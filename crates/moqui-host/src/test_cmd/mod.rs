@@ -27,7 +27,7 @@ mod report;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use moqui_core::testkit::{RunOptions, SpecFile, run_spec, spec_depends_on, suite_order};
+use moqui_core::testkit::{run_spec, spec_depends_on, suite_order, RunOptions, SpecFile};
 use moqui_lib::error::Error;
 
 pub use fixture::{DbMode, TestFixture};

@@ -38,13 +38,13 @@ use moqui_lib::error::Error;
 
 use crate::dialect::Dialect;
 use crate::model::{
-    AliasExpr, CaseAlias, ComplexAlias, ComplexField, ComplexPart, EntityDefinition, EntityModel, FieldAlias,
-    MemberEntity, SubSelect, is_text_java_type,
+    is_text_java_type, AliasExpr, CaseAlias, ComplexAlias, ComplexField, ComplexPart, EntityDefinition, EntityModel,
+    FieldAlias, MemberEntity, SubSelect,
 };
 
 use super::condition::{Column, Condition, FieldRef, LimitOffset, OrderBy, Writer};
 use super::ident::quote_ident;
-use super::statement::{SelectOptions, for_update};
+use super::statement::{for_update, SelectOptions};
 use super::{ConditionValues, Statement};
 
 /// View-entity select. See the module notes.

@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use moqui_lib::node::MNode;
 
-use super::screen_lint::{FileReport, Idiom, SiteKind, is_expression_attr, mask_strings, snippet};
+use super::screen_lint::{is_expression_attr, mask_strings, snippet, FileReport, Idiom, SiteKind};
 
 /// What one service (or one top-level element of another file) tells about its variables.
 #[derive(Default)]

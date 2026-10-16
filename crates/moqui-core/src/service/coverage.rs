@@ -18,8 +18,8 @@
 //! threads of `parallel` are all counted. A call whose name does not resolve is not.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static COUNTS: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());

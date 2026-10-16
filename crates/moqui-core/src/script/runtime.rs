@@ -29,12 +29,12 @@ use std::time::{Duration, Instant};
 
 use moqui_lib::context_stack::{ContextStack, Lookup};
 use moqui_lib::object::{HostObject, Value};
-use rquickjs::Error as JsError;
 use rquickjs::class::Trace;
 use rquickjs::context::EvalOptions;
 use rquickjs::function::{Opt, Rest, This};
 use rquickjs::object::Property;
 use rquickjs::proxy::{Proxy, ProxyHandler, ProxyProperty, ProxyReceiver, ProxyTarget};
+use rquickjs::Error as JsError;
 use rquickjs::{
     CatchResultExt, Class, Context, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Null, Object, Persistent,
     Runtime, Undefined, Value as JsValue,
@@ -65,7 +65,7 @@ mod user_host;
 mod values;
 
 pub(crate) use compiled::ScriptText;
-use compiled::{MAX_COMPILED_SCRIPT_BYTES, MAX_COMPILED_SCRIPTS, eval_compiled, eval_compiled_text};
+use compiled::{eval_compiled, eval_compiled_text, MAX_COMPILED_SCRIPTS, MAX_COMPILED_SCRIPT_BYTES};
 use conditions::*;
 use convert::*;
 use decimal::*;
@@ -1487,12 +1487,12 @@ pub fn eval_map(expression: &str) -> Result<std::collections::BTreeMap<String, V
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_NESTING, STACK, TOO_DEEP, clear_context_stack, context_value, eval_compiled, eval_condition, eval_source,
-        eval_value, expand, flush_current, js_error, push_context_frame, run_script, run_script_location,
-        set_context_name, with_ctx, with_screen_runner,
+        clear_context_stack, context_value, eval_compiled, eval_condition, eval_source, eval_value, expand,
+        flush_current, js_error, push_context_frame, run_script, run_script_location, set_context_name, with_ctx,
+        with_screen_runner, MAX_NESTING, STACK, TOO_DEEP,
     };
     use crate::context::{Error, ExecutionContextFactory};
-    use moqui_lib::object::{Value, basic_convert};
+    use moqui_lib::object::{basic_convert, Value};
     use rquickjs::Ctx;
 
     const MAX_COEFFICIENT: &str = "79228162514264337593543950335";

@@ -474,11 +474,8 @@ mod tests {
     fn nested_blocks_indent_but_inline_script_text_is_unchanged() {
         let source =
             generate("<actions><if condition=\"a\"><script>var s = `one\ntwo`;</script></if></actions>").unwrap();
-        assert!(
-            source.contains(
-                "        // begin inline script\n        var s = `one\ntwo`;\n        // end inline script\n"
-            )
-        );
+        assert!(source
+            .contains("        // begin inline script\n        var s = `one\ntwo`;\n        // end inline script\n"));
         assert!(!source.contains('\u{1}') && !source.contains('\u{2}'));
     }
 
@@ -512,11 +509,9 @@ mod tests {
     fn each_concrete_element_has_a_macro() {
         let names = macro_names().unwrap();
         assert_eq!(names, MACROS);
-        assert!(
-            !names
-                .iter()
-                .any(|name| *name == "service-group" || *name == "service-invoke")
-        );
+        assert!(!names
+            .iter()
+            .any(|name| *name == "service-group" || *name == "service-invoke"));
     }
 
     #[test]

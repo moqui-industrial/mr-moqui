@@ -24,9 +24,9 @@ use moqui_lib::error::Error;
 use crate::dialect::Dialect;
 use crate::model::{EntityDefinition, EntityModel, FieldDefinition, IndexDefinition, Relationship};
 
-use super::Statement;
-use super::condition::{Column, Condition, FieldRef, LimitOffset, OrderBy, Writer, fts_config};
+use super::condition::{fts_config, Column, Condition, FieldRef, LimitOffset, OrderBy, Writer};
 use super::ident::{clip_length, clip_name, is_mysql, placeholders, quote_ident, shrink_name};
+use super::Statement;
 
 /// What a select can ask for beyond conditions, order, and paging.
 #[derive(Debug, Clone, Default)]
