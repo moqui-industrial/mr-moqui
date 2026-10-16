@@ -315,21 +315,6 @@ impl ExecutionContextFactory {
         super::hits::flush(self, true)
     }
 
-    /// What Java's factory restart after the empty-db load does to the counts and ids: the old factory's `destroy`
-    /// writes every hit and bin, and the new factory starts with no stats and no sequence banks, so its first id of
-    /// each name is one past the stored `seqNum`. The host calls this once the startup empty-db load has run.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the rows cannot be written.
-    pub fn restart_artifact_stats(&self) -> Result<(), Error> {
-        let written = super::hits::flush_restart(self);
-        if let Some(facade) = self.entity() {
-            crate::entity::reset_sequence_banks(&facade);
-        }
-        written
-    }
-
     pub(crate) fn artifact_hits(&self) -> &super::hits::ArtifactHits {
         &self.hits
     }

@@ -493,9 +493,6 @@ pub struct LoadReport {
     /// How many times `UserSecurityChecks` ran during the load. The security ECAs fire on each
     /// `UserGroupMember` and `UserGroupPermission` write, so seed data makes this positive.
     pub security_checks: u64,
-    /// The startup empty-db load ran: no `moqui.basic.Enumeration` rows and `empty-db-load` types to load. Java
-    /// restarts its factory after this load.
-    pub empty_db_load: bool,
 }
 
 /// Parse `name=value` load arguments. This does not open a database.
@@ -973,7 +970,7 @@ fn boot_server(
         index_feeds_on_start_empty(&factory);
     }
     let load_started = std::time::Instant::now();
-    let empty_db_load = {
+    {
         let context = factory.new_context();
         let entered = context.enter();
         let authz = context.disable_authz();
@@ -988,17 +985,7 @@ fn boot_server(
         drop(authz);
         drop(entered);
         drop(context);
-        loaded?.empty_db_load
-    };
-    if empty_db_load {
-        // Java restarts its factory after the empty-db load: the old one writes its artifact hit bins on destroy,
-        // and the new one starts counting again and runs its start-time search check again.
-        factory
-            .restart_artifact_stats()
-            .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
-        if search.is_some() {
-            index_feeds_on_start_empty(&factory);
-        }
+        loaded?;
     }
     tracing::info!(
         "Table check and empty-db load finished in {:.3} seconds",
@@ -1228,12 +1215,11 @@ fn load_in_context(
         .as_ref()
         .map_or_else(|| "seed,seed-initial,install".to_string(), |types| types.join(","));
     let existing = entity_count(facade, "moqui.basic.Enumeration")?;
-    let mut empty_db_load = false;
     if let Some(location) = &flags.location {
         tracing::info!("Loading entity data from location {location}, data types: {types}");
         records = records.saturating_add(load_one(facade, location, &options)?);
     } else if should_load_data(existing, flags, startup) {
-        empty_db_load = startup && existing == 0;
+        let empty_db_load = startup && existing == 0;
         if existing == 0 {
             tracing::info!("Found 0 Enumeration records, loading empty-db-load data types ({types})");
         } else {
@@ -1274,11 +1260,11 @@ fn load_in_context(
         "Data load of {records} records finished in {:.3} seconds",
         load_started.elapsed().as_secs_f64()
     );
-    // Report counts Java does not make, so they are not artifact hits.
-    let untracked = moqui_core::entity::UntrackedEntityHits::enter();
+    // Report counts Java does not make, counted in Rust-only bins.
+    let report = moqui_core::entity::RustOnlyEntityHits::enter(moqui_core::entity::RustOnlyEntityHits::LOAD_REPORT);
     let enumeration = entity_count(facade, "moqui.basic.Enumeration")?;
     let user_group_permission = entity_count(facade, "moqui.security.UserGroupPermission")?;
-    drop(untracked);
+    drop(report);
     tracing::info!(
         "Loaded {records} records; enumeration {enumeration}; user group permission {user_group_permission}"
     );
@@ -1288,7 +1274,6 @@ fn load_in_context(
         user_group_permission,
         test_fts_before_load,
         security_checks: moqui_core::service::security_checks_run().saturating_sub(checks_before),
-        empty_db_load,
     })
 }
 

@@ -325,28 +325,27 @@ impl ArtifactHits {
     /// time is over. `all` also takes the current bins that are still open, as Java's `destroy`.
     ///
     /// Current bins are taken in the iteration order of Java's `artifactStatsInfoByType` `HashMap`, which is the
-    /// order Java's `destroy` gives them their sequenced ids.
+    /// order Java's `destroy` gives them their sequenced ids. Bins of Rust-only sub types (see
+    /// [`crate::entity::RustOnlyEntityHits`]) have no place in Java's map: they are left out of its order and taken
+    /// after it, so the bins Java also has get the same ids.
     fn take(&self, all: bool) -> (Vec<HitRow>, Vec<BinRow>) {
-        self.take_with(all, false)
-    }
-
-    /// As [`Self::take`] with `all`, then forget every artifact's counts, as Java's factory restart after the
-    /// empty-db load: the old factory's `destroy` writes its bins and the new one starts with no stats.
-    fn take_restart(&self) -> (Vec<HitRow>, Vec<BinRow>) {
-        self.take_with(true, true)
-    }
-
-    fn take_with(&self, all: bool, restart: bool) -> (Vec<HitRow>, Vec<BinRow>) {
         let now = now_millis();
         let mut state = lock(&self.state);
         let State {
             stats,
-            next_order,
             closed,
             hits,
             dropped,
+            ..
         } = &mut *state;
-        let keys = java_hash_map_order(stats.iter().map(|(key, info)| (key.as_str(), info.order)));
+        let (rust_only, java): (Vec<_>, Vec<_>) = stats
+            .iter()
+            .map(|(key, info)| (key.as_str(), info.order, info.sub_type.as_deref()))
+            .partition(|(_, _, sub_type)| crate::entity::is_rust_only_sub_type(*sub_type));
+        let mut keys = java_hash_map_order(java.into_iter().map(|(key, order, _)| (key, order)));
+        let mut rust_only: Vec<(&str, u64)> = rust_only.into_iter().map(|(key, order, _)| (key, order)).collect();
+        rust_only.sort_by_key(|(_, order)| *order);
+        keys.extend(rust_only.into_iter().map(|(key, _)| key.to_string()));
         for key in keys {
             let Some(info) = stats.get_mut(&key) else {
                 continue;
@@ -366,10 +365,6 @@ impl ArtifactHits {
                 "Artifact hits, bins, or artifacts were dropped since the last flush"
             );
             *dropped = 0;
-        }
-        if restart {
-            stats.clear();
-            *next_order = 0;
         }
         (std::mem::take(hits), std::mem::take(closed))
     }
@@ -554,22 +549,7 @@ fn server_address() -> &'static (String, String) {
 ///
 /// Returns an error when a chunk of rows cannot be written after the retries.
 pub(crate) fn flush(factory: &ExecutionContextFactory, all: bool) -> Result<(), Error> {
-    let taken = factory.artifact_hits().take(all);
-    write(factory, taken)
-}
-
-/// Java's factory restart after the empty-db load, for the counts: write every hit and bin as the old factory's
-/// `destroy` does, then start counting again with no stats, as the new factory does.
-///
-/// # Errors
-///
-/// Returns an error when a chunk of rows cannot be written after the retries.
-pub(crate) fn flush_restart(factory: &ExecutionContextFactory) -> Result<(), Error> {
-    let taken = factory.artifact_hits().take_restart();
-    write(factory, taken)
-}
-
-fn write(factory: &ExecutionContextFactory, (hits, bins): (Vec<HitRow>, Vec<BinRow>)) -> Result<(), Error> {
+    let (hits, bins) = factory.artifact_hits().take(all);
     if hits.is_empty() && bins.is_empty() {
         return Ok(());
     }
@@ -874,21 +854,22 @@ mod tests {
     }
 
     #[test]
-    fn a_restart_takes_every_bin_and_starts_with_no_stats() {
+    fn rust_only_bins_are_taken_after_the_java_order() {
         let hits = ArtifactHits::from_conf(conf());
-        hits.count(&hit("AT_SERVICE", "a.b#c", 1_000, 4.0), HitContext::default);
-        hits.count(
-            &hit("AT_XML_SCREEN", "component://x.xml", 2_000, 5.0),
-            HitContext::default,
-        );
-        let (_, bins) = hits.take_restart();
-        assert_eq!(bins.len(), 2);
-        let state = hits.state.lock().unwrap();
-        assert!(state.stats.is_empty() && state.closed.is_empty() && state.next_order == 0);
-        drop(state);
-        hits.count(&hit("AT_SERVICE", "a.b#c", 3_000, 1.0), HitContext::default);
-        let state = hits.state.lock().unwrap();
-        assert_eq!(state.stats["a.b#c"].hit_count, 1);
+        let fk_check = Hit {
+            sub_type: Some(crate::entity::RustOnlyEntityHits::FK_CHECK),
+            ..hit("AT_XML_SCREEN", "a", 1_000, 1.0)
+        };
+        hits.count(&fk_check, HitContext::default);
+        for name in ["c", "a", "b"] {
+            hits.count(&hit("AT_XML_SCREEN", name, 1_000, 1.0), HitContext::default);
+        }
+        let (_, bins) = hits.take(true);
+        let taken: Vec<(&str, Option<&str>)> = bins
+            .iter()
+            .map(|bin| (bin.name.as_str(), bin.sub_type.as_deref()))
+            .collect();
+        assert_eq!(taken, [("a", None), ("b", None), ("c", None), ("a", Some("fk-check"))]);
     }
 
     #[test]
@@ -1196,7 +1177,7 @@ mod tests {
     }
 
     #[test]
-    fn untracked_fk_reads_still_refuse_a_missing_parent() {
+    fn fk_reads_are_counted_apart_and_still_refuse_a_missing_parent() {
         let world = world();
         let _entered = world.context.enter();
         let _authz = world.context.disable_authz();
@@ -1209,13 +1190,16 @@ mod tests {
         transition.set("statusId", Value::string("Missing"));
         transition.set("toStatusId", Value::string("AlsoMissing"));
         assert!(transition.create(&world.facade).is_err());
-        // A read made after the FK check is counted again.
+        // A read made after the FK check is counted under its own sub type again.
         world.facade.find("moqui.basic.StatusFlow").unwrap().list().unwrap();
         world.context.factory().flush_artifact_hits().unwrap();
         let bins = rows(&world, "moqui.server.ArtifactHitBin", "AT_ENTITY");
-        assert!(bins
+        let status_items: Vec<String> = bins
             .iter()
-            .all(|bin| text(bin, "artifactName") != "moqui.basic.StatusItem"));
+            .filter(|bin| text(bin, "artifactName") == "moqui.basic.StatusItem")
+            .map(|bin| text(bin, "artifactSubType"))
+            .collect();
+        assert_eq!(status_items, ["fk-check"]);
         assert!(
             bins.iter()
                 .any(|bin| text(bin, "artifactName") == "moqui.basic.StatusFlow"

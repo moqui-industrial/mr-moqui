@@ -258,7 +258,14 @@ pub(crate) fn is_permitted(
         && artifact_flag(artifact_type, "tarpit-enabled")
         && (permit.requires_authz || (artifact_type != "AT_XML_SCREEN" && artifact_type != "AT_REST_PATH"))
     {
-        check_tarpit(artifact_type, name)?;
+        // Nothing is refused while authorization is disabled, so checks that cannot be read (a run with no
+        // database) are passed over.
+        match check_tarpit(artifact_type, name) {
+            Err(err) if permit.authz_disabled && err.kind() != crate::context::ErrorKind::Tarpit => {
+                tracing::debug!(error = %err, "tarpit checks not read while authorization is disabled");
+            }
+            outcome => outcome?,
+        }
     }
     if let Some(last) = last {
         if last.inheritable
@@ -278,7 +285,13 @@ pub(crate) fn is_permitted(
     {
         let _guard = disable_authz_guard()?;
         let facade = entity_facade()?;
-        let checks = user_checks(&facade)?;
+        let checks = match user_checks(&facade) {
+            Err(err) if permit.authz_disabled => {
+                tracing::debug!(error = %err, "authz checks not read while authorization is disabled");
+                Arc::default()
+            }
+            checks => checks?,
+        };
         for check in checks.iter() {
             if check.artifact_type != artifact_type
                 || !(check.authz_action == AUTHZA_ALL || check.authz_action == action_id)

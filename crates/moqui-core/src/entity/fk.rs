@@ -215,8 +215,8 @@ fn key_pairs(relationship: &Relationship, related: &EntityDefinition) -> Result<
 fn row_exists(facade: &EntityFacade, entity_name: &str, keys: &BTreeMap<String, Value>) -> Result<bool, Error> {
     // Existence does not access localized fields; keep cached/transaction-held rows usable.
     let _raw = super::field_rw::RawReadGuard::enter();
-    // Java leaves FK existence to the database and makes no such read, so it is not an artifact hit.
-    let _untracked = super::UntrackedEntityHits::enter();
+    // Java leaves FK existence to the database and makes no such read, so it is counted in a Rust-only bin.
+    let _fk_check = super::RustOnlyEntityHits::enter(super::RustOnlyEntityHits::FK_CHECK);
     let mut find = facade.find(entity_name)?;
     for (field, value) in keys {
         find = find.eq(field, value.clone());

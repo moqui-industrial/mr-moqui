@@ -589,30 +589,43 @@ impl Drop for WriteNote<'_> {
 }
 
 thread_local! {
-    static UNTRACKED_HITS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static RUST_ONLY_SUB_TYPE: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
 }
 
-/// While held, entity operations on this thread still push their frame, and so are still authorized, but are not
-/// counted as artifact hits. For reads Java does not make: FK existence checks (Java leaves those to the database)
-/// and the load report counts. Nested guards stack.
-#[must_use = "hits are counted again when the guard drops"]
-pub struct UntrackedEntityHits(());
+/// While held, entity operations on this thread are counted as artifact hits under `sub_type` instead of Java's find
+/// method or write operation. For reads Java does not make: FK existence checks (Java leaves those to the database)
+/// and the load report counts. They are still pushed, authorized and counted, but in bins of their own, so a
+/// comparison with Java can set them apart. The previous sub type is restored on drop.
+#[must_use = "the sub type is restored when the guard drops"]
+pub struct RustOnlyEntityHits(Option<&'static str>);
 
-impl UntrackedEntityHits {
-    pub fn enter() -> Self {
-        UNTRACKED_HITS.with(|depth| depth.set(depth.get() + 1));
-        Self(())
+impl RustOnlyEntityHits {
+    /// FK existence reads before a write.
+    pub const FK_CHECK: &'static str = "fk-check";
+    /// The record counts the startup load reports.
+    pub const LOAD_REPORT: &'static str = "load-report";
+
+    pub fn enter(sub_type: &'static str) -> Self {
+        Self(RUST_ONLY_SUB_TYPE.with(|current| current.replace(Some(sub_type))))
     }
 }
 
-impl Drop for UntrackedEntityHits {
+impl Drop for RustOnlyEntityHits {
     fn drop(&mut self) {
-        UNTRACKED_HITS.with(|depth| depth.set(depth.get().saturating_sub(1)));
+        RUST_ONLY_SUB_TYPE.with(|current| current.set(self.0));
     }
 }
 
-fn entity_hits_untracked() -> bool {
-    UNTRACKED_HITS.with(|depth| depth.get() > 0)
+fn rust_only_sub_type() -> Option<&'static str> {
+    RUST_ONLY_SUB_TYPE.with(std::cell::Cell::get)
+}
+
+/// Whether `sub_type` is one [`RustOnlyEntityHits`] counts under.
+pub(crate) fn is_rust_only_sub_type(sub_type: Option<&str>) -> bool {
+    matches!(
+        sub_type,
+        Some(RustOnlyEntityHits::FK_CHECK | RustOnlyEntityHits::LOAD_REPORT)
+    )
 }
 
 /// An `AT_ENTITY` frame on the artifact stack for one entity operation.
@@ -642,10 +655,7 @@ impl EntityArtifact {
         let requires_authz = !skips_authz(&skip, action);
         let outcome = crate::context::ExecutionContext::with_current(|ctx| {
             ctx.push_checked("AT_ENTITY", entity_name, action, requires_authz, false, None)?;
-            ctx.set_hit_detail(Some(sub_type), None);
-            if entity_hits_untracked() {
-                ctx.untrack_hit();
-            }
+            ctx.set_hit_detail(Some(rust_only_sub_type().unwrap_or(sub_type)), None);
             Ok::<(), crate::context::Error>(())
         });
         match outcome {

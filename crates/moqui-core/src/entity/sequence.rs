@@ -142,19 +142,6 @@ impl SequenceBanks {
     }
 }
 
-impl SequenceBanks {
-    /// Drop every bank, as a new Java factory starts with an empty bank cache: the next id of each name comes
-    /// from a database refill, one past the stored `seqNum`.
-    fn reset_all(&self) {
-        self.names.lock().unwrap_or_else(PoisonError::into_inner).clear();
-    }
-}
-
-/// Drop every in-memory sequence bank of the facade. See [`SequenceBanks::reset_all`].
-pub(crate) fn reset_sequence_banks(facade: &EntityFacade) {
-    facade.inner.banks.reset_all();
-}
-
 /// `EntityFacade.tempSetSequencedIdPrimary(seqName, nextSeqNum, bankSize)`. Factory wide, as Java.
 pub(crate) fn temp_set_sequenced_id_primary(facade: &EntityFacade, seq_name: &str, next: i64, bank_size: i64) {
     facade.inner.banks.temp_set(seq_name, next, bank_size);
