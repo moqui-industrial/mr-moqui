@@ -39,6 +39,10 @@ along with this software (see the LICENSE.md file). If not, see
     -->
 
     <transition name="login" require-session-token="false">
+        <!-- Optional for second-factor continuation, where the username is already in the session. -->
+        <parameter name="username"/>
+        <parameter name="password"/>
+        <parameter name="code"/>
         <actions>
             <if condition="ec.web?.sessionAttributes?.moquiPreAuthcUsername"><then>
                 <!-- already pre-auth'ed, verify code below -->

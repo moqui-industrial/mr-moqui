@@ -82,6 +82,71 @@ pub fn screen_info_list(
     Ok(out)
 }
 
+/// Resolve a transition's mounted path and backing service without exposing implementation objects.
+/// The caller chooses the root screen; this operation only reads metadata, never grants execution access.
+pub fn transition_info(
+    factory: &ExecutionContextFactory,
+    root: &str,
+    location: &str,
+    name: &str,
+    method: &str,
+) -> Result<Value, Error> {
+    let facade = ScreenFacade::of(factory);
+    let def = facade.screen_def(factory, location)?;
+    let transition = def
+        .transition(name, Some(method))
+        .ok_or_else(|| Error::new("Screen transition not found"))?;
+    fn find_paths(info: &Info, target: &str, path: &str, paths: &mut Vec<String>) {
+        if info.row["location"].as_str() == Some(target) {
+            paths.push(path.to_string());
+        } else if paths.len() < 2 {
+            for child in &info.children {
+                find_paths(
+                    child,
+                    target,
+                    &format!("{path}/{}", child.row["name"].as_str().unwrap_or_default()),
+                    paths,
+                );
+            }
+        }
+    }
+    // Reuse the existing bounded tree walk, including cycle and unreadable-screen handling.
+    let root = facade.screen_def(factory, root)?;
+    let tree = walk(&facade, factory, &root, None, 0, &mut vec![root.location.clone()]);
+    let mut paths = Vec::new();
+    find_paths(&tree, &def.location, "", &mut paths);
+    if paths.len() != 1 {
+        return Err(Error::new(if paths.is_empty() {
+            "Screen is not mounted under the selected root"
+        } else {
+            "Screen is mounted more than once under the selected root"
+        }));
+    }
+    let parameters = transition
+        .parameters
+        .iter()
+        .map(|p| (&p.name, p.required))
+        .chain(transition.path_parameters.iter().map(|name| (name, true)))
+        .map(|(name, required)| {
+            (
+                name.clone(),
+                Value::Map(indexmap::indexmap! {
+                    "name".to_string() => Value::string(name), "required".to_string() => Value::Bool(required),
+                }),
+            )
+        })
+        .collect();
+    Ok(Value::Map(indexmap::indexmap! {
+        "location".to_string() => Value::string(location),
+        "name".to_string() => Value::string(name),
+        "method".to_string() => Value::string(method.to_ascii_lowercase()),
+        "path".to_string() => Value::string(format!("{}/{name}", paths[0])),
+        "serviceName".to_string() => transition.single_service.as_deref().map_or(Value::Null, Value::string),
+        "pathParameters".to_string() => Value::List(transition.path_parameters.iter().map(Value::string).collect()),
+        "parameterMap".to_string() => Value::Map(parameters),
+    }))
+}
+
 fn walk(
     facade: &ScreenFacade,
     factory: &ExecutionContextFactory,

@@ -458,6 +458,27 @@ impl HostFind {
         })
     }
 
+    fn one_master<'js>(&self, ctx: Ctx<'js>, master: Opt<String>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let facade = facade_of(&ctx)?;
+            match take_find(&ctx, &self.inner)?
+                .one()
+                .map_err(|err| throw_lib(&ctx, &err))?
+            {
+                Some(value) => {
+                    let graph = crate::entity::query_rest::master_value(
+                        &facade,
+                        &value,
+                        master.0.as_deref().unwrap_or("default"),
+                    )
+                    .map_err(|err| throw_lib(&ctx, &err))?;
+                    host_to_js(&ctx, graph)
+                }
+                None => Null.into_js(&ctx),
+            }
+        })
+    }
+
     fn count<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
             let number = take_find(&ctx, &self.inner)?
@@ -1086,6 +1107,10 @@ impl HostEntity {
                 Ok(found)
             }
         })
+    }
+
+    fn resolve_entity_name(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        self.get_entity_name(ctx)
     }
 
     fn get_entity_name(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
