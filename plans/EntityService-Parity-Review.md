@@ -20,7 +20,7 @@ ordering.
 
 ## Summary
 
-80 open findings and 36 accepted differences. Open by phase:
+78 open findings and 36 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
@@ -28,14 +28,13 @@ ordering.
 | 2 Entity find / query | 0 | — |
 | 3 Facade / metadata / DDL / cache | 3 | — |
 | 4 Data loader / feed / ECA / writer / document / ETL | 1 | — |
-| 5 Entity query / REST | 5 | P5-01 |
+| 5 Entity query / REST | 3 | — |
 | 6 Service definition / validation / call | 20 | P6b-01 (decision) |
 | 7 ECA / SECA / pools / jobs | 19 | — |
 | 8 REST / remote / tools / mail / components | 30 | P8a-03 |
 
 | ID | Area | One-line |
 |---|---|---|
-| P5-01 | entity REST | REST find of a **view-entity** returns only `_entity` (no alias values) |
 | P6b-01 | service call | Service-body failure returns `Err`; Java returns the result map — **open design decision** |
 | P8a-03 | service REST | `/rest/s1` service results not run through `stripUserAccountSecrets` |
 
@@ -49,7 +48,9 @@ ordering.
    foreign key is recognized only by its computed name.
 3. **Error contract** (P6b-01, P7a-10): a failing service body propagates `Err` where Java records the
    error and returns; `post-commit` SECA gets `None` instead of an empty map.
-4. **View REST output** (P5-01): view finds now filter on aliases but still render no alias values.
+4. **View fields** (P5-19, P5-16, P5-18): the entity JSON schema and the data writer's CSV of a view read no fields
+   (REST finds and form auto fields now read the aliases), `pq-expression` aliases are not evaluated, and
+   `DataDocument.<id>` is not an entity name.
 
 ### Open decisions
 
@@ -411,7 +412,7 @@ open for want of a caller. A port would divert records the way a check does (`en
   is made, as `makeDocId`, of the document's fields named for the key, so a one-field key that is not a field gives
   no `_id` (`doc_id`, `:127`). Before, the `_id` was always the full key, read from the query's own key aliases.
 - XML writer count (P4b-05, fixed): an XML record counts its nested records too, as `plainMapXmlWriter`; JSON and CSV
-  count each top record (`data_body`, `entity/query_rest.rs:1556`, `xml_record_count`, `:1584`;
+  count each top record (`data_body`, `entity/query_rest.rs:1555`, `xml_record_count`, `:1583`;
   `write_rows`, `entity/data_writer.rs:472`).
 - Writer directories (P4b-06, fixed): `file()` needs its parent directory and `directory()` creates only the last
   one (`mkdir`), else the write is a message error; the zip writes still create the parents, as Java's
@@ -446,37 +447,81 @@ path→PK resolution, master/dependent expansion, JSON/XML/CSV writers) with `en
 `WebUtilities`, `ContextJavaUtil.jacksonMapper` and `RestSchemaUtil`. JSON-schema differences are
 tracked once under P2-06/P2-07/P2-12.
 
+Worked 2026-10-16: P5-01, P5-11, P5-13 and P5-15 fixed; P5-17 (form auto fields of a view) found and fixed;
+P5-16 left open, though a `pq-expression` alias no longer stops the model loading; P5-18 and P5-19 found and left
+open. The JSON wire change (P5-11, P5-15) has no consumer in this repository that reads the old text: the browser
+code (`runtime/base-component/webroot/screen/webroot/js`, `crates/moqui-browser/js`, `scripts/*.mjs`) parses with
+`JSON.parse`/`response.json()`, `MoquiL10n.toInstant` already takes a millis number (the old quoted millis text was
+an invalid date to it), the qvt screen data and `crates/moqui-browser` use `moqui_lib::json::to_json`, not this
+writer, the `moqui test` specs run in-process, and only some Rust tests matched `"name": value` text (now `"name" :
+value`). Line numbers in this section are as of that change.
+
 | ID | Rust location | Java location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P5-01 | `entity/query_rest.rs:300`, `:739` | `EntityFacadeImpl.groovy:1730,1754-1755` | REST find of a **view-entity** filters on aliases now but renders only `_entity` (`EntitySnap` copies `entity.fields`, empty for views); PK lookup on a view never happens | High | No |
-| P5-11 | `web/mod.rs:514` → `entity/query_rest.rs:1775` | `ContextJavaUtil.java:591-597` | REST JSON serializes `Timestamp`/`Date`/`Time` as quoted strings; Java emits unquoted millis (`WRITE_DATES_AS_TIMESTAMPS`) | Med | No |
-| P5-13 | `entity/query_rest.rs:1238-1247` | `EntityDynamicViewImpl.groovy:104-110` | `default-display` alias attribute dropped (unused in `runtime/`) | Low | Unsure |
-| P5-15 | `web/mod.rs:514` | `WebFacadeImpl.groovy:721`; `ContextJavaUtil.java:595` | Entity REST JSON compact vs Java `INDENT_OUTPUT` pretty-print | Low | Unsure |
-| P5-16 | `moqui-db/src/model/view.rs:267` | `EntityDefinition.groovy:180,205-210`; `EntityValueBase.java:215-251` | `pq-expression` aliases unsupported (fail the `alias X has no entity-alias` check) and unevaluated (unused in `runtime/`) | Low | Unsure |
+| P5-16 | `moqui-db/src/model/mod.rs:708-723` | `EntityDefinition.groovy:180,205-210`; `EntityValueBase.java:215-251` | `pq-expression` aliases are not evaluated; such an alias is left out of its view with a logged error (unused in `runtime/`) | Low | No |
+| P5-18 | `moqui-db/src/model/mod.rs:432` (`entity`); `entity/document.rs:722-758` | `EntityFacadeImpl.groovy:1110-1111`; `EntityDataDocument.groovy:169-183,204-208` | `DataDocument.<dataDocumentId>` is not an entity name: Java builds the document's dynamic view as an entity definition for finds and form auto fields (unused in `runtime/`) | Low | No |
+| P5-19 | `entity/schema.rs:148`; `entity/data_writer.rs:522-538` | `RestSchemaUtil.groovy:144-147`; `EntityDataWriterImpl.groovy:349-359` | The entity JSON schema and the data writer's CSV header and rows of a **view-entity** have no fields; Java uses the aliases (`getAllFieldNames`) | Med | No |
 
-#### P5-01 — REST find of a view-entity returns only `_entity`
+#### P5-16 — `pq-expression` aliases not evaluated
 
-The model stores view aliases in `EntityDefinition.aliases` and leaves `fields` empty for a view.
-Conditions now go through `search_form_map`, which reads aliases (`entity/search_form.rs:125-144`), but
-`EntitySnap::from_entity` still copies only `entity.fields` and `render` iterates `snap.fields`, so the
-response rows carry only `_entity` and `pk_complete` is always false. Java iterates
-`ed.allFieldInfoList` (aliases for a view) and returns alias values.
+Java leaves an alias with `pq-expression` out of the view's fields and keeps it in `pqExpressionNodeMap`; `get` of
+that name evaluates the expression with the row's values, and so does `getMap` (not `getPlainValueMap`, so REST
+output has none); form auto fields show it with `default-display="true"`. Before this pass Rust failed the alias's
+`entity-alias` check, and since `EntityModel::load` stops at the first entity that does not parse, one such view
+stopped the whole model loading. It is now left out of the view with an error naming it, and the rest loads. Left
+open: evaluating it needs the value layer to run a script expression (moqui-db has no script runtime, and Java does
+it lazily in `get`), a design choice best made with P5-18, the DataDocument entity definitions it was made for; no
+view in `runtime/` uses it.
 
-#### P5-11 — REST timestamps quoted instead of millis numbers
+#### P5-18 — `DataDocument.<id>` entity definitions not ported
 
-Java serializes with `ContextJavaUtil.jacksonMapper`, which enables `WRITE_DATES_AS_TIMESTAMPS`, so
-`Timestamp`/`Date`/`Time` becomes an unquoted millis number. Rust's JSON writer has no arm for those
-variants, so they fall through to a quoted string. Decimals match.
+Java's `getEntityDefinition` answers a name starting with `DataDocument.` with the document's dynamic view
+(`makeEntityDefinition`): its aliases carry the fields' `fieldNameAlias`, `functionName` and `defaultDisplay`, and
+expression fields become `pq-expression` aliases. A screen can then find on it or give a form-list its auto fields.
+Rust builds the same view only inside `entity/document.rs` (`code_view`) to query a document, so the name is not
+found. Left open for want of a caller: nothing in `runtime/` names a `DataDocument.` entity. A port would resolve
+the name in the facade's model lookup and needs P5-16 for expression fields.
+
+#### P5-19 — Entity schema and data-writer CSV of a view have no fields
+
+The model keeps a view's fields as `aliases` and leaves `fields` empty. `entity/schema.rs` builds a schema's
+`properties` from `entity.fields`, and the data writer's CSV header and rows (`entity/data_writer.rs`) from the same,
+so a view's schema has only `_entity` and its CSV no columns. Java uses `getAllFieldNames`, the aliases. Found while
+fixing P5-01 (the same cause) and left open as it belongs to the schema (P2-12) and writer (Phase 4) code; the fix
+is to read `field_names`/`pk_field_names` and the alias types for a view, as `EntitySnap` and the form shape now do.
+The CSV header with `tableColumnNames` would also need a column name for an alias.
 
 #### Phase 5 checked and found equivalent
 
+- REST find of a view-entity (P5-01, fixed): `EntitySnap` takes `field_names`/`pk_field_names`, the aliases for a
+  view (`entity/query_rest.rs:282-311`), so a view row renders its alias values (`render`, `:737-747`), and a
+  complete primary key of aliases, from the path or the parameters, finds one row as Java's `containsPrimaryKey`
+  (`find_rest`, `:478`). The identity and secret stripping (`sensitive::strip_user_account_secrets`) goes by key at
+  any depth, so view rows get it too. The query-REST CSV writer (`render_csv`) also gets a view's aliases.
+- REST JSON dates (P5-11, fixed): `encode_json` (`entity/query_rest.rs:1739-1781`), which every web JSON response
+  and JSON error goes through (`web/mod.rs:514`, `:525`, `:1263`), writes a `Timestamp` or `Date` as an unquoted
+  epoch-millis number and a `Time` as `"HH:mm:ss"`, as Jackson with `WRITE_DATES_AS_TIMESTAMPS` and its
+  `SqlTimeSerializer` (checked against jackson-databind 2.22.2). Before, all three were quoted millis text. A
+  `Date` is midnight UTC, as everywhere in this port; Java's is midnight in the JVM zone. The data writer's JSON
+  files are unchanged.
+- REST JSON layout (P5-15, fixed): the same writer indents as Jackson's `DefaultPrettyPrinter`
+  (`INDENT_OUTPUT`): object entries on their own lines two spaces deeper per enclosing object, `"name" : value`,
+  arrays on one line as `[ a, b ]`, and `{ }`/`[ ]` when empty.
+- `default-display` (P5-13, fixed): the model keeps it on an alias (`moqui-db/src/model/view.rs:134`, `:279`), as
+  does a REST dynamic view's alias spec (`entity/query_rest.rs:1243`), and a form-list's auto fields honor it as
+  `ScreenForm.addEntityFields` (`screen/form.rs:934-943`). As in Java, a dynamic view never reaches form auto fields,
+  so on a REST dynamic view it has no effect.
+- Form auto fields of a view-entity (P5-17, found and fixed): `read_entity_shape` (`screen/form.rs:862-915`) read
+  `entity.fields`, so `auto-fields-entity` of a view (the Tools entity data screens with a view selected) gave no
+  fields. A view's fields are now its aliases, with their types (`text-long` when none, as Java's `fi.type ?:
+  "text-long"`) and primary-key flags.
 - Identity-admin/secret-config read and write bans and `stripUserAccountSecrets` on every response
-  (`entity/query_rest.rs:186-211`, `entity/sensitive.rs` mirrors `WebUtilities`).
-- REST writes go through entity-auto (`write_rest`, `entity/query_rest.rs:234-255`), so status-flow checks
+  (`entity/query_rest.rs:185-210`, `entity/sensitive.rs` mirrors `WebUtilities`).
+- REST writes go through entity-auto (`write_rest`, `entity/query_rest.rs:233-254`), so status-flow checks
   and `oldStatusId`/`statusChanged` apply.
 - REST field conditions via `search_form_map`: `_ic`, `_period`/`_poffset`/`_pdate`, date-only `_thru`
   padding, aggregate aliases to HAVING, unknown `_op` adds nothing.
-- Multi-step relationship paths (`entity/query_rest.rs:417-438`); path→entity+PK resolution,
+- Multi-step relationship paths (`entity/query_rest.rs:415-436`); path→entity+PK resolution,
   `masterNameInPath` fallback, verb→operation mapping.
 - Dynamic view `<complex-alias>`/`case`/`when`/`else`, alias attributes, member `<field>`, `alias-all`
   expansion; view `group-by`/`having` inference; `<order-by>`/`<entity-condition>`.
@@ -811,8 +856,8 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P4a-20 | data loader | An empty CSV header cell (a trailing delimiter) is no column; Java's field lookup fails the file on it (`entity/load_feed/csv.rs:94-100`) | A trailing delimiter is no reason to fail a file; a non-empty name that is not a field still fails it (P4a-16). Comment at the site |
 | P4b-07 | data feed | `get#DataFeedDocuments` honors `thruUpdateStamp`; Java always passes null | Bug fix; comment at runtime `EntityServices.xml:35-36` |
 | P4b-08 | ETL | `useTryInsert` stores with `createOrUpdate` where the database is `never-try-insert` (Postgres); Java's ETL loader tries the insert anyway (`entity/etl.rs:92-101`) | Safer: on Postgres the failed insert aborts the transaction, so Java's update after it fails; the data loader's `handleValue` has the same guard. Comment at the site |
-| P4b-09 | data writer | `isoDateTime(true)` formats dates in JSON and XML; Java ignores it (`TODO`) (`entity/query_rest.rs:1551-1583,1716-1733`) | Implements Java's TODO |
-| P5-14 | entity REST | Request `pageSize` capped at `entity_rest_max_page_size` (1000); Java caps nothing | Documented `entity/query_rest.rs:534-553` |
+| P4b-09 | data writer | `isoDateTime(true)` formats dates in JSON and XML; Java ignores it (`TODO`) (`entity/query_rest.rs:1550-1582,1715-1732`) | Implements Java's TODO |
+| P5-14 | entity REST | Request `pageSize` capped at `entity_rest_max_page_size` (1000); Java caps nothing | Documented `entity/query_rest.rs:532-551` |
 | P6a-05 | service tools | Service detail view is a rebuilt node (`method` null, no `groovyString`, some attributes dropped) | Documented `service/info.rs:183-184` |
 | P6b-08 | semaphore | Row cleared only while `lockThread` equals Rust's owner label | Documented `service/semaphore.rs:72-73,204-205` |
 | P7a-01 | EECA | Security-check EECAs run even when the message facade already has errors (Java skips them) | Stricter by design; `service/eca.rs:74-75`, test at `service/eca.rs:327` |

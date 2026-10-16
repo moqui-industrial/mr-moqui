@@ -255,7 +255,7 @@ fn login_sets_a_cookie_and_the_next_request_is_that_user() {
     let response = serve_at(&world.factory, login, &root);
     assert_eq!(response.status, 200, "{}", response.body_text());
     assert!(
-        response.body_text().contains("\"loggedIn\": true"),
+        response.body_text().contains("\"loggedIn\" : true"),
         "{}",
         response.body_text()
     );
@@ -437,7 +437,7 @@ fn entity_json_has_the_primary_key_and_the_service_document_lists_enum_types() {
     let response = serve_at(&world.factory, service, &root);
     assert_eq!(response.status, 200, "{}", response.body_text());
     assert!(
-        response.body_text().contains("\"openapi\": \"3.1.0\""),
+        response.body_text().contains("\"openapi\" : \"3.1.0\""),
         "{}",
         response.body_text()
     );

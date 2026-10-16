@@ -130,6 +130,8 @@ pub struct FieldAlias {
     pub from_alias_all: bool,
     /// Full name of the member entity a column alias reads. Set when the view is completed.
     pub member_entity: Option<String>,
+    /// `default-display`: whether a form-list's auto fields show the alias. `None` leaves it to the type.
+    pub default_display: Option<bool>,
 }
 
 impl FieldAlias {
@@ -274,6 +276,7 @@ pub(super) fn parse_alias(node: &MNode, dictionary: &HashSet<String>) -> Result<
         field_type,
         is_aggregate: optional_attr(node, "is-aggregate").map(|value| value.eq_ignore_ascii_case("true")),
         expr,
+        default_display: optional_attr(node, "default-display").map(|value| value == "true"),
         ..FieldAlias::default()
     })
 }

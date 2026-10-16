@@ -1516,6 +1516,46 @@ fn entity_rest_delete_needs_every_key_and_takes_a_wildcard() {
     assert_eq!(left.values()[0].get("statusFlowId").and_then(Value::as_str), Some("F2"));
 }
 
+/// As Java's `getPlainValueMap`, a REST find of a view-entity gives its alias values, and the primary key aliases
+/// (here `enumId`, from the path or the parameters) find one row.
+#[test]
+fn entity_rest_find_of_a_view_gives_its_aliases_and_finds_one_by_its_key() {
+    let facade = crate::testing::open();
+    let mut kind = facade.make_value("moqui.basic.EnumerationType").unwrap();
+    kind.set("enumTypeId", Value::string("T1"));
+    kind.set("description", Value::string("Type One"));
+    kind.create(&facade).unwrap();
+    for enum_id in ["E1", "E2"] {
+        let mut row = facade.make_value("moqui.basic.Enumeration").unwrap();
+        row.set("enumId", Value::string(enum_id));
+        row.set("enumTypeId", Value::string("T1"));
+        row.create(&facade).unwrap();
+    }
+    let view = "moqui.basic.EnumerationAndType";
+    let field = |row: &Value, name: &str| match row {
+        Value::Map(map) => map.get(name).and_then(Value::as_str).map(str::to_string),
+        other => panic!("not a row: {other:?}"),
+    };
+
+    let mut by_type = BTreeMap::new();
+    by_type.insert("enumTypeId".to_string(), Value::string("T1"));
+    let Value::List(rows) = facade.rest("get", view, &by_type).unwrap() else {
+        panic!("a list");
+    };
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(field(&rows[0], "typeDescription").as_deref(), Some("Type One"));
+    assert_eq!(field(&rows[0], "enumTypeId").as_deref(), Some("T1"));
+    assert_eq!(field(&rows[0], "_entity").as_deref(), Some(view));
+
+    let one = facade.rest("get", &format!("{view}/E2"), &BTreeMap::new()).unwrap();
+    assert_eq!(field(&one, "enumId").as_deref(), Some("E2"));
+    assert_eq!(field(&one, "typeDescription").as_deref(), Some("Type One"));
+    let mut missing = BTreeMap::new();
+    missing.insert("enumId".to_string(), Value::string("E9"));
+    let err = facade.rest("get", view, &missing).unwrap_err();
+    assert!(err.to_string().contains("No value found"), "{err}");
+}
+
 /// As Java's `oneInternal`: a find one with no condition, or with a primary key field null or empty, is null.
 #[test]
 fn find_one_with_no_condition_or_an_empty_key_is_none() {
