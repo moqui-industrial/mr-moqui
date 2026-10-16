@@ -117,6 +117,38 @@ pub(crate) fn open_with(framework_dir: &std::path::Path, options: Options) -> En
     facade
 }
 
+/// [`open`] with `conf` in place of the framework's `MoquiDefaultConf.xml`.
+pub(crate) fn open_with_conf(conf: &moqui_lib::node::MNode) -> EntityFacade {
+    let driver: Arc<dyn DbDriver> = Arc::new(MemDriver {
+        store: Arc::new(Mutex::new(BTreeMap::new())),
+        tape: None,
+    });
+    let transactions = TransactionManager::new(
+        driver,
+        PoolConfig {
+            min: 0,
+            max: 4,
+            reserve: 1,
+            acquire_timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
+    )
+    .expect("memory pool");
+    let facade = EntityFacade::open_components_with_conf(
+        &framework_dir(),
+        &[],
+        "transactional",
+        vec![EntityGroup::new("transactional", "postgres", transactions)],
+        conf,
+    )
+    .expect("entity facade");
+    facade.set_disable_audit_log(true);
+    facade.set_disable_entity_eca(true);
+    facade.set_disable_fk_create(true);
+    facade.set_disable_data_feed(true);
+    facade
+}
+
 /// The `transactional` group and the `logging` group, each on its own database and transaction manager.
 pub(crate) fn open_two_groups() -> EntityFacade {
     open_groups("logging")

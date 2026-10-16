@@ -55,6 +55,9 @@ pub struct DocumentInfo {
     /// Short alias or full name of the primary entity, the `_entity` control field.
     pub primary_entity_label: String,
     pub primary_pk: Vec<String>,
+    /// Java's `hasAllPrimaryPks`: each primary key field is a field alias of the document, so the rows of one
+    /// primary record merge into one document. Otherwise each row is a document.
+    pub has_all_primary_pks: bool,
     pub manual_data_service: Option<String>,
     pub manual_mapping_service: Option<String>,
     pub root: FieldNode,
@@ -118,11 +121,20 @@ struct InfoCache {
 }
 
 impl DocumentInfo {
-    /// The document id for a query row, from the primary key aliases.
+    /// The document id for a query row, from the primary key aliases. Without every primary key field aliased it is,
+    /// as Java's `makeDocId`, made of the document's fields of those names, each empty when there is none, so a
+    /// one-field key gives no `_id`.
     fn doc_id(&self, row: &BTreeMap<String, Value>) -> String {
         self.primary_pk
             .iter()
-            .map(|name| row.get(&pk_alias(name)).map(to_plain_string).unwrap_or_default())
+            .map(|name| {
+                let alias = if self.has_all_primary_pks {
+                    pk_alias(name)
+                } else {
+                    name.clone()
+                };
+                row.get(&alias).map(to_plain_string).unwrap_or_default()
+            })
             .collect::<Vec<_>>()
             .join("::")
     }
@@ -616,18 +628,30 @@ fn load_info(facade: &EntityFacade, data_document_id: &str) -> Result<DocumentIn
             search_weight: text(row.get("searchWeight")),
         });
     }
+    let mut aliases = std::collections::HashSet::new();
+    collect_aliases(&root, &mut aliases);
+    let has_all_primary_pks = primary_pk.iter().all(|name| aliases.contains(name.as_str()));
     Ok(DocumentInfo {
         data_document_id: data_document_id.to_string(),
         index_name: text(document.get("indexName")).map(|name| name.to_ascii_lowercase()),
         primary_entity,
         primary_entity_label: primary_label,
         primary_pk,
+        has_all_primary_pks,
         manual_data_service: text(document.get("manualDataServiceName")),
         manual_mapping_service: text(document.get("manualMappingServiceName")),
         root,
         conditions,
         has_expression,
     })
+}
+
+/// The field aliases of `node` and every node below it.
+fn collect_aliases<'a>(node: &'a FieldNode, out: &mut std::collections::HashSet<&'a str>) {
+    out.extend(node.fields.iter().map(|field| field.alias.as_str()));
+    for rel in &node.relationships {
+        collect_aliases(&rel.node, out);
+    }
 }
 
 fn child_node<'a>(
@@ -834,9 +858,15 @@ fn document_condition(cond: &DocCondition) -> Result<Condition, Error> {
 fn merge_rows(info: &DocumentInfo, rows: &[BTreeMap<String, Value>], stamp: Timestamp) -> Vec<Document> {
     let stamp_text = stamp.to_string();
     let mut docs: IndexMap<String, Document> = IndexMap::new();
-    for row in rows {
+    for (at, row) in rows.iter().enumerate() {
         let id = info.doc_id(row);
-        let doc = docs.entry(id.clone()).or_insert_with(|| {
+        // Without every primary key aliased, Java does not merge: each row is its own document.
+        let key = if info.has_all_primary_pks {
+            id.clone()
+        } else {
+            at.to_string()
+        };
+        let doc = docs.entry(key).or_insert_with(|| {
             let mut doc = Document::new();
             doc.insert("_type".to_string(), Value::string(&info.data_document_id));
             if !id.is_empty() {
@@ -1168,15 +1198,13 @@ mod tests {
                 ("primaryEntityName", "moqui.test.TestEntity"),
             ],
         );
-        create_row(
-            &facade,
-            super::DOCUMENT_FIELD,
-            &[
-                ("dataDocumentId", "PAGED"),
-                ("fieldSeqId", "01"),
-                ("fieldPath", "testMedium"),
-            ],
-        );
+        for (seq, path) in [("01", "testId"), ("02", "testMedium")] {
+            create_row(
+                &facade,
+                super::DOCUMENT_FIELD,
+                &[("dataDocumentId", "PAGED"), ("fieldSeqId", seq), ("fieldPath", path)],
+            );
+        }
         for id in ["A", "C", "E", "G"] {
             create_row(&facade, "moqui.test.TestEntity", &[("testId", id), ("testMedium", id)]);
         }
@@ -1206,6 +1234,57 @@ mod tests {
         .unwrap();
         assert_eq!(seen, ["A", "C", "E", "F", "G"]);
         assert_eq!(count, 5);
+    }
+
+    /// Java's `hasAllPrimaryPks`: the rows of one primary record merge into one document only when every primary key
+    /// field is a field alias; otherwise each row is a document.
+    #[test]
+    fn rows_merge_only_when_every_primary_key_is_aliased() {
+        let facade = crate::testing::open();
+        create_row(
+            &facade,
+            "moqui.basic.EnumerationType",
+            &[("enumTypeId", "T1"), ("description", "type")],
+        );
+        for id in ["E1", "E2"] {
+            create_row(
+                &facade,
+                "moqui.basic.Enumeration",
+                &[("enumId", id), ("enumTypeId", "T1")],
+            );
+        }
+        for (id, paths) in [
+            ("MERGED", &["enumTypeId", "description", "enums:enumId"][..]),
+            ("ROWS", &["description", "enums:enumId"][..]),
+        ] {
+            create_row(
+                &facade,
+                super::DOCUMENT,
+                &[
+                    ("dataDocumentId", id),
+                    ("primaryEntityName", "moqui.basic.EnumerationType"),
+                ],
+            );
+            for (at, path) in paths.iter().enumerate() {
+                let seq = format!("{:02}", at + 1);
+                create_row(
+                    &facade,
+                    super::DOCUMENT_FIELD,
+                    &[("dataDocumentId", id), ("fieldSeqId", &seq), ("fieldPath", path)],
+                );
+            }
+        }
+        let merged = super::data_documents(&facade, "MERGED", None, None, None).unwrap();
+        assert_eq!(merged.len(), 1, "{merged:?}");
+        assert!(matches!(merged[0].get("enums"), Some(moqui_lib::object::Value::List(list)) if list.len() == 2));
+        assert_eq!(merged[0].get("_id"), Some(&moqui_lib::object::Value::string("T1")));
+        let rows = super::data_documents(&facade, "ROWS", None, None, None).unwrap();
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        // As Java's `makeDocId`, a one-field key that is not a field of the document gives no `_id`.
+        assert!(rows.iter().all(|doc| doc.get("_id").is_none()), "{rows:?}");
+        assert!(rows
+            .iter()
+            .all(|doc| matches!(doc.get("enums"), Some(moqui_lib::object::Value::List(list)) if list.len() == 1)));
     }
 
     #[test]

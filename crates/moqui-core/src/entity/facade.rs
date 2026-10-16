@@ -89,6 +89,13 @@ pub(crate) struct Inner {
     pub(crate) default_group: String,
     pub(crate) groups: HashMap<String, GroupRuntime>,
     pub(crate) banks: SequenceBanks,
+    /// `entity-facade` `sequenced-id-prefix`, in front of every id a sequence bank issues.
+    pub(crate) sequenced_id_prefix: Option<String>,
+    /// Each `<datasource>` group and its `sequence-primary-use-uuid`.
+    pub(crate) datasource_uuid: HashMap<String, bool>,
+    /// `<load-entity location>` files of the conf that are not in an `entity` directory; their entities are in the
+    /// model and their `*.eecas.xml` rules with the directories'.
+    pub(crate) entity_files: Vec<std::path::PathBuf>,
     /// See [`super::cache::screen_config_generation`].
     pub(crate) screen_config_generation: AtomicU64,
     /// See [`super::cache::feed_definition_generation`].
@@ -197,7 +204,11 @@ impl EntityFacade {
         }
         let started = std::time::Instant::now();
         let framework_entities = framework_dir.join("entity");
+        let entity_files = load_entity_files(conf, framework_dir, component_entity_dirs);
+        // As Java: the conf's `load-entity` files, then the components' `entity` directories. The framework's own
+        // `load-entity` files are its directory, read first.
         let mut directories: Vec<&Path> = vec![framework_entities.as_path()];
+        directories.extend(entity_files.iter().map(std::path::PathBuf::as_path));
         directories.extend(component_entity_dirs.iter().map(std::path::PathBuf::as_path));
         tracing::info!(
             "Loading entity definitions from {}",
@@ -207,7 +218,7 @@ impl EntityFacade {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        let model = EntityModel::load_directories(conf, &directories)?;
+        let model = EntityModel::load_paths(conf, &directories)?;
         let dialects = Dialects::load(conf)?;
         let all = model.entities();
         let views = all.iter().filter(|entity| entity.is_view).count();
@@ -247,6 +258,9 @@ impl EntityFacade {
                 default_group: default_group.to_string(),
                 groups: runtimes,
                 banks: SequenceBanks::default(),
+                sequenced_id_prefix: sequenced_id_prefix(conf),
+                datasource_uuid: datasource_uuid(conf),
+                entity_files,
                 screen_config_generation: AtomicU64::new(0),
                 feed_definition_generation: AtomicU64::new(0),
                 eca_rules: RwLock::new(None),
@@ -272,6 +286,31 @@ impl EntityFacade {
         let mut out = vec![self.inner.framework_dir.join("entity")];
         out.extend(self.inner.component_entity_dirs.iter().cloned());
         out
+    }
+
+    /// The conf's `<load-entity>` files outside the `entity` directories, read after the framework's directory.
+    pub fn entity_files(&self) -> &[std::path::PathBuf] {
+        &self.inner.entity_files
+    }
+
+    /// Where the model was read, in order: the framework's `entity` directory, the conf's `load-entity` files, then
+    /// each component's `entity` directory.
+    pub(crate) fn model_paths(&self) -> Vec<std::path::PathBuf> {
+        let mut out = vec![self.inner.framework_dir.join("entity")];
+        out.extend(self.inner.entity_files.iter().cloned());
+        out.extend(self.inner.component_entity_dirs.iter().cloned());
+        out
+    }
+
+    /// Whether the datasource of `group` (the default group's when it has none) says `sequence-primary-use-uuid`, as
+    /// Java's `EntityInfo` reads it with the entity's own attribute.
+    pub(crate) fn datasource_uses_uuid(&self, group: Option<&str>) -> bool {
+        let uuid = &self.inner.datasource_uuid;
+        let default_group = self.inner.default_group.as_str();
+        uuid.get(group.unwrap_or(default_group))
+            .or_else(|| uuid.get(default_group))
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Hook-module state. `init` runs once per `T`. Do not call `with_slot` from `body`.
@@ -556,6 +595,80 @@ impl EntityFacade {
         let mut flags = write(&self.inner.flags);
         edit(&mut flags);
     }
+}
+
+/// `entity-facade` `sequenced-id-prefix`; none when empty, as Java.
+fn sequenced_id_prefix(conf: &MNode) -> Option<String> {
+    let facade = conf.first_named("entity-facade")?;
+    let raw = facade.attribute("sequenced-id-prefix")?;
+    Some(moqui_lib::env::expand(&raw).unwrap_or(raw)).filter(|prefix| !prefix.is_empty())
+}
+
+/// `sequence-primary-use-uuid` of each `<datasource>`, expanded as Java's `setSystemExpandAttributes`.
+fn datasource_uuid(conf: &MNode) -> HashMap<String, bool> {
+    super::datasource::datasource_nodes(conf)
+        .iter()
+        .filter_map(|node| {
+            let group = node.attribute("group-name")?;
+            Some((
+                group,
+                super::datasource::datasource_attribute(node, "sequence-primary-use-uuid") == "true",
+            ))
+        })
+        .collect()
+}
+
+/// The files of the conf's `<entity-facade><load-entity location>` that no `entity` directory of the model holds, as
+/// Java's `getConfEntityFileLocations`. A `component://` location is the framework or a component whose directory has
+/// that name; a location that cannot be found is logged and left out.
+fn load_entity_files(
+    conf: &MNode,
+    framework_dir: &Path,
+    component_entity_dirs: &[std::path::PathBuf],
+) -> Vec<std::path::PathBuf> {
+    let Some(facade) = conf.first_named("entity-facade") else {
+        return Vec::new();
+    };
+    let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut dirs: Vec<std::path::PathBuf> = vec![canonical(&framework_dir.join("entity"))];
+    dirs.extend(component_entity_dirs.iter().map(|dir| canonical(dir)));
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for node in facade.children_named("load-entity") {
+        let location = node.attribute("location").unwrap_or_default();
+        let path = if let Some(rest) = location
+            .strip_prefix("component://")
+            .or_else(|| location.strip_prefix("component:"))
+        {
+            let rest = rest.trim_start_matches('/');
+            let (name, relative) = rest.split_once('/').unwrap_or((rest, ""));
+            let root = if name == "framework" {
+                Some(framework_dir.to_path_buf())
+            } else {
+                component_entity_dirs
+                    .iter()
+                    .filter_map(|dir| dir.parent())
+                    .find(|root| root.file_name().is_some_and(|dir_name| dir_name == name))
+                    .map(Path::to_path_buf)
+            };
+            root.map(|root| root.join(relative))
+        } else if let Some(rest) = location.strip_prefix("file:") {
+            Some(std::path::PathBuf::from(rest.trim_start_matches("//")))
+        } else if location.contains("://") {
+            None
+        } else {
+            Some(std::path::PathBuf::from(&location))
+        };
+        let Some(path) = path.filter(|path| path.is_file()) else {
+            tracing::error!("Could not find the entity file of load-entity location {location}, not loading it");
+            continue;
+        };
+        let path = canonical(&path);
+        if path.parent().is_some_and(|parent| dirs.iter().any(|dir| dir == parent)) || files.contains(&path) {
+            continue;
+        }
+        files.push(path);
+    }
+    files
 }
 
 fn crypt_config_from(node: &MNode, pass: String) -> Result<CryptConfig, Error> {

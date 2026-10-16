@@ -361,11 +361,7 @@ pub fn definition_info(facade: &EntityFacade, name: &str) -> Option<IndexMap<Str
             "shortAlias".to_string(),
             entity.short_alias.as_deref().map_or(Value::Null, text),
         );
-        let needs_audit = entity.enable_audit_log.is_some()
-            || entity
-                .fields
-                .iter()
-                .any(|field| field.enable_audit_log.as_deref().is_some_and(|flag| flag != "false"));
+        let needs_audit = needs_audit_log(entity);
         map.insert(
             "needsEncrypt".to_string(),
             Value::Bool(entity.fields.iter().any(|field| field.encrypt)),
@@ -572,8 +568,37 @@ pub fn run_sql(facade: &EntityFacade, group: &str, sql: &str, limit: usize) -> R
     Ok(result)
 }
 
+/// Java's `EntityInfo.needsAuditLog`: a field (with the entity's attribute as its default) says `true` or `update`.
+fn needs_audit_log(entity: &EntityDefinition) -> bool {
+    entity.fields.iter().any(|field| {
+        field
+            .enable_audit_log
+            .as_deref()
+            .is_some_and(|flag| matches!(flag, "true" | "update"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn needs_audit_log_is_a_field_with_true_or_update() {
+        use moqui_db::model::{EntityDefinition, FieldDefinition};
+        let entity = |entity_flag: Option<&str>, field_flag: Option<&str>| EntityDefinition {
+            enable_audit_log: entity_flag.map(str::to_string),
+            fields: vec![FieldDefinition {
+                name: "f".to_string(),
+                enable_audit_log: field_flag.or(entity_flag).map(str::to_string),
+                ..FieldDefinition::default()
+            }],
+            ..EntityDefinition::default()
+        };
+        assert!(super::needs_audit_log(&entity(None, Some("true"))));
+        assert!(super::needs_audit_log(&entity(Some("update"), None)));
+        assert!(!super::needs_audit_log(&entity(Some("false"), None)));
+        assert!(!super::needs_audit_log(&entity(Some("yes"), None)));
+        assert!(!super::needs_audit_log(&entity(Some("true"), Some("false"))));
+    }
+
     #[test]
     fn names_group_by_the_leading_parts() {
         assert_eq!(super::name_prefix("moqui.basic.Enumeration", 2), "moqui.basic");

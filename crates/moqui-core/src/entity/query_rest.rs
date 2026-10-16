@@ -1550,7 +1550,8 @@ fn xml_body(nodes: &[RecordNode], prefix: &str, iso: bool) -> String {
 
 /// The records of one entity as the data writer writes them between the file's start and end: XML
 /// elements, or JSON objects each followed by a comma, with dependents to `levels` or the `master`
-/// definition. Each top record counts once.
+/// definition. With the text, how many records it holds: as Java's writer, in XML each nested record counts too,
+/// and in JSON each top record counts once.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn data_body(
     facade: &EntityFacade,
@@ -1561,13 +1562,14 @@ pub(crate) fn data_body(
     master: Option<&str>,
     prefix: &str,
     iso: bool,
-) -> Result<String, Error> {
+) -> Result<(String, u64), Error> {
     let mut nodes = Vec::with_capacity(records.len());
     for record in records {
         nodes.push(render_record(facade, entity_name, record, levels, master)?);
     }
     if !json {
-        return Ok(xml_body(&nodes, prefix, iso));
+        let count = nodes.iter().map(xml_record_count).sum();
+        return Ok((xml_body(&nodes, prefix, iso), count));
     }
     let mut out = String::new();
     for node in &nodes {
@@ -1575,7 +1577,17 @@ pub(crate) fn data_body(
         write_json_node(&mut out, node, 4, iso);
         out.push_str(",\n");
     }
-    Ok(out)
+    Ok((out, nodes.len() as u64))
+}
+
+/// The record and the nested records written with it, as Java's `plainMapXmlWriter` counts them.
+fn xml_record_count(node: &RecordNode) -> u64 {
+    1 + node
+        .nested
+        .iter()
+        .flat_map(|nested| nested.records.iter())
+        .map(xml_record_count)
+        .sum::<u64>()
 }
 
 /// One field as a CSV cell: base64 for bytes, ISO text for a date or time when `iso`, the CSV quoting.
