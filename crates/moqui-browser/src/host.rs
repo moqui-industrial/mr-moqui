@@ -79,6 +79,9 @@ impl Browser {
         let driver: Arc<dyn DbDriver> = sqlite.clone();
         let facade = open_entity_facade(factory.framework_dir(), driver)?;
         factory.set_entity(facade.clone());
+        factory
+            .init_tools()
+            .map_err(|err| Error::new(format!("tools: {err}")))?;
         let browser = Self {
             factory,
             facade,

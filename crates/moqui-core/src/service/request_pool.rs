@@ -133,6 +133,13 @@ impl RequestPool {
         state.queue.len()
     }
 
+    pub(crate) fn shutdown(&self) {
+        let shared = lock(&self.inner).take();
+        if let Some(shared) = shared {
+            shutdown(&shared);
+        }
+    }
+
     fn running(&self) -> Result<Arc<Shared>, Error> {
         lock(&self.inner)
             .as_ref()
@@ -143,10 +150,7 @@ impl RequestPool {
 
 impl Drop for RequestPool {
     fn drop(&mut self) {
-        let shared = lock(&self.inner).take();
-        if let Some(shared) = shared {
-            shutdown(&shared);
-        }
+        self.shutdown();
     }
 }
 

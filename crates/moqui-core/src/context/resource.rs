@@ -38,6 +38,7 @@ enum Stored {
     Db(DbSnap),
     /// Fetched on first use, so `get` itself opens no connection.
     Http(HttpRef),
+    Native(Arc<dyn crate::native::ResourceProvider>),
 }
 
 /// An `http` or `https` location. The first read or existence check does the GET, and its outcome is kept.
@@ -99,6 +100,7 @@ impl ResourceRef {
 
     pub fn exists(&self) -> bool {
         match &self.stored {
+            Stored::Native(provider) => provider.stat(&self.location).ok().flatten().is_some(),
             Stored::File(file) => file.exists(),
             Stored::Db(snap) => snap.exists,
             Stored::Http(http) => http.fetch().is_ok(),
@@ -107,6 +109,11 @@ impl ResourceRef {
 
     pub fn is_file(&self) -> bool {
         match &self.stored {
+            Stored::Native(provider) => provider
+                .stat(&self.location)
+                .ok()
+                .flatten()
+                .is_some_and(|stat| stat.is_file),
             Stored::File(file) => file.is_file(),
             Stored::Db(snap) => snap.exists && snap.is_file,
             Stored::Http(http) => http.fetch().is_ok(),
@@ -115,6 +122,11 @@ impl ResourceRef {
 
     pub fn is_directory(&self) -> bool {
         match &self.stored {
+            Stored::Native(provider) => provider
+                .stat(&self.location)
+                .ok()
+                .flatten()
+                .is_some_and(|stat| !stat.is_file),
             Stored::File(file) => file.is_directory(),
             Stored::Db(snap) => snap.exists && !snap.is_file,
             Stored::Http(_) => false,
@@ -125,6 +137,11 @@ impl ResourceRef {
     /// does not invalidate on change.
     pub fn last_modified(&self) -> Option<i64> {
         match &self.stored {
+            Stored::Native(provider) => provider
+                .stat(&self.location)
+                .ok()
+                .flatten()
+                .and_then(|stat| stat.last_modified),
             Stored::File(file) => file.last_modified().ok(),
             Stored::Db(_) | Stored::Http(_) => None,
         }
@@ -132,6 +149,8 @@ impl ResourceRef {
 
     pub fn read_text(&self) -> Result<String, Error> {
         match &self.stored {
+            Stored::Native(provider) => String::from_utf8(provider.read_bytes(&self.location)?)
+                .map_err(|_| Error::new(format!("resource is not utf-8: {}", self.location))),
             Stored::File(file) => file.read_text().map_err(Error::from),
             Stored::Http(http) => http
                 .fetch()
@@ -150,6 +169,7 @@ impl ResourceRef {
     /// The bytes of the file, whatever they hold.
     pub fn read_bytes(&self) -> Result<Vec<u8>, Error> {
         match &self.stored {
+            Stored::Native(provider) => provider.read_bytes(&self.location),
             Stored::File(file) => file.read_bytes().map_err(Error::from),
             Stored::Http(http) => http
                 .fetch()
@@ -168,6 +188,7 @@ impl ResourceRef {
     /// The size in bytes of a file resource. Other kinds have none.
     pub fn size(&self) -> Option<u64> {
         match &self.stored {
+            Stored::Native(provider) => provider.stat(&self.location).ok().flatten().map(|stat| stat.size),
             Stored::File(file) => file.size().ok(),
             Stored::Db(_) | Stored::Http(_) => None,
         }
@@ -177,12 +198,21 @@ impl ResourceRef {
     pub fn file_path(&self) -> Option<&std::path::Path> {
         match &self.stored {
             Stored::File(file) => Some(file.path()),
-            Stored::Db(_) | Stored::Http(_) => None,
+            Stored::Db(_) | Stored::Http(_) | Stored::Native(_) => None,
         }
     }
 
     pub fn children(&self) -> Result<Vec<Self>, Error> {
         match &self.stored {
+            Stored::Native(provider) => Ok(provider
+                .list(&self.location)?
+                .into_iter()
+                .filter(|entry| entry.is_file)
+                .map(|entry| Self {
+                    location: entry.location,
+                    stored: Stored::Native(Arc::clone(provider)),
+                })
+                .collect()),
             Stored::File(file) => {
                 let files = file.children().map_err(Error::from)?;
                 Ok(files
@@ -217,6 +247,14 @@ impl ResourceRef {
 
     pub fn find_child_file(&self, relative: &str) -> Self {
         match &self.stored {
+            Stored::Native(provider) => Self {
+                location: if relative.is_empty() {
+                    self.location.clone()
+                } else {
+                    join_location(&self.location, relative)
+                },
+                stored: Stored::Native(Arc::clone(provider)),
+            },
             Stored::File(file) => {
                 let file = file.find_child_file(relative);
                 let location = if relative.is_empty() {
@@ -289,6 +327,7 @@ pub struct ResourceFacade {
     components: HashMap<String, PathBuf>,
     /// Shared with the factory. `None` until the host installs an entity facade.
     entity: Arc<RwLock<Option<EntityFacade>>>,
+    providers: RwLock<HashMap<String, Arc<dyn crate::native::ResourceProvider>>>,
 }
 
 impl ResourceFacade {
@@ -301,12 +340,42 @@ impl ResourceFacade {
             runtime_dir,
             components,
             entity,
+            providers: RwLock::new(HashMap::new()),
         }
+    }
+
+    pub(crate) fn install_provider(
+        &self,
+        scheme: &str,
+        provider: Arc<dyn crate::native::ResourceProvider>,
+    ) -> Result<(), Error> {
+        if matches!(
+            scheme,
+            "file" | "runtime" | "component" | "classpath" | "dbresource" | "http" | "https"
+        ) {
+            return Err(Error::new(format!("cannot replace built-in resource scheme {scheme}")));
+        }
+        let mut providers = moqui_lib::sync::write(&self.providers);
+        if providers.contains_key(scheme) {
+            return Err(Error::new(format!("duplicate resource scheme {scheme}")));
+        }
+        providers.insert(scheme.to_string(), provider);
+        Ok(())
+    }
+
+    fn provider(&self, location: &str) -> Option<Arc<dyn crate::native::ResourceProvider>> {
+        moqui_lib::sync::read(&self.providers).get(scheme_of(location)).cloned()
     }
 
     pub fn get(&self, location: &str) -> Result<ResourceRef, Error> {
         if location.is_empty() {
             return Err(Error::new("resource location is empty"));
+        }
+        if let Some(provider) = self.provider(location) {
+            return Ok(ResourceRef {
+                location: location.to_string(),
+                stored: Stored::Native(provider),
+            });
         }
         let scheme = scheme_of(location);
         match scheme {
@@ -341,6 +410,9 @@ impl ResourceFacade {
     /// Write bytes to a file, creating its parent directories: a `dbresource://` row, or a file under the
     /// `file`, `runtime`, or `component` schemes.
     pub fn write_bytes(&self, location: &str, bytes: &[u8]) -> Result<(), Error> {
+        if let Some(provider) = self.provider(location) {
+            return provider.write_bytes(location, bytes);
+        }
         if scheme_of(location) == "dbresource" {
             return self
                 .db_facade()?
@@ -356,6 +428,9 @@ impl ResourceFacade {
 
     /// The kind, size, and last-modified milliseconds of a location, or `None` when nothing is there.
     pub fn stat(&self, location: &str) -> Result<Option<ResourceStat>, Error> {
+        if let Some(provider) = self.provider(location) {
+            return provider.stat(location);
+        }
         if scheme_of(location) == "dbresource" {
             return Ok(self
                 .db_facade()?
@@ -385,7 +460,9 @@ impl ResourceFacade {
 
     /// The files and directories directly under a directory location, sorted by name.
     pub fn list(&self, location: &str) -> Result<Vec<ResourceEntry>, Error> {
-        let mut entries = if scheme_of(location) == "dbresource" {
+        let mut entries = if let Some(provider) = self.provider(location) {
+            provider.list(location)?
+        } else if scheme_of(location) == "dbresource" {
             let info = self.db_facade()?.read_db_resource(location).map_err(Error::from)?;
             if !info.exists || info.is_file {
                 return Err(Error::new(format!("not a directory: {location}")));
@@ -420,6 +497,9 @@ impl ResourceFacade {
 
     /// Create a directory and any missing parents.
     pub fn make_directory(&self, location: &str) -> Result<(), Error> {
+        if let Some(provider) = self.provider(location) {
+            return provider.make_directory(location);
+        }
         if scheme_of(location) == "dbresource" {
             return self.db_facade()?.make_db_directory(location).map_err(Error::from);
         }
@@ -429,6 +509,9 @@ impl ResourceFacade {
 
     /// Delete a file, or an empty directory. False when nothing is there.
     pub fn delete(&self, location: &str) -> Result<bool, Error> {
+        if let Some(provider) = self.provider(location) {
+            return provider.delete(location);
+        }
         if scheme_of(location) == "dbresource" {
             let facade = self.db_facade()?;
             let info = facade.read_db_resource(location).map_err(Error::from)?;
@@ -451,6 +534,12 @@ impl ResourceFacade {
 
     /// Move a file or directory to a new location of the same kind of storage.
     pub fn rename(&self, location: &str, new_location: &str) -> Result<(), Error> {
+        if let Some(provider) = self.provider(location) {
+            if scheme_of(location) != scheme_of(new_location) {
+                return Err(Error::new("cannot rename between resource schemes"));
+            }
+            return provider.rename(location, new_location);
+        }
         let (from_db, to_db) = (
             scheme_of(location) == "dbresource",
             scheme_of(new_location) == "dbresource",

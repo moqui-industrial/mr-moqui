@@ -24,7 +24,7 @@ use moqui_lib::object::{is_empty, Value};
 use super::define::{Authenticate, ServiceDef, ServiceKind};
 use super::util::has_error;
 use super::validate;
-use crate::context::Error;
+use crate::context::{Error, ExecutionContext};
 use crate::entity::{EntityFacade, EntityValue};
 use crate::transaction::TransactionAttribute;
 
@@ -617,6 +617,24 @@ fn execute(
             Some(run) => run(parameters, facade),
             None => Err(LibError::new(format!("service {} has no rust function", def.name))),
         },
+        ServiceKind::Native => {
+            let run = def
+                .native_fn
+                .ok_or_else(|| LibError::new(format!("service {} has no native implementation", def.name)))?;
+            ExecutionContext::with_current(|ec| {
+                run(
+                    ec,
+                    &crate::native::ServiceInfo {
+                        name: &def.name,
+                        service_type: &def.service_type,
+                        location: &def.location,
+                        method: &def.method,
+                    },
+                    parameters,
+                )
+            })
+            .ok_or_else(|| LibError::new("no execution context is entered"))?
+        }
         ServiceKind::Interface => Err(LibError::new(format!("interface {} has no runner", def.name))),
         ServiceKind::Unsupported => Err(LibError::new(format!(
             "service {} runs {}, a script language this port does not run",

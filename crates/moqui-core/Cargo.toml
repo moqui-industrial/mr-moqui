@@ -13,6 +13,7 @@ publish.workspace = true
 # lettre SMTP is blocking (tokio1 off). imap is blocking (native-tls off).
 
 [dependencies]
+inventory = "0.3.25"
 moqui-lib = { workspace = true }
 moqui-db = { workspace = true }
 csv = { workspace = true }

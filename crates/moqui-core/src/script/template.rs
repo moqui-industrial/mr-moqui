@@ -287,10 +287,15 @@ pub struct TemplateRegistry {
 
 impl TemplateRegistry {
     pub fn of(factory: &ExecutionContextFactory) -> Arc<Self> {
-        factory.extension(|factory| Self::parse(factory.conf_text()))
+        factory.extension(|factory| Self::parse_with_native(factory.conf_text(), Some(factory.native())))
     }
 
+    #[cfg(test)]
     fn parse(conf_text: &str) -> Self {
+        Self::parse_with_native(conf_text, None)
+    }
+
+    fn parse_with_native(conf_text: &str, native: Option<&crate::native::NativeRegistry>) -> Self {
         let mut by_extension = Vec::new();
         if let Ok(root) = moqui_lib::node::MNode::parse_text("moqui-conf", conf_text) {
             for facade in root.children_named("resource-facade") {
@@ -299,7 +304,9 @@ impl TemplateRegistry {
                     else {
                         continue;
                     };
-                    if let Some(renderer) = renderer_by_class(&class) {
+                    if let Some(renderer) =
+                        renderer_by_class(&class).or_else(|| native.and_then(|registry| registry.template_for(&class)))
+                    {
                         by_extension.push((extension, renderer));
                     }
                 }

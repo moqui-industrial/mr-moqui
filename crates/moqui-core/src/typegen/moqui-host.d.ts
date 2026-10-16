@@ -569,11 +569,22 @@ interface MoquiNotificationMessage {
     getNotifyUserIds(): string[];
 }
 
+/** Only the explicitly exposed native tool methods are callable from scripts. */
+interface MoquiNativeTool {
+    [method: string]: (...parameters: unknown[]) => unknown;
+}
+
+interface MoquiNativeToolFactory {
+    readonly name: string;
+    getInstance(...parameters: unknown[]): MoquiNativeTool;
+}
+
 /**
  * The server `ec` an action, a service script, or a script outside a render sees: the facade surface.
  * `ec.cache` and `ec.search` are outside the Server host methods list and are typed loosely.
  */
 interface MoquiServerEc {
+    getTool(name: string, ...parameters: unknown[]): MoquiNativeTool;
     readonly entity: MoquiEntityFacade;
     readonly service: {
         sync(): ServiceCallSync;
@@ -594,6 +605,8 @@ interface MoquiServerEc {
     readonly context: MoquiEcContext;
     readonly factory: {
         readonly moquiVersion: string;
+        getTool(name: string, ...parameters: unknown[]): MoquiNativeTool;
+        getToolFactory(name: string): MoquiNativeToolFactory | null;
         /** Wait up to `retryLimit` (default 50) times 100 ms for async service work to finish; whether the pool is empty. */
         waitWorkerPoolEmpty(retryLimit?: number): boolean;
     };

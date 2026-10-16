@@ -372,6 +372,17 @@ fn dispatch_types(args: &[String]) -> Result<(), moqui_lib::error::Error> {
 }
 
 fn dispatch_lint(path: Option<&str>) -> Result<(), moqui_lib::error::Error> {
+    let (runtime, framework) = runtime_framework_dirs();
+    let factory = moqui_core::context::ExecutionContextFactory::boot_with_options(
+        runtime,
+        framework,
+        moqui_core::context::BootOptions {
+            executor: moqui_core::context::Executor::Inline,
+        },
+    )
+    .map_err(moqui_lib::error::Error::from)?;
+    let context = factory.new_context();
+    let _entered = context.enter();
     let owned = path.map(std::path::PathBuf::from);
     let paths: Vec<std::path::PathBuf> = owned.into_iter().collect();
     let failures = moqui_core::service::check(&paths).map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
@@ -675,6 +686,7 @@ fn load_with_factory(
             None
         }
     };
+    factory.init_tools().map_err(moqui_lib::error::Error::from)?;
     let context = factory.new_context();
     let entered = context.enter();
     let authz = context.disable_authz();
@@ -931,6 +943,7 @@ fn boot_server(
         }
     };
     // Log events and HTTP requests go to moqui_logs and moqui_http_log through the search backend (shipped above).
+    factory.init_tools().map_err(moqui_lib::error::Error::from)?;
     let load_started = std::time::Instant::now();
     {
         let context = factory.new_context();
@@ -1041,6 +1054,9 @@ impl Drop for ServeProcess {
         if let Some(runtime) = self.runtime.take() {
             // The listener has already waited out its shutdown deadline; a blocking task still running is left.
             runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
+        }
+        if let Some(factory) = &self.factory {
+            factory.shutdown();
         }
         self.pdf.take();
         self.sshd.take();
