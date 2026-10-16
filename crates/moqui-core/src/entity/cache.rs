@@ -24,6 +24,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::Arc;
 
 use moqui_db::dialect::Dialect;
 use moqui_db::model::EntityDefinition;
@@ -54,6 +55,8 @@ thread_local! {
     /// Entities written by each open transaction frame, by frame token. Their finds skip the one-cache until the
     /// frame ends, since a find on the enlisted connection sees the frame's uncommitted rows.
     static TX_WRITTEN: RefCell<HashMap<u64, HashSet<String>>> = RefCell::new(HashMap::new());
+    /// The writes of each frame, by entity: `None` once there were too many to keep. See [`FRAME_WRITES_MAX`].
+    static TX_WRITES: RefCell<HashMap<u64, FrameWrites>> = RefCell::new(HashMap::new());
     static SIM: RefCell<Vec<SimSession>> = const { RefCell::new(Vec::new()) };
     /// Sim mode on this thread without a schema, which tests set through `set_sim_active`.
     static SIM_FLAG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -69,6 +72,8 @@ pub struct FindLookup {
     pub order: Vec<OrderBy>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    /// The user's authorization filters narrowed the condition. Such a find is not cached, as Java's `shouldCache`.
+    pub filtered: bool,
 }
 
 /// Whether the caller should run the write on the enlisted connection.
@@ -114,7 +119,12 @@ struct ReadMeta {
 }
 
 impl ReadMeta {
+    /// Java `shouldCache` and the list find: no cache for a find with no condition, a limit or offset, or the user's
+    /// authorization filters.
     fn caches(&self, lookup: &FindLookup) -> bool {
+        if lookup.condition.is_none() || lookup.limit.is_some() || lookup.offset.is_some() || lookup.filtered {
+            return false;
+        }
         match lookup.use_cache {
             Some(true) => !self.cache_never,
             Some(false) => false,
@@ -133,6 +143,57 @@ struct SimSession {
     tables: HashSet<String>,
     tombstones: HashMap<String, HashSet<String>>,
     written: HashSet<String>,
+    /// Java's `TransactionCacheDb.seqBanks`: the sim's own sequenced ids, so a sim uses no production ids.
+    seq_banks: HashMap<String, i64>,
+    /// Rows copied unchanged from production so a view read can join them with the sim's own rows, by row key. Neither
+    /// written nor deleted in the sim. See [`super::sim_view`].
+    replicas: HashSet<String>,
+    /// Rows copied from production in this session, against [`SIM_TOTAL_COPY_CAP`].
+    copied: usize,
+}
+
+impl SimSession {
+    fn new(schema: String) -> Self {
+        Self {
+            schema,
+            tables: HashSet::new(),
+            tombstones: HashMap::new(),
+            written: HashSet::new(),
+            seq_banks: HashMap::new(),
+            replicas: HashSet::new(),
+            copied: 0,
+        }
+    }
+}
+
+/// Java's `TransactionCacheDb.TOTAL_COPY_CAP`: rows copied from production over one sim, which bounds its size.
+const SIM_TOTAL_COPY_CAP: usize = 200_000;
+
+/// Java's `TransactionCacheDb.SEQ_START`: where the ids of a sim's sequences start.
+const SIM_SEQ_START: i64 = 900_000_000;
+
+/// Java's `TransactionCacheDb.PRODUCTION_ENTITIES`: written to the real database during a sim. The LLM's own records
+/// (a sim is itself a conversation) and the sequence banks.
+const SIM_PRODUCTION_ENTITIES: &[&str] = &[
+    "moqui.llm.LlmConversation",
+    "moqui.llm.LlmMessage",
+    "moqui.llm.LlmCallLog",
+    "moqui.llm.LlmSkill",
+    "moqui.llm.LlmSkillUse",
+    "moqui.llm.LlmLesson",
+    "moqui.llm.LlmCallUsage",
+    "moqui.entity.SequenceValueItem",
+];
+
+/// The next id of `seq_name` from the sim's own bank, when a sim session is open on this thread.
+pub(crate) fn sim_next_seq(seq_name: &str) -> Option<i64> {
+    SIM.with(|slot| {
+        let mut sessions = slot.borrow_mut();
+        let session = sessions.last_mut()?;
+        let next = session.seq_banks.entry(seq_name.to_string()).or_insert(SIM_SEQ_START);
+        *next += 1;
+        Some(*next)
+    })
 }
 
 struct SimHit {
@@ -140,6 +201,8 @@ struct SimHit {
     table: bool,
     tombstone: bool,
     written: bool,
+    /// A copy of the production row is in the sim table. See [`SimSession::replicas`].
+    replica: bool,
 }
 
 struct SimView {
@@ -150,8 +213,35 @@ struct SimView {
 
 #[derive(Default)]
 struct OneCaches {
-    lists: HashMap<String, MCache<String, EntityList>>,
+    lists: HashMap<String, MCache<String, CachedList>>,
+    /// Java's `entity.record.count.{entity}`: the count of each cached condition.
+    counts: HashMap<String, MCache<String, CachedCount>>,
+    /// The view entities that have each entity as a member, made on first use.
+    views_by_member: Option<Arc<HashMap<String, Vec<String>>>>,
 }
+
+/// A cached find: its condition, which a write compares with what it wrote, and its rows.
+#[derive(Clone)]
+struct CachedList {
+    condition: Option<Condition>,
+    rows: EntityList,
+}
+
+#[derive(Clone)]
+struct CachedCount {
+    condition: Option<Condition>,
+    count: i64,
+}
+
+/// One frame's writes by entity; `None` once there were too many to keep.
+type FrameWrites = HashMap<String, Option<Vec<FrameWrite>>>;
+
+/// How an overlay gets the stored row a held update applies to.
+type StoredRow<'a> = &'a mut dyn FnMut(&Held) -> Result<Option<BTreeMap<String, Value>>, Error>;
+
+/// Writes of an open frame, by entity, replayed against the caches when it ends. Past this many the entity's caches are
+/// cleared whole instead.
+const FRAME_WRITES_MAX: usize = 200;
 
 /// Look up a cached list, or rows held by the active transaction frame or the sim overlay.
 ///
@@ -165,7 +255,12 @@ pub fn before_find(facade: &EntityFacade, lookup: &FindLookup) -> Option<EntityL
             return None;
         }
     };
-    if !meta.is_view {
+    if meta.is_view {
+        // A view is read from the database, so the frame's held rows of its members go there first.
+        if let Err(err) = flush_for_view(facade, &lookup.entity_name) {
+            tracing::error!(error = %err, entity = %meta.full_name, "could not flush held rows for a view read");
+        }
+    } else {
         match overlay_rows(facade, &meta, lookup.condition.as_ref(), &lookup.order) {
             Ok(Some(rows)) => {
                 return Some(EntityList::new(page_rows(rows, lookup.limit, lookup.offset)));
@@ -186,8 +281,8 @@ pub fn before_find(facade: &EntityFacade, lookup: &FindLookup) -> Option<EntityL
 /// Count held and sim rows when this thread has overlaid that entity. Otherwise miss.
 ///
 /// `Some` is the count itself. The merged list is unlimited, so its length is that count.
-pub fn before_count(facade: &EntityFacade, entity_name: &str, condition: Option<&Condition>) -> Option<i64> {
-    let meta = match read_meta(facade, entity_name) {
+pub fn before_count(facade: &EntityFacade, lookup: &FindLookup) -> Option<i64> {
+    let meta = match read_meta(facade, &lookup.entity_name) {
         Ok(meta) => meta,
         Err(err) => {
             tracing::error!(error = %err, "entity cache count skipped");
@@ -195,16 +290,49 @@ pub fn before_count(facade: &EntityFacade, entity_name: &str, condition: Option<
         }
     };
     if meta.is_view {
-        return None;
-    }
-    match overlay_rows(facade, &meta, condition, &[]) {
-        Ok(Some(rows)) => Some(i64::try_from(rows.len()).unwrap_or(i64::MAX)),
-        Ok(None) => None,
-        Err(err) => {
-            tracing::error!(error = %err, entity = %meta.full_name, "entity cache count skipped");
-            None
+        if let Err(err) = flush_for_view(facade, &lookup.entity_name) {
+            tracing::error!(error = %err, entity = %meta.full_name, "could not flush held rows for a view count");
+        }
+    } else {
+        match overlay_rows(facade, &meta, lookup.condition.as_ref(), &[]) {
+            Ok(Some(rows)) => return Some(i64::try_from(rows.len()).unwrap_or(i64::MAX)),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::error!(error = %err, entity = %meta.full_name, "entity cache count skipped");
+                return None;
+            }
         }
     }
+    if meta.caches(lookup) && !frame_wrote(facade, &lookup.entity_name, &meta) {
+        let key = lookup_key(lookup);
+        let cache = facade.with_slot(OneCaches::default, |caches| caches.counts.get(&meta.full_name).cloned())?;
+        return cache.get(&key).ok().flatten().map(|cached| cached.count);
+    }
+    None
+}
+
+/// Store a count the database gave, as Java's count cache, when the entity's finds are cached.
+pub fn after_count(facade: &EntityFacade, lookup: &FindLookup, count: i64) -> Result<(), Error> {
+    let meta = read_meta(facade, &lookup.entity_name)?;
+    if !meta.caches(lookup) || frame_wrote(facade, &lookup.entity_name, &meta) {
+        return Ok(());
+    }
+    let key = lookup_key(lookup);
+    let name = meta.full_name;
+    let cache = facade.with_slot(OneCaches::default, |caches| {
+        caches
+            .counts
+            .entry(name.clone())
+            .or_insert_with(|| count_cache(&name))
+            .clone()
+    });
+    cache.put(
+        key,
+        CachedCount {
+            condition: lookup.condition.clone(),
+            count,
+        },
+    )
 }
 
 /// Store a find result when the entity cache attribute is `true`. Rows are already plaintext.
@@ -225,7 +353,13 @@ pub fn after_find(facade: &EntityFacade, lookup: &FindLookup, rows: &EntityList)
             .or_insert_with(|| list_cache(&name))
             .clone()
     });
-    cache.put(key, rows.clone())
+    cache.put(
+        key,
+        CachedList {
+            condition: lookup.condition.clone(),
+            rows: rows.clone(),
+        },
+    )
 }
 
 /// True when this thread's active frame for the entity has written it. For a view, any write in the frame counts,
@@ -255,11 +389,23 @@ fn frame_wrote(facade: &EntityFacade, entity_name: &str, meta: &ReadMeta) -> boo
 /// Inside a transaction, record the write on the frame and clear the one-cache again when the frame commits or
 /// rolls back, so rows read and cached by other threads before the commit do not stay. Hooks go on once per entity
 /// per frame.
-fn note_frame_write(facade: &EntityFacade, entity_name: &str, full_name: &str) -> Result<(), Error> {
+fn note_frame_write(facade: &EntityFacade, entity_name: &str, full_name: &str, write: FrameWrite) -> Result<(), Error> {
     let tx = facade.transactions_for(entity_name)?;
     let Some(token) = tx.frame_token() else {
         return Ok(());
     };
+    TX_WRITES.with(|slot| {
+        let mut frames = slot.borrow_mut();
+        let entry = frames
+            .entry(token)
+            .or_default()
+            .entry(full_name.to_string())
+            .or_insert_with(|| Some(Vec::new()));
+        match entry {
+            Some(writes) if writes.len() < FRAME_WRITES_MAX => writes.push(write),
+            _ => *entry = None,
+        }
+    });
     if TX_WRITTEN.with(|slot| slot.borrow().get(&token).is_some_and(|names| names.contains(full_name))) {
         return Ok(());
     }
@@ -286,10 +432,243 @@ fn end_frame_write(facade: &EntityFacade, token: u64, full_name: &str) {
             }
         }
     });
+    let writes = TX_WRITES.with(|slot| {
+        let mut frames = slot.borrow_mut();
+        let writes = frames.get_mut(&token).and_then(|entities| entities.remove(full_name));
+        if frames.get(&token).is_some_and(HashMap::is_empty) {
+            frames.remove(&token);
+        }
+        writes
+    });
     note_feed_definition(facade, full_name);
-    if let Err(err) = clear_named(facade, full_name) {
+    // The writes again, now that other threads may have read and cached the rows as they were before the end.
+    let result = match (writes.flatten(), read_meta(facade, full_name)) {
+        (Some(writes), Ok(meta)) => writes
+            .iter()
+            .try_for_each(|write| evict(facade, &meta, &write.operation, &write.values)),
+        _ => clear_named(facade, full_name),
+    };
+    if let Err(err) = result {
         tracing::warn!(error = %err, entity = %full_name, "entity cache clear at transaction end failed");
     }
+}
+
+/// One write of a frame, kept to evict again at the frame's end.
+struct FrameWrite {
+    operation: String,
+    values: BTreeMap<String, Value>,
+}
+
+/// Java's `EntityCache.clearCacheForValue`: each cached find of the entity that the write may have changed (it held
+/// the row, or its condition may match the values written; a field the write did not set counts as a match), each
+/// count it may have changed, and every cached find of a view that has the entity as a member.
+fn evict(
+    facade: &EntityFacade,
+    meta: &ReadMeta,
+    operation: &str,
+    values: &BTreeMap<String, Value>,
+) -> Result<(), Error> {
+    let (lists, counts) = facade.with_slot(OneCaches::default, |caches| {
+        (
+            caches.lists.get(&meta.full_name).cloned(),
+            caches.counts.get(&meta.full_name).cloned(),
+        )
+    });
+    let pk: Option<Vec<(&str, &Value)>> = meta
+        .pk_fields
+        .iter()
+        .map(|name| {
+            values
+                .get(name)
+                .filter(|value| !value.is_null())
+                .map(|value| (name.as_str(), value))
+        })
+        .collect();
+    if let Some(cache) = lists {
+        cache.remove_where(|_, cached| list_affected(cached, operation, values, pk.as_deref()))?;
+    }
+    if let Some(cache) = counts {
+        // A count has no rows to tell whether the row was in it: an update or delete clears them all.
+        if operation == "create" {
+            cache.remove_where(|_, cached| may_match(cached.condition.as_ref(), values))?;
+        } else {
+            cache.clear()?;
+        }
+    }
+    for view in views_using(facade, &meta.full_name).iter() {
+        clear_named(facade, view)?;
+    }
+    Ok(())
+}
+
+/// Whether a write may change a cached list: a delete when the list held the row, a create when the row may match,
+/// an update (or upsert) for either. A write whose primary key is not complete may change any list.
+fn list_affected(
+    cached: &CachedList,
+    operation: &str,
+    values: &BTreeMap<String, Value>,
+    pk: Option<&[(&str, &Value)]>,
+) -> bool {
+    let Some(pk) = pk else {
+        return true;
+    };
+    let held = || {
+        cached.rows.iter().any(|row| {
+            pk.iter().all(|(name, value)| {
+                row.get(name)
+                    .is_some_and(|stored| stored == *value || to_plain_string(stored) == to_plain_string(value))
+            })
+        })
+    };
+    match operation {
+        "delete" => held(),
+        "create" => may_match(cached.condition.as_ref(), values),
+        _ => held() || may_match(cached.condition.as_ref(), values),
+    }
+}
+
+/// False only when the condition surely does not match the values: a field they do not hold, a comparison this
+/// cannot judge, or values of different types count as a possible match.
+fn may_match(condition: Option<&Condition>, values: &BTreeMap<String, Value>) -> bool {
+    condition.is_none_or(|condition| judge(condition, values) != Some(false))
+}
+
+/// A three-valued match: `None` when it cannot be told from `values`.
+fn judge(condition: &Condition, values: &BTreeMap<String, Value>) -> Option<bool> {
+    let field = |field: &FieldRef| -> Option<&Value> {
+        if field.entity_alias.is_some() {
+            return None;
+        }
+        values.get(&field.name)
+    };
+    let same = |left: &Value, right: &Value| -> Option<bool> {
+        if left == right || to_plain_string(left) == to_plain_string(right) {
+            Some(true)
+        } else if std::mem::discriminant(left) == std::mem::discriminant(right) {
+            Some(false)
+        } else {
+            None
+        }
+    };
+    match condition {
+        Condition::Equals(name, expected) => {
+            let got = field(name)?;
+            if expected.is_null() {
+                return Some(got.is_null());
+            }
+            if got.is_null() {
+                return Some(false);
+            }
+            same(got, expected)
+        }
+        Condition::NotEquals(name, expected) => {
+            let got = field(name)?;
+            if got.is_null() {
+                return Some(false);
+            }
+            same(got, expected).map(|equal| !equal)
+        }
+        Condition::In(name, list) => {
+            let got = field(name)?;
+            if got.is_null() || list.is_empty() {
+                return Some(false);
+            }
+            let mut unknown = false;
+            for item in list {
+                match same(got, item) {
+                    Some(true) => return Some(true),
+                    Some(false) => {}
+                    None => unknown = true,
+                }
+            }
+            (!unknown).then_some(false)
+        }
+        Condition::NotIn(name, list) => judge(&Condition::In(name.clone(), list.clone()), values).map(|found| {
+            let got_null = field(name).is_none_or(Value::is_null);
+            !found && !got_null
+        }),
+        Condition::IsNull(name) => field(name).map(Value::is_null),
+        Condition::IsNotNull(name) => field(name).map(|got| !got.is_null()),
+        Condition::And(list) => {
+            let mut unknown = false;
+            for child in list {
+                match judge(child, values) {
+                    Some(false) => return Some(false),
+                    Some(true) => {}
+                    None => unknown = true,
+                }
+            }
+            (!unknown).then_some(true)
+        }
+        Condition::Or(list) => {
+            let mut unknown = false;
+            for child in list {
+                match judge(child, values) {
+                    Some(true) => return Some(true),
+                    Some(false) => {}
+                    None => unknown = true,
+                }
+            }
+            (!unknown).then_some(false)
+        }
+        Condition::Not(inner) => judge(inner, values).map(|matched| !matched),
+        _ => None,
+    }
+}
+
+/// The view entities that have `full_name` as a member, at any depth.
+fn views_using(facade: &EntityFacade, full_name: &str) -> Vec<String> {
+    let known = facade.with_slot(OneCaches::default, |caches| caches.views_by_member.clone());
+    let map = match known {
+        Some(map) => map,
+        None => {
+            let map = Arc::new(build_views_by_member(facade));
+            facade.with_slot(OneCaches::default, |caches| {
+                caches.views_by_member = Some(Arc::clone(&map));
+            });
+            map
+        }
+    };
+    map.get(full_name).cloned().unwrap_or_default()
+}
+
+fn build_views_by_member(facade: &EntityFacade) -> HashMap<String, Vec<String>> {
+    let model = facade.inner.model.model();
+    let full = |name: &str| {
+        model
+            .entity(name)
+            .map(|entity| entity.full_name.clone())
+            .unwrap_or_else(|_| name.to_string())
+    };
+    let views: Vec<(String, Vec<String>)> = model
+        .entities()
+        .iter()
+        .filter(|entity| entity.is_view)
+        .map(|view| {
+            let members = view
+                .member_entities
+                .iter()
+                .map(|member| full(&member.entity_name))
+                .collect();
+            (view.full_name.clone(), members)
+        })
+        .collect();
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for (view, members) in &views {
+        // A member that is itself a view reaches its own members, a few levels down.
+        let mut pending: Vec<String> = members.clone();
+        let mut seen: HashSet<String> = HashSet::new();
+        while let Some(member) = pending.pop() {
+            if !seen.insert(member.clone()) {
+                continue;
+            }
+            if let Some((_, inner)) = views.iter().find(|(name, _)| *name == member) {
+                pending.extend(inner.iter().cloned());
+            }
+            map.entry(member).or_default().push(view.clone());
+        }
+    }
+    map
 }
 
 /// Hold the write, or send it to the sim overlay. `Proceed` leaves SQL to the caller.
@@ -300,7 +679,13 @@ pub fn gate_write(
     values: &BTreeMap<String, Value>,
 ) -> Result<WriteGate, Error> {
     let op = parse_op(operation)?;
-    let sim = sim_session_open();
+    // A sim leaves its own records and the sequence banks on the real database, as Java's `allowsProductionWrite`.
+    let sim = sim_session_open()
+        && !facade
+            .with_entity(entity_name, |entity, _, _| {
+                Ok(SIM_PRODUCTION_ENTITIES.contains(&entity.full_name.as_str()))
+            })
+            .unwrap_or(false);
     let tx = facade.transactions_for(entity_name)?;
     if !sim && !tx.transaction_cache_active() {
         return Ok(WriteGate::Proceed);
@@ -381,35 +766,65 @@ pub fn on_write(
     operation: &str,
     values: &BTreeMap<String, Value>,
 ) -> Result<(), Error> {
-    let _ = operation;
     let meta = read_meta(facade, entity_name)?;
-    clear_named(facade, &meta.full_name)?;
-    note_frame_write(facade, entity_name, &meta.full_name)?;
+    evict(facade, &meta, operation, values)?;
+    note_frame_write(
+        facade,
+        entity_name,
+        &meta.full_name,
+        FrameWrite {
+            operation: operation.to_string(),
+            values: values.clone(),
+        },
+    )?;
     note_screen_config(facade, &meta.full_name);
     note_feed_definition(facade, &meta.full_name);
     crate::cluster::note_write(facade, entity_name, &meta.pk_fields, values).map_err(Error::from)
 }
 
-/// Clear this entity's one-cache and do not publish. Remote apply uses this.
-pub(crate) fn clear_one_cache(facade: &EntityFacade, entity_name: &str) -> Result<(), Error> {
+/// For another server's write, and do not publish: with its primary key, the cached finds that held the row or may
+/// match the key (as an update), else the entity's caches whole. Remote apply uses this.
+pub(crate) fn clear_one_cache(
+    facade: &EntityFacade,
+    entity_name: &str,
+    primary_key: Option<&BTreeMap<String, Value>>,
+) -> Result<(), Error> {
     let meta = read_meta(facade, entity_name)?;
     note_screen_config(facade, &meta.full_name);
     note_feed_definition(facade, &meta.full_name);
-    clear_named(facade, &meta.full_name)
+    match primary_key.filter(|keys| meta.pk_fields.iter().all(|name| keys.contains_key(name))) {
+        Some(keys) => evict(facade, &meta, "update", keys),
+        None => clear_named(facade, &meta.full_name),
+    }
 }
 
+/// Clear the list and count caches of `full_name`, and those of the views it is a member of.
 fn clear_named(facade: &EntityFacade, full_name: &str) -> Result<(), Error> {
-    match facade.with_slot(OneCaches::default, |caches| caches.lists.get(full_name).cloned()) {
-        Some(cache) => cache.clear(),
-        None => Ok(()),
+    let (lists, counts) = facade.with_slot(OneCaches::default, |caches| {
+        (
+            caches.lists.get(full_name).cloned(),
+            caches.counts.get(full_name).cloned(),
+        )
+    });
+    if let Some(cache) = lists {
+        cache.clear()?;
     }
+    if let Some(cache) = counts {
+        cache.clear()?;
+    }
+    Ok(())
 }
 
 /// The list cache of each entity that has cached a find, for the cache admin screen. The names are
 /// `entity.record.list.{entity}`, as in Java.
 pub fn list_cache_infos(facade: &EntityFacade) -> Vec<moqui_lib::cache::CacheInfo> {
     facade.with_slot(OneCaches::default, |caches| {
-        let mut infos: Vec<_> = caches.lists.values().map(MCache::info).collect();
+        let mut infos: Vec<_> = caches
+            .lists
+            .values()
+            .map(MCache::info)
+            .chain(caches.counts.values().map(MCache::info))
+            .collect();
         infos.sort_by(|left, right| left.name.cmp(&right.name));
         infos
     })
@@ -418,7 +833,10 @@ pub fn list_cache_infos(facade: &EntityFacade) -> Vec<moqui_lib::cache::CacheInf
 /// Clear the list cache named `cache_name`. `false` when no entity has a list cache of that name.
 pub fn clear_list_cache(facade: &EntityFacade, cache_name: &str) -> Result<bool, Error> {
     facade.with_slot(OneCaches::default, |caches| {
-        match caches.lists.values().find(|cache| cache.name() == cache_name) {
+        if let Some(cache) = caches.lists.values().find(|cache| cache.name() == cache_name) {
+            return cache.clear().map(|()| true);
+        }
+        match caches.counts.values().find(|cache| cache.name() == cache_name) {
             Some(cache) => cache.clear().map(|()| true),
             None => Ok(false),
         }
@@ -429,6 +847,9 @@ pub fn clear_list_cache(facade: &EntityFacade, cache_name: &str) -> Result<bool,
 pub fn clear_all_list_caches(facade: &EntityFacade) -> Result<(), Error> {
     facade.with_slot(OneCaches::default, |caches| {
         for cache in caches.lists.values() {
+            cache.clear()?;
+        }
+        for cache in caches.counts.values() {
             cache.clear()?;
         }
         Ok(())
@@ -478,12 +899,7 @@ pub fn enter_sim(facade: &EntityFacade) -> Result<(), Error> {
     }
     sim.with_connection(|conn| execute_conn(conn, &format!("CREATE SCHEMA {schema}"), &[]))?;
     SIM.with(|slot| {
-        slot.borrow_mut().push(SimSession {
-            schema,
-            tables: HashSet::new(),
-            tombstones: HashMap::new(),
-            written: HashSet::new(),
-        });
+        slot.borrow_mut().push(SimSession::new(schema));
     });
     Ok(())
 }
@@ -511,6 +927,141 @@ pub fn exit_sim(facade: &EntityFacade) -> Result<(), Error> {
 #[must_use]
 pub fn sim_entered() -> bool {
     sim_session_open()
+}
+
+/// The innermost sim schema of this thread, when a sim session is open.
+pub(super) fn sim_schema() -> Option<String> {
+    SIM.with(|slot| slot.borrow().last().map(|session| session.schema.clone()))
+}
+
+/// Whether the sim wrote or deleted a row of `entity` (a full name).
+pub(super) fn sim_changed(entity: &str) -> bool {
+    let prefix = format!("{entity}{PK_SEP}");
+    SIM.with(|slot| {
+        slot.borrow().last().is_some_and(|session| {
+            session.tombstones.get(entity).is_some_and(|set| !set.is_empty())
+                || session.written.iter().any(|key| key.starts_with(&prefix))
+        })
+    })
+}
+
+/// Rows deleted in the sim, as Java's `deletedCount`: production still returns them, so they shrink a copied page.
+pub(super) fn sim_deleted_count() -> usize {
+    SIM.with(|slot| {
+        slot.borrow()
+            .last()
+            .map_or(0, |session| session.tombstones.values().map(HashSet::len).sum())
+    })
+}
+
+/// The rows the sim wrote of `entity_name`, plain, read from its table. Not its replicas.
+pub(super) fn sim_written_rows(
+    facade: &EntityFacade,
+    entity_name: &str,
+) -> Result<Vec<BTreeMap<String, Value>>, Error> {
+    let meta = read_meta(facade, entity_name)?;
+    let view = sim_view(&meta.full_name);
+    if !view.table {
+        return Ok(Vec::new());
+    }
+    let rows = load_plain(facade, &meta, None, &[], Some(&view.schema))?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| pk_of(row, &meta.pk_fields).is_some_and(|pk| view.hide.contains(&row_key(&meta.full_name, &pk))))
+        .collect())
+}
+
+/// Create the table of `entity_name` in the sim schema when the sim has none yet.
+pub(super) fn ensure_sim_table(facade: &EntityFacade, entity_name: &str) -> Result<(), Error> {
+    let full_name = facade.with_entity(entity_name, |entity, _, _| Ok(entity.full_name.clone()))?;
+    let (schema, exists) = SIM.with(|slot| {
+        let guard = slot.borrow();
+        let session = guard.last().ok_or_else(|| Error::new("sim session is missing"))?;
+        Ok::<_, Error>((session.schema.clone(), session.tables.contains(&full_name)))
+    })?;
+    if exists {
+        return Ok(());
+    }
+    let ddl = create_sql(facade, entity_name)?;
+    let sim = facade
+        .sim_transactions()
+        .ok_or_else(|| Error::new("sim transactions are not configured"))?;
+    run_overlay(&sim, &schema, Some(&ddl), &[])?;
+    SIM.with(|slot| {
+        if let Some(session) = slot.borrow_mut().last_mut() {
+            session.tables.insert(full_name);
+        }
+    });
+    Ok(())
+}
+
+/// Copy a production row of `entity_name` into the sim schema as a replica, as Java's `copyFromProduction`. A row
+/// the sim wrote, deleted or already copied is left as it is. Returns whether it was copied.
+///
+/// # Errors
+///
+/// Fails when the sim has copied [`SIM_TOTAL_COPY_CAP`] rows, as Java fails the sim, or the copy cannot be written.
+pub(super) fn copy_replica(
+    facade: &EntityFacade,
+    entity_name: &str,
+    plain: BTreeMap<String, Value>,
+) -> Result<bool, Error> {
+    let owner = facade.clone();
+    let (full_name, pk, sealed) = facade.with_entity(entity_name, |entity, _, _| {
+        let pk = identity(entity, &plain)?;
+        let sealed = field_rw::seal_stored(&owner, entity, plain.clone())?;
+        Ok((entity.full_name.clone(), pk, sealed))
+    })?;
+    let key = row_key(&full_name, &pk);
+    let skip = SIM.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        let session = guard.last_mut().ok_or_else(|| Error::new("sim session is missing"))?;
+        if session.written.contains(&key)
+            || session.replicas.contains(&key)
+            || session.tombstones.get(&full_name).is_some_and(|set| set.contains(&pk))
+        {
+            return Ok(true);
+        }
+        session.copied += 1;
+        if session.copied > SIM_TOTAL_COPY_CAP {
+            return Err(Error::new(format!(
+                "The sim copied more than {SIM_TOTAL_COPY_CAP} production rows. Narrow the query or end the sim."
+            )));
+        }
+        Ok::<_, Error>(false)
+    })?;
+    if skip {
+        return Ok(false);
+    }
+    ensure_sim_table(facade, entity_name)?;
+    let schema = sim_schema().ok_or_else(|| Error::new("sim session is missing"))?;
+    let mut statements = Vec::new();
+    push_statement(&mut statements, dml(facade, entity_name, Op::Create, &sealed)?);
+    let sim = facade
+        .sim_transactions()
+        .ok_or_else(|| Error::new("sim transactions are not configured"))?;
+    run_overlay(&sim, &schema, None, &statements)?;
+    SIM.with(|slot| {
+        if let Some(session) = slot.borrow_mut().last_mut() {
+            session.replicas.insert(key);
+        }
+    });
+    Ok(true)
+}
+
+/// Run a read on the sim schema `schema`.
+pub(super) fn query_sim(facade: &EntityFacade, schema: &str, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
+    let sim = facade
+        .sim_transactions()
+        .ok_or_else(|| Error::new("sim transactions are not configured"))?;
+    sim.with_connection(|conn| {
+        query_conn(
+            conn,
+            "SELECT set_config('search_path', ?, false)",
+            &[Value::string(schema)],
+        )?;
+        query_conn(conn, sql, params)
+    })
 }
 
 /// End every sim session this thread still has open, dropping its schema, and clear the sim flag. A failed drop is
@@ -605,15 +1156,17 @@ fn write_sim(
 ) -> Result<(), Error> {
     let hit = sim_hit(&prepared.full_name, &prepared.pk)?;
     // The overlay dialect rejects insert-or-update. A new sim row is an insert; a written row is an update.
+    // A replica row is in the sim table already, as a written one is.
+    let present = hit.written || hit.replica;
     let op = match op {
-        Op::Upsert if hit.written => Op::Update,
+        Op::Upsert if present => Op::Update,
         Op::Upsert => Op::Create,
         other => other,
     };
     if op == Op::Update && hit.tombstone {
         return Ok(());
     }
-    if op == Op::Create && hit.written {
+    if op == Op::Create && present {
         return Err(Error::new(format!(
             "create of existing sim row {} {}",
             prepared.full_name, prepared.pk
@@ -623,7 +1176,7 @@ fn write_sim(
         note_sim(&prepared.full_name, &prepared.pk, Op::Delete, false);
         return Ok(());
     }
-    let sealed_copy = if op == Op::Update && !hit.written {
+    let sealed_copy = if op == Op::Update && !present {
         match load_by_pk(facade, entity_name, plain)? {
             Some(row) => Some(seal(facade, entity_name, "create", row)?),
             None => None,
@@ -657,7 +1210,7 @@ fn sim_statements(
     if let Some(copied) = sealed_copy {
         push_statement(&mut statements, dml(facade, entity_name, Op::Create, copied)?);
         push_statement(&mut statements, dml(facade, entity_name, Op::Update, sealed)?);
-    } else if op == Op::Update && !hit.written {
+    } else if op == Op::Update && !hit.written && !hit.replica {
         push_statement(&mut statements, dml(facade, entity_name, Op::Create, sealed)?);
     } else {
         push_statement(&mut statements, dml(facade, entity_name, op, sealed)?);
@@ -720,6 +1273,7 @@ fn note_sim(entity: &str, pk: &str, op: Op, created_table: bool) {
         if created_table {
             session.tables.insert(entity.to_string());
         }
+        session.replicas.remove(&row_key);
         match op {
             Op::Create | Op::Update | Op::Upsert => {
                 if let Some(set) = session.tombstones.get_mut(entity) {
@@ -745,12 +1299,25 @@ fn overlay_rows(
     condition: Option<&Condition>,
     order: &[OrderBy],
 ) -> Result<Option<Vec<EntityValue>>, Error> {
-    let holds = holds_for(facade, &meta.full_name);
+    let mut holds = holds_for(facade, &meta.full_name);
     let sim = if sim_session_open() {
         sim_view(&meta.full_name)
     } else {
         SimView::empty()
     };
+    if !sim.affects() {
+        // A find by the whole primary key sees only the held rows of that key.
+        if let Some(pk) = pinned_pk(condition, &meta.pk_fields) {
+            holds.retain(|held| held.pk == pk);
+        }
+        // With no held row that can be in the result, the database answers alone, with its limit and offset.
+        if holds
+            .iter()
+            .all(|held| held.operation == Op::Create && !may_match(condition, &held.plain))
+        {
+            return Ok(None);
+        }
+    }
     if holds.is_empty() && !sim.affects() {
         return Ok(None);
     }
@@ -759,7 +1326,9 @@ fn overlay_rows(
         .into_iter()
         .map(|fields| MemRow { fields, trusted: true })
         .collect();
-    apply_holds(&mut rows, &holds, &meta.pk_fields);
+    // An update of a row the condition did not load starts from the whole stored row, not the fields it set.
+    let mut stored = |held: &Held| load_by_pk(facade, &meta.full_name, &held.plain);
+    apply_holds(&mut rows, &holds, &meta.pk_fields, &mut stored)?;
     rows.retain(|row| row.trusted || row_matches(condition, &row.fields));
     if sim.affects() {
         rows.retain(|row| match pk_of(&row.fields, &meta.pk_fields) {
@@ -786,7 +1355,12 @@ fn overlay_rows(
     Ok(Some(values))
 }
 
-fn apply_holds(rows: &mut Vec<MemRow>, holds: &[Held], pk_fields: &[String]) {
+fn apply_holds(
+    rows: &mut Vec<MemRow>,
+    holds: &[Held],
+    pk_fields: &[String],
+    stored: StoredRow<'_>,
+) -> Result<(), Error> {
     for held in holds {
         match held.operation {
             Op::Delete => rows.retain(|row| pk_of(&row.fields, pk_fields).as_deref() != Some(held.pk.as_str())),
@@ -807,14 +1381,74 @@ fn apply_holds(rows: &mut Vec<MemRow>, holds: &[Held], pk_fields: &[String]) {
                     }
                     row.trusted = false;
                 } else {
-                    rows.push(MemRow {
-                        fields: held.plain.clone(),
-                        trusted: false,
-                    });
+                    // Not loaded: the stored row with this write on it, if there is one. An update of a row that is
+                    // not there writes nothing; an upsert of one is its whole row.
+                    let base = stored(held)?;
+                    let fields = match (base, held.operation) {
+                        (Some(mut base), _) => {
+                            base.extend(held.plain.iter().map(|(key, value)| (key.clone(), value.clone())));
+                            base
+                        }
+                        (None, Op::Upsert) => held.plain.clone(),
+                        (None, _) => continue,
+                    };
+                    rows.push(MemRow { fields, trusted: false });
                 }
             }
         }
     }
+    Ok(())
+}
+
+/// The primary key text a condition pins: every key field compared by equality at the top level.
+fn pinned_pk(condition: Option<&Condition>, pk_fields: &[String]) -> Option<String> {
+    let condition = condition?;
+    let parts: Vec<&Condition> = match condition {
+        Condition::And(list) => list.iter().collect(),
+        other => vec![other],
+    };
+    let mut keys = BTreeMap::new();
+    for part in parts {
+        if let Condition::Equals(field, value) = part {
+            if field.entity_alias.is_none() && pk_fields.contains(&field.name) && !value.is_null() {
+                keys.insert(field.name.clone(), value.clone());
+            }
+        }
+    }
+    pk_of(&keys, pk_fields)
+}
+
+/// Before a view read: when the frame holds rows of one of the view's members, write every held row now (in order,
+/// so a child row follows its parent), as Java's bypass of the transaction cache for a view.
+fn flush_for_view(facade: &EntityFacade, view: &str) -> Result<(), Error> {
+    if TX_HOLD.with(|slot| slot.borrow().is_empty()) {
+        return Ok(());
+    }
+    let tx = facade.transactions_for(view)?;
+    let Some(token) = tx.frame_token() else {
+        return Ok(());
+    };
+    let members: Vec<String> = facade.with_entity(view, |entity, _, model| {
+        Ok(entity
+            .member_entities
+            .iter()
+            .map(|member| {
+                model
+                    .entity(&member.entity_name)
+                    .map(|entity| entity.full_name.clone())
+                    .unwrap_or_else(|_| member.entity_name.clone())
+            })
+            .collect())
+    })?;
+    let held = TX_HOLD.with(|slot| {
+        slot.borrow()
+            .get(&token)
+            .is_some_and(|list| list.iter().any(|held| members.contains(&held.entity_name)))
+    });
+    if held {
+        tx.with_connection(|conn| flush_held(facade, token, conn))?;
+    }
+    Ok(())
 }
 
 fn load_plain(
@@ -826,17 +1460,7 @@ fn load_plain(
 ) -> Result<Vec<BTreeMap<String, Value>>, Error> {
     let plan = plan_select(facade, &meta.full_name, condition, order)?;
     let db_rows = if let Some(schema) = overlay_schema {
-        let sim = facade
-            .sim_transactions()
-            .ok_or_else(|| Error::new("sim transactions are not configured"))?;
-        sim.with_connection(|conn| {
-            query_conn(
-                conn,
-                "SELECT set_config('search_path', ?, false)",
-                &[Value::string(schema)],
-            )?;
-            query_conn(conn, &plan.sql, &plan.params)
-        })?
+        query_sim(facade, schema, &plan.sql, &plan.params)?
     } else {
         query_tx(&plan.tx, &plan.sql, &plan.params)?
     };
@@ -1135,6 +1759,7 @@ fn sim_hit(entity: &str, pk: &str) -> Result<SimHit, Error> {
             table: session.tables.contains(entity),
             tombstone: session.tombstones.get(entity).is_some_and(|set| set.contains(pk)),
             written: session.written.contains(&key),
+            replica: session.replicas.contains(&key),
         })
     })
 }
@@ -1152,14 +1777,17 @@ fn sim_view(entity: &str) -> SimView {
             }
         }
         let prefix = format!("{entity}{PK_SEP}");
+        let mut written = false;
         for key in &session.written {
             if key.starts_with(&prefix) {
                 hide.insert(key.clone());
+                written = true;
             }
         }
+        // A table that holds only replicas holds production's rows, so production answers alone.
         SimView {
             schema: session.schema.clone(),
-            table: session.tables.contains(entity),
+            table: written && session.tables.contains(entity),
             hide,
         }
     })
@@ -1182,21 +1810,47 @@ impl SimView {
 fn cache_get(facade: &EntityFacade, entity_name: &str, lookup: &FindLookup) -> Option<EntityList> {
     let key = lookup_key(lookup);
     let cache = facade.with_slot(OneCaches::default, |caches| caches.lists.get(entity_name).cloned())?;
-    cache.get(&key).ok().flatten()
+    cache.get(&key).ok().flatten().map(|cached| cached.rows)
 }
 
-fn list_cache(name: &str) -> MCache<String, EntityList> {
+fn list_cache(name: &str) -> MCache<String, CachedList> {
     MCache::new(
         format!("entity.record.list.{name}"),
         CacheConfig::new().max_entries(LIST_MAX).background(true),
     )
 }
 
+fn count_cache(name: &str) -> MCache<String, CachedCount> {
+    MCache::new(
+        format!("entity.record.count.{name}"),
+        CacheConfig::new().max_entries(LIST_MAX).background(true),
+    )
+}
+
+/// The key of a find: its condition with the parts of each `and` and `or` in one order, so the same condition
+/// built in another order is the same entry, then the order.
 fn lookup_key(lookup: &FindLookup) -> String {
     format!(
         "{:?}|{:?}|{:?}|{:?}",
-        lookup.condition, lookup.order, lookup.limit, lookup.offset
+        lookup.condition.clone().map(canonical),
+        lookup.order,
+        lookup.limit,
+        lookup.offset
     )
+}
+
+fn canonical(condition: Condition) -> Condition {
+    let sorted = |list: Vec<Condition>| {
+        let mut list: Vec<Condition> = list.into_iter().map(canonical).collect();
+        list.sort_by_cached_key(|item| format!("{item:?}"));
+        list
+    };
+    match condition {
+        Condition::And(list) => Condition::And(sorted(list)),
+        Condition::Or(list) => Condition::Or(sorted(list)),
+        Condition::Not(inner) => Condition::Not(Box::new(canonical(*inner))),
+        other => other,
+    }
 }
 
 fn page_rows(mut rows: Vec<EntityValue>, limit: Option<i64>, offset: Option<i64>) -> Vec<EntityValue> {
@@ -1418,7 +2072,7 @@ mod tests {
     use moqui_lib::error::Error;
     use moqui_lib::object::Value;
 
-    use super::{eval_condition, WriteGate};
+    use super::{eval_condition, judge, may_match, FindLookup, ReadMeta, WriteGate};
     use crate::entity::EntityFacade;
     use crate::testing;
     use crate::transaction::{TransactionAttribute, TransactionManager};
@@ -1428,6 +2082,136 @@ mod tests {
             .iter()
             .map(|(name, value)| ((*name).to_string(), value.clone()))
             .collect()
+    }
+
+    /// The eviction check: false only when the condition surely does not match what was written.
+    #[test]
+    fn a_write_may_match_unless_the_condition_surely_excludes_it() {
+        let written = row(&[("enumTypeId", Value::string("B")), ("enumId", Value::string("E9"))]);
+        let typed = || Condition::equals("enumTypeId", Value::string("A"));
+        assert!(!may_match(Some(&typed()), &written));
+        assert!(may_match(
+            Some(&Condition::equals("enumTypeId", Value::string("B"))),
+            &written
+        ));
+        // A field the write did not set, or a comparison this cannot judge, may match.
+        assert!(may_match(
+            Some(&Condition::equals("description", Value::string("x"))),
+            &written
+        ));
+        assert!(may_match(
+            Some(&Condition::Like("enumTypeId".into(), Value::string("A%"))),
+            &written
+        ));
+        // Different types are not judged.
+        assert_eq!(judge(&Condition::equals("enumTypeId", Value::I64(1)), &written), None);
+        assert_eq!(
+            judge(
+                &Condition::and(vec![typed(), Condition::equals("description", Value::string("x"))]),
+                &written
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            judge(
+                &Condition::is_in("enumTypeId", vec![Value::string("A"), Value::string("B")]),
+                &written
+            ),
+            Some(true)
+        );
+    }
+
+    /// Java's `EntityCache.clearCacheForValue`: a write evicts the cached finds it may change (one holding the row, or
+    /// one whose condition may match it), keeps the others, and clears the finds of a view of the entity.
+    #[test]
+    fn a_write_evicts_only_the_cached_finds_it_may_change() {
+        let facade = testing::open();
+        let make = |id: &str, kind: &str| {
+            let mut value = facade.make_value("moqui.basic.Enumeration").unwrap();
+            value.set("enumId", Value::string(id));
+            value.set("enumTypeId", Value::string(kind));
+            value
+        };
+        make("E1", "A").create(&facade).unwrap();
+        make("E2", "B").create(&facade).unwrap();
+        let cached = |kind: &str| {
+            facade
+                .find("moqui.basic.Enumeration")
+                .unwrap()
+                .eq("enumTypeId", Value::string(kind))
+                .use_cache(true)
+                .list()
+                .unwrap()
+                .len()
+        };
+        let entries = || {
+            super::list_cache_infos(&facade)
+                .into_iter()
+                .find(|info| info.name == "entity.record.list.moqui.basic.Enumeration")
+                .map_or(0, |info| info.size)
+        };
+        assert_eq!((cached("A"), cached("B")), (1, 1));
+        assert_eq!(entries(), 2);
+        // A new row of type B leaves the cached list of type A.
+        make("E3", "B").create(&facade).unwrap();
+        assert_eq!(entries(), 1);
+        assert_eq!(cached("B"), 2);
+        // An update of E1, which the list of type A holds, takes that list.
+        let mut moved = make("E1", "C");
+        moved.set("description", Value::string("moved"));
+        moved.update(&facade).unwrap();
+        assert_eq!(cached("A"), 0);
+        // The cached finds of a view of the entity go when a member is written.
+        let view_rows = || {
+            facade
+                .find("moqui.basic.EnumerationAndType")
+                .unwrap()
+                .eq("enumTypeId", Value::string("B"))
+                .use_cache(true)
+                .list()
+                .unwrap()
+                .len()
+        };
+        if facade
+            .with_entity("moqui.basic.EnumerationAndType", |_, _, _| Ok(()))
+            .is_ok()
+        {
+            let mut kind = facade.make_value("moqui.basic.EnumerationType").unwrap();
+            kind.set("enumTypeId", Value::string("B"));
+            kind.create(&facade).unwrap();
+            assert_eq!(view_rows(), 2);
+            make("E4", "B").create(&facade).unwrap();
+            assert_eq!(view_rows(), 3);
+        }
+    }
+
+    /// Java `shouldCache` and the list find: a find with no condition, a limit or offset, or the user's
+    /// authorization filters is read from the database.
+    #[test]
+    fn only_a_plain_conditioned_find_is_cached() {
+        let meta = ReadMeta {
+            full_name: "E".to_string(),
+            is_view: false,
+            cache: true,
+            cache_never: false,
+            pk_fields: Vec::new(),
+        };
+        let lookup =
+            |condition: Option<Condition>, limit: Option<i64>, offset: Option<i64>, filtered: bool| FindLookup {
+                entity_name: "E".to_string(),
+                use_cache: None,
+                condition,
+                order: Vec::new(),
+                limit,
+                offset,
+                filtered,
+            };
+        let some = || Some(Condition::equals("a", Value::string("1")));
+        assert!(meta.caches(&lookup(some(), None, None, false)));
+        assert!(!meta.caches(&lookup(None, None, None, false)));
+        assert!(!meta.caches(&lookup(some(), Some(10), None, false)));
+        assert!(!meta.caches(&lookup(some(), None, Some(0), false)));
+        assert!(!meta.caches(&lookup(some(), None, None, true)));
     }
 
     #[test]
@@ -1494,6 +2278,58 @@ mod tests {
 
     fn statements(tape: &Arc<Mutex<Vec<String>>>, needle: &str) -> usize {
         tape.lock().unwrap().iter().filter(|sql| sql.contains(needle)).count()
+    }
+
+    /// The overlay: an update of a row the condition did not load comes back whole (stored row plus the update), a
+    /// find by key sees the held write, and a view read writes the held rows first.
+    #[test]
+    fn held_updates_merge_onto_the_stored_row_and_a_view_read_flushes_them() {
+        let facade = testing::open();
+        let entity = "moqui.basic.Enumeration";
+        for (id, kind) in [("E1", "A"), ("E2", "A")] {
+            let mut value = facade.make_value(entity).unwrap();
+            value.set("enumId", Value::string(id));
+            value.set("enumTypeId", Value::string(kind));
+            value.set("description", Value::string("stored"));
+            value.create(&facade).unwrap();
+        }
+        let mut kind = facade.make_value("moqui.basic.EnumerationType").unwrap();
+        kind.set("enumTypeId", Value::string("B"));
+        kind.create(&facade).unwrap();
+        let tx = facade.transactions_for(entity).unwrap();
+        run(&tx, TransactionAttribute::Cache, || {
+            let mut moved = facade.make_value(entity).unwrap();
+            moved.set("enumId", Value::string("E1"));
+            moved.set("enumTypeId", Value::string("B"));
+            moved.update(&facade)?;
+            let of_b = facade.find(entity)?.eq("enumTypeId", Value::string("B")).list()?;
+            assert_eq!(of_b.len(), 1);
+            assert_eq!(of_b.values()[0].get("description"), Some(&Value::string("stored")));
+            let by_key = facade.find(entity)?.eq("enumId", Value::string("E1")).one()?.unwrap();
+            assert_eq!(by_key.get("enumTypeId"), Some(&Value::string("B")));
+            // A row no held write touches is read from the database by its key.
+            let other = facade.find(entity)?.eq("enumId", Value::string("E2")).one()?.unwrap();
+            assert_eq!(other.get("enumTypeId"), Some(&Value::string("A")));
+            let view = facade
+                .find("moqui.basic.EnumerationAndType")?
+                .eq("enumTypeId", Value::string("B"))
+                .list()?;
+            assert_eq!(view.len(), 1);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// Java's `TransactionCacheDb.nextSeq`: a sim takes ids from its own bank, not the production sequence.
+    #[test]
+    fn a_sim_takes_its_ids_from_its_own_bank() {
+        assert_eq!(super::sim_next_seq("moqui.test.TestEntity"), None);
+        super::SIM.with(|slot| {
+            slot.borrow_mut().push(super::SimSession::new("sim_test".to_string()));
+        });
+        assert_eq!(super::sim_next_seq("moqui.test.TestEntity"), Some(900_000_001));
+        assert_eq!(super::sim_next_seq("moqui.test.TestEntity"), Some(900_000_002));
+        super::SIM.with(|slot| slot.borrow_mut().clear());
     }
 
     #[test]

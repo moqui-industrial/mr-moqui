@@ -415,6 +415,16 @@ mod tests {
             "moqui.entity.document.DataDocument",
             &[("dataDocumentId", "DOC1"), ("primaryEntityName", "moqui.test.Foo")],
         );
+        // A write is fed when it sets a document field.
+        create_row(
+            &facade,
+            "moqui.entity.document.DataDocumentField",
+            &[
+                ("dataDocumentId", "DOC1"),
+                ("fieldSeqId", "01"),
+                ("fieldPath", "fooText"),
+            ],
+        );
         create_row(
             &facade,
             "moqui.entity.feed.DataFeed",

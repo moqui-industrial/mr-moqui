@@ -32,7 +32,7 @@ use moqui_lib::object::{basic_convert, to_plain_string, Value};
 use moqui_lib::sync::lock;
 
 use super::call::CallOptions;
-use super::pool::{Shared, Work};
+use super::pool::Shared;
 use super::util::{field_text, now_stamp, reserve};
 use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 use crate::entity::{EntityFacade, EntityValue};
@@ -61,6 +61,9 @@ pub(crate) struct JobRun {
     last_run_time: Value,
     delete_when_done: bool,
     user_name: Option<String>,
+    /// `ServiceJob.topic`: a notification of this topic is sent when the run ends.
+    topic: Option<String>,
+    description: Option<String>,
     factory: Arc<ExecutionContextFactory>,
 }
 
@@ -78,6 +81,8 @@ pub struct PassReport {
     pub jobs_active: usize,
     pub jobs_paused: usize,
     pub jobs_ready_not_run: usize,
+    /// Jobs that could not be checked or started; each is logged and the pass goes on.
+    pub jobs_failed: usize,
 }
 
 /// One scheduler pass for the pool's factory. Errors are logged, so a bad pass never ends the thread.
@@ -136,21 +141,46 @@ fn pass(shared: &Arc<Shared>, factory: &Arc<ExecutionContextFactory>) -> Result<
             report.jobs_paused += 1;
             continue;
         }
-        if !queued && repeat_exhausted(&facade, job, &job_name, &now_stamp)? {
-            continue;
+        // As in Java's `ScheduledJobRunner`, a job that cannot be checked or started is logged and the pass goes on
+        // with the next job.
+        let exhausted = if queued {
+            Ok(false)
+        } else {
+            repeat_exhausted(&facade, job, &job_name, &now_stamp)
+        };
+        match exhausted {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(err) => {
+                tracing::error!(job = %job_name, error = %err, "Error checking scheduled job, skipping it");
+                report.jobs_failed += 1;
+                continue;
+            }
         }
         report.jobs_active += 1;
-        let ready = readiness(&facade, job, &job_name, &cron_text, now)?;
-        let Some(ready) = ready else {
-            continue;
+        let ready = match readiness(&facade, job, &job_name, &cron_text, now) {
+            Ok(Some(ready)) => ready,
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::error!(job = %job_name, cron = %cron_text, error = %err, "Error checking scheduled job, skipping it");
+                report.jobs_failed += 1;
+                continue;
+            }
         };
         if slots <= 0 {
             report.jobs_ready_not_run += 1;
             continue;
         }
-        if dispatch(shared, factory, &facade, &plan, job, ready, &now_stamp)? {
-            report.jobs_run += 1;
-            slots -= 1;
+        match dispatch(shared, factory, &facade, &plan, job, ready, &now_stamp) {
+            Ok(true) => {
+                report.jobs_run += 1;
+                slots -= 1;
+            }
+            Ok(false) => {}
+            Err(err) => {
+                tracing::error!(job = %job_name, error = %err, "Error starting scheduled job, skipping it");
+                report.jobs_failed += 1;
+            }
         }
     }
     Ok(report)
@@ -197,7 +227,7 @@ fn readiness(
         }
     }
     if !cron_text.is_empty() {
-        let cron = super::schedule::parse_cron(cron_text)?;
+        let cron = super::schedule::cached_cron(cron_text)?;
         let zoned = now.to_zoned(jiff::tz::TimeZone::system());
         // A schedule with nothing before now has not come due yet.
         let Ok(last_schedule) = cron.find_previous_occurrence(&zoned, true) else {
@@ -259,6 +289,8 @@ fn dispatch(
         last_run_time: ready.last_run_time,
         delete_when_done: queued,
         user_name: None,
+        topic: Some(field_text(job, "topic")).filter(|topic| !topic.is_empty()),
+        description: Some(field_text(job, "description")).filter(|text| !text.is_empty()),
         factory: Arc::clone(factory),
     };
     if shared.submit_job(run) {
@@ -351,6 +383,8 @@ pub fn run_job_now(job_name: &str, extra: &BTreeMap<String, Value>) -> Result<St
         last_run_time: Value::Null,
         delete_when_done: false,
         user_name: crate::user::current_username().ok().flatten(),
+        topic: Some(field_text(&job, "topic")).filter(|topic| !topic.is_empty()),
+        description: Some(field_text(&job, "description")).filter(|text| !text.is_empty()),
         factory: Arc::clone(&factory),
     };
     // The inline executor runs it at the next drain point.
@@ -370,8 +404,19 @@ pub fn run_job_now(job_name: &str, extra: &BTreeMap<String, Value>) -> Result<St
 }
 
 /// Send the ServiceJobError notification. A failure is logged and does not change the job row.
+#[cfg(test)]
 pub(crate) fn send_job_error_notification(job_name: &str, job_run_id: &str, errors: &str) {
-    if let Err(err) = crate::notify::service_job_error(job_name, errors) {
+    send_job_error_to(job_name, job_run_id, errors, &[], indexmap::IndexMap::new());
+}
+
+fn send_job_error_to(
+    job_name: &str,
+    job_run_id: &str,
+    errors: &str,
+    user_ids: &[String],
+    extra: indexmap::IndexMap<String, Value>,
+) {
+    if let Err(err) = crate::notify::service_job_error(job_name, job_run_id, errors, user_ids, extra) {
         tracing::warn!(
             job = %job_name,
             run = %job_run_id,
@@ -434,13 +479,12 @@ pub(crate) fn run_job(job: JobRun) {
             clip(&messages.errors().join("\n")),
         )
     };
-    let results = serde_json::to_string(&moqui_lib::json::to_json(&Value::Map(
-        results.into_iter().collect::<indexmap::IndexMap<_, _>>(),
-    )))
-    .ok();
+    let result_values: indexmap::IndexMap<String, Value> = results.into_iter().collect();
+    let results = serde_json::to_string(&moqui_lib::json::to_json(&Value::Map(result_values.clone()))).ok();
     end.finish(&RunOutcome {
         has_error,
         results,
+        result_values,
         messages,
         errors,
     });
@@ -451,6 +495,8 @@ struct RunOutcome {
     has_error: bool,
     /// The results as JSON.
     results: Option<String>,
+    /// The results, for the notifications.
+    result_values: indexmap::IndexMap<String, Value>,
     messages: String,
     errors: String,
 }
@@ -478,6 +524,7 @@ impl Drop for RunEnd<'_> {
         let outcome = RunOutcome {
             has_error: true,
             results: None,
+            result_values: indexmap::IndexMap::new(),
             messages: String::new(),
             errors: "The service job panicked".to_string(),
         };
@@ -518,13 +565,84 @@ fn finish_run(facade: &EntityFacade, job: &JobRun, outcome: &RunOutcome) {
     );
     if outcome.has_error {
         tracing::warn!(job = %job.job_name, run = %job.job_run_id, errors = %outcome.errors, "service job ended with errors");
-        send_job_error_notification(&job.job_name, &job.job_run_id, &outcome.errors);
     }
+    send_job_notifications(facade, job, outcome);
     if job.delete_when_done {
         delete_queued(facade, &job.job_name);
         if let Err(err) = LockPlan::new(facade).and_then(|plan| plan.delete_lock(&job.job_name)) {
             tracing::warn!(job = %job.job_name, error = %err, "could not remove a queued job's lock");
         }
+    }
+}
+
+/// Java's job notifications: with a `topic`, a notification of that topic (`success`, or `danger` on an error), and on
+/// an error a `ServiceJobError` notification. Both go to the user the job ran as and to each `ServiceJobUser` of the job
+/// that does not turn notifications off. A failure is logged.
+fn send_job_notifications(facade: &EntityFacade, job: &JobRun, outcome: &RunOutcome) {
+    if job.topic.is_none() && !outcome.has_error {
+        return;
+    }
+    let mut user_ids: Vec<String> = Vec::new();
+    if let Some(user_id) = crate::user::current_user_id()
+        .ok()
+        .flatten()
+        .filter(|id| !id.is_empty())
+    {
+        user_ids.push(user_id);
+    }
+    let job_users = facade.find("moqui.service.job.ServiceJobUser").and_then(|find| {
+        find.eq("jobName", Value::string(&job.job_name))
+            .use_cache(true)
+            .disable_authz()
+            .list()
+    });
+    match job_users {
+        Ok(rows) => {
+            for row in rows.iter() {
+                let user_id = field_text(row, "userId");
+                if !user_id.is_empty() && field_text(row, "receiveNotifications") != "N" && !user_ids.contains(&user_id)
+                {
+                    user_ids.push(user_id);
+                }
+            }
+        }
+        Err(err) => tracing::warn!(job = %job.job_name, error = %err, "could not read the job's notification users"),
+    }
+    let mut run = indexmap::IndexMap::new();
+    run.insert("jobName".to_string(), Value::string(&job.job_name));
+    run.insert(
+        "description".to_string(),
+        job.description.clone().map_or(Value::Null, Value::String),
+    );
+    run.insert("jobRunId".to_string(), Value::string(&job.job_run_id));
+    run.insert("endTime".to_string(), now_stamp());
+    run.insert("messages".to_string(), Value::string(&outcome.messages));
+    run.insert("hasError".to_string(), Value::Bool(outcome.has_error));
+    run.insert("errors".to_string(), Value::string(&outcome.errors));
+    let mut message = indexmap::IndexMap::new();
+    message.insert("serviceCallRun".to_string(), Value::Map(run));
+    message.insert(
+        "parameters".to_string(),
+        Value::Map(
+            job.parameters
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+        ),
+    );
+    message.insert("results".to_string(), Value::Map(outcome.result_values.clone()));
+    if let Some(topic) = &job.topic {
+        let mut note = crate::notify::NotificationMessage::new();
+        note.topic(topic)
+            .notification_type(if outcome.has_error { "danger" } else { "success" })
+            .message_map(message.clone())
+            .user_ids(user_ids.iter().cloned());
+        if let Err(err) = note.send() {
+            tracing::warn!(job = %job.job_name, topic = %topic, error = %err, "could not send the job notification");
+        }
+    }
+    if outcome.has_error {
+        send_job_error_to(&job.job_name, &job.job_run_id, &outcome.errors, &user_ids, message);
     }
 }
 
@@ -799,24 +917,25 @@ impl Shared {
         lock(&self.factory).upgrade()
     }
 
-    /// Room for more jobs: workers plus the conf's job queue, less what is running or waiting.
+    /// Room for more jobs, as Java's `ScheduledJobRunner`: `job-queue-max` plus `job-pool-max`, less the jobs running
+    /// or waiting for a job worker.
     pub(crate) fn job_slots(&self) -> i64 {
         let state = lock(&self.state);
-        let total = i64::try_from(self.workers + self.job_queue_max).unwrap_or(i64::MAX);
-        let busy = i64::try_from(state.active + state.queue.len()).unwrap_or(i64::MAX);
+        let total = i64::try_from(self.job_queue_max + self.job_pool_max).unwrap_or(i64::MAX);
+        let busy = i64::try_from(state.jobs_active + state.jobs.len()).unwrap_or(i64::MAX);
         total - busy
     }
 
-    /// Queue a job run. False when the queue is full or the pool stopped.
+    /// Queue a job run for the job workers. False when the job queue is full or the pool stopped.
     pub(crate) fn submit_job(&self, run: JobRun) -> bool {
         {
             let mut state = lock(&self.state);
-            if state.stop || state.queue.len() >= self.queue_cap {
+            if state.stop || state.jobs.len() >= self.job_queue_max.max(self.job_pool_max) {
                 return false;
             }
-            state.queue.push_back(Work::Job(Box::new(run)));
+            state.jobs.push_back(Box::new(run));
         }
-        self.wake.notify_all();
+        self.job_wake.notify_all();
         true
     }
 }
@@ -856,6 +975,8 @@ mod tests {
             last_run_time: timestamp_value(PREVIOUS),
             delete_when_done: false,
             user_name: None,
+            topic: None,
+            description: None,
             factory: Arc::clone(ctx.factory()),
         }
     }

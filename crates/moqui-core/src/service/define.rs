@@ -151,6 +151,8 @@ pub(crate) struct ParamDef {
     pub field_name: Option<String>,
     /// `format`, for the date and number widgets of a form.
     pub format: Option<String>,
+    /// Nested `<parameter>` elements: the entries of a `Map` parameter, cleaned and checked the same way.
+    pub children: Vec<ParamDef>,
 }
 
 #[derive(Clone, Debug)]
@@ -176,6 +178,7 @@ pub(crate) struct ServiceDef {
     pub method: String,
     /// `<actions>` XML, or empty when the service has none.
     pub actions: String,
+    pub action_source: Option<moqui_lib::error::SourceLocation>,
     pub authenticate: Authenticate,
     pub authz_action: Option<String>,
     pub validate_input: bool,
@@ -210,7 +213,10 @@ impl ServiceDef {
             native_fn: None,
             method: String::new(),
             actions: String::new(),
-            authenticate: Authenticate::Required,
+            action_source: None,
+            // As Java's `runImplicitEntityAuto`: no login is needed and the service itself is not authorized; each
+            // entity operation it makes is.
+            authenticate: Authenticate::Off,
             authz_action: None,
             validate_input: true,
             transaction: TransactionAttribute::UseOrBegin,
@@ -709,7 +715,18 @@ fn load_file(
     }
     #[cfg(test)]
     PARSED.with(|parsed| parsed.borrow_mut().push(path.clone()));
-    let root = MNode::parse_file(&path)?;
+    // A file that does not parse loses only its own services, as in Java, where a file is read when one of its
+    // services is first looked up.
+    let root = match MNode::parse_file(&path) {
+        Ok(root) => root,
+        Err(err) => {
+            tracing::error!(error = %err, "Could not read service file {}, its services are not registered", path.display());
+            loaded
+                .failures
+                .push(format!("{} could not be read: {err}", path.display()));
+            return Ok(());
+        }
+    };
     let failures = &mut loaded.failures;
     if root.name() != "services" {
         failures.push(format!("{} root is {} and not services", path.display(), root.name()));
@@ -736,7 +753,17 @@ fn load_file(
                     ));
                     continue;
                 }
-                let included = resolve_location(&location)?;
+                let included = match resolve_location(&location) {
+                    Ok(included) => included,
+                    Err(err) => {
+                        failures.push(format!(
+                            "service-include {}.{} location {location} could not be resolved: {err}",
+                            prefix,
+                            service_tail(&verb, &noun)
+                        ));
+                        continue;
+                    }
+                };
                 pending.push(included);
                 includes.push(ServiceInclude {
                     prefix: prefix.clone(),
@@ -847,6 +874,13 @@ fn load_service(prefix: &str, node: &MNode, failures: &mut Vec<String>) -> Optio
             .first_named("actions")
             .map(|node| node.write_string())
             .unwrap_or_default(),
+        action_source: node
+            .first_named("actions")
+            .map(|actions| moqui_lib::error::SourceLocation {
+                file: actions.file_location(),
+                line: actions.line(),
+                column: actions.column(),
+            }),
         authenticate: authenticate_of(node),
         authz_action: node.attribute("authz-action"),
         validate_input: bool_attr(node, "validate", true),
@@ -1014,6 +1048,7 @@ fn parse_parameter(node: &MNode) -> ParamDef {
         entity_name: node.attribute("entity-name").filter(|text| !text.is_empty()),
         field_name: node.attribute("field-name").filter(|text| !text.is_empty()),
         format: node.attribute("format").filter(|text| !text.is_empty()),
+        children: node.children_named("parameter").iter().map(parse_parameter).collect(),
     }
 }
 
@@ -1047,6 +1082,7 @@ fn parse_auto(node: &MNode) -> ParamDef {
         entity_name: None,
         field_name: None,
         format: None,
+        children: Vec::new(),
     }
 }
 
@@ -1317,7 +1353,7 @@ fn normalize(path: &Path) -> PathBuf {
 ///
 /// # Errors
 ///
-/// Returns an error when the conf cannot be read or a location cannot be resolved.
+/// Returns an error when the conf cannot be read. A location that cannot be resolved is logged and skipped.
 pub fn configured_service_files() -> Result<Vec<PathBuf>, Error> {
     configured_paths()
 }
@@ -1342,7 +1378,12 @@ fn configured_paths() -> Result<Vec<PathBuf>, Error> {
         if location.is_empty() {
             continue;
         }
-        paths.push(resolve_location(&location)?);
+        match resolve_location(&location) {
+            Ok(path) => paths.push(path),
+            Err(err) => {
+                tracing::error!(error = %err, "Could not resolve service-file location {location}, skipping it")
+            }
+        }
     }
     Ok(paths)
 }
@@ -1392,6 +1433,30 @@ mod tests {
         assert_eq!(
             super::kind_of("script", "component://x/Send.groovy"),
             super::ServiceKind::Unsupported
+        );
+    }
+
+    /// A service file that does not parse, or an include that cannot be resolved, loses only its own services; the
+    /// other files still register.
+    #[test]
+    fn a_malformed_service_file_loses_only_its_own_services() {
+        let broken = write_fixture("broken", r#"<services><service verb="bad" noun="File">"#);
+        let good = write_fixture(
+            "good-neighbor",
+            r#"<services>
+                <service verb="plain" noun="Neighbor"/>
+                <service-include verb="lost" noun="Include" location="component://no-such-component/service/X.xml"/>
+            </services>"#,
+        );
+        let (defs, failures) = super::definitions_in(&[broken.clone(), good.clone()]).unwrap();
+        let _ = std::fs::remove_file(&broken);
+        let _ = std::fs::remove_file(&good);
+        let text = failures.join("\n");
+        assert!(text.contains("could not be read"), "{text}");
+        assert!(text.contains("could not be resolved"), "{text}");
+        assert!(
+            defs.iter().any(|def| def.name.ends_with("plain#Neighbor")),
+            "{failures:?}"
         );
     }
 

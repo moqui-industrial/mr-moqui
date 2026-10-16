@@ -375,6 +375,9 @@ fn message_errors() -> Vec<String> {
 fn page_headers() {
     if let Some(page) = query_rest::take_page_info() {
         header_i64("X-Total-Count", page.total);
+        if page.count_only {
+            return;
+        }
         header_i64("X-Page-Index", page.index);
         header_i64("X-Page-Size", page.size);
         header_i64("X-Page-Max-Index", page.max_index);

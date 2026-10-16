@@ -19,7 +19,9 @@ use std::io::BufRead;
 use moqui_lib::error::Error;
 use moqui_lib::node::MNode;
 
-use super::loader::{call_data_file_service, parse_top, skip_type, store_record, Top};
+use super::loader::{
+    apply_default_parameters, apply_default_values, call_data_file_service, parse_top, skip_type, store_record, Top,
+};
 use super::pull::Pull;
 use super::LoadOptions;
 use crate::entity::facade::EntityFacade;
@@ -60,10 +62,14 @@ fn load_definition_document<R: BufRead>(
                 continue;
             }
             match parse_top(facade, location, &child)? {
-                Some(Top::Record(record)) => {
+                Some(Top::Record(mut record)) => {
+                    apply_default_values(facade, options, &mut record);
                     total = total.saturating_add(store_record(facade, options, &record)?);
                 }
-                Some(Top::Service(service)) => call_data_file_service(facade, options, service)?,
+                Some(Top::Service(mut service)) => {
+                    apply_default_parameters(options, &mut service);
+                    call_data_file_service(facade, options, service)?;
+                }
                 None => {}
             }
         }
@@ -128,8 +134,14 @@ pub(super) fn load_xml_reader(
         let element = input.take_text(xml_element_end, "xml element")?;
         let node = MNode::parse_text(location, &element)?;
         match parse_top(facade, location, &node)? {
-            Some(Top::Record(record)) => total = total.saturating_add(store_record(facade, options, &record)?),
-            Some(Top::Service(service)) => call_data_file_service(facade, options, service)?,
+            Some(Top::Record(mut record)) => {
+                apply_default_values(facade, options, &mut record);
+                total = total.saturating_add(store_record(facade, options, &record)?);
+            }
+            Some(Top::Service(mut service)) => {
+                apply_default_parameters(options, &mut service);
+                call_data_file_service(facade, options, service)?;
+            }
             None => {}
         }
     }

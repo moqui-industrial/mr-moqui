@@ -55,8 +55,23 @@ fn rest_dynamic_view_and_writer() {
     )
     .unwrap();
     facade
-        .check_tables(&["moqui.test.TestEntity", "moqui.test.Foo", "moqui.test.Bar"])
+        .check_tables(&[
+            "moqui.test.TestEntity",
+            "moqui.test.Foo",
+            "moqui.test.Bar",
+            // Writes run the entity-auto services; a service frame reads the tarpit and authz checks.
+            "moqui.security.ArtifactTarpit",
+            "moqui.security.ArtifactAuthz",
+            "moqui.security.ArtifactGroupMember",
+        ])
         .unwrap();
+    let factory_dir = dir.join("runtime");
+    std::fs::create_dir_all(&factory_dir).unwrap();
+    let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(&factory_dir, &framework).unwrap();
+    moqui_host::db::entity_facade::attach(&factory, facade.clone());
+    let context = factory.new_context();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
 
     let created = facade
         .rest(

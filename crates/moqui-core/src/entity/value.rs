@@ -14,13 +14,15 @@
 
 //! One entity record and a list of records.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_db::model::EntityDefinition;
 use moqui_db::sql::{delete, insert, insert_or_update, update, Condition};
 use moqui_lib::error::Error;
 use moqui_lib::object::{basic_convert, Value};
+use moqui_lib::sync::lock;
 
 use super::cache::WriteGate;
 use super::exec::{after_statement, execute_tx};
@@ -31,10 +33,57 @@ use super::params::java_of;
 use super::{cache, fk, load_feed, sequence};
 
 /// One entity value. Field values are [`Value`].
-#[derive(Clone, Debug, PartialEq)]
+///
+/// The fields are the stored values, decrypted. A value read by a find of an entity with localized fields also reads
+/// those fields in the user's locale through [`Self::get_localized`] and [`Self::localized_fields`], as Java's
+/// `get` and `getMap`; [`Self::get`], [`Self::fields`] and every write use the stored values.
+#[derive(Clone, Debug)]
 pub struct EntityValue {
     entity_name: String,
     fields: BTreeMap<String, Value>,
+    l10n: Option<Box<Localizer>>,
+}
+
+/// Two values are equal when they hold the same stored fields of the same entity.
+impl PartialEq for EntityValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.entity_name == other.entity_name && self.fields == other.fields
+    }
+}
+
+/// The localized fields of a value, and what each read in each locale, as Java's `localizedByLocaleByField`. A clone
+/// shares what was read until either one sets a field.
+#[derive(Clone)]
+struct Localizer {
+    targets: Arc<field_rw::L10nTargets>,
+    memo: Arc<Mutex<HashMap<(String, String), Option<Value>>>>,
+}
+
+impl std::fmt::Debug for Localizer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Localizer")
+            .field("targets", &self.targets)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A localized read that needs a lookup, taken from the value so a caller that holds the value behind a lock can let
+/// go of it before the lookup runs. See [`EntityValue::read_localized`].
+pub(crate) struct LocalizedRead {
+    l10n: Localizer,
+    field: String,
+    locale: String,
+    /// The stored fields the lookup reads: the field itself and the primary key.
+    fields: BTreeMap<String, Value>,
+}
+
+impl LocalizedRead {
+    pub(crate) fn run(self, facade: &EntityFacade) -> Option<Value> {
+        let found = field_rw::localize_field(facade, &self.l10n.targets, &self.fields, &self.field, &self.locale);
+        let out = found.clone().or_else(|| self.fields.get(&self.field).cloned());
+        lock(&self.l10n.memo).insert((self.field, self.locale), found);
+        out
+    }
 }
 
 impl EntityValue {
@@ -43,23 +92,108 @@ impl EntityValue {
         Ok(Self {
             entity_name: full_name,
             fields: BTreeMap::new(),
+            l10n: None,
         })
     }
 
     pub(crate) fn from_fields(entity_name: String, fields: BTreeMap<String, Value>) -> Self {
-        Self { entity_name, fields }
+        Self {
+            entity_name,
+            fields,
+            l10n: None,
+        }
+    }
+
+    /// Read the fields in `targets` localized. `None` leaves the value plain.
+    pub(crate) fn with_l10n(mut self, targets: Option<&Arc<field_rw::L10nTargets>>) -> Self {
+        self.l10n = targets.map(|targets| {
+            Box::new(Localizer {
+                targets: Arc::clone(targets),
+                memo: Arc::new(Mutex::new(HashMap::new())),
+            })
+        });
+        self
     }
 
     pub fn entity_name(&self) -> &str {
         &self.entity_name
     }
 
+    /// The stored value of `field`.
     pub fn get(&self, field: &str) -> Option<&Value> {
         self.fields.get(field)
     }
 
+    /// Java's `get`: `field` in the user's locale when it is a localized field, else the stored value. A lookup is made
+    /// once per field and locale.
+    pub fn get_localized(&self, facade: &EntityFacade, field: &str) -> Option<Value> {
+        match self.read_localized(facade, field) {
+            Ok(value) => value,
+            Err(read) => read.run(facade),
+        }
+    }
+
+    /// Whether `field` reads localized, so a caller can skip finding the facade for every other field.
+    pub(crate) fn localizes(&self, field: &str) -> bool {
+        self.l10n.as_deref().is_some_and(|l10n| l10n.targets.has(field))
+    }
+
+    /// Whether any field reads localized.
+    pub(crate) fn has_l10n(&self) -> bool {
+        self.l10n.is_some()
+    }
+
+    /// `field` as [`Self::get_localized`] reads it when that needs no lookup; otherwise the lookup to run.
+    pub(crate) fn read_localized(&self, facade: &EntityFacade, field: &str) -> Result<Option<Value>, LocalizedRead> {
+        let stored = self.fields.get(field);
+        let Some(l10n) = self.l10n.as_deref().filter(|l10n| l10n.targets.has(field)) else {
+            return Ok(stored.cloned());
+        };
+        let locale = field_rw::current_locale(facade);
+        let key = (field.to_string(), locale);
+        if let Some(known) = lock(&l10n.memo).get(&key) {
+            return Ok(known.clone().or_else(|| stored.cloned()));
+        }
+        let (field, locale) = key;
+        let fields = l10n
+            .targets
+            .read_columns(&field)
+            .filter_map(|name| self.fields.get(name).map(|value| (name.to_string(), value.clone())))
+            .collect();
+        Err(LocalizedRead {
+            l10n: l10n.clone(),
+            field,
+            locale,
+            fields,
+        })
+    }
+
+    /// Java's `getMap`: every field held, the localized ones in the user's locale.
+    pub fn localized_fields(&self, facade: &EntityFacade) -> BTreeMap<String, Value> {
+        let mut out = self.fields.clone();
+        let Some(l10n) = self.l10n.as_deref() else {
+            return out;
+        };
+        for column in l10n.targets.columns() {
+            if let Some(value) = self.get_localized(facade, column) {
+                out.insert(column.to_string(), value);
+            }
+        }
+        out
+    }
+
     pub fn set(&mut self, field: impl Into<String>, value: Value) {
-        self.fields.insert(field.into(), value);
+        let field = field.into();
+        if let Some(l10n) = self.l10n.as_deref_mut() {
+            // A copy of its own, so a clone that shares the reads does not see this field's.
+            let kept: HashMap<_, _> = lock(&l10n.memo)
+                .iter()
+                .filter(|((name, _), _)| *name != field)
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            l10n.memo = Arc::new(Mutex::new(kept));
+        }
+        self.fields.insert(field, value);
     }
 
     pub fn fields(&self) -> &BTreeMap<String, Value> {
@@ -81,6 +215,9 @@ impl EntityValue {
     pub fn refresh(&mut self, facade: &EntityFacade) -> Result<(), Error> {
         let fresh = facade.refresh_fields(&self.entity_name, &self.fields)?;
         self.fields = fresh;
+        if let Some(l10n) = self.l10n.as_deref_mut() {
+            l10n.memo = Arc::new(Mutex::new(HashMap::new()));
+        }
         Ok(())
     }
 
@@ -245,8 +382,53 @@ impl EntityFacade {
         if !has_columns {
             return Ok(());
         }
+        self.check_create_only_fields(entity_name, &plain)?;
         self.finish_write(entity_name, "update", plain, Some(rules), true, true)
             .map(|_| ())
+    }
+
+    /// As Java's update: a create-only field (every field of a `create-only` entity) that would change is an error.
+    /// The row is read only when the entity has such a field. Fields that keep their stored value pass.
+    fn check_create_only_fields(&self, entity_name: &str, plain: &BTreeMap<String, Value>) -> Result<(), Error> {
+        let (full_name, create_only) = self.with_entity(entity_name, |entity, _, _| {
+            let names: Vec<String> = entity
+                .fields
+                .iter()
+                .filter(|field| {
+                    // The stamp is set on every write, as Java's update which skips it in this check.
+                    field.create_only
+                        && !field.is_pk
+                        && field.name != "lastUpdatedStamp"
+                        && plain.contains_key(&field.name)
+                })
+                .map(|field| field.name.clone())
+                .collect();
+            Ok((entity.full_name.clone(), names))
+        })?;
+        if create_only.is_empty() {
+            return Ok(());
+        }
+        let keys = self.pk_map(entity_name, plain)?;
+        let stored = {
+            let _raw = super::field_rw::RawReadGuard::enter();
+            self.find_by_pk(entity_name, &keys)?
+        };
+        let changed: Vec<String> = create_only
+            .into_iter()
+            .filter(|name| {
+                let new_value = plain.get(name).unwrap_or(&Value::Null);
+                let old_value = stored.as_ref().and_then(|row| row.get(name)).unwrap_or(&Value::Null);
+                old_value != new_value
+                    && moqui_lib::object::to_plain_string(old_value) != moqui_lib::object::to_plain_string(new_value)
+            })
+            .collect();
+        if changed.is_empty() {
+            return Ok(());
+        }
+        Err(Error::new(format!(
+            "Cannot update create-only (immutable) fields [{}] on entity {full_name}",
+            changed.join(", ")
+        )))
     }
 
     /// The first step of [`Self::create_or_update_value`]: one `UPDATE` by primary key, for a row that is probably
@@ -265,6 +447,7 @@ impl EntityFacade {
         let eligible = self.with_entity(entity_name, |entity, dialect, _| {
             Ok(dialect.name == "postgres"
                 && !entity.is_view
+                && !entity.fields.iter().any(|field| field.create_only && !field.is_pk)
                 && !entity.fields.iter().any(|field| {
                     field
                         .enable_audit_log
@@ -295,6 +478,15 @@ impl EntityFacade {
     fn write_delete(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
         let plain = self.normalize_values(entity_name, values, false)?;
         self.reject_view(entity_name, "delete")?;
+        self.with_entity(entity_name, |entity, _, _| {
+            if entity.create_only {
+                return Err(Error::new(format!(
+                    "Entity {} is create-only (immutable), cannot be deleted.",
+                    entity.full_name
+                )));
+            }
+            Ok(())
+        })?;
         self.finish_write(entity_name, "delete", plain, None, false, false)
             .map(|_| ())
     }
@@ -368,7 +560,7 @@ impl EntityFacade {
         let cache_values = plain.clone();
         let mut affected = 1;
         if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Handled {
-            load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
+            load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values), None);
         } else {
             let mut after_values = eca.then(|| plain.clone());
             // An after rule with `get-original-value` on an update or delete gets the row as it was before the write.
@@ -378,6 +570,19 @@ impl EntityFacade {
             {
                 let keys = self.pk_map(entity_name, &plain)?;
                 self.find_by_pk(entity_name, &keys)?
+            } else {
+                None
+            };
+            // The data feed feeds an update only when a document field changes, so it needs the row as it was.
+            let feed_old = if operation == "update" && !probe && load_feed::feed_wants_old(self, entity_name) {
+                match &pre_row {
+                    Some(row) => Some(row.fields().clone()),
+                    None => {
+                        let keys = self.pk_map(entity_name, &plain)?;
+                        let _raw = super::field_rw::RawReadGuard::enter();
+                        self.find_by_pk(entity_name, &keys)?.map(|row| row.fields().clone())
+                    }
+                }
             } else {
                 None
             };
@@ -395,6 +600,8 @@ impl EntityFacade {
                     }
                 }
             }
+            // Java's `checkTableRuntime` before each write, when the group adds missing tables at runtime.
+            self.check_table_runtime(entity_name);
             let prepared = self.seal_values(entity_name, seal_operation, plain)?;
             let (sql, params) = self.with_group(entity_name, |entity, dialect, _, _| {
                 let columns = present_columns(entity, &prepared, include_null, skip_pk);
@@ -424,7 +631,7 @@ impl EntityFacade {
                 }
                 crate::context::ExecutionContext::with_current(|ctx| ctx.set_hit_detail(Some("update"), None));
             }
-            load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values));
+            load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values), feed_old);
             if let Some(mut values) = after_values {
                 crate::service::run_matched_eca(
                     self,
@@ -437,7 +644,10 @@ impl EntityFacade {
                 )?;
             }
         }
-        cache::on_write(self, entity_name, operation, &cache_values)?;
+        // As Java's `EntityCache`, a cache clear or cluster publish that fails is logged; the write already ran.
+        if let Err(err) = cache::on_write(self, entity_name, operation, &cache_values) {
+            tracing::error!(error = %err, "Could not clear or publish the cache for {operation} of {entity_name}");
+        }
         after_statement(self, &tx, true);
         Ok(affected)
     }

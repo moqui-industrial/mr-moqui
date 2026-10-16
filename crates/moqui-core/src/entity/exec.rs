@@ -111,9 +111,15 @@ pub(crate) fn already_exists(err: &Error) -> bool {
     false
 }
 
+/// The object a DDL statement creates is there already: Postgres and SQLite say "already exists",
+/// MySQL says "Duplicate key name" (1061), "Duplicate column name" (1060) or "Duplicate foreign key
+/// constraint name" (1826). Duplicate data ("duplicate key value", "Duplicate entry") is a real failure.
 fn existence_text(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
-    text.contains("already exists") || text.contains("duplicate")
+    text.contains("already exists")
+        || text.contains("duplicate key name")
+        || text.contains("duplicate column name")
+        || text.contains("duplicate foreign key constraint name")
 }
 
 pub(crate) fn split_sql(sql: &str) -> Vec<&str> {
@@ -159,4 +165,29 @@ fn trace<T>(sql: &str, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Err
         tracing::warn!(sql = %sql, duration_ms, "slow statement");
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::already_exists;
+    use moqui_lib::error::Error;
+
+    #[test]
+    fn an_existing_object_is_not_duplicate_data() {
+        for text in [
+            "postgres execute: relation \"user_account\" already exists",
+            "ERROR 1061 (42000): Duplicate key name 'USERACCT_USERNAME'",
+            "ERROR 1060 (42S21): Duplicate column name 'user_id'",
+            "ERROR 1826 (HY000): Duplicate foreign key constraint name 'FK1'",
+        ] {
+            assert!(already_exists(&Error::new(text)), "{text}");
+        }
+        for text in [
+            "postgres execute: could not create unique index \"useracct_username\": Key (username)=(a) is duplicated.",
+            "postgres execute: duplicate key value violates unique constraint \"user_account_pk\"",
+            "ERROR 1062 (23000): Duplicate entry 'a' for key 'USERACCT_USERNAME'",
+        ] {
+            assert!(!already_exists(&Error::new(text)), "{text}");
+        }
+    }
 }

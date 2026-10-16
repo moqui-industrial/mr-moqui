@@ -30,9 +30,20 @@ pub(super) fn load_csv_reader(
     reader: impl Read,
     options: &LoadOptions,
 ) -> Result<u64, Error> {
+    // Java's `csvDelimiter`, `csvCommentStart` and `csvQuoteChar`, one ASCII character each.
+    let byte = |value: Option<char>, default: u8, what: &str| -> Result<u8, Error> {
+        match value {
+            None => Ok(default),
+            Some(ch) if ch.is_ascii() => Ok(ch as u8),
+            Some(ch) => Err(Error::new(format!(
+                "csv {what} {ch:?} for {location} is not one ASCII character"
+            ))),
+        }
+    };
     let mut reader = csv::ReaderBuilder::new()
-        .delimiter(b',')
-        .comment(Some(b'#'))
+        .delimiter(byte(options.csv_delimiter, b',', "delimiter")?)
+        .comment(Some(byte(options.csv_comment_start, b'#', "comment start")?))
+        .quote(byte(options.csv_quote_char, b'"', "quote")?)
         .has_headers(false)
         .flexible(true)
         .trim(csv::Trim::All)

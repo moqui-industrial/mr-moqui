@@ -457,8 +457,12 @@ pub fn create_index(entity: &EntityDefinition, index: &IndexDefinition, dialect:
         return Err(Error::new(format!("index {} has no fields", index.name)));
     }
     let mut sql = String::from("CREATE ");
-    if index.unique {
+    // As Java's `createIndexes`: `use-indexes-unique="false"` makes a unique index a plain one.
+    if index.unique && dialect.use_indexes_unique {
         sql.push_str("UNIQUE ");
+        if dialect.use_indexes_unique_where_not_null {
+            sql.push_str("WHERE NOT NULL ");
+        }
     }
     sql.push_str("INDEX ");
     sql.push_str(&quote_ident(dialect, &index.name));

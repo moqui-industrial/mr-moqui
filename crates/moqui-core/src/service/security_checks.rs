@@ -210,18 +210,15 @@ fn current_account_id(facade: &EntityFacade) -> Result<Option<String>, Error> {
     }
 }
 
+/// As Java's `filterByDate`: a missing date leaves that end open. A date that does not compare is not open.
 fn membership_open(from: Option<&Value>, thru: Option<&Value>, now: &Value) -> bool {
-    let Some(from) = from else {
-        return false;
-    };
-    if from.is_null() {
-        return false;
-    }
-    let Ok(order) = moqui_lib::object::compare_obj(from, now) else {
-        return false;
-    };
-    if order == std::cmp::Ordering::Greater {
-        return false;
+    if let Some(from) = from.filter(|from| !from.is_null()) {
+        let Ok(order) = moqui_lib::object::compare_obj(from, now) else {
+            return false;
+        };
+        if order == std::cmp::Ordering::Greater {
+            return false;
+        }
     }
     match thru {
         None | Some(Value::Null) => true,
@@ -233,5 +230,23 @@ fn row_text(row: &EntityValue, field: &str) -> String {
     match row.get(field) {
         Some(value) if !value.is_null() => moqui_lib::object::to_plain_string(value),
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use moqui_lib::object::Value;
+
+    use super::membership_open;
+
+    #[test]
+    fn a_missing_date_leaves_that_end_open_as_filter_by_date() {
+        let at = |millis: i64| moqui_lib::object::basic_convert(&Value::I64(millis), "java.sql.Timestamp").value;
+        let now = at(2_000);
+        assert!(membership_open(None, None, &now));
+        assert!(membership_open(Some(&Value::Null), Some(&Value::Null), &now));
+        assert!(membership_open(Some(&at(1_000)), Some(&at(3_000)), &now));
+        assert!(!membership_open(Some(&at(3_000)), None, &now), "not started");
+        assert!(!membership_open(None, Some(&at(1_000)), &now), "ended");
     }
 }

@@ -67,7 +67,8 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
     let mut seca_by_id: HashMap<String, Arc<SecaRule>> = HashMap::new();
     let mut seca: Vec<Arc<SecaRule>> = Vec::new();
     let mut email = Vec::new();
-    let (mut seca_files, mut email_files, mut no_id) = (0_usize, 0_usize, 0_usize);
+    let (mut seca_files, mut email_files, mut no_id, mut skipped) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let facade = factory.entity();
     let started = std::time::Instant::now();
     for component in factory.components() {
         let dir = component.location.join("service");
@@ -92,7 +93,24 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
             if is_seca {
                 seca_files += 1;
                 for node in root.children_named("seca") {
-                    let rule = Arc::new(seca_rule_from(&node));
+                    // As Java: a rule that cannot run is logged and skipped, and the others still load.
+                    let rule = match seca_rule_from(&node) {
+                        Ok(rule) => rule,
+                        Err(err) => {
+                            tracing::warn!(file = %path.display(), error = %err, "Skipping SECA rule");
+                            continue;
+                        }
+                    };
+                    if !rule.service_defined(facade.as_ref()) {
+                        tracing::warn!(
+                            "Invalid service name {} found in SECA file {}, skipping",
+                            node.attribute("service").unwrap_or_default(),
+                            path.display()
+                        );
+                        skipped += 1;
+                        continue;
+                    }
+                    let rule = Arc::new(rule);
                     match node.attribute("id").filter(|id| !id.is_empty()) {
                         Some(id) => {
                             seca_by_id.insert(id, rule);
@@ -114,7 +132,7 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
     seca.extend(seca_by_id.into_values());
     seca.sort_by_key(|rule| rule.priority);
     tracing::info!(
-        "Loaded {} Service ECA rules from {seca_files} .secas.xml files, {no_id} rules have no id, {} SECA rules active in {}ms",
+        "Loaded {} Service ECA rules from {seca_files} .secas.xml files, {no_id} rules have no id, {} SECA rules active, {skipped} skipped for an undefined service, in {}ms",
         seca.len(),
         seca.len(),
         started.elapsed().as_millis()
@@ -136,7 +154,7 @@ pub(super) fn from_xml(seca_xml: &str, email_xml: &str) -> EcaRules {
         seca = root
             .children_named("seca")
             .iter()
-            .map(|node| Arc::new(seca_rule_from(node)))
+            .map(|node| Arc::new(seca_rule_from(node).expect("a valid SECA rule")))
             .collect();
         seca.sort_by_key(|rule| rule.priority);
     }

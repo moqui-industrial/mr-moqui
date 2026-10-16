@@ -220,10 +220,16 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     ec.entity.makeDataLoader = function () {
         const options = { dataTypes: [], componentNames: [] };
         const l = {};
-        for (const name of ["location", "xmlText", "csvText", "jsonText", "dummyFks", "useTryInsert", "onlyCreate",
+        for (const name of ["xmlText", "csvText", "jsonText", "dummyFks", "useTryInsert", "onlyCreate",
                 "disableEntityEca", "disableAuditLog", "disableFkCreate", "disableDataFeed", "transactionTimeout",
-                "messageNoActionFiles", "restrictSensitiveEntities", "csvEntityName", "defaultValues"])
+                "messageNoActionFiles", "restrictSensitiveEntities", "csvEntityName", "csvDelimiter", "csvCommentStart",
+                "csvQuoteChar"])
             l[name] = (value) => { options[name] = value; return l; };
+        // Java adds each location to a list; defaultValues adds to the map.
+        options.locations = [];
+        l.location = (location) => { if (location) options.locations.push(String(location)); return l; };
+        l.locationList = (locations) => { options.locations.push(...Array.from(locations || []).map(String)); return l; };
+        l.defaultValues = (values) => { options.defaultValues = Object.assign(options.defaultValues || {}, values || {}); return l; };
         // the fields of a CSV text with no header line
         l.csvFieldNames = (names) => { options.csvFieldNames = Array.from(names || []); return l; };
         l.dataTypes = (types) => { options.dataTypes.push(...Array.from(types || [])); return l; };
@@ -241,6 +247,42 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
             return result.messages;
         };
         return l;
+    };
+
+    // Java's `EntityDataDocument`: the documents as JSON to a writer, a new file or a directory of files.
+    ec.entity.getEntityDataDocument = function () {
+        const write = (mode, path, ids, condition, from, thru, pretty) => host.writeDataDocuments(mode,
+            path == null ? "" : String(path), Array.from(ids || []).map(String), condition == null ? null : condition,
+            from == null ? null : from, thru == null ? null : thru, pretty === true || String(pretty) === "true");
+        return {
+            getDataDocuments: (id, condition, from, thru) => ec.entity.getDataDocuments(id, condition, from, thru),
+            writeDocumentsToWriter: (writer, ids, condition, from, thru, pretty) => {
+                const result = write("text", null, ids, condition, from, thru, pretty);
+                writer.write(result.text);
+                return result.count;
+            },
+            writeDocumentsToFile: (path, ids, condition, from, thru, pretty) =>
+                write("file", path, ids, condition, from, thru, pretty).count,
+            writeDocumentsToDirectory: (path, ids, condition, from, thru, pretty) =>
+                write("dir", path, ids, condition, from, thru, pretty).count,
+        };
+    };
+
+    // Java's `ServiceCallSpecial`: a service run asynchronously when the transaction in place commits or rolls back.
+    ec.service.special = function () {
+        let name = null;
+        const parameters = {};
+        const special = {
+            name: (a, b, c) => {
+                name = c !== undefined ? `${a}.${b}#${c}` : b !== undefined ? `${a}#${b}` : String(a);
+                return special;
+            },
+            parameters: (map) => { Object.assign(parameters, map || {}); return special; },
+            parameter: (key, value) => { parameters[key] = value; return special; },
+            registerOnCommit: () => host.registerServiceOnEnd(name, parameters, true),
+            registerOnRollback: () => host.registerServiceOnEnd(name, parameters, false),
+        };
+        return special;
     };
 
     // ---- service ----
@@ -670,16 +712,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     // `new URI(null, null, filename, null).toASCIIString()`: a path with the characters a URI does not allow escaped
     su.encodeAsciiFilename = (filename) => encodeURI(String(filename ?? ""));
     // Entities the generic tools (auto screens, data edit, data import) do not take from a request entity name
-    const restrictedKeys = new Set(["userloginkey", "usergroupmember", "usergrouppermission", "userpermission",
-        "artifactauthz", "artifactgroup", "artifactgroupmember", "artifacttarpit", "usergrouppermissions",
-        "userpermissions", "artifactgroups", "userauthcfactor", "userpasswordhistory", "emailserver", "systemmessageremote"]);
-    wu.isRestrictedGenericEntity = function (entityName) {
-        if (entityName == null || entityName === "") return false;
-        let name = String(entityName).trim();
-        const dot = name.lastIndexOf(".");
-        if (dot >= 0 && dot < name.length - 1) name = name.substring(dot + 1);
-        return restrictedKeys.has(name.toLowerCase());
-    };
+    wu.isRestrictedGenericEntity = host.isRestrictedGenericEntity;
 })"#;
 
 fn js_list<'js>(ctx: &Ctx<'js>, rows: Vec<indexmap::IndexMap<String, Value>>) -> rquickjs::Result<JsValue<'js>> {
@@ -1135,6 +1168,11 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
             Some(Value::List(items)) => items.iter().map(moqui_lib::object::to_plain_string).collect(),
             _ => Vec::new(),
         };
+        let mut locations: Vec<String> = list("locations");
+        // An older caller passes one `location`.
+        if !text("location").is_empty() {
+            locations.push(text("location"));
+        }
         let load_options = crate::entity::load_feed::LoadOptions {
             data_types: list("dataTypes"),
             components: list("componentNames"),
@@ -1149,6 +1187,9 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
             restrict_sensitive_entities: flag("restrictSensitiveEntities"),
             csv_entity_name: Some(text("csvEntityName")).filter(|name| !name.is_empty()),
             csv_field_names: list("csvFieldNames"),
+            csv_delimiter: text("csvDelimiter").chars().next(),
+            csv_comment_start: text("csvCommentStart").chars().next(),
+            csv_quote_char: text("csvQuoteChar").chars().next(),
             default_values: match options.get("defaultValues") {
                 Some(Value::Map(entries)) => entries
                     .iter()
@@ -1167,14 +1208,13 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
         let mut fields_checked = 0_u64;
         let loaded = if check {
             // `check()`: the messages are what did not match, not what was loaded.
-            crate::entity::load_feed::check_with(|| load_source(&facade, &factory, &text, &load_options)).map(
-                |((records, _), result)| {
+            crate::entity::load_feed::check_with(|| load_source(&facade, &factory, &text, &locations, &load_options))
+                .map(|((records, _), result)| {
                     fields_checked = result.fields_checked;
                     (records, result.messages)
-                },
-            )
+                })
         } else {
-            load_source(&facade, &factory, &text, &load_options)
+            load_source(&facade, &factory, &text, &locations, &load_options)
         };
         facade.set_disable_entity_eca(before.disable_entity_eca);
         facade.set_disable_audit_log(before.disable_audit_log);
@@ -1201,21 +1241,17 @@ fn load_source(
     facade: &crate::entity::EntityFacade,
     factory: &crate::context::ExecutionContextFactory,
     text: &dyn Fn(&str) -> String,
+    locations: &[String],
     options: &crate::entity::load_feed::LoadOptions,
 ) -> Result<(u64, Vec<String>), moqui_lib::error::Error> {
     use crate::entity::load_feed::{conf_data_locations, load_entity_data, load_entity_xml_text};
-    let location = text("location");
-    if !location.is_empty() {
-        let result = load_entity_data(facade, &location, options)?;
-        return Ok((
-            result.records,
-            vec![format!("Loaded {} records from {location}", result.records)],
-        ));
-    }
+    // As Java's `internalRun`: the XML, CSV and JSON text, each in its own transaction, then each location. With
+    // none of those, the conf data of the data types or components.
+    let mut records = 0;
+    let mut messages = Vec::new();
     let xml = text("xmlText");
     if !xml.is_empty() {
-        let result = load_entity_xml_text(facade, "xmlText", &xml, options)?;
-        return Ok((result.records, Vec::new()));
+        records += load_entity_xml_text(facade, "xmlText", &xml, options)?.records;
     }
     for (name, extension) in [("csvText", "csv"), ("jsonText", "json")] {
         let body = text(name);
@@ -1232,18 +1268,32 @@ fn load_source(
         })?;
         let result = load_entity_data(facade, &path.display().to_string(), options);
         let _ = std::fs::remove_file(&path);
-        let result = result?;
-        return Ok((result.records, Vec::new()));
+        records += result?.records;
     }
-    if options.data_types.is_empty() && options.components.is_empty() {
-        return Ok((0, Vec::new()));
-    }
-    let mut records = 0;
-    let mut messages = Vec::new();
-    for location in conf_data_locations(facade)? {
-        let result = load_entity_data(facade, &location, options)?;
-        if result.records > 0 {
+    let given = !xml.is_empty() || !text("csvText").is_empty() || !text("jsonText").is_empty() || !locations.is_empty();
+    let locations = if given {
+        locations.to_vec()
+    } else if options.data_types.is_empty() && options.components.is_empty() {
+        Vec::new()
+    } else {
+        conf_data_locations(facade)?
+    };
+    for location in locations {
+        // As Java's `loadAllData`, a location that fails is logged and the load goes on with the next one.
+        let result = match load_entity_data(facade, &location, options) {
+            Ok(result) => result,
+            Err(err) => {
+                let text = crate::entity::load_feed::error_chain(&err);
+                tracing::error!("Skipping to next file after error loading {location}: {text}");
+                messages.push(format!("Error loading {location}: {text}"));
+                continue;
+            }
+        };
+        if result.records > 0 || given {
             messages.push(format!("Loaded {} records from {location}", result.records));
+        }
+        if result.failed_files > 0 {
+            messages.push(format!("{} files failed to load from {location}", result.failed_files));
         }
         records += result.records;
     }
@@ -1428,7 +1478,7 @@ fn get_request_details(ctx: Ctx<'_>) -> rquickjs::Result<String> {
 
 fn resource_ref(ctx: &Ctx<'_>, location: &str) -> rquickjs::Result<crate::context::ResourceRef> {
     let found = with_ec(ctx, |ec| ec.factory().resource().get(location))?;
-    found.map_err(|err| Exception::throw_message(ctx, err.message()))
+    found.map_err(|err| throw_context(ctx, &err))
 }
 
 fn resource_info_value(resource: &crate::context::ResourceRef, children: bool) -> Value {
@@ -1516,7 +1566,7 @@ fn resource_text(ctx: Ctx<'_>, location: String) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         resource_ref(&ctx, &location)?
             .read_text()
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))
+            .map_err(|err| throw_context(&ctx, &err))
     })
 }
 
@@ -2103,6 +2153,22 @@ fn shared_keys(ctx: Ctx<'_>) -> rquickjs::Result<Vec<String>> {
     host_guard(&ctx, || with_ec(&ctx, |ec| ec.shared_map().keys().cloned().collect()))
 }
 
+fn register_service_on_end<'js>(
+    ctx: Ctx<'js>,
+    name: String,
+    parameters: JsValue<'js>,
+    on_commit: bool,
+) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        let parameters = match js_to_host(&ctx, &parameters)? {
+            Value::Map(map) => map.into_iter().collect(),
+            _ => std::collections::BTreeMap::new(),
+        };
+        crate::service::call::register_on_end(&name, &parameters, on_commit)
+            .map_err(|err| throw_lib(&ctx, &moqui_lib::error::Error::new(err.message())))
+    })
+}
+
 fn stack_name_string(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     host_guard(&ctx, || with_ec(&ctx, ExecutionContext::artifact_stack_names))
 }
@@ -2145,8 +2211,7 @@ fn get_find_filters_for_user<'js>(ctx: Ctx<'js>, entity_name: String) -> rquickj
 
 fn resolve_rest_service<'js>(ctx: Ctx<'js>, path: String, method: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        let value = crate::service::resolve_rest_service(&path, &method)
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+        let value = crate::service::resolve_rest_service(&path, &method).map_err(|err| throw_context(&ctx, &err))?;
         host_to_js(&ctx, value)
     })
 }
@@ -2161,7 +2226,7 @@ fn transition_info<'js>(
     host_guard(&ctx, || {
         let factory = factory_of(&ctx)?;
         let value = crate::screen::info::transition_info(&factory, &root, &location, &name, &method)
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+            .map_err(|err| throw_context(&ctx, &err))?;
         host_to_js(&ctx, value)
     })
 }
@@ -2240,6 +2305,15 @@ fn get_available_time_zones<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>
     })
 }
 
+fn is_restricted_generic_entity(ctx: Ctx<'_>, name: Opt<JsValue<'_>>) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        Ok(crate::entity::sensitive::is_restricted_generic_entity(&text_or_empty(
+            &ctx,
+            name.0.as_ref(),
+        )?))
+    })
+}
+
 fn camel_case_to_pretty(ctx: Ctx<'_>, text: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         Ok(moqui_lib::string::camel_case_to_pretty(&text_or_empty(
@@ -2292,6 +2366,8 @@ pub(super) fn install<'js>(
     method!("runSqlStatement", run_sql_statement);
     method!("writeData", write_data);
     method!("loadData", load_data);
+    method!("writeDataDocuments", super::search::write_data_documents);
+    method!("registerServiceOnEnd", register_service_on_end);
     method!("getKnownServiceNames", get_known_service_names);
     method!("getAllServiceInfo", get_all_service_info);
     method!("getSecaRuleCount", get_seca_rule_count);
@@ -2310,6 +2386,7 @@ pub(super) fn install<'js>(
     method!("getRequestDetails", get_request_details);
     method!("secureRequestParameters", secure_request_parameters);
     method!("camelCaseToPretty", camel_case_to_pretty);
+    method!("isRestrictedGenericEntity", is_restricted_generic_entity);
     method!("getAvailableTimeZones", get_available_time_zones);
     method!("resourceInfo", resource_info);
     method!("restRootResources", rest_root_resources);

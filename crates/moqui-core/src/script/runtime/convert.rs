@@ -66,7 +66,7 @@ pub(super) fn object_to_js<'js>(ctx: &Ctx<'js>, object: &HostObject) -> rquickjs
         return entity_to_js(ctx, HostEntity::of(inner));
     }
     if let Some(inner) = object.downcast::<ScriptList>() {
-        return Class::instance(ctx.clone(), HostList { inner }).and_then(|class| class.into_js(ctx));
+        return Class::instance(ctx.clone(), HostList::of_shared(inner)).and_then(|class| class.into_js(ctx));
     }
     if let Some(list) = object.downcast::<EntityList>() {
         return Class::instance(ctx.clone(), HostList::of_list(EntityList::clone(&list)))

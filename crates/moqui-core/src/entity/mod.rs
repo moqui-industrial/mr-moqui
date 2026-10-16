@@ -21,6 +21,7 @@ pub mod document;
 pub mod field_rw;
 pub mod load_feed;
 pub mod query_rest;
+pub mod sensitive;
 
 mod data_writer;
 mod dbresource;
@@ -36,6 +37,7 @@ mod schema;
 mod search_form;
 mod sequence;
 mod share;
+mod sim_view;
 mod value;
 
 pub(crate) use cache::screen_config_generation;
@@ -45,7 +47,7 @@ pub use etl::EtlLoader;
 pub use exec::statement_stats;
 pub use facade::{EntityFacade, EntityFlags, EntityGroup, SimStarter};
 pub use find::{EntityFind, EntityListIterator};
-pub use meta::EntityDbMeta;
+pub use meta::{DdlConf, EntityDbMeta};
 /// The condition tree `EntityFind::condition` takes, so callers need not depend on `moqui-db`.
 pub use moqui_db::sql::{CompareOp, Condition};
 pub(crate) use schema::document as schema_document;

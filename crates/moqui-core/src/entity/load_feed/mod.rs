@@ -45,8 +45,8 @@ pub(crate) use eca::add_eca_rules;
 pub use eca::{eca_rule_count, eca_rules, match_rules, EcaRule};
 pub(crate) use eca::{match_rules_with, EcaIndex};
 pub(super) use feed::clear_frame_touches;
-pub(crate) use feed::note_touch;
 pub use feed::register_feed_insert;
+pub(crate) use feed::{feed_wants_old, note_touch};
 pub use loader::{is_restricted_entity, load_entity_data, load_entity_xml_text};
 
 /// A data-file service element. It is called as it is read, and kept here for [`data_file_services`].
@@ -77,41 +77,45 @@ pub struct LoadOptions {
     /// Transaction timeout for each record. `None` uses the transaction manager default.
     pub timeout: Option<std::time::Duration>,
     /// Java `restrictSensitiveEntities`: refuse every record, root or nested, whose entity is a
-    /// [`RESTRICTED_ENTITIES`] entity. Here service elements are refused too, a hardening beyond the Java, which ran
+    /// restricted entity ([`is_restricted_entity`]). Here service elements are refused too, a hardening beyond the Java, which ran
     /// them and checked only root and CSV entity names.
     pub restrict_sensitive_entities: bool,
     /// Java `csvEntityName`: the entity or service of a CSV text with no entity line.
     pub csv_entity_name: Option<String>,
     /// Java `csvFieldNames`: the fields of a CSV text with no header line.
     pub csv_field_names: Vec<String>,
-    /// Java `defaultValues`: fields set on each CSV record before its own values, as text.
+    /// Java `defaultValues`: fields set on each top-level record (XML, CSV and JSON) and each data-file service
+    /// call before its own values, as text.
     pub default_values: Vec<(String, String)>,
+    /// Java `csvDelimiter`, `,` when `None`.
+    pub csv_delimiter: Option<char>,
+    /// Java `csvCommentStart`, `#` when `None`.
+    pub csv_comment_start: Option<char>,
+    /// Java `csvQuoteChar`, `"` when `None`.
+    pub csv_quote_char: Option<char>,
 }
-
-/// The identity-admin and secret-config entities (`WebUtilities.isRestrictedGenericEntity`), by simple name in lower
-/// case.
-pub const RESTRICTED_ENTITIES: &[&str] = &[
-    "userloginkey",
-    "usergroupmember",
-    "usergrouppermission",
-    "userpermission",
-    "artifactauthz",
-    "artifactgroup",
-    "artifactgroupmember",
-    "artifacttarpit",
-    "usergrouppermissions",
-    "userpermissions",
-    "artifactgroups",
-    "userauthcfactor",
-    "userpasswordhistory",
-    "emailserver",
-    "systemmessageremote",
-];
 
 /// How many entity records were written. Data-file service calls are not included.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LoadResult {
     pub records: u64,
+    /// Files of a directory location that failed, were logged and skipped.
+    pub failed_files: u64,
+}
+
+/// The error and its sources, as Java logs `t` and `t.getCause()`.
+pub fn error_chain(err: &Error) -> String {
+    let mut text = err.to_string();
+    let mut source = std::error::Error::source(err);
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !text.contains(&cause_text) {
+            text.push_str(": ");
+            text.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+    text
 }
 
 #[derive(Default)]

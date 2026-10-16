@@ -30,7 +30,7 @@ use super::csv::load_csv_reader;
 use super::json::load_json_reader;
 use super::xml::{load_xml_reader, load_xml_text};
 use super::zip::load_zip_reader;
-use super::{with_load_slot, DataFileService, LoadOptions, LoadResult, RESTRICTED_ENTITIES};
+use super::{error_chain, with_load_slot, DataFileService, LoadOptions, LoadResult};
 use crate::entity::facade::EntityFacade;
 use crate::entity::fk::FkScope;
 use crate::entity::value::EntityValue;
@@ -57,12 +57,13 @@ pub(super) struct RelInfo {
 /// Load one XML, CSV, JSON, or zip location, or a directory of those files.
 pub fn load_entity_data(facade: &EntityFacade, location: &str, options: &LoadOptions) -> Result<LoadResult, Error> {
     if !component_allowed(location, &options.components) {
-        return Ok(LoadResult { records: 0 });
+        return Ok(LoadResult::default());
     }
     let _scope = FkScope::enter(options.dummy_fks, options.disable_fk_create);
     let path = resolve_location(facade, location)?;
-    let records = load_path(facade, location, &path, options)?;
-    Ok(LoadResult { records })
+    let mut failed_files = 0;
+    let records = load_path(facade, location, &path, options, &mut failed_files)?;
+    Ok(LoadResult { records, failed_files })
 }
 
 /// Load entity XML text, as `EntityDataLoader.xmlText`. `location` names the text in errors.
@@ -73,14 +74,47 @@ pub fn load_entity_xml_text(
     options: &LoadOptions,
 ) -> Result<LoadResult, Error> {
     let _scope = FkScope::enter(options.dummy_fks, options.disable_fk_create);
-    let records = load_xml_text(facade, location, text, options)?;
-    Ok(LoadResult { records })
+    let records = in_file_transaction(facade, options, || load_xml_text(facade, location, text, options))?;
+    Ok(LoadResult {
+        records,
+        failed_files: 0,
+    })
 }
 
-fn load_path(facade: &EntityFacade, location: &str, path: &Path, options: &LoadOptions) -> Result<u64, Error> {
+fn load_path(
+    facade: &EntityFacade,
+    location: &str,
+    path: &Path,
+    options: &LoadOptions,
+    failed_files: &mut u64,
+) -> Result<u64, Error> {
     if path.is_dir() {
-        return load_directory(facade, path, options);
+        return load_directory(facade, path, options, failed_files);
     }
+    in_file_transaction(facade, options, || load_file(facade, location, path, options))
+}
+
+/// Java's `loadSingleFile`: one file (or text) in one transaction, 600 seconds unless the load names another timeout.
+/// A record that fails rolls back the whole file, and the load reports it; inside a caller's transaction the file
+/// joins it.
+pub(super) fn in_file_transaction(
+    facade: &EntityFacade,
+    options: &LoadOptions,
+    body: impl FnOnce() -> Result<u64, Error>,
+) -> Result<u64, Error> {
+    if super::check::checking() {
+        return body();
+    }
+    let timeout = options.timeout.unwrap_or(FILE_TIMEOUT);
+    facade
+        .default_transactions()?
+        .run(TransactionAttribute::UseOrBegin, Some(timeout), body)
+}
+
+/// Java's `EntityDataLoaderImpl.transactionTimeout` default.
+const FILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+fn load_file(facade: &EntityFacade, location: &str, path: &Path, options: &LoadOptions) -> Result<u64, Error> {
     match extension(path).as_str() {
         "xml" => {
             let file = open_data(path, location)?;
@@ -102,12 +136,26 @@ fn load_path(facade: &EntityFacade, location: &str, path: &Path, options: &LoadO
     }
 }
 
-fn load_directory(facade: &EntityFacade, path: &Path, options: &LoadOptions) -> Result<u64, Error> {
+/// Each file of the directory, by name. As in Java's `loadAllData`, a file that fails is logged and the load goes
+/// on with the next file; the failure is counted in `failed_files`.
+fn load_directory(
+    facade: &EntityFacade,
+    path: &Path,
+    options: &LoadOptions,
+    failed_files: &mut u64,
+) -> Result<u64, Error> {
     let mut names = Vec::new();
     let read = std::fs::read_dir(path)
         .map_err(|err| Error::new(format!("could not read {}", path.display())).with_source(err))?;
     for entry in read {
-        let entry = entry.map_err(|err| Error::new(format!("could not read {}", path.display())).with_source(err))?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                tracing::error!(error = %err, "Skipping an entry of {} that could not be read", path.display());
+                *failed_files += 1;
+                continue;
+            }
+        };
         let child = entry.path();
         if child.is_file() && is_data_file(&child) {
             names.push(child);
@@ -117,7 +165,16 @@ fn load_directory(facade: &EntityFacade, path: &Path, options: &LoadOptions) -> 
     let mut total = 0_u64;
     for child in names {
         let location = child.display().to_string();
-        total = total.saturating_add(load_path(facade, &location, &child, options)?);
+        match load_path(facade, &location, &child, options, failed_files) {
+            Ok(records) => total = total.saturating_add(records),
+            Err(err) => {
+                tracing::error!(
+                    "Skipping to next file after error loading {location}: {}",
+                    error_chain(&err)
+                );
+                *failed_files += 1;
+            }
+        }
     }
     Ok(total)
 }
@@ -329,7 +386,7 @@ pub(super) fn store_record(facade: &EntityFacade, options: &LoadOptions, record:
 }
 
 /// Refuses the record when it or any nested record, by relationship name, short alias, or entity name, resolves to
-/// a [`RESTRICTED_ENTITIES`] entity. Checked before anything of the tree is written.
+/// a restricted entity ([`is_restricted_entity`]). Checked before anything of the tree is written.
 fn refuse_restricted(facade: &EntityFacade, record: &Record) -> Result<(), Error> {
     let full_name = canonical_name(facade, &record.entity).unwrap_or_else(|_| record.entity.clone());
     if is_restricted_entity(&full_name) {
@@ -343,14 +400,10 @@ fn refuse_restricted(facade: &EntityFacade, record: &Record) -> Result<(), Error
     Ok(())
 }
 
-/// `WebUtilities.isRestrictedGenericEntity`: the simple name, case-insensitive, is in [`RESTRICTED_ENTITIES`].
+/// `WebUtilities.isRestrictedGenericEntity` of an entity name, or of the noun of a `verb#noun` service name.
 pub fn is_restricted_entity(entity_name: &str) -> bool {
-    let simple = entity_name
-        .rsplit(['.', '#'])
-        .next()
-        .unwrap_or(entity_name)
-        .to_ascii_lowercase();
-    RESTRICTED_ENTITIES.contains(&simple.as_str())
+    let noun = entity_name.rsplit('#').next().unwrap_or(entity_name);
+    crate::entity::sensitive::is_restricted_generic_entity(noun)
 }
 
 fn write_tree(
@@ -577,8 +630,39 @@ pub(super) fn call_data_file_service(
             service.name
         )));
     }
+    // As Java's `handleService`: a create-only load calls no service.
+    if options.only_create {
+        tracing::info!(
+            "Not calling service {} from {}, running with only insert",
+            service.name,
+            service.location
+        );
+        return Ok(());
+    }
     with_load_slot(facade, |slot| slot.services.push(service.clone()));
     crate::service::run_data_file_service(facade, &service)
+}
+
+/// Java `defaultValues` on a top-level record: each default the record does not set, for a field of its entity.
+pub(super) fn apply_default_values(facade: &EntityFacade, options: &LoadOptions, record: &mut Record) {
+    if options.default_values.is_empty() {
+        return;
+    }
+    let Ok(shape) = shape_of(facade, &record.entity) else {
+        return;
+    };
+    for (name, text) in &options.default_values {
+        if shape.fields.contains_key(name) && record.fields.get(name).is_none_or(Value::is_null) {
+            record.fields.insert(name.clone(), Value::string(text));
+        }
+    }
+}
+
+/// Java `defaultValues` on a data-file service call: each default the element does not set.
+pub(super) fn apply_default_parameters(options: &LoadOptions, service: &mut DataFileService) {
+    for (name, text) in &options.default_values {
+        service.parameters.entry(name.clone()).or_insert_with(|| text.clone());
+    }
 }
 
 pub(super) fn shape_of(facade: &EntityFacade, entity_name: &str) -> Result<Shape, Error> {

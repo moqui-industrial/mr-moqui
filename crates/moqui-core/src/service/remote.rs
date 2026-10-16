@@ -85,7 +85,11 @@ pub fn run_remote_rest(
         // The remote's body can hold anything, so it goes to the log and not into the message.
         tracing::warn!(service = service_name, status, url = %shown, body = %clip(&response.body), "remote REST error");
         let message = format!("Remote service error {status}");
-        let _ = ExecutionContext::with_current(|ctx| ctx.message().add_error(message.clone()));
+        // As Java's `RemoteRestServiceRunner`, the error is a message and the call returns no results; with no context
+        // to hold the message, it is the error.
+        if ExecutionContext::with_current(|ctx| ctx.message().add_error(message.clone())).is_some() {
+            return Ok(BTreeMap::new());
+        }
         return Err(Error::new(message));
     }
     Ok(response_map(&response.body))
@@ -487,9 +491,28 @@ mod tests {
                 false,
             )
             .expect_err("error status");
-            outbound::clear_http_sender();
             assert!(refused.to_string().contains("Remote service error 503"), "{refused}");
             assert_eq!(status.seen.lock().unwrap().len(), 1);
+            // In a context the error status is a message, and the call returns no results.
+            let ctx = crate::context::ExecutionContextFactory::test_context();
+            let entered = ctx.enter();
+            let results = run_remote_rest(
+                "example.get#Item",
+                "http://example.test/a",
+                None,
+                "get",
+                &BTreeMap::new(),
+                false,
+            )
+            .unwrap();
+            assert!(results.is_empty());
+            assert!(ctx
+                .message()
+                .errors()
+                .iter()
+                .any(|error| error.contains("Remote service error 503")));
+            drop(entered);
+            outbound::clear_http_sender();
         }
 
         #[test]

@@ -691,15 +691,27 @@ fn send_document_notifications(
     Ok(BTreeMap::new())
 }
 
+/// Rows read per page by [`rewrite_encrypted_fields`].
+const REWRITE_PAGE: i64 = 500;
+
 /// `rewrite#EntityEncryptedFields`: read each record with an encrypted field set and write it back, so it is stored
-/// with the current key and algorithm. Java skips a record whose field does not decrypt; here a value that does not
-/// decrypt fails the read, and the service reports that error.
+/// with the current key and algorithm. As in Java, a record with a field that does not decrypt is logged and skipped.
 fn rewrite_encrypted_fields(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
-    let entity_name = param_text(parameters, "entityName");
-    let (full_name, pk_names, encrypt_names) = facade.with_entity(&entity_name, |entity, _, _| {
+    rewrite_encrypted_in_pages(&param_text(parameters, "entityName"), facade, REWRITE_PAGE)
+}
+
+/// Java updates each record while its iterator is open. A stream holds the MySQL connection, so this reads pages in
+/// primary key order instead, each starting after the last key of the one before, all in the caller's transaction. The
+/// rewrite changes neither a key nor which encrypted fields are null, so the pages hold still under the updates.
+fn rewrite_encrypted_in_pages(
+    entity_name: &str,
+    facade: &EntityFacade,
+    page_size: i64,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    let (full_name, pk_names, encrypt_names) = facade.with_entity(entity_name, |entity, _, _| {
         Ok((
             entity.full_name.clone(),
             entity
@@ -724,34 +736,98 @@ fn rewrite_encrypted_fields(
         .iter()
         .map(|name| Condition::is_not_null(name.as_str()))
         .collect();
-    let mut find = facade
-        .find(&full_name)?
-        .disable_authz()
-        .condition(Condition::or(not_null));
-    for name in pk_names.iter().chain(encrypt_names.iter()) {
-        find = find.select_field(name);
-    }
     let mut updated = 0_i64;
-    for value in find.list()?.values() {
-        let mut row: IndexMap<String, Value> = IndexMap::new();
+    let mut last: Option<IndexMap<String, Value>> = None;
+    loop {
+        let mut find = facade
+            .find(&full_name)?
+            .disable_authz()
+            .use_cache(false)
+            .condition(Condition::or(not_null.clone()))
+            .limit(page_size);
+        if let Some(last) = &last {
+            find = find.condition(key_after(&pk_names, last));
+        }
+        for name in &pk_names {
+            find = find.order_by(name, false);
+        }
         for name in pk_names.iter().chain(encrypt_names.iter()) {
-            row.insert(name.clone(), value.get(name).cloned().unwrap_or(Value::Null));
+            find = find.select_field(name);
         }
-        if encrypt_names
-            .iter()
-            .all(|name| row.get(name).is_none_or(Value::is_null))
-        {
-            continue;
+        let page = find.list()?;
+        let read = page.len();
+        for value in page.values() {
+            let mut row: IndexMap<String, Value> = IndexMap::new();
+            for name in pk_names.iter().chain(encrypt_names.iter()) {
+                row.insert(name.clone(), value.get(name).cloned().unwrap_or(Value::Null));
+            }
+            last = Some(row.clone());
+            if encrypt_names
+                .iter()
+                .all(|name| row.get(name).is_none_or(Value::is_null))
+            {
+                continue;
+            }
+            let pk_text = || {
+                pk_names
+                    .iter()
+                    .map(|name| row.get(name).map(to_plain_string).unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join("::")
+            };
+            if let Some(failed) = encrypt_names
+                .iter()
+                .find(|name| row.get(*name).and_then(Value::as_str) == Some(crate::entity::field_rw::DECRYPT_FAILED))
+            {
+                tracing::error!(
+                    "rewrite#EntityEncryptedFields decrypt failed for {entity_name} pk {} field {failed}, skipping record",
+                    pk_text()
+                );
+                continue;
+            }
+            let mut rewrite = facade.make_value(&full_name)?;
+            for (name, field_value) in &row {
+                rewrite.set(name.clone(), field_value.clone());
+            }
+            // One record that will not write is logged, and the rest are still rewritten.
+            match rewrite.update(facade) {
+                Ok(()) => updated += 1,
+                Err(err) => tracing::error!(
+                    error = %err,
+                    "rewrite#EntityEncryptedFields could not update {entity_name} pk {}, skipping record",
+                    pk_text()
+                ),
+            }
         }
-        let mut rewrite = facade.make_value(&full_name)?;
-        for (name, field_value) in row {
-            rewrite.set(name, field_value);
+        if i64::try_from(read).unwrap_or(i64::MAX) < page_size {
+            break;
         }
-        rewrite.update(facade)?;
-        updated += 1;
     }
     out.insert("recordsUpdated".to_string(), Value::I64(updated));
     Ok(out)
+}
+
+/// The rows whose primary key sorts after `last`'s: `p1 > v1 OR (p1 = v1 AND p2 > v2) OR ...`.
+fn key_after(pk_names: &[String], last: &IndexMap<String, Value>) -> Condition {
+    let value = |name: &String| last.get(name).cloned().unwrap_or(Value::Null);
+    let mut options = Vec::with_capacity(pk_names.len());
+    for (index, name) in pk_names.iter().enumerate() {
+        let mut parts: Vec<Condition> = pk_names[..index]
+            .iter()
+            .map(|before| Condition::equals(before.as_str(), value(before)))
+            .collect();
+        parts.push(Condition::greater(name.as_str(), value(name)));
+        options.push(if parts.len() == 1 {
+            parts.remove(0)
+        } else {
+            Condition::and(parts)
+        });
+    }
+    if options.len() == 1 {
+        options.remove(0)
+    } else {
+        Condition::or(options)
+    }
 }
 
 #[cfg(test)]

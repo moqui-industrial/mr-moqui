@@ -24,8 +24,8 @@ use std::rc::Rc;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use moqui_db::model::{
-    AliasAll, EntityDefinition, EntityModel, FieldAlias, FieldDefinition, KeyMap, MasterDefinition, MasterDetail,
-    MemberEntity, Relationship,
+    AliasAll, EntityDefinition, FieldAlias, FieldDefinition, KeyMap, MasterDefinition, MasterDetail, MemberEntity,
+    Relationship,
 };
 use moqui_db::sql::{select_view, Condition, FieldRef, LimitOffset, OrderBy};
 use moqui_lib::error::Error;
@@ -35,7 +35,8 @@ use super::exec::{after_statement, query_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
 use super::find::FindValues;
-use super::params::{self, map_row, view_columns};
+use super::params::{map_row, view_columns};
+use super::sensitive;
 use super::value::{EntityArtifact, EntityValue};
 use crate::context::ErrorKind;
 
@@ -125,6 +126,8 @@ pub fn xml_element(
 /// Pagination numbers for the last entity REST list on this thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PageInfo {
+    /// Only `X-Total-Count` is sent, as for a Service REST count.
+    pub count_only: bool,
     pub total: i64,
     pub index: i64,
     pub size: i64,
@@ -154,6 +157,23 @@ fn want_page_info() -> bool {
     WANT_PAGE.with(|slot| slot.get())
 }
 
+/// Record the page numbers of a list, or only the total of a count, for the response headers of a REST call that
+/// asked for them.
+pub(crate) fn note_page_info(
+    limit: Option<i64>,
+    offset: Option<i64>,
+    parameters: &BTreeMap<String, Value>,
+    total: i64,
+    count_only: bool,
+) {
+    if !want_page_info() {
+        return;
+    }
+    let mut info = page_numbers(&Page { limit, offset }, parameters, total);
+    info.count_only = count_only;
+    PAGE.with(|slot| slot.set(Some(info)));
+}
+
 pub fn rest(
     facade: &EntityFacade,
     operation: &str,
@@ -163,11 +183,75 @@ pub fn rest(
     let verb = normalize_operation(operation)?;
     let mut parameters = parameters.clone();
     let target = resolve_target(facade, entity_name, &mut parameters)?;
-    match verb {
-        Verb::Find => find_rest(facade, &target, &parameters),
-        Verb::Delete => delete_rest(facade, &target.entity_name, &parameters),
-        Verb::Create | Verb::Store | Verb::Update => mutate(facade, verb, &target.entity_name, &parameters, 0),
+    // As Java's `EntityFacadeImpl.rest`, identity-admin and secret-config entities are not readable, identity-admin
+    // and `UserAccount` are not writable, and secret-config is writable only by ADMIN. Results never carry the
+    // `UserAccount` password fields.
+    let full_name = facade
+        .with_entity(&target.entity_name, |entity, _, _| Ok(entity.full_name.clone()))
+        .unwrap_or_else(|_| target.entity_name.clone());
+    if verb == Verb::Find {
+        if sensitive::is_restricted_generic_entity(&full_name) {
+            return Err(kinded(
+                ErrorKind::Unauthorized,
+                format!("Entity {full_name} is not available through generic entity REST"),
+            ));
+        }
+    } else if sensitive::is_identity_admin_entity(&full_name)
+        || sensitive::is_user_account_entity(&full_name)
+        || (sensitive::is_secret_config_entity(&full_name) && !crate::user::is_in_group("ADMIN")?)
+    {
+        return Err(kinded(
+            ErrorKind::Unauthorized,
+            format!("Entity {full_name} is not writable through generic entity REST"),
+        ));
     }
+    // Java's generic entity REST never reads without a limit: with `pageNoLimit` it still takes 100.
+    parameters.remove("pageNoLimit");
+    let result = rest_target(facade, verb, &target, &parameters)?;
+    Ok(sensitive::strip_user_account_secrets(result))
+}
+
+fn rest_target(
+    facade: &EntityFacade,
+    verb: Verb,
+    target: &Resolved,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Value, Error> {
+    let operation = match verb {
+        Verb::Find => return find_rest(facade, target, parameters),
+        Verb::Create => "create",
+        Verb::Store => "store",
+        Verb::Update => "update",
+        Verb::Delete => "delete",
+    };
+    write_rest(facade, operation, &target.entity_name, parameters)
+}
+
+/// Create, store, update and delete run the entity-auto service of the entity, as Java's `rest` does, so service
+/// ECA rules, parameter validation and the status-flow check apply. As Java's entity REST handler, message errors
+/// after the call are the error: those the call added are the caller's input; errors from before it mean it did not
+/// run.
+fn write_rest(
+    facade: &EntityFacade,
+    operation: &str,
+    entity_name: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Value, Error> {
+    let full_name = facade.with_entity(entity_name, |entity, _, _| Ok(entity.full_name.clone()))?;
+    let errors =
+        || crate::context::ExecutionContext::with_current(|ec| ec.message().errors().to_vec()).unwrap_or_default();
+    let before = errors().len();
+    let results = crate::service::call::sync(&format!("{operation}#{full_name}"), parameters)?;
+    let after = errors();
+    if !after.is_empty() {
+        let kind = if before > 0 {
+            ErrorKind::General
+        } else {
+            ErrorKind::Validation
+        };
+        return Err(kinded(kind, after.join("\n")));
+    }
+    Ok(value_map(results.into_iter().collect()))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -330,7 +414,8 @@ fn resolve_target(
     }
     take_pk_path(&first, &mut path, parameters, false);
     let mut current = first;
-    if !path.is_empty() {
+    // As Java: each further element names a relationship, followed by the related entity's key values.
+    while !path.is_empty() {
         let relationship_name = path.remove(0);
         let relationship = current
             .relationships
@@ -338,19 +423,17 @@ fn resolve_target(
             .find(|relationship| relationship.matches(&relationship_name))
             .cloned()
             .ok_or_else(|| {
-                Error::new(format!(
-                    "No relationship found with name or alias [{relationship_name}] on entity [{}]",
-                    current.label()
-                ))
+                kinded(
+                    ErrorKind::NotFound,
+                    format!(
+                        "No relationship found with name or alias [{relationship_name}] on entity [{}]",
+                        current.label()
+                    ),
+                )
             })?;
-        let related = load_snap(facade, &relationship.related)?;
+        let related =
+            load_snap(facade, &relationship.related).map_err(|err| kinded(ErrorKind::NotFound, err.message()))?;
         take_pk_path(&related, &mut path, parameters, true);
-        if !path.is_empty() {
-            return Err(Error::new(format!(
-                "Only one relationship step is supported; extra path remains on {}",
-                related.full_name
-            )));
-        }
         current = related;
     }
     Ok(Resolved {
@@ -422,21 +505,12 @@ fn find_rest(facade: &EntityFacade, target: &Resolved, parameters: &BTreeMap<Str
         )?;
         return Ok(node_to_value(&node));
     }
-    let plan = search_plan(facade, &snap.full_name, parameters)?;
-    let page = rest_page(parameters);
-    let mut find = facade.find(&snap.full_name)?;
-    for condition in &plan.conditions {
-        find = find.condition(condition.clone());
-    }
-    for entry in plan.order {
-        find = find.order_by_entry(entry);
-    }
-    if let Some(limit) = page.limit {
-        find = find.limit(limit);
-    }
-    if let Some(offset) = page.offset {
-        find = find.offset(offset);
-    }
+    let find = list_find(facade, &snap.full_name, parameters)?;
+    let page = Page {
+        limit: find.limit_value(),
+        offset: find.offset_value(),
+    };
+    let counter = want_page_info().then(|| find.clone());
     let rows = find.list()?;
     let mut items = Vec::with_capacity(rows.len());
     for row in rows.iter() {
@@ -449,20 +523,34 @@ fn find_rest(facade: &EntityFacade, target: &Resolved, parameters: &BTreeMap<Str
         )?;
         items.push(node_to_value(&node));
     }
-    if want_page_info() {
-        if let Ok(total) = count_matching(facade, &snap.full_name, &plan.conditions) {
+    if let Some(counter) = counter {
+        if let Ok(total) = counter.count() {
             PAGE.with(|slot| slot.set(Some(page_numbers(&page, parameters, total))));
         }
     }
     Ok(Value::List(items))
 }
 
-fn count_matching(facade: &EntityFacade, entity_name: &str, conditions: &[Condition]) -> Result<i64, Error> {
-    let mut find = facade.find(entity_name)?;
-    for condition in conditions {
-        find = find.condition(condition.clone());
-    }
-    find.count()
+/// As Java's list find: the search form conditions, order and paging of the parameters, and never more than 100 rows
+/// when no page is asked for. This port also caps a page asked for at `entity_rest_max_page_size` (1000 by default).
+fn list_find(
+    facade: &EntityFacade,
+    entity_name: &str,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<super::find::EntityFind, Error> {
+    let find = facade
+        .find(entity_name)?
+        .search_form_map(parameters, &BTreeMap::new(), "", "", false)?
+        .find;
+    Ok(match find.limit_value() {
+        None => find.limit(100),
+        Some(limit) if limit > max_page_size() => {
+            let index = parameters.get("pageIndex").and_then(value_i64).unwrap_or(0).max(0);
+            find.offset(index.saturating_mul(max_page_size()))
+                .limit(max_page_size())
+        }
+        Some(_) => find,
+    })
 }
 
 fn page_numbers(page: &Page, parameters: &BTreeMap<String, Value>, total: i64) -> PageInfo {
@@ -484,191 +572,13 @@ fn page_numbers(page: &Page, parameters: &BTreeMap<String, Value>, total: i64) -
     };
     let range_high = index.saturating_mul(divisor).saturating_add(size).min(total.max(0));
     PageInfo {
+        count_only: false,
         total,
         index,
         size,
         max_index,
         range_low,
         range_high,
-    }
-}
-
-struct SearchPlan {
-    conditions: Vec<Condition>,
-    order: Vec<OrderBy>,
-}
-
-fn search_plan(
-    facade: &EntityFacade,
-    entity_name: &str,
-    parameters: &BTreeMap<String, Value>,
-) -> Result<SearchPlan, Error> {
-    facade.with_entity(entity_name, |entity, _, model| {
-        let order = if let Some(value) = parameters.get("orderByField") {
-            parse_order(value)
-                .into_iter()
-                .filter(|entry| entity.field(&entry.field.name).is_some() || entity.alias(&entry.field.name).is_some())
-                .collect()
-        } else {
-            Vec::new()
-        };
-        Ok(SearchPlan {
-            conditions: field_conditions(entity, model, parameters),
-            order,
-        })
-    })
-}
-
-fn field_conditions(
-    entity: &EntityDefinition,
-    model: &EntityModel,
-    parameters: &BTreeMap<String, Value>,
-) -> Vec<Condition> {
-    let mut conditions = Vec::new();
-    for field in &entity.fields {
-        let op_key = format!("{}_op", field.name);
-        if parameters.contains_key(&field.name) || parameters.contains_key(&op_key) {
-            if let Some(condition) = field_op(model, field, parameters, &op_key) {
-                conditions.push(condition);
-            }
-        } else {
-            push_range(&mut conditions, field, parameters);
-        }
-    }
-    conditions
-}
-
-fn field_op(
-    model: &EntityModel,
-    field: &FieldDefinition,
-    parameters: &BTreeMap<String, Value>,
-    op_key: &str,
-) -> Option<Condition> {
-    let op = parameters
-        .get(op_key)
-        .map(text_of)
-        .unwrap_or_else(|| String::from("equals"));
-    let not_key = format!("{}_not", field.name);
-    let not = flag(parameters, &not_key);
-    let name = field.name.as_str();
-    if op == "empty" {
-        return Some(if not {
-            Condition::and(vec![
-                Condition::is_not_null(name),
-                Condition::not_equals(name, Value::string("")),
-            ])
-        } else {
-            Condition::or(vec![
-                Condition::is_null(name),
-                Condition::equals(name, Value::string("")),
-            ])
-        });
-    }
-    let value = parameters.get(name)?;
-    if is_empty(value) {
-        return None;
-    }
-    let condition = match op.as_str() {
-        "like" => like_condition(name, &text_of(value), not, false),
-        "contains" => like_condition(name, &text_of(value), not, true),
-        "begins" => {
-            let pattern = format!("{}%", text_of(value));
-            like_condition(name, &pattern, not, false)
-        }
-        "in" => {
-            let values: Vec<Value> = in_values(value)
-                .into_iter()
-                .map(|item| convert_field(model, field, &item))
-                .collect();
-            if values.is_empty() {
-                return None;
-            }
-            if not {
-                Condition::not_in(name, values)
-            } else {
-                Condition::is_in(name, values)
-            }
-        }
-        _ => {
-            let converted = convert_field(model, field, value);
-            if not {
-                Condition::not_equals(name, converted)
-            } else {
-                Condition::equals(name, converted)
-            }
-        }
-    };
-    Some(condition)
-}
-
-fn like_condition(name: &str, text: &str, not: bool, contains: bool) -> Condition {
-    let pattern = if contains {
-        format!("%{text}%")
-    } else {
-        text.to_string()
-    };
-    if not {
-        Condition::not_like(name, Value::string(pattern))
-    } else {
-        Condition::like(name, Value::string(pattern))
-    }
-}
-
-fn in_values(value: &Value) -> Vec<Value> {
-    match value {
-        Value::List(items) => items.clone(),
-        Value::String(text) => text
-            .split(',')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .map(Value::string)
-            .collect(),
-        other => vec![other.clone()],
-    }
-}
-
-fn push_range(out: &mut Vec<Condition>, field: &FieldDefinition, parameters: &BTreeMap<String, Value>) {
-    let from_key = format!("{}_from", field.name);
-    let thru_key = format!("{}_thru", field.name);
-    if let Some(value) = parameters.get(&from_key) {
-        if !is_empty(value) {
-            out.push(Condition::greater_equal(field.name.as_str(), value.clone()));
-        }
-    }
-    if let Some(value) = parameters.get(&thru_key) {
-        if !is_empty(value) {
-            out.push(Condition::less_equal(field.name.as_str(), value.clone()));
-        }
-    }
-}
-
-fn convert_field(model: &EntityModel, field: &FieldDefinition, value: &Value) -> Value {
-    match params::java_of(model, field) {
-        Some(java) if !java.is_empty() => basic_convert(value, &java).value,
-        _ => value.clone(),
-    }
-}
-
-fn rest_page(parameters: &BTreeMap<String, Value>) -> Page {
-    if flag(parameters, "pageNoLimit") {
-        return Page {
-            limit: None,
-            offset: None,
-        };
-    }
-    let index = parameters.get("pageIndex").and_then(value_i64);
-    let size = parameters.get("pageSize").and_then(value_i64);
-    if index.is_some() || size.is_some() {
-        let page_size = size.unwrap_or(20).clamp(0, max_page_size());
-        let page_index = index.unwrap_or(0).max(0);
-        return Page {
-            limit: Some(page_size),
-            offset: Some(page_index.saturating_mul(page_size)),
-        };
-    }
-    Page {
-        limit: Some(100),
-        offset: None,
     }
 }
 
@@ -696,256 +606,6 @@ fn key_text(snap: &EntitySnap, parameters: &BTreeMap<String, Value>) -> String {
         parts.push(format!("{name}={shown}"));
     }
     parts.join(", ")
-}
-
-fn delete_rest(facade: &EntityFacade, entity_name: &str, parameters: &BTreeMap<String, Value>) -> Result<Value, Error> {
-    let snap = load_snap(facade, entity_name)?;
-    let pk_names = snap.pk_names();
-    if pk_names.is_empty() {
-        return Err(Error::new(format!("{} has no primary key", snap.full_name)));
-    }
-    let wildcard = pk_names
-        .iter()
-        .any(|name| parameters.get(*name).and_then(Value::as_str) == Some("*"));
-    if !pk_complete(&snap, parameters) && !wildcard {
-        return Err(Error::new(
-            "Must specify all primary key fields to delete, can use wildcard of '*' in one or more PK fields to delete multiple records",
-        ));
-    }
-    if wildcard {
-        let mut find = facade.find(&snap.full_name)?;
-        for field in &snap.fields {
-            if parameters.get(&field.name).and_then(Value::as_str) == Some("*") {
-                continue;
-            }
-            if let Some(value) = parameters.get(&field.name) {
-                if !is_empty(value) {
-                    find = find.eq(&field.name, value.clone());
-                }
-            }
-        }
-        let rows = find.list()?;
-        for row in rows.iter() {
-            row.delete(facade)?;
-        }
-    } else {
-        let mut value = facade.make_value(&snap.full_name)?;
-        for name in pk_names {
-            if let Some(raw) = parameters.get(name) {
-                value.set(name, raw.clone());
-            }
-        }
-        value.delete(facade)?;
-    }
-    Ok(value_map(Vec::new()))
-}
-
-fn write_verb(facade: &EntityFacade, verb: Verb, sequenced: bool, value: &EntityValue) -> Result<(), Error> {
-    match verb {
-        Verb::Update => value.update(facade),
-        Verb::Store if !sequenced => value.create_or_update(facade),
-        Verb::Store | Verb::Create => value.create(facade),
-        Verb::Find | Verb::Delete => Ok(()),
-    }
-}
-
-fn mutate(
-    facade: &EntityFacade,
-    verb: Verb,
-    entity_name: &str,
-    parameters: &BTreeMap<String, Value>,
-    depth: u32,
-) -> Result<Value, Error> {
-    let (value, snap, sequenced) = prepare_value(facade, verb, entity_name, parameters)?;
-    write_verb(facade, verb, sequenced, &value)?;
-    let mut entries = pk_entries(&value, &snap);
-    if depth < MAX_DEPTH {
-        entries.extend(nest_related(facade, verb, &value, &snap, parameters, depth)?);
-    }
-    Ok(value_map(entries))
-}
-
-fn prepare_value(
-    facade: &EntityFacade,
-    verb: Verb,
-    entity_name: &str,
-    parameters: &BTreeMap<String, Value>,
-) -> Result<(EntityValue, EntitySnap, bool), Error> {
-    let snap = load_snap(facade, entity_name)?;
-    let mut value = facade.make_value(&snap.full_name)?;
-    if verb != Verb::Update && snap.fields.iter().any(|field| field.is_pk && field.name == "fromDate") {
-        let missing = parameters.get("fromDate").is_none_or(is_empty);
-        if missing {
-            value.set("fromDate", crate::user::now_effective_value());
-        }
-    }
-    for field in &snap.fields {
-        if let Some(raw) = parameters.get(&field.name) {
-            if !is_empty(raw) {
-                value.set(&field.name, raw.clone());
-            }
-        }
-    }
-    // a primary key field with a default takes it before a missing key is sequenced; the default is evaluated
-    // (quotes stripped, `ec.user.nowTimestamp`, `ec.user.userId`) as for a service create or store
-    if verb != Verb::Update && !missing_pks(&value, &snap).is_empty() {
-        let with_defaults = facade.apply_field_defaults(&snap.full_name, value.fields())?;
-        for name in snap.pk_names() {
-            if value.get(name).is_none_or(is_empty) {
-                if let Some(default) = with_defaults.get(name).filter(|default| !default.is_null()) {
-                    value.set(name, default.clone());
-                }
-            }
-        }
-    }
-    let missing = missing_pks(&value, &snap);
-    if verb == Verb::Update {
-        if !missing.is_empty() {
-            return Err(Error::new(format!(
-                "Required fields {} are missing, cannot update {}",
-                missing.join(", "),
-                snap.entity_name
-            )));
-        }
-        return Ok((value, snap, false));
-    }
-    let sequenced = !missing.is_empty();
-    let pk_count = snap.pk_names().len();
-    if pk_count == 1 && sequenced {
-        value.set_sequenced_id_primary(facade)?;
-    } else if pk_count == 2 && sequenced {
-        let secondary = snap.pk_names()[1].to_string();
-        if value.get(&secondary).is_none_or(is_empty) {
-            value.set_sequenced_id_secondary(facade)?;
-        }
-    }
-    let still_missing = missing_pks(&value, &snap);
-    if !still_missing.is_empty() {
-        let verb_name = if verb == Verb::Store { "store" } else { "create" };
-        return Err(Error::new(format!(
-            "Required fields {} are missing, cannot {verb_name} {}",
-            still_missing.join(", "),
-            snap.entity_name
-        )));
-    }
-    Ok((value, snap, sequenced))
-}
-
-fn missing_pks(value: &EntityValue, snap: &EntitySnap) -> Vec<String> {
-    snap.pk_names()
-        .into_iter()
-        .filter(|name| value.get(name).is_none_or(is_empty))
-        .map(str::to_string)
-        .collect()
-}
-
-fn pk_entries(value: &EntityValue, snap: &EntitySnap) -> Vec<(String, Value)> {
-    let mut entries = Vec::new();
-    for name in snap.pk_names() {
-        if let Some(field) = value.get(name) {
-            if !is_empty(field) {
-                entries.push((name.to_string(), field.clone()));
-            }
-        }
-    }
-    entries
-}
-
-fn nest_related(
-    facade: &EntityFacade,
-    verb: Verb,
-    value: &EntityValue,
-    snap: &EntitySnap,
-    parameters: &BTreeMap<String, Value>,
-    depth: u32,
-) -> Result<Vec<(String, Value)>, Error> {
-    let parent_keys = pk_map(value, snap);
-    let mut out = Vec::new();
-    for (key, raw) in parameters {
-        if is_control(key) || snap.fields.iter().any(|field| field.name == *key) {
-            continue;
-        }
-        let (items, many) = match raw {
-            Value::Map(_) => (vec![raw.clone()], false),
-            Value::List(items) => (items.clone(), true),
-            _ => continue,
-        };
-        let relationship = snap
-            .relationships
-            .iter()
-            .find(|relationship| relationship.matches(key))
-            .cloned();
-        if relationship.as_ref().is_some_and(|relationship| !relationship.mutable) {
-            continue;
-        }
-        let child_name = if let Some(relationship) = &relationship {
-            relationship.related.clone()
-        } else if let Some(full_name) = defined_name(facade, key) {
-            full_name
-        } else {
-            continue;
-        };
-        let nested_verb = if verb == Verb::Create {
-            Verb::Create
-        } else {
-            Verb::Store
-        };
-        let mut nested = Vec::new();
-        for item in items {
-            let Value::Map(_) = &item else { continue };
-            let mut child_parameters = map_to_btree(&item);
-            copy_parent_keys(&mut child_parameters, &parent_keys, relationship.as_ref());
-            nested.push(mutate(facade, nested_verb, &child_name, &child_parameters, depth + 1)?);
-        }
-        if nested.is_empty() {
-            continue;
-        }
-        if many {
-            out.push((key.clone(), Value::List(nested)));
-        } else if let Some(one) = nested.pop() {
-            out.push((key.clone(), one));
-        }
-    }
-    Ok(out)
-}
-
-fn pk_map(value: &EntityValue, snap: &EntitySnap) -> BTreeMap<String, Value> {
-    let mut keys = BTreeMap::new();
-    for name in snap.pk_names() {
-        if let Some(field) = value.get(name) {
-            if !is_empty(field) {
-                keys.insert(name.to_string(), field.clone());
-            }
-        }
-    }
-    keys
-}
-
-fn copy_parent_keys(
-    child: &mut BTreeMap<String, Value>,
-    parent: &BTreeMap<String, Value>,
-    relationship: Option<&Relationship>,
-) {
-    for (key, value) in parent {
-        child.entry(key.clone()).or_insert_with(|| value.clone());
-    }
-    let Some(relationship) = relationship else {
-        return;
-    };
-    for (source, related) in relationship.key_pairs.clone() {
-        if let Some(value) = parent.get(&source) {
-            if !is_empty(value) {
-                child.insert(related, value.clone());
-            }
-        }
-    }
-    for key_value in &relationship.key_values {
-        child.insert(key_value.related.clone(), Value::string(&key_value.value));
-    }
-}
-
-fn defined_name(facade: &EntityFacade, name: &str) -> Option<String> {
-    load_snap(facade, name).ok().map(|snap| snap.full_name)
 }
 
 /// A master graph for a script find, using the same expansion and authorization as entity REST.
@@ -2340,16 +2000,6 @@ fn string_list(value: &Value) -> Vec<String> {
     }
 }
 
-fn map_to_btree(value: &Value) -> BTreeMap<String, Value> {
-    let mut out = BTreeMap::new();
-    if let Value::Map(map) = value {
-        for (key, item) in map {
-            out.insert(key.clone(), item.clone());
-        }
-    }
-    out
-}
-
 fn value_map(entries: Vec<(String, Value)>) -> Value {
     let stack = moqui_lib::context_stack::ContextStack::new();
     let frame = stack.shared_map();
@@ -2375,7 +2025,11 @@ mod tests {
             .iter()
             .map(|(name, value)| (name.to_string(), Value::I64(*value)))
             .collect();
-        rest_page(&parameters)
+        let find = list_find(&crate::testing::open(), "moqui.basic.Enumeration", &parameters).unwrap();
+        Page {
+            limit: find.limit_value(),
+            offset: find.offset_value(),
+        }
     }
 
     #[test]
@@ -2387,8 +2041,9 @@ mod tests {
         assert_eq!((page.limit, page.offset), (Some(50), Some(0)));
         let page = page_of(&[("pageSize", -5), ("pageIndex", 4)]);
         assert_eq!((page.limit, page.offset), (Some(0), Some(0)));
+        assert_eq!(page_of(&[]).limit, Some(100));
         let parameters = BTreeMap::from([("pageIndex".to_string(), Value::I64(i64::MAX))]);
-        let page = rest_page(&parameters);
+        let page = page_of(&[("pageIndex", i64::MAX)]);
         assert_eq!(page.offset, Some(i64::MAX));
         let info = page_numbers(&page, &parameters, 10);
         assert_eq!((info.range_low, info.range_high), (i64::MAX, 10));

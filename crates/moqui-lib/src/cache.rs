@@ -425,6 +425,20 @@ where
         Ok(())
     }
 
+    /// Remove each entry for which `remove` is true, looking at the values in place. Returns how many were removed.
+    pub fn remove_where(&self, mut remove: impl FnMut(&K, &V) -> bool) -> Result<usize, Error> {
+        self.ensure_open()?;
+        let mut entries = write(&self.inner.entries);
+        let before = entries.len();
+        entries.retain(|key, entry| !remove(key, &entry.value));
+        let removed = before - entries.len();
+        drop(entries);
+        if removed > 0 {
+            bump(&self.inner.stats.removals, u64::try_from(removed).unwrap_or(u64::MAX));
+        }
+        Ok(removed)
+    }
+
     pub fn len(&self) -> usize {
         read(&self.inner.entries).len()
     }
