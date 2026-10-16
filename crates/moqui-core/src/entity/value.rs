@@ -183,9 +183,10 @@ impl EntityFacade {
             .map(|_| ())
     }
 
-    /// Fill the fields an entity definition gives a `default` (a quoted literal, a number, or the name of another
-    /// field of the same value) when a create leaves them out or null, as Moqui does on create.
-    fn apply_field_defaults(
+    /// Fill the fields an entity definition gives a `default` (a quoted literal, a number, the name of another
+    /// field of the same value, `ec.user.nowTimestamp` or `ec.user.userId`) when a create leaves them out or null, as
+    /// Moqui does on create.
+    pub(crate) fn apply_field_defaults(
         &self,
         entity_name: &str,
         values: &BTreeMap<String, Value>,
@@ -206,6 +207,11 @@ impl EntityFacade {
                     Some(Value::String(default[1..default.len() - 1].to_string()))
                 } else if default.parse::<f64>().is_ok() {
                     Some(Value::String(default.to_string()))
+                } else if default == "ec.user.nowTimestamp" {
+                    // the execution context's effective time, as the Groovy default expression read it
+                    Some(crate::user::now_effective_value())
+                } else if default == "ec.user.userId" {
+                    crate::user::current_user_id().ok().flatten().map(Value::string)
                 } else {
                     out.get(default).filter(|v| !v.is_null()).cloned()
                 };

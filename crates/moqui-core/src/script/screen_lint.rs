@@ -1135,6 +1135,9 @@ pub fn classify(text: &str) -> Vec<(Idiom, String)> {
         };
         out.push((idiom, format!("{class} {}", snippet(text, at))));
     }
+    if let Some(at) = qualified_class(m) {
+        out.push(sample(text, Idiom::StaticClass, at));
+    }
     if m.contains(".'") || m.contains(".\"") {
         out.push(sample(
             text,
@@ -1242,6 +1245,46 @@ fn context_plus(masked: &str) -> Option<usize> {
         rest.strip_prefix('+')
             .is_some_and(|rest| rest.trim_start().starts_with('['))
     })
+}
+
+/// A Java class written with its package, such as `org.moqui.resource.ResourceReference.isTextFilename(..)`: the script
+/// has no `org` or `java` name, so it fails at run time. Only the class name is a host global where there is one.
+fn qualified_class(masked: &str) -> Option<usize> {
+    const PACKAGES: &[&str] = &[
+        "org.moqui.",
+        "org.apache.",
+        "java.lang.",
+        "java.util.",
+        "java.math.",
+        "java.sql.",
+        "java.io.",
+        "java.text.",
+        "java.time.",
+        "groovy.",
+    ];
+    let bytes = masked.as_bytes();
+    for package in PACKAGES {
+        let mut from = 0;
+        while let Some(found) = masked[from..].find(package) {
+            let at = from + found;
+            from = at + package.len();
+            if at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'.') {
+                continue;
+            }
+            // a capitalized class name follows the lower case package path
+            let rest = &masked[at..];
+            let path_end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+                .unwrap_or(rest.len());
+            let has_class = rest[..path_end]
+                .split('.')
+                .any(|part| part.chars().next().is_some_and(|c| c.is_ascii_uppercase()));
+            if has_class {
+                return Some(at);
+            }
+        }
+    }
+    None
 }
 
 fn static_calls(masked: &str) -> Vec<(String, usize)> {
@@ -1367,6 +1410,13 @@ mod tests {
         assert!(names("StringUtilities.camelCaseToPretty(x)").contains(&"static-class"));
         assert_eq!(names("ResourceReference.isTextFilename(x)"), vec!["host-static"]);
         assert!(names("Math.max(1, 2)").is_empty());
+        // with the package it is a Java name the script does not have; a service name in a string is not
+        assert!(names("org.moqui.resource.ResourceReference.isTextFilename(x)").contains(&"static-class"));
+        assert!(names("new java.util.Date()").contains(&"static-class"));
+        assert!(
+            !names("ec.service.sync().name('org.moqui.impl.UserServices.update#UserAccount')")
+                .contains(&"static-class")
+        );
     }
 
     #[test]
