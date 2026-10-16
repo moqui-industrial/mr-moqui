@@ -274,6 +274,7 @@ impl EntityFind {
         // The view frame is what authorizes the read, and the filters come from its record.
         let _authz = self.authz_guard();
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", operation)?;
+        cache::sim_check_find(&self.facade, &self.entity_name)?;
         let condition = self.combined();
         let lookup = self.lookup(&condition);
         if let Some(schema) = self.sim_view_schema(false)? {
@@ -461,6 +462,7 @@ impl EntityFind {
         }
         let _authz = self.authz_guard();
         let _artifact = EntityArtifact::push(&self.facade, &self.entity_name, "view", "count")?;
+        cache::sim_check_find(&self.facade, &self.entity_name)?;
         if let Some(schema) = self.sim_view_schema(true)? {
             let plan = self.plan(true)?;
             let rows = cache::query_sim(&self.facade, &schema, &plan.sql, &plan.params)?;
@@ -527,6 +529,7 @@ impl EntityFind {
                 EntityList::new(Vec::new()),
             ));
         }
+        cache::sim_check_find(&self.facade, &self.entity_name)?;
         // A view the sim changed is read from the sim schema, into memory.
         if sim_view::plan_for(&self.facade, &self.entity_name)?.is_some() {
             let facade = self.facade.clone();

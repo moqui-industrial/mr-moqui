@@ -157,32 +157,94 @@ fn auto_reverse_swaps_the_uom_conversion_key_map() {
     assert!(uom.relationship("toConversions").is_some());
 }
 
-#[test]
-fn short_entity_name_must_be_unique() {
-    let conf = MNode::parse_text(
+fn id_conf() -> MNode {
+    MNode::parse_text(
         "conf.xml",
         r#"<database-list>
             <dictionary-type type="id" java-type="java.lang.String" default-sql-type="VARCHAR(40)"/>
         </database-list>"#,
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn a_short_name_in_two_packages_means_the_framework_one_or_the_last_full_name() {
     let document = MNode::parse_text(
         "entities.xml",
         r#"<entities>
+            <entity entity-name="Same" package="two.b" no-update-stamp="true">
+                <field name="id" type="id" is-pk="true"/>
+            </entity>
             <entity entity-name="Same" package="one.a" no-update-stamp="true">
                 <field name="id" type="id" is-pk="true"/>
             </entity>
-            <entity entity-name="Same" package="two.b" no-update-stamp="true">
+            <entity entity-name="Other" package="zz.c" no-update-stamp="true">
+                <field name="id" type="id" is-pk="true"/>
+            </entity>
+            <entity entity-name="Other" package="moqui.c" no-update-stamp="true">
                 <field name="id" type="id" is-pk="true"/>
             </entity>
         </entities>"#,
     )
     .unwrap();
-    let model = EntityModel::load(&conf, &[document]).unwrap();
+    let model = EntityModel::load(&id_conf(), &[document]).unwrap();
     assert!(model.entity("one.a.Same").is_ok());
     assert!(model.entity("two.b.Same").is_ok());
-    let err = model.entity("Same").unwrap_err();
-    assert!(err.to_string().contains("not unique"));
-    assert_eq!(model.full_names().len(), 2);
+    assert_eq!(model.entity("Same").unwrap().full_name, "two.b.Same");
+    assert_eq!(model.entity("Other").unwrap().full_name, "moqui.c.Other");
+    assert_eq!(model.full_names().len(), 4);
     assert!(model.entity("one.a.Same").unwrap().field("lastUpdatedStamp").is_none());
+}
+
+#[test]
+fn an_entity_defined_again_overrides_and_an_unmatched_extend_is_skipped() {
+    let first = MNode::parse_text(
+        "first.xml",
+        r#"<entities>
+            <entity entity-name="Twice" package="one.a" no-update-stamp="true">
+                <field name="id" type="id" is-pk="true"/>
+                <field name="old" type="id"/>
+            </entity>
+        </entities>"#,
+    )
+    .unwrap();
+    let second = MNode::parse_text(
+        "second.xml",
+        r#"<entities>
+            <entity entity-name="Twice" package="one.a" no-update-stamp="true">
+                <field name="id" type="id" is-pk="true"/>
+                <field name="new" type="id"/>
+            </entity>
+            <extend-entity entity-name="Twice" package="other.pkg"><field name="extra" type="id"/></extend-entity>
+            <extend-entity entity-name="Missing" package="one.a"><field name="extra" type="id"/></extend-entity>
+        </entities>"#,
+    )
+    .unwrap();
+    let model = EntityModel::load(&id_conf(), &[first, second]).unwrap();
+    let twice = model.entity("one.a.Twice").unwrap();
+    assert!(twice.field("new").is_some() && twice.field("old").is_none());
+    assert!(twice.field("extra").is_none());
+    assert_eq!(model.full_names().len(), 1);
+}
+
+#[test]
+fn load_paths_reads_a_file_as_well_as_a_directory() {
+    let dir = std::env::temp_dir().join(format!("moqui-model-paths-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("entity")).unwrap();
+    std::fs::write(
+        dir.join("entity/A.xml"),
+        r#"<entities><entity entity-name="InDir" package="p" no-update-stamp="true"><field name="id" type="id" is-pk="true"/></entity></entities>"#,
+    )
+    .unwrap();
+    let file = dir.join("Extra.xml");
+    std::fs::write(
+        &file,
+        r#"<entities><entity entity-name="InFile" package="p" no-update-stamp="true"><field name="id" type="id" is-pk="true"/></entity></entities>"#,
+    )
+    .unwrap();
+    let model = EntityModel::load_paths(&id_conf(), &[dir.join("entity").as_path(), file.as_path()]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let model = model.unwrap();
+    assert!(model.entity("p.InDir").is_ok());
+    assert!(model.entity("p.InFile").is_ok());
 }

@@ -130,6 +130,17 @@ impl EcaIndex {
         let mut index = Self::default();
         let mut files = 0;
         for dir in dirs {
+            // A conf `load-entity` file outside the directories.
+            if dir.is_file() {
+                if dir.to_string_lossy().ends_with(".eecas.xml") {
+                    files += 1;
+                    match MNode::parse_file(dir) {
+                        Ok(root) => index.ingest(&root),
+                        Err(err) => tracing::warn!(error = %err, path = %dir.display(), "could not parse eeca file"),
+                    }
+                }
+                continue;
+            }
             let read = match std::fs::read_dir(dir) {
                 Ok(read) => read,
                 Err(err) => {
@@ -210,7 +221,7 @@ fn eca_index(facade: &EntityFacade) -> Arc<EcaIndex> {
         return Arc::clone(index);
     }
     let mut slot = write(rules);
-    Arc::clone(slot.get_or_insert_with(|| Arc::new(EcaIndex::load(&facade.entity_dirs()))))
+    Arc::clone(slot.get_or_insert_with(|| Arc::new(EcaIndex::load(&facade.model_paths()))))
 }
 
 fn attr_true(node: &MNode, name: &str) -> bool {

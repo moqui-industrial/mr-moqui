@@ -69,10 +69,8 @@ struct Builder<'a> {
 
 impl Builder<'_> {
     fn one_entity(&mut self, name: &str, master_name: Option<String>) -> Result<Value, Error> {
-        let entity = match self.model.entity(name) {
-            Ok(entity) => entity,
-            Err(err) if err.message().contains("not unique") => return Err(bad_request(err.message())),
-            Err(_) => return Err(bad_request(format!("No entity found with name or alias {name}"))),
+        let Ok(entity) = self.model.entity(name) else {
+            return Err(bad_request(format!("No entity found with name or alias {name}")));
         };
         let master = match master_name.as_deref() {
             Some(master_name) => Some(entity.masters.iter().find(|item| item.name == master_name).ok_or_else(

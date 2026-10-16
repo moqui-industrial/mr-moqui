@@ -388,6 +388,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
             getCurrentVersion: () => makeVersion(host.resourceVersion(ref.location, "current")),
             getRootVersion: () => makeVersion(host.resourceVersion(ref.location, "root")),
             getVersionHistory: () => host.resourceVersionHistory(ref.location).map(makeVersion),
+            getNextVersions: (versionName) => host.resourceNextVersions(ref.location, String(versionName)).map(makeVersion),
             // the directory named as this file without its extensions, or this directory
             findMatchingDirectory: function () {
                 if (ref.directory) return ref;
@@ -1715,6 +1716,23 @@ fn resource_version_history<'js>(ctx: Ctx<'js>, location: String) -> rquickjs::R
     })
 }
 
+/// `getNextVersions(versionName)`: the versions made from that one.
+fn resource_next_versions<'js>(
+    ctx: Ctx<'js>,
+    location: String,
+    version_name: String,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        if !resource_supports_version(location.clone()) {
+            return host_to_js(&ctx, Value::List(Vec::new()));
+        }
+        let versions = facade_of(&ctx)?
+            .db_resource_next_versions(&location, &version_name)
+            .map_err(|err| throw_lib(&ctx, &err))?;
+        host_to_js(&ctx, Value::List(versions.into_iter().map(version_value).collect()))
+    })
+}
+
 /// `getText(versionName)`: the text of one version, or null when there is no such version.
 fn resource_version_text<'js>(ctx: Ctx<'js>, location: String, version_name: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
@@ -2421,6 +2439,7 @@ pub(super) fn install<'js>(
     method!("resourceSupportsVersion", resource_supports_version);
     method!("resourceVersion", resource_version);
     method!("resourceVersionHistory", resource_version_history);
+    method!("resourceNextVersions", resource_next_versions);
     method!("resourceVersionText", resource_version_text);
     method!("restSend", rest_send);
     method!("runTokenCommand", run_token_command);

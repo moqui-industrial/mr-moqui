@@ -2047,3 +2047,99 @@ fn optimistic_lock_refuses_an_update_of_a_stale_value() {
     assert!(err.to_string().contains("updated by someone else"), "{err}");
     assert_eq!(read().get("note"), Some(&Value::string("first")));
 }
+
+/// The framework conf, to change before a facade is opened on it.
+fn framework_conf() -> MNode {
+    MNode::parse_file(crate::testing::framework_dir().join("conf/MoquiDefaultConf.xml")).unwrap()
+}
+
+#[test]
+fn the_global_sequenced_id_prefix_is_put_in_front_of_bank_ids() {
+    let conf = framework_conf();
+    conf.first_named("entity-facade")
+        .unwrap()
+        .set_attribute("sequenced-id-prefix", "G");
+    let facade = crate::testing::open_with_conf(&conf);
+    facade.temp_set_sequenced_id_primary("moqui.test.Foo", 1000, 10);
+    let mut foo = facade.make_value("moqui.test.Foo").unwrap();
+    foo.set_sequenced_id_primary(&facade).unwrap();
+    assert_eq!(foo.get("fooId").and_then(Value::as_str), Some("G1000"));
+    facade.temp_set_sequenced_id_primary("SomeName", 7, 10);
+    assert_eq!(
+        super::sequenced_id_primary(&facade, "SomeName", None, None).unwrap(),
+        "G7"
+    );
+    // An empty prefix is none, as the framework conf has it.
+    let plain = crate::testing::open();
+    plain.temp_set_sequenced_id_primary("SomeName", 7, 10);
+    assert_eq!(
+        super::sequenced_id_primary(&plain, "SomeName", None, None).unwrap(),
+        "7"
+    );
+}
+
+#[test]
+fn a_datasource_with_sequence_primary_use_uuid_gives_its_entities_uuids() {
+    let conf = framework_conf();
+    let datasource = super::datasource::datasource_nodes(&conf)
+        .into_iter()
+        .find(|node| node.attribute("group-name").as_deref() == Some("transactional"))
+        .unwrap();
+    datasource.set_attribute("sequence-primary-use-uuid", "true");
+    let facade = crate::testing::open_with_conf(&conf);
+    let mut foo = facade.make_value("moqui.test.Foo").unwrap();
+    foo.set_sequenced_id_primary(&facade).unwrap();
+    let id = foo.get("fooId").and_then(Value::as_str).unwrap().to_string();
+    assert_eq!((id.len(), id.matches('-').count()), (36, 4), "{id}");
+    let id = super::sequenced_id_primary(&facade, "moqui.test.Foo", None, None).unwrap();
+    assert_eq!(id.len(), 36, "{id}");
+    // A name that is no entity still comes from the bank.
+    facade.temp_set_sequenced_id_primary("SomeName", 7, 10);
+    assert_eq!(
+        super::sequenced_id_primary(&facade, "SomeName", None, None).unwrap(),
+        "7"
+    );
+}
+
+#[test]
+fn a_load_entity_file_outside_the_entity_directories_joins_the_model() {
+    let dir = std::env::temp_dir().join(format!("moqui-load-entity-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("Extra.xml");
+    std::fs::write(
+        &file,
+        r#"<entities><entity entity-name="LoadedByConf" package="moqui.test.conf">
+            <field name="confId" type="id" is-pk="true"/></entity></entities>"#,
+    )
+    .unwrap();
+    let conf = framework_conf();
+    let entity_facade = conf.first_named("entity-facade").unwrap();
+    let extra = MNode::parse_text("load", &format!(r#"<load-entity location="{}"/>"#, file.display())).unwrap();
+    entity_facade.append_node(extra);
+    let missing = MNode::parse_text("load", r#"<load-entity location="component://nowhere/entity/X.xml"/>"#).unwrap();
+    entity_facade.append_node(missing);
+    let facade = crate::testing::open_with_conf(&conf);
+    let _ = std::fs::remove_dir_all(&dir);
+    // The framework's own load-entity files are its entity directory, read once.
+    assert_eq!(facade.entity_files().len(), 1, "{:?}", facade.entity_files());
+    assert!(facade.make_value("moqui.test.conf.LoadedByConf").is_ok());
+    assert!(facade.make_value("moqui.basic.Enumeration").is_ok());
+}
+
+#[test]
+fn a_sequence_primary_prefix_is_expanded_with_the_value_fields() {
+    let context = crate::context::ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    let mut values = BTreeMap::new();
+    values.insert("kind".to_string(), Value::string("INV"));
+    assert_eq!(
+        super::sequence::expand_prefix(Some("${kind}-"), &values)
+            .unwrap()
+            .as_deref(),
+        Some("INV-")
+    );
+    assert_eq!(
+        super::sequence::expand_prefix(Some("P"), &values).unwrap().as_deref(),
+        Some("P")
+    );
+}

@@ -230,7 +230,7 @@ impl EntityValue {
 
     /// Set the first primary key from the in-memory sequence bank.
     pub fn set_sequenced_id_primary(&mut self, facade: &EntityFacade) -> Result<(), Error> {
-        let (field, id) = sequence::assign_primary(facade, &self.entity_name)?;
+        let (field, id) = sequence::assign_primary(facade, &self.entity_name, &self.fields)?;
         self.set(field, Value::string(id));
         Ok(())
     }

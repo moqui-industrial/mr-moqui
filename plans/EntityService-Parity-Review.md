@@ -20,13 +20,13 @@ ordering.
 
 ## Summary
 
-114 open findings and 30 accepted differences. Open by phase:
+97 open findings and 32 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
 | 1 Entity value / field / condition | 2 | — |
 | 2 Entity find / query | 0 | — |
-| 3 Facade / metadata / DDL / cache | 20 | — |
+| 3 Facade / metadata / DDL / cache | 3 | — |
 | 4 Data loader / feed / ECA / writer / document / ETL | 18 | P4a-01, P4a-02 |
 | 5 Entity query / REST | 5 | P5-01 |
 | 6 Service definition / validation / call | 20 | P6b-01 (decision) |
@@ -48,13 +48,12 @@ ordering.
    the permission check omits ALL_USERS group permissions.
 2. **Loader contract** (P4a-01, P4a-02, P4a-05, P4a-08, P4a-09, P4a-11): CSV typing, the CSV write
    path, empty/short cells and bad-type handling diverge from Java's accept/reject rules.
-3. **Config-driven DDL / model sources** (P3-01, P3-06, P3-07, P3-08, P3-09, P3-13, P3-14): global
-   `sequenced-id-prefix`, explicit schema qualification, full-text DDL shape and `fts-ddl`, and the
-   non-directory model sources (`<load-entity>`, DB view entities) are unread.
+3. **Full-text search and model sources** (P3-20, P3-14, P3-21): a `LIKE` on a `text-fts` field is not rewritten
+   to a full-text search (the DDL now follows `FtsDdl`), DB view entities are not built from their rows, and a
+   foreign key is recognized only by its computed name.
 4. **Error contract** (P6b-01, P7a-10): a failing service body propagates `Err` where Java records the
    error and returns; `post-commit` SECA gets `None` instead of an empty map.
-5. **Cache** (P3b-03): the sim has no rollback poison.
-6. **View REST output** (P5-01): view finds now filter on aliases but still render no alias values.
+5. **View REST output** (P5-01): view finds now filter on aliases but still render no alias values.
 
 ### Open decisions
 
@@ -154,7 +153,7 @@ along the way. No Phase 2 finding is open. Line numbers in this section are as o
 
 - Repeated equality (P2-03, fixed): `eq` and `condition` keep one equality (or `IS NULL`) per plain field, as
   Java's `simpleAndMap`, so a second one for the field replaces the first in place, and an `AND` is unrolled so
-  its equalities do the same (`add_condition`, `entity/find.rs:720`). A search-form condition goes the same way,
+  its equalities do the same (`add_condition`, `entity/find.rs:723`). A search-form condition goes the same way,
   so a form value replaces the find's own equality on that field, as in Java.
 - Search-form cache (P2-02, fixed): `search_form_map` sets `useCache(false)` when the find did not choose, and a
   find that asked for the cache (Java's `shouldCache`) is not paged (`entity/search_form.rs:66-69`, `:98`).
@@ -167,15 +166,15 @@ along the way. No Phase 2 finding is open. Line numbers in this section are as o
 - JSON schema relationships (P2-06, fixed): an entity's dependent relationships, or a master's details (with
   `use-master`), are properties named by short alias or relationship name with a `$ref` to the related schema,
   an array for `many`; the related schemas go in `$defs`, nested as Java nests them, and a reference back to a
-  standalone document's own entity is `#` (`entity/schema.rs:131-245`). The catalog also holds any view entity
+  standalone document's own entity is `#` (`entity/schema.rs:129-243`). The catalog also holds any view entity
   a relationship refers to, so every `$ref` resolves; Java refers to a definition it never writes.
 - JSON schema `enum` (P2-07, fixed): the first non-auto-reverse `one` relationship keyed by the field alone,
   titled and to `Enumeration` or `StatusItem`, lists that type's ids by `sequenceNum` (`field_enums`,
-  `entity/schema.rs:250`); a read that fails is logged and the field has no `enum`.
+  `entity/schema.rs:248`); a read that fails is logged and the field has no `enum`.
 - Distinct count (P2-11, fixed): with no field selected it counts `SELECT DISTINCT *` in a sub-select, as Java
   wraps all fields (`moqui-db/src/sql/statement.rs:262`).
-- `one()` with no condition or an empty PK returns `None` without querying (`entity/find.rs:367-405`).
-- `select_field` of an unknown field is skipped with a warning (`entity/find.rs:619-631`); its doc comment now
+- `one()` with no condition or an empty PK returns `None` without querying (`entity/find.rs:368-406`).
+- `select_field` of an unknown field is skipped with a warning (`entity/find.rs:622-634`); its doc comment now
   says so.
 - Search-form operators (`equals`/`like`/`contains`/`begins`/`empty`/`in`, `_from`/`_thru`, `_period`),
   date-range widening, `_period`/`getPeriodRange` windows, unknown op → no condition.
@@ -200,98 +199,116 @@ Reviewed the entity facade, model/DDL metadata, sequenced-id, datasource, tools-
 dbresource modules. Physical naming, DDL text and the model loader live in `moqui-db`; those findings
 cite their `moqui-db` location.
 
+Worked 2026-10-16: P3-01, P3-02, P3-07, P3-09, P3-10, P3-12, P3-13, P3-16, P3-17, P3-18, P3-19, P3b-03,
+P3b-04, P3b-07, P3b-08 and P3b-09 fixed; P3-06 and P3-11 moved to [Accepted differences](#accepted-differences);
+P3-08 removed as invalid (H2, SQL Server and Oracle have no driver in this port and `datasource_conf` refuses
+them, so no full-text DDL can run for those styles); P3-14 left open; P3-22 found and fixed, and P3-20 and P3-21
+found and left open, along the way. Line numbers in this section are as of that change.
+
 ### Findings — 3a facade / metadata / sequence / datasource
 
 | ID | Rust location | Java location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P3-01 | `entity/sequence.rs` (no read) | `EntityFacadeImpl.groovy:98,123,2038` | Global `entity-facade` `sequenced-id-prefix` never read/applied | Med | No |
-| P3-02 | `entity/info.rs:364-368` | `EntityJavaUtil.java:371` | `needsAuditLog` true for any attr / any value other than `"false"` (info display only) | Low | No |
-| P3-06 | `moqui-db/src/sql/statement.rs:120`; `moqui-host/src/db/entity_db.rs:202-226` | `EntityJavaUtil.java:312`; `EntityDbMeta.groovy:546,693,1085` | Postgres sets `search_path` to `schema-name`, so SQL/DDL land correctly there; still no explicit schema qualification, no `use-schemas="false"`, no `use-schema-for-all`, nothing for MySQL | Low-Med | No |
-| P3-07 | `moqui-db/src/sql/statement.rs:441-446`, `:680-681` | `FtsDdl.java:152-164,194-196` | Postgres fts: expression GIN index `{table}_{field}_FTS` clipped to 30 vs generated `{col}_tsv` column + `fts_{table}_{col}` clipped to 60 | Med | No |
-| P3-08 | `moqui-db/src/sql/statement.rs:440-450` | `FtsDdl.java:86-89,111` | `h2-native` fts creates no index; `mssql-contains`/`oracle-text` no warn/disable (H2 is not a Rust driver) | Low-Med | No |
-| P3-09 | `entity/meta.rs:663` | `FtsDdl.java:69` | `<database fts-ddl="false">` ignored; fts DDL still runs | Low | No |
-| P3-10 | `moqui-db/src/sql/statement.rs:494-520` | `EntityDbMeta.groovy:1101` | `use-fk-initially-deferred="true"` not honored (`INITIALLY DEFERRED` omitted) | Low | No |
-| P3-11 | `moqui-db/src/dialect.rs:198`; `moqui-db/src/sql/statement.rs:507` | `EntityDbMeta.groovy:1075` | `fk-style="name_fk"` parsed but unused; always `ADD CONSTRAINT n FOREIGN KEY` | Low | No |
-| P3-12 | `moqui-db/src/sql/statement.rs:662-664` | `EntityDbMeta.groovy:535` | `always-use-constraint-keyword` not honored in create-table columns | Low | No |
-| P3-13 | `moqui-db/src/model/mod.rs`; `entity/facade.rs` | `EntityFacadeImpl.groovy:459-472` | `<entity-facade><load-entity location=…>` files never loaded | Med | Unsure |
-| P3-14 | `moqui-db/src/model/mod.rs` | `EntityFacadeImpl.groovy:529-555,675-727` | DB view entities (`DbViewEntity`) never loaded | Med | Unsure |
-| P3-16 | `entity/sequence.rs:186` | `EntityJavaUtil.java:333-334` | Datasource-level `sequence-primary-use-uuid` ignored (entity attribute only) | Low | No |
-| P3-17 | `moqui-db/src/model/mod.rs:310-311`, `:403-405` | `EntityFacadeImpl.groovy:738-744,815-824` | Duplicate full entity name / ambiguous short name errors; Java warns and the last definition wins | Med | No |
-| P3-18 | `moqui-db/src/model/mod.rs:519-525` | `EntityFacadeImpl.groovy:768` | Unmatched / `extend-entity` package mismatch errors; Java skips silently | Low | No |
-| P3-19 | `entity/datasource.rs:276-299` | `EntityFacadeImpl.groovy:355` | JDBC URI query parameters other than `sslmode` dropped | Med | No |
+| P3-14 | `entity/share.rs` (immutable model); `runtime/base-component/tools/screen/Tools/DataView/ViewDbView.xml:62` | `EntityFacadeImpl.groovy:529-555,675-727` | DB view entities (`DbViewEntity` rows) are never made into view-entities; the DataView screen says so | Med | Unsure |
+| P3-20 | `moqui-db/src/sql/condition.rs:811` (`matches` only) | `FtsSql.java:81-123`; `FieldValueCondition.java:73` | A `LIKE`/`NOT LIKE` on a `text-fts` field stays a SQL `LIKE`; Java rewrites it to the full-text predicate plus a `LOWER(col) LIKE` per word, and falls back to `LIKE` when the group's full-text setup failed | Med | No |
+| P3-21 | `entity/meta.rs:733` | `EntityDbMeta.groovy:881`, `1047`, `1132` | A foreign key counts as there only by its computed name; Java matches the key columns, so a key Java made under another name gets a second one | Low | No |
 
-### Findings — 3b cache / dbresource
+No 3b (cache / dbresource) finding is open.
 
-| ID | Rust location | Java location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P3b-03 | `entity/cache.rs:1150-1194`, `:1229-1244` | `TransactionCacheDb.java:363-406` | No sim `poison`; a rolled-back sim write stays resident and the sim keeps running | Med | No |
-| P3b-04 | `entity/dbresource.rs:347-359` | `DbResourceReference.groovy:148-150,251` | dbresource write across a file/dir path silently nests under a file or flips a directory to a file instead of throwing | Med | No |
-| P3b-07 | `entity/dbresource.rs:381-387` | `DbResourceReference.groovy:181`; `ResourceEntities.xml:34` | `DbResourceFile.mimeType` never set on first write | Low | No |
-| P3b-08 | `entity/dbresource.rs:315-321` | `DbResourceReference.groovy:100` | Directory children returned unordered, not by `filename` | Low | No |
-| P3b-09 | `entity/dbresource.rs` | `DbResourceReference.groovy:346` | No `getNextVersions` (query by `previousVersionName`) | Low | Unsure |
+#### P3-14 — DB view entities not loaded
 
-#### P3-06 — Explicit schema qualification still missing
+Java looks a `DbViewEntity` name up in the database when the definition is first asked for, builds a
+`view-entity` node from its `DbViewEntityMember`, `DbViewEntityKeyMap` and `DbViewEntityAlias` rows, and caches
+it until the tools screens clear it. Rust's model is loaded once from files and is immutable (`SharedModel`);
+every lookup (`with_entity`, `with_model`, the SQL builders) borrows from it. Supporting these needs a second,
+mutable set of definitions behind a lock that every name lookup consults after the file model (or a model that
+can be swapped), a build from the rows through `EntityModel::complete_view` that reads them without recursing
+into the lookup, and invalidation when those rows change (the DataView edit screens and the data loader). That
+reaches every model lookup site, so it is left for a change of its own; until then the DataView screen tells the
+user the view is not available (`ViewDbView.xml:62`).
 
-Java computes `fullTableName` as `schemaName + "." + tableName` unless `<database use-schemas="false">`
-(`EntityJavaUtil.java:312`) and prefixes the schema onto PK constraints, indexes and FKs under
-`use-schema-for-all="true"`. Rust now sets the Postgres connection `search_path` to the configured
-`schema-name` (`moqui-host/src/db/entity_db.rs:202-226`), so DML, DDL and `current_schema()` probes land
-in the configured schema on Postgres. What remains: physical names are never qualified
-(`moqui-db/src/sql/statement.rs:120`), `use-schemas="false"` / `use-schema-for-all` are unread, and MySQL has no
-equivalent.
+#### P3-20 — `LIKE` on a `text-fts` field is not a full-text search
 
-#### P3-01 — Global `sequenced-id-prefix` never applied
+Java's `FieldValueCondition` hands a `LIKE`/`NOT LIKE` on a `text-fts` field to `FtsSql.appendIfRewritten`,
+which (unless the pattern is a prefix-only one, the words are all shorter than three letters, a hold overlay is
+active, or the group's FTS is disabled) writes the `fts-style` predicate (`{col}_tsv @@ plainto_tsquery(...)`,
+`MATCH ... AGAINST`, ...) and a `LOWER(col) LIKE ?` filter per word. Rust renders every `LIKE` as SQL `LIKE`;
+the full-text predicate is reachable only through `EntityFind::matches`, which no component calls. The
+Phase 2 note on `FtsSql` covered only that predicate's text. Rust also has no `FtsSql.disable`: when the
+`_tsv` column could not be added (P3-07), `matches` on Postgres fails rather than falling back to `LIKE`.
 
-Java reads `entity-facade@sequenced-id-prefix` once and prepends it to every generated primary id in
-`dbSequencedIdPrimary`. Rust reads only the per-entity `sequence-primary-prefix`; nothing under
-`crates/` references the global attribute, so with a configured prefix Rust persists keys without it.
+#### P3-21 — Foreign key existence by name
 
-#### P3-07 / P3-08 — Full-text DDL differs
-
-Java Postgres fts adds an owned generated `{column}_tsv` column and a GIN index `fts_{table}_{column}`
-clipped to 60; Rust builds an expression index `{table}_{field}_FTS` clipped to the constraint-name
-length (30) with no generated column — the two schemas are not interchangeable. Java also drives H2
-`FullText.createIndex` and warns/disables on `mssql-contains`/`oracle-text`; Rust returns `None` for any
-style other than `postgres-tsvector`/`mysql-fulltext`.
-
-#### P3-13 / P3-14 — Model sources not loaded
-
-Java loads entity files named by `<entity-facade><load-entity location=…>` in addition to component
-`entity` directories and synthesizes `view-entity` nodes from `moqui.entity.view.DbViewEntity` rows at
-startup. Rust's model is built solely from component `entity` directories, so custom-location entity
-XML and DB-defined view entities are undefined.
-
-#### P3-17 — Duplicate/ambiguous entity names fatal instead of override
-
-Java logs a warning and lets a later definition of a full name override, and caches by short name
-overwriting the prior entry. Rust treats a repeated full name as fatal and errors on an ambiguous short
-name, so colliding definitions Java tolerates become a startup failure.
-
-#### P3-19 — JDBC URI query parameters dropped
-
-Java passes the whole `inline-jdbc@jdbc-uri` to the driver. Rust `jdbc_uri` parses only host, port,
-database and `sslmode`, discarding the rest (Postgres `currentSchema`/`ApplicationName`, MySQL
-`useSSL`, …).
-
-#### P3b-03 — Rolled-back sim write does not poison the sim
-
-Rust `write_sim` executes and commits each statement on the overlay immediately with no equivalent of
-Java's `noteWrite`/`poison`. Java registers a JTA synchronization on the first sim write and, on
-rollback, poisons the sim so later use throws, because sim writes cannot be undone. In Rust a service
-that writes then rolls back continues with the sim active and the writes resident.
-
-#### P3b-04 — dbresource write silently restructures across a file/dir boundary
-
-`ensure_node` returns an existing file's id without complaint and flips an existing directory node to a
-file when a file is requested. Java's `putObject` throws when a path segment is a file and NPEs when
-the target is an existing directory, so Rust creates orphaned children under a file node or converts a
-directory (with children still pointing at it) into a file.
+`ensure_fks` skips a foreign key when the schema has a constraint of the name `foreign_key_name` gives. Java's
+`foreignKeyExists` reads the imported keys and matches the key columns. A database whose keys Java created under
+another name (MySQL's `fk-style="name_fk"` on MySQL 8.0.16 and later names them `{table}_ibfk_N`, see P3-11)
+gets a second, identically keyed constraint from the first Rust check. Matching by key columns needs a catalog
+read of the foreign key columns per group, like `existing_constraints`.
 
 #### Phase 3 checked and found equivalent
 
+- Global `sequenced-id-prefix` (P3-01, fixed): read once with the conf (`sequenced_id_prefix`,
+  `entity/facade.rs:601`) and put in front of every id a bank issues, for an entity (inside its own
+  `sequence-primary-prefix`) and for `sequencedIdPrimary`; not on a UUID or a sim id, as Java
+  (`entity/sequence.rs:211`, `:257`).
+- Entity `sequence-primary-prefix` (P3-22, found and fixed): `${}` runs with the value's fields in the context,
+  as Java's `setSequencedIdPrimary` expands it (`expand_prefix`, `entity/sequence.rs:216`). Before, the text was
+  used as written.
+- Datasource `sequence-primary-use-uuid` (P3-16, fixed): the entity's attribute or its group's datasource (the
+  default group's when it has none) gives a UUID, for `setSequencedIdPrimary` and `sequencedIdPrimary`
+  (`datasource_uses_uuid`, `entity/facade.rs:307`).
+- `needsAuditLog` in the tools info (P3-02, fixed): a field (the entity's attribute as its default) with `true`
+  or `update` (`entity/info.rs:572`).
+- Full-text DDL (P3-07, fixed): on Postgres the generated column `{column}_tsv` (`to_tsvector(config,
+  coalesce(col, ''))`, stored) and a GIN index `fts_{table}_{column}` on it; on MySQL a `FULLTEXT` index
+  `{table}_{column}_FTS`; names with characters other than letters, digits and `_` as `_`, clipped to 60, as
+  `FtsDdl` (`moqui-db/src/sql/statement.rs:439-520`). `matches` on a `text-fts` field searches the `_tsv` column
+  (`moqui-db/src/sql/condition.rs:817-825`); a view alias still computes `to_tsvector(...)`, which is right but
+  not indexed. A plain entity with a `text-fts` field no longer reads `SELECT *`, which would carry the generated
+  column. **Upgrade:** a database this port set up before has an expression index `{table}_{field}_FTS` clipped
+  to 30 and no `_tsv` column. The next table check (startup, or the runtime check) adds the column and its index
+  and then drops that old index (`ensure_fts`, `entity/meta.rs:667`); on MySQL a `FULLTEXT` index under the old
+  name is dropped after the new one is added. On Postgres adding the stored column rewrites the table once, so a
+  large `text-fts` table makes that start slow; set `fts-ddl="false"` and add the column and index by hand to
+  avoid it. Checked against embedded Postgres, including the upgrade.
+- `fts-ddl="false"` (P3-09, fixed): no full-text column or index, in create table or in the check, and no old
+  index is dropped. The attribute is now in the runtime's `moqui-conf-3.xsd`.
+- `use-fk-initially-deferred` (P3-10, fixed): `INITIALLY DEFERRED` after the references
+  (`moqui-db/src/sql/statement.rs:599-601`). Only new foreign keys get it; an existing one is not altered.
+- `always-use-constraint-keyword` (P3-12, fixed): `CONSTRAINT NOT NULL` for a not-null column of a create table
+  (`moqui-db/src/sql/statement.rs:737-739`). No shipped profile sets it.
+- `<load-entity location>` (P3-13, fixed): the conf's files are read after the framework's `entity` directory and
+  before the components', as Java's `getAllEntityFileLocations`; a file already in a model directory (the
+  framework's own list) is read once, and `*.eecas.xml` ones join the EECA rules (`load_entity_files`,
+  `entity/facade.rs:624`; `EntityModel::load_paths`, `moqui-db/src/model/mod.rs:399`). `component://` is the
+  framework or a component whose directory has that name; a location that cannot be found is logged and skipped.
+- Repeated entity names (P3-17, fixed): a full name defined again is a warning naming both locations and the
+  later definition is used; an entity name in more than one package is a warning at load and means the
+  framework's (`moqui.`) definition, else the full name that sorts last, as Java's definition cache ends up after
+  `loadAllEntityDefinitions` (`preferred`, `moqui-db/src/model/mod.rs:497`).
+- `extend-entity` with no matching entity or another package (P3-18, fixed): skipped with a warning naming it
+  (`moqui-db/src/model/mod.rs:586`); Java skips it silently.
+- JDBC URI parameters (P3-19, fixed): those with an equivalent in this port's drivers are read (`sslmode`/
+  `sslMode`, MySQL `useSSL`, Postgres `currentSchema` when there is no `schema-name`); any other is logged by
+  name and left out, since the Postgres and MySQL clients here are not JDBC drivers (`jdbc_uri`,
+  `entity/datasource.rs:295`).
+- Sim rollback poison (P3b-03, fixed): the first sim write of a transaction adds a rollback hook that ends the
+  sim, as Java's `noteWrite`/`poison`; afterwards every find and sim write fails with Java's message until the
+  sim is exited (`note_sim_write`, `entity/cache.rs:211`; `sim_check_find`, `:183`). A transaction that commits,
+  one that never wrote to the sim, and a write with no transaction are not tracked, and the sim's own records on
+  production (`SIM_PRODUCTION_ENTITIES`) are still read. Checked against an embedded overlay.
+- dbresource write across a file/dir boundary (P3b-04, fixed): the parent directories go through
+  `directory_id`, so a file in the path is Java's "found file instead" error, and a directory at the location is
+  an error rather than becoming a file (`write_db_resource`, `entity/dbresource.rs:120`).
+- `DbResourceFile.mimeType` (P3b-07, fixed): set on the first write from the file name
+  (`content_type_for_name`, `entity/dbresource.rs:366`); that list is shorter than Java's MIME map, so a rarer
+  extension gets none.
+- Directory children (P3b-08, fixed) are listed by `filename` (`entity/dbresource.rs:313`).
+- `getNextVersions` (P3b-09, fixed): the history rows whose `previousVersionName` is the version
+  (`db_resource_next_versions`, `entity/dbresource.rs:466`), and `ResourceReference.getNextVersions` in scripts.
 - `<database use-indexes>`, `use-indexes-unique(-where-not-null)`, `use-foreign-keys`
-  (`entity/meta.rs:607-608,704-705`, `moqui-db/src/dialect.rs:205-210`); unknown entity group falls back to
-  the default group (`entity/facade.rs:497-507`).
+  (`entity/meta.rs:609,725`, `moqui-db/src/dialect.rs:217-223`); unknown entity group falls back to
+  the default group (`entity/facade.rs:536-546`).
 - Entity-operation authorization (`AT_ENTITY` for create/update/delete/view, `authorize-skip`
   semantics); facade `begin`/`commit`/`rollback`/`transactions_for` per group.
 - Sequenced-id bank start 100000, bank size 50, stagger, `tempSet/tempReset`, per-name locking,
@@ -300,7 +317,7 @@ directory (with children still pointing at it) into a file.
   `use-foreign-key-indexes`, `never-nulls`, `never-try-insert`, `use-binary-type-for-blob`,
   `table-engine`, `character-set`, `collate`, `for-update`; FK/index naming; dictionary type mapping.
 - Cache: one/list keying, `entity.record.list.{entity}`, LFU no-TTL, `useCache`/`neverCache`; member
-  writes evict cached views over that member, nested views included (`entity/cache.rs:498-500,619-660`, coarser
+  writes evict cached views over that member, nested views included (`entity/cache.rs:584-586,705-746`, coarser
   than Java but safe); count cache; limit/offset finds not cached.
 - Per-transaction hold cache: create-after-delete collapse, delete-after-create, chronological flush,
   rollback drop, last-value-wins update; `flush_and_disable`; `stopTxCache`.
@@ -339,8 +356,8 @@ against `EntityDataLoaderImpl`, `EntityDataFeed`, `EntityEcaRule`, `EntityDataWr
 
 | ID | Rust location | Java location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P4b-01 | `entity/load_feed/eca.rs:96-97`, `:173` | `EntityFacadeImpl.groovy:968-969,986-990` | EECA rule `entity` not canonicalized; undefined entities not skipped | Med | No |
-| P4b-02 | `entity/load_feed/eca.rs:192-201` | `EntityFacadeImpl.groovy:935-936,966-977` | Same-entity rule order: single file-order list vs no-id-first then id'd (Java's id'd order is `HashMap`-undefined) | Low | No |
+| P4b-01 | `entity/load_feed/eca.rs:96-97`, `:184` | `EntityFacadeImpl.groovy:968-969,986-990` | EECA rule `entity` not canonicalized; undefined entities not skipped | Med | No |
+| P4b-02 | `entity/load_feed/eca.rs:203-212` | `EntityFacadeImpl.groovy:935-936,966-977` | Same-entity rule order: single file-order list vs no-id-first then id'd (Java's id'd order is `HashMap`-undefined) | Low | No |
 | P4b-03 | `entity/document.rs:834-857` | `EntityDataDocument.groovy:136,163-169,363-427` | Rows merged by `doc_id` even when not all PKs are aliased; Java emits one doc per row | Med | No |
 | P4b-05 | `entity/data_writer.rs:452-465` | `EntityValueBase.java:1128,1181,1187`; `EntityDataWriterImpl.groovy:391-397` | XML record count/message excludes nested dependents | Low | No |
 | P4b-06 | `entity/data_writer.rs:303-307`, `:555-557` | `EntityDataWriterImpl.groovy:91-96,152-154` | `file()`/`directory()` create parent dirs; Java errors if the parent is missing (zip path matches) | Low | No |
@@ -575,7 +592,7 @@ Reviewed `service/{eca,eca_rules,seca,rule_actions,email_eca,security_checks}.rs
 |----|---|---|---|---|---|
 | P7a-03 | `service/call.rs:293`, `:316` | `ServiceCallSyncImpl.java:173,215,239,565` | Implicit entity-auto: `pre-validate` SECA fires once in Rust, twice in Java; and Rust runs `pre-auth` SECA, which Java never reaches (it returns at `:215`) | Med | No |
 | P7a-05 | `service/security_checks.rs:142-188` | `UserFacadeImpl.groovy:852-858` | `user_in_group` omits the `userGroupId == "ALL_USERS"` short-circuit, and `user_has_permission` omits ALL_USERS group permissions that Java `hasPermission` includes | Med | No |
-| P7a-06 | `entity/load_feed/eca.rs:180-183`; `service/email_eca.rs:34-37`; `script/actions.rs:76-81` | `EmailEcaRule.groovy:44-47`; `EntityEcaRule.groovy:44-47` | EECA and EMECA AND every `<condition>` child; Java wraps only the first (SECA now matches) | Low | Unsure |
+| P7a-06 | `entity/load_feed/eca.rs:191-194`; `service/email_eca.rs:34-37`; `script/actions.rs:76-81` | `EmailEcaRule.groovy:44-47`; `EntityEcaRule.groovy:44-47` | EECA and EMECA AND every `<condition>` child; Java wraps only the first (SECA now matches) | Low | Unsure |
 | P7a-07 | `script/runtime/convert.rs:123-137` | `actions/XmlAction.java:77-81` | `eval_condition` JS truthiness (empty array/object true) vs Groovy `as Boolean` (empty collection false) | Low | Unsure |
 | P7a-08 | `service/seca.rs:132-168` | `ServiceFacadeImpl.groovy:415-508` | SECA patterns matched at runtime; Java expands patterns to defined services at load | Low | Yes |
 | P7a-10 | `service/call.rs:395` | `ServiceCallSyncImpl.java:388` | `post-commit` on a failed call passes `results = None`; Java passes an empty map | Low | No |
@@ -780,13 +797,15 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 
 | ID | Area | Difference | Rationale / where documented |
 |---|---|---|---|
-| P1-07 | entity condition | A raw `Where` fragment is wrapped in `(...)`; Java appends it verbatim, so boolean precedence can differ (`moqui-db/src/sql/condition.rs:656-662`) | Safer: an `OR` in the fragment cannot bind across the conditions around it; comment at the site |
+| P1-07 | entity condition | A raw `Where` fragment is wrapped in `(...)`; Java appends it verbatim, so boolean precedence can differ (`moqui-db/src/sql/condition.rs:659-665`) | Safer: an `OR` in the fragment cannot bind across the conditions around it; comment at the site |
 | P1-13 | entity list | Rust `EntityList` has only len/get/iter/values; Java has `filterByAnd`, `orderByFields`, `getFirst` and more (`entity/value.rs:243-277`) | Rust callers use slice/iterator methods; the script runtime's list has the helpers scripts call (`filterByDate`, `getPartialList`, `first`), and no converted component uses the others; doc comment at the type |
 | P2-08 | entity find | Distinct and select-field finds bypass the entity cache; Java caches them by reading every field, so a cached entity answers with whole, non-distinct rows (`entity/find.rs:238-244`) | Rust returns the rows and fields asked for; comment at `bypasses_cache` |
-| P2-10 | entity find | `iterator()` under `requireSearchFormParameters` returns an empty iterator; Java returns `null` (`entity/find.rs:522-528`) | Rust has no null iterator; empty is the safe equivalent |
-| P2-12 | entity schema | JSON schema envelope redesigned: `$defs`/draft 2020-12, PK `required`, keyed by full name vs Java `definitions`/`anyOf`/pagination, draft-04, `_entity`+`default`, short-or-full name (`entity/schema.rs:27,91-130`) | Deliberate modernization; relationships and `enum` now follow Java inside it (P2-06/P2-07 fixed) |
+| P2-10 | entity find | `iterator()` under `requireSearchFormParameters` returns an empty iterator; Java returns `null` (`entity/find.rs:524-530`) | Rust has no null iterator; empty is the safe equivalent |
+| P2-12 | entity schema | JSON schema envelope redesigned: `$defs`/draft 2020-12, PK `required`, keyed by full name vs Java `definitions`/`anyOf`/pagination, draft-04, `_entity`+`default`, short-or-full name (`entity/schema.rs:27,89-128`) | Deliberate modernization; relationships and `enum` now follow Java inside it (P2-06/P2-07 fixed) |
 | P2-14 | search form | `_not` with `_ic` on `equals` compares ignoring case; Java throws, since `ignoreCase()` on the `orNull` join condition is unsupported (`entity/search_form.rs:269-272`) | A search a user can type should not fail; comment at the site |
-| P3b-10 | feed cache | Feed-info cache invalidated on write vs Java 900s TTL (`entity/cache.rs:751-758`) | Rust is more current |
+| P3-06 | datasource / DDL | No table, constraint or index name is schema-qualified: Postgres sets the session `search_path` to `schema-name` (`moqui-host/src/db/entity_db.rs:202-207`), `use-schema-for-all` (only the DB2 profiles) is unread, and a MySQL `schema-name` is logged and not used (`entity/datasource.rs:222-229`) | Same placement on Postgres without qualifying each statement; no DB2 driver; on MySQL Java's `schema.TABLE` is another database, which the jdbc-uri names. `use-schemas="false"` is now honored (no search path, `entity/datasource.rs:178-184`); comments at both sites |
+| P3-11 | DDL | `fk-style="name_fk"` (the MySQL profiles) is not followed: always `ADD CONSTRAINT name FOREIGN KEY` (`moqui-db/src/sql/statement.rs:562-571`) | MySQL 8.0.16 and later ignore the `name_fk` name and call the key `{table}_ibfk_N`, so the check that goes by name (P3-21) would add it again on every check; doc comment at `create_foreign_key` |
+| P3b-10 | feed cache | Feed-info cache invalidated on write vs Java 900s TTL (`entity/cache.rs:838-845`) | Rust is more current |
 | P4b-07 | data feed | `get#DataFeedDocuments` honors `thruUpdateStamp`; Java always passes null | Bug fix; comment at runtime `EntityServices.xml:35-36` |
 | P4b-09 | data writer | `isoDateTime(true)` formats dates in JSON and XML; Java ignores it (`TODO`) (`entity/query_rest.rs:1555-1578,1704-1721`) | Implements Java's TODO |
 | P5-14 | entity REST | Request `pageSize` capped at `entity_rest_max_page_size` (1000); Java caps nothing | Documented `entity/query_rest.rs:534-553` |

@@ -290,6 +290,9 @@ pub struct EntityModel {
 
 impl EntityModel {
     /// `conf` is a tree that contains `<database-list>`. Documents whose root is not `entities` are skipped.
+    ///
+    /// As Java's `EntityFacadeImpl`, a full name defined again is a warning and the later definition is used, and an
+    /// `extend-entity` that matches no entity is skipped with a warning.
     pub fn load(conf: &MNode, documents: &[MNode]) -> Result<Self, Error> {
         let dictionary = parse_dictionary(conf)?;
         let legacy_names = crate::dialect::legacy_names(conf)?;
@@ -307,8 +310,15 @@ impl EntityModel {
                         let node = child.deep_copy();
                         let (entity_name, package_name) = entity_identity(&node)?;
                         let full_name = format!("{package_name}.{entity_name}");
-                        if by_full.contains_key(&full_name) {
-                            return Err(located(&node, format!("duplicate entity {full_name}")));
+                        if let Some(index) = by_full.get(&full_name).copied() {
+                            tracing::warn!(
+                                "Entity {full_name} was found again at {}, so overriding definition from previous location {}",
+                                where_of(&node),
+                                where_of(&nodes[index])
+                            );
+                            view_flags[index] = child.name() == "view-entity";
+                            nodes[index] = node;
+                            continue;
                         }
                         by_full.insert(full_name, nodes.len());
                         view_flags.push(child.name() == "view-entity");
@@ -339,6 +349,20 @@ impl EntityModel {
         resolve_relationships(&mut entities, &index_by_name)?;
         create_auto_reverses(&mut entities, &index_by_full)?;
         expand_key_pairs(&mut entities, &index_by_full);
+        for (name, indexes) in &index_by_name {
+            if indexes.len() > 1 {
+                let chosen = preferred(&entities, indexes);
+                let all: Vec<String> = indexes
+                    .iter()
+                    .map(|index| format!("{} at {}", entities[*index].full_name, where_of(&nodes[*index])))
+                    .collect();
+                tracing::warn!(
+                    "Entity name {name} is defined more than once ({}); the name alone means {}",
+                    all.join(", "),
+                    entities[chosen].full_name
+                );
+            }
+        }
         let mut by_short_alias = HashMap::new();
         for (index, entity) in entities.iter().enumerate() {
             if let Some(alias) = entity.short_alias.as_ref().filter(|alias| !alias.is_empty()) {
@@ -367,9 +391,22 @@ impl EntityModel {
     /// [`Self::load_directory`] over several directories in order, the framework's first and then each
     /// component's `entity` directory, as one model: a component's `extend-entity` applies to any of them.
     pub fn load_directories(conf: &MNode, directories: &[&Path]) -> Result<Self, Error> {
+        Self::load_paths(conf, directories)
+    }
+
+    /// [`Self::load_directories`] where a path may also be one entity file, such as a `<load-entity location>` of the
+    /// conf. A file whose root is not `entities` is skipped.
+    pub fn load_paths(conf: &MNode, paths: &[&Path]) -> Result<Self, Error> {
         let mut documents = Vec::new();
-        for directory in directories {
-            documents.extend(entity_documents(directory)?);
+        for path in paths {
+            if path.is_file() {
+                let node = MNode::parse_file(path)?;
+                if node.name() == "entities" {
+                    documents.push(node);
+                }
+            } else {
+                documents.extend(entity_documents(path)?);
+            }
         }
         Self::load(conf, &documents)
     }
@@ -401,9 +438,8 @@ impl EntityModel {
             return Ok(*index);
         }
         match self.by_name.get(name) {
-            Some(indexes) if indexes.len() == 1 => Ok(indexes[0]),
-            Some(_) => Err(Error::new(format!("entity name {name} is not unique"))),
-            None => self
+            Some(indexes) if !indexes.is_empty() => Ok(preferred(&self.entities, indexes)),
+            _ => self
                 .by_short_alias
                 .get(name)
                 .copied()
@@ -452,6 +488,32 @@ impl EntityModel {
         completed?;
         state[index] = Completion::Done;
         Ok(())
+    }
+}
+
+/// The definition an entity name defined in more than one package means, as Java's definition cache has it after
+/// loading every entity in full name order: the framework's (`moqui.`) when there is one, else the full name that sorts
+/// last.
+fn preferred(entities: &[EntityDefinition], indexes: &[usize]) -> usize {
+    let framework = indexes
+        .iter()
+        .copied()
+        .filter(|index| entities[*index].full_name.starts_with("moqui."))
+        .max_by(|a, b| entities[*a].full_name.cmp(&entities[*b].full_name));
+    framework.unwrap_or_else(|| {
+        indexes
+            .iter()
+            .copied()
+            .max_by(|a, b| entities[*a].full_name.cmp(&entities[*b].full_name))
+            .unwrap_or(indexes[0])
+    })
+}
+
+/// Where a node was read, for a message.
+fn where_of(node: &MNode) -> String {
+    match node.file_location() {
+        Some(location) => format!("{location}:{}", node.line()),
+        None => "an unknown location".to_string(),
     }
 }
 
@@ -518,10 +580,13 @@ fn apply_extend(nodes: &[MNode], by_full: &HashMap<String, usize>, extend_node: 
     let (entity_name, package_name) = entity_identity(extend_node)?;
     let full_name = format!("{package_name}.{entity_name}");
     let Some(index) = by_full.get(&full_name) else {
-        return Err(located(
-            extend_node,
-            format!("extend-entity {full_name} does not match a loaded entity"),
-        ));
+        // Java applies an extend-entity only while it builds the entity it names, so one that names no entity (or
+        // another package) is never used.
+        tracing::warn!(
+            "extend-entity {full_name} at {} matches no entity, skipping it",
+            where_of(extend_node)
+        );
+        return Ok(());
     };
     let entity_node = &nodes[*index];
     entity_node.copy_attributes_from(extend_node);
