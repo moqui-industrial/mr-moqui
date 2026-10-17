@@ -9,7 +9,9 @@ const { execFileSync } = require('node:child_process');
 
 test('Quasar theme colors, labels and sort layout match Java', () => {
     const css = fs.readFileSync(path.join(__dirname, 'WebrootVue.qvt.css'), 'utf8');
+    const quasar = fs.readFileSync(path.join(__dirname, '../libs/quasar/quasar.prod.css'), 'utf8');
     const html = `<style>
+        ${quasar}
         :root { --q-primary:rgb(1,2,3); --q-positive:rgb(4,5,6); --q-negative:rgb(7,8,9); }
         ${css}
         .q-menu, .q-toolbar { color:rgb(10,11,12); }
@@ -23,6 +25,9 @@ test('Quasar theme colors, labels and sort layout match Java', () => {
     <div class="q-toolbar"><a id="toolbar" href="#">Toolbar</a></div>
     <p id="paragraph" class="text-inline">Promotion note</p>
     <span id="inline" class="text-inline">Inline label</span>
+    <button id="dense" class="q-btn q-btn--dense"><span class="q-btn__content">Find Options</span></button>
+    <a id="flat" class="q-btn q-btn--dense q-btn--flat m-link"><span class="q-btn__content">Product</span></a>
+    <button id="round" class="q-btn q-btn--dense q-btn--round">Icon</button>
     <pre id="result"></pre>
     <script>
         const style = id => getComputedStyle(document.getElementById(id));
@@ -32,6 +37,8 @@ test('Quasar theme colors, labels and sort layout match Java', () => {
             borderStyle:style('input').borderBottomStyle,
             menu:style('menu').color, toolbar:style('toolbar').color,
             paragraph:style('paragraph').display, inline:style('inline').display,
+            densePadding:style('dense').padding, flatPadding:style('flat').padding,
+            flatMinHeight:style('flat').minHeight, roundPadding:style('round').padding,
             sort:style('sort').display, sortLink:style('active').display,
             sortSameLine:document.getElementById('active').getBoundingClientRect().top ===
                 document.getElementById('descending').getBoundingClientRect().top
@@ -40,9 +47,11 @@ test('Quasar theme colors, labels and sort layout match Java', () => {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'moqui-qvt-css-'));
     let dom;
     try {
+        const fixture = path.join(profile, 'fixture.html');
+        fs.writeFileSync(fixture, html);
         dom = execFileSync(process.env.CHROMIUM_PATH || 'chromium', [
             '--headless', '--disable-gpu', '--user-data-dir=' + profile,
-            '--dump-dom', 'data:text/html,' + encodeURIComponent(html)
+            '--dump-dom', 'file://' + fixture
         ], { encoding: 'utf8', timeout: 20000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
     } finally {
         fs.rmSync(profile, { recursive: true, force: true });
@@ -53,6 +62,7 @@ test('Quasar theme colors, labels and sort layout match Java', () => {
         active: 'rgb(1, 2, 3)', border: 'rgb(1, 2, 3)', borderStyle: 'solid',
         menu: 'rgb(10, 11, 12)', toolbar: 'rgb(10, 11, 12)',
         paragraph: 'block', inline: 'inline',
+        densePadding: '4px 8px', flatPadding: '0px 4px', flatMinHeight: '21px', roundPadding: '0px',
         sort: 'inline', sortLink: 'inline', sortSameLine: true
     });
 });
