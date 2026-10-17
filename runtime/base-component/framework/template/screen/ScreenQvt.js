@@ -1093,7 +1093,7 @@
             }
             const count = ctx(listName + "Count");
             if ((count === "" ? 0 : count) === 0) {
-                out += '<strong class="text-warning on-right q-my-auto">' + t(L(ec.context.get("_entityListNoSearchParms") ? "Find Options required to view results" : "No results found")) + "</strong>";
+                out += '<strong class="text-warning on-right q-my-auto">' + t(L(ec.context.sharedMap._entityListNoSearchParms ? "Find Options required to view results" : "No results found")) + "</strong>";
             }
             out += "</div></div>";
             if (paginated) {
