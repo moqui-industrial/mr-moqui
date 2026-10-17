@@ -28,7 +28,7 @@ use moqui_lib::node::MNode;
 pub use condition::{ConditionGroup, ConditionItem, DateFilter, ECondition, EntityConditionDef};
 pub use view::{
     prefixed_name, AliasAll, AliasExpr, CaseAlias, ComplexAlias, ComplexField, ComplexPart, FieldAlias, MemberEntity,
-    SubSelect, AGGREGATE_FUNCTIONS,
+    PqAlias, SubSelect, AGGREGATE_FUNCTIONS,
 };
 
 use view::SourceField;
@@ -153,6 +153,9 @@ pub struct EntityDefinition {
     pub member_entities: Vec<MemberEntity>,
     /// Every alias, including those `alias-all` expands to, after [`EntityModel::complete_view`].
     pub aliases: Vec<FieldAlias>,
+    /// Aliases with `pq-expression`, as Java's `pqExpressionNodeMap`: not selected and not among the view's fields; the
+    /// value layer evaluates each on a row it reads.
+    pub pq_aliases: Vec<PqAlias>,
     /// `alias-all` as written. Already expanded into `aliases` once the view is complete.
     pub alias_alls: Vec<AliasAll>,
     pub entity_condition: Option<EntityConditionDef>,
@@ -268,6 +271,10 @@ impl EntityDefinition {
 
     pub fn alias(&self, name: &str) -> Option<&FieldAlias> {
         self.aliases.iter().find(|alias| alias.name == name)
+    }
+
+    pub fn pq_alias(&self, name: &str) -> Option<&PqAlias> {
+        self.pq_aliases.iter().find(|alias| alias.name == name)
     }
 }
 
@@ -698,31 +705,22 @@ fn parse_entity(
         .iter()
         .map(parse_master)
         .collect::<Result<Vec<_>, _>>()?;
-    let (member_entities, aliases, alias_alls, entity_condition) = if is_view {
+    let (member_entities, aliases, pq_aliases, alias_alls, entity_condition) = if is_view {
         let mut member_entities = Vec::new();
         for child in node.children() {
             if matches!(child.name().as_str(), "member-entity" | "member-relationship") {
                 member_entities.push(view::parse_member(&child)?);
             }
         }
-        // Java evaluates a `pq-expression` alias after the query, which this port does not do: the alias is left out,
-        // so the rest of the view and the model still load.
-        let mut aliases = node
-            .children_named("alias")
-            .iter()
-            .filter(|child| {
-                let Some(expression) = optional_attr(child, "pq-expression") else {
-                    return true;
-                };
-                tracing::error!(
-                    "View-entity {full_name} alias {} has pq-expression [{expression}], which is not \
-                     supported; leaving the alias out",
-                    child.attribute("name").unwrap_or_default()
-                );
-                false
-            })
-            .map(|child| view::parse_alias(child, &dictionary_names))
-            .collect::<Result<Vec<_>, _>>()?;
+        // As Java, an alias with `pq-expression` is kept apart from the selected aliases.
+        let mut aliases = Vec::new();
+        let mut pq_aliases = Vec::new();
+        for child in node.children_named("alias") {
+            match view::parse_pq_alias(&child)? {
+                Some(pq_alias) => pq_aliases.push(pq_alias),
+                None => aliases.push(view::parse_alias(&child, &dictionary_names)?),
+            }
+        }
         for alias in &mut aliases {
             if let Some(field_type) = &alias.field_type {
                 alias.java_type = java_of(field_type);
@@ -737,9 +735,9 @@ fn parse_entity(
             .first_named("entity-condition")
             .map(|condition| EntityConditionDef::parse(&condition))
             .transpose()?;
-        (member_entities, aliases, alias_alls, entity_condition)
+        (member_entities, aliases, pq_aliases, alias_alls, entity_condition)
     } else {
-        (Vec::new(), Vec::new(), Vec::new(), None)
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), None)
     };
     Ok(EntityDefinition {
         entity_name,
@@ -768,6 +766,7 @@ fn parse_entity(
         masters,
         member_entities,
         aliases,
+        pq_aliases,
         alias_alls,
         entity_condition,
     })

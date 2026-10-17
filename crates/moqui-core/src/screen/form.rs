@@ -813,6 +813,8 @@ pub(super) struct EntityShape {
     pub description_field: String,
     /// A view alias's `default-display`, by alias name.
     pub default_display: HashMap<String, bool>,
+    /// The view's `pq-expression` aliases with `default-display="true"`, which the auto fields show after the others.
+    pub pq_display: Vec<String>,
 }
 
 /// The shapes made so far, by entity name, for the model they were read from. A form-list row and an option item ask
@@ -900,6 +902,12 @@ fn read_entity_shape(model: &EntityModel, entity_name: &str) -> Result<EntitySha
         .iter()
         .filter_map(|alias| alias.default_display.map(|display| (alias.name.clone(), display)))
         .collect();
+    let pq_display = entity
+        .pq_aliases
+        .iter()
+        .filter(|alias| alias.default_display)
+        .map(|alias| alias.name.clone())
+        .collect();
     Ok(EntityShape {
         full_name: entity.full_name.clone(),
         pk_fields: fields
@@ -911,6 +919,7 @@ fn read_entity_shape(model: &EntityModel, entity_name: &str) -> Result<EntitySha
         one_relations,
         description_field,
         default_display,
+        pq_display,
     })
 }
 
@@ -951,6 +960,17 @@ fn add_entity_fields(
             sub
         });
         add_auto_entity_field(shape, name, field_type, &field, sub.as_ref(), form);
+        merge_field_node(form, &field, false);
+    }
+    // As Java, a `pq-expression` alias with `default-display="true"` is a display field whatever `include`, the
+    // excludes and the field type, and is not among the displayed names.
+    for name in &shape.pq_display {
+        let field = MNode::new("field");
+        field.set_attribute("name", name.clone());
+        let sub = field.append("default-field");
+        sub.set_attribute("validate-entity", shape.full_name.clone());
+        sub.set_attribute("validate-field", name.clone());
+        add_auto_entity_field(shape, name, "display", &field, Some(&sub), form);
         merge_field_node(form, &field, false);
     }
     displayed
@@ -1443,5 +1463,45 @@ mod tests {
         };
         assert!(field("note").first_named("default-field").is_some());
         assert!(field("code").first_named("default-field").is_none());
+    }
+
+    /// As Java's `addEntityFields`: a view's `pq-expression` alias with `default-display="true"` is a display field
+    /// whatever the form, `include`, field type and excludes, and is not one of the names shown; one without it gets no
+    /// field.
+    #[test]
+    fn a_pq_expression_alias_with_default_display_is_an_auto_display_field() {
+        let conf = parse(
+            r#"<database-list>
+                <dictionary-type type="id" java-type="java.lang.String" default-sql-type="VARCHAR(40)"/>
+            </database-list>"#,
+        );
+        let entities = parse(
+            r#"<entities>
+                <entity entity-name="Item" package="t" no-update-stamp="true">
+                    <field name="itemId" type="id" is-pk="true"/><field name="code" type="id"/></entity>
+                <view-entity entity-name="ItemView" package="t">
+                    <member-entity entity-alias="I" entity-name="t.Item"/>
+                    <alias-all entity-alias="I"/>
+                    <alias name="label" pq-expression="itemId + ':' + code" default-display="true"/>
+                    <alias name="quiet" pq-expression="code"/>
+                </view-entity></entities>"#,
+        );
+        let model = EntityModel::load(&conf, &[entities]).unwrap();
+        let shape = read_entity_shape(&model, "t.ItemView").unwrap();
+        assert_eq!(shape.pq_display, ["label"]);
+        let form = parse(r#"<form-single name="S"/>"#);
+        let shown = add_entity_fields(&shape, "pk", "edit", &["label".to_string()], &form);
+        assert_eq!(shown, ["itemId"]);
+        let names: Vec<String> = form
+            .children_named("field")
+            .iter()
+            .filter_map(|field| field.attribute("name"))
+            .collect();
+        assert_eq!(names, ["itemId", "label"]);
+        let label = form.children_named("field")[1].first_named("default-field").unwrap();
+        assert_eq!(label.attribute("validate-entity").as_deref(), Some("t.ItemView"));
+        assert_eq!(label.attribute("validate-field").as_deref(), Some("label"));
+        assert!(label.first_named("display").is_some());
+        assert!(label.first_named("text-area").is_none() && label.first_named("text-line").is_none());
     }
 }

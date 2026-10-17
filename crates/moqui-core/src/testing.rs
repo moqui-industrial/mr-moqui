@@ -193,6 +193,42 @@ pub(crate) fn framework_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework")
 }
 
+/// A log subscriber that keeps each event's fields as one line, for a test that checks what was logged.
+pub(crate) struct LogSubscriber(pub(crate) Arc<Mutex<Vec<String>>>);
+
+impl tracing::Subscriber for LogSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut visit = FieldVisit(String::new());
+        event.record(&mut visit);
+        self.0.lock().expect("lines").push(visit.0);
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+struct FieldVisit(String);
+
+impl tracing::field::Visit for FieldVisit {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write as _;
+        let _ = write!(self.0, "{}={:?} ", field.name(), value);
+    }
+}
+
 struct MemDriver {
     store: Arc<Mutex<Tables>>,
     tape: Option<Arc<Mutex<Vec<String>>>>,
@@ -992,7 +1028,8 @@ fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
     }))
 }
 
-/// Each column and the name it is returned as: its own, or the `AS` alias.
+/// Each column and the name it is returned as: the `AS` alias, or its own without the table alias, as a database
+/// labels `"I"."code"` as `code`.
 fn parse_columns(cur: &mut Cur) -> Result<Vec<(String, String)>, Error> {
     let mut columns = Vec::new();
     loop {
@@ -1003,7 +1040,7 @@ fn parse_columns(cur: &mut Cur) -> Result<Vec<(String, String)>, Error> {
         let name = if cur.eat_keyword("AS") {
             cur.quoted()?
         } else {
-            column.clone()
+            column.rsplit('.').next().unwrap_or(&column).to_string()
         };
         columns.push((column, name));
         if !cur.eat_symbol(b',') {

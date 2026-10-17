@@ -1896,6 +1896,17 @@ const PARITY_ENTITIES: &str = r#"<entities>
         <field name="lockedId" type="id" is-pk="true"/>
         <field name="note" type="text-medium"/>
     </entity>
+    <view-entity entity-name="ParityItemView" package="moqui.test">
+        <member-entity entity-alias="I" entity-name="moqui.test.ParityItem"/>
+        <alias-all entity-alias="I"/>
+        <alias name="other" pq-expression="code + '-' + note" default-display="true"/>
+        <alias name="selfRead" pq-expression="pqRow.code + '?'"/>
+        <alias name="broken" pq-expression="noSuchName.length"/>
+        <alias name="withSuffix" pq-expression="code + pqSuffix"/>
+        <alias name="sameItem" pq-expression="'not the relationship'"/>
+        <relationship type="one" related="moqui.test.ParityItem" short-alias="sameItem">
+            <key-map field-name="itemId"/></relationship>
+    </view-entity>
 </entities>"#;
 
 /// The framework entities plus [`PARITY_ENTITIES`], in a directory removed on drop.
@@ -1984,6 +1995,99 @@ fn field_defaults_are_expressions_that_also_fill_an_update() {
     partial.set("kind", Value::string(""));
     partial.update(&facade).unwrap();
     assert_eq!(parity_item(&facade, "I1").get("kind"), Some(&Value::string("plain")));
+}
+
+/// Java's `pq-expression` alias: `get` and `getMap` evaluate it with the row's stored fields, here
+/// `get_localized`, `localized_fields` and a script's read; the stored fields and a REST find (`getPlainValueMap`)
+/// have none of it. Its name keeps `alias-all` from the member field of the same name, each read evaluates it again,
+/// an expression that reads the value it is on does not find the value locked, a failing one is logged and reads as
+/// null, and a script reads a relationship of the same name first.
+#[test]
+fn a_pq_expression_alias_is_evaluated_on_read_and_left_out_of_the_stored_fields() {
+    let fixture = ParityFixture::new();
+    let facade = fixture.open(None);
+    let context = crate::context::ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let _frame = crate::script::ContextFrame::push();
+    crate::script::set_context_name("pqSuffix", Value::string("a")).unwrap();
+    let mut item = facade.make_value("moqui.test.ParityItem").unwrap();
+    for (name, value) in [("itemId", "I1"), ("code", "7"), ("note", "n"), ("other", "stored")] {
+        item.set(name, Value::string(value));
+    }
+    item.create(&facade).unwrap();
+    let view = "moqui.test.ParityItemView";
+    let find = || {
+        facade
+            .find(view)
+            .unwrap()
+            .eq("itemId", Value::string("I1"))
+            .one()
+            .unwrap()
+            .unwrap()
+    };
+    let mut row = find();
+    assert_eq!(row.get("code"), Some(&Value::string("7")));
+    for name in ["other", "selfRead", "broken", "withSuffix"] {
+        assert!(!row.fields().contains_key(name), "{name} is not a stored field");
+    }
+    assert_eq!(row.get_localized(&facade, "other"), Some(Value::string("7-n")));
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let all = tracing::subscriber::with_default(crate::testing::LogSubscriber(Arc::clone(&lines)), || {
+        row.localized_fields(&facade)
+    });
+    assert_eq!(all.get("other"), Some(&Value::string("7-n")));
+    assert_eq!(all.get("code"), Some(&Value::string("7")));
+    assert_eq!(all.get("broken"), Some(&Value::Null));
+    let text = lines.lock().unwrap().join("\n");
+    assert!(
+        text.contains("alias broken on entity moqui.test.ParityItemView"),
+        "{text}"
+    );
+    row.set("note", Value::string("m"));
+    assert_eq!(row.get_localized(&facade, "other"), Some(Value::string("7-m")));
+    // Not remembered: a read sees what the expression reads from outside the row now, as Java's `get`.
+    assert_eq!(row.get_localized(&facade, "withSuffix"), Some(Value::string("7a")));
+    crate::script::set_context_name("pqSuffix", Value::string("b")).unwrap();
+    assert_eq!(row.get_localized(&facade, "withSuffix"), Some(Value::string("7b")));
+
+    // A script reads it as a property, by `get` and in `getMap`; the expression reads the value from the context with
+    // the value unlocked.
+    let read = crate::script::eval_value(
+        r#"(function () {
+            pqRow = ec.entity.find("moqui.test.ParityItemView").condition("itemId", "I1").one();
+            const value = pqRow;
+            const before = value.other === "7-n" && value.get("other") === "7-n" && value.getMap().other === "7-n";
+            value.note = "z";
+            return before && value.other === "7-z" && value.selfRead === "7?" && value.broken === null
+                && value.withSuffix === "7b" && value.sameItem.itemId === "I1" && value.get("sameItem").itemId === "I1";
+        })()"#,
+    )
+    .unwrap();
+    assert_eq!(read, Value::Bool(true));
+    // As a template or XML action reads it.
+    let held = crate::script::context_value("pqRow").expect("the script put the value in the context");
+    assert_eq!(crate::script::value_field(&held, "other"), Some(Value::string("7-z")));
+    assert_eq!(
+        crate::script::value_map(&held).and_then(|map| map.get("selfRead").cloned()),
+        Some(Value::string("7?"))
+    );
+
+    let found = facade
+        .rest(
+            "get",
+            view,
+            &BTreeMap::from([("itemId".to_string(), Value::string("I1"))]),
+        )
+        .unwrap();
+    let Value::Map(found) = found else {
+        panic!("a REST find by primary key returns one map: {found:?}");
+    };
+    assert_eq!(found.get("code"), Some(&Value::string("7")));
+    for name in ["other", "selfRead", "broken", "withSuffix"] {
+        assert!(!found.contains_key(name), "{name} is not in the REST output");
+    }
 }
 
 /// Java's `update`: an entity whose update reads the row first writes only the fields that changed, and nothing when

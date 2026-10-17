@@ -18,7 +18,7 @@ use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 
-use moqui_db::model::{EntityDefinition, EntityModel};
+use moqui_db::model::{EntityDefinition, EntityModel, PqAlias};
 use moqui_db::sql::{Condition, FieldRef};
 use moqui_lib::error::Error;
 use moqui_lib::object::{decimal_compare, to_plain_string, Value};
@@ -514,15 +514,29 @@ fn changed_now() -> Value {
     crate::user::now_effective_value()
 }
 
-/// The localized fields of a find's entity, worked out once per find and shared by each value it returns.
+/// The localized fields of a find's entity, worked out once per find and shared by each value it returns, and a view's
+/// `pq-expression` aliases, which a value also reads in place of a stored field.
 #[derive(Debug)]
 pub(crate) struct L10nTargets {
     targets: Vec<LocalTarget>,
+    pq_aliases: Vec<PqAlias>,
 }
 
 impl L10nTargets {
     pub(crate) fn has(&self, column: &str) -> bool {
         self.targets.iter().any(|target| target.column == column)
+    }
+
+    /// The expression of the `pq-expression` alias `name`.
+    pub(crate) fn pq_expression(&self, name: &str) -> Option<&str> {
+        self.pq_aliases
+            .iter()
+            .find(|alias| alias.name == name)
+            .map(|alias| alias.expression.as_str())
+    }
+
+    pub(crate) fn pq_names(&self) -> impl Iterator<Item = &str> {
+        self.pq_aliases.iter().map(|alias| alias.name.as_str())
     }
 
     pub(crate) fn columns(&self) -> impl Iterator<Item = &str> {
@@ -549,8 +563,8 @@ struct LocalTarget {
     pk_column: Option<String>,
 }
 
-/// The localized fields of `entity`, or `None` when it has none or this is a raw read (an internal read that must
-/// see what is stored). A lookup that fails is logged and the values stay as stored.
+/// The localized fields and `pq-expression` aliases of `entity`, or `None` when it has none or this is a raw read (an
+/// internal read that must see what is stored). A lookup that fails is logged and the values stay as stored.
 pub(crate) fn l10n_targets(facade: &EntityFacade, entity: &EntityDefinition) -> Option<std::sync::Arc<L10nTargets>> {
     if raw_read() {
         return None;
@@ -560,13 +574,14 @@ pub(crate) fn l10n_targets(facade: &EntityFacade, entity: &EntityDefinition) -> 
             Ok(targets) => targets,
             Err(err) => {
                 tracing::error!(error = %err, "Could not find the localized fields of {}, not localizing", entity.full_name);
-                return None;
+                Vec::new()
             }
         }
     } else {
         plain_targets(entity)
     };
-    (!targets.is_empty()).then(|| std::sync::Arc::new(L10nTargets { targets }))
+    let pq_aliases = entity.pq_aliases.clone();
+    (!targets.is_empty() || !pq_aliases.is_empty()).then(|| std::sync::Arc::new(L10nTargets { targets, pq_aliases }))
 }
 
 /// The user's locale, as Java's `userFacade.getLocale()`; the facade's own with no execution context.

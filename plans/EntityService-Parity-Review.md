@@ -21,7 +21,7 @@ ordering.
 
 ## Summary
 
-10 open findings and 64 accepted differences. Open by phase:
+9 open findings and 65 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
@@ -29,7 +29,7 @@ ordering.
 | 2 Entity find / query | 0 | — |
 | 3 Facade / metadata / DDL / cache | 3 | — |
 | 4 Data loader / feed / ECA / writer / document / ETL | 1 | — |
-| 5 Entity query / REST | 3 | — |
+| 5 Entity query / REST | 2 | — |
 | 6 Service definition / validation / call | 0 | — |
 | 7 ECA / SECA / pools / jobs | 0 | — |
 | 8 REST / remote / tools / mail / components | 1 | — |
@@ -43,8 +43,8 @@ No access-control finding is open.
 1. **Full-text search and model sources** (P3-20, P3-14, P3-21): a `LIKE` on a `text-fts` field is not rewritten
    to a full-text search (the DDL now follows `FtsDdl`), DB view entities are not built from their rows, and a
    foreign key is recognized only by its computed name.
-2. **View fields** (P5-19, P5-16, P5-18): the entity JSON schema and the data writer's CSV of a view read no fields
-   (REST finds and form auto fields now read the aliases), `pq-expression` aliases are not evaluated, and
+2. **View fields** (P5-19, P5-18): the entity JSON schema and the data writer's CSV of a view read no fields
+   (REST finds and form auto fields now read the aliases, and `pq-expression` aliases are evaluated), and
    `DataDocument.<id>` is not an entity name.
 
 ### Open decisions
@@ -53,8 +53,9 @@ No access-control finding is open.
   [Phase 6](#phase-6-checked-and-found-equivalent).
 - **P3-14** — how DB view entities join an immutable model: a second, locked set of definitions consulted after the
   file model, or a model that can be swapped, and when it is invalidated.
-- **P5-16 / P5-18** — whether the value layer runs a `pq-expression` alias's script (moqui-db has no script runtime)
-  and resolves `DataDocument.<id>` names; nothing in `runtime/` uses either.
+- **P5-18** — how `DataDocument.<id>` names resolve to entity definitions; nothing in `runtime/` uses them. A later
+  round does it on an overlay of derived definitions, together with P3-14. (P5-16, the `pq-expression` aliases those
+  definitions use for expression fields, is done: see [Phase 5](#phase-5-checked-and-found-equivalent).)
 - **P8a-41** — whether every print job asks for portrait and monochrome, as cups4j's builder defaults make Java's do,
   or keeps the print queue's defaults, as now; see [P8a-41](#p8a-41--portrait-and-monochrome-on-every-job).
 
@@ -456,31 +457,19 @@ path→PK resolution, master/dependent expansion, JSON/XML/CSV writers) with `en
 `WebUtilities`, `ContextJavaUtil.jacksonMapper` and `RestSchemaUtil`. JSON-schema differences are
 tracked once under P2-06/P2-07/P2-12.
 
-Worked 2026-10-16: P5-01, P5-11, P5-13 and P5-15 fixed; P5-17 (form auto fields of a view) found and fixed;
-P5-16 left open, though a `pq-expression` alias no longer stops the model loading; P5-18 and P5-19 found and left
-open. The JSON wire change (P5-11, P5-15) has no consumer in this repository that reads the old text: the browser
-code (`runtime/base-component/webroot/screen/webroot/js`, `crates/moqui-browser/js`, `scripts/*.mjs`) parses with
-`JSON.parse`/`response.json()`, `MoquiL10n.toInstant` already takes a millis number (the old quoted millis text was
-an invalid date to it), the qvt screen data and `crates/moqui-browser` use `moqui_lib::json::to_json`, not this
-writer, the `moqui test` specs run in-process, and only some Rust tests matched `"name": value` text (now `"name" :
-value`). Line numbers in this section are as of that change.
+Worked 2026-10-16: P5-01, P5-11, P5-13, P5-15 and P5-16 fixed (P5-16 in a later pass, once evaluation in moqui-core's
+value layer was chosen); P5-17 (form auto fields of a view) found and fixed; P5-18 and P5-19 found and left open. The
+JSON wire change (P5-11, P5-15) has no consumer in this repository that reads the old text: the browser code
+(`runtime/base-component/webroot/screen/webroot/js`, `crates/moqui-browser/js`, `scripts/*.mjs`) parses with
+`JSON.parse`/`response.json()`, `MoquiL10n.toInstant` already takes a millis number (the old quoted millis text was an
+invalid date to it), the qvt screen data and `crates/moqui-browser` use `moqui_lib::json::to_json`, not this writer, the
+`moqui test` specs run in-process, and only some Rust tests matched `"name": value` text (now `"name" : value`). Line
+numbers in this section are as of that change.
 
 | ID | Rust location | Java location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P5-16 | `moqui-db/src/model/mod.rs:708-723` | `EntityDefinition.groovy:180,205-210`; `EntityValueBase.java:215-251` | `pq-expression` aliases are not evaluated; such an alias is left out of its view with a logged error (unused in `runtime/`) | Low | No |
 | P5-18 | `moqui-db/src/model/mod.rs:432` (`entity`); `entity/document.rs:722-758` | `EntityFacadeImpl.groovy:1110-1111`; `EntityDataDocument.groovy:169-183,204-208` | `DataDocument.<dataDocumentId>` is not an entity name: Java builds the document's dynamic view as an entity definition for finds and form auto fields (unused in `runtime/`) | Low | No |
 | P5-19 | `entity/schema.rs:145`; `entity/data_writer.rs:522-538` | `RestSchemaUtil.groovy:144-147`; `EntityDataWriterImpl.groovy:349-359` | The entity JSON schema and the data writer's CSV header and rows of a **view-entity** have no fields; Java uses the aliases (`getAllFieldNames`) | Med | No |
-
-#### P5-16 — `pq-expression` aliases not evaluated
-
-Java leaves an alias with `pq-expression` out of the view's fields and keeps it in `pqExpressionNodeMap`; `get` of
-that name evaluates the expression with the row's values, and so does `getMap` (not `getPlainValueMap`, so REST
-output has none); form auto fields show it with `default-display="true"`. Before this pass Rust failed the alias's
-`entity-alias` check, and since `EntityModel::load` stops at the first entity that does not parse, one such view
-stopped the whole model loading. It is now left out of the view with an error naming it, and the rest loads. Left
-open: evaluating it needs the value layer to run a script expression (moqui-db has no script runtime, and Java does
-it lazily in `get`), a design choice best made with P5-18, the DataDocument entity definitions it was made for; no
-view in `runtime/` uses it.
 
 #### P5-18 — `DataDocument.<id>` entity definitions not ported
 
@@ -489,7 +478,8 @@ Java's `getEntityDefinition` answers a name starting with `DataDocument.` with t
 expression fields become `pq-expression` aliases. A screen can then find on it or give a form-list its auto fields.
 Rust builds the same view only inside `entity/document.rs` (`code_view`) to query a document, so the name is not
 found. Left open for want of a caller: nothing in `runtime/` names a `DataDocument.` entity. A port would resolve
-the name in the facade's model lookup and needs P5-16 for expression fields.
+the name in the facade's model lookup; its expression fields would be `pq-expression` aliases, which are now
+evaluated (P5-16).
 
 #### P5-19 — Entity schema and data-writer CSV of a view have no fields
 
@@ -502,6 +492,25 @@ The CSV header with `tableColumnNames` would also need a column name for an alia
 
 #### Phase 5 checked and found equivalent
 
+- `pq-expression` aliases (P5-16, fixed; line numbers as of that pass): moqui-db only keeps the expression. As
+  `EntityDefinition`, such an alias is kept apart from the view's aliases, in `pq_aliases`
+  (`moqui-db/src/model/mod.rs:158`, `:715-723`; `parse_pq_alias`, `model/view.rs:261`), so no SQL builder sees it and
+  it is not one of the view's fields, and its name keeps `alias-all` from the member field of the same name (`:478`);
+  a REST dynamic view's alias spec with `pq-expression` is kept the same way (`pq_alias_from_spec`,
+  `entity/query_rest.rs:1255`), and as there its rows are plain maps it only does that. moqui-core's value layer
+  evaluates it lazily, where the localized reads are: a find's values carry the view's `pq-expression` aliases with
+  their localized fields (`l10n_targets`, `entity/field_rw.rs:568`), and `get_localized`, `localized_fields` and a
+  script's or template's read of a value (Java's `get` and `getMap`) evaluate it in the script runtime with the
+  row's stored fields in the context, as Java's `valueMapInternal` (`eval_pq_alias`, `entity/value.rs:1202`). As
+  Java's `get`, it runs on every read and is not remembered, since an expression may read more than the row (the
+  user, the time, the context); only the localized lookups are (`read_localized`, `:170`). The evaluation runs outside
+  the value's lock and the memo's, as the localized lookup (`LocalizedRead`, `:87`), so an expression that reads the
+  same value does not deadlock. `fields()`, and so REST output, never has it, as Java's `getPlainValueMap`. A failing
+  expression is logged with the alias and entity names and reads as null, where Java throws (accepted, P5-16 in
+  [Accepted differences](#accepted-differences)). A script's read of a name that is both a `pq-expression` alias and a
+  relationship gets the relationship, as Java's `get` (`held_value`, `script/runtime/entities.rs:1045`). Form auto
+  fields show one with `default-display="true"` as a display field after the others, whatever `include`, the
+  excludes and the field type, as `ScreenForm.addEntityFields` (`screen/form.rs:965-976`).
 - REST find of a view-entity (P5-01, fixed): `EntitySnap` takes `field_names`/`pk_field_names`, the aliases for a
   view (`entity/query_rest.rs:282-311`), so a view row renders its alias values (`render`, `:737-747`), and a
   complete primary key of aliases, from the path or the parameters, finds one row as Java's `containsPrimaryKey`
@@ -1071,6 +1080,7 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P4b-08 | ETL | `useTryInsert` stores with `createOrUpdate` where the database is `never-try-insert` (Postgres); Java's ETL loader tries the insert anyway (`entity/etl.rs:92-101`) | Safer: on Postgres the failed insert aborts the transaction, so Java's update after it fails; the data loader's `handleValue` has the same guard. Comment at the site |
 | P4b-09 | data writer | `isoDateTime(true)` formats dates in JSON and XML; Java ignores it (`TODO`) (`entity/query_rest.rs:1550-1582,1715-1732`) | Implements Java's TODO |
 | P5-14 | entity REST | Request `pageSize` capped at `entity_rest_max_page_size` (1000); Java caps nothing | Documented `entity/query_rest.rs:532-551` |
+| P5-16 | entity value | A `pq-expression` alias whose expression fails is logged with the alias and entity names and reads as null; Java's `get` throws an `EntityException` (`eval_pq_alias`, `entity/value.rs:1202`) | AGENTS.md failure tolerance: one bad expression does not fail the read of a row, its map, or a form-list of such rows; doc comment at `eval_pq_alias` |
 | P6a-05 | service tools | Service detail view is a rebuilt node (`method` null, no `groovyString`, some attributes dropped) | Documented `service/info.rs:194-195` |
 | P6a-12 | service validation | A `required="disabled"` parameter is skipped, so validating drops a value passed for it, and an implemented one is not copied (`service/validate.rs:48-52`, `service/define.rs:1434-1441`); Java only makes it not required and still converts the value | The XSD says it behaves "as if the parameter did not exist", for overriding an earlier parameter; dropping it keeps an undeclared value from the service. Comment at the site |
 | P6a-19 | service validation | `val-or` passes when one child passes and `val-not` fails when one passes, with a message (`service/validate.rs:704-723`); Java's `validateParameterSingle` adds each failing child's error even when the `val-or` passes, and adds none for a failing `val-not` | Java's makes a `val-or` with any failing branch fail the call and a failing `val-not` pass it; unused in `runtime/`. Comment at the site |

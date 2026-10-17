@@ -36,7 +36,8 @@ use super::{cache, fk, load_feed, sequence};
 ///
 /// The fields are the stored values, decrypted. A value read by a find of an entity with localized fields also reads
 /// those fields in the user's locale through [`Self::get_localized`] and [`Self::localized_fields`], as Java's
-/// `get` and `getMap`; [`Self::get`], [`Self::fields`] and every write use the stored values.
+/// `get` and `getMap`, and a value of a view reads its `pq-expression` aliases there too; [`Self::get`],
+/// [`Self::fields`] and every write use the stored values.
 #[derive(Clone, Debug)]
 pub struct EntityValue {
     entity_name: String,
@@ -51,8 +52,8 @@ impl PartialEq for EntityValue {
     }
 }
 
-/// The localized fields of a value, and what each read in each locale, as Java's `localizedByLocaleByField`. A clone
-/// shares what was read until either one sets a field.
+/// The localized fields of a value, and what each read in each locale, as Java's `localizedByLocaleByField`, and the
+/// view's `pq-expression` aliases. A clone shares what was read until either one sets a field.
 #[derive(Clone)]
 struct Localizer {
     targets: Arc<field_rw::L10nTargets>,
@@ -70,18 +71,25 @@ impl std::fmt::Debug for Localizer {
     }
 }
 
-/// A localized read that needs a lookup, taken from the value so a caller that holds the value behind a lock can let
-/// go of it before the lookup runs. See [`EntityValue::read_localized`].
+/// A localized read that needs a lookup, or a `pq-expression` alias to evaluate, taken from the value so a caller that
+/// holds the value behind a lock can let go of it before the lookup or the script runs. See
+/// [`EntityValue::read_localized`].
 pub(crate) struct LocalizedRead {
     l10n: Localizer,
     field: String,
     locale: String,
-    /// The stored fields the lookup reads: the field itself and the primary key.
+    /// The stored fields the lookup reads: the field itself and the primary key. Every stored field for an expression.
     fields: BTreeMap<String, Value>,
+    /// The entity and the expression of a `pq-expression` alias. Boxed, so a read that needs no lookup stays small.
+    pq: Option<Box<(String, String)>>,
 }
 
 impl LocalizedRead {
     pub(crate) fn run(self, facade: &EntityFacade) -> Option<Value> {
+        // An expression is not remembered: as Java's `get`, it runs on every read, since it may read more than the row.
+        if let Some((entity_name, expression)) = self.pq.as_deref() {
+            return Some(eval_pq_alias(entity_name, &self.field, expression, &self.fields));
+        }
         let found = field_rw::localize_field(facade, &self.l10n.targets, &self.fields, &self.field, &self.locale);
         let out = found.clone().or_else(|| self.fields.get(&self.field).cloned());
         lock(&self.l10n.memo).insert((self.field, self.locale), found);
@@ -127,8 +135,9 @@ impl EntityValue {
         self.fields.get(field)
     }
 
-    /// Java's `get`: `field` in the user's locale when it is a localized field, else the stored value. A lookup is made
-    /// once per field and locale.
+    /// Java's `get`: `field` in the user's locale when it is a localized field, the value of its expression when it is a
+    /// `pq-expression` alias of a view, else the stored value. A lookup is made once per field and locale; an expression
+    /// runs on every read.
     pub fn get_localized(&self, facade: &EntityFacade, field: &str) -> Option<Value> {
         match self.read_localized(facade, field) {
             Ok(value) => value,
@@ -136,22 +145,43 @@ impl EntityValue {
         }
     }
 
-    /// Whether `field` reads localized, so a caller can skip finding the facade for every other field.
+    /// Whether `field` reads localized or is a `pq-expression` alias, so a caller can skip finding the facade for every
+    /// other field.
     pub(crate) fn localizes(&self, field: &str) -> bool {
-        self.l10n.as_deref().is_some_and(|l10n| l10n.targets.has(field))
+        self.l10n
+            .as_deref()
+            .is_some_and(|l10n| l10n.targets.has(field) || l10n.targets.pq_expression(field).is_some())
     }
 
-    /// Whether any field reads localized.
+    /// Whether `name` is a `pq-expression` alias of the value's view.
+    pub(crate) fn is_pq_alias(&self, name: &str) -> bool {
+        self.l10n
+            .as_deref()
+            .is_some_and(|l10n| l10n.targets.pq_expression(name).is_some())
+    }
+
+    /// Whether any field reads localized, or the view has a `pq-expression` alias.
     pub(crate) fn has_l10n(&self) -> bool {
         self.l10n.is_some()
     }
 
-    /// `field` as [`Self::get_localized`] reads it when that needs no lookup; otherwise the lookup to run.
+    /// `field` as [`Self::get_localized`] reads it when that needs no lookup; otherwise the lookup or the expression to
+    /// run.
     pub(crate) fn read_localized(&self, facade: &EntityFacade, field: &str) -> Result<Option<Value>, LocalizedRead> {
         let stored = self.fields.get(field);
-        let Some(l10n) = self.l10n.as_deref().filter(|l10n| l10n.targets.has(field)) else {
+        let Some(l10n) = self.l10n.as_deref().filter(|_| self.localizes(field)) else {
             return Ok(stored.cloned());
         };
+        // As Java, the expression reads the stored fields, not the localized ones.
+        if let Some(expression) = l10n.targets.pq_expression(field) {
+            return Err(LocalizedRead {
+                l10n: l10n.clone(),
+                field: field.to_string(),
+                locale: String::new(),
+                fields: self.fields.clone(),
+                pq: Some(Box::new((self.entity_name.clone(), expression.to_string()))),
+            });
+        }
         let locale = field_rw::current_locale(facade);
         let key = (field.to_string(), locale);
         if let Some(known) = lock(&l10n.memo).get(&key) {
@@ -168,16 +198,17 @@ impl EntityValue {
             field,
             locale,
             fields,
+            pq: None,
         })
     }
 
-    /// Java's `getMap`: every field held, the localized ones in the user's locale.
+    /// Java's `getMap`: every field held, the localized ones in the user's locale, and a view's `pq-expression` aliases.
     pub fn localized_fields(&self, facade: &EntityFacade) -> BTreeMap<String, Value> {
         let mut out = self.fields.clone();
         let Some(l10n) = self.l10n.as_deref() else {
             return out;
         };
-        for column in l10n.targets.columns() {
+        for column in l10n.targets.columns().chain(l10n.targets.pq_names()) {
             if let Some(value) = self.get_localized(facade, column) {
                 out.insert(column.to_string(), value);
             }
@@ -1163,6 +1194,26 @@ fn eval_field_default(
         crate::script::set_context_name(name, value.clone())?;
     }
     Ok(crate::script::eval_value(expression)?)
+}
+
+/// A `pq-expression` alias's value, as Java's `get` evaluates it with the row's stored fields in the context. A failing
+/// expression is logged and reads as null, where Java throws: as for other independent pieces (AGENTS.md failure
+/// tolerance), one bad expression does not fail the read of a row, its map, or a form-list of such rows.
+fn eval_pq_alias(entity_name: &str, alias: &str, expression: &str, fields: &BTreeMap<String, Value>) -> Value {
+    let evaluated = (|| {
+        let _frame = crate::script::ContextFrame::push();
+        for (name, value) in fields {
+            crate::script::set_context_name(name, value.clone())?;
+        }
+        Ok::<_, Error>(crate::script::eval_value(expression)?)
+    })();
+    evaluated.unwrap_or_else(|err| {
+        tracing::error!(
+            error = %err,
+            "Error evaluating pq-expression [{expression}] of alias {alias} on entity {entity_name}, reading null"
+        );
+        Value::Null
+    })
 }
 
 fn has_field_defaults(entity: &EntityDefinition) -> bool {

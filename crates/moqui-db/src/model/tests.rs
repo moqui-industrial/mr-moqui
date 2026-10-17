@@ -249,20 +249,23 @@ fn load_paths_reads_a_file_as_well_as_a_directory() {
     assert!(model.entity("p.InFile").is_ok());
 }
 
-/// A `pq-expression` alias, which this port does not evaluate, is left out of its view and the model still loads.
-/// `default-display` is kept on an alias.
+/// A `pq-expression` alias is kept apart from the view's fields with its expression, as Java's `pqExpressionNodeMap`,
+/// and its name keeps `alias-all` from aliasing a member field of the same name. `default-display` is kept on an alias.
 #[test]
-fn a_pq_expression_alias_is_left_out_and_default_display_is_kept() {
+fn a_pq_expression_alias_is_kept_apart_and_default_display_is_kept() {
     let document = MNode::parse_text(
         "entities.xml",
         r#"<entities>
             <entity entity-name="Item" package="t" no-update-stamp="true">
-                <field name="itemId" type="id" is-pk="true"/><field name="code" type="id"/></entity>
+                <field name="itemId" type="id" is-pk="true"/><field name="code" type="id"/>
+                <field name="label" type="id"/></entity>
             <view-entity entity-name="ItemView" package="t">
                 <member-entity entity-alias="I" entity-name="t.Item"/>
                 <alias name="itemId" entity-alias="I"/>
                 <alias name="code" entity-alias="I" default-display="false"/>
                 <alias name="shown" pq-expression="code + '!'" default-display="true"/>
+                <alias name="label" pq-expression="itemId + ':' + code"/>
+                <alias-all entity-alias="I"/>
             </view-entity>
         </entities>"#,
     )
@@ -270,6 +273,24 @@ fn a_pq_expression_alias_is_left_out_and_default_display_is_kept() {
     let model = EntityModel::load(&id_conf(), &[document]).unwrap();
     let view = model.entity("t.ItemView").unwrap();
     assert_eq!(view.field_names(), ["itemId", "code"]);
+    assert!(!view.has_field("shown") && !view.has_field("label"));
     assert_eq!(view.alias("code").unwrap().default_display, Some(false));
     assert_eq!(view.alias("itemId").unwrap().default_display, None);
+    assert_eq!(
+        view.pq_aliases,
+        [
+            PqAlias {
+                name: "shown".to_string(),
+                expression: "code + '!'".to_string(),
+                default_display: true,
+            },
+            PqAlias {
+                name: "label".to_string(),
+                expression: "itemId + ':' + code".to_string(),
+                default_display: false,
+            },
+        ]
+    );
+    assert_eq!(view.pq_alias("label").unwrap().expression, "itemId + ':' + code");
+    assert!(view.pq_alias("code").is_none());
 }

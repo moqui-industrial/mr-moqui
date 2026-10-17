@@ -24,7 +24,7 @@ use std::rc::Rc;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use moqui_db::model::{
-    AliasAll, EntityDefinition, FieldAlias, KeyMap, MasterDefinition, MasterDetail, MemberEntity, Relationship,
+    AliasAll, EntityDefinition, FieldAlias, KeyMap, MasterDefinition, MasterDetail, MemberEntity, PqAlias, Relationship,
 };
 use moqui_db::sql::{select_view, Condition, FieldRef, LimitOffset, OrderBy};
 use moqui_lib::error::Error;
@@ -1099,9 +1099,13 @@ fn build_view(
         return Err(Error::new(format!("dynamic view {entity_name} needs a member-entity")));
     }
     let mut aliases = Vec::new();
+    let mut pq_aliases = Vec::new();
     if let Some(value) = param(parameters, &["alias"]) {
         for spec in map_list(value) {
-            aliases.push(alias_from_spec(&spec)?);
+            match pq_alias_from_spec(&spec)? {
+                Some(pq_alias) => pq_aliases.push(pq_alias),
+                None => aliases.push(alias_from_spec(&spec)?),
+            }
         }
     }
     let mut alias_alls = Vec::new();
@@ -1120,6 +1124,7 @@ fn build_view(
     let mut view = blank_view(entity_name);
     view.member_entities = members;
     view.aliases = aliases;
+    view.pq_aliases = pq_aliases;
     view.alias_alls = alias_alls;
     Ok(BuiltView {
         view,
@@ -1243,6 +1248,20 @@ fn alias_from_spec(spec: &Value) -> Result<FieldAlias, Error> {
         default_display: optional_string(spec, &["default-display", "defaultDisplay"]).map(|value| value == "true"),
         ..FieldAlias::default()
     })
+}
+
+/// An alias with `pq-expression`, as Java's `addPqExprAlias`. It is not selected, and the rows a dynamic view returns
+/// are plain maps, as Java's `getPlainValueMap`, so it only keeps `alias-all` from that name.
+fn pq_alias_from_spec(spec: &Value) -> Result<Option<PqAlias>, Error> {
+    let Some(expression) = optional_string(spec, &["pq-expression", "pqExpression"]) else {
+        return Ok(None);
+    };
+    Ok(Some(PqAlias {
+        name: req_string(spec, &["name"], "alias name")?,
+        expression,
+        default_display: optional_string(spec, &["default-display", "defaultDisplay"])
+            .is_some_and(|value| value == "true"),
+    }))
 }
 
 fn alias_all_from_spec(spec: &Value) -> Result<AliasAll, Error> {
