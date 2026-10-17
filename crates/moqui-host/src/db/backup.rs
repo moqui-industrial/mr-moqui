@@ -807,6 +807,7 @@ mod tests {
     #[test]
     fn dump_round_trip_rotates_the_same_week_and_incremental_when_the_tools_exist() {
         use std::os::unix::fs::PermissionsExt;
+        use std::slice::from_ref;
 
         use super::super::embedded::EmbeddedCluster;
 
@@ -830,7 +831,7 @@ mod tests {
             std::fs::write(backup.join(&old_name), b"older").unwrap();
         }
 
-        let outcome = run(&[target.clone()], &base, &request(BackupMode::Dump, backup.clone(), 1)).unwrap();
+        let outcome = run(from_ref(&target), &base, &request(BackupMode::Dump, backup.clone(), 1)).unwrap();
         assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
         assert_eq!(outcome.backup_kind, "dump");
         assert!(outcome.archive_path.is_file(), "{}", outcome.archive_path.display());
@@ -866,7 +867,7 @@ mod tests {
         }
         let incr = base.join("backup-incr");
         let first = run(
-            &[target.clone()],
+            from_ref(&target),
             &base,
             &request(BackupMode::Incremental, incr.clone(), 7),
         )
@@ -890,7 +891,7 @@ mod tests {
         assert!(sidecar.contains("kind=full"), "{sidecar}");
         let full_name = first.archive_path.file_name().unwrap().to_string_lossy().into_owned();
 
-        let second = run(&[target.clone()], &base, &request(BackupMode::Incremental, incr, 7)).unwrap();
+        let second = run(from_ref(&target), &base, &request(BackupMode::Incremental, incr, 7)).unwrap();
         if second.errors.iter().any(|err| err.contains("pg_hba")) {
             assert!(
                 second
