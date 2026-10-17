@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function renderList({ saved = true, header = true, denied = false, hideNav = false, finds = [] } = {}) {
+function renderList({ saved = true, header = true, denied = false, hideNav = false, finds = [], fields = [], hidden = {} } = {}) {
     const factory = vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'ScreenQvt.js'), 'utf8'));
     const module = factory({ stmt: fn => fn, noops: () => ({}) }, {
         anyMacros: () => ({}), allElements: [], opaqueElements: []
@@ -19,7 +19,7 @@ function renderList({ saved = true, header = true, denied = false, hideNav = fal
         sri: {
             write: text => { html += text; }, buildUrl: url, makeUrlByType: url,
             getScreenUrlInstance: url, getCurrentScreenUrl: url,
-            getFormHiddenParameters: () => ({}), getFormListHeaderValues: () => ({}),
+            getFormHiddenParameters: () => hidden, getFormListHeaderValues: () => ({}),
             getUserFormListFinds: () => finds, getUserDefaultFormListFindId: () => '',
             pushSingleFormMapContext() {}, popContext() {}, safeCloseList() {}
         },
@@ -31,7 +31,7 @@ function renderList({ saved = true, header = true, denied = false, hideNav = fal
     vm.runInNewContext(module.runtime, context);
     context.$mqQvt.formList({ count: 0 }, { attrs: {
         name: 'PaymentList', list: 'payments', 'saved-finds': String(saved), 'header-dialog': String(header)
-    } }, [], { headerForm: header, valueDescs: { h: [] } });
+    } }, [], { headerForm: header, valueDescs: { h: [] }, allFields: fields });
     return html;
 }
 
@@ -75,6 +75,31 @@ test('server-static forms also separate Saved Finds from Find Options', () => {
     assert.match(dialog(html, 'PaymentList_sfdialog'), /icon="find_in_page"/);
     assert.match(dialog(html, 'PaymentList_sfdialog'), /Save New Find/);
     assert.doesNotMatch(dialog(html, 'PaymentList_hdialog'), /Save New Find|_NewFind/);
+});
+
+test('filter summary uses all fields, escapes labels and keeps hidden reset parameters only', () => {
+    const html = renderList({
+        fields: [
+            { title: () => 'Type <&>', summary: () => 'Transfer <script>' },
+            { title: () => 'Empty', summary: () => '' },
+            { title: () => 'Ignored' }
+        ],
+        hidden: { organizationPartyId: 'ORG_TEST' }
+    });
+    assert.match(html, /<strong>Type &lt;&amp;&gt;:<\/strong> <span class="text-positive">Transfer &lt;script&gt;<\/span>/);
+    assert.doesNotMatch(html, /<strong>Empty|<strong>Ignored/);
+    const reset = html.match(/<m-form-link[^>]*id="PaymentList_header_clr"[^>]*>/)?.[0];
+    assert.ok(reset);
+    assert.match(reset, /organizationPartyId/);
+    assert.doesNotMatch(reset, /statusId|PmntProposed/);
+    assert.match(html, /<q-tooltip>Reset to Default<\/q-tooltip>/);
+});
+
+test('empty filters have no reset control; inline headers and hidden navigation have no summary', () => {
+    assert.doesNotMatch(renderList(), /PaymentList_header_clr/);
+    for (const options of [{ header: false }, { hideNav: true }]) {
+        assert.doesNotMatch(renderList({ ...options, fields: [{ title: () => 'Type', summary: () => 'Transfer' }] }), /form-list-filter-summary|PaymentList_header_clr/);
+    }
 });
 
 test('existing saved find actions stay in the Saved Finds dialog', () => {

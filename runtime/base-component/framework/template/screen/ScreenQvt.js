@@ -1104,6 +1104,18 @@
                 out += '<m-form-paginate :paginate="' + e(paginateProps(listName)) + '"></m-form-paginate></div></div>';
             }
             w(out + "</div>\n");
+            if (cfg.headerDialog) {
+                const summaries = (cfg.allFields || []).map((field) => {
+                    const value = field.summary ? field.summary() : "";
+                    return value ? '<span style="white-space:nowrap;"><strong>' + t(field.title()) + ':</strong> <span class="text-positive">' + t(value) + '</span></span>' : "";
+                }).filter(Boolean);
+                w('<div class="form-list-filter-summary text-center q-pa-sm" style="font-weight:normal;">' + summaries.join(" "));
+                if (summaries.length) {
+                    w("<m-form-link" + A({ name: cfg.headerFormId + "_clr", id: cfg.headerFormId + "_clr", action: sri.getCurrentScreenUrl().path, ":fields-initial": initial(hiddenParams(n)) }) +
+                        '><q-btn dense flat type="submit" icon="clear" color="negative"><q-tooltip>' + t(L("Reset to Default")) + '</q-tooltip></q-btn></m-form-link>');
+                }
+                w("</div>");
+            }
         };
 
         // Saved finds have their own dialog, as in Java, separate from the search parameters.
@@ -1762,6 +1774,13 @@
         return `() => {\n${body}}`;
     };
 
+    const summaryCode = (field) => {
+        const header = child(field, "header-field");
+        if (!header || !header.children.length || child(header, "hidden") || child(header, "ignored")) return "null";
+        const hide = attr(field, "hide");
+        return `() => { ${hide ? `if (${hide}) return "";` : ""} let $t = ""; sri.pushContext(); try { ${setCode(header)} ${header.children.filter((w) => w.name !== "set" && w.name !== "link").map((w) => `$t += $v.valueText(${wlit(w, true)});`).join(" ")} } finally { sri.popContext(); } return $t.trim(); }`;
+    };
+
     const columnField = (field) => {
         const header = S.headerSub(field);
         const headerField = child(field, "header-field");
@@ -1771,8 +1790,7 @@
         const first = sideCode(field, "first-row-field");
         const second = sideCode(field, "second-row-field");
         const last = sideCode(field, "last-row-field");
-        const summary = headerField && headerField.children.length && !child(headerField, "hidden") && !child(headerField, "ignored") ?
-            `() => { let $t = ""; sri.pushContext(); try { ${setCode(headerField)} ${headerField.children.filter((w) => w.name !== "set" && w.name !== "link").map((w) => `$t += $v.valueText(${wlit(w, true)});`).join(" ")} } finally { sri.popContext(); } return $t.trim(); }` : "null";
+        const summary = summaryCode(field);
         return js`
             {
                 "name": ${lit(attr(field, "name"))},
@@ -1825,7 +1843,7 @@
                     "last": ${valueDescs(fields, "last")}
                 },
                 "allFields": [
-                    ${fields.filter((field) => !S.listFieldHiddenWidget(field)).map((field) => `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(S.headerSub(field))}}`).join(",\n")}
+                    ${fields.filter((field) => !S.listFieldHiddenWidget(field)).map((field) => `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(S.headerSub(field))}, "summary": ${summaryCode(field)}}`).join(",\n")}
                 ]
             }
         `.replace(/\n$/, "");
