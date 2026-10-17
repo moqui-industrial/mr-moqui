@@ -43,6 +43,28 @@ function renderList({ saved = true, header = true, denied = false, hideNav = fal
     return html;
 }
 
+test('empty entity displays preserve a line in list cells, not single-form inputs', () => {
+    const factory = vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'ScreenQvt.js'), 'utf8'));
+    const module = factory({ stmt: fn => fn, noops: () => ({}) }, {
+        anyMacros: () => ({}), allElements: [], opaqueElements: []
+    });
+    for (const kind of ['form-list', 'form-single']) {
+        for (const value of ['', 'Asset <Good>']) {
+            let html = '';
+            const field = { attrs: { name: 'productClassEnumId' }, parent: { name: kind, attrs: { name: 'ProductsForm' } } };
+            const widget = { attrs: {}, parent: { attrs: {}, parent: field } };
+            const context = {
+                sri: { write: text => { html += text; }, getFieldEntityValue: () => value, getFieldValuePlainString: () => '' },
+                ec: { context: { get: () => null }, resource: { expand: text => text }, l10n: { localize: text => text } }
+            };
+            vm.runInNewContext(module.runtime, context);
+            context.$mqQvt.displayEntity(widget);
+            if (kind === 'form-list') assert.ok(html.includes('<template v-slot:default>' + (value ? 'Asset &lt;Good&gt;' : '&nbsp;') + '</template>'));
+            else assert.doesNotMatch(html, /&nbsp;|v-slot:default/);
+        }
+    }
+});
+
 function dialog(html, id) {
     return html.match(new RegExp('<m-container-dialog id="' + id + '"[^>]*>([\\s\\S]*?)</m-container-dialog>'))?.[1];
 }
