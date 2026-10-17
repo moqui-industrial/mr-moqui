@@ -473,3 +473,28 @@ fn key_after_orders_by_each_key_field_in_turn() {
         ])
     );
 }
+
+/// As Java's `findAllFieldsNestedMap`: the values in the document, its nested maps and the maps in its lists, not in a
+/// list in a list; an empty value names no user.
+#[test]
+fn document_user_ids_are_found_in_nested_maps_and_lists_of_maps() {
+    let map = |pairs: Vec<(&str, Value)>| {
+        Value::Map(pairs.into_iter().map(|(key, value)| (key.to_string(), value)).collect())
+    };
+    let document = map(vec![
+        ("userId", Value::string("U1")),
+        ("party", map(vec![("userId", Value::string("U2"))])),
+        (
+            "notes",
+            Value::List(vec![map(vec![("userId", Value::string("U3"))]), Value::string("text")]),
+        ),
+        (
+            "pages",
+            Value::List(vec![Value::List(vec![map(vec![("userId", Value::string("U4"))])])]),
+        ),
+        ("blank", map(vec![("userId", Value::string(""))])),
+    ]);
+    let mut found = std::collections::BTreeSet::new();
+    super::find_nested("userId", &document, &mut found);
+    assert_eq!(found.into_iter().collect::<Vec<_>>(), ["U1", "U2", "U3"]);
+}

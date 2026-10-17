@@ -2002,7 +2002,7 @@ fn rest_send<'js>(ctx: Ctx<'js>, request: JsValue<'js>) -> rquickjs::Result<JsVa
         map.insert("statusCode".to_string(), Value::I64(i64::from(response.status)));
         map.insert(
             "reasonPhrase".to_string(),
-            Value::string(reason_phrase(response.status)),
+            Value::string(crate::outbound::reason_phrase(response.status)),
         );
         // A sender that kept no bytes sent text: the text is the bytes.
         let bytes = if response.bytes.is_empty() {
@@ -2024,41 +2024,6 @@ fn rest_send<'js>(ctx: Ctx<'js>, request: JsValue<'js>) -> rquickjs::Result<JsVa
         );
         host_to_js(&ctx, Value::Map(map))
     })
-}
-
-/// The standard reason phrase of an HTTP status; the transport does not pass the server's own.
-fn reason_phrase(status: u16) -> &'static str {
-    match status {
-        100 => "Continue",
-        200 => "OK",
-        201 => "Created",
-        202 => "Accepted",
-        204 => "No Content",
-        301 => "Moved Permanently",
-        302 => "Found",
-        304 => "Not Modified",
-        307 => "Temporary Redirect",
-        308 => "Permanent Redirect",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        406 => "Not Acceptable",
-        408 => "Request Timeout",
-        409 => "Conflict",
-        410 => "Gone",
-        413 => "Payload Too Large",
-        415 => "Unsupported Media Type",
-        422 => "Unprocessable Entity",
-        429 => "Too Many Requests",
-        500 => "Internal Server Error",
-        501 => "Not Implemented",
-        502 => "Bad Gateway",
-        503 => "Service Unavailable",
-        504 => "Gateway Timeout",
-        _ => "",
-    }
 }
 
 /// The XML of the form named after `#` in a screen location: `component://.../Screen.xml#FormName`.

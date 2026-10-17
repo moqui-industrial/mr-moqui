@@ -204,6 +204,8 @@ fn print_screen_document(
         found if found.is_empty() => "application/pdf".to_string(),
         found => found,
     };
+    // The PDF renderer makes only PDF, where Java's FOP takes other output types; and the screen renders in this
+    // port's one webapp, `webroot` (`webappName`'s default).
     if content_type != "application/pdf" {
         add_error(format!(
             "A screen document prints as application/pdf, not {content_type}"
@@ -610,19 +612,22 @@ fn job_action(
     Ok(BTreeMap::new())
 }
 
-/// `StringUtilities.findAllFieldsNestedMap`: every value of `key` in nested maps and lists.
+/// `CollectionUtilities.findAllFieldsNestedMap`: every value of `key` in the map, its nested maps and the maps in its
+/// lists (not in a list in a list). An empty value names no user, so it is left out where Java adds it: its
+/// `NotificationMessageUser` for user `""` would fail the send for every user of the document.
 fn find_nested(key: &str, value: &Value, found: &mut BTreeSet<String>) {
-    match value {
-        Value::Map(map) => {
-            for (name, item) in map {
-                if name == key && !is_empty(item) {
-                    found.insert(to_plain_string(item));
-                }
-                find_nested(key, item, found);
-            }
+    let Value::Map(map) = value else {
+        return;
+    };
+    for (name, item) in map {
+        if name == key && !is_empty(item) {
+            found.insert(to_plain_string(item));
         }
-        Value::List(items) => items.iter().for_each(|item| find_nested(key, item, found)),
-        _ => {}
+        match item {
+            Value::Map(_) => find_nested(key, item, found),
+            Value::List(items) => items.iter().for_each(|entry| find_nested(key, entry, found)),
+            _ => {}
+        }
     }
 }
 
@@ -664,6 +669,7 @@ fn send_document_notifications(
             let data_document = facade
                 .find("moqui.entity.document.DataDocument")?
                 .disable_authz()
+                .use_cache(true)
                 .eq("dataDocumentId", Value::string(&doc_type))
                 .one()?;
             if let Some(title) = data_document
@@ -676,6 +682,7 @@ fn send_document_notifications(
             let links = facade
                 .find("moqui.entity.document.DataDocumentLink")?
                 .disable_authz()
+                .use_cache(true)
                 .eq("dataDocumentId", Value::string(&doc_type))
                 .list()?;
             if let Some(link) = links

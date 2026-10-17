@@ -1195,7 +1195,7 @@ fn load_in_context(
     // The ECA rules load on first use; reading the count here puts them in the log at a known point.
     tracing::info!(
         "{} Service ECA rules are active",
-        moqui_core::service::info::seca_rule_count()
+        moqui_core::service::info::seca_rules_active()
     );
     // As Java, `startup-add-missing` checks every table now; without it a table is made on first use when
     // `runtime-add-missing` is on, or is left to the database.

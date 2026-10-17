@@ -4,9 +4,10 @@ Scope: Rust modules in `crates/moqui-core/src/entity/` and `crates/moqui-core/sr
 `moqui-db` SQL/model layer they delegate to), compared against the Moqui Java / Groovy / XML code they
 were ported from.
 
-Revalidated 2026-10-16 against `d9d5f9f`. Findings fixed by 956954e, 48e9d36, 62a3def and 2ce6ecd, and
-findings that proved invalid or duplicated, have been removed; the IDs that remain keep their original
-numbers, so gaps in the numbering are expected. Deliberate, documented differences are collected in
+Revalidated 2026-10-16 against `d9d5f9f`, and worked through phase by phase on 2026-10-16 (commits 7255066 through
+the Phase 8b/8c commit). Findings fixed by 956954e, 48e9d36, 62a3def and 2ce6ecd and in those phases, and findings
+that proved invalid or duplicated, have been removed; the IDs that remain keep their original numbers, so gaps in the
+numbering are expected. Deliberate, documented differences are collected in
 [Accepted differences](#accepted-differences) rather than the phase tables.
 
 Paths: Rust locations are relative to `crates/moqui-core/src/` unless they start with `moqui-db/`,
@@ -20,7 +21,7 @@ ordering.
 
 ## Summary
 
-80 open findings and 36 accepted differences. Open by phase:
+11 open findings and 60 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
@@ -28,34 +29,36 @@ ordering.
 | 2 Entity find / query | 0 | — |
 | 3 Facade / metadata / DDL / cache | 3 | — |
 | 4 Data loader / feed / ECA / writer / document / ETL | 1 | — |
-| 5 Entity query / REST | 5 | P5-01 |
-| 6 Service definition / validation / call | 20 | P6b-01 (decision) |
-| 7 ECA / SECA / pools / jobs | 19 | — |
-| 8 REST / remote / tools / mail / components | 30 | P8a-03 |
+| 5 Entity query / REST | 3 | — |
+| 6 Service definition / validation / call | 0 | — |
+| 7 ECA / SECA / pools / jobs | 0 | — |
+| 8 REST / remote / tools / mail / components | 2 | — |
 
-| ID | Area | One-line |
-|---|---|---|
-| P5-01 | entity REST | REST find of a **view-entity** returns only `_entity` (no alias values) |
-| P6b-01 | service call | Service-body failure returns `Err`; Java returns the result map — **open design decision** |
-| P8a-03 | service REST | `/rest/s1` service results not run through `stripUserAccountSecrets` |
+No High finding is open.
 
 ### Cross-cutting threads
 
-1. **Access control** (P8a-03, P7b-07, P7b-08, P7a-05): service-REST results are not stripped of
-   UserAccount secrets; async calls skip the pre-queue authz check and then run with authz enabled;
-   the permission check omits ALL_USERS group permissions.
-2. **Full-text search and model sources** (P3-20, P3-14, P3-21): a `LIKE` on a `text-fts` field is not rewritten
+No access-control finding is open.
+
+1. **Full-text search and model sources** (P3-20, P3-14, P3-21): a `LIKE` on a `text-fts` field is not rewritten
    to a full-text search (the DDL now follows `FtsDdl`), DB view entities are not built from their rows, and a
    foreign key is recognized only by its computed name.
-3. **Error contract** (P6b-01, P7a-10): a failing service body propagates `Err` where Java records the
-   error and returns; `post-commit` SECA gets `None` instead of an empty map.
-4. **View REST output** (P5-01): view finds now filter on aliases but still render no alias values.
+2. **View fields** (P5-19, P5-16, P5-18): the entity JSON schema and the data writer's CSV of a view read no fields
+   (REST finds and form auto fields now read the aliases), `pq-expression` aliases are not evaluated, and
+   `DataDocument.<id>` is not an entity name.
 
 ### Open decisions
 
-- **P6b-01** — keep Rust's `Err` on a service-body failure (the Rust tests assert it) as a documented
-  redesign, or switch to Java's record-and-return contract. Everything that calls `sync(...).call()`
-  depends on the answer.
+- **P6b-01** — decided 2026-10-16 and done: Java's record-and-return contract is adopted; see
+  [Phase 6](#phase-6-checked-and-found-equivalent).
+- **P3-14** — how DB view entities join an immutable model: a second, locked set of definitions consulted after the
+  file model, or a model that can be swapped, and when it is invalidated.
+- **P5-16 / P5-18** — whether the value layer runs a `pq-expression` alias's script (moqui-db has no script runtime)
+  and resolves `DataDocument.<id>` names; nothing in `runtime/` uses either.
+- **P8a-26** — how `merge_param` merges a parameter's `<description>` for an `implements` or a redeclared parameter.
+- **P8c-11** — the format of the "Original" image: the input's (this port, and Java's evident intent), Java's exact
+  outcome (a JPEG written as `outputImageFormat`, the rest kept), or always `outputImageFormat` (what the one caller
+  names the file).
 - **Spreadsheet/print references**: `org.moqui.impl.SpreadsheetServices` and some component Groovy are
   absent from these checkouts, so those comparisons rely on the XML descriptor only.
 
@@ -63,6 +66,16 @@ ordering.
 
 None open. The last one, the loader's comment that every record uses the entity-auto store path, now says that CSV
 rows do not (P4a-02, `entity/load_feed/loader.rs:466-467`).
+
+### Outside this review
+
+- `cargo test -p moqui-host --test gate3` has 3 failures that are not from this work; they fail the same way with
+  the Phase 5 and Phase 8a changes stashed: `artifact_group_detail_renders_as_text_csv_xml_and_html_print`,
+  `artifact_group_detail_static_qvt_is_a_data_free_template_with_its_data_on_actions` and
+  `the_login_page_and_the_root_render_as_html_and_a_failed_login_comes_back_with_its_message` (screen-render
+  assertions: an ALL_USERS link, a `$mq.url` template, a login alert div).
+- `user/preference.rs` `date_open` treats `thruDate` as exclusive; Java's `filterByDate` is inclusive (as fixed for
+  jobs in P7b-11 and security checks in P7a-14).
 
 ---
 
@@ -162,11 +175,12 @@ along the way. No Phase 2 finding is open. Line numbers in this section are as o
 - JSON schema relationships (P2-06, fixed): an entity's dependent relationships, or a master's details (with
   `use-master`), are properties named by short alias or relationship name with a `$ref` to the related schema,
   an array for `many`; the related schemas go in `$defs`, nested as Java nests them, and a reference back to a
-  standalone document's own entity is `#` (`entity/schema.rs:129-243`). The catalog also holds any view entity
+  standalone document's own entity is `#` (`entity/schema.rs:126-240`). The catalog also holds any view entity
   a relationship refers to, so every `$ref` resolves; Java refers to a definition it never writes.
 - JSON schema `enum` (P2-07, fixed): the first non-auto-reverse `one` relationship keyed by the field alone,
-  titled and to `Enumeration` or `StatusItem`, lists that type's ids by `sequenceNum` (`field_enums`,
-  `entity/schema.rs:248`); a read that fails is logged and the field has no `enum`.
+  titled and to `Enumeration` or `StatusItem`, lists that type's ids by `sequenceNum` (`FieldEnums::of`,
+  `entity/schema.rs:260`, which the service OpenAPI also uses, P8a-24); a read that fails is logged and the field
+  has no `enum`.
 - Distinct count (P2-11, fixed): with no field selected it counts `SELECT DISTINCT *` in a sub-select, as Java
   wraps all fields (`moqui-db/src/sql/statement.rs:262`).
 - `one()` with no condition or an empty PK returns `None` without querying (`entity/find.rs:368-406`).
@@ -405,13 +419,13 @@ open for want of a caller. A port would divert records the way a check does (`en
 - EECA entity names (P4b-01, fixed): a rule's `entity` is resolved to its full name, and a rule for an entity that is
   not defined is skipped with Java's warning (`EcaIndex::ingest`, `entity/load_feed/eca.rs:180`).
 - EECA order (P4b-02, fixed): an entity's rules with no id run first, then those with an id, each in file order
-  (`entity/load_feed/eca.rs:217-226`); Java's id'd rules are in `HashMap` order, which file order is one instance of.
+  (`entity/load_feed/eca.rs:214-223`); Java's id'd rules are in `HashMap` order, which file order is one instance of.
 - Data document merging (P4b-03, fixed): rows merge by document id only when every primary key field is a field alias
   (`has_all_primary_pks`, `entity/document.rs:60`, `:633`); otherwise each row is a document (`:863`), and its `_id`
   is made, as `makeDocId`, of the document's fields named for the key, so a one-field key that is not a field gives
   no `_id` (`doc_id`, `:127`). Before, the `_id` was always the full key, read from the query's own key aliases.
 - XML writer count (P4b-05, fixed): an XML record counts its nested records too, as `plainMapXmlWriter`; JSON and CSV
-  count each top record (`data_body`, `entity/query_rest.rs:1556`, `xml_record_count`, `:1584`;
+  count each top record (`data_body`, `entity/query_rest.rs:1555`, `xml_record_count`, `:1583`;
   `write_rows`, `entity/data_writer.rs:472`).
 - Writer directories (P4b-06, fixed): `file()` needs its parent directory and `directory()` creates only the last
   one (`mkdir`), else the write is a message error; the zip writes still create the parents, as Java's
@@ -446,37 +460,81 @@ path→PK resolution, master/dependent expansion, JSON/XML/CSV writers) with `en
 `WebUtilities`, `ContextJavaUtil.jacksonMapper` and `RestSchemaUtil`. JSON-schema differences are
 tracked once under P2-06/P2-07/P2-12.
 
+Worked 2026-10-16: P5-01, P5-11, P5-13 and P5-15 fixed; P5-17 (form auto fields of a view) found and fixed;
+P5-16 left open, though a `pq-expression` alias no longer stops the model loading; P5-18 and P5-19 found and left
+open. The JSON wire change (P5-11, P5-15) has no consumer in this repository that reads the old text: the browser
+code (`runtime/base-component/webroot/screen/webroot/js`, `crates/moqui-browser/js`, `scripts/*.mjs`) parses with
+`JSON.parse`/`response.json()`, `MoquiL10n.toInstant` already takes a millis number (the old quoted millis text was
+an invalid date to it), the qvt screen data and `crates/moqui-browser` use `moqui_lib::json::to_json`, not this
+writer, the `moqui test` specs run in-process, and only some Rust tests matched `"name": value` text (now `"name" :
+value`). Line numbers in this section are as of that change.
+
 | ID | Rust location | Java location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P5-01 | `entity/query_rest.rs:300`, `:739` | `EntityFacadeImpl.groovy:1730,1754-1755` | REST find of a **view-entity** filters on aliases now but renders only `_entity` (`EntitySnap` copies `entity.fields`, empty for views); PK lookup on a view never happens | High | No |
-| P5-11 | `web/mod.rs:514` → `entity/query_rest.rs:1775` | `ContextJavaUtil.java:591-597` | REST JSON serializes `Timestamp`/`Date`/`Time` as quoted strings; Java emits unquoted millis (`WRITE_DATES_AS_TIMESTAMPS`) | Med | No |
-| P5-13 | `entity/query_rest.rs:1238-1247` | `EntityDynamicViewImpl.groovy:104-110` | `default-display` alias attribute dropped (unused in `runtime/`) | Low | Unsure |
-| P5-15 | `web/mod.rs:514` | `WebFacadeImpl.groovy:721`; `ContextJavaUtil.java:595` | Entity REST JSON compact vs Java `INDENT_OUTPUT` pretty-print | Low | Unsure |
-| P5-16 | `moqui-db/src/model/view.rs:267` | `EntityDefinition.groovy:180,205-210`; `EntityValueBase.java:215-251` | `pq-expression` aliases unsupported (fail the `alias X has no entity-alias` check) and unevaluated (unused in `runtime/`) | Low | Unsure |
+| P5-16 | `moqui-db/src/model/mod.rs:708-723` | `EntityDefinition.groovy:180,205-210`; `EntityValueBase.java:215-251` | `pq-expression` aliases are not evaluated; such an alias is left out of its view with a logged error (unused in `runtime/`) | Low | No |
+| P5-18 | `moqui-db/src/model/mod.rs:432` (`entity`); `entity/document.rs:722-758` | `EntityFacadeImpl.groovy:1110-1111`; `EntityDataDocument.groovy:169-183,204-208` | `DataDocument.<dataDocumentId>` is not an entity name: Java builds the document's dynamic view as an entity definition for finds and form auto fields (unused in `runtime/`) | Low | No |
+| P5-19 | `entity/schema.rs:145`; `entity/data_writer.rs:522-538` | `RestSchemaUtil.groovy:144-147`; `EntityDataWriterImpl.groovy:349-359` | The entity JSON schema and the data writer's CSV header and rows of a **view-entity** have no fields; Java uses the aliases (`getAllFieldNames`) | Med | No |
 
-#### P5-01 — REST find of a view-entity returns only `_entity`
+#### P5-16 — `pq-expression` aliases not evaluated
 
-The model stores view aliases in `EntityDefinition.aliases` and leaves `fields` empty for a view.
-Conditions now go through `search_form_map`, which reads aliases (`entity/search_form.rs:125-144`), but
-`EntitySnap::from_entity` still copies only `entity.fields` and `render` iterates `snap.fields`, so the
-response rows carry only `_entity` and `pk_complete` is always false. Java iterates
-`ed.allFieldInfoList` (aliases for a view) and returns alias values.
+Java leaves an alias with `pq-expression` out of the view's fields and keeps it in `pqExpressionNodeMap`; `get` of
+that name evaluates the expression with the row's values, and so does `getMap` (not `getPlainValueMap`, so REST
+output has none); form auto fields show it with `default-display="true"`. Before this pass Rust failed the alias's
+`entity-alias` check, and since `EntityModel::load` stops at the first entity that does not parse, one such view
+stopped the whole model loading. It is now left out of the view with an error naming it, and the rest loads. Left
+open: evaluating it needs the value layer to run a script expression (moqui-db has no script runtime, and Java does
+it lazily in `get`), a design choice best made with P5-18, the DataDocument entity definitions it was made for; no
+view in `runtime/` uses it.
 
-#### P5-11 — REST timestamps quoted instead of millis numbers
+#### P5-18 — `DataDocument.<id>` entity definitions not ported
 
-Java serializes with `ContextJavaUtil.jacksonMapper`, which enables `WRITE_DATES_AS_TIMESTAMPS`, so
-`Timestamp`/`Date`/`Time` becomes an unquoted millis number. Rust's JSON writer has no arm for those
-variants, so they fall through to a quoted string. Decimals match.
+Java's `getEntityDefinition` answers a name starting with `DataDocument.` with the document's dynamic view
+(`makeEntityDefinition`): its aliases carry the fields' `fieldNameAlias`, `functionName` and `defaultDisplay`, and
+expression fields become `pq-expression` aliases. A screen can then find on it or give a form-list its auto fields.
+Rust builds the same view only inside `entity/document.rs` (`code_view`) to query a document, so the name is not
+found. Left open for want of a caller: nothing in `runtime/` names a `DataDocument.` entity. A port would resolve
+the name in the facade's model lookup and needs P5-16 for expression fields.
+
+#### P5-19 — Entity schema and data-writer CSV of a view have no fields
+
+The model keeps a view's fields as `aliases` and leaves `fields` empty. `entity/schema.rs` builds a schema's
+`properties` from `entity.fields`, and the data writer's CSV header and rows (`entity/data_writer.rs`) from the same,
+so a view's schema has only `_entity` and its CSV no columns. Java uses `getAllFieldNames`, the aliases. Found while
+fixing P5-01 (the same cause) and left open as it belongs to the schema (P2-12) and writer (Phase 4) code; the fix
+is to read `field_names`/`pk_field_names` and the alias types for a view, as `EntitySnap` and the form shape now do.
+The CSV header with `tableColumnNames` would also need a column name for an alias.
 
 #### Phase 5 checked and found equivalent
 
+- REST find of a view-entity (P5-01, fixed): `EntitySnap` takes `field_names`/`pk_field_names`, the aliases for a
+  view (`entity/query_rest.rs:282-311`), so a view row renders its alias values (`render`, `:737-747`), and a
+  complete primary key of aliases, from the path or the parameters, finds one row as Java's `containsPrimaryKey`
+  (`find_rest`, `:478`). The identity and secret stripping (`sensitive::strip_user_account_secrets`) goes by key at
+  any depth, so view rows get it too. The query-REST CSV writer (`render_csv`) also gets a view's aliases.
+- REST JSON dates (P5-11, fixed): `encode_json` (`entity/query_rest.rs:1739-1781`), which every web JSON response
+  and JSON error goes through (`web/mod.rs:514`, `:525`, `:1263`), writes a `Timestamp` or `Date` as an unquoted
+  epoch-millis number and a `Time` as `"HH:mm:ss"`, as Jackson with `WRITE_DATES_AS_TIMESTAMPS` and its
+  `SqlTimeSerializer` (checked against jackson-databind 2.22.2). Before, all three were quoted millis text. A
+  `Date` is midnight UTC, as everywhere in this port; Java's is midnight in the JVM zone. The data writer's JSON
+  files are unchanged.
+- REST JSON layout (P5-15, fixed): the same writer indents as Jackson's `DefaultPrettyPrinter`
+  (`INDENT_OUTPUT`): object entries on their own lines two spaces deeper per enclosing object, `"name" : value`,
+  arrays on one line as `[ a, b ]`, and `{ }`/`[ ]` when empty.
+- `default-display` (P5-13, fixed): the model keeps it on an alias (`moqui-db/src/model/view.rs:134`, `:279`), as
+  does a REST dynamic view's alias spec (`entity/query_rest.rs:1243`), and a form-list's auto fields honor it as
+  `ScreenForm.addEntityFields` (`screen/form.rs:934-943`). As in Java, a dynamic view never reaches form auto fields,
+  so on a REST dynamic view it has no effect.
+- Form auto fields of a view-entity (P5-17, found and fixed): `read_entity_shape` (`screen/form.rs:862-915`) read
+  `entity.fields`, so `auto-fields-entity` of a view (the Tools entity data screens with a view selected) gave no
+  fields. A view's fields are now its aliases, with their types (`text-long` when none, as Java's `fi.type ?:
+  "text-long"`) and primary-key flags.
 - Identity-admin/secret-config read and write bans and `stripUserAccountSecrets` on every response
-  (`entity/query_rest.rs:186-211`, `entity/sensitive.rs` mirrors `WebUtilities`).
-- REST writes go through entity-auto (`write_rest`, `entity/query_rest.rs:234-255`), so status-flow checks
+  (`entity/query_rest.rs:185-210`, `entity/sensitive.rs` mirrors `WebUtilities`).
+- REST writes go through entity-auto (`write_rest`, `entity/query_rest.rs:233-254`), so status-flow checks
   and `oldStatusId`/`statusChanged` apply.
 - REST field conditions via `search_form_map`: `_ic`, `_period`/`_poffset`/`_pdate`, date-only `_thru`
   padding, aggregate aliases to HAVING, unknown `_op` adds nothing.
-- Multi-step relationship paths (`entity/query_rest.rs:417-438`); path→entity+PK resolution,
+- Multi-step relationship paths (`entity/query_rest.rs:415-436`); path→entity+PK resolution,
   `masterNameInPath` fallback, verb→operation mapping.
 - Dynamic view `<complex-alias>`/`case`/`when`/`else`, alias attributes, member `<field>`, `alias-all`
   expansion; view `group-by`/`having` inference; `<order-by>`/`<entity-condition>`.
@@ -493,76 +551,135 @@ Reviewed `service/{define,validate,info,call,semaphore}.rs` against `ServiceDefi
 `ParameterInfo.java`, `ServiceFacadeImpl.groovy`, `ServiceCallImpl.java`, `ServiceCallSyncImpl.java`,
 `ServiceCallSpecialImpl.groovy` and the inline/entity-auto/script runners. Async is in Phase 7.
 
+Worked 2026-10-16: P6a-01, P6a-03, P6a-04, P6a-06, P6a-07, P6a-08, P6a-09, P6a-10, P6a-11, P6a-13, P6a-14, P6a-15,
+P6a-16, P6a-17, P6b-01, P6b-10, P6b-11 and P6b-12 fixed (P6b-01 once Java's record-and-return contract was chosen);
+P6a-12 and P6b-14 moved to [Accepted differences](#accepted-differences). Found along the way: P6a-18, P6a-21 and
+P6a-22 (fixed), P6a-19 and P6a-20 (the parts of
+P6a-13 and P6a-08 that stay, accepted) and P6a-23 (fixed: the errors text that P6a-14's messages left without a
+field). Two changes reach shipped services: parameters of `implements` now come first (an order change only: a dump of
+the 37 `runtime/` services with `implements` gives the same name, type, `required`, checks and default for each
+parameter as before), and an `auto-parameters` field merges with a parameter of the same name, so
+`EntityServices.create#DataDocumentField` and `update#DataDocumentField`, whose `fieldPath required="true"` comes
+before `<auto-parameters include="nonpk"/>`, no longer require `fieldPath`, as in Java, where the later
+`auto-parameters` sets `required="false"`; in the other 7 such services the merged parameter keeps the type,
+`required`, default and checks of the two before. Line numbers in this section are as of that change.
+
 ### Findings — 6a definition / validation / info
 
-| ID | Rust location | Java location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P6a-01 | `service/validate.rs:141`, `:167`, `:168` | `ServiceDefinition.java:212,492,519-545,556-558` | `validate="false"` gates only unknown-parameter retention (`:78`) and nesting (`:97`); Rust still enforces `required`, `allow-html` and declared checks (only `noop` uses `validate="false"` in `runtime/`) | Med | No |
-| P6a-03 | `service/validate.rs:393-394` | `ParameterInfo.java:154-193` | Number conversion ignores the parameter `format` (date/time/timestamp now use it) | Med | No |
-| P6a-04 | `service/info.rs:26-34`; `service/define.rs:572-578` | `ServiceFacadeImpl.groovy:336-359,380-413` | `known_service_names` returns only loaded services; Java scans every component `service/` dir | Med | Unsure |
-| P6a-06 | `service/define.rs:1211-1224`, `:1032` | `ServiceDefinition.java:106-152` | Implements parameters appended after own params (Java places them first); an own param of the same name replaces the interface one instead of merging attributes, so an untyped own param becomes `String` | Med | No |
-| P6a-07 | `service/validate.rs:586-608` | `ServiceDefinition.java:738-782` | `time-range` bounds exclusive vs Java inclusive; unparseable value errors in Rust but is skipped in Java | Med | No |
-| P6a-08 | `service/validate.rs:578-583` | `ServiceDefinition.java:41,698-715` | Email/letters/digits checks are ASCII regexes; Java uses `EmailValidator` and `Character.isLetter`/`isDigit` | Low-Med | No |
-| P6a-09 | `service/info.rs:37-39` | `ServiceFacadeImpl.groovy:492-497,530-534` | `getSecaRuleCount` counts distinct rules; Java counts per-service expansions | Low | Unsure |
-| P6a-10 | `service/validate.rs:368` | `ServiceDefinition.java:265-272,296-304` | Auto-expanded params omit the `field-name` Java sets | Low | No |
-| P6a-11 | `service/define.rs:1034` | `ParameterInfo.java:95-98` | Empty `default-value=""` counts as a default in Rust, not in Java | Low | No |
-| P6a-12 | `service/validate.rs:49` | `ParameterInfo.java:101-102`; `ServiceDefinition.java:396-553` | `required="disabled"` params skipped before `known.insert`, so `retain_known` drops them; Java still converts a passed disabled param | Low | Unsure |
-| P6a-13 | `service/validate.rs:376-381`, `:625-640` | `ServiceDefinition.java:531-543,568-579` | Stops at the first failing check per param; Java collects all failures, including failing OR branches | Low | No |
-| P6a-14 | `service/validate.rs:73`, `:142` | `ServiceDefinition.java:492-493,594,656` | Error text differs (`X is required (in service …)` vs `Field cannot be empty`) | Low | No |
-| P6a-15 | `service/define.rs:554-565` | `ServiceFacadeImpl.groovy:275-298` | File lookup takes the first existing file; Java lets later components override | Low | Unsure |
-| P6a-16 | `service/define.rs:949-957` | `ServiceDefinition.java:190-195` | Non-numeric `transaction-timeout` silently ignored vs Java `Integer.valueOf` error (`"0"` → unset is equivalent) | Low | No |
-| P6a-17 | `service/validate.rs:692-708` | `ServiceCallSyncImpl.java:558-606` | Implicit entity-auto calls filtered to fields + Map/List values; Java passes the raw map | Low | Unsure |
+None open.
 
 ### Findings — 6b call / semaphore
 
-| ID | Rust location | Java location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P6b-01 | `service/call.rs:382-397` | `ServiceCallSyncImpl.java:320-356,391` | A service-body failure is returned as `Err` after `add_error`; Java catches it, records the message/cause chain, rolls back, and returns the result map (only `ArtifactAuthorizationException` rethrown) | High | Decision pending |
-| P6b-10 | `service/semaphore.rs:196-201` | `ServiceCallSyncImpl.java:461-466` | Empty-string `semaphore-parameter` maps to `_NULL_` in Rust but `""` in Java | Low | No |
-| P6b-11 | `service/semaphore.rs:63` | `ServiceCallSyncImpl.java:497-517` | Semaphore-conflict error text differs | Low | No |
-| P6b-12 | `service/call.rs:1109-1113` | `EntityAutoServiceRunner.groovy:487-491` | Invalid status transition error hardcoded; Java expands `StatusFlowTransitionNotFoundTemplate` | Low | No |
-| P6b-14 | `service/call.rs:827-838`, `:865-879` | `ServiceCallSyncImpl.java:322,391`; `InlineServiceRunner.java:56-66`; `ScriptServiceRunner.java:56-83` | Rust collects only declared out-parameters; Java returns the runner map, so undeclared `result` keys / a body-returned Map are dropped in Rust | Low | Unsure |
-
-#### P6a-01 — `validate="false"` still enforces required/HTML/checks
-
-Java's `nestedParameterClean` gates the required-field error (`parameterIsEmpty && validate &&
-parameterInfo.required`), the `allow-html` check and every `ParameterValidation` sub-element behind
-`validate`; type conversion is not gated. Rust always runs `required` (`service/validate.rs:141`), `clean_html`
-(`:167`) and `check_param` (`:168`); only `retain_known` and nesting look at `validate_input`. No
-shipped `runtime/` service with parameters uses `validate="false"` today, so the impact is on
-component services that do.
-
-#### P6a-06 — Implements parameter ordering and merge
-
-Java inserts deep-copied `implements` parameters first, then merges own params by name, so an own param
-that only overrides one attribute keeps the interface's `type`, `required`, etc. Rust appends
-implemented params after own params, and a same-named own param replaces the interface one entirely;
-an own param with no `type` then defaults to `String` (`service/define.rs:1032`).
-
-#### P6a-07 / P6a-08 — `time-range` and character-class validation
-
-Java `time-range` compares with `compareTo(...) < 0` / `> 0`, so equality passes and an unparseable
-value is skipped; Rust uses exclusive bounds and errors on an unparseable formatted value. Java's email
-check uses `EmailValidator` and letters/digits use `Character.isLetter`/`isDigit`; Rust uses ASCII
-regexes, so non-ASCII letters/digits and some emails validate differently.
-
-#### P6b-01 — A service-body failure throws in Rust but returns a map in Java
-
-Java's `callSingle` wraps the runner in `try { … } catch (Throwable t)`, adds `t`'s message and cause
-chain to the message facade, rolls back, then returns the result map. Rust maps any `Err` from
-`execute` to `add_error(...)` and then returns `Err(err)`. A failing service body therefore makes Rust
-`sync(...).call()` return `Err` where Java returns normally with the error in the message facade. The
-Rust tests assert this `Err`; see [Open decisions](#open-decisions).
+None open.
 
 #### Phase 6 checked and found equivalent
 
-- Nested `<parameter>` children parsed and validated (`service/define.rs:1042`, `service/validate.rs:84-125`).
-- Implicit entity-auto skips authentication (`Authenticate::Off`, `service/define.rs:215-217`); an `AT_SERVICE`
+- Service-body failure (P6b-01, fixed: Java's record-and-return contract adopted 2026-10-16): as `callSingle`'s
+  `catch (Throwable t)`, a failure of the body, its pre-service or post-service rules, or the commit is recorded in the
+  message facade (the diagnostic with its Rust origin, then any cause its text does not show), the transaction rolls
+  back, the callbacks hear the error (a commit failure: the results they heard before it), the post-commit rules run,
+  and `sync` returns `Ok` with the results as they were, empty when the runner failed (`sync_with`,
+  `service/call.rs:507-544`; `record_failure`, `:550-567`). `Err` stays for what Java throws: an unknown or interface
+  service (the interface check now comes before the run, `:440-445`), authentication, a semaphore, a failing
+  pre-validate or pre-auth rule, an authorization failure in the body (Java rethrows `ArtifactAuthorizationException`),
+  and a failure with no message facade to record it in. An authorization failure in an inline or script body keeps its
+  kind across the script, by the error property the screen runtime already used (`throw_diagnostic`, `mark_kind`,
+  `caught_kind`, `script/runtime.rs:1260-1312`; the compiled-script catch paths), and a `service-call` the user may not
+  make is thrown out of the calling body (`script/runtime/services.rs:287`), so REST answers 403 and nothing is
+  recorded; the rollback is P6b-15. Callers read the message facade, as Java's read `hasError()`: the REST,
+  screen-login, job, SSO, system-message and SSH paths already did; a data-file service's errors now fail its element
+  and are cleared, as `handleService` (`service/eca.rs:213-217`), a manual data service's are logged and cleared, as
+  `EntityDataDocument` (`entity/document.rs:970-985`); an authz service that leaves errors still fails the check
+  (P6b-16; `sync_checked`, `service/call.rs:189-204`; `user/authz.rs:419`). A body failure under service REST is now
+  Java's 400 with the errors, not a 500. A script's `call()` gets the empty map, as Java's, so an `out-map` now gets
+  `{}` too.
+- `validate="false"` (P6a-01, fixed): skips the `required` check, the `allow-html` check and the declared checks, as
+  Java's `nestedParameterClean`, and still converts (`clean_param`, `service/validate.rs:124-170`); unknown
+  parameters are kept and nested maps not trimmed, as before.
+- Number `format` (P6a-03, fixed): a number parameter with a `format` is read by that `DecimalFormat` pattern for
+  the session locale, as `BigDecimalValidator.validate(text, pattern, locale)` (`convert_text`,
+  `service/validate.rs:436`; `l10n::parse_number_format`, `l10n.rs:365`; `format::parse_decimal_pattern`,
+  `moqui-lib/src/format.rs:330`): its prefix and suffix or negative sub-pattern, grouping only when the pattern
+  groups, `%` and per-mille scaled back. Text it does not read is Java's error naming the format.
+- Known service names (P6a-04, fixed): `known_service_names` (`service/info.rs:27`) adds to the registered services
+  the services of the `service-file` locations and of every service file under each component's `service`
+  directory, read but not registered, as `getKnownServiceNames` (`service_names_in_files`,
+  `service/define.rs:639-702`); a file that does not parse is logged and skipped. Like Java, the framework's own
+  `service` directory is listed only through `service-file`.
+- `implements` merge (P6a-06, fixed): the implemented services' parameters come first, then the service's own are
+  merged in by name, as `ServiceDefinition`'s `mergeParameter`: an own parameter sets only the attributes it has (a
+  parameter that adds a check keeps the interface's `type` and `required`), its checks are added and its nested
+  parameters merged (`merge_param`, `service/define.rs:162-202`; `resolve_one`/`implemented`,
+  `service/define.rs:1363-1455`). `implements required` also sets the `required` of an `auto-parameters` it copies.
+  A `required="disabled"` implemented parameter is still left out (P6a-12), and of two implemented services with a
+  parameter of the same name the first one's is kept (Java appends both and the later wins its map).
+- `time-range` (P6a-07, fixed): text is read by the `format` and a value that does not read is not checked; the
+  bounds are inclusive, and `now` is the effective time written and read back by the format, so `after="now"` with
+  `MM/yyyy` takes this month (`time_range`, `service/validate.rs:735-775`; `bound_millis`, `:912-927`).
+- Character classes (P6a-08, fixed): `text-letters` is Unicode alphabetic in the Basic Multilingual Plane, as
+  `Character.isLetter` of a UTF-16 unit, `text-digits` the decimal digits there, as `Character.isDigit`
+  (`is_java_digit`, `service/validate.rs:779`), and `text-email` follows `EmailValidator`'s user and host rules
+  (`is_email`, `:794-875`); what stays different is P6a-20.
+- SECA rule count (P6a-09, fixed): `getSecaRuleCount` counts a pattern rule once per known service it matches
+  (`seca_rule_count`, `service/info.rs:39`; `SecaRule::service_count`, `service/seca.rs:299-310`). The startup log
+  keeps Java's "SECA rules active" count of rules (`seca_rules_active`, `service/info.rs:48`), and a SECA load reads
+  the known names at most once (`service_defined`, `service/seca.rs:282-297`).
+- `field-name` (P6a-10, fixed): an `auto-parameters` field sets `field-name` (`auto_fields`,
+  `service/validate.rs:424`).
+- Empty `default-value` (P6a-11, fixed): no default, as `ParameterInfo` (`parse_parameter`,
+  `service/define.rs:1237`); an empty `default-value` on an own parameter still clears an implemented one's.
+- Each failed check (P6a-13, fixed): every check of a parameter that fails is its own validation error, and an HTML
+  error does not stop the checks (`clean_param`, `service/validate.rs:161-170`; `apply_check`, `:576-731`); `val-and`
+  reports each child; `val-or`/`val-not` are P6a-19.
+- Message text (P6a-14, fixed): Java's localized messages: `Field cannot be empty`, `Value entered ({0}) could not be
+  converted to a {1}` (with `using format [..]`), the HTML message, and each check's `Value entered …` text or its own
+  `message` expanded with `pv`, `regexp`, `min`/`max` (`apply_check`, `service/validate.rs:576-731`). The field and
+  service are on the validation error, not in its text; the errors text adds them (P6a-23).
+- Errors text (P6a-23, found and fixed): the JSON `errors` of a REST or screen response (`web/mod.rs:778-781`,
+  `screen/dispatch.rs:372-375`) and a script's `ec.message.errorsString` (`script/runtime/facades.rs:350-352`) are
+  Java's `getErrorsString`: the errors, then each validation error as `toStringPretty` writes it, its message, `(`,
+  `for field`, ` on form` and ` of service` with the pretty names, and no closing parenthesis, as Java
+  (`MessageFacade::errors_text`, `ValidationError::to_string_pretty`, `context/message.rs:44-67`, `:132-156`); a
+  validation error's message, which the errors list also holds, is written once. The lines are joined without
+  Java's newline after the last. The browser still leaves a placed field error out of its toasts: `placeFieldErrors`
+  in `WebrootVue.qvt.js` (`moqui.validationErrorText`) and `moqui-html.js` match the line in either form. Before,
+  the line was the message alone, which since P6a-14 named no field.
+- File override (P6a-15, fixed): reading a service file under a framework or component `service` directory reads
+  the files of the same path in the others, and a service is defined by the last of them that has it, in the order
+  framework then components, as `findServiceNode`; this holds for the `service-file` files read at startup too
+  (`load_file`, `service/define.rs:844-946`; `service_roots`, `:620-634`). A file that does not parse loses only its
+  own services.
+- Numeric attributes (P6a-16, fixed; P6a-22, found and fixed): a `transaction-timeout`, `semaphore-timeout`,
+  `semaphore-sleep` or `semaphore-ignore` that is not a whole number fails that service with a registration failure,
+  where Java's `Integer.valueOf`/`Long.parseLong` fails its definition; before, the first was ignored and the others
+  took their defaults (`service/define.rs:1006-1021`; `timeout_of`, `:1142`; `seconds_attr`, `:1164`).
+- Implicit entity-auto (P6a-17, fixed): the implicit definition does not clean its parameters
+  (`validate_input: false`, `service/define.rs:263-269`), so SECA rules and the runner get the map as it came, as
+  `runImplicitEntityAuto`; the runner sets only the entity's fields, as `setFields` (`run_entity`,
+  `service/call.rs:1001`).
+- Declared entity-auto (P6a-18, found and fixed): a declared `type="entity-auto"` service kept every entity field
+  and every map or list parameter beyond its declared parameters; it now keeps only those declared, as any
+  validating service, so `create#UomConversion` (`auto-parameters include="nonpk"`) no longer takes a caller's
+  `uomConversionId` (`clean`, `service/validate.rs:78-80`).
+- `auto-parameters` merge (P6a-21, found and fixed): an `auto-parameters` field and a parameter of the same name were
+  two parameters, each cleaned in turn, so an untyped parameter after a `Timestamp` field converted the value back to
+  text; they are now one, merged by name in declaration order, as `mergeAutoParameters` (`expand_params`,
+  `service/validate.rs:321-341`; the same in `typegen/services.rs:34-61`).
+- Semaphore scope (P6b-10, fixed): an empty `semaphore-parameter` is `_NA_` and an empty value is `""`; only a missing
+  or null value is `_NULL_` (`scope_value`, `service/semaphore.rs:237-245`).
+- Semaphore text (P6b-11, fixed): Java's "An instance of service semaphore … is already running (thread [..], locked
+  at ..) and it is setup to fail on semaphore conflict." and the wait form with its seconds, with the holder read
+  from the row (`take`, `service/semaphore.rs:33-77`; `try_lock`, `:151-216`).
+- Status transition text (P6b-12, fixed): `StatusFlowTransitionNotFoundTemplate` localized and expanded with the
+  status ids and names, its default text when the seed data is not loaded (`status_transition_message`,
+  `service/call.rs:1228-1243`).
+- Nested `<parameter>` children parsed and validated (`service/define.rs:1245`, `service/validate.rs:84-118`).
+- Implicit entity-auto skips authentication (`Authenticate::Off`, `service/define.rs:263-265`); an `AT_SERVICE`
   frame is still pushed but with `requires_authz=false`.
 - Early "errors already in the facade" abort with `ErrorsAside` push/pop, and the rollback-only guard
-  (`service/call.rs:271-291,402-416`).
-- `verb_action` maps `get`/`search` to `view` (`service/call.rs:760`); entity-auto `delete` requires a full PK
-  or `*` wildcard (`delete_entity`, `service/call.rs:972-1015`) and returns an empty map.
+  (`service/call.rs:330-350,484-498`).
+- `verb_action` maps `get`/`search` to `view` (`service/call.rs:846`); entity-auto `delete` requires a full PK
+  or `*` wildcard (`delete_entity`, `service/call.rs:1069-1112`) and returns an empty map.
 - Service `type` default, `authenticate` values, `transaction`/`no-tx-cache` defaults,
   `no-remember-parameters`, interface pass-through; semaphore attribute defaults and none/fail/wait.
 - `auto-parameters` include/exclude/required/allow-html; `default` precedence, requirement-after-
@@ -586,91 +703,104 @@ Reviewed `service/{eca,eca_rules,seca,rule_actions,email_eca,security_checks}.rs
 `ScheduledJobRunner.groovy`, `ExecutionContextFactoryImpl`, `UserSecurityChecks.groovy` +
 `Security.eecas.xml`, and `MoquiDefaultConf.xml`.
 
+Worked 2026-10-16: P7a-03, P7a-06, P7a-10, P7a-11, P7a-12, P7b-01, P7b-02, P7b-05, P7b-07, P7b-08, P7b-10, P7b-11,
+P7b-12, P7b-13, P7b-14 and P7b-15 fixed; P7a-05 fixed for `ALL_USERS` membership, and its permission half removed as
+invalid: Java's `hasPermission` reads the `UserPermissionCheck` view, a join of the user's own `UserGroupMember` rows,
+so a permission granted to `ALL_USERS` counts only for a user with a membership row for it, as Rust already did (a test
+now holds both). P7a-07 and P7a-08 moved to [Accepted differences](#accepted-differences). Found along the way: P7a-13,
+P7a-14, P7a-16 and P7b-17 (fixed), P7a-15 and P7b-16 (the parts of P7a-12 and P7b-14 that stay, accepted) and P7b-18
+(accepted). Changes a deployment may see: an async call (`async_call`, `call_future`, `start_future`, a script's
+`ec.service.async()`) of an unknown service, or by a caller not authorized for the service, is now an error where it is
+made (in a script, an error message, as the script host reports a failed call), and its run on a worker has
+authorization disabled; an async call in a sim session is skipped; shutdown runs the
+queued async calls for up to 30 seconds; and the first scheduled job pass is 120 seconds after start. No `runtime/`
+component has a SECA rule, so the live `parameters` (P7a-11, P7a-13) and the SECA phase order (P7a-03, P7a-16) change
+only rules a deployment adds. The scheduler tests run their passes with `ServicePools::tick()`, not the thread, so none
+waits on the initial delay and no test override was needed. Line numbers in this section are as of that change.
+
 ### Findings — 7a ECA / SECA / email / security
 
-| ID | Rust location | Java location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P7a-03 | `service/call.rs:293`, `:316` | `ServiceCallSyncImpl.java:173,215,239,565` | Implicit entity-auto: `pre-validate` SECA fires once in Rust, twice in Java; and Rust runs `pre-auth` SECA, which Java never reaches (it returns at `:215`) | Med | No |
-| P7a-05 | `service/security_checks.rs:142-188` | `UserFacadeImpl.groovy:852-858` | `user_in_group` omits the `userGroupId == "ALL_USERS"` short-circuit, and `user_has_permission` omits ALL_USERS group permissions that Java `hasPermission` includes | Med | No |
-| P7a-06 | `entity/load_feed/eca.rs:198-201`; `service/email_eca.rs:34-37`; `script/actions.rs:76-81` | `EmailEcaRule.groovy:44-47`; `EntityEcaRule.groovy:44-47` | EECA and EMECA AND every `<condition>` child; Java wraps only the first (SECA now matches) | Low | Unsure |
-| P7a-07 | `script/runtime/convert.rs:123-137` | `actions/XmlAction.java:77-81` | `eval_condition` JS truthiness (empty array/object true) vs Groovy `as Boolean` (empty collection false) | Low | Unsure |
-| P7a-08 | `service/seca.rs:132-168` | `ServiceFacadeImpl.groovy:415-508` | SECA patterns matched at runtime; Java expands patterns to defined services at load | Low | Yes |
-| P7a-10 | `service/call.rs:395` | `ServiceCallSyncImpl.java:388` | `post-commit` on a failed call passes `results = None`; Java passes an empty map | Low | No |
-| P7a-11 | `service/seca.rs:65-66` | `ServiceEcaRule.groovy:82-101`; `ServiceCallSyncImpl.java:307-322` | Rust publishes a copy of `parameters`; Java puts the live `currentParameters` map, so a pre-* SECA can change the call's inputs | Low-Med | Unsure |
-| P7a-12 | `service/call.rs:363`, `:524-559` | `ServiceEcaRule.groovy:104,143-173` | Tx rules: Java's `registerTx` never fires for pattern rules, Rust's `has_rules` includes them; Rust registers `tx-rollback` before the run with no results, Java after | Low | No |
+None open.
 
 ### Findings — 7b pools / async jobs / scheduler
 
-| ID | Rust location | Java location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P7b-01 | `service/pool.rs:715-719`, `:786` | `ServiceFacadeImpl.groovy:134-144` | `scheduled-job-check-time=0` disables the runner in Java; Rust clamps to 1s and always runs the scheduler | Med | No |
-| P7b-02 | `service/schedule.rs:34`, `:49` | `ServiceFacadeImpl.groovy:135-140` | No 120s initial delay; Rust's first pass is at `check_interval` | Med | Unsure |
-| P7b-05 | `service/pool.rs:592-599`, `:1057-1071` | `ExecutionContextFactoryImpl.groovy:848-861` | Shutdown fails queued async calls; Java `workerPool.shutdown()` drains them (Java never shuts down `jobWorkerPool`, so jobs match) | Med | Unsure |
-| P7b-07 | `service/call.rs:87-90`; `service/pool.rs:519-544` | `ServiceCallImpl.java:116-129`; `ServiceCallAsyncImpl.groovy:199` | Async params not validated/converted at queue time, no authz pre-check before queueing, `authUsername` not added | Med | No |
-| P7b-08 | `service/pool.rs:930-942` | `ServiceCallAsyncImpl.groovy:199` | Async worker calls `sync` with authz enabled; Java disables authz (it was checked before queueing) | Med | No |
-| P7b-10 | `service/jobs.rs:300-305` | `ScheduledJobRunner.groovy:240-250` | Pool full at submit: Rust deletes the `ServiceJobRun` row; Java keeps it as a failed run | Low | No |
-| P7b-11 | `service/jobs.rs:801` | `EntityListImpl.java:95,102` | `thruDate` boundary inclusive (Java) vs exclusive (Rust) | Low | No |
-| P7b-12 | `service/jobs.rs:805-807` | `ScheduledJobRunner.groovy:125` | `paused=""` treated as paused by Java, active by Rust | Low | No |
-| P7b-13 | `service/pool.rs:43` | `ExecutionContextFactoryImpl.groovy:467` | Default `worker-queue` 65535 vs 65536 | Low | No |
-| P7b-14 | `service/jobs.rs:446-451` | `ServiceCallJobImpl.groovy:233-238` | `ServiceJobRun` omits `hostAddress`/`hostName`; `runThread` name differs | Low | No |
-| P7b-15 | `service/jobs.rs:99-101` | `ScheduledJobRunner.groovy:261-266` | Runner stats not updated on a failed pass; Java still updates | Low | No |
-
-#### P7a-03 — Implicit entity-auto SECA phases
-
-Java runs `pre-validate` SECA in the main body and again inside `runImplicitEntityAuto`, and returns
-from `runImplicitEntityAuto` at `:215` before the `pre-auth` SECA at `:239`. Rust's single `sync_with`
-runs `pre-validate` once and then runs `pre-auth`, so a non-idempotent pre-validate rule fires half as
-often and a pre-auth rule fires where Java never runs it.
-
-#### P7a-05 — ALL_USERS group handling
-
-Java `isInGroup` returns true for `ALL_USERS` without a lookup, and `hasPermission` includes
-permissions granted to the ALL_USERS group. Rust `user_in_group` and `user_has_permission` only consult
-the user's own date-ranged memberships, so a permission granted to ALL_USERS is denied in Rust.
-
-#### P7a-11 — SECA parameters are a copy
-
-Java's SECA context `parameters` is the live `currentParameters` map, so a `pre-validate`/`pre-auth`/
-`pre-service` rule that sets a parameter changes what the service receives. Rust publishes a copy, so
-such a rule's changes are lost.
-
-#### P7b-01 / P7b-02 — Scheduler enablement and initial delay
-
-Java starts the `ScheduledJobRunner` only when `scheduled-job-check-time > 0`. Rust applies `.max(1)`
-and always spawns the scheduler, so a deployment that sets `0` to disable scheduling gets a pass every
-second. Java also waits a 120s initial delay; Rust's first pass is after `check_interval` (default
-60s).
-
-#### P7b-05 — Shutdown drops queued async calls
-
-Java's `destroy` calls `workerPool.shutdown()` then `awaitTermination(30s)`, letting queued async calls
-finish. Rust `ServicePools::shutdown` → `fail_pending` empties the queue and sends
-`Err("service worker pool is not running")` to async callers. Java never shuts down `jobWorkerPool`,
-so abandoning queued jobs is not a divergence.
-
-#### P7b-07 / P7b-08 — Async queue-time validation and authz
-
-Java's `ServiceCallAsyncImpl.call()` runs `validateCall` before queueing: the authz check
-(`ServiceCallImpl.java:122-127`), `convertValidateCleanParameters`, and adding `authUsername`; the
-worker then logs the user in and calls `.disableAuthz()`. Rust passes the raw map to the pool, validates
-inside the worker, never checks authz before queueing, and calls `call::sync` with authz enabled — so a
-caller without authz can queue work, validation errors surface later, and an async call touching
-authz-controlled artifacts can fail where Java succeeds.
+None open.
 
 #### Phase 7 checked and found equivalent
 
+- Implicit entity-auto SECA phases (P7a-03, fixed): an implicit entity-auto call runs its `pre-validate` rules a second
+  time where Java's `runImplicitEntityAuto` does, after the authentication check, and runs no `pre-auth` rules, which
+  Java never reaches for it (`sync_with`, `service/call.rs:403-410`).
+- `pre-auth` order (P7a-16, found and fixed): the `pre-auth` rules ran right after validation, before the
+  `authUsername` login and the authentication check; they now run after both, as Java's, so they see the user the call
+  logged in and do not run for a call that fails either (`service/call.rs:403-410`).
+- `ALL_USERS` (P7a-05, fixed): `user_in_group` is true for `ALL_USERS` with no lookup and no user, as `isInGroupById`
+  (`service/security_checks.rs:142-146`); a permission granted to `ALL_USERS` counts only with a membership row for
+  it, as Java's `UserPermissionCheck` view (`user_has_permission`, `:162-164`).
+- Membership dates (P7a-14, found and fixed): a membership or grant whose `thruDate` is now was closed; both ends are
+  now inclusive, as `filterByDate` (`membership_open`, `service/security_checks.rs:219-234`).
+- EECA and EMECA conditions (P7a-06, fixed): only the first child of `<condition>` is the condition, as
+  `EntityEcaRule` and `EmailEcaRule` (`first_condition`, `service/rule_actions.rs:33-40`; used at
+  `entity/load_feed/eca.rs:198` and `service/email_eca.rs:34`); SECA already did.
+- `post-commit` results (P7a-10, fixed): the `post-commit` rules of a call that failed get an empty result map, Java's
+  `result` as it began, instead of none (`service/call.rs:535-537`); the call returns that map (P6b-01).
+- Live `parameters` and `results` (P7a-11, fixed; P7a-13, found and fixed): after each rule, the `parameters` and
+  `results` maps in its frame are read back into the call's (`run_seca_rules`, `read_back`, `service/seca.rs:47-102`), so a
+  `pre-validate` rule changes what is validated (the input is copied only when there are such rules,
+  `service/call.rs:352-356`), a `pre-auth` or `pre-service` rule what the service runs with, and a `post-service` or
+  `post-commit` rule what is returned. A rule that sets a plain name still sets it only in its own frame, as Java's.
+- `tx-rollback` registration (P7a-12, fixed): the `tx-rollback` rules are registered once the runner ran, with its
+  results (empty when it failed), as Java's `finally` after `runService`, so a call stopped before it runs registers
+  none (`service/call.rs:436-442`). The `tx-commit` rules are still registered after the `post-service` rules, so a write there
+  can still register the feed hook first, but with the parameters and results as they were before those rules, the
+  copies Java registers (`service/call.rs:443-444`); they run only when the transaction commits, so Java registering
+  them on an error as well changes nothing. Pattern rules are P7a-15.
+- Scheduler (P7b-01, P7b-02, fixed): `scheduled-job-check-time="0"` starts no job runner, with Java's warning: no job
+  passes run, also from `tick()`, and `runner_stats` is `None`, so the tools screens show "No Service Job Runner
+  active" (`settings`, `service/pool.rs:765-778`; `runner_stats`, `:413-419`; `tick`, `:567-581`). The first job pass
+  is 120 seconds after start, then one every check time, as `scheduleAtFixedRate(jobRunner, 120, rate)`; the tick
+  hooks, this port's own (the cluster heartbeat), keep running every interval from the start (`Clock`,
+  `service/schedule.rs:66-96`).
+- Shutdown (P7b-05, fixed): as `workerPool.shutdown()` and `awaitTermination(30s)`, the pool takes no new work, the
+  scheduler and job workers end, and the service workers run the queued calls for up to 30 seconds; what is left then
+  fails as before, with Java's "NOT YET terminated" warning (`shutdown`, `service/pool.rs:616-635`; `drain`,
+  `:1137-1160`; `next_work`, `:921-939`). On one of the pool's own workers it does not wait. Queued job runs are
+  abandoned at once, as before (Java never shuts its `jobWorkerPool` down).
+- Async queue-time check (P7b-07, P7b-08, fixed): before an async call is queued, as the caller, an unknown or
+  interface service is an error, the parameters are converted and validated, the service is pushed and popped to
+  check authorization (no artifact hit), and `authUsername` is added, as Java's `validateCall`; the worker logs in the
+  caller and runs the call with authorization disabled, as `AsyncServiceInfo` (`prepare_async`,
+  `service/call.rs:256-313`; `submit`, `service/pool.rs:529-565`; `submit_future`, `:672-701`; `invoke`, `:998-1015`;
+  `call_now`, `:1019-1042`). Input that fails validation queues nothing (P7b-18).
+- Async in a sim session (P7b-17, found and fixed): an async call in a sim session ran on a worker, outside the sim,
+  against the real database; it is now skipped with Java's log line, and a future gets `simSkipped` and `serviceName`,
+  as `ServiceCallAsyncImpl` (`prepare_async`, `service/call.rs:275-281`).
+- A run that cannot be started (P7b-10, fixed): once the pass has taken the lock, a run whose parameters cannot be
+  read or that the job queue does not take is a failed run, as Java's `ScheduledJobRunner`: the lock is cleared and
+  keeps this pass's run time, and the `ServiceJobRun` row records the error with start and end times; before, the row
+  was deleted, and a failure reading the parameters left the lock held (`dispatch`, `service/jobs.rs:261-322`).
+- Job dates and `paused` (P7b-11, P7b-12, fixed): a job whose `thruDate` is now is still in date, as `filterByDate`
+  (`within_dates`, `service/jobs.rs:822-827`), and a `paused` that is not null or `N`, an empty one too, pauses the job
+  (`paused_ok`, `:829-835`).
+- Queue default (P7b-13, fixed): with no `worker-queue`, the queue holds 65536, Java's code default
+  (`service/pool.rs:44-45`); `MoquiDefaultConf.xml` sets 65535 in both.
+- Run host (P7b-14, fixed): a job run records `hostAddress` and `hostName`, from the address Java's
+  `InetAddress.getLocalHost()` would give (`server_address`, `context/hits.rs:520`), with `runThread` and `startTime`
+  (`run_job`, `service/jobs.rs:463-475`). The thread's name is P7b-16.
+- Runner counters (P7b-15, fixed): a pass that failed or panicked still counts in the runner's counters, as Java's
+  (`run_scheduled`, `service/jobs.rs:89-113`).
 - SECA/EMECA discovery per component, id-overwrite, priority ordering; SECA rules for undefined
-  services skipped at load (`service/eca_rules.rs:104-112`, `service/seca.rs:267-278`); SECA uses only the first
-  `<condition>` child (`service/seca.rs:193-197`).
+  services skipped at load (`service/eca_rules.rs:105-113`, `service/seca.rs:282-297`); SECA uses only the first
+  `<condition>` child (`service/seca.rs:209-213`).
 - Runtime name matching; `run-on-error` gating for SECA; phase set/ordering and tx hooks; tx rules run
-  on a worker in a new transaction and skip sim sessions (`service/call.rs:524-559`); condition-false skip.
-  SECA context carries `parameters`/`results` (as a copy — see P7a-11).
+  on a worker in a new transaction and skip sim sessions (`service/call.rs:607-652`); condition-false skip.
+  SECA context carries `parameters`/`results`, the call's own (P7a-11).
 - Action dispatch `service-call`/`entity-*`/`script`/`in-map="context"`; email ECA context fields.
 - Security-check logic: empty-id, `authzDisabled`, privileged/sealed membership, date-ranged lookups,
   error strings.
-- Registered callbacks run (`call_callbacks`, `service/call.rs:393`).
-- Jobs run on a separate job queue sized by `job-pool-core` (`service/pool.rs:249-252,806-833`); job topic
-  notification plus `ServiceJobError` to the user and `ServiceJobUser` recipients (`service/jobs.rs:578-647`).
+- Registered callbacks run (`call_callbacks`, `service/call.rs:469`).
+- Jobs run on a separate job queue sized by `job-pool-core` (`service/pool.rs:260-263,867-894`); job topic
+  notification plus `ServiceJobError` to the user and `ServiceJobUser` recipients (`service/jobs.rs:602-671`).
 - Cron parsing, lock-claim concurrency, `expireLockTime`/`minRetryTime`/`transactionTimeout` defaults,
   expired-lock run, `repeatCount` pause, `lastSchedule < lastRunTime` skip, min-retry-after-error;
   run-history write and clipping; `run_job_now`; parallel-count accounting.
@@ -691,85 +821,132 @@ mail Groovy resources and `EmailServices.xml`, `ElFinderConnector.groovy`, `Enti
 image/spreadsheet service XML. The `*.rest.xml` HTTP route/CORS layer lives in `screen/dispatch.rs` /
 `web/mod.rs`.
 
+Worked 2026-10-16 (8a): P8a-03, P8a-04, P8a-06, P8a-08, P8a-11, P8a-12,
+P8a-13, P8a-15, P8a-18, P8a-19, P8a-20, P8a-21, P8a-22 and P8a-24 fixed; P8a-17 moved to
+[Accepted differences](#accepted-differences). Found along the way: P8a-25, P8a-27, P8a-28 and P8a-29 (the parts of
+P8a-21, P8a-20, P8a-24 and P8a-11 that stay, accepted) and P8a-26 (open). For P8a-08 the shipped callers were checked
+first: the only `remote-rest` service in the tree, the browser smoke `get#Echo`, is answered with a JSON object, so
+none depends on the lenient body handling. Changes a deployment may see: a `/rest/s1` service result has no `null`
+out-parameters, no `null` fields one map down, and no `UserAccount` password fields; a POST with
+`X-HTTP-Method-Override` reaches the overriding method on `/rest/s1` and is authorized for it; a `remote-rest` call
+whose 2xx body is not a JSON object or array, an empty one too, now fails; its GET query carries empty and list
+values; a `method="HEAD"` or `"OPTIONS"` is sent as that method (and fails with parameters, which it cannot carry as
+a body); a `<method type="GET">` (upper case, outside the XSD) is no longer served; and the service OpenAPI
+(`/rest/service.swagger/<root>`) now documents each service method's parameters and response. Its entity methods
+still carry only a summary, as before (Swagger and RAML are out of scope, below).
+
+Worked 2026-10-16 (8b and 8c): P8c-03, P8c-07 and P8c-16 fixed; P8b-03, P8b-04, P8b-06, P8b-07, P8b-09, P8c-05,
+P8c-06 and P8c-17 moved to [Accepted differences](#accepted-differences); P8c-11 left open as a decision. Removed as
+invalid: P8b-10, since commons-email's `buildMimeMessage` sets the `Subject` only for a subject that is not empty, as
+Rust does; and P8c-02 and P8c-04, since an elFinder entry here is a `DbResource` or a file path (any other location is
+an error), which Java's `supportsWrite()` answers true for, so its check never refuses and the `write` flag is the
+same. For P8b-03 the readers of the stored addresses were checked first: `send#EmailMessage` (`send_message`, as
+Java's `sendEmailMessage.groovy`) splits `toAddresses`, `ccAddresses` and `bccAddresses` on commas, and no screen or
+service in `runtime/` reads them otherwise. For P8b-09, none of the email body screens in `runtime/` sets
+`render-modes`, so each has a text render. Changes a deployment may see: an elFinder command on the root says
+"Operation not allowed on the root", and a hash of only the volume ID is the root; an SSO profile claim of `0` is not
+mapped to an account field; and an SSO logout ends the local login even when the provider's end-session URL cannot be
+had (no SSO client, a failed discovery). Line numbers in this section are as of that change.
+
 ### Findings — 8a REST / remote REST / tools / print
 
 | ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P8a-03 | `service/rest.rs:564` | `RestApi.groovy:833` | `run_service` results on `/rest/s1` not passed through `strip_user_account_secrets` (entity results are, `service/rest.rs:614`); Java strips every `RestResult` | High | No |
-| P8a-04 | `screen/dispatch.rs:154` | `RestApi.groovy:648-662` | `X-HTTP-Method-Override` honored for `/rest/e1` (`screen/dispatch.rs:332-343`) but not `/rest/s1` | Med | No |
-| P8a-06 | `service/rest.rs:327-331` | `RestApi.groovy:605` | Resource `description` read from a child element; real `*.rest.xml` put it on the attribute | Med | No |
-| P8a-08 | `service/remote.rs:169-180` | `RemoteRestServiceRunner.groovy:77` | 2xx non-JSON body yields `{response:<text>}` and an empty body `{}`; Java `jsonObject()` throws and fails the call | Med | Unsure |
-| P8a-11 | `service/rest.rs:564` | `RestApi.groovy:252` | Null-valued out-parameters not removed (`nestedRemoveNullsFromResultMap`) | Low | Unsure |
-| P8a-12 | `service/remote.rs:87` | `RemoteRestServiceRunner.groovy:71-75` | Error message omits the reason phrase | Low | No |
-| P8a-13 | `service/remote.rs:143-156` | `RestClient.java:941-952` | GET query omits list/map and empty values | Low | Unsure |
-| P8a-15 | `outbound.rs:29-35` | `RestClient.java:89-90` | `HEAD`/`OPTIONS` dropped, falling back to POST | Low | No |
-| P8a-17 | `service/tools.rs:203-212` | `PrintServices.xml:100,121-123` | `print#ScreenDocument` rejects non-PDF and ignores `webappName` | Low | Unsure |
-| P8a-18 | `service/rest.rs:296-298`, `:343-345` | `RestApi.groovy:192,614` | Empty `require-authentication=""` inherits the parent in Java, required in Rust | Low | No |
-| P8a-19 | `service/rest.rs:310` | `RestApi.groovy:618` | Rust lowercases `method type`; Java keys by the verbatim attribute | Low | No |
-| P8a-20 | `service/rest.rs:375`, `:224` | `RestApi.groovy:616-632` | Unsupported method child fails the whole file; Java registers no handler | Low | No |
-| P8a-21 | `service/tools.rs:618`, `:664-668` | `EntityServices.xml:176-192` | Empty-string userIds dropped; DataDocument read without `useCache(true)` | Low | Unsure |
-| P8a-22 | `service/rest.rs:132-161` | `RestApi.groovy:100-106,597,634-644` | `resource_info` omits `childPaths`/`methods` (the dashboard uses only `childMethods`, which is recursive on both sides) | Low | Unsure |
-| P8a-24 | `service/rest.rs:729` (`openapi_document`) | `RestApi.groovy:471`; `RestSchemaUtil.groovy:517` | Service-parameter schemas omit the `enum` lists Java derives from `Enumeration`/`StatusItem` (entity schemas have them since P2-07) | Low | Unsure |
+| P8a-26 | `service/rest.rs:1011` (`param_schema`) | `RestSchemaUtil.groovy:479-480`; `RestApi.groovy:272,290` | The service OpenAPI's parameter schemas have no `description`; Java takes the parameter's `<description>` text | Low | No |
+
+#### P8a-26 — Parameter descriptions in the service OpenAPI
+
+`ParamDef` keeps no `<description>` text, so the parameter schemas P8a-24 added have none. Left open: carrying it
+means a new `ParamDef` field and a decision on how `merge_param` (`service/define.rs:176`) merges it for an
+`implements` or a redeclared parameter, which Java's `mergeParameter` does by copying the child elements; that is
+service-definition work beyond this REST round.
 
 ### Findings — 8b mail / email services
 
-| ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P8b-03 | `runtime/…/org/moqui/impl/EmailServices.xml:82-83` | `EmailServices.xml:72-73` | `save#EcaEmailMessage` stores addresses as `join(', ')` vs Java `List.toString()` (`[a, b]`) | Med | Unsure |
-| P8b-04 | `service/mail/implementation.rs:1658-1666` | `pollEmailServer.groovy:111` | Expunge only when this poll flagged deletes; Java `close(true)` always expunges | Low | Unsure |
-| P8b-06 | `service/mail/implementation.rs:780-791` | `sendEmailTemplate.groovy:283-286` | Default attachment filename differs (Java strips 4 chars / NPEs) | Low | Unsure |
-| P8b-07 | `service/mail/implementation.rs:2073-2100` | `sendEmailTemplate.groovy:161-165` | Recipient split respects quotes/`<>`; Java splits on every `,` | Low | Unsure |
-| P8b-09 | `service/mail/implementation.rs:384` | `sendEmailTemplate.groovy:88-90` | Text alternative rendered only when `allows_text`; Java always renders it | Low | Unsure |
-| P8b-10 | `service/mail/implementation.rs:981-983` | `sendEmailTemplate.groovy:141` | Empty expanded subject omits the `Subject` header; Java sets it unconditionally | Low | Unsure |
+None open.
 
 ### Findings — 8c SSO / elFinder / system sync / images
 
 | ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P8c-02 | `service/elfinder.rs:319-322` | `ElFinderConnector.groovy:152` | `info.write` from `writes_restricted()` only, not `supportsWrite()` (Rust roots are always writable, so near-moot) | Low | No |
-| P8c-03 | `service/elfinder.rs:44` | `ElFinderConnector.groovy:257` | Root-refused error text differs | Low | No |
-| P8c-04 | `service/elfinder.rs:621-641` | `ElFinderConnector.groovy:316,326` | `mkdir`/`mkfile` omit the `supportsWrite()` check (near-moot, as P8c-02) | Low | No |
-| P8c-05 | `service/sso.rs:255` | `AuthenticationFlow.groovy:89-91` | Callback ignores `RelayState` (moot without SAML) | Low | Unsure |
-| P8c-06 | `service/sso.rs:204-207` | `AuthenticationFlow.groovy:50-53` | `login` clears a stored `returnTo` when none given | Low | Unsure |
-| P8c-07 | `service/sso.rs:347` | `MoquiSecurityGrantedAccessAdapter.groovy:35` | `map_fields` keeps numeric `0`; Groovy truthiness treats `0` false | Low | No |
-| P8c-11 | `service/images.rs:317` | impl `ImageServices.xml:109` | "Original" output format uses detected lowercase suffix; Java usually writes `outputImageFormat` | Low | Unsure |
-| P8c-16 | `service/elfinder.rs:753-755` | `ElFinderConnector.groovy:75-93` | A hash of exactly the 3-char volume id decodes to invalid; Java yields the root | Low | No |
-| P8c-17 | `service/sso.rs:286-290` | `AuthenticationFlow.groovy:139-155` | `logout` always ends local login; Java only if pac4j `perform` did not throw | Low | Unsure |
+| P8c-11 | `service/images.rs:317-325` | impl `ImageServices.xml:109` | The "Original" output keeps every writable input format; Java's check compares the reader's format name with the writers' suffixes, so a JPEG original (format name `JPEG`) is written as `outputImageFormat` | Low | Decision pending |
 
-#### P8a-03 — Service-REST service results not stripped of secrets
+#### P8c-11 — The "Original" image format
 
-Java wraps every Service-REST response in `WebUtilities.stripUserAccountSecrets` (`RestApi.groovy:833`),
-removing `currentPassword`/`resetPassword`/`passwordSalt`/`passwordHashType`/`passwordBase64` wherever
-they appear. Rust strips entity results (`service/rest.rs:614`) but returns `run_service` results as produced
-(`service/rest.rs:564`), so a service method on `/rest/s1` whose out-parameters include a UserAccount map leaks
-password material. The fix is to run the `entity/sensitive.rs` stripper over service results too.
-
-#### P8a-04 / P8a-06 — REST verb override and resource description
-
-Java resolves the effective verb through `PathNode.effectiveRequestMethod` (honoring
-`X-HTTP-Method-Override`) for both service and entity dispatch; Rust does this only for `/rest/e1` and
-passes the raw method for `/rest/s1`, so an override POST gets 405. Java reads resource `description`
-from the attribute, which real `*.rest.xml` files use; Rust reads a child element, so descriptions are
-always empty.
-
-#### P8a-08 — Remote-REST response handling
-
-On a 2xx response Java parses JSON and throws on a non-JSON or empty body. Rust tolerates a non-JSON
-body as `{"response": "<text>"}` and an empty one as `{}`, changing success/failure and the value
-shape.
-
-#### P8b-03 — Email address formatting
-
-The port's `save#EcaEmailMessage` stores `toAddresses` (and cc/bcc) as `join(', ')`, where Java uses
-Groovy `List.toString()` (`[a, b]`), so stored values differ for anything that reads them back.
+Java keeps the input format for the original when `ImageIO.getWriterFileSuffixes()` contains `reader.getFormatName()`:
+the JPEG reader's name is `JPEG`, which is not among the lower-case suffixes, so a JPEG original is converted to
+`outputImageFormat`, while a PNG, GIF, BMP or TIFF original is kept (and WebP, which the TwelveMonkeys plugin
+reads but does not write, is converted). Rust keeps any input format it can write, which is what the check appears meant to do. The one caller
+found (`WeCreateServices.xml`, a sibling component) names the original's file `..._Original.${outputImageFormat}`, so
+neither Java's outcome nor this port's always matches the name. Left open: keeping the input format, copying Java's
+outcome, or always writing `outputImageFormat` is an owner decision (see [Open decisions](#open-decisions)).
 
 #### Phase 8 checked and found equivalent
 
+- Service results stripped of secrets (P8a-03, fixed): a `/rest/s1` service result goes through
+  `strip_user_account_secrets`, as Java's `RestResult`, so the `UserAccount` password fields are left out of every map
+  in it at any depth: an out-parameter that is an account, a list of them, or one nested further (`run_service`,
+  `service/rest.rs:585-594`).
+- Method override (P8a-04, fixed): `/rest/s1` takes `X-HTTP-Method-Override` on a POST as `/rest/e1` does, and the
+  method it names is the one the path frames are authorized for (`AT_REST_PATH` view, create, update or delete) as
+  well as the one that runs, as Java's `effectiveRequestMethod` in both `getActionFromMethod` and `runByMethod`
+  (`effective_verb`, `screen/dispatch.rs:333-345`; used at `:87`, `:155`). An override cannot reach a method the
+  user may not run: a view-only user's POST with `PUT` is refused at the path.
+- Resource description (P8a-06, fixed): read from the `description` attribute, as written in the real `*.rest.xml` and
+  the XSD, as Java (`service/rest.rs:356`); the tools dashboard's tooltip and child links show it.
+- Remote-REST body (P8a-08, fixed): a 2xx body that is a JSON object is the result and an array is `response`; any
+  other, an empty body too, fails the call with Java's "Error parsing JSON response from request to ...", the URL
+  redacted (`response_map`, `service/remote.rs:174-183`; `:100-101`).
+- Result nulls (P8a-11, fixed): as `nestedRemoveNullsFromResultMap`, the null out-parameters, and the null fields of
+  each map out-parameter and of the maps that lead a list, are left out (`remove_result_nulls`,
+  `service/rest.rs:596-615`); the plain-map part that stays is P8a-29.
+- Remote-REST error text (P8a-12, fixed): "Remote service error 503: Service Unavailable", with the standard reason
+  phrase of the status (`service/remote.rs:92`; `reason_phrase`, `outbound.rs:183-216`, shared with the script
+  `rest()` host, which already used it); the transport does not pass on the server's own phrase.
+- GET query (P8a-13, fixed): as `parametersMapToString`, every parameter but a null one, an empty value as `name=` and
+  a list as its items joined by commas (`encode_query`, `service/remote.rs:149-160`). Java's stray `&` for a null is
+  not copied, and a space is `%20` where `URLEncoder` writes `+`, which servers read the same.
+- HEAD and OPTIONS (P8a-15, fixed): sent as themselves, as Java's `RestClient.Method`, where they fell back to POST
+  (`outbound.rs:28-72`; `moqui-lib/src/http.rs:57-107`); with parameters, which they cannot carry as a body, the call
+  fails before it is sent, as `RestClient.text` refuses one (`service/remote.rs:71-75`). The script `rest()` host
+  takes them too.
+- `require-authentication=""` (P8a-18, fixed): an empty value inherits the parent's, as Java's `?:`, on a resource,
+  an id and a method (`service/rest.rs:311-315`, `:368-371`).
+- Method `type` (P8a-19, fixed): methods are keyed by `type` as written, as Java's `methodMap`, so a `type="GET"`,
+  outside the XSD's lower-case list, is never matched (`service/rest.rs:326-344`).
+- A method that does not load (P8a-20, fixed): an operation other than `service` or `entity` is logged and that method
+  left out, and the rest of the file is served, as Java registers no handler for it (`service/rest.rs:326-344`); what
+  else is left out where Java does otherwise is P8a-27.
+- DataDocument notifications (P8a-21, fixed): the `DataDocument` and its links are read through the entity cache, as
+  `useCache(true)`, and user ids are looked for in the maps of a list but not in a list in a list, as
+  `findAllFieldsNestedMap` (`find_nested`, `service/tools.rs:615-632`; `:669-687`). The empty id is P8a-25.
+- Tools dashboard counts (P8a-22, fixed): each resource has `childPaths`, Java's count of the resources and ids under
+  it, beside `childMethods` (`path_count`, `service/rest.rs:163-169`). Java's `methodMap` of handler objects is read
+  only by its LLM browse tool (out of scope) and is not built.
+- Service OpenAPI parameters (P8a-24, fixed): a service method in `/rest/service.swagger/<root>` has its path
+  parameters, its other in-parameters as query parameters of a method with no body (not objects or arrays) or as the
+  JSON `requestBody` of a `post`, `put` or `patch`, and its out-parameters as the `200` response, each with Java's
+  `getJsonType`/`getJsonFormat`, its default, nested parameters, and the `enum` Java's `addParameterEnums` gives a
+  parameter with `entity-name` and `field-name`, through P2-07's `FieldEnums` (`service_parameters`,
+  `service/rest.rs:900-979`; `param_schema`, `:1009-1047`; `parameter_enums`, `:1049-1067`). The schemas are inline
+  in OpenAPI 3.1 form where Java's Swagger 2 refers to `definitions`; a `required="disabled"` parameter is left out,
+  as validation drops it (P6a-12). P8a-26 and P8a-28 are what stays.
+- elFinder root refusal (P8c-03, fixed): `rm`, `rename`, `upload` and `put` on the volume root answer Java's
+  "Operation not allowed on the root" (`ROOT_REFUSED`, `service/elfinder.rs:45`).
+- Volume-ID hash (P8c-16, fixed): a hash of only the 3-character volume ID decodes to the empty path, the root, as
+  Java's `unhash`; `rm` of it is refused as the root, and a hash shorter than the ID is still an error (`unhash`,
+  `service/elfinder.rs:756`).
+- SSO field mapping (P8c-07, fixed): a mapped claim is taken by Groovy truth, as `if (srcFieldValue)`, so `false`, an
+  empty value and a zero number are not mapped, and the text `"0"` is (`groovy_truth`, `service/sso.rs:353`, `:383-392`).
+- 8b and 8c, found equivalent this round: an empty expanded subject leaves out the `Subject` header in both, as
+  commons-email sets it only when not empty (P8b-10, `service/mail/implementation.rs:985`); and the elFinder `write`
+  flag and the `mkdir`/`mkfile` `supportsWrite()` check (P8c-02, P8c-04), since every entry is a `DbResource` or a
+  file, which `supportsWrite()` answers true for (`service/elfinder.rs:319`, `:636`).
 - 8a: identity-admin read ban and identity/secret write bans with UserAccount input stripping
-  (`service/rest.rs:591-606`); entity results stripped and returned without `_entity` (`service/rest.rs:614,632-642`;
+  (`service/rest.rs:641-656`); entity results stripped and returned without `_entity` (`service/rest.rs:664,682-692`;
   master path keeps it, as Java); `count` via `search_form_map` with `X-Total-Count`; remote-REST
-  `method` attribute honored (`service/call.rs:800-808`); `rewrite#EntityEncryptedFields` logs and skips
-  records that won't decrypt or update (`service/tools.rs:778-800`).
+  `method` attribute honored (`service/call.rs:886-894`); `rewrite#EntityEncryptedFields` logs and skips
+  records that won't decrypt or update (`service/tools.rs:785-807`).
 - 8a: root/path 404s and error kinds; `*.rest.xml` discovery and root replacement; named-child
   precedence; `allow-extra-path`; `AT_REST_PATH` frame/authz; `anonymous-all`/`anonymous-view`; entity
   operation set and `{operation}#{entity}` dispatch; find-one-not-found → null; default list limit 100
@@ -801,7 +978,7 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P1-13 | entity list | Rust `EntityList` has only len/get/iter/values; Java has `filterByAnd`, `orderByFields`, `getFirst` and more (`entity/value.rs:243-277`) | Rust callers use slice/iterator methods; the script runtime's list has the helpers scripts call (`filterByDate`, `getPartialList`, `first`), and no converted component uses the others; doc comment at the type |
 | P2-08 | entity find | Distinct and select-field finds bypass the entity cache; Java caches them by reading every field, so a cached entity answers with whole, non-distinct rows (`entity/find.rs:238-244`) | Rust returns the rows and fields asked for; comment at `bypasses_cache` |
 | P2-10 | entity find | `iterator()` under `requireSearchFormParameters` returns an empty iterator; Java returns `null` (`entity/find.rs:524-530`) | Rust has no null iterator; empty is the safe equivalent |
-| P2-12 | entity schema | JSON schema envelope redesigned: `$defs`/draft 2020-12, PK `required`, keyed by full name vs Java `definitions`/`anyOf`/pagination, draft-04, `_entity`+`default`, short-or-full name (`entity/schema.rs:27,89-128`) | Deliberate modernization; relationships and `enum` now follow Java inside it (P2-06/P2-07 fixed) |
+| P2-12 | entity schema | JSON schema envelope redesigned: `$defs`/draft 2020-12, PK `required`, keyed by full name vs Java `definitions`/`anyOf`/pagination, draft-04, `_entity`+`default`, short-or-full name (`entity/schema.rs:27,86-125`) | Deliberate modernization; relationships and `enum` now follow Java inside it (P2-06/P2-07 fixed) |
 | P2-14 | search form | `_not` with `_ic` on `equals` compares ignoring case; Java throws, since `ignoreCase()` on the `orNull` join condition is unsupported (`entity/search_form.rs:269-272`) | A search a user can type should not fail; comment at the site |
 | P3-06 | datasource / DDL | No table, constraint or index name is schema-qualified: Postgres sets the session `search_path` to `schema-name` (`moqui-host/src/db/entity_db.rs:202-207`), `use-schema-for-all` (only the DB2 profiles) is unread, and a MySQL `schema-name` is logged and not used (`entity/datasource.rs:222-229`) | Same placement on Postgres without qualifying each statement; no DB2 driver; on MySQL Java's `schema.TABLE` is another database, which the jdbc-uri names. `use-schemas="false"` is now honored (no search path, `entity/datasource.rs:178-184`); comments at both sites |
 | P3-11 | DDL | `fk-style="name_fk"` (the MySQL profiles) is not followed: always `ADD CONSTRAINT name FOREIGN KEY` (`moqui-db/src/sql/statement.rs:562-571`) | MySQL 8.0.16 and later ignore the `name_fk` name and call the key `{table}_ibfk_N`, so the check that goes by name (P3-21) would add it again on every check; doc comment at `create_foreign_key` |
@@ -811,25 +988,49 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P4a-20 | data loader | An empty CSV header cell (a trailing delimiter) is no column; Java's field lookup fails the file on it (`entity/load_feed/csv.rs:94-100`) | A trailing delimiter is no reason to fail a file; a non-empty name that is not a field still fails it (P4a-16). Comment at the site |
 | P4b-07 | data feed | `get#DataFeedDocuments` honors `thruUpdateStamp`; Java always passes null | Bug fix; comment at runtime `EntityServices.xml:35-36` |
 | P4b-08 | ETL | `useTryInsert` stores with `createOrUpdate` where the database is `never-try-insert` (Postgres); Java's ETL loader tries the insert anyway (`entity/etl.rs:92-101`) | Safer: on Postgres the failed insert aborts the transaction, so Java's update after it fails; the data loader's `handleValue` has the same guard. Comment at the site |
-| P4b-09 | data writer | `isoDateTime(true)` formats dates in JSON and XML; Java ignores it (`TODO`) (`entity/query_rest.rs:1551-1583,1716-1733`) | Implements Java's TODO |
-| P5-14 | entity REST | Request `pageSize` capped at `entity_rest_max_page_size` (1000); Java caps nothing | Documented `entity/query_rest.rs:534-553` |
-| P6a-05 | service tools | Service detail view is a rebuilt node (`method` null, no `groovyString`, some attributes dropped) | Documented `service/info.rs:183-184` |
-| P6b-08 | semaphore | Row cleared only while `lockThread` equals Rust's owner label | Documented `service/semaphore.rs:72-73,204-205` |
+| P4b-09 | data writer | `isoDateTime(true)` formats dates in JSON and XML; Java ignores it (`TODO`) (`entity/query_rest.rs:1550-1582,1715-1732`) | Implements Java's TODO |
+| P5-14 | entity REST | Request `pageSize` capped at `entity_rest_max_page_size` (1000); Java caps nothing | Documented `entity/query_rest.rs:532-551` |
+| P6a-05 | service tools | Service detail view is a rebuilt node (`method` null, no `groovyString`, some attributes dropped) | Documented `service/info.rs:194-195` |
+| P6a-12 | service validation | A `required="disabled"` parameter is skipped, so validating drops a value passed for it, and an implemented one is not copied (`service/validate.rs:48-52`, `service/define.rs:1434-1441`); Java only makes it not required and still converts the value | The XSD says it behaves "as if the parameter did not exist", for overriding an earlier parameter; dropping it keeps an undeclared value from the service. Comment at the site |
+| P6a-19 | service validation | `val-or` passes when one child passes and `val-not` fails when one passes, with a message (`service/validate.rs:704-723`); Java's `validateParameterSingle` adds each failing child's error even when the `val-or` passes, and adds none for a failing `val-not` | Java's makes a `val-or` with any failing branch fail the call and a failing `val-not` pass it; unused in `runtime/`. Comment at the site |
+| P6a-20 | service validation | `text-email` checks the top-level domain's form (letters first, two or more long), not the IANA list, and a Unicode host is not valid; `text-letters` takes Unicode alphabetic characters, a little more than `Character.isLetter` (combining vowel signs, letter numbers) (`service/validate.rs:684-688`, `:789-875`) | No list of top-level domains to keep current and no IDN library in moqui-core; doc comment at `is_email` |
+| P6b-08 | semaphore | Row cleared only while `lockThread` equals Rust's owner label | Documented `service/semaphore.rs:82-83,247-248` |
+| P6b-14 | service call | A call returns only the declared out-parameters (all when none are declared), and inline/script bodies have no `result` map (`service/call.rs:951-968`); Java returns the runner's map, the `result` map's entries included | Keeps a body's other values from REST and remote callers; a ported script uses `result` as a name of its own (`SearchServices.xml`). Doc comment at `project` |
+| P6b-15 | service call | An authorization failure in a service's body rolls back the transaction the call began (`tx.run`, `service/call.rs:516-520`); Java's `callSingle` rethrows `ArtifactAuthorizationException` and its `finally` commits what the body wrote before the refusal | Safer: a refused call leaves nothing written. Comment at the site |
+| P6b-16 | authorization | An `authzServiceName` service that leaves errors fails the authorization check (`authz_service_type`, `user/authz.rs:403-419`); Java goes on with the record's own type, which can be `AUTHZT_ALLOW` | AGENTS.md: stay strict where it protects security, so a failing authz service never authorizes. Doc comment at `authz_service_type` |
 | P7a-01 | EECA | Security-check EECAs run even when the message facade already has errors (Java skips them) | Stricter by design; `service/eca.rs:74-75`, test at `service/eca.rs:327` |
 | P7a-04 | security | `SSH_SHELL` sealed in Rust conf/constants | Rust-only artifact (`service/security_checks.rs:31-32`, `MoquiDefaultConf.xml:63-64`) |
+| P7a-07 | rule conditions | A rule condition is JavaScript truth, as an `<if>` in the actions: an empty list or map is true (`eval_condition`, `script/runtime.rs:574-579`); Java's `checkCondition` takes Groovy truth (`as Boolean`), where it is false | The action language is JavaScript: a rule condition and an `<if>` agree, converted Groovy tests a list's length (`groovy_convert`), and the linter flags collection truth (`lint_hazards`). Doc comment at `eval_condition` |
+| P7a-08 | SECA | A pattern rule is matched against each called name, once per name (`SecaIndex`, `service/seca.rs:118-121`); Java expands it at load to the services known then, so it never runs for one it did not know, as an implicit entity-auto service | The same rules run for every service known at load; a pattern written for a name also covers that name when the service comes later. Comment at the site |
 | P7a-09 | email ECA | A failing email rule is logged and the rest run; Java aborts | AGENTS.md failure-tolerance policy |
-| P7b-04 | pools | Workers = `worker-pool-max` − job core; core/alive ignored (Java effectively runs `worker-pool-core`) | Comment at `service/pool.rs:741-747` |
+| P7a-15 | SECA | A pattern rule with `when="tx-commit"` or `"tx-rollback"` runs (`register_tx_rules`, `service/call.rs:607-612`); Java's `registerTx` compares the rule's service name, the pattern text, to the called name, so it never registers one | A pattern rule runs at each `when` it names, as at every other phase (P7a-08); Java's skip comes from comparing a pattern as a name. Doc comment at `register_tx_rules` |
+| P7b-04 | pools | Workers = `worker-pool-max` − job core; core/alive ignored (Java effectively runs `worker-pool-core`) | Comment at `service/pool.rs:801-803` |
 | P7b-06 | jobs | Lock row with a run id but null `lastRunTime` holds the job | Comment at `service/jobs.rs:224-227`; Java always writes both |
-| P8a-14 | remote REST | Substituted `${param}` values percent-encoded; Java does not URL-encode | Doc comment `service/remote.rs:107-108` |
-| P8a-16 | service REST | No-user denial returns 401; Java throws (403) | Comment `service/rest.rs:497-498` |
+| P7b-16 | jobs | `ServiceJobRun.runThread` is the name of this port's job thread, `moqui-job-0` (`service/jobs.rs:463-475`); Java's is `MoquiJob-1` | The column names the thread that ran the job in both; the threads follow this port's `moqui-*` names, which its logs show. Comment at the site |
+| P7b-18 | async | An async call whose parameters fail validation is not queued: the errors are in the caller's message facade, and a future gets an empty map (`prepare_async`, `service/call.rs:264-313`); Java queues it, skipping its authorization check, and its run fails the same validation | Safer: a call that skipped the authorization check is not queued, and its run would do nothing but its `pre-validate` rules. Doc comment at `prepare_async` |
+| P8a-14 | remote REST | Substituted `${param}` values percent-encoded; Java does not URL-encode | Doc comment `service/remote.rs:113-114` |
+| P8a-16 | service REST | No-user denial returns 401; Java throws (403) | Comment `service/rest.rs:523-524` |
+| P8a-17 | print | `print#ScreenDocument` refuses a `contentType` other than `application/pdf` with an error, and renders in the one webapp, `webroot`, whatever `webappName` says (`service/tools.rs:207-214`); Java's FOP writes other output types and renders in the named webapp | The PDF renderer makes only PDF, so another type cannot be made, and this port serves one webapp, `webappName`'s default; comment at the site |
 | P8a-23 | service REST | Authc message says "operation"; Java has the "operaton" typo | Don't copy the typo |
+| P8a-25 | DataDocument notifications | An empty `userId`, `fromUserId` or `toUserId` in a document names no user (`find_nested`, `service/tools.rs:615-632`); Java's `findAllFieldsNestedMap` adds it | Java then writes a `NotificationMessageUser` for user `""`, which fails the send for every user of the document; doc comment at `find_nested` |
+| P8a-27 | service REST | A `<method>` with no `type`, no operation element, or an operation with no `name` (or no `operation`) is logged and left out, and the rest of the file is served (`service/rest.rs:326-344`); Java keys one with no type by `null`, registers a service or entity handler with no name, which fails when called, and fails the whole file for a method with no child | AGENTS.md failure tolerance; comment at the site |
+| P8a-28 | service OpenAPI | A REST service that is not defined, or whose parameters do not expand, is logged and documented without parameters, and a parameter whose `entity-name` or `field-name` is not defined is logged and has no `enum` (`service/rest.rs:910-923`, `:1049-1067`); Java's Swagger throws for the whole document | AGENTS.md failure tolerance; doc comments at `service_parameters` and `parameter_enums` |
+| P8a-29 | service REST | A plain map out-parameter loses its null entries one level down too (`remove_result_nulls`, `service/rest.rs:596-615`); Java removes them only from an `EntityValue` | Entity values are maps in this port, so the two cannot be told apart; a missing key and a `null` read the same to a JSON client. Doc comment at the function |
 | P8b-01 | mail | `allowedToDomains` dot-boundary match on the extracted address vs Java `endsWith` on the raw address | Hardening; doc comment `service/mail/implementation.rs:545-564` |
 | P8b-02 | mail poll | Per-message `ForceNew` transaction and continue-on-error vs Java one poll transaction aborting on first throw | AGENTS.md policy; comment `service/mail/implementation.rs:1303-1307` |
+| P8b-03 | email ECA | `save#EcaEmailMessage` stores the to, cc and bcc lists joined by `, ` (runtime `EmailServices.xml:79-86`); Java stores Groovy's `List.toString()`, `[a, b]` | The stored lists are read back by `send#EmailMessage`, which splits them on commas in both, so Java's form sends to `[a` and `b]`; `send#EmailTemplate` stores them comma separated too. Comment at the site |
+| P8b-04 | mail poll | An IMAP poll expunges only when it flagged a message deleted (`ImapBox::close`, `service/mail/implementation.rs:1668-1671`); Java's `folder.close(true)` always expunges | Safer: a poll of a server not set to delete does not purge what another client flagged and could still undelete. Comment at the site |
 | P8b-05 | email ECA | `message` context is a Map, not the live `MimeMessage` | Comment `service/mail/implementation.rs:1402` |
+| P8b-06 | mail | A screen attachment with no `fileName` is named for its location (or `screenPath`) less the extension (`service/mail/implementation.rs:783-795`); Java drops the last 4 characters of the location | The same for a `.xml` screen; Java fails the send with an NPE for a `screenPath` attachment, which has no location. Comment at the site |
+| P8b-07 | mail | A recipient list is split on commas outside quotes and `<>`, and empty items are left out (`split_addresses`, `service/mail/implementation.rs:2080-2082`); Java splits on every comma | Java breaks `"Doe, Jane" <jane@example.com>` into two bad addresses. Doc comment at the function |
 | P8b-08 | mail | `send#Email`/`send#EmailTemplate` gain `body`/`bodyText` overrides | Module doc `service/mail/implementation.rs:23`, `:83-84` |
-| P8c-08 | SSO | Default group added only when non-empty | `service/sso.rs:479-481` |
-| P8c-10 | elFinder | `rm` validates all targets before deleting; Java deletes then returns on first bad | Comment `service/elfinder.rs:655` |
+| P8b-09 | mail | The text alternative is rendered only when the body screen's `render-modes` takes `text` (`render_bodies`, `service/mail/implementation.rs:373-392`); Java always renders it | This port's screen renderer refuses a mode the screen does not list (`screen/render.rs:410`), which would fail the send; no email body screen in `runtime/` sets `render-modes`. Doc comment at the function |
+| P8c-05 | SSO | The callback takes no return URL from `RelayState` (`service/sso.rs:235-246`); Java prefers it to the session's `returnTo` | `RelayState` is SAML's, which the port has no client for (P8c-14), so a return URL never comes from the callback's query. Comment at the site |
+| P8c-06 | SSO | `login#User` without a `returnTo` clears one stored by an earlier, unfinished login (`service/sso.rs:204-208`); Java keeps it | Stricter: a stale return URL is not followed by a later login. Comment at the site |
+| P8c-08 | SSO | Default group added only when non-empty | `service/sso.rs:498-500` |
+| P8c-10 | elFinder | `rm` validates all targets before deleting; Java deletes then returns on first bad | Comment `service/elfinder.rs:657` |
 | P8c-12 | images | Suffix/MIME lists hardcoded; Java uses live `ImageIO` lists | `service/images.rs:46-55` |
 | P8c-13 | system message | Replay-cache TTL check on received messages (Rust-only) | Hardening; `service/system_sync/message.rs:430-446` |
 | P8c-14 | SSO | SAML flows error as unavailable; Java builds a `SAML2Client` | No SAML client in the port (`service/sso.rs:180-184`) |
-| P8c-15 | elFinder | Symlink-to-directory deleted as a link; Java follows and deletes contents | Comment `service/elfinder.rs:425-431` |
+| P8c-15 | elFinder | Symlink-to-directory deleted as a link; Java follows and deletes contents | Comment `service/elfinder.rs:426-431` |
+| P8c-17 | SSO | `logout#User` always ends the local login, even when the provider's end-session URL cannot be had, which is then logged (`service/sso.rs:266-298`); Java skips `logoutUser()` when its pac4j logout throws | Safer: a provider failure does not leave the user logged in here. Doc comment at the function |

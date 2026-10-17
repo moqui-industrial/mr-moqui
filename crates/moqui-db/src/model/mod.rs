@@ -705,9 +705,22 @@ fn parse_entity(
                 member_entities.push(view::parse_member(&child)?);
             }
         }
+        // Java evaluates a `pq-expression` alias after the query, which this port does not do: the alias is left out,
+        // so the rest of the view and the model still load.
         let mut aliases = node
             .children_named("alias")
             .iter()
+            .filter(|child| {
+                let Some(expression) = optional_attr(child, "pq-expression") else {
+                    return true;
+                };
+                tracing::error!(
+                    "View-entity {full_name} alias {} has pq-expression [{expression}], which is not \
+                     supported; leaving the alias out",
+                    child.attribute("name").unwrap_or_default()
+                );
+                false
+            })
             .map(|child| view::parse_alias(child, &dictionary_names))
             .collect::<Result<Vec<_>, _>>()?;
         for alias in &mut aliases {

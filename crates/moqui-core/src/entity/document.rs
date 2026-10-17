@@ -968,10 +968,21 @@ fn manual_data(service: &str, info: &DocumentInfo, doc: Document) -> Document {
     params.insert("dataDocumentId".to_string(), Value::string(&info.data_document_id));
     params.insert("document".to_string(), Value::Map(doc.clone()));
     match crate::service::call::sync(service, &params) {
-        Ok(result) => match result.get("document") {
-            Some(Value::Map(out)) if !out.is_empty() => out.clone(),
-            _ => doc,
-        },
+        Ok(result) => {
+            // As Java: errors the call left are logged and cleared, and the document stays as it was.
+            if let Some(errors) = crate::service::util::take_errors_string() {
+                tracing::error!(
+                    document = %info.data_document_id,
+                    service,
+                    "Error calling manual data service, document may be missing data: {errors}"
+                );
+                return doc;
+            }
+            match result.get("document") {
+                Some(Value::Map(out)) if !out.is_empty() => out.clone(),
+                _ => doc,
+            }
+        }
         Err(err) => {
             tracing::error!(
                 document = %info.data_document_id,

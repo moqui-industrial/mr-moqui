@@ -248,3 +248,28 @@ fn load_paths_reads_a_file_as_well_as_a_directory() {
     assert!(model.entity("p.InDir").is_ok());
     assert!(model.entity("p.InFile").is_ok());
 }
+
+/// A `pq-expression` alias, which this port does not evaluate, is left out of its view and the model still loads.
+/// `default-display` is kept on an alias.
+#[test]
+fn a_pq_expression_alias_is_left_out_and_default_display_is_kept() {
+    let document = MNode::parse_text(
+        "entities.xml",
+        r#"<entities>
+            <entity entity-name="Item" package="t" no-update-stamp="true">
+                <field name="itemId" type="id" is-pk="true"/><field name="code" type="id"/></entity>
+            <view-entity entity-name="ItemView" package="t">
+                <member-entity entity-alias="I" entity-name="t.Item"/>
+                <alias name="itemId" entity-alias="I"/>
+                <alias name="code" entity-alias="I" default-display="false"/>
+                <alias name="shown" pq-expression="code + '!'" default-display="true"/>
+            </view-entity>
+        </entities>"#,
+    )
+    .unwrap();
+    let model = EntityModel::load(&id_conf(), &[document]).unwrap();
+    let view = model.entity("t.ItemView").unwrap();
+    assert_eq!(view.field_names(), ["itemId", "code"]);
+    assert_eq!(view.alias("code").unwrap().default_display, Some(false));
+    assert_eq!(view.alias("itemId").unwrap().default_display, None);
+}

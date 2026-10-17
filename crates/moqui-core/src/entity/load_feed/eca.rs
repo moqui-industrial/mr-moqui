@@ -195,10 +195,7 @@ impl EcaIndex {
                 get_original_value: attr_true(&node, "get-original-value"),
                 set_results: attr_true(&node, "set-results"),
                 run_on_error: attr_true(&node, "run-on-error"),
-                condition: node
-                    .first_named("condition")
-                    .map(|child| child.write_string())
-                    .unwrap_or_default(),
+                condition: crate::service::rule_actions::first_condition(&node),
                 actions: node
                     .first_named("actions")
                     .map(|child| child.write_string())

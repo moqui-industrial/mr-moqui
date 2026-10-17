@@ -517,7 +517,7 @@ fn truncate(text: &str, max_chars: usize) -> String {
 }
 
 /// The host address and name, as Java's `InetAddress.getLocalHost()`, found once.
-fn server_address() -> &'static (String, String) {
+pub(crate) fn server_address() -> &'static (String, String) {
     static ADDRESS: OnceLock<(String, String)> = OnceLock::new();
     ADDRESS.get_or_init(|| {
         let name = std::fs::read_to_string("/proc/sys/kernel/hostname")

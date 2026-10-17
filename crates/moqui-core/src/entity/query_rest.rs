@@ -24,8 +24,7 @@ use std::rc::Rc;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use moqui_db::model::{
-    AliasAll, EntityDefinition, FieldAlias, FieldDefinition, KeyMap, MasterDefinition, MasterDetail, MemberEntity,
-    Relationship,
+    AliasAll, EntityDefinition, FieldAlias, KeyMap, MasterDefinition, MasterDetail, MemberEntity, Relationship,
 };
 use moqui_db::sql::{select_view, Condition, FieldRef, LimitOffset, OrderBy};
 use moqui_lib::error::Error;
@@ -285,7 +284,9 @@ struct EntitySnap {
     full_name: String,
     short_alias: Option<String>,
     entity_key: String,
-    fields: Vec<FieldDefinition>,
+    /// Field names in definition order, or alias names for a view, as Java's `allFieldNameList`.
+    fields: Vec<String>,
+    pk_fields: Vec<String>,
     relationships: Vec<Relationship>,
     masters: Vec<MasterDefinition>,
 }
@@ -297,18 +298,15 @@ impl EntitySnap {
             full_name: entity.full_name.clone(),
             entity_key: entity.short_alias.clone().unwrap_or_else(|| entity.full_name.clone()),
             short_alias: entity.short_alias.clone(),
-            fields: entity.fields.clone(),
+            fields: entity.field_names().into_iter().map(str::to_string).collect(),
+            pk_fields: entity.pk_field_names().into_iter().map(str::to_string).collect(),
             relationships: entity.relationships.clone(),
             masters: entity.masters.clone(),
         }
     }
 
     fn pk_names(&self) -> Vec<&str> {
-        self.fields
-            .iter()
-            .filter(|field| field.is_pk)
-            .map(|field| field.name.as_str())
-            .collect()
+        self.pk_fields.iter().map(String::as_str).collect()
     }
 
     fn label(&self) -> String {
@@ -736,17 +734,17 @@ fn render(
         fields: Vec::new(),
         nested: Vec::new(),
     };
-    for field in &snap.fields {
-        if !ctx.preserve_keys && ctx.parent_pks.contains(&field.name) {
+    for name in &snap.fields {
+        if !ctx.preserve_keys && ctx.parent_pks.contains(name) {
             continue;
         }
-        let Some(value) = fields.get(&field.name) else {
+        let Some(value) = fields.get(name) else {
             continue;
         };
         if value.is_null() {
             continue;
         }
-        node.fields.push((field.name.clone(), value.clone()));
+        node.fields.push((name.clone(), value.clone()));
     }
     let seen_id = seen_key(&snap, fields);
     if ctx.depth >= MAX_DEPTH || !ctx.seen.insert(seen_id) {
@@ -1242,6 +1240,7 @@ fn alias_from_spec(spec: &Value) -> Result<FieldAlias, Error> {
         field: optional_string(spec, &["field"]),
         function: optional_string(spec, &["function"]),
         field_type: optional_string(spec, &["type", "field-type", "fieldType"]),
+        default_display: optional_string(spec, &["default-display", "defaultDisplay"]).map(|value| value == "true"),
         ..FieldAlias::default()
     })
 }
@@ -1734,10 +1733,51 @@ fn write_field_json(out: &mut String, value: &Value, iso: bool) {
     write_json_value(out, value);
 }
 
+/// A web response's JSON, as Java's `ContextJavaUtil.jacksonMapper` writes it: indented as Jackson's default pretty
+/// printer (`INDENT_OUTPUT`), a time stamp or date as epoch millis (`WRITE_DATES_AS_TIMESTAMPS`), and a time as
+/// `HH:mm:ss` text, as Jackson's `SqlTimeSerializer`.
 pub(crate) fn encode_json(value: &Value) -> String {
     let mut out = String::new();
-    write_json_value(&mut out, value);
+    write_response_json(&mut out, value, 0);
     out
+}
+
+/// Jackson's `DefaultPrettyPrinter`: an object's entries on their own lines, two spaces deeper for each object they
+/// are in (an array adds no depth), `"name" : value`; an array on one line, `[ a, b ]`; empty ones `{ }` and `[ ]`.
+fn write_response_json(out: &mut String, value: &Value, depth: usize) {
+    match value {
+        Value::Timestamp(_) | Value::Date(_) => out.push_str(&to_plain_string(value)),
+        Value::Time(time) => out.push_str(&json_string(&time.strftime("%H:%M:%S").to_string())),
+        Value::List(items) if items.is_empty() => out.push_str("[ ]"),
+        Value::List(items) => {
+            out.push_str("[ ");
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                write_response_json(out, item, depth);
+            }
+            out.push_str(" ]");
+        }
+        Value::Map(map) if map.is_empty() => out.push_str("{ }"),
+        Value::Map(map) => {
+            out.push('{');
+            for (index, (key, item)) in map.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push('\n');
+                out.push_str(&"  ".repeat(depth + 1));
+                out.push_str(&json_string(key));
+                out.push_str(" : ");
+                write_response_json(out, item, depth + 1);
+            }
+            out.push('\n');
+            out.push_str(&"  ".repeat(depth));
+            out.push('}');
+        }
+        other => write_json_value(out, other),
+    }
 }
 
 fn write_json_value(out: &mut String, value: &Value) {
@@ -1785,20 +1825,20 @@ fn render_csv(snap: &EntitySnap, records: &[BTreeMap<String, Value>], iso: bool)
         out.push_str(name);
     }
     out.push('\n');
-    for (index, field) in snap.fields.iter().enumerate() {
+    for (index, name) in snap.fields.iter().enumerate() {
         if index > 0 {
             out.push(',');
         }
-        out.push_str(&field.name);
+        out.push_str(name);
     }
     out.push('\n');
     for record in records {
-        for (index, field) in snap.fields.iter().enumerate() {
+        for (index, name) in snap.fields.iter().enumerate() {
             if index > 0 {
                 out.push(',');
             }
             let text = record
-                .get(&field.name)
+                .get(name)
                 .map(|value| scalar_string(value, iso))
                 .unwrap_or_default();
             write_csv_field(&mut out, &text);
@@ -2059,5 +2099,52 @@ mod tests {
         assert_eq!(page.offset, Some(i64::MAX));
         let info = page_numbers(&page, &parameters, 10);
         assert_eq!((info.range_low, info.range_high), (i64::MAX, 10));
+    }
+
+    /// The text Java's `jacksonMapper` gives for the same map: Jackson's pretty printer, dates as millis numbers.
+    #[test]
+    fn response_json_is_indented_as_jackson_with_dates_as_millis() {
+        let stamp: jiff::Timestamp = "2024-01-02T03:04:05.123Z".parse().unwrap();
+        let date = jiff::civil::date(2024, 1, 2);
+        let time = jiff::civil::time(3, 4, 5, 0);
+        let child = Value::Map(indexmap::IndexMap::from([
+            ("c".to_string(), Value::I64(1)),
+            ("d".to_string(), Value::List(vec![Value::I64(1), Value::I64(2)])),
+        ]));
+        let value = Value::Map(indexmap::IndexMap::from([
+            ("stamp".to_string(), Value::Timestamp(stamp)),
+            (
+                "before".to_string(),
+                Value::Timestamp("1960-01-02T03:04:05Z".parse().unwrap()),
+            ),
+            ("date".to_string(), Value::Date(date)),
+            ("time".to_string(), Value::Time(time)),
+            ("rows".to_string(), Value::List(vec![child.clone(), Value::string("x")])),
+            ("one".to_string(), child),
+            ("none".to_string(), Value::List(Vec::new())),
+            ("empty".to_string(), Value::Map(indexmap::IndexMap::new())),
+            ("text".to_string(), Value::string("a\"b")),
+            ("null".to_string(), Value::Null),
+        ]));
+        let expected = r#"{
+  "stamp" : 1704164645123,
+  "before" : -315521755000,
+  "date" : 1704153600000,
+  "time" : "03:04:05",
+  "rows" : [ {
+    "c" : 1,
+    "d" : [ 1, 2 ]
+  }, "x" ],
+  "one" : {
+    "c" : 1,
+    "d" : [ 1, 2 ]
+  },
+  "none" : [ ],
+  "empty" : { },
+  "text" : "a\"b",
+  "null" : null
+}"#;
+        assert_eq!(encode_json(&value), expected);
+        assert_eq!(encode_json(&Value::List(Vec::new())), "[ ]");
     }
 }
