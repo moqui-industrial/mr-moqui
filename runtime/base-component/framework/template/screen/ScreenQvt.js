@@ -32,8 +32,7 @@
 //  - The background-message of a form is text. The Java client evaluated it as a JavaScript string.
 //  - An editor-type html or md text-area is an m-text-area (QEditor, or a textarea with a Marked preview).
 //  - lookup is a text line. The Java macros had it commented out.
-//  - The navigation bar sits above the table of a form-list and not in a table row. The saved finds are listed in the find dialog; the menu
-//    data has them and the screen documents.
+//  - The navigation bar sits above the table of a form-list and not in a table row.
 //  - The mask of a text-line is converted from the Inputmask patterns (9, a, *) to Quasar mask tokens.
 //  - In fields-initial a link does not replace the _display text of a display or display-entity before it in the same field.
 (function (T, S) {
@@ -1058,7 +1057,7 @@
             if (!(cfg.headerDialog || cfg.savedFinds || cfg.selectColumns || paginated) || ctx("hideNav") === "true") return;
             let out = '<div class="form-list-nav-row row items-center"><div class="col-xs-12 col-sm-6"><div class="row items-center">';
             const flush = () => { if (out) { w(out); out = ""; } };
-            if (cfg.headerDialog || cfg.savedFinds) {
+            if (cfg.headerDialog) {
                 out += '<m-container-dialog id="' + e(formId) + '_hdialog" title="' + e(L("Find Options")) + '"><template v-slot:button><q-btn dense outline no-caps icon="search" label="' + e(L("Find Options")) + '"></q-btn></template>';
                 flush();
                 findDialogBody(n, cols, cfg);
@@ -1068,6 +1067,12 @@
                 out += '<m-container-dialog id="' + e(formId) + '_SelColsDialog" title="' + e(L("Column Fields")) + '"><template v-slot:button><q-btn dense outline no-caps icon="table_chart" label="' + e(L("Columns")) + '"></q-btn></template>';
                 flush();
                 columnsDialogBody(n, cols, cfg);
+                w("</m-container-dialog>");
+            }
+            if (cfg.savedFinds) {
+                out += '<m-container-dialog id="' + e(formId) + '_sfdialog" title="' + e(L("Saved Finds")) + '"><template v-slot:button><q-btn dense outline no-caps icon="find_in_page" label="' + e(L("Saved Finds")) + '"></q-btn></template>';
+                flush();
+                savedFindsDialogBody(n, cfg);
                 w("</m-container-dialog>");
             }
             if (at(n, "show-csv-button") === "true") {
@@ -1101,10 +1106,9 @@
             w(out + "</div>\n");
         };
 
-        // The dialog of find options: the header fields as an m-form-link, an order-by list, and the summary of the saved find form.
-        const findDialogBody = (n, cols, cfg) => {
+        // Saved finds have their own dialog, as in Java, separate from the search parameters.
+        const savedFindsDialogBody = (n, cfg) => {
             const formId = cfg.formId;
-            const headerId = cfg.headerFormId;
             if (cfg.savedFinds) {
                 const current = sri.getScreenUrlInstance().cloneUrlInstance().removeParameter("pageIndex").removeParameter("moquiFormName").removeParameter("moquiSessionToken").removeParameter("lastStandalone").removeParameter("formListFindId");
                 const params = current.getParameterMap();
@@ -1140,6 +1144,10 @@
                     }) + '></m-text-line></div><div class="on-right q-my-auto big-row-item"><q-btn dense outline no-caps type="submit" label="' + e(L("Save New Find")) + '"></q-btn></div></div></m-form>');
                 } else w("<div style=\"margin:12px 0;\"><strong>" + t(L("No find parameters (or default), choose some in Find Options to save a new find or update existing")) + "</strong></div>");
             }
+        };
+
+        const findDialogBody = (n, cols, cfg) => {
+            const headerId = cfg.headerFormId;
             if (!cfg.headerDialog) return;
             const orderable = cols.flat().filter((f) => f.orderBy);
             const orderOptions = [];
