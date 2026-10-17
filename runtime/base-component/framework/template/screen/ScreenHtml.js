@@ -634,7 +634,7 @@
         const dialogOpen = (n, id, text, extra) => {
             const iconClass = at(n, "icon") || "fa fa-share";
             return "<button" + A({
-                type: "button", id: id + "-button", "data-dialog": id, "data-btn": xn(at(n, "type")) || "primary", class: xn(at(n, "button-style")) || null, title: text
+                type: "button", id: id + "-button", "data-dialog": id, "data-btn": xn(at(n, "type")) || "primary", class: xn(at(n, "button-style")) || null, title: text, "aria-label": text
             }) + ">" + icon(iconClass) + e(text) + "</button>";
         };
         const dialogShell = (n, id, text, bodyAttrs, body, extra) =>
@@ -1143,8 +1143,8 @@
                     if (cfg.headerDialog) {
                         // The active find parameters are shown as text with a button that clears them.
                         let summary = "";
-                        visible.flat().forEach((f) => {
-                            if (!f.summary) return;
+                        cfg.summaryFields.forEach((f) => {
+                            if (!f.summary || (f.hide && f.hide())) return;
                             const text = f.summary();
                             if (text) summary += '<span class="filter"><strong>' + e(f.title()) + ":</strong> " + e(text) + "</span> ";
                         });
@@ -1576,6 +1576,9 @@
                 ],
                 "allFields": [
                     ${fields.filter((field) => !S.listFieldHiddenWidget(field)).map((field) => `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(S.headerSub(field))}}`).join(",\n")}
+                ],
+                "summaryFields": [
+                    ${fields.map(columnField).join(",\n")}
                 ]
             }
         `.replace(/\n$/, "");
