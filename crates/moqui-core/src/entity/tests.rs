@@ -1338,6 +1338,40 @@ fn create_or_update_on_a_new_row_updates_nothing_then_finds_and_inserts_as_befor
 }
 
 #[test]
+fn create_or_update_flag_selects_java_read_first_and_defaults_to_update_first() {
+    const CHILD: &str = "MOQUI_TEST_CREATE_OR_UPDATE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Run each setting in its own process; process properties must not affect parallel tests.
+        for setting in [None, Some("false"), Some("true")] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args([
+                "--exact",
+                "entity::tests::create_or_update_flag_selects_java_read_first_and_defaults_to_update_first",
+            ]);
+            command.env(CHILD, "true").env_remove("create-or-update");
+            if let Some(setting) = setting {
+                command.env("create-or-update", setting);
+            }
+            assert!(command.status().unwrap().success(), "setting {setting:?}");
+        }
+        return;
+    }
+    let java = moqui_lib::env::get_prop_or_env("create-or-update") == "true";
+    for exists in [false, true] {
+        let (facade, tape) = open_store(exists, "postgres");
+        facade.create_or_update_value(&test_value(&facade)).unwrap();
+        let kinds: Vec<String> = writes(&tape).into_iter().map(|(kind, _)| kind).collect();
+        let expected = match (java, exists) {
+            (true, false) => vec!["SELECT", "INSERT"],
+            (true, true) => vec!["SELECT", "UPDATE"],
+            (false, false) => vec!["UPDATE", "SELECT", "INSERT"],
+            (false, true) => vec!["UPDATE"],
+        };
+        assert_eq!(kinds, expected, "java={java}, exists={exists}");
+    }
+}
+
+#[test]
 fn create_or_update_keeps_find_then_write_for_dialects_that_do_not_report_matched_rows() {
     let (facade, tape) = open_store(true, "mysql");
     facade.create_or_update_value(&test_value(&facade)).unwrap();

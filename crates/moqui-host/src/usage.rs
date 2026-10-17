@@ -431,7 +431,7 @@ fn split_property(token: &str) -> Result<(&str, &str), Error> {
     let Some((name, value)) = token.split_once('=') else {
         return Err(Error::new(format!("-D needs name=value, not '{token}'")));
     };
-    if valid_property(name) {
+    if name == "create-or-update" || valid_property(name) {
         return Ok((name, value));
     }
     if name.contains('.') {
@@ -590,6 +590,19 @@ mod tests {
         assert_eq!(parse(&["no-run-es"]).value("opensearch_run"), Some("false"));
         assert_eq!(parse(&["-no-run-es"]).value("opensearch_run"), Some("false"));
         assert_eq!(parse(&["--no-run-es"]).value("opensearch_run"), Some("false"));
+    }
+
+    #[test]
+    fn usage_create_or_update_is_opt_in() {
+        assert_eq!(parse(&[]).value("create-or-update"), None);
+        assert_eq!(
+            parse(&["-D", "create-or-update=true"]).value("create-or-update"),
+            Some("true")
+        );
+        assert_eq!(
+            parse(&["-Dcreate-or-update=false"]).value("create-or-update"),
+            Some("false")
+        );
     }
 
     #[test]
