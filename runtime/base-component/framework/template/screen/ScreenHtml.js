@@ -1265,7 +1265,19 @@
             }
             if (type === "date-period") {
                 const period = String(ec.context.get(name + "_period") || "").toLowerCase();
-                if (period) return period + " " + (ec.context.get(name + "_poffset") || "0") + " " + (ec.context.get(name + "_pdate") || "");
+                if (period) {
+                    const offset = String(ec.context.get(name + "_poffset") ?? "0");
+                    const date = ec.context.get(name + "_pdate") || "";
+                    const range = ec.user.getPeriodRange(period, offset, date);
+                    const periods = { day: L("Day"), "7d": "7 " + L("Days"), "30d": "30 " + L("Days"),
+                        week: L("Week"), weeks: L("Weeks"), month: L("Month"), months: L("Months"),
+                        quarter: L("Quarter"), year: L("Year"), "7r": "+/-7d", "30r": "+/-30d" };
+                    const offsets = { "0": L("This"), "-1": L("Last"), "1": L("Next") };
+                    return (offsets[offset] || offset) + " " + (periods[period] || "") +
+                        (date ? " " + L("from##period") + " " + date : "") + " (" +
+                        formatted(range[0], "yyyy-MM-dd") + " " + L("to##period") + " " +
+                        formatted(range[1] - 1, "yyyy-MM-dd") + ")";
+                }
             }
             if (type === "date-find" || type === "date-period" || type === "range-find") {
                 const format = type === "date-find" ? dateDefault(n) : "yyyy-MM-dd";
