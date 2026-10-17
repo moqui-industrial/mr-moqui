@@ -699,7 +699,7 @@
             }
             const value = sri.getFieldEntityValue(n) || "";
             if (formKind === "form-single") attrs.display = value;
-            const text = formKind !== "form-single" && value ? (at(n, "encode") === "false" ? value : t(value).replace(/\n/g, "<br>")) : "";
+            const text = formKind !== "form-single" ? (value ? (at(n, "encode") === "false" ? value : t(value).replace(/\n/g, "<br>")) : "&nbsp;") : "";
             w("<m-display" + A(attrs) + ">" + (text ? "<template v-slot:default>" + text + "</template>" : "") + "</m-display>");
             if (alsoHidden) w("<input" + A({ type: "hidden", id, name, value: sri.getFieldValuePlainString(field, ""), form: owner() }) + ">");
         };
