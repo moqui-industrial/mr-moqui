@@ -1143,8 +1143,8 @@
                     if (cfg.headerDialog) {
                         // The active find parameters are shown as text with a button that clears them.
                         let summary = "";
-                        visible.flat().forEach((f) => {
-                            if (!f.summary) return;
+                        cfg.summaryFields.forEach((f) => {
+                            if (!f.summary || (f.hide && f.hide())) return;
                             const text = f.summary();
                             if (text) summary += '<span class="filter"><strong>' + e(f.title()) + ":</strong> " + e(text) + "</span> ";
                         });
@@ -1576,6 +1576,9 @@
                 ],
                 "allFields": [
                     ${fields.filter((field) => !S.listFieldHiddenWidget(field)).map((field) => `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(S.headerSub(field))}}`).join(",\n")}
+                ],
+                "summaryFields": [
+                    ${fields.map(columnField).join(",\n")}
                 ]
             }
         `.replace(/\n$/, "");
