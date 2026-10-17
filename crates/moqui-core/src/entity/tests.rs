@@ -1304,7 +1304,7 @@ fn test_value(facade: &EntityFacade) -> super::EntityValue {
 }
 
 #[test]
-fn create_or_update_on_an_existing_row_is_one_update_with_the_same_sql_as_update() {
+fn create_or_update_on_an_existing_row_refreshes_before_update_as_java_does() {
     let (facade, tape) = open_store(true, "postgres");
     facade.update_value(&test_value(&facade)).unwrap();
     let direct = tape.lock().unwrap().sql.clone();
@@ -1313,12 +1313,13 @@ fn create_or_update_on_an_existing_row_is_one_update_with_the_same_sql_as_update
     tape.lock().unwrap().params.clear();
 
     facade.create_or_update_value(&test_value(&facade)).unwrap();
-    // Before: SELECT then UPDATE. Now: the UPDATE alone, the same statement.
-    assert_eq!(tape.lock().unwrap().sql, direct);
+    let kinds: Vec<String> = writes(&tape).into_iter().map(|(kind, _)| kind).collect();
+    assert_eq!(kinds, ["SELECT", "UPDATE"], "{kinds:?}");
+    assert_eq!(tape.lock().unwrap().sql[1], direct[0]);
 }
 
 #[test]
-fn create_or_update_on_a_new_row_updates_nothing_then_finds_and_inserts_as_before() {
+fn create_or_update_on_a_new_row_refreshes_then_inserts_without_an_update_probe() {
     let (facade, tape) = open_store(false, "postgres");
     facade.create_value(&test_value(&facade)).unwrap();
     let direct_insert = tape.lock().unwrap().sql.clone();
@@ -1331,9 +1332,9 @@ fn create_or_update_on_a_new_row_updates_nothing_then_finds_and_inserts_as_befor
     }
     facade.create_or_update_value(&test_value(&facade)).unwrap();
     let kinds: Vec<String> = writes(&tape).into_iter().map(|(kind, _)| kind).collect();
-    assert_eq!(kinds, ["UPDATE", "SELECT", "INSERT"], "{kinds:?}");
+    assert_eq!(kinds, ["SELECT", "INSERT"], "{kinds:?}");
     let tape = tape.lock().unwrap();
-    assert_eq!(tape.sql[2], direct_insert[0]);
+    assert_eq!(tape.sql[1], direct_insert[0]);
     assert!(tape.exists);
 }
 

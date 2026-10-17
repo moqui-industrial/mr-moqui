@@ -1141,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn create_or_update_counts_what_it_runs_and_an_unmatched_probe_apart() {
+    fn create_or_update_counts_java_refresh_then_write_without_probe_bins() {
         let world = world();
         let _entered = world.context.enter();
         let _authz = world.context.disable_authz();
@@ -1149,10 +1149,10 @@ mod tests {
         let mut value = world.facade.make_value(entity).unwrap();
         value.set("enumTypeId", Value::string("HitType"));
         value.set("description", Value::string("first"));
-        // A new row: the UPDATE probe matches nothing (Rust-only `update-probe`), then refresh and create.
+        // Java refreshes first, then creates a new row.
         value.create_or_update(&world.facade).unwrap();
         value.set("description", Value::string("second"));
-        // An existing row: the probe is the update, with no refresh.
+        // Java also refreshes an existing row before updating it.
         value.create_or_update(&world.facade).unwrap();
         value.refresh(&world.facade).unwrap();
         world.facade.find(entity).unwrap().one().unwrap();
@@ -1165,14 +1165,13 @@ mod tests {
             .filter(|bin| text(bin, "artifactName") == entity)
             .map(|bin| (text(bin, "artifactSubType"), number(bin, "hitCount")))
             .collect();
-        assert_eq!(bins.iter().filter(|bin| text(bin, "artifactName") == entity).count(), 6);
+        assert_eq!(bins.iter().filter(|bin| text(bin, "artifactName") == entity).count(), 5);
         assert_eq!(
             counts,
             BTreeMap::from([
                 ("create".to_string(), 1.0),
                 ("update".to_string(), 1.0),
-                ("update-probe".to_string(), 1.0),
-                ("refresh".to_string(), 2.0),
+                ("refresh".to_string(), 3.0),
                 ("one".to_string(), 1.0),
                 ("list".to_string(), 1.0),
             ])
@@ -1272,7 +1271,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_map_loader_probes_then_refreshes_regular_rows_and_uses_one_for_new_status_rows() {
+    fn plain_map_loader_refreshes_regular_rows_and_uses_one_for_new_status_rows() {
         let world = world();
         let _entered = world.context.enter();
         let _authz = world.context.disable_authz();
@@ -1302,11 +1301,9 @@ mod tests {
                 )
             })
             .collect();
-        // The first EnumerationType row: an UPDATE probe that matches nothing, then refresh and create. The second:
-        // the probe updates the row, with no refresh.
+        // Both EnumerationType rows refresh before choosing create or update, as Java does.
         let expected = [
-            ("moqui.basic.EnumerationType", "update-probe", 1.0),
-            ("moqui.basic.EnumerationType", "refresh", 1.0),
+            ("moqui.basic.EnumerationType", "refresh", 2.0),
             ("moqui.basic.EnumerationType", "create", 1.0),
             ("moqui.basic.EnumerationType", "update", 1.0),
             ("moqui.basic.StatusItem", "one", 1.0),
