@@ -7,7 +7,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 
-test('Quasar theme colors and label tag display match Java', () => {
+test('Quasar theme colors, labels and sort layout match Java', () => {
     const css = fs.readFileSync(path.join(__dirname, 'WebrootVue.qvt.css'), 'utf8');
     const html = `<style>
         :root { --q-primary:rgb(1,2,3); --q-positive:rgb(4,5,6); --q-negative:rgb(7,8,9); }
@@ -17,7 +17,7 @@ test('Quasar theme colors and label tag display match Java', () => {
     <a id="link" href="#">Link</a>
     <span id="success" class="text-success">Success</span>
     <span id="danger" class="text-danger">Danger</span>
-    <span class="form-order-by"><a id="active" class="active" href="#">Sort</a></span>
+    <span id="sort" class="form-order-by"><a id="active" class="active" href="#">▲</a> <a id="descending" href="#">▼</a></span>
     <div class="q-field--focused"><input id="input" class="q-field__input"></div>
     <div class="q-menu"><a id="menu" href="#">Menu</a></div>
     <div class="q-toolbar"><a id="toolbar" href="#">Toolbar</a></div>
@@ -31,7 +31,10 @@ test('Quasar theme colors and label tag display match Java', () => {
             active:style('active').color, border:style('input').borderBottomColor,
             borderStyle:style('input').borderBottomStyle,
             menu:style('menu').color, toolbar:style('toolbar').color,
-            paragraph:style('paragraph').display, inline:style('inline').display
+            paragraph:style('paragraph').display, inline:style('inline').display,
+            sort:style('sort').display, sortLink:style('active').display,
+            sortSameLine:document.getElementById('active').getBoundingClientRect().top ===
+                document.getElementById('descending').getBoundingClientRect().top
         });
     </script>`;
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'moqui-qvt-css-'));
@@ -49,6 +52,7 @@ test('Quasar theme colors and label tag display match Java', () => {
         link: 'rgb(1, 2, 3)', success: 'rgb(4, 5, 6)', danger: 'rgb(7, 8, 9)',
         active: 'rgb(1, 2, 3)', border: 'rgb(1, 2, 3)', borderStyle: 'solid',
         menu: 'rgb(10, 11, 12)', toolbar: 'rgb(10, 11, 12)',
-        paragraph: 'block', inline: 'inline'
+        paragraph: 'block', inline: 'inline',
+        sort: 'inline', sortLink: 'inline', sortSameLine: true
     });
 });
