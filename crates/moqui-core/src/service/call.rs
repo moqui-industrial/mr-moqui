@@ -253,6 +253,65 @@ pub fn sync_multi(
     }
 }
 
+/// What [`prepare_async`] decided for an async call.
+pub(super) enum AsyncCall {
+    /// Queue the call with these parameters.
+    Run(BTreeMap<String, Value>),
+    /// Queue nothing; a future gets this result at once.
+    Skip(BTreeMap<String, Value>),
+}
+
+/// Java's `validateCall`, run as the caller before an async call is queued: an unknown or interface service is an error
+/// at once, the parameters are converted and validated, the caller must be authorized for the service, and
+/// `authUsername` is added. The worker then runs the call with authorization disabled, as Java's.
+///
+/// Nothing is queued when the parameters failed validation: the errors are in the message facade and a future gets an
+/// empty result. Java queues the call anyway, without the authorization check, and its run fails the same validation.
+/// In a sim session nothing is queued either, as Java's `ServiceCallAsyncImpl`, since a worker would not run in the
+/// sim: a future gets `simSkipped` and `serviceName`.
+pub(super) fn prepare_async(name: &str, parameters: &BTreeMap<String, Value>) -> Result<AsyncCall, Error> {
+    let name = canonical(name);
+    let facade = current_facade();
+    if facade.as_ref().is_some_and(EntityFacade::sim_active) {
+        tracing::info!("Skipping async service {name} in LLM sim session");
+        let mut skipped = BTreeMap::new();
+        skipped.insert("simSkipped".to_string(), Value::Bool(true));
+        skipped.insert("serviceName".to_string(), Value::string(&name));
+        return Ok(AsyncCall::Skip(skipped));
+    }
+    let def = resolve(&name, facade.as_ref())?;
+    if def.kind == ServiceKind::Interface {
+        return Err(Error::new(format!("Cannot run interface service [{}]", def.name)));
+    }
+    let mut cleaned = match validate::clean(&def, parameters, facade.as_ref()) {
+        Ok(cleaned) => cleaned,
+        Err(err) if err.kind() == crate::context::ErrorKind::Validation => {
+            tracing::warn!(service = %def.name, "async call not queued, input failed validation: {}", err.message());
+            return Ok(AsyncCall::Skip(BTreeMap::new()));
+        }
+        Err(err) => return Err(err),
+    };
+    // As Java: the service is pushed, which checks its authorization, and popped at once, with no artifact hit.
+    let checked = ExecutionContext::with_current(|ctx| {
+        ctx.push_checked(
+            "AT_SERVICE",
+            &def.name,
+            verb_action(&def.verb),
+            def.authenticate == Authenticate::Required,
+            true,
+            None,
+        )?;
+        ctx.untrack_hit();
+        ctx.pop()
+    });
+    if let Some(Err(err)) = checked {
+        return Err(err);
+    }
+    let username = crate::user::current_username().ok().flatten();
+    cleaned.insert("authUsername".to_string(), username.map_or(Value::Null, Value::String));
+    Ok(AsyncCall::Run(cleaned))
+}
+
 /// [`sync`] with per-call overrides of authorization and the transaction attribute.
 pub fn sync_with(
     name: &str,
@@ -290,11 +349,15 @@ pub fn sync_with(
         }
     }
     super::coverage::record(&def.name);
-    super::seca::run_seca_rules(&def.name, "pre-validate", parameters, None)?;
+    // Java's `currentParameters`: what a pre-validate rule sets is what is validated.
+    let mut input = std::borrow::Cow::Borrowed(parameters);
+    if super::seca::has_rules(&def.name, "pre-validate") {
+        super::seca::run_seca_rules(&def.name, "pre-validate", input.to_mut(), None)?;
+    }
     // Input that fails its checks is validation errors in the message facade and no run, as in Java: the caller sees
     // the errors (a screen shows them by their fields) instead of a failed call.
     let mark = crate::context::ExecutionContext::with_current(|ctx| ctx.message().error_mark());
-    let cleaned = match validate::clean(&def, parameters, facade.as_ref()) {
+    let mut cleaned = match validate::clean(&def, &input, facade.as_ref()) {
         Ok(cleaned) => cleaned,
         Err(err) if err.kind() == crate::context::ErrorKind::Validation && options.soft_validate => {
             if let Some(mark) = mark {
@@ -313,7 +376,6 @@ pub fn sync_with(
         }
         Err(err) => return Err(err),
     };
-    super::seca::run_seca_rules(&def.name, "pre-auth", &cleaned, None)?;
     // A call with credentials logs in first, as Java does with authUsername and authPassword, and the caller's user
     // is back when the call returns, as Java's logoutLocal in finally.
     let _login = match auth_credentials(parameters) {
@@ -338,6 +400,14 @@ pub fn sync_with(
             format!("User must be logged in to call service {}", def.name),
         ));
     }
+    if def.service_type == "entity-implicit" {
+        // As Java's `runImplicitEntityAuto`, which runs the pre-validate rules a second time and returns before the
+        // pre-auth rules.
+        super::seca::run_seca_rules(&def.name, "pre-validate", &mut cleaned, None)?;
+    } else {
+        // After the login and the authentication check, as Java's.
+        super::seca::run_seca_rules(&def.name, "pre-auth", &mut cleaned, None)?;
+    }
     // The service goes on the artifact stack, so the entity operations it makes inherit its
     // authorization. Only a service that requires authentication needs an allow record.
     let _frame = ServiceFrame::push(&def, &cleaned, options.no_remember_parameters)?;
@@ -358,28 +428,34 @@ pub fn sync_with(
         if def.no_tx_cache {
             crate::entity::cache::flush_and_disable(&facade, &tx)?;
         }
-        // on_rollback is not a commit hook. tx-commit is last so a post-service
-        // entity write can still register the feed schedule hook.
-        register_tx_rollback(&tx, &def.name, &cleaned)?;
-        super::seca::run_seca_rules(&def.name, "pre-service", &cleaned, None).map_err(script_err)?;
+        super::seca::run_seca_rules(&def.name, "pre-service", &mut cleaned, None).map_err(script_err)?;
         if has_error() {
             tracing::warn!(service = %def.name, "errors before the service ran, so it was not run");
             return Ok(BTreeMap::new());
         }
-        let produced = execute(&def, &cleaned, &facade)?;
-        super::seca::run_seca_rules(&def.name, "post-service", &cleaned, Some(&produced)).map_err(script_err)?;
+        let ran = execute(&def, &cleaned, &facade);
+        // As Java's `finally` after the runner: tx-rollback rules are registered once the service ran, with its results,
+        // empty when it failed. tx-commit is last so a post-service entity write can still register the feed schedule
+        // hook.
+        let registered = register_tx_rollback(&tx, &def.name, &cleaned, ran.as_ref().unwrap_or(&BTreeMap::new()));
+        let mut produced = ran?;
+        registered?;
+        // Java registers the tx-commit rules here too, with copies, so they do not see what the post-service rules set.
+        let for_commit = super::seca::has_rules(&def.name, "tx-commit").then(|| (cleaned.clone(), produced.clone()));
+        super::seca::run_seca_rules(&def.name, "post-service", &mut cleaned, Some(&mut produced))
+            .map_err(script_err)?;
         if has_error() {
             message_failed = Some(produced.clone());
             // Under `ignore` with nothing in place there is no transaction to mark.
             if tx.in_transaction() {
                 tx.set_rollback_only(format!("Error running service {} (message)", def.name))?;
             }
-        } else {
-            register_tx_commit(&tx, &def.name, &cleaned, &produced)?;
+        } else if let Some((parameters, results)) = &for_commit {
+            register_tx_commit(&tx, &def.name, parameters, results)?;
         }
         Ok(produced)
     });
-    let produced = match outcome {
+    let mut produced = match outcome {
         Ok(produced) => Ok(produced),
         Err(err) => match message_failed.take() {
             Some(produced) => Ok(produced),
@@ -391,8 +467,14 @@ pub fn sync_with(
         },
     };
     call_callbacks(&def.name, &cleaned, produced.as_ref());
-    // post-commit rules run whether or not the service worked. Those that skip on error do.
-    let post = super::seca::run_seca_rules(&def.name, "post-commit", &cleaned, produced.as_ref().ok());
+    // post-commit rules run whether or not the service worked. Those that skip on error do. As Java's, a failed call
+    // gives them an empty result map.
+    let mut failed_results = BTreeMap::new();
+    let results = match &mut produced {
+        Ok(produced) => produced,
+        Err(_) => &mut failed_results,
+    };
+    let post = super::seca::run_seca_rules(&def.name, "post-commit", &mut cleaned, Some(results));
     drop(guard);
     let produced = produced?;
     post?;
@@ -508,8 +590,9 @@ fn register_tx_rollback(
     tx: &crate::transaction::TransactionManager,
     service: &str,
     parameters: &BTreeMap<String, Value>,
+    results: &BTreeMap<String, Value>,
 ) -> Result<(), LibError> {
-    register_tx_rules(tx, service, "tx-rollback", parameters, None)
+    register_tx_rules(tx, service, "tx-rollback", parameters, Some(results))
 }
 
 fn register_tx_commit(
@@ -524,6 +607,9 @@ fn register_tx_commit(
 /// Java's `SecaSynchronization`: when the transaction commits (or rolls back), the `tx-commit` (or `tx-rollback`)
 /// rules run on a service worker, in a context and transaction of their own. A sim session never really commits, so
 /// its rules do not run.
+///
+/// A pattern rule runs here as at any other `when`. Java's `registerTx` compares the rule's service name, the pattern
+/// text, to the called name, so its pattern tx rules never run (an accepted difference, P7a-15).
 fn register_tx_rules(
     tx: &crate::transaction::TransactionManager,
     service: &str,
@@ -539,8 +625,8 @@ fn register_tx_rules(
     };
     let sim = current_facade().is_some_and(|facade| facade.sim_active());
     let service = service.to_string();
-    let parameters = parameters.clone();
-    let results = results.cloned();
+    let mut parameters = parameters.clone();
+    let mut results = results.cloned();
     let hook = move || {
         if sim {
             tracing::info!("Skipping {when} rules of {service} in a sim session");
@@ -553,7 +639,7 @@ fn register_tx_rules(
                 .ok_or_else(|| Error::new("no entity facade is installed"))?;
             let tx = facade.default_transactions()?;
             tx.run(TransactionAttribute::UseOrBegin, None, || {
-                super::seca::run_seca_rules(&service, when, &parameters, results.as_ref()).map_err(Into::into)
+                super::seca::run_seca_rules(&service, when, &mut parameters, results.as_mut()).map_err(Into::into)
             })
             .map_err(Into::into)
         });
@@ -1819,7 +1905,7 @@ mod tests {
                         <actions><script>ec.message.addMessage("plain")</script></actions>
                     </seca>
                     <seca service="shell#Only" when="post-commit" run-on-error="true">
-                        <actions><script>ec.message.addMessage("cleanup")</script></actions>
+                        <actions><script>ec.message.addMessage("cleanup " + (results == null ? "none" : JSON.stringify(results)))</script></actions>
                     </seca>
                 </secas>"#,
                 "",
@@ -1830,7 +1916,8 @@ mod tests {
         crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let _authz = ctx.disable_authz();
         assert!(sync("shell#Only", &BTreeMap::new()).is_err());
-        assert_eq!(ctx.message().messages(), ["cleanup"]);
+        // As Java's, a failed call gives the rule an empty result map.
+        assert_eq!(ctx.message().messages(), ["cleanup {}"]);
     }
 
     #[test]
@@ -2012,6 +2099,181 @@ mod tests {
         sync("mark#Row", &BTreeMap::new()).unwrap();
         // The rule runs in its own context frame, so its effect is seen through the message facade.
         assert!(ctx.message().messages().iter().any(|text| text == "seen"));
+    }
+
+    /// As Java's, `parameters` and `results` in a rule are the call's own maps: a pre-* rule changes what is validated
+    /// and run, and a post-service rule what is returned.
+    #[test]
+    fn seca_rules_change_the_call_parameters_and_results() {
+        let path = write_fixture(
+            "seca-live",
+            r#"<services>
+                <service verb="echo" noun="Live">
+                    <in-parameters><parameter name="note" required="true"/></in-parameters>
+                    <out-parameters><parameter name="seen"/></out-parameters>
+                    <actions><set field="seen" from="note"/></actions>
+                </service>
+            </services>"#,
+        );
+        let facade = crate::testing::open();
+        let ctx = ExecutionContextFactory::test_context();
+        super::super::eca_rules::install(
+            ctx.factory(),
+            super::super::eca_rules::from_xml(
+                r#"<secas>
+                    <seca service="echo#Live" when="pre-validate">
+                        <actions><set field="parameters.note" value="pv"/></actions>
+                    </seca>
+                    <seca service="echo#Live" when="pre-auth">
+                        <actions><script>parameters.note = parameters.note + "-pa"</script></actions>
+                    </seca>
+                    <seca service="echo#Live" when="pre-service">
+                        <actions><script>parameters.note = parameters.note + "-ps"</script></actions>
+                    </seca>
+                    <seca service="echo#Live" when="post-service">
+                        <actions><script>results.seen = results.seen + "-post"</script></actions>
+                    </seca>
+                </secas>"#,
+                "",
+            ),
+        );
+        ctx.factory().set_entity(facade);
+        let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let _authz = ctx.disable_authz();
+        // `note` is required and not passed: the pre-validate rule sets it.
+        let out = sync("echo#Live", &BTreeMap::new()).unwrap();
+        assert!(ctx.message().errors().is_empty(), "{:?}", ctx.message().errors());
+        assert_eq!(
+            out.get("seen").and_then(Value::as_str),
+            Some("pv-pa-ps-post"),
+            "{out:?}"
+        );
+    }
+
+    /// As Java's `runImplicitEntityAuto`: an implicit entity-auto call runs its pre-validate rules twice and no pre-auth
+    /// rules.
+    #[test]
+    fn an_implicit_entity_auto_call_runs_pre_validate_twice_and_no_pre_auth() {
+        let facade = crate::testing::open();
+        let ctx = ExecutionContextFactory::test_context();
+        super::super::eca_rules::install(
+            ctx.factory(),
+            super::super::eca_rules::from_xml(
+                r#"<secas>
+                    <seca service="create#moqui.test.TestEntity" when="pre-validate">
+                        <actions><script>ec.message.addMessage("pre-validate")</script></actions>
+                    </seca>
+                    <seca service="create#moqui.test.TestEntity" when="pre-auth">
+                        <actions><script>ec.message.addMessage("pre-auth")</script></actions>
+                    </seca>
+                </secas>"#,
+                "",
+            ),
+        );
+        ctx.factory().set_entity(facade.clone());
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        let mut params = BTreeMap::new();
+        params.insert("testId".to_string(), Value::string("IMPLICIT"));
+        sync("create#moqui.test.TestEntity", &params).unwrap();
+        assert_eq!(ctx.message().messages(), ["pre-validate", "pre-validate"]);
+    }
+
+    /// As Java's, the tx-commit rules get the parameters and results from before the post-service rules.
+    #[test]
+    fn tx_commit_rules_get_the_results_from_before_the_post_service_rules() {
+        let path = write_fixture(
+            "tx-commit",
+            r#"<services>
+                <service verb="note" noun="Commit">
+                    <out-parameters><parameter name="note"/></out-parameters>
+                    <actions><set field="note" value="from-service"/></actions>
+                </service>
+            </services>"#,
+        );
+        let facade = crate::testing::open();
+        let ctx = ExecutionContextFactory::test_context();
+        super::super::eca_rules::install(
+            ctx.factory(),
+            super::super::eca_rules::from_xml(
+                r#"<secas>
+                    <seca service="note#Commit" when="post-service">
+                        <actions><script>results.note = "from-post-service"</script></actions>
+                    </seca>
+                    <seca service="note#Commit" when="tx-commit">
+                        <actions>
+                            <entity-make-value entity-name="moqui.test.TestEntity" value-field="made"/>
+                            <script>made.set("testId", "COMMIT_RULE"); made.set("testMedium", results.note)</script>
+                            <entity-create value-field="made"/>
+                        </actions>
+                    </seca>
+                </secas>"#,
+                "",
+            ),
+        );
+        ctx.factory().set_entity(facade.clone());
+        let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let _authz = ctx.disable_authz();
+        let out = sync("note#Commit", &BTreeMap::new()).unwrap();
+        assert_eq!(out.get("note").and_then(Value::as_str), Some("from-post-service"));
+        let row = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", Value::string("COMMIT_RULE"))
+            .one()
+            .unwrap()
+            .expect("the tx-commit rule ran");
+        assert_eq!(row.get("testMedium").and_then(Value::as_str), Some("from-service"));
+    }
+
+    /// As Java's, the tx-rollback rules are registered after the service ran, with its results.
+    #[test]
+    fn tx_rollback_rules_get_the_results() {
+        let path = write_fixture(
+            "tx-rollback",
+            r#"<services>
+                <service verb="fail" noun="Late">
+                    <out-parameters><parameter name="note"/></out-parameters>
+                    <actions>
+                        <set field="note" value="before-error"/>
+                        <message error="true">late failure</message>
+                    </actions>
+                </service>
+            </services>"#,
+        );
+        let facade = crate::testing::open();
+        let ctx = ExecutionContextFactory::test_context();
+        super::super::eca_rules::install(
+            ctx.factory(),
+            super::super::eca_rules::from_xml(
+                r#"<secas>
+                    <seca service="fail#Late" when="tx-rollback">
+                        <actions>
+                            <entity-make-value entity-name="moqui.test.TestEntity" value-field="made"/>
+                            <script>made.set("testId", "ROLLBACK_RULE"); made.set("testMedium", results.note)</script>
+                            <entity-create value-field="made"/>
+                        </actions>
+                    </seca>
+                </secas>"#,
+                "",
+            ),
+        );
+        ctx.factory().set_entity(facade.clone());
+        let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let _authz = ctx.disable_authz();
+        sync("fail#Late", &BTreeMap::new()).unwrap();
+        assert_eq!(ctx.message().errors(), ["late failure"]);
+        let row = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", Value::string("ROLLBACK_RULE"))
+            .one()
+            .unwrap()
+            .expect("the tx-rollback rule ran");
+        assert_eq!(row.get("testMedium").and_then(Value::as_str), Some("before-error"));
     }
 
     #[test]

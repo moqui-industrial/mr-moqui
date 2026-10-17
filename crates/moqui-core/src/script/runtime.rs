@@ -572,6 +572,10 @@ fn as_expression(source: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Evaluate a strict expression. Null, false, and a zero number are false. A decimal is true.
+///
+/// This is JavaScript truth, as an `<if>` in the actions has: an empty list or map is true, where Java's
+/// `XmlAction.checkCondition` (`as Boolean`) makes it false. A rule condition and an `<if>` agree, and converted Groovy
+/// tests a list's length instead (`groovy_convert`; the linter flags the rest, `lint_hazards`).
 pub fn eval_condition(expression: &str) -> Result<bool, Error> {
     if expression.as_bytes().contains(&0) {
         return Err(Error::new("script source contains a null byte"));

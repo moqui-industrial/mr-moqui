@@ -20,7 +20,7 @@ ordering.
 
 ## Summary
 
-59 open findings and 40 accepted differences. Open by phase:
+40 open findings and 45 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
@@ -30,7 +30,7 @@ ordering.
 | 4 Data loader / feed / ECA / writer / document / ETL | 1 | — |
 | 5 Entity query / REST | 3 | — |
 | 6 Service definition / validation / call | 1 | P6b-01 (decision) |
-| 7 ECA / SECA / pools / jobs | 19 | — |
+| 7 ECA / SECA / pools / jobs | 0 | — |
 | 8 REST / remote / tools / mail / components | 30 | P8a-03 |
 
 | ID | Area | One-line |
@@ -40,15 +40,15 @@ ordering.
 
 ### Cross-cutting threads
 
-1. **Access control** (P8a-03, P7b-07, P7b-08, P7a-05): service-REST results are not stripped of
-   UserAccount secrets; async calls skip the pre-queue authz check and then run with authz enabled;
-   the permission check omits ALL_USERS group permissions.
+1. **Access control** (P8a-03): service-REST results are not stripped of UserAccount secrets. (Async calls now check
+   authorization as the caller before they are queued and run with it disabled, P7b-07 and P7b-08 fixed, and
+   `ALL_USERS` membership follows Java, P7a-05 fixed.)
 2. **Full-text search and model sources** (P3-20, P3-14, P3-21): a `LIKE` on a `text-fts` field is not rewritten
    to a full-text search (the DDL now follows `FtsDdl`), DB view entities are not built from their rows, and a
    foreign key is recognized only by its computed name.
-3. **Error contract** (P6b-01, P7a-10): a failing service body propagates `Err` where Java records the
-   error and returns; `post-commit` SECA gets `None` instead of an empty map. (The errors text now follows Java's
-   `errorsString`, P6a-23 fixed.)
+3. **Error contract** (P6b-01): a failing service body propagates `Err` where Java records the
+   error and returns. (The errors text now follows Java's `errorsString`, P6a-23 fixed, and the `post-commit` SECA rules
+   of a failed call get an empty result map, P7a-10 fixed.)
 4. **View fields** (P5-19, P5-16, P5-18): the entity JSON schema and the data writer's CSV of a view read no fields
    (REST finds and form auto fields now read the aliases), `pq-expression` aliases are not evaluated, and
    `DataDocument.<id>` is not an entity name.
@@ -62,7 +62,7 @@ ordering.
     moqui-core, moqui-host and moqui-browser, and about 90 in tests. Some stop on the `Err` with `?`
     (`entity/query_rest.rs:243`, `entity/field_rw.rs:466`, `user/authz.rs:417`, `service/rest.rs:564,608`,
     `service/spreadsheet.rs:315`, `moqui-browser/src/host.rs:182`); some match it to record or log it
-    (`service/jobs.rs:466` records the job's error, `service/eca.rs:206`, `entity/document.rs:970`,
+    (`service/jobs.rs:490` records the job's error, `service/eca.rs:206`, `entity/document.rs:970`,
     `notify/message.rs:601`, `service/tools.rs:68`, `service/system_sync/sftp.rs:242`); some read the message
     facade as well (`screen/dispatch.rs:248,263,294`, `search/feed.rs:248`, `service/sso.rs:301`,
     `service/system_sync/message.rs:336`, `moqui-host/src/ssh/shell.rs:163`). Under Java's contract the first two
@@ -79,7 +79,7 @@ ordering.
     null, and returns on `ec.message.hasError()`, so actions stop as Java's do; only an `out-map` differs (left as it
     was here, `{}` in Java).
   - A switch: `sync_with` returns the empty (or partial) map after `add_error` and the rollback
-    (`service/call.rs:382-392`), keeping `Err` for what Java also throws: an authorization failure in the body (Java
+    (`service/call.rs:458-468`), keeping `Err` for what Java also throws: an authorization failure in the body (Java
     rethrows `ArtifactAuthorizationException`) and the failures before the run (unknown service, authentication,
     semaphore). The script host's `Err` arm would then be unused, the callers in the first two groups above move
     to a `has_error()` check, and the tests above read the message facade.
@@ -432,7 +432,7 @@ open for want of a caller. A port would divert records the way a check does (`en
 - EECA entity names (P4b-01, fixed): a rule's `entity` is resolved to its full name, and a rule for an entity that is
   not defined is skipped with Java's warning (`EcaIndex::ingest`, `entity/load_feed/eca.rs:180`).
 - EECA order (P4b-02, fixed): an entity's rules with no id run first, then those with an id, each in file order
-  (`entity/load_feed/eca.rs:217-226`); Java's id'd rules are in `HashMap` order, which file order is one instance of.
+  (`entity/load_feed/eca.rs:214-223`); Java's id'd rules are in `HashMap` order, which file order is one instance of.
 - Data document merging (P4b-03, fixed): rows merge by document id only when every primary key field is a field alias
   (`has_all_primary_pks`, `entity/document.rs:60`, `:633`); otherwise each row is a document (`:863`), and its `_id`
   is made, as `makeDocId`, of the document's fields named for the key, so a one-field key that is not a field gives
@@ -585,7 +585,7 @@ None open.
 
 | ID | Rust location | Java location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P6b-01 | `service/call.rs:382-392` | `ServiceCallSyncImpl.java:320-356,391` | A service-body failure is returned as `Err` after `add_error`; Java catches it, records the message/cause chain, rolls back, and returns the result map (only `ArtifactAuthorizationException` rethrown) | High | Decision pending |
+| P6b-01 | `service/call.rs:458-468` | `ServiceCallSyncImpl.java:320-356,391` | A service-body failure is returned as `Err` after `add_error`; Java catches it, records the message/cause chain, rolls back, and returns the result map (only `ArtifactAuthorizationException` rethrown) | High | Decision pending |
 
 #### P6b-01 — A service-body failure throws in Rust but returns a map in Java
 
@@ -625,9 +625,9 @@ Rust tests assert this `Err`; see [Open decisions](#open-decisions).
   (`is_java_digit`, `service/validate.rs:779`), and `text-email` follows `EmailValidator`'s user and host rules
   (`is_email`, `:794-875`); what stays different is P6a-20.
 - SECA rule count (P6a-09, fixed): `getSecaRuleCount` counts a pattern rule once per known service it matches
-  (`seca_rule_count`, `service/info.rs:39`; `SecaRule::service_count`, `service/seca.rs:284-296`). The startup log
+  (`seca_rule_count`, `service/info.rs:39`; `SecaRule::service_count`, `service/seca.rs:299-310`). The startup log
   keeps Java's "SECA rules active" count of rules (`seca_rules_active`, `service/info.rs:48`), and a SECA load reads
-  the known names at most once (`service_defined`, `service/seca.rs:266-282`).
+  the known names at most once (`service_defined`, `service/seca.rs:282-297`).
 - `field-name` (P6a-10, fixed): an `auto-parameters` field sets `field-name` (`auto_fields`,
   `service/validate.rs:424`).
 - Empty `default-value` (P6a-11, fixed): no default, as `ParameterInfo` (`parse_parameter`,
@@ -660,7 +660,7 @@ Rust tests assert this `Err`; see [Open decisions](#open-decisions).
 - Implicit entity-auto (P6a-17, fixed): the implicit definition does not clean its parameters
   (`validate_input: false`, `service/define.rs:263-269`), so SECA rules and the runner get the map as it came, as
   `runImplicitEntityAuto`; the runner sets only the entity's fields, as `setFields` (`run_entity`,
-  `service/call.rs:915`).
+  `service/call.rs:1001`).
 - Declared entity-auto (P6a-18, found and fixed): a declared `type="entity-auto"` service kept every entity field
   and every map or list parameter beyond its declared parameters; it now keeps only those declared, as any
   validating service, so `create#UomConversion` (`auto-parameters include="nonpk"`) no longer takes a caller's
@@ -676,14 +676,14 @@ Rust tests assert this `Err`; see [Open decisions](#open-decisions).
   from the row (`take`, `service/semaphore.rs:33-77`; `try_lock`, `:151-216`).
 - Status transition text (P6b-12, fixed): `StatusFlowTransitionNotFoundTemplate` localized and expanded with the
   status ids and names, its default text when the seed data is not loaded (`status_transition_message`,
-  `service/call.rs:1142-1157`).
+  `service/call.rs:1228-1243`).
 - Nested `<parameter>` children parsed and validated (`service/define.rs:1245`, `service/validate.rs:84-118`).
 - Implicit entity-auto skips authentication (`Authenticate::Off`, `service/define.rs:263-265`); an `AT_SERVICE`
   frame is still pushed but with `requires_authz=false`.
 - Early "errors already in the facade" abort with `ErrorsAside` push/pop, and the rollback-only guard
-  (`service/call.rs:271-291,402-416`).
-- `verb_action` maps `get`/`search` to `view` (`service/call.rs:760`); entity-auto `delete` requires a full PK
-  or `*` wildcard (`delete_entity`, `service/call.rs:983-1026`) and returns an empty map.
+  (`service/call.rs:330-350,484-498`).
+- `verb_action` maps `get`/`search` to `view` (`service/call.rs:846`); entity-auto `delete` requires a full PK
+  or `*` wildcard (`delete_entity`, `service/call.rs:1069-1112`) and returns an empty map.
 - Service `type` default, `authenticate` values, `transaction`/`no-tx-cache` defaults,
   `no-remember-parameters`, interface pass-through; semaphore attribute defaults and none/fail/wait.
 - `auto-parameters` include/exclude/required/allow-html; `default` precedence, requirement-after-
@@ -707,91 +707,104 @@ Reviewed `service/{eca,eca_rules,seca,rule_actions,email_eca,security_checks}.rs
 `ScheduledJobRunner.groovy`, `ExecutionContextFactoryImpl`, `UserSecurityChecks.groovy` +
 `Security.eecas.xml`, and `MoquiDefaultConf.xml`.
 
+Worked 2026-10-16: P7a-03, P7a-06, P7a-10, P7a-11, P7a-12, P7b-01, P7b-02, P7b-05, P7b-07, P7b-08, P7b-10, P7b-11,
+P7b-12, P7b-13, P7b-14 and P7b-15 fixed; P7a-05 fixed for `ALL_USERS` membership, and its permission half removed as
+invalid: Java's `hasPermission` reads the `UserPermissionCheck` view, a join of the user's own `UserGroupMember` rows,
+so a permission granted to `ALL_USERS` counts only for a user with a membership row for it, as Rust already did (a test
+now holds both). P7a-07 and P7a-08 moved to [Accepted differences](#accepted-differences). Found along the way: P7a-13,
+P7a-14, P7a-16 and P7b-17 (fixed), P7a-15 and P7b-16 (the parts of P7a-12 and P7b-14 that stay, accepted) and P7b-18
+(accepted). Changes a deployment may see: an async call (`async_call`, `call_future`, `start_future`, a script's
+`ec.service.async()`) of an unknown service, or by a caller not authorized for the service, is now an error where it is
+made (in a script, an error message, as the script host reports a failed call), and its run on a worker has
+authorization disabled; an async call in a sim session is skipped; shutdown runs the
+queued async calls for up to 30 seconds; and the first scheduled job pass is 120 seconds after start. No `runtime/`
+component has a SECA rule, so the live `parameters` (P7a-11, P7a-13) and the SECA phase order (P7a-03, P7a-16) change
+only rules a deployment adds. The scheduler tests run their passes with `ServicePools::tick()`, not the thread, so none
+waits on the initial delay and no test override was needed. Line numbers in this section are as of that change.
+
 ### Findings — 7a ECA / SECA / email / security
 
-| ID | Rust location | Java location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P7a-03 | `service/call.rs:293`, `:316` | `ServiceCallSyncImpl.java:173,215,239,565` | Implicit entity-auto: `pre-validate` SECA fires once in Rust, twice in Java; and Rust runs `pre-auth` SECA, which Java never reaches (it returns at `:215`) | Med | No |
-| P7a-05 | `service/security_checks.rs:142-188` | `UserFacadeImpl.groovy:852-858` | `user_in_group` omits the `userGroupId == "ALL_USERS"` short-circuit, and `user_has_permission` omits ALL_USERS group permissions that Java `hasPermission` includes | Med | No |
-| P7a-06 | `entity/load_feed/eca.rs:198-201`; `service/email_eca.rs:34-37`; `script/actions.rs:76-81` | `EmailEcaRule.groovy:44-47`; `EntityEcaRule.groovy:44-47` | EECA and EMECA AND every `<condition>` child; Java wraps only the first (SECA now matches) | Low | Unsure |
-| P7a-07 | `script/runtime/convert.rs:123-137` | `actions/XmlAction.java:77-81` | `eval_condition` JS truthiness (empty array/object true) vs Groovy `as Boolean` (empty collection false) | Low | Unsure |
-| P7a-08 | `service/seca.rs:132-168` | `ServiceFacadeImpl.groovy:415-508` | SECA patterns matched at runtime; Java expands patterns to defined services at load | Low | Yes |
-| P7a-10 | `service/call.rs:395` | `ServiceCallSyncImpl.java:388` | `post-commit` on a failed call passes `results = None`; Java passes an empty map | Low | No |
-| P7a-11 | `service/seca.rs:65-66` | `ServiceEcaRule.groovy:82-101`; `ServiceCallSyncImpl.java:307-322` | Rust publishes a copy of `parameters`; Java puts the live `currentParameters` map, so a pre-* SECA can change the call's inputs | Low-Med | Unsure |
-| P7a-12 | `service/call.rs:363`, `:524-559` | `ServiceEcaRule.groovy:104,143-173` | Tx rules: Java's `registerTx` never fires for pattern rules, Rust's `has_rules` includes them; Rust registers `tx-rollback` before the run with no results, Java after | Low | No |
+None open.
 
 ### Findings — 7b pools / async jobs / scheduler
 
-| ID | Rust location | Java location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P7b-01 | `service/pool.rs:715-719`, `:786` | `ServiceFacadeImpl.groovy:134-144` | `scheduled-job-check-time=0` disables the runner in Java; Rust clamps to 1s and always runs the scheduler | Med | No |
-| P7b-02 | `service/schedule.rs:34`, `:49` | `ServiceFacadeImpl.groovy:135-140` | No 120s initial delay; Rust's first pass is at `check_interval` | Med | Unsure |
-| P7b-05 | `service/pool.rs:592-599`, `:1057-1071` | `ExecutionContextFactoryImpl.groovy:848-861` | Shutdown fails queued async calls; Java `workerPool.shutdown()` drains them (Java never shuts down `jobWorkerPool`, so jobs match) | Med | Unsure |
-| P7b-07 | `service/call.rs:87-90`; `service/pool.rs:519-544` | `ServiceCallImpl.java:116-129`; `ServiceCallAsyncImpl.groovy:199` | Async params not validated/converted at queue time, no authz pre-check before queueing, `authUsername` not added | Med | No |
-| P7b-08 | `service/pool.rs:930-942` | `ServiceCallAsyncImpl.groovy:199` | Async worker calls `sync` with authz enabled; Java disables authz (it was checked before queueing) | Med | No |
-| P7b-10 | `service/jobs.rs:300-305` | `ScheduledJobRunner.groovy:240-250` | Pool full at submit: Rust deletes the `ServiceJobRun` row; Java keeps it as a failed run | Low | No |
-| P7b-11 | `service/jobs.rs:801` | `EntityListImpl.java:95,102` | `thruDate` boundary inclusive (Java) vs exclusive (Rust) | Low | No |
-| P7b-12 | `service/jobs.rs:805-807` | `ScheduledJobRunner.groovy:125` | `paused=""` treated as paused by Java, active by Rust | Low | No |
-| P7b-13 | `service/pool.rs:43` | `ExecutionContextFactoryImpl.groovy:467` | Default `worker-queue` 65535 vs 65536 | Low | No |
-| P7b-14 | `service/jobs.rs:446-451` | `ServiceCallJobImpl.groovy:233-238` | `ServiceJobRun` omits `hostAddress`/`hostName`; `runThread` name differs | Low | No |
-| P7b-15 | `service/jobs.rs:99-101` | `ScheduledJobRunner.groovy:261-266` | Runner stats not updated on a failed pass; Java still updates | Low | No |
-
-#### P7a-03 — Implicit entity-auto SECA phases
-
-Java runs `pre-validate` SECA in the main body and again inside `runImplicitEntityAuto`, and returns
-from `runImplicitEntityAuto` at `:215` before the `pre-auth` SECA at `:239`. Rust's single `sync_with`
-runs `pre-validate` once and then runs `pre-auth`, so a non-idempotent pre-validate rule fires half as
-often and a pre-auth rule fires where Java never runs it.
-
-#### P7a-05 — ALL_USERS group handling
-
-Java `isInGroup` returns true for `ALL_USERS` without a lookup, and `hasPermission` includes
-permissions granted to the ALL_USERS group. Rust `user_in_group` and `user_has_permission` only consult
-the user's own date-ranged memberships, so a permission granted to ALL_USERS is denied in Rust.
-
-#### P7a-11 — SECA parameters are a copy
-
-Java's SECA context `parameters` is the live `currentParameters` map, so a `pre-validate`/`pre-auth`/
-`pre-service` rule that sets a parameter changes what the service receives. Rust publishes a copy, so
-such a rule's changes are lost.
-
-#### P7b-01 / P7b-02 — Scheduler enablement and initial delay
-
-Java starts the `ScheduledJobRunner` only when `scheduled-job-check-time > 0`. Rust applies `.max(1)`
-and always spawns the scheduler, so a deployment that sets `0` to disable scheduling gets a pass every
-second. Java also waits a 120s initial delay; Rust's first pass is after `check_interval` (default
-60s).
-
-#### P7b-05 — Shutdown drops queued async calls
-
-Java's `destroy` calls `workerPool.shutdown()` then `awaitTermination(30s)`, letting queued async calls
-finish. Rust `ServicePools::shutdown` → `fail_pending` empties the queue and sends
-`Err("service worker pool is not running")` to async callers. Java never shuts down `jobWorkerPool`,
-so abandoning queued jobs is not a divergence.
-
-#### P7b-07 / P7b-08 — Async queue-time validation and authz
-
-Java's `ServiceCallAsyncImpl.call()` runs `validateCall` before queueing: the authz check
-(`ServiceCallImpl.java:122-127`), `convertValidateCleanParameters`, and adding `authUsername`; the
-worker then logs the user in and calls `.disableAuthz()`. Rust passes the raw map to the pool, validates
-inside the worker, never checks authz before queueing, and calls `call::sync` with authz enabled — so a
-caller without authz can queue work, validation errors surface later, and an async call touching
-authz-controlled artifacts can fail where Java succeeds.
+None open.
 
 #### Phase 7 checked and found equivalent
 
+- Implicit entity-auto SECA phases (P7a-03, fixed): an implicit entity-auto call runs its `pre-validate` rules a second
+  time where Java's `runImplicitEntityAuto` does, after the authentication check, and runs no `pre-auth` rules, which
+  Java never reaches for it (`sync_with`, `service/call.rs:403-410`).
+- `pre-auth` order (P7a-16, found and fixed): the `pre-auth` rules ran right after validation, before the
+  `authUsername` login and the authentication check; they now run after both, as Java's, so they see the user the call
+  logged in and do not run for a call that fails either (`service/call.rs:403-410`).
+- `ALL_USERS` (P7a-05, fixed): `user_in_group` is true for `ALL_USERS` with no lookup and no user, as `isInGroupById`
+  (`service/security_checks.rs:142-146`); a permission granted to `ALL_USERS` counts only with a membership row for
+  it, as Java's `UserPermissionCheck` view (`user_has_permission`, `:162-164`).
+- Membership dates (P7a-14, found and fixed): a membership or grant whose `thruDate` is now was closed; both ends are
+  now inclusive, as `filterByDate` (`membership_open`, `service/security_checks.rs:219-234`).
+- EECA and EMECA conditions (P7a-06, fixed): only the first child of `<condition>` is the condition, as
+  `EntityEcaRule` and `EmailEcaRule` (`first_condition`, `service/rule_actions.rs:33-40`; used at
+  `entity/load_feed/eca.rs:198` and `service/email_eca.rs:34`); SECA already did.
+- `post-commit` results (P7a-10, fixed): the `post-commit` rules of a call that failed get an empty result map, Java's
+  `result` as it began, instead of none (`service/call.rs:470-477`). The call still returns `Err` (P6b-01).
+- Live `parameters` and `results` (P7a-11, fixed; P7a-13, found and fixed): after each rule, the `parameters` and
+  `results` maps in its frame are read back into the call's (`run_seca_rules`, `read_back`, `service/seca.rs:47-102`), so a
+  `pre-validate` rule changes what is validated (the input is copied only when there are such rules,
+  `service/call.rs:352-356`), a `pre-auth` or `pre-service` rule what the service runs with, and a `post-service` or
+  `post-commit` rule what is returned. A rule that sets a plain name still sets it only in its own frame, as Java's.
+- `tx-rollback` registration (P7a-12, fixed): the `tx-rollback` rules are registered once the runner ran, with its
+  results (empty when it failed), as Java's `finally` after `runService`, so a call stopped before it runs registers
+  none (`service/call.rs:436-442`). The `tx-commit` rules are still registered after the `post-service` rules, so a write there
+  can still register the feed hook first, but with the parameters and results as they were before those rules, the
+  copies Java registers (`service/call.rs:443-444`); they run only when the transaction commits, so Java registering
+  them on an error as well changes nothing. Pattern rules are P7a-15.
+- Scheduler (P7b-01, P7b-02, fixed): `scheduled-job-check-time="0"` starts no job runner, with Java's warning: no job
+  passes run, also from `tick()`, and `runner_stats` is `None`, so the tools screens show "No Service Job Runner
+  active" (`settings`, `service/pool.rs:765-778`; `runner_stats`, `:413-419`; `tick`, `:567-581`). The first job pass
+  is 120 seconds after start, then one every check time, as `scheduleAtFixedRate(jobRunner, 120, rate)`; the tick
+  hooks, this port's own (the cluster heartbeat), keep running every interval from the start (`Clock`,
+  `service/schedule.rs:66-96`).
+- Shutdown (P7b-05, fixed): as `workerPool.shutdown()` and `awaitTermination(30s)`, the pool takes no new work, the
+  scheduler and job workers end, and the service workers run the queued calls for up to 30 seconds; what is left then
+  fails as before, with Java's "NOT YET terminated" warning (`shutdown`, `service/pool.rs:616-635`; `drain`,
+  `:1137-1160`; `next_work`, `:921-939`). On one of the pool's own workers it does not wait. Queued job runs are
+  abandoned at once, as before (Java never shuts its `jobWorkerPool` down).
+- Async queue-time check (P7b-07, P7b-08, fixed): before an async call is queued, as the caller, an unknown or
+  interface service is an error, the parameters are converted and validated, the service is pushed and popped to
+  check authorization (no artifact hit), and `authUsername` is added, as Java's `validateCall`; the worker logs in the
+  caller and runs the call with authorization disabled, as `AsyncServiceInfo` (`prepare_async`,
+  `service/call.rs:256-313`; `submit`, `service/pool.rs:529-565`; `submit_future`, `:672-701`; `invoke`, `:998-1015`;
+  `call_now`, `:1019-1042`). Input that fails validation queues nothing (P7b-18).
+- Async in a sim session (P7b-17, found and fixed): an async call in a sim session ran on a worker, outside the sim,
+  against the real database; it is now skipped with Java's log line, and a future gets `simSkipped` and `serviceName`,
+  as `ServiceCallAsyncImpl` (`prepare_async`, `service/call.rs:275-281`).
+- A run that cannot be started (P7b-10, fixed): once the pass has taken the lock, a run whose parameters cannot be
+  read or that the job queue does not take is a failed run, as Java's `ScheduledJobRunner`: the lock is cleared and
+  keeps this pass's run time, and the `ServiceJobRun` row records the error with start and end times; before, the row
+  was deleted, and a failure reading the parameters left the lock held (`dispatch`, `service/jobs.rs:261-322`).
+- Job dates and `paused` (P7b-11, P7b-12, fixed): a job whose `thruDate` is now is still in date, as `filterByDate`
+  (`within_dates`, `service/jobs.rs:822-827`), and a `paused` that is not null or `N`, an empty one too, pauses the job
+  (`paused_ok`, `:829-835`).
+- Queue default (P7b-13, fixed): with no `worker-queue`, the queue holds 65536, Java's code default
+  (`service/pool.rs:44-45`); `MoquiDefaultConf.xml` sets 65535 in both.
+- Run host (P7b-14, fixed): a job run records `hostAddress` and `hostName`, from the address Java's
+  `InetAddress.getLocalHost()` would give (`server_address`, `context/hits.rs:520`), with `runThread` and `startTime`
+  (`run_job`, `service/jobs.rs:463-475`). The thread's name is P7b-16.
+- Runner counters (P7b-15, fixed): a pass that failed or panicked still counts in the runner's counters, as Java's
+  (`run_scheduled`, `service/jobs.rs:89-113`).
 - SECA/EMECA discovery per component, id-overwrite, priority ordering; SECA rules for undefined
-  services skipped at load (`service/eca_rules.rs:105-113`, `service/seca.rs:266-282`); SECA uses only the first
-  `<condition>` child (`service/seca.rs:193-197`).
+  services skipped at load (`service/eca_rules.rs:105-113`, `service/seca.rs:282-297`); SECA uses only the first
+  `<condition>` child (`service/seca.rs:209-213`).
 - Runtime name matching; `run-on-error` gating for SECA; phase set/ordering and tx hooks; tx rules run
-  on a worker in a new transaction and skip sim sessions (`service/call.rs:524-559`); condition-false skip.
-  SECA context carries `parameters`/`results` (as a copy — see P7a-11).
+  on a worker in a new transaction and skip sim sessions (`service/call.rs:607-652`); condition-false skip.
+  SECA context carries `parameters`/`results`, the call's own (P7a-11).
 - Action dispatch `service-call`/`entity-*`/`script`/`in-map="context"`; email ECA context fields.
 - Security-check logic: empty-id, `authzDisabled`, privileged/sealed membership, date-ranged lookups,
   error strings.
-- Registered callbacks run (`call_callbacks`, `service/call.rs:393`).
-- Jobs run on a separate job queue sized by `job-pool-core` (`service/pool.rs:249-252,806-833`); job topic
-  notification plus `ServiceJobError` to the user and `ServiceJobUser` recipients (`service/jobs.rs:578-647`).
+- Registered callbacks run (`call_callbacks`, `service/call.rs:469`).
+- Jobs run on a separate job queue sized by `job-pool-core` (`service/pool.rs:260-263,867-894`); job topic
+  notification plus `ServiceJobError` to the user and `ServiceJobUser` recipients (`service/jobs.rs:602-671`).
 - Cron parsing, lock-claim concurrency, `expireLockTime`/`minRetryTime`/`transactionTimeout` defaults,
   expired-lock run, `repeatCount` pause, `lastSchedule < lastRunTime` skip, min-retry-after-error;
   run-history write and clipping; `run_job_now`; parallel-count accounting.
@@ -889,7 +902,7 @@ Groovy `List.toString()` (`[a, b]`), so stored values differ for anything that r
 - 8a: identity-admin read ban and identity/secret write bans with UserAccount input stripping
   (`service/rest.rs:591-606`); entity results stripped and returned without `_entity` (`service/rest.rs:614,632-642`;
   master path keeps it, as Java); `count` via `search_form_map` with `X-Total-Count`; remote-REST
-  `method` attribute honored (`service/call.rs:800-808`); `rewrite#EntityEncryptedFields` logs and skips
+  `method` attribute honored (`service/call.rs:886-894`); `rewrite#EntityEncryptedFields` logs and skips
   records that won't decrypt or update (`service/tools.rs:778-800`).
 - 8a: root/path 404s and error kinds; `*.rest.xml` discovery and root replacement; named-child
   precedence; `allow-extra-path`; `AT_REST_PATH` frame/authz; `anonymous-all`/`anonymous-view`; entity
@@ -939,12 +952,17 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P6a-19 | service validation | `val-or` passes when one child passes and `val-not` fails when one passes, with a message (`service/validate.rs:704-723`); Java's `validateParameterSingle` adds each failing child's error even when the `val-or` passes, and adds none for a failing `val-not` | Java's makes a `val-or` with any failing branch fail the call and a failing `val-not` pass it; unused in `runtime/`. Comment at the site |
 | P6a-20 | service validation | `text-email` checks the top-level domain's form (letters first, two or more long), not the IANA list, and a Unicode host is not valid; `text-letters` takes Unicode alphabetic characters, a little more than `Character.isLetter` (combining vowel signs, letter numbers) (`service/validate.rs:684-688`, `:789-875`) | No list of top-level domains to keep current and no IDN library in moqui-core; doc comment at `is_email` |
 | P6b-08 | semaphore | Row cleared only while `lockThread` equals Rust's owner label | Documented `service/semaphore.rs:82-83,247-248` |
-| P6b-14 | service call | A call returns only the declared out-parameters (all when none are declared), and inline/script bodies have no `result` map (`service/call.rs:865-882`); Java returns the runner's map, the `result` map's entries included | Keeps a body's other values from REST and remote callers; a ported script uses `result` as a name of its own (`SearchServices.xml`). Doc comment at `project` |
+| P6b-14 | service call | A call returns only the declared out-parameters (all when none are declared), and inline/script bodies have no `result` map (`service/call.rs:951-968`); Java returns the runner's map, the `result` map's entries included | Keeps a body's other values from REST and remote callers; a ported script uses `result` as a name of its own (`SearchServices.xml`). Doc comment at `project` |
 | P7a-01 | EECA | Security-check EECAs run even when the message facade already has errors (Java skips them) | Stricter by design; `service/eca.rs:74-75`, test at `service/eca.rs:327` |
 | P7a-04 | security | `SSH_SHELL` sealed in Rust conf/constants | Rust-only artifact (`service/security_checks.rs:31-32`, `MoquiDefaultConf.xml:63-64`) |
+| P7a-07 | rule conditions | A rule condition is JavaScript truth, as an `<if>` in the actions: an empty list or map is true (`eval_condition`, `script/runtime.rs:574-579`); Java's `checkCondition` takes Groovy truth (`as Boolean`), where it is false | The action language is JavaScript: a rule condition and an `<if>` agree, converted Groovy tests a list's length (`groovy_convert`), and the linter flags collection truth (`lint_hazards`). Doc comment at `eval_condition` |
+| P7a-08 | SECA | A pattern rule is matched against each called name, once per name (`SecaIndex`, `service/seca.rs:118-121`); Java expands it at load to the services known then, so it never runs for one it did not know, as an implicit entity-auto service | The same rules run for every service known at load; a pattern written for a name also covers that name when the service comes later. Comment at the site |
 | P7a-09 | email ECA | A failing email rule is logged and the rest run; Java aborts | AGENTS.md failure-tolerance policy |
-| P7b-04 | pools | Workers = `worker-pool-max` − job core; core/alive ignored (Java effectively runs `worker-pool-core`) | Comment at `service/pool.rs:741-747` |
+| P7a-15 | SECA | A pattern rule with `when="tx-commit"` or `"tx-rollback"` runs (`register_tx_rules`, `service/call.rs:607-612`); Java's `registerTx` compares the rule's service name, the pattern text, to the called name, so it never registers one | A pattern rule runs at each `when` it names, as at every other phase (P7a-08); Java's skip comes from comparing a pattern as a name. Doc comment at `register_tx_rules` |
+| P7b-04 | pools | Workers = `worker-pool-max` − job core; core/alive ignored (Java effectively runs `worker-pool-core`) | Comment at `service/pool.rs:801-803` |
 | P7b-06 | jobs | Lock row with a run id but null `lastRunTime` holds the job | Comment at `service/jobs.rs:224-227`; Java always writes both |
+| P7b-16 | jobs | `ServiceJobRun.runThread` is the name of this port's job thread, `moqui-job-0` (`service/jobs.rs:463-475`); Java's is `MoquiJob-1` | The column names the thread that ran the job in both; the threads follow this port's `moqui-*` names, which its logs show. Comment at the site |
+| P7b-18 | async | An async call whose parameters fail validation is not queued: the errors are in the caller's message facade, and a future gets an empty map (`prepare_async`, `service/call.rs:264-313`); Java queues it, skipping its authorization check, and its run fails the same validation | Safer: a call that skipped the authorization check is not queued, and its run would do nothing but its `pre-validate` rules. Doc comment at `prepare_async` |
 | P8a-14 | remote REST | Substituted `${param}` values percent-encoded; Java does not URL-encode | Doc comment `service/remote.rs:107-108` |
 | P8a-16 | service REST | No-user denial returns 401; Java throws (403) | Comment `service/rest.rs:497-498` |
 | P8a-23 | service REST | Authc message says "operation"; Java has the "operaton" typo | Don't copy the typo |

@@ -47,12 +47,14 @@ pub(super) struct SecaRule {
 /// Run SECA actions whose service and `when` match. A false condition skips the rule.
 ///
 /// Each rule runs in its own context frame holding the parameters, `parameters`, and, for the
-/// rules that run after the service, the results and `results`.
+/// rules that run after the service, the results and `results`. As Java's, `parameters` and `results` are the call's
+/// own maps: what a rule sets in them is in `parameters` and `results` when it ends, so a pre-* rule changes the
+/// service's input and a post-* rule its results.
 pub fn run_seca_rules(
     service: &str,
     when: &str,
-    parameters: &BTreeMap<String, Value>,
-    results: Option<&BTreeMap<String, Value>>,
+    parameters: &mut BTreeMap<String, Value>,
+    mut results: Option<&mut BTreeMap<String, Value>>,
 ) -> Result<(), Error> {
     let Some(rules) = eca_rules::current() else {
         return Ok(());
@@ -64,7 +66,7 @@ pub fn run_seca_rules(
         }
         let _frame = super::rule_actions::publish_names(parameters)?;
         crate::script::set_context_name("parameters", Value::Map(to_index_map(parameters)))?;
-        if let Some(results) = results {
+        if let Some(results) = results.as_deref() {
             for (name, value) in results {
                 crate::script::set_context_name(name, value.clone())?;
             }
@@ -77,14 +79,26 @@ pub fn run_seca_rules(
                 err.message()
             ))
         };
-        if let Some(check) = &rule.condition_check {
-            if !crate::script::eval_condition_group(check).map_err(in_rule)? {
-                continue;
-            }
+        let passed = match &rule.condition_check {
+            Some(check) => crate::script::eval_condition_group(check).map_err(in_rule)?,
+            None => true,
+        };
+        if passed {
+            super::rule_actions::run_stored_actions(&rule.actions).map_err(in_rule)?;
         }
-        super::rule_actions::run_stored_actions(&rule.actions).map_err(in_rule)?;
+        read_back("parameters", parameters);
+        if let Some(results) = results.as_deref_mut() {
+            read_back("results", results);
+        }
     }
     Ok(())
+}
+
+/// The map a rule left under `name` in its frame, in place of `map`. Anything but a map leaves `map` as it was.
+fn read_back(name: &str, map: &mut BTreeMap<String, Value>) {
+    if let Some(Value::Map(values)) = crate::script::context_value(name) {
+        *map = values.into_iter().collect();
+    }
 }
 
 /// Whether any rule runs for `service` at `when`, so a transaction hook is registered only when one does.
@@ -101,7 +115,9 @@ type PatternHits = HashMap<(String, String), Arc<[usize]>>;
 pub(super) struct SecaIndex {
     /// By `when`, then by the service name without `#`.
     exact: HashMap<String, HashMap<String, Vec<usize>>>,
-    /// The rules whose name is a pattern, by `when`.
+    /// The rules whose name is a pattern, by `when`. A pattern is matched against the name a call has, the first time a
+    /// service is called (`pattern_hits`); Java expands it at load to the known services, so there it never runs for a
+    /// service it did not know then, as an implicit entity-auto one (an accepted difference, P7a-08).
     patterns: HashMap<String, Vec<usize>>,
     /// The pattern rules that matched, by `when` and service name, so each pattern runs once for a service.
     pattern_hits: std::sync::RwLock<PatternHits>,
@@ -321,7 +337,7 @@ mod tests {
             ),
         );
         let _entered = context.enter();
-        run_seca_rules("test.example#First", "pre-service", &BTreeMap::new(), None).unwrap();
+        run_seca_rules("test.example#First", "pre-service", &mut BTreeMap::new(), None).unwrap();
         assert_eq!(context.message().messages(), ["first"]);
         let node = moqui_lib::node::MNode::parse_text(
             "seca",
@@ -373,10 +389,10 @@ mod tests {
         let _entered = context.enter();
         let mut parameters = BTreeMap::new();
         parameters.insert("note".to_string(), Value::string("go"));
-        run_seca_rules("test.example#Run", "pre-service", &parameters, None).unwrap();
+        run_seca_rules("test.example#Run", "pre-service", &mut parameters, None).unwrap();
         // Priority order, and the false condition skips its rule.
         assert_eq!(context.message().messages(), ["early", "late"]);
-        run_seca_rules("test.example#Run", "post-service", &parameters, None).unwrap();
+        run_seca_rules("test.example#Run", "post-service", &mut parameters, None).unwrap();
         assert_eq!(context.message().messages(), ["early", "late"]);
     }
 
@@ -441,10 +457,9 @@ mod tests {
             ),
         );
         let _entered = context.enter();
-        let parameters = BTreeMap::new();
         let run = |service: &str, when: &str| {
             context.message().clear();
-            run_seca_rules(service, when, &parameters, None).unwrap();
+            run_seca_rules(service, when, &mut BTreeMap::new(), None).unwrap();
             context.message().messages().to_vec()
         };
         assert_eq!(
@@ -495,7 +510,7 @@ mod tests {
             let mut parameters = BTreeMap::new();
             parameters.insert("note".to_string(), Value::string(note));
             parameters.insert("count".to_string(), Value::I64(count));
-            run_seca_rules("test.example#Cond", "pre-service", &parameters, None).unwrap();
+            run_seca_rules("test.example#Cond", "pre-service", &mut parameters, None).unwrap();
             context.message().messages().to_vec()
         };
         assert_eq!(run("go", 5), ["compare", "and"]);
@@ -520,8 +535,7 @@ mod tests {
             ),
         );
         let _entered = context.enter();
-        let parameters = BTreeMap::new();
-        assert!(run_seca_rules("test.example#Odd", "pre-service", &parameters, None).is_err());
+        assert!(run_seca_rules("test.example#Odd", "pre-service", &mut BTreeMap::new(), None).is_err());
         assert!(context.message().messages().is_empty(), "the rule did not run");
     }
 

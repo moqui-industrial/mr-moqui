@@ -33,7 +33,7 @@ mod pool;
 mod remote;
 mod request_pool;
 mod rest;
-mod rule_actions;
+pub(crate) mod rule_actions;
 mod schedule;
 #[cfg(test)]
 mod script_ports_tests;
