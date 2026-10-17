@@ -1034,7 +1034,7 @@
                     let descUrl = pageUrl("orderByField", "-" + (insensitive ? "^" : "") + field.name);
                     if (asc) ascUrl = descUrl;
                     if (desc) descUrl = ascUrl;
-                    out += '<span class="order-by"><a' + A({ href: ascUrl, class: asc ? "active" : null }) + '><i class="fa fa-caret-up"></i></a><a' + A({ href: descUrl, class: desc ? "active" : null }) + '><i class="fa fa-caret-down"></i></a></span>';
+                    out += ' <span class="order-by"> <a' + A({ href: ascUrl, class: asc ? "active" : null }) + '><i class="fa fa-caret-up"></i></a> <a' + A({ href: descUrl, class: desc ? "active" : null }) + '><i class="fa fa-caret-down"></i></a> </span>';
                 }
                 out += "</div>";
                 if (field.find && !cfg.headerDialog) {
@@ -1140,8 +1140,9 @@
                 if (!skipHeader) {
                     w("<thead>");
                     nav(n, visible, cfg);
-                    if (cfg.headerDialog) {
-                        // The active find parameters are shown as text with a button that clears them.
+                    if (cfg.headerDialog && ec.context.get("hideNav") !== "true") {
+                        // Java retains the summary header row even when no filters are active.
+                        w('<tr><th colspan="' + Math.max(visible.length, 1) + '" style="font-weight: normal">');
                         let summary = "";
                         cfg.summaryFields.forEach((f) => {
                             if (!f.summary || (f.hide && f.hide())) return;
@@ -1149,9 +1150,10 @@
                             if (text) summary += '<span class="filter"><strong>' + e(f.title()) + ":</strong> " + e(text) + "</span> ";
                         });
                         if (summary) {
-                            w('<tr><td colspan="' + Math.max(visible.length, 1) + '">' + summary + "<form" + A({ method: "post", action: sri.getCurrentScreenUrl().url }) + ">" + hiddenInputs() +
-                                '<button type="submit" name="clearParameters" title="' + e(L("Clear")) + '"><i class="fa fa-remove"></i></button></form></td></tr>');
+                            w(summary + "<form" + A({ method: "post", action: sri.getCurrentScreenUrl().url }) + ">" + hiddenInputs() +
+                                '<button type="submit" name="clearParameters" title="' + e(L("Clear")) + '"><i class="fa fa-remove"></i></button></form>');
                         }
+                        w("</th></tr>");
                     }
                     st.owner = cfg.headerFormId;
                     w("<tr>");

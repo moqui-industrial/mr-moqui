@@ -47,6 +47,8 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
                 stripe:getComputedStyle(document.getElementById('product')).backgroundColor,
                 navMargin:getComputedStyle(document.getElementById('find')).margin,
                 pagePadding:getComputedStyle(document.getElementById('page')).padding,
+                paginationDisplay:getComputedStyle(document.querySelector('.pagination')).display,
+                pageFloat:getComputedStyle(document.getElementById('page')).cssFloat,
                 csvBeforePagination:document.getElementById('csv').getBoundingClientRect().x < document.getElementById('page').getBoundingClientRect().x
             }
         });
@@ -68,7 +70,8 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
         background: 'rgb(255, 255, 255)', color: 'rgb(34, 34, 34)', cellPadding: '5px', cellAlign: 'middle',
         rowHeight: 51, headerHeight: 51, sortColor: 'rgb(255, 0, 0)', dialogFont: '12px', dialogPadding: '5px 10px',
         buttonPadding: '6px 12px', strongWeight: '700', stripe: 'rgba(0, 0, 0, 0)',
-        navMargin: '6px 8px 0px 0px', pagePadding: '6px 12px', csvBeforePagination: true
+        navMargin: '6px 8px 0px 0px', pagePadding: '6px 12px',
+        paginationDisplay: 'inline-block', pageFloat: 'left', csvBeforePagination: true
     });
     assert.equal(wide.widget.width, wide.width);
     assert.ok(wide.input.width > 300, 'size=40 input is not squeezed into the unused label column');
