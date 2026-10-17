@@ -12,6 +12,9 @@ pub trait Provider: Send + Sync {
     /// Returns an object containing a nonempty operation_id and an integer time_epoch_ms.
     fn begin(&self, request: Value) -> Result<Value, Error>;
     fn complete(&self, request: Value) -> Result<(), Error>;
+    fn random(&self, _domain: &str, _length: usize) -> Result<Vec<u8>, Error> {
+        Err(Error::new("deterministic provider does not support random bytes"))
+    }
 }
 
 static PROVIDER: OnceLock<Arc<dyn Provider>> = OnceLock::new();
@@ -34,10 +37,14 @@ pub fn enabled() -> bool {
     moqui_lib::clock::deterministic()
 }
 
-pub fn install(provider: Arc<dyn Provider>) -> Result<(), Error> {
+pub fn install(source: Arc<dyn Provider>) -> Result<(), Error> {
     PROVIDER
-        .set(provider)
+        .set(source)
         .map_err(|_| Error::new("deterministic provider already installed"))?;
+    moqui_lib::random::install(Arc::new(|domain, length| {
+        check()?;
+        provider().random(domain, length).inspect_err(|_| fail())
+    }))?;
     moqui_lib::clock::enable_deterministic();
     Ok(())
 }

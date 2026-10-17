@@ -1226,7 +1226,7 @@ fn load_source(
         std::fs::create_dir_all(&dir).map_err(|err| {
             moqui_lib::error::Error::new(format!("could not create {}", dir.display())).with_source(err)
         })?;
-        let path = dir.join(format!("data-load-{}.{extension}", crate::entity::uuid_v4()?));
+        let path = dir.join(format!("data-load-{}.{extension}", crate::entity::uuid_v4_for("tools-data-load")?));
         std::fs::write(&path, body).map_err(|err| {
             moqui_lib::error::Error::new(format!("could not write {}", path.display())).with_source(err)
         })?;

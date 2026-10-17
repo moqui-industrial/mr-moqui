@@ -685,7 +685,9 @@ fn push_insert_params(
 /// 13 hex digits of epoch millis then 12 random ones, so rows sort by arrival and ids do not collide.
 fn generated_doc_id() -> String {
     let mut bytes = [0_u8; 6];
-    if getrandom::fill(&mut bytes).is_err() {
+    if moqui_lib::random::deterministic() {
+        moqui_lib::random::fill("search-document-id", &mut bytes).expect("deterministic search entropy");
+    } else if getrandom::fill(&mut bytes).is_err() {
         bytes = u64::from(std::process::id()).to_le_bytes()[..6]
             .try_into()
             .unwrap_or([0; 6]);

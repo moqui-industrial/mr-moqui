@@ -17,8 +17,8 @@
 use moqui_lib::codec::{constant_time_eq, hex_encode};
 
 use argon2::{
-    password_hash::{PasswordHasher, PasswordVerifier},
     Argon2,
+    password_hash::{PasswordHasher, PasswordVerifier},
 };
 use base64::Engine;
 use sha1::Sha1;
@@ -30,11 +30,16 @@ use super::policy;
 
 const ARGON2: &str = "argon2";
 
-/// Hash `plain` with argon2id. The salt comes from `getrandom` inside the argon2 crate.
+/// Hash `plain` with argon2id. Only deterministic test mode supplies a coordinator-seeded salt.
 pub fn hash_password(plain: &str) -> Result<String, Error> {
-    let hashed = Argon2::default()
-        .hash_password(plain.as_bytes())
-        .map_err(|err| Error::new(format!("argon2 hash failed: {err}")))?;
+    let hashed = if moqui_lib::random::deterministic() {
+        let mut salt = [0; 16];
+        moqui_lib::random::fill("argon2-salt", &mut salt)?;
+        Argon2::default().hash_password_with_salt(plain.as_bytes(), &salt)
+    } else {
+        Argon2::default().hash_password(plain.as_bytes())
+    }
+    .map_err(|err| Error::new(format!("argon2 hash failed: {err}")))?;
     Ok(hashed.to_string())
 }
 

@@ -51,7 +51,7 @@ pub use moqui_db::sql::{CompareOp, Condition};
 pub(crate) use schema::document as schema_document;
 pub use search_form::SearchFormResult;
 pub use sequence::{fill_bank, stagger_step, take_id, SequenceBank};
-pub(crate) use sequence::{sequenced_id_primary, uuid_v4};
+pub(crate) use sequence::{sequenced_id_primary, uuid_v4_for};
 pub(crate) use value::is_rust_only_sub_type;
 pub use value::{EntityList, EntityValue, RustOnlyEntityHits};
 

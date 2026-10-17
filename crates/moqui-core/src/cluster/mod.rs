@@ -260,7 +260,7 @@ pub(crate) fn note_write(
 ) -> Result<(), Error> {
     let message = TopicMessage {
         origin_id: notify::origin_id().to_string(),
-        message_id: crate::entity::uuid_v4().map_err(Error::from)?,
+        message_id: crate::entity::uuid_v4_for("cluster-invalidation").map_err(Error::from)?,
         body: invalidation_body(entity_name, pk_fields, values),
     };
     let tx = facade.transactions_for(entity_name).map_err(Error::from)?;
@@ -348,7 +348,7 @@ fn ensure_instance_id(factory: &ExecutionContextFactory) -> Result<String, Error
             return Ok(kept);
         }
     }
-    let id = crate::entity::uuid_v4().map_err(Error::from)?;
+    let id = crate::entity::uuid_v4_for("cluster-node").map_err(Error::from)?;
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|err| Error::new(format!("could not make {}: {err}", parent.display())))?;
@@ -905,7 +905,7 @@ fn touch_member(facade: &EntityFacade, instance_id: &str, now: i64) -> Result<()
 /// Returns an error when the row cannot be written.
 pub fn store_message(facade: &EntityFacade, topic: &str, payload: &str) -> Result<String, Error> {
     let _authz = entered_authz();
-    let id = crate::entity::uuid_v4().map_err(Error::from)?;
+    let id = crate::entity::uuid_v4_for("cluster-message").map_err(Error::from)?;
     let sql = facade
         .with_entity(MESSAGE, |entity, dialect, _| {
             sql_insert(entity, dialect, &["messageId", "topic", "payload", "createdDate"])

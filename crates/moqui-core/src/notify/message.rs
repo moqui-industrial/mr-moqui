@@ -797,7 +797,7 @@ fn now_value() -> Value {
 }
 
 fn new_id() -> Result<String, Error> {
-    crate::entity::uuid_v4().map_err(Error::from)
+    crate::entity::uuid_v4_for("notification-message").map_err(Error::from)
 }
 
 fn current_facade() -> Result<EntityFacade, Error> {

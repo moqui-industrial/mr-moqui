@@ -939,6 +939,7 @@ impl Sandbox {
         })));
         let context = Context::full(&runtime).map_err(js_error)?;
         context.with(|ctx| -> Result<(), Error> {
+            super::runtime::install_random(&ctx)?;
             let globals = ctx.globals();
             globals
                 .set("format", Function::new(ctx.clone(), locked_format).map_err(js_error)?)

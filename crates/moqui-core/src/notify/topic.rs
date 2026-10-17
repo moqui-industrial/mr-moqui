@@ -110,7 +110,14 @@ fn lock() -> std::sync::MutexGuard<'static, Bus> {
 pub fn origin_id() -> &'static str {
     static ORIGIN: OnceLock<String> = OnceLock::new();
     ORIGIN
-        .get_or_init(|| crate::entity::uuid_v4().unwrap_or_else(|_| "local".to_string()))
+        .get_or_init(|| {
+            crate::entity::uuid_v4_for("notification-origin").unwrap_or_else(|err| {
+                if moqui_lib::random::deterministic() {
+                    panic!("deterministic notification entropy: {err}");
+                }
+                "local".to_string()
+            })
+        })
         .as_str()
 }
 

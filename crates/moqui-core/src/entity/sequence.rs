@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use moqui_db::sql::{is_mysql, is_sqlite, quote_column, quote_physical_ident};
 use moqui_lib::error::Error;
-use moqui_lib::object::{basic_convert, Value};
+use moqui_lib::object::{Value, basic_convert};
 
 use super::exec::{query_conn, with_reserve_tx};
 use super::facade::EntityFacade;
@@ -117,7 +117,11 @@ impl SequenceBanks {
         let bank = self.bank(seq_name);
         let mut bank = bank.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
-            let roll = roll_for(stagger)?;
+            let roll = if bank.current <= bank.end {
+                roll_for(seq_name, stagger)?
+            } else {
+                0.0
+            };
             if let Some(id) = take_id(&mut bank, stagger, roll) {
                 return Ok(id);
             }
@@ -189,7 +193,13 @@ pub(crate) fn assign_primary(facade: &EntityFacade, entity_name: &str) -> Result
         })
     })?;
     if spec.use_uuid {
-        return Ok((spec.pk_field, apply_prefix(spec.prefix.as_deref(), &uuid_v4()?)));
+        return Ok((
+            spec.pk_field,
+            apply_prefix(
+                spec.prefix.as_deref(),
+                &uuid_v4_for(&format!("entity:{}", spec.seq_name))?,
+            ),
+        ));
     }
     let prepared = facade.with_entity(SEQUENCE_ENTITY, |entity, dialect, _| seq_sql(entity, dialect))?;
     let tx = facade.transactions_for(SEQUENCE_ENTITY)?;
@@ -209,10 +219,13 @@ pub(crate) fn sequenced_id_primary(
     bank_size: Option<u64>,
 ) -> Result<String, Error> {
     let uuid = facade
-        .with_entity(seq_name, |entity, _, _| Ok(entity.sequence_primary_use_uuid))
-        .unwrap_or(false);
-    if uuid {
-        return uuid_v4();
+        .with_entity(seq_name, |entity, _, _| {
+            Ok(entity.sequence_primary_use_uuid.then(|| entity.full_name.clone()))
+        })
+        .ok()
+        .flatten();
+    if let Some(name) = uuid {
+        return uuid_v4_for(&format!("entity:{name}"));
     }
     let stagger = stagger.unwrap_or(0);
     let bank_size = bank_size.filter(|size| *size > 0).unwrap_or(DEFAULT_BANK_SIZE);
@@ -379,30 +392,29 @@ fn apply_prefix(prefix: Option<&str>, id: &str) -> String {
     }
 }
 
-fn roll_for(stagger: u64) -> Result<f64, Error> {
+fn roll_for(seq_name: &str, stagger: u64) -> Result<f64, Error> {
     if stagger <= 1 {
         return Ok(0.0);
+    }
+    if crate::deterministic::enabled() {
+        return moqui_lib::random::unit(&format!("sequence-stagger:{seq_name}"));
     }
     unit_roll()
 }
 
 fn unit_roll() -> Result<f64, Error> {
     let mut bytes = [0_u8; 8];
-    fill_random(&mut bytes)?;
+    moqui_lib::random::fill("sequence-stagger", &mut bytes)?;
     let number = u64::from_le_bytes(bytes);
     Ok((number as f64) / (u64::MAX as f64))
 }
 
-pub(crate) fn uuid_v4() -> Result<String, Error> {
+pub(crate) fn uuid_v4_for(domain: &str) -> Result<String, Error> {
     let mut bytes = [0_u8; 16];
-    fill_random(&mut bytes)?;
+    moqui_lib::random::fill(domain, &mut bytes)?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(format_uuid(&bytes))
-}
-
-fn fill_random(bytes: &mut [u8]) -> Result<(), Error> {
-    getrandom::fill(bytes).map_err(|err| Error::new(format!("could not read random bytes: {err}")))
 }
 
 fn format_uuid(bytes: &[u8; 16]) -> String {

@@ -215,7 +215,7 @@ pub fn get_login_key(expire_hours: Option<f64>) -> Result<String, Error> {
             "No active user, cannot get login key",
         ));
     };
-    let login_key = super::factor::random_string(40)?;
+    let login_key = super::factor::random_string_for("login-key", 40)?;
     let hashed = password::hash_login_key(&login_key)?;
     let hours = expire_hours.unwrap_or_else(policy::login_key_expire_hours);
     let from = now_millis();
