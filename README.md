@@ -92,6 +92,9 @@ checkout on Linux or macOS. `./moq` with no arguments lists the tasks, and
 ./moq completion --install     # tab completion for bash or zsh
 ```
 
+`-D create-or-update=true` opts into Java's read-first create-or-update (SELECT, then
+CREATE or UPDATE). It defaults to off, preserving Rust's UPDATE-first optimization.
+
 With no arguments the binary starts the HTTP server (HTTP on `8080` by default, HTTPS on `8443`, cluster
 HTTPS on `8444`) using `runtime/base-component/framework/conf/MoquiDefaultConf.xml` merged with the runtime conf:
 `runtime/conf/MoquiDevConf.xml` when present, or the file `MOQUI_CONF` names, relative to
