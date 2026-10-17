@@ -24,7 +24,7 @@ use moqui_lib::error::Error;
 use moqui_lib::object::{HostObject, Value};
 
 use super::rule_actions::{condition_allows, publish_names, run_stored_actions};
-use super::util::has_error;
+use super::util::{has_error, take_errors_string};
 use crate::context::ExecutionContext;
 use crate::entity::load_feed::{self, DataFileService, EcaRule};
 use crate::entity::EntityFacade;
@@ -210,7 +210,11 @@ pub fn run_data_file_service(facade: &EntityFacade, service: &DataFileService) -
                 service.name,
                 started.elapsed().as_millis()
             );
-            Ok(())
+            // As Java's `handleService`: errors the call left fail the element, and are cleared.
+            match take_errors_string() {
+                Some(errors) => Err(Error::new(format!("Error handling data load service call: {errors}"))),
+                None => Ok(()),
+            }
         }
         Err(err) => {
             tracing::warn!(

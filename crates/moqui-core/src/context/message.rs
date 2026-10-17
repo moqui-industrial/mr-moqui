@@ -184,6 +184,14 @@ impl MessageFacade {
         }
     }
 
+    /// The error texts added since `mark`, left in place.
+    pub fn errors_since(&self, mark: ErrorMark) -> Vec<String> {
+        self.errors
+            .get(mark.errors..)
+            .map(<[String]>::to_vec)
+            .unwrap_or_default()
+    }
+
     /// Removes the errors and validation errors added since `mark` and returns the error texts. The earlier ones stay.
     pub fn take_errors_since(&mut self, mark: ErrorMark) -> Vec<String> {
         self.validation_errors.truncate(mark.validation_errors);

@@ -420,8 +420,9 @@ fn a_target_outside_the_volume_is_an_error_and_a_name_stays_inside_it() {
     parameters.insert("cmd".to_string(), Value::string("ls"));
     parameters.insert("target".to_string(), Value::string("db_cm9vdA"));
     parameters.insert("resourceRoot".to_string(), Value::string("content://main/files"));
-    let err = crate::service::sync(RUN_COMMAND, &parameters).unwrap_err();
-    assert!(err.message().contains("content://main/files"), "{err}");
+    assert!(crate::service::sync(RUN_COMMAND, &parameters).unwrap().is_empty());
+    let errors = setup.context.message().errors().join("\n");
+    assert!(errors.contains("content://main/files"), "{errors}");
     assert_eq!(std::fs::read_to_string(dir.0.join("secret.txt")).unwrap(), "outside");
 }
 

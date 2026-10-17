@@ -93,7 +93,7 @@ pub fn async_call(name: &str, parameters: &BTreeMap<String, Value>) -> Result<()
 ///
 /// # Errors
 ///
-/// Returns an error when the call fails, or the worker queue is full.
+/// Returns the errors of [`sync`], or an error when the worker queue is full.
 pub fn call_future(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
     let factory = super::pool::capture_factory()?;
     factory.service_pools().call_future(&canonical(name), parameters)
@@ -166,8 +166,41 @@ impl ServiceFuture {
 }
 
 /// Run `name` and return its out parameters. `create-entity` is `create#entity`.
+///
+/// As Java's `call()`, a failure of the service's body or of its commit is not an error of the call: its message and
+/// causes are recorded in the message facade, the transaction rolls back, and the results come back as they were, empty
+/// when the body failed. Callers read the message facade, as Java's read `hasError()`; [`sync_checked`] does that for
+/// Rust code that needs a `Result`.
+///
+/// # Errors
+///
+/// Returns an error for what Java throws: an unknown or interface service, a call that needs a logged-in user, a held
+/// semaphore, a failing pre-validate or pre-auth rule, and an authorization failure, in the body too.
 pub fn sync(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
     sync_with(name, parameters, &CallOptions::default())
+}
+
+/// [`sync_with`] for Rust code that needs a `Result`: the errors the call recorded in the message facade are an error
+/// here too, with their text. They stay in the message facade.
+///
+/// # Errors
+///
+/// Returns the errors of [`sync`], and the errors the call recorded.
+pub fn sync_checked(
+    name: &str,
+    parameters: &BTreeMap<String, Value>,
+    options: &CallOptions,
+) -> Result<BTreeMap<String, Value>, Error> {
+    let mark = ExecutionContext::with_current(|ctx| ctx.message().error_mark());
+    let results = sync_with(name, parameters, options)?;
+    let errors = mark
+        .and_then(|mark| ExecutionContext::with_current(|ctx| ctx.message().errors_since(mark)))
+        .unwrap_or_default();
+    if errors.is_empty() {
+        Ok(results)
+    } else {
+        Err(Error::new(errors.join("\n")))
+    }
 }
 
 /// The multi call of Java's `ServiceCallSyncImpl`: for each row `N` (from 0, until a row has none of the in-parameters
@@ -177,7 +210,7 @@ pub fn sync(name: &str, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap
 ///
 /// # Errors
 ///
-/// Returns an error when a call fails other than with error messages.
+/// Returns the errors of [`sync`] for a row, and an error of the transaction around the rows.
 pub fn sync_multi(
     name: &str,
     parameters: &BTreeMap<String, Value>,
@@ -313,6 +346,10 @@ pub(super) fn prepare_async(name: &str, parameters: &BTreeMap<String, Value>) ->
 }
 
 /// [`sync`] with per-call overrides of authorization and the transaction attribute.
+///
+/// # Errors
+///
+/// Returns the errors of [`sync`].
 pub fn sync_with(
     name: &str,
     parameters: &BTreeMap<String, Value>,
@@ -400,6 +437,13 @@ pub fn sync_with(
             format!("User must be logged in to call service {}", def.name),
         ));
     }
+    // As Java, an interface is an error before the run, not a failure of its body.
+    if def.kind == ServiceKind::Interface {
+        return Err(Error::new(format!(
+            "Service {} is an interface and cannot be run",
+            def.name
+        )));
+    }
     if def.service_type == "entity-implicit" {
         // As Java's `runImplicitEntityAuto`, which runs the pre-validate rules a second time and returns before the
         // pre-auth rules.
@@ -420,9 +464,13 @@ pub fn sync_with(
     };
     let tx = facade.transactions_for(&entity_name)?;
     let attribute = options.attribute(def.transaction);
+    // Java's `result`: empty until the runner returns, then its results, which the post-service rules may change.
+    let mut produced: BTreeMap<String, Value> = BTreeMap::new();
     // Errors the service leaves in the message facade roll the transaction back but are not a
     // failure of the call: the results come back with the errors alongside, as in Java.
-    let mut message_failed: Option<BTreeMap<String, Value>> = None;
+    let mut message_failed = false;
+    // The body and its post-service rules ran; a failure after that is the commit's.
+    let mut finished = false;
     let outcome = tx.run(attribute, options.timeout.or(def.timeout), || {
         let _deadline = crate::script::DeadlineGuard::new(tx.time_remaining());
         if def.no_tx_cache {
@@ -431,21 +479,22 @@ pub fn sync_with(
         super::seca::run_seca_rules(&def.name, "pre-service", &mut cleaned, None).map_err(script_err)?;
         if has_error() {
             tracing::warn!(service = %def.name, "errors before the service ran, so it was not run");
-            return Ok(BTreeMap::new());
+            return Ok(());
         }
         let ran = execute(&def, &cleaned, &facade);
         // As Java's `finally` after the runner: tx-rollback rules are registered once the service ran, with its results,
         // empty when it failed. tx-commit is last so a post-service entity write can still register the feed schedule
         // hook.
         let registered = register_tx_rollback(&tx, &def.name, &cleaned, ran.as_ref().unwrap_or(&BTreeMap::new()));
-        let mut produced = ran?;
+        produced = ran?;
         registered?;
         // Java registers the tx-commit rules here too, with copies, so they do not see what the post-service rules set.
         let for_commit = super::seca::has_rules(&def.name, "tx-commit").then(|| (cleaned.clone(), produced.clone()));
         super::seca::run_seca_rules(&def.name, "post-service", &mut cleaned, Some(&mut produced))
             .map_err(script_err)?;
+        finished = true;
         if has_error() {
-            message_failed = Some(produced.clone());
+            message_failed = true;
             // Under `ignore` with nothing in place there is no transaction to mark.
             if tx.in_transaction() {
                 tx.set_rollback_only(format!("Error running service {} (message)", def.name))?;
@@ -453,32 +502,68 @@ pub fn sync_with(
         } else if let Some((parameters, results)) = &for_commit {
             register_tx_commit(&tx, &def.name, parameters, results)?;
         }
-        Ok(produced)
+        Ok(())
     });
-    let mut produced = match outcome {
-        Ok(produced) => Ok(produced),
-        Err(err) => match message_failed.take() {
-            Some(produced) => Ok(produced),
-            None => {
-                // A failure is also an error message, so rules that skip on error skip.
-                add_error(&err.diagnostic());
-                Err(err)
+    // As Java's `callSingle`, a failure of the body or of the commit is recorded in the message facade, the transaction
+    // is rolled back, and the call returns the results as they were: empty when the runner failed. Only an authorization
+    // failure goes on as an error, as Java rethrows `ArtifactAuthorizationException`, and so does a failure with no
+    // message facade to record it in.
+    let mut failure = match outcome {
+        Ok(()) => None,
+        // The rollback the message errors asked for.
+        Err(_) if message_failed => None,
+        Err(err) => Some(err),
+    };
+    if let Some(err) = &failure {
+        // An authorization failure has already rolled back the transaction the call began, where Java's `finally`
+        // commits what the body wrote before the refusal: safer, so a refused call leaves nothing (accepted, P6b-15).
+        let authz = crate::context::ErrorKind::of(err) == crate::context::ErrorKind::Unauthorized;
+        if !authz {
+            // Java tells the callbacks of a body failure; a commit failure comes after they heard the results.
+            if finished {
+                call_callbacks(&def.name, &cleaned, Ok(&produced));
+            } else {
+                call_callbacks(&def.name, &cleaned, Err(err));
             }
-        },
-    };
-    call_callbacks(&def.name, &cleaned, produced.as_ref());
+            if record_failure(err) {
+                failure = None;
+            }
+        }
+    } else {
+        call_callbacks(&def.name, &cleaned, Ok(&produced));
+    }
     // post-commit rules run whether or not the service worked. Those that skip on error do. As Java's, a failed call
-    // gives them an empty result map.
-    let mut failed_results = BTreeMap::new();
-    let results = match &mut produced {
-        Ok(produced) => produced,
-        Err(_) => &mut failed_results,
-    };
-    let post = super::seca::run_seca_rules(&def.name, "post-commit", &mut cleaned, Some(results));
+    // gives them its results as they were, an empty map when the runner failed.
+    let post = super::seca::run_seca_rules(&def.name, "post-commit", &mut cleaned, Some(&mut produced));
     drop(guard);
-    let produced = produced?;
+    if let Some(err) = failure {
+        return Err(err.into());
+    }
     post?;
     Ok(project(&def, produced))
+}
+
+/// Java's `catch (Throwable t)`: the failure's message and each cause's are added to the message facade. Display here
+/// already writes the causes after the message, so the first error is the diagnostic, with the Rust origin, and a cause
+/// is added on its own only when no error so far shows its text. False with no execution context, where the error
+/// would be lost.
+fn record_failure(err: &LibError) -> bool {
+    let mut texts = vec![err.diagnostic()];
+    let mut source = std::error::Error::source(err);
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !texts.iter().any(|known| known.contains(&text)) {
+            texts.push(text);
+        }
+        source = cause.source();
+    }
+    ExecutionContext::with_current(|ctx| {
+        let mut messages = ctx.message();
+        for text in texts {
+            messages.add_error(text);
+        }
+    })
+    .is_some()
 }
 
 /// The message errors set aside by `ignorePreviousError`, put back when dropped (Java's `pushErrors`/`popErrors`).
@@ -1732,8 +1817,10 @@ mod tests {
         let _entered = ctx.enter();
         let _authz = ctx.disable_authz();
         crate::service::lint(std::slice::from_ref(&path)).unwrap();
-        let err = sync("locate#Failure", &BTreeMap::new()).unwrap_err();
-        let diagnostic = err.diagnostic();
+        // As Java's, the failure is recorded in the message facade and the call returns its empty results.
+        let out = sync("locate#Failure", &BTreeMap::new()).expect("a body failure is recorded, not returned");
+        assert!(out.is_empty(), "{out:?}");
+        let diagnostic = ctx.message().errors().join("\n");
         assert!(
             diagnostic.contains(&format!("{}#actions-3-1.generated.js:", path.display())),
             "{diagnostic}"
@@ -1743,11 +1830,6 @@ mod tests {
             "{diagnostic}"
         );
         assert!(diagnostic.contains("in service locate#Failure"), "{diagnostic}");
-        assert!(ctx
-            .message()
-            .errors()
-            .iter()
-            .any(|error| error.contains(".generated.js:") && error.contains("Rust:")));
         std::fs::remove_file(path).unwrap();
     }
 
@@ -1887,10 +1969,159 @@ mod tests {
         assert_eq!(rows.len(), 0, "the create was rolled back with the message error");
     }
 
+    /// Java's `ServiceCallback`, recording what it hears.
+    struct Heard(Mutex<Vec<String>>);
+
+    impl super::ServiceCallback for Heard {
+        fn receive_result(&self, _context: &BTreeMap<String, Value>, result: &BTreeMap<String, Value>) {
+            self.0.lock().unwrap().push(format!("result {}", result.len()));
+        }
+        fn receive_error(&self, _context: &BTreeMap<String, Value>, error: &moqui_lib::error::Error) {
+            self.0.lock().unwrap().push(format!("error {}", error.message()));
+        }
+    }
+
+    /// As Java's `callSingle`: a failing body is recorded in the message facade, the callbacks hear of the error, the
+    /// transaction rolls back (and its tx-rollback rules run), the post-commit rules that run on error get an empty
+    /// result map, and the call returns that empty map.
     #[test]
-    fn post_commit_rules_run_after_a_failure_only_when_they_run_on_error() {
+    fn a_body_failure_is_recorded_rolled_back_and_returns_empty_results() {
         let path = write_fixture(
-            "post-commit",
+            "body-failure",
+            r#"<services>
+                <service verb="break" noun="Late">
+                    <out-parameters><parameter name="note"/></out-parameters>
+                    <actions>
+                        <entity-make-value entity-name="moqui.test.TestEntity" value-field="made"/>
+                        <script>made.set("testId", "ROLLED"); note = "ran";</script>
+                        <entity-create value-field="made"/>
+                        <script>throw new Error("late boom")</script>
+                    </actions>
+                </service>
+            </services>"#,
+        );
+        let facade = crate::testing::open();
+        let ctx = ExecutionContextFactory::test_context();
+        super::super::eca_rules::install(
+            ctx.factory(),
+            super::super::eca_rules::from_xml(
+                r#"<secas>
+                    <seca service="break#Late" when="post-commit">
+                        <actions><script>ec.message.addMessage("plain")</script></actions>
+                    </seca>
+                    <seca service="break#Late" when="post-commit" run-on-error="true">
+                        <actions><script>ec.message.addMessage("cleanup " + (results == null ? "none" : JSON.stringify(results)))</script></actions>
+                    </seca>
+                    <seca service="break#Late" when="tx-rollback">
+                        <actions>
+                            <entity-make-value entity-name="moqui.test.TestEntity" value-field="made"/>
+                            <script>made.set("testId", "ROLLBACK_RULE")</script>
+                            <entity-create value-field="made"/>
+                        </actions>
+                    </seca>
+                </secas>"#,
+                "",
+            ),
+        );
+        ctx.factory().set_entity(facade.clone());
+        let heard = Arc::new(Heard(Mutex::new(Vec::new())));
+        super::register_callback("break#Late", heard.clone());
+        let _entered = ctx.enter();
+        crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        let _authz = ctx.disable_authz();
+        let out = sync("break#Late", &BTreeMap::new()).expect("a body failure is recorded, not returned");
+        assert!(out.is_empty(), "{out:?}");
+        let errors = ctx.message().errors().to_vec();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("late boom") && error.contains("in service break#Late")),
+            "{errors:?}"
+        );
+        assert_eq!(ctx.message().messages(), ["cleanup {}"]);
+        let heard = heard.0.lock().unwrap().clone();
+        assert_eq!(heard.len(), 1, "{heard:?}");
+        assert!(
+            heard[0].starts_with("error ") && heard[0].contains("late boom"),
+            "{heard:?}"
+        );
+        let find = |id: &str| {
+            facade
+                .find("moqui.test.TestEntity")
+                .unwrap()
+                .eq("testId", Value::string(id))
+                .one()
+                .unwrap()
+        };
+        assert!(find("ROLLED").is_none(), "the create was rolled back");
+        assert!(find("ROLLBACK_RULE").is_some(), "the tx-rollback rule ran");
+    }
+
+    /// As Java's `finally`: a commit that fails is recorded in the message facade, after the callbacks heard the
+    /// results, and the call returns those results; the post-commit rules that run on error get them too.
+    #[test]
+    fn a_commit_failure_is_recorded_and_returns_the_results() {
+        let path = write_fixture(
+            "commit-failure",
+            r#"<services>
+                <service verb="refuse" noun="Commit" type="rust" location="test::refuse_commit">
+                    <out-parameters><parameter name="note"/></out-parameters>
+                </service>
+            </services>"#,
+        );
+        let facade = crate::testing::open();
+        let ctx = ExecutionContextFactory::test_context();
+        ctx.factory()
+            .register_service("test::refuse_commit", |ec, _info, _parameters| {
+                let facade = ec.factory().entity().expect("an entity facade");
+                let mut row = facade.make_value("moqui.test.TestEntity")?;
+                row.set("testId", Value::string("UNCOMMITTED"));
+                row.create(&facade)?;
+                // A hook that runs before the commit, as the data feed's insert does, and fails it.
+                facade
+                    .transactions_for("moqui.test.TestEntity")?
+                    .on_feed_insert(|_| Err(moqui_lib::error::Error::new("feed insert refused")))?;
+                Ok(BTreeMap::from([("note".to_string(), Value::string("ran"))]))
+            })
+            .unwrap();
+        super::super::eca_rules::install(
+            ctx.factory(),
+            super::super::eca_rules::from_xml(
+                r#"<secas>
+                    <seca service="refuse#Commit" when="post-commit" run-on-error="true">
+                        <actions><script>ec.message.addMessage("cleanup " + JSON.stringify(results))</script></actions>
+                    </seca>
+                </secas>"#,
+                "",
+            ),
+        );
+        ctx.factory().set_entity(facade.clone());
+        let heard = Arc::new(Heard(Mutex::new(Vec::new())));
+        super::register_callback("refuse#Commit", heard.clone());
+        let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        let _authz = ctx.disable_authz();
+        let out = sync("refuse#Commit", &BTreeMap::new()).expect("a commit failure is recorded, not returned");
+        assert_eq!(out.get("note").and_then(Value::as_str), Some("ran"));
+        let errors = ctx.message().errors().join("\n");
+        assert!(errors.contains("feed insert refused"), "{errors}");
+        assert_eq!(ctx.message().messages(), [r#"cleanup {"note":"ran"}"#]);
+        assert_eq!(*heard.0.lock().unwrap(), ["result 1"]);
+        let row = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", Value::string("UNCOMMITTED"))
+            .one()
+            .unwrap();
+        assert!(row.is_none(), "the write was rolled back");
+    }
+
+    /// An interface cannot be run: as Java, an error before the call's transaction, so no post-commit rule runs.
+    #[test]
+    fn an_interface_service_is_an_error_before_it_runs() {
+        let path = write_fixture(
+            "interface",
             r#"<services>
                 <service verb="shell" noun="Only" type="interface"/>
             </services>"#,
@@ -1901,11 +2132,8 @@ mod tests {
             ctx.factory(),
             super::super::eca_rules::from_xml(
                 r#"<secas>
-                    <seca service="shell#Only" when="post-commit">
-                        <actions><script>ec.message.addMessage("plain")</script></actions>
-                    </seca>
                     <seca service="shell#Only" when="post-commit" run-on-error="true">
-                        <actions><script>ec.message.addMessage("cleanup " + (results == null ? "none" : JSON.stringify(results)))</script></actions>
+                        <actions><script>ec.message.addMessage("cleanup")</script></actions>
                     </seca>
                 </secas>"#,
                 "",
@@ -1915,9 +2143,10 @@ mod tests {
         let _entered = ctx.enter();
         crate::service::lint(std::slice::from_ref(&path)).unwrap();
         let _authz = ctx.disable_authz();
-        assert!(sync("shell#Only", &BTreeMap::new()).is_err());
-        // As Java's, a failed call gives the rule an empty result map.
-        assert_eq!(ctx.message().messages(), ["cleanup {}"]);
+        let err = sync("shell#Only", &BTreeMap::new()).unwrap_err();
+        assert!(err.message().contains("is an interface and cannot be run"), "{err}");
+        assert!(ctx.message().messages().is_empty(), "{:?}", ctx.message().messages());
+        assert!(ctx.message().errors().is_empty(), "{:?}", ctx.message().errors());
     }
 
     #[test]
@@ -2067,8 +2296,13 @@ mod tests {
         assert!(failures.is_empty(), "{failures:?}");
         let _authz = ctx.disable_authz();
         let started = std::time::Instant::now();
-        let err = sync("spin#Forever", &BTreeMap::new()).expect_err("interrupted");
-        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{err}");
+        let out = sync("spin#Forever", &BTreeMap::new()).expect("the interruption is recorded");
+        assert!(out.is_empty(), "{out:?}");
+        assert!(
+            !ctx.message().errors().is_empty(),
+            "the interruption is an error message"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]
@@ -2292,8 +2526,8 @@ mod tests {
         let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
         assert!(failures.is_empty(), "{failures:?}");
         let _authz = ctx.disable_authz();
-        let err = sync("ping#Remote", &BTreeMap::new()).unwrap_err();
-        let text = err.to_string();
+        assert!(sync("ping#Remote", &BTreeMap::new()).unwrap().is_empty());
+        let text = ctx.message().errors().join("\n");
         assert!(text.contains("sim mode is active"), "{text}");
     }
 

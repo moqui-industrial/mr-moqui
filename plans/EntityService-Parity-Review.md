@@ -21,7 +21,7 @@ ordering.
 
 ## Summary
 
-12 open findings and 58 accepted differences. Open by phase:
+11 open findings and 60 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
@@ -30,13 +30,11 @@ ordering.
 | 3 Facade / metadata / DDL / cache | 3 | — |
 | 4 Data loader / feed / ECA / writer / document / ETL | 1 | — |
 | 5 Entity query / REST | 3 | — |
-| 6 Service definition / validation / call | 1 | P6b-01 (decision) |
+| 6 Service definition / validation / call | 0 | — |
 | 7 ECA / SECA / pools / jobs | 0 | — |
 | 8 REST / remote / tools / mail / components | 2 | — |
 
-| ID | Area | One-line |
-|---|---|---|
-| P6b-01 | service call | Service-body failure returns `Err`; Java returns the result map — **open design decision** |
+No High finding is open.
 
 ### Cross-cutting threads
 
@@ -45,42 +43,14 @@ No access-control finding is open.
 1. **Full-text search and model sources** (P3-20, P3-14, P3-21): a `LIKE` on a `text-fts` field is not rewritten
    to a full-text search (the DDL now follows `FtsDdl`), DB view entities are not built from their rows, and a
    foreign key is recognized only by its computed name.
-2. **Error contract** (P6b-01): a failing service body propagates `Err` where Java records the
-   error and returns.
-3. **View fields** (P5-19, P5-16, P5-18): the entity JSON schema and the data writer's CSV of a view read no fields
+2. **View fields** (P5-19, P5-16, P5-18): the entity JSON schema and the data writer's CSV of a view read no fields
    (REST finds and form auto fields now read the aliases), `pq-expression` aliases are not evaluated, and
    `DataDocument.<id>` is not an entity name.
 
 ### Open decisions
 
-- **P6b-01** — keep Rust's `Err` on a service-body failure (the Rust tests assert it) as a documented
-  redesign, or switch to Java's record-and-return contract. Everything that calls `sync(...).call()`
-  depends on the answer. Notes for the decision (2026-10-16):
-  - Callers: about 25 non-test call sites of `service::sync`, `call::sync`, `sync_with` and `sync_multi` in
-    moqui-core, moqui-host and moqui-browser, and about 90 in tests. Some stop on the `Err` with `?`
-    (`entity/query_rest.rs:243`, `entity/field_rw.rs:466`, `user/authz.rs:417`, `service/rest.rs:590,658`,
-    `service/spreadsheet.rs:315`, `moqui-browser/src/host.rs:182`); some match it to record or log it
-    (`service/jobs.rs:490` records the job's error, `service/eca.rs:206`, `entity/document.rs:970`,
-    `notify/message.rs:601`, `service/tools.rs:68`, `service/system_sync/sftp.rs:242`); some read the message
-    facade as well (`screen/dispatch.rs:249,264,295`, `search/feed.rs:248`, `service/sso.rs:307`,
-    `service/system_sync/message.rs:336`, `moqui-host/src/ssh/shell.rs:163`). Under Java's contract the first two
-    groups would need a `has_error()` check, or they go on with an empty result.
-  - Tests that assert the `Err` of a body failure: in `service/call.rs`,
-    `service_failures_identify_owning_actions_and_rust_origin` (reads the diagnostic from the `Err`),
-    `post_commit_rules_run_after_a_failure_only_when_they_run_on_error`,
-    `a_runaway_script_ends_at_the_transaction_deadline` and `remote_rest_in_sim_mode_errors_before_a_socket`; and
-    `service/elfinder/tests.rs:423`. `script_ports_tests.rs:612-621` takes either. The authentication and semaphore
-    failures (`native_components.rs:395`, `held_fail_semaphore_errors`) throw in Java too, before its `try`.
-  - Scripts and XML actions: `ec.service.sync()…call()` (`script/runtime/services.rs:266-297`) already turns the
-    `Err` into a message-facade error and returns `null`; Java returns the result map, the empty one it started
-    with when the runner threw. A `<service-call>` compiles to that call, merges the result only when it is not
-    null, and returns on `ec.message.hasError()`, so actions stop as Java's do; only an `out-map` differs (left as it
-    was here, `{}` in Java).
-  - A switch: `sync_with` returns the empty (or partial) map after `add_error` and the rollback
-    (`service/call.rs:458-468`), keeping `Err` for what Java also throws: an authorization failure in the body (Java
-    rethrows `ArtifactAuthorizationException`) and the failures before the run (unknown service, authentication,
-    semaphore). The script host's `Err` arm would then be unused, the callers in the first two groups above move
-    to a `has_error()` check, and the tests above read the message facade.
+- **P6b-01** — decided 2026-10-16 and done: Java's record-and-return contract is adopted; see
+  [Phase 6](#phase-6-checked-and-found-equivalent).
 - **P3-14** — how DB view entities join an immutable model: a second, locked set of definitions consulted after the
   file model, or a model that can be swapped, and when it is invalidated.
 - **P5-16 / P5-18** — whether the value layer runs a `pq-expression` alias's script (moqui-db has no script runtime)
@@ -582,9 +552,9 @@ Reviewed `service/{define,validate,info,call,semaphore}.rs` against `ServiceDefi
 `ServiceCallSpecialImpl.groovy` and the inline/entity-auto/script runners. Async is in Phase 7.
 
 Worked 2026-10-16: P6a-01, P6a-03, P6a-04, P6a-06, P6a-07, P6a-08, P6a-09, P6a-10, P6a-11, P6a-13, P6a-14, P6a-15,
-P6a-16, P6a-17, P6b-10, P6b-11 and P6b-12 fixed; P6a-12 and P6b-14 moved to [Accepted
-differences](#accepted-differences); P6b-01 left open as a decision, with notes under [Open
-decisions](#open-decisions). Found along the way: P6a-18, P6a-21 and P6a-22 (fixed), P6a-19 and P6a-20 (the parts of
+P6a-16, P6a-17, P6b-01, P6b-10, P6b-11 and P6b-12 fixed (P6b-01 once Java's record-and-return contract was chosen);
+P6a-12 and P6b-14 moved to [Accepted differences](#accepted-differences). Found along the way: P6a-18, P6a-21 and
+P6a-22 (fixed), P6a-19 and P6a-20 (the parts of
 P6a-13 and P6a-08 that stay, accepted) and P6a-23 (fixed: the errors text that P6a-14's messages left without a
 field). Two changes reach shipped services: parameters of `implements` now come first (an order change only: a dump of
 the 37 `runtime/` services with `implements` gives the same name, type, `required`, checks and default for each
@@ -600,20 +570,29 @@ None open.
 
 ### Findings — 6b call / semaphore
 
-| ID | Rust location | Java location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P6b-01 | `service/call.rs:458-468` | `ServiceCallSyncImpl.java:320-356,391` | A service-body failure is returned as `Err` after `add_error`; Java catches it, records the message/cause chain, rolls back, and returns the result map (only `ArtifactAuthorizationException` rethrown) | High | Decision pending |
-
-#### P6b-01 — A service-body failure throws in Rust but returns a map in Java
-
-Java's `callSingle` wraps the runner in `try { … } catch (Throwable t)`, adds `t`'s message and cause
-chain to the message facade, rolls back, then returns the result map. Rust maps any `Err` from
-`execute` to `add_error(...)` and then returns `Err(err)`. A failing service body therefore makes Rust
-`sync(...).call()` return `Err` where Java returns normally with the error in the message facade. The
-Rust tests assert this `Err`; see [Open decisions](#open-decisions).
+None open.
 
 #### Phase 6 checked and found equivalent
 
+- Service-body failure (P6b-01, fixed: Java's record-and-return contract adopted 2026-10-16): as `callSingle`'s
+  `catch (Throwable t)`, a failure of the body, its pre-service or post-service rules, or the commit is recorded in the
+  message facade (the diagnostic with its Rust origin, then any cause its text does not show), the transaction rolls
+  back, the callbacks hear the error (a commit failure: the results they heard before it), the post-commit rules run,
+  and `sync` returns `Ok` with the results as they were, empty when the runner failed (`sync_with`,
+  `service/call.rs:507-544`; `record_failure`, `:550-567`). `Err` stays for what Java throws: an unknown or interface
+  service (the interface check now comes before the run, `:440-445`), authentication, a semaphore, a failing
+  pre-validate or pre-auth rule, an authorization failure in the body (Java rethrows `ArtifactAuthorizationException`),
+  and a failure with no message facade to record it in. An authorization failure in an inline or script body keeps its
+  kind across the script, by the error property the screen runtime already used (`throw_diagnostic`, `mark_kind`,
+  `caught_kind`, `script/runtime.rs:1260-1312`; the compiled-script catch paths), and a `service-call` the user may not
+  make is thrown out of the calling body (`script/runtime/services.rs:287`), so REST answers 403 and nothing is
+  recorded; the rollback is P6b-15. Callers read the message facade, as Java's read `hasError()`: the REST,
+  screen-login, job, SSO, system-message and SSH paths already did; a data-file service's errors now fail its element
+  and are cleared, as `handleService` (`service/eca.rs:213-217`), a manual data service's are logged and cleared, as
+  `EntityDataDocument` (`entity/document.rs:970-985`); an authz service that leaves errors still fails the check
+  (P6b-16; `sync_checked`, `service/call.rs:189-204`; `user/authz.rs:419`). A body failure under service REST is now
+  Java's 400 with the errors, not a 500. A script's `call()` gets the empty map, as Java's, so an `out-map` now gets
+  `{}` too.
 - `validate="false"` (P6a-01, fixed): skips the `required` check, the `allow-html` check and the declared checks, as
   Java's `nestedParameterClean`, and still converts (`clean_param`, `service/validate.rs:124-170`); unknown
   parameters are kept and nested maps not trimmed, as before.
@@ -764,7 +743,7 @@ None open.
   `EntityEcaRule` and `EmailEcaRule` (`first_condition`, `service/rule_actions.rs:33-40`; used at
   `entity/load_feed/eca.rs:198` and `service/email_eca.rs:34`); SECA already did.
 - `post-commit` results (P7a-10, fixed): the `post-commit` rules of a call that failed get an empty result map, Java's
-  `result` as it began, instead of none (`service/call.rs:470-477`). The call still returns `Err` (P6b-01).
+  `result` as it began, instead of none (`service/call.rs:535-537`); the call returns that map (P6b-01).
 - Live `parameters` and `results` (P7a-11, fixed; P7a-13, found and fixed): after each rule, the `parameters` and
   `results` maps in its frame are read back into the call's (`run_seca_rules`, `read_back`, `service/seca.rs:47-102`), so a
   `pre-validate` rule changes what is validated (the input is copied only when there are such rules,
@@ -1017,6 +996,8 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P6a-20 | service validation | `text-email` checks the top-level domain's form (letters first, two or more long), not the IANA list, and a Unicode host is not valid; `text-letters` takes Unicode alphabetic characters, a little more than `Character.isLetter` (combining vowel signs, letter numbers) (`service/validate.rs:684-688`, `:789-875`) | No list of top-level domains to keep current and no IDN library in moqui-core; doc comment at `is_email` |
 | P6b-08 | semaphore | Row cleared only while `lockThread` equals Rust's owner label | Documented `service/semaphore.rs:82-83,247-248` |
 | P6b-14 | service call | A call returns only the declared out-parameters (all when none are declared), and inline/script bodies have no `result` map (`service/call.rs:951-968`); Java returns the runner's map, the `result` map's entries included | Keeps a body's other values from REST and remote callers; a ported script uses `result` as a name of its own (`SearchServices.xml`). Doc comment at `project` |
+| P6b-15 | service call | An authorization failure in a service's body rolls back the transaction the call began (`tx.run`, `service/call.rs:516-520`); Java's `callSingle` rethrows `ArtifactAuthorizationException` and its `finally` commits what the body wrote before the refusal | Safer: a refused call leaves nothing written. Comment at the site |
+| P6b-16 | authorization | An `authzServiceName` service that leaves errors fails the authorization check (`authz_service_type`, `user/authz.rs:403-419`); Java goes on with the record's own type, which can be `AUTHZT_ALLOW` | AGENTS.md: stay strict where it protects security, so a failing authz service never authorizes. Doc comment at `authz_service_type` |
 | P7a-01 | EECA | Security-check EECAs run even when the message facade already has errors (Java skips them) | Stricter by design; `service/eca.rs:74-75`, test at `service/eca.rs:327` |
 | P7a-04 | security | `SSH_SHELL` sealed in Rust conf/constants | Rust-only artifact (`service/security_checks.rs:31-32`, `MoquiDefaultConf.xml:63-64`) |
 | P7a-07 | rule conditions | A rule condition is JavaScript truth, as an `<if>` in the actions: an empty list or map is true (`eval_condition`, `script/runtime.rs:574-579`); Java's `checkCondition` takes Groovy truth (`as Boolean`), where it is false | The action language is JavaScript: a rule condition and an `<if>` agree, converted Groovy tests a list's length (`groovy_convert`), and the linter flags collection truth (`lint_hazards`). Doc comment at `eval_condition` |

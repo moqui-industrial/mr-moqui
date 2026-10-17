@@ -88,7 +88,7 @@ pub(crate) use values::{
     context_combined, pop_context_frame, put_context_all, value_entity_name, value_field, value_items, value_map,
 };
 
-use crate::context::{Error, ExecutionContext};
+use crate::context::{Error, ErrorKind, ExecutionContext};
 use moqui_db::sql::{CompareOp, Condition};
 
 use crate::entity::{EntityFacade, EntityFind, EntityList, EntityValue};
@@ -1247,16 +1247,17 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
 }
 
 fn throw_lib(ctx: &Ctx<'_>, err: &moqui_lib::error::Error) -> JsError {
-    throw_diagnostic(ctx, err.message(), &err.diagnostic())
+    throw_diagnostic(ctx, err.message(), &err.diagnostic(), ErrorKind::of(err))
 }
 
 fn throw_context(ctx: &Ctx<'_>, err: &Error) -> JsError {
-    throw_diagnostic(ctx, err.message(), &err.diagnostic())
+    throw_diagnostic(ctx, err.message(), &err.diagnostic(), err.kind())
 }
 
 /// Keep `error.message` unchanged for scripts that catch or classify errors. Source diagnostics
-/// belong to the stack, alongside the JavaScript call site, not in the exception's message.
-fn throw_diagnostic(ctx: &Ctx<'_>, message: &str, diagnostic: &str) -> JsError {
+/// belong to the stack, alongside the JavaScript call site, not in the exception's message. A security kind goes on
+/// the error, so it is still one when the script ends with it.
+fn throw_diagnostic(ctx: &Ctx<'_>, message: &str, diagnostic: &str, kind: ErrorKind) -> JsError {
     match Exception::from_message(ctx.clone(), message) {
         Ok(exception) => {
             let detail = diagnostic.strip_prefix(message).unwrap_or(diagnostic);
@@ -1266,10 +1267,47 @@ fn throw_diagnostic(ctx: &Ctx<'_>, message: &str, diagnostic: &str) -> JsError {
                     return err;
                 }
             }
+            if let Err(err) = mark_kind(&exception, kind) {
+                return err;
+            }
             exception.throw()
         }
         Err(err) => err,
     }
+}
+
+/// The property of a thrown error that names its security kind, so a security error is still one after it has
+/// crossed the script and come back: an authorization failure in a service's script is still one for the call, as
+/// Java's `ArtifactAuthorizationException` passes through Groovy. It goes with that one error: one a script catches
+/// and goes on from does not mark a later failure, and a nested unit does not change the outer one's.
+const KIND_PROPERTY: &str = "moquiErrorKind";
+
+/// The kinds [`mark_kind`] carries on the error, by name.
+const CARRIED_KINDS: [(ErrorKind, &str); 3] = [
+    (ErrorKind::AuthenticationRequired, "AuthenticationRequired"),
+    (ErrorKind::Unauthorized, "Unauthorized"),
+    (ErrorKind::Tarpit, "Tarpit"),
+];
+
+/// Put `kind` on an error about to be thrown, when it is one of the [`CARRIED_KINDS`].
+fn mark_kind(exception: &Exception<'_>, kind: ErrorKind) -> rquickjs::Result<()> {
+    match CARRIED_KINDS.iter().find(|(carried, _)| *carried == kind) {
+        Some((_, name)) => exception.as_object().set(KIND_PROPERTY, *name),
+        None => Ok(()),
+    }
+}
+
+/// The security kind [`mark_kind`] put on the error the script ended with, else general.
+fn caught_kind(caught: &rquickjs::CaughtError<'_>) -> ErrorKind {
+    let object = match caught {
+        rquickjs::CaughtError::Exception(exception) => Some(exception.as_object()),
+        rquickjs::CaughtError::Value(value) => value.as_object(),
+        rquickjs::CaughtError::Error(_) => None,
+    };
+    object
+        .and_then(|object| object.get::<_, Option<String>>(KIND_PROPERTY).ok().flatten())
+        .and_then(|name| CARRIED_KINDS.iter().find(|(_, known)| *known == name))
+        .map_or(ErrorKind::General, |(kind, _)| *kind)
 }
 
 /// `ec` is an own property of `globalThis`, so the bare-name proxy does not hide it.

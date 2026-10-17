@@ -147,6 +147,13 @@ impl Error {
         self
     }
 
+    /// The same error as another kind, such as the security kind a script error carried.
+    #[must_use]
+    pub(crate) fn with_kind(mut self, kind: ErrorKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
     /// A JavaScript exception already has its own source location in its stack.
     pub(crate) fn script(message: impl Into<String>) -> Self {
         Self {

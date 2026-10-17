@@ -321,10 +321,20 @@ const AUTHZ_SERVICES: &str = r#"<services>
             <entity-create value-field="made"/>
         </actions>
     </service>
+    <service verb="call" noun="Whoami" authenticate="false">
+        <actions>
+            <service-call name="authz#Whoami"><field-map field-name="id" value="NESTED"/></service-call>
+        </actions>
+    </service>
+    <service verb="create" noun="moqui.test.TestEntity" type="entity-auto" authenticate="false">
+        <in-parameters><auto-parameters include="all"/></in-parameters>
+    </service>
 </services>"#;
 
 /// An inline executor with service and entity authorization on, `authz#Whoami` allowed to the group `ASYNC_CALLERS`, and
-/// two users: `asyncok` in that group and `asyncplain` in none. Nobody is allowed any entity.
+/// two users: `asyncok` in that group and `asyncplain` in none. Nobody is allowed any entity, not even through
+/// `create#moqui.test.TestEntity`, which needs no authentication; `call#Whoami`, which needs none either, calls
+/// `authz#Whoami`.
 fn authz_context() -> (EntityFacade, ExecutionContext) {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -434,6 +444,65 @@ fn an_authorized_async_call_runs_as_its_caller_with_authz_disabled() {
     super::call_future("authz#Whoami", &whoami("OK2")).unwrap();
     let _authz = ctx.disable_authz();
     assert_eq!(medium(&facade, "OK2").as_deref(), Some("asyncok/asyncok"));
+}
+
+/// As Java's `callSingle` rethrows `ArtifactAuthorizationException`, an authorization failure in a service's body is an
+/// error of the call, not a recorded failure: the service needs no authorization, its entity write is refused.
+#[test]
+fn an_authorization_failure_in_the_body_is_still_an_error() {
+    let (facade, ctx) = authz_context();
+    let _entered = ctx.enter();
+    crate::user::internal_login_user("asyncok").unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("testId".to_string(), Value::string("DENIED"));
+    let err = super::sync("create#moqui.test.TestEntity", &params).unwrap_err();
+    assert_eq!(
+        crate::context::ErrorKind::of(&err),
+        crate::context::ErrorKind::Unauthorized,
+        "{err}"
+    );
+    assert!(ctx.message().errors().is_empty(), "{:?}", ctx.message().errors());
+    crate::user::logout().unwrap();
+    let _authz = ctx.disable_authz();
+    assert_eq!(medium(&facade, "DENIED"), None);
+}
+
+/// The same for an inline body: the authorization failure of its entity write crosses the script with its kind, as
+/// Java's `ArtifactAuthorizationException` passes through Groovy, so the call is an error and records nothing.
+#[test]
+fn an_authorization_failure_in_an_inline_body_is_still_an_error() {
+    let (facade, ctx) = authz_context();
+    let _entered = ctx.enter();
+    crate::user::internal_login_user("asyncok").unwrap();
+    let err = super::sync("authz#Whoami", &whoami("INLINE")).unwrap_err();
+    assert_eq!(
+        crate::context::ErrorKind::of(&err),
+        crate::context::ErrorKind::Unauthorized,
+        "{err}"
+    );
+    assert!(ctx.message().errors().is_empty(), "{:?}", ctx.message().errors());
+    crate::user::logout().unwrap();
+    let _authz = ctx.disable_authz();
+    assert_eq!(medium(&facade, "INLINE"), None);
+}
+
+/// A `service-call` the user may not make is thrown out of the calling body, as Java's call builder throws, so the
+/// outer call is an authorization error too.
+#[test]
+fn a_service_call_the_user_may_not_make_fails_the_calling_service() {
+    let (facade, ctx) = authz_context();
+    let _entered = ctx.enter();
+    crate::user::internal_login_user("asyncplain").unwrap();
+    let err = super::sync("call#Whoami", &BTreeMap::new()).unwrap_err();
+    assert_eq!(
+        crate::context::ErrorKind::of(&err),
+        crate::context::ErrorKind::Unauthorized,
+        "{err}"
+    );
+    assert!(ctx.message().errors().is_empty(), "{:?}", ctx.message().errors());
+    crate::user::logout().unwrap();
+    let _authz = ctx.disable_authz();
+    assert_eq!(medium(&facade, "NESTED"), None);
 }
 
 /// As Java's `validateCall`, input that fails validation is an error in the caller's message facade, and nothing runs.

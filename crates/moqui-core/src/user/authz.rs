@@ -401,7 +401,9 @@ fn filter_map_matches(expression: &str, parameters: Option<&BTreeMap<String, Val
         .all(|(key, value)| parameters.get(key).is_some_and(|actual| actual == value)))
 }
 
-/// The service named on an authz record may change the record's type.
+/// The service named on an authz record may change the record's type. A call that leaves errors fails the check, where
+/// Java goes on with the record's type: a failing authz service must not authorize (accepted, P6b-16, the AGENTS.md
+/// rule to stay strict where it protects security).
 fn authz_service_type(
     service: &str,
     user_id: &str,
@@ -414,7 +416,7 @@ fn authz_service_type(
     parameters.insert("authzActionEnumId".to_string(), Value::string(action_id));
     parameters.insert("artifactTypeEnumId".to_string(), Value::string(artifact_type));
     parameters.insert("artifactName".to_string(), Value::string(name));
-    let result = crate::service::call::sync(service, &parameters)?;
+    let result = crate::service::call::sync_checked(service, &parameters, &Default::default())?;
     Ok(result
         .get("authzTypeEnumId")
         .map(moqui_lib::object::to_plain_string)
