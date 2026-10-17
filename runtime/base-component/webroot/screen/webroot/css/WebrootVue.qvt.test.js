@@ -7,7 +7,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 
-test('Quasar 2 theme colors reach links, status text and focused inputs', () => {
+test('Quasar theme colors and label tag display match Java', () => {
     const css = fs.readFileSync(path.join(__dirname, 'WebrootVue.qvt.css'), 'utf8');
     const html = `<style>
         :root { --q-primary:rgb(1,2,3); --q-positive:rgb(4,5,6); --q-negative:rgb(7,8,9); }
@@ -21,6 +21,8 @@ test('Quasar 2 theme colors reach links, status text and focused inputs', () => 
     <div class="q-field--focused"><input id="input" class="q-field__input"></div>
     <div class="q-menu"><a id="menu" href="#">Menu</a></div>
     <div class="q-toolbar"><a id="toolbar" href="#">Toolbar</a></div>
+    <p id="paragraph" class="text-inline">Promotion note</p>
+    <span id="inline" class="text-inline">Inline label</span>
     <pre id="result"></pre>
     <script>
         const style = id => getComputedStyle(document.getElementById(id));
@@ -28,7 +30,8 @@ test('Quasar 2 theme colors reach links, status text and focused inputs', () => 
             link:style('link').color, success:style('success').color, danger:style('danger').color,
             active:style('active').color, border:style('input').borderBottomColor,
             borderStyle:style('input').borderBottomStyle,
-            menu:style('menu').color, toolbar:style('toolbar').color
+            menu:style('menu').color, toolbar:style('toolbar').color,
+            paragraph:style('paragraph').display, inline:style('inline').display
         });
     </script>`;
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'moqui-qvt-css-'));
@@ -45,6 +48,7 @@ test('Quasar 2 theme colors reach links, status text and focused inputs', () => 
     assert.deepEqual(result, {
         link: 'rgb(1, 2, 3)', success: 'rgb(4, 5, 6)', danger: 'rgb(7, 8, 9)',
         active: 'rgb(1, 2, 3)', border: 'rgb(1, 2, 3)', borderStyle: 'solid',
-        menu: 'rgb(10, 11, 12)', toolbar: 'rgb(10, 11, 12)'
+        menu: 'rgb(10, 11, 12)', toolbar: 'rgb(10, 11, 12)',
+        paragraph: 'block', inline: 'inline'
     });
 });
