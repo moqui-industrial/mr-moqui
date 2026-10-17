@@ -1141,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn create_or_update_counts_what_it_runs_and_an_unmatched_probe_apart() {
+    fn create_or_update_counts_successful_writes_but_not_internal_probe_misses() {
         let world = world();
         let _entered = world.context.enter();
         let _authz = world.context.disable_authz();
@@ -1149,7 +1149,7 @@ mod tests {
         let mut value = world.facade.make_value(entity).unwrap();
         value.set("enumTypeId", Value::string("HitType"));
         value.set("description", Value::string("first"));
-        // A new row: the UPDATE probe matches nothing (Rust-only `update-probe`), then refresh and create.
+        // A new row: the UPDATE probe matches nothing, then refresh and create. The probe is not a hit.
         value.create_or_update(&world.facade).unwrap();
         value.set("description", Value::string("second"));
         // An existing row: the probe is the update, with no refresh.
@@ -1165,13 +1165,12 @@ mod tests {
             .filter(|bin| text(bin, "artifactName") == entity)
             .map(|bin| (text(bin, "artifactSubType"), number(bin, "hitCount")))
             .collect();
-        assert_eq!(bins.iter().filter(|bin| text(bin, "artifactName") == entity).count(), 6);
+        assert_eq!(bins.iter().filter(|bin| text(bin, "artifactName") == entity).count(), 5);
         assert_eq!(
             counts,
             BTreeMap::from([
                 ("create".to_string(), 1.0),
                 ("update".to_string(), 1.0),
-                ("update-probe".to_string(), 1.0),
                 ("refresh".to_string(), 2.0),
                 ("one".to_string(), 1.0),
                 ("list".to_string(), 1.0),
@@ -1302,10 +1301,8 @@ mod tests {
                 )
             })
             .collect();
-        // The first EnumerationType row: an UPDATE probe that matches nothing, then refresh and create. The second:
-        // the probe updates the row, with no refresh.
+        // The first row's failed probe is not counted. The second probe updates the row and is an update hit.
         let expected = [
-            ("moqui.basic.EnumerationType", "update-probe", 1.0),
             ("moqui.basic.EnumerationType", "refresh", 1.0),
             ("moqui.basic.EnumerationType", "create", 1.0),
             ("moqui.basic.EnumerationType", "update", 1.0),

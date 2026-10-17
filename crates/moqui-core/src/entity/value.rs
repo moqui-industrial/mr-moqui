@@ -617,9 +617,8 @@ impl EntityFacade {
         rules: Option<Vec<EcaRule>>,
         stored: Option<BTreeMap<String, Value>>,
     ) -> Result<u64, Error> {
-        // `update-probe` is an update that leaves no trace when it matches no row; see `update_if_exists`. It is
-        // authorized as an update. Its hit is an `update` when it updated a row, and the Rust-only `update-probe`
-        // when it matched none.
+        // The internal UPDATE-first probe remains authorized/traced. Count it as an update only when it
+        // updates a row; a miss is not a separate entity operation in Java's create-or-update statistics.
         let probe = operation == "update-probe";
         let operation = if probe { "update" } else { operation };
         // Declared first, so it drops last: the authorization cache is invalidated after the write.
@@ -753,6 +752,9 @@ impl EntityFacade {
             affected = execute_tx(&tx, &sql, &params)?;
             if probe {
                 if affected == 0 {
+                    // This is an internal create-or-update probe, not an entity update Java records.
+                    // Keep its authorization/SQL trace, but do not create an extra statistics bin.
+                    crate::context::ExecutionContext::with_current(|ctx| ctx.untrack_hit());
                     return Ok(0);
                 }
                 crate::context::ExecutionContext::with_current(|ctx| ctx.set_hit_detail(Some("update"), None));
@@ -1024,7 +1026,7 @@ impl RustOnlyEntityHits {
     pub const FK_CHECK: &'static str = "fk-check";
     /// The record counts the startup load reports.
     pub const LOAD_REPORT: &'static str = "load-report";
-    /// The UPDATE create-or-update tries before it reads the row, when it matched no row (Java reads first).
+    /// Internal UPDATE-first probe detail; misses are traced but not counted as artifact hits.
     pub const UPDATE_PROBE: &'static str = "update-probe";
 
     pub fn enter(sub_type: &'static str) -> Self {
