@@ -1,4 +1,4 @@
-<addons default-repository="github">
+<addons>
     <!--
     Components known to work with MR Moqui, for the ./moq component-get, component-set, component-depends, and
     component-create tasks. To add or override repository, component, and component-set elements, and to set the
@@ -7,6 +7,9 @@
     Location urls fill in ${group}, ${name}, ${branch}, ${version}, and ${token} from the component element. The Java
     Moqui form ${component.'@group'} also works, so a Java myaddons.xml can be copied as it is.
     Keep one element per line; ./moq reads these files with sed, not an XML parser.
+
+    The repository a download uses is the component's repository attribute, else default-repository on a root
+    element, else github when this repo was cloned by https and github-ssh when by git@ (ssh); -r picks one.
     -->
 
     <repository name="github">

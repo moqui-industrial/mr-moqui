@@ -75,9 +75,9 @@ opensearch-stop|OpenSearch||Stop the runtime/opensearch daemon
 git|Git|<git args...>|Run a git command in the root repo and each component repo
 git-status|Git|[-s]|Branch, tracking, ahead/behind, and changes in each repo
 git-pull|Git|[git pull args...]|Pull each repo and list the new commits
-component-get|Components|[name...] [-t type]|Get components and the components they depend on
-component-set|Components|<set...> [-t type]|Get the components in a component-set
-component-depends|Components|[-t type]|Get missing depends-on components for runtime/component
+component-get|Components|[name...] [-t type] [-r repo]|Get components and the components they depend on
+component-set|Components|<set...> [-t type] [-r repo]|Get the components in a component-set
+component-depends|Components|[-t type] [-r repo]|Get missing depends-on components for runtime/component
 component-create|Components|<name> [opts]|Create a component from the start component
 component-zip|Components|[name...]|Zip components in runtime/component
 completion|Setup|[bash or zsh] [--install]|Print or install shell completion
@@ -638,6 +638,9 @@ EOF
 COMPONENT_TYPE_HELP='  -t, --type TYPE      git, current (branch archive), release, or binary. Default: git when the
                        root has .git, else current. release and binary fall back to current when
                        the component has no version'
+COMPONENT_REPO_HELP='  -r, --repo REPO      Repository from myaddons.xml or addons.xml, overriding the component'"'"'s
+                       repository attribute. Default: github when this repo was cloned by https,
+                       github-ssh when by git@ (ssh)'
 
 help_component_get() {
     cat <<EOF
@@ -650,6 +653,7 @@ With no names it gets the default="a,b" list on the myaddons.xml root element.
 
 Options:
 $COMPONENT_TYPE_HELP
+$COMPONENT_REPO_HELP
 EOF
 }
 
@@ -661,6 +665,7 @@ and their dependencies.
 
 Options:
 $COMPONENT_TYPE_HELP
+$COMPONENT_REPO_HELP
 EOF
 }
 
@@ -670,6 +675,7 @@ Checks every component in runtime/component and gets the depends-on components t
 
 Options:
 $COMPONENT_TYPE_HELP
+$COMPONENT_REPO_HELP
 EOF
 }
 
@@ -689,6 +695,7 @@ Options:
       --no-git         Do not git init
       --myaddons GROUP Add the component to myaddons.xml with this git group (creating the file if needed)
 $COMPONENT_TYPE_HELP
+$COMPONENT_REPO_HELP
 EOF
 }
 
@@ -2288,6 +2295,26 @@ default_location_type() {
     if [ -e "$ROOT/.git" ]; then echo git; else echo current; fi
 }
 
+# Set by parse_component_args or component-create from -r; empty means fall back to the element and the defaults.
+REPOSITORY=
+
+# The default repository when neither -r, the component element, nor default-repository says one: github for an
+# https clone of this repo, github-ssh for a git@ or ssh:// one, and github when there is no origin to ask.
+DEFAULT_REPOSITORY=
+default_repository() {
+    if [ -z "$DEFAULT_REPOSITORY" ]; then
+        local url=
+        if command -v git >/dev/null 2>&1; then
+            url=$(git -C "$ROOT" remote get-url origin 2>/dev/null) || url=
+        fi
+        case $url in
+            git@* | ssh://*) DEFAULT_REPOSITORY=github-ssh ;;
+            *) DEFAULT_REPOSITORY=github ;;
+        esac
+    fi
+    printf '%s\n' "$DEFAULT_REPOSITORY"
+}
+
 check_location_type() {
     case $1 in
         git | current | release | binary) ;;
@@ -2301,10 +2328,15 @@ download_component() {
     version=$(xml_attr "$element" version)
     branch=$(xml_attr "$element" branch)
     case $type in release | binary) [ -n "$version" ] || type=current ;; esac
-    repository=$(xml_attr "$element" repository)
-    [ -n "$repository" ] || repository=$(addons_root_attr "$MYADDONS" default-repository)
-    [ -n "$repository" ] || repository=$(addons_root_attr "$ADDONS" default-repository)
-    [ -n "$repository" ] || repository=github
+    # -r wins, then the element's repository attribute, then default-repository, then the detected default.
+    if [ -n "$REPOSITORY" ]; then
+        repository=$REPOSITORY
+    else
+        repository=$(xml_attr "$element" repository)
+        [ -n "$repository" ] || repository=$(addons_root_attr "$MYADDONS" default-repository)
+        [ -n "$repository" ] || repository=$(addons_root_attr "$ADDONS" default-repository)
+        [ -n "$repository" ] || repository=$(default_repository)
+    fi
     url=$(addons_location "$repository" "$type") || die "repository $repository has no $type location in myaddons.xml or addons.xml"
     url=$(expand_url "$url" "$element")
     info "Getting $name ($type) from $url${branch:+ at $branch} to $(rel "$target")"
@@ -2393,9 +2425,10 @@ components_checked_summary() {
     [ -z "$list" ] || info "Checked: $list"
 }
 
-# Sets LOCATION_TYPE and COMPONENT_ARGS from -t and the other words.
+# Sets REPOSITORY and LOCATION_TYPE from -r and -t, and COMPONENT_ARGS from the other words.
 parse_component_args() {
     LOCATION_TYPE=$(default_location_type)
+    REPOSITORY=
     COMPONENT_ARGS=()
     while [ $# -gt 0 ]; do
         case $1 in
@@ -2405,6 +2438,12 @@ parse_component_args() {
                 shift
                 ;;
             --type=*) LOCATION_TYPE=${1#--type=} ;;
+            -r | --repo)
+                [ $# -ge 2 ] || die "$1 needs a repository"
+                REPOSITORY=$2
+                shift
+                ;;
+            --repo=*) REPOSITORY=${1#--repo=} ;;
             -*) die "unknown option $1" ;;
             *) COMPONENT_ARGS+=("$1") ;;
         esac
@@ -2496,6 +2535,7 @@ sed_replacement_escape() {
 task_component_create() {
     local name='' from=start part='' remote='' no_git='' group='' element target file base new from_re name_rep branch
     LOCATION_TYPE=$(default_location_type)
+    REPOSITORY=
     while [ $# -gt 0 ]; do
         case $1 in
             --from)
@@ -2505,6 +2545,12 @@ task_component_create() {
                 ;;
             --rest) part=rest ;;
             --screens) part=screens ;;
+            -r | --repo)
+                [ $# -ge 2 ] || die "$1 needs a repository"
+                REPOSITORY=$2
+                shift
+                ;;
+            --repo=*) REPOSITORY=${1#--repo=} ;;
             --git-remote)
                 [ $# -ge 2 ] || die "--git-remote needs a URL"
                 remote=$2
@@ -2908,15 +2954,17 @@ complete_task() {
         component-get | component-set | component-depends | component-create)
             case $prev in
                 -t | --type) filter_prefix "$cur" git current release binary; return ;;
+                -r | --repo) filter_prefix "$cur" $(addons_names repository); return ;;
                 --from) filter_prefix "$cur" $(addons_names component); return ;;
                 --git-remote | --myaddons) return ;;
             esac
             case $cur in
                 -*)
                     if [ "$task" = component-create ]; then
-                        filter_prefix "$cur" -t --type --from --rest --screens --git-remote --no-git --myaddons
+                        filter_prefix "$cur" -t --type -r --repo --from --rest --screens --git-remote --no-git \
+                            --myaddons
                     else
-                        filter_prefix "$cur" -t --type
+                        filter_prefix "$cur" -t --type -r --repo
                     fi
                     ;;
                 *)

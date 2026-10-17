@@ -409,8 +409,15 @@ if have git; then
         <location type="git" url="file://$FIX/repos/\${name}.git"/>
         <location type="current" url="file://$FIX/zips/\${name}-\${branch}.zip"/>
     </repository>
+    <!-- The detected default repositories; the -ssh one has its own directory so the two are told apart. -->
+    <repository name="github">
+        <location type="git" url="file://$FIX/repos/\${name}.git"/>
+    </repository>
+    <repository name="github-ssh">
+        <location type="git" url="file://$FIX/repos-ssh/\${name}.git"/>
+    </repository>
     <component name="comp-a" group="g" branch="master"/>
-    <component name="comp-b" group="g" branch="master"/>
+    <component name="comp-b" group="g" branch="master" repository="local"/>
     <component name="comp-c" group="g" branch="master"/>
     <component name="comp-skip" group="g" branch="master" skip-get="true"/>
     <component name="start" group="g" branch="master"/>
@@ -433,6 +440,38 @@ EOF
     rm -rf "$R/runtime/component/comp-b"
     check "component-depends" 0 'comp-a depends on comp-b' -- "$M" component-depends
     check "component-get bad type" 1 'not git, current' -- "$M" component-get -t svn comp-a
+
+    # Repository: -r, then the component's repository attribute, then default-repository, then how the root
+    # repo was cloned (https -> github, git@ -> github-ssh, no origin -> github).
+    check "complete -r option" 0 '^--repo$' -- "$M" __complete 2 component-get --r
+    check "complete -r repositories" 0 '^github-ssh$' -- "$M" __complete 3 component-get -r git
+    check "complete -r on create" 0 '^github$' -- "$M" __complete 3 component-create -r github
+    cp "$R/myaddons.xml" "$FIX/myaddons.xml.bak"
+    rm -rf "$R/runtime/component/comp-c" "$R/runtime/component/comp-b"
+    sed 's/ default-repository="local"//' "$R/myaddons.xml" >"$R/myaddons.xml.moq-tmp" &&
+        cat "$R/myaddons.xml.moq-tmp" >"$R/myaddons.xml"
+    rm -f "$R/myaddons.xml.moq-tmp"
+    check "default repository with no origin" 0 "file://$FIX/repos/comp-c.git" -- dry "$M" component-get comp-c
+    (cd "$R" && git remote add origin https://github.com/moqui/mr-moqui.git)
+    check "default repository for an https clone" 0 "file://$FIX/repos/comp-c.git" -- dry "$M" component-get comp-c
+    (cd "$R" && git remote set-url origin git@github.com:moqui/mr-moqui.git)
+    check "default repository for a git@ clone" 0 "file://$FIX/repos-ssh/comp-c.git" -- dry "$M" component-get comp-c
+    check "repository attribute beats the clone url" 0 "file://$FIX/repos/comp-b.git" -- \
+        dry "$M" component-get comp-b
+    cp "$FIX/myaddons.xml.bak" "$R/myaddons.xml"
+    check "default-repository beats the clone url" 0 "file://$FIX/repos/comp-c.git" -- dry "$M" component-get comp-c
+    check "-r beats default-repository" 0 "file://$FIX/repos-ssh/comp-c.git" -- \
+        dry "$M" component-get -r github-ssh comp-c
+    check "-r beats the repository attribute" 0 "file://$FIX/repos-ssh/comp-b.git" -- \
+        dry "$M" component-get --repo=github-ssh comp-b
+    check "-r unknown repository" 1 'repository nope has no git location' -- dry "$M" component-get -r nope comp-c
+    check "-r needs a repository" 1 'needs a repository' -- "$M" component-get -r
+    check "component-create -r" 0 "file://$FIX/repos-ssh/start.git" -- \
+        dry "$M" component-create mk-demo -r github-ssh --no-git
+    (cd "$R" && git remote remove origin)
+    cp "$FIX/myaddons.xml.bak" "$R/myaddons.xml"
+    # Back to the fixture defaults, with the components the later checks expect in place again.
+    "$M" component-get comp-b comp-c >/dev/null
 
     check "git in each repo" 0 '== runtime/component/comp-a \(master\)' -- "$M" git rev-parse --abbrev-ref HEAD
     check "git failure exit" 1 'git failed in:' -- "$M" git rev-parse --verify nope
