@@ -1180,6 +1180,47 @@ mod tests {
     }
 
     #[test]
+    fn audit_services_reuse_the_users_authorization_list_across_seed_writes() {
+        let world = world_with_conf(r#"<moqui-conf>
+            <artifact-execution-facade>
+                <artifact-execution type="AT_SERVICE" authz-enabled="true"/>
+            </artifact-execution-facade>
+            <server-stats bin-length-seconds="600">
+                <artifact-stats type="AT_SERVICE" persist-bin="true"/>
+                <artifact-stats type="AT_ENTITY" persist-bin="true"/>
+            </server-stats>
+        </moqui-conf>"#);
+        let _entered = world.context.enter();
+        let _authz = world.context.disable_authz();
+        world.facade.set_disable_audit_log(false);
+        let mut user = world.facade.make_value("moqui.security.UserAccount").unwrap();
+        user.set("userId", Value::string("AUDIT_CACHE"));
+        user.set("username", Value::string("first"));
+        user.create(&world.facade).unwrap();
+        let mut authz = world.facade.make_value("moqui.security.ArtifactAuthz").unwrap();
+        authz.set("artifactAuthzId", Value::string("SEED_CACHE"));
+        authz.set("userGroupId", Value::string("ALL_USERS"));
+        authz.create(&world.facade).unwrap();
+        user.set("username", Value::string("second"));
+        user.update(&world.facade).unwrap();
+        world.context.factory().flush_artifact_hits().unwrap();
+        let bins = rows(&world, "moqui.server.ArtifactHitBin", "AT_ENTITY");
+        let checks: Vec<_> = bins.iter().filter(|bin|
+            text(bin, "artifactName") == "moqui.security.ArtifactAuthzCheckView"
+                && text(bin, "artifactSubType") == "list"
+        ).collect();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(text(checks[0], "hitCount"), "1");
+        let bins = rows(&world, "moqui.server.ArtifactHitBin", "AT_SERVICE");
+        let audit: Vec<_> = bins.iter().filter(|bin|
+            text(bin, "artifactName") == "create#moqui.entity.EntityAuditLog"
+        ).collect();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(text(audit[0], "artifactSubType"), "entity-implicit");
+        assert_eq!(text(audit[0], "hitCount"), "2");
+    }
+
+    #[test]
     fn fk_reads_are_counted_apart_when_a_load_makes_dummy_parents() {
         let world = world();
         let _entered = world.context.enter();
