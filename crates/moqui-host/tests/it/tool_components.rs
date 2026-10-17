@@ -53,8 +53,8 @@ fn text(value: &str) -> Value {
     Value::string(value)
 }
 
-/// What the stub IPP server saw: the operation and the document of each request.
-type Seen = Arc<Mutex<Vec<(i16, Vec<u8>)>>>;
+/// What the stub IPP server saw: the operation, the job attributes (name and value) and the document of each request.
+type Seen = Arc<Mutex<Vec<(i16, Vec<(String, String)>, Vec<u8>)>>>;
 
 /// An IPP server with one printer, "stub", that takes every job as job 7 and reports it completed.
 fn ipp_stub() -> (u16, Seen) {
@@ -85,9 +85,15 @@ fn ipp_stub() -> (u16, Seen) {
                 .unwrap();
             let operation = request.header().operation_or_status;
             let id = request.header().request_id;
+            let job_attributes = request
+                .attributes()
+                .groups_of(DelimiterTag::JobAttributes)
+                .flat_map(|group| group.attributes().iter())
+                .map(|attr| (attr.name().as_str().to_string(), attr.value().to_string()))
+                .collect();
             let mut payload = Vec::new();
             request.into_payload().read_to_end(&mut payload).unwrap();
-            record.lock().unwrap().push((operation, payload));
+            record.lock().unwrap().push((operation, job_attributes, payload));
             let mut response =
                 IppRequestResponse::new_response(IppVersion::v1_1(), StatusCode::SuccessfulOk, id).unwrap();
             let mut add = |tag: DelimiterTag, name: &str, value: IppValue| {
@@ -315,11 +321,22 @@ fn xlsx_spreadsheets_images_and_ipp_printing() {
     );
     assert_eq!(job_field(&job, "statusId"), "PtjPending");
     assert_eq!(job_field(&job, "jobId"), "7");
-    assert!(seen
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|(operation, payload)| *operation == Operation::PrintJob as i16 && payload == b"%PDF-1.7 gate"));
+    {
+        let seen = seen.lock().unwrap();
+        let (_, job_attributes, _) = seen
+            .iter()
+            .find(|(operation, _, payload)| *operation == Operation::PrintJob as i16 && payload == b"%PDF-1.7 gate")
+            .expect("the Print-Job with the document");
+        // As cups4j's builder: the copies given, and `duplex` (`N` by default) one-sided.
+        let attribute = |name: &str| {
+            job_attributes
+                .iter()
+                .find(|(found, _)| found == name)
+                .map(|(_, value)| value.as_str())
+        };
+        assert_eq!(attribute("copies"), Some("2"), "{job_attributes:?}");
+        assert_eq!(attribute("sides"), Some("one-sided"), "{job_attributes:?}");
+    }
 
     let details = moqui_core::service::sync(
         "org.moqui.impl.PrintServices.get#PrintJobDetailsFromServer",
@@ -327,6 +344,11 @@ fn xlsx_spreadsheets_images_and_ipp_printing() {
     )
     .unwrap();
     assert_eq!(details.get("pagesPrinted"), Some(&Value::I32(2)));
+    // The job URL as cups4j gives it, `http://` for `ipp://`.
+    assert_eq!(
+        details.get("jobUrl").map(to_plain_string),
+        Some(format!("http://127.0.0.1:{port}/jobs/7"))
+    );
     assert_eq!(job_field(&job, "statusId"), "PtjCompleted");
 
     // The status flow has no Completed to Canceled transition, so the cancel is of a second, pending job.

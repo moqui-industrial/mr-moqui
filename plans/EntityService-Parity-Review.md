@@ -21,7 +21,7 @@ ordering.
 
 ## Summary
 
-9 open findings and 60 accepted differences. Open by phase:
+10 open findings and 64 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
@@ -32,7 +32,7 @@ ordering.
 | 5 Entity query / REST | 3 | — |
 | 6 Service definition / validation / call | 0 | — |
 | 7 ECA / SECA / pools / jobs | 0 | — |
-| 8 REST / remote / tools / mail / components | 0 | — |
+| 8 REST / remote / tools / mail / components | 1 | — |
 
 No High finding is open.
 
@@ -55,6 +55,8 @@ No access-control finding is open.
   file model, or a model that can be swapped, and when it is invalidated.
 - **P5-16 / P5-18** — whether the value layer runs a `pq-expression` alias's script (moqui-db has no script runtime)
   and resolves `DataDocument.<id>` names; nothing in `runtime/` uses either.
+- **P8a-41** — whether every print job asks for portrait and monochrome, as cups4j's builder defaults make Java's do,
+  or keeps the print queue's defaults, as now; see [P8a-41](#p8a-41--portrait-and-monochrome-on-every-job).
 
 ### Stale code comments (small to-dos)
 
@@ -816,8 +818,10 @@ image service XML. The `*.rest.xml` HTTP route/CORS layer lives in `screen/dispa
 `web/mod.rs`.
 
 The component Java sources are in the checkout under `/home/jonesde/work/moquiwork/moqui/runtime/component/`. The
-print bodies are inline Groovy on cups4j in `moqui-cups/service/org/moqui/impl/PrintServices.xml`, to be compared in
-the next round. The image services are `moqui-image/service/org/moqui/impl/ImageServices.xml`, already used here.
+print bodies are inline Groovy on cups4j in `moqui-cups/service/org/moqui/impl/PrintServices.xml`; they were compared
+against moqui-cups on 2026-10-16, with cups4j's own behavior (its builder defaults, what `CupsPrinter.print` sends,
+how it parses a job's attributes) read from the `cups4j-0.8.3.jar` in `moqui-cups/lib` with `javap`. The image
+services are `moqui-image/service/org/moqui/impl/ImageServices.xml`, already used here.
 `org.moqui.impl.SpreadsheetServices` (read/load) has no Java counterpart: it is a port addition, and `moqui-poi` has
 only the xlsx screen render (`ScreenWidgetRenderExcel.groovy`, `FormListExcelRender.groovy`), which is screen scope.
 
@@ -853,9 +857,31 @@ parameter schemas carry the parameter's `<description>`; and `convert#Image` wri
 `outputImageFormat` (a png, gif, bmp or tiff original was kept in its own format), so the file its caller names
 `..._Original.${outputImageFormat}` is in that format. Line numbers for these two are as of that change.
 
+Worked 2026-10-16 (print, against moqui-cups): P8a-30 through P8a-36 fixed; P8a-37 through P8a-40 moved to
+[Accepted differences](#accepted-differences); P8a-41 left open for a decision (below). Changes a deployment may see:
+the PrintJob screen's Send (`send#PrintJob`) and its REST method send the job, where each such send failed with
+"Could not find NetworkPrinter []" and left the job as it was; a job with no copies is sent as one copy and one with
+no duplex as one-sided, as cups4j sends them; page ranges that are not page numbers fail the send (`PtjSendFailed`)
+rather than printing every page; a job with no document fails its send; `get#PrintJobDetailsFromServer` gives
+`jobUrl` and `printerUrl` as `http://` URLs; a hold, release or cancel of a job the server never took is an error
+rather than an info message; and a screen document's default job name lists the `screenParameters` values in the
+order given. Line numbers for these are as of that change.
+
 ### Findings — 8a REST / remote REST / tools / print
 
-None open.
+| ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
+|----|---|---|---|---|---|
+| P8a-41 | `moqui-host/src/ipp.rs:312-362` (`print`); `print.rs` (`PrintDocument`) | moqui-cups `PrintServices.xml` `send#PrintJobInternal`; cups4j `PrintJob.Builder`, `CupsPrinter.print` | Every Java job asks for `orientation-requested` portrait and `output-mode` monochrome, cups4j's builder defaults, which the Groovy never changes; Rust sends neither, so the queue's defaults apply (color on a color printer) | Med | Unsure |
+
+#### P8a-41 — Portrait and monochrome on every job
+
+cups4j's `PrintJob.Builder` starts with `portrait = true` and `color = false`, and `CupsPrinter.print` always adds
+`orientation-requested:enum:3` (or `:4`) and `output-mode:keyword:monochrome` (or `:color`); moqui-cups sets neither,
+so every Java job asks for portrait, monochrome output. Rust's `PrintDocument` has no such fields and the IPP client
+sends neither. Left open for a decision: matching Java greys every job on a color printer and fixes the orientation,
+which a deployment moving from Java has today but may not have chosen; keeping the queue's defaults would be an
+accepted difference. Setting either per job (a `PrintJob` field or a `print#DocumentInterface` parameter) would be an
+addition beyond Java.
 
 ### Findings — 8b mail / email services
 
@@ -929,6 +955,63 @@ None open.
   `service/images.rs:318-327`). Java keeps a PNG, GIF, BMP or TIFF original in its own format and converts a JPEG
   one, as its check compares the reader's format name with the writers' suffixes (impl `ImageServices.xml:109`); the
   module doc says so.
+- `send#PrintJob` (P8a-30, found and fixed): the `PrintJob` it finds reaches `send#PrintJobInternal` as an entity value,
+  which the body read only as a map, so every send by id (the PrintJob screen's Send, the `send` method in
+  `moqui.rest.xml`) failed with "Could not find NetworkPrinter []" and recorded nothing on the job; the job is read as
+  a map or an entity value (`send_print_job_internal`, `service/tools.rs:336-339`).
+- Copies and duplex (P8a-31, fixed): as the Groovy on cups4j's `PrintJob.Builder`, a job with no copies, or 0, is sent
+  as one copy and a negative count sends none, and a `duplex` other than `Y`, none too, is `sides` one-sided (`Y` is
+  two-sided-long-edge); Rust sent neither attribute for a job without the field (`send_job`, `service/tools.rs:398-412`).
+- Page ranges (P8a-32, fixed): empty text and `1-` send no `page-ranges`, as cups4j; each comma item is a page or a
+  range; text that is not page numbers (`x`, an open `3-`) fails the send with a message, recorded as `PtjSendFailed`,
+  as cups4j's `Integer.parseInt` throws into the Groovy's `catch`, where Rust printed every page (`page_ranges`,
+  `moqui-host/src/ipp.rs:247-270`).
+- No document (P8a-33, fixed): a job with no `document` (a `send#PrintJob` of a record not stored) is a failed send,
+  "PrintJob [id] has no document", as cups4j's builder cannot be made from a null document, where Rust sent an empty
+  one (`service/tools.rs:387-396`).
+- Job URLs (P8a-34, fixed): `jobUrl` and `printerUrl` are `job-uri` and `job-printer-uri` with `ipp://` made `http://`,
+  as cups4j's `PrintJobAttributes` URLs, where Rust gave the `ipp://` URIs (`http_url`, `moqui-host/src/ipp.rs:273-275`,
+  `:398-400`).
+- Hold, release or cancel of a job not sent (P8a-35, fixed): a job with no `jobId` fails the call with "PrintJob [id]
+  has not been sent to the print server", as `get#PrintJobDetailsFromServer` does and as Java's `(int) printJob.jobId`
+  throws, where Rust left an info message and the call succeeded (`job_action`, `service/tools.rs:613-619`).
+- Screen job name (P8a-36, fixed): the default `jobName` is the screen name and the parameter values in the order
+  `screenParameters` gives them, as Java's `[:]` keeps them, then those of `screenParametersStr` in key order, as
+  `eval_map` returns a sorted map; all were in key order (`print_screen_document`, `service/tools.rs:193-204`,
+  `:245-252`).
+- Print, found equivalent against moqui-cups: `get#ServerPrinters` finds the server's records by `serverHost` and
+  `serverPort` (default 631), returns their ids and those of the records it makes, and makes one for each server
+  printer whose name no record has, with the host, port, `printerName`, `description` (`printer-info`) and `location`
+  (`printer-location`), as cups4j's `CupsPrinter` (`get_server_printers`, `service/tools.rs:452-495`). A create that
+  fails stops the loop with its error, as the XML `service-call` returns; AGENTS.md failure tolerance gains nothing
+  there, since the error rolls back the call's transaction and the records it made.
+- `make#CupsPrinter`: the `NetworkPrinter` by id ("Could not find NetworkPrinter [id]"), then the server printer of its
+  `printerName` from CUPS-Get-Printers, or CUPS-Get-Default when it names none ("Print not found with name [...] on
+  server [...] for NetworkPrinter [...]"), from `http://host:port`, cups4j's `toURI`; a job is posted to the server at
+  the path of the printer's `printer-uri-supported`, as cups4j's printer URI is the server URL plus that path
+  (`make_printer`, `service/tools.rs:295-322`; `print`, `moqui-host/src/ipp.rs:312-362`).
+- Job attributes: `requesting-user-name` is the job's `username`, else the process user (`$USER`, else `anonymous`, as
+  cups4j's `user.name` default); `job-name` only when the job has one; copies, sides and page ranges as above; and no
+  resolution, media or media source, which the Groovy never sets.
+- `send#PrintJobInternal`: refused in a sim session with Java's message; taken, the job is `PtjPending` with the
+  server's `jobId`; refused (an IPP status that is not successful, as cups4j's `isSuccessfulResult`) or failed, it is
+  `PtjSendFailed` with the `jobId` and the message as `errorMessage`; each update is in its own transaction, and the
+  error is left in the message facade with the results returned, under P6b-01's record-and-return contract.
+  `print#Document` creates the `PtjNotSent` job in its own transaction first, so it stays whatever the send does, and
+  returns `printJobId` and `jobId` (`service/tools.rs:116-150`, `:327-373`).
+- `print#ResourceDocument`: "Could not find resource at [...]" for a missing location; the bytes are printed and not
+  stored, with the content type of the location's name (`service/tools.rs:153-175`).
+- `get#PrintJobDetailsFromServer`: the job's non-PK fields and the server's `completeTime` and `createTime` (seconds to
+  timestamps), `jobUrl`, `pagesPrinted` (`job-media-sheets-completed`), `printerUrl` and `size` (`job-k-octets`); the
+  job state names map to `PtjAborted`, `PtjCanceled`, `PtjCompleted`, `PtjPending`, `PtjPendingHeld`, `PtjProcessing`
+  and `PtjProcessingStopped` as Java's `stateMap`, and a changed status is saved with `update#PrintJob`, which checks
+  the status flow; a job not sent, or one the server does not know, is an error in both (`status_of_state`,
+  `get_print_job_details`, `service/tools.rs:498-568`).
+- Hold, release and cancel: Hold-Job, Release-Job and Cancel-Job as the process user; done (an IPP success status, as
+  cups4j's `isSuccessfulResult`), the job moves to `PtjPendingHeld`, `PtjPending` or `PtjCanceled` through
+  `update#PrintJob`; not done, Java's info message "Could not hold job [...] on print server at [...] for PrintJob
+  [...]" and no change (`job_action`, `service/tools.rs:592-638`). None of the print services has a SECA or EECA, in
+  the framework or in moqui-cups.
 - elFinder root refusal (P8c-03, fixed): `rm`, `rename`, `upload` and `put` on the volume root answer Java's
   "Operation not allowed on the root" (`ROOT_REFUSED`, `service/elfinder.rs:45`).
 - Volume-ID hash (P8c-16, fixed): a hash of only the 3-character volume ID decodes to the empty path, the root, as
@@ -1013,6 +1096,10 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P8a-25 | DataDocument notifications | An empty `userId`, `fromUserId` or `toUserId` in a document names no user (`find_nested`, `service/tools.rs:615-632`); Java's `findAllFieldsNestedMap` adds it | Java then writes a `NotificationMessageUser` for user `""`, which fails the send for every user of the document; doc comment at `find_nested` |
 | P8a-27 | service REST | A `<method>` with no `type`, no operation element, or an operation with no `name` (or no `operation`) is logged and left out, and the rest of the file is served (`service/rest.rs:326-344`); Java keys one with no type by `null`, registers a service or entity handler with no name, which fails when called, and fails the whole file for a method with no child | AGENTS.md failure tolerance; comment at the site |
 | P8a-28 | service OpenAPI | A REST service that is not defined, or whose parameters do not expand, is logged and documented without parameters, and a parameter whose `entity-name` or `field-name` is not defined is logged and has no `enum` (`service/rest.rs:910-923`, `:1049-1067`); Java's Swagger throws for the whole document | AGENTS.md failure tolerance; doc comments at `service_parameters` and `parameter_enums` |
+| P8a-37 | print | The IPP wire differs from cups4j's: a job carries `document-format`, the job's `contentType`; the `printer-uri` is the one the server reported; a hold, release or cancel names the job by `printer-uri` and `job-id`; a CUPS-Get-Printers refused for any reason but not-found is an error; and port 443, or a host that names `https://`, is TLS (`moqui-host/src/ipp.rs:20-27`; `endpoint`, `:53-79`; `:292-302`). cups4j sends no `document-format`, so the server types the document; writes the server's host with no port and the path; posts a `job-uri` to `/jobs/<id>`; reads any refusal as no printers; and always connects `http://host:port` | The same server and printer are reached; the type a job was stored with is what the server is told, and a refusal is reported rather than read as an empty server. Module doc and a comment at `document-format` |
+| P8a-38 | print | A `NetworkPrinter` with no `serverPort` is on port 631 (`server_of`, `service/tools.rs:279-292`); Java's `(int) networkPrinter.serverPort ?: 631` casts before the default, so its `make#CupsPrinter` fails on such a record | 631 is the field's documented default ("Defaults to 631"); doc comment at `server_of` |
+| P8a-39 | print | A send whose printer cannot be had (no `NetworkPrinter`, no printer of that name, the server not reached, no print client) is recorded on the job as `PtjSendFailed` with the message (`send_job`, `service/tools.rs:379-386`); Java's `make#CupsPrinter` runs before the Groovy's `try`, so its job stays `PtjNotSent` with no `errorMessage` | The job shows why it was not printed, which the PrintJob screens list; `PtjSendFailed` to `PtjPending` is a Send transition, so it can be sent again. Comment at the site, and the module doc |
+| P8a-40 | print | A number the server does not give is null: a refused job without a `job-id` is stored and returned with no `jobId`, and details without `job-k-octets` or `job-media-sheets-completed` give no `size` or `pagesPrinted` (`service/tools.rs:345-350`, `:536`); cups4j's ints give -1 and 0 | No job on the server has id -1, and a job without one is reported as not sent by the details, hold, release and cancel; comments at both sites |
 | P8a-29 | service REST | A plain map out-parameter loses its null entries one level down too (`remove_result_nulls`, `service/rest.rs:596-615`); Java removes them only from an `EntityValue` | Entity values are maps in this port, so the two cannot be told apart; a missing key and a `null` read the same to a JSON client. Doc comment at the function |
 | P8b-01 | mail | `allowedToDomains` dot-boundary match on the extracted address vs Java `endsWith` on the raw address | Hardening; doc comment `service/mail/implementation.rs:545-564` |
 | P8b-02 | mail poll | Per-message `ForceNew` transaction and continue-on-error vs Java one poll transaction aborting on first throw | AGENTS.md policy; comment `service/mail/implementation.rs:1303-1307` |

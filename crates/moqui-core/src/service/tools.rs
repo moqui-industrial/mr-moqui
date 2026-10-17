@@ -190,7 +190,9 @@ fn print_screen_document(
         add_error(format!("Screen not found at [{location}]"));
         return Ok(BTreeMap::new());
     };
-    let mut screen_parameters = BTreeMap::new();
+    // In the order given, as Java's `[:]` (a `LinkedHashMap`), for the job name; a `screenParametersStr` map comes in
+    // key order, as `eval_map` returns it.
+    let mut screen_parameters = IndexMap::new();
     if let Some(Value::Map(given)) = parameters.get("screenParameters") {
         screen_parameters.extend(given.iter().map(|(name, value)| (name.clone(), value.clone())));
     }
@@ -215,7 +217,7 @@ fn print_screen_document(
     let rendered = crate::screen::make_render(&factory)
         .root_screen(&location)
         .render_mode("xsl-fo")
-        .parameters(screen_parameters.clone())
+        .parameters(screen_parameters.clone().into_iter().collect())
         .render();
     let output = match rendered {
         Ok(output) => output,
@@ -274,6 +276,9 @@ fn update_print_job(print_job_id: &str, fields: &[(&str, Value)], options: &Call
     call(&format!("update#{PRINT_JOB}"), &update, options);
 }
 
+/// The server of a `NetworkPrinter`: no `serverPort`, or 0, is 631, the field's documented default. Java's
+/// `(int) networkPrinter.serverPort ?: 631` casts before the default, so a record with no port fails there (accepted,
+/// P8a-38).
 fn server_of(printer: &IndexMap<String, Value>) -> PrintServer {
     let port = match printer.get("serverPort") {
         Some(value) if !is_empty(value) => to_plain_string(value).parse().unwrap_or(IPP_PORT),
@@ -327,15 +332,18 @@ fn send_print_job_internal(
         add_error("Printing is disabled in LLM sim session");
         return Ok(BTreeMap::new());
     }
-    let job = match parameters.get("printJob") {
-        Some(Value::Map(job)) => job.clone(),
-        _ => IndexMap::new(),
-    };
+    // A map from `print#Document`, or the entity value `send#PrintJob` finds.
+    let job = parameters
+        .get("printJob")
+        .and_then(crate::script::value_map)
+        .unwrap_or_default();
     let print_job_id = map_text(&job, "printJobId");
     let (job_id, error) = match send_job(&job, facade)? {
         Ok(result) => (result.job_id, result.error),
         Err(message) => (None, Some(message)),
     };
+    // A refused job the server gave no id is stored and returned with none, where cups4j's `PrintRequestResult` says -1
+    // (accepted, P8a-40).
     let mut out = BTreeMap::new();
     if let Some(job_id) = job_id {
         out.insert("jobId".to_string(), Value::I32(job_id));
@@ -368,26 +376,39 @@ fn send_job(
     job: &IndexMap<String, Value>,
     facade: &EntityFacade,
 ) -> Result<Result<crate::print::PrintResult, String>, LibError> {
+    // A printer that cannot be had (no record, no such printer, no server or no client) is a failed send recorded on
+    // the job; Java's `make#CupsPrinter` runs before its `try`, so its job stays `PtjNotSent` with no `errorMessage`
+    // (accepted, P8a-39).
     let (_, server, printer) = match make_printer(facade, &map_text(job, "networkPrinterId")) {
         Ok(Ok(found)) => found,
         Ok(Err(message)) => return Ok(Err(message)),
         Err(err) => return Ok(Err(err.message().to_string())),
     };
+    // No document fails the send, as cups4j's `PrintJob.Builder` does on a null `document`.
     let bytes = match job.get("document") {
         Some(Value::Bytes(bytes)) => bytes.clone(),
         Some(Value::String(text)) => text.as_bytes().to_vec(),
-        _ => Vec::new(),
+        _ => {
+            return Ok(Err(format!(
+                "PrintJob [{}] has no document",
+                map_text(job, "printJobId")
+            )))
+        }
     };
     let optional = |name: &str| Some(map_text(job, name)).filter(|text| !text.is_empty());
+    // The Groovy sets `copies` and `duplex` only when the job has them, else cups4j's `PrintJob.Builder` defaults
+    // apply: no copies (or 0) is 1, a negative count is not sent, and no duplex is one-sided.
+    let copies = optional("copies")
+        .and_then(|text| text.parse::<i32>().ok())
+        .filter(|copies| *copies != 0)
+        .unwrap_or(1);
     let document = PrintDocument {
         bytes,
         content_type: map_text(job, "contentType"),
         user_name: optional("username"),
         job_name: optional("jobName"),
-        copies: optional("copies")
-            .and_then(|text| text.parse().ok())
-            .filter(|copies| *copies > 0),
-        duplex: optional("duplex").map(|flag| flag == "Y"),
+        copies: Some(copies).filter(|copies| *copies > 0),
+        duplex: Some(map_text(job, "duplex") == "Y"),
         page_ranges: optional("pageRanges"),
     };
     let client = match crate::print::client() {
@@ -512,6 +533,7 @@ fn get_print_job_details(
     let attributes = client
         .job_attributes(&server, job_id)
         .map_err(|err| LibError::new(err.message()))?;
+    // A number the server does not give is null, where cups4j's `PrintJobAttributes` ints say 0 (accepted, P8a-40).
     let stamp = |seconds: Option<i64>| {
         seconds
             .and_then(|seconds| jiff::Timestamp::from_second(seconds).ok())
@@ -588,13 +610,17 @@ fn job_action(
         JobAction::Release => ("release", "PtjPending"),
         JobAction::Cancel => ("cancel", "PtjCanceled"),
     };
-    let done = match job_id_of(&job) {
-        Some(job_id) => crate::print::client()
-            .map_err(|err| LibError::new(err.message()))?
-            .job_action(&server, &printer, job_id, action)
-            .map_err(|err| LibError::new(err.message()))?,
-        None => false,
+    // A job with no server id fails the call, as Java's `(int) printJob.jobId` does.
+    let Some(job_id) = job_id_of(&job) else {
+        add_error(format!(
+            "PrintJob [{print_job_id}] has not been sent to the print server"
+        ));
+        return Ok(BTreeMap::new());
     };
+    let done = crate::print::client()
+        .map_err(|err| LibError::new(err.message()))?
+        .job_action(&server, &printer, job_id, action)
+        .map_err(|err| LibError::new(err.message()))?;
     if done {
         update_print_job(
             &print_job_id,
@@ -602,7 +628,6 @@ fn job_action(
             &CallOptions::default(),
         );
     } else {
-        let job_id = map_text(&job, "jobId");
         let text = format!(
             "Could not {verb} job [{job_id}] on print server at [{}] for PrintJob [{print_job_id}]",
             server.host
