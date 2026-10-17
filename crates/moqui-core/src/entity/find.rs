@@ -269,6 +269,10 @@ impl EntityFind {
 
     fn list_internal(self, operation: &str) -> Result<EntityList, Error> {
         if self.require_search_parameters && !self.has_search_parameters {
+            crate::context::ExecutionContext::with_current(|ec| {
+                ec.shared_map()
+                    .insert("_entityListNoSearchParms".to_string(), Value::Bool(true));
+            });
             return Ok(EntityList::new(Vec::new()));
         }
         // The view frame is what authorizes the read, and the filters come from its record.

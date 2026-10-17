@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function renderList({ saved = true, header = true, denied = false, hideNav = false, finds = [], fields = [], hidden = {} } = {}) {
+function renderList({ saved = true, header = true, denied = false, hideNav = false, noSearch = false, finds = [], fields = [], hidden = {} } = {}) {
     const factory = vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'ScreenQvt.js'), 'utf8'));
     const module = factory({ stmt: fn => fn, noops: () => ({}) }, {
         anyMacros: () => ({}), allElements: [], opaqueElements: []
@@ -24,7 +24,10 @@ function renderList({ saved = true, header = true, denied = false, hideNav = fal
             pushSingleFormMapContext() {}, popContext() {}, safeCloseList() {}
         },
         ec: {
-            context: { get: key => key === 'hideNav' && hideNav ? 'true' : null },
+            context: {
+                get: key => key === 'hideNav' && hideNav ? 'true' : null,
+                sharedMap: { _entityListNoSearchParms: noSearch }
+            },
             l10n: { localize: text => text }, resource: { expand: text => text }
         }
     };
@@ -38,6 +41,15 @@ function renderList({ saved = true, header = true, denied = false, hideNav = fal
 function dialog(html, id) {
     return html.match(new RegExp('<m-container-dialog id="' + id + '"[^>]*>([\\s\\S]*?)</m-container-dialog>'))?.[1];
 }
+
+test('empty-list warning reads the shared no-search-parameters marker', () => {
+    const required = renderList({ noSearch: true });
+    assert.match(required, /Find Options required to view results/);
+    assert.doesNotMatch(required, /No results found/);
+    const searched = renderList();
+    assert.match(searched, /No results found/);
+    assert.doesNotMatch(searched, /Find Options required to view results/);
+});
 
 test('saved finds have a separate named dialog, not inside Find Options', () => {
     const html = renderList();

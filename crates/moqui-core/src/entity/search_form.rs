@@ -591,6 +591,8 @@ mod tests {
 
     #[test]
     fn a_form_with_nothing_to_search_returns_no_rows_when_parameters_are_required() {
+        let ec = crate::context::ExecutionContextFactory::test_context();
+        let _entered = ec.enter();
         let facade = crate::testing::open();
         let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
         row.set("testId", Value::string("A"));
@@ -601,6 +603,11 @@ mod tests {
             .search_form_map(&BTreeMap::new(), &BTreeMap::new(), "", "", false)
             .unwrap();
         assert_eq!(result.find.list().unwrap().len(), 0);
+        assert_eq!(
+            ec.shared_map().get("_entityListNoSearchParms"),
+            Some(&Value::Bool(true))
+        );
+        ec.shared_map().shift_remove("_entityListNoSearchParms");
         let searched = facade
             .find("moqui.test.TestEntity")
             .unwrap()
@@ -608,5 +615,8 @@ mod tests {
             .search_form_map(&input(&[("testId", "A")]), &BTreeMap::new(), "", "", false)
             .unwrap();
         assert_eq!(searched.find.list().unwrap().len(), 1);
+        assert!(!ec.shared_map().contains_key("_entityListNoSearchParms"));
+        assert_eq!(facade.find("moqui.test.TestEntity").unwrap().list().unwrap().len(), 1);
+        assert!(!ec.shared_map().contains_key("_entityListNoSearchParms"));
     }
 }
