@@ -240,7 +240,6 @@ div.container-panel-header, div.container-panel-footer { width: 100%; }
 span.hover-image-container { position: relative; }
 span.hover-image-container img.hover-image { position: absolute; display: none; z-index: 10; background-color: #FFF6E8; padding: 6px; }
 span.hover-image-container:hover img.hover-image { display: initial; margin: 10px 0 0 5px; }
-.text-inline { display: inline; }
 .text-find-options { margin-left: 4px; }
 .editable-label { border-bottom: 1px dashed currentColor; }
 .markdown-preview { border: 1px solid rgba(0,0,0,0.12); margin-top: 4px; }
