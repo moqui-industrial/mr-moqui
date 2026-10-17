@@ -4,9 +4,10 @@ Date: 2026-10-16. This file maps the MR-Moqui Rust tree onto the Moqui Java, Gro
 FreeMarker it was ported from, and accounts for every framework source the other way.
 
 The entity and service sections are still the basis for the phase reviews in
-[EntityService-Parity-Review](EntityService-Parity-Review.md). Those tables keep their phase
+[EntityService-Parity-Review](archive/EntityService-Parity-Review.md). Those tables keep their phase
 column. The rest of the file is the same kind of map for the whole framework. It names primary
-sources. It is not a line-level review and it does not record divergences.
+sources. It is not a line-level review and it does not record divergences: the accepted ones are in
+[Parity-Diffs](Parity-Diffs.md), the open ones are findings in [Remaining-Work](Remaining-Work.md).
 
 ## How to read a row
 
@@ -191,7 +192,7 @@ Entity model and SQL text. No `ExecutionContext` and no driver. The entity secti
 
 ## Entity
 
-Phase numbers match [EntityService-Parity-Review](EntityService-Parity-Review.md). SQL text and the definition model are in moqui-db above. `params.rs`, `exec.rs`, and `share.rs` are the native rows in the table before this section.
+Phase numbers match [EntityService-Parity-Review](archive/EntityService-Parity-Review.md). SQL text and the definition model are in moqui-db above. `params.rs`, `exec.rs`, and `share.rs` are the native rows in the table before this section.
 
 | Rust file | Primary basis | Phase |
 |---|---|---|
@@ -428,12 +429,12 @@ The service section names the Rust service bodies. This section is where the add
 |---|---|---|
 | `moqui-host/src/lib.rs`, `usage.rs` | `MoquiStart` commands that exist: run, load, save-db, load-save, and the help text. WAR packaging, the executable-WAR classpath, and H2 are not ported. | Partial |
 | `moqui/src/main.rs` | Process entry that calls the host. | Native |
-| `testkit/mod.rs`, `testkit/run.rs`, `testkit/rewrite.rs` | Spock, reimplemented as JavaScript specs. [TestHarness](TestHarness.md). | Native |
+| `testkit/mod.rs`, `testkit/run.rs`, `testkit/rewrite.rs` | Spock, reimplemented as JavaScript specs. [TestHarness](archive/TestHarness.md). | Native |
 | `moqui-host/src/test_cmd/mod.rs`, `test_cmd/fixture.rs`, `test_cmd/report.rs`, `test_cmd/coverage.rs` | `moqui test` driver, database fixture, JUnit XML, coverage. | Native |
 | `typegen/mod.rs`, `typegen/entities.rs`, `typegen/services.rs`, `typegen/screens.rs`, `typegen/ts.rs` | TypeScript declarations from the loaded definitions. [TypeGeneration](archive/TypeGeneration.md). | Native |
 | `moqui-host/src/types.rs` | `moqui types`. | Native |
 | `moqui-host/src/qvt_report.rs` | `moqui lint --screens --qvt-static`. The report is `screen/statics/report.rs`. | Native |
-| `native.rs` | Component JAR on the classpath: linked Rust services, tools, resource schemes, template renderers. [Native-Components](Native-Components.md). | Native |
+| `native.rs` | Component JAR on the classpath: linked Rust services, tools, resource schemes, template renderers. [Native-Components](archive/Native-Components.md). | Native |
 
 ## Browser host
 

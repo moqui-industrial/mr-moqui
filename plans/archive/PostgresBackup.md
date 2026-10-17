@@ -4,7 +4,7 @@ The job `backup_EmbeddedDatabase_daily` takes a live backup of each embedded Pos
 
 The service is `org.moqui.impl.ServerServices.backup#EmbeddedDatabase`. `moqui-core` holds the retention and mirror decisions and the service. `moqui-host` runs `pg_dump` and `pg_basebackup` and registers that runner when a postmaster starts. `moqui-core` does not spawn Postgres tools. With no embedded cluster the service returns `skipped=Y` and does not raise `ServiceJobError`.
 
-`moqui save-db` and `moqui load-save` are the same custom-format dump and restore, run by hand against one cluster directory. This job is that dump on a schedule, plus rotation, plus the physical option below. The cluster layout is [archive/EmbeddedPostgres.md](archive/EmbeddedPostgres.md). The retention counts follow `docker/postgres_backup.sh` in the Java tree: 7 daily, 5 weekly, 12 monthly, and yearly with no limit.
+`moqui save-db` and `moqui load-save` are the same custom-format dump and restore, run by hand against one cluster directory. This job is that dump on a schedule, plus rotation, plus the physical option below. The cluster layout is [EmbeddedPostgres.md](EmbeddedPostgres.md). The retention counts follow `docker/postgres_backup.sh` in the Java tree: 7 daily, 5 weekly, 12 monthly, and yearly with no limit.
 
 ## Three live mechanisms
 

@@ -36,8 +36,12 @@ Components can supply linked Rust services, tools, resource schemes, template re
 as a Gradle build did for a Java Moqui component: a `Cargo.toml` and `src/` beside the `component.xml`, which
 `./moq build` links into the binary. Service XML still defines services; component configuration selects
 implementations, and scripts get tools with `ec.factory.getTool("Name")`. See
-[Native component usage](plans/Native-Components-Usage.md), the [plan](plans/Native-Components.md), and
+[Native component usage](docs/Native-Components.md), the [plan](plans/archive/Native-Components.md), and
 `runtime/base-component/example`, which is off by default (`./moq run -D example_disabled=false`).
+
+## Documentation
+
+Reference guides for built features are in [`docs/`](docs/). Design, status and review documents are in [`plans/`](plans/), indexed by [`plans/README.md`](plans/README.md): what is still open, what comes next, the proposals, and the archive of built designs and finished reviews.
 
 ## Build, Test, and Run
 
