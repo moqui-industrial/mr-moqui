@@ -4,9 +4,10 @@ Scope: Rust modules in `crates/moqui-core/src/entity/` and `crates/moqui-core/sr
 `moqui-db` SQL/model layer they delegate to), compared against the Moqui Java / Groovy / XML code they
 were ported from.
 
-Revalidated 2026-10-16 against `d9d5f9f`. Findings fixed by 956954e, 48e9d36, 62a3def and 2ce6ecd, and
-findings that proved invalid or duplicated, have been removed; the IDs that remain keep their original
-numbers, so gaps in the numbering are expected. Deliberate, documented differences are collected in
+Revalidated 2026-10-16 against `d9d5f9f`, and worked through phase by phase on 2026-10-16 (commits 7255066 through
+the Phase 8b/8c commit). Findings fixed by 956954e, 48e9d36, 62a3def and 2ce6ecd and in those phases, and findings
+that proved invalid or duplicated, have been removed; the IDs that remain keep their original numbers, so gaps in the
+numbering are expected. Deliberate, documented differences are collected in
 [Accepted differences](#accepted-differences) rather than the phase tables.
 
 Paths: Rust locations are relative to `crates/moqui-core/src/` unless they start with `moqui-db/`,
@@ -20,7 +21,7 @@ ordering.
 
 ## Summary
 
-26 open findings and 50 accepted differences. Open by phase:
+12 open findings and 58 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
@@ -31,7 +32,7 @@ ordering.
 | 5 Entity query / REST | 3 | — |
 | 6 Service definition / validation / call | 1 | P6b-01 (decision) |
 | 7 ECA / SECA / pools / jobs | 0 | — |
-| 8 REST / remote / tools / mail / components | 16 | — |
+| 8 REST / remote / tools / mail / components | 2 | — |
 
 | ID | Area | One-line |
 |---|---|---|
@@ -39,17 +40,14 @@ ordering.
 
 ### Cross-cutting threads
 
-1. **Access control** (none open): service-REST results are now stripped of UserAccount secrets at any depth (P8a-03
-   fixed), and a `/rest/s1` path is authorized for the method an `X-HTTP-Method-Override` names (P8a-04 fixed). (Async
-   calls now check authorization as the caller before they are queued and run with it disabled, P7b-07 and P7b-08
-   fixed, and `ALL_USERS` membership follows Java, P7a-05 fixed.)
-2. **Full-text search and model sources** (P3-20, P3-14, P3-21): a `LIKE` on a `text-fts` field is not rewritten
+No access-control finding is open.
+
+1. **Full-text search and model sources** (P3-20, P3-14, P3-21): a `LIKE` on a `text-fts` field is not rewritten
    to a full-text search (the DDL now follows `FtsDdl`), DB view entities are not built from their rows, and a
    foreign key is recognized only by its computed name.
-3. **Error contract** (P6b-01): a failing service body propagates `Err` where Java records the
-   error and returns. (The errors text now follows Java's `errorsString`, P6a-23 fixed, and the `post-commit` SECA rules
-   of a failed call get an empty result map, P7a-10 fixed.)
-4. **View fields** (P5-19, P5-16, P5-18): the entity JSON schema and the data writer's CSV of a view read no fields
+2. **Error contract** (P6b-01): a failing service body propagates `Err` where Java records the
+   error and returns.
+3. **View fields** (P5-19, P5-16, P5-18): the entity JSON schema and the data writer's CSV of a view read no fields
    (REST finds and form auto fields now read the aliases), `pq-expression` aliases are not evaluated, and
    `DataDocument.<id>` is not an entity name.
 
@@ -64,14 +62,14 @@ ordering.
     `service/spreadsheet.rs:315`, `moqui-browser/src/host.rs:182`); some match it to record or log it
     (`service/jobs.rs:490` records the job's error, `service/eca.rs:206`, `entity/document.rs:970`,
     `notify/message.rs:601`, `service/tools.rs:68`, `service/system_sync/sftp.rs:242`); some read the message
-    facade as well (`screen/dispatch.rs:249,264,295`, `search/feed.rs:248`, `service/sso.rs:301`,
+    facade as well (`screen/dispatch.rs:249,264,295`, `search/feed.rs:248`, `service/sso.rs:307`,
     `service/system_sync/message.rs:336`, `moqui-host/src/ssh/shell.rs:163`). Under Java's contract the first two
     groups would need a `has_error()` check, or they go on with an empty result.
   - Tests that assert the `Err` of a body failure: in `service/call.rs`,
     `service_failures_identify_owning_actions_and_rust_origin` (reads the diagnostic from the `Err`),
     `post_commit_rules_run_after_a_failure_only_when_they_run_on_error`,
     `a_runaway_script_ends_at_the_transaction_deadline` and `remote_rest_in_sim_mode_errors_before_a_socket`; and
-    `service/elfinder/tests.rs:417`. `script_ports_tests.rs:612-621` takes either. The authentication and semaphore
+    `service/elfinder/tests.rs:423`. `script_ports_tests.rs:612-621` takes either. The authentication and semaphore
     failures (`native_components.rs:395`, `held_fail_semaphore_errors`) throw in Java too, before its `try`.
   - Scripts and XML actions: `ec.service.sync()…call()` (`script/runtime/services.rs:266-297`) already turns the
     `Err` into a message-facade error and returns `null`; Java returns the result map, the empty one it started
@@ -83,6 +81,14 @@ ordering.
     rethrows `ArtifactAuthorizationException`) and the failures before the run (unknown service, authentication,
     semaphore). The script host's `Err` arm would then be unused, the callers in the first two groups above move
     to a `has_error()` check, and the tests above read the message facade.
+- **P3-14** — how DB view entities join an immutable model: a second, locked set of definitions consulted after the
+  file model, or a model that can be swapped, and when it is invalidated.
+- **P5-16 / P5-18** — whether the value layer runs a `pq-expression` alias's script (moqui-db has no script runtime)
+  and resolves `DataDocument.<id>` names; nothing in `runtime/` uses either.
+- **P8a-26** — how `merge_param` merges a parameter's `<description>` for an `implements` or a redeclared parameter.
+- **P8c-11** — the format of the "Original" image: the input's (this port, and Java's evident intent), Java's exact
+  outcome (a JPEG written as `outputImageFormat`, the rest kept), or always `outputImageFormat` (what the one caller
+  names the file).
 - **Spreadsheet/print references**: `org.moqui.impl.SpreadsheetServices` and some component Groovy are
   absent from these checkouts, so those comparisons rely on the XML descriptor only.
 
@@ -90,6 +96,16 @@ ordering.
 
 None open. The last one, the loader's comment that every record uses the entity-auto store path, now says that CSV
 rows do not (P4a-02, `entity/load_feed/loader.rs:466-467`).
+
+### Outside this review
+
+- `cargo test -p moqui-host --test gate3` has 3 failures that are not from this work; they fail the same way with
+  the Phase 5 and Phase 8a changes stashed: `artifact_group_detail_renders_as_text_csv_xml_and_html_print`,
+  `artifact_group_detail_static_qvt_is_a_data_free_template_with_its_data_on_actions` and
+  `the_login_page_and_the_root_render_as_html_and_a_failed_login_comes_back_with_its_message` (screen-render
+  assertions: an ALL_USERS link, a `$mq.url` template, a login alert div).
+- `user/preference.rs` `date_open` treats `thruDate` as exclusive; Java's `filterByDate` is inclusive (as fixed for
+  jobs in P7b-11 and security checks in P7a-14).
 
 ---
 
@@ -826,7 +842,7 @@ mail Groovy resources and `EmailServices.xml`, `ElFinderConnector.groovy`, `Enti
 image/spreadsheet service XML. The `*.rest.xml` HTTP route/CORS layer lives in `screen/dispatch.rs` /
 `web/mod.rs`.
 
-Worked 2026-10-16 (8a only; 8b and 8c are for a later round): P8a-03, P8a-04, P8a-06, P8a-08, P8a-11, P8a-12,
+Worked 2026-10-16 (8a): P8a-03, P8a-04, P8a-06, P8a-08, P8a-11, P8a-12,
 P8a-13, P8a-15, P8a-18, P8a-19, P8a-20, P8a-21, P8a-22 and P8a-24 fixed; P8a-17 moved to
 [Accepted differences](#accepted-differences). Found along the way: P8a-25, P8a-27, P8a-28 and P8a-29 (the parts of
 P8a-21, P8a-20, P8a-24 and P8a-11 that stay, accepted) and P8a-26 (open). For P8a-08 the shipped callers were checked
@@ -838,8 +854,20 @@ whose 2xx body is not a JSON object or array, an empty one too, now fails; its G
 values; a `method="HEAD"` or `"OPTIONS"` is sent as that method (and fails with parameters, which it cannot carry as
 a body); a `<method type="GET">` (upper case, outside the XSD) is no longer served; and the service OpenAPI
 (`/rest/service.swagger/<root>`) now documents each service method's parameters and response. Its entity methods
-still carry only a summary, as before (Swagger and RAML are out of scope, below). Line numbers in this section are as
-of that change.
+still carry only a summary, as before (Swagger and RAML are out of scope, below).
+
+Worked 2026-10-16 (8b and 8c): P8c-03, P8c-07 and P8c-16 fixed; P8b-03, P8b-04, P8b-06, P8b-07, P8b-09, P8c-05,
+P8c-06 and P8c-17 moved to [Accepted differences](#accepted-differences); P8c-11 left open as a decision. Removed as
+invalid: P8b-10, since commons-email's `buildMimeMessage` sets the `Subject` only for a subject that is not empty, as
+Rust does; and P8c-02 and P8c-04, since an elFinder entry here is a `DbResource` or a file path (any other location is
+an error), which Java's `supportsWrite()` answers true for, so its check never refuses and the `write` flag is the
+same. For P8b-03 the readers of the stored addresses were checked first: `send#EmailMessage` (`send_message`, as
+Java's `sendEmailMessage.groovy`) splits `toAddresses`, `ccAddresses` and `bccAddresses` on commas, and no screen or
+service in `runtime/` reads them otherwise. For P8b-09, none of the email body screens in `runtime/` sets
+`render-modes`, so each has a text render. Changes a deployment may see: an elFinder command on the root says
+"Operation not allowed on the root", and a hash of only the volume ID is the root; an SSO profile claim of `0` is not
+mapped to an account field; and an SSO logout ends the local login even when the provider's end-session URL cannot be
+had (no SSO client, a failed discovery). Line numbers in this section are as of that change.
 
 ### Findings — 8a REST / remote REST / tools / print
 
@@ -856,33 +884,23 @@ service-definition work beyond this REST round.
 
 ### Findings — 8b mail / email services
 
-| ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P8b-03 | `runtime/…/org/moqui/impl/EmailServices.xml:82-83` | `EmailServices.xml:72-73` | `save#EcaEmailMessage` stores addresses as `join(', ')` vs Java `List.toString()` (`[a, b]`) | Med | Unsure |
-| P8b-04 | `service/mail/implementation.rs:1658-1666` | `pollEmailServer.groovy:111` | Expunge only when this poll flagged deletes; Java `close(true)` always expunges | Low | Unsure |
-| P8b-06 | `service/mail/implementation.rs:780-791` | `sendEmailTemplate.groovy:283-286` | Default attachment filename differs (Java strips 4 chars / NPEs) | Low | Unsure |
-| P8b-07 | `service/mail/implementation.rs:2073-2100` | `sendEmailTemplate.groovy:161-165` | Recipient split respects quotes/`<>`; Java splits on every `,` | Low | Unsure |
-| P8b-09 | `service/mail/implementation.rs:384` | `sendEmailTemplate.groovy:88-90` | Text alternative rendered only when `allows_text`; Java always renders it | Low | Unsure |
-| P8b-10 | `service/mail/implementation.rs:981-983` | `sendEmailTemplate.groovy:141` | Empty expanded subject omits the `Subject` header; Java sets it unconditionally | Low | Unsure |
+None open.
 
 ### Findings — 8c SSO / elFinder / system sync / images
 
 | ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P8c-02 | `service/elfinder.rs:319-322` | `ElFinderConnector.groovy:152` | `info.write` from `writes_restricted()` only, not `supportsWrite()` (Rust roots are always writable, so near-moot) | Low | No |
-| P8c-03 | `service/elfinder.rs:44` | `ElFinderConnector.groovy:257` | Root-refused error text differs | Low | No |
-| P8c-04 | `service/elfinder.rs:621-641` | `ElFinderConnector.groovy:316,326` | `mkdir`/`mkfile` omit the `supportsWrite()` check (near-moot, as P8c-02) | Low | No |
-| P8c-05 | `service/sso.rs:255` | `AuthenticationFlow.groovy:89-91` | Callback ignores `RelayState` (moot without SAML) | Low | Unsure |
-| P8c-06 | `service/sso.rs:204-207` | `AuthenticationFlow.groovy:50-53` | `login` clears a stored `returnTo` when none given | Low | Unsure |
-| P8c-07 | `service/sso.rs:347` | `MoquiSecurityGrantedAccessAdapter.groovy:35` | `map_fields` keeps numeric `0`; Groovy truthiness treats `0` false | Low | No |
-| P8c-11 | `service/images.rs:317` | impl `ImageServices.xml:109` | "Original" output format uses detected lowercase suffix; Java usually writes `outputImageFormat` | Low | Unsure |
-| P8c-16 | `service/elfinder.rs:753-755` | `ElFinderConnector.groovy:75-93` | A hash of exactly the 3-char volume id decodes to invalid; Java yields the root | Low | No |
-| P8c-17 | `service/sso.rs:286-290` | `AuthenticationFlow.groovy:139-155` | `logout` always ends local login; Java only if pac4j `perform` did not throw | Low | Unsure |
+| P8c-11 | `service/images.rs:317-325` | impl `ImageServices.xml:109` | The "Original" output keeps every writable input format; Java's check compares the reader's format name with the writers' suffixes, so a JPEG original (format name `JPEG`) is written as `outputImageFormat` | Low | Decision pending |
 
-#### P8b-03 — Email address formatting
+#### P8c-11 — The "Original" image format
 
-The port's `save#EcaEmailMessage` stores `toAddresses` (and cc/bcc) as `join(', ')`, where Java uses
-Groovy `List.toString()` (`[a, b]`), so stored values differ for anything that reads them back.
+Java keeps the input format for the original when `ImageIO.getWriterFileSuffixes()` contains `reader.getFormatName()`:
+the JPEG reader's name is `JPEG`, which is not among the lower-case suffixes, so a JPEG original is converted to
+`outputImageFormat`, while a PNG, GIF, BMP or TIFF original is kept (and WebP, which the TwelveMonkeys plugin
+reads but does not write, is converted). Rust keeps any input format it can write, which is what the check appears meant to do. The one caller
+found (`WeCreateServices.xml`, a sibling component) names the original's file `..._Original.${outputImageFormat}`, so
+neither Java's outcome nor this port's always matches the name. Left open: keeping the input format, copying Java's
+outcome, or always writing `outputImageFormat` is an owner decision (see [Open decisions](#open-decisions)).
 
 #### Phase 8 checked and found equivalent
 
@@ -934,6 +952,17 @@ Groovy `List.toString()` (`[a, b]`), so stored values differ for anything that r
   `service/rest.rs:900-979`; `param_schema`, `:1009-1047`; `parameter_enums`, `:1049-1067`). The schemas are inline
   in OpenAPI 3.1 form where Java's Swagger 2 refers to `definitions`; a `required="disabled"` parameter is left out,
   as validation drops it (P6a-12). P8a-26 and P8a-28 are what stays.
+- elFinder root refusal (P8c-03, fixed): `rm`, `rename`, `upload` and `put` on the volume root answer Java's
+  "Operation not allowed on the root" (`ROOT_REFUSED`, `service/elfinder.rs:45`).
+- Volume-ID hash (P8c-16, fixed): a hash of only the 3-character volume ID decodes to the empty path, the root, as
+  Java's `unhash`; `rm` of it is refused as the root, and a hash shorter than the ID is still an error (`unhash`,
+  `service/elfinder.rs:756`).
+- SSO field mapping (P8c-07, fixed): a mapped claim is taken by Groovy truth, as `if (srcFieldValue)`, so `false`, an
+  empty value and a zero number are not mapped, and the text `"0"` is (`groovy_truth`, `service/sso.rs:353`, `:383-392`).
+- 8b and 8c, found equivalent this round: an empty expanded subject leaves out the `Subject` header in both, as
+  commons-email sets it only when not empty (P8b-10, `service/mail/implementation.rs:985`); and the elFinder `write`
+  flag and the `mkdir`/`mkfile` `supportsWrite()` check (P8c-02, P8c-04), since every entry is a `DbResource` or a
+  file, which `supportsWrite()` answers true for (`service/elfinder.rs:319`, `:636`).
 - 8a: identity-admin read ban and identity/secret write bans with UserAccount input stripping
   (`service/rest.rs:641-656`); entity results stripped and returned without `_entity` (`service/rest.rs:664,682-692`;
   master path keeps it, as Java); `count` via `search_form_map` with `X-Total-Count`; remote-REST
@@ -1008,11 +1037,19 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P8a-29 | service REST | A plain map out-parameter loses its null entries one level down too (`remove_result_nulls`, `service/rest.rs:596-615`); Java removes them only from an `EntityValue` | Entity values are maps in this port, so the two cannot be told apart; a missing key and a `null` read the same to a JSON client. Doc comment at the function |
 | P8b-01 | mail | `allowedToDomains` dot-boundary match on the extracted address vs Java `endsWith` on the raw address | Hardening; doc comment `service/mail/implementation.rs:545-564` |
 | P8b-02 | mail poll | Per-message `ForceNew` transaction and continue-on-error vs Java one poll transaction aborting on first throw | AGENTS.md policy; comment `service/mail/implementation.rs:1303-1307` |
+| P8b-03 | email ECA | `save#EcaEmailMessage` stores the to, cc and bcc lists joined by `, ` (runtime `EmailServices.xml:79-86`); Java stores Groovy's `List.toString()`, `[a, b]` | The stored lists are read back by `send#EmailMessage`, which splits them on commas in both, so Java's form sends to `[a` and `b]`; `send#EmailTemplate` stores them comma separated too. Comment at the site |
+| P8b-04 | mail poll | An IMAP poll expunges only when it flagged a message deleted (`ImapBox::close`, `service/mail/implementation.rs:1668-1671`); Java's `folder.close(true)` always expunges | Safer: a poll of a server not set to delete does not purge what another client flagged and could still undelete. Comment at the site |
 | P8b-05 | email ECA | `message` context is a Map, not the live `MimeMessage` | Comment `service/mail/implementation.rs:1402` |
+| P8b-06 | mail | A screen attachment with no `fileName` is named for its location (or `screenPath`) less the extension (`service/mail/implementation.rs:783-795`); Java drops the last 4 characters of the location | The same for a `.xml` screen; Java fails the send with an NPE for a `screenPath` attachment, which has no location. Comment at the site |
+| P8b-07 | mail | A recipient list is split on commas outside quotes and `<>`, and empty items are left out (`split_addresses`, `service/mail/implementation.rs:2080-2082`); Java splits on every comma | Java breaks `"Doe, Jane" <jane@example.com>` into two bad addresses. Doc comment at the function |
 | P8b-08 | mail | `send#Email`/`send#EmailTemplate` gain `body`/`bodyText` overrides | Module doc `service/mail/implementation.rs:23`, `:83-84` |
-| P8c-08 | SSO | Default group added only when non-empty | `service/sso.rs:479-481` |
-| P8c-10 | elFinder | `rm` validates all targets before deleting; Java deletes then returns on first bad | Comment `service/elfinder.rs:655` |
+| P8b-09 | mail | The text alternative is rendered only when the body screen's `render-modes` takes `text` (`render_bodies`, `service/mail/implementation.rs:373-392`); Java always renders it | This port's screen renderer refuses a mode the screen does not list (`screen/render.rs:410`), which would fail the send; no email body screen in `runtime/` sets `render-modes`. Doc comment at the function |
+| P8c-05 | SSO | The callback takes no return URL from `RelayState` (`service/sso.rs:235-246`); Java prefers it to the session's `returnTo` | `RelayState` is SAML's, which the port has no client for (P8c-14), so a return URL never comes from the callback's query. Comment at the site |
+| P8c-06 | SSO | `login#User` without a `returnTo` clears one stored by an earlier, unfinished login (`service/sso.rs:204-208`); Java keeps it | Stricter: a stale return URL is not followed by a later login. Comment at the site |
+| P8c-08 | SSO | Default group added only when non-empty | `service/sso.rs:498-500` |
+| P8c-10 | elFinder | `rm` validates all targets before deleting; Java deletes then returns on first bad | Comment `service/elfinder.rs:657` |
 | P8c-12 | images | Suffix/MIME lists hardcoded; Java uses live `ImageIO` lists | `service/images.rs:46-55` |
 | P8c-13 | system message | Replay-cache TTL check on received messages (Rust-only) | Hardening; `service/system_sync/message.rs:430-446` |
 | P8c-14 | SSO | SAML flows error as unavailable; Java builds a `SAML2Client` | No SAML client in the port (`service/sso.rs:180-184`) |
-| P8c-15 | elFinder | Symlink-to-directory deleted as a link; Java follows and deletes contents | Comment `service/elfinder.rs:425-431` |
+| P8c-15 | elFinder | Symlink-to-directory deleted as a link; Java follows and deletes contents | Comment `service/elfinder.rs:426-431` |
+| P8c-17 | SSO | `logout#User` always ends the local login, even when the provider's end-session URL cannot be had, which is then logged (`service/sso.rs:266-298`); Java skips `logoutUser()` when its pac4j logout throws | Safer: a provider failure does not leave the user logged in here. Doc comment at the function |
