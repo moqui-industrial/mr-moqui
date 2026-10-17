@@ -84,11 +84,11 @@
         if (sub.name === "header-field" && sub.parent) {
             const header = child(sub.parent, "header-field");
             const dflt = child(sub.parent, "default-field");
-            if (header && attr(header, "title")) holder = header;
-            else if (dflt && attr(dflt, "title")) holder = dflt;
+            if (header?.attrs?.title !== undefined) holder = header;
+            else if (dflt?.attrs?.title !== undefined) holder = dflt;
         }
         const title = attr(holder, "title");
-        if (title) return `ec.l10n.localize(${expandCode(title)})`;
+        if (holder.attrs?.title !== undefined) return `ec.l10n.localize(${expandCode(title)})`;
         return `ec.l10n.localize(${lit(titleText(holder))})`;
     };
 
@@ -192,10 +192,10 @@
             if (sub.name === "header-field" && sub.parent) {
                 const header = first(sub.parent, "header-field");
                 const dflt = first(sub.parent, "default-field");
-                if (header && at(header, "title")) holder = header;
-                else if (dflt && at(dflt, "title")) holder = dflt;
+                if (header?.attrs?.title !== undefined) holder = header;
+                else if (dflt?.attrs?.title !== undefined) holder = dflt;
             }
-            if (at(holder, "title")) return L(x(at(holder, "title")));
+            if (holder.attrs?.title !== undefined) return L(x(at(holder, "title")));
             const name = holder.parent ? at(holder.parent, "name") : "";
             return L(name.split(/(?=[A-Z])/).map((word) => (word.charAt(0).toUpperCase() + word.slice(1)).replace("Id", "ID")).join(" "));
         };

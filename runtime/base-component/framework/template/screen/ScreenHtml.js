@@ -80,11 +80,11 @@
         if (sub.name === "header-field" && sub.parent) {
             const header = child(sub.parent, "header-field");
             const dflt = child(sub.parent, "default-field");
-            if (header && attr(header, "title")) holder = header;
-            else if (dflt && attr(dflt, "title")) holder = dflt;
+            if (header?.attrs?.title !== undefined) holder = header;
+            else if (dflt?.attrs?.title !== undefined) holder = dflt;
         }
         const title = attr(holder, "title");
-        if (title) return `ec.l10n.localize(${expandCode(title)})`;
+        if (holder.attrs?.title !== undefined) return `ec.l10n.localize(${expandCode(title)})`;
         return `ec.l10n.localize(${lit(titleText(holder))})`;
     };
 
