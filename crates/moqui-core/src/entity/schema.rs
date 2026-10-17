@@ -35,11 +35,10 @@ const SCHEMA: &str = "https://json-schema.org/draft/2020-12/schema";
 pub(crate) fn document(facade: &EntityFacade, names: &[String], master: bool) -> Result<Value, Error> {
     facade.with_model(|model| {
         let mut builder = Builder {
-            facade,
             model,
             defs: IndexMap::new(),
             root: None,
-            enums: HashMap::new(),
+            enums: FieldEnums::new(facade),
         };
         if names.is_empty() {
             return Ok(builder.catalog(master));
@@ -57,14 +56,12 @@ fn bad_request(message: impl Into<String>) -> Error {
 }
 
 struct Builder<'a> {
-    facade: &'a EntityFacade,
     model: &'a EntityModel,
     /// The schemas a relationship refers to, by full entity name (`full.master` for a master in the catalog).
     defs: IndexMap<String, Value>,
     /// The key of a standalone document's own entity: a relationship back to it refers to the root, `#`.
     root: Option<String>,
-    /// The ids of each `(related entity, type)` already read.
-    enums: HashMap<(String, String), Option<Vec<Value>>>,
+    enums: FieldEnums<'a>,
 }
 
 impl Builder<'_> {
@@ -147,7 +144,7 @@ impl Builder<'_> {
         let mut properties = IndexMap::new();
         for field in &entity.fields {
             let mut schema = field_schema(&field.field_type);
-            if let Some(ids) = self.field_enums(entity, &field.name) {
+            if let Some(ids) = self.enums.of(entity, &field.name) {
                 schema.insert("enum".to_string(), Value::List(ids));
             }
             properties.insert(field.name.clone(), Value::Map(schema));
@@ -241,11 +238,26 @@ impl Builder<'_> {
             .unwrap_or_else(|| relationship.name.clone());
         properties.insert(entry, Value::Map(property));
     }
+}
+
+/// Java's `getFieldEnums` for one document: the ids of each `(related entity, type)` are read once.
+pub(crate) struct FieldEnums<'a> {
+    facade: &'a EntityFacade,
+    read: HashMap<(String, String), Option<Vec<Value>>>,
+}
+
+impl<'a> FieldEnums<'a> {
+    pub(crate) fn new(facade: &'a EntityFacade) -> Self {
+        Self {
+            facade,
+            read: HashMap::new(),
+        }
+    }
 
     /// Java's `getFieldEnums`: the first `one` relationship (not an auto-reverse) keyed by this field alone, when it
     /// has a title and goes to `Enumeration` or `StatusItem`, gives the ids of that type, by `sequenceNum`. A read
     /// that fails is logged and the field has no `enum`.
-    fn field_enums(&mut self, entity: &EntityDefinition, field_name: &str) -> Option<Vec<Value>> {
+    pub(crate) fn of(&mut self, entity: &EntityDefinition, field_name: &str) -> Option<Vec<Value>> {
         let relationship = entity.relationships.iter().find(|relationship| {
             relationship.key_pairs.len() == 1
                 && relationship.key_pairs[0].0 == field_name
@@ -259,7 +271,7 @@ impl Builder<'_> {
             _ => return None,
         };
         let key = (relationship.related.clone(), title.to_string());
-        if let Some(ids) = self.enums.get(&key) {
+        if let Some(ids) = self.read.get(&key) {
             return ids.clone();
         }
         let found = self.facade.find(&relationship.related).and_then(|find| {
@@ -283,7 +295,7 @@ impl Builder<'_> {
                 None
             }
         };
-        self.enums.insert(key, ids.clone());
+        self.read.insert(key, ids.clone());
         ids
     }
 }

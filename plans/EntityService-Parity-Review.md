@@ -20,7 +20,7 @@ ordering.
 
 ## Summary
 
-40 open findings and 45 accepted differences. Open by phase:
+26 open findings and 50 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
@@ -31,18 +31,18 @@ ordering.
 | 5 Entity query / REST | 3 | — |
 | 6 Service definition / validation / call | 1 | P6b-01 (decision) |
 | 7 ECA / SECA / pools / jobs | 0 | — |
-| 8 REST / remote / tools / mail / components | 30 | P8a-03 |
+| 8 REST / remote / tools / mail / components | 16 | — |
 
 | ID | Area | One-line |
 |---|---|---|
 | P6b-01 | service call | Service-body failure returns `Err`; Java returns the result map — **open design decision** |
-| P8a-03 | service REST | `/rest/s1` service results not run through `stripUserAccountSecrets` |
 
 ### Cross-cutting threads
 
-1. **Access control** (P8a-03): service-REST results are not stripped of UserAccount secrets. (Async calls now check
-   authorization as the caller before they are queued and run with it disabled, P7b-07 and P7b-08 fixed, and
-   `ALL_USERS` membership follows Java, P7a-05 fixed.)
+1. **Access control** (none open): service-REST results are now stripped of UserAccount secrets at any depth (P8a-03
+   fixed), and a `/rest/s1` path is authorized for the method an `X-HTTP-Method-Override` names (P8a-04 fixed). (Async
+   calls now check authorization as the caller before they are queued and run with it disabled, P7b-07 and P7b-08
+   fixed, and `ALL_USERS` membership follows Java, P7a-05 fixed.)
 2. **Full-text search and model sources** (P3-20, P3-14, P3-21): a `LIKE` on a `text-fts` field is not rewritten
    to a full-text search (the DDL now follows `FtsDdl`), DB view entities are not built from their rows, and a
    foreign key is recognized only by its computed name.
@@ -60,11 +60,11 @@ ordering.
   depends on the answer. Notes for the decision (2026-10-16):
   - Callers: about 25 non-test call sites of `service::sync`, `call::sync`, `sync_with` and `sync_multi` in
     moqui-core, moqui-host and moqui-browser, and about 90 in tests. Some stop on the `Err` with `?`
-    (`entity/query_rest.rs:243`, `entity/field_rw.rs:466`, `user/authz.rs:417`, `service/rest.rs:564,608`,
+    (`entity/query_rest.rs:243`, `entity/field_rw.rs:466`, `user/authz.rs:417`, `service/rest.rs:590,658`,
     `service/spreadsheet.rs:315`, `moqui-browser/src/host.rs:182`); some match it to record or log it
     (`service/jobs.rs:490` records the job's error, `service/eca.rs:206`, `entity/document.rs:970`,
     `notify/message.rs:601`, `service/tools.rs:68`, `service/system_sync/sftp.rs:242`); some read the message
-    facade as well (`screen/dispatch.rs:248,263,294`, `search/feed.rs:248`, `service/sso.rs:301`,
+    facade as well (`screen/dispatch.rs:249,264,295`, `search/feed.rs:248`, `service/sso.rs:301`,
     `service/system_sync/message.rs:336`, `moqui-host/src/ssh/shell.rs:163`). Under Java's contract the first two
     groups would need a `has_error()` check, or they go on with an empty result.
   - Tests that assert the `Err` of a body failure: in `service/call.rs`,
@@ -189,11 +189,12 @@ along the way. No Phase 2 finding is open. Line numbers in this section are as o
 - JSON schema relationships (P2-06, fixed): an entity's dependent relationships, or a master's details (with
   `use-master`), are properties named by short alias or relationship name with a `$ref` to the related schema,
   an array for `many`; the related schemas go in `$defs`, nested as Java nests them, and a reference back to a
-  standalone document's own entity is `#` (`entity/schema.rs:129-243`). The catalog also holds any view entity
+  standalone document's own entity is `#` (`entity/schema.rs:126-240`). The catalog also holds any view entity
   a relationship refers to, so every `$ref` resolves; Java refers to a definition it never writes.
 - JSON schema `enum` (P2-07, fixed): the first non-auto-reverse `one` relationship keyed by the field alone,
-  titled and to `Enumeration` or `StatusItem`, lists that type's ids by `sequenceNum` (`field_enums`,
-  `entity/schema.rs:248`); a read that fails is logged and the field has no `enum`.
+  titled and to `Enumeration` or `StatusItem`, lists that type's ids by `sequenceNum` (`FieldEnums::of`,
+  `entity/schema.rs:260`, which the service OpenAPI also uses, P8a-24); a read that fails is logged and the field
+  has no `enum`.
 - Distinct count (P2-11, fixed): with no field selected it counts `SELECT DISTINCT *` in a sub-select, as Java
   wraps all fields (`moqui-db/src/sql/statement.rs:262`).
 - `one()` with no condition or an empty PK returns `None` without querying (`entity/find.rs:368-406`).
@@ -486,7 +487,7 @@ value`). Line numbers in this section are as of that change.
 |----|---|---|---|---|---|
 | P5-16 | `moqui-db/src/model/mod.rs:708-723` | `EntityDefinition.groovy:180,205-210`; `EntityValueBase.java:215-251` | `pq-expression` aliases are not evaluated; such an alias is left out of its view with a logged error (unused in `runtime/`) | Low | No |
 | P5-18 | `moqui-db/src/model/mod.rs:432` (`entity`); `entity/document.rs:722-758` | `EntityFacadeImpl.groovy:1110-1111`; `EntityDataDocument.groovy:169-183,204-208` | `DataDocument.<dataDocumentId>` is not an entity name: Java builds the document's dynamic view as an entity definition for finds and form auto fields (unused in `runtime/`) | Low | No |
-| P5-19 | `entity/schema.rs:148`; `entity/data_writer.rs:522-538` | `RestSchemaUtil.groovy:144-147`; `EntityDataWriterImpl.groovy:349-359` | The entity JSON schema and the data writer's CSV header and rows of a **view-entity** have no fields; Java uses the aliases (`getAllFieldNames`) | Med | No |
+| P5-19 | `entity/schema.rs:145`; `entity/data_writer.rs:522-538` | `RestSchemaUtil.groovy:144-147`; `EntityDataWriterImpl.groovy:349-359` | The entity JSON schema and the data writer's CSV header and rows of a **view-entity** have no fields; Java uses the aliases (`getAllFieldNames`) | Med | No |
 
 #### P5-16 — `pq-expression` aliases not evaluated
 
@@ -640,7 +641,7 @@ Rust tests assert this `Err`; see [Open decisions](#open-decisions).
   `message` expanded with `pv`, `regexp`, `min`/`max` (`apply_check`, `service/validate.rs:576-731`). The field and
   service are on the validation error, not in its text; the errors text adds them (P6a-23).
 - Errors text (P6a-23, found and fixed): the JSON `errors` of a REST or screen response (`web/mod.rs:778-781`,
-  `screen/dispatch.rs:370-373`) and a script's `ec.message.errorsString` (`script/runtime/facades.rs:350-352`) are
+  `screen/dispatch.rs:372-375`) and a script's `ec.message.errorsString` (`script/runtime/facades.rs:350-352`) are
   Java's `getErrorsString`: the errors, then each validation error as `toStringPretty` writes it, its message, `(`,
   `for field`, ` on form` and ` of service` with the pretty names, and no closing parenthesis, as Java
   (`MessageFacade::errors_text`, `ValidationError::to_string_pretty`, `context/message.rs:44-67`, `:132-156`); a
@@ -825,25 +826,33 @@ mail Groovy resources and `EmailServices.xml`, `ElFinderConnector.groovy`, `Enti
 image/spreadsheet service XML. The `*.rest.xml` HTTP route/CORS layer lives in `screen/dispatch.rs` /
 `web/mod.rs`.
 
+Worked 2026-10-16 (8a only; 8b and 8c are for a later round): P8a-03, P8a-04, P8a-06, P8a-08, P8a-11, P8a-12,
+P8a-13, P8a-15, P8a-18, P8a-19, P8a-20, P8a-21, P8a-22 and P8a-24 fixed; P8a-17 moved to
+[Accepted differences](#accepted-differences). Found along the way: P8a-25, P8a-27, P8a-28 and P8a-29 (the parts of
+P8a-21, P8a-20, P8a-24 and P8a-11 that stay, accepted) and P8a-26 (open). For P8a-08 the shipped callers were checked
+first: the only `remote-rest` service in the tree, the browser smoke `get#Echo`, is answered with a JSON object, so
+none depends on the lenient body handling. Changes a deployment may see: a `/rest/s1` service result has no `null`
+out-parameters, no `null` fields one map down, and no `UserAccount` password fields; a POST with
+`X-HTTP-Method-Override` reaches the overriding method on `/rest/s1` and is authorized for it; a `remote-rest` call
+whose 2xx body is not a JSON object or array, an empty one too, now fails; its GET query carries empty and list
+values; a `method="HEAD"` or `"OPTIONS"` is sent as that method (and fails with parameters, which it cannot carry as
+a body); a `<method type="GET">` (upper case, outside the XSD) is no longer served; and the service OpenAPI
+(`/rest/service.swagger/<root>`) now documents each service method's parameters and response. Its entity methods
+still carry only a summary, as before (Swagger and RAML are out of scope, below). Line numbers in this section are as
+of that change.
+
 ### Findings — 8a REST / remote REST / tools / print
 
 | ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P8a-03 | `service/rest.rs:564` | `RestApi.groovy:833` | `run_service` results on `/rest/s1` not passed through `strip_user_account_secrets` (entity results are, `service/rest.rs:614`); Java strips every `RestResult` | High | No |
-| P8a-04 | `screen/dispatch.rs:154` | `RestApi.groovy:648-662` | `X-HTTP-Method-Override` honored for `/rest/e1` (`screen/dispatch.rs:332-343`) but not `/rest/s1` | Med | No |
-| P8a-06 | `service/rest.rs:327-331` | `RestApi.groovy:605` | Resource `description` read from a child element; real `*.rest.xml` put it on the attribute | Med | No |
-| P8a-08 | `service/remote.rs:169-180` | `RemoteRestServiceRunner.groovy:77` | 2xx non-JSON body yields `{response:<text>}` and an empty body `{}`; Java `jsonObject()` throws and fails the call | Med | Unsure |
-| P8a-11 | `service/rest.rs:564` | `RestApi.groovy:252` | Null-valued out-parameters not removed (`nestedRemoveNullsFromResultMap`) | Low | Unsure |
-| P8a-12 | `service/remote.rs:87` | `RemoteRestServiceRunner.groovy:71-75` | Error message omits the reason phrase | Low | No |
-| P8a-13 | `service/remote.rs:143-156` | `RestClient.java:941-952` | GET query omits list/map and empty values | Low | Unsure |
-| P8a-15 | `outbound.rs:29-35` | `RestClient.java:89-90` | `HEAD`/`OPTIONS` dropped, falling back to POST | Low | No |
-| P8a-17 | `service/tools.rs:203-212` | `PrintServices.xml:100,121-123` | `print#ScreenDocument` rejects non-PDF and ignores `webappName` | Low | Unsure |
-| P8a-18 | `service/rest.rs:296-298`, `:343-345` | `RestApi.groovy:192,614` | Empty `require-authentication=""` inherits the parent in Java, required in Rust | Low | No |
-| P8a-19 | `service/rest.rs:310` | `RestApi.groovy:618` | Rust lowercases `method type`; Java keys by the verbatim attribute | Low | No |
-| P8a-20 | `service/rest.rs:375`, `:224` | `RestApi.groovy:616-632` | Unsupported method child fails the whole file; Java registers no handler | Low | No |
-| P8a-21 | `service/tools.rs:618`, `:664-668` | `EntityServices.xml:176-192` | Empty-string userIds dropped; DataDocument read without `useCache(true)` | Low | Unsure |
-| P8a-22 | `service/rest.rs:132-161` | `RestApi.groovy:100-106,597,634-644` | `resource_info` omits `childPaths`/`methods` (the dashboard uses only `childMethods`, which is recursive on both sides) | Low | Unsure |
-| P8a-24 | `service/rest.rs:729` (`openapi_document`) | `RestApi.groovy:471`; `RestSchemaUtil.groovy:517` | Service-parameter schemas omit the `enum` lists Java derives from `Enumeration`/`StatusItem` (entity schemas have them since P2-07) | Low | Unsure |
+| P8a-26 | `service/rest.rs:1011` (`param_schema`) | `RestSchemaUtil.groovy:479-480`; `RestApi.groovy:272,290` | The service OpenAPI's parameter schemas have no `description`; Java takes the parameter's `<description>` text | Low | No |
+
+#### P8a-26 — Parameter descriptions in the service OpenAPI
+
+`ParamDef` keeps no `<description>` text, so the parameter schemas P8a-24 added have none. Left open: carrying it
+means a new `ParamDef` field and a decision on how `merge_param` (`service/define.rs:176`) merges it for an
+`implements` or a redeclared parameter, which Java's `mergeParameter` does by copying the child elements; that is
+service-definition work beyond this REST round.
 
 ### Findings — 8b mail / email services
 
@@ -870,28 +879,6 @@ image/spreadsheet service XML. The `*.rest.xml` HTTP route/CORS layer lives in `
 | P8c-16 | `service/elfinder.rs:753-755` | `ElFinderConnector.groovy:75-93` | A hash of exactly the 3-char volume id decodes to invalid; Java yields the root | Low | No |
 | P8c-17 | `service/sso.rs:286-290` | `AuthenticationFlow.groovy:139-155` | `logout` always ends local login; Java only if pac4j `perform` did not throw | Low | Unsure |
 
-#### P8a-03 — Service-REST service results not stripped of secrets
-
-Java wraps every Service-REST response in `WebUtilities.stripUserAccountSecrets` (`RestApi.groovy:833`),
-removing `currentPassword`/`resetPassword`/`passwordSalt`/`passwordHashType`/`passwordBase64` wherever
-they appear. Rust strips entity results (`service/rest.rs:614`) but returns `run_service` results as produced
-(`service/rest.rs:564`), so a service method on `/rest/s1` whose out-parameters include a UserAccount map leaks
-password material. The fix is to run the `entity/sensitive.rs` stripper over service results too.
-
-#### P8a-04 / P8a-06 — REST verb override and resource description
-
-Java resolves the effective verb through `PathNode.effectiveRequestMethod` (honoring
-`X-HTTP-Method-Override`) for both service and entity dispatch; Rust does this only for `/rest/e1` and
-passes the raw method for `/rest/s1`, so an override POST gets 405. Java reads resource `description`
-from the attribute, which real `*.rest.xml` files use; Rust reads a child element, so descriptions are
-always empty.
-
-#### P8a-08 — Remote-REST response handling
-
-On a 2xx response Java parses JSON and throws on a non-JSON or empty body. Rust tolerates a non-JSON
-body as `{"response": "<text>"}` and an empty one as `{}`, changing success/failure and the value
-shape.
-
 #### P8b-03 — Email address formatting
 
 The port's `save#EcaEmailMessage` stores `toAddresses` (and cc/bcc) as `join(', ')`, where Java uses
@@ -899,11 +886,59 @@ Groovy `List.toString()` (`[a, b]`), so stored values differ for anything that r
 
 #### Phase 8 checked and found equivalent
 
+- Service results stripped of secrets (P8a-03, fixed): a `/rest/s1` service result goes through
+  `strip_user_account_secrets`, as Java's `RestResult`, so the `UserAccount` password fields are left out of every map
+  in it at any depth: an out-parameter that is an account, a list of them, or one nested further (`run_service`,
+  `service/rest.rs:585-594`).
+- Method override (P8a-04, fixed): `/rest/s1` takes `X-HTTP-Method-Override` on a POST as `/rest/e1` does, and the
+  method it names is the one the path frames are authorized for (`AT_REST_PATH` view, create, update or delete) as
+  well as the one that runs, as Java's `effectiveRequestMethod` in both `getActionFromMethod` and `runByMethod`
+  (`effective_verb`, `screen/dispatch.rs:333-345`; used at `:87`, `:155`). An override cannot reach a method the
+  user may not run: a view-only user's POST with `PUT` is refused at the path.
+- Resource description (P8a-06, fixed): read from the `description` attribute, as written in the real `*.rest.xml` and
+  the XSD, as Java (`service/rest.rs:356`); the tools dashboard's tooltip and child links show it.
+- Remote-REST body (P8a-08, fixed): a 2xx body that is a JSON object is the result and an array is `response`; any
+  other, an empty body too, fails the call with Java's "Error parsing JSON response from request to ...", the URL
+  redacted (`response_map`, `service/remote.rs:174-183`; `:100-101`).
+- Result nulls (P8a-11, fixed): as `nestedRemoveNullsFromResultMap`, the null out-parameters, and the null fields of
+  each map out-parameter and of the maps that lead a list, are left out (`remove_result_nulls`,
+  `service/rest.rs:596-615`); the plain-map part that stays is P8a-29.
+- Remote-REST error text (P8a-12, fixed): "Remote service error 503: Service Unavailable", with the standard reason
+  phrase of the status (`service/remote.rs:92`; `reason_phrase`, `outbound.rs:183-216`, shared with the script
+  `rest()` host, which already used it); the transport does not pass on the server's own phrase.
+- GET query (P8a-13, fixed): as `parametersMapToString`, every parameter but a null one, an empty value as `name=` and
+  a list as its items joined by commas (`encode_query`, `service/remote.rs:149-160`). Java's stray `&` for a null is
+  not copied, and a space is `%20` where `URLEncoder` writes `+`, which servers read the same.
+- HEAD and OPTIONS (P8a-15, fixed): sent as themselves, as Java's `RestClient.Method`, where they fell back to POST
+  (`outbound.rs:28-72`; `moqui-lib/src/http.rs:57-107`); with parameters, which they cannot carry as a body, the call
+  fails before it is sent, as `RestClient.text` refuses one (`service/remote.rs:71-75`). The script `rest()` host
+  takes them too.
+- `require-authentication=""` (P8a-18, fixed): an empty value inherits the parent's, as Java's `?:`, on a resource,
+  an id and a method (`service/rest.rs:311-315`, `:368-371`).
+- Method `type` (P8a-19, fixed): methods are keyed by `type` as written, as Java's `methodMap`, so a `type="GET"`,
+  outside the XSD's lower-case list, is never matched (`service/rest.rs:326-344`).
+- A method that does not load (P8a-20, fixed): an operation other than `service` or `entity` is logged and that method
+  left out, and the rest of the file is served, as Java registers no handler for it (`service/rest.rs:326-344`); what
+  else is left out where Java does otherwise is P8a-27.
+- DataDocument notifications (P8a-21, fixed): the `DataDocument` and its links are read through the entity cache, as
+  `useCache(true)`, and user ids are looked for in the maps of a list but not in a list in a list, as
+  `findAllFieldsNestedMap` (`find_nested`, `service/tools.rs:615-632`; `:669-687`). The empty id is P8a-25.
+- Tools dashboard counts (P8a-22, fixed): each resource has `childPaths`, Java's count of the resources and ids under
+  it, beside `childMethods` (`path_count`, `service/rest.rs:163-169`). Java's `methodMap` of handler objects is read
+  only by its LLM browse tool (out of scope) and is not built.
+- Service OpenAPI parameters (P8a-24, fixed): a service method in `/rest/service.swagger/<root>` has its path
+  parameters, its other in-parameters as query parameters of a method with no body (not objects or arrays) or as the
+  JSON `requestBody` of a `post`, `put` or `patch`, and its out-parameters as the `200` response, each with Java's
+  `getJsonType`/`getJsonFormat`, its default, nested parameters, and the `enum` Java's `addParameterEnums` gives a
+  parameter with `entity-name` and `field-name`, through P2-07's `FieldEnums` (`service_parameters`,
+  `service/rest.rs:900-979`; `param_schema`, `:1009-1047`; `parameter_enums`, `:1049-1067`). The schemas are inline
+  in OpenAPI 3.1 form where Java's Swagger 2 refers to `definitions`; a `required="disabled"` parameter is left out,
+  as validation drops it (P6a-12). P8a-26 and P8a-28 are what stays.
 - 8a: identity-admin read ban and identity/secret write bans with UserAccount input stripping
-  (`service/rest.rs:591-606`); entity results stripped and returned without `_entity` (`service/rest.rs:614,632-642`;
+  (`service/rest.rs:641-656`); entity results stripped and returned without `_entity` (`service/rest.rs:664,682-692`;
   master path keeps it, as Java); `count` via `search_form_map` with `X-Total-Count`; remote-REST
   `method` attribute honored (`service/call.rs:886-894`); `rewrite#EntityEncryptedFields` logs and skips
-  records that won't decrypt or update (`service/tools.rs:778-800`).
+  records that won't decrypt or update (`service/tools.rs:785-807`).
 - 8a: root/path 404s and error kinds; `*.rest.xml` discovery and root replacement; named-child
   precedence; `allow-extra-path`; `AT_REST_PATH` frame/authz; `anonymous-all`/`anonymous-view`; entity
   operation set and `{operation}#{entity}` dispatch; find-one-not-found → null; default list limit 100
@@ -935,7 +970,7 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P1-13 | entity list | Rust `EntityList` has only len/get/iter/values; Java has `filterByAnd`, `orderByFields`, `getFirst` and more (`entity/value.rs:243-277`) | Rust callers use slice/iterator methods; the script runtime's list has the helpers scripts call (`filterByDate`, `getPartialList`, `first`), and no converted component uses the others; doc comment at the type |
 | P2-08 | entity find | Distinct and select-field finds bypass the entity cache; Java caches them by reading every field, so a cached entity answers with whole, non-distinct rows (`entity/find.rs:238-244`) | Rust returns the rows and fields asked for; comment at `bypasses_cache` |
 | P2-10 | entity find | `iterator()` under `requireSearchFormParameters` returns an empty iterator; Java returns `null` (`entity/find.rs:524-530`) | Rust has no null iterator; empty is the safe equivalent |
-| P2-12 | entity schema | JSON schema envelope redesigned: `$defs`/draft 2020-12, PK `required`, keyed by full name vs Java `definitions`/`anyOf`/pagination, draft-04, `_entity`+`default`, short-or-full name (`entity/schema.rs:27,89-128`) | Deliberate modernization; relationships and `enum` now follow Java inside it (P2-06/P2-07 fixed) |
+| P2-12 | entity schema | JSON schema envelope redesigned: `$defs`/draft 2020-12, PK `required`, keyed by full name vs Java `definitions`/`anyOf`/pagination, draft-04, `_entity`+`default`, short-or-full name (`entity/schema.rs:27,86-125`) | Deliberate modernization; relationships and `enum` now follow Java inside it (P2-06/P2-07 fixed) |
 | P2-14 | search form | `_not` with `_ic` on `equals` compares ignoring case; Java throws, since `ignoreCase()` on the `orNull` join condition is unsupported (`entity/search_form.rs:269-272`) | A search a user can type should not fail; comment at the site |
 | P3-06 | datasource / DDL | No table, constraint or index name is schema-qualified: Postgres sets the session `search_path` to `schema-name` (`moqui-host/src/db/entity_db.rs:202-207`), `use-schema-for-all` (only the DB2 profiles) is unread, and a MySQL `schema-name` is logged and not used (`entity/datasource.rs:222-229`) | Same placement on Postgres without qualifying each statement; no DB2 driver; on MySQL Java's `schema.TABLE` is another database, which the jdbc-uri names. `use-schemas="false"` is now honored (no search path, `entity/datasource.rs:178-184`); comments at both sites |
 | P3-11 | DDL | `fk-style="name_fk"` (the MySQL profiles) is not followed: always `ADD CONSTRAINT name FOREIGN KEY` (`moqui-db/src/sql/statement.rs:562-571`) | MySQL 8.0.16 and later ignore the `name_fk` name and call the key `{table}_ibfk_N`, so the check that goes by name (P3-21) would add it again on every check; doc comment at `create_foreign_key` |
@@ -963,9 +998,14 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P7b-06 | jobs | Lock row with a run id but null `lastRunTime` holds the job | Comment at `service/jobs.rs:224-227`; Java always writes both |
 | P7b-16 | jobs | `ServiceJobRun.runThread` is the name of this port's job thread, `moqui-job-0` (`service/jobs.rs:463-475`); Java's is `MoquiJob-1` | The column names the thread that ran the job in both; the threads follow this port's `moqui-*` names, which its logs show. Comment at the site |
 | P7b-18 | async | An async call whose parameters fail validation is not queued: the errors are in the caller's message facade, and a future gets an empty map (`prepare_async`, `service/call.rs:264-313`); Java queues it, skipping its authorization check, and its run fails the same validation | Safer: a call that skipped the authorization check is not queued, and its run would do nothing but its `pre-validate` rules. Doc comment at `prepare_async` |
-| P8a-14 | remote REST | Substituted `${param}` values percent-encoded; Java does not URL-encode | Doc comment `service/remote.rs:107-108` |
-| P8a-16 | service REST | No-user denial returns 401; Java throws (403) | Comment `service/rest.rs:497-498` |
+| P8a-14 | remote REST | Substituted `${param}` values percent-encoded; Java does not URL-encode | Doc comment `service/remote.rs:113-114` |
+| P8a-16 | service REST | No-user denial returns 401; Java throws (403) | Comment `service/rest.rs:523-524` |
+| P8a-17 | print | `print#ScreenDocument` refuses a `contentType` other than `application/pdf` with an error, and renders in the one webapp, `webroot`, whatever `webappName` says (`service/tools.rs:207-214`); Java's FOP writes other output types and renders in the named webapp | The PDF renderer makes only PDF, so another type cannot be made, and this port serves one webapp, `webappName`'s default; comment at the site |
 | P8a-23 | service REST | Authc message says "operation"; Java has the "operaton" typo | Don't copy the typo |
+| P8a-25 | DataDocument notifications | An empty `userId`, `fromUserId` or `toUserId` in a document names no user (`find_nested`, `service/tools.rs:615-632`); Java's `findAllFieldsNestedMap` adds it | Java then writes a `NotificationMessageUser` for user `""`, which fails the send for every user of the document; doc comment at `find_nested` |
+| P8a-27 | service REST | A `<method>` with no `type`, no operation element, or an operation with no `name` (or no `operation`) is logged and left out, and the rest of the file is served (`service/rest.rs:326-344`); Java keys one with no type by `null`, registers a service or entity handler with no name, which fails when called, and fails the whole file for a method with no child | AGENTS.md failure tolerance; comment at the site |
+| P8a-28 | service OpenAPI | A REST service that is not defined, or whose parameters do not expand, is logged and documented without parameters, and a parameter whose `entity-name` or `field-name` is not defined is logged and has no `enum` (`service/rest.rs:910-923`, `:1049-1067`); Java's Swagger throws for the whole document | AGENTS.md failure tolerance; doc comments at `service_parameters` and `parameter_enums` |
+| P8a-29 | service REST | A plain map out-parameter loses its null entries one level down too (`remove_result_nulls`, `service/rest.rs:596-615`); Java removes them only from an `EntityValue` | Entity values are maps in this port, so the two cannot be told apart; a missing key and a `null` read the same to a JSON client. Doc comment at the function |
 | P8b-01 | mail | `allowedToDomains` dot-boundary match on the extracted address vs Java `endsWith` on the raw address | Hardening; doc comment `service/mail/implementation.rs:545-564` |
 | P8b-02 | mail poll | Per-message `ForceNew` transaction and continue-on-error vs Java one poll transaction aborting on first throw | AGENTS.md policy; comment `service/mail/implementation.rs:1303-1307` |
 | P8b-05 | email ECA | `message` context is a Map, not the live `MimeMessage` | Comment `service/mail/implementation.rs:1402` |

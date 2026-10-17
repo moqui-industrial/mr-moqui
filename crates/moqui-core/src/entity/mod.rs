@@ -50,7 +50,7 @@ pub use find::{EntityFind, EntityListIterator};
 pub use meta::{DdlConf, EntityDbMeta};
 /// The condition tree `EntityFind::condition` takes, so callers need not depend on `moqui-db`.
 pub use moqui_db::sql::{CompareOp, Condition};
-pub(crate) use schema::document as schema_document;
+pub(crate) use schema::{document as schema_document, FieldEnums};
 pub use search_form::SearchFormResult;
 pub use sequence::{fill_bank, stagger_step, take_id, SequenceBank};
 pub(crate) use sequence::{sequenced_id_primary, uuid_v4};

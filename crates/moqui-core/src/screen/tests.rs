@@ -312,6 +312,55 @@ fn anonymous_entity_rest_is_401_and_a_user_without_an_allow_is_403() {
     assert_eq!(response.status, 403, "{}", response.body_text());
 }
 
+/// As Java's `effectiveRequestMethod`, `X-HTTP-Method-Override` on a POST is the method for `/rest/s1` too, and the
+/// REST path is authorized for that method: a view-only user reads with an override `GET` and is refused a `PUT`.
+#[test]
+fn service_rest_takes_the_method_override_and_authorizes_it() {
+    let world = World::open(
+        "<moqui-conf><artifact-execution-facade>\
+            <artifact-execution type=\"AT_REST_PATH\" authz-enabled=\"true\"/>\
+            <artifact-execution type=\"AT_ENTITY\" authz-enabled=\"true\"/>\
+        </artifact-execution-facade></moqui-conf>",
+    );
+    world.load_service_rest();
+    world.user("viewer", Some("VIEWERS"));
+    world.enumeration_type();
+    let mut member = world.facade.make_value("moqui.security.ArtifactGroupMember").unwrap();
+    member.set("artifactGroupId", Value::string("REST_VIEW"));
+    member.set("artifactName", Value::string("/moqui"));
+    member.set("artifactTypeEnumId", Value::string("AT_REST_PATH"));
+    member.set("nameIsPattern", Value::string("N"));
+    member.set("inheritAuthz", Value::string("Y"));
+    member.create(&world.facade).unwrap();
+    let mut authz = world.facade.make_value("moqui.security.ArtifactAuthz").unwrap();
+    authz.set("artifactAuthzId", Value::string("REST_VIEW"));
+    authz.set("userGroupId", Value::string("VIEWERS"));
+    authz.set("artifactGroupId", Value::string("REST_VIEW"));
+    authz.set("authzTypeEnumId", Value::string("AUTHZT_ALWAYS"));
+    authz.set("authzActionEnumId", Value::string("AUTHZA_VIEW"));
+    authz.create(&world.facade).unwrap();
+    let root = webroot().to_string_lossy().into_owned();
+    let send = |method: &str, over: Option<&str>| {
+        let mut call = request(method, "/rest/s1/moqui/basic/enumTypes");
+        call.set_header("authorization", basic("viewer"));
+        if let Some(over) = over {
+            call.set_header("x-http-method-override", over);
+        }
+        serve_at(&world.factory, call, &root)
+    };
+
+    let response = send("GET", None);
+    assert_eq!(response.status, 200, "{}", response.body_text());
+    let response = send("POST", Some("GET"));
+    assert_eq!(response.status, 200, "{}", response.body_text());
+    assert!(response.body_text().contains("TestType"), "{}", response.body_text());
+    // Authorized as an update, which the user may not do, before the method is looked for.
+    let response = send("POST", Some("PUT"));
+    assert_eq!(response.status, 403, "{}", response.body_text());
+    let response = send("POST", None);
+    assert_eq!(response.status, 403, "{}", response.body_text());
+}
+
 #[test]
 fn redirect_json_list_security_headers_and_cors() {
     let mut world = World::open("");
