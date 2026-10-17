@@ -196,6 +196,7 @@ label.inline { white-space: nowrap; margin: 0 6px; font-weight: normal; }
 .field-row > div > .field { grid-template-columns: minmax(6em, 33%) minmax(0, 1fr); }
 .field.big-row { margin-bottom: 8px; }
 .big-row > .widget { display: flex; flex-wrap: wrap; gap: 0 20px; }
+.field.big-row > .widget:first-child { grid-column: 1 / -1; }
 .big-item .field { grid-template-columns: 1fr; }
 .big-item .field > label { text-align: left; padding-top: 0; }
 .field-group > h5 { border-bottom: 1px solid var(--line); padding-bottom: 2px; }
