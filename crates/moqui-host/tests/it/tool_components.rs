@@ -16,7 +16,7 @@
 //!
 //! - `moqui-poi`: a framework screen requested as `.xlsx` is a workbook with a sheet for each form-list and typed
 //!   cells, and `read#Spreadsheet` reads it back;
-//! - `moqui-image`: `convert#Image` writes the original and the four widths of a png, a gif and a tiff;
+//! - `moqui-image`: `convert#Image` writes the original and the four widths of a png, a gif and a tiff as jpg;
 //! - `moqui-cups`: `get#ServerPrinters`, `print#Document`, `get#PrintJobDetailsFromServer` and `cancel#PrintJob` against
 //!   an IPP server in the test, and a send to a server that does not answer.
 
@@ -216,7 +216,7 @@ fn xlsx_spreadsheets_images_and_ipp_printing() {
 
     // ---- moqui-image: the original and four widths of each fixture ----
     let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/images");
-    for (file, original) in [("barnstar.png", "png"), ("wolf.gif", "gif"), ("autumn.tif", "tiff")] {
+    for file in ["barnstar.png", "wolf.gif", "autumn.tif"] {
         let stem = file.split('.').next().unwrap();
         let bytes = std::fs::read(fixtures.join(file)).unwrap();
         let out = |size: &str, ext: &str| text(&format!("runtime://image-test/{stem}-{size}.{ext}"));
@@ -225,7 +225,7 @@ fn xlsx_spreadsheets_images_and_ipp_printing() {
             &params(&[
                 ("inputImageStream", Value::Bytes(bytes)),
                 ("outputImageFormat", text("jpg")),
-                ("outputResourceReferenceOriginal", out("original", original)),
+                ("outputResourceReferenceOriginal", out("original", "jpg")),
                 ("outputResourceReferenceLarge", out("large", "jpg")),
                 ("outputResourceReferenceMedium", out("medium", "jpg")),
                 ("outputResourceReferenceSmall", out("small", "jpg")),
@@ -233,23 +233,27 @@ fn xlsx_spreadsheets_images_and_ipp_printing() {
             ]),
         )
         .unwrap_or_else(|err| panic!("{file}: {err}"));
-        for (size, width) in [("Large", 2160), ("Medium", 1080), ("Small", 360), ("Thumbnail", 165)] {
+        // the original is written as outputImageFormat too, as its caller names the file
+        for (size, width) in [
+            ("Original", None),
+            ("Large", Some(2160)),
+            ("Medium", Some(1080)),
+            ("Small", Some(360)),
+            ("Thumbnail", Some(165)),
+        ] {
             let location = to_plain_string(converted.get(&format!("contentLocation{size}")).unwrap());
+            assert!(location.ends_with(".jpg"), "{location}");
             let written = factory.resource().get(&location).unwrap().read_bytes().unwrap();
             let image = image::load_from_memory(&written).unwrap_or_else(|err| panic!("{location}: {err}"));
-            assert_eq!(image.width(), width, "{location}");
+            if let Some(width) = width {
+                assert_eq!(image.width(), width, "{location}");
+            }
             assert_eq!(
                 image::guess_format(&written).unwrap(),
                 image::ImageFormat::Jpeg,
                 "{location}"
             );
         }
-        let original_location = to_plain_string(converted.get("contentLocationOriginal").unwrap());
-        assert!(
-            original_location.ends_with(&format!(".{original}")),
-            "{original_location}"
-        );
-        assert!(factory.resource().get(&original_location).unwrap().exists());
     }
 
     // ---- moqui-cups: a server that does not answer, then the stub ----

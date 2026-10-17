@@ -151,6 +151,8 @@ pub(crate) struct ParamDef {
     pub field_name: Option<String>,
     /// `format`, for the date and number widgets of a form.
     pub format: Option<String>,
+    /// The `<description>` text, trimmed; none when absent or empty. The service OpenAPI documents it.
+    pub description: Option<String>,
     /// Nested `<parameter>` elements: the entries of a `Map` parameter, cleaned and checked the same way.
     pub children: Vec<ParamDef>,
     /// The attributes the element sets, of [`MERGED_ATTRIBUTES`]: what a parameter of the same name takes from it in
@@ -172,7 +174,8 @@ const MERGED_ATTRIBUTES: [&str; 8] = [
 
 /// Java's `mergeParameter`: a parameter already in `params` with the same name takes the attributes `param` sets, its
 /// checks and its nested parameters, and keeps its place, so one that sets only `required` keeps the earlier `type`;
-/// any other is added at the end. `auto-parameters` are added as they are, to be expanded and merged at the call.
+/// any other is added at the end. `auto-parameters` are added as they are, to be expanded and merged at the call. As
+/// Java replaces the `<description>` child, one that `param` has replaces the earlier one, and one it lacks keeps it.
 pub(crate) fn merge_param(params: &mut Vec<ParamDef>, param: ParamDef) {
     let found = (!param.name.is_empty())
         .then(|| params.iter_mut().find(|have| have.name == param.name))
@@ -193,6 +196,9 @@ pub(crate) fn merge_param(params: &mut Vec<ParamDef>, param: ParamDef) {
             "format" => base.format.clone_from(&param.format),
             _ => {}
         }
+    }
+    if param.description.is_some() {
+        base.description = param.description;
     }
     base.given.extend(param.given.iter().copied());
     base.checks.extend(param.checks);
@@ -1242,6 +1248,11 @@ fn parse_parameter(node: &MNode) -> ParamDef {
         entity_name: node.attribute("entity-name").filter(|text| !text.is_empty()),
         field_name: node.attribute("field-name").filter(|text| !text.is_empty()),
         format: node.attribute("format").filter(|text| !text.is_empty()),
+        description: node
+            .first_named("description")
+            .and_then(|child| child.text())
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty()),
         children: node.children_named("parameter").iter().map(parse_parameter).collect(),
         given: MERGED_ATTRIBUTES
             .into_iter()
@@ -1280,6 +1291,7 @@ fn parse_auto(node: &MNode) -> ParamDef {
         entity_name: None,
         field_name: None,
         format: None,
+        description: None,
         children: Vec::new(),
         given: BTreeSet::new(),
     }

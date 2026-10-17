@@ -933,6 +933,9 @@ fn service_parameters(
             "type".to_string(),
             Value::string(json_type(found.map_or("", |param| param.java_type.as_str()))),
         );
+        if let Some(description) = found.and_then(|param| param.description.as_deref()) {
+            schema.insert("description".to_string(), Value::string(description));
+        }
         parameters.push(parameter_object(path_param, "path", true, schema));
     }
     let remaining: Vec<&ParamDef> = in_params
@@ -1006,14 +1009,17 @@ fn params_schema(params: &[&ParamDef], schemas: &mut Schemas<'_>) -> Value {
     Value::Map(map)
 }
 
-/// Java's `getJsonSchemaPropMap`: the type and format, the default, the first nested parameter as an array's items or
-/// the nested parameters as an object's properties, and otherwise the enumeration ids.
+/// Java's `getJsonSchemaPropMap`: the type and format, the description, the default, the first nested parameter as an
+/// array's items or the nested parameters as an object's properties, and otherwise the enumeration ids.
 fn param_schema(param: &ParamDef, schemas: &mut Schemas<'_>) -> IndexMap<String, Value> {
     let json_type = json_type(&param.java_type);
     let mut map = IndexMap::new();
     map.insert("type".to_string(), Value::string(json_type));
     if let Some(format) = json_format(&param.java_type) {
         map.insert("format".to_string(), Value::string(format));
+    }
+    if let Some(description) = param.description.as_deref() {
+        map.insert("description".to_string(), Value::string(description));
     }
     if let Some(default) = param.default_value.as_deref().filter(|text| !text.is_empty()) {
         map.insert("default".to_string(), Value::string(default));
@@ -1553,7 +1559,7 @@ mod tests {
     /// JSON body of a `post`, its out-parameters as the response, and the `enum` of a parameter on an `Enumeration`
     /// field, as Java's Swagger.
     #[test]
-    fn openapi_lists_service_parameters_with_their_enumeration_ids() {
+    fn openapi_lists_service_parameters_with_their_descriptions_and_enumeration_ids() {
         let dir = std::env::temp_dir().join(format!("moqui-rest-openapi-{}", std::process::id()));
         let _guard = DirGuard(dir.clone());
         std::fs::create_dir_all(dir.join("service")).unwrap();
@@ -1571,9 +1577,9 @@ mod tests {
             r#"<services>
                 <service verb="get" noun="Feed" authenticate="false">
                     <in-parameters>
-                        <parameter name="dataFeedId" required="true"/>
+                        <parameter name="dataFeedId" required="true"><description> The feed </description></parameter>
                         <parameter name="dataFeedTypeEnumId" entity-name="moqui.entity.feed.DataFeed" field-name="dataFeedTypeEnumId"/>
-                        <parameter name="count" type="Integer" default-value="10"/>
+                        <parameter name="count" type="Integer" default-value="10"><description>How many</description></parameter>
                         <parameter name="options" type="Map"/>
                     </in-parameters>
                     <out-parameters><parameter name="feed" type="Map"/></out-parameters>
@@ -1618,6 +1624,7 @@ mod tests {
         let path = named("dataFeedId").expect("path parameter");
         assert_eq!(at(&path, &["in"]), Value::string("path"));
         assert_eq!(at(&path, &["required"]), Value::Bool(true));
+        assert_eq!(at(&path, &["schema", "description"]), Value::string("The feed"));
         let feed_type = named("dataFeedTypeEnumId").expect("query parameter");
         assert_eq!(at(&feed_type, &["in"]), Value::string("query"));
         assert_eq!(at(&feed_type, &["schema", "enum"]), ids);
@@ -1625,6 +1632,11 @@ mod tests {
         assert_eq!(at(&count, &["schema", "type"]), Value::string("integer"));
         assert_eq!(at(&count, &["schema", "format"]), Value::string("int32"));
         assert_eq!(at(&count, &["schema", "default"]), Value::string("10"));
+        assert_eq!(at(&count, &["schema", "description"]), Value::string("How many"));
+        assert!(
+            !matches!(at(&feed_type, &["schema"]), Value::Map(map) if map.contains_key("description")),
+            "no description, none in the schema"
+        );
         assert!(named("options").is_none(), "an object is no query parameter");
         assert_eq!(
             at(
@@ -1646,6 +1658,10 @@ mod tests {
         let post = at(&doc, &["paths", "/feeds/{dataFeedId}", "post"]);
         let body = at(&post, &["requestBody", "content", "application/json", "schema"]);
         assert_eq!(at(&body, &["properties", "dataFeedTypeEnumId", "enum"]), ids);
+        assert_eq!(
+            at(&body, &["properties", "count", "description"]),
+            Value::string("How many")
+        );
         assert_eq!(at(&body, &["required"]), Value::List(vec![Value::string("dataFeedId")]));
     }
 

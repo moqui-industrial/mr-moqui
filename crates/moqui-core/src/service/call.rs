@@ -2605,7 +2605,8 @@ mod tests {
 
     /// Java's `ServiceDefinition` merge: the implemented service's parameters first, then the service's own merged
     /// into them by name, and an `auto-parameters` field and a parameter of the same name are one parameter, whose
-    /// attributes the later one sets. An empty `default-value` is no default.
+    /// attributes the later one sets. An empty `default-value` is no default. A `<description>` of the later one
+    /// replaces the earlier one's, and none keeps it.
     #[test]
     fn implemented_and_auto_parameters_merge_by_name() {
         let path = write_fixture(
@@ -2613,17 +2614,18 @@ mod tests {
             r#"<services>
                 <service verb="define" noun="Row" type="interface">
                     <in-parameters>
-                        <parameter name="testId" required="true"/>
-                        <parameter name="note" default-value="n"/>
+                        <parameter name="testId" required="true"><description>Inherited id</description></parameter>
+                        <parameter name="note" default-value="n"><description>Inherited note</description></parameter>
+                        <parameter name="testMedium"><description>Inherited medium</description></parameter>
                     </in-parameters>
                 </service>
                 <service verb="save" noun="Row">
                     <implements service="define#Row"/>
                     <in-parameters>
                         <auto-parameters entity-name="moqui.test.TestEntity" include="nonpk"/>
-                        <parameter name="testDateTime" required="true"/>
+                        <parameter name="testDateTime" required="true"><description>Own stamp</description></parameter>
                         <parameter name="testId"><text-length max="5"/></parameter>
-                        <parameter name="note" default-value=""/>
+                        <parameter name="note" default-value=""><description> Own note </description></parameter>
                     </in-parameters>
                     <actions><set field="x" value="1"/></actions>
                 </service>
@@ -2659,6 +2661,21 @@ mod tests {
                 .default_value,
             None
         );
+        let description = |name: &str| {
+            declared
+                .iter()
+                .find(|param| param.name == name)
+                .and_then(|param| param.description.as_deref())
+        };
+        assert_eq!(description("testId"), Some("Inherited id"), "none of its own keeps it");
+        assert_eq!(description("note"), Some("Own note"), "its own replaces it");
+        assert_eq!(
+            description("testMedium"),
+            Some("Inherited medium"),
+            "an auto field has none"
+        );
+        assert_eq!(description("testDateTime"), Some("Own stamp"), "over an auto field");
+        assert_eq!(description("testLong"), None);
 
         let params = |pairs: &[(&str, &str)]| -> BTreeMap<String, Value> {
             pairs

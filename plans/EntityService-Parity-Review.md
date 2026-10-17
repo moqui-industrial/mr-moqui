@@ -21,7 +21,7 @@ ordering.
 
 ## Summary
 
-11 open findings and 60 accepted differences. Open by phase:
+9 open findings and 60 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
@@ -32,7 +32,7 @@ ordering.
 | 5 Entity query / REST | 3 | — |
 | 6 Service definition / validation / call | 0 | — |
 | 7 ECA / SECA / pools / jobs | 0 | — |
-| 8 REST / remote / tools / mail / components | 2 | — |
+| 8 REST / remote / tools / mail / components | 0 | — |
 
 No High finding is open.
 
@@ -55,12 +55,6 @@ No access-control finding is open.
   file model, or a model that can be swapped, and when it is invalidated.
 - **P5-16 / P5-18** — whether the value layer runs a `pq-expression` alias's script (moqui-db has no script runtime)
   and resolves `DataDocument.<id>` names; nothing in `runtime/` uses either.
-- **P8a-26** — how `merge_param` merges a parameter's `<description>` for an `implements` or a redeclared parameter.
-- **P8c-11** — the format of the "Original" image: the input's (this port, and Java's evident intent), Java's exact
-  outcome (a JPEG written as `outputImageFormat`, the rest kept), or always `outputImageFormat` (what the one caller
-  names the file).
-- **Spreadsheet/print references**: `org.moqui.impl.SpreadsheetServices` and some component Groovy are
-  absent from these checkouts, so those comparisons rely on the XML descriptor only.
 
 ### Stale code comments (small to-dos)
 
@@ -818,48 +812,50 @@ Reviewed `service/{rest,remote,tools}.rs`, `service/mail/{implementation,mod}.rs
 mail Groovy resources and `EmailServices.xml`, `ElFinderConnector.groovy`, `EntitySyncServices.xml`,
 `SystemMessageServices.xml`/`WebFacadeImpl.handleSystemMessage`, `SftpMessageServices.xml`,
 `AuthServices.xml`/`AuthenticationFlow.groovy`/`MoquiSecurityGrantedAccessAdapter.groovy`, and the
-image/spreadsheet service XML. The `*.rest.xml` HTTP route/CORS layer lives in `screen/dispatch.rs` /
+image service XML. The `*.rest.xml` HTTP route/CORS layer lives in `screen/dispatch.rs` /
 `web/mod.rs`.
+
+The component Java sources are in the checkout under `/home/jonesde/work/moquiwork/moqui/runtime/component/`. The
+print bodies are inline Groovy on cups4j in `moqui-cups/service/org/moqui/impl/PrintServices.xml`, to be compared in
+the next round. The image services are `moqui-image/service/org/moqui/impl/ImageServices.xml`, already used here.
+`org.moqui.impl.SpreadsheetServices` (read/load) has no Java counterpart: it is a port addition, and `moqui-poi` has
+only the xlsx screen render (`ScreenWidgetRenderExcel.groovy`, `FormListExcelRender.groovy`), which is screen scope.
 
 Worked 2026-10-16 (8a): P8a-03, P8a-04, P8a-06, P8a-08, P8a-11, P8a-12,
 P8a-13, P8a-15, P8a-18, P8a-19, P8a-20, P8a-21, P8a-22 and P8a-24 fixed; P8a-17 moved to
 [Accepted differences](#accepted-differences). Found along the way: P8a-25, P8a-27, P8a-28 and P8a-29 (the parts of
-P8a-21, P8a-20, P8a-24 and P8a-11 that stay, accepted) and P8a-26 (open). For P8a-08 the shipped callers were checked
-first: the only `remote-rest` service in the tree, the browser smoke `get#Echo`, is answered with a JSON object, so
-none depends on the lenient body handling. Changes a deployment may see: a `/rest/s1` service result has no `null`
-out-parameters, no `null` fields one map down, and no `UserAccount` password fields; a POST with
-`X-HTTP-Method-Override` reaches the overriding method on `/rest/s1` and is authorized for it; a `remote-rest` call
-whose 2xx body is not a JSON object or array, an empty one too, now fails; its GET query carries empty and list
-values; a `method="HEAD"` or `"OPTIONS"` is sent as that method (and fails with parameters, which it cannot carry as
-a body); a `<method type="GET">` (upper case, outside the XSD) is no longer served; and the service OpenAPI
-(`/rest/service.swagger/<root>`) now documents each service method's parameters and response. Its entity methods
+P8a-21, P8a-20, P8a-24 and P8a-11 that stay, accepted) and P8a-26 (fixed once its merge rule was decided, below).
+For P8a-08 the shipped callers were checked first: the only `remote-rest` service in the tree, the browser smoke
+`get#Echo`, is answered with a JSON object, so none depends on the lenient body handling. Changes a deployment may
+see: a `/rest/s1` service result has no `null` out-parameters, no `null` fields one map down, and no `UserAccount`
+password fields; a POST with `X-HTTP-Method-Override` reaches the overriding method on `/rest/s1` and is authorized for
+it; a `remote-rest` call whose 2xx body is not a JSON object or array, an empty one too, now fails; its GET query
+carries empty and list values; a `method="HEAD"` or `"OPTIONS"` is sent as that method (and fails with parameters, which
+it cannot carry as a body); a `<method type="GET">` (upper case, outside the XSD) is no longer served; and the service
+OpenAPI (`/rest/service.swagger/<root>`) now documents each service method's parameters and response. Its entity methods
 still carry only a summary, as before (Swagger and RAML are out of scope, below).
 
 Worked 2026-10-16 (8b and 8c): P8c-03, P8c-07 and P8c-16 fixed; P8b-03, P8b-04, P8b-06, P8b-07, P8b-09, P8c-05,
-P8c-06 and P8c-17 moved to [Accepted differences](#accepted-differences); P8c-11 left open as a decision. Removed as
-invalid: P8b-10, since commons-email's `buildMimeMessage` sets the `Subject` only for a subject that is not empty, as
-Rust does; and P8c-02 and P8c-04, since an elFinder entry here is a `DbResource` or a file path (any other location is
-an error), which Java's `supportsWrite()` answers true for, so its check never refuses and the `write` flag is the
-same. For P8b-03 the readers of the stored addresses were checked first: `send#EmailMessage` (`send_message`, as
-Java's `sendEmailMessage.groovy`) splits `toAddresses`, `ccAddresses` and `bccAddresses` on commas, and no screen or
-service in `runtime/` reads them otherwise. For P8b-09, none of the email body screens in `runtime/` sets
-`render-modes`, so each has a text render. Changes a deployment may see: an elFinder command on the root says
+P8c-06 and P8c-17 moved to [Accepted differences](#accepted-differences); P8c-11 fixed once its format was decided,
+below. Removed as invalid: P8b-10, since commons-email's `buildMimeMessage` sets the `Subject` only for a subject that
+is not empty, as Rust does; and P8c-02 and P8c-04, since an elFinder entry here is a `DbResource` or a file path (any
+other location is an error), which Java's `supportsWrite()` answers true for, so its check never refuses and the `write`
+flag is the same. For P8b-03 the readers of the stored addresses were checked first: `send#EmailMessage`
+(`send_message`, as Java's `sendEmailMessage.groovy`) splits `toAddresses`, `ccAddresses` and `bccAddresses` on commas,
+and no screen or service in `runtime/` reads them otherwise. For P8b-09, none of the email body screens in `runtime/`
+sets `render-modes`, so each has a text render. Changes a deployment may see: an elFinder command on the root says
 "Operation not allowed on the root", and a hash of only the volume ID is the root; an SSO profile claim of `0` is not
 mapped to an account field; and an SSO logout ends the local login even when the provider's end-session URL cannot be
 had (no SSO client, a failed discovery). Line numbers in this section are as of that change.
 
+Decided and worked 2026-10-16: P8a-26 and P8c-11 fixed. Changes a deployment may see: the service OpenAPI's
+parameter schemas carry the parameter's `<description>`; and `convert#Image` writes the original as
+`outputImageFormat` (a png, gif, bmp or tiff original was kept in its own format), so the file its caller names
+`..._Original.${outputImageFormat}` is in that format. Line numbers for these two are as of that change.
+
 ### Findings — 8a REST / remote REST / tools / print
 
-| ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P8a-26 | `service/rest.rs:1011` (`param_schema`) | `RestSchemaUtil.groovy:479-480`; `RestApi.groovy:272,290` | The service OpenAPI's parameter schemas have no `description`; Java takes the parameter's `<description>` text | Low | No |
-
-#### P8a-26 — Parameter descriptions in the service OpenAPI
-
-`ParamDef` keeps no `<description>` text, so the parameter schemas P8a-24 added have none. Left open: carrying it
-means a new `ParamDef` field and a decision on how `merge_param` (`service/define.rs:176`) merges it for an
-`implements` or a redeclared parameter, which Java's `mergeParameter` does by copying the child elements; that is
-service-definition work beyond this REST round.
+None open.
 
 ### Findings — 8b mail / email services
 
@@ -867,19 +863,7 @@ None open.
 
 ### Findings — 8c SSO / elFinder / system sync / images
 
-| ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
-|----|---|---|---|---|---|
-| P8c-11 | `service/images.rs:317-325` | impl `ImageServices.xml:109` | The "Original" output keeps every writable input format; Java's check compares the reader's format name with the writers' suffixes, so a JPEG original (format name `JPEG`) is written as `outputImageFormat` | Low | Decision pending |
-
-#### P8c-11 — The "Original" image format
-
-Java keeps the input format for the original when `ImageIO.getWriterFileSuffixes()` contains `reader.getFormatName()`:
-the JPEG reader's name is `JPEG`, which is not among the lower-case suffixes, so a JPEG original is converted to
-`outputImageFormat`, while a PNG, GIF, BMP or TIFF original is kept (and WebP, which the TwelveMonkeys plugin
-reads but does not write, is converted). Rust keeps any input format it can write, which is what the check appears meant to do. The one caller
-found (`WeCreateServices.xml`, a sibling component) names the original's file `..._Original.${outputImageFormat}`, so
-neither Java's outcome nor this port's always matches the name. Left open: keeping the input format, copying Java's
-outcome, or always writing `outputImageFormat` is an owner decision (see [Open decisions](#open-decisions)).
+None open.
 
 #### Phase 8 checked and found equivalent
 
@@ -930,7 +914,21 @@ outcome, or always writing `outputImageFormat` is an owner decision (see [Open d
   parameter with `entity-name` and `field-name`, through P2-07's `FieldEnums` (`service_parameters`,
   `service/rest.rs:900-979`; `param_schema`, `:1009-1047`; `parameter_enums`, `:1049-1067`). The schemas are inline
   in OpenAPI 3.1 form where Java's Swagger 2 refers to `definitions`; a `required="disabled"` parameter is left out,
-  as validation drops it (P6a-12). P8a-26 and P8a-28 are what stays.
+  as validation drops it (P6a-12). P8a-28 is what stays.
+- Parameter descriptions (P8a-26, fixed: decided 2026-10-16): a parameter's `<description>` text, trimmed, is kept on
+  `ParamDef` (`service/define.rs:155`, `:1251-1255`) and is the `description` of its OpenAPI schema, as
+  `getJsonSchemaPropMap`, and of a path parameter's schema, where Java's Swagger 2 puts it on the parameter
+  (`param_schema`, `service/rest.rs:1021-1023`; `:936-938`). In `merge_param` a parameter's own description replaces
+  the inherited one and one with none keeps it, as Java's `mergeParameter` replaces the `<description>` child, for an
+  `implements` and a redeclared or auto-parameter alike (`service/define.rs:200-202`). An auto-parameter has none: the
+  entity model keeps no field `<description>`, and Java's `mergeAutoParameters` copies none (`auto_fields`,
+  `service/validate.rs:426-427`).
+- The "Original" image format (P8c-11, fixed: decided 2026-10-16): `convert#Image` writes the original as
+  `outputImageFormat` when that format can be written, as its one caller (`WeCreateServices.xml`) names the file
+  `..._Original.${outputImageFormat}`, and in the input's format otherwise (`convert_image`,
+  `service/images.rs:318-327`). Java keeps a PNG, GIF, BMP or TIFF original in its own format and converts a JPEG
+  one, as its check compares the reader's format name with the writers' suffixes (impl `ImageServices.xml:109`); the
+  module doc says so.
 - elFinder root refusal (P8c-03, fixed): `rm`, `rename`, `upload` and `put` on the volume root answer Java's
   "Operation not allowed on the root" (`ROOT_REFUSED`, `service/elfinder.rs:45`).
 - Volume-ID hash (P8c-16, fixed): a hash of only the 3-character volume ID decodes to the empty path, the root, as
@@ -959,8 +957,8 @@ outcome, or always writing `outputImageFormat` is an owner decision (see [Open d
   matches Java's callback `buildAll()` filter; entity-sync lock/guards/status/history — including the
   early return when `internalRun` hits an error, which Java's XML `service-call` also does
   (`XmlActions.groovy.ftl:69`); `get#EntitySyncData` split loop, include-list expansion, put options;
-  system-message REST send/receive and missing-HMAC 403; SFTP send/poll; image convert/write and
-  spreadsheet read/load (XML descriptor).
+  system-message REST send/receive and missing-HMAC 403; SFTP send/poll; image convert/write
+  (`ImageServices.xml`). Spreadsheet read/load is a port addition with no Java counterpart (above).
 - Out of scope (not findings): JSON-RPC, `RemoteJsonRpcServiceRunner`, Groovy/Java runners,
   `service-group`, Swagger/RAML (Rust's `openapi_document` is an addition), Elasticsearch, Hazelcast,
   LLM/A2A, extra drivers.

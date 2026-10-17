@@ -423,6 +423,8 @@ pub(crate) fn auto_fields(
             entity_name: Some(entity.full_name.clone()),
             field_name: Some(name.to_string()),
             format: None,
+            // The entity model keeps no field `<description>`, and Java's mergeAutoParameters copies none.
+            description: None,
             children: Vec::new(),
             given: BTreeSet::from(["type", "required", "allow-html", "entity-name", "field-name"]),
         });
@@ -1030,6 +1032,7 @@ mod parameter_tests {
             entity_name: None,
             field_name: None,
             format: None,
+            description: None,
             children: Vec::new(),
             given: BTreeSet::new(),
         }
