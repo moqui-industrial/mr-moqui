@@ -28,6 +28,9 @@ fn protocol_and_failure_cases() {
         "uncertain",
         "config",
         "normal",
+        "random",
+        "random-invalid",
+        "random-uninstalled",
     ] {
         let dir = std::env::temp_dir().join(format!("moqui-deterministic-{}-{scenario}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -71,8 +74,18 @@ fn protocol_and_failure_cases() {
                 stream.read_exact(&mut body).unwrap();
                 let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
                 captured.lock().unwrap().push(request.clone());
-                let sequence = request["sequence"].as_u64().unwrap();
-                let response = if scenario == "json" {
+                let sequence = request["sequence"].as_u64().unwrap_or(0);
+                let response = if request["event"] == "random" {
+                    let length = request["length"].as_u64().unwrap() as usize;
+                    let bytes = if scenario == "random-invalid" {
+                        "bad".to_string()
+                    } else {
+                        (0..length)
+                            .map(|byte| format!("{:02x}", byte as u8))
+                            .collect::<String>()
+                    };
+                    json!({"bytes":bytes}).to_string()
+                } else if scenario == "json" {
                     "not json".to_string()
                 } else if scenario == "assignment" {
                     json!({"operation_id":"x", "time_epoch_ms":"wrong"}).to_string()
@@ -174,9 +187,12 @@ fn protocol_and_failure_cases() {
                     next += 1;
                     service_context |= record["artifact"]["name"] == "test#Lifecycle";
                     assert!(!record.to_string().contains("secret-parameter"));
-                } else {
+                } else if record["event"] == "complete" {
                     assert_eq!(record["sequence"].as_u64(), stack.pop());
                     outcomes.push(record["outcome"].as_str().unwrap());
+                } else {
+                    assert_eq!(record["event"], "random");
+                    assert!(record.get("bytes").is_none());
                 }
             }
             assert!(stack.is_empty());
@@ -200,11 +216,39 @@ fn deterministic_child() {
         assert!(moqui_host::deterministic::init().is_err());
         return;
     }
+    if scenario == "random-uninstalled" {
+        assert!(moqui_lib::random::fill("uuid", &mut [0; 16]).is_err());
+        assert!(moqui_core::user::random_code(6).is_err());
+        assert!(moqui_core::user::hash_password("test-only").is_err());
+        assert!(std::panic::catch_unwind(moqui_core::user::totp_secret).is_err());
+        return;
+    }
     moqui_host::deterministic::init().unwrap();
     if scenario == "normal" {
         assert!(!moqui_core::deterministic::enabled());
+        let mut first = [0; 16];
+        let mut second = [0; 16];
+        moqui_lib::random::fill("normal", &mut first).unwrap();
+        moqui_lib::random::fill("normal", &mut second).unwrap();
+        assert_ne!(first, second);
         assert!(moqui_lib::clock::now_millis() > BASE);
         assert!(moqui_core::deterministic::begin().unwrap().is_none());
+        return;
+    }
+    if scenario == "random-invalid" {
+        assert!(moqui_lib::random::fill("uuid", &mut [0; 16]).is_err());
+        assert!(moqui_lib::random::fill("uuid", &mut [0; 16]).is_err());
+        assert!(moqui_core::deterministic::begin().is_err());
+        return;
+    }
+    if scenario == "random" {
+        let mut bytes = [0; 16];
+        moqui_lib::random::fill("entity:moqui.server.Visitor", &mut bytes).unwrap();
+        assert_eq!(bytes, std::array::from_fn::<_, 16, _>(|index| index as u8));
+        assert_eq!(moqui_lib::random::below("factor-code:6", 999999).unwrap(), 66051);
+        assert_eq!(moqui_core::user::random_string(12).unwrap(), "AAECAwQFBgcI");
+        let expected = (0x0001_0203_0405_0607_u64 >> 11) as f64 / (1_u64 << 53) as f64;
+        assert_eq!(moqui_lib::random::unit("unit").unwrap(), expected);
         return;
     }
     if ["status", "json", "assignment", "timeout"].contains(&scenario.as_str()) {

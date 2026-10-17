@@ -57,6 +57,29 @@ restarts. A new process starts at sequence 1; sequence is not an inter-engine ma
   already committed database transaction. Destructor-only completion failures are logged
   and poison the clock/lane's future operations; they cannot return an error to their caller.
 
+## Application entropy
+
+The host installs `moqui_lib::random` alongside the deterministic clock provider.
+Random draws call the coordinator with `version`, `run_id`, `engine`, `event="random"`,
+`domain` and `length`; the response is exactly `{"bytes":"<lowercase hex>"}`.
+The coordinator owns the replayable 256-bit seed and independent semantic-domain and
+loading/activity streams. Requests do not open or pair transactions. Missing providers,
+transport/log failures and malformed responses fail closed, without OS-entropy fallback.
+Logs retain request metadata, not generated tokens.
+
+Audited UUIDs, sequence staggering, strings, session ids/tokens, login keys, password
+salts, factor/TOTP codes, generated configuration secrets, notifications, cluster ids,
+data-feed ids, search document ids and persisted email Message-IDs use this source.
+QuickJS service and locked-template contexts replace server-side `Math.random`.
+UUID v4 bits, URL-base64 strings, 53-bit doubles and bounded integers use shared vectors.
+Normal mode retains ordinary entropy. **Never enable test mode in production or a shared
+deployment: generated credentials and secrets are predictable.**
+
+Transport cryptography, temporary-directory isolation, MIME multipart boundaries,
+browser/vendor randomness, arbitrary components and external providers remain outside
+this adapter. Seeding is not a parity guarantee or a production replay mechanism.
+The companion harness documents the algorithm and full audit in DETERMINISTIC-RANDOMNESS.md.
+
 ## Explicit limitations
 
 - The autonomous scheduled-job timer does not run with the inline executor; startup reports
@@ -76,9 +99,10 @@ restarts. A new process starts at sequence 1; sequence is not an inter-engine ma
   check, not a full SQL parser: even quoted clock words are rejected. Bind logical timestamp
   values. Arbitrary custom SQL, stored procedures, defaults/triggers with hidden server
   clocks and raw SQL transaction-control tricks are outside the guarantee.
-- UUIDs, entropy, generated passwords/keys, host identity, external authentication providers
-  and other external I/O are not made deterministic. Persisted elapsed/profiling fields
-  remain real. Nested operations must end in LIFO order on their originating thread.
+- Only audited application entropy is controlled as described above; transport keys,
+  host identity, external authentication providers and other external I/O are not made
+  deterministic. Persisted elapsed/profiling fields remain real. Nested operations must
+  end in LIFO order on their originating thread.
 - Optional `MOQUI_DETERMINISTIC_OFFLINE=true` explicitly disables search/cluster/SSH and
   reports it. It is **not required** and is not used by the default-server smoke test.
 - Transaction topology is unchanged where possible, but deterministic autocommit wrapping,

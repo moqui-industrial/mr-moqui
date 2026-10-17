@@ -873,7 +873,19 @@ struct Helpers {
     user_security_checks: Persistent<Object<'static>>,
 }
 
+pub(super) fn install_random(ctx: &Ctx<'_>) -> Result<(), Error> {
+    if crate::deterministic::enabled() {
+        let math: Object = ctx.globals().get("Math").map_err(js_error)?;
+        math.set("random", Function::new(ctx.clone(), |ctx: Ctx<'_>| {
+            moqui_lib::random::unit("script-math-random")
+                .map_err(|err| Exception::throw_message(&ctx, err.message()))
+        }).map_err(js_error)?).map_err(js_error)?;
+    }
+    Ok(())
+}
+
 fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
+    install_random(ctx)?;
     let object_utilities = Object::new(ctx.clone()).map_err(js_error)?;
     let collection_utilities = Object::new(ctx.clone()).map_err(js_error)?;
     let string_utilities = Object::new(ctx.clone()).map_err(js_error)?;

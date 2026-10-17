@@ -449,8 +449,8 @@ pub(crate) fn rotate_on_password_login() -> Result<(), Error> {
     };
     sync_bound(&factory);
     let facade = factory.entity().ok_or_else(|| Error::new("no entity facade"))?;
-    let new_id = random_hex(SESSION_ID_BYTES)?;
-    let new_token = random_hex(SESSION_TOKEN_BYTES)?;
+    let new_id = random_hex(SESSION_ID_BYTES, "session-id")?;
+    let new_token = random_hex(SESSION_TOKEN_BYTES, "session-token")?;
     stage_rotated(&factory, &old_id, &new_id, &new_token)?;
     {
         // A flush of the old id that is under way would write the row back after the delete.
@@ -639,7 +639,7 @@ pub fn csrf_token() -> Result<String, Error> {
     if let Some(token) = existing {
         return Ok(token);
     }
-    let token = random_hex(SESSION_TOKEN_BYTES)?;
+    let token = random_hex(SESSION_TOKEN_BYTES, "session-token")?;
     with_session(|session| {
         if session.csrf_token.is_none() {
             session.csrf_token = Some(token.clone());
@@ -986,9 +986,9 @@ fn next_revision() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-fn random_hex(size: usize) -> Result<String, Error> {
+fn random_hex(size: usize, domain: &str) -> Result<String, Error> {
     let mut bytes = vec![0_u8; size];
-    getrandom::fill(&mut bytes).map_err(|err| Error::new(format!("could not read random bytes: {err}")))?;
+    moqui_lib::random::fill(domain, &mut bytes)?;
     Ok(hex_encode(&bytes))
 }
 
@@ -1005,8 +1005,8 @@ fn resolve_id(factory: &Arc<ExecutionContextFactory>, presented: Option<&str>) -
             return Ok((id.to_string(), false));
         }
     }
-    let id = random_hex(SESSION_ID_BYTES)?;
-    let token = random_hex(SESSION_TOKEN_BYTES)?;
+    let id = random_hex(SESSION_ID_BYTES, "session-id")?;
+    let token = random_hex(SESSION_TOKEN_BYTES, "session-token")?;
     let live = LiveSession {
         columns: Columns {
             session_token: Some(token),
@@ -2268,7 +2268,7 @@ mod tests {
         let guard = bind(&factory, None, None, false).unwrap();
         let active = guard.session_id();
         drop(guard);
-        let stale = random_hex(SESSION_ID_BYTES).unwrap();
+        let stale = random_hex(SESSION_ID_BYTES, "session-id").unwrap();
         {
             let mut table = lock_sessions(&factory);
             let mut live = table.sessions.get(&active).unwrap().clone();

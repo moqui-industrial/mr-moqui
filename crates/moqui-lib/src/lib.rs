@@ -32,6 +32,7 @@ pub mod json;
 pub mod markdown;
 pub mod node;
 pub mod object;
+pub mod random;
 pub mod resource;
 pub mod signer;
 pub mod string;

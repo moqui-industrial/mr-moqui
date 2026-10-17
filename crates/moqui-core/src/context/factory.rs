@@ -1016,7 +1016,7 @@ fn apply_default_properties(conf_node: &MNode, env_path: &Path) -> Result<(Vec<S
             env::expand(&raw)?
         };
         if secret && value.ends_with("CHANGEME") && !leave_sentinel(&name) {
-            value = generate_secret()?;
+            value = generate_secret(&name)?;
             env::set_property(&name, value.clone());
             set_by_boot.remember(&name);
             generated.push((name.clone(), value));
@@ -1160,10 +1160,9 @@ fn ensure_env_readable(path: &Path) -> Result<(), Error> {
     }
 }
 
-fn generate_secret() -> Result<String, Error> {
+fn generate_secret(name: &str) -> Result<String, Error> {
     let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes)
-        .map_err(|err| Error::new(format!("could not read random bytes for a secret property: {err}")))?;
+    moqui_lib::random::fill(&format!("secret-property:{name}"), &mut bytes)?;
     Ok(STANDARD.encode(bytes))
 }
 

@@ -1078,7 +1078,7 @@ fn mailbox(address: &str, name: &str) -> Result<lettre::message::Mailbox, String
 /// A random `<hex@host>` Message-ID, the host the domain of the from address.
 fn new_message_id(from: &str) -> Result<String, String> {
     let mut bytes = [0u8; 12];
-    getrandom::fill(&mut bytes).map_err(|err| format!("could not make a Message-ID: {err}"))?;
+    moqui_lib::random::fill("mail-message-id", &mut bytes).map_err(|err| err.to_string())?;
     let host = mailbox(from, "")
         .map(|parsed| parsed.email.domain().to_string())
         .ok()

@@ -191,7 +191,7 @@ fn insert_pending(
         }
     }
     for ((document_id, id), (entity_name, operation)) in &resolved {
-        let row_id = crate::entity::uuid_v4()?;
+        let row_id = crate::entity::uuid_v4_for("data-feed-row")?;
         let params = vec![
             Value::string(&row_id),
             Value::string(document_id),
@@ -241,7 +241,7 @@ fn insert_pending(
                 if !seen.insert(dedup) {
                     continue;
                 }
-                let row_id = crate::entity::uuid_v4()?;
+                let row_id = crate::entity::uuid_v4_for("data-feed-row")?;
                 let params = vec![
                     Value::string(&row_id),
                     Value::string(&hit.data_document_id),

@@ -144,6 +144,32 @@ impl Hook {
 }
 
 impl Provider for Hook {
+    fn random(&self, domain: &str, length: usize) -> Result<Vec<u8>, Error> {
+        let request = self.envelope(json!({"event":"random", "domain":domain, "length":length}));
+        self.append(&request)?;
+        let response = self.post(&request)?;
+        let hex = response
+            .get("bytes")
+            .and_then(Value::as_str)
+            .filter(|hex| {
+                hex.len() == length * 2
+                    && hex
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+            .ok_or_else(|| Error::new("invalid deterministic random response"))?;
+        if response.as_object().map(|value| value.len()) != Some(1) {
+            return Err(Error::new("invalid deterministic random fields"));
+        }
+        (0..hex.len())
+            .step_by(2)
+            .map(|index| {
+                u8::from_str_radix(&hex[index..index + 2], 16)
+                    .map_err(|_| Error::new("invalid deterministic random hex"))
+            })
+            .collect()
+    }
+
     fn begin(&self, request: Value) -> Result<Value, Error> {
         let mut request = self.envelope(request);
         let response = self.post(&request)?;

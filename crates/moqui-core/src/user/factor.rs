@@ -81,6 +81,11 @@ fn date_filter(now: &Value) -> Condition {
 
 /// A new TOTP shared secret, as `DefaultSecretGenerator` makes it: base32 of 20 random bytes.
 pub fn totp_secret() -> String {
+    if moqui_lib::random::deterministic() {
+        let mut bytes = [0; 20];
+        moqui_lib::random::fill("totp-secret", &mut bytes).expect("deterministic TOTP entropy");
+        return Secret::from(bytes).to_base32();
+    }
     Secret::generate().to_base32()
 }
 
@@ -134,7 +139,11 @@ pub fn single_use_hash(code: &str) -> Result<String, Error> {
 pub fn random_code(width: usize) -> Result<String, Error> {
     let width = width.clamp(1, 9);
     let bound = 10_u32.pow(u32::try_from(width).unwrap_or(9)) - 1;
-    let number = random_below(bound)?;
+    let number = if moqui_lib::random::deterministic() {
+        moqui_lib::random::below(&format!("factor-code:{width}"), bound)?
+    } else {
+        random_below(bound)?
+    };
     Ok(format!("{number:0width$}"))
 }
 
@@ -158,9 +167,13 @@ fn random_below(bound: u32) -> Result<u32, Error> {
 ///
 /// Returns an error when the system random source fails.
 pub fn random_string(length: usize) -> Result<String, Error> {
+    random_string_for(&format!("string:{length}"), length)
+}
+
+pub(crate) fn random_string_for(domain: &str, length: usize) -> Result<String, Error> {
     use base64::Engine;
     let mut bytes = vec![0_u8; length];
-    getrandom::fill(&mut bytes).map_err(|err| Error::new(format!("random source failed: {err}")))?;
+    moqui_lib::random::fill(domain, &mut bytes)?;
     let mut text = base64::engine::general_purpose::URL_SAFE.encode(bytes);
     text.truncate(length);
     Ok(text)
@@ -193,9 +206,11 @@ mod tests {
     fn a_new_secret_is_32_base32_characters_and_the_uri_names_issuer_and_label() {
         let secret = totp_secret();
         assert_eq!(secret.len(), 32, "{secret}");
-        assert!(secret
-            .chars()
-            .all(|ch| ch.is_ascii_uppercase() || ('2'..='7').contains(&ch)));
+        assert!(
+            secret
+                .chars()
+                .all(|ch| ch.is_ascii_uppercase() || ('2'..='7').contains(&ch))
+        );
         let uri = totp_uri("ada", "example.com", &secret).unwrap();
         assert!(uri.starts_with("otpauth://totp/example.com:ada?"), "{uri}");
         assert!(uri.contains(&format!("secret={secret}")), "{uri}");
@@ -212,8 +227,9 @@ mod tests {
         assert_eq!(random_code(8).unwrap().len(), 8);
         let text = random_string(12).unwrap();
         assert_eq!(text.len(), 12);
-        assert!(text
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'));
+        assert!(
+            text.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        );
     }
 }
