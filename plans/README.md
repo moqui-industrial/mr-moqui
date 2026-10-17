@@ -10,6 +10,6 @@ Design and status documents for the MR-Moqui port. As of 2026-10-14 the build (p
 - [Performance-Summary.md](Performance-Summary.md): digest of the performance plan, recorded numbers and Mantle USL audit.
 - [Code-Quality-Review.md](Code-Quality-Review.md): code quality and problematic-pattern review of `crates/` (2026-10-14), with 15 verified High findings, cross-cutting patterns and a fix order.
 
-**Active detail documents:** `Performance.md`, `Performance-Implementation.md`, `MantleUSL-Performance-Audit.md`, `MantleUSL-Execution-Benchmark-Plan.md`, `Messaging.md`, `Monitoring.md`, `Data.md`, `Usability.md`.
+**Active detail documents:** `Performance.md`, `Performance-Implementation.md`, `MantleUSL-Performance-Audit.md`, `MantleUSL-Execution-Benchmark-Plan.md`, `Messaging.md`, `Monitoring.md`, `Data.md`, `Usability.md`, `PostgresBackup.md`.
 
 **[archive/](archive/)**: built or complete designs, kept as reference: `Implementation-Phases` (phase and gate record), `Architecture-Proposal`, `Crate-Layout`, `ContextObjects`, `SearchFacade`, `QvtServerStatic`, `EmbeddedPostgres`, `Cluster`, `Ssh`, `Sso`, `Office-Image-Print`, `TypeGeneration`, `Wasm`, `ConvertProcess` (Mantle conversion trial), `License-Review`, plus the earlier reviews `MimoReview`, `SonnetReview`, `SonnetRecommendations`.

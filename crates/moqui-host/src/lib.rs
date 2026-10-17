@@ -969,6 +969,7 @@ fn boot_server(
             None
         }
     };
+    crate::db::backup::install(&facade, &db, search.as_ref(), &runtime_dir);
     // Log events and HTTP requests go to moqui_logs and moqui_http_log through the search backend (shipped above).
     factory.init_tools().map_err(moqui_lib::error::Error::from)?;
     if search.is_some() {

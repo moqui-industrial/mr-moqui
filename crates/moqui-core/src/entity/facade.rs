@@ -109,6 +109,8 @@ pub(crate) struct Inner {
     sim_tx: RwLock<Option<TransactionManager>>,
     /// Starts the overlay cluster on the first `enter_sim`. The mutex also serializes that start.
     sim_starter: Mutex<Option<SimStarter>>,
+    /// Embedded-database backup. The host installs it; core does not spawn `pg_dump`.
+    backup_runner: Mutex<Option<crate::backup::BackupRunner>>,
     slots: Mutex<HashMap<TypeId, Box<dyn Any + Send>>>,
     /// What is known of the tables, and the groups' DDL settings.
     pub(crate) tables: super::meta::TableState,
@@ -269,6 +271,7 @@ impl EntityFacade {
                 locale: RwLock::new("en".to_string()),
                 crypt: RwLock::new(None),
                 sim_starter: Mutex::new(None),
+                backup_runner: Mutex::new(None),
                 sim_tx: RwLock::new(None),
                 slots: Mutex::new(HashMap::new()),
                 tables: super::meta::TableState::default(),
@@ -348,6 +351,18 @@ impl EntityFacade {
     /// overlay pool. Core does not start a cluster itself.
     pub fn set_sim_starter(&self, starter: Option<SimStarter>) {
         *lock(&self.inner.sim_starter) = starter;
+    }
+
+    /// The host's embedded-database backup. Absent when this process has no embedded cluster, and the
+    /// backup service then reports `skipped`.
+    pub fn set_backup_runner(&self, runner: Option<crate::backup::BackupRunner>) {
+        *lock(&self.inner.backup_runner) = runner;
+    }
+
+    /// Clone of the installed runner. The lock is not held across the backup.
+    #[must_use]
+    pub fn backup_runner(&self) -> Option<crate::backup::BackupRunner> {
+        lock(&self.inner.backup_runner).clone()
     }
 
     /// The overlay pool, started through the starter when there is none yet. A failed start is
