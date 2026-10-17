@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function renderList({ saved = true, header = true, denied = false, hideNav = false, noSearch = false, finds = [], fields = [], hidden = {}, headerColumns = null } = {}) {
+function renderList({ saved = true, header = true, denied = false, hideNav = false, noSearch = false, finds = [], fields = [], hidden = {}, headerColumns = null, headerFields = [] } = {}) {
     const factory = vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'ScreenQvt.js'), 'utf8'));
     const module = factory({ stmt: fn => fn, noops: () => ({}) }, {
         anyMacros: () => ({}), allElements: [], opaqueElements: []
@@ -39,7 +39,7 @@ function renderList({ saved = true, header = true, denied = false, hideNav = fal
     }
     context.$mqQvt.formList({ count: 0 }, { attrs: {
         name: 'PaymentList', list: 'payments', 'saved-finds': String(saved), 'header-dialog': String(header)
-    } }, [], { headerForm: header, valueDescs: { h: [] }, allFields: fields });
+    } }, [], { headerForm: header, valueDescs: { h: [] }, allFields: fields, headerFields });
     return html;
 }
 
@@ -58,6 +58,47 @@ test('sortable headers separate title and sort links with whitespace like Java',
     assert.match(html, /href="\/qapps\/FindPayment\?orderByField=-projectId"/);
     assert.match(html, />Purpose<\/div>/);
     assert.equal((html.match(/class="form-order-by"/g) || []).length, 1);
+});
+
+test('Find Options includes header-only filters and sort choices in declaration order', () => {
+    const rendered = [];
+    const html = renderList({ headerFields: [
+        { name: 'orderType', title: () => 'Order Type', dialogField: () => rendered.push('orderType') },
+        { name: 'orderName', title: () => 'Name', orderBy: 'case-insensitive', dialogField: () => rendered.push('orderName') }
+    ] });
+    assert.deepEqual(rendered, ['orderType', 'orderName']);
+    const find = dialog(html, 'PaymentList_hdialog');
+    assert.match(find, /'value':'\^orderName'/);
+    assert.match(find, /'value':'-\^orderName'/);
+});
+
+test('compiled Find Options keeps header-only filters outside table columns', () => {
+    const load = file => vm.runInNewContext(fs.readFileSync(path.join(__dirname, file), 'utf8'));
+    const T = load('../TemplateSupport.js');
+    const module = load('ScreenQvt.js')(T, load('ScreenSupport.js')(T));
+    const node = (name, attrs = {}, children = []) => {
+        const result = { name, attrs, children,
+            source: name === 'radio' ? '$v.radio();' : name === 'text-find' ? '$v.textFind();' : '' };
+        children.forEach(child => { child.parent = result; });
+        return result;
+    };
+    const form = node('form-list', { name: 'OrderList' }, [
+        node('field', { name: 'orderType' }, [node('header-field', {}, [node('radio')])]),
+        node('field', { name: 'orderName' }, [node('header-field', { 'show-order-by': 'case-insensitive' }, [node('text-find')])])
+    ]);
+    let config;
+    const rendered = [];
+    const context = {
+        sri: { doBoundaryComments: () => false, openFormList: () => ({}), pushContext() {}, popContext() {}, write() {} },
+        $v: { formList: (info, form, columns, cfg) => { config = cfg; },
+            fieldBox() {}, radio: () => rendered.push('radio'), textFind: () => rendered.push('text-find') }
+    };
+    vm.runInNewContext(module.macros['form-list'](form, []), context);
+    assert.equal(config.allFields.length, 0);
+    assert.deepEqual(Array.from(config.headerFields, field => field.name), ['orderType', 'orderName']);
+    assert.equal(config.headerFields[1].orderBy, 'case-insensitive');
+    config.headerFields.forEach(field => field.dialogField());
+    assert.deepEqual(rendered, ['radio', 'text-find']);
 });
 
 test('empty-list warning reads the shared no-search-parameters marker', () => {
