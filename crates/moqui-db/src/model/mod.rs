@@ -458,6 +458,15 @@ impl EntityModel {
         self.by_full.get(full_name).map(|index| &self.entities[*index])
     }
 
+    /// A `view-entity` element made at runtime, as Java's `new EntityDefinition(efi, node)` for a `DbViewEntity` or a
+    /// data document's view: parsed as one read from a file and completed against this model. It is not added to the
+    /// model, so its members must be in it.
+    pub fn derive_view(&self, node: &MNode) -> Result<EntityDefinition, Error> {
+        let mut view = parse_entity(node, true, &self.dictionary, false)?;
+        self.complete_view(&mut view)?;
+        Ok(view)
+    }
+
     /// Complete every view, members first, so a view that joins another view sees it finished.
     fn complete_views(&mut self) -> Result<(), Error> {
         let mut state = vec![Completion::Pending; self.entities.len()];

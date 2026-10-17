@@ -31,6 +31,7 @@ use jiff::Timestamp;
 use moqui_db::model::FieldAlias;
 use moqui_db::sql::{Condition, FieldRef, LimitOffset, OrderBy};
 use moqui_lib::error::Error;
+use moqui_lib::node::MNode;
 use moqui_lib::object::{to_plain_string, Value};
 
 use super::facade::EntityFacade;
@@ -93,6 +94,8 @@ pub struct DocField {
     pub search_role: Option<String>,
     /// `searchWeight`: A, B, C, or D.
     pub search_weight: Option<String>,
+    /// `defaultDisplay`: `Y` or `N`, else `None`; the `default-display` of its alias in the document's view.
+    pub default_display: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -626,6 +629,11 @@ fn load_info(facade: &EntityFacade, data_document_id: &str) -> Result<DocumentIn
             is_expression,
             search_role: text(row.get("searchRole")),
             search_weight: text(row.get("searchWeight")),
+            default_display: match text(row.get("defaultDisplay")).as_deref() {
+                Some("Y") => Some(true),
+                Some("N") => Some(false),
+                _ => None,
+            },
         });
     }
     let mut aliases = std::collections::HashSet::new();
@@ -757,6 +765,91 @@ fn code_view(info: &DocumentInfo) -> CodeView {
     }
 }
 
+/// The document's view as a `view-entity` element, as Java's `makeEntityDefinition` builds it: `DataDocument.{id}`, the
+/// primary entity as `PRIM`, each relationship an optional member with its key maps and its key values as a condition,
+/// each field an alias with its `functionName` and `defaultDisplay`, and an expression field a `pq-expression` alias.
+/// The aliases come in the order of the field tree, each member's fields before the members below it. Unlike
+/// [`code_view`] it has no primary key aliases of its own.
+pub(crate) fn entity_view_node(facade: &EntityFacade, info: &DocumentInfo) -> Result<MNode, Error> {
+    let node = MNode::new("view-entity");
+    node.set_attribute("entity-name", info.data_document_id.clone());
+    node.set_attribute("package", "DataDocument");
+    let primary = node.append("member-entity");
+    primary.set_attribute("entity-alias", PRIMARY_ALIAS);
+    primary.set_attribute("entity-name", info.primary_entity.clone());
+    let mut failed = None;
+    info.walk(|path, field_node| {
+        if failed.is_some() {
+            return;
+        }
+        if let Some(rel) = path.last() {
+            let parent = path.len().checked_sub(2).map_or(&info.root, |at| &path[at].node);
+            if let Err(err) = append_relationship_member(facade, &node, parent, rel) {
+                failed = Some(err);
+                return;
+            }
+        }
+        for field in &field_node.fields {
+            let alias = node.append("alias");
+            alias.set_attribute("name", field.alias.clone());
+            if field.is_expression {
+                alias.set_attribute("pq-expression", field.path_element.clone());
+            } else {
+                alias.set_attribute("entity-alias", field_node.member_alias.clone());
+                alias.set_attribute("field", field.path_element.clone());
+                if let Some(function) = &field.function {
+                    alias.set_attribute("function", function.clone());
+                }
+            }
+            if let Some(display) = field.default_display {
+                alias.set_attribute("default-display", if display { "true" } else { "false" });
+            }
+        }
+    });
+    match failed {
+        Some(err) => Err(err),
+        None => Ok(node),
+    }
+}
+
+/// Java's `addRelationshipMember`: the related entity joined optionally from `parent` by the relationship's keys, its
+/// key values an `entity-condition` of the member.
+fn append_relationship_member(
+    facade: &EntityFacade,
+    node: &MNode,
+    parent: &FieldNode,
+    rel: &RelNode,
+) -> Result<(), Error> {
+    let relationship = facade.with_entity(&parent.entity, |entity, _, _| {
+        entity.relationship(&rel.relationship).cloned().ok_or_else(|| {
+            Error::new(format!(
+                "Relationship not found with name [{}] on entity [{}]",
+                rel.relationship, parent.entity
+            ))
+        })
+    })?;
+    let member = node.append("member-entity");
+    member.set_attribute("entity-alias", rel.node.member_alias.clone());
+    member.set_attribute("entity-name", relationship.related.clone());
+    member.set_attribute("join-from-alias", parent.member_alias.clone());
+    member.set_attribute("join-optional", "true");
+    for (field_name, related) in &relationship.key_pairs {
+        let key_map = member.append("key-map");
+        key_map.set_attribute("field-name", field_name.clone());
+        key_map.set_attribute("related", related.clone());
+    }
+    if !relationship.key_values.is_empty() {
+        let condition = member.append("entity-condition");
+        for key_value in &relationship.key_values {
+            let econdition = condition.append("econdition");
+            econdition.set_attribute("entity-alias", rel.node.member_alias.clone());
+            econdition.set_attribute("field-name", key_value.related.clone());
+            econdition.set_attribute("value", key_value.value.clone());
+        }
+    }
+    Ok(())
+}
+
 fn query_rows(
     facade: &EntityFacade,
     info: &DocumentInfo,
@@ -811,7 +904,7 @@ fn query_rows(
     run_code_view(facade, &view, condition, order, page)
 }
 
-fn document_condition(cond: &DocCondition) -> Result<Condition, Error> {
+pub(crate) fn document_condition(cond: &DocCondition) -> Result<Condition, Error> {
     let field = FieldRef::new(cond.field_alias.clone());
     if let Some(to_alias) = &cond.to_field_alias {
         let op = match cond.operator.as_str() {
@@ -1163,6 +1256,7 @@ mod tests {
             is_expression: true,
             search_role: None,
             search_weight: None,
+            default_display: None,
         };
         let stamp = super::expression_value(&field("date"), Value::string("1791979200000"));
         assert!(matches!(stamp, Value::Timestamp(_)), "{stamp:?}");

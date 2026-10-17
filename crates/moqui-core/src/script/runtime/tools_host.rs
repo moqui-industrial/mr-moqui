@@ -86,6 +86,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
 
     // ---- entity ----
     ec.entity.isEntityDefined = host.isEntityDefined;
+    ec.entity.clearEntityDefinitionFromCache = host.clearEntityDefinitionFromCache;
     ec.entity.getValueListFromPlainMap = host.valuesFromPlainMap;
     ec.entity.getAllEntityNames = host.getAllEntityNames;
     ec.entity.getAllEntitiesInfo = host.getAllEntitiesInfo;
@@ -915,6 +916,15 @@ fn is_entity_defined(ctx: Ctx<'_>, name: Opt<JsValue<'_>>) -> rquickjs::Result<b
             &facade,
             &text_or_empty(&ctx, name.0.as_ref())?,
         ))
+    })
+}
+
+/// `clearEntityDefinitionFromCache`, which the data view edit screen calls after it writes a view's rows: the
+/// definitions built from rows are read again on their next use. Java drops the one named; this drops them all.
+fn clear_entity_definition_from_cache(ctx: Ctx<'_>, _name: Opt<JsValue<'_>>) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        facade_of(&ctx)?.clear_derived_definitions();
+        Ok(())
     })
 }
 
@@ -2370,6 +2380,7 @@ pub(super) fn install<'js>(
     method!("getAllCachesInfo", get_all_caches_info);
     method!("makeElementInfoList", make_element_info_list);
     method!("isEntityDefined", is_entity_defined);
+    method!("clearEntityDefinitionFromCache", clear_entity_definition_from_cache);
     method!("getAllEntityNames", get_all_entity_names);
     method!("getAllEntitiesInfo", get_all_entities_info);
     method!("getAllEntityInfo", get_all_entity_info);

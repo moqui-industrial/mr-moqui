@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock};
 
-use moqui_db::model::EntityModel;
+use moqui_db::model::{EntityDefinition, EntityModel};
 use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
 
@@ -856,13 +856,23 @@ pub(super) fn entity_shape(entity_name: &str) -> Result<Arc<EntityShape>, Error>
     })
     .flatten()
     .ok_or_else(|| Error::new("no entity facade is installed"))?;
+    // A definition built at runtime (a DB view entity, `DataDocument.<id>`) changes with its rows, so its shape is read
+    // each time rather than kept with the model's.
+    if facade.with_model(|model| model.entity(entity_name).is_err()) {
+        return facade
+            .with_entity(entity_name, |entity, _, _| Ok(Arc::new(entity_shape_of(entity))))
+            .map_err(Error::from);
+    }
     facade
         .with_model(|model| shapes.get(model, entity_name))
         .map_err(Error::from)
 }
 
 fn read_entity_shape(model: &EntityModel, entity_name: &str) -> Result<EntityShape, moqui_lib::error::Error> {
-    let entity = model.entity(entity_name)?;
+    Ok(entity_shape_of(model.entity(entity_name)?))
+}
+
+fn entity_shape_of(entity: &EntityDefinition) -> EntityShape {
     // A view's fields are its aliases, as Java's `getFieldNames`; an alias with no type is `text-long` to the forms.
     let fields: Vec<(String, String, bool)> = if entity.is_view {
         entity
@@ -908,7 +918,7 @@ fn read_entity_shape(model: &EntityModel, entity_name: &str) -> Result<EntitySha
         .filter(|alias| alias.default_display)
         .map(|alias| alias.name.clone())
         .collect();
-    Ok(EntityShape {
+    EntityShape {
         full_name: entity.full_name.clone(),
         pk_fields: fields
             .iter()
@@ -920,7 +930,7 @@ fn read_entity_shape(model: &EntityModel, entity_name: &str) -> Result<EntitySha
         description_field,
         default_display,
         pq_display,
-    })
+    }
 }
 
 fn add_entity_fields(
@@ -1503,5 +1513,62 @@ mod tests {
         assert_eq!(label.attribute("validate-field").as_deref(), Some("label"));
         assert!(label.first_named("display").is_some());
         assert!(label.first_named("text-area").is_none() && label.first_named("text-line").is_none());
+    }
+
+    /// Java's `addEntityFields` of a `DataDocument.<id>` name: the document's view, its fields' `defaultDisplay` and
+    /// an expression field with `defaultDisplay` `Y` a display field; its shape is read again after its rows change.
+    #[test]
+    fn a_data_document_name_gives_the_auto_fields_of_its_view() {
+        use moqui_lib::object::Value;
+        let facade = crate::testing::open();
+        let context = crate::context::ExecutionContextFactory::test_context();
+        context.factory().set_entity(facade.clone());
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        let create = |entity: &str, pairs: &[(&str, &str)]| {
+            let mut row = facade.make_value(entity).unwrap();
+            for (name, value) in pairs {
+                row.set(*name, Value::string(*value));
+            }
+            row.create(&facade).unwrap();
+        };
+        create(
+            "moqui.entity.document.DataDocument",
+            &[
+                ("dataDocumentId", "FormDoc"),
+                ("primaryEntityName", "moqui.basic.Enumeration"),
+            ],
+        );
+        let field = |seq: &str, path: &str, extra: &[(&str, &str)]| {
+            let mut pairs = vec![("dataDocumentId", "FormDoc"), ("fieldSeqId", seq), ("fieldPath", path)];
+            pairs.extend_from_slice(extra);
+            create("moqui.entity.document.DataDocumentField", &pairs);
+        };
+        field("01", "enumId", &[]);
+        field("02", "description", &[("defaultDisplay", "N")]);
+        field(
+            "03",
+            "(enumId + '!')",
+            &[("fieldNameAlias", "shout"), ("defaultDisplay", "Y")],
+        );
+        let shape = super::entity_shape("DataDocument.FormDoc").unwrap();
+        assert_eq!(shape.full_name, "DataDocument.FormDoc");
+        assert_eq!(shape.pq_display, ["shout"]);
+        let form = parse(r#"<form-list name="L"/>"#);
+        let shown = add_entity_fields(&shape, "all", "display", &[], &form);
+        assert_eq!(shown, ["enumId", "description"]);
+        let fields = form.children_named("field");
+        let names: Vec<String> = fields.iter().filter_map(|field| field.attribute("name")).collect();
+        assert_eq!(names, ["enumId", "description", "shout"]);
+        assert!(fields[1].first_named("default-field").is_none(), "defaultDisplay N");
+        assert!(fields[2]
+            .first_named("default-field")
+            .unwrap()
+            .first_named("display")
+            .is_some());
+
+        field("04", "enumTypeId", &[]);
+        let shape = super::entity_shape("DataDocument.FormDoc").unwrap();
+        assert!(shape.fields.iter().any(|(name, _, _)| name == "enumTypeId"));
     }
 }

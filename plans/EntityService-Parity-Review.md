@@ -21,15 +21,15 @@ ordering.
 
 ## Summary
 
-9 open findings and 65 accepted differences. Open by phase:
+7 open findings and 66 accepted differences. Open by phase:
 
 | Phase | Open | High |
 |---|---|---|
 | 1 Entity value / field / condition | 2 | — |
 | 2 Entity find / query | 0 | — |
-| 3 Facade / metadata / DDL / cache | 3 | — |
+| 3 Facade / metadata / DDL / cache | 2 | — |
 | 4 Data loader / feed / ECA / writer / document / ETL | 1 | — |
-| 5 Entity query / REST | 2 | — |
+| 5 Entity query / REST | 1 | — |
 | 6 Service definition / validation / call | 0 | — |
 | 7 ECA / SECA / pools / jobs | 0 | — |
 | 8 REST / remote / tools / mail / components | 1 | — |
@@ -40,22 +40,17 @@ No High finding is open.
 
 No access-control finding is open.
 
-1. **Full-text search and model sources** (P3-20, P3-14, P3-21): a `LIKE` on a `text-fts` field is not rewritten
-   to a full-text search (the DDL now follows `FtsDdl`), DB view entities are not built from their rows, and a
-   foreign key is recognized only by its computed name.
-2. **View fields** (P5-19, P5-18): the entity JSON schema and the data writer's CSV of a view read no fields
-   (REST finds and form auto fields now read the aliases, and `pq-expression` aliases are evaluated), and
-   `DataDocument.<id>` is not an entity name.
+1. **Full-text search and model sources** (P3-20, P3-21): a `LIKE` on a `text-fts` field is not rewritten to a
+   full-text search (the DDL now follows `FtsDdl`), and a foreign key is recognized only by its computed name. DB view
+   entities and `DataDocument.<id>` names are now built at runtime, in an overlay on the file model (P3-14, P5-18).
+2. **View fields** (P5-19): the entity JSON schema and the data writer's CSV of a view read no fields (REST finds and
+   form auto fields now read the aliases, and `pq-expression` aliases are evaluated). That now includes the views the
+   overlay builds.
 
 ### Open decisions
 
 - **P6b-01** — decided 2026-10-16 and done: Java's record-and-return contract is adopted; see
   [Phase 6](#phase-6-checked-and-found-equivalent).
-- **P3-14** — how DB view entities join an immutable model: a second, locked set of definitions consulted after the
-  file model, or a model that can be swapped, and when it is invalidated.
-- **P5-18** — how `DataDocument.<id>` names resolve to entity definitions; nothing in `runtime/` uses them. A later
-  round does it on an overlay of derived definitions, together with P3-14. (P5-16, the `pq-expression` aliases those
-  definitions use for expression fields, is done: see [Phase 5](#phase-5-checked-and-found-equivalent).)
 - **P8a-41** — whether every print job asks for portrait and monochrome, as cups4j's builder defaults make Java's do,
   or keeps the print queue's defaults, as now; see [P8a-41](#p8a-41--portrait-and-monochrome-on-every-job).
 
@@ -210,29 +205,17 @@ Worked 2026-10-16: P3-01, P3-02, P3-07, P3-09, P3-10, P3-12, P3-13, P3-16, P3-17
 P3b-04, P3b-07, P3b-08 and P3b-09 fixed; P3-06 and P3-11 moved to [Accepted differences](#accepted-differences);
 P3-08 removed as invalid (H2, SQL Server and Oracle have no driver in this port and `datasource_conf` refuses
 them, so no full-text DDL can run for those styles); P3-14 left open; P3-22 found and fixed, and P3-20 and P3-21
-found and left open, along the way. Line numbers in this section are as of that change.
+found and left open, along the way. Line numbers in this section are as of that change. P3-14 fixed in a later pass,
+with P5-18, on an overlay of definitions built at runtime; its line numbers are as of that pass.
 
 ### Findings — 3a facade / metadata / sequence / datasource
 
 | ID | Rust location | Java location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P3-14 | `entity/share.rs` (immutable model); `runtime/base-component/tools/screen/Tools/DataView/ViewDbView.xml:62` | `EntityFacadeImpl.groovy:529-555,675-727` | DB view entities (`DbViewEntity` rows) are never made into view-entities; the DataView screen says so | Med | Unsure |
 | P3-20 | `moqui-db/src/sql/condition.rs:811` (`matches` only) | `FtsSql.java:81-123`; `FieldValueCondition.java:73` | A `LIKE`/`NOT LIKE` on a `text-fts` field stays a SQL `LIKE`; Java rewrites it to the full-text predicate plus a `LOWER(col) LIKE` per word, and falls back to `LIKE` when the group's full-text setup failed | Med | No |
 | P3-21 | `entity/meta.rs:733` | `EntityDbMeta.groovy:881`, `1047`, `1132` | A foreign key counts as there only by its computed name; Java matches the key columns, so a key Java made under another name gets a second one | Low | No |
 
 No 3b (cache / dbresource) finding is open.
-
-#### P3-14 — DB view entities not loaded
-
-Java looks a `DbViewEntity` name up in the database when the definition is first asked for, builds a
-`view-entity` node from its `DbViewEntityMember`, `DbViewEntityKeyMap` and `DbViewEntityAlias` rows, and caches
-it until the tools screens clear it. Rust's model is loaded once from files and is immutable (`SharedModel`);
-every lookup (`with_entity`, `with_model`, the SQL builders) borrows from it. Supporting these needs a second,
-mutable set of definitions behind a lock that every name lookup consults after the file model (or a model that
-can be swapped), a build from the rows through `EntityModel::complete_view` that reads them without recursing
-into the lookup, and invalidation when those rows change (the DataView edit screens and the data loader). That
-reaches every model lookup site, so it is left for a change of its own; until then the DataView screen tells the
-user the view is not available (`ViewDbView.xml:62`).
 
 #### P3-20 — `LIKE` on a `text-fts` field is not a full-text search
 
@@ -254,6 +237,31 @@ read of the foreign key columns per group, like `existing_constraints`.
 
 #### Phase 3 checked and found equivalent
 
+- DB view entities (P3-14, fixed; line numbers as of that pass): a name the file model does not have is looked up in an
+  overlay of definitions built at runtime, kept with the facade behind a lock (`entity/derived.rs`), which `with_entity`
+  and `with_read_group` consult after the file model (`definition`, `entity/facade.rs:569`), so finds, counts,
+  iterators, the sim and the SQL builders take it as any view; its members are completed against the file model. As
+  Java's `loadEntityDefinition`, a `DbViewEntity` named by its name, or by `{packageName}.{name}` (Java's `null.{name}`
+  with no package), becomes a `view-entity` of its `DbViewEntityMember` rows (joined from `joinFromAlias` by their
+  `DbViewEntityKeyMap` rows, optional for `joinOptional` `Y`) and `DbViewEntityAlias` rows (`field`, `function`), parsed
+  and completed as a file view is (`db_view`, `entity/derived.rs:182`; `EntityModel::derive_view`,
+  `moqui-db/src/model/mod.rs:464`). Built on its first lookup and kept under the name and the full name; a name that is
+  not one is kept as not found, so asking again reads nothing (`lookup`, `:82`; the misses are dropped past 10,000
+  names). A write to a `moqui.entity.view.DbViewEntity*` or `moqui.entity.document.DataDocument*` entity drops the whole
+  overlay, from the entity write hook at the write and again at its transaction's end, and from a cluster peer's
+  `entity-cache-invalidate`, which already reaches `clear_one_cache` (`note_write`, `entity/cache.rs:541`, `:871`,
+  `:889`); a build that read the rows before a drop is not kept. The data view edit screen's
+  `clearEntityDefinitionFromCache` drops it too (all of it, where Java drops the one named;
+  `script/runtime/tools_host.rs:924`). A view that does not build (a member that is not a file entity, an alias of a
+  field its member lacks) is logged with its name and is not found until its rows change, and other lookups go on
+  (AGENTS.md failure tolerance). `isEntityDefined` and the tools' `getEntityDefinition` see it (`entity/info.rs:51`,
+  `:350`), as do form auto fields, read each time rather than kept with the model's shapes (`screen/form.rs:859`), the
+  entity REST paths, the JSON schema of one entity (`entity/schema.rs`), and an OpenAPI parameter enum
+  (`service/rest.rs:1057`); the whole-model listings (entity lists, the schema catalog, typegen, `getAllEntityNames`)
+  stay on the file model, so they leave a DB view entity out, where Java's `getAllEntityNames` has it. The data view
+  screen shows the view as Java's does (`ViewDbView.xml`, now Java's). Its rows are read outside the caller's
+  transaction and the view is never cached (accepted, P3-14 in [Accepted differences](#accepted-differences)). A
+  `DbViewEntity` member that is itself one is not found (Java builds it in turn).
 - Global `sequenced-id-prefix` (P3-01, fixed): read once with the conf (`sequenced_id_prefix`,
   `entity/facade.rs:601`) and put in front of every id a bank issues, for an entity (inside its own
   `sequence-primary-prefix`) and for `sequencedIdPrimary`; not on a UUID or a sim id, as Java
@@ -458,8 +466,9 @@ path→PK resolution, master/dependent expansion, JSON/XML/CSV writers) with `en
 tracked once under P2-06/P2-07/P2-12.
 
 Worked 2026-10-16: P5-01, P5-11, P5-13, P5-15 and P5-16 fixed (P5-16 in a later pass, once evaluation in moqui-core's
-value layer was chosen); P5-17 (form auto fields of a view) found and fixed; P5-18 and P5-19 found and left open. The
-JSON wire change (P5-11, P5-15) has no consumer in this repository that reads the old text: the browser code
+value layer was chosen); P5-17 (form auto fields of a view) found and fixed; P5-18 and P5-19 found and left open, and
+P5-18 fixed in a later pass with P3-14, on the overlay of definitions built at runtime. The JSON wire change (P5-11,
+P5-15) has no consumer in this repository that reads the old text: the browser code
 (`runtime/base-component/webroot/screen/webroot/js`, `crates/moqui-browser/js`, `scripts/*.mjs`) parses with
 `JSON.parse`/`response.json()`, `MoquiL10n.toInstant` already takes a millis number (the old quoted millis text was an
 invalid date to it), the qvt screen data and `crates/moqui-browser` use `moqui_lib::json::to_json`, not this writer, the
@@ -468,18 +477,7 @@ numbers in this section are as of that change.
 
 | ID | Rust location | Java location | Divergence | Severity | Intentional? |
 |----|---|---|---|---|---|
-| P5-18 | `moqui-db/src/model/mod.rs:432` (`entity`); `entity/document.rs:722-758` | `EntityFacadeImpl.groovy:1110-1111`; `EntityDataDocument.groovy:169-183,204-208` | `DataDocument.<dataDocumentId>` is not an entity name: Java builds the document's dynamic view as an entity definition for finds and form auto fields (unused in `runtime/`) | Low | No |
 | P5-19 | `entity/schema.rs:145`; `entity/data_writer.rs:522-538` | `RestSchemaUtil.groovy:144-147`; `EntityDataWriterImpl.groovy:349-359` | The entity JSON schema and the data writer's CSV header and rows of a **view-entity** have no fields; Java uses the aliases (`getAllFieldNames`) | Med | No |
-
-#### P5-18 — `DataDocument.<id>` entity definitions not ported
-
-Java's `getEntityDefinition` answers a name starting with `DataDocument.` with the document's dynamic view
-(`makeEntityDefinition`): its aliases carry the fields' `fieldNameAlias`, `functionName` and `defaultDisplay`, and
-expression fields become `pq-expression` aliases. A screen can then find on it or give a form-list its auto fields.
-Rust builds the same view only inside `entity/document.rs` (`code_view`) to query a document, so the name is not
-found. Left open for want of a caller: nothing in `runtime/` names a `DataDocument.` entity. A port would resolve
-the name in the facade's model lookup; its expression fields would be `pq-expression` aliases, which are now
-evaluated (P5-16).
 
 #### P5-19 — Entity schema and data-writer CSV of a view have no fields
 
@@ -492,6 +490,17 @@ The CSV header with `tableColumnNames` would also need a column name for an alia
 
 #### Phase 5 checked and found equivalent
 
+- `DataDocument.<id>` names (P5-18, fixed; line numbers as of that pass): the overlay of P3-14 (Phase 3) builds the
+  document's view as Java's `makeEntityDefinition`: `DataDocument.{id}`, the primary entity as `PRIM` and each
+  relationship an optional member with its key maps and its key values as a member condition (Java's
+  `addRelationshipMember`), each field an alias named by `fieldNameAlias` with its `functionName` and `defaultDisplay`,
+  and an expression field a `pq-expression` alias (P5-16), which a read evaluates and form auto fields show with
+  `defaultDisplay` `Y` (`entity_view_node`, `entity/document.rs:773`; `document_view`, `entity/derived.rs:259`). As
+  Java's `find`, a find on it has the document's conditions that are not `postQuery` and reads from a clone when one is
+  open (`EntityFacade::find`, `entity/facade.rs:508`). As Java's `isEntityDefined`, the name is not an entity name. The
+  aliases come in the order of the document's field tree, each member's fields before the members below it, where Java's
+  tree keeps the order fields and relationships first appear; the document's own query (`code_view`) is unchanged. Never
+  cached, as a P3-14 view.
 - `pq-expression` aliases (P5-16, fixed; line numbers as of that pass): moqui-db only keeps the expression. As
   `EntityDefinition`, such an alias is kept apart from the view's aliases, in `pq_aliases`
   (`moqui-db/src/model/mod.rs:158`, `:715-723`; `parse_pq_alias`, `model/view.rs:261`), so no SQL builder sees it and
@@ -1072,6 +1081,7 @@ tolerance). Not part of the worklist; revisit only if the rationale changes.
 | P2-14 | search form | `_not` with `_ic` on `equals` compares ignoring case; Java throws, since `ignoreCase()` on the `orNull` join condition is unsupported (`entity/search_form.rs:269-272`) | A search a user can type should not fail; comment at the site |
 | P3-06 | datasource / DDL | No table, constraint or index name is schema-qualified: Postgres sets the session `search_path` to `schema-name` (`moqui-host/src/db/entity_db.rs:202-207`), `use-schema-for-all` (only the DB2 profiles) is unread, and a MySQL `schema-name` is logged and not used (`entity/datasource.rs:222-229`) | Same placement on Postgres without qualifying each statement; no DB2 driver; on MySQL Java's `schema.TABLE` is another database, which the jdbc-uri names. `use-schemas="false"` is now honored (no search path, `entity/datasource.rs:178-184`); comments at both sites |
 | P3-11 | DDL | `fk-style="name_fk"` (the MySQL profiles) is not followed: always `ADD CONSTRAINT name FOREIGN KEY` (`moqui-db/src/sql/statement.rs:562-571`) | MySQL 8.0.16 and later ignore the `name_fk` name and call the key `{table}_ibfk_N`, so the check that goes by name (P3-21) would add it again on every check; doc comment at `create_foreign_key` |
+| P3-14 | entity facade | A view built at runtime (a `DbViewEntity`, `DataDocument.<id>`) reads its rows outside the caller's transaction, which is suspended, and is never cached (`cache="never"`, though a `DbViewEntity` says `Y`); Java reads in the transaction and caches a `cache="Y"` view (`build`, `entity/derived.rs:154`) | A failed read (a database without the table) cannot mark the caller's transaction for rollback, as the loader asks whether each data file element is an entity inside its file transaction; rows that transaction wrote are seen once it commits, when the overlay is dropped again. The entity cache keeps no member-to-view map for views built here and would keep a dropped view's finds. Comments at the site and in the module doc |
 | P3b-10 | feed cache | Feed-info cache invalidated on write vs Java 900s TTL (`entity/cache.rs:838-845`) | Rust is more current |
 | P4a-04 | data loader | A JSON `binary-very-long` string is Base64-decoded (text that is not Base64 is its UTF-8 bytes); Java's JSON reader stores the text's UTF-8 bytes (`entity/load_feed/json.rs:290-292`) | This port's data writer writes bytes in JSON as Base64, so its writer and loader round-trip; Java's JSON writer has no text form for bytes (`JsonBuilder` of a `SerialBlob`), so its pair never did. Comment at the site |
 | P4a-19 | data loader | XML and JSON `binary-very-long` text is trimmed before the Base64 decode; Java decodes it as it is, so Base64 with whitespace around it becomes the text's UTF-8 bytes (`entity/load_feed/loader.rs:327-331`) | Base64 laid out on lines of its own decodes to the bytes meant; Java's writer puts it in CDATA with no whitespace, so both read that the same. Doc comment at `decode_binary` |

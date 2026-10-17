@@ -114,6 +114,8 @@ pub(crate) struct Inner {
     slots: Mutex<HashMap<TypeId, Box<dyn Any + Send>>>,
     /// What is known of the tables, and the groups' DDL settings.
     pub(crate) tables: super::meta::TableState,
+    /// Definitions built at runtime, consulted when the file model has no such name. See [`super::derived`].
+    pub(crate) derived: super::derived::DerivedDefinitions,
 }
 
 /// Starts the sim overlay and answers its pool. See [`EntityFacade::set_sim_starter`].
@@ -275,6 +277,7 @@ impl EntityFacade {
                 sim_tx: RwLock::new(None),
                 slots: Mutex::new(HashMap::new()),
                 tables: super::meta::TableState::default(),
+                derived: super::derived::DerivedDefinitions::default(),
             }),
         })
     }
@@ -504,7 +507,19 @@ impl EntityFacade {
 
     pub fn find(&self, entity_name: &str) -> Result<EntityFind, Error> {
         let full_name = self.with_entity(entity_name, |entity, _, _| Ok(entity.full_name.clone()))?;
-        Ok(EntityFind::new(self.clone(), full_name))
+        let conditions = super::derived::document_conditions(self, &full_name)?;
+        let find = EntityFind::new(self.clone(), full_name);
+        // As Java's `find`, a data document's view finds with the document's conditions, from a clone when one is open.
+        Ok(match conditions {
+            Some(conditions) => conditions.into_iter().fold(find, EntityFind::condition).use_clone(true),
+            None => find,
+        })
+    }
+
+    /// Drop the definitions built at runtime (DB view entities, `DataDocument.<id>`), so the next lookup reads their
+    /// rows again. A write to their rows does this already.
+    pub fn clear_derived_definitions(&self) {
+        super::derived::clear(self);
     }
 
     /// `EntityFacade.rest`. Find, store, update, delete, and relationship steps.
@@ -537,15 +552,25 @@ impl EntityFacade {
         body(self.inner.model.model())
     }
 
+    /// `body` with the definition of `name`, from the file model or else built at runtime ([`super::derived`]), the
+    /// dialect of its group, and the file model.
     pub(crate) fn with_entity<T>(
         &self,
         name: &str,
         body: impl FnOnce(&EntityDefinition, &Dialect, &EntityModel) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let model = self.inner.model.model();
-        let entity = model.entity(name)?;
+        let entity = self.definition(name)?;
         let runtime = self.group_runtime(entity.group.as_deref())?;
-        body(entity, &runtime.dialect, model)
+        body(&entity, &runtime.dialect, model)
+    }
+
+    /// The file model's definition of `name`, or else one built at runtime. The overlay's lock is not held after this.
+    fn definition(&self, name: &str) -> Result<Definition<'_>, Error> {
+        match self.inner.model.model().entity(name) {
+            Ok(entity) => Ok(Definition::File(entity)),
+            Err(err) => super::derived::lookup(self, name).map(Definition::Derived).ok_or(err),
+        }
     }
 
     /// The runtime of an entity group. A group with no datasource of its own uses the default group's, as Java's
@@ -577,7 +602,7 @@ impl EntityFacade {
         body: impl FnOnce(&EntityDefinition, &Dialect, &EntityModel, &TransactionManager) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let model = self.inner.model.model();
-        let entity = model.entity(name)?;
+        let entity = self.definition(name)?;
         let runtime = if use_clone {
             let group = entity.group.as_deref().unwrap_or(self.inner.default_group.as_str());
             let prefix = format!("{group}#clone");
@@ -595,7 +620,7 @@ impl EntityFacade {
         } else {
             self.group_runtime(entity.group.as_deref())?
         };
-        body(entity, &runtime.dialect, model, &runtime.transactions)
+        body(&entity, &runtime.dialect, model, &runtime.transactions)
     }
 
     /// The names of the open entity groups, the default first.
@@ -609,6 +634,23 @@ impl EntityFacade {
     fn edit_flags(&self, edit: impl FnOnce(&mut EntityFlags)) {
         let mut flags = write(&self.inner.flags);
         edit(&mut flags);
+    }
+}
+
+/// A definition of the file model, or one built at runtime and shared from the overlay.
+enum Definition<'a> {
+    File(&'a EntityDefinition),
+    Derived(Arc<EntityDefinition>),
+}
+
+impl std::ops::Deref for Definition<'_> {
+    type Target = EntityDefinition;
+
+    fn deref(&self) -> &EntityDefinition {
+        match self {
+            Self::File(entity) => entity,
+            Self::Derived(entity) => entity,
+        }
     }
 }
 

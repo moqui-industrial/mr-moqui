@@ -1060,8 +1060,11 @@ fn parameter_enums(param: &ParamDef, schemas: &mut Schemas<'_>) -> Option<Vec<Va
     let (Some(facade), Some(enums)) = (schemas.facade, schemas.enums.as_mut()) else {
         return None;
     };
-    facade.with_model(|model| match model.entity(entity_name) {
-        Ok(entity) if entity.has_field(field_name) => enums.of(entity, field_name),
+    let found = facade.with_entity(entity_name, |entity, _, _| {
+        Ok(entity.has_field(field_name).then(|| enums.of(entity, field_name)))
+    });
+    match found {
+        Ok(Some(ids)) => ids,
         _ => {
             tracing::error!(
                 parameter = %param.name,
@@ -1069,7 +1072,7 @@ fn parameter_enums(param: &ParamDef, schemas: &mut Schemas<'_>) -> Option<Vec<Va
             );
             None
         }
-    })
+    }
 }
 
 /// Java's `RestApi.getJsonType`, by the class name after the last `.`.

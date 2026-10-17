@@ -25,6 +25,7 @@ pub mod sensitive;
 
 mod data_writer;
 mod dbresource;
+mod derived;
 mod etl;
 pub(crate) mod exec;
 mod facade;

@@ -2287,3 +2287,342 @@ fn a_sequence_primary_prefix_is_expanded_with_the_value_fields() {
         Some("P")
     );
 }
+
+fn create_row(facade: &EntityFacade, entity: &str, pairs: &[(&str, &str)]) {
+    let mut row = facade.make_value(entity).unwrap();
+    for (name, value) in pairs {
+        row.set(*name, Value::string(*value));
+    }
+    row.create(facade).unwrap();
+}
+
+/// Enumeration types `T1` and `T2`, with `E1` and `E2` of `T1` and `E3` of `T2`.
+fn seed_enumerations(facade: &EntityFacade) {
+    for (id, description) in [("T1", "Type one"), ("T2", "Type two")] {
+        create_row(
+            facade,
+            "moqui.basic.EnumerationType",
+            &[("enumTypeId", id), ("description", description)],
+        );
+    }
+    for (id, type_id) in [("E1", "T1"), ("E2", "T1"), ("E3", "T2")] {
+        create_row(
+            facade,
+            "moqui.basic.Enumeration",
+            &[
+                ("enumId", id),
+                ("enumTypeId", type_id),
+                ("description", &format!("Enum {id}")),
+            ],
+        );
+    }
+}
+
+/// A `DbViewEntity` of `members` (alias, entity, join-from alias), each joined on `enumTypeId`, and `aliases` (name,
+/// member alias, field).
+fn create_db_view(facade: &EntityFacade, name: &str, members: &[(&str, &str, &str)], aliases: &[(&str, &str, &str)]) {
+    create_row(
+        facade,
+        "moqui.entity.view.DbViewEntity",
+        &[
+            ("dbViewEntityName", name),
+            ("packageName", "test.dbview"),
+            ("cache", "Y"),
+        ],
+    );
+    for (alias, entity, join_from) in members {
+        let mut fields = vec![
+            ("dbViewEntityName", name),
+            ("entityAlias", *alias),
+            ("entityName", *entity),
+        ];
+        if !join_from.is_empty() {
+            fields.extend([("joinFromAlias", *join_from), ("joinOptional", "Y")]);
+            create_row(
+                facade,
+                "moqui.entity.view.DbViewEntityKeyMap",
+                &[
+                    ("dbViewEntityName", name),
+                    ("joinFromAlias", join_from),
+                    ("entityAlias", alias),
+                    ("fieldName", "enumTypeId"),
+                ],
+            );
+        }
+        create_row(facade, "moqui.entity.view.DbViewEntityMember", &fields);
+    }
+    for (alias, member, field) in aliases {
+        create_row(
+            facade,
+            "moqui.entity.view.DbViewEntityAlias",
+            &[
+                ("dbViewEntityName", name),
+                ("fieldAlias", alias),
+                ("entityAlias", member),
+                ("fieldName", field),
+            ],
+        );
+    }
+}
+
+/// Java's `DbViewEntity`: a view-entity built from its member, key map and alias rows on its first use, under its name
+/// and its full name, that finds, counts and iterates as a file view does. A name looked up before its rows are there
+/// is found once they are, and a write to its rows builds it again.
+#[test]
+fn a_db_view_entity_is_built_from_its_rows_and_again_when_they_change() {
+    let facade = crate::testing::open();
+    seed_enumerations(&facade);
+    assert!(facade.find("EnumWithType").is_err());
+    create_db_view(
+        &facade,
+        "EnumWithType",
+        &[
+            ("MASTER", "moqui.basic.Enumeration", ""),
+            ("TYPE", "moqui.basic.EnumerationType", "MASTER"),
+        ],
+        &[
+            ("enumId", "MASTER", "enumId"),
+            ("description", "MASTER", "description"),
+            ("typeDescription", "TYPE", "description"),
+        ],
+    );
+    let one = |name: &str| {
+        facade
+            .find(name)
+            .unwrap()
+            .eq("enumId", Value::string("E1"))
+            .one()
+            .unwrap()
+            .unwrap()
+    };
+    let row = one("EnumWithType");
+    assert_eq!(row.get("typeDescription"), Some(&Value::string("Type one")));
+    assert_eq!(row.get("description"), Some(&Value::string("Enum E1")));
+    assert!(row.get("enumTypeId").is_none());
+    let (full_name, pk, cache) = facade
+        .with_entity("EnumWithType", |entity, _, _| {
+            let pk: Vec<String> = entity.pk_field_names().into_iter().map(str::to_string).collect();
+            Ok((entity.full_name.clone(), pk, entity.cache.clone()))
+        })
+        .unwrap();
+    assert_eq!(full_name, "test.dbview.EnumWithType");
+    assert_eq!(pk, ["enumId"]);
+    // Never cached, though the row says `Y`: the entity cache does not know a member's views built here.
+    assert_eq!(cache, "never");
+    assert_eq!(
+        one("test.dbview.EnumWithType").get("typeDescription"),
+        Some(&Value::string("Type one"))
+    );
+    assert!(facade.find("other.EnumWithType").is_err());
+    assert_eq!(facade.find("EnumWithType").unwrap().count().unwrap(), 3);
+    let mut iterator = facade
+        .find("EnumWithType")
+        .unwrap()
+        .order_by("enumId", true)
+        .iterator()
+        .unwrap();
+    let first = iterator.next_value().unwrap().unwrap();
+    assert_eq!(first.get("enumId"), Some(&Value::string("E3")));
+    iterator.close().unwrap();
+    assert!(super::info::is_entity_defined(&facade, "EnumWithType"));
+    let info = super::info::definition_info(&facade, "EnumWithType").unwrap();
+    assert_eq!(info.get("isViewEntity"), Some(&Value::Bool(true)));
+
+    // A new alias row: the next lookup builds the view with it.
+    create_row(
+        &facade,
+        "moqui.entity.view.DbViewEntityAlias",
+        &[
+            ("dbViewEntityName", "EnumWithType"),
+            ("fieldAlias", "enumTypeId"),
+            ("entityAlias", "MASTER"),
+        ],
+    );
+    assert_eq!(one("EnumWithType").get("enumTypeId"), Some(&Value::string("T1")));
+
+    // An alias's function, as Java's `function` attribute.
+    create_db_view(
+        &facade,
+        "EnumCount",
+        &[("MASTER", "moqui.basic.Enumeration", "")],
+        &[("enumTypeId", "MASTER", "enumTypeId")],
+    );
+    create_row(
+        &facade,
+        "moqui.entity.view.DbViewEntityAlias",
+        &[
+            ("dbViewEntityName", "EnumCount"),
+            ("fieldAlias", "enumCount"),
+            ("entityAlias", "MASTER"),
+            ("fieldName", "enumId"),
+            ("functionName", "count"),
+        ],
+    );
+    let counted = facade
+        .with_entity("EnumCount", |entity, _, _| {
+            Ok(entity
+                .alias("enumCount")
+                .map(|alias| (alias.function.clone(), alias.aggregates())))
+        })
+        .unwrap();
+    assert_eq!(counted, Some((Some("count".to_string()), true)));
+}
+
+/// AGENTS.md failure tolerance: a `DbViewEntity` with a member that is not an entity, or an alias of a field its
+/// member does not have, is logged with its name once and is not found, until its rows change; other entities and
+/// views go on. A name that is no entity is not found, with nothing logged.
+#[test]
+fn a_db_view_entity_that_does_not_build_is_logged_and_not_found() {
+    let facade = crate::testing::open();
+    seed_enumerations(&facade);
+    create_db_view(
+        &facade,
+        "NoMemberView",
+        &[("MASTER", "moqui.test.NoSuchEntity", "")],
+        &[("enumId", "MASTER", "enumId")],
+    );
+    create_db_view(
+        &facade,
+        "BadAliasView",
+        &[("MASTER", "moqui.basic.Enumeration", "")],
+        &[("enumId", "MASTER", "noSuchField")],
+    );
+    create_db_view(
+        &facade,
+        "GoodView",
+        &[("MASTER", "moqui.basic.Enumeration", "")],
+        &[("enumId", "MASTER", "enumId")],
+    );
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    tracing::subscriber::with_default(crate::testing::LogSubscriber(Arc::clone(&lines)), || {
+        for _ in 0..2 {
+            assert!(facade.find("NoMemberView").is_err());
+            assert!(facade.find("BadAliasView").is_err());
+            assert!(facade.find("NoSuchEntityAnywhere").is_err());
+            assert!(facade.find("DataDocument.NoSuchDocument").is_err());
+        }
+        assert!(!super::info::is_entity_defined(&facade, "NoMemberView"));
+        assert_eq!(facade.find("moqui.basic.Enumeration").unwrap().count().unwrap(), 3);
+        assert_eq!(facade.find("GoodView").unwrap().count().unwrap(), 3);
+    });
+    let lines = lines.lock().unwrap().clone();
+    let text = lines.join("\n");
+    let logged = |name: &str| lines.iter().filter(|line| line.contains(name)).count();
+    assert_eq!(logged("NoMemberView"), 1, "{text}");
+    assert!(text.contains("moqui.test.NoSuchEntity"), "{text}");
+    assert_eq!(logged("BadAliasView"), 1, "{text}");
+    assert!(text.contains("noSuchField"), "{text}");
+    assert!(
+        !text.contains("NoSuchEntityAnywhere") && !text.contains("NoSuchDocument"),
+        "{text}"
+    );
+    let Err(err) = facade.find("NoSuchEntityAnywhere") else {
+        panic!("not an entity");
+    };
+    assert!(
+        err.to_string().contains("no entity named NoSuchEntityAnywhere"),
+        "{err}"
+    );
+
+    // Fixed rows: found.
+    facade
+        .find("moqui.entity.view.DbViewEntityAlias")
+        .unwrap()
+        .eq("dbViewEntityName", Value::string("BadAliasView"))
+        .update_all([("fieldName".to_string(), Value::string("enumId"))])
+        .unwrap();
+    assert_eq!(facade.find("BadAliasView").unwrap().count().unwrap(), 3);
+}
+
+/// Java's `getEntityDefinition("DataDocument.<id>")`: the document's view, its aliases with `fieldNameAlias`,
+/// `functionName` and `defaultDisplay`, an expression field a `pq-expression` alias that a read evaluates; a find on it
+/// has the document's conditions, as Java's `makeDataDocumentFind`. As Java's `isEntityDefined`, the name is not an
+/// entity name, and a write to the document's rows builds it again.
+#[test]
+fn a_data_document_name_is_its_view_with_its_conditions() {
+    let facade = crate::testing::open();
+    let context = crate::context::ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    seed_enumerations(&facade);
+    create_row(
+        &facade,
+        "moqui.entity.document.DataDocument",
+        &[
+            ("dataDocumentId", "EnumDoc"),
+            ("primaryEntityName", "moqui.basic.EnumerationType"),
+        ],
+    );
+    for (seq, path, alias, display) in [
+        ("01", "enumTypeId", "", ""),
+        ("02", "description", "typeDescription", "N"),
+        ("03", "enums:enumId", "", ""),
+        ("04", "enums:description", "enumDescription", ""),
+        ("05", "(enumTypeId + '/' + enumId)", "label", "Y"),
+    ] {
+        let mut fields = vec![("dataDocumentId", "EnumDoc"), ("fieldSeqId", seq), ("fieldPath", path)];
+        if !alias.is_empty() {
+            fields.push(("fieldNameAlias", alias));
+        }
+        if !display.is_empty() {
+            fields.push(("defaultDisplay", display));
+        }
+        create_row(&facade, "moqui.entity.document.DataDocumentField", &fields);
+    }
+    create_row(
+        &facade,
+        "moqui.entity.document.DataDocumentCondition",
+        &[
+            ("dataDocumentId", "EnumDoc"),
+            ("conditionSeqId", "01"),
+            ("fieldNameAlias", "enumTypeId"),
+            ("fieldValue", "T1"),
+        ],
+    );
+    let name = "DataDocument.EnumDoc";
+    let rows = facade.find(name).unwrap().order_by("enumId", false).list().unwrap();
+    let ids: Vec<_> = rows.iter().map(|row| row.get("enumId").cloned()).collect();
+    assert_eq!(ids, [Some(Value::string("E1")), Some(Value::string("E2"))]);
+    let row = &rows.values()[0];
+    assert_eq!(row.get("typeDescription"), Some(&Value::string("Type one")));
+    assert_eq!(row.get("enumDescription"), Some(&Value::string("Enum E1")));
+    assert!(!row.fields().contains_key("label"));
+    assert_eq!(row.get_localized(&facade, "label"), Some(Value::string("T1/E1")));
+    let (full_name, aliases, displays, pq) = facade
+        .with_entity(name, |entity, _, _| {
+            Ok((
+                entity.full_name.clone(),
+                entity.field_names().into_iter().map(str::to_string).collect::<Vec<_>>(),
+                entity
+                    .aliases
+                    .iter()
+                    .map(|alias| alias.default_display)
+                    .collect::<Vec<_>>(),
+                entity
+                    .pq_aliases
+                    .iter()
+                    .map(|alias| (alias.name.clone(), alias.default_display))
+                    .collect::<Vec<_>>(),
+            ))
+        })
+        .unwrap();
+    assert_eq!(full_name, name);
+    assert_eq!(aliases, ["enumTypeId", "typeDescription", "enumId", "enumDescription"]);
+    assert_eq!(displays, [None, Some(false), None, None]);
+    assert_eq!(pq, [("label".to_string(), true)]);
+    assert!(!super::info::is_entity_defined(&facade, name));
+
+    create_row(
+        &facade,
+        "moqui.entity.document.DataDocumentField",
+        &[
+            ("dataDocumentId", "EnumDoc"),
+            ("fieldSeqId", "06"),
+            ("fieldPath", "enums:enumCode"),
+        ],
+    );
+    assert!(facade
+        .with_entity(name, |entity, _, _| Ok(entity.has_field("enumCode")))
+        .unwrap());
+}

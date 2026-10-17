@@ -537,6 +537,8 @@ fn end_frame_write(facade: &EntityFacade, token: u64, full_name: &str) {
     if let Err(err) = result {
         tracing::warn!(error = %err, entity = %full_name, "entity cache clear at transaction end failed");
     }
+    // After the evict, so a definition built meanwhile does not keep rows read from the cache before it.
+    super::derived::note_write(facade, full_name);
 }
 
 /// One write of a frame, kept to evict again at the frame's end.
@@ -866,6 +868,7 @@ pub fn on_write(
     )?;
     note_screen_config(facade, &meta.full_name);
     note_feed_definition(facade, &meta.full_name);
+    super::derived::note_write(facade, &meta.full_name);
     crate::cluster::note_write(facade, entity_name, &meta.pk_fields, values).map_err(Error::from)
 }
 
@@ -879,10 +882,12 @@ pub(crate) fn clear_one_cache(
     let meta = read_meta(facade, entity_name)?;
     note_screen_config(facade, &meta.full_name);
     note_feed_definition(facade, &meta.full_name);
-    match primary_key.filter(|keys| meta.pk_fields.iter().all(|name| keys.contains_key(name))) {
+    let cleared = match primary_key.filter(|keys| meta.pk_fields.iter().all(|name| keys.contains_key(name))) {
         Some(keys) => evict(facade, &meta, "update", keys),
         None => clear_named(facade, &meta.full_name),
-    }
+    };
+    super::derived::note_write(facade, &meta.full_name);
+    cleared
 }
 
 /// Clear the list and count caches of `full_name`, and those of the views it is a member of.

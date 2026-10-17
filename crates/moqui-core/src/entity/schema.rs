@@ -33,21 +33,18 @@ const SCHEMA: &str = "https://json-schema.org/draft/2020-12/schema";
 /// an array for a `many`, and a field keyed to an `Enumeration` or `StatusItem` by a titled relationship lists its ids
 /// in `enum`.
 pub(crate) fn document(facade: &EntityFacade, names: &[String], master: bool) -> Result<Value, Error> {
-    facade.with_model(|model| {
-        let mut builder = Builder {
-            model,
-            defs: IndexMap::new(),
-            root: None,
-            enums: FieldEnums::new(facade),
-        };
-        if names.is_empty() {
-            return Ok(builder.catalog(master));
-        }
-        builder.one_entity(
-            &names[0],
-            master.then(|| names.get(1).cloned().unwrap_or_else(|| "default".to_string())),
-        )
-    })
+    let Some(name) = names.first() else {
+        return facade.with_model(|model| Ok(Builder::new(facade, model).catalog(master)));
+    };
+    let master_name = master.then(|| names.get(1).cloned().unwrap_or_else(|| "default".to_string()));
+    // The entity may be one built at runtime (a DB view entity, `DataDocument.<id>`); what it refers to is in the model.
+    let found = facade.with_entity(name, |entity, _, model| {
+        Ok(Builder::new(facade, model).one_entity(entity, master_name))
+    });
+    match found {
+        Ok(schema) => schema,
+        Err(_) => Err(bad_request(format!("No entity found with name or alias {name}"))),
+    }
 }
 
 /// A name in the request that does not pick one entity or master: the client's error.
@@ -64,11 +61,17 @@ struct Builder<'a> {
     enums: FieldEnums<'a>,
 }
 
-impl Builder<'_> {
-    fn one_entity(&mut self, name: &str, master_name: Option<String>) -> Result<Value, Error> {
-        let Ok(entity) = self.model.entity(name) else {
-            return Err(bad_request(format!("No entity found with name or alias {name}")));
-        };
+impl<'a> Builder<'a> {
+    fn new(facade: &'a EntityFacade, model: &'a EntityModel) -> Self {
+        Self {
+            model,
+            defs: IndexMap::new(),
+            root: None,
+            enums: FieldEnums::new(facade),
+        }
+    }
+
+    fn one_entity(&mut self, entity: &EntityDefinition, master_name: Option<String>) -> Result<Value, Error> {
         let master = match master_name.as_deref() {
             Some(master_name) => Some(entity.masters.iter().find(|item| item.name == master_name).ok_or_else(
                 || {

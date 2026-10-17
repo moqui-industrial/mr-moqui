@@ -46,9 +46,12 @@ pub fn name_matches(name: &str, filter: &str) -> bool {
     name.to_lowercase().contains(&filter.to_lowercase())
 }
 
-/// `isEntityDefined`: a full name, a short name, or a short alias of a defined entity.
+/// `isEntityDefined`: a full name, a short name, or a short alias of a defined entity, or a DB view entity. As Java's, a
+/// `DataDocument.<id>` name is not one, though a find on it works.
 pub fn is_entity_defined(facade: &EntityFacade, name: &str) -> bool {
-    !name.is_empty() && facade.with_model(|model| model.entity(name).is_ok())
+    !name.is_empty()
+        && (facade.with_model(|model| model.entity(name).is_ok())
+            || (!name.starts_with("DataDocument.") && facade.with_entity(name, |_, _, _| Ok(())).is_ok()))
 }
 
 /// `getAllEntityNames(filterRegexp)`: every full entity name, sorted.
@@ -343,10 +346,9 @@ fn build_dependents(
 
 /// One entity as the tools screens read an `EntityDefinition`: the names, the flags of `entityInfo`, the fields, the
 /// relationships, the master definitions, the dependents, and the entity element's attributes. `None` when the entity
-/// is not defined.
+/// is not defined. A DB view entity or `DataDocument.<id>` is one too.
 pub fn definition_info(facade: &EntityFacade, name: &str) -> Option<IndexMap<String, Value>> {
-    facade.with_model(|model| {
-        let entity = model.entity(name).ok()?;
+    let found = facade.with_entity(name, |entity, _, model| {
         let mut map = IndexMap::new();
         map.insert("fullEntityName".to_string(), text(&entity.full_name));
         map.insert("entityName".to_string(), text(&entity.entity_name));
@@ -444,8 +446,9 @@ pub fn definition_info(facade: &EntityFacade, name: &str) -> Option<IndexMap<Str
             attributes.insert("has-dependents".to_string(), text("true"));
         }
         map.insert("entityAttributes".to_string(), Value::Map(attributes));
-        Some(map)
-    })
+        Ok(map)
+    });
+    found.ok()
 }
 
 /// The entity group names, sorted: `getDatasourceGroupNames`.
