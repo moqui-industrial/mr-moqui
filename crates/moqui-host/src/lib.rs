@@ -486,6 +486,8 @@ pub struct LoadFlags {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadReport {
     pub records: u64,
+    /// Startup loaded an empty database, requiring factory reinitialization.
+    pub empty_db_loaded: bool,
     pub enumeration: i64,
     pub user_group_permission: i64,
     /// `moqui.test.TestFts` existed after `check_tables` and before any data file.
@@ -907,6 +909,16 @@ fn boot_server(
     framework_dir: &std::path::Path,
     cluster_dir: &std::path::Path,
 ) -> Result<ServeProcess, moqui_lib::error::Error> {
+    boot_server_factory(runtime_dir, framework_dir, cluster_dir, true)
+}
+
+#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+fn boot_server_factory(
+    runtime_dir: &std::path::Path,
+    framework_dir: &std::path::Path,
+    cluster_dir: &std::path::Path,
+    check_empty_db: bool,
+) -> Result<ServeProcess, moqui_lib::error::Error> {
     use std::sync::Arc;
 
     let boot_started = std::time::Instant::now();
@@ -976,7 +988,7 @@ fn boot_server(
         index_feeds_on_start_empty(&factory);
     }
     let load_started = std::time::Instant::now();
-    {
+    let empty_db_loaded = if check_empty_db {
         let context = factory.new_context();
         let entered = context.enter();
         let authz = context.disable_authz();
@@ -992,12 +1004,28 @@ fn boot_server(
         drop(authz);
         drop(entered);
         drop(context);
-        loaded?;
-    }
+        loaded?.empty_db_loaded
+    } else {
+        false
+    };
     tracing::info!(
         "Table check and empty-db load finished in {:.3} seconds",
         load_started.elapsed().as_secs_f64()
     );
+    if empty_db_loaded {
+        tracing::warn!("Data loaded into empty DB, re-initializing ExecutionContextFactory");
+        factory.flush_artifact_hits().map_err(moqui_lib::error::Error::from)?;
+        factory.flush_sessions().map_err(moqui_lib::error::Error::from)?;
+        logging::stop_shipping();
+        factory.shutdown();
+        drop(factory);
+        drop(search);
+        drop(facade);
+        drop(sim);
+        drop(db);
+        // As Java's dynamicInit, construct a fresh factory without running checkEmptyDb again.
+        return boot_server_factory(&runtime_dir, &framework_dir, &cluster_dir, false);
+    }
     moqui_core::service::check_serve_caps(&factory).map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     factory
         .start_request_pool()
@@ -1303,6 +1331,10 @@ fn load_in_context(
     );
     Ok(LoadReport {
         records,
+        empty_db_loaded: startup
+            && existing == 0
+            && flags.location.is_none()
+            && should_load_data(existing, flags, startup),
         enumeration,
         user_group_permission,
         test_fts_before_load,
