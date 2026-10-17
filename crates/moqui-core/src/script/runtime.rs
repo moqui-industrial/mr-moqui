@@ -100,10 +100,12 @@ const MAX_CACHED_TEMPLATES: usize = 4096;
 const MAX_CACHED_TEMPLATE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CACHED_UNIT_BYTES: usize = 8 * 1024 * 1024;
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
-/// The stack the outermost script on a thread may use, below the 2 MiB of a worker thread. QuickJS counts an engine's
-/// stack from where it is entered, so a nested engine gets what is left of [`SCRIPT_STACK`] and [`NESTED_STACK`] below
-/// the outermost script, at most [`NESTED_STACK`], and a nested script with less than [`MIN_NESTED_STACK`] left fails.
+/// The stack the outermost script on a thread may use, below the 2 MiB of a service worker. QuickJS counts an engine's
+/// stack from where it is entered. Nested scripts share this budget plus [`NESTED_STACK`], capped at [`NESTED_STACK`]
+/// per engine except on larger request workers. Less than [`MIN_NESTED_STACK`] left fails before entering an engine.
 const SCRIPT_STACK: usize = 1024 * 1024;
+/// Full app renders nest widget templates, includes and services on the request worker's 8 MiB stack.
+const REQUEST_SCRIPT_STACK: usize = 4 * 1024 * 1024;
 const NESTED_STACK: usize = 256 * 1024;
 const MIN_NESTED_STACK: usize = 32 * 1024;
 const VALUE_OF_MESSAGE: &str =
@@ -352,12 +354,17 @@ fn stack_address() -> usize {
 /// The stack budget of the engine entered at `depth`, or an error when a nested script has too little stack left.
 fn stack_budget(depth: usize) -> Result<usize, Error> {
     let here = stack_address();
+    let (budget, ceiling) = if REQUEST_THREAD.with(Cell::get) {
+        (REQUEST_SCRIPT_STACK, REQUEST_SCRIPT_STACK)
+    } else {
+        (SCRIPT_STACK, NESTED_STACK)
+    };
     if depth == 0 {
         STACK_BASE.with(|base| base.set(here));
-        return Ok(SCRIPT_STACK);
+        return Ok(budget);
     }
     let used = STACK_BASE.with(Cell::get).abs_diff(here);
-    let left = (SCRIPT_STACK + NESTED_STACK).saturating_sub(used).min(NESTED_STACK);
+    let left = (budget + NESTED_STACK).saturating_sub(used).min(ceiling);
     if left < MIN_NESTED_STACK {
         return Err(Error::new("scripts are nested too deeply for the thread's stack"));
     }
@@ -2017,6 +2024,22 @@ mod tests {
             .expect("the thread did not overflow");
         let message = outcome.unwrap();
         assert!(message.contains("stack"), "{message}");
+    }
+
+    #[test]
+    fn request_scripts_have_room_for_nested_app_templates() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                super::mark_request_thread();
+                assert_eq!(super::stack_budget(0).unwrap(), super::REQUEST_SCRIPT_STACK);
+                assert!(super::stack_budget(1).unwrap() > super::NESTED_STACK);
+                let err = run_script("function down(n) { return down(n + 1) + 1; } down(0);").unwrap_err();
+                assert!(err.message().contains("stack"), "{err}");
+            })
+            .unwrap()
+            .join()
+            .expect("request recursion must fail as a script error, not overflow the worker");
     }
 
     #[test]
