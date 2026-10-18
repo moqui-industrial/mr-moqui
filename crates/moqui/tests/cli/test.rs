@@ -83,7 +83,8 @@ fn the_fixture_suite_passes_in_suite_order_and_writes_junit() {
         return;
     };
     let junit = runtime.dir.join("junit");
-    let (out, err, ok) = moqui_test(&runtime, &["--junit", junit.to_str().unwrap()]);
+    // Named, as base-component/example has specs of its own.
+    let (out, err, ok) = moqui_test(&runtime, &["moqui-test-fixture", "--junit", junit.to_str().unwrap()]);
     assert!(ok, "stdout:\n{out}\nstderr:\n{err}");
     let lines: Vec<&str> = out.lines().filter(|line| line.contains(" > ")).collect();
     assert_eq!(lines.len(), 7, "{out}");

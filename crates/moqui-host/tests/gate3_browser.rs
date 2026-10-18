@@ -350,7 +350,10 @@ fn qapps_fixture(browser: &mut Browser, base: &str, gate: &common::Gate, descrip
         WAIT,
     );
     browser.eval(FETCH_SPY);
-    let text = browser.eval("document.body.innerText");
+    // a single m-drop-down shows its option's label as the value of its input (fill-input), which innerText leaves out
+    let text = browser.eval(
+        "document.body.innerText + '\\n' + Array.from(document.querySelectorAll('input')).map((el) => el.value).join('\\n')",
+    );
     let text = text.as_str().unwrap();
     for wanted in [
         "Artifact Group Detail",
@@ -538,7 +541,7 @@ fn qapps_widgets(browser: &mut Browser, base: &str) {
     );
 
     // the column dialog
-    browser.click("the columns button", &by_text("button", "table_chart\nColumns"));
+    browser.click("the columns button", &by_text("button", "view_column\nColumns"));
     browser.wait_for(
         "the column dialog",
         "Array.from(document.querySelectorAll('.q-dialog')).some((el) => el.innerText.indexOf('Enum ID') >= 0)",
@@ -553,11 +556,7 @@ fn qapps_widgets(browser: &mut Browser, base: &str) {
 
     // the pages of the list
     browser.click("page 2", &by_text(".q-pagination button", "2"));
-    browser.wait_for(
-        "page 2",
-        "/2 \\/ \\d+ \\(21-40 \\/ \\d+\\)/.test(document.body.innerText)",
-        WAIT,
-    );
+    browser.wait_for("page 2", "/\\b21-40 \\/ \\d+/.test(document.body.innerText)", WAIT);
     browser.pump(Duration::from_millis(500));
     assert_clean(browser, &page);
 }
@@ -654,11 +653,7 @@ fn static_list(browser: &mut Browser, base: &str) {
         "document.querySelectorAll('#EnumList_table .tbody .tr')[0].querySelectorAll('.td')[1].innerText.trim()";
     let first = browser.eval(first_row);
     browser.click("page 2", &by_text(".q-pagination button", "2"));
-    browser.wait_for(
-        "page 2",
-        "/2 \\/ \\d+ \\(21-40 \\/ \\d+\\)/.test(document.body.innerText)",
-        WAIT,
-    );
+    browser.wait_for("page 2", "/\\b21-40 \\/ \\d+/.test(document.body.innerText)", WAIT);
     let rows = fetched(browser, "the rows of page 2", "/actions/EnumList");
     assert!(rows["url"].as_str().unwrap().contains("pageIndex=1"), "{rows}");
     assert_ne!(browser.eval(first_row), first);
@@ -687,21 +682,47 @@ fn static_list(browser: &mut Browser, base: &str) {
         "{ids:?}"
     );
 
-    // the csv export goes to the screen in csv with the current sort
-    let csv = browser.eval(
-        "(Array.from(document.querySelectorAll('a')).find((a) => a.href.indexOf('renderMode=csv') >= 0) || {}).href || ''",
+    // the csv export, an item of the Export menu, goes to the screen in csv with the current sort
+    browser.click(
+        "the Export menu",
+        "Array.from(document.querySelectorAll('.q-btn-dropdown')).find((el) => el.innerText.toLowerCase().indexOf('export') >= 0)",
+    );
+    let csv = browser.wait_for(
+        "the csv export item",
+        "(Array.from(document.querySelectorAll('.q-menu a')).find((a) => a.href.indexOf('renderMode=csv') >= 0) || {}).href",
+        WAIT,
     );
     let csv = csv.as_str().unwrap();
     assert!(
         csv.contains("/apps/GateStaticList?") && csv.contains("orderByField=-enumId"),
         "{csv}"
     );
+    browser.press("Escape");
+    browser.wait_for(
+        "the menu closed",
+        "document.querySelectorAll('.q-menu').length === 0",
+        WAIT,
+    );
 
-    // the find dialog: the header field and the order by, and a new saved find of the current sort
+    // the find dialog: the header field and the order by
     browser.click("Find Options", &by_text(".q-btn", "Find Options"));
     browser.wait_for(
         "the find dialog",
-        "Array.from(document.querySelectorAll('.q-dialog')).some((el) => el.innerText.indexOf('Clear Parameters') >= 0 && el.innerText.indexOf('Save New Find') >= 0)",
+        "Array.from(document.querySelectorAll('.q-dialog')).some((el) => el.innerText.indexOf('Clear Parameters') >= 0 && el.innerText.indexOf('Order By') >= 0)",
+        WAIT,
+    );
+    browser.press("Escape");
+    browser.wait_for(
+        "the dialog closed",
+        "document.querySelectorAll('.q-dialog').length === 0",
+        WAIT,
+    );
+
+    // the saved finds dialog: a new saved find of the current sort
+    browser.click("Saved Finds", &by_text(".q-btn", "Saved Finds"));
+    browser.wait_for(
+        "the saved finds dialog",
+        "Array.from(document.querySelectorAll('.q-dialog')).some((el) => el.innerText.indexOf('Save New Find') >= 0)",
         WAIT,
     );
     browser.click(
@@ -722,7 +743,7 @@ fn static_list(browser: &mut Browser, base: &str) {
         "document.querySelectorAll('.q-dialog').length === 0",
         WAIT,
     );
-    browser.click("Find Options", &by_text(".q-btn", "Find Options"));
+    browser.click("Saved Finds", &by_text(".q-btn", "Saved Finds"));
     browser.wait_for(
         "the saved find listed",
         "Array.from(document.querySelectorAll('.q-dialog')).some((el) => el.innerText.indexOf('Gate find') >= 0)",
@@ -740,7 +761,7 @@ fn static_list(browser: &mut Browser, base: &str) {
         .eval("document.querySelectorAll('#EnumList_table .tbody .tr')[0].querySelectorAll('.td')[1].innerText.trim()");
     browser.click(
         "the first row's checkbox",
-        "document.querySelector('#EnumList_table .tbody input[type=checkbox]')",
+        "document.querySelector('#EnumList_table .tbody .q-checkbox')",
     );
     browser.click(
         "the row actions",

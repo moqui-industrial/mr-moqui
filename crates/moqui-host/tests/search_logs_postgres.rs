@@ -21,6 +21,9 @@
 
 mod common;
 
+// the example component loads with the repository runtime; link its tool factory as the moqui binary does
+use example as _;
+
 use std::time::{Duration, Instant};
 
 use common::{basic, exchange, http_request, start_with_data};
