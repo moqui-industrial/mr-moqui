@@ -111,7 +111,8 @@ fn the_template_holds_no_request_data_and_compiles_without_with() {
     assert!(html.contains("<template v-if=\"(item != null)\">"), "{html}");
 }
 
-/// A server-static anchor uses the alias screen path. The transition path stays available for a submit.
+/// A server-static anchor uses the alias screen path. The transition path stays available for a submit. The parameters
+/// the target gives a link are in the template as scope reads under the link's own, as the server render reads them.
 #[test]
 fn an_alias_transition_link_bakes_the_screen_path() {
     let context = ExecutionContextFactory::test_context();
@@ -124,9 +125,20 @@ fn an_alias_transition_link_bakes_the_screen_path() {
         output.body_text()
     );
     let html = html_of(context.factory(), "Jump", "/Jump");
-    assert!(html.contains("$mq.url('/Land'"), "{html}");
-    assert!(html.contains("$mq.url('/Jump/open'"), "{html}");
-    assert!(html.contains("$mq.url('/Jump/save'"), "{html}");
+    assert!(
+        html.contains("$mq.url('/Land',{},$mq.merge({'landId':$scope['landId']},null))"),
+        "{html}"
+    );
+    assert!(
+        html.contains("$mq.url('/Jump/open',{},$mq.merge({'jumpId':$scope['jumpId']},null))"),
+        "{html}"
+    );
+    assert!(
+        html.contains("$mq.url('/Jump/save',{},$mq.merge({'jumpId':$scope['jumpId']},null))"),
+        "{html}"
+    );
+    assert!(html.contains(":href=\"'/Land'\""), "{html}");
+    assert!(html.contains("$mq.url('/Land',{'landId':"), "{html}");
 }
 
 #[test]

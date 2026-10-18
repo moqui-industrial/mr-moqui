@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <screen require-authentication="false" server-static="qvt" default-menu-title="Jump">
+    <parameter name="jumpId"/>
     <transition name="open"><default-response url="../Land"/></transition>
     <transition name="save">
         <actions><set field="x" value="1"/></actions>
@@ -9,5 +10,7 @@
         <link url="open" text="Open" link-type="anchor"/>
         <link url="open" text="Stay" link-type="anchor" expand-transition-url="false"/>
         <link url="save" text="Save" link-type="anchor"/>
+        <link url="open" text="Bare" link-type="anchor" url-noparam="true"/>
+        <link url="open" text="Given" link-type="anchor"><parameter name="landId" value="L1"/></link>
     </widgets>
 </screen>

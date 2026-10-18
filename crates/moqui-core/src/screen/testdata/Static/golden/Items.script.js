@@ -156,7 +156,7 @@ return function render(_ctx, _cache) {
       }, null, 8, ["textContent"]))
     }), 128)),
     _createElementVNode("a", {
-      href: _ctx.$mq.url('/Items/viewItem',{'itemId':(_ctx.item.itemId)},null),
+      href: _ctx.$mq.url('/Items/viewItem',{'itemId':(_ctx.item.itemId)},_ctx.$mq.merge({'pageIndex':_ctx.$scope['pageIndex']},null)),
       class: "m-link-text"
     }, [
       _createElementVNode("span", {

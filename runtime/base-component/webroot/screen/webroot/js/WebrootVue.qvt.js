@@ -374,6 +374,15 @@
             maps.forEach((map) => { if (map && typeof map === "object") Object.keys(map).forEach((key) => { out[key] = map[key]; }); });
             return out;
         },
+        // The entries of a map that have a value: not null, undefined or empty text.
+        given: (map) => {
+            const out = {};
+            if (map && typeof map === "object") Object.keys(map).forEach((key) => {
+                const value = map[key];
+                if (value !== null && value !== undefined && value !== "") out[key] = value;
+            });
+            return out;
+        },
         qs: (params, map) => {
             const merged = qvt.helpers.merge(map, params);
             const pairs = [];

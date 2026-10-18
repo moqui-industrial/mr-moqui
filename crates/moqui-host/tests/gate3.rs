@@ -161,7 +161,8 @@ fn artifact_group_detail_renders_as_text_csv_xml_and_html_print() {
     );
     assert!(print.contains("SYSTEM_APP_ADMIN"), "{print}");
     assert!(print.contains("Always Allow (overrides Deny)"), "{print}");
-    assert!(print.contains("All Users (all users members by default) - <a href=\"/System/Security/ArtifactGroup/ArtifactGroupDetail/userGroupDetail?artifactGroupId=SYSTEM_APP\">ALL_USERS</a>"), "{print}");
+    // userGroupDetail is an alias transition, so the link goes to the screen it names, with that screen's parameter
+    assert!(print.contains("All Users (all users members by default) - <a href=\"/System/Security/UserGroup/UserGroupDetail?userGroupId=ALL_USERS\">ALL_USERS</a>"), "{print}");
     // a print document has no client: no moqui-html.js and no script at all
     assert!(!print.contains("moqui-html.js"), "{print}");
     assert!(!print.contains("<script"), "{print}");
@@ -507,7 +508,7 @@ fn the_login_page_and_the_root_render_as_html_and_a_failed_login_comes_back_with
     let (status, headers, text) = exchange(address, &post);
     assert_eq!(status, 302, "{text}");
     assert_eq!(header(&headers, "location").as_deref(), Some("/Login"));
-    let cookie = cookies_of(&headers).max(cookie);
+    let cookie = merge_cookies(&cookie, &headers);
     let (status, _, again) = get("/Login", &cookie);
     assert_eq!(status, 200, "{again}");
     assert!(
@@ -836,8 +837,11 @@ fn artifact_group_detail_static_qvt_is_a_data_free_template_with_its_data_on_act
         template.contains(&format!("action: \"{screen}/updateArtifactGroup\"")),
         "{template}"
     );
+    // an alias transition's link goes to the screen it names, with that screen's parameter read from the row
     assert!(
-        template.contains(&format!("$mq.url('{screen}/userGroupDetail'")),
+        template.contains(
+            "$mq.url('/apps/System/Security/UserGroup/UserGroupDetail',{},_ctx.$mq.merge({'userGroupId':_ctx.$scope['userGroupId']}"
+        ),
         "{template}"
     );
     // a request with no user gets no template

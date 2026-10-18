@@ -769,7 +769,8 @@ fn sri_get_section_included_node<'js>(ctx: Ctx<'js>, node: JsValue<'js>) -> rqui
     })
 }
 
-/// `sri.staticUrl(text, urlType)`: where a link of a static template goes, with no parameters.
+/// `sri.staticUrl(text, urlType)`: where a link of a static template goes, and the parameters its target gives the link
+/// (`parameters`, and `screenParameters` for an alias's `screenPath`) for the template to evaluate.
 fn sri_static_url<'js>(ctx: Ctx<'js>, text: String, url_type: Opt<String>) -> rquickjs::Result<Object<'js>> {
     host_guard(&ctx, || {
         let found = with_render(&ctx, false, |state| {
@@ -784,8 +785,26 @@ fn sri_static_url<'js>(ctx: Ctx<'js>, text: String, url_type: Opt<String>) -> rq
         object.set("readOnly", found.read_only)?;
         object.set("method", found.method)?;
         object.set("screenUrl", found.screen_url)?;
+        object.set("parameters", static_parameters(&ctx, found.parameters)?)?;
+        object.set("screenParameters", static_parameters(&ctx, found.screen_parameters)?)?;
         Ok(object)
     })
+}
+
+/// Parameter definitions as `[{name, from, value}]`.
+fn static_parameters<'js>(
+    ctx: &Ctx<'js>,
+    parameters: Vec<crate::screen::ParameterDef>,
+) -> rquickjs::Result<Array<'js>> {
+    let list = Array::new(ctx.clone())?;
+    for (index, parameter) in parameters.into_iter().enumerate() {
+        let item = Object::new(ctx.clone())?;
+        item.set("name", parameter.name)?;
+        item.set("from", parameter.from)?;
+        item.set("value", parameter.value)?;
+        list.set(index, item)?;
+    }
+    Ok(list)
 }
 
 /// `sri.staticCheck(json)`: the expressions a static macro wrote, as `[{expr, element, attr}]`. Only a compatibility report looks at them.

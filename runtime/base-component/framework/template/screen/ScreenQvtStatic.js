@@ -224,10 +224,30 @@
             return "{" + params.join(",") + "}";
         };
         const mapOf = (n) => (at(n, "parameter-map") ? X(at(n, "parameter-map"), n, "parameter-map") : "null");
-        // The parameters with the map of parameter-map, as one object.
-        const allParams = (n, extra) => "$mq.merge(" + mapOf(n) + "," + paramsOf(n, extra) + ")";
-        // A path with the query string the parameters make.
-        const urlOf = (n, path, extra) => "$mq.url(" + sq(path) + "," + paramsOf(n, extra) + "," + mapOf(n) + ")";
+        // The parameters a link's target gives it (sri.staticUrl's parameters), as an object expression, or null when there
+        // are none. The server render reads the same ones for a link (UrlInstance.getParameterMap).
+        const targetOf = (n, target) => {
+            if (!target || !target.length) return null;
+            return "{" + target.map((p) => {
+                let value;
+                if (p.from) value = X(p.from, n, "url");
+                else if (p.value) value = exp(p.value, n, "url", true);
+                else value = scopeRef(p.name);
+                return sq(p.name) + ":" + value;
+            }).join(",") + "}";
+        };
+        // The parameters with the map of parameter-map, as one object. The target's parameters come first, and only those
+        // with a value, as the server writes them.
+        const allParams = (n, extra, target) => {
+            const given = targetOf(n, target);
+            return "$mq.merge(" + (given ? "$mq.given(" + given + ")," : "") + mapOf(n) + "," + paramsOf(n, extra) + ")";
+        };
+        // A path with the query string the parameters make. The query leaves out a parameter with no value.
+        const urlOf = (n, path, extra, target) => {
+            const given = targetOf(n, target);
+            const map = given ? "$mq.merge(" + given + "," + mapOf(n) + ")" : mapOf(n);
+            return "$mq.url(" + sq(path) + "," + paramsOf(n, extra) + "," + map + ")";
+        };
 
         // ---- state of the form being written ----
 
@@ -739,7 +759,8 @@
 
         const imageTag = (img) => {
             const type = at(img, "url-type") || "content";
-            const src = type === "content" || type === "plain" ? exp(at(img, "url"), img, "url", false) : urlOf(img, sri.staticUrl(at(img, "url"), type).path);
+            const target = type === "content" || type === "plain" ? null : sri.staticUrl(at(img, "url"), type);
+            const src = target ? urlOf(img, target.path, null, target.parameters) : exp(at(img, "url"), img, "url", false);
             const out = { ":src": src, ":alt": exp(at(img, "alt") || "image", img, "alt", true), width: at(img, "width") || null, height: at(img, "height") || null };
             plainAttr(out, "id", at(img, "id"), img);
             plainAttr(out, "class", at(img, "style"), img);
@@ -788,13 +809,15 @@
             if (confirmation) textAttr(confirmAttr, "data-confirm", confirmation, n, true);
             const noParam = at(n, "url-noparam") === "true";
             // An alias transition's screenPath is the screen it names. A form still posts found.path.
-            const navPath = found && at(n, "expand-transition-url") !== "false" && found.screenPath ? found.screenPath : (found ? found.path : "");
+            const toAlias = !!(found && at(n, "expand-transition-url") !== "false" && found.screenPath);
+            const navPath = toAlias ? found.screenPath : (found ? found.path : "");
+            const navParams = toAlias ? found.screenParameters : (found ? found.parameters : null);
             let out = "";
             if (anchor) {
                 // A type=none or plain-response transition is not a screen URL, so the anchor is <a> and the client
                 // does not setUrl it. An unresolved ${} target stays an m-link.
                 const toScreen = !!(found && found.screenUrl);
-                const href = found ? (noParam ? sq(navPath) : urlOf(n, navPath)) : exp(at(n, "url"), n, "url", false);
+                const href = found ? (noParam ? sq(navPath) : urlOf(n, navPath, null, navParams)) : exp(at(n, "url"), n, "url", false);
                 const tag = toScreen ? "m-link" : "a";
                 // A screen link in a form-list cell is text (as is link-type anchor anywhere); the others are tonal buttons.
                 const textLink = linkType === "anchor" || (st.inList && linkType !== "anchor-button");
@@ -802,7 +825,7 @@
                 plainAttr(attrs, "id", at(n, "id"), n);
                 out = "<" + tag + A(attrs) + ">" + (textLink ? tooltip + body : "<q-btn" + A({ dense: true, unelevated: true, "no-caps": true, class: tonal(color, "m-link", style) }) + ">" + tooltip + body + "</q-btn>") + "</" + tag + ">";
             } else {
-                const fieldsInitial = allParams(n);
+                const fieldsInitial = allParams(n, null, found && !noParam ? found.parameters : null);
                 const isForm = found ? !found.isScreen : true;
                 const tag = isForm ? "m-form" : "m-form-link";
                 const hiddenLink = linkType === "hidden-form-link";

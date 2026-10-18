@@ -467,6 +467,10 @@ test("the helpers a template calls", () => {
     assert.equal(mq.fmt("", "#"), "");
     assert.equal(mq.url("/a/b", { x: "1 2", y: null, z: "" }, { m: "q&r" }), "/a/b?m=q%26r&x=1%202");
     assert.equal(mq.url("/a", {}, null), "/a");
+    // a link's target parameters sit under its parameter-map and its own parameters
+    assert.equal(mq.url("/a", { id: "own" }, mq.merge({ id: "target", page: "2", none: null }, { page: "3" })), "/a?id=own&page=3");
+    assert.deepEqual(mq.given({ a: "1", b: null, c: "", d: undefined, e: 0 }), { a: "1", e: 0 });
+    assert.deepEqual(mq.merge(mq.given({ a: "", b: "2" }), null, { a: "x" }), { b: "2", a: "x" });
     assert.deepEqual(mq.shown("B,C", "C"), { display: "" });
     assert.deepEqual(mq.shown("B", "A"), { display: "none" });
 });

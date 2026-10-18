@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <screen require-authentication="false" default-menu-title="Land">
+    <parameter name="landId"/>
     <widgets><label text="land"/></widgets>
 </screen>

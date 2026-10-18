@@ -24,7 +24,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 use moqui_lib::object::{is_empty, to_plain_string, Value};
 
-use super::definition::{ResponseKind, ScreenDef, TransitionDef};
+use super::definition::{ParameterDef, ResponseKind, ScreenDef, TransitionDef};
 use super::render::parameter_value;
 use super::sri::{self, active_screen_path, NodeLit};
 use super::url::{encode_path, parse_last_standalone, resolve_screen_path, ScreenUrlInfo};
@@ -304,7 +304,12 @@ pub fn build_url_from_target(state: &RenderState, subscreen_path: &str) -> Resul
 ///
 /// Returns an error when the request's path cannot be resolved again.
 pub fn current_url(state: &RenderState) -> Result<UrlInstance, Error> {
-    resolve_names_at(state, state.url_info.full_path.clone(), state.url_info.last_standalone, true)
+    resolve_names_at(
+        state,
+        state.url_info.full_path.clone(),
+        state.url_info.last_standalone,
+        true,
+    )
 }
 
 /// A URL for path names from the root, resolved with `last_standalone`. That only changes which screens render, so
@@ -396,7 +401,8 @@ fn service_parameter_names(service: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A link target for a server-static template: where it goes and what it is, with no parameters, since the template evaluates those.
+/// A link target for a server-static template: where it goes and what it is. The template evaluates the parameters, so they
+/// are the definitions, not values.
 #[derive(Clone, Debug, Default)]
 pub struct StaticUrl {
     pub path: String,
@@ -413,6 +419,12 @@ pub struct StaticUrl {
     /// Java's `isScreenUrl` for this target. False for a `type="none"` or plain-response transition, and for a missing
     /// screen, so a static anchor is `<a>` and the client does not `setUrl` it.
     pub screen_url: bool,
+    /// The parameters the target gives a link to `path`, as the server render reads them for a [`UrlInstance`]: each
+    /// screen's on the path, the transition's, and the in-parameters of its one service. A parameter with no `from` or
+    /// `value` is read by its name.
+    pub parameters: Vec<ParameterDef>,
+    /// The parameters of a link to `screen_path`: the screens' the alias names, then its response's own.
+    pub screen_parameters: Vec<ParameterDef>,
 }
 
 /// The target of a link written into a static template: the name resolved against the screen being rendered.
@@ -468,11 +480,20 @@ pub fn static_url(state: &RenderState, text: &str, url_type: &str) -> Result<Sta
         prepared.cache,
     ) {
         Ok(info) => {
-            let (screen_path, screen_url) = match alias_url(state, &info)? {
+            let alias = alias_url(state, &info)?;
+            let (screen_path, screen_url) = match &alias {
                 Some(alias) => (alias.path(), alias.is_screen_url()),
                 None => (String::new(), info_is_screen_url(&info)),
             };
             let transition = info.transition(None);
+            let parameters = link_parameters(info.parameter_items.values(), transition, &[]);
+            let screen_parameters = match alias.as_ref().and_then(|alias| alias.info.as_deref()) {
+                Some(target) => {
+                    let response = transition.map(|item| item.default_response.parameters.as_slice());
+                    link_parameters(target.parameter_items.values(), None, response.unwrap_or_default())
+                }
+                None => Vec::new(),
+            };
             let is_transition = transition.is_some() || info.target_transition_name.is_some();
             Ok(StaticUrl {
                 path: encode_path(&info.full_path),
@@ -485,6 +506,8 @@ pub fn static_url(state: &RenderState, text: &str, url_type: &str) -> Result<Sta
                     .unwrap_or_default(),
                 screen_path,
                 screen_url,
+                parameters,
+                screen_parameters,
             })
         }
         Err(err) if err.kind() == ErrorKind::NotFound => {
@@ -496,6 +519,10 @@ pub fn static_url(state: &RenderState, text: &str, url_type: &str) -> Result<Sta
             let screen_url = local
                 .as_ref()
                 .is_some_and(|item| !response_leaves_screen(&item.default_response));
+            let parameters = local
+                .as_ref()
+                .map(|item| link_parameters(def.parameters.iter(), Some(item), &[]))
+                .unwrap_or_default();
             Ok(StaticUrl {
                 path: encode_path(&names),
                 exists: local.is_some(),
@@ -505,10 +532,44 @@ pub fn static_url(state: &RenderState, text: &str, url_type: &str) -> Result<Sta
                 method: local.map(|item| item.method.to_ascii_lowercase()).unwrap_or_default(),
                 screen_path: String::new(),
                 screen_url,
+                parameters,
+                screen_parameters: Vec::new(),
             })
         }
         Err(err) => Err(err),
     }
+}
+
+/// The parameter definitions of a link target, in the order the server render adds them (a later one with a name replaces
+/// the earlier): the screens', the transition's, the in-parameters of the transition's one service, then `extra`.
+fn link_parameters<'a>(
+    screens: impl Iterator<Item = &'a ParameterDef>,
+    transition: Option<&TransitionDef>,
+    extra: &[ParameterDef],
+) -> Vec<ParameterDef> {
+    let mut out: IndexMap<String, ParameterDef> = IndexMap::new();
+    let add = |out: &mut IndexMap<String, ParameterDef>, parameter: &ParameterDef| {
+        out.insert(parameter.name.clone(), parameter.clone());
+    };
+    screens.for_each(|parameter| add(&mut out, parameter));
+    if let Some(transition) = transition {
+        transition
+            .parameters
+            .iter()
+            .for_each(|parameter| add(&mut out, parameter));
+        if let Some(service) = &transition.single_service {
+            for name in service_parameter_names(service) {
+                out.entry(name.clone()).or_insert(ParameterDef {
+                    name,
+                    required: false,
+                    from: None,
+                    value: None,
+                });
+            }
+        }
+    }
+    extra.iter().for_each(|parameter| add(&mut out, parameter));
+    out.into_values().collect()
 }
 
 /// `sri.makeUrlByType(url, urlType, parameterParent, expandTransitionUrl)`.
@@ -650,7 +711,10 @@ fn alias_url(state: &RenderState, info: &ScreenUrlInfo) -> Result<Option<UrlInst
 fn response_leaves_screen(response: &super::definition::ResponseDef) -> bool {
     response.url_type == "plain"
         || response.kind == ResponseKind::None
-        || response.parameters.iter().any(|parameter| parameter.name == "renderMode")
+        || response
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "renderMode")
 }
 
 fn info_is_screen_url(info: &ScreenUrlInfo) -> bool {
@@ -682,11 +746,7 @@ fn missing_url() -> UrlInstance {
     }
 }
 
-fn resolve_path(
-    state: &RenderState,
-    from: &[String],
-    url: &str,
-) -> Result<super::url::ScreenPath, Error> {
+fn resolve_path(state: &RenderState, from: &[String], url: &str) -> Result<super::url::ScreenPath, Error> {
     let root = state
         .url_info
         .path_defs

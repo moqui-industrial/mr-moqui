@@ -165,11 +165,7 @@ fn server_static_qvt_runs_on_the_runtime_build_under_a_policy_without_eval() {
          form.password.value = 'moqui'; form.requestSubmit(); return true; })()",
     );
     browser.wait_event("Page.loadEventFired", WAIT);
-    browser.wait_for(
-        "the list",
-        "/1 \\/ \\d+ \\(1-20 \\/ \\d+\\)/.test(document.body.innerText)",
-        WAIT,
-    );
+    browser.wait_for("the list", "/1-20 \\/ \\d+/.test(document.body.innerText)", WAIT);
     assert_eq!(
         browser.eval("!!document.querySelector('script[src*=\"vue.runtime.global.prod.js\"]') && !document.querySelector('script[src*=\"vue.global.prod.js\"]')"),
         true
@@ -633,11 +629,7 @@ fn static_fixture(browser: &mut Browser, base: &str) {
 fn static_list(browser: &mut Browser, base: &str) {
     let page = format!("{base}/qapps/GateStaticList");
     browser.navigate(&page);
-    browser.wait_for(
-        "the list",
-        "/1 \\/ \\d+ \\(1-20 \\/ \\d+\\)/.test(document.body.innerText)",
-        WAIT,
-    );
+    browser.wait_for("the list", "/1-20 \\/ \\d+/.test(document.body.innerText)", WAIT);
     assert_eq!(
         browser.eval("typeof (moqui.qvtStatic || {})['/apps/GateStaticList']"),
         "function"
@@ -674,7 +666,7 @@ fn static_list(browser: &mut Browser, base: &str) {
     );
     browser.wait_for(
         "sorted, back on the first page",
-        "/1 \\/ \\d+ \\(1-20 \\/ \\d+\\)/.test(document.body.innerText) && window.__gate.fetches.some((f) => f.url.indexOf('orderByField=-enumId') >= 0)",
+        "/1-20 \\/ \\d+/.test(document.body.innerText) && window.__gate.fetches.some((f) => f.url.indexOf('orderByField=-enumId') >= 0)",
         WAIT,
     );
     let ids = browser.eval("Array.from(document.querySelectorAll('#EnumList_table .tbody .tr')).map((tr) => tr.querySelectorAll('.td')[1].innerText.trim())");
