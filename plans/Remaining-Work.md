@@ -1,79 +1,56 @@
 # Remaining work
 
-Summary derived from the archived plans on 2026-10-14, extended 2026-10-16 with the parity and code quality review leftovers. Phases 0–12 and gates 1–4 of [Implementation-Phases](archive/Implementation-Phases.md) are built. This file lists what is not. Details stay in the linked archived sections; this file does not replace them.
+Summary derived from the archived plans on 2026-10-14, extended 2026-10-16 with the parity and code quality review leftovers, and trimmed to open items on 2026-10-18. Phases 0–12 and gates 1–4 of [Implementation-Phases](archive/Implementation-Phases.md) are built. This file lists what is not. Details stay in the linked archived sections; this file does not replace them.
+
+What is not ported on purpose (JSON-RPC, the Groovy and Java runners, the database drivers not in this tree, `service-group`, Swagger 2.0 and RAML, Hazelcast, the embedded SMTP server, vuet and `/vapps`) is in [Parity-Mapping, Excluded on purpose](Parity-Mapping.md#excluded-on-purpose); the non-SQL entity datasources (`ElasticDatasourceFactory`, OrientDB) are a proposal in [Future-Plans](Future-Plans.md). Differences from Java that are kept on purpose are in [Parity-Diffs](Parity-Diffs.md).
 
 ## Deferred on purpose
 
-- **Phase 13: LLM and A2A.** Ported as the Java framework stands when the phase begins, because the Java side is not yet stable and community feedback iterations are still running. Scope: LLM client, conversation, protocols, tool loop, host routes for LLM endpoints, A2A routes (design in `../moqui/framework/plans/A2A-Server.md`). `LlmServices.xml`, `A2AServices.xml` and the tools component's `llm` REST resource were removed on 2026-10-14; take fresh copies from moqui-framework when the phase begins and wire them then. The LLM and A2A entities and `LlmTypeData.xml` stay. The LLM client sets the sim-allow exception on `RestClient`. Check: same cases as the Java tests at the time of the port. See [Implementation-Phases, Phase 13](archive/Implementation-Phases.md).
-- **Further database drivers** (SQL Server, Oracle, DB2, DB2 for i, Derby, HSQLDB). Build stays on Postgres, MySQL, and SQLite (browser). A missing driver is a configuration error naming the database. Phase 12 in the same file.
-- **Assist panel** and the other agent/assist parts: part of this phase.
-- **Deliberately not ported:** JSON-RPC, Groovy shell and web eval, Java/Groovy service runners, `vuet`/`/vapps`, `service-group`, Swagger 2.0/RAML output, Hazelcast/session-byte replication. Non-SQL entity datasources (`ElasticDatasourceFactory`, OrientDB) are a proposal in [Future-Plans](Future-Plans.md).
+- **Phase 13: LLM, A2A and the assist panel.** Ported as the Java framework stands when the phase begins, because the Java side is not yet stable and community feedback iterations are still running. Scope: LLM client, conversation, protocols, tool loop, host routes for LLM endpoints, A2A routes (design in `../moqui/framework/plans/A2A-Server.md`), and the screens' assist panel (`js/assist`) with the other agent and assist parts. `LlmServices.xml`, `A2AServices.xml` and the tools component's `llm` REST resource were removed on 2026-10-14; take fresh copies from moqui-framework when the phase begins and wire them then. The LLM and A2A entities and `LlmTypeData.xml` stay. The LLM client sets the sim-allow exception on `RestClient`. Check: same cases as the Java tests at the time of the port. See [Implementation-Phases, Phase 13 and Phase 8](archive/Implementation-Phases.md).
 
 ## Known open items
 
 | Area | Item | Source |
 |---|---|---|
-| Wasm browser host | No login flow (calls run with authz disabled except renders); Groovy services skipped (`crates/moqui-browser/src/host.rs`) | [Wasm, Status](archive/Wasm.md) |
-| Wasm | Second-tab OPFS failure untested; `/opfs` must not be touched via the Emscripten FS JS API; WebSocket check uses a Node mock of `/notws`, not moqui-host | same |
-| Screens | Assist panel (`js/assist`) not ported; it belongs with the Phase 13 assist parts | [Implementation-Phases, Phase 8](archive/Implementation-Phases.md) |
-| Mail | Embedded SMTP server: no code; stays disabled behind a feature if ever built | [Crate-Layout](archive/Crate-Layout.md) |
+| Wasm browser host | No login flow: calls run with authorization disabled, except renders (`crates/moqui-browser/src/host.rs`) | [Wasm, Status](archive/Wasm.md) |
+| Wasm | No lock between tabs: without pthreads the WasmFS OPFS backend opens a file through its async access handle, not the exclusive sync access handle, so a second tab opens and writes the database the first tab has open (`scripts/wasm-chrome-smoke.mjs` shows it and warns), and two writers can corrupt the SQLite file. A Web Locks (`navigator.locks`) lock per database name in the worker would make the second tab wait or refuse | found 2026-10-18; [Wasm, Status](archive/Wasm.md) |
+| Wasm | The WebSocket check runs against a Node mock of `/notws`, not moqui-host. A live-host mode needs the package served from moqui-host's origin, a signed-in session, and checks of what the real `/notws` does (the mock's `echo:`, `drop` and `Ack` replies are its own) | same |
 | Parity | Java vs MR-Moqui parity harness and its diff report (a gate artifact) has no code; only search-backend parity tests exist. Java runtime must stay runnable | [Implementation-Phases, Tests](archive/Implementation-Phases.md) |
 | Search | Universal search result links go to the generic entity edit screens until IronStone has record screens; the per-document hook predicate is not built | [SearchFacade, REST service and UI](archive/SearchFacade.md) |
 | Search | Semantic retrieval has the `Embedder` trait and a development hash embedder only; no local model (`semantic` cargo feature) | [Implementation-Phases, Phase 9](archive/Implementation-Phases.md) |
 | Search | Postgres broad queries (common words: rank, facets, proximity) take tens to hundreds of ms at 50k documents; candidates are a stored per-field `tsvector`, a ranked-row cap, and measuring cover density on a real corpus. Hybrid `k` and weights wait on a relevance set | [Performance, Search](Performance.md) |
 | IronStone | The `boss` menu has Search, QuickSearch and SalesSummary only; SalesAnalysis, SimpleReport and the User screens are not converted | ironstone-boss `mr-moqui` branch |
-| MarbleERP | Acceptance work after the migration: wiki fixtures, exhaustive role and organization isolation, CSRF, every mounted QVT interaction, physical checks and scanners, FOP pagination parity for the running page header (XSL-FO repeated it on every page; the `.print.html.fancy` ports print it on the first; the running footers are done) | [MarbleERPMigration, Limits](archive/MarbleERPMigration.md#limits) |
-| Tests | `moqui test mantle-usl` fails 8 of 344 features: 7 in RestApiTests expect `"statusChanged": true` where the REST JSON is now Jackson's `"statusChanged" : true` (since EntityService Parity Phase 5), and ShipmentReturnMisc expects `newShipmentId is required` where the validation message is now `Field cannot be empty (for field New Shipment ...)` | same |
-| Docs | A `docs/Testing.md` for `moqui test` (spec format, script API, power asserts, runner), extracted from the archived design; today the design and `mr-mantle-usl/test/README.md` are the only description | [TestHarness](archive/TestHarness.md) |
+| MarbleERP | Acceptance work after the migration: wiki fixtures, exhaustive role and organization isolation, CSRF, every mounted QVT interaction, physical checks and scanners | [MarbleERPMigration, Limits](archive/MarbleERPMigration.md#limits) |
+| Tests | `cargo test -p moqui-host --test gate3_browser`: in the server-merged qvt ArtifactGroupDetail a form-list drop-down shows its title, not the selected option (`Always Allow (overrides Deny)` is not on the page); and the static-qvt tests first run the compatibility report over every screen in `runtime/`, which is slow with the mantle components present: `qvt_report` in `cargo test-slow` passed but took 3 hours on the debug build (with another test run on the machine), and `moqui lint --screens --qvt-static` on the release build had not finished after 10 minutes | found 2026-10-18 |
+| Tests | `moqui test mantle-usl SimpleScreens`: 15 of the SimpleScreensRender features fail, the same with or without the 2026-10-18 changes. Among them, the print screens are asked for with `renderMode=xsl-fo` in the path, which the screen test does not apply, so they render nothing; with `makeTest().renderMode("html-print")` they render | found 2026-10-18 |
 
 ## Parity gap review
 
 The entity and service modules (Parity-Mapping's Entity and Service sections) were reviewed phase by phase against their Java sources on 2026-10-16: [EntityService-Parity-Review](archive/EntityService-Parity-Review.md), 8 phases, with the accepted differences in [Parity-Diffs](Parity-Diffs.md). The rest of [Parity-Mapping](Parity-Mapping.md) (moqui-lib, moqui-db, context and resources, user and session, transactions and drivers, script and templates, screens and macros, web and the HTTP host, search, notifications and cluster, mail and the tool components, tooling, browser host) has had no phase review yet; the threads to carry through one are [Parity-Mapping, Cross-cutting threads](Parity-Mapping.md#cross-cutting-threads).
 
-Open findings from the entity and service review (none High; IDs link to the finding's section):
-
-| ID | Item | Severity | Note |
-|---|---|---|---|
-| [P1-14](archive/EntityService-Parity-Review.md#p1-14--update-of-a-missing-row-is-silent) | An update that matches no row returns `Ok`; Java throws. Making the zero count an error needs a pass over the Rust callers that update rows that may be gone | Med | |
-| [P1-15](archive/EntityService-Parity-Review.md#p1-15--caller-set-stamp-without-a-read) | A `lastUpdatedStamp` the caller sets on a found value is replaced unless the update reads the row; Java keeps it | Low | `EntityValue` does not track what it read |
-| [P3-20](archive/EntityService-Parity-Review.md#p3-20--like-on-a-text-fts-field-is-not-a-full-text-search) | A `LIKE` on a `text-fts` field stays SQL `LIKE`; Java rewrites it to the full-text predicate. Reachable only through `EntityFind::matches`, which no component calls | Med | |
-| [P3-21](archive/EntityService-Parity-Review.md#p3-21--foreign-key-existence-by-name) | A foreign key counts as present only by its computed name; Java matches the key columns, so a database whose keys Java named differently (MySQL `name_fk`) gets a second constraint | Med | Needs a catalog read of key columns per group |
-| [P4a-18](archive/EntityService-Parity-Review.md#p4a-18--entitydataloaderlist-not-ported) | `EntityDataLoader.list()` is not ported | Low | Open for want of a caller: nothing in `runtime/` uses it |
-| [P5-19](archive/EntityService-Parity-Review.md#p5-19--entity-schema-and-data-writer-csv-of-a-view-have-no-fields) | The entity JSON schema and the data writer's CSV of a view have no fields (the model keeps a view's fields as aliases); fix is to read `field_names` and the alias types as `EntitySnap` does | Med | Includes views the runtime overlay builds |
-
-Noted by the review but outside it:
-
-- `cargo test -p moqui-host --test gate3` has 3 failures not from that work: `artifact_group_detail_renders_as_text_csv_xml_and_html_print`, `artifact_group_detail_static_qvt_is_a_data_free_template_with_its_data_on_actions` and `the_login_page_and_the_root_render_as_html_and_a_failed_login_comes_back_with_its_message` (screen-render assertions: an ALL_USERS link, a `$mq.url` template, a login alert div).
-- `user/preference.rs` `date_open` treats `thruDate` as exclusive; Java's `filterByDate` is inclusive (as fixed for jobs and security checks in that review).
-- The Java-vs-Rust parity harness with a diff report (a gate artifact) still has no code; see the Parity row above.
+The review's open findings (P1-14, P1-15, P3-20, P3-21, P4a-18, P5-19) were fixed on 2026-10-18; what differs from Java in the fixes is in [Parity-Diffs, Remaining-Work fixes](Parity-Diffs.md#remaining-work-fixes-2026-10-18).
 
 ## Code quality review leftovers
 
-The [Code-Quality-Review](archive/Code-Quality-Review.md) of 2026-10-14 was resolved on 2026-10-15 (six fix phases, about 170 new tests). Left as noted in its [Resolution](archive/Code-Quality-Review.md#not-done-or-left-as-noted):
+The [Code-Quality-Review](archive/Code-Quality-Review.md) of 2026-10-14 was resolved on 2026-10-15 (six fix phases, about 170 new tests), and the Lows, live checks and limits it left were worked on 2026-10-18. Still open from its [Resolution](archive/Code-Quality-Review.md#not-done-or-left-as-noted):
 
-- **Lows:** `service/mail.rs` still uses `Result<_, String>` (49 sites); `moqui-lib` `regex_match` is polynomial on nested quantifiers; static files are read whole, with no Range support; search mapping caches can go stale across cluster nodes; the login lockout gate is checked before the failure increment; `remember_client_ip` updates the Visit on every request; HttpSession rows are never purged when `webapp_session_timeout` is 0 or less.
-- **Process-wide global state:** the notify bus and its origin id, the transaction deadline slots and lock tracking, the QZ signer, and `LAST_BOOTED`.
-- **Not verified live:** `catch_unwind` in the wasm32-emscripten build; the pgvector embedding SQL (its test needs `PGVECTOR_URL`); MySQL and MariaDB integration (needs a server).
-- **Known limits:** on MySQL (not MariaDB) the statement timeout bounds only SELECT; the entity JSON loader relies on serde_json's `arbitrary_precision` number key (a test covers it); `cargo clippy -p moqui-host --no-default-features` failed at baseline and is not linted.
-- **Test isolation:** `screen/cache.rs` and `script/runtime/facades.rs` still read `instance_purpose` directly.
-
-## Checked and done (removed from the list)
-
-- Print and components (2026-10-18), found verifying the print fixes: `ec.resource.code128Svg` draws a Code 128 barcode as inline SVG (`moqui-lib/src/barcode.rs`, barcode4j's symbols and layout), so the 13 print templates that call it render; the forks keep their upstream component names again (`SimpleScreens`, `mantle-usl`, `mantle-udm`, reverting the 2026-10-17 renames that left `component://SimpleScreens/...` and `component://mantle-usl/...` unresolved), and `./moq` finds a depends-on by its component name through the `component-name` attribute in `addons.xml`, which took `moqui test mantle-usl` from 316 to 335 passing features; the demo check signature `LincolnSignature.png` is copied from Moqui Java's webroot.
-- Print (2026-10-18), from [Markdown-PDF-Review](archive/Markdown-PDF-Review.md#repository-findings): an `<img>` whose `src` is a resource location is inlined as a `data:` URL before the PDF engine (`screen/pdf.rs`), so logos, signatures and face images print; `/fop/<path>` sends the screen as a PDF, as Java's `MoquiFopServlet` (`screen/mod.rs`), so the 30 PDF links in tools and MrSimpleScreens work again; the 12 print documents whose XSL-FO had a running footer print it on every page, with the page number, as an `@page` margin box (`cssString` in the template prelude); P8a-41 is a per-job `orientation` and `colorMode` on `PrintJob`, sent only when given.
-
-- Postgres `NOTIFY` cluster channel: `cluster_transport=notify`, `moqui-host/src/cluster_notify.rs`, with an integration test.
-- The russh SSH cluster sender: `moqui-host/src/ssh/cluster.rs`.
-- `ScreenServices.xml` bodies: JavaScript or Rust under `ServiceKind::Tools` (Phase 11).
-- The last framework Groovy (2026-10-14): `WikiServices`, `InstanceServices` (Docker provisioning and the database create and check services) and `verify#ReCaptcha` are JavaScript, on `ec.service.rest()`, the wiki's ResourceReference methods, dbresource version history, `ec.entity` SQL on a conf connection and `ec.resource.runTokenCommand`. The email services run in Rust (`service/mail.rs`) selected by name, and the `Security.eecas.xml` checks call the `UserSecurityChecks` script helper. `moqui lint --groovy runtime/base-component` reports no parse failures. Checked by `crates/moqui-core/src/service/script_ports_tests.rs`.
-- Static `qvt` template double download: the handler loads the script with the response's ETag/Cache-Control serving the second request, so it is a cache hit, not a second download. Not verified in a browser.
-- `lookup` widget as a text line: matches Java, where the macro was commented out. Not a gap.
-- `WASM_BIGINT` link flag: no longer present in the repo.
-- Search callers on Mantle: `SalesReportServices`, `get#InventoryProjectedInfo`, party and general search on `ec.search`, with the org limit as a trusted filter; universal search (`search#Universal`, `/rest/s1/mantle/search`, ironstone-boss `Base/Search`); the wiki manual data feed. Checked by `crates/moqui-host/tests/mantle_search.rs` with the Mantle components present.
+- **Static files:** a range is read alone (`Range` is answered), but a whole-file response is still read into memory: the response body is bytes, not a stream.
+- **Process-wide global state:** the notify bus and its origin id, the transaction deadline slots and lock tracking, the QZ signer, and `LAST_BOOTED`. One factory runs per process outside tests; `LAST_BOOTED` and the single deadline timer are process-level by design, and the notify bus and lock tracking have no factory handle at their call sites.
 
 ## Mantle conversion follow-up
 
-mantle-usl services are hand ported to JavaScript and `moqui lint --groovy` is at 0 flagged sites (the lint separates Groovy and run-time hazards from valid JavaScript idioms; see the sixth and seventh iterations in [ConvertProcess](archive/ConvertProcess.md)). The eight Spock specs and thirty-five specs without a Groovy original run under `moqui test mantle-usl` ([MantleFlowTests](archive/MantleFlowTests.md)): 344 features in 43 specs, 751 of 762 services called (`moqui test mantle-usl --coverage`). Open: the 11 services never called. Three call Google (`GooglePartyServices`) and one the reCAPTCHA service (`create#ContactRequestReCaptcha`), which need a network; four are `TenantSubscriptionServices`, left for the deprecated multi-tenant mode (the `fulfill#ProductSubscriptionResource` it builds on is covered); `TaxServices.calculate#InvoiceSalesTax` is an empty TODO upstream; `ReturnServices.returnAndResell#Shipment` never places its new order upstream (a spec documents where it stops); `PartyServices.send#DataDocumentNotifications` needs the data feed of a search backend. `generate#Efw2File` is unfinished upstream (no RT, RU, RV or RF records, and it never sets `fileText`); `autoApply#Payment`, `get#VariantProductsInfo`, `calculate#SalesTaxLocal` and `post#WorkEffortCost` are stubs. Open elsewhere: the 18 `moqui lint --screens` failures in ironstone-boss; Drools is removed rather than ported. Application migration of other components' scripts is outside this repository's gates.
+mantle-usl services are hand ported to JavaScript, and `moqui lint --groovy` is at 0 flagged sites ([ConvertProcess](archive/ConvertProcess.md)). The specs run under `moqui test mantle-usl` ([MantleFlowTests](archive/MantleFlowTests.md)): 344 features in 43 specs, 751 of 762 services called (`moqui test mantle-usl --coverage`).
+
+- **The 11 services never called:**
+  - three call Google (`GooglePartyServices`) and one the reCAPTCHA service (`create#ContactRequestReCaptcha`), which need a network;
+  - four are `TenantSubscriptionServices`, left for the deprecated multi-tenant mode (the `fulfill#ProductSubscriptionResource` it builds on is covered);
+  - `TaxServices.calculate#InvoiceSalesTax` is an empty TODO upstream;
+  - `ReturnServices.returnAndResell#Shipment` never places its new order upstream (a spec documents where it stops);
+  - `PartyServices.send#DataDocumentNotifications` needs the data feed of a search backend.
+- **Unfinished upstream, kept as they are:** `generate#Efw2File` writes no RT, RU, RV or RF records and never sets `fileText`; `autoApply#Payment`, `get#VariantProductsInfo`, `calculate#SalesTaxLocal` and `post#WorkEffortCost` are stubs.
+- **ironstone-boss:** 18 `moqui lint --screens` failures.
+
+Migrating other components' scripts is outside this repository's gates.
 
 ## Related documents
 [Future-Plans](Future-Plans.md) (digest of the unbuilt [proposals](proposals/)), [Performance-Summary](Performance-Summary.md) (the next phase), [Parity-Mapping](Parity-Mapping.md) and [Parity-Diffs](Parity-Diffs.md) (reference for the gap review). The index is [README](README.md).
