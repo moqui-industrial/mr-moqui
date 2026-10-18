@@ -63,6 +63,12 @@ test("the shell mounts: links, dark mode, and the page address", () => {
     assert.deepEqual(target.currentPathList, ["Bar"]);
 });
 
+test("theme footer columns have a full-width row as their immediate parent", () => {
+    // Quasar's .row > .col-md-6 selector needs a DOM parent, not display:contents.
+    assert.match(qvt.components["m-qapps-root"].template,
+        /<div v-html="shell.footerHtml" class="row full-width"><\/div>/);
+});
+
 test("the router stand-in resolves what Quasar asks and pushes through setUrl", async () => {
     const router = qvt.makeRouter();
     moqui.webrootVue = { getLinkPath: (p) => p.replace("/apps", "/qapps"), setUrl: (location) => { moqui.pushed = location; } };

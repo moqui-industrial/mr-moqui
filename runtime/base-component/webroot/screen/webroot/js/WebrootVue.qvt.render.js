@@ -1691,7 +1691,7 @@
               ], 4))
             }
         } },
-        "m-qapps-root": { hash: "cfc27184", make: function (Vue) {
+        "m-qapps-root": { hash: "7f08df34", make: function (Vue) {
             const { resolveComponent: _resolveComponent, createVNode: _createVNode, createElementVNode: _createElementVNode, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, renderList: _renderList, Fragment: _Fragment, createElementBlock: _createElementBlock, normalizeClass: _normalizeClass, resolveDirective: _resolveDirective, withDirectives: _withDirectives, resolveDynamicComponent: _resolveDynamicComponent, withModifiers: _withModifiers } = Vue
 
             return function render(_ctx, _cache) {
@@ -2275,12 +2275,12 @@
                     _createVNode(_component_q_footer, {
                       bordered: "",
                       id: "footer",
-                      class: _normalizeClass(["text-caption", _ctx.$q.dark.isActive ? 'bg-dark text-grey-5' : 'bg-grey-2 text-grey-8'])
+                      class: _normalizeClass(["text-caption q-pa-xs", _ctx.$q.dark.isActive ? 'bg-dark text-grey-5' : 'bg-grey-2 text-grey-8'])
                     }, {
                       default: _withCtx(() => [
                         _createElementVNode("div", {
-                          class: "row justify-center items-center q-pa-xs",
-                          innerHTML: _ctx.shell.footerHtml
+                          innerHTML: _ctx.shell.footerHtml,
+                          class: "row full-width"
                         }, null, 8, ["innerHTML"])
                       ]),
                       _: 1

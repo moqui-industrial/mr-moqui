@@ -2509,8 +2509,8 @@
         "        <q-page class=\"q-pa-sm\"><m-subscreens-active></m-subscreens-active></q-page>\n" +
         "    </q-page-container>\n" +
         "\n" +
-        "    <q-footer bordered id=\"footer\" class=\"text-caption\" :class=\"$q.dark.isActive ? 'bg-dark text-grey-5' : 'bg-grey-2 text-grey-8'\">\n" +
-        "        <div class=\"row justify-center items-center q-pa-xs\" v-html=\"shell.footerHtml\"></div>\n" +
+        "    <q-footer bordered id=\"footer\" class=\"text-caption q-pa-xs\" :class=\"$q.dark.isActive ? 'bg-dark text-grey-5' : 'bg-grey-2 text-grey-8'\">\n" +
+        "        <div v-html=\"shell.footerHtml\" class=\"row full-width\"></div>\n" +
         "    </q-footer>\n" +
         "</q-layout>\n" +
         "\n" +

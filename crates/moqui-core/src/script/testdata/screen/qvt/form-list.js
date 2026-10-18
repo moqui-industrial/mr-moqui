@@ -223,6 +223,19 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
         "second": [],
         "last": []
     },
+    "headerFields": [
+        {"name": "id", "title": () => ec.l10n.localize("ID"),
+                                    "orderBy": "true", "dialogField": () => {
+        $v.fieldBox(null, "", false);
+        sri.pushContext();
+        try {
+            $v.textFind({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"true"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        }}
+    ],
     "allFields": [
         {"name": "id", "title": () => ec.l10n.localize("ID"), "summary": () => {  let $t = ""; sri.pushContext(); try {  $t += $v.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"true"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}}); } finally { sri.popContext(); } return $t.trim(); }},
         {"name": "title", "title": () => ec.l10n.localize("The Title"), "summary": null},
@@ -326,6 +339,8 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Cols] -->\n"
         "second": [],
         "last": []
     },
+    "headerFields": [
+    ],
     "allFields": [
         {"name": "a", "title": () => ec.l10n.localize("A"), "summary": null},
         {"name": "b", "title": () => ec.l10n.localize("B"), "summary": null},

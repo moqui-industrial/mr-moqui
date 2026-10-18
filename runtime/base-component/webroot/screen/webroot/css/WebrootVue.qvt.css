@@ -44,8 +44,12 @@ body.test.body--dark #top { background:#1b3a1b!important; }
 
 /* the three kinds a macro writes: unelevated primary (a submit), tonal (a secondary action) and flat (a tool) */
 .q-btn { margin:2px; }
+.q-btn--dense { padding:4px 8px; } /* match Java runtime CSS defaults */
 .q-btn .q-icon, .q-btn .q-spinner { font-size:1.3em; } /* was 1.715em ~= 24px */
 .q-btn__content { flex-wrap: nowrap; } /* don't let buttons wrap, ugly */
+/* using q-btn flat for link style buttons, reduce margin/padding/height to match inline text */
+.m-link.q-btn--flat { margin:0; padding:0 4px; min-height:1.5em; }
+.m-link.q-btn--flat .q-btn__content { line-height:1.5; }
 .q-btn.m-btn-tonal { color:var(--q-primary); background:color-mix(in srgb, var(--q-primary) 12%, transparent); }
 .q-btn.m-btn-tonal.text-negative { background:color-mix(in srgb, var(--q-negative) 12%, transparent); }
 .q-btn.m-btn-tonal.text-positive { background:color-mix(in srgb, var(--q-positive) 12%, transparent); }

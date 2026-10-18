@@ -703,7 +703,7 @@
             }
             const value = sri.getFieldEntityValue(n) || "";
             if (formKind === "form-single") attrs.display = value;
-            const text = formKind !== "form-single" && value ? (at(n, "encode") === "false" ? value : t(value).replace(/\n/g, "<br>")) : "";
+            const text = formKind !== "form-single" ? (value ? (at(n, "encode") === "false" ? value : t(value).replace(/\n/g, "<br>")) : "&nbsp;") : "";
             w("<m-display" + A(attrs) + ">" + (text ? "<template v-slot:default>" + text + "</template>" : "") + "</m-display>");
             if (alsoHidden) w("<input" + A({ type: "hidden", id, name, value: sri.getFieldValuePlainString(field, ""), form: owner() }) + ">");
         };
@@ -1078,7 +1078,7 @@
                 w("</m-container-dialog>");
             }
             if (cfg.savedFinds) {
-                out += '<m-container-dialog id="' + e(formId) + '_sfdialog" title="' + e(L("Saved Finds")) + '"><template v-slot:button>' + tool("bookmarks", L("Saved Finds")) + "</template>";
+                out += '<m-container-dialog id="' + e(formId) + '_sfdialog" title="' + e(L("Saved Finds")) + '"><template v-slot:button>' + tool("find_in_page", L("Saved Finds")) + "</template>";
                 flush();
                 savedFindsDialogBody(n, cfg);
                 w("</m-container-dialog>");
@@ -1174,7 +1174,8 @@
         const findDialogBody = (n, cols, cfg) => {
             const headerId = cfg.headerFormId;
             if (!cfg.headerDialog) return;
-            const orderable = cols.flat().filter((f) => f.orderBy);
+            const headerFields = cfg.headerFields || [];
+            const orderable = headerFields.filter((f) => f.orderBy);
             const orderOptions = [];
             orderable.forEach((f) => {
                 const ci = f.orderBy === "case-insensitive" ? "^" : "";
@@ -1193,7 +1194,7 @@
             }) + "></m-drop-down></div>");
             sri.pushSingleFormMapContext("");
             try {
-                cols.flat().forEach((f) => { if (f.dialogField) f.dialogField(); });
+                headerFields.forEach((f) => { if (f.dialogField) f.dialogField(); });
             } finally {
                 sri.popContext();
             }
@@ -1247,7 +1248,7 @@
                     let descUrl = pathUrl("orderByField", "-" + (insensitive ? "^" : "") + f.name);
                     if (asc) ascUrl = descUrl;
                     if (desc) descUrl = ascUrl;
-                    out += '<span class="form-order-by"><m-link href="' + e(ascUrl) + '"' + (asc ? ' class="active"' : "") + '><q-icon name="arrow_drop_up"></q-icon></m-link><m-link href="' + e(descUrl) + '"' + (desc ? ' class="active"' : "") +
+                    out += ' <span class="form-order-by"><m-link href="' + e(ascUrl) + '"' + (asc ? ' class="active"' : "") + '><q-icon name="arrow_drop_up"></q-icon></m-link> <m-link href="' + e(descUrl) + '"' + (desc ? ' class="active"' : "") +
                         '><q-icon name="arrow_drop_down"></q-icon></m-link></span>';
                 }
                 out += "</div>";
@@ -1868,6 +1869,14 @@
                     "second": ${valueDescs(fields, "second")},
                     "last": ${valueDescs(fields, "last")}
                 },
+                "headerFields": [
+                    ${fields.filter((field) => child(field, "header-field")).map((field) => {
+                        const header = child(field, "header-field");
+                        const orderBy = attr(header, "show-order-by");
+                        return `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(header)},
+                            "orderBy": ${lit(orderBy === "false" ? "" : orderBy)}, "dialogField": ${dialogFieldCode(field) || "null"}}`;
+                    }).join(",\n")}
+                ],
                 "allFields": [
                     ${fields.filter((field) => !S.listFieldHiddenWidget(field)).map((field) => `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(S.headerSub(field))}, "summary": ${summaryCode(field)}}`).join(",\n")}
                 ]

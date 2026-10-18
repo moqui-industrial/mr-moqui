@@ -333,7 +333,10 @@ impl EntityFacade {
         // Rust then tries one UPDATE by primary key, for a row that is probably there: an `update` hit when it
         // updates the row, the Rust-only `update-probe` when it matches none. Otherwise as Java: refresh a clone
         // before choosing the write.
-        if self.update_if_exists(&value.entity_name, &value.fields)? {
+        // Opt in to Java's read-first create-or-update; keep UPDATE-first by default.
+        if moqui_lib::env::get_prop_or_env("create-or-update") != "true"
+            && self.update_if_exists(&value.entity_name, &value.fields)?
+        {
             return Ok(());
         }
         let stored = {

@@ -218,6 +218,34 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rich] -->\n"
         "second": [],
         "last": []
     },
+    "headerFields": [
+        {"name": "id", "title": () => ec.l10n.localize("ID"),
+                                    "orderBy": "case-insensitive", "dialogField": () => {
+        $v.fieldBox(null, "", false);
+        sri.pushContext();
+        try {
+            $v.textFind({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rich"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        }},
+        {"name": "title", "title": () => ec.l10n.localize("Title"),
+                                    "orderBy": "", "dialogField": () => {
+        $v.fieldBox(null, "head", false);
+        sri.pushContext();
+        try {
+            $v.dropDown({"name":"drop-down","attrs":{},"children":[{"name":"option","attrs":{"key":"A"}}],"parent":{"name":"header-field","attrs":{"container-style":"head"},"parent":{"name":"field","attrs":{"name":"title","align":"center"},"parent":{"name":"form-list","attrs":{"name":"Rich"}}}}});
+        } finally {
+            sri.popContext();
+        }
+        sri.write("</div>");
+        }},
+        {"name": "rowId", "title": () => ec.l10n.localize("Row ID"),
+                                    "orderBy": "", "dialogField": () => {
+        $v.hidden({"name":"hidden","attrs":{},"parent":{"name":"header-field","attrs":{},"parent":{"name":"field","attrs":{"name":"rowId"},"parent":{"name":"form-list","attrs":{"name":"Rich"}}}}});
+        }}
+    ],
     "allFields": [
         {"name": "id", "title": () => ec.l10n.localize("ID"), "summary": () => {  let $t = ""; sri.pushContext(); try {  $t += $v.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rich"}}}}}); } finally { sri.popContext(); } return $t.trim(); }},
         {"name": "title", "title": () => ec.l10n.localize("Title"), "summary": () => {  let $t = ""; sri.pushContext(); try {  $t += $v.valueText({"name":"drop-down","attrs":{},"children":[{"name":"option","attrs":{"key":"A"}}],"parent":{"name":"header-field","attrs":{"container-style":"head"},"parent":{"name":"field","attrs":{"name":"title","align":"center"},"parent":{"name":"form-list","attrs":{"name":"Rich"}}}}}); } finally { sri.popContext(); } return $t.trim(); }},
@@ -320,6 +348,8 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Multi] -->\n
         "second": [],
         "last": []
     },
+    "headerFields": [
+    ],
     "allFields": [
         {"name": "id", "title": () => ec.l10n.localize("ID"), "summary": null},
         {"name": "note", "title": () => ec.l10n.localize("Note"), "summary": null},
@@ -389,6 +419,8 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Edge] -->\n"
         "second": [],
         "last": [{"name": "a", "field": {"name":"field","attrs":{"name":"a"},"parent":{"name":"form-list","attrs":{"name":"Edge"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"display","attrs":{"text":"last"},"parent":{"name":"last-row-field","attrs":{},"parent":{"name":"field","attrs":{"name":"a"},"parent":{"name":"form-list","attrs":{"name":"Edge"}}}}}]}]}]
     },
+    "headerFields": [
+    ],
     "allFields": [
         {"name": "a", "title": () => ec.l10n.localize("A"), "summary": null}
     ]

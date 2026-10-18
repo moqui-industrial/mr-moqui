@@ -1347,7 +1347,7 @@
                 w("</m-container-dialog>");
             }
             if (flags.savedFinds) {
-                w("<m-container-dialog" + A({ id: name + "_sfdialog", ":title": loc("Saved Finds") }) + "><template v-slot:button>" + tool("bookmarks", "Saved Finds") + "</template>");
+                w("<m-container-dialog" + A({ id: name + "_sfdialog", ":title": loc("Saved Finds") }) + "><template v-slot:button>" + tool("find_in_page", "Saved Finds") + "</template>");
                 savedFindsBody(name);
                 w("</m-container-dialog>");
             }
