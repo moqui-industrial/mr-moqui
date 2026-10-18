@@ -118,10 +118,19 @@ screen) with the extra path and query, and gives `callback` a component. It retu
 ## The components the macros write
 
 `ScreenQvt.js` writes only these names for widgets. A widget binds with `v-model` (`modelValue`) inside a form, and with `model-value`
-outside one. The wrappers add `dense outlined stack-label` themselves, tint a field that differs from its form's `fields-initial`, and
-take `fields` where they read the fields they depend on (`depends-on`). The `id` a macro gives a field wrapper is the id of its native input (the
-`for` of the Quasar field), so `label for`, `focus-field` and `document.getElementById` find the input. Raw `q-input`, `q-select`, `q-date` and `q-field` are not written by a
-macro; `q-btn`, `q-tooltip`, `q-badge`, `q-list`, `q-btn-dropdown`, `q-expansion-item` and the layout classes are.
+outside one. The wrappers add `dense outlined stack-label hide-bottom-space` themselves (Quasar floats the label inside the outline; a group of
+checkboxes or radios is a borderless `m-field` over a `q-option-group`, and a `display` with a label is a borderless read-only field), tint a field
+that differs from its form's `fields-initial`, and take `fields` where they read the fields they depend on (`depends-on`). The `id` a macro gives a
+field wrapper is the id of its native input (the `for` of the Quasar field), so `label for`, `focus-field` and `document.getElementById` find the
+input. Raw `q-input`, `q-select`, `q-date` and `q-field` are not written by a macro; `q-btn`, `q-tooltip`, `q-badge`, `q-list`, `q-btn-dropdown`,
+`q-expansion-item`, `q-checkbox` and the layout classes are.
+
+Buttons are of three kinds, so a screen reads the same everywhere: a `submit` is `unelevated color="primary"` once a field of its form changed
+(`outline` until then); a secondary action (a `link` outside a form-list cell, a transition link, a `button-menu`, a dialog's button, the Find
+Options / Columns / Saved Finds tools of a list) is tonal, `unelevated class="m-btn-tonal"` with `text-<color>` for its `btn-type`
+(`../css/WebrootVue.qvt.css`); a minor one (`reset`, page size, the export menu, icon buttons) is `flat`. A screen link with the default link-type
+inside a form-list cell, and `link-type="anchor"` anywhere, is text (`m-link-text`); `anchor-button` keeps the button in a cell. The exports of a
+list (csv, xlsx, text, print) are the items of one `q-btn-dropdown`, and the page buttons are a `q-pagination`.
 
 | Component | For |
 |---|---|
@@ -152,7 +161,11 @@ macro; `q-btn`, `q-tooltip`, `q-badge`, `q-list`, `q-btn-dropdown`, `q-expansion
 list under the name of the form and `Count`, `PageIndex`, `PageSize`, `PageMaxIndex`, `PageRangeLow`, `PageRangeHigh` keys. The server-merged
 macros write the rows themselves; this component is for the screens that fetch.
 
-The shell gives Quasar a stand-in for `vue-router` (`$router.resolve`, `push`, `replace`, and `$route`), so `q-btn to="..."` navigates with `setUrl`.
+The shell is a `q-layout` with a `q-header` (menu button, logo, title, the screen path as `q-breadcrumbs`, the documentation, notification,
+history and account menus), a `q-drawer` with the screen menu (`QUASAR_LEFT_OPEN`; an overlay below 1024px), the page, and a `q-footer` with the
+theme's footer items. The `LoadingBar` plugin runs while the root's `loading` count is above zero. `config.quasar` (brand, notify, loadingBar) is the
+JSON of the theme's `STRT_QUASAR_CONFIG` resource, merged over the defaults.
+The shell gives Quasar a stand-in for `vue-router` (`$router.resolve`, `push`, `replace`, and `$route`), so `q-btn to="..."` and `q-item to="..."` navigate with `setUrl`.
 `moqui.webrootVue` is the root: `setUrl(url, bodyParameters)`, `setParameters(obj)`, `reloadContainer(id)`, `loadContainer(id, url)`,
 `hideContainer(id)`, `addNotify`, `getLinkPath`.
 

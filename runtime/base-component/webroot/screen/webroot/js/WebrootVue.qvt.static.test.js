@@ -221,8 +221,9 @@ test("a multi form-list is one form with each row's fields under name_rowIndex, 
     assert.equal(second.formProps.fields.name, "ZEBRA row two");
     second.formProps.fields.name = "changed";
     assert.equal(fields.name_1, "changed");
-    // the csv button of ItemList goes to the screen in csv with the find parameters
-    assert.match(text, /<q-btn dense='' outline='' type='a' href='\/Items\?itemGroup=G1&renderMode=csv&pageNoLimit=true&lastStandalone=true&saveFilename=ItemList.csv'/);
+    // the csv item of the export menu of ItemList goes to the screen in csv with the find parameters
+    // (v-close-popup compiles to a directive, so it does not show in this props-only render)
+    assert.match(text, /<q-item clickable='' tag='a' href='\/Items\?itemGroup=G1&renderMode=csv&pageNoLimit=true&lastStandalone=true&saveFilename=ItemList.csv'/);
 });
 
 test("the column picker lays out the user's columns from the package, and its dialog tree lists the rest as not shown", async () => {
@@ -343,7 +344,7 @@ test("Parity: row selection is a checkbox set over the rows' ids, a checkbox for
     assert.equal(set.checkboxParameter, "itemId");
     assert.equal(set.checkboxCount, 2);
     const table = text.slice(text.indexOf("<div class='table q-table' id='PickList_table'>"));
-    assert.equal((table.match(/<input type='checkbox'/g) || []).length, 2, table);
+    assert.equal((table.match(/<q-checkbox dense='' size='sm'/g) || []).length, 2, table);
     // the menu of the head holds the action: its dialog and the form-single that posts the selected rows
     assert.match(table, /<m-container-dialog[^>]*button-text='Archive'/);
     assert.match(table, /<m-form name='ArchiveForm'/);

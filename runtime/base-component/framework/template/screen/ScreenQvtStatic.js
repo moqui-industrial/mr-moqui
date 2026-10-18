@@ -234,7 +234,7 @@
         const st = {};
         const saved = [];
         const reset = () => {
-            Object.assign(st, { formName: "", fieldForm: "", owner: "", inForm: false, inRow: false, listName: "", multi: false, accordion: "", accIndex: 0, accActive: "", selectedForm: false });
+            Object.assign(st, { formName: "", fieldForm: "", owner: "", inForm: false, inRow: false, inList: false, listName: "", multi: false, accordion: "", accIndex: 0, accActive: "", selectedForm: false });
             saved.length = 0;
         };
         reset();
@@ -517,14 +517,18 @@
             w("<input" + A(Object.assign({ type: "hidden", name: nameOf(n), ":value": "$mq.str(" + baseValue(field, at(n, "default-value")) + ")", form: owner() }, idAttrs(n))) + ">\n");
         };
 
+        // The classes of a tonal (soft tinted) button, the secondary kind, as ScreenQvt.js writes them.
+        const tonal = (color, ...extra) => cls("m-btn-tonal", color && color !== "default" ? "text-" + color : null, ...extra);
+
         const reset_ = (n) => {
-            const out = Object.assign({ dense: true, outline: true, "no-caps": true, type: "reset", name: nameOf(n), form: owner() }, idAttrs(n));
+            const out = Object.assign({ dense: true, flat: true, "no-caps": true, type: "reset", name: nameOf(n), form: owner() }, idAttrs(n));
             w("<q-btn" + A(out) + ">" + "<span v-text=\"" + e(titleExpr(n.parent)) + "\"></span></q-btn>");
         };
 
         const submit = (n) => {
             const out = Object.assign({
-                dense: true, ":outline": st.inForm ? "!formProps.hasFieldsChanged" : null, outline: st.inForm ? null : true, "no-caps": true, type: "submit",
+                dense: true, ":outline": st.inForm ? "!formProps.hasFieldsChanged" : null, ":unelevated": st.inForm ? "formProps.hasFieldsChanged" : null,
+                unelevated: st.inForm ? null : true, "no-caps": true, type: "submit",
                 name: nameOf(n), value: nameOf(n), color: quasarColor(at(n, "type") || "primary") || null, form: owner()
             }, idAttrs(n));
             if (at(n, "confirmation")) textAttr(out, "data-confirm", at(n, "confirmation"), n, true);
@@ -636,7 +640,7 @@
             let body = "<m-drop-down" + A(out) + ">";
             if (at(n, "show-not") === "true") {
                 body += "<template v-slot:after><m-check" + A(Object.assign({
-                    name: name + "_not", "true-value": "Y", "false-value": "N", ":single-label": "ec.l10n.localize('Not')", form: owner()
+                    name: name + "_not", toggle: true, "true-value": "Y", "false-value": "N", ":single-label": "ec.l10n.localize('Not')", form: owner()
                 }, idAttrs(n, "_not"), st.inForm ? { "v-model": fieldRef(name + "_not") } : { ":model-value": "(" + scopeRef(name + "_not") + "||'N')" })) + "></m-check></template>";
             }
             w(body + "</m-drop-down>");
@@ -792,10 +796,11 @@
                 const toScreen = !!(found && found.screenUrl);
                 const href = found ? (noParam ? sq(navPath) : urlOf(n, navPath)) : exp(at(n, "url"), n, "url", false);
                 const tag = toScreen ? "m-link" : "a";
-                const asButton = linkType !== "anchor";
-                const attrs = Object.assign({ ":href": href, target: at(n, "target-window") || null, "load-id": at(n, "dynamic-load-id") || null, class: asButton ? null : style }, confirmAttr);
+                // A screen link in a form-list cell is text (as is link-type anchor anywhere); the others are tonal buttons.
+                const textLink = linkType === "anchor" || (st.inList && linkType !== "anchor-button");
+                const attrs = Object.assign({ ":href": href, target: at(n, "target-window") || null, "load-id": at(n, "dynamic-load-id") || null, class: textLink ? cls("m-link-text", style) : null }, confirmAttr);
                 plainAttr(attrs, "id", at(n, "id"), n);
-                out = "<" + tag + A(attrs) + ">" + (asButton ? "<q-btn" + A({ dense: true, outline: true, "no-caps": true, color, class: cls("m-link", style) }) + ">" + tooltip + body + "</q-btn>" : tooltip + body) + "</" + tag + ">";
+                out = "<" + tag + A(attrs) + ">" + (textLink ? tooltip + body : "<q-btn" + A({ dense: true, unelevated: true, "no-caps": true, class: tonal(color, "m-link", style) }) + ">" + tooltip + body + "</q-btn>") + "</" + tag + ">";
             } else {
                 const fieldsInitial = allParams(n);
                 const isForm = found ? !found.isScreen : true;
@@ -803,7 +808,8 @@
                 const hiddenLink = linkType === "hidden-form-link";
                 const button = img ?
                     "<input" + A({ type: "image", ":src": exp(at(img, "url"), img, "url", false), ":alt": exp(at(img, "alt") || "image", img, "alt", true) }) + ">" :
-                    "<q-btn" + A(Object.assign({ dense: true, "no-caps": true, type: "submit", flat: hiddenLink ? true : null, outline: hiddenLink ? null : true, color, class: cls("m-link", style) }, confirmAttr)) + ">" + tooltip + body + "</q-btn>";
+                    "<q-btn" + A(Object.assign({ dense: true, "no-caps": true, type: "submit", flat: hiddenLink ? true : null, unelevated: hiddenLink ? null : true,
+                        class: hiddenLink ? cls("m-link", color ? "text-" + color : null, style) : tonal(color, "m-link", style) }, confirmAttr)) + ">" + tooltip + body + "</q-btn>";
                 const attrs = { action: found ? found.path : at(n, "url"), ":fields-initial": fieldsInitial, "v-slot:default": "formProps", "read-only": isForm && found && found.readOnly ? true : null, target: at(n, "target-window") || null };
                 if (isForm && found && found.method === "get") attrs.method = "GET";
                 out = "<" + tag + A(attrs) + ">" + button + "</" + tag + ">";
@@ -910,6 +916,7 @@
             st.owner = at(n, "owner-form");
             st.inForm = true;
             st.inRow = false;
+            st.inList = false;
             const skipStart = at(n, "skip-start") === "true" || !!st.owner;
             const found = sri.staticUrl(at(n, "transition"), "transition");
             const isForm = !found.isScreen;
@@ -928,7 +935,7 @@
             // a row action of a form-list with row-selection posts the selected rows: the checkbox set is the selection slot's mqSelSet
             if (st.selectedForm && isForm) attrs[":parent-checkbox-set"] = "mqSelSet";
             w('<m-scope :value="' + e(X(map, n, "map")) + '" :extra="' + e("$scope[" + sq("mqExtra_" + at(n, "name")) + "]") + '" v-slot="_ctx">');
-            w(skipStart ? "" : '<div class="q-my-md"><' + tag + A(attrs) + ">");
+            w(skipStart ? "" : '<div class="q-mb-md"><' + tag + A(attrs) + ">");
             return { skipStart, tag };
         };
         const formSingleClose = (opened) => {
@@ -943,9 +950,9 @@
                 const value = at(when, "from") ? X(at(when, "from"), when, "from") : exp(at(when, "value"), when, "value", false);
                 style = "$mq.shown(" + value + "," + target + ")";
             }
-            const box = big ? "q-mx-sm q-my-auto big-row-item" : cls("q-ma-sm", containerStyle || null);
+            const box = big ? "big-row-item" : cls("q-pa-xs", containerStyle || null);
             const attrs = { class: box, ":style": style };
-            if (containerStyle && isDynamic(containerStyle)) { delete attrs.class; attrs[":class"] = "'q-ma-sm '+" + exp(containerStyle, null, "container-style", false); }
+            if (containerStyle && isDynamic(containerStyle)) { delete attrs.class; attrs[":class"] = "'q-pa-xs '+" + exp(containerStyle, null, "container-style", false); }
             w("<div" + A(attrs) + ">");
         };
         const rowOpen = (kind, style) => w("<div" + A({ class: cls(kind, style || null) }) + ">");
@@ -962,15 +969,15 @@
         };
         const fieldGroup = (n) => {
             const title = at(n, "title");
-            const heading = title ? "<h5><span v-text=\"" + e(exp(title, n, "title", true)) + "\"></span></h5>" : "";
+            const heading = title ? '<div class="text-subtitle1 text-weight-medium q-px-xs q-pt-xs"><span v-text="' + e(exp(title, n, "title", true)) + '"></span></div>' : "";
             if (st.accordion) {
                 st.accIndex++;
-                w("<q-list bordered padding><q-expansion-item" + A({ "switch-toggle-side": true, group: st.accordion, ":label": title ? exp(title, n, "title", true) : "ec.l10n.localize('Fields')",
-                    "default-opened": String(st.accIndex) === st.accActive ? true : null }) + '><div class="' + cls("panel-body", at(n, "style") || null) + '">');
-            } else if (at(n, "box") === "true") w('<div class="panel panel-default"><div class="panel-heading"><h5 class="panel-title">' + (title ? "<span v-text=\"" + e(exp(title, n, "title", true)) + "\"></span>" : "") + '</h5></div><div class="' + cls("panel-body", at(n, "style") || null) + '">');
+                w("<q-expansion-item" + A({ dense: true, "expand-separator": true, "switch-toggle-side": true, "header-class": "text-weight-medium", group: st.accordion, ":label": title ? exp(title, n, "title", true) : "ec.l10n.localize('Fields')",
+                    "default-opened": String(st.accIndex) === st.accActive ? true : null }) + '><div class="' + cls("q-pa-sm", at(n, "style") || null) + '">');
+            } else if (at(n, "box") === "true") w("<m-container-box" + A({ type: "default", ":title": title ? exp(title, n, "title", true) : "ec.l10n.localize('Fields')" }) + "><div" + A({ class: at(n, "style") || null }) + ">");
             else w('<div class="' + cls("form-single-field-group", at(n, "style") || null) + '">' + heading);
         };
-        const fieldGroupClose = (n) => w(st.accordion ? "</div></q-expansion-item></q-list>\n" : at(n, "box") === "true" ? "</div></div>\n" : "</div>\n");
+        const fieldGroupClose = (n) => w(st.accordion ? "</div></q-expansion-item>\n" : at(n, "box") === "true" ? "</div></m-container-box>\n" : "</div>\n");
 
         // ---- form-list ----
 
@@ -988,8 +995,8 @@
                 if (f.orderBy) {
                     const insensitive = f.orderBy === "case-insensitive";
                     const ascName = (insensitive ? "^" : "") + f.name;
-                    out += '<span class="form-order-by"><a href="#" @click.prevent="hs.sortBy(' + e(sq(ascName)) + ')"' + ' :class="{active: hs.orderBy(' + e(sq(ascName)) + ') === \'asc\'}"><i class="fa fa-caret-up"></i></a>' +
-                        '<a href="#" @click.prevent="hs.sortBy(' + e(sq("-" + ascName)) + ')"' + ' :class="{active: hs.orderBy(' + e(sq("-" + ascName)) + ') === \'desc\'}"><i class="fa fa-caret-down"></i></a></span>';
+                    out += '<span class="form-order-by"><a href="#" @click.prevent="hs.sortBy(' + e(sq(ascName)) + ')"' + ' :class="{active: hs.orderBy(' + e(sq(ascName)) + ') === \'asc\'}"><q-icon name="arrow_drop_up"></q-icon></a>' +
+                        '<a href="#" @click.prevent="hs.sortBy(' + e(sq("-" + ascName)) + ')"' + ' :class="{active: hs.orderBy(' + e(sq("-" + ascName)) + ') === \'desc\'}"><q-icon name="arrow_drop_down"></q-icon></a></span>';
                 }
                 out += "</div>";
                 w(out);
@@ -1010,6 +1017,7 @@
             st.formName = name;
             st.fieldForm = name;
             st.listName = at(n, "list");
+            st.inList = true;
             const multi = !skipForm && at(n, "multi") === "true";
             st.multi = multi;
             const attrs = {
@@ -1114,7 +1122,7 @@
             if (!text && !img && !icon) return "";
             if (at(n, "encode") === "false") note("encode-false", n, "button-menu with encode=false writes text as html");
             let out = (at(n, "condition") ? '<template v-if="' + e(X(at(n, "condition"), n, "condition")) + '">' : "") +
-                "<q-btn-dropdown" + A({ dense: true, outline: true, "no-caps": true, color: quasarColor(at(n, "btn-type") || "primary") || null, class: at(n, "style") || null }) + "><template v-slot:label>";
+                "<q-btn-dropdown" + A({ dense: true, unelevated: true, "no-caps": true, class: tonal(quasarColor(at(n, "btn-type") || "primary"), at(n, "style") || null) }) + "><template v-slot:label>";
             if (at(n, "tooltip")) out += '<q-tooltip><span v-text="' + e(exp(at(n, "tooltip"), n, "tooltip", true)) + '"></span></q-tooltip>';
             if (icon) out += '<i class="' + e(icon + " q-icon" + (text ? " on-left" : "")) + '"></i>';
             out += img ? imageTag(img) : '<span v-text="' + e(textOf(n)) + '"></span>';
@@ -1124,7 +1132,7 @@
             }
             return out + "</template><q-list>";
         };
-        const buttonMenuItem = (kid) => "<q-item" + (at(kid, "condition") ? ' v-if="' + e(X(at(kid, "condition"), kid, "condition")) + '"' : "") + "><q-item-section>";
+        const buttonMenuItem = (kid) => "<q-item clickable v-close-popup" + (at(kid, "condition") ? ' v-if="' + e(X(at(kid, "condition"), kid, "condition")) + '"' : "") + "><q-item-section>";
         const buttonMenuClose = (n) => "</q-list></q-btn-dropdown>" + (at(n, "condition") ? "</template>" : "") + "\n";
 
         // An XML condition element as one expression, as XmlActions.js writes it for an if: and, or and not join their parts, an expression
@@ -1274,7 +1282,7 @@
                         w("</div>\n");
                     } else if (name === "field-row-big") {
                         w('<div class="q-my-sm big-row"' + (at(kid, "justify") ? ' style="justify-content:' + e(at(kid, "justify")) + ';"' : "") + ">");
-                        if (at(kid, "title")) w('<div class="q-mx-sm q-my-auto big-row-item"><span v-text="' + e(exp(at(kid, "title"), kid, "title", true)) + '"></span></div>');
+                        if (at(kid, "title")) w('<div class="big-row-item"><span v-text="' + e(exp(at(kid, "title"), kid, "title", true)) + '"></span></div>');
                         layoutCode(kid, true);
                         w("</div>\n");
                     } else if (name === "field-group") {
@@ -1285,7 +1293,7 @@
                         // Java's accordion: a q-list of groups, each a q-expansion-item of one group, the active one (1-based, "false" for none) open
                         const before = { accordion: st.accordion, accIndex: st.accIndex, accActive: st.accActive };
                         Object.assign(st, { accordion: at(kid, "id") || (st.fieldForm || at(n, "name")) + "_accordion", accIndex: 0, accActive: at(kid, "active") || "1" });
-                        w("<q-list>");
+                        w('<q-list bordered class="rounded-borders q-my-sm">');
                         layoutCode(kid, big);
                         w("</q-list>\n");
                         Object.assign(st, before);
@@ -1327,30 +1335,37 @@
             if (!(flags.headerDialog || flags.savedFinds || flags.csv || flags.xlsx || flags.text || flags.pdf || flags.columns)) return;
             const name = at(n, "name");
             w('<template v-slot:nav="nv">');
+            const tool = (icon, text) => '<q-btn dense unelevated no-caps class="m-btn-tonal" icon="' + icon + '"' + A({ ":label": loc(text) }) + "></q-btn>";
             if (flags.headerDialog) {
-                w("<m-container-dialog" + A({ id: name + "_hdialog", ":title": loc("Find Options") }) + '><template v-slot:button><q-btn dense outline no-caps icon="search"' + A({ ":label": loc("Find Options") }) + "></q-btn></template>");
+                w("<m-container-dialog" + A({ id: name + "_hdialog", ":title": loc("Find Options") }) + "><template v-slot:button>" + tool("search", "Find Options") + "</template>");
                 findDialogForm(n, cols, headerFields);
                 w("</m-container-dialog>");
             }
             if (flags.columns) {
-                w("<m-container-dialog" + A({ id: name + "_SelColsDialog", ":title": loc("Column Fields") }) + '><template v-slot:button><q-btn dense outline no-caps icon="table_chart"' + A({ ":label": loc("Columns") }) + "></q-btn></template>");
+                w("<m-container-dialog" + A({ id: name + "_SelColsDialog", ":title": loc("Column Fields") }) + "><template v-slot:button>" + tool("view_column", "Columns") + "</template>");
                 w("<m-form-column-config" + A({ id: name + "_SelColsForm", ":action": "nv.columnsAction", ":find-parameters": "nv.params", ":columns-initial": "nv.columnsTree", "form-location": name }) + "></m-form-column-config>");
                 w("</m-container-dialog>");
             }
             if (flags.savedFinds) {
-                w("<m-container-dialog" + A({ id: name + "_sfdialog", ":title": loc("Saved Finds") }) + '><template v-slot:button><q-btn dense outline no-caps icon="find_in_page"' + A({ ":label": loc("Saved Finds") }) + "></q-btn></template>");
+                w("<m-container-dialog" + A({ id: name + "_sfdialog", ":title": loc("Saved Finds") }) + "><template v-slot:button>" + tool("bookmarks", "Saved Finds") + "</template>");
                 savedFindsBody(name);
                 w("</m-container-dialog>");
             }
-            if (flags.csv) w('<q-btn dense outline type="a"' + A({ ":href": "nv.exportUrl('csv')", ":label": loc("CSV") }) + "></q-btn>");
-            if (flags.xlsx) w('<q-btn dense outline type="a"' + A({ ":href": "nv.exportUrl('xlsx')", ":label": loc("XLS") }) + "></q-btn>");
-            if (flags.text) textExportDialog(name);
-            if (flags.pdf) w('<q-btn dense outline type="a" target="_blank"' + A({ ":href": "nv.printUrl()", ":label": loc("Print") }) + "></q-btn>");
+            // the exports in one menu: csv, xlsx, the text dialog (its button is the item), and print
+            const exportItem = (href, text, target) => '<q-item clickable v-close-popup tag="a"' + A({ ":href": href, target: target || null }) + '><q-item-section><span v-text="' + e(loc(text)) + '"></span></q-item-section></q-item>';
+            if (flags.csv || flags.xlsx || flags.text || flags.pdf) {
+                w('<q-btn-dropdown dense flat no-caps icon="download"' + A({ ":label": loc("Export") }) + "><q-list dense>");
+                if (flags.csv) w(exportItem("nv.exportUrl('csv')", "CSV"));
+                if (flags.xlsx) w(exportItem("nv.exportUrl('xlsx')", "XLS"));
+                if (flags.text) textExportDialog(name);
+                if (flags.pdf) w(exportItem("nv.printUrl()", "Print", "_blank"));
+                w("</q-list></q-btn-dropdown>");
+            }
             w("</template>");
         };
         const savedFindsBody = (name) => {
-            const button = (buttonName, text, extra) => '<q-btn dense flat no-caps type="submit"' + A(Object.assign({ name: buttonName, value: buttonName ? "Y" : null, ":label": loc(text) }, extra || {})) + "></q-btn>";
-            w('<q-list dense class="q-my-sm" v-if="nv.finds.length">');
+            const button = (buttonName, text, extra) => '<q-btn dense flat no-caps size="sm" type="submit"' + A(Object.assign({ name: buttonName, value: buttonName ? "Y" : null, ":label": loc(text) }, extra || {})) + "></q-btn>";
+            w('<q-list dense separator class="q-my-sm" v-if="nv.finds.length">');
             w('<q-item v-for="mqFind in nv.finds" :key="mqFind.formListFindId" :active="mqFind.formListFindId === nv.activeFindId">');
             w('<q-item-section><m-link :href="nv.findUrl(mqFind.formListFindId)"><span v-text="(mqFind.description || mqFind.formListFindId) + (mqFind.formListFindId === nv.defaultFindId ? \' (\' + ' + e(loc("Default")) + ' + \')\' : \'\')"></span></m-link></q-item-section>');
             w('<q-item-section side><m-form class="form-inline" :action="nv.saveFindAction" :fields-initial="nv.findFields(mqFind.formListFindId)">');
@@ -1361,7 +1376,7 @@
             w("</m-form></q-item-section></q-item></q-list>");
             w("<m-form" + A({ "v-if": "nv.hasParams", class: "form-inline", id: name + "_NewFind", ":action": "nv.saveFindAction", ":fields-initial": "nv.newFindFields()", "v-slot:default": "formProps" }) + '><div class="big-row"><div class="q-my-auto big-row-item"><m-text-line' +
                 A({ "v-model": "formProps.fields._findDescription", name: "_findDescription", id: name + "_NewFind_description", ":label": loc("Description"), size: "30", required: true }) +
-                '></m-text-line></div><div class="on-right q-my-auto big-row-item"><q-btn dense outline no-caps type="submit"' + A({ ":label": loc("Save New Find") }) + "></q-btn></div></div></m-form>");
+                '></m-text-line></div><div class="big-row-item"><q-btn dense unelevated no-caps color="primary" type="submit"' + A({ ":label": loc("Save New Find") }) + "></q-btn></div></div></m-form>");
             w('<div v-else style="margin:12px 0;"><strong' + A({ "v-text": loc("No find parameters (or default), choose some in Find Options to save a new find or update existing") }) + "></strong></div>");
         };
         // The header fields as a find form in the dialog, with clear and order-by, which goes to the screen with the fields as parameters.
@@ -1378,7 +1393,7 @@
             st.inForm = true;
             st.inRow = false;
             w("<m-form-link" + A({ name: name + "_header", id: name + "_header", ":action": "nv.findAction", ":fields-initial": initialOf(headerFields, "header-field", [["orderByField", "nv.orderByField"]]), "v-slot:default": "formProps" }) + ">");
-            w('<div class="q-mx-sm"><q-btn dense outline no-caps name="clearParameters" @click.prevent="formProps.clearForm"' + A({ ":label": loc("Clear Parameters") }) + "></q-btn>");
+            w('<div class="q-mx-sm"><q-btn dense unelevated no-caps class="m-btn-tonal" name="clearParameters" @click.prevent="formProps.clearForm"' + A({ ":label": loc("Clear Parameters") }) + "></q-btn>");
             w("<m-drop-down" + A({ name: "orderByField", id: name + "_header_orderByField", ":label": loc("Order By"), multiple: true, "allow-empty": true, ":options": "[" + orderOptions.join(",") + "]", "v-model": "formProps.fields.orderByField" }) + "></m-drop-down></div>");
             cols.flat().forEach((f) => {
                 if (!f.find) return;
@@ -1392,11 +1407,11 @@
         // The fixed-width text export: a plain form posted to the screen with renderMode text, the current parameters, and the sizes.
         const textExportDialog = (name) => {
             const row = (title, fieldName, value, size) => '<div class="q-my-sm"><m-text-line' + A({ name: fieldName, id: name + "_Text_" + fieldName, ":label": loc(title), "model-value": value, form: name + "_Text", size }) + "></m-text-line></div>";
-            w("<m-container-dialog" + A({ id: name + "_TextDialog", ":button-text": loc("Text"), ":title": loc("Export Fixed-Width Plain Text") }) + ">");
+            w("<m-container-dialog" + A({ id: name + "_TextDialog", ":button-text": loc("Text"), ":title": loc("Export Fixed-Width Plain Text") }) + '><template v-slot:button><q-item clickable v-close-popup><q-item-section><span v-text="' + e(loc("Text")) + '"></span></q-item-section></q-item></template>');
             w("<form" + A({ id: name + "_Text", method: "post", ":action": "nv.screenPath" }) + '><input type="hidden" name="renderMode" value="text"><input type="hidden" name="pageNoLimit" value="true"><input type="hidden" name="lastStandalone" value="true">');
             w('<input v-for="(mqValue, mqKey) in nv.params" :key="mqKey" type="hidden" :name="mqKey" :value="mqValue">');
             w(row("Line Characters", "lineCharacters", "132", "4") + row("Page Lines", "pageLines", "88", "4") + row("Line Wrap?", "lineWrap", "true", "5") + row("Save to Filename", "saveFilename", name + ".txt", "40"));
-            w('<q-btn dense outline no-caps type="submit"' + A({ ":label": loc("Export Text") }) + "></q-btn></form></m-container-dialog>");
+            w('<q-btn dense unelevated no-caps color="primary" type="submit"' + A({ ":label": loc("Export Text") }) + "></q-btn></form></m-container-dialog>");
         };
 
         // The cells of a form-list with the column picker: a header slot (hc_) and a row slot (rc_) for each field, which the component places in
@@ -1454,12 +1469,12 @@
 
         // The checkbox of a row of a form-list with row-selection, bound to the checkbox set (mqSel in the row's scope), written when the row has
         // an id, as Java's.
-        const selectionCell = (selection) => '<div class="td"><div class="q-my-auto"' + A({ "v-if": "$mq.str(" + scopeRef(selection.idField) + ")" }) +
-            '><input type="checkbox" style="transform: scale(1.3)" :checked="mqSel.checkboxStates[rowIndex]" @click="mqSel.clickCheckbox($event, rowIndex)" @change="mqSel.checkboxStates[rowIndex] = $event.target.checked"></div></div>';
+        const selectionCell = (selection) => '<div class="td"><q-checkbox dense size="sm"' + A({ "v-if": "$mq.str(" + scopeRef(selection.idField) + ")" }) +
+            ' :model-value="!!mqSel.checkboxStates[rowIndex]" @update:model-value="(value, event) => { mqSel.clickCheckbox(event || {}, rowIndex); mqSel.checkboxStates[rowIndex] = value; }"></q-checkbox></div>';
         // The actions of the selected rows, in the menu of the head: each action's form-single, in a dialog when it has one, posting the
         // selected ids through the checkbox set (Java's formListSelectedRowCard).
         const selectionSlot = (selection) => {
-            w('<template v-slot:selection="mqSelSet"><q-card flat bordered><q-card-section horizontal class="q-pa-md">');
+            w('<template v-slot:selection="mqSelSet"><q-card flat><q-card-section horizontal class="q-pa-sm">');
             kids(selection.node, "action").forEach((action) => {
                 const dialog = first(action, "dialog");
                 const form = first(action, "form-single");

@@ -18,7 +18,6 @@ test('Quasar theme colors, labels and sort layout match Java', () => {
     <span id="success" class="text-success">Success</span>
     <span id="danger" class="text-danger">Danger</span>
     <span id="sort" class="form-order-by"><a id="active" class="active" href="#">▲</a> <a id="descending" href="#">▼</a></span>
-    <div class="q-field--focused"><input id="input" class="q-field__input"></div>
     <div class="q-menu"><a id="menu" href="#">Menu</a></div>
     <div class="q-toolbar"><a id="toolbar" href="#">Toolbar</a></div>
     <p id="paragraph" class="text-inline">Promotion note</p>
@@ -28,8 +27,7 @@ test('Quasar theme colors, labels and sort layout match Java', () => {
         const style = id => getComputedStyle(document.getElementById(id));
         document.getElementById('result').textContent = JSON.stringify({
             link:style('link').color, success:style('success').color, danger:style('danger').color,
-            active:style('active').color, border:style('input').borderBottomColor,
-            borderStyle:style('input').borderBottomStyle,
+            active:style('active').color,
             menu:style('menu').color, toolbar:style('toolbar').color,
             paragraph:style('paragraph').display, inline:style('inline').display,
             sort:style('sort').display, sortLink:style('active').display,
@@ -50,7 +48,7 @@ test('Quasar theme colors, labels and sort layout match Java', () => {
     const result = JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
     assert.deepEqual(result, {
         link: 'rgb(1, 2, 3)', success: 'rgb(4, 5, 6)', danger: 'rgb(7, 8, 9)',
-        active: 'rgb(1, 2, 3)', border: 'rgb(1, 2, 3)', borderStyle: 'solid',
+        active: 'rgb(1, 2, 3)',
         menu: 'rgb(10, 11, 12)', toolbar: 'rgb(10, 11, 12)',
         paragraph: 'block', inline: 'inline',
         sort: 'inline', sortLink: 'inline', sortSameLine: true

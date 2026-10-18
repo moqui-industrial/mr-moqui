@@ -33,7 +33,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <text type="qvt"><![CDATA[
                     <#list sri.getMenuItems("/apps") as item>
                     <#if !item.hasParameters>
-                    <div class="q-my-sm"><q-btn outline no-caps to="${html(item.url)}" style="min-width:250px"><i class="${html(item.image && item.imageType == "icon" ? item.image : "fa fa-link")}" style="padding-right: 8px;"></i> ${html(ec.resource.expand(item.title, ""))}</q-btn></div>
+                    <div class="q-my-sm"><q-btn unelevated no-caps class="m-btn-tonal" to="${html(item.url)}" style="min-width:250px"><i class="${html(item.image && item.imageType == "icon" ? item.image : "fa fa-link")}" style="padding-right: 8px;"></i> ${html(ec.resource.expand(item.title, ""))}</q-btn></div>
                     </#if>
                     </#list>
                     <p>&nbsp;</p>

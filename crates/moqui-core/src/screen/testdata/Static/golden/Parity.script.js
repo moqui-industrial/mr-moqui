@@ -1,5 +1,5 @@
 (function(){var m=globalThis.moqui=globalThis.moqui||{};(m.qvtStatic=m.qvtStatic||{})["/Parity"]=function(Vue){
-const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, createBlock: _createBlock, normalizeClass: _normalizeClass, renderList: _renderList, Fragment: _Fragment } = Vue
+const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, resolveDirective: _resolveDirective, createBlock: _createBlock, withDirectives: _withDirectives, normalizeClass: _normalizeClass, renderList: _renderList, Fragment: _Fragment } = Vue
 
 return function render(_ctx, _cache) {
   const _component_q_item_section = _resolveComponent("q-item-section")
@@ -14,10 +14,12 @@ return function render(_ctx, _cache) {
   const _component_m_display = _resolveComponent("m-display")
   const _component_q_btn = _resolveComponent("q-btn")
   const _component_m_static_form_list = _resolveComponent("m-static-form-list")
+  const _component_q_checkbox = _resolveComponent("q-checkbox")
   const _component_m_container_dialog = _resolveComponent("m-container-dialog")
   const _component_q_card_section = _resolveComponent("q-card-section")
   const _component_q_card = _resolveComponent("q-card")
   const _component_m_form_paginate = _resolveComponent("m-form-paginate")
+  const _directive_close_popup = _resolveDirective("close-popup")
 
   return (_openBlock(), _createElementBlock(_Fragment, null, [
     (((_ctx.$mq.compare(_ctx.status,'equals','ACTIVE',null,null,'Object') && (_ctx.qty > 3))))
@@ -47,7 +49,8 @@ return function render(_ctx, _cache) {
       textContent: _toDisplayString(_ctx.ec.resource.expand('Product ${productName} at ${price}',{'productName':()=>(_ctx.$mq.inMap((_ctx.product),'productName')?_ctx.$mq.inMap((_ctx.product),'productName',true):(_ctx.productName)),'price':()=>(_ctx.$mq.inMap((_ctx.product),'price')?_ctx.$mq.inMap((_ctx.product),'price',true):(_ctx.price))}))
     }, null, 8, ["textContent"]),
     _createElementVNode("a", {
-      href: _ctx.$mq.url('/Parity/viewProduct',{},null)
+      href: _ctx.$mq.url('/Parity/viewProduct',{},null),
+      class: "m-link-text"
     }, [
       _createElementVNode("span", {
         textContent: _toDisplayString(_ctx.ec.resource.expand('View ${productName}',{'productName':()=>(_ctx.$mq.inMap((_ctx.product),'productName')?_ctx.$mq.inMap((_ctx.product),'productName',true):(_ctx.productName))}))
@@ -55,9 +58,9 @@ return function render(_ctx, _cache) {
     ], 8, ["href"]),
     _createVNode(_component_q_btn_dropdown, {
       dense: "",
-      outline: "",
+      unelevated: "",
       "no-caps": "",
-      color: "primary"
+      class: "m-btn-tonal text-primary"
     }, {
       label: _withCtx(() => [
         _createElementVNode("i", { class: "fa fa-bars q-icon on-left" }),
@@ -68,12 +71,13 @@ return function render(_ctx, _cache) {
       default: _withCtx(() => [
         _createVNode(_component_q_list, null, {
           default: _withCtx(() => [
-            _createVNode(_component_q_item, null, {
+            _withDirectives((_openBlock(), _createBlock(_component_q_item, { clickable: "" }, {
               default: _withCtx(() => [
                 _createVNode(_component_q_item_section, null, {
                   default: _withCtx(() => [
                     _createElementVNode("a", {
-                      href: _ctx.$mq.url('/Parity/viewProduct',{},null)
+                      href: _ctx.$mq.url('/Parity/viewProduct',{},null),
+                      class: "m-link-text"
                     }, [
                       _createElementVNode("span", {
                         textContent: _toDisplayString(_ctx.ec.l10n.localize('View it'))
@@ -84,9 +88,14 @@ return function render(_ctx, _cache) {
                 })
               ]),
               _: 1
-            }),
+            })), [
+              [_directive_close_popup]
+            ]),
             ((_ctx.qty > 3))
-              ? (_openBlock(), _createBlock(_component_q_item, { key: 0 }, {
+              ? _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                  key: 0,
+                  clickable: ""
+                }, {
                   default: _withCtx(() => [
                     _createVNode(_component_q_item_section, null, {
                       default: _withCtx(() => [
@@ -102,10 +111,15 @@ return function render(_ctx, _cache) {
                     })
                   ]),
                   _: 1
-                }))
+                })), [
+                  [_directive_close_popup]
+                ])
               : _createCommentVNode("", true),
             ((_ctx.qty <= 3))
-              ? (_openBlock(), _createBlock(_component_q_item, { key: 1 }, {
+              ? _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                  key: 1,
+                  clickable: ""
+                }, {
                   default: _withCtx(() => [
                     _createVNode(_component_q_item_section, null, {
                       default: _withCtx(() => [
@@ -121,7 +135,9 @@ return function render(_ctx, _cache) {
                     })
                   ]),
                   _: 1
-                }))
+                })), [
+                  [_directive_close_popup]
+                ])
               : _createCommentVNode("", true)
           ]),
           _: 1
@@ -134,7 +150,7 @@ return function render(_ctx, _cache) {
       extra: _ctx.$scope['mqExtra_ProductForm']
     }, {
       default: _withCtx((_ctx) => [
-        _createElementVNode("div", { class: "q-my-md" }, [
+        _createElementVNode("div", { class: "q-mb-md" }, [
           _createVNode(_component_m_form, {
             name: "ProductForm",
             id: "ProductForm",
@@ -143,82 +159,75 @@ return function render(_ctx, _cache) {
             "fields-initial": {'productName':_ctx.$mq.str(_ctx.$scope['productName']),'price':_ctx.$mq.str(_ctx.$scope['price']),'note':_ctx.$mq.str(_ctx.$scope['note']),'moquiFormName':'ProductForm'}
           }, {
             default: _withCtx((formProps) => [
-              _createVNode(_component_q_list, null, {
+              _createVNode(_component_q_list, {
+                bordered: "",
+                class: "rounded-borders q-my-sm"
+              }, {
                 default: _withCtx(() => [
-                  _createVNode(_component_q_list, {
-                    bordered: "",
-                    padding: ""
+                  _createVNode(_component_q_expansion_item, {
+                    dense: "",
+                    "expand-separator": "",
+                    "switch-toggle-side": "",
+                    "header-class": "text-weight-medium",
+                    group: "ProductForm_accordion",
+                    label: _ctx.ec.l10n.localize('Names')
                   }, {
                     default: _withCtx(() => [
-                      _createVNode(_component_q_expansion_item, {
-                        "switch-toggle-side": "",
-                        group: "ProductForm_accordion",
-                        label: _ctx.ec.l10n.localize('Names')
-                      }, {
-                        default: _withCtx(() => [
-                          _createElementVNode("div", { class: "panel-body" }, [
-                            _createElementVNode("div", { class: "q-ma-sm" }, [
-                              _createVNode(_component_m_text_line, {
-                                id: "ProductForm_productName",
-                                type: "text",
-                                name: "productName",
-                                style: {"width":"100%"},
-                                label: _ctx.ec.l10n.localize('Product Name'),
-                                modelValue: formProps.fields.productName,
-                                "onUpdate:modelValue": $event => ((formProps.fields.productName) = $event),
-                                fields: formProps.fields
-                              }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "fields"])
-                            ])
-                          ])
-                        ]),
-                        _: 2
-                      }, 1032, ["label"])
+                      _createElementVNode("div", { class: "q-pa-sm" }, [
+                        _createElementVNode("div", { class: "q-pa-xs" }, [
+                          _createVNode(_component_m_text_line, {
+                            id: "ProductForm_productName",
+                            type: "text",
+                            name: "productName",
+                            style: {"width":"100%"},
+                            label: _ctx.ec.l10n.localize('Product Name'),
+                            modelValue: formProps.fields.productName,
+                            "onUpdate:modelValue": $event => ((formProps.fields.productName) = $event),
+                            fields: formProps.fields
+                          }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "fields"])
+                        ])
+                      ])
                     ]),
                     _: 2
-                  }, 1024),
-                  _createVNode(_component_q_list, {
-                    bordered: "",
-                    padding: ""
+                  }, 1032, ["label"]),
+                  _createVNode(_component_q_expansion_item, {
+                    dense: "",
+                    "expand-separator": "",
+                    "switch-toggle-side": "",
+                    "header-class": "text-weight-medium",
+                    group: "ProductForm_accordion",
+                    label: _ctx.ec.l10n.localize('Amounts'),
+                    "default-opened": ""
                   }, {
                     default: _withCtx(() => [
-                      _createVNode(_component_q_expansion_item, {
-                        "switch-toggle-side": "",
-                        group: "ProductForm_accordion",
-                        label: _ctx.ec.l10n.localize('Amounts'),
-                        "default-opened": ""
-                      }, {
-                        default: _withCtx(() => [
-                          _createElementVNode("div", { class: "panel-body" }, [
-                            _createElementVNode("div", { class: "q-ma-sm" }, [
-                              _createVNode(_component_m_text_line, {
-                                id: "ProductForm_price",
-                                type: "text",
-                                name: "price",
-                                style: {"width":"100%"},
-                                label: _ctx.ec.l10n.localize('Price'),
-                                modelValue: formProps.fields.price,
-                                "onUpdate:modelValue": $event => ((formProps.fields.price) = $event),
-                                fields: formProps.fields
-                              }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "fields"])
-                            ]),
-                            _createElementVNode("div", { class: "q-ma-sm" }, [
-                              _createVNode(_component_m_text_area, {
-                                name: "note",
-                                id: "ProductForm_note",
-                                rows: "3",
-                                style: {"width":"100%"},
-                                label: _ctx.ec.l10n.localize('Note'),
-                                modelValue: formProps.fields.note,
-                                "onUpdate:modelValue": $event => ((formProps.fields.note) = $event)
-                              }, null, 8, ["label", "modelValue", "onUpdate:modelValue"])
-                            ])
-                          ])
+                      _createElementVNode("div", { class: "q-pa-sm" }, [
+                        _createElementVNode("div", { class: "q-pa-xs" }, [
+                          _createVNode(_component_m_text_line, {
+                            id: "ProductForm_price",
+                            type: "text",
+                            name: "price",
+                            style: {"width":"100%"},
+                            label: _ctx.ec.l10n.localize('Price'),
+                            modelValue: formProps.fields.price,
+                            "onUpdate:modelValue": $event => ((formProps.fields.price) = $event),
+                            fields: formProps.fields
+                          }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "fields"])
                         ]),
-                        _: 2
-                      }, 1032, ["label"])
+                        _createElementVNode("div", { class: "q-pa-xs" }, [
+                          _createVNode(_component_m_text_area, {
+                            name: "note",
+                            id: "ProductForm_note",
+                            rows: "3",
+                            style: {"width":"100%"},
+                            label: _ctx.ec.l10n.localize('Note'),
+                            modelValue: formProps.fields.note,
+                            "onUpdate:modelValue": $event => ((formProps.fields.note) = $event)
+                          }, null, 8, ["label", "modelValue", "onUpdate:modelValue"])
+                        ])
+                      ])
                     ]),
                     _: 2
-                  }, 1024)
+                  }, 1032, ["label"])
                 ]),
                 _: 2
               }, 1024)
@@ -303,6 +312,7 @@ return function render(_ctx, _cache) {
                   _createVNode(_component_q_btn, {
                     dense: "",
                     outline: !formProps.hasFieldsChanged,
+                    unelevated: formProps.hasFieldsChanged,
                     "no-caps": "",
                     type: "submit",
                     name: "go",
@@ -316,7 +326,7 @@ return function render(_ctx, _cache) {
                       }, null, 8, ["textContent"])
                     ]),
                     _: 1
-                  }, 8, ["outline", "id"])
+                  }, 8, ["outline", "unelevated", "id"])
                 ])
               ])
             ]),
@@ -359,6 +369,7 @@ return function render(_ctx, _cache) {
               _createVNode(_component_q_btn, {
                 dense: "",
                 outline: !_ctx.formProps.hasFieldsChanged,
+                unelevated: _ctx.formProps.hasFieldsChanged,
                 "no-caps": "",
                 type: "submit",
                 name: "go",
@@ -372,7 +383,7 @@ return function render(_ctx, _cache) {
                   }, null, 8, ["textContent"])
                 ]),
                 _: 1
-              }, 8, ["outline"])
+              }, 8, ["outline", "unelevated"])
             ])
           ])
         ])
@@ -440,18 +451,13 @@ return function render(_ctx, _cache) {
         }, [
           _createElementVNode("div", { class: "td" }, [
             (_ctx.$mq.str(_ctx.$scope['itemId']))
-              ? (_openBlock(), _createElementBlock("div", {
+              ? (_openBlock(), _createBlock(_component_q_checkbox, {
                   key: 0,
-                  class: "q-my-auto"
-                }, [
-                  _createElementVNode("input", {
-                    type: "checkbox",
-                    style: {"transform":"scale(1.3)"},
-                    checked: _ctx.mqSel.checkboxStates[_ctx.rowIndex],
-                    onClick: $event => (_ctx.mqSel.clickCheckbox($event, _ctx.rowIndex)),
-                    onChange: $event => (_ctx.mqSel.checkboxStates[_ctx.rowIndex] = $event.target.checked)
-                  }, null, 40, ["checked", "onClick", "onChange"])
-                ]))
+                  dense: "",
+                  size: "sm",
+                  "model-value": !!_ctx.mqSel.checkboxStates[_ctx.rowIndex],
+                  "onUpdate:modelValue": (value, event) => { _ctx.mqSel.clickCheckbox(event || {}, _ctx.rowIndex); _ctx.mqSel.checkboxStates[_ctx.rowIndex] = value; }
+                }, null, 8, ["model-value", "onUpdate:modelValue"]))
               : _createCommentVNode("", true)
           ]),
           _createElementVNode("div", { class: "td" }, [
@@ -497,14 +503,11 @@ return function render(_ctx, _cache) {
         ], 2)
       ]),
       selection: _withCtx((mqSelSet) => [
-        _createVNode(_component_q_card, {
-          flat: "",
-          bordered: ""
-        }, {
+        _createVNode(_component_q_card, { flat: "" }, {
           default: _withCtx(() => [
             _createVNode(_component_q_card_section, {
               horizontal: "",
-              class: "q-pa-md"
+              class: "q-pa-sm"
             }, {
               default: _withCtx(() => [
                 _createElementVNode("span", { class: "q-my-md" }, [
@@ -520,7 +523,7 @@ return function render(_ctx, _cache) {
                           extra: _ctx.$scope['mqExtra_ArchiveForm']
                         }, {
                           default: _withCtx((_ctx) => [
-                            _createElementVNode("div", { class: "q-my-md" }, [
+                            _createElementVNode("div", { class: "q-mb-md" }, [
                               _createVNode(_component_m_form, {
                                 name: "ArchiveForm",
                                 id: "ArchiveForm",
@@ -530,7 +533,7 @@ return function render(_ctx, _cache) {
                                 "parent-checkbox-set": mqSelSet
                               }, {
                                 default: _withCtx((formProps) => [
-                                  _createElementVNode("div", { class: "q-ma-sm" }, [
+                                  _createElementVNode("div", { class: "q-pa-xs" }, [
                                     _createVNode(_component_m_text_line, {
                                       id: "ArchiveForm_reason",
                                       type: "text",
@@ -542,10 +545,11 @@ return function render(_ctx, _cache) {
                                       fields: formProps.fields
                                     }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "fields"])
                                   ]),
-                                  _createElementVNode("div", { class: "q-ma-sm" }, [
+                                  _createElementVNode("div", { class: "q-pa-xs" }, [
                                     _createVNode(_component_q_btn, {
                                       dense: "",
                                       outline: !formProps.hasFieldsChanged,
+                                      unelevated: formProps.hasFieldsChanged,
                                       "no-caps": "",
                                       type: "submit",
                                       name: "go",
@@ -559,7 +563,7 @@ return function render(_ctx, _cache) {
                                         }, null, 8, ["textContent"])
                                       ]),
                                       _: 1
-                                    }, 8, ["outline"])
+                                    }, 8, ["outline", "unelevated"])
                                   ])
                                 ]),
                                 _: 1

@@ -151,6 +151,9 @@
         const quasarColor = (color) => (color === "success" ? "positive" : color === "danger" ? "negative" : color === "default" ? "" : color || "");
         const icon = (name, text) => (name ? '<i class="' + e(name) + ' q-icon' + (text ? " on-left" : "") + '"></i> ' : "");
         const tooltipTag = (text) => (text ? "<q-tooltip>" + t(text) + "</q-tooltip>" : "");
+        // The classes of a tonal (soft tinted) button, the secondary kind: the macros write unelevated primary for a submit, tonal for
+        // a secondary action (a link outside a list cell, a dialog, a tool of a list), and flat for a minor one (reset, page size, icons).
+        const tonal = (color, ...extra) => cls("m-btn-tonal", color && color !== "default" ? "text-" + color : null, ...extra);
 
         const OUTLINE_BG = ":bg-color";
 
@@ -159,7 +162,7 @@
         const saved = [];
         const reset = () => {
             Object.assign(st, {
-                formName: "", fieldForm: "", owner: "", entry: "", multi: false, skipForm: false, inForm: false,
+                formName: "", fieldForm: "", owner: "", entry: "", multi: false, skipForm: false, inForm: false, inList: false,
                 accordion: "", accIndex: 0, accActive: "", disabled: false, selectedForm: false
             });
             saved.length = 0;
@@ -463,7 +466,7 @@
 
         const reset_ = (n) => {
             w("<q-btn" + A({
-                dense: true, outline: true, "no-caps": true, type: "reset", name: fnm(n), id: fid(n), form: owner()
+                dense: true, flat: true, "no-caps": true, type: "reset", name: fnm(n), id: fid(n), form: owner()
             }) + ">" + tooltipTag(tip(n)) + t(label(n)) + "</q-btn>");
         };
 
@@ -479,7 +482,8 @@
                 body += "<img" + A({ src: src.url, alt: at(image, "alt") || title, width: at(image, "width") || null, height: at(image, "height") || null }) + ">";
             } else body += t(text);
             w("<q-btn" + A({
-                dense: true, ":outline": st.inForm ? "!formProps.hasFieldsChanged" : null, outline: st.inForm ? null : true, "no-caps": true, type: "submit",
+                dense: true, ":outline": st.inForm ? "!formProps.hasFieldsChanged" : null, ":unelevated": st.inForm ? "formProps.hasFieldsChanged" : null,
+                unelevated: st.inForm ? null : true, "no-caps": true, type: "submit",
                 name: fnm(n), value: fnm(n), id: fid(n), color: quasarColor(at(n, "type") || "primary") || null, disabled: st.disabled || null,
                 "data-confirm": confirmation || null, form: owner()
             }) + ">" + body + "</q-btn>");
@@ -620,7 +624,7 @@
             let out = "<m-drop-down" + A(Object.assign(attrs, model)) + ">";
             if (xn(at(n, "show-not")) === "true") {
                 out += "<template v-slot:after><m-check" + A(Object.assign({
-                    name: name + "_not", id: id + "_not", "true-value": "Y", "false-value": "N", "single-label": L("Not"), form: owner()
+                    name: name + "_not", id: id + "_not", toggle: true, "true-value": "Y", "false-value": "N", "single-label": L("Not"), form: owner()
                 }, st.inForm ? { "v-model": fieldRef(name + "_not") } : { "model-value": param(name + "_not") === "Y" ? "Y" : "N" })) + "></m-check></template>";
             }
             w(out + "</m-drop-down>");
@@ -767,11 +771,12 @@
             const style = xn(at(n, "style")) || null;
             const linkType = at(n, "link-type");
             const color = quasarColor(at(n, "btn-type") || "primary") || null;
+            // A screen link in a form-list cell is text (as is link-type anchor anywhere); the others are tonal buttons.
+            const textLink = linkType === "anchor" || (st.inList && linkType !== "anchor-button");
             if (parts.url.getDisableLink()) {
+                if (parts.anchor && textLink) return '<span class="text-grey-5">' + linkBody(n, parts.text, parts.img, false) + "</span>";
                 return "<span><q-btn" + A({
-                    dense: true, "no-caps": true, disabled: true, outline: linkType !== "anchor" && linkType !== "hidden-form-link" ? true : null,
-                    flat: linkType === "anchor" || linkType === "hidden-form-link" ? true : null, class: cls("m-link", style), id: formId || null,
-                    label: parts.text || null
+                    dense: true, "no-caps": true, disabled: true, flat: true, class: cls("m-link", style), id: formId || null, label: parts.text || null
                 }) + ">" + (at(n, "icon") ? '<i class="' + e(xn(at(n, "icon"))) + '"></i>' : "") + "</q-btn></span>";
             }
             const confirmation = x(at(n, "confirmation"));
@@ -781,15 +786,14 @@
                 const href = screen ? (noParam ? parts.url.path : parts.url.pathWithParams) : (noParam ? parts.url.url : parts.url.getUrlWithParams());
                 const tag = screen ? "m-link" : "a";
                 const inner = linkBody(n, parts.text, parts.img, false) + "";
-                const asButton = linkType !== "anchor";
                 return "<" + tag + A({
                     href, id: formId || null, target: at(n, "target-window") || null, "load-id": at(n, "dynamic-load-id") || null,
-                    "data-confirm": confirmation || null, class: asButton ? null : style
-                }) + ">" + (asButton ? "<q-btn" + A({ dense: true, outline: true, "no-caps": true, color, class: cls("m-link", style) }) + ">" + inner + "</q-btn>" : inner) + "</" + tag + ">";
+                    "data-confirm": confirmation || null, class: textLink ? cls("m-link-text", style) : null
+                }) + ">" + (textLink ? inner : "<q-btn" + A({ dense: true, unelevated: true, "no-caps": true, class: tonal(color, "m-link", style) }) + ">" + inner + "</q-btn>") + "</" + tag + ">";
             }
             if (!formId) return "";
             return "<q-btn" + A({
-                dense: true, outline: true, "no-caps": true, type: "submit", form: formId, id: formId + "_button", color, class: style || null,
+                dense: true, unelevated: true, "no-caps": true, type: "submit", form: formId, id: formId + "_button", class: tonal(color, style),
                 "data-confirm": confirmation || null
             }) + ">" + linkBody(n, parts.text, parts.img, false) + "</q-btn>";
         };
@@ -816,9 +820,11 @@
                     out += "<input" + A({ type: "image", src: sri.makeUrlByType(at(img, "url"), at(img, "url-type") || "content", null, "true").url, alt: at(img, "alt") || null, "data-confirm": confirmation || null }) + ">";
                 } else {
                     const linkType = at(n, "link-type");
+                    const color = quasarColor(at(n, "btn-type") || "primary") || null;
+                    const flat = linkType === "hidden-form-link";
                     out += "<q-btn" + A({
-                        dense: true, "no-caps": true, type: "submit", flat: linkType === "hidden-form-link" ? true : null, outline: linkType === "hidden-form-link" ? null : true,
-                        color: quasarColor(at(n, "btn-type") || "primary") || null, class: cls("m-link", xn(at(n, "style")) || null), "data-confirm": confirmation || null
+                        dense: true, "no-caps": true, type: "submit", flat: flat ? true : null, unelevated: flat ? null : true,
+                        class: flat ? cls("m-link", color ? "text-" + color : null, xn(at(n, "style")) || null) : tonal(color, "m-link", xn(at(n, "style")) || null), "data-confirm": confirmation || null
                     }) + ">" + linkBody(n, parts.text, null, false) + "</q-btn>";
                 }
             }
@@ -880,7 +886,7 @@
             const url = sri.makeUrlByType(at(n, "transition"), "transition", n, "true");
             const color = quasarColor(xn(at(n, "type") || "primary")) || null;
             if (url.getDisableLink()) {
-                w("<q-btn" + A({ disabled: true, dense: true, outline: true, "no-caps": true, icon: "open_in_new", label: buttonText, color, class: xn(at(n, "button-style")) || null }) + "></q-btn>");
+                w("<q-btn" + A({ disabled: true, dense: true, flat: true, "no-caps": true, icon: "open_in_new", label: buttonText, class: xn(at(n, "button-style")) || null }) + "></q-btn>");
                 return;
             }
             w("<m-dynamic-dialog" + A({
@@ -963,6 +969,7 @@
             st.formName = at(n, "name");
             st.owner = at(n, "owner-form");
             st.skipForm = false;
+            st.inList = false;
             const ownerForm = !!st.owner;
             const skipStart = at(n, "skip-start") === "true" || ownerForm;
             const url = sri.makeUrlByType(at(n, "transition"), "transition", null, "true");
@@ -985,7 +992,7 @@
                 "v-slot:default": "formProps", ":fields-initial": initial(singleValues(n, formAttrs)),
                 ":validation-errors-initial": isForm ? savedErrors(at(n, "name")) : null
             };
-            w((skipStart ? "" : '<div class="q-my-md"><' + tag + A(attrs) + ">"));
+            w((skipStart ? "" : '<div class="q-mb-md"><' + tag + A(attrs) + ">"));
             return { skipStart, tag };
         };
 
@@ -996,7 +1003,7 @@
 
         const fieldBox = (when, containerStyle, big) => {
             const style = visibleStyle(when);
-            const box = big ? "q-mx-sm q-my-auto big-row-item" : cls("q-ma-sm", containerStyle || null);
+            const box = big ? "big-row-item" : cls("q-pa-xs", containerStyle || null);
             w("<div" + A({ class: box, ":style": style }) + ">");
         };
 
@@ -1018,16 +1025,16 @@
             if (st.accordion) {
                 st.accIndex++;
                 const active = String(st.accIndex) === st.accActive;
-                w("<q-list bordered padding><q-expansion-item" + A({ "switch-toggle-side": true, group: st.accordion, label: title || "Fields", "default-opened": active ? true : null }) +
-                    '><div class="' + cls("panel-body", at(n, "style") || null) + '">');
+                w("<q-expansion-item" + A({ dense: true, "expand-separator": true, "switch-toggle-side": true, "header-class": "text-weight-medium", group: st.accordion, label: title || "Fields", "default-opened": active ? true : null }) +
+                    '><div class="' + cls("q-pa-sm", at(n, "style") || null) + '">');
             } else if (at(n, "box") === "true") {
-                w('<div class="panel panel-default"><div class="panel-heading"><h5 class="panel-title">' + t(title || "Fields") + '</h5></div><div class="' + cls("panel-body", at(n, "style") || null) + '">');
+                w("<m-container-box" + A({ type: "default", title: title || "Fields" }) + "><div" + A({ class: at(n, "style") || null }) + ">");
             } else {
-                w('<div class="' + cls("form-single-field-group", at(n, "style") || null) + '">' + (title ? "<h5>" + t(title) + "</h5>" : ""));
+                w('<div class="' + cls("form-single-field-group", at(n, "style") || null) + '">' + (title ? '<div class="text-subtitle1 text-weight-medium q-px-xs q-pt-xs">' + t(title) + "</div>" : ""));
             }
         };
         const fieldGroupClose = (n) => {
-            w(st.accordion ? "</div></q-expansion-item></q-list>\n" : at(n, "box") === "true" ? "</div></div>\n" : "</div>\n");
+            w(st.accordion ? "</div></q-expansion-item>\n" : at(n, "box") === "true" ? "</div></m-container-box>\n" : "</div>\n");
         };
 
         // ---- form-list ----
@@ -1037,7 +1044,7 @@
         const pageSizes = [10, 20, 50, 100, 200, 500];
 
         const pageSizeMenu = (listName) => {
-            let out = '<span class="on-left q-my-auto"><q-btn-dropdown dense outline no-caps label="' + e(ctx(listName + "PageSize")) + '"><q-list dense>';
+            let out = '<span class="q-my-auto"><q-btn-dropdown dense flat no-caps label="' + e(ctx(listName + "PageSize")) + '"><q-tooltip>' + t(L("Page Size")) + '</q-tooltip><q-list dense>';
             pageSizes.forEach((size) => { out += '<q-item clickable v-close-popup><q-item-section><m-link href="' + e(pathUrl("pageSize", size)) + '">' + size + "</m-link></q-item-section></q-item>"; });
             return out + "</q-list></q-btn-dropdown></span>";
         };
@@ -1057,43 +1064,49 @@
             if (!(cfg.headerDialog || cfg.savedFinds || cfg.selectColumns || paginated) || ctx("hideNav") === "true") return;
             let out = '<div class="form-list-nav-row row items-center"><div class="col-xs-12 col-sm-6"><div class="row items-center">';
             const flush = () => { if (out) { w(out); out = ""; } };
+            const tool = (icon, text) => '<q-btn dense unelevated no-caps class="m-btn-tonal" icon="' + icon + '" label="' + e(text) + '"></q-btn>';
             if (cfg.headerDialog) {
-                out += '<m-container-dialog id="' + e(formId) + '_hdialog" title="' + e(L("Find Options")) + '"><template v-slot:button><q-btn dense outline no-caps icon="search" label="' + e(L("Find Options")) + '"></q-btn></template>';
+                out += '<m-container-dialog id="' + e(formId) + '_hdialog" title="' + e(L("Find Options")) + '"><template v-slot:button>' + tool("search", L("Find Options")) + "</template>";
                 flush();
                 findDialogBody(n, cols, cfg);
                 w("</m-container-dialog>");
             }
             if (cfg.selectColumns) {
-                out += '<m-container-dialog id="' + e(formId) + '_SelColsDialog" title="' + e(L("Column Fields")) + '"><template v-slot:button><q-btn dense outline no-caps icon="table_chart" label="' + e(L("Columns")) + '"></q-btn></template>';
+                out += '<m-container-dialog id="' + e(formId) + '_SelColsDialog" title="' + e(L("Column Fields")) + '"><template v-slot:button>' + tool("view_column", L("Columns")) + "</template>";
                 flush();
                 columnsDialogBody(n, cols, cfg);
                 w("</m-container-dialog>");
             }
             if (cfg.savedFinds) {
-                out += '<m-container-dialog id="' + e(formId) + '_sfdialog" title="' + e(L("Saved Finds")) + '"><template v-slot:button><q-btn dense outline no-caps icon="find_in_page" label="' + e(L("Saved Finds")) + '"></q-btn></template>';
+                out += '<m-container-dialog id="' + e(formId) + '_sfdialog" title="' + e(L("Saved Finds")) + '"><template v-slot:button>' + tool("bookmarks", L("Saved Finds")) + "</template>";
                 flush();
                 savedFindsDialogBody(n, cfg);
                 w("</m-container-dialog>");
             }
-            if (at(n, "show-csv-button") === "true") {
-                const csv = sri.getScreenUrlInstance().cloneUrlInstance().addParameter("renderMode", "csv").addParameter("pageNoLimit", "true").addParameter("lastStandalone", "true").addParameter("saveFilename", at(n, "name") + ".csv");
-                out += '<q-btn dense outline type="a" href="' + e(csv.getUrlWithParams()) + '" label="' + e(L("CSV")) + '"></q-btn>';
-            }
-            if (at(n, "show-xlsx-button") === "true" && ec.screen.isRenderModeValid("xlsx")) {
-                const xlsx = sri.getScreenUrlInstance().cloneUrlInstance().addParameter("renderMode", "xlsx").addParameter("pageNoLimit", "true").addParameter("lastStandalone", "true").addParameter("saveFilename", at(n, "name") + ".xlsx");
-                out += '<q-btn dense outline type="a" href="' + e(xlsx.getUrlWithParams()) + '" label="' + e(L("XLS")) + '"></q-btn>';
-            }
-            if (at(n, "show-text-button") === "true") {
-                flush();
-                textDialog(n, cfg);
-            }
-            if (at(n, "show-pdf-button") === "true") {
-                const print = sri.getScreenUrlInstance().cloneUrlInstance().addParameter("renderMode", "html-print").addParameter("pageNoLimit", "true");
-                out += '<q-btn dense outline type="a" target="_blank" href="' + e(print.getUrlWithParams()) + '" label="' + e(L("Print")) + '"></q-btn>';
+            // the exports in one menu: csv, xlsx, the text dialog (its button is the item), and print
+            const exportUrl = (mode, filename) => sri.getScreenUrlInstance().cloneUrlInstance().addParameter("renderMode", mode).addParameter("pageNoLimit", "true").addParameter("lastStandalone", "true").addParameter("saveFilename", filename).getUrlWithParams();
+            const exportItem = (href, text, target) => '<q-item clickable v-close-popup tag="a"' + A({ href, target: target || null }) + "><q-item-section>" + t(text) + "</q-item-section></q-item>";
+            const csv = at(n, "show-csv-button") === "true";
+            const xlsx = at(n, "show-xlsx-button") === "true" && ec.screen.isRenderModeValid("xlsx");
+            const text = at(n, "show-text-button") === "true";
+            const pdf = at(n, "show-pdf-button") === "true";
+            if (csv || xlsx || text || pdf) {
+                out += '<q-btn-dropdown dense flat no-caps icon="download" label="' + e(L("Export")) + '"><q-list dense>';
+                if (csv) out += exportItem(exportUrl("csv", at(n, "name") + ".csv"), L("CSV"));
+                if (xlsx) out += exportItem(exportUrl("xlsx", at(n, "name") + ".xlsx"), L("XLS"));
+                if (text) {
+                    flush();
+                    textDialog(n, cfg);
+                }
+                if (pdf) {
+                    const print = sri.getScreenUrlInstance().cloneUrlInstance().addParameter("renderMode", "html-print").addParameter("pageNoLimit", "true");
+                    out += exportItem(print.getUrlWithParams(), L("Print"), "_blank");
+                }
+                out += "</q-list></q-btn-dropdown>";
             }
             const count = ctx(listName + "Count");
             if ((count === "" ? 0 : count) === 0) {
-                out += '<strong class="text-warning on-right q-my-auto">' + t(L(ec.context.sharedMap._entityListNoSearchParms ? "Find Options required to view results" : "No results found")) + "</strong>";
+                out += '<span class="text-warning text-weight-medium q-ml-sm q-my-auto">' + t(L(ec.context.sharedMap._entityListNoSearchParms ? "Find Options required to view results" : "No results found")) + "</span>";
             }
             out += "</div></div>";
             if (paginated) {
@@ -1112,7 +1125,7 @@
                 w('<div class="form-list-filter-summary text-center q-pa-sm" style="font-weight:normal;">' + summaries.join(" "));
                 if (summaries.length) {
                     w("<m-form-link" + A({ name: cfg.headerFormId + "_clr", id: cfg.headerFormId + "_clr", action: sri.getCurrentScreenUrl().path, ":fields-initial": initial(hiddenParams(n)) }) +
-                        '><q-btn dense flat type="submit" icon="clear" color="negative"><q-tooltip>' + t(L("Reset to Default")) + '</q-tooltip></q-btn></m-form-link>');
+                        '><q-btn flat round dense size="sm" type="submit" icon="clear" color="negative"><q-tooltip>' + t(L("Reset to Default")) + '</q-tooltip></q-btn></m-form-link>');
                 }
                 w("</div>");
             }
@@ -1132,12 +1145,12 @@
                     const activeId = ctx("formListFindId") || "";
                     const defaultId = sri.getUserDefaultFormListFindId() || "";
                     const base = sri.getScreenUrlInstance().path;
-                    w('<q-list dense class="q-my-sm">');
+                    w('<q-list dense separator class="q-my-sm">');
                     finds.forEach((find) => {
                         const id = find.formListFind.formListFindId;
                         const label = (find.description || id) + (id === defaultId ? " (" + L("Default") + ")" : "");
                         const fields = Object.assign({ formLocation: at(n, "name"), formListFindId: id }, params);
-                        const button = (name, text, color) => "<q-btn dense flat no-caps" + A({ type: "submit", name, value: name ? "Y" : null, color: color || null, label: text }) + "></q-btn>";
+                        const button = (name, text, color) => '<q-btn dense flat no-caps size="sm"' + A({ type: "submit", name, value: name ? "Y" : null, color: color || null, label: text }) + "></q-btn>";
                         w("<q-item" + A({ active: id === activeId ? true : null }) + "><q-item-section><m-link" + A({ href: base + "?formListFindId=" + encodeURIComponent(id) }) + ">" + t(label) + "</m-link></q-item-section>" +
                             "<q-item-section side><m-form" + A({ class: "form-inline", action: saveUrl, ":fields-initial": js_(fields) }) + ">" +
                             (find.isByUserId === "true" && Object.keys(params).length ? button(null, L("Update to Current")) : "") +
@@ -1153,7 +1166,7 @@
                         ":fields-initial": js_(Object.assign({ formLocation: at(n, "name"), _findDescription: "" }, params))
                     }) + '><div class="big-row"><div class="q-my-auto big-row-item"><m-text-line' + A({
                         "v-model": "formProps.fields._findDescription", name: "_findDescription", id: formId + "_NewFind_description", label: L("Description"), size: "30", required: true
-                    }) + '></m-text-line></div><div class="on-right q-my-auto big-row-item"><q-btn dense outline no-caps type="submit" label="' + e(L("Save New Find")) + '"></q-btn></div></div></m-form>');
+                    }) + '></m-text-line></div><div class="big-row-item"><q-btn dense unelevated no-caps color="primary" type="submit" label="' + e(L("Save New Find")) + '"></q-btn></div></div></m-form>');
                 } else w("<div style=\"margin:12px 0;\"><strong>" + t(L("No find parameters (or default), choose some in Find Options to save a new find or update existing")) + "</strong></div>");
             }
         };
@@ -1174,7 +1187,7 @@
             w("<m-form-link" + A({
                 name: headerId, id: headerId, action: sri.getCurrentScreenUrl().path, "v-slot:default": "formProps",
                 ":fields-initial": initial(headerValues(n, cfg.valueDescs.h))
-            }) + '><div class="q-mx-sm"><q-btn dense outline no-caps name="clearParameters" @click.prevent="formProps.clearForm" label="' + e(L("Clear Parameters")) + '"></q-btn>');
+            }) + '><div class="q-mx-sm"><q-btn dense unelevated no-caps class="m-btn-tonal" name="clearParameters" @click.prevent="formProps.clearForm" label="' + e(L("Clear Parameters")) + '"></q-btn>');
             w("<m-drop-down" + A({
                 name: "orderByField", id: headerId + "_orderByField", label: L("Order By"), multiple: true, "allow-empty": true, ":options": js_(orderOptions), "v-model": "formProps.fields.orderByField"
             }) + "></m-drop-down></div>");
@@ -1205,12 +1218,12 @@
             const url = sri.getScreenUrlInstance();
             const params = url.getParameterMap();
             const row = (title, name, value, extra) => '<div class="q-my-sm"><m-text-line' + A(Object.assign({ name, id: formId + "_Text_" + name, label: L(title), "model-value": value, form: formId + "_Text" }, extra || {})) + "></m-text-line></div>";
-            w('<m-container-dialog id="' + e(formId) + '_TextDialog" button-text="' + e(L("Text")) + '" title="' + e(L("Export Fixed-Width Plain Text")) + '"><form' +
+            w('<m-container-dialog id="' + e(formId) + '_TextDialog" button-text="' + e(L("Text")) + '" title="' + e(L("Export Fixed-Width Plain Text")) + '"><template v-slot:button><q-item clickable v-close-popup><q-item-section>' + t(L("Text")) + "</q-item-section></q-item></template><form" +
                 A({ id: formId + "_Text", method: "post", action: url.url }) + ">" + hiddenInput("renderMode", "text") + hiddenInput("pageNoLimit", "true") + hiddenInput("lastStandalone", "true") +
                 Object.keys(params).map((key) => hiddenInput(key, params[key])).join("") +
                 row("Line Characters", "lineCharacters", "132", { size: "4" }) + row("Page Lines", "pageLines", "88", { size: "4" }) +
                 row("Line Wrap?", "lineWrap", "true", { size: "5" }) + row("Save to Filename", "saveFilename", at(n, "name") + ".txt", { size: "40" }) +
-                '<q-btn dense outline no-caps type="submit" label="' + e(L("Export Text")) + '"></q-btn></form></m-container-dialog>');
+                '<q-btn dense unelevated no-caps color="primary" type="submit" label="' + e(L("Export Text")) + '"></q-btn></form></m-container-dialog>');
         };
 
         // The head of one column: for each field the title with its order-by links, and the find widgets of its header-field.
@@ -1234,8 +1247,8 @@
                     let descUrl = pathUrl("orderByField", "-" + (insensitive ? "^" : "") + f.name);
                     if (asc) ascUrl = descUrl;
                     if (desc) descUrl = ascUrl;
-                    out += '<span class="form-order-by"><m-link href="' + e(ascUrl) + '"' + (asc ? ' class="active"' : "") + '><i class="fa fa-caret-up"></i></m-link><m-link href="' + e(descUrl) + '"' + (desc ? ' class="active"' : "") +
-                        '><i class="fa fa-caret-down"></i></m-link></span>';
+                    out += '<span class="form-order-by"><m-link href="' + e(ascUrl) + '"' + (asc ? ' class="active"' : "") + '><q-icon name="arrow_drop_up"></q-icon></m-link><m-link href="' + e(descUrl) + '"' + (desc ? ' class="active"' : "") +
+                        '><q-icon name="arrow_drop_down"></q-icon></m-link></span>';
                 }
                 out += "</div>";
                 w(out);
@@ -1251,7 +1264,7 @@
 
         const selectedRowCard = (cfg) => {
             if (!cfg.rowSelection) return;
-            w('<q-card flat bordered><q-card-section horizontal class="q-pa-md">');
+            w('<q-card flat><q-card-section horizontal class="q-pa-sm">');
             cfg.rowSelection.actions.forEach((action) => {
                 if (action.dialog) {
                     const d = action.dialog;
@@ -1272,6 +1285,7 @@
 
         const formList = (info, n, cols, cfg) => {
             push();
+            st.inList = true;
             const formId = xn(at(n, "name")) + sec();
             Object.assign(cfg, { formId, headerFormId: formId + "_header" });
             st.formName = at(n, "name");
@@ -1346,8 +1360,8 @@
                 if (!skipHeader) {
                     w('<div class="thead"><div class="tr">');
                     if (rowSel) {
-                        w('<div class="th"><span class="q-my-auto"><q-checkbox size="sm" v-model="formProps.checkboxAllState" @update:model-value="formProps.setCheckboxAllState"><q-tooltip>{{formProps.checkboxAllState ? ' + sq(L("Unselect All")) + " : " + sq(L("Select All")) +
-                            '}}</q-tooltip></q-checkbox><q-btn dense flat icon="build" :color="formProps.checkboxStates && formProps.checkboxStates.includes(true) ? \'positive\' : \'\'"><q-tooltip>' + t(L("Row Actions")) + '</q-tooltip><q-menu anchor="top left" self="bottom left">');
+                        w('<div class="th"><span class="q-my-auto"><q-checkbox dense size="sm" v-model="formProps.checkboxAllState" @update:model-value="formProps.setCheckboxAllState"><q-tooltip>{{formProps.checkboxAllState ? ' + sq(L("Unselect All")) + " : " + sq(L("Select All")) +
+                            '}}</q-tooltip></q-checkbox><q-btn flat round dense size="sm" icon="more_vert" :color="formProps.checkboxStates && formProps.checkboxStates.includes(true) ? \'primary\' : \'grey-7\'"><q-tooltip>' + t(L("Row Actions")) + '</q-tooltip><q-menu anchor="top left" self="bottom left">');
                         selectedRowCard(cfg);
                         w("</q-menu></q-btn></span></div>");
                     }
@@ -1421,7 +1435,7 @@
                     st.entry = String(i);
                     w('<div class="tr' + (ctx("_moquiRowType") === "total" ? " text-weight-bold" : "") + '">');
                     if (rowSel) {
-                        w('<div class="td">' + (ids[i] ? '<div class="q-my-auto"><input style="transform:scale(1.3)" type="checkbox" v-model="formProps.checkboxStates[' + i + ']" @click="formProps.clickCheckbox($event, ' + i + ')"></div>' : "") + "</div>");
+                        w('<div class="td">' + (ids[i] ? '<q-checkbox dense size="sm" :model-value="formProps.checkboxStates[' + i + ']" @update:model-value="(value, event) => { formProps.clickCheckbox(event || {}, ' + i + '); formProps.checkboxStates[' + i + '] = value; }"></q-checkbox>' : "") + "</div>");
                     }
                     if (!(multi || skipForm)) {
                         st.owner = formId + "_" + i;
@@ -1552,7 +1566,7 @@
             formList, rowCellOpen, rowCellClose, valueText, sectionPaginate, headerCell,
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
-            quasarColor, icon, tooltipTag, js: js_
+            quasarColor, icon, tooltipTag, tonal, js: js_
         };
         Object.defineProperty(globalThis, "$mqQvt", { value: h, configurable: true });
     };
@@ -1650,7 +1664,7 @@
             const justify = attr(kid, "justify");
             return js`
                 sri.write("<div class=\\"q-my-sm big-row\\"" + ${justify ? lit(` style="justify-content:${justify};"`) : '""'} + ">");
-                ${title ? `sri.write("<div class=\\"q-mx-sm q-my-auto big-row-item\\">" + $v.t(ec.resource.expand(${lit(title)}, "")) + "</div>");` : ""}
+                ${title ? `sri.write("<div class=\\"big-row-item\\">" + $v.t(ec.resource.expand(${lit(title)}, "")) + "</div>");` : ""}
                 ${layoutCode(kid, fields, referenced, true)}
                 sri.write("</div>\\n");
             `;
@@ -1666,7 +1680,7 @@
             const id = attr(kid, "id");
             return js`
                 $v.accordion(${id ? lit(id) : `$v.st.fieldForm + "_accordion"`}, ${lit(attr(kid, "active") || "1")});
-                sri.write("<q-list>");
+                sri.write("<q-list bordered class=\\"rounded-borders q-my-sm\\">");
                 ${layoutCode(kid, fields, referenced, big)}
                 sri.write("</q-list>\\n");
                 $v.endAccordion();
@@ -1962,13 +1976,13 @@
                     let $icon = ${lit(attr(node, "icon"))};
                     if (!$icon && $text) $icon = sri.getThemeIconClass($text) || "";
                     const $badge = ec.resource.expand(${lit(attr(node, "badge"))}, "");
-                    sri.write("<q-btn-dropdown" + $v.A({dense: true, outline: true, "no-caps": true, color: $v.quasarColor(${lit(attr(node, "btn-type") || "primary")}) || null, class: ${attr(node, "style") ? noL10n(attr(node, "style")) : "null"}}) + "><template v-slot:label>" +
+                    sri.write("<q-btn-dropdown" + $v.A({dense: true, unelevated: true, "no-caps": true, class: $v.tonal($v.quasarColor(${lit(attr(node, "btn-type") || "primary")}), ${attr(node, "style") ? noL10n(attr(node, "style")) : "null"})}) + "><template v-slot:label>" +
                         ${attr(node, "tooltip") ? `$v.tooltipTag(ec.resource.expand(${lit(attr(node, "tooltip"))}, "")) + ` : ""}
                         ($icon ? "<i class=\\"" + $v.e($icon) + " q-icon" + ($text ? " on-left" : "") + "\\"></i>" : ""));
                     // as Java: the image child in the place of the text
                     ${image ? image.source : "sri.write($text);"}
                     sri.write(($badge ? "<q-badge class=\\"on-right\\" transparent>" + $v.t($badge) + "</q-badge>" : "") + "</template><q-list>");
-                    ${linkItems.map((kid) => condGuard(attr(kid, "condition"), `sri.write("<q-item><q-item-section>");\n${kid.source}sri.write("</q-item-section></q-item>");\n`)).join("")}
+                    ${linkItems.map((kid) => condGuard(attr(kid, "condition"), `sri.write("<q-item clickable v-close-popup><q-item-section>");\n${kid.source}sri.write("</q-item-section></q-item>");\n`)).join("")}
                     sri.write("</q-list></q-btn-dropdown>\\n");
                 }
             }

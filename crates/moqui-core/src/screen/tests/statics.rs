@@ -797,7 +797,8 @@ fn the_parity_fixture_is_a_template_with_its_data_in_the_packages() {
     // row selection: the id field for the checkbox set, a checkbox for each row, and the action form posting through the set
     assert!(
         html.contains("selection-id-field=\"itemId\"")
-            && html.contains("mqSel.checkboxStates[rowIndex] = $event.target.checked"),
+            && html.contains("mqSel.clickCheckbox(event || {}, rowIndex)")
+            && html.contains("mqSel.checkboxStates[rowIndex] = value;"),
         "{html}"
     );
     assert!(html.contains(":parent-checkbox-set=\"mqSelSet\""), "{html}");

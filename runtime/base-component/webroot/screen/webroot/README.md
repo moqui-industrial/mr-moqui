@@ -13,7 +13,7 @@ a request with a `v` parameter and an hour with revalidation for the rest. The h
 | `css/moqui-html.css` | style sheet of the `html` mode (light and dark, responsive, print) |
 | `js/moqui-html.js` | client of the `html` mode. `js/README.md` lists the data attributes. `js/moqui-html.test.js` runs under Node |
 | `js/MoquiLib.js`, `js/MoquiL10n.js`, `js/WebrootVue.qvt.js`, `js/MoquiQzComponent.js` | client of the `qvt` mode and the `/qapps` shell (Vue 3.5, Quasar 2.35). `js/README.md` lists the components and the settings block. Their `*.test.js` files run under Node |
-| `css/WebrootVue.qvt.css` | style sheet of the `qvt` shell and widgets |
+| `css/WebrootVue.qvt.css` | style sheet of the `qvt` shell and widgets: only what Quasar 2.35 has no prop for (tonal buttons, the div-table rules, the container-box accents, print) |
 | `images/`, `MoquiLogo100.png`, `favicon.ico` | logo and icon |
 
 ## Vendored browser libraries (`libs/`)

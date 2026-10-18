@@ -53,6 +53,11 @@ along with this software (see the LICENSE.md file). If not, see
         }
         const logoList = sri.getThemeValues('STRT_HEADER_LOGO')
         const titleList = sri.getThemeValues('STRT_HEADER_TITLE')
+        // The Quasar configuration of the theme (brand colors, notify, loadingBar) as JSON in a STRT_QUASAR_CONFIG resource; a bad one is logged and skipped.
+        let quasarConfig = null
+        for (const text of sri.getThemeValues('STRT_QUASAR_CONFIG')) {
+            try { quasarConfig = Object.assign(quasarConfig || {}, JSON.parse(text)) } catch (e) { ec.logger.error('Theme STRT_QUASAR_CONFIG is not JSON: ' + e) }
+        }
         qvtConfig = {
             sessionToken: ec.web.sessionToken, appHost: ec.web.getHostName(true), appRootPath: '', basePath: '/apps', linkBasePath: '/qapps',
             userId: ec.user.userId, username: ec.user.username, userFullName: (ec.user.userAccount && ec.user.userAccount.userFullName) || '',
@@ -62,7 +67,7 @@ along with this software (see the LICENSE.md file). If not, see
             navPlugins: sri.getThemeValues('STRT_HEADER_NAVBAR_COMP'), accountPlugins: sri.getThemeValues('STRT_HEADER_ACCOUNT_COMP'),
             qz: { enabled: qzEnabled },
             userAccount: { partyId: account.partyId || '', emailAddress: account.emailAddress || '', userFullName: account.userFullName || '' },
-            preferences: preferences, moquiVersion: ec.factory.moquiVersion,
+            preferences: preferences, moquiVersion: ec.factory.moquiVersion, quasar: quasarConfig,
             qvt: { build: staticOnly ? 'runtime' : 'compiler', handles: staticOnly ? ['static-template'] : ['merged-fragment', 'static-template'] },
             // the shell (m-qapps-root): the theme's logo, title and footer, the logout URL, and its labels in the user's language
             shell: { logoUrl: logoList.length ? sri.buildUrl(logoList[0]).url : '', title: titleList.length ? ec.resource.expand(titleList[0], '') : '',

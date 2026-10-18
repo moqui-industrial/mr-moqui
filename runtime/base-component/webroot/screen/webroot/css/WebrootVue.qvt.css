@@ -1,7 +1,13 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
+/* The styles of the qvt shell and widgets over Quasar 2.35. The widgets take what they can from Quasar props (dense, outlined,
+   stack-label, hide-bottom-space, unelevated, flat, use-chips, ...); this sheet holds only what Quasar has no option for. */
+
 a { color:var(--q-primary); text-decoration:none; }
 .q-menu a, .q-toolbar a { color:inherit; }
+/* a screen link written as text: a link in a form-list cell, or link-type anchor */
+.m-link-text { color:var(--q-primary); text-decoration:none; }
+.m-link-text:hover { text-decoration:underline; }
 
 .text-success { color:var(--q-positive); }
 .text-danger { color:var(--q-negative); }
@@ -21,100 +27,53 @@ h6, .text-h6 { font-size:1.0rem; line-height:1.0rem; letter-spacing:initial; mar
 p { margin-bottom:8px; } /* orig 16px */
 pre { text-wrap: normal; white-space: pre-line; word-wrap: normal; word-break: normal; }
 
-body.dev #top { background: #5d5d5d!important; }
-body.test #top { background: #224422!important; }
+/* ====== shell ====== */
 
-/* example for header that changes light and dark along with rest of screen:
-#top { background:white!important; color:black; }
-body.body--dark #top { background:black!important; color:white; }
+/* The header is a neutral surface (the shell sets bg-white or bg-dark); a dev or test deployment tints it. */
+body.dev #top { background:#e3f2fd!important; }
+body.dev.body--dark #top { background:#0c1b29!important; }
+body.test #top { background:#e8f5e9!important; }
+body.test.body--dark #top { background:#1b3a1b!important; }
 
-body.dev #top { background:lightblue!important; color:black; }
-body.dev.body--dark #top { background:#0c1b29!important; color:white; }
-
-body.test #top { background:lightgreen!important; color:black; }
-body.test.body--dark #top { background:#224422!important; color:white; }
-*/
-
-.body--dark .q-menu { background-color:black; }
-.body--dark .q-drawer { background-color: black; }
-
-/* Under the header the row is the menu, then the page. */
-.shell-row { display:flex; align-items:stretch; height:calc(100vh - 86px); min-height:0; overflow:hidden; }
-.app-menu-col { flex:0 0 300px; width:300px; min-height:0; overflow:auto; border-right:1px solid rgba(0,0,0,0.12); background:#fff; }
-.app-menu-overlay { position:fixed; z-index:2000; top:50px; bottom:0; left:0; box-shadow:0 0 16px rgba(0,0,0,0.2); }
-.body--dark .app-menu-col { background:#000; border-right-color:rgba(255,255,255,0.12); }
-.shell-page-col { flex:1 1 auto; min-width:0; min-height:0; overflow:auto; }
-.shell-page-col.q-page { min-height:0 !important; }
 .body--dark img.invertible { -webkit-filter: invert(90%); filter: invert(90%); }
+.q-drawer .q-item__section--avatar { min-width:30px; } /* orig 56px */
+.q-drawer .q-item__section--side { padding-right:4px; } /* orig 16px */
+.q-drawer .q-expansion-item__content .q-item { padding-left:8px; }
 
-@media (min-width:576px) {
-    .q-dark, .q-card { background:transparent; }
-}
-.q-card__actions h5 { font-size: 1.1rem; display:inline-block; margin-block-start:0; margin-block-end:0; }
-.q-dialog .q-card { background-color:white; }
-.body--dark .q-dialog .q-card { background-color:black; }
+/* ====== buttons ====== */
 
-.non-selectable { -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; }
-
+/* the three kinds a macro writes: unelevated primary (a submit), tonal (a secondary action) and flat (a tool) */
 .q-btn { margin:2px; }
-.q-btn--dense .q-btn__wrapper { padding:4px 8px; }
-.q-btn .q-icon, .q-btn .q-spinner { font-size:18px; padding:2px 0; } /* was 1.715em ~= 24px */
-/* using q-btn flat for link style buttons, reduce margin/padding/height to match inline text */
-.m-link.q-btn--flat { margin:0; }
-.m-link.q-btn--flat .q-btn__wrapper { padding:0 4px; min-height:1.5em; }
-.m-link.q-btn--flat .q-btn__content { line-height:1.5; }
-/* don't let buttons wrap, ugly */
-.q-btn__content { flex-wrap: nowrap; }
+.q-btn .q-icon, .q-btn .q-spinner { font-size:1.3em; } /* was 1.715em ~= 24px */
+.q-btn__content { flex-wrap: nowrap; } /* don't let buttons wrap, ugly */
+.q-btn.m-btn-tonal { color:var(--q-primary); background:color-mix(in srgb, var(--q-primary) 12%, transparent); }
+.q-btn.m-btn-tonal.text-negative { background:color-mix(in srgb, var(--q-negative) 12%, transparent); }
+.q-btn.m-btn-tonal.text-positive { background:color-mix(in srgb, var(--q-positive) 12%, transparent); }
+.q-btn.m-btn-tonal.text-warning { background:color-mix(in srgb, var(--q-warning) 14%, transparent); }
+.q-btn.m-btn-tonal.text-info { background:color-mix(in srgb, var(--q-info) 12%, transparent); }
+.q-btn.m-btn-tonal.text-secondary { background:color-mix(in srgb, var(--q-secondary) 12%, transparent); }
+.q-btn.m-btn-tonal.text-accent { background:color-mix(in srgb, var(--q-accent) 12%, transparent); }
+.q-btn.m-btn-tonal.text-grey { background:color-mix(in srgb, currentColor 12%, transparent); }
+.body--dark .q-btn.m-btn-tonal { background:color-mix(in srgb, currentColor 18%, transparent); }
 
 form.q-form { width:100%; }
 
-/* BEGIN q-field label move up to overlay outline */
-/* need small (6px) top margin so floating label does not overlap elements above, but to make all q-field consistent apply too all (not just .q-field--labeled.q-field--dense) */
-.q-field--dense { margin:6px 0 6px 0; }
-/* don't double margin for q-field within q-field */
-.q-field--dense .q-field--dense, .row .q-field--dense { margin:0; }
-/* move field lable up to 'notch' in outline (like https://material.io/components/text-fields) */
-.q-field--dense .q-field__label { top:0; padding-left:4px; padding-right:4px; background-color:white; }
-.body--dark .q-field--dense .q-field__label { background-color:black; }
-/* make notch fit text, not full width */
-.q-field--dense.q-field--float .q-field__label { right:auto; }
-/* move input text up 6px OOTB padding-top:14px */
-.q-field--labeled.q-field--dense .q-field__native, .q-field--labeled.q-field--dense .q-field__prefix { padding-top:8px; }
-/* move drop-down input up 6px; this padding-top defaults to 14px, have to move up 12px to handle wrapped field padding */
-.q-field--auto-height.q-field--dense.q-field--labeled .q-field__control-container { padding-top:0; }
-/* fix blue focus border on top of label instead of behind */
-.q-field__label { z-index:10; }
-/* fix disabled opacity, was 0.6 which caused border to bleed through */
-.q-field--disabled .q-field__control > div { opacity:1 !important; }
-/* END q-field label move */
+/* ====== fields ====== */
 
-.q-field--focused .q-field__input { border-bottom: var(--q-primary) solid 1px; margin-left:8px; }
+/* no double spacing for a field inside a field */
+.q-field .q-field { margin:0; }
+/* a group of checkboxes or radios in a borderless field, and a toggle in the after slot of a drop-down (show-not) */
+.m-field-group .q-option-group { margin-left:-4px; }
+.q-field__after .q-toggle__label, .q-field__after .q-checkbox__label { font-size:12px; }
+.m-display-field .q-field__control { min-height:40px; }
 
-.q-field--dense .q-field__marginal { height:auto; min-height:40px; }
-.q-field__prepend { max-width:75%; }
-.q-field__marginal .q-checkbox__label { font-size:10px; } /* orig from q-field__marginal 24px */
-
-/* instead of always having 20px bottom area only do when there is an error - may need adjustment for other field bottom uses */
-.q-field--with-bottom { padding-bottom:0; }
-.q-field--with-bottom.q-field--error { padding-bottom:16px; }
-.q-field__bottom { padding-top:4px; }
-
-.q-item__section--avatar { min-width:30px; } /* orig 56px */
-.q-drawer .q-item__section--side { padding-right:4px; } /* orig 16px */
-
-.m-container-box .q-card__actions { padding:8px 8px 0 8px; }
-.q-card__section--vert { padding:8px; } /* orig 16px */
-
-.big-row { display:flex; flex-wrap:wrap; justify-content:flex-start; align-content:center; }
+.big-row { display:flex; flex-wrap:wrap; justify-content:flex-start; align-items:center; gap:4px 8px; }
 .big-row.text-center { justify-content:center; }
-.big-row-item {}
 .big-row-item .q-field { display:inline-flex; }
 
-.q-table--dense .q-table .form-list-nav-row th:first-child { padding:4px 0; }
-.form-list-nav-row .q-bar { background-color:transparent; }
-.form-list-nav-row, .form-list-nav-row .q-btn { font-size:13px; }
-
 .form-date-find { display:inline-flex; }
+.form-list-nav-row { padding:4px 8px; }
+.m-text-find-options { min-width:220px; }
 
 /* ====== div based table styles ====== */
 
@@ -127,13 +86,12 @@ form.q-form { width:100%; }
 td, .td { min-height:21px; }
 
 /* ====== quasar table styles adapted to div based table styles ====== */
-/* NOTE: these are based on quasar.css version 1.12.11 */
-/* lines 4216-4531 */
+/* NOTE: these follow the tr/th/td rules of quasar.css 2.35.1 (the rows of a form-list are div.tr) */
 .q-table .thead .tr, .q-table .tbody .td { height: 48px; }
-.q-table .th { font-weight: 500; font-size: 13px; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; }
+.q-table .th { font-weight: 500; font-size: 12px; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; }
 .q-table .th, .q-table .td { padding: 7px 16px; background-color: inherit; }
 .q-table .thead, .q-table .td, .q-table .th { border-style: solid; border-width: 0; }
-.q-table .tbody .td { font-size: 14px; } /* was 13px in quasar css */
+.q-table .tbody .td { font-size: 13px; }
 
 .q-table--no-wrap .th, .q-table--no-wrap .td { white-space: nowrap; }
 .q-table--grid .q-table__middle .thead, .q-table--grid .q-table__middle .thead .th { border: 0 !important; }
@@ -159,10 +117,17 @@ body.desktop .q-table .tr:not(.q-tr--no-hover):hover .td:not(.q-td--no-hover):be
 .q-table--dark .q-table__bottom, .q-table--dark .thead, .q-table--dark .tr, .q-table--dark .th, .q-table--dark .td { border-color: rgba(255,255,255,0.28); }
 .q-table--dark .tbody .td:before { background: rgba(255,255,255,0.07); }
 .q-table--dark .tbody .td:after { background: rgba(255,255,255,0.1); }
+.q-table__card { border-radius:4px; }
 
-/* lines 5730-5735 */
 .q-table .q-virtual-scroll__padding .tr { height: 0 !important; }
 .q-table .q-virtual-scroll__padding .td { padding: 0 !important; }
+
+/* the sort arrows of a column head sit on the title line */
+.form-title { white-space: nowrap; font-weight: 500; }
+.form-order-by { display:inline; white-space:nowrap; margin-left:2px; }
+.form-order-by a { display:inline; color:#9e9e9e; }
+.form-order-by a.active { color: var(--q-primary); }
+.form-order-by .q-icon { font-size:18px; margin:0 -5px; vertical-align:middle; }
 
 /* ====== Old Handy Styles ====== */
 
@@ -189,9 +154,6 @@ ul.float-plain.condensed { margin: 0; }
 ul.float-plain.condensed li { margin: 0 4px 0 0; padding: 4px; }
 
 .diagram-sequence { font-size: 16px; text-align: center; width: 900px; max-width: 100%; margin-left: auto; margin-right: auto; }
-/*.diagram-sequence>div { border-right: rgb(127, 127, 127) dotted 0; }
-.diagram-sequence>div:first-child { border-left: rgb(127, 127, 127) dotted 0; }*/
-.diagram-sequence>div:last-child {  }
 .diagram-sequence p { margin-bottom: 10px; }
 .diagram-sequence-item { position: relative; border-bottom: rgb(127, 127, 127) solid 2px; margin: 0 4px 8px 4px; }
 .diagram-sequence-item.smaller { font-size: 14px; }
@@ -212,16 +174,22 @@ ul.float-plain.condensed li { margin: 0 4px 0 0; padding: 4px; }
     *, *:before, *:after { background: transparent none !important; }
     body { background: white none !important; font-size: 10px; }
 
-    #top, #footer { display: none; }
+    #top, #footer, .q-drawer, .q-tabs, .q-btn, .form-list-nav-row { display: none; }
     .q-page-container { padding:0!important; }
-    .q-drawer, .q-tabs, .q-btn, .form-list-nav-row, .app-menu-col { display: none; }
 
     tbody>tr:nth-child(even)>td, .tbody .tr:nth-child(even)>.td { background-color: #EEEEEE !important; }
 }
 
 .ScreenTreeNested { margin: 4px 0 4px 12px; padding: 0 0 0 12px; border-left: 1px dashed lightgrey; }
 
-/* container-panel, hover image and widget details the macros write */
+/* container-box, container-panel, hover image and widget details the macros write */
+.m-container-box.m-box-primary { border-left: 3px solid var(--q-primary); }
+.m-container-box.m-box-info { border-left: 3px solid var(--q-info); }
+.m-container-box.m-box-warning { border-left: 3px solid var(--q-warning); }
+.m-container-box.m-box-positive { border-left: 3px solid var(--q-positive); }
+.m-container-box.m-box-negative { border-left: 3px solid var(--q-negative); }
+.m-container-box .q-card__section--vert { padding:8px; } /* orig 16px */
+.m-container-box > .m-box-head { min-height:36px; }
 div.container-panel-outer {  }
 div.container-panel-middle { display: table; table-layout: auto; width: 100%; height: 100%; }
 div.container-panel-left { display: table-cell; padding-right: 8px; height: 100%; vertical-align: top; }
@@ -229,15 +197,9 @@ div.container-panel-center-only { display: table-cell; width: 100%; height: 100%
 div.container-panel-center-left, div.container-panel-center-both, div.container-panel-center-right { display: table-cell; height: 100%; padding: 0 8px 0 8px; vertical-align: top; }
 div.container-panel-right { display: table-cell; padding-left: 8px; height: 100%; vertical-align: top; }
 div.container-panel-header, div.container-panel-footer { width: 100%; }
-.form-title { white-space: nowrap; font-weight: bold; }
-.form-order-by a.active { color: var(--q-primary); }
 .form-single-field-group { margin: 4px 0; }
-.panel { margin-bottom: 12px; }
-.panel .panel-heading>h5 { margin: 4px 8px; font-size: 16px; }
-.panel-body { padding: 8px; }
 span.hover-image-container { position: relative; }
 span.hover-image-container img.hover-image { position: absolute; display: none; z-index: 10; background-color: #FFF6E8; padding: 6px; }
 span.hover-image-container:hover img.hover-image { display: initial; margin: 10px 0 0 5px; }
-.text-find-options { margin-left: 4px; }
 .editable-label { border-bottom: 1px dashed currentColor; }
 .markdown-preview { border: 1px solid rgba(0,0,0,0.12); margin-top: 4px; }

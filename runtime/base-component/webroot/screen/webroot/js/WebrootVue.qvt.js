@@ -28,6 +28,11 @@
         if (bootstrapColor === "danger") return "negative";
         return bootstrapColor;
     };
+    // The classes of a tonal (soft tinted) button: the secondary kind of the three the macros write (unelevated primary, tonal, flat).
+    moqui.tonalClass = (color, extra) => {
+        const quasar = moqui.getQuasarColor(color);
+        return ["m-btn-tonal", quasar && quasar !== "default" ? "text-" + quasar : "", extra || ""].filter((part) => part).join(" ");
+    };
 
     const rootVm = () => moqui.webrootVue;
     const notify = (options) => {
@@ -752,12 +757,12 @@
                 const row = rowIndex === null ? null : this.rows[rowIndex];
                 const id = row ? row[this.selectionIdField] : null;
                 if (id === null || id === undefined || id === "") return h("div", { class: "td" }, "\u00a0");
-                return h("div", { class: "td" }, [h("div", { class: "q-my-auto" }, [h("input", { type: "checkbox", style: "transform: scale(1.3)", checked: !!sel.checkboxStates[rowIndex],
-                    onClick: (event) => sel.clickCheckbox(event, rowIndex), onChange: (event) => { sel.checkboxStates[rowIndex] = event.target.checked; } })])]);
+                return h("div", { class: "td" }, [h(V.resolveComponent("q-checkbox"), { dense: true, size: "sm", modelValue: !!sel.checkboxStates[rowIndex],
+                    "onUpdate:modelValue": (value, event) => { sel.clickCheckbox(event || {}, rowIndex); sel.checkboxStates[rowIndex] = value; } })]);
             };
             const selHead = sel ? h("div", { class: "th" }, [h("span", { class: "q-my-auto" }, [
-                h(V.resolveComponent("q-checkbox"), { size: "sm", modelValue: sel.checkboxAllState, "onUpdate:modelValue": sel.setCheckboxAllState }),
-                h(V.resolveComponent("q-btn"), { dense: true, flat: true, icon: "build", color: sel.checkboxStates && sel.checkboxStates.includes(true) ? "positive" : "" }, { default: () => [
+                h(V.resolveComponent("q-checkbox"), { dense: true, size: "sm", modelValue: sel.checkboxAllState, "onUpdate:modelValue": sel.setCheckboxAllState }),
+                h(V.resolveComponent("q-btn"), { dense: true, flat: true, round: true, size: "sm", icon: "more_vert", color: sel.checkboxStates && sel.checkboxStates.includes(true) ? "primary" : "grey-7" }, { default: () => [
                     h(V.resolveComponent("q-tooltip"), null, { default: () => moqui.l10n.localize("Row Actions") }),
                     h(V.resolveComponent("q-menu"), { anchor: "top left", self: "bottom left" }, { default: () => (slots.selection ? slots.selection(sel) : null) })] })])]) : null;
             const hs = { sortBy: this.sortBy, orderBy: this.orderBy, action: this.$root && this.$root.currentLinkPath, orderByField: this.searchObj.orderByField || (this.pkg && this.pkg.orderByField) || "" };
@@ -894,16 +899,17 @@
         name: "mContainerBox",
         props: { type: { type: String, default: "default" }, title: String, initialOpen: { type: Boolean, default: true } },
         data() { return { isBodyOpen: this.initialOpen }; },
+        computed: { boxClass() { const color = moqui.getQuasarColor(this.type); return color && color !== "default" ? "m-box-" + color : ""; } },
         template:
-            '<q-card flat bordered class="q-ma-sm m-container-box">' +
-                '<q-card-actions @click.self="toggleBody">' +
-                    '<h5 v-if="title && title.length" @click="toggleBody" :class="\'text-\' + type">{{title}}</h5>' +
+            '<q-card flat bordered class="q-ma-sm m-container-box" :class="boxClass">' +
+                '<div class="m-box-head row items-center no-wrap q-py-xs q-px-sm" @click.self="toggleBody">' +
+                    '<div v-if="title && title.length" class="text-subtitle1 text-weight-medium ellipsis cursor-pointer" @click="toggleBody">{{title}}</div>' +
                     '<slot name="header"></slot>' +
                     '<q-space></q-space>' +
                     '<slot name="toolbar"></slot>' +
-                    '<q-btn color="grey" round flat dense :icon="isBodyOpen ? \'keyboard_arrow_up\' : \'keyboard_arrow_down\'" @click="toggleBody"></q-btn>' +
-                '</q-card-actions>' +
-                '<div v-show="isBodyOpen"><q-card-section><slot></slot></q-card-section></div>' +
+                    '<q-btn flat round dense size="sm" color="grey-7" :icon="isBodyOpen ? \'expand_less\' : \'expand_more\'" @click="toggleBody"></q-btn>' +
+                '</div>' +
+                '<q-slide-transition><div v-show="isBodyOpen"><q-separator></q-separator><q-card-section><slot></slot></q-card-section></div></q-slide-transition>' +
             '</q-card>',
         methods: { toggleBody() { this.isBodyOpen = !this.isBodyOpen; } }
     });
@@ -920,13 +926,13 @@
         props: { draggable: { type: Boolean, default: true }, modelValue: { type: Boolean, default: false }, id: String, color: String, width: String, title: String },
         emits: ["update:modelValue", "onShow", "onHide"],
         template:
-            '<q-dialog :model-value="modelValue" @update:model-value="$emit(\'update:modelValue\', $event)" :id="id" @show="onShow" @hide="onHide" :maximized="$q.platform.is.mobile">' +
-                '<q-card ref="dialogCard" flat bordered :style="{width:((width||760)+\'px\'),\'max-width\':($q.platform.is.mobile?\'100vw\':\'90vw\')}">' +
-                    '<q-card-actions ref="dialogHeader" :style="{cursor:(draggable?\'move\':\'default\')}">' +
-                        '<h5 class="q-pl-sm non-selectable">{{title}}</h5><q-space></q-space>' +
+            '<q-dialog :model-value="modelValue" @update:model-value="$emit(\'update:modelValue\', $event)" :id="id" @show="onShow" @hide="onHide" :maximized="$q.screen.lt.sm">' +
+                '<q-card ref="dialogCard" flat bordered :style="{width:((width||760)+\'px\'),\'max-width\':($q.screen.lt.sm?\'100vw\':\'90vw\')}">' +
+                    '<q-card-section ref="dialogHeader" class="row items-center no-wrap q-py-xs q-pr-xs non-selectable" :style="{cursor:(draggable?\'move\':\'default\')}">' +
+                        '<div class="text-subtitle1 text-weight-medium ellipsis">{{title}}</div><q-space></q-space>' +
                         '<q-btn icon="close" flat round dense v-close-popup></q-btn>' +
-                    '</q-card-actions><q-separator></q-separator>' +
-                    '<q-card-section ref="dialogBody"><slot></slot></q-card-section>' +
+                    '</q-card-section><q-separator></q-separator>' +
+                    '<q-card-section ref="dialogBody" class="scroll" style="max-height:80vh;"><slot></slot></q-card-section>' +
                 '</q-card>' +
             '</q-dialog>',
         methods: {
@@ -982,7 +988,7 @@
         data() { return { isShown: false }; },
         template:
             '<span>' +
-                '<span @click="show()"><slot name="button"><q-btn dense outline no-caps :icon="buttonIcon" :label="buttonText" :color="color" :class="buttonClass"></q-btn></slot></span>' +
+                '<span @click="show()"><slot name="button"><q-btn dense unelevated no-caps :icon="buttonIcon" :label="buttonText" :class="moqui.tonalClass(color, buttonClass)"></q-btn></slot></span>' +
                 '<m-dialog v-model="isShown" :id="id" :title="title" :color="color" :width="width"><slot></slot></m-dialog>' +
             '</span>',
         methods: { show() { this.isShown = true; }, hide() { this.isShown = false; } },
@@ -1014,7 +1020,7 @@
         data() { return { curComponent: moqui.EmptyComponent, curUrl: "", isShown: false }; },
         template:
             '<span>' +
-                '<q-btn dense outline no-caps icon="open_in_new" :label="buttonText" :color="color" :class="buttonClass" @click="isShown = true"></q-btn>' +
+                '<q-btn dense unelevated no-caps icon="open_in_new" :label="buttonText" :class="moqui.tonalClass(color, buttonClass)" @click="isShown = true"></q-btn>' +
                 '<m-dialog ref="dialog" v-model="isShown" :id="id" :title="title" :color="color" :width="width"><component :is="curComponent"></component></m-dialog>' +
             '</span>',
         methods: {
@@ -1454,35 +1460,11 @@
         name: "mFormPaginate",
         props: { paginate: Object, formList: Object },
         template:
-            '<div v-if="paginate && paginate.count > 1" class="q-pagination row no-wrap items-center">' +
-                '<template v-if="paginate.pageIndex > 0">' +
-                    '<q-btn dense flat no-caps @click.prevent="setIndex(0)" icon="skip_previous"></q-btn>' +
-                    '<q-btn dense flat no-caps @click.prevent="setIndex(paginate.pageIndex-1)" icon="fast_rewind"></q-btn></template>' +
-                '<template v-else><q-btn dense flat no-caps disabled icon="skip_previous"></q-btn><q-btn dense flat no-caps disabled icon="fast_rewind"></q-btn></template>' +
-                '<q-btn v-for="prevIndex in prevArray" :key="prevIndex" dense flat no-caps @click.prevent="setIndex(prevIndex)" :label="prevIndex+1" color="primary"></q-btn>' +
-                '<q-btn dense flat no-caps disabled>{{paginate.pageIndex+1}} / {{paginate.pageMaxIndex+1}} ({{paginate.pageRangeLow}}-{{paginate.pageRangeHigh}} / {{paginate.count}})</q-btn>' +
-                '<q-btn v-for="nextIndex in nextArray" :key="nextIndex" dense flat no-caps @click.prevent="setIndex(nextIndex)" :label="nextIndex+1" color="primary"></q-btn>' +
-                '<template v-if="paginate.pageIndex < paginate.pageMaxIndex">' +
-                    '<q-btn dense flat no-caps @click.prevent="setIndex(paginate.pageIndex+1)" icon="fast_forward"></q-btn>' +
-                    '<q-btn dense flat no-caps @click.prevent="setIndex(paginate.pageMaxIndex)" icon="skip_next"></q-btn></template>' +
-                '<template v-else><q-btn dense flat no-caps disabled icon="fast_forward"></q-btn><q-btn dense flat no-caps disabled icon="skip_next"></q-btn></template>' +
+            '<div v-if="paginate && paginate.count > 1" class="row no-wrap items-center">' +
+                '<span class="text-caption text-grey-7 q-mx-sm">{{paginate.pageRangeLow}}-{{paginate.pageRangeHigh}} / {{paginate.count}}</span>' +
+                '<q-pagination v-if="paginate.pageMaxIndex > 0" :model-value="paginate.pageIndex + 1" @update:model-value="setIndex($event - 1)" :max="paginate.pageMaxIndex + 1" :max-pages="7"' +
+                    ' direction-links boundary-links size="sm" flat active-design="unelevated" color="grey-8" active-color="primary"></q-pagination>' +
             '</div>',
-        computed: {
-            prevArray() {
-                const pag = this.paginate;
-                if (!pag || pag.pageIndex < 1) return [];
-                const out = [];
-                for (let i = Math.max(pag.pageIndex - 3, 0); i <= pag.pageIndex - 1; i++) out.push(i);
-                return out;
-            },
-            nextArray() {
-                const pag = this.paginate;
-                if (!pag || pag.pageIndex >= pag.pageMaxIndex) return [];
-                const out = [];
-                for (let i = pag.pageIndex + 1; i <= Math.min(pag.pageIndex + 3, pag.pageMaxIndex); i++) out.push(i);
-                return out;
-            }
-        },
         methods: {
             setIndex(newIndex) {
                 if (this.formList) this.formList.setPageIndex(newIndex);
@@ -1496,10 +1478,10 @@
         props: { idVal: { type: String, required: true }, maxIndex: Number, formList: Object },
         data() { return { pageIndex: "" }; },
         template:
-            '<q-form v-if="!formList || (formList.paginate && formList.paginate.pageMaxIndex > 4)" @submit.prevent="goPage">' +
-                '<q-input dense outlined v-model="pageIndex" type="text" size="4" name="pageIndex" :placeholder="$q.lang.label ? \'Page #\' : \'Page #\'"' +
+            '<q-form v-if="!formList || (formList.paginate && formList.paginate.pageMaxIndex > 4)" @submit.prevent="goPage" class="q-mx-xs">' +
+                '<q-input dense outlined hide-bottom-space v-model="pageIndex" type="text" name="pageIndex" placeholder="Page #" style="width:96px;" input-class="text-center"' +
                     ' :rules="[val => /^\\d*$/.test(val) || \'digits only\', val => !val || ((formList && +val <= formList.paginate.pageMaxIndex + 1) || (maxIndex && +val <= maxIndex + 1)) || \'higher than max\']">' +
-                    '<template v-slot:append><q-btn dense flat no-caps type="submit" icon="redo"></q-btn></template>' +
+                    '<template v-slot:append><q-btn flat round dense size="sm" type="submit" icon="arrow_forward"></q-btn></template>' +
                 '</q-input>' +
             '</q-form>',
         methods: {
@@ -1520,30 +1502,30 @@
         data() { return { columns: moqui.deepCopy(this.columnsInitial) }; },
         template:
             '<m-form ref="mForm" :id="id" :action="action">' +
-                '<q-list v-for="(column, columnIdx) in columns" :key="column.id" bordered dense>' +
+                '<q-list v-for="(column, columnIdx) in columns" :key="column.id" bordered dense class="q-mb-sm rounded-borders">' +
                     '<q-item-label header>{{column.label}}</q-item-label>' +
                     '<q-item v-for="(field, fieldIdx) in column.children" :key="field.id">' +
-                        '<q-item-section side v-if="columnIdx !== 0"><q-btn dense flat icon="cancel" @click="hideField(columnIdx, fieldIdx)"><q-tooltip>Hide</q-tooltip></q-btn></q-item-section>' +
+                        '<q-item-section side v-if="columnIdx !== 0"><q-btn flat round dense size="sm" icon="close" @click="hideField(columnIdx, fieldIdx)"><q-tooltip>Hide</q-tooltip></q-btn></q-item-section>' +
                         '<q-item-section><q-item-label>{{field.label}}</q-item-label></q-item-section>' +
                         '<q-item-section v-if="columnIdx === 0" side>' +
-                            '<q-btn-dropdown dense outline no-caps label="Display"><q-list dense>' +
+                            '<q-btn-dropdown dense flat no-caps label="Display" class="m-btn-tonal"><q-list dense>' +
                                 '<q-item v-for="(toColumn, toColumnIdx) in columns.slice(1)" :key="toColumn.id" clickable v-close-popup>' +
                                     '<q-item-section @click="moveToCol(columnIdx, fieldIdx, toColumnIdx+1)">{{toColumn.label}}</q-item-section></q-item>' +
                                 '<q-item clickable v-close-popup><q-item-section @click="moveToCol(columnIdx, fieldIdx, columns.length+1)">New Column</q-item-section></q-item>' +
                             '</q-list></q-btn-dropdown>' +
                         '</q-item-section>' +
                         '<q-item-section v-else side><q-btn-group flat>' +
-                            '<q-btn :disabled="columnIdx <= 1" dense flat icon="north" @click="moveToCol(columnIdx, fieldIdx, columnIdx-1)"></q-btn>' +
-                            '<q-btn :disabled="fieldIdx === 0" dense flat icon="expand_less" @click="moveInCol(columnIdx, fieldIdx, fieldIdx-1)"></q-btn>' +
-                            '<q-btn :disabled="(fieldIdx + 1) === column.children.length" dense flat icon="expand_more" @click="moveInCol(columnIdx, fieldIdx, fieldIdx+1)"></q-btn>' +
-                            '<q-btn dense flat icon="south" @click="moveToCol(columnIdx, fieldIdx, columnIdx+1)"></q-btn>' +
+                            '<q-btn :disabled="columnIdx <= 1" dense flat size="sm" icon="north" @click="moveToCol(columnIdx, fieldIdx, columnIdx-1)"></q-btn>' +
+                            '<q-btn :disabled="fieldIdx === 0" dense flat size="sm" icon="expand_less" @click="moveInCol(columnIdx, fieldIdx, fieldIdx-1)"></q-btn>' +
+                            '<q-btn :disabled="(fieldIdx + 1) === column.children.length" dense flat size="sm" icon="expand_more" @click="moveInCol(columnIdx, fieldIdx, fieldIdx+1)"></q-btn>' +
+                            '<q-btn dense flat size="sm" icon="south" @click="moveToCol(columnIdx, fieldIdx, columnIdx+1)"></q-btn>' +
                         '</q-btn-group></q-item-section>' +
                     '</q-item>' +
                 '</q-list>' +
                 '<div class="q-my-md">' +
-                    '<q-btn dense outline no-caps @click.prevent="saveColumns()" label="Save Changes"></q-btn>' +
-                    '<q-btn dense outline no-caps @click.prevent="resetColumns()" label="Undo Changes"></q-btn>' +
-                    '<q-btn dense outline no-caps @click.prevent="resetToDefault()" label="Reset to Default"></q-btn>' +
+                    '<q-btn dense unelevated no-caps color="primary" @click.prevent="saveColumns()" label="Save Changes"></q-btn>' +
+                    '<q-btn dense flat no-caps @click.prevent="resetColumns()" label="Undo Changes"></q-btn>' +
+                    '<q-btn dense flat no-caps @click.prevent="resetToDefault()" label="Reset to Default"></q-btn>' +
                 '</div>' +
             '</m-form>',
         methods: {
@@ -1614,7 +1596,7 @@
                         '<q-space></q-space>' +
                         '<m-form-paginate :paginate="paginate" :form-list="this"></m-form-paginate>' +
                         '<m-form-go-page :id-val="idVal" :form-list="this"></m-form-go-page>' +
-                        '<q-btn v-if="csvButton" dense outline type="a" :href="csvUrl" label="CSV"></q-btn>' +
+                        '<q-btn v-if="csvButton" dense flat no-caps icon="download" type="a" :href="csvUrl" label="CSV"></q-btn>' +
                         '<slot name="nav"></slot>' +
                     '</div>' +
                     '<div class="table q-table" :id="idVal+\'_table\'">' +
@@ -1623,14 +1605,14 @@
                                 '<slot name="headerForm" :search="formProps.fields"></slot>' +
                             '</m-form-link>' +
                             '<div class="tr">' +
-                                '<div v-if="selection" class="th"><q-checkbox size="sm" :model-value="allSelected" @update:model-value="selectAll"></q-checkbox></div>' +
+                                '<div v-if="selection" class="th"><q-checkbox dense size="sm" :model-value="allSelected" @update:model-value="selectAll"></q-checkbox></div>' +
                                 '<slot name="header" :search="searchObj" :sort-by="sortBy" :order-by="orderBy"></slot>' +
                             '</div>' +
                         '</div>' +
                         '<div class="tbody">' +
                             '<template v-for="(fields, rowIndex) in rowList" :key="rowIndex">' +
                                 '<div class="tr" :class="{selected:selected[rowIndex]}">' +
-                                    '<div v-if="selection" class="td"><q-checkbox size="sm" :model-value="!!selected[rowIndex]" @update:model-value="selected[rowIndex] = $event"></q-checkbox></div>' +
+                                    '<div v-if="selection" class="td"><q-checkbox dense size="sm" :model-value="!!selected[rowIndex]" @update:model-value="selected[rowIndex] = $event"></q-checkbox></div>' +
                                     '<slot name="row" :fields="fields" :row-index="rowIndex" :selected="!!selected[rowIndex]"></slot>' +
                                 '</div>' +
                                 '<template v-if="fields.aggregateSubList && fields.aggregateSubList.length">' +
@@ -1770,8 +1752,8 @@
     component("m-field", {
         name: "mField",
         inheritAttrs: false,
-        props: { label: String, bgColor: String, disable: Boolean },
-        template: '<q-field dense outlined stack-label :label="label" :bg-color="bgColor" :disable="disable" v-bind="$attrs" :model-value="1"><template v-slot:control><slot></slot></template></q-field>'
+        props: { label: String, bgColor: String, disable: Boolean, borderless: Boolean },
+        template: '<q-field dense :outlined="!borderless" :borderless="borderless" stack-label hide-bottom-space :label="label" :bg-color="bgColor" :disable="disable" v-bind="$attrs" :model-value="1"><template v-slot:control><slot></slot></template></q-field>'
     });
 
     component("m-date-time", {
@@ -1782,20 +1764,20 @@
             minuteStep: { type: Number, default: 5 } },
         emits: ["update:modelValue"],
         template:
-            '<q-input dense outlined stack-label :label="label" :model-value="local" @update:model-value="onInput" :rules="allRules"' +
+            '<q-input dense outlined stack-label hide-bottom-space no-error-icon :label="label" :model-value="local" @update:model-value="onInput" :rules="allRules"' +
                     ' :mask="inputMask" fill-mask :for="id" :name="name" :form="form" :disable="disable" :size="sizeVal"' +
                     ' style="max-width:max-content;" :bg-color="bg" v-bind="errorAttrs">' +
                 '<template v-slot:prepend v-if="hasDate">' +
-                    '<q-icon name="event" class="cursor-pointer">' +
-                        '<q-popup-proxy ref="qDateProxy" transition-show="scale" transition-hide="scale">' +
-                            '<q-date :model-value="local" @update:model-value="onDate" :mask="formatVal"></q-date>' +
+                    '<q-icon name="event" size="xs" class="cursor-pointer">' +
+                        '<q-popup-proxy ref="qDateProxy" cover transition-show="scale" transition-hide="scale">' +
+                            '<q-date :model-value="local" @update:model-value="onDate" :mask="formatVal" today-btn></q-date>' +
                         '</q-popup-proxy>' +
                     '</q-icon>' +
                 '</template>' +
                 '<template v-slot:append v-if="hasTime">' +
-                    '<q-icon name="access_time" class="cursor-pointer">' +
-                        '<q-popup-proxy ref="qTimeProxy" transition-show="scale" transition-hide="scale">' +
-                            '<q-time :model-value="local" @update:model-value="onTime" :mask="formatVal" format24h></q-time>' +
+                    '<q-icon name="access_time" size="xs" class="cursor-pointer">' +
+                        '<q-popup-proxy ref="qTimeProxy" cover transition-show="scale" transition-hide="scale">' +
+                            '<q-time :model-value="local" @update:model-value="onTime" :mask="formatVal" format24h now-btn></q-time>' +
                         '</q-popup-proxy>' +
                     '</q-icon>' +
                 '</template>' +
@@ -1840,31 +1822,31 @@
                 '<q-icon class="q-my-auto" name="remove"></q-icon>' +
                 '<m-date-time :name="name+\'_thru\'" :id="id+\'_thru\'" :label="label+\' Thru\'" :form="form" :type="fromThruType" v-model="fields[name+\'_thru\']">' +
                     '<template v-slot:after>' +
-                        '<q-btn dense flat icon="calendar_view_day" @click="toggleMode"><q-tooltip>Period Select Mode</q-tooltip></q-btn>' +
-                        '<q-btn dense flat icon="clear" @click="clearAll"><q-tooltip>Clear</q-tooltip></q-btn>' +
+                        '<q-btn flat round dense size="sm" icon="calendar_view_day" @click="toggleMode"><q-tooltip>Period Select Mode</q-tooltip></q-btn>' +
+                        '<q-btn flat round dense size="sm" icon="clear" @click="clearAll"><q-tooltip>Clear</q-tooltip></q-btn>' +
                     '</template>' +
                 '</m-date-time>' +
             '</div>' +
-            '<div v-else class="row"><q-input dense outlined stack-label :label="label" v-model="fields[name+\'_pdate\']"' +
+            '<div v-else class="row"><q-input dense outlined stack-label hide-bottom-space :label="label" v-model="fields[name+\'_pdate\']"' +
                     ' mask="####-##-##" fill-mask :for="id" :name="name+\'_pdate\'" :form="form" style="max-width:max-content;"' +
                     ' :bg-color="changed(name+\'_pdate\')">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
                 '<template v-slot:before>' +
-                    '<q-select class="q-pr-xs" dense outlined options-dense emit-value map-options v-model="fields[name+\'_poffset\']"' +
+                    '<q-select class="q-pr-xs" dense outlined options-dense emit-value map-options hide-bottom-space v-model="fields[name+\'_poffset\']"' +
                         ' :name="name+\'_poffset\'" :bg-color="changed(name+\'_poffset\')" stack-label label="Offset" :options="dateOffsets" :form="form" behavior="menu"></q-select>' +
-                    '<q-select dense outlined options-dense emit-value map-options v-model="fields[name+\'_period\']"' +
+                    '<q-select dense outlined options-dense emit-value map-options hide-bottom-space v-model="fields[name+\'_period\']"' +
                         ' :name="name+\'_period\'" :bg-color="changed(name+\'_period\')" stack-label label="Period" :options="datePeriods" :form="form" behavior="menu"></q-select>' +
                 '</template>' +
                 '<template v-slot:prepend>' +
-                    '<q-icon name="event" class="cursor-pointer">' +
-                        '<q-popup-proxy ref="qDateProxy" transition-show="scale" transition-hide="scale">' +
-                            '<q-date v-model="fields[name+\'_pdate\']" mask="YYYY-MM-DD" @update:model-value="hideDate"></q-date>' +
+                    '<q-icon name="event" size="xs" class="cursor-pointer">' +
+                        '<q-popup-proxy ref="qDateProxy" cover transition-show="scale" transition-hide="scale">' +
+                            '<q-date v-model="fields[name+\'_pdate\']" mask="YYYY-MM-DD" today-btn @update:model-value="hideDate"></q-date>' +
                         '</q-popup-proxy>' +
                     '</q-icon>' +
                 '</template>' +
                 '<template v-slot:after>' +
-                    '<q-btn dense flat icon="date_range" @click="toggleMode"><q-tooltip>Date Range Mode</q-tooltip></q-btn>' +
-                    '<q-btn dense flat icon="clear" @click="clearAll"><q-tooltip>Clear</q-tooltip></q-btn>' +
+                    '<q-btn flat round dense size="sm" icon="date_range" @click="toggleMode"><q-tooltip>Date Range Mode</q-tooltip></q-btn>' +
+                    '<q-btn flat round dense size="sm" icon="clear" @click="clearAll"><q-tooltip>Clear</q-tooltip></q-btn>' +
                 '</template>' +
             '</q-input></div>',
         methods: {
@@ -1889,9 +1871,10 @@
         emits: ["update:modelValue"],
         data() { return { curDisplay: this.display, loading: false }; },
         template:
-            '<q-input v-if="labelWrapper" dense outlined readonly stack-label autogrow :model-value="displayValue" :label="label" :for="id" :name="name" :loading="loading">' +
+            '<q-field v-if="labelWrapper" dense borderless readonly stack-label hide-bottom-space :label="label" :loading="loading" class="m-display-field">' +
+                '<template v-slot:control><div class="self-center full-width no-outline" :id="id" tabindex="-1">{{displayValue}}</div></template>' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
-            '</q-input>' +
+            '</q-field>' +
             '<span v-else :id="id">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip><slot></slot>' +
                 '{{displayValue}}' +
@@ -1948,17 +1931,14 @@
         data() { return { curOptions: this.options, allOptions: this.options, lastSearch: null, loading: false }; },
         template:
             '<q-select ref="qSelect" :model-value="modelValue" @update:model-value="handleInput"' +
-                    ' dense outlined options-dense use-input :hide-selected="multiple" :name="name" :for="id" :form="form"' +
+                    ' dense outlined options-dense use-input :use-chips="multiple" :fill-input="!multiple" :hide-selected="!multiple" :name="name" :for="id" :form="form"' +
                     ' :input-debounce="serverSearch ? serverDelay : 100" @filter="filterFn" :clearable="allowEmpty||multiple" :disable="disable"' +
                     ' :multiple="multiple" :emit-value="!onSelectGoTo" map-options behavior="menu" :new-value-mode="combo ? \'add-unique\' : undefined"' +
                     ' :rules="[val => allowEmpty||multiple||combo||val===\'\'||(val&&val.length)||\'Please select an option\']"' +
-                    ' stack-label :label="label" :loading="loading" :bg-color="bg" :options="curOptions" v-bind="errorAttrs">' +
+                    ' stack-label hide-bottom-space no-error-icon :label="label" :loading="loading" :bg-color="bg" :options="curOptions" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
                 '<template v-slot:no-option><q-item><q-item-section class="text-grey">No results</q-item-section></q-item></template>' +
-                '<template v-if="multiple" v-slot:prepend><div>' +
-                    '<q-chip v-for="valueEntry in modelValue" :key="valueEntry" dense size="md" class="q-my-xs" removable @remove="removeValue(valueEntry)">{{optionLabel(valueEntry)}}</q-chip>' +
-                '</div></template>' +
-                '<template v-slot:after><slot name="after"></slot></template>' +
+                '<template v-if="$slots.after" v-slot:after><slot name="after"></slot></template>' +
             '</q-select>',
         watch: { options(list) { this.curOptions = list; this.allOptions = list; } },
         methods: {
@@ -2053,17 +2033,6 @@
                     this.$emit("update:modelValue", options[0].value);
                 } else this.$emit("update:modelValue", null);
             },
-            optionLabel(value) {
-                const option = (this.allOptions || []).find((item) => item.value === value);
-                return option ? option.label : "";
-            },
-            removeValue(value) {
-                const current = this.modelValue;
-                if (!Array.isArray(current)) return;
-                const next = current.filter((entry) => entry !== value);
-                if (next.length !== current.length) this.$emit("update:modelValue", next);
-                this.maybeSubmit();
-            }
         },
         mounted() {
             if (this.serverSearch && !this.optionsUrl) console.error("m-drop-down in form " + this.form + " has no options-url but has server-search");
@@ -2100,10 +2069,11 @@
         emits: ["update:modelValue"],
         data() { return { loading: false }; },
         template:
-            '<q-input dense outlined stack-label :label="label" :prefix="prefix" :model-value="local" @update:model-value="onInput" :type="type"' +
+            '<q-input dense outlined stack-label hide-bottom-space no-error-icon :label="label" :prefix="prefix" :model-value="local" @update:model-value="onInput" :type="type"' +
                     ' :for="id" :name="name" :size="size" :maxlength="maxlength" :form="form" :loading="loading" :rules="allRules" :disable="disable" :bg-color="bg"' +
                     ' :mask="mask" :fill-mask="fillMask" :reverse-fill-mask="reverseFillMask" autocapitalize="off" autocomplete="off" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
+                '<template v-if="$slots.append" v-slot:append><slot name="append"></slot></template>' +
             '</q-input>',
         computed: {
             allRules() {
@@ -2145,18 +2115,18 @@
         },
         template:
             '<div v-if="editorType === \'html\'" class="m-text-area-editor">' +
-                '<div v-if="label" class="text-caption">{{label}}</div>' +
-                '<q-editor :model-value="local" @update:model-value="onInput" :toolbar="toolbar" min-height="12rem" :readonly="readonly" :disable="disable"></q-editor>' +
+                '<div v-if="label" class="text-caption text-grey-7">{{label}}</div>' +
+                '<q-editor :model-value="local" @update:model-value="onInput" :toolbar="toolbar" dense min-height="12rem" :readonly="readonly" :disable="disable"></q-editor>' +
                 '<input type="hidden" :name="name" :value="local" :form="form">' +
             '</div>' +
             '<div v-else-if="editorType === \'md\'" class="m-text-area-editor">' +
-                '<q-input type="textarea" dense outlined stack-label :label="label" :model-value="local" @update:model-value="onInput" :name="name" :for="id" :rows="rows"' +
+                '<q-input type="textarea" dense outlined stack-label hide-bottom-space :label="label" :model-value="local" @update:model-value="onInput" :name="name" :for="id" :rows="rows"' +
                     ' :readonly="readonly" :disable="disable" :form="form" :bg-color="bg" autogrow v-bind="errorAttrs">' +
-                    '<template v-slot:after><q-btn dense flat :icon="preview ? \'edit\' : \'visibility\'" @click="togglePreview"><q-tooltip>Preview</q-tooltip></q-btn></template>' +
+                    '<template v-slot:after><q-btn flat round dense size="sm" :icon="preview ? \'edit\' : \'visibility\'" @click="togglePreview"><q-tooltip>Preview</q-tooltip></q-btn></template>' +
                 '</q-input>' +
                 '<div v-if="preview" class="q-pa-sm markdown-preview" v-html="previewHtml"></div>' +
             '</div>' +
-            '<q-input v-else type="textarea" dense outlined stack-label :label="label" :model-value="local" @update:model-value="onInput" :name="name" :for="id" :rows="rows"' +
+            '<q-input v-else type="textarea" dense outlined stack-label hide-bottom-space no-error-icon :label="label" :model-value="local" @update:model-value="onInput" :name="name" :for="id" :rows="rows"' +
                 ' :cols="cols" :readonly="readonly" :autogrow="autogrow" :maxlength="maxlength" :disable="disable" :form="form" :bg-color="bg" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
             '</q-input>',
@@ -2179,18 +2149,18 @@
         name: "mCheck",
         mixins: [fieldMixin, localValueMixin],
         props: { modelValue: [Array, String], name: String, id: String, label: String, options: { type: Array, default: () => [] }, disable: Boolean, form: String,
-            tooltip: String, noWrapper: Boolean, trueValue: String, falseValue: String, singleLabel: String },
+            tooltip: String, noWrapper: Boolean, trueValue: String, falseValue: String, singleLabel: String, toggle: Boolean },
         emits: ["update:modelValue"],
         template:
-            '<q-checkbox v-if="!options.length" size="xs" :model-value="local" @update:model-value="onInput" :true-value="trueValue" :false-value="falseValue"' +
+            '<q-toggle v-if="!options.length && toggle" dense size="xs" :model-value="local" @update:model-value="onInput" :true-value="trueValue" :false-value="falseValue"' +
+                ' :label="singleLabel" :name="name" :id="id" :form="form" :disable="disable"></q-toggle>' +
+            '<q-checkbox v-else-if="!options.length" dense size="xs" :model-value="local" @update:model-value="onInput" :true-value="trueValue" :false-value="falseValue"' +
                 ' :label="singleLabel" :name="name" :id="id" :form="form" :disable="disable"></q-checkbox>' +
-            '<m-field v-else-if="!noWrapper" :label="label" :bg-color="bg" :disable="disable" v-bind="errorAttrs">' +
+            '<m-field v-else-if="!noWrapper" borderless class="m-field-group" :label="label" :bg-color="bg" :disable="disable" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
-                '<q-checkbox v-for="(option, index) in options" :key="option.value" size="xs" :val="option.value" :label="option.label" :model-value="local"' +
-                    ' @update:model-value="onInput" :name="name" :id="index > 0 ? id + \'_\' + index : id" :form="form" :disable="disable"></q-checkbox>' +
+                '<q-option-group type="checkbox" inline dense size="sm" :options="options" :model-value="local" @update:model-value="onInput" :name="name" :id="id" :disable="disable"></q-option-group>' +
             '</m-field>' +
-            '<template v-else><q-checkbox v-for="(option, index) in options" :key="option.value" size="xs" :val="option.value" :label="option.label" :model-value="local"' +
-                ' @update:model-value="onInput" :name="name" :id="index > 0 ? id + \'_\' + index : id" :form="form" :disable="disable"></q-checkbox></template>'
+            '<q-option-group v-else type="checkbox" inline dense size="sm" :options="options" :model-value="local" @update:model-value="onInput" :name="name" :id="id" :disable="disable"></q-option-group>'
     });
 
     component("m-radio", {
@@ -2199,10 +2169,9 @@
         props: { modelValue: String, name: String, id: String, label: String, options: { type: Array, default: () => [] }, disable: Boolean, form: String, tooltip: String },
         emits: ["update:modelValue"],
         template:
-            '<m-field :label="label" :bg-color="bg" :disable="disable" v-bind="errorAttrs">' +
+            '<m-field borderless class="m-field-group" :label="label" :bg-color="bg" :disable="disable" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
-                '<q-radio v-for="(option, index) in options" :key="option.value" size="xs" :val="option.value" :label="option.label" :model-value="local"' +
-                    ' @update:model-value="onInput" :name="name" :id="index > 0 ? id + \'_\' + index : id" :form="form" :disable="disable"></q-radio>' +
+                '<q-option-group type="radio" inline dense size="sm" :options="options" :model-value="local" @update:model-value="onInput" :name="name" :id="id" :disable="disable"></q-option-group>' +
             '</m-field>'
     });
 
@@ -2213,8 +2182,9 @@
             disable: Boolean, form: String, tooltip: String },
         emits: ["update:modelValue"],
         template:
-            '<q-file dense outlined stack-label :label="label" :model-value="modelValue" @update:model-value="$emit(\'update:modelValue\', $event)" :name="name" :for="id"' +
+            '<q-file dense outlined stack-label hide-bottom-space no-error-icon :use-chips="multiple" :counter="multiple" :label="label" :model-value="modelValue" @update:model-value="$emit(\'update:modelValue\', $event)" :name="name" :for="id"' +
                 ' :size="size" :multiple="multiple" :accept="accept" :form="form" :disable="disable" :bg-color="bg" v-bind="errorAttrs">' +
+                '<template v-slot:append><q-icon name="attach_file" size="xs"></q-icon></template>' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
             '</q-file>'
     });
@@ -2239,13 +2209,20 @@
             return { operators: [{ value: "equals", label: "Equals" }, { value: "like", label: "Like" }, { value: "contains", label: "Contains" },
                 { value: "begins", label: "Begins With" }, { value: "empty", label: "Empty" }] };
         },
+        computed: { optionsActive() { const op = this.fields[this.name + "_op"]; return this.fields[this.name + "_not"] === "Y" || (!!op && op !== "contains"); } },
         template:
-            '<m-text-line :label="label" :name="name" :id="id" :size="size" :maxlength="maxlength" :form="form" :tooltip="tooltip" v-model="fields[name]"></m-text-line>' +
-            '<div v-if="hideOptions !== \'true\'" class="row items-center text-find-options">' +
-                '<q-checkbox v-if="hideOptions !== \'operator\'" size="xs" :name="name + \'_not\'" label="Not" true-value="Y" false-value="N" v-model="fields[name + \'_not\']" :form="form"></q-checkbox>' +
-                '<q-select v-if="hideOptions !== \'operator\'" dense outlined options-dense emit-value map-options :name="name + \'_op\'" v-model="fields[name + \'_op\']" :options="operators" :form="form" behavior="menu"></q-select>' +
-                '<q-checkbox v-if="hideOptions !== \'ignore-case\'" size="xs" :name="name + \'_ic\'" label="Ignore Case" true-value="Y" false-value="N" v-model="fields[name + \'_ic\']" :form="form"></q-checkbox>' +
-            '</div>'
+            '<m-text-line :label="label" :name="name" :id="id" :size="size" :maxlength="maxlength" :form="form" :tooltip="tooltip" v-model="fields[name]">' +
+                '<template v-if="hideOptions !== \'true\'" v-slot:append>' +
+                    '<q-btn flat round dense size="sm" icon="tune" :color="optionsActive ? \'primary\' : \'grey-6\'">' +
+                        '<q-tooltip>Find Options</q-tooltip>' +
+                        '<q-menu class="m-text-find-options q-pa-sm"><div class="column q-gutter-y-xs">' +
+                            '<q-select v-if="hideOptions !== \'operator\'" dense outlined options-dense emit-value map-options stack-label hide-bottom-space label="Operator" :name="name + \'_op\'" v-model="fields[name + \'_op\']" :options="operators" :form="form" behavior="menu"></q-select>' +
+                            '<q-toggle v-if="hideOptions !== \'operator\'" dense size="sm" :name="name + \'_not\'" label="Not" true-value="Y" false-value="N" v-model="fields[name + \'_not\']" :form="form"></q-toggle>' +
+                            '<q-toggle v-if="hideOptions !== \'ignore-case\'" dense size="sm" :name="name + \'_ic\'" label="Ignore Case" true-value="Y" false-value="N" v-model="fields[name + \'_ic\']" :form="form"></q-toggle>' +
+                        '</div></q-menu>' +
+                    '</q-btn>' +
+                '</template>' +
+            '</m-text-line>'
     });
 
     /* ========== lazy libraries ========== */
@@ -2298,7 +2275,7 @@
         name: "mSubscreensTabs",
         data() { return { pathIndex: -1 }; },
         template:
-            '<div v-if="subscreens.length > 1"><q-tabs dense no-caps align="left" active-color="primary" indicator-color="primary" :model-value="activeTab">' +
+            '<div v-if="subscreens.length > 1"><q-tabs dense no-caps align="left" narrow-indicator inline-label class="text-grey-7" active-color="primary" indicator-color="primary" :model-value="activeTab">' +
                 '<q-tab v-for="tab in subscreens" :key="tab.name" :name="tab.name" :label="tab.title" :disable="tab.disableLink" @click.prevent="goTo(tab.pathWithParams)"></q-tab>' +
             '</q-tabs><q-separator class="q-mb-md"></q-separator></div>',
         methods: { goTo(pathWithParams) { this.$root.setUrl(this.$root.getLinkPath(pathWithParams)); } },
@@ -2376,24 +2353,24 @@
         props: { menuIndex: Number },
         template:
             '<q-expansion-item v-if="navMenuItem && navMenuItem.subscreens && navMenuItem.subscreens.length" :model-value="true" :content-inset-level="0.3"' +
-                    ' switch-toggle-side dense dense-toggle expanded-icon="arrow_drop_down" :to="navMenuItem.pathWithParams">' +
+                    ' switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expanded-icon="arrow_drop_down" :to="navMenuItem.pathWithParams">' +
                 '<template v-slot:header><m-menu-item-content :menu-item="navMenuItem" active></m-menu-item-content></template>' +
                 '<template v-slot:default><m-menu-subscreen-item v-for="(subscreen, ssIndex) in navMenuItem.subscreens" :key="subscreen.name" :menu-index="menuIndex" :subscreen-index="ssIndex"></m-menu-subscreen-item></template>' +
             '</q-expansion-item>' +
             '<q-expansion-item v-else-if="navMenuItem && navMenuItem.savedFinds && navMenuItem.savedFinds.length" :model-value="true" :content-inset-level="0.3"' +
-                    ' switch-toggle-side dense dense-toggle expanded-icon="arrow_drop_down" :to="navMenuItem.pathWithParams">' +
+                    ' switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expanded-icon="arrow_drop_down" :to="navMenuItem.pathWithParams">' +
                 '<template v-slot:header><m-menu-item-content :menu-item="navMenuItem" active></m-menu-item-content></template>' +
                 '<template v-slot:default><q-expansion-item v-for="(savedFind, ssIndex) in navMenuItem.savedFinds" :key="savedFind.name"' +
-                        ' :model-value="false" switch-toggle-side dense dense-toggle expand-icon="chevron_right" :to="savedFind.pathWithParams">' +
+                        ' :model-value="false" switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expand-icon="chevron_right" :to="savedFind.pathWithParams">' +
                     '<template v-slot:header><m-menu-item-content :menu-item="savedFind" :active="savedFind.active"></m-menu-item-content></template>' +
                 '</q-expansion-item></template>' +
             '</q-expansion-item>' +
             '<q-expansion-item v-else-if="navMenuItem && menuIndex < (navMenuLength - 1)" :model-value="true" :content-inset-level="0.3"' +
-                    ' switch-toggle-side dense dense-toggle expanded-icon="arrow_drop_down" :to="navMenuItem.pathWithParams">' +
+                    ' switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expanded-icon="arrow_drop_down" :to="navMenuItem.pathWithParams">' +
                 '<template v-slot:header><m-menu-item-content :menu-item="navMenuItem" active></m-menu-item-content></template>' +
                 '<template v-slot:default><m-menu-nav-item :menu-index="menuIndex + 1"></m-menu-nav-item></template>' +
             '</q-expansion-item>' +
-            '<q-expansion-item v-else-if="navMenuItem" :model-value="false" switch-toggle-side dense dense-toggle expand-icon="arrow_right" :to="navMenuItem.pathWithParams">' +
+            '<q-expansion-item v-else-if="navMenuItem" :model-value="false" switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expand-icon="arrow_right" :to="navMenuItem.pathWithParams">' +
                 '<template v-slot:header><m-menu-item-content :menu-item="navMenuItem" active></m-menu-item-content></template>' +
             '</q-expansion-item>',
         computed: {
@@ -2407,7 +2384,7 @@
         props: { menuIndex: Number, subscreenIndex: Number },
         template:
             '<m-menu-nav-item v-if="subscreen.active" :menu-index="menuIndex + 1"></m-menu-nav-item>' +
-            '<q-expansion-item v-else :model-value="false" switch-toggle-side dense dense-toggle expand-icon="arrow_right" :to="subscreen.pathWithParams">' +
+            '<q-expansion-item v-else :model-value="false" switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expand-icon="arrow_right" :to="subscreen.pathWithParams">' +
                 '<template v-slot:header><m-menu-item-content :menu-item="subscreen"></m-menu-item-content></template>' +
             '</q-expansion-item>',
         computed: { subscreen() { return this.$root.navMenuList[this.menuIndex].subscreens[this.subscreenIndex]; } }
@@ -2417,11 +2394,11 @@
         name: "mMenuItemContent",
         props: { menuItem: Object, active: Boolean },
         template:
-            '<div class="q-item__section column q-item__section--main justify-center"><div class="q-item__label">' +
-                '<i v-if="menuItem.image && menuItem.imageType === \'icon\'" :class="menuItem.image" style="padding-right: 8px;"></i>' +
-                '<span v-else-if="menuItem.image" style="padding-right:8px;"><img :src="menuItem.image" :alt="menuItem.title" height="14" class="invertible"></span>' +
-                '<span :class="{\'text-primary\':active}">{{menuItem.title}}</span>' +
-            '</div></div>'
+            '<q-item-section v-if="menuItem.image" avatar>' +
+                '<i v-if="menuItem.imageType === \'icon\'" :class="menuItem.image"></i>' +
+                '<img v-else :src="menuItem.image" :alt="menuItem.title" height="14" class="invertible">' +
+            '</q-item-section>' +
+            '<q-item-section :class="{\'text-primary text-weight-medium\':active}">{{menuItem.title}}</q-item-section>'
     });
 
     /* ========== the application ========== */
@@ -2434,41 +2411,37 @@
     component("m-qapps-root", {
         template:
         "<q-layout view=\"hHh LpR fFf\">\n" +
-        "    <q-header reveal bordered class=\"bg-black text-white\" id=\"top\"><q-toolbar style=\"font-size:15px;\">\n" +
-        "        <q-btn dense flat icon=\"menu\" @click=\"toggleLeftOpen()\"></q-btn>\n" +
-        "        <m-link v-if=\"shell.logoUrl\" href=\"/apps\"><div class=\"q-mx-md q-mt-sm\"><img :src=\"shell.logoUrl\" alt=\"Home\" height=\"32\"></div></m-link>\n" +
-        "        <q-toolbar-title v-if=\"shell.title\">{{shell.title}}</q-toolbar-title>\n" +
-        "        <template v-for=\"(navMenuItem, menuIndex) in navMenuList\"><template v-if=\"menuIndex < (navMenuList.length - 1)\">\n" +
-        "            <m-link v-if=\"navMenuItem.hasTabMenu\" :href=\"getNavHref(menuIndex)\" class=\"gt-xs\">{{navMenuItem.title}}</m-link>\n" +
-        "            <div v-else-if=\"navMenuItem.subscreens && navMenuItem.subscreens.length\" class=\"cursor-pointer gt-xs\">\n" +
-        "                {{navMenuItem.title}}\n" +
-        "                <q-menu anchor=\"bottom left\" self=\"top left\"><q-list dense style=\"min-width: 200px\">\n" +
-        "                    <q-item v-for=\"subscreen in navMenuItem.subscreens\" :key=\"subscreen.name\" :class=\"{'bg-primary':subscreen.active, 'text-white':subscreen.active}\" clickable v-close-popup><q-item-section>\n" +
-        "                        <m-link :href=\"subscreen.pathWithParams\">\n" +
-        "                            <template v-if=\"subscreen.image\">\n" +
-        "                                <i v-if=\"subscreen.imageType === 'icon'\" :class=\"subscreen.image\" style=\"padding-right: 4px;\"></i>\n" +
-        "                                <img v-else :src=\"subscreen.image\" :alt=\"subscreen.title\" width=\"18\" class=\"invertible\" style=\"padding-right: 4px;\">\n" +
-        "                            </template>\n" +
-        "                            <i v-else class=\"fa fa-link\" style=\"padding-right: 8px;\"></i>\n" +
-        "                            {{subscreen.title}}\n" +
-        "                        </m-link>\n" +
-        "                    </q-item-section></q-item>\n" +
-        "                </q-list></q-menu>\n" +
-        "            </div>\n" +
-        "            <m-link v-else :href=\"getNavHref(menuIndex)\" class=\"gt-xs\">{{navMenuItem.title}}</m-link>\n" +
-        "            <q-icon size=\"1.5em\" name=\"chevron_right\" color=\"grey\" class=\"gt-xs\"></q-icon>\n" +
-        "        </template></template>\n" +
-        "        <m-link v-if=\"navMenuList.length > 0\" :href=\"getNavHref(navMenuList.length - 1)\" class=\"gt-xs\">{{navMenuList[navMenuList.length - 1].title}}</m-link>\n" +
+        "    <q-header bordered id=\"top\" :class=\"$q.dark.isActive ? 'bg-dark text-white' : 'bg-white text-dark'\"><q-toolbar dense>\n" +
+        "        <q-btn flat round dense icon=\"menu\" @click=\"toggleLeftOpen()\"></q-btn>\n" +
+        "        <m-link v-if=\"shell.logoUrl\" href=\"/apps\" class=\"row items-center q-mx-sm\"><img :src=\"shell.logoUrl\" alt=\"Home\" height=\"28\"></m-link>\n" +
+        "        <q-toolbar-title v-if=\"shell.title\" shrink class=\"text-subtitle1 text-weight-medium q-pr-sm\">{{shell.title}}</q-toolbar-title>\n" +
+        "        <q-breadcrumbs class=\"gt-xs\" gutter=\"xs\" separator-color=\"grey-5\" active-color=\"grey-8\">\n" +
+        "            <template v-for=\"(navMenuItem, menuIndex) in navMenuList\" :key=\"navMenuItem.path || menuIndex\">\n" +
+        "                <q-breadcrumbs-el v-if=\"menuIndex === navMenuList.length - 1\" :label=\"navMenuItem.title\" class=\"text-weight-medium\"></q-breadcrumbs-el>\n" +
+        "                <q-breadcrumbs-el v-else-if=\"navMenuItem.subscreens && navMenuItem.subscreens.length && !navMenuItem.hasTabMenu\" class=\"cursor-pointer\">\n" +
+        "                    {{navMenuItem.title}}<q-icon name=\"arrow_drop_down\" size=\"xs\"></q-icon>\n" +
+        "                    <q-menu anchor=\"bottom left\" self=\"top left\"><q-list dense style=\"min-width:200px;\">\n" +
+        "                        <q-item v-for=\"subscreen in navMenuItem.subscreens\" :key=\"subscreen.name\" clickable v-close-popup :active=\"subscreen.active\" active-class=\"text-primary text-weight-medium\" :to=\"subscreen.pathWithParams\">\n" +
+        "                            <q-item-section avatar>\n" +
+        "                                <i v-if=\"subscreen.image && subscreen.imageType === 'icon'\" :class=\"subscreen.image\"></i>\n" +
+        "                                <img v-else-if=\"subscreen.image\" :src=\"subscreen.image\" :alt=\"subscreen.title\" width=\"18\" class=\"invertible\">\n" +
+        "                                <q-icon v-else name=\"chevron_right\" size=\"xs\"></q-icon>\n" +
+        "                            </q-item-section>\n" +
+        "                            <q-item-section>{{subscreen.title}}</q-item-section>\n" +
+        "                        </q-item>\n" +
+        "                    </q-list></q-menu>\n" +
+        "                </q-breadcrumbs-el>\n" +
+        "                <q-breadcrumbs-el v-else :label=\"navMenuItem.title\" :to=\"getNavHref(menuIndex)\"></q-breadcrumbs-el>\n" +
+        "            </template>\n" +
+        "        </q-breadcrumbs>\n" +
         "\n" +
         "        <q-space></q-space>\n" +
         "\n" +
-        "        <q-circular-progress indeterminate size=\"20px\" color=\"light-blue\" class=\"q-ma-xs\" :class=\"{ hidden: loading < 1 }\"></q-circular-progress>\n" +
-        "\n" +
         "        <component :is=\"qzVue\" ref=\"qzVue\"></component>\n" +
         "\n" +
-        "        <q-btn dense flat icon=\"help_outline\" color=\"info\" :class=\"{hidden:!documentMenuList.length}\">\n" +
+        "        <q-btn v-if=\"documentMenuList.length\" flat round dense icon=\"help_outline\">\n" +
         "            <q-tooltip>{{labels.documentation}}</q-tooltip>\n" +
-        "            <q-menu><q-list dense class=\"q-my-md\">\n" +
+        "            <q-menu><q-list dense style=\"min-width:200px;\">\n" +
         "                <q-item v-for=\"screenDoc in documentMenuList\" :key=\"screenDoc.index\"><q-item-section>\n" +
         "                    <m-dynamic-dialog :url=\"currentPath + '/screenDoc?docIndex=' + screenDoc.index\" :button-text=\"screenDoc.title\" :title=\"screenDoc.title\"></m-dynamic-dialog>\n" +
         "                </q-item-section></q-item>\n" +
@@ -2477,92 +2450,88 @@
         "\n" +
         "        <template v-for=\"navPlugin in navPlugins\"><component :is=\"navPlugin\"></component></template>\n" +
         "\n" +
-        "        <q-btn dense flat icon=\"notifications\">\n" +
+        "        <q-btn flat round dense icon=\"notifications\">\n" +
         "            <q-tooltip>{{labels.notifyHistory}}</q-tooltip>\n" +
-        "            <q-menu><q-list dense style=\"min-width: 300px\">\n" +
-        "                <q-item v-for=\"(histItem, histIndex) in notifyHistoryList\" :key=\"histIndex\"><q-item-section>\n" +
-        "                    <q-banner dense rounded class=\"text-white\" :class=\"'bg-' + getQuasarColor(histItem.type)\">\n" +
-        "                        <strong>{{histItem.time}}</strong> <span>{{histItem.message}}</span>\n" +
-        "                        <template v-if=\"histItem.link != null\" v-slot:action>\n" +
-        "                            <q-btn :to=\"histItem.link\" flat color=\"white\" label=\"View\"></q-btn>\n" +
-        "                        </template>\n" +
-        "                    </q-banner>\n" +
-        "                </q-item-section></q-item>\n" +
+        "            <q-menu><q-list dense separator style=\"min-width:320px;max-width:440px;\">\n" +
+        "                <q-item v-if=\"!notifyHistoryList.length\"><q-item-section class=\"text-grey-6\">{{labels.notifyHistory}}</q-item-section></q-item>\n" +
+        "                <q-item v-for=\"(histItem, histIndex) in notifyHistoryList\" :key=\"histIndex\" :clickable=\"!!histItem.link\" :to=\"histItem.link || undefined\">\n" +
+        "                    <q-item-section avatar><q-icon :name=\"notifyIcon(histItem.type)\" :color=\"getQuasarColor(histItem.type) || 'info'\"></q-icon></q-item-section>\n" +
+        "                    <q-item-section><q-item-label>{{histItem.message}}</q-item-label><q-item-label caption>{{histItem.time}}</q-item-label></q-item-section>\n" +
+        "                </q-item>\n" +
         "            </q-list></q-menu>\n" +
         "        </q-btn>\n" +
         "\n" +
-        "        <q-btn dense flat icon=\"history\">\n" +
+        "        <q-btn flat round dense icon=\"history\">\n" +
         "            <q-tooltip>{{labels.screenHistory}}</q-tooltip>\n" +
-        "            <q-menu><q-list dense style=\"min-width: 300px\">\n" +
-        "                <q-item v-for=\"histItem in navHistoryList\" :key=\"histItem.pathWithParams\" clickable v-close-popup><q-item-section>\n" +
-        "                    <m-link :href=\"histItem.pathWithParams\">\n" +
-        "                        <template v-if=\"histItem.image\">\n" +
-        "                            <i v-if=\"histItem.imageType === 'icon'\" :class=\"histItem.image\" style=\"padding-right: 8px;\"></i>\n" +
-        "                            <img v-else :src=\"histItem.image\" :alt=\"histItem.title\" width=\"18\" style=\"padding-right: 4px;\">\n" +
-        "                        </template>\n" +
-        "                        <i v-else class=\"fa fa-link\" style=\"padding-right: 8px;\"></i>\n" +
-        "                        {{histItem.title}}\n" +
-        "                    </m-link>\n" +
-        "                </q-item-section></q-item>\n" +
+        "            <q-menu><q-list dense style=\"min-width:300px;\">\n" +
+        "                <q-item v-for=\"histItem in navHistoryList\" :key=\"histItem.pathWithParams\" clickable v-close-popup :to=\"histItem.pathWithParams\">\n" +
+        "                    <q-item-section avatar>\n" +
+        "                        <i v-if=\"histItem.image && histItem.imageType === 'icon'\" :class=\"histItem.image\"></i>\n" +
+        "                        <img v-else-if=\"histItem.image\" :src=\"histItem.image\" :alt=\"histItem.title\" width=\"18\" class=\"invertible\">\n" +
+        "                        <q-icon v-else name=\"chevron_right\" size=\"xs\"></q-icon>\n" +
+        "                    </q-item-section>\n" +
+        "                    <q-item-section>{{histItem.title}}</q-item-section>\n" +
+        "                </q-item>\n" +
         "            </q-list></q-menu>\n" +
         "        </q-btn>\n" +
         "\n" +
-        "        <q-btn dense flat icon=\"account_circle\">\n" +
+        "        <q-btn flat round dense icon=\"account_circle\">\n" +
         "            <q-tooltip>{{userFullName || labels.account}}</q-tooltip>\n" +
-        "            <q-menu><q-card flat bordered>\n" +
-        "                <q-card-section horizontal class=\"q-pa-md\">\n" +
-        "                    <q-card-section>\n" +
-        "                        <div v-if=\"userFullName\" class=\"q-mb-sm text-strong\">{{labels.welcome}} {{userFullName}}</div>\n" +
-        "                        <template v-for=\"(accountPlugin, accountIndex) in accountPlugins\" :key=\"accountIndex\"><component :is=\"accountPlugin\"></component></template>\n" +
-        "                    </q-card-section>\n" +
-        "                    <q-separator vertical></q-separator>\n" +
-        "                    <q-card-actions vertical class=\"justify-around q-px-md\">\n" +
-        "                        <q-btn flat dense icon=\"settings_power\" color=\"negative\" type=\"a\" :href=\"shell.logoutUrl\" :data-confirm=\"labels.logout + ' ' + userFullName + '?'\">\n" +
-        "                            <q-tooltip>{{labels.logout}} {{userFullName}}</q-tooltip></q-btn>\n" +
-        "                        <q-btn flat dense @click.prevent=\"switchDarkLight()\" icon=\"invert_colors\">\n" +
-        "                            <q-tooltip>{{labels.switchDarkLight}}</q-tooltip></q-btn>\n" +
-        "                        <q-btn flat dense icon=\"autorenew\" color=\"negative\" @click=\"reLoginShowDialog\"><q-tooltip>Re-Login</q-tooltip></q-btn>\n" +
-        "                    </q-card-actions>\n" +
-        "                </q-card-section>\n" +
-        "            </q-card></q-menu>\n" +
+        "            <q-menu><q-list style=\"min-width:240px;\">\n" +
+        "                <q-item v-if=\"userFullName || username\"><q-item-section>\n" +
+        "                    <q-item-label class=\"text-weight-medium\">{{userFullName || username}}</q-item-label><q-item-label v-if=\"userFullName\" caption>{{username}}</q-item-label>\n" +
+        "                </q-item-section></q-item>\n" +
+        "                <q-separator v-if=\"userFullName || username\"></q-separator>\n" +
+        "                <q-item v-for=\"(accountPlugin, accountIndex) in accountPlugins\" :key=\"accountIndex\"><q-item-section><component :is=\"accountPlugin\"></component></q-item-section></q-item>\n" +
+        "                <q-item tag=\"label\" clickable>\n" +
+        "                    <q-item-section avatar><q-icon name=\"dark_mode\"></q-icon></q-item-section>\n" +
+        "                    <q-item-section>{{labels.switchDarkLight}}</q-item-section>\n" +
+        "                    <q-item-section side><q-toggle dense :model-value=\"$q.dark.isActive\" @update:model-value=\"switchDarkLight()\"></q-toggle></q-item-section>\n" +
+        "                </q-item>\n" +
+        "                <q-item clickable v-close-popup @click=\"reLoginShowDialog\">\n" +
+        "                    <q-item-section avatar><q-icon name=\"autorenew\"></q-icon></q-item-section>\n" +
+        "                    <q-item-section>{{labels.reLogin}}</q-item-section>\n" +
+        "                </q-item>\n" +
+        "                <q-separator></q-separator>\n" +
+        "                <q-item clickable tag=\"a\" :href=\"shell.logoutUrl\" :data-confirm=\"labels.logout + ' ' + userFullName + '?'\">\n" +
+        "                    <q-item-section avatar><q-icon name=\"logout\" color=\"negative\"></q-icon></q-item-section>\n" +
+        "                    <q-item-section class=\"text-negative\">{{labels.logout}}</q-item-section>\n" +
+        "                </q-item>\n" +
+        "            </q-list></q-menu>\n" +
         "        </q-btn>\n" +
         "    </q-toolbar></q-header>\n" +
         "\n" +
+        "    <q-drawer v-model=\"leftOpen\" side=\"left\" bordered :width=\"260\" :breakpoint=\"1023\">\n" +
+        "        <q-scroll-area class=\"fit\"><q-list dense padding><m-menu-nav-item :menu-index=\"0\"></m-menu-nav-item></q-list></q-scroll-area>\n" +
+        "    </q-drawer>\n" +
+        "\n" +
         "    <q-page-container>\n" +
-        "        <div class=\"shell-row\">\n" +
-        "            <div v-show=\"leftOpen\" class=\"app-menu-col\" :class=\"{ 'app-menu-overlay': $q.screen.lt.md }\">\n" +
-        "                <q-btn dense flat icon=\"menu\" @click=\"toggleLeftOpen()\" class=\"lt-sm\"></q-btn>\n" +
-        "                <q-list dense padding><m-menu-nav-item :menu-index=\"0\"></m-menu-nav-item></q-list>\n" +
-        "            </div>\n" +
-        "            <q-page class=\"shell-page-col\">\n" +
-        "                <div class=\"q-ma-sm\"><m-subscreens-active></m-subscreens-active></div>\n" +
-        "            </q-page>\n" +
-        "        </div>\n" +
+        "        <q-page class=\"q-pa-sm\"><m-subscreens-active></m-subscreens-active></q-page>\n" +
         "    </q-page-container>\n" +
         "\n" +
-        "    <q-footer reveal bordered class=\"bg-grey-9 text-white row q-pa-xs\" id=\"footer\">\n" +
-        "        <div v-html=\"shell.footerHtml\" style=\"display:contents;\"></div>\n" +
+        "    <q-footer bordered id=\"footer\" class=\"text-caption\" :class=\"$q.dark.isActive ? 'bg-dark text-grey-5' : 'bg-grey-2 text-grey-8'\">\n" +
+        "        <div class=\"row justify-center items-center q-pa-xs\" v-html=\"shell.footerHtml\"></div>\n" +
         "    </q-footer>\n" +
         "</q-layout>\n" +
         "\n" +
         "<m-dialog v-model=\"reLoginShow\" width=\"400\" :title=\"labels.reLogin\">\n" +
         "    <div v-if=\"reLoginMfaData\">\n" +
-        "        <div style=\"text-align:center;padding-bottom:10px\">User <strong>{{username}}</strong> requires an authentication code, you have these options:</div>\n" +
-        "        <div style=\"text-align:center;padding-bottom:10px\">{{reLoginMfaData.factorTypeDescriptions.join(\", \")}}</div>\n" +
-        "        <q-form @submit.prevent=\"reLoginVerifyOtp\" autocapitalize=\"off\" autocomplete=\"off\">\n" +
+        "        <div class=\"text-center q-pb-sm\">User <strong>{{username}}</strong> requires an authentication code, you have these options:</div>\n" +
+        "        <div class=\"text-center q-pb-sm\">{{reLoginMfaData.factorTypeDescriptions.join(\", \")}}</div>\n" +
+        "        <q-form @submit.prevent=\"reLoginVerifyOtp\" autocapitalize=\"off\" autocomplete=\"off\" class=\"q-gutter-y-sm\">\n" +
         "            <m-text-line v-model=\"reLoginOtp\" name=\"code\" type=\"password\" :label=\"labels.authenticationCode\"></m-text-line>\n" +
-        "            <q-btn outline no-caps color=\"primary\" type=\"submit\" :label=\"labels.signIn\"></q-btn>\n" +
+        "            <q-btn unelevated no-caps color=\"primary\" type=\"submit\" :label=\"labels.signIn\"></q-btn>\n" +
         "        </q-form>\n" +
-        "        <div v-for=\"sendableFactor in reLoginMfaData.sendableFactors\" :key=\"sendableFactor.factorId\" style=\"padding:8px\">\n" +
-        "            <q-btn outline no-caps dense :label=\"labels.sendCodeTo + ' ' + sendableFactor.factorOption\" @click.prevent=\"reLoginSendOtp(sendableFactor.factorId)\"></q-btn>\n" +
+        "        <div v-for=\"sendableFactor in reLoginMfaData.sendableFactors\" :key=\"sendableFactor.factorId\" class=\"q-pt-sm\">\n" +
+        "            <q-btn unelevated no-caps dense class=\"m-btn-tonal\" :label=\"labels.sendCodeTo + ' ' + sendableFactor.factorOption\" @click.prevent=\"reLoginSendOtp(sendableFactor.factorId)\"></q-btn>\n" +
         "        </div>\n" +
         "    </div>\n" +
         "    <div v-else>\n" +
-        "        <div style=\"text-align:center;padding-bottom:10px\">Please sign in to continue as user <strong>{{username}}</strong></div>\n" +
-        "        <q-form @submit.prevent=\"reLoginSubmit\" autocapitalize=\"off\" autocomplete=\"off\">\n" +
+        "        <div class=\"text-center q-pb-sm\">Please sign in to continue as user <strong>{{username}}</strong></div>\n" +
+        "        <q-form @submit.prevent=\"reLoginSubmit\" autocapitalize=\"off\" autocomplete=\"off\" class=\"q-gutter-y-sm\">\n" +
         "            <m-text-line v-model=\"reLoginPassword\" name=\"password\" type=\"password\" :label=\"labels.password\"></m-text-line>\n" +
-        "            <q-btn outline no-caps color=\"primary\" type=\"submit\" :label=\"labels.signIn\"></q-btn>\n" +
-        "            <q-btn outline no-caps color=\"negative\" @click.prevent=\"reLoginReload\" :label=\"labels.reloadPage\"></q-btn>\n" +
+        "            <div><q-btn unelevated no-caps color=\"primary\" type=\"submit\" :label=\"labels.signIn\"></q-btn>\n" +
+        "            <q-btn flat no-caps color=\"negative\" @click.prevent=\"reLoginReload\" :label=\"labels.reloadPage\"></q-btn></div>\n" +
         "        </q-form>\n" +
         "    </div>\n" +
         "</m-dialog>\n"
@@ -2705,7 +2674,7 @@
                 this.setPreference("QUASAR_LEFT_OPEN", this.leftOpen ? "true" : "false");
             },
             getNavHref(navIndex) {
-                if (!navIndex) navIndex = this.navMenuList.length - 1;
+                if (navIndex === undefined || navIndex === null || navIndex < 0) navIndex = this.navMenuList.length - 1;
                 const navMenu = this.navMenuList[navIndex];
                 if (navMenu.extraPathList && navMenu.extraPathList.length) {
                     let href = navMenu.path + "/" + navMenu.extraPathList.join("/");
@@ -2726,6 +2695,10 @@
                 return pathList.join("/");
             },
             getQuasarColor(bootstrapColor) { return moqui.getQuasarColor(bootstrapColor); },
+            notifyIcon(type) {
+                const color = moqui.getQuasarColor(type);
+                return color === "positive" ? "check_circle" : color === "negative" ? "error" : color === "warning" ? "warning" : "info";
+            },
             // the session token changes with a new session, after login
             getCsrfToken(response) {
                 const token = response && response.headers && response.headers.get ? response.headers.get("X-CSRF-Token") : null;
@@ -2778,6 +2751,12 @@
             qLayoutMinHeight(offset) { return { minHeight: offset ? "calc(100vh - " + offset + "px)" : "100vh" }; }
         },
         watch: {
+            // the bar at the top of the page while anything loads
+            loading(count, before) {
+                if (!this.$q || !this.$q.loadingBar) return;
+                if (count > 0 && !(before > 0)) this.$q.loadingBar.start();
+                else if (count <= 0 && before > 0) this.$q.loadingBar.stop();
+            },
             navMenuList(newList) {
                 if (newList.length === 0) return;
                 const cur = newList[newList.length - 1];
@@ -2974,7 +2953,7 @@
         if (shell.render) options.render = shell.render;
         else options.template = shell.template;
         const app = root.Vue.createApp(options);
-        const quasarOptions = { config: Object.assign({ brand: { info: "#1e7b8e" }, notify: { progress: true, closeBtn: "X", position: "top-right" }, loadingBar: { color: "primary" } }, config.quasar),
+        const quasarOptions = { config: Object.assign({ brand: { info: "#1e7b8e" }, notify: { progress: true, closeBtn: "X", position: "top-right" }, loadingBar: { color: "primary", size: "3px", position: "top" } }, config.quasar),
             plugins: { Notify: root.Quasar.Notify, LoadingBar: root.Quasar.LoadingBar } };
         const langKey = String(config.quasarLang || "enUS").replace(/-([a-zA-Z])/g, (m, ch) => ch.toUpperCase()).replace("-", "");
         if (root.Quasar.Lang && root.Quasar.Lang[langKey]) quasarOptions.lang = root.Quasar.Lang[langKey];

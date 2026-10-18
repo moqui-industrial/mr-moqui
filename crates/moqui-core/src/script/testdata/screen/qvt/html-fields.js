@@ -53,7 +53,7 @@ try {
         sri.write("</div>");
         $v.fieldGroupClose({"name":"field-group","attrs":{"title":"Names","box":"true"}});
         $v.accordion("Acc", "2");
-        sri.write("<q-list>");
+        sri.write("<q-list bordered class=\"rounded-borders q-my-sm\">");
         $v.fieldGroup({"name":"field-group","attrs":{"title":"One"}});
         $v.fieldBox(null, "", false);
         sri.pushContext();
@@ -99,7 +99,7 @@ try {
         sri.write("</div>");
         sri.write("</div>\n");
         sri.write("<div class=\"q-my-sm big-row\"" + "" + ">");
-        sri.write("<div class=\"q-mx-sm q-my-auto big-row-item\">" + $v.t(ec.resource.expand("Big", "")) + "</div>");
+        sri.write("<div class=\"big-row-item\">" + $v.t(ec.resource.expand("Big", "")) + "</div>");
         $v.fieldBox(null, "", true);
         sri.pushContext();
         try {

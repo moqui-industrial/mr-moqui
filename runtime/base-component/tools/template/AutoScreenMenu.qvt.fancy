@@ -1,7 +1,7 @@
 <#-- The tabs of an auto-generated entity screen in the qvt mode: the entity itself and each dependent entity, then the active subscreen. -->
 <#assign masterUrl = sri.buildUrl("AutoEditMaster").addParameter("aen", aen).addParameters(masterPrimaryKeyMap || {}).removeParameter("den")>
 <div id="auto-menu">
-    <q-tabs id="auto-edit-tabs" dense no-caps align="left" active-color="primary" indicator-color="primary" :model-value="$root.currentParameters.den||'current'">
+    <q-tabs id="auto-edit-tabs" dense no-caps align="left" narrow-indicator inline-label class="text-grey-7" active-color="primary" indicator-color="primary" :model-value="$root.currentParameters.den||'current'">
         <q-tab name="current" label="${html(aen)}" @click="$root.setUrl('${html(masterUrl.pathWithParams)}')"></q-tab>
 <#list relationshipInfoList || [] as relationshipInfo>
 <#assign curKeyMap = relationshipInfo.getTargetParameterMap(context)>

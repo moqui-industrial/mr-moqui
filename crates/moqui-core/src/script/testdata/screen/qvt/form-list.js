@@ -31,7 +31,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
         }
         sri.write("</div>");
         },
-            "summary": () => { let $t = ""; sri.pushContext(); try {  $t += $v.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"true"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}}); } finally { sri.popContext(); } return $t.trim(); },
+            "summary": () => {  let $t = ""; sri.pushContext(); try {  $t += $v.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"true"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}}); } finally { sri.popContext(); } return $t.trim(); },
             "cell": ($m) => {
                 if ($m !== 2) {
                     $v.rowCellOpen("", "", $m === 2);
@@ -224,13 +224,13 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
         "last": []
     },
     "allFields": [
-        {"name": "id", "title": () => ec.l10n.localize("ID")},
-        {"name": "title", "title": () => ec.l10n.localize("The Title")},
-        {"name": "qty", "title": () => ec.l10n.localize("Qty")},
-        {"name": "amt", "title": () => ec.l10n.localize("Amt")},
-        {"name": "status", "title": () => ec.l10n.localize("Status")},
-        {"name": "link", "title": () => ec.l10n.localize("Open")},
-        {"name": "b", "title": () => ec.l10n.localize("Do")}
+        {"name": "id", "title": () => ec.l10n.localize("ID"), "summary": () => {  let $t = ""; sri.pushContext(); try {  $t += $v.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"true"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}}); } finally { sri.popContext(); } return $t.trim(); }},
+        {"name": "title", "title": () => ec.l10n.localize("The Title"), "summary": null},
+        {"name": "qty", "title": () => ec.l10n.localize("Qty"), "summary": null},
+        {"name": "amt", "title": () => ec.l10n.localize("Amt"), "summary": null},
+        {"name": "status", "title": () => ec.l10n.localize("Status"), "summary": null},
+        {"name": "link", "title": () => ec.l10n.localize("Open"), "summary": null},
+        {"name": "b", "title": () => ec.l10n.localize("Do"), "summary": null}
     ]
 });
 }
@@ -327,9 +327,9 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Cols] -->\n"
         "last": []
     },
     "allFields": [
-        {"name": "a", "title": () => ec.l10n.localize("A")},
-        {"name": "b", "title": () => ec.l10n.localize("B")},
-        {"name": "c", "title": () => ec.l10n.localize("C")}
+        {"name": "a", "title": () => ec.l10n.localize("A"), "summary": null},
+        {"name": "b", "title": () => ec.l10n.localize("B"), "summary": null},
+        {"name": "c", "title": () => ec.l10n.localize("C"), "summary": null}
     ]
 });
 }

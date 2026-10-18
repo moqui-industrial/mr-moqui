@@ -130,7 +130,7 @@ fn an_alias_transition_link_points_at_the_screen() {
     assert_compiles(&["alias".to_string()], std::slice::from_ref(&out));
     assert!(out.contains("href=\"/Detail?id=I1&amp;fromResponse=yes\""), "{out}");
     assert!(
-        out.contains("<m-link href=\"/Detail?id=I1&amp;fromResponse=yes\" id=\"Rows_id_0_detail\">"),
+        out.contains("<m-link href=\"/Detail?id=I1&amp;fromResponse=yes\" id=\"Rows_id_0_detail\" class=\"m-link-text\">"),
         "{out}"
     );
     assert!(out.contains("href=\"/List/detail?id=I1\""), "{out}");
@@ -139,12 +139,12 @@ fn an_alias_transition_link_points_at_the_screen() {
     assert!(out.contains("action=\"/Detail\""), "{out}");
     assert!(out.contains("action=\"/List/detail\""), "{out}");
     // The extra path of an alias is the path-parameter, outside the row so the row's id is not the source.
-    assert!(out.contains("href=\"/Detail?id=I1\">By path"), "{out}");
-    // type=none is not a screen URL, so the anchor is <a>. The alias above stays m-link.
-    assert!(out.contains("<a href=\"/List/gone\">"), "{out}");
+    assert!(out.contains("href=\"/Detail?id=I1\" class=\"m-link-text\">By path"), "{out}");
+    // type=none is not a screen URL, so the anchor is <a>. The alias above stays m-link. In a list cell a screen link is text.
+    assert!(out.contains("<a href=\"/List/gone\" class=\"m-link-text\">"), "{out}");
     assert!(!out.contains("<m-link href=\"/List/gone\">"), "{out}");
     // An http(s) value with url-type screen is that string, not a screen walk.
-    assert!(out.contains("<a href=\"https://example.com/x\">"), "{out}");
+    assert!(out.contains("<a href=\"https://example.com/x\" class=\"m-link-text\">"), "{out}");
     // A screen that does not exist is `#`.
     assert!(out.contains(">#</span>"), "{out}");
 }
@@ -190,7 +190,7 @@ fn row_selection_multi_forms_find_dialogs_and_the_options_of_a_drop_down() {
     }
     assert!(out.contains("editor-type=\"md\""), "{out}");
     // the checkbox of each row points at the state of the set
-    assert!(out.contains("v-model=\"formProps.checkboxStates[0]\""), "{out}");
+    assert!(out.contains(":model-value=\"formProps.checkboxStates[0]\""), "{out}");
     assert!(out.contains(":checkbox-values=\"['I1','I2']\""), "{out}");
     // a form that posts all rows has one set of fields with the row number after each name
     assert!(

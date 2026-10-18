@@ -110,7 +110,7 @@ along with this software (see the LICENSE.md file). If not, see
     <widgets>
         <render-mode><text type="qvue"><![CDATA[
             <template><div>
-                <q-btn dense outline no-caps color="info" type="button" label="Populate Test 1: Lookup By ID"
+                <q-btn dense unelevated no-caps class="m-btn-tonal text-info" type="button" label="Populate Test 1: Lookup By ID"
                        @click.prevent="setLocal('mantle.GeneralServices.lookup#ById', '[lookupId:\'100000\']', '100', '100', '10', '255', '1000', '60')"></q-btn>
 
                 <p><strong>All delay, run, etc times are in milliseconds (ms), rates in runs per second</strong></p>
@@ -142,12 +142,12 @@ along with this software (see the LICENSE.md file). If not, see
                         <m-text-line dense outlined v-model="newServiceInfo.timeBinsKeep" name="timeBinsKeep"
                                      stack-label label="Bins Keep" type="text" size="10"></m-text-line>
                     </div></div>
-                    <q-btn dense outline no-caps color="primary" type="submit" name="submitBtn" label="Set Service Info"></q-btn>
+                    <q-btn dense unelevated no-caps color="primary" type="submit" name="submitBtn" label="Set Service Info"></q-btn>
                 </q-form>
-                <q-btn dense outline no-caps color="positive" type="button" label="Begin" @click.prevent="callBegin"
+                <q-btn dense unelevated no-caps color="positive" type="button" label="Begin" @click.prevent="callBegin"
                         :disabled="executorInfo.executorExists"></q-btn>
                 <!-- this is best avoided, observed Bitronix blow up with heavy load: <q-btn dense outline no-caps color="negative" type="button" label="Stop Now" @click.prevent="callStopNow"></q-btn> -->
-                <q-btn dense outline no-caps color="negative" type="button" label="Stop Wait" @click.prevent="callStopWait"
+                <q-btn dense unelevated no-caps color="negative" type="button" label="Stop Wait" @click.prevent="callStopWait"
                         :disabled="!executorInfo.running"></q-btn>
 
                 <div class="row">

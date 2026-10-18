@@ -1,5 +1,5 @@
 (function(){var m=globalThis.moqui=globalThis.moqui||{};(m.qvtStatic=m.qvtStatic||{})["/Items"]=function(Vue){
-const { toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, withCtx: _withCtx, createBlock: _createBlock, renderList: _renderList, Fragment: _Fragment, withModifiers: _withModifiers, normalizeClass: _normalizeClass } = Vue
+const { toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, withCtx: _withCtx, createBlock: _createBlock, renderList: _renderList, Fragment: _Fragment, resolveDirective: _resolveDirective, withDirectives: _withDirectives, withModifiers: _withModifiers, normalizeClass: _normalizeClass } = Vue
 
 return function render(_ctx, _cache) {
   const _component_m_display = _resolveComponent("m-display")
@@ -10,7 +10,13 @@ return function render(_ctx, _cache) {
   const _component_m_scope = _resolveComponent("m-scope")
   const _component_m_form_column_config = _resolveComponent("m-form-column-config")
   const _component_m_container_dialog = _resolveComponent("m-container-dialog")
+  const _component_q_item_section = _resolveComponent("q-item-section")
+  const _component_q_item = _resolveComponent("q-item")
+  const _component_q_list = _resolveComponent("q-list")
+  const _component_q_btn_dropdown = _resolveComponent("q-btn-dropdown")
+  const _component_q_icon = _resolveComponent("q-icon")
   const _component_m_static_form_list = _resolveComponent("m-static-form-list")
+  const _directive_close_popup = _resolveDirective("close-popup")
 
   return (_openBlock(), _createElementBlock(_Fragment, null, [
     _createElementVNode("h4", {
@@ -24,7 +30,7 @@ return function render(_ctx, _cache) {
           extra: _ctx.$scope['mqExtra_ItemForm']
         }, {
           default: _withCtx((_ctx) => [
-            _createElementVNode("div", { class: "q-my-md" }, [
+            _createElementVNode("div", { class: "q-mb-md" }, [
               _createVNode(_component_m_form, {
                 name: "ItemForm",
                 id: "ItemForm",
@@ -33,7 +39,7 @@ return function render(_ctx, _cache) {
                 "fields-initial": {'itemId':_ctx.$mq.str(_ctx.$scope['itemId']),'itemId_display':_ctx.$mq.str(_ctx.$scope['itemId']),'name':_ctx.$mq.str(_ctx.$scope['name']),'status':_ctx.$mq.cur(_ctx.$scope['status'],false,''),'price':_ctx.$mq.str(_ctx.$scope['price']),'price_display':_ctx.$mq.fmt(_ctx.$scope['price'],'#,##0.00'),'mode':((_ctx.status == 'ACTIVE')?_ctx.$mq.str(_ctx.$scope['mode']):_ctx.$mq.str(_ctx.$scope['mode'])),'mode_display':((_ctx.status == 'ACTIVE')?_ctx.ec.resource.expand('is active: ${name}',{'name':()=>(_ctx.name)}):_ctx.ec.l10n.localize('not active')),'moquiFormName':'ItemForm'}
               }, {
                 default: _withCtx((formProps) => [
-                  _createElementVNode("div", { class: "q-ma-sm" }, [
+                  _createElementVNode("div", { class: "q-pa-xs" }, [
                     _createVNode(_component_m_display, {
                       name: "itemId",
                       "label-wrapper": "",
@@ -45,7 +51,7 @@ return function render(_ctx, _cache) {
                       fields: formProps.fields
                     }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "display", "fields"])
                   ]),
-                  _createElementVNode("div", { class: "q-ma-sm" }, [
+                  _createElementVNode("div", { class: "q-pa-xs" }, [
                     _createVNode(_component_m_text_line, {
                       id: "ItemForm_name",
                       type: "text",
@@ -57,7 +63,7 @@ return function render(_ctx, _cache) {
                       fields: formProps.fields
                     }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "fields"])
                   ]),
-                  _createElementVNode("div", { class: "q-ma-sm" }, [
+                  _createElementVNode("div", { class: "q-pa-xs" }, [
                     _createVNode(_component_m_drop_down, {
                       name: "status",
                       id: "ItemForm_status",
@@ -67,7 +73,7 @@ return function render(_ctx, _cache) {
                       "onUpdate:modelValue": $event => ((formProps.fields.status) = $event)
                     }, null, 8, ["label", "options", "modelValue", "onUpdate:modelValue"])
                   ]),
-                  _createElementVNode("div", { class: "q-ma-sm" }, [
+                  _createElementVNode("div", { class: "q-pa-xs" }, [
                     _createVNode(_component_m_display, {
                       name: "price",
                       "label-wrapper": "",
@@ -82,7 +88,7 @@ return function render(_ctx, _cache) {
                   ((_ctx.status == 'ACTIVE'))
                     ? (_openBlock(), _createElementBlock("div", {
                         key: 0,
-                        class: "q-ma-sm"
+                        class: "q-pa-xs"
                       }, [
                         _createVNode(_component_m_display, {
                           name: "mode",
@@ -97,7 +103,7 @@ return function render(_ctx, _cache) {
                       ]))
                     : (_openBlock(), _createElementBlock("div", {
                         key: 1,
-                        class: "q-ma-sm"
+                        class: "q-pa-xs"
                       }, [
                         _createVNode(_component_m_display, {
                           name: "mode",
@@ -110,10 +116,11 @@ return function render(_ctx, _cache) {
                           fields: formProps.fields
                         }, null, 8, ["label", "modelValue", "onUpdate:modelValue", "display", "fields"])
                       ])),
-                  _createElementVNode("div", { class: "q-ma-sm" }, [
+                  _createElementVNode("div", { class: "q-pa-xs" }, [
                     _createVNode(_component_q_btn, {
                       dense: "",
                       outline: !formProps.hasFieldsChanged,
+                      unelevated: formProps.hasFieldsChanged,
                       "no-caps": "",
                       type: "submit",
                       name: "go",
@@ -127,7 +134,7 @@ return function render(_ctx, _cache) {
                         }, null, 8, ["textContent"])
                       ]),
                       _: 1
-                    }, 8, ["outline"])
+                    }, 8, ["outline", "unelevated"])
                   ])
                 ]),
                 _: 1
@@ -149,7 +156,8 @@ return function render(_ctx, _cache) {
       }, null, 8, ["textContent"]))
     }), 128)),
     _createElementVNode("a", {
-      href: _ctx.$mq.url('/Items/viewItem',{'itemId':(_ctx.item.itemId)},null)
+      href: _ctx.$mq.url('/Items/viewItem',{'itemId':(_ctx.item.itemId)},null),
+      class: "m-link-text"
     }, [
       _createElementVNode("span", {
         textContent: _toDisplayString(_ctx.ec.resource.expand('View ${item.itemId}',{'item.itemId':()=>(_ctx.item.itemId)}))
@@ -174,9 +182,10 @@ return function render(_ctx, _cache) {
           button: _withCtx(() => [
             _createVNode(_component_q_btn, {
               dense: "",
-              outline: "",
+              unelevated: "",
               "no-caps": "",
-              icon: "table_chart",
+              class: "m-btn-tonal",
+              icon: "view_column",
               label: _ctx.ec.l10n.localize('Columns')
             }, null, 8, ["label"])
           ]),
@@ -191,13 +200,41 @@ return function render(_ctx, _cache) {
           ]),
           _: 2
         }, 1032, ["title"]),
-        _createVNode(_component_q_btn, {
+        _createVNode(_component_q_btn_dropdown, {
           dense: "",
-          outline: "",
-          type: "a",
-          href: nv.exportUrl('csv'),
-          label: _ctx.ec.l10n.localize('CSV')
-        }, null, 8, ["href", "label"])
+          flat: "",
+          "no-caps": "",
+          icon: "download",
+          label: _ctx.ec.l10n.localize('Export')
+        }, {
+          default: _withCtx(() => [
+            _createVNode(_component_q_list, { dense: "" }, {
+              default: _withCtx(() => [
+                _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                  clickable: "",
+                  tag: "a",
+                  href: nv.exportUrl('csv')
+                }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_q_item_section, null, {
+                      default: _withCtx(() => [
+                        _createElementVNode("span", {
+                          textContent: _toDisplayString(_ctx.ec.l10n.localize('CSV'))
+                        }, null, 8, ["textContent"])
+                      ]),
+                      _: 1
+                    })
+                  ]),
+                  _: 1
+                }, 8, ["href"])), [
+                  [_directive_close_popup]
+                ])
+              ]),
+              _: 2
+            }, 1024)
+          ]),
+          _: 2
+        }, 1032, ["label"])
       ]),
       hc_itemId: _withCtx(({hs, formProps}) => [
         _createElementVNode("div", null, [
@@ -211,14 +248,14 @@ return function render(_ctx, _cache) {
                 onClick: _withModifiers($event => (hs.sortBy('itemId')), ["prevent"]),
                 class: _normalizeClass({active: hs.orderBy('itemId') === 'asc'})
               }, [
-                _createElementVNode("i", { class: "fa fa-caret-up" })
+                _createVNode(_component_q_icon, { name: "arrow_drop_up" })
               ], 10, ["onClick"]),
               _createElementVNode("a", {
                 href: "#",
                 onClick: _withModifiers($event => (hs.sortBy('-itemId')), ["prevent"]),
                 class: _normalizeClass({active: hs.orderBy('-itemId') === 'desc'})
               }, [
-                _createElementVNode("i", { class: "fa fa-caret-down" })
+                _createVNode(_component_q_icon, { name: "arrow_drop_down" })
               ], 10, ["onClick"])
             ])
           ])
@@ -291,6 +328,7 @@ return function render(_ctx, _cache) {
           _createVNode(_component_q_btn, {
             dense: "",
             outline: !_ctx.formProps.hasFieldsChanged,
+            unelevated: _ctx.formProps.hasFieldsChanged,
             "no-caps": "",
             type: "submit",
             name: "go",
@@ -304,7 +342,7 @@ return function render(_ctx, _cache) {
               }, null, 8, ["textContent"])
             ]),
             _: 1
-          }, 8, ["outline", "id"])
+          }, 8, ["outline", "unelevated", "id"])
         ])
       ]),
       _: 1
@@ -377,6 +415,7 @@ return function render(_ctx, _cache) {
               _createVNode(_component_q_btn, {
                 dense: "",
                 outline: !_ctx.formProps.hasFieldsChanged,
+                unelevated: _ctx.formProps.hasFieldsChanged,
                 "no-caps": "",
                 type: "submit",
                 name: "go",
@@ -390,7 +429,7 @@ return function render(_ctx, _cache) {
                   }, null, 8, ["textContent"])
                 ]),
                 _: 1
-              }, 8, ["outline", "id"])
+              }, 8, ["outline", "unelevated", "id"])
             ])
           ])
         ], 2)

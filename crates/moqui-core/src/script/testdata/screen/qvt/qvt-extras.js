@@ -31,7 +31,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Selectable] 
         }
         sri.write("</div>");
         },
-            "summary": () => { let $t = ""; sri.pushContext(); try {  $t += $v.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}}); } finally { sri.popContext(); } return $t.trim(); },
+            "summary": () => {  let $t = ""; sri.pushContext(); try {  $t += $v.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}}); } finally { sri.popContext(); } return $t.trim(); },
             "cell": ($m) => {
                 if ($m !== 2) {
                     $v.rowCellOpen("", "", $m === 2);
@@ -158,9 +158,9 @@ if (sri.doBoundaryComments()) sri.write("<!-- END   form-single[@name=UpdateSele
         "last": [{"name": "note", "field": {"name":"field","attrs":{"name":"note"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"display","attrs":{"text":"end"},"parent":{"name":"last-row-field","attrs":{},"parent":{"name":"field","attrs":{"name":"note"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}}]}]}]
     },
     "allFields": [
-        {"name": "id", "title": () => ec.l10n.localize("ID")},
-        {"name": "title", "title": () => ec.l10n.localize("Title")},
-        {"name": "note", "title": () => ec.l10n.localize("Note")}
+        {"name": "id", "title": () => ec.l10n.localize("ID"), "summary": () => {  let $t = ""; sri.pushContext(); try {  $t += $v.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}}); } finally { sri.popContext(); } return $t.trim(); }},
+        {"name": "title", "title": () => ec.l10n.localize("Title"), "summary": null},
+        {"name": "note", "title": () => ec.l10n.localize("Note"), "summary": null}
     ]
 });
 }
@@ -233,8 +233,8 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Everyone] --
         "last": []
     },
     "allFields": [
-        {"name": "title", "title": () => ec.l10n.localize("Title")},
-        {"name": "go", "title": () => ec.l10n.localize("Save All")}
+        {"name": "title", "title": () => ec.l10n.localize("Title"), "summary": null},
+        {"name": "go", "title": () => ec.l10n.localize("Save All"), "summary": null}
     ]
 });
 }
