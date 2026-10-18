@@ -28,8 +28,9 @@ use tungstenite::{connect, Message, WebSocket};
 
 use super::{temp_dir, DirGuard};
 
-/// The browser of the smoke: `pdf-chromium-path` when it is set, else `chromium`, `chromium-browser` or `google-chrome` on the `PATH`.
-/// A missing binary fails the smoke.
+/// The browser of the smoke: `pdf-chromium-path` when it is set, else the Chromium of `./moq chromium-download` in
+/// `runtime/chromium`, else `chromium`, `chromium-browser` or `google-chrome` on the `PATH`. A missing binary fails
+/// the smoke.
 pub fn chromium_binary() -> PathBuf {
     for name in ["pdf-chromium-path", "pdf_chromium_path"] {
         let configured = moqui_lib::env::get_prop_or_env(name);
@@ -38,6 +39,9 @@ pub fn chromium_binary() -> PathBuf {
             assert!(path.is_file(), "{name} names {configured}, which is not a file");
             return path;
         }
+    }
+    if let Some(found) = super::downloaded_chromium() {
+        return found;
     }
     let path = std::env::var_os("PATH").unwrap_or_default();
     for name in ["chromium", "chromium-browser", "google-chrome"] {
@@ -48,7 +52,10 @@ pub fn chromium_binary() -> PathBuf {
             }
         }
     }
-    panic!("no Chromium for the Gate 3 browser smoke: set pdf-chromium-path, or put chromium, chromium-browser or google-chrome on the PATH");
+    panic!(
+        "no Chromium for the Gate 3 browser smoke: set pdf-chromium-path, run ./moq chromium-download, or put chromium, \
+         chromium-browser or google-chrome on the PATH"
+    );
 }
 
 /// What the page said while it ran: console errors and warnings, uncaught exceptions, and log entries.

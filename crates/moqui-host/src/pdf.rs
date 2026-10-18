@@ -15,9 +15,10 @@
 //! `PdfRenderer`'s engine: one long-lived headless Chromium, driven over the DevTools Protocol
 //! (`plans/archive/Architecture-Proposal.md`, Tool components and print).
 //!
-//! The binary is `pdf_chromium_path`, else `chromium` then `chromium-browser` on the `PATH`. It is not vendored and not
-//! downloaded. When none is found the server still starts and PDF reports that it is not available. The browser starts
-//! on the first render and is kept; when it exits, the next render starts it again.
+//! The binary is `pdf_chromium_path`, else the one `./moq chromium-download` put in `runtime/chromium`, else `chromium`
+//! then `chromium-browser` on the `PATH`; early in startup [`find_chromium`] logs every one it finds and the one it
+//! uses. It is not vendored. When none is found the server still starts and PDF reports that it is not available. The browser starts on the first render and is kept; when it exits, the next
+//! render starts it again.
 //!
 //! Each document gets its own page: the `html-print` text becomes the content of `about:blank`, every request the page
 //! makes is failed (the document reaches no network, no server, and no session), `Page.printToPDF` runs with the
@@ -54,54 +55,172 @@ const START_WAIT: Duration = Duration::from_secs(30);
 const LOADED: &str = "new Promise((resolve) => { const done = () => document.fonts.ready.then(() => resolve(true)); \
     if (document.readyState === 'complete') done(); else window.addEventListener('load', done, { once: true }); })";
 
-/// The Chromium binary from `pdf_chromium_path`, else `chromium` or `chromium-browser` on the `PATH`.
+/// A Chromium or Chrome binary found at startup, and where it was found.
+struct Found {
+    place: String,
+    path: PathBuf,
+    chrome: bool,
+}
+
+/// Look at every place a Chromium may be, log each one found, and choose one: `pdf_chromium_path` when it names a file,
+/// else the first Chromium of [`downloaded_chromium`], `chromium` then `chromium-browser` on the `PATH`, and on macOS
+/// `/Applications/Chromium.app`. Google Chrome is logged when it is found but is used only when `pdf_chromium_path`
+/// names it.
 ///
 /// # Errors
 ///
-/// Returns an error when `pdf_chromium_path` names something that is not a file.
-pub fn find_chromium() -> Result<Option<PathBuf>, Error> {
+/// Returns the reason PDF is not available, already logged, when no Chromium is chosen.
+pub fn find_chromium(runtime_dir: &Path) -> Result<PathBuf, String> {
     let configured = moqui_lib::env::get_prop_or_env("pdf_chromium_path");
+    let mut found = Vec::new();
     if !configured.is_empty() {
         let path = PathBuf::from(&configured);
-        if !path.is_file() {
-            return Err(Error::new(format!(
-                "pdf_chromium_path names {configured}, which is not a file"
-            )));
+        if path.is_file() {
+            found.push(Found {
+                place: "pdf_chromium_path".to_string(),
+                path,
+                chrome: false,
+            });
+        } else {
+            tracing::warn!("Chromium for PDF: pdf_chromium_path names {configured}, which is not a file");
         }
-        return Ok(Some(path));
     }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    for name in ["chromium", "chromium-browser"] {
-        for dir in std::env::split_paths(&path) {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return Ok(Some(candidate));
+    if let Some(path) = downloaded_chromium(runtime_dir) {
+        let place = match std::fs::read_to_string(runtime_dir.join("chromium/REVISION")) {
+            Ok(text) => format!(
+                "runtime/chromium (snapshot {})",
+                text.split_whitespace().next().unwrap_or("?")
+            ),
+            Err(_) => "runtime/chromium".to_string(),
+        };
+        found.push(Found {
+            place,
+            path,
+            chrome: false,
+        });
+    }
+    let search = std::env::var_os("PATH").unwrap_or_default();
+    for (name, chrome) in [
+        ("chromium", false),
+        ("chromium-browser", false),
+        ("google-chrome", true),
+        ("google-chrome-stable", true),
+    ] {
+        if let Some(path) = std::env::split_paths(&search)
+            .map(|dir| dir.join(name))
+            .find(|path| path.is_file())
+        {
+            found.push(Found {
+                place: format!("{name} on the PATH"),
+                path,
+                chrome,
+            });
+        }
+    }
+    if cfg!(target_os = "macos") {
+        for (app, chrome) in [
+            ("/Applications/Chromium.app/Contents/MacOS/Chromium", false),
+            ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", true),
+        ] {
+            let path = PathBuf::from(app);
+            if path.is_file() {
+                found.push(Found {
+                    place: "/Applications".to_string(),
+                    path,
+                    chrome,
+                });
             }
         }
     }
-    Ok(None)
+    // One binary under several names (chromium-browser a link to chromium, google-chrome-stable to google-chrome).
+    let mut seen = Vec::new();
+    found.retain(|one| {
+        let real = std::fs::canonicalize(&one.path).unwrap_or_else(|_| one.path.clone());
+        let new = !seen.contains(&real);
+        seen.push(real);
+        new
+    });
+    for one in &found {
+        let note = if one.chrome {
+            ", Google Chrome: used only when pdf_chromium_path names it"
+        } else {
+            ""
+        };
+        tracing::info!("Chromium for PDF: found {} at {}{note}", one.place, one.path.display());
+    }
+    if let Some(chosen) = found.iter().find(|one| !one.chrome) {
+        tracing::info!(
+            "Chromium for PDF: using {} from {}",
+            chosen.path.display(),
+            chosen.place
+        );
+        if chosen.place.starts_with("runtime/chromium") {
+            check_apparmor_profile(&chosen.path);
+        }
+        return Ok(chosen.path.clone());
+    }
+    let mut reason = if configured.is_empty() {
+        moqui_core::screen::PDF_UNAVAILABLE.to_string()
+    } else {
+        format!("PDF is not available: pdf_chromium_path names {configured}, which is not a file, and no other Chromium was found")
+    };
+    if let Some(chrome) = found.first() {
+        reason.push_str(&format!(
+            "; Google Chrome at {} is used when pdf_chromium_path names it",
+            chrome.path.display()
+        ));
+    }
+    tracing::warn!("Chromium for PDF: {reason}");
+    Err(reason)
+}
+
+/// The Chromium that `./moq chromium-download` put in `runtime/chromium`.
+#[must_use]
+pub fn downloaded_chromium(runtime_dir: &Path) -> Option<PathBuf> {
+    ["chrome", "Chromium.app/Contents/MacOS/Chromium"]
+        .iter()
+        .map(|name| runtime_dir.join("chromium").join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Whether AppArmor limits unprivileged user namespaces (Ubuntu 23.10 and later), which keeps a Chromium that has no
+/// AppArmor profile from starting its sandbox.
+fn userns_restricted() -> bool {
+    std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        .is_ok_and(|text| text.trim() == "1")
+}
+
+/// Warn when the downloaded Chromium needs the `moqui-chromium` AppArmor profile that `./moq chromium-download`
+/// describes and it is not there. Distro and Chrome packages install their own profiles.
+fn check_apparmor_profile(binary: &Path) {
+    if !userns_restricted() {
+        return;
+    }
+    let real = std::fs::canonicalize(binary).unwrap_or_else(|_| binary.to_path_buf());
+    let named = std::fs::read_to_string("/etc/apparmor.d/moqui-chromium")
+        .is_ok_and(|text| text.contains(&format!("\"{}\"", real.display())));
+    if !named {
+        tracing::warn!(
+            "Chromium for PDF: AppArmor limits unprivileged user namespaces here and no moqui-chromium profile names {}, \
+             so it cannot start its sandbox and PDF will fail; ./moq help chromium-download shows how to add one",
+            real.display()
+        );
+    }
 }
 
 /// Find the binary and install the engine into core, or install the reason PDF is not available. The returned guard
 /// removes the engine and stops the browser when it drops.
 #[must_use = "dropping the guard stops the PDF browser"]
 pub fn install(runtime_dir: &Path) -> PdfGuard {
-    match find_chromium() {
-        Ok(Some(binary)) => {
+    match find_chromium(runtime_dir) {
+        Ok(binary) => {
             let temp_dir = runtime_dir.join("tmp");
             remove_orphan_profiles(&temp_dir);
             let engine = Arc::new(ChromiumPdf::new(binary, temp_dir));
             moqui_core::screen::install_pdf_engine(engine.clone());
             PdfGuard { engine: Some(engine) }
         }
-        Ok(None) => {
-            tracing::warn!("{}", moqui_core::screen::PDF_UNAVAILABLE);
-            moqui_core::screen::install_pdf_unavailable(moqui_core::screen::PDF_UNAVAILABLE);
-            PdfGuard { engine: None }
-        }
-        Err(err) => {
-            let reason = format!("PDF is not available: {err}");
-            tracing::warn!("{reason}");
+        Err(reason) => {
             moqui_core::screen::install_pdf_unavailable(reason);
             PdfGuard { engine: None }
         }
@@ -420,7 +539,17 @@ impl ChromiumProcess {
             .spawn()
             .map_err(|err| Error::new(format!("could not start {}", binary.display())).with_source(err))?;
         let mut process = Self { child, profile };
-        let url = devtools_url(&process.profile, &mut process.child, START_WAIT)?;
+        let url = devtools_url(&process.profile, &mut process.child, START_WAIT).map_err(|err| {
+            if userns_restricted() {
+                Error::new(format!(
+                    "{err}; AppArmor limits unprivileged user namespaces here, so {} may need an AppArmor profile to \
+                     start its sandbox (./moq help chromium-download)",
+                    binary.display()
+                ))
+            } else {
+                err
+            }
+        })?;
         Ok((process, url))
     }
 

@@ -71,8 +71,10 @@
     <default-property name="email_allowed_hosts" value=""/>
 
     <!--
-        PDF (the html-print render through headless Chromium). pdf_chromium_path names the executable; empty looks for
-        chromium, then chromium-browser, on the PATH. With none the server starts and PDF reports it is not available.
+        PDF (the html-print render through headless Chromium). pdf_chromium_path names the executable; empty, or a path
+        that names no file, looks in runtime/chromium (from ./moq chromium-download), then for chromium, then
+        chromium-browser, on the PATH. Google Chrome is used only when pdf_chromium_path names it. Startup logs each one
+        found and the one used. With none the server starts and PDF reports it is not available.
         pdf_page_limit is the pages that print at once; pdf_timeout is the seconds one document may take.
     -->
     <default-property name="pdf_chromium_path" value=""/>

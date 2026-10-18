@@ -232,6 +232,17 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// The repo's own runtime directory, where `./moq chromium-download` puts `chromium`.
+pub fn repo_runtime() -> PathBuf {
+    let runtime = repo_root().join("runtime");
+    std::fs::canonicalize(&runtime).unwrap_or(runtime)
+}
+
+/// The Chromium that `./moq chromium-download` put in the repo's `runtime/chromium`.
+pub fn downloaded_chromium() -> Option<PathBuf> {
+    moqui_host::pdf::downloaded_chromium(&repo_runtime())
+}
+
 /// The files under `path` as a hash of names, sizes and modification times, for the key of the template.
 fn stamp_tree(path: &Path, hasher: &mut std::collections::hash_map::DefaultHasher) {
     use std::hash::Hash;

@@ -9,6 +9,7 @@
 /runtime/cert
 /runtime/types
 /runtime/opensearch*
+/runtime/chromium*
 /runtime/component/
 /runtime/save
 /myaddons.xml

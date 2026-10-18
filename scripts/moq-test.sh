@@ -370,6 +370,13 @@ check "load-save dry run" 0 'save-db .*runtime/save/demo/moqui.dump.part' -- dry
 check "opensearch-start without install" 1 'no OpenSearch' -- "$M" opensearch-start
 check "opensearch-stop without pid" 0 'not running' -- "$M" opensearch-stop
 check "opensearch-download needs force" 1 'add --force' -- "$M" opensearch-download
+check "help chromium-download" 0 'AppArmor profile' -- "$M" help chromium-download
+check "chromium-download unknown option" 1 'unknown option --full' -- "$M" chromium-download --full
+check "chromium-download bad revision" 1 'snapshot number' -- "$M" chromium-download 12x
+if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] && have curl && have unzip; then
+    check "chromium-download dry run" 0 'curl .*Linux_x64/1697588/chrome-linux.zip' -- dry "$M" chromium-download 1697588
+    check "chromium-download dry run unpacks" 0 'mv .*chrome-linux .*runtime/chromium' -- dry "$M" chromium-download 1697588
+fi
 
 # ========== git ==========
 

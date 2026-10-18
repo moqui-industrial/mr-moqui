@@ -70,12 +70,15 @@ fn page(address: SocketAddr, auth: &str, path: &str) -> String {
     text
 }
 
-/// A browser for the PDF check: `pdf_chromium_path` when set, else `chromium`, `chromium-browser` or `google-chrome` on the
-/// `PATH`. With none the screen document reports that PDF is not available, which also passes gate 4.
+/// A browser for the PDF check: `pdf_chromium_path` when set, else the one in `runtime/chromium`, else `chromium`,
+/// `chromium-browser` or `google-chrome` on the `PATH`. With none the screen document reports that PDF is not available, which also passes gate 4.
 fn browser() -> Option<String> {
     let configured = moqui_lib::env::get_prop_or_env("pdf_chromium_path");
     if !configured.is_empty() {
         return Some(configured);
+    }
+    if let Some(found) = crate::common::downloaded_chromium() {
+        return Some(found.display().to_string());
     }
     let path = std::env::var_os("PATH").unwrap_or_default();
     ["chromium", "chromium-browser", "google-chrome"]

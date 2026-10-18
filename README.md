@@ -67,7 +67,8 @@ scripts/pg-payload.sh check
 cargo test
 cargo lint
 
-# The Gate 3 tests, left out of the default run (embedded Postgres per test, Chromium)
+# The Gate 3 tests, left out of the default run (embedded Postgres per test, Chromium: ./moq chromium-download, or
+# pdf_chromium_path, or chromium on the PATH)
 cargo test -p moqui-host --test gate3 --test gate3_browser
 ```
 
@@ -77,7 +78,7 @@ Setting `entity_ds_db_conf` to `postgres`, `mysql` or `mysql8`, with the other `
 properties, uses that server instead. The examples are in `runtime/conf/MoquiDevConf.xml`.
 
 The `./moq` script runs the built binaries in place and replaces the Java Moqui Gradle
-tasks (run, load, save and reload of the database, clean, OpenSearch, git across all repos,
+tasks (run, load, save and reload of the database, clean, OpenSearch, Chromium for PDF, git across all repos,
 and component get/create/zip). It needs only bash (3.2 or newer), so it works on a fresh
 checkout on Linux or macOS. `./moq` with no arguments lists the tasks, and
 `./moq help <task>` describes one. Task names match by partial parts, ignoring case, so

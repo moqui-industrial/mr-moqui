@@ -944,6 +944,8 @@ fn boot_server_factory(
     let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(&runtime_dir, &framework_dir)
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     log_files_attached(&runtime_dir);
+    // Tool checks before the database: which Chromium PDF uses, or why there is none.
+    let pdf = install_pdf(&runtime_dir);
     let conf = crate::db::entity_db::transactional_conf(&factory)?;
     // `(request cap + service cap) * 2` must fit in `max - reserve`; check_serve_caps below says so.
     let pool = conf.pool.clone();
@@ -1064,11 +1066,10 @@ fn boot_server_factory(
     let cluster_edge = cluster_edge::listen(Arc::clone(&factory), cluster_posts)?;
     notws::install_push().map_err(moqui_lib::error::Error::from)?;
     tracing::info!("Cluster, cluster edge listener and notification WebSocket push initialized");
-    let pdf = install_pdf(&runtime_dir);
     ssh::install_client(&factory, &runtime_dir);
     sso::install();
     ipp::install();
-    tracing::info!("PDF, SSH client, SSO and IPP integrations installed");
+    tracing::info!("SSH client, SSO and IPP integrations installed");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

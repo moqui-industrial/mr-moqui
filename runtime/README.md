@@ -12,6 +12,7 @@ The runtime directory holds everything that varies per instance. The binary find
 | `db/` | no | Embedded database cluster and related files |
 | `log/` | no | Log files |
 | `opensearch/` | no | Managed OpenSearch install and data |
+| `chromium/` | no | Chromium from `./moq chromium-download`, for PDF when `pdf_chromium_path` is not set |
 | `tmp/` | no | Scratch files |
 | `txlog/` | no | Transaction logs |
 | `.env` | no | Generated secrets and local overrides |
