@@ -2379,8 +2379,52 @@ download_component() {
 # Component names already checked in this run, space separated.
 COMPONENTS_CHECKED=' '
 
+# The myaddons.xml or addons.xml component that $1 names: the one of that name, else the one whose component-name is $1,
+# a fork whose repository and directory are named apart from its component.xml name (mr-mantle-usl is mantle-usl).
+addons_name_for() {
+    local file line
+    if addons_find component "$1" >/dev/null; then
+        printf '%s\n' "$1"
+        return 0
+    fi
+    for file in "$MYADDONS" "$ADDONS"; do
+        while IFS= read -r line; do
+            if [ "$(xml_attr "$line" component-name)" = "$1" ]; then
+                xml_attr "$line" name
+                return 0
+            fi
+        done < <(xml_elements "$file" component)
+    done
+    printf '%s\n' "$1"
+}
+
+# The component.xml name of the component in directory $1, else the directory name.
+component_name_of() {
+    local name
+    name=$(xml_attr "$(xml_elements "$1/component.xml" component | head -n 1)" name)
+    printf '%s\n' "${name:-$(basename "$1")}"
+}
+
+# The directory in runtime/component of the component a depends-on of $1 means: the directory of that name, else the
+# one whose component.xml has that name.
+component_dir_named() {
+    local dir
+    if [ -e "$RUNTIME_DIR/component/$1" ]; then
+        printf '%s\n' "$RUNTIME_DIR/component/$1"
+        return 0
+    fi
+    for dir in "$RUNTIME_DIR"/component/*; do
+        if [ -f "$dir/component.xml" ] && [ "$(component_name_of "$dir")" = "$1" ]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+    done
+    return 1
+}
+
 component_get_one() {
-    local name=$1 type=$2 element target
+    local name type=$2 element target
+    name=$(addons_name_for "$1")
     case $COMPONENTS_CHECKED in *" $name "*) return 0 ;; esac
     element=$(addons_find component "$name") || die "component $name is not in myaddons.xml or addons.xml"
     if [ "$(xml_attr "$element" skip-get)" = true ]; then
@@ -2397,8 +2441,10 @@ component_get_one() {
     component_check_depends "$name" "$type"
 }
 
+# A depends-on names a component by its component.xml name, which for a fork is not its directory (MrSimpleScreens
+# depends on mantle-usl, in mr-mantle-usl).
 component_check_depends() {
-    local name=$1 type=$2 dir dep line
+    local name=$1 type=$2 dir dep dep_dir line
     case $COMPONENTS_CHECKED in *" $name "*) return 0 ;; esac
     COMPONENTS_CHECKED="$COMPONENTS_CHECKED$name "
     dir=$RUNTIME_DIR/component/$name
@@ -2410,8 +2456,8 @@ component_check_depends() {
         [ -z "$dep" ] || deps+=("$dep")
     done < <(xml_elements "$dir/component.xml" depends-on)
     for dep in "${deps[@]}"; do
-        if [ -e "$RUNTIME_DIR/component/$dep" ]; then
-            component_check_depends "$dep" "$type"
+        if dep_dir=$(component_dir_named "$dep"); then
+            component_check_depends "$(basename "$dep_dir")" "$type"
         else
             info "$name depends on $dep"
             component_get_one "$dep" "$type"

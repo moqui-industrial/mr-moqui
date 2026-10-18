@@ -394,6 +394,11 @@ if have git; then
 </component>'
     mkrepo comp-b '<component name="comp-b" version="2.0"/>'
     mkrepo comp-c '<component name="comp-c"/>'
+    # A fork that keeps its upstream component name: repository and directory mr-comp-d, component.xml name comp-d.
+    mkrepo mr-comp-d '<component name="comp-d" version="1.0"/>'
+    mkrepo comp-e '<component name="comp-e">
+    <depends-on name="comp-d"/>
+</component>'
     mkdir -p "$FIX/src/start/screen" "$FIX/src/start/data" "$FIX/src/start/services" "$FIX/src/start/src"
     echo '<screen name="start"/>' >"$FIX/src/start/screen/start.xml"
     echo 'StartApp start' >"$FIX/src/start/data/AppSeedData.xml"
@@ -420,6 +425,8 @@ if have git; then
     <component name="comp-b" group="g" branch="master" repository="local"/>
     <component name="comp-c" group="g" branch="master"/>
     <component name="comp-skip" group="g" branch="master" skip-get="true"/>
+    <component name="mr-comp-d" component-name="comp-d" group="g" branch="master"/>
+    <component name="comp-e" group="g" branch="master"/>
     <component name="start" group="g" branch="master"/>
     <component-set name="outer" sets="inner"/>
     <component-set name="inner" components="comp-c"/>
@@ -440,6 +447,13 @@ EOF
     rm -rf "$R/runtime/component/comp-b"
     check "component-depends" 0 'comp-a depends on comp-b' -- "$M" component-depends
     check "component-get bad type" 1 'not git, current' -- "$M" component-get -t svn comp-a
+    check "a depends-on names a fork by its component name" 0 'Getting mr-comp-d' -- "$M" component-get comp-e
+    check "the fork goes in its own directory" 0 '' -- test -f "$R/runtime/component/mr-comp-d/component.xml"
+    check "component-depends finds the fork by its component name" 0 'Checked: .*comp-e, mr-comp-d' -- \
+        "$M" component-depends
+    lacks "component-depends gets no fork that is there" 'Getting' -- "$M" component-depends
+    check "component-get by component name" 0 'mr-comp-d is already in' -- "$M" component-get comp-d
+    rm -rf "$R/runtime/component/mr-comp-d" "$R/runtime/component/comp-e"
 
     # Repository: -r, then the component's repository attribute, then default-repository, then how the root
     # repo was cloned (https -> github, git@ -> github-ssh, no origin -> github).

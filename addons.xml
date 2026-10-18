@@ -10,6 +10,8 @@
 
     The repository a download uses is the component's repository attribute, else default-repository on a root
     element, else github when this repo was cloned by https and github-ssh when by git@ (ssh); -r picks one.
+    A component's name is its repository and directory. A fork that keeps the upstream component.xml name (mr-mantle-usl
+    is mantle-usl) has that name in component-name, so a depends-on, component-get, or component-set naming it finds it.
     -->
 
     <repository name="github">
@@ -43,9 +45,9 @@
     <component name="start" group="moqui" version="" branch="master"/>
 
     <!-- Mantle Business Artifact Components, as the mr- forks (moqui/mr-mantle-udm, moqui/mr-mantle-usl; no MR Moqui releases yet) -->
-    <component name="mr-mantle-udm" group="moqui" version="" branch="master"/>
-    <component name="mr-mantle-usl" group="moqui" version="" branch="master"/>
-    <component name="MrSimpleScreens" group="moqui" version="" branch="master"/>
+    <component name="mr-mantle-udm" component-name="mantle-udm" group="moqui" version="" branch="master"/>
+    <component name="mr-mantle-usl" component-name="mantle-usl" group="moqui" version="" branch="master"/>
+    <component name="MrSimpleScreens" component-name="SimpleScreens" group="moqui" version="" branch="master"/>
     <!-- Applications -->
     <component name="ironstone-boss" group="moqui" version="" branch="master"/>
     <component name="MrMarbleERP" group="moqui" version="" branch="master"/>
