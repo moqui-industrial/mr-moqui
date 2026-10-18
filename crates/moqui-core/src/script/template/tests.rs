@@ -305,6 +305,42 @@ fn markdown_fancy_converts_markdown_then_runs_the_template() {
 }
 
 #[test]
+fn markdown_fancy_tag_lines_in_a_table_do_not_become_rows() {
+    // markdown makes a row of each line inside a table, so the list would repeat an empty row with
+    // each item and the tag lines would leave empty rows of their own
+    let source = "| Item | Qty |\n|---|--:|\n<#list items as item>\n| ${item.id} | ${item.qty} |\n</#list>\n\
+        <#if hasTotal><#-- total row -->\n| **Total** | ${total} |\n</#if>\n| ${note} | |\n";
+    let prepared = markdown_fancy_source(source).unwrap();
+    assert!(prepared.contains("<tbody>\n<#list items as item>\n<tr>"), "{prepared}");
+    assert!(
+        prepared.contains("\n<#if hasTotal><#-- total row -->\n<tr>"),
+        "{prepared}"
+    );
+    let data = moqui_lib::json::from_json(&serde_json::json!({
+        "items": [{"id": "a", "qty": 1}, {"id": "b", "qty": 2}], "hasTotal": true, "total": 3, "note": "n"
+    }));
+    let html = MarkdownFancyRenderer.render(source, Some(&data)).unwrap();
+    assert_eq!(html.matches("<tr>").count(), 5, "{html}");
+    assert!(
+        html.contains("<tr><td>a</td><td style=\"text-align: right\">1</td></tr>"),
+        "{html}"
+    );
+    assert!(
+        html.contains("<tr><td>b</td><td style=\"text-align: right\">2</td></tr>"),
+        "{html}"
+    );
+    assert!(
+        html.contains("<tr><td><strong>Total</strong></td><td style=\"text-align: right\">3</td></tr>"),
+        "{html}"
+    );
+    // a row of only `${}` is a row
+    assert!(
+        html.contains("<tr><td>n</td><td style=\"text-align: right\"></td></tr>"),
+        "{html}"
+    );
+}
+
+#[test]
 fn assign_reads_the_context_value_before_it_and_its_own_value_after() {
     crate::script::clear_context_stack();
     crate::script::set_context_name("n", Value::I32(5)).unwrap();

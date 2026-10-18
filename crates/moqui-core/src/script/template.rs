@@ -172,7 +172,9 @@ impl TemplateRenderer for MarkdownFancyRenderer {
 
 /// The fancy template that a markdown template becomes: the markdown converted to HTML with each
 /// tag, comment, `${}` and escape of the template put back as written. A tag alone in a paragraph
-/// loses the paragraph, so a tag on its own line stays on its own line.
+/// loses the paragraph, so a tag on its own line stays on its own line. A tag alone on a line inside
+/// a table loses the row the markdown made of it, so a `<#list>` around a row repeats the row; Java's
+/// `.md.ftl` also ran markdown first, and there the tag stayed in a row of its own.
 ///
 /// # Errors
 ///
@@ -221,7 +223,7 @@ pub fn markdown_fancy_source(source: &str) -> Result<String, Error> {
             index += ch.len_utf8();
         }
     }
-    let mut html = moqui_lib::markdown::to_html(&markdown);
+    let mut html = lift_tag_rows(&moqui_lib::markdown::to_html(&markdown), &prefix, &held);
     for (placeholder, original, is_tag) in &held {
         if *is_tag {
             html = html.replace(&format!("<p>{placeholder}</p>"), original);
@@ -229,6 +231,55 @@ pub fn markdown_fancy_source(source: &str) -> Result<String, Error> {
         html = html.replace(placeholder, original);
     }
     Ok(html)
+}
+
+/// The markdown HTML with each table row that markdown made of a tag line replaced by the line's
+/// placeholders: a row whose first cell is only tag placeholders and whose other cells are empty.
+/// pulldown-cmark writes each body row on a line of its own.
+fn lift_tag_rows(html: &str, prefix: &str, held: &[(String, String, bool)]) -> String {
+    let mut out = String::with_capacity(html.len());
+    for line in html.split_inclusive('\n') {
+        match tag_row_text(line.trim_end_matches('\n'), prefix, held) {
+            Some(tags) => {
+                out.push_str(tags);
+                out.push('\n');
+            }
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
+/// The first cell's text when `row` is a table row of tag placeholders alone, else `None`.
+fn tag_row_text<'a>(row: &'a str, prefix: &str, held: &[(String, String, bool)]) -> Option<&'a str> {
+    let mut cells = row.strip_prefix("<tr>")?.strip_suffix("</tr>")?;
+    let mut first = None;
+    while !cells.is_empty() {
+        let cell = cells.strip_prefix("<td")?;
+        let cell = &cell[cell.find('>')? + 1..];
+        let end = cell.find("</td>")?;
+        if first.is_none() {
+            first = Some(&cell[..end]);
+        } else if end > 0 {
+            return None;
+        }
+        cells = &cell[end + "</td>".len()..];
+    }
+    let text = first?;
+    let mut rest = text.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    while !rest.is_empty() {
+        let after = rest.strip_prefix(prefix)?;
+        let digits = after.find(|c: char| !c.is_ascii_digit())?;
+        let index: usize = after[..digits].parse().ok()?;
+        if !held.get(index)?.2 {
+            return None;
+        }
+        rest = after[digits..].strip_prefix('x')?.trim_start();
+    }
+    Some(text)
 }
 
 /// The renderer a conf `class` names: `fancy`, `fancy-html`, `fancy-locked`, `fancy-locked-html`,
