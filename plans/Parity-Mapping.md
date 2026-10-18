@@ -102,6 +102,7 @@ Standalone utilities. No `ExecutionContext`. Java's `org.moqui.util` and `org.mo
 | `moqui-lib/src/resource.rs` | File and in-memory half of `resource/ResourceReference.java`. No scheme router. | Partial |
 | `moqui-lib/src/regex_match.rs` | Java `String.matches` (whole input, `.` does not cross a line). | Port |
 | `moqui-lib/src/markdown.rs` | `MarkdownTemplateRenderer` (flexmark). CommonMark plus GitHub tables. The flexmark `[TOC]` extension is not rendered. | Partial |
+| `moqui-lib/src/barcode.rs` | The barcode4j FOP extension's `<barcode:code128>` (`moqui-fop`), as inline SVG for `html-print` through `ec.resource.code128Svg`. The same code sets, symbols and layout as barcode4j 2.1; Code 128 only. | Redesign |
 | `moqui-lib/src/codec.rs` | Hex, constant-time compare, FNV-1a. | Native |
 | `moqui-lib/src/sync.rs` | Lock guards that ignore poisoning. | Native |
 | `moqui-lib/src/error.rs` | Plain error for this crate. Artifact exceptions stay in core. | Native |

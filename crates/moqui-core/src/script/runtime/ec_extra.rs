@@ -15,6 +15,7 @@
 //! `ec.resource` expansion, `ec.l10n`, `ec.context`, `ec.screen`, and the static helpers the screen
 //! macros call (`WebUtilities`, `StringUtilities`, `CollectionUtilities`).
 
+use moqui_lib::object::to_plain_string;
 use rquickjs::object::Accessor;
 
 use super::*;
@@ -189,8 +190,74 @@ pub(super) fn add_resource_functions<'js>(ctx: &Ctx<'js>, resource: &Object<'js>
         Function::new(ctx.clone(), super::ec_screen::resource_xsl_fo_transform),
     )?;
     caught(ctx, "resource.xslFoTransform", resource.set("xslFoTransform", xsl_fo))?;
+    let code128 = caught(
+        ctx,
+        "resource.code128Svg",
+        Function::new(ctx.clone(), resource_code128_svg),
+    )?;
+    caught(ctx, "resource.code128Svg", resource.set("code128Svg", code128))?;
     let template = caught(ctx, "resource.template", Function::new(ctx.clone(), resource_template))?;
     caught(ctx, "resource.template", resource.set("template", template))
+}
+
+/// `ec.resource.code128Svg(text, options)`: the Code 128 barcode of `text` as an inline `<svg>`, for a print document,
+/// where Java's XSL-FO had barcode4j's `<barcode:code128>`. The options are `height` (the whole height, text
+/// included), `moduleWidth`, `fontSize` (CSS lengths, or millimetres as a number), `fontFamily`, `humanReadable` and
+/// `quietZone` (modules each side, or false). No text gives no barcode; text Code 128 cannot hold (not ASCII) is logged
+/// and gives no barcode, so the rest of the document still prints.
+fn resource_code128_svg(ctx: Ctx<'_>, text: JsValue<'_>, options: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        let text = to_plain_string(&js_to_host(&ctx, &text)?);
+        let options = match options.0.filter(|value| !value.is_null() && !value.is_undefined()) {
+            Some(value) => code128_options(&js_to_host(&ctx, &value)?)
+                .map_err(|message| Exception::throw_message(&ctx, &format!("code128Svg: {message}")))?,
+            None => moqui_lib::barcode::SvgOptions::default(),
+        };
+        if text.is_empty() {
+            return Ok(String::new());
+        }
+        match moqui_lib::barcode::code128(&text) {
+            Ok(barcode) => Ok(barcode.svg(&options)),
+            Err(err) => {
+                tracing::error!("No Code 128 barcode in the document: {}", err.message());
+                Ok(String::new())
+            }
+        }
+    })
+}
+
+/// The SVG options of a `code128Svg` options map.
+fn code128_options(value: &Value) -> Result<moqui_lib::barcode::SvgOptions, String> {
+    let Value::Map(map) = value else {
+        return Err("the options are not an object".to_string());
+    };
+    let length = |value: &Value| match value {
+        Value::String(text) => moqui_lib::barcode::length_mm(text).map_err(|err| err.message().to_string()),
+        other => to_plain_string(other)
+            .parse::<f64>()
+            .map_err(|_| format!("{} is not a length", to_plain_string(other))),
+    };
+    let mut options = moqui_lib::barcode::SvgOptions::default();
+    for (name, value) in map {
+        match name.as_str() {
+            "height" => options.height = length(value)?,
+            "moduleWidth" => options.module_width = length(value)?,
+            "fontSize" => options.font_size = length(value)?,
+            "fontFamily" | "fontName" => options.font_family = to_plain_string(value),
+            "humanReadable" => options.human_readable = !matches!(value, Value::Bool(false) | Value::Null),
+            "quietZone" => {
+                options.quiet_zone = match value {
+                    Value::Bool(false) | Value::Null => 0,
+                    Value::Bool(true) => moqui_lib::barcode::SvgOptions::default().quiet_zone,
+                    other => to_plain_string(other)
+                        .parse()
+                        .map_err(|_| format!("quietZone {} is not a number of modules", to_plain_string(other)))?,
+                }
+            }
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
+    Ok(options)
 }
 
 /// `ec.resource.template(location, data)`: the file rendered by the renderer for its extension, as

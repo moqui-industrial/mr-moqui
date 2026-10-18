@@ -306,6 +306,36 @@ fn the_pdf_renderer_uses_the_installed_engine_or_reports_that_it_is_not_availabl
     crate::screen::clear_pdf_engine();
 }
 
+/// `ec.resource.code128Svg` as the print templates call it: an inline SVG; no barcode, not an error, for empty text or
+/// text outside ASCII; an error for an option it does not know.
+#[test]
+fn code128_svg_draws_the_barcode_a_template_asks_for() {
+    let context = ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    let drawn = crate::script::eval_condition(
+        "(() => { const svg = ec.resource.code128Svg('55500', {height: '0.4in', moduleWidth: '0.3mm', fontSize: '12pt', humanReadable: true}); \
+         return svg.startsWith('<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"29.7mm\" height=\"10.16mm\"') && svg.includes('>55500</text>') })()",
+    )
+    .unwrap();
+    assert!(drawn);
+    let plain = crate::script::eval_condition(
+        "(() => { const svg = ec.resource.code128Svg(100045, {humanReadable: false, quietZone: false}); \
+         return svg.startsWith('<svg') && !svg.includes('<text') && svg.includes('<rect x=\"0\"') })()",
+    )
+    .unwrap();
+    assert!(plain);
+    let nothing = crate::script::eval_condition(
+        "ec.resource.code128Svg(null) === '' && ec.resource.code128Svg('') === '' && ec.resource.code128Svg('caf\\u00e9') === ''",
+    )
+    .unwrap();
+    assert!(nothing);
+    let refused = crate::script::eval_condition(
+        "(() => { try { ec.resource.code128Svg('1', {barWidth: 2}); return false } catch (e) { return String(e).includes('unknown option barWidth') } })()",
+    )
+    .unwrap();
+    assert!(refused);
+}
+
 /// Keeps the last document it was given.
 #[derive(Default)]
 struct CapturePdf(std::sync::Mutex<String>);

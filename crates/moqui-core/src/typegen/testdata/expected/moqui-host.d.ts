@@ -385,6 +385,19 @@ interface MoquiResourceFacade {
     template(location: string, data?: MoquiMap | null): string;
     /** PDF bytes of an `html-print` (old name `xsl-fo`) document. `xslt` must be null and `out` is ignored. Throws when PDF is not available. */
     xslFoTransform(document: string, xslt?: null, out?: unknown, contentType?: string | null): Uint8Array;
+    /** The Code 128 barcode of `text` as an inline `<svg>` sized in millimetres, for a print document. Lengths take CSS units
+     * (or millimetres as a number); `height` includes the text under the bars. No text, or text outside ASCII, gives "". */
+    code128Svg(
+        text: unknown,
+        options?: {
+            height?: string | number;
+            moduleWidth?: string | number;
+            fontSize?: string | number;
+            fontFamily?: string;
+            humanReadable?: boolean;
+            quietZone?: number | boolean;
+        } | null,
+    ): string;
 }
 
 interface MoquiL10nFacade {
