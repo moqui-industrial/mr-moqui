@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Gallery screen for the 3.2 List archetype of the IronStone BOSS style guide: a find and list screen over
+    moqui.basic.Enumeration joined to its type, with inline finds, Find Options, saved finds, column picker, paging,
+    exports, row selection with a bulk action, row actions, a status-like chip and a New dialog. Nothing is written. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="List" default-menu-index="2">
+
+    <transition name="detail"><default-response url="../Detail"/></transition>
+    <transition name="landing"><default-response url="../Landing"/></transition>
+    <transition name="createEnum">
+        <actions><message>Gallery: nothing is written. A real New dialog would create the enumeration "${description}" of type ${enumTypeId}.</message></actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="bulkTag">
+        <actions><message>Gallery: ${enumId ? enumId.split(',').length : 0} selected row(s) would be tagged "${tag}" (${enumId}); nothing is written.</message></actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="cloneEnum">
+        <actions><message>Gallery: cloning ${enumId} is a no-op; nothing is written.</message></actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="switchView">
+        <actions><message>The ${view} view is not built yet: form-list views (style guide §8) will switch the same rows and filters to a board or a calendar.</message></actions>
+        <default-response url="."/>
+    </transition>
+
+    <widgets>
+        <container-box type="info"><box-header title="Archetype 3.2 List"/><box-body>
+            <label type="p" text="The find and list screen over one record type, here Enumeration with its type through display-entity: the identifier first as a text link to the Detail, a chip for the state, Find Options for the rest of the filters, saved finds, the column picker, paging with a page size, exports, row selection with one bulk action in the header menu, two row actions, and New as a dialog. Nothing posted here is written."/>
+            <label type="p" text="Fallbacks for §8: the state chip is a tonal anchor-button link (Enumeration has no status, so the state is derived per row) until the m-tonal status chip exists; the two inline finds are a form-single above the table because header-dialog moves every header-field into Find Options; the view switch is a button-menu where only List works until views exists."/>
+        </box-body></container-box>
+
+        <!-- title row: the title, the view switch and New -->
+        <container style="row items-center q-mx-sm q-mb-xs">
+            <label text="Enumerations" type="h5" style="q-my-none"/>
+            <container style="col"/>
+            <button-menu text="View: list" icon="fa fa-list">
+                <link url="." text="List" link-type="anchor"/>
+                <link url="switchView" text="Board" link-type="hidden-form-link" parameter-map="{view:'board'}"/>
+                <link url="switchView" text="Calendar" link-type="hidden-form-link" parameter-map="{view:'calendar'}"/>
+            </button-menu>
+            <container-dialog id="NewEnumDialog" button-text="New enumeration" width="600">
+                <form-single name="NewEnumForm" transition="createEnum" focus-field="description">
+                    <field name="enumTypeId"><default-field title="Type">
+                        <drop-down><entity-options key="${enumTypeId}" text="${description}">
+                            <entity-find entity-name="moqui.basic.EnumerationType" cache="true"><order-by field-name="description"/></entity-find>
+                        </entity-options></drop-down>
+                    </default-field></field>
+                    <field name="description"><default-field title="Description"><text-line size="40"/></default-field></field>
+                    <field name="enumCode"><default-field title="Code"><text-line size="20"/></default-field></field>
+                    <field name="submitButton"><default-field title="Create"><submit/></default-field></field>
+                </form-single>
+            </container-dialog>
+        </container>
+
+        <!-- the most-used filters inline -->
+        <form-single name="EnumFind" transition=".">
+            <field name="enumTypeId"><default-field title="Type">
+                <drop-down allow-empty="true"><entity-options key="${enumTypeId}" text="${description}">
+                    <entity-find entity-name="moqui.basic.EnumerationType" cache="true"><order-by field-name="description"/></entity-find>
+                </entity-options></drop-down>
+            </default-field></field>
+            <field name="description"><default-field title="Description"><text-find size="25" hide-options="true"/></default-field></field>
+            <field name="findButton"><default-field title="Find"><submit/></default-field></field>
+            <field-layout><field-row-big><field-ref name="enumTypeId"/><field-ref name="description"/><field-ref name="findButton"/></field-row-big></field-layout>
+        </form-single>
+
+        <form-list name="EnumList" list="enumList" transition="bulkTag" multi="true" header-dialog="true" saved-finds="true" select-columns="true"
+                show-page-size="true" show-csv-button="true" show-xlsx-button="true">
+            <entity-find entity-name="moqui.basic.Enumeration" list="enumList">
+                <search-form-inputs default-order-by="description,enumId"/>
+            </entity-find>
+            <!-- row-actions is the per-row actions block: a derived state, because Enumeration has no status -->
+            <row-actions>
+                <set field="state" from="optionIndicator ? 'Flagged' : (parentEnumId ? 'Child' : (sequenceNum != null ? 'Ordered' : 'Plain'))"/>
+            </row-actions>
+            <row-selection id-field="enumId" list-mode="true">
+                <action><form-single name="BulkTagForm" transition="bulkTag">
+                    <field name="tag"><default-field title="Tag"><text-line size="15" default-value="reviewed"/></default-field></field>
+                    <field name="submitButton"><default-field title="Tag selected"><submit/></default-field></field>
+                    <field-layout><field-row-big><field-ref name="tag"/><field-ref name="submitButton"/></field-row-big></field-layout>
+                </form-single></action>
+            </row-selection>
+
+            <field name="enumId"><header-field title="ID" show-order-by="true"><text-find size="15" hide-options="true"/></header-field>
+                <default-field><link url="detail" text="${enumId}"/></default-field></field>
+            <field name="description"><header-field show-order-by="true"><text-find size="25"/></header-field>
+                <default-field><display/></default-field></field>
+            <field name="enumTypeId"><header-field title="Type" show-order-by="true">
+                    <drop-down allow-empty="true"><entity-options key="${enumTypeId}" text="${description}">
+                        <entity-find entity-name="moqui.basic.EnumerationType" cache="true"><order-by field-name="description"/></entity-find>
+                    </entity-options></drop-down>
+                </header-field>
+                <default-field><display-entity entity-name="moqui.basic.EnumerationType"/></default-field></field>
+            <field name="state"><header-field title="State"/>
+                <conditional-field condition="state == 'Flagged'">
+                    <link url="." link-type="anchor-button" btn-type="warning" style="text-no-wrap" text="${state}" parameter-map="{optionIndicator:'Y'}"/></conditional-field>
+                <conditional-field condition="state == 'Child'">
+                    <link url="." link-type="anchor-button" btn-type="info" style="text-no-wrap" text="${state}" parameter-map="{parentEnumId_op:'empty', parentEnumId_not:'Y'}"/></conditional-field>
+                <conditional-field condition="state == 'Ordered'">
+                    <link url="." link-type="anchor-button" btn-type="success" style="text-no-wrap" text="${state}" parameter-map="{sequenceNum_from:'0'}"/></conditional-field>
+                <default-field>
+                    <link url="." link-type="anchor-button" style="text-grey text-no-wrap" text="${state}" parameter-map="{parentEnumId_op:'empty', sequenceNum_op:'empty'}"/></default-field>
+            </field>
+            <field name="enumCode"><header-field title="Code" show-order-by="true"><text-find size="15" hide-options="true"/></header-field>
+                <default-field><display/></default-field></field>
+            <field name="sequenceNum" align="right"><header-field title="Seq" show-order-by="true"><range-find size="6"/></header-field>
+                <default-field><display/></default-field></field>
+            <field name="parentEnumId"><header-field title="Parent" show-order-by="true"><text-find size="15" hide-options="true"/></header-field>
+                <default-field><display-entity entity-name="moqui.basic.Enumeration" key-field-name="enumId" text="${description}"/></default-field></field>
+            <field name="optionIndicator"><header-field title="Flag" show-order-by="true">
+                <drop-down allow-empty="true"><option key="Y" text="Flagged"/><option key="N" text="Not flagged"/></drop-down></header-field>
+                <default-field><display/></default-field></field>
+            <field name="lastUpdatedStamp" align="right"><header-field title="Changed" show-order-by="true"><date-period/></header-field>
+                <default-field><display format="yyyy-MM-dd HH:mm"/></default-field></field>
+            <field name="findButton"><header-field title="Find"><submit/></header-field></field>
+            <!-- two row actions: open (text link) and clone (transition) -->
+            <field name="rowActions" align="right"><header-field title=""/><default-field>
+                <container style="row no-wrap justify-end items-center">
+                    <link url="detail" text="" icon="fa fa-eye" tooltip="Open" link-type="anchor-button" style="bg-transparent"/>
+                    <link url="cloneEnum" text="" icon="fa fa-clone" tooltip="Clone" style="bg-transparent" parameter-map="{enumId:enumId}"/>
+                </container>
+            </default-field></field>
+
+            <columns>
+                <column><field-ref name="enumId"/></column>
+                <column><field-ref name="description"/></column>
+                <column><field-ref name="enumTypeId"/></column>
+                <column><field-ref name="state"/></column>
+                <column><field-ref name="enumCode"/></column>
+                <column><field-ref name="sequenceNum"/></column>
+                <column><field-ref name="parentEnumId"/></column>
+                <column><field-ref name="lastUpdatedStamp"/></column>
+                <column><field-ref name="rowActions"/></column>
+            </columns>
+            <columns type="mobile">
+                <column><field-ref name="enumId"/><field-ref name="description"/></column>
+                <column><field-ref name="enumTypeId"/><field-ref name="state"/></column>
+                <column><field-ref name="rowActions"/></column>
+            </columns>
+        </form-list>
+        <link url="landing" text="Back to the Landing" link-type="anchor"/>
+    </widgets>
+</screen>

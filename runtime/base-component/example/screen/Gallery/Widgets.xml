@@ -1,0 +1,291 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Gallery: the section 4 widget guide as a fixture. Every field widget in one form-single, every button role, the
+    label types and text classes, a small form-list with header find, sort, paging, row selection and row actions,
+    and the containers: box types, a dialog, a dynamic container, a lazy tree, an editable value and an image. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Widgets" default-menu-index="14">
+
+    <!-- nothing here writes: every action answers with a message -->
+    <transition name="noop" method="post">
+        <actions><message>Nothing changed: the gallery writes nothing</message></actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="dangerNoop" method="post">
+        <actions><message type="warning">Would delete the example record (nothing is written in the gallery)</message></actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="editValue" method="post">
+        <actions><message>Would save: ${value} (nothing is written in the gallery)</message></actions>
+        <default-response url="."/>
+    </transition>
+    <!-- a drop-down with server search: the term comes in as 'term', the answer is a list of value and label -->
+    <transition name="searchEnum" read-only="true">
+        <actions>
+            <entity-find entity-name="moqui.basic.Enumeration" list="enumSearchList" limit="20">
+                <econditions combine="or">
+                    <econdition field-name="enumId" operator="like" value="%${term}%" ignore-case="true"/>
+                    <econdition field-name="description" operator="like" value="%${term}%" ignore-case="true"/>
+                </econditions>
+                <order-by field-name="description"/>
+            </entity-find>
+            <script>ec.web.sendJsonResponse(enumSearchList.map((row) => ({value: row.enumId, label: `${row.description} [${row.enumId}]`})))</script>
+        </actions>
+        <default-response type="none"/>
+    </transition>
+    <!-- the dynamic container loads this screen again with dynPart=Y, which renders only the DynamicPart section -->
+    <transition name="loadPart"><default-response url="."/></transition>
+    <transition name="openDetail"><default-response url="../Detail"/></transition>
+
+    <actions>
+        <set field="editableText" from="'Click this text to edit it in place'"/>
+        <set field="fieldValues" from="{textMasked: '8015551234', textNumber: 42, textArea: 'Plain text area.', textMd: '**Markdown** text area with a preview',
+            ddEntity: 'ScreenThemeType', ddMulti: ['UserGroup', 'UserAccount'], dtDate: '2026-10-18', dtTime: '09:30', dtDateTime: '2026-10-18 09:30',
+            checkSingle: 'Y', checkMulti: ['email'], radioKind: 'task', displayWrapped: 'A read-only value with a label', displayEntity: 'ScreenThemeType', hid: 'hidden-value'}"/>
+    </actions>
+    <widgets>
+        <!-- the small text the dynamic container loads -->
+        <section name="DynamicPart" condition="dynPart == 'Y'"><widgets>
+            <label type="p" text="Loaded by dynamic-container from the loadPart transition at ${ec.l10n.format(new Date(), 'HH:mm:ss')}." style="text-caption q-mb-none"/>
+        </widgets></section>
+
+        <section name="FullScreen" condition="dynPart != 'Y'"><widgets>
+        <container-box type="info"><box-header title="Archetype 4 Widget guide"/><box-body>
+            <label type="p" text="The fixture for style changes: every field widget of section 4.5 in one form, every button role of 4.6, the label types and text classes of 4.7, a list with header find, sort, paging, row selection and row actions (4.4), and the containers of 4.1 and 4.2. Nothing here writes; every action answers with a message."/>
+            <label type="p" text="Fallbacks for style-guide section 8: none needed; the dynamic container loads this screen with dynPart=Y because the gallery owns no second screen file."/>
+        </box-body></container-box>
+
+        <!-- 1. fields -->
+        <container-box><box-header title="Fields (4.5): every widget, titled by its element"/><box-body>
+            <form-single name="AllFields" transition="noop" map="fieldValues">
+                <field name="textMasked"><default-field title="text-line mask=(999) 999-9999" tooltip="A masked text line"><text-line mask="(999) 999-9999" size="20"/></default-field></field>
+                <field name="textNumber"><default-field title="text-line input-type=number"><text-line input-type="number" size="10"/></default-field></field>
+                <field name="textArea"><default-field title="text-area"><text-area rows="2"/></default-field></field>
+                <field name="textMd"><default-field title="text-area editor-type=md"><text-area rows="3" editor-type="md"/></default-field></field>
+                <field name="ddEntity"><default-field title="drop-down entity-options">
+                    <drop-down allow-empty="true"><entity-options key="${enumTypeId}" text="${description} [${enumTypeId}]">
+                        <entity-find entity-name="moqui.basic.EnumerationType" cache="true"><order-by field-name="description"/></entity-find>
+                    </entity-options></drop-down>
+                </default-field></field>
+                <field name="ddMulti"><default-field title="drop-down allow-multiple">
+                    <drop-down allow-multiple="true" allow-empty="true"><entity-options key="${artifactTypeEnumId}" text="${description}">
+                        <entity-find entity-name="moqui.basic.Enumeration" cache="true"><econdition field-name="enumTypeId" value="ArtifactType"/>
+                            <order-by field-name="description"/></entity-find>
+                    </entity-options></drop-down>
+                </default-field></field>
+                <field name="ddSearch"><default-field title="drop-down dynamic-options server-search">
+                    <drop-down allow-empty="true"><dynamic-options transition="searchEnum" server-search="true" min-length="1"/></drop-down>
+                </default-field></field>
+                <field name="dtDate"><default-field title="date-time type=date"><date-time type="date"/></default-field></field>
+                <field name="dtTime"><default-field title="date-time type=time"><date-time type="time"/></default-field></field>
+                <field name="dtDateTime"><default-field title="date-time type=date-time"><date-time type="date-time"/></default-field></field>
+                <field name="period"><default-field title="date-period"><date-period allow-empty="true"/></default-field></field>
+                <field name="dateFind"><default-field title="date-find type=date"><date-find type="date"/></default-field></field>
+                <field name="rangeFind"><default-field title="range-find"><range-find size="6"/></default-field></field>
+                <field name="textFind"><default-field title="text-find"><text-find size="20"/></default-field></field>
+                <field name="checkSingle"><default-field title="check (single)"><check><option key="Y" text="Active"/></check></default-field></field>
+                <field name="checkMulti"><default-field title="check with options">
+                    <check><option key="email" text="Email"/><option key="sms" text="SMS"/><option key="push" text="Push"/></check>
+                </default-field></field>
+                <field name="radioKind"><default-field title="radio">
+                    <radio><option key="task" text="Task"/><option key="call" text="Call"/><option key="event" text="Event"/></radio>
+                </default-field></field>
+                <field name="fileUp"><default-field title="file"><file/></default-field></field>
+                <field name="displayWrapped"><default-field title="display (label-wrapper)"><display/></default-field></field>
+                <field name="displayEntity"><default-field title="display-entity EnumerationType">
+                    <display-entity entity-name="moqui.basic.EnumerationType" key-field-name="enumTypeId"/>
+                </default-field></field>
+                <field name="pwd"><default-field title="password"><password size="20"/></default-field></field>
+                <field name="hid"><default-field><hidden/></default-field></field>
+                <field name="saveButton"><default-field title="Save"><submit/></default-field></field>
+                <field-layout>
+                    <field-row><field-ref name="textMasked"/><field-ref name="textNumber"/></field-row>
+                    <field-row><field-ref name="textArea"/><field-ref name="textMd"/></field-row>
+                    <field-row><field-ref name="ddEntity"/><field-ref name="ddMulti"/></field-row>
+                    <field-row><field-ref name="ddSearch"/><field-ref name="dtDate"/></field-row>
+                    <field-row><field-ref name="dtTime"/><field-ref name="dtDateTime"/></field-row>
+                    <field-row><field-ref name="period"/><field-ref name="dateFind"/></field-row>
+                    <field-row><field-ref name="rangeFind"/><field-ref name="textFind"/></field-row>
+                    <field-row><field-ref name="checkSingle"/><field-ref name="checkMulti"/></field-row>
+                    <field-row><field-ref name="radioKind"/><field-ref name="fileUp"/></field-row>
+                    <field-row><field-ref name="displayWrapped"/><field-ref name="displayEntity"/></field-row>
+                    <field-row><field-ref name="pwd"/><field-ref name="hid"/></field-row>
+                    <field-row-big><field-ref name="saveButton"/></field-row-big>
+                </field-layout>
+            </form-single>
+        </box-body></container-box>
+
+        <!-- 2. buttons -->
+        <container-box><box-header title="Buttons (4.6): primary, tonal, flat, text"/><box-body>
+            <label type="p" text="Primary: a form's submit, outline until a field changes." style="text-caption q-mb-xs"/>
+            <form-single name="ButtonForm" transition="noop">
+                <field name="note"><default-field title="Type here to see the submit turn primary"><text-line size="40"/></default-field></field>
+                <field name="submitButton"><default-field title="Save"><submit/></default-field></field>
+                <field name="resetButton"><default-field title="Reset"><reset/></default-field></field>
+                <field-layout><field-row-big><field-ref name="note"/><field-ref name="submitButton"/><field-ref name="resetButton"/></field-row-big></field-layout>
+            </form-single>
+            <label type="p" text="Tonal (secondary): transition links by btn-type, a danger link with confirmation, a button-menu." style="text-caption q-mt-sm q-mb-xs"/>
+            <container style="row items-center q-gutter-sm">
+                <link url="noop" text="Tonal primary"/>
+                <link url="noop" text="Tonal success" btn-type="success"/>
+                <link url="noop" text="Tonal info" btn-type="info"/>
+                <link url="noop" text="Tonal warning" btn-type="warning"/>
+                <link url="dangerNoop" text="Delete" btn-type="danger" confirmation="Delete the example record?"/>
+                <button-menu text="More" icon="fa fa-ellipsis-v">
+                    <link url="noop" text="Clone" link-type="hidden-form-link"/>
+                    <link url="noop" text="Put on hold" link-type="hidden-form-link"/>
+                    <link url="dangerNoop" text="Cancel" link-type="hidden-form-link" btn-type="danger" confirmation="Cancel the example record?"/>
+                </button-menu>
+            </container>
+            <label type="p" text="Flat (tertiary): icon-only links with link-type=hidden-form-link. The first uses a Material name (icon=edit), the second a Font Awesome class (icon=fa fa-pencil); the macro writes the icon attribute as a CSS class." style="text-caption q-mt-sm q-mb-xs"/>
+            <container style="row items-center q-gutter-sm">
+                <link url="noop" link-type="hidden-form-link" icon="edit" text="" tooltip="Edit (Material name)"/>
+                <link url="noop" link-type="hidden-form-link" icon="fa fa-pencil" text="" tooltip="Edit (Font Awesome class)"/>
+                <link url="noop" link-type="hidden-form-link" icon="fa fa-refresh" text="Flat with text" tooltip="Flat with text"/>
+                <render-mode><text type="qvt"><![CDATA[<q-btn flat round dense icon="more_vert" size="sm"><q-tooltip>Raw q-btn flat round, Material name</q-tooltip></q-btn>]]></text></render-mode>
+            </container>
+            <label type="p" text="Text links: link-type=anchor to a screen and to a transition that redirects." style="text-caption q-mt-sm q-mb-xs"/>
+            <container style="row items-center q-gutter-md">
+                <link url="../Detail" text="Text link to the Detail archetype" link-type="anchor"/>
+                <link url="openDetail" text="Text link through a transition" link-type="anchor"/>
+                <link url="https://moqui.org" url-type="plain" text="Plain URL in a new window" link-type="anchor" target-window="_blank"/>
+            </container>
+        </box-body></container-box>
+
+        <!-- 3. labels -->
+        <container-box><box-header title="Labels (4.7): types and text classes"/><box-body>
+            <container-row><row-col md="6">
+                <label type="h1" text="h1 label"/>
+                <label type="h2" text="h2 label"/>
+                <label type="h3" text="h3 label"/>
+                <label type="h4" text="h4 label: a landing greeting"/>
+                <label type="h5" text="h5 label: a record title"/>
+                <label type="h6" text="h6 label: a section title outside a box"/>
+                <label type="p" text="p label: a paragraph of body text, 14 px at line height 1.5."/>
+                <label type="strong" text="strong label"/>
+                <label type="span" text=" and a span label after it."/>
+            </row-col><row-col md="6">
+                <label type="div" text="text-subtitle1 text-weight-medium: a box title" style="text-subtitle1 text-weight-medium"/>
+                <label type="div" text="text-subtitle2: a group caption" style="text-subtitle2"/>
+                <label type="div" text="text-body2: fields and table cells" style="text-body2"/>
+                <label type="div" text="text-caption: who, when, ids under a title" style="text-caption"/>
+                <label type="div" text="text-overline: a number card label" style="text-overline"/>
+                <label type="div" text="text-mono: LOT-2026-00417" style="text-mono"/>
+                <label type="div" text="text-weight-bold: a total 12,400.00" style="text-weight-bold"/>
+                <label type="div" text="text-primary / text-positive / text-warning / text-negative / text-info" style="text-primary"/>
+                <container style="row q-gutter-sm">
+                    <label type="span" text="positive" style="text-positive"/>
+                    <label type="span" text="warning" style="text-warning"/>
+                    <label type="span" text="negative" style="text-negative"/>
+                    <label type="span" text="info" style="text-info"/>
+                    <label type="span" text="grey-7 muted" style="text-grey-7"/>
+                </container>
+            </row-col></container-row>
+        </box-body></container-box>
+
+        <!-- 4. list -->
+        <container-box><box-header title="List (4.4): header find, sort, paging, row selection, row actions"/><box-body-nopad>
+            <form-list name="EnumList" list="enumList" skip-form="true" paginate="true" show-page-size="true" select-columns="true">
+                <entity-find entity-name="moqui.basic.Enumeration" list="enumList">
+                    <search-form-inputs default-order-by="enumTypeId,sequenceNum,enumId"/>
+                </entity-find>
+                <row-actions>
+                    <set field="descriptionLength" from="description ? description.length : 0"/>
+                    <set field="sizeWord" from="descriptionLength > 20 ? 'long' : 'short'"/>
+                </row-actions>
+                <row-selection id-field="enumId">
+                    <action>
+                        <form-single name="EnumSelectedAction" transition="noop" pass-through-parameters="true">
+                            <field name="actionButton"><default-field title="Tag selected"><submit/></default-field></field>
+                            <field-layout><field-row-big><field-ref name="actionButton"/></field-row-big></field-layout>
+                        </form-single>
+                    </action>
+                </row-selection>
+                <field name="enumId"><header-field title="ID" show-order-by="true"><text-find hide-options="true" size="12"/></header-field>
+                    <default-field><link url="../Detail" text="${enumId}" link-type="anchor"><parameter name="enumId"/></link></default-field></field>
+                <field name="description"><header-field show-order-by="true"><text-find hide-options="true" size="20"/></header-field>
+                    <default-field><display/></default-field></field>
+                <field name="enumTypeId"><header-field title="Type" show-order-by="true">
+                        <drop-down allow-empty="true"><entity-options key="${enumTypeId}" text="${description}">
+                            <entity-find entity-name="moqui.basic.EnumerationType" cache="true"><order-by field-name="description"/></entity-find>
+                        </entity-options></drop-down></header-field>
+                    <default-field><display-entity entity-name="moqui.basic.EnumerationType"/></default-field></field>
+                <field name="sequenceNum" align="right"><header-field title="Seq" show-order-by="true"/>
+                    <default-field><display/></default-field></field>
+                <field name="sizeWord"><default-field title="Row action value"><display text="${sizeWord} (${descriptionLength})"/></default-field></field>
+            </form-list>
+        </box-body-nopad></container-box>
+
+        <!-- 5. containers -->
+        <label type="h6" text="Containers (4.1, 4.2): box types, dialog, dynamic container, tree, editable, image"/>
+        <container-row>
+            <row-col md="2" sm="4" xs="6"><container-box><box-header title="default"/><box-body><label type="p" text="No accent."/></box-body></container-box></row-col>
+            <row-col md="2" sm="4" xs="6"><container-box type="primary"><box-header title="primary"/><box-body><label type="p" text="Left accent."/></box-body></container-box></row-col>
+            <row-col md="2" sm="4" xs="6"><container-box type="info"><box-header title="info"/><box-body><label type="p" text="Left accent."/></box-body></container-box></row-col>
+            <row-col md="2" sm="4" xs="6"><container-box type="warning"><box-header title="warning"/><box-body><label type="p" text="Left accent."/></box-body></container-box></row-col>
+            <row-col md="2" sm="4" xs="6"><container-box type="success"><box-header title="success"/><box-body><label type="p" text="Left accent."/></box-body></container-box></row-col>
+            <row-col md="2" sm="4" xs="6"><container-box type="danger"><box-header title="danger"/><box-body><label type="p" text="Left accent."/></box-body></container-box></row-col>
+        </container-row>
+        <container-row>
+            <row-col md="4">
+                <container-box><box-header title="container-dialog and dynamic-container"/><box-toolbar>
+                    <container-dialog id="WidgetDialog" button-text="Open dialog" title="A dialog with a short form" width="480">
+                        <form-single name="DialogForm" transition="noop" focus-field="name">
+                            <field name="name"><default-field title="Name"><text-line/></default-field></field>
+                            <field name="kind"><default-field title="Kind"><drop-down><option key="a" text="Kind A"/><option key="b" text="Kind B"/></drop-down></default-field></field>
+                            <field name="saveButton"><default-field title="Save"><submit/></default-field></field>
+                        </form-single>
+                    </container-dialog>
+                </box-toolbar><box-body>
+                    <label type="p" text="dynamic-container, loaded from the loadPart transition:" style="text-caption"/>
+                    <dynamic-container id="WidgetDynamic" transition="loadPart"><parameter name="dynPart" value="Y"/></dynamic-container>
+                </box-body></container-box>
+            </row-col>
+            <row-col md="4">
+                <container-box><box-header title="tree: EnumerationType, then Enumeration, lazy"/><box-body>
+                    <!-- open-path opens the first type with its children in the first answer; the other types load on
+                        click (and the client does not draw what it loads, see the gallery report) -->
+                    <tree name="EnumTree" open-path="A2APartType">
+                        <tree-node name="TypeNode">
+                            <label text="${nodeList_entry.description} [${nodeList_entry.enumTypeId}]" id="${nodeList_entry.enumTypeId}"/>
+                            <tree-sub-node node-name="EnumNode" list="childEnums"><actions>
+                                <set field="enumTypeId" from="treeNodeId.split('/').at(-1)"/>
+                                <entity-find entity-name="moqui.basic.Enumeration" list="childEnums">
+                                    <econdition field-name="enumTypeId"/><order-by field-name="sequenceNum,description"/>
+                                </entity-find>
+                            </actions></tree-sub-node>
+                        </tree-node>
+                        <tree-node name="EnumNode">
+                            <link url="../Detail" text="${nodeList_entry.description} [${nodeList_entry.enumId}]" id="${treeNodeId}/${nodeList_entry.enumId}">
+                                <parameter name="enumId" from="nodeList_entry.enumId"/></link>
+                        </tree-node>
+                        <tree-sub-node node-name="TypeNode" list="typeList"><actions>
+                            <entity-find entity-name="moqui.basic.EnumerationType" list="typeList" limit="12"><order-by field-name="description"/></entity-find>
+                        </actions></tree-sub-node>
+                    </tree>
+                </box-body></container-box>
+            </row-col>
+            <row-col md="4">
+                <container-box><box-header title="editable and image"/><box-body>
+                    <label type="p" text="editable (click the text; saves to the editValue transition):" style="text-caption"/>
+                    <editable id="WidgetEditable" text="${editableText}" transition="editValue" parameter-name="value" type="p"/>
+                    <label type="p" text="image with the invertible class for dark mode:" style="text-caption q-mt-sm"/>
+                    <image url="/images/MoquiLogoSmall.png" url-type="plain" alt="Moqui logo" height="40" style="invertible"/>
+                </box-body></container-box>
+            </row-col>
+        </container-row>
+        </widgets></section>
+    </widgets>
+</screen>

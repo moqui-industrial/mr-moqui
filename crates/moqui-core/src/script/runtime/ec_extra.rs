@@ -633,12 +633,16 @@ fn js_safe_map(entries: &indexmap::IndexMap<String, Value>) -> String {
     format!("{{{}}}", parts.join(","))
 }
 
-fn web_encode_html(ctx: Ctx<'_>, text: Opt<String>) -> rquickjs::Result<String> {
-    host_guard(&ctx, || Ok(crate::screen::encode_html(text.0.as_deref().unwrap_or(""))))
+/// `WebUtilities.encodeHtml(text)`: null-safe as Java's, so a null or undefined argument is empty text and a number
+/// or a boolean is its text.
+fn web_encode_html(ctx: Ctx<'_>, text: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        Ok(crate::screen::encode_html(&text_or_empty(&ctx, text.0.as_ref())?))
+    })
 }
 
-fn web_encode_html_js_safe(ctx: Ctx<'_>, text: Opt<String>) -> rquickjs::Result<String> {
-    host_guard(&ctx, || Ok(encode_html_js_safe(text.0.as_deref().unwrap_or(""))))
+fn web_encode_html_js_safe(ctx: Ctx<'_>, text: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || Ok(encode_html_js_safe(&text_or_empty(&ctx, text.0.as_ref())?)))
 }
 
 fn web_field_values_encode_html_js_safe(ctx: Ctx<'_>, map: JsValue<'_>) -> rquickjs::Result<String> {
@@ -949,6 +953,19 @@ mod tests {
         holds(r#"WebUtilities.encodeHtml("<&>") === "&lt;&amp;&gt;""#);
         holds(
             r#"ec.l10n.format("1791979200000", "yyyy") === "2026" && ec.l10n.format(1791979200000 - 1, "yyyy") === "2026""#,
+        );
+    }
+
+    #[test]
+    fn encode_html_is_null_safe() {
+        clear_context_stack();
+        holds(r#"WebUtilities.encodeHtml(null) === "" && WebUtilities.encodeHtml(undefined) === """#);
+        holds(r#"WebUtilities.encodeHtml() === "" && WebUtilities.encodeHtml(missingName) === """#);
+        holds(r#"WebUtilities.encodeHtml(12) === "12" && WebUtilities.encodeHtml(true) === "true""#);
+        holds(r#"WebUtilities.encodeHtmlJsSafe(null) === "" && WebUtilities.encodeHtmlJsSafe(undefined) === """#);
+        holds(r#"WebUtilities.encodeHtmlJsSafe() === "" && WebUtilities.encodeHtmlJsSafe(3.5) === "3.5""#);
+        holds(
+            r#"WebUtilities.encodeHtmlJsSafe(false) === "false" && WebUtilities.encodeHtmlJsSafe("<'") === "&lt;\\'""#,
         );
         holds(r##"ec.l10n.format(1234.5, "#,##0.00") === "1,234.50""##);
         holds(

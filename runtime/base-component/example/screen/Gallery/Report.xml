@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Gallery: the 3.12 Report archetype of the style guide, over moqui.server.ArtifactHitBin. Parameters in the URL
+    (a form-single submitting to "."), number cards, two m-chart charts whose colors are read from the brand CSS
+    variables in the browser, and a result table with the export menu and a totals row. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Report" default-menu-index="12">
+
+    <actions>
+        <!-- Two finds over the same filter: the paged one is the table (search-form-inputs sets the Count fields the
+            list's nav row reads, and pageNoLimit=true exports it whole); the unpaged one feeds the cards, charts and
+            totals, from a copy of the parameters without the paging keys. A script sets a context value by a bare
+            assignment or through context.x = (let/const stay inside the script). -->
+        <script><![CDATA[
+            findParams = Object.assign({}, ec.web.parameters)
+            delete findParams.pageIndex
+            delete findParams.pageSize
+            delete findParams.pageNoLimit
+        ]]></script>
+        <entity-find entity-name="moqui.server.ArtifactHitBin" list="typeList" distinct="true">
+            <select-field field-name="artifactType"/>
+            <order-by field-name="artifactType"/>
+        </entity-find>
+        <entity-find entity-name="moqui.server.ArtifactHitBin" list="allBinList" limit="5000">
+            <search-form-inputs input-fields-map="findParams" paginate="false" default-order-by="-binStartDateTime"/>
+        </entity-find>
+        <entity-find entity-name="moqui.server.ArtifactHitBin" list="hitBinList">
+            <search-form-inputs default-order-by="-binStartDateTime"/>
+        </entity-find>
+        <script><![CDATA[
+            // ArtifactHitBin is written by the server as screens, services and entities are used; when it has no rows
+            // (tracking off, a fresh database) the report shows an inline sample and says so.
+            usingFallback = false
+            if (!allBinList || allBinList.length === 0) {
+                usingFallback = true
+                const base = new Date(); base.setHours(0, 0, 0, 0)
+                const pad = (n) => String(n).padStart(2, '0')
+                const stamp = (dayBack, hour) => { const d = new Date(base.getTime() - dayBack * 86400000); d.setHours(hour)
+                    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(hour)}:00:00` }
+                const names = [['AT_XML_SCREEN', 'screen', 'webroot.qapps.gallery.List'], ['AT_XML_SCREEN', 'screen', 'webroot.qapps.gallery.Detail'],
+                    ['AT_XML_SCREEN_TRANS', 'transition', 'webroot.qapps.gallery.List.searchEnum'], ['AT_SERVICE', 'entity-auto', 'update#moqui.basic.Enumeration'],
+                    ['AT_ENTITY', 'list', 'moqui.basic.Enumeration'], ['AT_ENTITY', 'one', 'moqui.security.UserAccount'], ['AT_REST_PATH', 'get', 'rest/e1/moqui.basic.Geo']]
+                const sample = []
+                let seq = 1
+                for (let day = 6; day >= 0; day--) names.forEach((n, i) => {
+                    const hits = 12 + ((day * 7 + i * 5) % 40)
+                    const avg = 3 + ((i * 13 + day) % 60)
+                    sample.push({ hitBinId: String(seq++), artifactType: n[0], artifactSubType: n[1], artifactName: n[2],
+                        binStartDateTime: stamp(day, 9), binEndDateTime: stamp(day, 10), hitCount: hits,
+                        totalTimeMillis: hits * avg, minTimeMillis: 1, maxTimeMillis: avg * 4, slowHitCount: i === 3 ? 2 : 0 })
+                })
+                allBinList = sample
+                // the first page of the sample, with the fields the list's nav row reads
+                const pageSize = 20
+                hitBinList = sample.slice(0, pageSize)
+                hitBinListCount = sample.length
+                hitBinListPageIndex = 0
+                hitBinListPageSize = pageSize
+                hitBinListPageMaxIndex = Math.floor((sample.length - 1) / pageSize)
+                hitBinListPageRangeLow = 1
+                hitBinListPageRangeHigh = Math.min(pageSize, sample.length)
+            }
+
+            // artifact types for the parameter drop-down: from the data, else from the sample
+            const typeNames = typeList && typeList.length ? typeList.map((row) => row.artifactType).filter((name) => name)
+                : Array.from(new Set(allBinList.map((row) => row.artifactType)))
+            typeOptionList = typeNames.map((name) => ({ artifactType: name }))
+
+            // the numbers and the chart series over the whole filtered set
+            // a number-decimal field is a decimal object in a script: toNumber(), not Number()
+            const num = (v) => (v === null || v === undefined ? 0 : (typeof v === 'object' && typeof v.toNumber === 'function' ? v.toNumber() : Number(v)))
+            let hits = 0, time = 0, slow = 0, maxTime = 0
+            const byType = new Map(), byDay = new Map(), nameSet = new Set()
+            allBinList.forEach((row) => {
+                const h = num(row.hitCount), tt = num(row.totalTimeMillis)
+                hits += h; time += tt; slow += num(row.slowHitCount); maxTime = Math.max(maxTime, num(row.maxTimeMillis))
+                nameSet.add(row.artifactName)
+                byType.set(row.artifactType, (byType.get(row.artifactType) || 0) + h)
+                // a date-time field is a timestamp object whose text is epoch milliseconds: the day comes from
+                // ec.l10n.format as the display widget does it; the sample rows hold date text
+                const start = row.binStartDateTime
+                let day = ''
+                try { day = String(ec.l10n.format(start, 'yyyy-MM-dd')) } catch (e) { day = '' }
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+                    const text = String(start)
+                    day = /^\d+$/.test(text) ? new Date(Number(text)).toISOString().slice(0, 10) : text.slice(0, 10)
+                }
+                const cur = byDay.get(day) || { hits: 0, time: 0 }
+                cur.hits += h; cur.time += tt; byDay.set(day, cur)
+            })
+            const dayKeys = Array.from(byDay.keys()).sort()
+            cardHits = ec.l10n.format(hits, '#,##0')
+            cardArtifacts = ec.l10n.format(nameSet.size, '#,##0')
+            cardAvg = ec.l10n.format(hits ? time / hits : 0, '#,##0.0')
+            cardSlow = ec.l10n.format(slow, '#,##0')
+            slowClass = slow ? 'text-warning' : ''
+            cardMax = ec.l10n.format(maxTime, '#,##0')
+            binCount = ec.l10n.format(allBinList.length, '#,##0')
+            typeLabelsJson = JSON.stringify(Array.from(byType.keys()))
+            typeHitsJson = JSON.stringify(Array.from(byType.values()))
+            dayLabelsJson = JSON.stringify(dayKeys.map((d) => d.slice(5)))
+            dayHitsJson = JSON.stringify(dayKeys.map((d) => byDay.get(d).hits))
+            dayAvgJson = JSON.stringify(dayKeys.map((d) => { const c = byDay.get(d); return c.hits ? Math.round(c.time / c.hits * 10) / 10 : 0 }))
+            // the totals row of the table, over the whole filtered set
+            totalsMap = { artifactName: 'Total of ' + allBinList.length + ' bins', hitCount: hits, totalTimeMillis: time,
+                averageTime: hits ? time / hits : 0, maxTimeMillis: maxTime, slowHitCount: slow }
+        ]]></script>
+    </actions>
+    <widgets>
+        <container-box type="info"><box-header title="Archetype 3.12 Report"/><box-body>
+            <label type="p" text="Parameters in the URL (the form submits to this screen), number cards, two charts and a result table with exports and a totals row over the whole filtered set, over moqui.server.ArtifactHitBin. ${usingFallback ? 'ArtifactHitBin has no rows, so the data is an inline sample and the type list comes from it.' : 'The data is the live ArtifactHitBin table.'}"/>
+            <label type="p" text="Fallbacks for style-guide section 8: number cards are q-card with text-overline and text-h5 until number-card exists; the muted caption class is text-grey-7/text-grey-5 by mode until m-muted exists; chart colors are read from the --q-* brand variables when the chart draws."/>
+        </box-body></container-box>
+
+        <form-single name="ReportParameters" transition=".">
+            <field name="binStartDateTime"><default-field title="Bin period"><date-period allow-empty="true"/></default-field></field>
+            <field name="artifactType"><default-field title="Artifact type">
+                <drop-down allow-empty="true"><list-options list="typeOptionList" key="${artifactType}" text="${artifactType}"/></drop-down>
+            </default-field></field>
+            <field name="artifactName"><default-field title="Artifact name"><text-find hide-options="true" size="30"/></default-field></field>
+            <field name="runButton"><default-field title="Run"><submit/></default-field></field>
+            <field-layout><field-row-big>
+                <field-ref name="binStartDateTime"/><field-ref name="artifactType"/><field-ref name="artifactName"/><field-ref name="runButton"/>
+            </field-row-big></field-layout>
+        </form-single>
+
+        <render-mode><text type="qvt"><![CDATA[
+            <div class="row q-col-gutter-sm q-mb-sm">
+                <div class="col-6 col-md-3"><q-card flat bordered><q-card-section class="q-py-sm">
+                    <div class="text-overline" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Hits</div>
+                    <div class="text-h5">${cardHits}</div>
+                    <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">in ${binCount} bins</div>
+                </q-card-section></q-card></div>
+                <div class="col-6 col-md-3"><q-card flat bordered><q-card-section class="q-py-sm">
+                    <div class="text-overline" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Artifacts</div>
+                    <div class="text-h5">${cardArtifacts}</div>
+                    <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">distinct names</div>
+                </q-card-section></q-card></div>
+                <div class="col-6 col-md-3"><q-card flat bordered><q-card-section class="q-py-sm">
+                    <div class="text-overline" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Average time</div>
+                    <div class="text-h5">${cardAvg} <span class="text-subtitle2">ms</span></div>
+                    <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">max ${cardMax} ms</div>
+                </q-card-section></q-card></div>
+                <div class="col-6 col-md-3"><q-card flat bordered><q-card-section class="q-py-sm">
+                    <div class="text-overline" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Slow hits</div>
+                    <div class="text-h5 ${slowClass}">${cardSlow}</div>
+                    <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">over 2.6 standard deviations</div>
+                </q-card-section></q-card></div>
+            </div>
+        ]]></text></render-mode>
+
+        <!-- Chart.js reads colors as values, so each series color is a scriptable option that reads the brand variable
+            from the canvas's computed style when the chart draws (a theme change plus chart.update recolors); the axis
+            text takes the page text color and the grid a 12% tint of it, so both modes read. -->
+        <container-row>
+            <row-col md="6">
+                <container-box><box-header title="Hits by artifact type"/><box-body>
+                    <render-mode><text type="qvt"><![CDATA[
+                        <m-chart height="240px" :config='((cv, tc, gc) => ({type: "bar",
+                            data: {labels: ${typeLabelsJson}, datasets: [{label: "Hits", data: ${typeHitsJson}, backgroundColor: cv("primary"), borderColor: cv("primary"), borderRadius: 3}]},
+                            options: {maintainAspectRatio: false, animation: false, plugins: {legend: {display: false}},
+                                scales: {x: {ticks: {color: tc}, grid: {display: false}}, y: {beginAtZero: true, ticks: {color: tc, precision: 0}, grid: {color: gc}}}}}))(
+                            (name) => (c) => c.chart.canvas.ownerDocument.defaultView.getComputedStyle(c.chart.canvas).getPropertyValue("--q-" + name).trim(),
+                            (c) => c.chart.canvas.ownerDocument.defaultView.getComputedStyle(c.chart.canvas).color,
+                            (c) => c.chart.canvas.ownerDocument.defaultView.getComputedStyle(c.chart.canvas).color.replace(/^rgba?\((\d+,\s*\d+,\s*\d+)[^)]*\)$/, "rgba($1, 0.12)"))'></m-chart>
+                    ]]></text></render-mode>
+                </box-body></container-box>
+            </row-col>
+            <row-col md="6">
+                <container-box><box-header title="Hits and average time by day"/><box-body>
+                    <render-mode><text type="qvt"><![CDATA[
+                        <m-chart height="240px" :config='((cv, tc, gc) => ({type: "line",
+                            data: {labels: ${dayLabelsJson}, datasets: [
+                                {label: "Hits", data: ${dayHitsJson}, borderColor: cv("primary"), backgroundColor: cv("primary"), tension: 0.3, yAxisID: "y"},
+                                {label: "Average ms", data: ${dayAvgJson}, borderColor: cv("secondary"), backgroundColor: cv("secondary"), tension: 0.3, yAxisID: "y1"}]},
+                            options: {maintainAspectRatio: false, animation: false, plugins: {legend: {position: "bottom", labels: {color: tc, boxWidth: 12}}},
+                                scales: {x: {ticks: {color: tc}, grid: {display: false}},
+                                    y: {beginAtZero: true, position: "left", ticks: {color: tc, precision: 0}, grid: {color: gc}},
+                                    y1: {beginAtZero: true, position: "right", ticks: {color: tc}, grid: {drawOnChartArea: false}}}}}))(
+                            (name) => (c) => c.chart.canvas.ownerDocument.defaultView.getComputedStyle(c.chart.canvas).getPropertyValue("--q-" + name).trim(),
+                            (c) => c.chart.canvas.ownerDocument.defaultView.getComputedStyle(c.chart.canvas).color,
+                            (c) => c.chart.canvas.ownerDocument.defaultView.getComputedStyle(c.chart.canvas).color.replace(/^rgba?\((\d+,\s*\d+,\s*\d+)[^)]*\)$/, "rgba($1, 0.12)"))'></m-chart>
+                    ]]></text></render-mode>
+                </box-body></container-box>
+            </row-col>
+        </container-row>
+
+        <form-list name="HitBinList" list="hitBinList" skip-form="true" paginate="true" show-page-size="true"
+                show-csv-button="true" show-xlsx-button="true" map-last-row="totalsMap">
+            <row-actions>
+                <set field="averageTime" from="hitCount ? toDecimal(totalTimeMillis).toNumber() / Number(hitCount) : null"/>
+            </row-actions>
+            <field name="binStartDateTime"><header-field title="Bin start" show-order-by="true"/>
+                <default-field><display format="yyyy-MM-dd HH:mm"/></default-field></field>
+            <field name="artifactType"><header-field title="Type" show-order-by="true"/>
+                <default-field><display/></default-field></field>
+            <field name="artifactSubType"><header-field title="Sub type" show-order-by="true"/>
+                <default-field><display/></default-field></field>
+            <field name="artifactName"><header-field title="Artifact" show-order-by="true"/>
+                <default-field><display/></default-field>
+                <last-row-field><display style="text-weight-bold"/></last-row-field></field>
+            <field name="hitCount" align="right"><header-field title="Hits" show-order-by="true"/>
+                <default-field><display format="#,##0"/></default-field>
+                <last-row-field><display format="#,##0" style="text-weight-bold"/></last-row-field></field>
+            <field name="totalTimeMillis" align="right"><header-field title="Total ms" show-order-by="true"/>
+                <default-field><display format="#,##0"/></default-field>
+                <last-row-field><display format="#,##0" style="text-weight-bold"/></last-row-field></field>
+            <field name="averageTime" align="right"><default-field title="Avg ms"><display format="#,##0.0"/></default-field>
+                <last-row-field><display format="#,##0.0" style="text-weight-bold"/></last-row-field></field>
+            <field name="maxTimeMillis" align="right"><header-field title="Max ms" show-order-by="true"/>
+                <default-field><display format="#,##0"/></default-field>
+                <last-row-field><display format="#,##0" style="text-weight-bold"/></last-row-field></field>
+            <field name="slowHitCount" align="right"><header-field title="Slow" show-order-by="true"/>
+                <default-field><display format="#,##0"/></default-field>
+                <last-row-field><display format="#,##0" style="text-weight-bold"/></last-row-field></field>
+        </form-list>
+    </widgets>
+</screen>

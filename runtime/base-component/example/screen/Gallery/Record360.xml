@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Gallery screen for the 3.4 360 archetype of the IronStone BOSS style guide: a moqui.security.UserAccount seen
+    through a header card (avatar, identity, group chips, key numbers), action buttons, the parts as boxes and a
+    Chatter column. Every action posts to a no-op transition; nothing is written. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Record360" default-menu-index="4">
+
+    <parameter name="userId"/>
+
+    <transition name="list"><default-response url="../List"/></transition>
+    <transition name="detail"><default-response url="../Detail"/></transition>
+    <transition name="sendMessage">
+        <actions><message>Gallery: a message to ${userId} would be sent from Comms; nothing is written.</message></actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="resetPassword">
+        <actions><message>Gallery: a password reset for ${userId} would be sent; nothing is written.</message></actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="disableAccount">
+        <actions><message>Gallery: ${userId} would be disabled; nothing is written.</message></actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="addToGroup">
+        <actions><message>Gallery: ${userId} would be added to a group; nothing is written.</message></actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="loginAs">
+        <actions><message>Gallery: login as ${userId} is a no-op here.</message></actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="postMessage">
+        <actions><message>Gallery: Chatter is not built yet; the message "${messageText}" was not saved.</message></actions>
+        <default-response url="."/>
+    </transition>
+
+    <actions>
+        <set field="userId" from="userId || 'EX_JOHN_DOE'"/>
+        <entity-find-one entity-name="moqui.security.UserAccount" value-field="userAccount"/>
+        <if condition="userAccount">
+            <entity-find entity-name="moqui.security.UserGroupAndMember" list="groupList">
+                <econdition field-name="userId"/><date-filter/>
+                <order-by field-name="userGroupId"/></entity-find>
+            <entity-find-count entity-name="moqui.server.Visit" count-field="visitCount">
+                <econdition field-name="userId"/></entity-find-count>
+            <entity-find-count entity-name="moqui.server.ArtifactHit" count-field="hitCount">
+                <econdition field-name="userId"/></entity-find-count>
+            <entity-find-count entity-name="moqui.security.user.NotificationMessageUser" count-field="notificationCount">
+                <econdition field-name="userId"/></entity-find-count>
+            <entity-find entity-name="moqui.server.ArtifactHit" list="hitList" offset="0" limit="20">
+                <econdition field-name="userId"/>
+                <order-by field-name="-startDateTime"/></entity-find>
+            <entity-find entity-name="moqui.server.Visit" list="visitList" offset="0" limit="5">
+                <econdition field-name="userId"/>
+                <order-by field-name="-fromDate"/></entity-find>
+            <entity-find entity-name="moqui.security.user.NotificationMessageUser" list="notificationList" offset="0" limit="10">
+                <econdition field-name="userId"/>
+                <order-by field-name="-sentDate"/></entity-find>
+            <set field="displayName" from="userAccount.userFullName || userAccount.username"/>
+            <set field="initials" from="displayName.split(/\s+/).filter(p => p).map(p => p[0]).join('').substring(0, 2).toUpperCase()"/>
+            <set field="groupChipsHtml" from="groupList.map(g => '&lt;q-chip dense square outline color=&quot;primary&quot;&gt;' + WebUtilities.encodeHtml(g.description || g.userGroupId) + '&lt;/q-chip&gt;').join('')"/>
+            <set field="groupsUrl" from="sri.makeUrlByType('//system/Security/UserAccount/UserAccountDetail', 'transition', null, 'true').addParameter('userId', userId).pathWithParams"/>
+            <set field="visitsUrl" from="sri.makeUrlByType('//system/Visit/VisitList', 'transition', null, 'true').addParameter('userId', userId).pathWithParams"/>
+            <set field="hitsUrl" from="sri.makeUrlByType('//system/ArtifactHitSummary', 'transition', null, 'true').pathWithParams"/>
+            <set field="notificationsUrl" from="sri.makeUrlByType('//system/Security/UserAccount/UserAccountDetail', 'transition', null, 'true').addParameter('userId', userId).pathWithParams"/>
+        </if>
+    </actions>
+    <widgets>
+        <container-box type="info"><box-header title="Archetype 3.4 360"/><box-body>
+            <label type="p" text="A detail for a party seen through the app's role, here a user account: a header card with the avatar, identity, classification chips and key numbers that link into the matching lists, the app's actions, then the parts. The real 360 uses subscreens-panel type=&quot;tab&quot; for Overview, Groups, Activity and the rest; this leaf has no subscreens, so the parts are boxes. Chatter spans every tab."/>
+            <label type="p" text="Fallbacks for §8: number-card size=&quot;sm&quot; is the row of numbers inside the header q-card (render-mode); chatter is a box with a compose form and a q-timeline; the avatar is initials in a q-avatar because the framework has no party content. Every action is a no-op."/>
+        </box-body></container-box>
+
+        <section name="NotFound" condition="!userAccount"><widgets>
+            <container-box type="warning"><box-header title="Not found"/><box-body>
+                <label type="p" text="There is no user account ${userId}. The real screen goes back to the list with a notification."/>
+                <link url="list" text="Back to the list"/>
+            </box-body></container-box>
+        </widgets></section>
+
+        <section name="Found" condition="userAccount"><widgets>
+            <!-- header card: identity, chips and key numbers -->
+            <render-mode><text type="qvt"><![CDATA[
+<q-card flat bordered class="q-ma-sm">
+    <q-card-section class="row items-center q-col-gutter-md">
+        <div class="col-12 col-md-auto">
+            <q-avatar size="64px" color="primary" text-color="white" class="text-h5">${WebUtilities.encodeHtml(initials)}</q-avatar>
+        </div>
+        <div class="col-12 col-md">
+            <div class="text-h5 text-weight-medium">${WebUtilities.encodeHtml(displayName)}</div>
+            <div class="text-caption text-grey-6">${WebUtilities.encodeHtml(userAccount.username)} · ${WebUtilities.encodeHtml(userAccount.emailAddress || 'no email')} · ${WebUtilities.encodeHtml(userId)}</div>
+            <div class="q-mt-xs q-gutter-x-xs">${groupChipsHtml}
+                <q-chip dense square outline color="${userAccount.disabled == 'Y' ? 'negative' : 'positive'}">${userAccount.disabled == 'Y' ? 'Disabled' : 'Active'}</q-chip>
+            </div>
+        </div>
+        <div class="col-12 col-md-5 col-lg-4"><div class="row q-col-gutter-sm">
+            <div class="col-3"><m-link href="${groupsUrl}" class="m-link-text"><div class="text-overline text-grey-6 ellipsis">Groups</div><div class="text-h5 text-weight-medium">${ec.l10n.format(groupList.length, '#,##0')}</div></m-link></div>
+            <div class="col-3"><m-link href="${visitsUrl}" class="m-link-text"><div class="text-overline text-grey-6 ellipsis">Visits</div><div class="text-h5 text-weight-medium">${ec.l10n.format(visitCount, '#,##0')}</div></m-link></div>
+            <div class="col-3"><m-link href="${hitsUrl}" class="m-link-text"><div class="text-overline text-grey-6 ellipsis">Hits</div><div class="text-h5 text-weight-medium">${ec.l10n.format(hitCount, '#,##0')}</div></m-link></div>
+            <div class="col-3"><m-link href="${notificationsUrl}" class="m-link-text"><div class="text-overline text-grey-6 ellipsis">Alerts</div><div class="text-h5 text-weight-medium">${ec.l10n.format(notificationCount, '#,##0')}</div></m-link></div>
+        </div></div>
+    </q-card-section>
+</q-card>
+            ]]></text></render-mode>
+
+            <!-- the app's actions: tonal links, destructive one confirms -->
+            <container style="q-mx-sm q-mb-sm q-gutter-sm">
+                <link url="sendMessage" text="Send message" icon="fa fa-comment-o"/>
+                <link url="addToGroup" text="Add to group" icon="fa fa-users"/>
+                <link url="resetPassword" text="Reset password" icon="fa fa-key" confirmation="Send a password reset to ${displayName}?"/>
+                <link url="disableAccount" text="Disable" btn-type="danger" icon="fa fa-ban" confirmation="Disable ${displayName}? They will not be able to sign in."/>
+                <button-menu text="More" icon="fa fa-ellipsis-v">
+                    <link url="loginAs" text="Login as" link-type="hidden-form-link"/>
+                    <link url="list" text="Enumerations list" link-type="anchor"/>
+                    <link url="detail" text="Detail archetype" link-type="anchor"/>
+                </button-menu>
+            </container>
+
+            <container-row>
+                <row-col lg="8">
+                    <container-box><box-header title="Overview"/><box-body>
+                        <form-single name="OverviewForm" map="userAccount" transition=".">
+                            <field name="userId"><default-field title="User ID"><display/></default-field></field>
+                            <field name="username"><default-field title="User name"><display/></default-field></field>
+                            <field name="userFullName"><default-field title="Full name"><display/></default-field></field>
+                            <field name="emailAddress"><default-field title="Email"><display/></default-field></field>
+                            <field name="locale"><default-field title="Locale"><display text="${locale || '(default)'}"/></default-field></field>
+                            <field name="timeZone"><default-field title="Time zone"><display text="${timeZone || '(default)'}"/></default-field></field>
+                            <field name="disabled"><default-field title="Disabled"><display text="${disabled || 'N'}"/></default-field></field>
+                            <field name="requirePasswordChange"><default-field title="Password change required"><display text="${requirePasswordChange || 'N'}"/></default-field></field>
+                            <field name="passwordSetDate"><default-field title="Password set"><display text="${passwordSetDate ? ec.l10n.format(passwordSetDate, 'yyyy-MM-dd') : 'never'}"/></default-field></field>
+                            <field-layout>
+                                <field-row><field-ref name="userId"/><field-ref name="username"/></field-row>
+                                <field-row><field-ref name="userFullName"/><field-ref name="emailAddress"/></field-row>
+                                <field-row><field-ref name="locale"/><field-ref name="timeZone"/></field-row>
+                                <field-row><field-ref name="disabled"/><field-ref name="requirePasswordChange"/></field-row>
+                                <field-row><field-ref name="passwordSetDate"/></field-row>
+                            </field-layout>
+                        </form-single>
+                    </box-body></container-box>
+
+                    <container-box><box-header title="Groups"/><box-toolbar>
+                        <link url="addToGroup" text="Add to group" link-type="hidden-form-link" icon="fa fa-plus"/>
+                    </box-toolbar><box-body-nopad>
+                        <form-list name="GroupList" list="groupList" skip-form="true" paginate="false">
+                            <field name="userGroupId"><default-field title="Group"><display/></default-field></field>
+                            <field name="description"><default-field title="Description"><display/></default-field></field>
+                            <field name="groupTypeEnumId"><default-field title="Type">
+                                <display-entity entity-name="moqui.basic.Enumeration" key-field-name="enumId" text="${description}"/></default-field></field>
+                            <field name="fromDate" align="right"><default-field title="Since"><display format="yyyy-MM-dd"/></default-field></field>
+                        </form-list>
+                    </box-body-nopad></container-box>
+
+                    <container-box><box-header title="Activity: last 20 artifact hits"/><box-body-nopad>
+                        <form-list name="HitList" list="hitList" skip-form="true" paginate="false">
+                            <field name="startDateTime"><default-field title="When"><display format="yyyy-MM-dd HH:mm:ss"/></default-field></field>
+                            <field name="artifactType"><default-field title="Type"><display/></default-field></field>
+                            <field name="artifactName"><default-field title="Artifact"><display/></default-field></field>
+                            <field name="runningTimeMillis" align="right"><default-field title="ms"><display format="#,##0"/></default-field></field>
+                            <field name="wasError"><default-field title="Error"><display text="${wasError == 'Y' ? 'Y' : ''}"/></default-field></field>
+                        </form-list>
+                    </box-body-nopad></container-box>
+
+                    <container-box><box-header title="Notifications"/><box-body-nopad>
+                        <form-list name="NotificationList" list="notificationList" skip-form="true" paginate="false">
+                            <field name="notificationMessageId"><default-field title="ID"><display/></default-field></field>
+                            <field name="sentDate"><default-field title="Sent"><display format="yyyy-MM-dd HH:mm"/></default-field></field>
+                            <field name="viewedDate"><default-field title="Viewed"><display text="${viewedDate ? ec.l10n.format(viewedDate, 'yyyy-MM-dd HH:mm') : 'unread'}"/></default-field></field>
+                        </form-list>
+                        <label type="div" style="q-pa-sm text-grey-6" text="No notifications yet." condition="!notificationList || !notificationList.length"/>
+                    </box-body-nopad></container-box>
+                </row-col>
+                <row-col lg="4">
+                    <container-box><box-header title="Chatter"/><box-body>
+                        <form-single name="ChatterCompose" transition="postMessage">
+                            <field name="messageText"><default-field title="Message"><text-area rows="2" cols="40"/></default-field></field>
+                            <field name="submitButton"><default-field title="Post"><submit/></default-field></field>
+                        </form-single>
+                        <render-mode><text type="qvt"><![CDATA[
+<q-timeline color="primary" layout="dense">
+    <q-timeline-entry title="Signed in from ${WebUtilities.encodeHtml(visitList.length ? (visitList[0].clientIpAddress || 'unknown address') : 'nowhere yet')}" subtitle="${visitList.length ? ec.l10n.format(visitList[0].fromDate, 'yyyy-MM-dd HH:mm') : ''}" icon="login"></q-timeline-entry>
+    <q-timeline-entry title="Added to ${WebUtilities.encodeHtml(groupList.length ? (groupList[0].description || groupList[0].userGroupId) : 'no group')}" subtitle="${groupList.length ? ec.l10n.format(groupList[0].fromDate, 'yyyy-MM-dd') : ''}" icon="group_add" color="secondary"></q-timeline-entry>
+    <q-timeline-entry title="Note: demo account of the framework" subtitle="Seed data" icon="note" color="grey-6"></q-timeline-entry>
+</q-timeline>
+                        ]]></text></render-mode>
+                    </box-body></container-box>
+                </row-col>
+            </container-row>
+        </widgets></section>
+    </widgets>
+</screen>

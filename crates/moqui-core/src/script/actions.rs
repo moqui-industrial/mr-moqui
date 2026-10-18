@@ -462,6 +462,33 @@ mod tests {
     }
 
     #[test]
+    fn a_limit_or_offset_with_an_expression_is_expanded_and_a_literal_is_as_written() {
+        let expression = generate(
+            r#"<actions><entity-find entity-name="moqui.basic.Enumeration" list="found" limit="${sideLimit}" offset="${sideOffset}"/></actions>"#,
+        )
+        .unwrap();
+        assert!(
+            expression
+                .contains(r#".offset(ec.resource.expand("${sideOffset}")).limit(ec.resource.expand("${sideLimit}"))"#),
+            "{expression}"
+        );
+        let literal = generate(
+            r#"<actions><entity-find entity-name="moqui.basic.Enumeration" list="found" limit="30" offset="10"/></actions>"#,
+        )
+        .unwrap();
+        assert!(literal.contains(".offset(10).limit(30)"), "{literal}");
+        // What `lint --screens` runs: both parse.
+        super::check_actions(
+            r#"<actions><entity-find entity-name="moqui.basic.Enumeration" list="found" limit="${sideLimit}"/></actions>"#,
+        )
+        .unwrap();
+        super::check_actions(
+            r#"<actions><entity-find entity-name="moqui.basic.Enumeration" list="found" limit="30"/></actions>"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn golden_entity_value() {
         assert_golden(
             include_str!("testdata/entity-value.xml"),

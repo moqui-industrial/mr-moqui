@@ -8,8 +8,8 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN screen[@location=" + sri.get
         let $icon = "";
         if (!$icon && $text) $icon = sri.getThemeIconClass($text) || "";
         const $badge = ec.resource.expand("", "");
-        sri.write("<q-btn-dropdown" + $v.A({dense: true, unelevated: true, "no-caps": true, class: $v.tonal($v.quasarColor("primary"), null)}) + "><template v-slot:label>" +
-            ($icon ? "<i class=\"" + $v.e($icon) + " q-icon" + ($text ? " on-left" : "") + "\"></i>" : ""));
+        sri.write("<q-btn-dropdown" + $v.A(Object.assign({dense: true, unelevated: true, "no-caps": true}, $v.btnKind("", null))) + "><template v-slot:label>" +
+            ($icon ? $v.iconTag($icon, !!$text) : ""));
         // as Java: the image child in the place of the text
         sri.write($text);
         sri.write(($badge ? "<q-badge class=\"on-right\" transparent>" + $v.t($badge) + "</q-badge>" : "") + "</template><q-list>");

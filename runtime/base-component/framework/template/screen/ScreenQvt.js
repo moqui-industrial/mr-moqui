@@ -149,11 +149,22 @@
         };
         const arr = (list) => js_(list.map(String));
         const quasarColor = (color) => (color === "success" ? "positive" : color === "danger" ? "negative" : color === "default" ? "" : color || "");
-        const icon = (name, text) => (name ? '<i class="' + e(name) + ' q-icon' + (text ? " on-left" : "") + '"></i> ' : "");
+        // An icon attribute: a value with a space or a Font Awesome prefix (fa fa-plus, fa-plus) is a class list on an i element; any
+        // other value is an icon name (Material Icons today, sym_o_* later) on a q-icon. left puts the on-left margin before a text.
+        const iconIsClass = (name) => /\s/.test(name) || /^fa[\s-]/.test(name);
+        const iconTag = (name, left) => (iconIsClass(name) ?
+            '<i class="' + e(cls(name, "q-icon", left ? "on-left" : null)) + '"></i>' :
+            '<q-icon name="' + e(name) + '" size="sm"' + (left ? ' class="on-left"' : "") + "></q-icon>");
+        const icon = (name, text) => (name ? iconTag(name, text) + " " : "");
         const tooltipTag = (text) => (text ? "<q-tooltip>" + t(text) + "</q-tooltip>" : "");
         // The classes of a tonal (soft tinted) button, the secondary kind: the macros write unelevated primary for a submit, tonal for
         // a secondary action (a link outside a list cell, a dialog, a tool of a list), and flat for a minor one (reset, page size, icons).
         const tonal = (color, ...extra) => cls("m-btn-tonal", color && color !== "default" ? "text-" + color : null, ...extra);
+        // The color and class of a link or menu button by its btn-type: an explicit primary is the filled primary button (the one main
+        // action of a title row), and any other value, or none, is a tonal button tinted with that color.
+        const btnKind = (btnType, ...extra) => (btnType === "primary" ?
+            { color: "primary", class: cls(...extra) } :
+            { class: tonal(quasarColor(btnType || "primary") || null, ...extra) });
 
         const OUTLINE_BG = ":bg-color";
 
@@ -184,7 +195,10 @@
         const fname = (n) => at(fieldOf(n), "name");
         const formName = (n) => at(fieldOf(n).parent, "name");
         const fid = (n) => (st.fieldForm || xn(formName(n))) + "_" + fname(n) + entry() + sec();
-        const fnm = (n) => fname(n) + (st.multi && st.entry !== "" && /^\d+$/.test(st.entry) ? "_" + st.entry : "");
+        // The name of a field, and of a companion entry of it (name_display): in a row of a multi form the row index comes last, as the
+        // fields-initial of the form names them (id_0, id_display_0).
+        const fnmWith = (n, suffix) => fname(n) + suffix + (st.multi && st.entry !== "" && /^\d+$/.test(st.entry) ? "_" + st.entry : "");
+        const fnm = (n) => fnmWith(n, "");
         const owner = () => st.owner || null;
         const tip = (n) => (at(n.parent, "tooltip") ? x(at(n.parent, "tooltip")) : null);
         const label = (n) => titleOf(n.parent);
@@ -476,7 +490,7 @@
             const confirmation = x(at(n, "confirmation"));
             const iconClass = at(n, "icon") || sri.getThemeIconClass(text) || "";
             const image = first(n, "image");
-            let body = tooltipTag(tip(n)) + (iconClass ? '<i class="' + e(iconClass) + (image ? "" : " q-icon on-left") + '"></i>' : "");
+            let body = tooltipTag(tip(n)) + (iconClass ? iconTag(iconClass, !image) : "");
             if (image) {
                 const src = sri.makeUrlByType(at(image, "url"), at(image, "url-type") || "content", null, "true");
                 body += "<img" + A({ src: src.url, alt: at(image, "alt") || title, width: at(image, "width") || null, height: at(image, "height") || null }) + ">";
@@ -674,7 +688,7 @@
             }
             let out;
             if (st.inForm) {
-                Object.assign(attrs, { "v-model": fieldRef(name), ":display": fieldRef(name + "_display"), ":fields": "formProps.fields" });
+                Object.assign(attrs, { "v-model": fieldRef(name), ":display": fieldRef(fnmWith(n, "_display")), ":fields": "formProps.fields" });
                 out = "<m-display" + A(attrs) + "></m-display>";
             } else {
                 if (labelWrapper && value) attrs.display = at(n, "encode") === "false" ? value : value;
@@ -697,7 +711,7 @@
                 class: cls(align === "center" ? "text-center" : align === "right" ? "text-right" : null, xn(at(n, "style")) || null)
             };
             if (st.inForm) {
-                Object.assign(attrs, { "v-model": fieldRef(name), ":display": fieldRef(name + "_display") });
+                Object.assign(attrs, { "v-model": fieldRef(name), ":display": fieldRef(fnmWith(n, "_display")) });
                 w("<m-display" + A(attrs) + "></m-display>");
                 return;
             }
@@ -756,28 +770,29 @@
             return { text, url, img, anchor: sri.isAnchorLink(n, url) };
         };
 
-        const linkBody = (n, text, img, plainIcon) => {
+        const linkBody = (n, text, img) => {
             let iconClass = at(n, "icon");
             if (!iconClass && at(n, "text")) iconClass = sri.getThemeIconClass(at(n, "text")) || "";
             iconClass = xn(iconClass);
             const badge = x(at(n, "badge"));
             const tooltip = at(n, "tooltip") ? tooltipTag(x(at(n, "tooltip"))) : "";
             const hasText = !!String(text).trim();
-            return tooltip + (iconClass ? plainIcon ? '<i class="' + e(iconClass) + '"></i>' : icon(iconClass, hasText) : "") +
+            return tooltip + (iconClass ? icon(iconClass, hasText) : "") +
                 (img ? imageTag(img) : text) + (badge ? ' <q-badge class="on-right" transparent>' + t(badge) + "</q-badge>" : "");
         };
 
         const linkElement = (n, parts, formId) => {
             const style = xn(at(n, "style")) || null;
             const linkType = at(n, "link-type");
-            const color = quasarColor(at(n, "btn-type") || "primary") || null;
-            // A screen link in a form-list cell is text (as is link-type anchor anywhere); the others are tonal buttons.
+            const btnType = at(n, "btn-type");
+            // A screen link in a form-list cell is text (as is link-type anchor anywhere); the others are tonal buttons, or the filled
+            // primary button with btn-type="primary".
             const textLink = linkType === "anchor" || (st.inList && linkType !== "anchor-button");
             if (parts.url.getDisableLink()) {
-                if (parts.anchor && textLink) return '<span class="text-grey-5">' + linkBody(n, parts.text, parts.img, false) + "</span>";
+                if (parts.anchor && textLink) return '<span class="text-grey-5">' + linkBody(n, parts.text, parts.img) + "</span>";
                 return "<span><q-btn" + A({
                     dense: true, "no-caps": true, disabled: true, flat: true, class: cls("m-link", style), id: formId || null, label: parts.text || null
-                }) + ">" + (at(n, "icon") ? '<i class="' + e(xn(at(n, "icon"))) + '"></i>' : "") + "</q-btn></span>";
+                }) + ">" + (at(n, "icon") ? iconTag(xn(at(n, "icon")), false) : "") + "</q-btn></span>";
             }
             const confirmation = x(at(n, "confirmation"));
             if (parts.anchor) {
@@ -785,17 +800,16 @@
                 const noParam = at(n, "url-noparam") === "true";
                 const href = screen ? (noParam ? parts.url.path : parts.url.pathWithParams) : (noParam ? parts.url.url : parts.url.getUrlWithParams());
                 const tag = screen ? "m-link" : "a";
-                const inner = linkBody(n, parts.text, parts.img, false) + "";
+                const inner = linkBody(n, parts.text, parts.img) + "";
                 return "<" + tag + A({
                     href, id: formId || null, target: at(n, "target-window") || null, "load-id": at(n, "dynamic-load-id") || null,
                     "data-confirm": confirmation || null, class: textLink ? cls("m-link-text", style) : null
-                }) + ">" + (textLink ? inner : "<q-btn" + A({ dense: true, unelevated: true, "no-caps": true, class: tonal(color, "m-link", style) }) + ">" + inner + "</q-btn>") + "</" + tag + ">";
+                }) + ">" + (textLink ? inner : "<q-btn" + A(Object.assign({ dense: true, unelevated: true, "no-caps": true }, btnKind(btnType, "m-link", style))) + ">" + inner + "</q-btn>") + "</" + tag + ">";
             }
             if (!formId) return "";
-            return "<q-btn" + A({
-                dense: true, unelevated: true, "no-caps": true, type: "submit", form: formId, id: formId + "_button", class: tonal(color, style),
-                "data-confirm": confirmation || null
-            }) + ">" + linkBody(n, parts.text, parts.img, false) + "</q-btn>";
+            return "<q-btn" + A(Object.assign({
+                dense: true, unelevated: true, "no-caps": true, type: "submit", form: formId, id: formId + "_button"
+            }, btnKind(btnType, style), { "data-confirm": confirmation || null })) + ">" + linkBody(n, parts.text, parts.img) + "</q-btn>";
         };
 
         const hiddenInput = (name, value, form) => "<input" + A({ type: "hidden", name, value, form: form || null }) + ">";
@@ -820,12 +834,14 @@
                     out += "<input" + A({ type: "image", src: sri.makeUrlByType(at(img, "url"), at(img, "url-type") || "content", null, "true").url, alt: at(img, "alt") || null, "data-confirm": confirmation || null }) + ">";
                 } else {
                     const linkType = at(n, "link-type");
-                    const color = quasarColor(at(n, "btn-type") || "primary") || null;
+                    const btnType = at(n, "btn-type");
+                    const color = quasarColor(btnType || "primary") || null;
+                    const style = xn(at(n, "style")) || null;
+                    // hidden-form-link is the flat (minor) button in its color; the others are tonal, or filled with btn-type="primary"
                     const flat = linkType === "hidden-form-link";
-                    out += "<q-btn" + A({
-                        dense: true, "no-caps": true, type: "submit", flat: flat ? true : null, unelevated: flat ? null : true,
-                        class: flat ? cls("m-link", color ? "text-" + color : null, xn(at(n, "style")) || null) : tonal(color, "m-link", xn(at(n, "style")) || null), "data-confirm": confirmation || null
-                    }) + ">" + linkBody(n, parts.text, null, false) + "</q-btn>";
+                    out += "<q-btn" + A(Object.assign({
+                        dense: true, "no-caps": true, type: "submit", flat: flat ? true : null, unelevated: flat ? null : true
+                    }, flat ? { class: cls("m-link", color ? "text-" + color : null, style) } : btnKind(btnType, "m-link", style), { "data-confirm": confirmation || null })) + ">" + linkBody(n, parts.text, null) + "</q-btn>";
                 }
             }
             return out + "</" + tag + ">";
@@ -868,14 +884,22 @@
 
         // ---- containers ----
 
+        // The button of a dialog is the component's tonal button with the icon attribute as its button-icon (the component's default is
+        // open_in_new). In a form-list cell it is flat and dense like the other in-cell links: a container-dialog gets that button through
+        // the component's button slot, and a dynamic-dialog, which has no slot, the button-class m-btn-flat.
         const containerDialog = (n) => {
             if (at(n, "condition") && !cond(at(n, "condition"))) return false;
             const buttonText = x(at(n, "button-text"));
             const id = nodeId(n);
+            const buttonIcon = xn(at(n, "icon")) || null;
+            const buttonStyle = xn(at(n, "button-style")) || null;
+            const inCell = st.inList;
             w("<m-container-dialog" + A({
                 id, color: quasarColor(xn(at(n, "type") || "primary")) || null, width: at(n, "width") || null, "button-text": buttonText,
-                "button-class": xn(at(n, "button-style")) || null, title: x(at(n, "title")) || buttonText, "open-dialog": ctx("_openDialog") === id ? true : null
+                "button-icon": inCell ? null : buttonIcon, "button-class": inCell ? null : buttonStyle, title: x(at(n, "title")) || buttonText,
+                "open-dialog": ctx("_openDialog") === id ? true : null
             }) + ">");
+            if (inCell) w("<template v-slot:button><q-btn" + A({ dense: true, flat: true, "no-caps": true, class: cls("m-link", buttonStyle), icon: buttonIcon, label: buttonText }) + "></q-btn></template>");
             return true;
         };
 
@@ -885,13 +909,15 @@
             const id = nodeId(n);
             const url = sri.makeUrlByType(at(n, "transition"), "transition", n, "true");
             const color = quasarColor(xn(at(n, "type") || "primary")) || null;
+            const buttonIcon = xn(at(n, "icon")) || null;
+            const buttonStyle = xn(at(n, "button-style")) || null;
             if (url.getDisableLink()) {
-                w("<q-btn" + A({ disabled: true, dense: true, flat: true, "no-caps": true, icon: "open_in_new", label: buttonText, class: xn(at(n, "button-style")) || null }) + "></q-btn>");
+                w("<q-btn" + A({ disabled: true, dense: true, flat: true, "no-caps": true, icon: buttonIcon || "open_in_new", label: buttonText, class: buttonStyle }) + "></q-btn>");
                 return;
             }
             w("<m-dynamic-dialog" + A({
-                id, url: url.getUrlWithParams(), color, width: at(n, "width") || null, "button-text": buttonText, "button-class": xn(at(n, "button-style")) || null,
-                title: x(at(n, "title")) || buttonText, "open-dialog": ctx("_openDialog") === id ? true : null
+                id, url: url.getUrlWithParams(), color, width: at(n, "width") || null, "button-text": buttonText, "button-icon": buttonIcon,
+                "button-class": cls(st.inList ? "m-btn-flat" : null, buttonStyle), title: x(at(n, "title")) || buttonText, "open-dialog": ctx("_openDialog") === id ? true : null
             }) + "></m-dynamic-dialog>");
         };
 
@@ -1057,6 +1083,20 @@
                 (!at(n, "paginate-always-show") || at(n, "paginate-always-show") === "true" || maxIndex > 0);
         };
 
+        // The page tools of a list, right-aligned in a row: the page size menu, the jump to a page and the page buttons. The nav row above
+        // the table and the one below it (bottomNav) both hold them.
+        const pageTools = (n, listName, formId) => {
+            let out = '<div class="row"><q-space></q-space>';
+            if (at(n, "show-all-button") === "true" || at(n, "show-page-size") === "true") out += pageSizeMenu(listName);
+            const maxIndex = Number(ctx(listName + "PageMaxIndex"));
+            if (maxIndex > 4) out += '<m-form-go-page id-val="' + e(formId) + '" :max-index="' + maxIndex + '"></m-form-go-page>';
+            return out + '<m-form-paginate :paginate="' + e(paginateProps(listName)) + '"></m-form-paginate></div>';
+        };
+        const bottomNav = (n, formId) => {
+            if (!isPaginated(n) || ctx("hideNav") === "true") return;
+            w('<div class="form-list-nav-row row items-center"><div class="col-xs-12">' + pageTools(n, at(n, "list"), formId) + "</div></div>\n");
+        };
+
         const nav = (n, cols, cfg) => {
             const listName = at(n, "list");
             const formId = cfg.formId;
@@ -1109,13 +1149,7 @@
                 out += '<span class="text-warning text-weight-medium q-ml-sm q-my-auto">' + t(L(ec.context.sharedMap._entityListNoSearchParms ? "Find Options required to view results" : "No results found")) + "</span>";
             }
             out += "</div></div>";
-            if (paginated) {
-                out += '<div class="col-xs-12 col-sm-6"><div class="row"><q-space></q-space>';
-                if (at(n, "show-all-button") === "true" || at(n, "show-page-size") === "true") out += pageSizeMenu(listName);
-                const maxIndex = Number(ctx(listName + "PageMaxIndex"));
-                if (maxIndex > 4) out += '<m-form-go-page id-val="' + e(formId) + '" :max-index="' + maxIndex + '"></m-form-go-page>';
-                out += '<m-form-paginate :paginate="' + e(paginateProps(listName)) + '"></m-form-paginate></div></div>';
-            }
+            if (paginated) out += '<div class="col-xs-12 col-sm-6">' + pageTools(n, listName, formId) + "</div>";
             w(out + "</div>\n");
             if (cfg.headerDialog) {
                 const summaries = (cfg.allFields || []).map((field) => {
@@ -1499,15 +1533,10 @@
                     cols.forEach((col) => col.forEach((f) => f.cell(2)));
                     w("</div></div>");
                 }
-                if (isPaginated(n) && !skipHeader) {
-                    const listName = at(n, "list");
-                    w('<div class="tr form-list-nav-row"><div class="td"><div class="row"><q-space></q-space>');
-                    if (at(n, "show-all-button") === "true" || at(n, "show-page-size") === "true") w(pageSizeMenu(listName));
-                    const maxIndex = Number(ctx(listName + "PageMaxIndex"));
-                    if (maxIndex > 4) w('<m-form-go-page id-val="' + e(formId) + '" :max-index="' + maxIndex + '"></m-form-go-page>');
-                    w('<m-form-paginate :paginate="' + e(paginateProps(listName)) + '"></m-form-paginate></div></div></div>');
-                }
-                w("</div></div></div>\n");
+                // the body and the table close, then the bottom nav row sits in the table container as a full-width row like the top one
+                w("</div></div>");
+                if (!skipHeader) bottomNav(n, formId);
+                w("</div>\n");
                 if (multi) w("</m-form>\n");
                 else if (rowSel && !skipStart) w("</m-checkbox-set>\n");
             }
@@ -1567,7 +1596,7 @@
             formList, rowCellOpen, rowCellClose, valueText, sectionPaginate, headerCell,
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
-            quasarColor, icon, tooltipTag, tonal, js: js_
+            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_
         };
         Object.defineProperty(globalThis, "$mqQvt", { value: h, configurable: true });
     };
@@ -1643,6 +1672,10 @@
         `;
     };
 
+    // The column classes of a field-row cell: full width below 600px, then half the row for one or two cells, a third for three and a
+    // quarter for four or more.
+    const fieldRowCellClass = (count) => "col-xs-12 col-sm-" + (count <= 2 ? 6 : count === 3 ? 4 : 3);
+
     const layoutCode = (node, fields, referenced, big) => node.children.map((kid) => {
         const name = kid.name;
         if (name === "field-ref") {
@@ -1654,9 +1687,12 @@
             return Object.keys(fields).filter((fieldName) => !referenced.has(fieldName)).map((fieldName) => singleFieldCode(fields[fieldName], big)).join("");
         }
         if (name === "field-row") {
+            // two cells side by side from 600px (three or four in narrower columns), stacked below that
+            const cells = childrenNamed(kid, "field-ref");
+            const col = `<div class="${fieldRowCellClass(cells.length)}">`;
             return js`
                 sri.write("<div class=\\"row\\">");
-                ${kid.children.map((cell) => `sri.write("<div class=\\"col-sm-6\\">");\n` + layoutCode({ children: [cell] }, fields, referenced, false) + `sri.write("</div>");\n`).join("")}
+                ${cells.map((cell) => `sri.write(${lit(col)});\n` + layoutCode({ children: [cell] }, fields, referenced, false) + `sri.write("</div>");\n`).join("")}
                 sri.write("</div>\\n");
             `;
         }
@@ -1985,9 +2021,9 @@
                     let $icon = ${lit(attr(node, "icon"))};
                     if (!$icon && $text) $icon = sri.getThemeIconClass($text) || "";
                     const $badge = ec.resource.expand(${lit(attr(node, "badge"))}, "");
-                    sri.write("<q-btn-dropdown" + $v.A({dense: true, unelevated: true, "no-caps": true, class: $v.tonal($v.quasarColor(${lit(attr(node, "btn-type") || "primary")}), ${attr(node, "style") ? noL10n(attr(node, "style")) : "null"})}) + "><template v-slot:label>" +
+                    sri.write("<q-btn-dropdown" + $v.A(Object.assign({dense: true, unelevated: true, "no-caps": true}, $v.btnKind(${lit(attr(node, "btn-type"))}, ${attr(node, "style") ? noL10n(attr(node, "style")) : "null"}))) + "><template v-slot:label>" +
                         ${attr(node, "tooltip") ? `$v.tooltipTag(ec.resource.expand(${lit(attr(node, "tooltip"))}, "")) + ` : ""}
-                        ($icon ? "<i class=\\"" + $v.e($icon) + " q-icon" + ($text ? " on-left" : "") + "\\"></i>" : ""));
+                        ($icon ? $v.iconTag($icon, !!$text) : ""));
                     // as Java: the image child in the place of the text
                     ${image ? image.source : "sri.write($text);"}
                     sri.write(($badge ? "<q-badge class=\\"on-right\\" transparent>" + $v.t($badge) + "</q-badge>" : "") + "</template><q-list>");

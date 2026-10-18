@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The screen archetype gallery of the IronStone BOSS style guide
+    (runtime/component/ironstone-boss/plan/style-guide.md, sections 3, 4 and 10): one screen per archetype, rendered
+    with the real qvt widgets over framework data, so a style decision is checked against the actual render mode in
+    light and dark. Mounted under the apps root by this component's MoquiConf.xml. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        require-authentication="true" default-menu-title="Gallery" menu-image="fa fa-th-large" menu-image-type="icon">
+
+    <subscreens default-item="Landing">
+        <subscreens-item name="Landing" menu-title="Landing" menu-index="1" location="component://example/screen/Gallery/Landing.xml"/>
+        <subscreens-item name="List" menu-title="List" menu-index="2" location="component://example/screen/Gallery/List.xml"/>
+        <subscreens-item name="Detail" menu-title="Detail" menu-index="3" location="component://example/screen/Gallery/Detail.xml"/>
+        <subscreens-item name="Record360" menu-title="360" menu-index="4" location="component://example/screen/Gallery/Record360.xml"/>
+        <subscreens-item name="Task" menu-title="Task" menu-index="5" location="component://example/screen/Gallery/Task.xml"/>
+        <subscreens-item name="Board" menu-title="Board" menu-index="6" location="component://example/screen/Gallery/Board.xml"/>
+        <subscreens-item name="Calendar" menu-title="Calendar" menu-index="7" location="component://example/screen/Gallery/Calendar.xml"/>
+        <subscreens-item name="Split" menu-title="Split" menu-index="8" location="component://example/screen/Gallery/Split.xml"/>
+        <subscreens-item name="Settings" menu-title="Settings" menu-index="9" location="component://example/screen/Gallery/Settings.xml"/>
+        <subscreens-item name="Wizard" menu-title="Wizard" menu-index="10" location="component://example/screen/Gallery/Wizard.xml"/>
+        <subscreens-item name="Dialog" menu-title="Dialog" menu-index="11" location="component://example/screen/Gallery/Dialog.xml"/>
+        <subscreens-item name="Report" menu-title="Report" menu-index="12" location="component://example/screen/Gallery/Report.xml"/>
+        <subscreens-item name="Panel" menu-title="Panel" menu-index="13" location="component://example/screen/Gallery/Panel.xml"/>
+        <subscreens-item name="Widgets" menu-title="Widgets" menu-index="14" location="component://example/screen/Gallery/Widgets.xml"/>
+    </subscreens>
+
+    <widgets><subscreens-panel id="gallery-panel" type="popup"/></widgets>
+</screen>

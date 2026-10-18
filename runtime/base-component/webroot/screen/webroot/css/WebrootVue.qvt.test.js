@@ -27,6 +27,13 @@ test('Quasar theme colors, labels and sort layout match Java', () => {
     <button id="dense" class="q-btn q-btn--dense"><span class="q-btn__content">Find Options</span></button>
     <a id="flat" class="q-btn q-btn--dense q-btn--flat m-link"><span class="q-btn__content">Product</span></a>
     <button id="round" class="q-btn q-btn--dense q-btn--round">Icon</button>
+    <span id="muted" class="m-muted">Muted caption</span>
+    <div id="chip" class="q-chip m-tonal">Approved</div>
+    <div id="container" class="q-table__container q-table__card" style="width:600px">
+        <div class="table q-table"><div class="thead"><div class="tr">
+            <div id="selHead" class="th m-sel">x</div><div class="th">Name</div><div class="th">Description</div>
+        </div></div></div>
+    </div>
     <pre id="result"></pre>
     <script>
         const style = id => getComputedStyle(document.getElementById(id));
@@ -39,7 +46,11 @@ test('Quasar theme colors, labels and sort layout match Java', () => {
             flatMinHeight:style('flat').minHeight, roundPadding:style('round').padding,
             sort:style('sort').display, sortLink:style('active').display,
             sortSameLine:document.getElementById('active').getBoundingClientRect().top ===
-                document.getElementById('descending').getBoundingClientRect().top
+                document.getElementById('descending').getBoundingClientRect().top,
+            muted:style('muted').color, chipColor:style('chip').color,
+            chipTinted:style('chip').backgroundColor !== 'rgb(224, 224, 224)',
+            containerOverflow:style('container').overflowX,
+            selNarrow:document.getElementById('selHead').getBoundingClientRect().width < 60
         });
     </script>`;
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'moqui-qvt-css-'));
@@ -61,6 +72,9 @@ test('Quasar theme colors, labels and sort layout match Java', () => {
         menu: 'rgb(10, 11, 12)', toolbar: 'rgb(10, 11, 12)',
         paragraph: 'block', inline: 'inline',
         densePadding: '4px 8px', flatPadding: '0px 4px', flatMinHeight: '21px', roundPadding: '0px',
-        sort: 'inline', sortLink: 'inline', sortSameLine: true
+        sort: 'inline', sortLink: 'inline', sortSameLine: true,
+        // the muted caption is grey-7; a tonal chip is primary text over a tint, not Quasar's grey chip; a list wider than its
+        // card scrolls inside it; the selection column is as narrow as its checkbox
+        muted: 'rgb(97, 97, 97)', chipColor: 'rgb(1, 2, 3)', chipTinted: true, containerOverflow: 'auto', selNarrow: true
     });
 });

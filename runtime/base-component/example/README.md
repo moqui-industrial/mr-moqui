@@ -1,14 +1,15 @@
 # example
 
-Examples of Rust in an MR Moqui component, kept with the framework and added to over time. The component is off by
-default.
+Examples of Rust in an MR Moqui component, kept with the framework and added to over time, and the screen archetype
+gallery of the IronStone BOSS style guide (`screen/Gallery.xml`, at `/qapps/gallery` once signed in). The component
+is on by default while the framework is young.
 
-## Turning it on
+## Turning it off
 
-- For one run: `./moq run -D example_disabled=false`, or `./moq test example -D example_disabled=false`.
-  `component.xml` has `disabled="${example_disabled ?: 'true'}"`, so the property, as a `-D` option or an
-  environment variable, decides.
-- In a conf: name it in the `component-list`, which loads a component even when its `component.xml` is disabled:
+- For one run: `./moq run -D example_disabled=true`. `component.xml` has `disabled="${example_disabled ?: 'false'}"`,
+  so the property, as a `-D` option or an environment variable, decides.
+- In a conf: a `component-list` that names components loads only those, so one that leaves `example` out turns it
+  off; one that names it loads it even when its `component.xml` is disabled:
 
   ```xml
   <component-list><component name="example" location="base-component/example"/></component-list>
@@ -27,6 +28,10 @@ The binary always links this crate. Its implementations are only used when the c
 | `MoquiConf.xml` | Selects the tool factory by the class the crate registers, `example::ExampleToolFactory`. |
 | `service/example/ExampleServices.xml` | The two rust service definitions, and XML Actions that keep the tool in a field and call it. |
 | `test/Example.spec.js` | Specs for each of these. |
+| `screen/Gallery.xml`, `screen/Gallery/*.xml`, `*.qvue` | The screen archetype gallery of the IronStone BOSS style guide (`runtime/component/ironstone-boss/plan/style-guide.md` §3, §4 and §10): one screen per archetype over framework data, mounted at `/qapps/gallery` by `MoquiConf.xml`; `Board` and `Calendar` are `.qvue` screens. |
+| `data/ExampleSecurityData.xml` | Seed authorization: the gallery for the ADMIN group. |
+| `test/Gallery.spec.js` | Renders every gallery screen in its render mode through `ec.screen.makeTest()` (`./moq test example`). |
+| `test/gallery-shots.mjs` | Screenshots and text of `/qapps` screens through Chrome DevTools against a running server, for checking the gallery in light and dark and at phone width. |
 
 ## Rust in your own component
 

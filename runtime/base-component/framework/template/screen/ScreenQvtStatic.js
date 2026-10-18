@@ -110,6 +110,15 @@
             return "{" + Object.keys(value).map((key) => sq(key) + ":" + js_(value[key])).join(",") + "}";
         };
         const quasarColor = (color) => (color === "success" ? "positive" : color === "danger" ? "negative" : color === "default" ? "" : color || "");
+        // An icon attribute, as ScreenQvt.js writes it: a class list (a space, or a Font Awesome prefix) on an i element, else an icon name
+        // on a q-icon. left adds the on-left margin before a text.
+        const iconIsClass = (name) => /\s/.test(name) || /^fa[\s-]/.test(name);
+        const iconTag = (name, left) => (iconIsClass(name) ?
+            '<i class="' + e(cls(name, "q-icon", left ? "on-left" : null)) + '"></i>' :
+            '<q-icon name="' + e(name) + '" size="sm"' + (left ? ' class="on-left"' : "") + "></q-icon>");
+        const icon = (name, text) => (name ? iconTag(name, text) + " " : "");
+        // The column classes of a field-row cell, as ScreenQvt.js writes them.
+        const fieldRowCellClass = (count) => "col-xs-12 col-sm-" + (count <= 2 ? 6 : count === 3 ? 4 : 3);
         const blank = (text) => text === null || text === undefined || text === "";
         const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
         const scopeRef = (name) => "$scope[" + sq(name) + "]";
@@ -537,8 +546,12 @@
             w("<input" + A(Object.assign({ type: "hidden", name: nameOf(n), ":value": "$mq.str(" + baseValue(field, at(n, "default-value")) + ")", form: owner() }, idAttrs(n))) + ">\n");
         };
 
-        // The classes of a tonal (soft tinted) button, the secondary kind, as ScreenQvt.js writes them.
+        // The classes of a tonal (soft tinted) button, the secondary kind, as ScreenQvt.js writes them, and the color and class of a link
+        // or menu button by its btn-type: an explicit primary is the filled primary button, anything else a tonal one in its color.
         const tonal = (color, ...extra) => cls("m-btn-tonal", color && color !== "default" ? "text-" + color : null, ...extra);
+        const btnKind = (btnType, ...extra) => (btnType === "primary" ?
+            { color: "primary", class: cls(...extra) } :
+            { class: tonal(quasarColor(btnType || "primary") || null, ...extra) });
 
         const reset_ = (n) => {
             const out = Object.assign({ dense: true, flat: true, "no-caps": true, type: "reset", name: nameOf(n), form: owner() }, idAttrs(n));
@@ -554,7 +567,7 @@
             if (at(n, "confirmation")) textAttr(out, "data-confirm", at(n, "confirmation"), n, true);
             const image = first(n, "image");
             const iconClass = at(n, "icon");
-            let body = iconClass ? '<i class="' + e(iconClass) + (image ? "" : " q-icon on-left") + '"></i>' : "";
+            let body = iconClass ? iconTag(iconClass, !image) : "";
             if (image) {
                 body += "<img" + A({ ":src": exp(at(image, "url"), image, "url", false), ":alt": exp(at(image, "alt") || "image", image, "alt", true), width: at(image, "width") || null, height: at(image, "height") || null }) + ">";
             } else body += "<span v-text=\"" + e(at(n, "text") ? exp(at(n, "text"), n, "text", true) : titleExpr(n.parent)) + "\"></span>";
@@ -795,12 +808,13 @@
             const anchor = linkType === "anchor" || linkType === "anchor-button" ||
                 ((!linkType || linkType === "auto") && ((urlType && urlType !== "transition") || (found ? found.readOnly : true)));
             const style = at(n, "style") || null;
-            const color = quasarColor(at(n, "btn-type") || "primary") || null;
+            const btnType = at(n, "btn-type");
+            const color = quasarColor(btnType || "primary") || null;
             const iconClass = at(n, "icon");
             let label = "";
             if (at(n, "entity-name")) label = "$mq.str(" + scopeRef(fieldName(n) + "_display") + ")";
             else label = at(n, "text") ? exp(at(n, "text"), n, "text", true) : "''";
-            const body = (iconClass ? '<i class="' + e(iconClass) + ' q-icon' + '"></i> ' : "") +
+            const body = (iconClass ? icon(iconClass, !!(at(n, "text") || at(n, "entity-name"))) : "") +
                 (img ? imageTag(img) : '<span v-text="' + e(label) + '"></span>') +
                 (at(n, "badge") ? ' <q-badge class="on-right" transparent><span v-text="' + e(exp(at(n, "badge"), n, "badge", true)) + '"></span></q-badge>' : "");
             const tooltip = at(n, "tooltip") ? '<q-tooltip><span v-text="' + e(exp(at(n, "tooltip"), n, "tooltip", true)) + '"></span></q-tooltip>' : "";
@@ -823,7 +837,7 @@
                 const textLink = linkType === "anchor" || (st.inList && linkType !== "anchor-button");
                 const attrs = Object.assign({ ":href": href, target: at(n, "target-window") || null, "load-id": at(n, "dynamic-load-id") || null, class: textLink ? cls("m-link-text", style) : null }, confirmAttr);
                 plainAttr(attrs, "id", at(n, "id"), n);
-                out = "<" + tag + A(attrs) + ">" + (textLink ? tooltip + body : "<q-btn" + A({ dense: true, unelevated: true, "no-caps": true, class: tonal(color, "m-link", style) }) + ">" + tooltip + body + "</q-btn>") + "</" + tag + ">";
+                out = "<" + tag + A(attrs) + ">" + (textLink ? tooltip + body : "<q-btn" + A(Object.assign({ dense: true, unelevated: true, "no-caps": true }, btnKind(btnType, "m-link", style))) + ">" + tooltip + body + "</q-btn>") + "</" + tag + ">";
             } else {
                 const fieldsInitial = allParams(n, null, found && !noParam ? found.parameters : null);
                 const isForm = found ? !found.isScreen : true;
@@ -831,8 +845,8 @@
                 const hiddenLink = linkType === "hidden-form-link";
                 const button = img ?
                     "<input" + A({ type: "image", ":src": exp(at(img, "url"), img, "url", false), ":alt": exp(at(img, "alt") || "image", img, "alt", true) }) + ">" :
-                    "<q-btn" + A(Object.assign({ dense: true, "no-caps": true, type: "submit", flat: hiddenLink ? true : null, unelevated: hiddenLink ? null : true,
-                        class: hiddenLink ? cls("m-link", color ? "text-" + color : null, style) : tonal(color, "m-link", style) }, confirmAttr)) + ">" + tooltip + body + "</q-btn>";
+                    "<q-btn" + A(Object.assign({ dense: true, "no-caps": true, type: "submit", flat: hiddenLink ? true : null, unelevated: hiddenLink ? null : true },
+                        hiddenLink ? { class: cls("m-link", color ? "text-" + color : null, style) } : btnKind(btnType, "m-link", style), confirmAttr)) + ">" + tooltip + body + "</q-btn>";
                 const attrs = { action: found ? found.path : at(n, "url"), ":fields-initial": fieldsInitial, "v-slot:default": "formProps", "read-only": isForm && found && found.readOnly ? true : null, target: at(n, "target-window") || null };
                 if (isForm && found && found.method === "get") attrs.method = "GET";
                 out = "<" + tag + A(attrs) + ">" + button + "</" + tag + ">";
@@ -862,20 +876,30 @@
 
         // ---- containers ----
 
+        // The dialogs as ScreenQvt.js writes them: the icon attribute is the button-icon, and in a form-list cell the button is flat and
+        // dense (the button slot of a container-dialog, the button-class m-btn-flat of a dynamic-dialog).
         const containerDialog = (n) => {
-            const out = { color: quasarColor(at(n, "type") || "primary") || null, width: at(n, "width") || null, "button-class": at(n, "button-style") || null };
+            const inCell = st.inList;
+            const out = { color: quasarColor(at(n, "type") || "primary") || null, width: at(n, "width") || null, "button-icon": inCell ? null : at(n, "icon") || null, "button-class": inCell ? null : at(n, "button-style") || null };
             plainAttr(out, "id", at(n, "id"), n);
             textAttr(out, "button-text", at(n, "button-text"), n, true);
             if (at(n, "title")) textAttr(out, "title", at(n, "title"), n, true);
             else if (at(n, "button-text")) textAttr(out, "title", at(n, "button-text"), n, true);
             const open = at(n, "condition") ? '<template v-if="' + e(X(at(n, "condition"), n, "condition")) + '">' : "";
-            w(open + "<m-container-dialog" + A(out) + ">");
+            let slot = "";
+            if (inCell) {
+                const btn = { dense: true, flat: true, "no-caps": true, class: cls("m-link", at(n, "button-style") || null), icon: at(n, "icon") || null };
+                textAttr(btn, "label", at(n, "button-text"), n, true);
+                slot = "<template v-slot:button><q-btn" + A(btn) + "></q-btn></template>";
+            }
+            w(open + "<m-container-dialog" + A(out) + ">" + slot);
             return !!open;
         };
 
         const dynamicDialog = (n) => {
             const found = sri.staticUrl(at(n, "transition"), "transition");
-            const out = { ":url": urlOf(n, found.screenPath || found.path), color: quasarColor(at(n, "type") || "primary") || null, width: at(n, "width") || null, "button-class": at(n, "button-style") || null };
+            const out = { ":url": urlOf(n, found.screenPath || found.path), color: quasarColor(at(n, "type") || "primary") || null, width: at(n, "width") || null,
+                "button-icon": at(n, "icon") || null, "button-class": cls(st.inList ? "m-btn-flat" : null, at(n, "button-style") || null) };
             plainAttr(out, "id", at(n, "id"), n);
             textAttr(out, "button-text", at(n, "button-text"), n, true);
             if (at(n, "title")) textAttr(out, "title", at(n, "title"), n, true);
@@ -1145,9 +1169,9 @@
             if (!text && !img && !icon) return "";
             if (at(n, "encode") === "false") note("encode-false", n, "button-menu with encode=false writes text as html");
             let out = (at(n, "condition") ? '<template v-if="' + e(X(at(n, "condition"), n, "condition")) + '">' : "") +
-                "<q-btn-dropdown" + A({ dense: true, unelevated: true, "no-caps": true, class: tonal(quasarColor(at(n, "btn-type") || "primary"), at(n, "style") || null) }) + "><template v-slot:label>";
+                "<q-btn-dropdown" + A(Object.assign({ dense: true, unelevated: true, "no-caps": true }, btnKind(at(n, "btn-type"), at(n, "style") || null))) + "><template v-slot:label>";
             if (at(n, "tooltip")) out += '<q-tooltip><span v-text="' + e(exp(at(n, "tooltip"), n, "tooltip", true)) + '"></span></q-tooltip>';
-            if (icon) out += '<i class="' + e(icon + " q-icon" + (text ? " on-left" : "")) + '"></i>';
+            if (icon) out += iconTag(icon, !!text);
             out += img ? imageTag(img) : '<span v-text="' + e(textOf(n)) + '"></span>';
             if (at(n, "badge")) {
                 const badge = exp(at(n, "badge"), n, "badge", false);
@@ -1300,8 +1324,9 @@
                         collect(layout);
                         Object.keys(fields).filter((fieldName) => !referenced[fieldName]).forEach((fieldName) => singleField(fields[fieldName], big));
                     } else if (name === "field-row") {
+                        const cells = kids(kid, "field-ref");
                         w('<div class="row">');
-                        kid.children.forEach((cell) => { w('<div class="col-sm-6">'); layoutCode({ children: [cell] }, false); w("</div>"); });
+                        cells.forEach((cell) => { w('<div class="' + fieldRowCellClass(cells.length) + '">'); layoutCode({ children: [cell] }, false); w("</div>"); });
                         w("</div>\n");
                     } else if (name === "field-row-big") {
                         w('<div class="q-my-sm big-row"' + (at(kid, "justify") ? ' style="justify-content:' + e(at(kid, "justify")) + ';"' : "") + ">");

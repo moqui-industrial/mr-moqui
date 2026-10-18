@@ -139,6 +139,15 @@ Behaviour changes made when the [Code-Quality-Review](archive/Code-Quality-Revie
 | SFTP | The default port is 22 | The protocol's port; review phase 6 |
 | data writer | Zip entries are deflated | Smaller exports; review phase 6 |
 
+## Gallery fixes (2026-10-18)
+
+Defects the screen archetype gallery (`runtime/base-component/example/screen/Gallery/`) found in the qvt render mode and the script runtime; two of the fixes differ from Java on purpose.
+
+| Area | Difference | Rationale / where documented |
+|---|---|---|
+| csv render | A `label` writes nothing in the csv render mode; Java's `DefaultScreenMacros.csv.ftl` wrote the label text with no line break, so a screen's captions ran into the header row | An export is the table; the difference is named in the top comment of `runtime/base-component/framework/template/screen/ScreenCsv.js` |
+| entity-find | `limit` and `offset` that expand to an empty or non-numeric text apply no limit or offset and log at debug; Java's `as Integer` threw | Failure tolerance (AGENTS.md); `find_count` in `script/runtime/entities.rs` |
+
 ## Print fixes (2026-10-18)
 
 The print findings of [Markdown-PDF-Review](archive/Markdown-PDF-Review.md#repository-findings) and the decision on P8a-41, where the fix differs from Java on purpose.

@@ -761,15 +761,16 @@
             // and each row with a checkbox, as Java's form-list; sel is not reactive state of this component.
             const build = (sel) => {
             this.mqSelState = sel;
+            // the selection column is m-sel: as narrow as its checkbox, so it does not take the slack of the automatic table layout
             const selCell = (rowIndex) => {
                 if (!sel) return null;
                 const row = rowIndex === null ? null : this.rows[rowIndex];
                 const id = row ? row[this.selectionIdField] : null;
-                if (id === null || id === undefined || id === "") return h("div", { class: "td" }, "\u00a0");
-                return h("div", { class: "td" }, [h(V.resolveComponent("q-checkbox"), { dense: true, size: "sm", modelValue: !!sel.checkboxStates[rowIndex],
+                if (id === null || id === undefined || id === "") return h("div", { class: "td m-sel" }, "\u00a0");
+                return h("div", { class: "td m-sel" }, [h(V.resolveComponent("q-checkbox"), { dense: true, size: "sm", modelValue: !!sel.checkboxStates[rowIndex],
                     "onUpdate:modelValue": (value, event) => { sel.clickCheckbox(event || {}, rowIndex); sel.checkboxStates[rowIndex] = value; } })]);
             };
-            const selHead = sel ? h("div", { class: "th" }, [h("span", { class: "q-my-auto" }, [
+            const selHead = sel ? h("div", { class: "th m-sel" }, [h("span", { class: "q-my-auto" }, [
                 h(V.resolveComponent("q-checkbox"), { dense: true, size: "sm", modelValue: sel.checkboxAllState, "onUpdate:modelValue": sel.setCheckboxAllState }),
                 h(V.resolveComponent("q-btn"), { dense: true, flat: true, round: true, size: "sm", icon: "more_vert", color: sel.checkboxStates && sel.checkboxStates.includes(true) ? "primary" : "grey-7" }, { default: () => [
                     h(V.resolveComponent("q-tooltip"), null, { default: () => moqui.l10n.localize("Row Actions") }),
@@ -806,7 +807,7 @@
                 const cells = (scope) => (columnsMode
                     ? subColumns.map((column) => h("div", { class: "col" }, column.map((field) => (slots["rc_" + field] ? slots["rc_" + field](scope) : null))))
                     : slots.subrow(scope));
-                return h("div", { class: "tr sub-rows" }, [sel ? h("div", { class: "td" }, "\u00a0") : null, h("div", { class: "td" }, [h("div", { class: "q-pl-lg" },
+                return h("div", { class: "tr sub-rows" }, [sel ? h("div", { class: "td m-sel" }, "\u00a0") : null, h("div", { class: "td" }, [h("div", { class: "q-pl-lg" },
                     entries.map((entry, subIndex) => h("div", { class: "row no-wrap q-col-gutter-sm" }, cells(this.subScope(entry, subIndex, entries.length, parent)))))])]);
             };
             const rowsOf = (multiProps) => this.rows.map((row, rowIndex) => h(V.Fragment, { key: this.generation + "_" + rowIndex },
@@ -821,7 +822,7 @@
                 const map = this.pkg[this.listKey + kind.charAt(0).toUpperCase() + kind.slice(1)] || {};
                 const scopeOf = (formProps) => qvt.makeScope(() => Object.assign({}, map, { _formMap: map }, formProps ? { formProps } : {}), formScope);
                 const content = (scope) => (columnsMode
-                    ? h("div", { class: "tr " + kind }, [sel ? h("div", { class: "td" }, "\u00a0") : null].concat(columns.map((column) => h("div", { class: "td" },
+                    ? h("div", { class: "tr " + kind }, [sel ? h("div", { class: "td m-sel" }, "\u00a0") : null].concat(columns.map((column) => h("div", { class: "td" },
                         column.map((field) => (slots["rc" + kind.charAt(0) + "_" + field] ? slots["rc" + kind.charAt(0) + "_" + field](scope) : null))))))
                     : (slots["row_" + kind] ? slots["row_" + kind](scope) : null));
                 if (!spec.action) return h(V.Fragment, { key: kind + "_" + this.generation }, [content(scopeOf(null))]);
@@ -862,7 +863,14 @@
                     checkboxListMode: !!this.selectionListMode, checkboxValues: this.rows.map((row) => (row[this.selectionIdField] === undefined ? null : row[this.selectionIdField]))
                 }, { default: (sel) => [build(sel)] })
                 : build(null);
-            return h("div", { class: "q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat" }, [nav, table]);
+            // the page buttons again under a list of more than one page, after the table so they are not a row of its first column
+            const bottomNav = this.paginate && this.paginate.pageMaxIndex > 0 && !this.skipHeader
+                ? h("div", { class: "form-list-nav-row row items-center" }, [
+                    h(V.resolveComponent("q-space")),
+                    h(V.resolveComponent("m-form-go-page"), { idVal: this.idVal, formList: this }),
+                    h(V.resolveComponent("m-form-paginate"), { paginate: this.paginate, formList: this })])
+                : null;
+            return h("div", { class: "q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat" }, [nav, table, bottomNav]);
         }
     });
 
@@ -1025,11 +1033,11 @@
     component("m-dynamic-dialog", {
         name: "mDynamicDialog",
         props: { id: String, url: { type: String, required: true }, color: String, buttonText: String, buttonClass: String, title: String, width: String,
-            openDialog: { type: Boolean, default: false }, dynamicParams: { type: Object, default: null } },
+            openDialog: { type: Boolean, default: false }, dynamicParams: { type: Object, default: null }, buttonIcon: { type: String, default: "open_in_new" } },
         data() { return { curComponent: moqui.EmptyComponent, curUrl: "", isShown: false }; },
         template:
             '<span>' +
-                '<q-btn dense unelevated no-caps icon="open_in_new" :label="buttonText" :class="moqui.tonalClass(color, buttonClass)" @click="isShown = true"></q-btn>' +
+                '<q-btn dense unelevated no-caps :icon="buttonIcon" :label="buttonText" :class="moqui.tonalClass(color, buttonClass)" @click="isShown = true"></q-btn>' +
                 '<m-dialog ref="dialog" v-model="isShown" :id="id" :title="title" :color="color" :width="width"><component :is="curComponent"></component></m-dialog>' +
             '</span>',
         methods: {
@@ -1080,6 +1088,8 @@
         }
     });
 
+    // A node of the tree. The server sends a node's children as a list when the node is on the open path, else as a boolean: true means
+    // they load from the tree's URL when the node is opened, false that it is a leaf. The list drawn is the loaded one over the model's.
     component("m-tree-item", {
         name: "mTreeItem",
         template:
@@ -1090,7 +1100,7 @@
                     '<m-link v-if="linkHref" :href="linkHref" :load-id="model.a_attr.loadId" :class="{\'text-success\':selected}">{{model.text}}</m-link>' +
                     '<span v-else :class="{\'text-success\':selected}">{{model.text}}</span>' +
                 '</span>' +
-                '<ul v-show="open" v-if="hasChildren"><m-tree-item v-for="child in model.children" :key="child.id" :model="child" :top="top"></m-tree-item></ul>' +
+                '<ul v-show="open" v-if="hasChildren"><m-tree-item v-for="child in children" :key="child.id" :model="child" :top="top"></m-tree-item></ul>' +
             '</li>',
         props: { model: Object, top: Object },
         data() { return { open: false, loadedChildren: null }; },
@@ -1108,7 +1118,8 @@
                 if (this.children && moqui.isBoolean(this.children) && moqui.isString(url)) {
                     const liAttr = this.model.li_attr;
                     const params = Object.assign({ treeNodeId: this.model.id, treeNodeName: liAttr && liAttr.treeNodeName ? liAttr.treeNodeName : "", treeOpenPath: this.top.currentPath }, this.top.parameters);
-                    moqui.request(url, { method: "POST", params }).then((result) => { this.loadedChildren = result.json; }, moqui.handleAjaxError);
+                    // an answer that is not a list leaves the node a folder that fetches again on the next open
+                    moqui.request(url, { method: "POST", params }).then((result) => { if (Array.isArray(result.json)) this.loadedChildren = result.json; }, moqui.handleAjaxError);
                 }
             }
         },
@@ -1614,14 +1625,14 @@
                                 '<slot name="headerForm" :search="formProps.fields"></slot>' +
                             '</m-form-link>' +
                             '<div class="tr">' +
-                                '<div v-if="selection" class="th"><q-checkbox dense size="sm" :model-value="allSelected" @update:model-value="selectAll"></q-checkbox></div>' +
+                                '<div v-if="selection" class="th m-sel"><q-checkbox dense size="sm" :model-value="allSelected" @update:model-value="selectAll"></q-checkbox></div>' +
                                 '<slot name="header" :search="searchObj" :sort-by="sortBy" :order-by="orderBy"></slot>' +
                             '</div>' +
                         '</div>' +
                         '<div class="tbody">' +
                             '<template v-for="(fields, rowIndex) in rowList" :key="rowIndex">' +
                                 '<div class="tr" :class="{selected:selected[rowIndex]}">' +
-                                    '<div v-if="selection" class="td"><q-checkbox dense size="sm" :model-value="!!selected[rowIndex]" @update:model-value="selected[rowIndex] = $event"></q-checkbox></div>' +
+                                    '<div v-if="selection" class="td m-sel"><q-checkbox dense size="sm" :model-value="!!selected[rowIndex]" @update:model-value="selected[rowIndex] = $event"></q-checkbox></div>' +
                                     '<slot name="row" :fields="fields" :row-index="rowIndex" :selected="!!selected[rowIndex]"></slot>' +
                                 '</div>' +
                                 '<template v-if="fields.aggregateSubList && fields.aggregateSubList.length">' +
@@ -1630,6 +1641,12 @@
                             '</template>' +
                             '<div v-if="!rowList.length && !loading" class="tr"><div class="td">No results found</div></div>' +
                         '</div>' +
+                    '</div>' +
+                    // the page buttons again under a list of more than one page: after the table, not a row squeezed into its first column
+                    '<div v-if="paginate && paginate.pageMaxIndex > 0" class="form-list-nav-row row items-center">' +
+                        '<q-space></q-space>' +
+                        '<m-form-go-page :id-val="idVal" :form-list="this"></m-form-go-page>' +
+                        '<m-form-paginate :paginate="paginate" :form-list="this"></m-form-paginate>' +
                     '</div>' +
                 '</div>' +
             '</div>',
@@ -1836,16 +1853,12 @@
                     '</template>' +
                 '</m-date-time>' +
             '</div>' +
+            // Period mode is one labeled field: the base date, with the period and offset selects in a menu behind the button in its
+            // append slot (as the find options of m-text-find), which reads the choice ("Last Month") once one is made.
             '<div v-else class="row"><q-input dense outlined stack-label hide-bottom-space :label="label" v-model="fields[name+\'_pdate\']"' +
                     ' mask="####-##-##" fill-mask :for="id" :name="name+\'_pdate\'" :form="form" style="max-width:max-content;"' +
                     ' :bg-color="changed(name+\'_pdate\')">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
-                '<template v-slot:before>' +
-                    '<q-select class="q-pr-xs" dense outlined options-dense emit-value map-options hide-bottom-space v-model="fields[name+\'_poffset\']"' +
-                        ' :name="name+\'_poffset\'" :bg-color="changed(name+\'_poffset\')" stack-label label="Offset" :options="dateOffsets" :form="form" behavior="menu"></q-select>' +
-                    '<q-select dense outlined options-dense emit-value map-options hide-bottom-space v-model="fields[name+\'_period\']"' +
-                        ' :name="name+\'_period\'" :bg-color="changed(name+\'_period\')" stack-label label="Period" :options="datePeriods" :form="form" behavior="menu"></q-select>' +
-                '</template>' +
                 '<template v-slot:prepend>' +
                     '<q-icon name="event" size="xs" class="cursor-pointer">' +
                         '<q-popup-proxy ref="qDateProxy" cover transition-show="scale" transition-hide="scale">' +
@@ -1853,11 +1866,34 @@
                         '</q-popup-proxy>' +
                     '</q-icon>' +
                 '</template>' +
+                '<template v-slot:append>' +
+                    '<q-btn flat dense no-caps size="sm" icon="event_repeat" :round="!periodText" :label="periodText || undefined" :color="periodText ? \'primary\' : \'grey-6\'">' +
+                        '<q-tooltip>Period</q-tooltip>' +
+                        '<q-menu class="m-date-period-options q-pa-sm"><div class="column q-gutter-y-xs">' +
+                            '<q-select dense outlined options-dense emit-value map-options hide-bottom-space v-model="fields[name+\'_period\']"' +
+                                ' :name="name+\'_period\'" :bg-color="changed(name+\'_period\')" stack-label label="Period" :options="datePeriods" :form="form" behavior="menu"></q-select>' +
+                            '<q-select dense outlined options-dense emit-value map-options hide-bottom-space v-model="fields[name+\'_poffset\']"' +
+                                ' :name="name+\'_poffset\'" :bg-color="changed(name+\'_poffset\')" stack-label label="Offset" :options="dateOffsets" :form="form" behavior="menu"></q-select>' +
+                        '</div></q-menu>' +
+                    '</q-btn>' +
+                '</template>' +
                 '<template v-slot:after>' +
                     '<q-btn flat round dense size="sm" icon="date_range" @click="toggleMode"><q-tooltip>Date Range Mode</q-tooltip></q-btn>' +
                     '<q-btn flat round dense size="sm" icon="clear" @click="clearAll"><q-tooltip>Clear</q-tooltip></q-btn>' +
                 '</template>' +
             '</q-input></div>',
+        computed: {
+            // the choice as its labels, "Last Month"; empty until a period or an offset is chosen
+            periodText() {
+                const labelOf = (list, value) => { const found = list.find((option) => option.value === String(value)); return found ? found.label : String(value); };
+                const parts = [];
+                const offset = this.fields[this.name + "_poffset"];
+                const period = this.fields[this.name + "_period"];
+                if (offset !== undefined && offset !== null && offset !== "") parts.push(labelOf(this.dateOffsets, offset));
+                if (period !== undefined && period !== null && period !== "") parts.push(labelOf(this.datePeriods, period));
+                return parts.join(" ");
+            }
+        },
         methods: {
             toggleMode() { this.fromThruMode = !this.fromThruMode; },
             hideDate() { if (this.$refs.qDateProxy) this.$refs.qDateProxy.hide(); },
@@ -2264,13 +2300,15 @@
     // The text of the element is the diagram. Mermaid 11 draws it with mermaid.run into an element that is not Vue's.
     component("m-mermaid", {
         name: "mMermaid",
-        props: { config: { type: Object, default: () => ({ startOnLoad: false, securityLevel: "strict" }) }, height: { type: String, default: "400px" }, width: { type: String, default: "100%" } },
+        // The diagram comes in the text prop: the Vue compiler condenses the whitespace of slot content, and a diagram
+        // needs its line breaks. The slot is kept for a single-line diagram or one written with explicit newlines.
+        props: { text: String, config: { type: Object, default: () => ({ startOnLoad: false, securityLevel: "strict" }) }, height: { type: String, default: "400px" }, width: { type: String, default: "100%" } },
         template: '<div class="mermaid-container" :style="{height:height,width:width}"><pre ref="source" style="display:none;"><slot></slot></pre><div ref="target"></div></div>',
         mounted() {
             moqui.loadScript("/libs/mermaid/mermaid.min.js", null, () => !!root.mermaid).then(() => {
                 const diagram = root.document.createElement("pre");
                 diagram.className = "mermaid";
-                diagram.textContent = this.$refs.source.textContent.trim();
+                diagram.textContent = (this.text || this.$refs.source.textContent).trim();
                 this.$refs.target.appendChild(diagram);
                 root.mermaid.initialize(Object.assign({ startOnLoad: false, securityLevel: "strict" }, this.config));
                 return root.mermaid.run({ nodes: [diagram] });

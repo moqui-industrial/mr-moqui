@@ -233,17 +233,18 @@
               ]))
             }
         } },
-        "m-date-period": { hash: "195c0d34", make: function (Vue) {
-            const { resolveComponent: _resolveComponent, createVNode: _createVNode, createTextVNode: _createTextVNode, withCtx: _withCtx, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createBlock: _createBlock } = Vue
+        "m-date-period": { hash: "9a3df286", make: function (Vue) {
+            const { resolveComponent: _resolveComponent, createVNode: _createVNode, createTextVNode: _createTextVNode, withCtx: _withCtx, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createBlock: _createBlock, createElementVNode: _createElementVNode } = Vue
 
             return function render(_ctx, _cache) {
               const _component_m_date_time = _resolveComponent("m-date-time")
               const _component_q_icon = _resolveComponent("q-icon")
               const _component_q_tooltip = _resolveComponent("q-tooltip")
               const _component_q_btn = _resolveComponent("q-btn")
-              const _component_q_select = _resolveComponent("q-select")
               const _component_q_date = _resolveComponent("q-date")
               const _component_q_popup_proxy = _resolveComponent("q-popup-proxy")
+              const _component_q_select = _resolveComponent("q-select")
+              const _component_q_menu = _resolveComponent("q-menu")
               const _component_q_input = _resolveComponent("q-input")
 
               return (_ctx.fromThruMode)
@@ -334,43 +335,6 @@
                       style: {"max-width":"max-content"},
                       "bg-color": _ctx.changed(_ctx.name+'_pdate')
                     }, {
-                      before: _withCtx(() => [
-                        _createVNode(_component_q_select, {
-                          class: "q-pr-xs",
-                          dense: "",
-                          outlined: "",
-                          "options-dense": "",
-                          "emit-value": "",
-                          "map-options": "",
-                          "hide-bottom-space": "",
-                          modelValue: _ctx.fields[_ctx.name+'_poffset'],
-                          "onUpdate:modelValue": $event => ((_ctx.fields[_ctx.name+'_poffset']) = $event),
-                          name: _ctx.name+'_poffset',
-                          "bg-color": _ctx.changed(_ctx.name+'_poffset'),
-                          "stack-label": "",
-                          label: "Offset",
-                          options: _ctx.dateOffsets,
-                          form: _ctx.form,
-                          behavior: "menu"
-                        }, null, 8, ["modelValue", "onUpdate:modelValue", "name", "bg-color", "options", "form"]),
-                        _createVNode(_component_q_select, {
-                          dense: "",
-                          outlined: "",
-                          "options-dense": "",
-                          "emit-value": "",
-                          "map-options": "",
-                          "hide-bottom-space": "",
-                          modelValue: _ctx.fields[_ctx.name+'_period'],
-                          "onUpdate:modelValue": $event => ((_ctx.fields[_ctx.name+'_period']) = $event),
-                          name: _ctx.name+'_period',
-                          "bg-color": _ctx.changed(_ctx.name+'_period'),
-                          "stack-label": "",
-                          label: "Period",
-                          options: _ctx.datePeriods,
-                          form: _ctx.form,
-                          behavior: "menu"
-                        }, null, 8, ["modelValue", "onUpdate:modelValue", "name", "bg-color", "options", "form"])
-                      ]),
                       prepend: _withCtx(() => [
                         _createVNode(_component_q_icon, {
                           name: "event",
@@ -397,6 +361,69 @@
                           ]),
                           _: 1
                         })
+                      ]),
+                      append: _withCtx(() => [
+                        _createVNode(_component_q_btn, {
+                          flat: "",
+                          dense: "",
+                          "no-caps": "",
+                          size: "sm",
+                          icon: "event_repeat",
+                          round: !_ctx.periodText,
+                          label: _ctx.periodText || undefined,
+                          color: _ctx.periodText ? 'primary' : 'grey-6'
+                        }, {
+                          default: _withCtx(() => [
+                            _createVNode(_component_q_tooltip, null, {
+                              default: _withCtx(() => [
+                                _createTextVNode("Period")
+                              ]),
+                              _: 1
+                            }),
+                            _createVNode(_component_q_menu, { class: "m-date-period-options q-pa-sm" }, {
+                              default: _withCtx(() => [
+                                _createElementVNode("div", { class: "column q-gutter-y-xs" }, [
+                                  _createVNode(_component_q_select, {
+                                    dense: "",
+                                    outlined: "",
+                                    "options-dense": "",
+                                    "emit-value": "",
+                                    "map-options": "",
+                                    "hide-bottom-space": "",
+                                    modelValue: _ctx.fields[_ctx.name+'_period'],
+                                    "onUpdate:modelValue": $event => ((_ctx.fields[_ctx.name+'_period']) = $event),
+                                    name: _ctx.name+'_period',
+                                    "bg-color": _ctx.changed(_ctx.name+'_period'),
+                                    "stack-label": "",
+                                    label: "Period",
+                                    options: _ctx.datePeriods,
+                                    form: _ctx.form,
+                                    behavior: "menu"
+                                  }, null, 8, ["modelValue", "onUpdate:modelValue", "name", "bg-color", "options", "form"]),
+                                  _createVNode(_component_q_select, {
+                                    dense: "",
+                                    outlined: "",
+                                    "options-dense": "",
+                                    "emit-value": "",
+                                    "map-options": "",
+                                    "hide-bottom-space": "",
+                                    modelValue: _ctx.fields[_ctx.name+'_poffset'],
+                                    "onUpdate:modelValue": $event => ((_ctx.fields[_ctx.name+'_poffset']) = $event),
+                                    name: _ctx.name+'_poffset',
+                                    "bg-color": _ctx.changed(_ctx.name+'_poffset'),
+                                    "stack-label": "",
+                                    label: "Offset",
+                                    options: _ctx.dateOffsets,
+                                    form: _ctx.form,
+                                    behavior: "menu"
+                                  }, null, 8, ["modelValue", "onUpdate:modelValue", "name", "bg-color", "options", "form"])
+                                ])
+                              ]),
+                              _: 1
+                            })
+                          ]),
+                          _: 1
+                        }, 8, ["round", "label", "color"])
                       ]),
                       after: _withCtx(() => [
                         _createVNode(_component_q_btn, {
@@ -773,7 +800,7 @@
               return (_openBlock(), _createBlock(_resolveDynamicComponent(_ctx.curComponent)))
             }
         } },
-        "m-dynamic-dialog": { hash: "36820848", make: function (Vue) {
+        "m-dynamic-dialog": { hash: "9c4723b0", make: function (Vue) {
             const { resolveComponent: _resolveComponent, normalizeClass: _normalizeClass, createVNode: _createVNode, resolveDynamicComponent: _resolveDynamicComponent, openBlock: _openBlock, createBlock: _createBlock, withCtx: _withCtx, createElementBlock: _createElementBlock } = Vue
 
             return function render(_ctx, _cache) {
@@ -785,11 +812,11 @@
                   dense: "",
                   unelevated: "",
                   "no-caps": "",
-                  icon: "open_in_new",
+                  icon: _ctx.buttonIcon,
                   label: _ctx.buttonText,
                   class: _normalizeClass(_ctx.moqui.tonalClass(_ctx.color, _ctx.buttonClass)),
                   onClick: $event => (_ctx.isShown = true)
-                }, null, 8, ["label", "class", "onClick"]),
+                }, null, 8, ["icon", "label", "class", "onClick"]),
                 _createVNode(_component_m_dialog, {
                   ref: "dialog",
                   modelValue: _ctx.isShown,
@@ -1240,7 +1267,7 @@
               }, 8, ["onSubmit", "onReset"]))
             }
         } },
-        "m-form-list": { hash: "2b1d1fde", make: function (Vue) {
+        "m-form-list": { hash: "ae8730d0", make: function (Vue) {
             const { renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, renderSlot: _renderSlot, resolveComponent: _resolveComponent, withCtx: _withCtx, createBlock: _createBlock, createCommentVNode: _createCommentVNode, createElementVNode: _createElementVNode, createVNode: _createVNode, normalizeClass: _normalizeClass } = Vue
 
             return function render(_ctx, _cache) {
@@ -1358,7 +1385,7 @@
                             (_ctx.selection)
                               ? (_openBlock(), _createElementBlock("div", {
                                   key: 0,
-                                  class: "th"
+                                  class: "th m-sel"
                                 }, [
                                   _createVNode(_component_q_checkbox, {
                                     dense: "",
@@ -1385,7 +1412,7 @@
                             (_ctx.selection)
                               ? (_openBlock(), _createElementBlock("div", {
                                   key: 0,
-                                  class: "td"
+                                  class: "td m-sel"
                                 }, [
                                   _createVNode(_component_q_checkbox, {
                                     dense: "",
@@ -1426,7 +1453,23 @@
                           ]))
                         : _createCommentVNode("", true)
                     ])
-                  ], 8, ["id"])
+                  ], 8, ["id"]),
+                  (_ctx.paginate && _ctx.paginate.pageMaxIndex > 0)
+                    ? (_openBlock(), _createElementBlock("div", {
+                        key: 0,
+                        class: "form-list-nav-row row items-center"
+                      }, [
+                        _createVNode(_component_q_space),
+                        _createVNode(_component_m_form_go_page, {
+                          "id-val": _ctx.idVal,
+                          "form-list": this
+                        }, null, 8, ["id-val"]),
+                        _createVNode(_component_m_form_paginate, {
+                          paginate: _ctx.paginate,
+                          "form-list": this
+                        }, null, 8, ["paginate"])
+                      ]))
+                    : _createCommentVNode("", true)
                 ], 2)
               ]))
             }
@@ -2830,7 +2873,7 @@
               ]), 1040, ["label", "prefix", "model-value", "onUpdate:modelValue", "type", "for", "name", "size", "maxlength", "form", "loading", "rules", "disable", "bg-color", "mask", "fill-mask", "reverse-fill-mask"]))
             }
         } },
-        "m-tree-item": { hash: "b701718a", make: function (Vue) {
+        "m-tree-item": { hash: "f60fcdc3", make: function (Vue) {
             const { normalizeClass: _normalizeClass, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createBlock: _createBlock, createElementVNode: _createElementVNode, renderList: _renderList, Fragment: _Fragment, vShow: _vShow, withDirectives: _withDirectives } = Vue
 
             return function render(_ctx, _cache) {
@@ -2871,7 +2914,7 @@
                 ], 8, ["onClick"]),
                 (_ctx.hasChildren)
                   ? _withDirectives((_openBlock(), _createElementBlock("ul", { key: 2 }, [
-                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.model.children, (child) => {
+                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.children, (child) => {
                         return (_openBlock(), _createBlock(_component_m_tree_item, {
                           key: child.id,
                           model: child,

@@ -77,7 +77,7 @@ try {
         sri.write("</q-list>\n");
         $v.endAccordion();
         sri.write("<div class=\"row\">");
-        sri.write("<div class=\"col-sm-6\">");
+        sri.write("<div class=\"col-xs-12 col-sm-6\">");
         $v.fieldBox(null, "", false);
         sri.pushContext();
         try {
@@ -87,7 +87,7 @@ try {
         }
         sri.write("</div>");
         sri.write("</div>");
-        sri.write("<div class=\"col-sm-6\">");
+        sri.write("<div class=\"col-xs-12 col-sm-6\">");
         $v.fieldBox(null, "", false);
         sri.pushContext();
         try {

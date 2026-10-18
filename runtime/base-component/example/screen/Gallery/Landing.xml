@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Gallery screen for the 3.1 Landing archetype of the IronStone BOSS style guide: counters, my-work lists, shortcuts
+    and a chart over framework data (enumerations by type stand in for orders by status). Every counter and list row
+    links into the List screen with its filter. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Landing" default-menu-index="1">
+
+    <transition name="list"><default-response url="../List"/></transition>
+    <transition name="detail"><default-response url="../Detail"/></transition>
+    <transition name="record360"><default-response url="../Record360"/></transition>
+
+    <actions>
+        <!-- counters and the chart: enumerations by type, the largest types first -->
+        <entity-find entity-name="moqui.basic.Enumeration" list="enumTypeRows">
+            <select-field field-name="enumTypeId"/></entity-find>
+        <entity-find entity-name="moqui.basic.EnumerationType" list="enumTypeList" cache="true"/>
+        <!-- my work: the enumerations changed last, and an inline assigned-to-me list built over them -->
+        <entity-find entity-name="moqui.basic.Enumeration" list="recentEnumList" offset="0" limit="10">
+            <order-by field-name="-lastUpdatedStamp,enumId"/></entity-find>
+        <entity-find entity-name="moqui.basic.Geo" list="countryList" offset="0" limit="10">
+            <econdition field-name="geoTypeEnumId" value="GEOT_COUNTRY"/>
+            <order-by field-name="geoName"/></entity-find>
+        <script><![CDATA[
+            const typeDesc = {}
+            for (const et of enumTypeList) typeDesc[et.enumTypeId] = et.description
+            const counts = {}
+            for (const row of enumTypeRows) counts[row.enumTypeId] = (counts[row.enumTypeId] || 0) + 1
+            const typeCounts = Object.keys(counts)
+                .map(id => ({ enumTypeId: id, description: String(typeDesc[id] || id), count: counts[id] }))
+                .sort((a, b) => b.count - a.count || a.description.localeCompare(b.description))
+            // bare assignments go to the screen context (as EntityDetail.xml does); context.x = ... does too
+            enumTotal = enumTypeRows.length
+            counterList = typeCounts.slice(0, 5)
+            const chartTypes = typeCounts.slice(0, 8)
+            chartLabelsJson = JSON.stringify(chartTypes.map(t => t.description.length > 24 ? t.description.slice(0, 23) + '…' : t.description))
+            chartDataJson = JSON.stringify(chartTypes.map(t => t.count))
+
+            // work items do not exist in the framework: an inline list over real enumerations shows the archetype
+            const verbs = ['Review', 'Translate', 'Approve', 'Retire', 'Check', 'Describe']
+            const states = ['Due today', 'In progress', 'Overdue', 'New', 'In progress', 'Due today']
+            const dues = ['Today', 'Tomorrow', 'Yesterday', 'Fri', 'Mon', 'Today']
+            myWorkList = recentEnumList.slice(0, 6).map((row, i) => ({
+                title: verbs[i] + ' ' + row.description, enumId: row.enumId, enumTypeId: row.enumTypeId,
+                kind: typeDesc[row.enumTypeId] || row.enumTypeId, state: states[i], due: dues[i] }))
+        ]]></script>
+    </actions>
+    <widgets>
+        <container-box type="info"><box-header title="Archetype 3.1 Landing"/><box-body>
+            <label type="p" text="The home of an app: a row of counters, the lists of my work, shortcuts and a chart, each a link into the List screen with its filter. Framework data stands in for the business: enumerations by type instead of orders by status. One column on a phone, counters two per row."/>
+            <label type="p" text="Fallbacks for §8: number-card is a q-card with a text-overline label and a text-h5 value through render-mode; the assigned-to-me list is an inline list because the framework has no work-item entity; the status chips are tonal anchor-button links until the m-tonal chip exists."/>
+        </box-body></container-box>
+
+        <!-- counters: number-card fallback, each card a link into the list with the type filter -->
+        <container style="row q-col-gutter-sm q-ma-sm">
+            <render-mode><text type="qvt"><![CDATA[
+<div class="col-xs-6 col-sm-4 col-md-2"><q-card flat bordered class="full-height"><q-card-section class="q-pa-sm">
+    <m-link href="${sri.makeUrlByType('list', 'transition', null, 'true').pathWithParams}" class="m-link-text">
+        <div class="text-overline text-grey-6 ellipsis">All enumerations</div>
+        <div class="text-h5 text-weight-medium">${ec.l10n.format(enumTotal, '#,##0')}</div>
+    </m-link>
+</q-card-section></q-card></div>
+            ]]></text></render-mode>
+            <section-iterate name="CounterCards" list="counterList" entry="card"><widgets>
+                <render-mode><text type="qvt"><![CDATA[
+<div class="col-xs-6 col-sm-4 col-md-2"><q-card flat bordered class="full-height"><q-card-section class="q-pa-sm">
+    <m-link href="${sri.makeUrlByType('list', 'transition', null, 'true').addParameter('enumTypeId', card.enumTypeId).pathWithParams}" class="m-link-text">
+        <div class="text-overline text-grey-6 ellipsis">${WebUtilities.encodeHtml(card.description)}</div>
+        <div class="text-h5 text-weight-medium">${ec.l10n.format(card.count, '#,##0')}</div>
+    </m-link>
+</q-card-section></q-card></div>
+                ]]></text></render-mode>
+            </widgets></section-iterate>
+        </container>
+
+        <container-row>
+            <row-col md="7">
+                <!-- my work: lists with skip-header and no paging, ten rows at most -->
+                <container-box><box-header title="Assigned to me"/><box-toolbar>
+                    <link url="list" text="All enumerations" link-type="anchor"/>
+                </box-toolbar><box-body-nopad>
+                    <form-list name="MyWorkList" list="myWorkList" skip-form="true" skip-header="true" paginate="false">
+                        <field name="title"><default-field><link url="detail" text="${title}"/></default-field></field>
+                        <field name="kind"><default-field><display/></default-field></field>
+                        <field name="due"><default-field><display/></default-field></field>
+                        <field name="state" align="right">
+                            <conditional-field condition="state == 'Overdue'">
+                                <link url="list" link-type="anchor-button" btn-type="danger" style="text-no-wrap" text="${state}" parameter-map="{enumTypeId:enumTypeId}"/></conditional-field>
+                            <conditional-field condition="state == 'Due today'">
+                                <link url="list" link-type="anchor-button" btn-type="warning" style="text-no-wrap" text="${state}" parameter-map="{enumTypeId:enumTypeId}"/></conditional-field>
+                            <conditional-field condition="state == 'New'">
+                                <link url="list" link-type="anchor-button" style="text-grey text-no-wrap" text="${state}" parameter-map="{enumTypeId:enumTypeId}"/></conditional-field>
+                            <default-field>
+                                <link url="list" link-type="anchor-button" style="text-no-wrap" text="${state}" parameter-map="{enumTypeId:enumTypeId}"/></default-field>
+                        </field>
+                        <columns type="mobile">
+                            <column><field-ref name="title"/><field-ref name="due"/></column>
+                            <column><field-ref name="state"/></column>
+                        </columns>
+                    </form-list>
+                </box-body-nopad></container-box>
+
+                <container-box><box-header title="Changed last"/><box-toolbar>
+                    <link url="list" text="All enumerations" link-type="anchor"/>
+                </box-toolbar><box-body-nopad>
+                    <form-list name="RecentEnumList" list="recentEnumList" skip-form="true" skip-header="true" paginate="false">
+                        <field name="description"><default-field><link url="detail" text="${description}"/></default-field></field>
+                        <field name="enumTypeId"><default-field>
+                            <link url="list" entity-name="moqui.basic.EnumerationType" text="${description}" parameter-map="{enumTypeId:enumTypeId}"/></default-field></field>
+                        <field name="lastUpdatedStamp" align="right"><default-field><display format="yyyy-MM-dd HH:mm"/></default-field></field>
+                        <columns type="mobile">
+                            <column><field-ref name="description"/><field-ref name="enumTypeId"/></column>
+                            <column><field-ref name="lastUpdatedStamp"/></column>
+                        </columns>
+                    </form-list>
+                </box-body-nopad></container-box>
+
+                <container-box><box-header title="Countries"/><box-toolbar>
+                    <link url="list" text="Geo types" link-type="anchor" parameter-map="{enumTypeId:'GeoType'}"/>
+                </box-toolbar><box-body-nopad>
+                    <form-list name="CountryList" list="countryList" skip-form="true" skip-header="true" paginate="false">
+                        <field name="geoName"><default-field><display/></default-field></field>
+                        <field name="geoCodeAlpha2"><default-field><display/></default-field></field>
+                        <field name="geoTypeEnumId"><default-field>
+                            <link url="detail" text="Country" parameter-map="{enumId:geoTypeEnumId}"/></default-field></field>
+                    </form-list>
+                </box-body-nopad></container-box>
+            </row-col>
+            <row-col md="5">
+                <!-- shortcuts: tonal links -->
+                <container-box><box-header title="Shortcuts"/><box-body>
+                    <container style="q-gutter-sm">
+                        <link url="list" text="New enumeration" icon="fa fa-plus" parameter-map="{_openDialog:'NewEnumDialog'}"/>
+                        <link url="list" text="Find enumerations" icon="fa fa-search"/>
+                        <link url="detail" text="Theme type detail" icon="fa fa-file-text-o"/>
+                        <link url="record360" text="John Doe 360" icon="fa fa-user-circle-o" parameter-map="{userId:'EX_JOHN_DOE'}"/>
+                        <link url="//tools/StatusFlows" text="Status flows" icon="fa fa-random"/>
+                    </container>
+                </box-body></container-box>
+
+                <!-- one chart: a single series, the brand primary read from the CSS variable when the chart draws -->
+                <container-box><box-header title="Enumerations by type"/><box-body>
+                    <render-mode><text type="qvt"><![CDATA[
+<m-chart height="300px" :config="{dark: $q.dark.isActive, type: 'bar',
+    data: {labels: ${WebUtilities.encodeHtml(chartLabelsJson)}, datasets: [{label: 'Enumerations', data: ${chartDataJson},
+        backgroundColor: window.getComputedStyle(window.document.body).getPropertyValue('--q-primary').trim(), borderRadius: 4, maxBarThickness: 18}]},
+    options: {indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: {legend: {display: false}},
+        scales: {x: {beginAtZero: true, ticks: {color: window.getComputedStyle(window.document.body).color, precision: 0}, grid: {display: false}, border: {display: false}},
+            y: {ticks: {color: window.getComputedStyle(window.document.body).color}, grid: {display: false}, border: {display: false}}}}}"></m-chart>
+                    ]]></text></render-mode>
+                    <label type="div" style="text-caption text-grey-6 q-mt-xs" text="One series, one brand color; the table behind it is the List screen."/>
+                </box-body></container-box>
+            </row-col>
+        </container-row>
+    </widgets>
+</screen>

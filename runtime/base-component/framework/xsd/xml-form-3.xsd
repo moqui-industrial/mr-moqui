@@ -414,10 +414,11 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="box" type="boolean" default="false"/>
     </xs:complexType></xs:element>
     <xs:element name="field-row"><xs:annotation>
-        <xs:documentation>Fields in the field-row will be split into two columns. If you want more than
-            two fields in a row, use field-row-big.</xs:documentation>
+        <xs:documentation>Fields in the field-row sit side by side in equal columns from 600px up (two fields in halves,
+            three in thirds, four in quarters) and stack below that. For fields that should flow on one line at their own
+            width, such as a row of buttons, use field-row-big.</xs:documentation>
     </xs:annotation><xs:complexType>
-        <xs:sequence><xs:element minOccurs="0" maxOccurs="2" ref="field-ref"/></xs:sequence>
+        <xs:sequence><xs:element minOccurs="0" maxOccurs="4" ref="field-ref"/></xs:sequence>
     </xs:complexType></xs:element>
     <xs:element name="field-row-big"><xs:annotation>
         <xs:documentation>All fields go in a single column, with an optional title column first. Fields
@@ -477,7 +478,8 @@ along with this software (see the LICENSE.md file). If not, see
             </xs:documentation></xs:annotation>
         </xs:attribute>
         <xs:attribute name="icon" type="xs:string"><xs:annotation>
-            <xs:documentation>Icon name, actually an icon style used in an 'i' element in HTML output.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:documentation>An icon before the text: a Material Icons name (add, edit, open_in_new) or, with a space or an fa prefix
+                (fa fa-plus), CSS classes for an 'i' element.</xs:documentation></xs:annotation></xs:attribute>
         <xs:attribute name="badge" type="xs:string"><xs:annotation>
             <xs:documentation>Text to put in a badge on the right side</xs:documentation></xs:annotation></xs:attribute>
         <xs:attribute name="tooltip" type="xs:string"/>
@@ -498,7 +500,12 @@ along with this software (see the LICENSE.md file). If not, see
                 default-response points to instead of a URL to this transition.</xs:documentation></xs:annotation>
         </xs:attribute>
         <xs:attribute name="style" type="xs:string"/>
-        <xs:attribute name="btn-type" type="color-context" default="primary"/>
+        <xs:attribute name="btn-type" type="color-context" default="primary"><xs:annotation><xs:documentation>
+            The color of a button link. Without this attribute the button is the tonal (soft tinted) secondary kind; with
+            success, info, warning or danger it is tonal in that color; with primary written explicitly it is the filled
+            primary button, for the one main action of a title row. A text link (link-type anchor, or a screen link in a
+            form-list cell) and a hidden-form-link (flat) keep their kind and take only the color.
+        </xs:documentation></xs:annotation></xs:attribute>
         <xs:attribute name="dynamic-load-id" type="xs:string"><xs:annotation><xs:documentation>
             If specified URL will be loaded into the dynamic-container with this ID.
         </xs:documentation></xs:annotation></xs:attribute>
@@ -1021,7 +1028,9 @@ along with this software (see the LICENSE.md file). If not, see
             If there is a message here it will show in a confirmation box when the button is clicked on.
         </xs:documentation></xs:annotation></xs:attribute>
         <xs:attribute name="type" type="color-context" default="primary"/>
-        <xs:attribute name="icon" type="xs:string"/>
+        <xs:attribute name="icon" type="xs:string"><xs:annotation><xs:documentation>
+            An icon before the text: a Material Icons name (check, arrow_forward) or, with a space or an fa prefix (fa fa-check),
+            CSS classes for an 'i' element.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>
     <xs:element name="text-line" substitutionGroup="SubFields"><xs:complexType>
         <xs:sequence>

@@ -37,7 +37,8 @@ as a Gradle build did for a Java Moqui component: a `Cargo.toml` and `src/` besi
 `./moq build` links into the binary. Service XML still defines services; component configuration selects
 implementations, and scripts get tools with `ec.factory.getTool("Name")`. See
 [Native component usage](docs/Native-Components.md), the [plan](plans/archive/Native-Components.md), and
-`runtime/base-component/example`, which is off by default (`./moq run -D example_disabled=false`).
+`runtime/base-component/example`, which also holds the screen archetype gallery (`/qapps/gallery`); it is on by default and
+`./moq run -D example_disabled=true` leaves it out.
 
 ## Documentation
 

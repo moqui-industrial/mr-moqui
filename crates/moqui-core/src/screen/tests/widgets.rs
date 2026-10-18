@@ -85,11 +85,8 @@ fn labels_containers_and_sections_in_text() {
 #[test]
 fn labels_containers_and_sections_in_csv_and_xml() {
     let context = ExecutionContextFactory::test_context();
-    // csv writes labels as values with nothing between them, and a box shows only its body.
-    assert_eq!(
-        body(context.factory(), "/Labels.csv", &[]),
-        "Hello Adain containerBodyin sectiona-1-0b-2-1"
-    );
+    // csv writes no labels, in a box or a section or anywhere: only a form-list has a place in it.
+    assert_eq!(body(context.factory(), "/Labels.csv", &[]), "");
     // xml writes the screen element for each screen, and a line break around the widgets of each section.
     assert_eq!(
         body(context.factory(), "/Labels.xml", &[]),

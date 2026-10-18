@@ -30,7 +30,7 @@ try {
 {"name": "withSet", "field": {"name":"field","attrs":{"name":"withSet"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}, "subs": [{"cond": null, "sets": [{"name":"set","attrs":{"field":"shown","value":"x${y}"}}], "widgets": [{"name":"display","attrs":{"text":"${shown}"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"withSet"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}}]}]},
 {"name": "hidden1", "field": {"name":"field","attrs":{"name":"hidden1","hide":"true"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}, "subs": [{"cond": null, "sets": [], "widgets": [{"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"hidden1","hide":"true"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"}}}}}]}]}]);
         sri.write("<div class=\"row\">");
-        sri.write("<div class=\"col-sm-6\">");
+        sri.write("<div class=\"col-xs-12 col-sm-6\">");
         $v.fieldBox(null, "", false);
         sri.pushContext();
         try {
@@ -40,7 +40,7 @@ try {
         }
         sri.write("</div>");
         sri.write("</div>");
-        sri.write("<div class=\"col-sm-6\">");
+        sri.write("<div class=\"col-xs-12 col-sm-6\">");
         $v.fieldBox(null, "", false);
         sri.pushContext();
         try {
