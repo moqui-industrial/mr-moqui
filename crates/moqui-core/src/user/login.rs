@@ -14,7 +14,9 @@
 
 //! Login against `moqui.security.UserAccount`. A bound web session rotates on password success.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use moqui_db::sql::{select as sql_select, update as sql_update, Condition, FieldRef, LimitOffset};
 use moqui_lib::object::{basic_convert, Value};
@@ -87,15 +89,26 @@ fn password_login(username: &str, password: &str) -> Result<bool, Error> {
     // The login reads and writes the user's own account whatever the caller may do.
     let _authz = without_authz();
     let facade = entity_facade()?;
-    let Some(account) = find_username(&facade, username)? else {
-        password::burn_verify(password);
-        return Err(Error::new(INVALID_LOGIN));
-    };
     let now = now_millis();
-    if let Err(err) = gate_account(&facade, &account, now) {
-        password::burn_verify(password);
-        return Err(err);
-    }
+    // No more of the user's logins are checked at once than the failures the account has left, so concurrent guesses
+    // cannot all pass the gate before the first failure is counted. Another waits for one to end and reads the account
+    // again. One at a time, the logins checked are Java's.
+    let (account, _checking) = loop {
+        let Some(account) = find_username(&facade, username)? else {
+            password::burn_verify(password);
+            return Err(Error::new(INVALID_LOGIN));
+        };
+        if let Err(err) = gate_account(&facade, &account, now) {
+            password::burn_verify(password);
+            return Err(err);
+        }
+        let left = policy::max_failures() + 1 - field_i64(&account, "successiveFailedLogins").unwrap_or(0);
+        let user_id = text_field(&account, "userId");
+        if let Some(checking) = LoginCheck::enter(&user_id, left) {
+            break (account, checking);
+        }
+        LoginCheck::wait(&user_id);
+    };
     // A legacy hash checks in microseconds; the argon2 burn keeps it as slow as an unknown user, so
     // the time does not tell which usernames exist.
     if legacy_hash(&account) {
@@ -121,6 +134,69 @@ fn password_login(username: &str, password: &str) -> Result<bool, Error> {
     let same_user = session::current_username()?.as_deref() == Some(username);
     finish_login(&facade, &account, Some(password), true)?;
     Ok(!same_user)
+}
+
+/// The password checks of each user running on this factory, and a signal when one ends. A Rust-only bound on concurrent
+/// guesses: Java counts a failure only after the check, so every attempt that passed the gate before it is checked.
+#[derive(Default)]
+struct LoginsChecking {
+    running: Mutex<HashMap<String, i64>>,
+    ended: Condvar,
+}
+
+/// One password check of a user in [`LoginsChecking`], until it is dropped.
+struct LoginCheck {
+    checking: Arc<LoginsChecking>,
+    user_id: String,
+}
+
+impl LoginCheck {
+    fn checking() -> Arc<LoginsChecking> {
+        ExecutionContext::with_current(|ctx| ctx.factory().extension(|_| LoginsChecking::default())).unwrap_or_default()
+    }
+
+    /// A check of `user_id`, or `None` when `left` (at least one) of them already run. An empty user id is not counted.
+    fn enter(user_id: &str, left: i64) -> Option<Self> {
+        let checking = Self::checking();
+        if !user_id.is_empty() {
+            let mut running = checking.running.lock().unwrap_or_else(|err| err.into_inner());
+            let count = running.entry(user_id.to_string()).or_insert(0);
+            if *count >= left.max(1) {
+                return None;
+            }
+            *count += 1;
+        }
+        Some(Self {
+            checking,
+            user_id: user_id.to_string(),
+        })
+    }
+
+    /// Wait until a check of `user_id` ends, or a second passes.
+    fn wait(user_id: &str) {
+        let checking = Self::checking();
+        let running = checking.running.lock().unwrap_or_else(|err| err.into_inner());
+        if running.get(user_id).is_some_and(|count| *count > 0) {
+            drop(checking.ended.wait_timeout(running, Duration::from_secs(1)));
+        }
+    }
+}
+
+impl Drop for LoginCheck {
+    fn drop(&mut self) {
+        if self.user_id.is_empty() {
+            return;
+        }
+        let mut running = self.checking.running.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(count) = running.get_mut(&self.user_id) {
+            *count -= 1;
+            if *count <= 0 {
+                running.remove(&self.user_id);
+            }
+        }
+        drop(running);
+        self.checking.ended.notify_all();
+    }
 }
 
 /// Every login starts by forgetting an earlier pre-authenticated user, so a finished login does
@@ -798,6 +874,65 @@ fn nonempty(value: String) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// No more of a user's password checks run at once than the account has failures left, and a check that ends
+    /// frees its place; other users are not held by it.
+    #[test]
+    fn concurrent_checks_of_one_user_are_bounded_by_the_failures_left() {
+        let ctx = ExecutionContextFactory::test_context();
+        let _entered = ctx.enter();
+        let first = LoginCheck::enter("ada", 2).expect("first");
+        let second = LoginCheck::enter("ada", 2).expect("second");
+        assert!(LoginCheck::enter("ada", 2).is_none());
+        assert!(LoginCheck::enter("bob", 2).is_some());
+        drop(first);
+        let third = LoginCheck::enter("ada", 2).expect("a place came free");
+        drop((second, third));
+        // An account past its failures still gets one check, and an empty user id is not held.
+        let one = LoginCheck::enter("ada", -3).expect("one");
+        assert!(LoginCheck::enter("ada", -3).is_none());
+        drop(one);
+        assert!(LoginCheck::enter("", 0).is_some() && LoginCheck::enter("", 0).is_some());
+
+        // A check past the bound waits for one to end, here on another thread.
+        let held = LoginCheck::enter("ada", 1).expect("held");
+        let factory = Arc::clone(ctx.factory());
+        let started = std::time::Instant::now();
+        let ender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(held);
+            drop(factory);
+        });
+        LoginCheck::wait("ada");
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(LoginCheck::enter("ada", 1).is_some());
+        ender.join().unwrap();
+    }
+
+    /// Concurrent logins of one user with the right password all succeed: those past the bound wait their turn.
+    #[test]
+    fn concurrent_logins_of_one_user_all_succeed() {
+        let (ctx, facade) = open_ctx();
+        create_user(&facade, "par", "Secret1!", |_| {});
+        let factory = Arc::clone(ctx.factory());
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let factory = Arc::clone(&factory);
+                std::thread::spawn(move || {
+                    let context = factory.new_context();
+                    let _entered = context.enter();
+                    login_user("par", "Secret1!").is_ok()
+                })
+            })
+            .collect();
+        for thread in threads {
+            assert!(thread.join().unwrap());
+        }
+    }
+
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use moqui_lib::object::{basic_convert, Value};

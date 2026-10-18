@@ -217,6 +217,7 @@ pub fn respond(
         ("Content-Type".to_string(), media_type(name).to_string()),
         ("Cache-Control".to_string(), cache.to_string()),
         ("Vary".to_string(), "Accept-Encoding".to_string()),
+        ("Accept-Ranges".to_string(), "bytes".to_string()),
     ];
     let modified = resource.last_modified();
     let size = resource.size();
@@ -234,6 +235,40 @@ pub fn respond(
         web::send_bytes_with_headers(304, headers, Vec::new());
         return Ok(());
     }
+    // One byte range, unless `If-Range` names another version of the file: then the whole file, as for a request
+    // without a range.
+    let range = request.header("range").filter(|_| {
+        request
+            .header("if-range")
+            .is_none_or(|presented| presented.trim() == tag)
+    });
+    if let Some(range) = range {
+        let total = match (size, &bytes) {
+            (Some(size), _) => size,
+            (None, Some(bytes)) => bytes.len() as u64,
+            (None, None) => resource.read_bytes()?.len() as u64,
+        };
+        match byte_range(range, total) {
+            ByteRange::Whole => {}
+            ByteRange::Unsatisfiable => {
+                headers.push(("Content-Range".to_string(), format!("bytes */{total}")));
+                web::send_bytes_with_headers(416, headers, Vec::new());
+                return Ok(());
+            }
+            ByteRange::Span(start, end) => {
+                let length = end - start + 1;
+                headers.push(("Content-Range".to_string(), format!("bytes {start}-{end}/{total}")));
+                headers.push(("Content-Length".to_string(), length.to_string()));
+                let body = if method == "HEAD" {
+                    Vec::new()
+                } else {
+                    read_span(&resource, bytes, start, length)?
+                };
+                web::send_bytes_with_headers(206, headers, body);
+                return Ok(());
+            }
+        }
+    }
     let bytes = match bytes {
         Some(bytes) => bytes,
         None => resource.read_bytes()?,
@@ -242,6 +277,85 @@ pub fn respond(
     let body = if method == "HEAD" { Vec::new() } else { bytes };
     web::send_bytes_with_headers(200, headers, body);
     Ok(())
+}
+
+/// What a `Range` header asks of a file of a known size.
+#[derive(Debug, PartialEq, Eq)]
+enum ByteRange {
+    /// No range this answers: not `bytes=`, more than one range, or not well formed. The whole file is sent.
+    Whole,
+    /// A range that starts past the end, or an empty suffix: 416.
+    Unsatisfiable,
+    /// The first and last byte, inclusive.
+    Span(u64, u64),
+}
+
+/// One range of RFC 9110: `bytes=first-last`, `bytes=first-` or `bytes=-suffix`. A last byte past the end is the end.
+fn byte_range(header: &str, total: u64) -> ByteRange {
+    let Some((unit, spec)) = header.trim().split_once('=') else {
+        return ByteRange::Whole;
+    };
+    if !unit.trim().eq_ignore_ascii_case("bytes") || spec.contains(',') {
+        return ByteRange::Whole;
+    }
+    let Some((first, last)) = spec.trim().split_once('-') else {
+        return ByteRange::Whole;
+    };
+    let number = |text: &str| -> Option<u64> {
+        let text = text.trim();
+        (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| text.parse().ok())
+            .flatten()
+    };
+    match (number(first), number(last)) {
+        (Some(first), last) if last.map_or(last_is_empty(spec), |last| first <= last) => {
+            if first >= total {
+                return ByteRange::Unsatisfiable;
+            }
+            ByteRange::Span(first, last.map_or(total - 1, |last| last.min(total - 1)))
+        }
+        (None, Some(suffix)) if first.trim().is_empty() => {
+            if suffix == 0 || total == 0 {
+                return ByteRange::Unsatisfiable;
+            }
+            ByteRange::Span(total.saturating_sub(suffix), total - 1)
+        }
+        _ => ByteRange::Whole,
+    }
+}
+
+/// `first-` with nothing after the dash.
+fn last_is_empty(spec: &str) -> bool {
+    spec.split_once('-').is_some_and(|(_, last)| last.trim().is_empty())
+}
+
+/// `length` bytes from `start`: read from the file when it is one, so a range of a large file does not read it whole.
+fn read_span(
+    resource: &crate::context::ResourceRef,
+    bytes: Option<Vec<u8>>,
+    start: u64,
+    length: u64,
+) -> Result<Vec<u8>, Error> {
+    if let (None, Some(path)) = (&bytes, resource.file_path()) {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(path).map_err(|err| Error::new(format!("{}: {err}", path.display())))?;
+        file.seek(SeekFrom::Start(start))
+            .map_err(|err| Error::new(format!("{}: {err}", path.display())))?;
+        let mut out = Vec::with_capacity(usize::try_from(length).unwrap_or(0));
+        file.take(length)
+            .read_to_end(&mut out)
+            .map_err(|err| Error::new(format!("{}: {err}", path.display())))?;
+        return Ok(out);
+    }
+    let bytes = match bytes {
+        Some(bytes) => bytes,
+        None => resource.read_bytes()?,
+    };
+    let start = usize::try_from(start).unwrap_or(usize::MAX).min(bytes.len());
+    let end = start
+        .saturating_add(usize::try_from(length).unwrap_or(usize::MAX))
+        .min(bytes.len());
+    Ok(bytes[start..end].to_vec())
 }
 
 /// Write a response made in memory with the validators of a file: `ETag`, a 304 when the request has it, and no body for HEAD. The
@@ -334,6 +448,31 @@ mod tests {
         assert_eq!(media_type("a.WOFF2"), "font/woff2");
         assert_eq!(media_type("favicon.ico"), "image/x-icon");
         assert_eq!(media_type("noext"), "application/octet-stream");
+    }
+
+    #[test]
+    fn a_range_header_picks_one_span_and_ignores_what_it_cannot_answer() {
+        use super::{byte_range, ByteRange};
+        assert_eq!(byte_range("bytes=0-99", 1000), ByteRange::Span(0, 99));
+        assert_eq!(byte_range("bytes=900-", 1000), ByteRange::Span(900, 999));
+        assert_eq!(byte_range("bytes=990-2000", 1000), ByteRange::Span(990, 999));
+        assert_eq!(byte_range("bytes=-100", 1000), ByteRange::Span(900, 999));
+        assert_eq!(byte_range("bytes=-5000", 1000), ByteRange::Span(0, 999));
+        assert_eq!(byte_range("Bytes = 5-5", 1000), ByteRange::Span(5, 5));
+        assert_eq!(byte_range("bytes=1000-", 1000), ByteRange::Unsatisfiable);
+        assert_eq!(byte_range("bytes=-0", 1000), ByteRange::Unsatisfiable);
+        assert_eq!(byte_range("bytes=0-", 0), ByteRange::Unsatisfiable);
+        for ignored in [
+            "bytes=5-1",
+            "bytes=0-1,5-9",
+            "items=0-1",
+            "bytes=a-b",
+            "bytes=-",
+            "bytes=1",
+            "0-1",
+        ] {
+            assert_eq!(byte_range(ignored, 1000), ByteRange::Whole, "{ignored}");
+        }
     }
 
     #[test]

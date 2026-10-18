@@ -137,7 +137,7 @@ fn modified_of(path: &std::path::Path) -> Option<std::time::SystemTime> {
 /// changes: its text as the body of a function called at once (see [`crate::script::parse::file_function`]), so it runs
 /// in names of its own and evaluates to what it returns. The compiled form is kept by the runtime by text.
 pub(super) fn read_script(location: &str) -> Result<Arc<str>, Error> {
-    let production = moqui_lib::env::get_prop_or_env("instance_purpose") == "production";
+    let production = crate::web::is_production();
     {
         let mut texts = script_texts().lock().unwrap_or_else(|err| err.into_inner());
         if let Some(found) = texts.get_mut(location) {

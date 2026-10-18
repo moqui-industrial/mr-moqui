@@ -65,7 +65,7 @@ fn empty_db_recreates_factory_once_and_existing_db_does_not() {
     moqui_lib::env::set_property("cluster_https_port", "0");
     moqui_lib::env::set_property("cluster_ssh_port", "0");
     let bind = ([127, 0, 0, 1], 0).into();
-    let server = moqui_host::start_server(&runtime, &framework, &root.join("db"), bind).unwrap();
+    let server = moqui_host::start_server(&runtime, &framework, root.join("db"), bind).unwrap();
     assert_eq!(*EVENTS.lock().unwrap(), ["empty", "destroy", "seeded"]);
     {
         let factories = FACTORIES.lock().unwrap();
@@ -75,7 +75,7 @@ fn empty_db_recreates_factory_once_and_existing_db_does_not() {
     drop(server);
     assert_eq!(*EVENTS.lock().unwrap(), ["empty", "destroy", "seeded", "destroy"]);
     EVENTS.lock().unwrap().clear();
-    let server = moqui_host::start_server(&runtime, &framework, &root.join("db"), bind).unwrap();
+    let server = moqui_host::start_server(&runtime, &framework, root.join("db"), bind).unwrap();
     assert_eq!(*EVENTS.lock().unwrap(), ["seeded"]);
     drop(server);
     assert_eq!(*EVENTS.lock().unwrap(), ["seeded", "destroy"]);

@@ -10,6 +10,8 @@ test-slow = "test -p moqui-host --test it -- --ignored tools_screens:: gate2:: t
 # rustc warnings plus Clippy. The default Clippy set is already deny
 # in the workspace lints.
 lint = "clippy --workspace --all-targets -- -D warnings"
+# The host without its default features (no server, no embedded Postgres, MySQL or PDF), which `lint` does not build.
+lint-min = "clippy -p moqui-host --no-default-features --all-targets -- -D warnings"
 
 # The build profiles, here rather than in Cargo.toml so they apply to the generated crate `./moq build` links add-on
 # components through (target/moqui-app), which is its own workspace. Cargo reads this file from the directory it runs

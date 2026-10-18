@@ -197,6 +197,9 @@ struct LiveSession {
     /// Changes whenever something a flush writes changes, so a flush that ran without the lock
     /// can tell whether it wrote the latest state.
     revision: u64,
+    /// The client address [`remember_client_ip`] last stored on the visit, so a request from the same address writes
+    /// nothing. Not flushed.
+    client_ip: Option<String>,
 }
 
 /// What [`flush_id`] writes, copied from the live session under the lock.
@@ -493,7 +496,8 @@ pub fn is_anonymous() -> Result<bool, Error> {
     Ok(with_session(|session| session.anonymous))
 }
 
-/// Store the client address on this session's visit. An empty address is left unchanged.
+/// Store the client address on this session's visit. An empty address is left unchanged, and so is the address the
+/// session last stored: only a request from a new address reads and writes the visit.
 ///
 /// # Errors
 ///
@@ -509,6 +513,16 @@ pub fn remember_client_ip(address: &str) -> Result<(), Error> {
     let Some(factory) = bound_factory() else {
         return Ok(());
     };
+    let bound_id = with_session(|session| session.bound_id.clone());
+    let known = |table: &SessionTable| {
+        bound_id
+            .as_ref()
+            .and_then(|id| table.sessions.get(id))
+            .is_some_and(|live| live.client_ip.as_deref() == Some(address))
+    };
+    if known(&lock_sessions(&factory)) {
+        return Ok(());
+    }
     let Some(facade) = factory.entity() else {
         return Ok(());
     };
@@ -522,8 +536,16 @@ pub fn remember_client_ip(address: &str) -> Result<(), Error> {
     else {
         return Ok(());
     };
-    visit.set("clientIpAddress", Value::string(address));
-    visit.update(&facade).map_err(Error::from)
+    if visit.get("clientIpAddress").and_then(Value::as_str) != Some(address) {
+        visit.set("clientIpAddress", Value::string(address));
+        visit.update(&facade).map_err(Error::from)?;
+    }
+    if let Some(id) = bound_id {
+        if let Some(live) = lock_sessions(&factory).sessions.get_mut(&id) {
+            live.client_ip = Some(address.to_string());
+        }
+    }
+    Ok(())
 }
 
 /// Every session attribute as text. Maps and lists are JSON.
@@ -1024,6 +1046,7 @@ fn resolve_id(factory: &Arc<ExecutionContextFactory>, presented: Option<&str>) -
         touch_mark: 0,
         touch: false,
         revision: next_revision(),
+        client_ip: None,
     };
     lock_sessions(factory).sessions.insert(id.clone(), live);
     Ok((id, true))
@@ -1212,6 +1235,7 @@ fn install_from_row(factory: &ExecutionContextFactory, id: &str) -> Result<(), E
         touch_mark: stamp.unwrap_or(0),
         touch: false,
         revision: next_revision(),
+        client_ip: None,
     };
     let mut table = lock_sessions(factory);
     if table.sessions.get(id).is_some_and(|existing| !existing.retired) {
@@ -1874,6 +1898,7 @@ fn live_from_thread(view: &ThreadView) -> LiveSession {
         touch_mark: 0,
         touch: false,
         revision: next_revision(),
+        client_ip: None,
     }
 }
 
@@ -2490,6 +2515,51 @@ mod tests {
         let guard = bind(&factory, None, Some("missing-visitor"), false).unwrap();
         assert_ne!(guard.visitor_id().as_deref(), Some("missing-visitor"));
         assert_eq!(count_entity(&facade, VISITOR), 2);
+    }
+
+    /// The visit gets the client address once: a later request from the same address of the session writes nothing,
+    /// and one from a new address writes it.
+    #[test]
+    fn the_client_address_is_written_to_the_visit_only_when_it_changes() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let session_cookie = bind(&factory, None, None, false)
+            .unwrap()
+            .session_cookie_header()
+            .unwrap();
+        let visit_row = |visit: &str| {
+            facade
+                .find(VISIT)
+                .unwrap()
+                .eq("visitId", Value::string(visit))
+                .use_cache(false)
+                .one()
+                .unwrap()
+                .unwrap()
+        };
+        let request = |address: &str| {
+            let guard = bind(&factory, Some(cookie_value(&session_cookie)), None, false).unwrap();
+            remember_client_ip(address).unwrap();
+            let visit = visit_id().unwrap().unwrap();
+            drop(guard);
+            visit
+        };
+        let visit = request("10.0.0.1");
+        let first = visit_row(&visit);
+        assert_eq!(first.get("clientIpAddress"), Some(&Value::string("10.0.0.1")));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        request("10.0.0.1");
+        assert_eq!(
+            visit_row(&visit).get("lastUpdatedStamp"),
+            first.get("lastUpdatedStamp"),
+            "the same address wrote the visit again"
+        );
+        request("10.0.0.2");
+        assert_eq!(
+            visit_row(&visit).get("clientIpAddress"),
+            Some(&Value::string("10.0.0.2"))
+        );
     }
 
     #[test]

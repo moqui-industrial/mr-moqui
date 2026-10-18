@@ -616,6 +616,27 @@ fn static_files_are_served_with_validators_compression_and_no_way_out() {
     assert_eq!(status, 200);
     assert!(body.is_empty());
     assert_eq!(header(&headers, "etag").as_deref(), Some(tag.as_str()));
+    // one byte range, not compressed even when the client takes gzip; a range past the end is 416; an If-Range of
+    // another version gets the whole file
+    let (status, headers, part) = get(
+        "/css/moqui-html.css",
+        &[("Range", "bytes=2-11"), ("Accept-Encoding", "gzip")],
+    );
+    assert_eq!(status, 206);
+    assert_eq!(part.len(), 10, "{part}");
+    assert_eq!(part, css[2..12]);
+    let content_range = header(&headers, "content-range").unwrap();
+    assert!(content_range.starts_with("bytes 2-11/"), "{content_range}");
+    assert!(header(&headers, "content-encoding").is_none());
+    let (status, headers, _) = get("/css/moqui-html.css", &[("Range", "bytes=99999999-")]);
+    assert_eq!(status, 416);
+    assert!(header(&headers, "content-range").is_some_and(|value| value.starts_with("bytes */")));
+    let (status, _, whole) = get(
+        "/css/moqui-html.css",
+        &[("Range", "bytes=0-9"), ("If-Range", "W/\"other\"")],
+    );
+    assert_eq!(status, 200);
+    assert_eq!(whole, css);
 
     // gzip when the client takes it
     let mut stream = TcpStream::connect(address).unwrap();

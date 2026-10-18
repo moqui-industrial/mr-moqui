@@ -17,6 +17,13 @@
 //! `types` writes TypeScript declarations. No arguments start the plain HTTP listener. Database drivers live in [`db`].
 //! The search store and backend are placed by [`search`].
 
+// The server, its cluster listeners and its startup load need the `axum` and embedded Postgres features. A build without
+// them is a library for the CLI and tests, where those items are unused; the default build still lints them.
+#![cfg_attr(
+    not(all(feature = "axum", feature = "embedded-postgres", feature = "postgres")),
+    allow(dead_code, unused_imports)
+)]
+
 pub mod db;
 pub mod edge;
 pub mod ipp;

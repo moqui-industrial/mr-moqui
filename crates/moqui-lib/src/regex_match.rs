@@ -21,6 +21,10 @@
 //! accepts the same strings as a greedy one. Backreferences, lookaround, inline flags,
 //! possessive quantifiers and escapes outside `\d\D\w\W\s\S\n\r\t\f` are errors rather
 //! than literals, so an unsupported pattern fails closed.
+//!
+//! The parsed pattern is compiled to a Thompson NFA and matched by stepping the set of its states over the text, so
+//! a match takes time in proportion to the text length times the pattern size, nested quantifiers or not. A counted
+//! quantifier is written out once per count, so a pattern whose program would pass [`MAX_PROGRAM`] is an error too.
 
 use crate::error::Error;
 
@@ -47,9 +51,9 @@ enum Re {
     End,
 }
 
-/// A pattern parsed once, for a caller that matches it many times.
+/// A pattern parsed and compiled once, for a caller that matches it many times.
 #[derive(Clone, Debug)]
-pub struct CompiledRegex(Option<Re>);
+pub struct CompiledRegex(Option<Program>);
 
 impl CompiledRegex {
     /// Parse `pattern`. An unsupported or bad pattern is an error, as [`is_full_match`] reports it.
@@ -57,28 +61,20 @@ impl CompiledRegex {
         if pattern.is_empty() {
             return Ok(Self(None));
         }
-        parse_regex(pattern).map(|re| Self(Some(re)))
+        Program::compile(&parse_regex(pattern)?).map(|program| Self(Some(program)))
     }
 
     /// Whether the whole of `text` matches, as Java's `String.matches`.
     pub fn is_full_match(&self, text: &str) -> bool {
         match &self.0 {
             None => text.is_empty(),
-            Some(re) => {
-                let chars: Vec<char> = text.chars().collect();
-                ends(re, &chars, 0).contains(&chars.len())
-            }
+            Some(program) => program.is_full_match(&text.chars().collect::<Vec<char>>()),
         }
     }
 }
 
 pub fn is_full_match(text: &str, pattern: &str) -> Result<bool, Error> {
-    if pattern.is_empty() {
-        return Ok(text.is_empty());
-    }
-    let re = parse_regex(pattern)?;
-    let chars: Vec<char> = text.chars().collect();
-    Ok(ends(&re, &chars, 0).contains(&chars.len()))
+    Ok(CompiledRegex::new(pattern)?.is_full_match(text))
 }
 
 struct Parser {
@@ -396,73 +392,6 @@ fn shorthand(negated: bool, ranges: &[(char, char)]) -> Re {
     }
 }
 
-fn ends(re: &Re, text: &[char], pos: usize) -> Vec<usize> {
-    match re {
-        Re::Empty => vec![pos],
-        Re::Lit(ch) => {
-            if text.get(pos) == Some(ch) {
-                vec![pos + 1]
-            } else {
-                Vec::new()
-            }
-        }
-        Re::Any => match text.get(pos) {
-            Some(ch) if !is_line_end(*ch) => vec![pos + 1],
-            _ => Vec::new(),
-        },
-        Re::Start => {
-            if pos == 0 {
-                vec![pos]
-            } else {
-                Vec::new()
-            }
-        }
-        Re::End => {
-            if pos == text.len() || is_final_terminator(&text[pos..]) {
-                vec![pos]
-            } else {
-                Vec::new()
-            }
-        }
-        Re::Class {
-            negated,
-            ranges,
-            outside,
-        } => match text.get(pos) {
-            Some(ch) if (class_hit(*ch, ranges) || outside.iter().any(|set| !class_hit(*ch, set))) ^ negated => {
-                vec![pos + 1]
-            }
-            _ => Vec::new(),
-        },
-        Re::Seq(items) => {
-            let mut positions = vec![pos];
-            for item in items {
-                let mut next = Vec::new();
-                for at in positions {
-                    next.extend(ends(item, text, at));
-                }
-                next.sort_unstable();
-                next.dedup();
-                positions = next;
-                if positions.is_empty() {
-                    break;
-                }
-            }
-            positions
-        }
-        Re::Alt(alts) => {
-            let mut out = Vec::new();
-            for alt in alts {
-                out.extend(ends(alt, text, pos));
-            }
-            out.sort_unstable();
-            out.dedup();
-            out
-        }
-        Re::Repeat { inner, min, max } => repeat_ends(inner, *min, *max, text, pos),
-    }
-}
-
 fn class_hit(ch: char, ranges: &[(char, char)]) -> bool {
     ranges.iter().any(|(start, end)| ch >= *start && ch <= *end)
 }
@@ -480,43 +409,206 @@ fn is_final_terminator(rest: &[char]) -> bool {
     }
 }
 
-fn repeat_ends(inner: &Re, min: u32, max: Option<u32>, text: &[char], start: usize) -> Vec<usize> {
-    let cap = max.unwrap_or_else(|| (text.len() as u32).saturating_add(1));
-    let mut reached = vec![vec![start]];
-    while (reached.len() as u32) - 1 < cap {
-        let prev = reached.last().cloned().unwrap_or_default();
-        if prev.is_empty() {
-            break;
+/// Most instructions a compiled pattern may have. Counted quantifiers are written out, so `(a{1000}){1000}` would be a
+/// million; such a pattern is an error rather than a program that large.
+const MAX_PROGRAM: usize = 100_000;
+
+/// One instruction of the NFA. Execution starts at 0 and accepts on reaching [`Inst::Match`] at the end of the text.
+#[derive(Clone, Debug)]
+enum Inst {
+    /// Consume one char that passes the test, then go on to the next instruction.
+    Char(CharTest),
+    /// Go on at both.
+    Split(usize, usize),
+    Jump(usize),
+    /// `^`: only at the start of the text.
+    Start,
+    /// `$`: at the end of the text, or before one line terminator that ends it.
+    End,
+    Match,
+}
+
+#[derive(Clone, Debug)]
+enum CharTest {
+    Lit(char),
+    /// `.`: any char but a line terminator.
+    Any,
+    Class {
+        negated: bool,
+        ranges: Vec<(char, char)>,
+        outside: Vec<Vec<(char, char)>>,
+    },
+}
+
+impl CharTest {
+    fn hits(&self, ch: char) -> bool {
+        match self {
+            Self::Lit(lit) => *lit == ch,
+            Self::Any => !is_line_end(ch),
+            Self::Class {
+                negated,
+                ranges,
+                outside,
+            } => (class_hit(ch, ranges) || outside.iter().any(|set| !class_hit(ch, set))) ^ negated,
         }
-        let mut next = Vec::new();
-        for pos in prev {
-            next.extend(ends(inner, text, pos));
-        }
-        next.sort_unstable();
-        next.dedup();
-        if next.is_empty() {
-            break;
-        }
-        let prev_layer = reached.last().expect("repeat layer");
-        let only_previous = next.iter().all(|end| prev_layer.contains(end));
-        reached.push(next);
-        if only_previous {
-            let pad = reached.last().cloned().unwrap_or_default();
-            while (reached.len() as u32) - 1 < min.min(cap) {
-                reached.push(pad.clone());
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Program(Vec<Inst>);
+
+impl Program {
+    fn compile(re: &Re) -> Result<Self, Error> {
+        let mut code = Vec::new();
+        emit(re, &mut code)?;
+        code.push(Inst::Match);
+        Ok(Self(code))
+    }
+
+    /// Step the set of live states over `text`: a state is kept once per position, so the work is the text length
+    /// times the program length.
+    fn is_full_match(&self, text: &[char]) -> bool {
+        let mut seen = vec![usize::MAX; self.0.len()];
+        let mut current = Vec::new();
+        let mut stack = Vec::new();
+        self.closure(0, 0, text, &mut seen, &mut stack, &mut current);
+        for (pos, ch) in text.iter().enumerate() {
+            let mut next = Vec::new();
+            for pc in std::mem::take(&mut current) {
+                if let Inst::Char(test) = &self.0[pc] {
+                    if test.hits(*ch) {
+                        self.closure(pc + 1, pos + 1, text, &mut seen, &mut stack, &mut next);
+                    }
+                }
             }
-            break;
+            if next.is_empty() {
+                return false;
+            }
+            current = next;
+        }
+        current.iter().any(|pc| matches!(self.0[*pc], Inst::Match))
+    }
+
+    /// Add to `out` the char and match states reached from `start` at `pos` without consuming a char. `seen` holds the
+    /// position each state was last added at, so a state is added once per position and an empty loop ends.
+    fn closure(
+        &self,
+        start: usize,
+        pos: usize,
+        text: &[char],
+        seen: &mut [usize],
+        stack: &mut Vec<usize>,
+        out: &mut Vec<usize>,
+    ) {
+        stack.push(start);
+        while let Some(pc) = stack.pop() {
+            if seen[pc] == pos {
+                continue;
+            }
+            seen[pc] = pos;
+            match &self.0[pc] {
+                Inst::Char(_) | Inst::Match => out.push(pc),
+                Inst::Jump(to) => stack.push(*to),
+                Inst::Split(first, second) => {
+                    stack.push(*second);
+                    stack.push(*first);
+                }
+                Inst::Start => {
+                    if pos == 0 {
+                        stack.push(pc + 1);
+                    }
+                }
+                Inst::End => {
+                    if pos == text.len() || is_final_terminator(&text[pos..]) {
+                        stack.push(pc + 1);
+                    }
+                }
+            }
         }
     }
-    let mut out = Vec::new();
-    for (count, layer) in reached.iter().enumerate() {
-        if (count as u32) >= min && max.is_none_or(|limit| (count as u32) <= limit) {
-            out.extend(layer.iter().copied());
+}
+
+/// Append the instructions of `re` to `code`. They run on into whatever follows.
+fn emit(re: &Re, code: &mut Vec<Inst>) -> Result<(), Error> {
+    if code.len() > MAX_PROGRAM {
+        return Err(Error::new("regular expression is too large to match"));
+    }
+    match re {
+        Re::Empty => {}
+        Re::Lit(ch) => code.push(Inst::Char(CharTest::Lit(*ch))),
+        Re::Any => code.push(Inst::Char(CharTest::Any)),
+        Re::Class {
+            negated,
+            ranges,
+            outside,
+        } => code.push(Inst::Char(CharTest::Class {
+            negated: *negated,
+            ranges: ranges.clone(),
+            outside: outside.clone(),
+        })),
+        Re::Start => code.push(Inst::Start),
+        Re::End => code.push(Inst::End),
+        Re::Seq(items) => {
+            for item in items {
+                emit(item, code)?;
+            }
+        }
+        Re::Alt(alts) => {
+            // Split to each alternative but the last, which the last split's second branch runs; each ends with a
+            // jump past the others.
+            let mut exits = Vec::new();
+            for (index, alt) in alts.iter().enumerate() {
+                if index + 1 < alts.len() {
+                    let split = code.len();
+                    code.push(Inst::Split(split + 1, 0));
+                    emit(alt, code)?;
+                    exits.push(code.len());
+                    code.push(Inst::Jump(0));
+                    let next = code.len();
+                    code[split] = Inst::Split(split + 1, next);
+                } else {
+                    emit(alt, code)?;
+                }
+            }
+            let end = code.len();
+            for exit in exits {
+                code[exit] = Inst::Jump(end);
+            }
+        }
+        Re::Repeat { inner, min, max } => {
+            for _ in 0..*min {
+                emit(inner, code)?;
+            }
+            match max {
+                // A loop: split to the body or out, and the body jumps back to the split.
+                None => {
+                    let split = code.len();
+                    code.push(Inst::Split(split + 1, 0));
+                    emit(inner, code)?;
+                    code.push(Inst::Jump(split));
+                    let out = code.len();
+                    code[split] = Inst::Split(split + 1, out);
+                }
+                // Each optional copy may stop, which skips the copies after it.
+                Some(max) => {
+                    let mut splits = Vec::new();
+                    for _ in *min..*max {
+                        splits.push(code.len());
+                        code.push(Inst::Split(code.len() + 1, 0));
+                        emit(inner, code)?;
+                    }
+                    let out = code.len();
+                    for split in splits {
+                        code[split] = Inst::Split(split + 1, out);
+                    }
+                }
+            }
         }
     }
-    out.sort_unstable();
-    out.dedup();
-    out
+    if code.len() > MAX_PROGRAM {
+        return Err(Error::new("regular expression is too large to match"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -573,6 +665,28 @@ mod tests {
         assert!(hit("ab", "a{1,2}?b"));
         assert!(hit("a\n", "a$\n"));
         assert!(!hit("a\n", "a$"));
+    }
+
+    /// Nested quantifiers that a backtracking or position-set matcher takes polynomial or exponential time on finish at
+    /// once, and a counted quantifier too large to write out is an error.
+    #[test]
+    fn nested_quantifiers_match_in_linear_time() {
+        let long = "a".repeat(5000);
+        let started = std::time::Instant::now();
+        assert!(!hit(&format!("{long}b"), "(a*)*"));
+        assert!(hit(&long, "(a*)*"));
+        assert!(!hit(&format!("{long}!"), "((a+)+)+b"));
+        assert!(hit(&format!("{long}b"), "(a|aa)*b"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(is_full_match("a", "(a{1000}){1000}").is_err());
+        assert!(hit(&"ab".repeat(3), "(ab){2,4}"));
+        assert!(!hit(&"ab".repeat(5), "(ab){2,4}"));
+        assert!(hit("", "(ab){0,2}") && hit("abc", "a(x|y|z|b)c") && !hit("ac", "a(x|y)c"));
+        assert!(hit("ac", "a(|x)c") && hit("abc", "^abc$"));
     }
 
     #[test]

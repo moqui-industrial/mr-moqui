@@ -44,7 +44,7 @@ use moqui_lib::object::{basic_convert, is_empty, to_plain_string, Value};
 #[cfg(test)]
 use moqui_lib::sync::lock;
 
-use crate::context::{ExecutionContext, ExecutionContextFactory};
+use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 use crate::entity::{EntityFacade, EntityValue};
 use crate::screen::{make_render, PdfRenderer, ScreenFacade};
 use crate::transaction::TransactionAttribute;
@@ -318,15 +318,15 @@ impl RenderEnv {
 
     /// Render `location` as the root screen, or `screen_path` under the default root screen (Java's
     /// `rootScreenFromHost`, which this port has one of) as the last standalone screen, in `mode`.
-    fn render(&self, location: &str, screen_path: &str, mode: &str) -> Result<String, String> {
+    fn render(&self, location: &str, screen_path: &str, mode: &str) -> Result<String, Error> {
         self.render_bytes(location, screen_path, mode)
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// The body of the render, which for a binary mode such as `xlsx` is the document.
-    fn render_bytes(&self, location: &str, screen_path: &str, mode: &str) -> Result<Vec<u8>, String> {
+    fn render_bytes(&self, location: &str, screen_path: &str, mode: &str) -> Result<Vec<u8>, Error> {
         let Some(factory) = &self.factory else {
-            return Err("no execution context to render a screen in".to_string());
+            return Err(Error::new("no execution context to render a screen in"));
         };
         let mut parameters = self.parameters.clone();
         let mut render = make_render(factory).base_url(self.base_url.clone()).render_mode(mode);
@@ -340,9 +340,12 @@ impl RenderEnv {
         let output = render
             .parameters(parameters)
             .render()
-            .map_err(|err| format!("could not render {shown} as {mode}: {}", err.message()))?;
+            .map_err(|err| Error::new(format!("could not render {shown} as {mode}: {}", err.message())))?;
         if output.status != 200 {
-            return Err(format!("could not render {shown} as {mode}: status {}", output.status));
+            return Err(Error::new(format!(
+                "could not render {shown} as {mode}: status {}",
+                output.status
+            )));
         }
         Ok(output.body)
     }
@@ -374,7 +377,7 @@ impl RenderEnv {
 /// `bodyScreenLocation` (html, and text when the screen has a text render). Blank output is no part. Java renders
 /// text whatever `render-modes` says; the screen renderer here refuses a mode it does not list, which would fail the
 /// send.
-fn render_bodies(env: &RenderEnv, screen: &str, body: String, body_text: String) -> Result<(String, String), String> {
+fn render_bodies(env: &RenderEnv, screen: &str, body: String, body_text: String) -> Result<(String, String), Error> {
     if screen.is_empty() {
         return Ok((body, body_text));
     }
@@ -401,7 +404,7 @@ fn blank_to_empty(text: String) -> String {
 
 /// The Groovy script's outer catch: log, add a message (not an error), and send nothing. A created
 /// `EmailMessage` stays as it was.
-fn send_error(err: &str, email_message_id: &str, template_id: &str) -> BTreeMap<String, Value> {
+fn send_error(err: &Error, email_message_id: &str, template_id: &str) -> BTreeMap<String, Value> {
     tracing::error!(template = %template_id, message = %email_message_id, error = %err, "Error in sendEmailTemplate");
     note_message(format!("Error sending email: {err}"));
     ids(email_message_id, "")
@@ -574,11 +577,11 @@ fn bare_address(text: &str) -> &str {
     }
 }
 
-fn require_host(host: &str) -> Result<(), String> {
+fn require_host(host: &str) -> Result<(), Error> {
     if host_allowed(host) {
         Ok(())
     } else {
-        Err(format!("Email host {host} is not in email_allowed_hosts"))
+        Err(Error::new(format!("Email host {host} is not in email_allowed_hosts")))
     }
 }
 
@@ -623,7 +626,7 @@ fn collect_attachments(
     parameters: &BTreeMap<String, Value>,
     template_id: &str,
     env: &RenderEnv,
-) -> Result<Vec<AttachmentBytes>, String> {
+) -> Result<Vec<AttachmentBytes>, Error> {
     let mut out = Vec::new();
     if let Some(Value::List(items)) = parameters.get("attachments") {
         for item in items {
@@ -635,7 +638,7 @@ fn collect_attachments(
     let rows = facade
         .find(ATTACHMENT)
         .and_then(|find| find.eq("emailTemplateId", Value::string(template_id)).list())
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| Error::new(err.to_string()))?;
     for row in rows.iter() {
         push_stored_attachment(&mut out, row, env)?;
     }
@@ -646,7 +649,7 @@ fn push_parameter_attachment(
     out: &mut Vec<AttachmentBytes>,
     map: &IndexMap<String, Value>,
     env: &RenderEnv,
-) -> Result<(), String> {
+) -> Result<(), Error> {
     let filename = expand_text(&map_text(map, "fileName"))?;
     let mode = map_text(map, "screenRenderMode");
     let location = map_text(map, "attachmentLocation");
@@ -700,14 +703,14 @@ fn push_parameter_attachment(
 /// One `EmailTemplateAttachment`: skipped when `attachmentCondition` is false; a screen render (one for
 /// each entry of `forEachIn`, the entry's fields in the context) when `screenRenderMode` is set; else the
 /// bytes at `attachmentLocation`.
-fn push_stored_attachment(out: &mut Vec<AttachmentBytes>, row: &EntityValue, env: &RenderEnv) -> Result<(), String> {
+fn push_stored_attachment(out: &mut Vec<AttachmentBytes>, row: &EntityValue, env: &RenderEnv) -> Result<(), Error> {
     let mode = field_text(row, "screenRenderMode");
     let location = field_text(row, "attachmentLocation");
     let filename = field_text(row, "fileName");
     let condition = field_text(row, "attachmentCondition");
     if !condition.is_empty() {
         let holds = crate::script::eval_condition(&condition)
-            .map_err(|err| format!("attachmentCondition of {filename}: {}", err.message()))?;
+            .map_err(|err| Error::new(format!("attachmentCondition of {filename}: {}", err.message())))?;
         if !holds {
             return Ok(());
         }
@@ -725,22 +728,22 @@ fn push_stored_attachment(out: &mut Vec<AttachmentBytes>, row: &EntityValue, env
             return render_attachment(out, &screen, env);
         }
         let entries = match crate::script::eval_value(&for_each_in)
-            .map_err(|err| format!("forEachIn of {filename}: {}", err.message()))?
+            .map_err(|err| Error::new(format!("forEachIn of {filename}: {}", err.message())))?
         {
             Value::List(items) => items,
             Value::Null => Vec::new(),
-            other => return Err(format!("forEachIn of {filename} is not a list: {other:?}")),
+            other => return Err(Error::new(format!("forEachIn of {filename} is not a list: {other:?}"))),
         };
         for entry in entries {
             let _frame = crate::script::ContextFrame::push();
             match entry {
                 Value::Map(map) => {
                     for (name, value) in map {
-                        crate::script::set_context_name(&name, value).map_err(|err| err.message().to_string())?;
+                        crate::script::set_context_name(&name, value).map_err(|err| Error::new(err.message()))?;
                     }
                 }
                 other => {
-                    crate::script::set_context_name("forEachEntry", other).map_err(|err| err.message().to_string())?;
+                    crate::script::set_context_name("forEachEntry", other).map_err(|err| Error::new(err.message()))?;
                 }
             }
             render_attachment(out, &screen, env)?;
@@ -778,7 +781,7 @@ fn render_attachment(
     out: &mut Vec<AttachmentBytes>,
     screen: &ScreenAttachment<'_>,
     env: &RenderEnv,
-) -> Result<(), String> {
+) -> Result<(), Error> {
     let mut filename = screen.filename.to_string();
     if filename.is_empty() {
         // The name less its extension; Java drops 4 characters, the same for a `.xml` screen, and fails on a
@@ -852,13 +855,13 @@ fn render_attachment(
     Ok(())
 }
 
-fn expand_text(text: &str) -> Result<String, String> {
-    crate::script::expand(text).map_err(|err| err.message().to_string())
+fn expand_text(text: &str) -> Result<String, Error> {
+    crate::script::expand(text).map_err(|err| Error::new(err.message()))
 }
 
-fn read_location(location: &str) -> Result<Vec<u8>, String> {
-    let path = crate::context::locate(location).map_err(|err| err.message().to_string())?;
-    std::fs::read(&path).map_err(|err| format!("could not read attachment {location}: {err}"))
+fn read_location(location: &str) -> Result<Vec<u8>, Error> {
+    let path = crate::context::locate(location).map_err(|err| Error::new(err.message()))?;
+    std::fs::read(&path).map_err(|err| Error::new(format!("could not read attachment {location}: {err}")))
 }
 
 fn fallback_type(given: &str, filename: &str, default: &str) -> String {
@@ -914,7 +917,7 @@ struct Letter {
     message_id: String,
 }
 
-fn deliver(letter: &Letter, server: &EntityValue) -> Result<(), String> {
+fn deliver(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
     #[cfg(test)]
     if push_sink(letter) {
         return Ok(());
@@ -922,7 +925,7 @@ fn deliver(letter: &Letter, server: &EntityValue) -> Result<(), String> {
     lettre_send(letter, server)
 }
 
-fn lettre_send(letter: &Letter, server: &EntityValue) -> Result<(), String> {
+fn lettre_send(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
     let host = field_text(server, "smtpHost");
     let port = parse_port(&field_text(server, "smtpPort"), 25)?;
     let message = build_lettre(letter)?;
@@ -959,7 +962,7 @@ fn lettre_send(letter: &Letter, server: &EntityValue) -> Result<(), String> {
     };
     lettre::Transport::send(&transport, &message)
         .map(|_| ())
-        .map_err(|err| err.to_string())
+        .map_err(|err| Error::new(err.to_string()))
 }
 
 fn creds(
@@ -977,7 +980,7 @@ fn creds(
     }
 }
 
-fn build_lettre(letter: &Letter) -> Result<lettre::Message, String> {
+fn build_lettre(letter: &Letter) -> Result<lettre::Message, Error> {
     let from = mailbox(&letter.from_address, &letter.from_name)?;
     let mut builder = lettre::Message::builder()
         .from(from)
@@ -1008,8 +1011,9 @@ fn build_lettre(letter: &Letter) -> Result<lettre::Message, String> {
             .bounce
             .trim()
             .parse()
-            .map_err(|err| format!("bounce address {} is not valid: {err}", letter.bounce))?;
-        let envelope = lettre::address::Envelope::new(Some(sender), recipients).map_err(|err| err.to_string())?;
+            .map_err(|err| Error::new(format!("bounce address {} is not valid: {err}", letter.bounce)))?;
+        let envelope =
+            lettre::address::Envelope::new(Some(sender), recipients).map_err(|err| Error::new(err.to_string()))?;
         builder = builder.envelope(envelope);
     }
     let message = if letter.attachments.is_empty() {
@@ -1017,33 +1021,33 @@ fn build_lettre(letter: &Letter) -> Result<lettre::Message, String> {
     } else {
         builder
             .multipart(with_attachments(letter)?)
-            .map_err(|err| err.to_string())?
+            .map_err(|err| Error::new(err.to_string()))?
     };
     Ok(message)
 }
 
-fn finish_body(builder: lettre::message::MessageBuilder, letter: &Letter) -> Result<lettre::Message, String> {
+fn finish_body(builder: lettre::message::MessageBuilder, letter: &Letter) -> Result<lettre::Message, Error> {
     if !letter.body.is_empty() && !letter.body_text.is_empty() {
         return builder
             .multipart(lettre::message::MultiPart::alternative_plain_html(
                 letter.body_text.clone(),
                 letter.body.clone(),
             ))
-            .map_err(|err| err.to_string());
+            .map_err(|err| Error::new(err.to_string()));
     }
     if !letter.body.is_empty() {
         return builder
             .header(lettre::message::header::ContentType::TEXT_HTML)
             .body(letter.body.clone())
-            .map_err(|err| err.to_string());
+            .map_err(|err| Error::new(err.to_string()));
     }
     builder
         .header(lettre::message::header::ContentType::TEXT_PLAIN)
         .body(letter.body_text.clone())
-        .map_err(|err| err.to_string())
+        .map_err(|err| Error::new(err.to_string()))
 }
 
-fn with_attachments(letter: &Letter) -> Result<lettre::message::MultiPart, String> {
+fn with_attachments(letter: &Letter) -> Result<lettre::message::MultiPart, Error> {
     let mut mixed = if !letter.body.is_empty() && !letter.body_text.is_empty() {
         lettre::message::MultiPart::mixed().multipart(lettre::message::MultiPart::alternative_plain_html(
             letter.body_text.clone(),
@@ -1067,11 +1071,11 @@ fn content_type(name: &str) -> lettre::message::header::ContentType {
 }
 
 /// An address as Java's `addTo` takes it: `a@example.com` or `Name <a@example.com>`. A `name` given separately wins.
-fn mailbox(address: &str, name: &str) -> Result<lettre::message::Mailbox, String> {
+fn mailbox(address: &str, name: &str) -> Result<lettre::message::Mailbox, Error> {
     let address = address.trim();
     let parsed: lettre::message::Mailbox = address
         .parse()
-        .map_err(|err| format!("email address {address} is not valid: {err}"))?;
+        .map_err(|err| Error::new(format!("email address {address} is not valid: {err}")))?;
     let name = name.trim();
     if name.is_empty() {
         Ok(parsed)
@@ -1081,9 +1085,9 @@ fn mailbox(address: &str, name: &str) -> Result<lettre::message::Mailbox, String
 }
 
 /// A random `<hex@host>` Message-ID, the host the domain of the from address.
-fn new_message_id(from: &str) -> Result<String, String> {
+fn new_message_id(from: &str) -> Result<String, Error> {
     let mut bytes = [0u8; 12];
-    getrandom::fill(&mut bytes).map_err(|err| format!("could not make a Message-ID: {err}"))?;
+    getrandom::fill(&mut bytes).map_err(|err| Error::new(format!("could not make a Message-ID: {err}")))?;
     let host = mailbox(from, "")
         .map(|parsed| parsed.email.domain().to_string())
         .ok()
@@ -1324,22 +1328,22 @@ pub(super) fn poll_server(
         }
         if let Err(text) = receive(facade, &message, &server_id) {
             tracing::error!("email ECA rules failed for message {id} of {server_id}, left on the server: {text}");
-            errors.push(text);
+            errors.push(text.to_string());
             continue;
         }
         if settings.mark_seen {
             if let Err(err) = store.mark_seen(&id) {
-                errors.push(err);
+                errors.push(err.to_string());
             }
         }
         if settings.delete {
             if let Err(err) = store.delete(&id) {
-                errors.push(err);
+                errors.push(err.to_string());
             }
         }
     }
     if let Err(err) = store.close() {
-        errors.push(err);
+        errors.push(err.to_string());
     }
     for text in errors {
         note_error(text);
@@ -1349,7 +1353,7 @@ pub(super) fn poll_server(
 
 /// Runs the email ECA rules for one message in a new transaction. A rule that fails, or an error a rule leaves in the
 /// message facade, rolls it back; the errors are taken out of the facade and returned.
-fn receive(facade: &EntityFacade, message: &Inbound, server_id: &str) -> Result<(), String> {
+fn receive(facade: &EntityFacade, message: &Inbound, server_id: &str) -> Result<(), Error> {
     let mark = ExecutionContext::with_current(|ctx| ctx.message().error_mark()).unwrap_or_default();
     force_new(facade, || {
         let ran = crate::service::run_email_rules(&eca_fields(message, server_id));
@@ -1366,7 +1370,7 @@ fn receive(facade: &EntityFacade, message: &Inbound, server_id: &str) -> Result<
             Err(LibError::new(errors.join("\n")))
         }
     })
-    .map_err(|err| err.message().to_string())
+    .map_err(|err| Error::new(err.message()))
 }
 
 struct StoreSettings {
@@ -1480,12 +1484,12 @@ impl Inbound {
 
 trait Mailbox {
     /// The ids of the messages to look at, in server order.
-    fn list_ids(&mut self) -> Result<Vec<String>, String>;
+    fn list_ids(&mut self) -> Result<Vec<String>, Error>;
     /// One message, with its flags.
-    fn fetch(&mut self, id: &str) -> Result<Inbound, String>;
-    fn mark_seen(&mut self, id: &str) -> Result<(), String>;
-    fn delete(&mut self, id: &str) -> Result<(), String>;
-    fn close(&mut self) -> Result<(), String>;
+    fn fetch(&mut self, id: &str) -> Result<Inbound, Error>;
+    fn mark_seen(&mut self, id: &str) -> Result<(), Error>;
+    fn delete(&mut self, id: &str) -> Result<(), Error>;
+    fn close(&mut self) -> Result<(), Error>;
 }
 
 #[cfg(test)]
@@ -1495,32 +1499,32 @@ struct FakeBox {
 
 #[cfg(test)]
 impl Mailbox for FakeBox {
-    fn list_ids(&mut self) -> Result<Vec<String>, String> {
+    fn list_ids(&mut self) -> Result<Vec<String>, Error> {
         Ok(self.messages.iter().map(|message| message.id.clone()).collect())
     }
 
-    fn fetch(&mut self, id: &str) -> Result<Inbound, String> {
+    fn fetch(&mut self, id: &str) -> Result<Inbound, Error> {
         self.messages
             .iter()
             .find(|message| message.id == id)
             .cloned()
-            .ok_or_else(|| format!("no message {id}"))
+            .ok_or_else(|| Error::new(format!("no message {id}")))
     }
 
-    fn mark_seen(&mut self, id: &str) -> Result<(), String> {
+    fn mark_seen(&mut self, id: &str) -> Result<(), Error> {
         if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
             message.seen = true;
         }
         Ok(())
     }
 
-    fn delete(&mut self, id: &str) -> Result<(), String> {
+    fn delete(&mut self, id: &str) -> Result<(), Error> {
         self.messages.retain(|message| message.id != id);
         FAKE_DELETED.with(|deleted| deleted.borrow_mut().push(id.to_string()));
         Ok(())
     }
 
-    fn close(&mut self) -> Result<(), String> {
+    fn close(&mut self) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -1552,7 +1556,7 @@ fn fake_store() -> Option<Box<dyn Mailbox>> {
     Some(Box::new(FakeBox { messages }))
 }
 
-fn open_store(settings: &StoreSettings) -> Result<Box<dyn Mailbox>, String> {
+fn open_store(settings: &StoreSettings) -> Result<Box<dyn Mailbox>, Error> {
     #[cfg(test)]
     if let Some(fake) = fake_store() {
         return Ok(fake);
@@ -1560,7 +1564,7 @@ fn open_store(settings: &StoreSettings) -> Result<Box<dyn Mailbox>, String> {
     match settings.protocol.as_str() {
         "pop3" | "pop3s" => Ok(Box::new(Pop3::open(settings)?)),
         "imap" | "imaps" => Ok(Box::new(ImapBox::open(settings)?)),
-        other => Err(format!("storeProtocol {other} is not supported")),
+        other => Err(Error::new(format!("storeProtocol {other} is not supported"))),
     }
 }
 
@@ -1576,20 +1580,20 @@ struct ImapBox {
 }
 
 impl ImapBox {
-    fn open(settings: &StoreSettings) -> Result<Self, String> {
+    fn open(settings: &StoreSettings) -> Result<Self, Error> {
         let net = connect_net(
             &settings.host,
             settings.port,
             use_tls(&settings.protocol, settings.port),
         )?;
         let mut client = imap::Client::new(net);
-        client.read_greeting().map_err(|err| err.to_string())?;
+        client.read_greeting().map_err(|err| Error::new(err.to_string()))?;
         let mut session = client
             .login(&settings.user, &settings.password)
-            .map_err(|(err, _)| err.to_string())?;
+            .map_err(|(err, _)| Error::new(err.to_string()))?;
         session
             .select(&settings.folder)
-            .map_err(|_| format!("No {} folder found", settings.folder))?;
+            .map_err(|_| Error::new(format!("No {} folder found", settings.folder)))?;
         Ok(Self {
             session,
             closed: false,
@@ -1600,7 +1604,7 @@ impl ImapBox {
 }
 
 impl Mailbox for ImapBox {
-    fn list_ids(&mut self) -> Result<Vec<String>, String> {
+    fn list_ids(&mut self) -> Result<Vec<String>, Error> {
         let query = if self.skip_seen {
             "UNSEEN NOT DELETED"
         } else {
@@ -1609,22 +1613,22 @@ impl Mailbox for ImapBox {
         let mut ids: Vec<u32> = self
             .session
             .search(query)
-            .map_err(|err| err.to_string())?
+            .map_err(|err| Error::new(err.to_string()))?
             .into_iter()
             .collect();
         ids.sort_unstable();
         Ok(ids.into_iter().map(|id| id.to_string()).collect())
     }
 
-    fn fetch(&mut self, id: &str) -> Result<Inbound, String> {
+    fn fetch(&mut self, id: &str) -> Result<Inbound, Error> {
         let fetches = self
             .session
             .fetch(id, "BODY.PEEK[] FLAGS INTERNALDATE")
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| Error::new(err.to_string()))?;
         let fetch = fetches
             .iter()
             .next()
-            .ok_or_else(|| format!("message {id} is not on the server"))?;
+            .ok_or_else(|| Error::new(format!("message {id} is not on the server")))?;
         let mut message = parse_rfc822(fetch.body().unwrap_or_default());
         message.id = id.to_string();
         for flag in fetch.flags() {
@@ -1644,23 +1648,23 @@ impl Mailbox for ImapBox {
         Ok(message)
     }
 
-    fn mark_seen(&mut self, id: &str) -> Result<(), String> {
+    fn mark_seen(&mut self, id: &str) -> Result<(), Error> {
         self.session
             .store(id, "+FLAGS (\\Seen)")
             .map(|_| ())
-            .map_err(|err| err.to_string())
+            .map_err(|err| Error::new(err.to_string()))
     }
 
-    fn delete(&mut self, id: &str) -> Result<(), String> {
+    fn delete(&mut self, id: &str) -> Result<(), Error> {
         self.session
             .store(id, "+FLAGS (\\Deleted)")
             .map(|_| ())
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| Error::new(err.to_string()))?;
         self.deleted = true;
         Ok(())
     }
 
-    fn close(&mut self) -> Result<(), String> {
+    fn close(&mut self) -> Result<(), Error> {
         if self.closed {
             return Ok(());
         }
@@ -1668,9 +1672,9 @@ impl Mailbox for ImapBox {
         // Only when this poll flagged a message: Java's close(true) also expunges what another client flagged and
         // could still undelete, on a server that is not set to delete.
         if self.deleted {
-            self.session.expunge().map_err(|err| err.to_string())?;
+            self.session.expunge().map_err(|err| Error::new(err.to_string()))?;
         }
-        self.session.logout().map_err(|err| err.to_string())
+        self.session.logout().map_err(|err| Error::new(err.to_string()))
     }
 }
 
@@ -1692,16 +1696,16 @@ struct Pop3 {
 }
 
 impl Pop3 {
-    fn open(settings: &StoreSettings) -> Result<Self, String> {
+    fn open(settings: &StoreSettings) -> Result<Self, Error> {
         if settings.folder != "INBOX" {
-            return Err(format!("No {} folder found", settings.folder));
+            return Err(Error::new(format!("No {} folder found", settings.folder)));
         }
         // They go into the USER and PASS lines as they are.
         if [&settings.user, &settings.password]
             .iter()
             .any(|text| text.contains(['\r', '\n']))
         {
-            return Err("the POP3 username or password has a line break".to_string());
+            return Err(Error::new("the POP3 username or password has a line break"));
         }
         let net = connect_net(
             &settings.host,
@@ -1717,16 +1721,19 @@ impl Pop3 {
         Ok(client)
     }
 
-    fn command(&mut self, line: &str) -> Result<String, String> {
-        write!(self.reader.get_mut(), "{line}\r\n").map_err(|err| err.to_string())?;
-        self.reader.get_mut().flush().map_err(|err| err.to_string())?;
+    fn command(&mut self, line: &str) -> Result<String, Error> {
+        write!(self.reader.get_mut(), "{line}\r\n").map_err(|err| Error::new(err.to_string()))?;
+        self.reader
+            .get_mut()
+            .flush()
+            .map_err(|err| Error::new(err.to_string()))?;
         let response = read_line(&mut self.reader)?;
         expect_ok(&response)?;
         Ok(response)
     }
 
     /// A multi-line answer up to the line with only a dot, as bytes: 8-bit mail is not text in any one charset.
-    fn read_dot(&mut self) -> Result<Vec<u8>, String> {
+    fn read_dot(&mut self) -> Result<Vec<u8>, Error> {
         let mut raw = Vec::new();
         loop {
             let line = read_line_bytes(&mut self.reader)?;
@@ -1745,7 +1752,7 @@ impl Pop3 {
 }
 
 impl Mailbox for Pop3 {
-    fn list_ids(&mut self) -> Result<Vec<String>, String> {
+    fn list_ids(&mut self) -> Result<Vec<String>, Error> {
         self.command("LIST")?;
         let listing = self.read_dot()?;
         Ok(String::from_utf8_lossy(&listing)
@@ -1756,7 +1763,7 @@ impl Mailbox for Pop3 {
             .collect())
     }
 
-    fn fetch(&mut self, id: &str) -> Result<Inbound, String> {
+    fn fetch(&mut self, id: &str) -> Result<Inbound, Error> {
         self.command(&format!("RETR {id}"))?;
         let bytes = self.read_dot()?;
         let mut message = parse_rfc822(&bytes);
@@ -1764,16 +1771,16 @@ impl Mailbox for Pop3 {
         Ok(message)
     }
 
-    fn mark_seen(&mut self, _id: &str) -> Result<(), String> {
+    fn mark_seen(&mut self, _id: &str) -> Result<(), Error> {
         Ok(())
     }
 
-    fn delete(&mut self, id: &str) -> Result<(), String> {
+    fn delete(&mut self, id: &str) -> Result<(), Error> {
         self.command(&format!("DELE {id}")).map(|_| ())
     }
 
     /// `QUIT` is when a POP3 server removes the deleted messages, so its answer is read.
-    fn close(&mut self) -> Result<(), String> {
+    fn close(&mut self) -> Result<(), Error> {
         if self.closed {
             return Ok(());
         }
@@ -1822,74 +1829,78 @@ impl Write for Net {
     }
 }
 
-fn connect_net(host: &str, port: u16, tls: bool) -> Result<Net, String> {
+fn connect_net(host: &str, port: u16, tls: bool) -> Result<Net, Error> {
     // A blackholed host fails in 30 seconds instead of the system default of minutes.
     let address = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
-        .map_err(|err| format!("could not resolve {host}:{port}: {err}"))?
+        .map_err(|err| Error::new(format!("could not resolve {host}:{port}: {err}")))?
         .next()
-        .ok_or_else(|| format!("could not resolve {host}:{port}"))?;
+        .ok_or_else(|| Error::new(format!("could not resolve {host}:{port}")))?;
     let tcp = TcpStream::connect_timeout(&address, Duration::from_secs(30))
-        .map_err(|err| format!("could not connect to {host}:{port}: {err}"))?;
+        .map_err(|err| Error::new(format!("could not connect to {host}:{port}: {err}")))?;
     let _ = tcp.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = tcp.set_write_timeout(Some(Duration::from_secs(60)));
     if !tls {
         return Ok(Net::Plain(tcp));
     }
     let name = rustls::pki_types::ServerName::try_from(host.to_string())
-        .map_err(|_| format!("email host {host} is not a DNS name"))?;
+        .map_err(|_| Error::new(format!("email host {host} is not a DNS name")))?;
     let config = tls_config()?;
-    let conn = rustls::ClientConnection::new(config, name).map_err(|err| err.to_string())?;
+    let conn = rustls::ClientConnection::new(config, name).map_err(|err| Error::new(err.to_string()))?;
     Ok(Net::Tls(Box::new(rustls::StreamOwned::new(conn, tcp))))
 }
 
 /// The certificates of the PEM file `email_tls_ca_file` names, for a mail server with its own CA. Empty when unset.
-fn extra_ca_certificates() -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, String> {
+fn extra_ca_certificates() -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, Error> {
     use rustls::pki_types::pem::PemObject;
     let location = moqui_lib::env::get_prop_or_env("email_tls_ca_file");
     if location.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let pem =
-        std::fs::read(location.trim()).map_err(|err| format!("could not read email_tls_ca_file {location}: {err}"))?;
+    let pem = std::fs::read(location.trim())
+        .map_err(|err| Error::new(format!("could not read email_tls_ca_file {location}: {err}")))?;
     rustls::pki_types::CertificateDer::pem_slice_iter(&pem)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| format!("email_tls_ca_file {location} is not PEM certificates: {err}"))
+        .map_err(|err| Error::new(format!("email_tls_ca_file {location} is not PEM certificates: {err}")))
 }
 
-fn smtp_tls(host: &str) -> Result<lettre::transport::smtp::client::TlsParameters, String> {
+fn smtp_tls(host: &str) -> Result<lettre::transport::smtp::client::TlsParameters, Error> {
     let mut builder = lettre::transport::smtp::client::TlsParameters::builder(host.to_string());
     for der in extra_ca_certificates()? {
-        let certificate =
-            lettre::transport::smtp::client::Certificate::from_der(der.to_vec()).map_err(|err| err.to_string())?;
+        let certificate = lettre::transport::smtp::client::Certificate::from_der(der.to_vec())
+            .map_err(|err| Error::new(err.to_string()))?;
         builder = builder.add_root_certificate(certificate);
     }
-    builder.build().map_err(|err| err.to_string())
+    builder.build().map_err(|err| Error::new(err.to_string()))
 }
 
-fn tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
+fn tls_config() -> Result<Arc<rustls::ClientConfig>, Error> {
     let mut roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     for der in extra_ca_certificates()? {
-        roots.add(der).map_err(|err| format!("email_tls_ca_file: {err}"))?;
+        roots
+            .add(der)
+            .map_err(|err| Error::new(format!("email_tls_ca_file: {err}")))?;
     }
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
-        .map_err(|err| err.to_string())?
+        .map_err(|err| Error::new(err.to_string()))?
         .with_root_certificates(roots)
         .with_no_client_auth();
     Ok(Arc::new(config))
 }
 
 /// A status line, which is ASCII; any other byte is replaced.
-fn read_line(reader: &mut impl BufRead) -> Result<String, String> {
+fn read_line(reader: &mut impl BufRead) -> Result<String, Error> {
     read_line_bytes(reader).map(|line| String::from_utf8_lossy(&line).into_owned())
 }
 
-fn read_line_bytes(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
+fn read_line_bytes(reader: &mut impl BufRead) -> Result<Vec<u8>, Error> {
     let mut line = Vec::new();
-    let read = reader.read_until(b'\n', &mut line).map_err(|err| err.to_string())?;
+    let read = reader
+        .read_until(b'\n', &mut line)
+        .map_err(|err| Error::new(err.to_string()))?;
     if read == 0 {
-        return Err("mail server closed the connection".to_string());
+        return Err(Error::new("mail server closed the connection"));
     }
     if line.ends_with(b"\n") {
         line.pop();
@@ -1900,11 +1911,11 @@ fn read_line_bytes(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
     Ok(line)
 }
 
-fn expect_ok(line: &str) -> Result<(), String> {
+fn expect_ok(line: &str) -> Result<(), Error> {
     if line.starts_with("+OK") {
         Ok(())
     } else {
-        Err(format!("mail server rejected the command: {line}"))
+        Err(Error::new(format!("mail server rejected the command: {line}")))
     }
 }
 
@@ -2108,11 +2119,13 @@ fn split_addresses(value: &str) -> Vec<String> {
     out
 }
 
-fn parse_port(text: &str, default: u16) -> Result<u16, String> {
+fn parse_port(text: &str, default: u16) -> Result<u16, Error> {
     if text.trim().is_empty() {
         return Ok(default);
     }
-    text.trim().parse().map_err(|_| format!("port {text} is not a number"))
+    text.trim()
+        .parse()
+        .map_err(|_| Error::new(format!("port {text} is not a number")))
 }
 
 fn ids(email_message_id: &str, message_id: &str) -> BTreeMap<String, Value> {
@@ -2126,18 +2139,18 @@ fn ids(email_message_id: &str, message_id: &str) -> BTreeMap<String, Value> {
     out
 }
 
-fn fail(text: impl Into<String>) -> Result<BTreeMap<String, Value>, LibError> {
+fn fail(text: impl std::fmt::Display) -> Result<BTreeMap<String, Value>, LibError> {
     note_error(text);
     Ok(BTreeMap::new())
 }
 
-fn fail_with(text: impl Into<String>, email_message_id: &str) -> Result<BTreeMap<String, Value>, LibError> {
+fn fail_with(text: impl std::fmt::Display, email_message_id: &str) -> Result<BTreeMap<String, Value>, LibError> {
     note_error(text);
     Ok(ids(email_message_id, ""))
 }
 
-fn note_error(text: impl Into<String>) {
-    let text = text.into();
+fn note_error(text: impl std::fmt::Display) {
+    let text = text.to_string();
     ExecutionContext::with_current(|ctx| ctx.message().add_error(text));
 }
 

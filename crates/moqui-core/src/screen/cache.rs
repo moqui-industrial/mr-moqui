@@ -547,7 +547,7 @@ fn configured_check_interval() -> i64 {
     if let Ok(millis) = configured.trim().parse::<i64>() {
         return millis;
     }
-    if moqui_lib::env::get_prop_or_env("instance_purpose") == "production" {
+    if crate::web::is_production() {
         -1
     } else {
         DEFAULT_CHECK_INTERVAL_MS

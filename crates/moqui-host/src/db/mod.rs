@@ -92,7 +92,7 @@ pub fn conf_driver(conf: &ConfDb) -> Result<Arc<dyn DbDriver>, Error> {
         )),
         other => {
             let _ = (host, database, user, password, port_of(0));
-            return Err(Error::new(format!("no database driver for database conf {other}")));
+            Err(Error::new(format!("no database driver for database conf {other}")))?
         }
     };
     Ok(driver)

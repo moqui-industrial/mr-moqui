@@ -37,6 +37,7 @@ pub mod query;
 pub mod semantic;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
@@ -367,6 +368,9 @@ pub struct SearchFacade {
     entity: EntityFacade,
     mappings: Mutex<HashMap<String, Arc<DocumentMapping>>>,
     ensured: Mutex<HashSet<String>>,
+    /// The data document definition generation `mappings` and `ensured` were filled under. A definition written here or
+    /// on a cluster peer changes it, and the next use reads the definitions again.
+    generation: AtomicU64,
     /// The local embedding model, when one is installed.
     embedder: RwLock<Option<semantic::SharedEmbedder>>,
 }
@@ -378,7 +382,17 @@ impl SearchFacade {
             entity,
             mappings: Mutex::new(HashMap::new()),
             ensured: Mutex::new(HashSet::new()),
+            generation: AtomicU64::new(0),
             embedder: RwLock::new(None),
+        }
+    }
+
+    /// Forget the mappings and the indexes ensured when a data document definition changed since they were made.
+    fn follow_definitions(&self) {
+        let now = crate::entity::cache::feed_definition_generation(&self.entity);
+        if self.generation.swap(now, Ordering::AcqRel) != now {
+            lock(&self.mappings).clear();
+            lock(&self.ensured).clear();
         }
     }
 
@@ -468,6 +482,7 @@ impl SearchFacade {
     ///
     /// Returns an error when the definition does not resolve.
     pub fn mapping(&self, data_document_id: &str) -> Result<Arc<DocumentMapping>, Error> {
+        self.follow_definitions();
         if let Some(found) = lock(&self.mappings).get(data_document_id) {
             return Ok(Arc::clone(found));
         }
@@ -1177,6 +1192,26 @@ mod tests {
         let stored = lock(&store.stored).clone();
         let failed = lock(&store.failed).clone();
         (result, stored, failed)
+    }
+
+    /// A data document definition written here or on a cluster peer (which counts in the same generation) makes the
+    /// search facade read its mappings again.
+    #[test]
+    fn a_definition_write_refreshes_the_cached_mappings() {
+        let store = Arc::new(EmbedStore {
+            pending: Vec::new(),
+            stored: Mutex::new(Vec::new()),
+            failed: Mutex::new(Vec::new()),
+        });
+        let entity = crate::testing::open();
+        let facade = SearchFacade::new(Arc::clone(&store) as Arc<dyn SearchBackend>, entity.clone());
+        let first = facade.mapping(logs::APP_LOG).unwrap();
+        assert!(Arc::ptr_eq(&first, &facade.mapping(logs::APP_LOG).unwrap()));
+        let mut document = entity.make_value("moqui.entity.document.DataDocument").unwrap();
+        document.set("dataDocumentId", Value::string("REFRESHED"));
+        document.set("primaryEntityName", Value::string("moqui.basic.Enumeration"));
+        document.create(&entity).unwrap();
+        assert!(!Arc::ptr_eq(&first, &facade.mapping(logs::APP_LOG).unwrap()));
     }
 
     #[test]
