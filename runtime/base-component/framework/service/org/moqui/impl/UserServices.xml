@@ -626,7 +626,9 @@ along with this software (see the LICENSE.md file). If not, see
                             <set field="factorId" from="userAuthcFactor.get('factorId')"/>
                             <set field="verified" from="true"/>
                             <service-call name="update#moqui.security.UserAuthcFactor" in-map="{factorId: userAuthcFactor.get('factorId'), thruDate: ec.user.nowTimestamp}"/>
-                            <if condition="userAuthcFactor.get('fromFactorId')"><service-call name="update#moqui.security.UserAuthcFactor" in-map="{factorId: userAuthcFactor.get('fromFactorId'), needsValidation: 'N'}"/></if>
+                            <!-- A code sent to the account email names the UserAccountEmail pseudo factor, which has no row to update;
+                                Java's update of it fails the verify. -->
+                            <if condition="userAuthcFactor.get('fromFactorId') &amp;&amp; userAuthcFactor.get('fromFactorId') != 'UserAccountEmail'"><service-call name="update#moqui.security.UserAuthcFactor" in-map="{factorId: userAuthcFactor.get('fromFactorId'), needsValidation: 'N'}"/></if>
                         </if>
                     </then>
                     <else-if condition="userAuthcFactor.get('factorTypeEnumId') == 'UafTotp'">

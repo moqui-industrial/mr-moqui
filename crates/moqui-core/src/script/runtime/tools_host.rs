@@ -260,6 +260,9 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
             for (const message of result.messages) ec.message.addMessage(message, "info");
             return result.diffInfo;
         };
+        // Java's list(): the values of the records the data has, nested records after the record they are in, with
+        // nothing written and no service called.
+        l.list = () => host.loadData(Object.assign({}, options, { list: true })).values;
         return l;
     };
 
@@ -1231,9 +1234,17 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
         facade.set_disable_data_feed(flag("disableDataFeed") || before.disable_data_feed);
         let factory = factory_of(&ctx)?;
         let check = flag("check");
+        let listing = flag("list");
         let mut fields_checked = 0_u64;
         let mut diff_info = Vec::new();
-        let loaded = if check {
+        let mut values = Vec::new();
+        let loaded = if listing {
+            let source = || load_source(&facade, &factory, &text, &locations, &load_options);
+            crate::entity::load_feed::list_with(source).map(|((records, _), result)| {
+                values = result.values;
+                (records, Vec::new())
+            })
+        } else if check {
             // `check()`: the messages are what did not match, not what was loaded. `checkInfo()`: what did not match
             // is in the diff rows.
             let source = || load_source(&facade, &factory, &text, &locations, &load_options);
@@ -1271,7 +1282,14 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
             "diffInfo".to_string(),
             Value::List(diff_info.into_iter().map(Value::Map).collect()),
         );
-        host_to_js(&ctx, Value::Map(out))
+        let out = host_to_js(&ctx, Value::Map(out))?;
+        if listing {
+            if let Some(object) = out.as_object() {
+                let list = super::entities::HostList::of_list(crate::entity::EntityList::new(values));
+                object.set("values", Class::instance(ctx.clone(), list)?)?;
+            }
+        }
+        Ok(out)
     })
 }
 

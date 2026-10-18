@@ -145,12 +145,18 @@ impl<'a> Builder<'a> {
         nest: bool,
     ) -> IndexMap<String, Value> {
         let mut properties = IndexMap::new();
-        for field in &entity.fields {
-            let mut schema = field_schema(&field.field_type);
-            if let Some(ids) = self.enums.of(entity, &field.name) {
+        // A view's fields are its aliases, as Java's getAllFieldNames.
+        for name in entity.field_names() {
+            let field_type = if entity.is_view {
+                entity.alias(name).and_then(|alias| alias.field_type.as_deref())
+            } else {
+                entity.field(name).map(|field| field.field_type.as_str())
+            };
+            let mut schema = field_schema(field_type.unwrap_or_default());
+            if let Some(ids) = self.enums.of(entity, name) {
                 schema.insert("enum".to_string(), Value::List(ids));
             }
-            properties.insert(field.name.clone(), Value::Map(schema));
+            properties.insert(name.to_string(), Value::Map(schema));
         }
         if let Some(details) = details {
             for detail in details {
@@ -392,6 +398,20 @@ mod tests {
             ),
             &Value::string("#/$defs/moqui.entity.feed.DataFeedDocument")
         );
+    }
+
+    /// A view's properties are its aliases, with the member field's type, and its primary key is the aliases of the
+    /// members' keys, as Java's `getAllFieldNames`.
+    #[test]
+    fn a_view_lists_its_aliases_as_properties() {
+        let facade = crate::testing::open();
+        let view = super::document(&facade, &["moqui.basic.EnumerationAndType".to_string()], false).unwrap();
+        let properties = at(&view, &["properties"]);
+        assert_eq!(at(properties, &["enumId", "type"]), &Value::string("string"));
+        assert_eq!(at(properties, &["typeDescription", "type"]), &Value::string("string"));
+        assert_eq!(at(properties, &["sequenceNum", "type"]), &Value::string("number"));
+        assert_eq!(at(properties, &["sequenceNum", "format"]), &Value::string("int64"));
+        assert_eq!(at(&view, &["required"]), &Value::List(vec![Value::string("enumId")]));
     }
 
     #[test]

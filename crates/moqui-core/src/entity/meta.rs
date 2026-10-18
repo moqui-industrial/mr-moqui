@@ -499,10 +499,12 @@ fn apply(
     }
     // One read of the index and foreign key names the group has, so a check does not send a statement for each
     // one that is already there.
-    let existing = names
+    let dialect = names
         .first()
-        .and_then(|name| facade.with_entity(name, |_, dialect, _| Ok(dialect.clone())).ok())
-        .map(|dialect| existing_constraints(conn, &dialect))
+        .and_then(|name| facade.with_entity(name, |_, dialect, _| Ok(dialect.clone())).ok());
+    let existing = dialect
+        .as_ref()
+        .map(|dialect| existing_constraints(conn, dialect))
         .unwrap_or_default();
     for name in names.iter().filter(|name| !missing.contains(name.as_str())) {
         ensure_columns(facade, conn, name, &mut counts);
@@ -513,12 +515,16 @@ fn apply(
         if counts.tables_created > 0 {
             tracing::info!("Tables were created, checking FKs for all entities in group {group}");
         }
+        let fk_columns = dialect
+            .as_ref()
+            .map(|dialect| existing_fk_columns(conn, dialect))
+            .unwrap_or_default();
         for name in names
             .iter()
             .filter(|name| !missing.contains(name.as_str()))
             .filter(|name| fks_for_existing || created.contains(name.as_str()))
         {
-            ensure_fks(facade, conn, name, &existing, &mut counts);
+            ensure_fks(facade, conn, name, &existing, &fk_columns, &mut counts);
         }
     } else {
         tracing::info!("Not checking foreign keys for group {group}, disable-fk-create is set");
@@ -565,6 +571,70 @@ fn existing_constraints(conn: &mut dyn DbConnection, dialect: &Dialect) -> HashS
         }
     }
     names
+}
+
+/// The foreign key columns of each table in the current schema, keyed by the lower-case table and referenced table
+/// names, as Java's `foreignKeyExists` reads `getImportedKeys`. Empty when they cannot be read: a key is then found by
+/// its name only.
+type FkColumns = HashMap<(String, String), HashSet<String>>;
+
+fn existing_fk_columns(conn: &mut dyn DbConnection, dialect: &Dialect) -> FkColumns {
+    let sql = if is_mysql(dialect) {
+        "SELECT table_name, referenced_table_name, column_name FROM information_schema.key_column_usage \
+         WHERE table_schema = database() AND referenced_table_name IS NOT NULL"
+    } else if dialect.name.starts_with("postgres") {
+        "SELECT cl.relname, rf.relname, a.attname FROM pg_constraint c \
+         JOIN pg_class cl ON cl.oid = c.conrelid JOIN pg_namespace n ON n.oid = cl.relnamespace \
+         JOIN pg_class rf ON rf.oid = c.confrelid \
+         JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey) \
+         WHERE c.contype = 'f' AND n.nspname = current_schema()"
+    } else {
+        return FkColumns::new();
+    };
+    let rows = match query_conn(conn, sql, &[]) {
+        Ok(rows) => rows,
+        Err(err) => {
+            tracing::debug!(error = %err, "Could not read the existing foreign key columns");
+            return FkColumns::new();
+        }
+    };
+    let mut columns = FkColumns::new();
+    for row in rows {
+        let text: Vec<String> = row
+            .columns
+            .iter()
+            .filter_map(|(_, value)| value.as_str().map(str::to_ascii_lowercase))
+            .collect();
+        if let [table, referenced, column] = text.as_slice() {
+            columns
+                .entry((table.clone(), referenced.clone()))
+                .or_default()
+                .insert(column.clone());
+        }
+    }
+    columns
+}
+
+/// Whether the table has foreign key columns to `related`'s table for every key field of `relationship`, whatever the
+/// key's name, as Java's `foreignKeyExists`.
+fn fk_columns_exist(
+    fk_columns: &FkColumns,
+    entity: &moqui_db::model::EntityDefinition,
+    relationship: &moqui_db::model::Relationship,
+    related: &moqui_db::model::EntityDefinition,
+) -> bool {
+    let key = (
+        entity.table_name.to_ascii_lowercase(),
+        related.table_name.to_ascii_lowercase(),
+    );
+    fk_columns.get(&key).is_some_and(|columns| {
+        relationship.key_pairs.iter().all(|(field, _)| {
+            let column = entity
+                .field(field)
+                .map_or(field.as_str(), |field| field.column_name.as_str());
+            columns.contains(&column.to_ascii_lowercase())
+        })
+    })
 }
 
 fn ensure_columns(facade: &EntityFacade, conn: &mut dyn DbConnection, name: &str, counts: &mut Counts) {
@@ -716,6 +786,7 @@ fn ensure_fks(
     conn: &mut dyn DbConnection,
     name: &str,
     existing: &HashSet<String>,
+    fk_columns: &FkColumns,
     counts: &mut Counts,
 ) {
     let statements = facade.with_entity(name, |entity, dialect, model| {
@@ -750,6 +821,10 @@ fn ensure_fks(
                 counts.errors += 1;
                 continue;
             };
+            // A key Java made under another name (MySQL's `name_fk`, P3-11) is the same key: its columns are there.
+            if fk_columns_exist(fk_columns, entity, relationship, related) {
+                continue;
+            }
             match table_exists_conn(conn, dialect, &related.table_name) {
                 Ok(true) if !related.is_view => {}
                 Ok(_) => continue,

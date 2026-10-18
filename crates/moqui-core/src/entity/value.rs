@@ -43,6 +43,9 @@ pub struct EntityValue {
     entity_name: String,
     fields: BTreeMap<String, Value>,
     l10n: Option<Box<Localizer>>,
+    /// The `lastUpdatedStamp` the value was read with, so an update can tell a stamp the caller set from the one read, as
+    /// Java's `dbValueMap` does for that field.
+    read_stamp: Option<Value>,
 }
 
 /// Two values are equal when they hold the same stored fields of the same entity.
@@ -104,12 +107,15 @@ impl EntityValue {
             entity_name: full_name,
             fields: BTreeMap::new(),
             l10n: None,
+            read_stamp: None,
         })
     }
 
+    /// A value read from the database or the entity cache.
     pub(crate) fn from_fields(entity_name: String, fields: BTreeMap<String, Value>) -> Self {
         Self {
             entity_name,
+            read_stamp: fields.get(STAMP).filter(|stamp| !stamp.is_null()).cloned(),
             fields,
             l10n: None,
         }
@@ -248,6 +254,7 @@ impl EntityValue {
 
     pub fn refresh(&mut self, facade: &EntityFacade) -> Result<(), Error> {
         let fresh = facade.refresh_fields(&self.entity_name, &self.fields)?;
+        self.read_stamp = fresh.get(STAMP).filter(|stamp| !stamp.is_null()).cloned();
         self.fields = fresh;
         if let Some(l10n) = self.l10n.as_deref_mut() {
             l10n.memo = Arc::new(Mutex::new(HashMap::new()));
@@ -317,7 +324,7 @@ impl EntityFacade {
     }
 
     pub fn update_value(&self, value: &EntityValue) -> Result<(), Error> {
-        self.write_update(&value.entity_name, &value.fields, None)
+        self.write_update(&value.entity_name, &value.fields, None, value.read_stamp.as_ref())
     }
 
     pub fn delete_value(&self, value: &EntityValue) -> Result<(), Error> {
@@ -346,7 +353,7 @@ impl EntityFacade {
         };
         // The row just read is the one the update would read again, in the same transaction.
         match stored {
-            Some(row) => self.write_update(&value.entity_name, &value.fields, Some(row.fields)),
+            Some(row) => self.write_update(&value.entity_name, &value.fields, Some(row.fields), None),
             None => self.create_value(&value),
         }
     }
@@ -442,17 +449,26 @@ impl EntityFacade {
     /// Java's `update`. The primary key defaults are filled first. When the entity needs the stored row (see
     /// [`update_reads_row`]) it is read, or taken from `known` when the caller just read it, and the update then writes
     /// only the fields that differ from it, and nothing when none do. See [`Self::update_columns`].
+    ///
+    /// `read_stamp` is the `lastUpdatedStamp` a found value was read with. When the caller set another one, the row is
+    /// read too, so the update keeps the caller's stamp as Java does (P1-15).
     fn write_update(
         &self,
         entity_name: &str,
         values: &BTreeMap<String, Value>,
         known: Option<BTreeMap<String, Value>>,
+        read_stamp: Option<&Value>,
     ) -> Result<(), Error> {
         self.reject_view(entity_name, "update")?;
         let (has_defaults, reads_row) = self.with_entity(entity_name, |entity, _, _| {
             Ok((has_field_defaults(entity), update_reads_row(entity)))
         })?;
-        let reads_row = reads_row || load_feed::feed_wants_old(self, entity_name);
+        let stamp_set = read_stamp.is_some_and(|read| {
+            values
+                .get(STAMP)
+                .is_some_and(|stamp| !stamp.is_null() && !same_field_value(read, stamp))
+        });
+        let reads_row = reads_row || stamp_set || load_feed::feed_wants_old(self, entity_name);
         let mut values = if has_defaults {
             self.fill_field_defaults(entity_name, values, DefaultFields::Pk, None)?
         } else {
@@ -790,6 +806,18 @@ impl EntityFacade {
                     return Ok(0);
                 }
                 crate::context::ExecutionContext::with_current(|ctx| ctx.set_hit_detail(Some("update"), None));
+            } else if operation == "update" && affected == 0 {
+                // As Java's `updateExtended`: an update of a row that is not there is an error, not a silent no-op.
+                let keys = self
+                    .with_entity(entity_name, |entity, _, _| pk_values(entity, &cache_values))
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|(name, value)| format!("{name}={}", moqui_lib::object::to_plain_string(value)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(Error::new(format!(
+                    "Tried to update a value that does not exist [{entity_name}: {keys}]"
+                )));
             }
             load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values), feed_old);
             if let Some(mut values) = after_values {

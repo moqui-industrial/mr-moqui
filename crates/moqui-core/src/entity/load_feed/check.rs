@@ -17,6 +17,9 @@
 //!
 //! The readers hand every record to `store_record` and every service element to `call_data_file_service`. While a
 //! check runs on this thread those divert here, so XML, CSV, JSON and zip data all check the same way.
+//!
+//! `EntityDataLoader.list()` (Java's `ListValueHandler`) diverts the same way: the records become entity values, in
+//! the order a load would write them, and nothing is checked, written or called.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -28,6 +31,7 @@ use moqui_lib::object::{basic_convert, compare_obj, to_plain_string, Value};
 use super::loader::{convert_fields, inherit_pk_fields, load_entity_data, load_entity_xml_text, Record};
 use super::{DataFileService, LoadOptions};
 use crate::entity::facade::EntityFacade;
+use crate::entity::EntityValue;
 
 /// What a check found: one message for each record not found and each field that did not match (with
 /// [`check_info_with`] a row in `diff_info` instead), and how many fields were compared.
@@ -38,6 +42,8 @@ pub struct CheckResult {
     /// Java's `checkInfo` rows: `entity`, `pk`, `notFound`, `pkComplete` and `location`, with `createValues` for a
     /// record not found, or `field`, `value` and `dbValue` for a field that did not match.
     pub diff_info: Vec<IndexMap<String, Value>>,
+    /// With [`list_with`], the values of the records read, nested records after the record they are in.
+    pub values: Vec<EntityValue>,
 }
 
 /// The check running on this thread.
@@ -45,6 +51,8 @@ struct CheckState {
     result: CheckResult,
     /// Java's `checkInfo`: rows in `diff_info`, not messages.
     info: bool,
+    /// Java's `list`: the records become values in `values` and are not checked.
+    list: bool,
     /// The file or text being read, for the rows.
     location: String,
 }
@@ -57,7 +65,7 @@ thread_local! {
 struct CheckScope;
 
 impl CheckScope {
-    fn enter(info: bool) -> Result<Self, Error> {
+    fn enter(info: bool, list: bool) -> Result<Self, Error> {
         CHECKING.with(|slot| {
             let mut slot = slot.borrow_mut();
             if slot.is_some() {
@@ -66,6 +74,7 @@ impl CheckScope {
             *slot = Some(CheckState {
                 result: CheckResult::default(),
                 info,
+                list,
                 location: String::new(),
             });
             Ok(CheckScope)
@@ -89,7 +98,7 @@ impl Drop for CheckScope {
 /// Run `body`, a load of any kind, as a check: the records it reads are compared with the database and none is
 /// written.
 pub fn check_with<R>(body: impl FnOnce() -> Result<R, Error>) -> Result<(R, CheckResult), Error> {
-    let scope = CheckScope::enter(false)?;
+    let scope = CheckScope::enter(false, false)?;
     let out = body()?;
     Ok((out, scope.finish()))
 }
@@ -97,7 +106,15 @@ pub fn check_with<R>(body: impl FnOnce() -> Result<R, Error>) -> Result<(R, Chec
 /// Run `body` as Java's `checkInfo`: like [`check_with`], but what did not match is a row of
 /// [`CheckResult::diff_info`] rather than a message.
 pub fn check_info_with<R>(body: impl FnOnce() -> Result<R, Error>) -> Result<(R, CheckResult), Error> {
-    let scope = CheckScope::enter(true)?;
+    let scope = CheckScope::enter(true, false)?;
+    let out = body()?;
+    Ok((out, scope.finish()))
+}
+
+/// Run `body`, a load of any kind, as Java's `EntityDataLoader.list()`: the records it reads come back as values in
+/// [`CheckResult::values`], and none is checked or written. A service element is logged and not called.
+pub fn list_with<R>(body: impl FnOnce() -> Result<R, Error>) -> Result<(R, CheckResult), Error> {
+    let scope = CheckScope::enter(false, true)?;
     let out = body()?;
     Ok((out, scope.finish()))
 }
@@ -169,12 +186,22 @@ pub(super) fn check_file(
 /// Check one record read from the data and its nested records. Returns how many records it read, as a store
 /// returns how many it wrote.
 pub(super) fn check_record(facade: &EntityFacade, record: &Record) -> Result<u64, Error> {
-    let (info, location) = CHECKING.with(|slot| {
+    let (info, list, location) = CHECKING.with(|slot| {
         slot.borrow()
             .as_ref()
-            .map(|state| (state.info, state.location.clone()))
+            .map(|state| (state.info, state.list, state.location.clone()))
             .unwrap_or_default()
     });
+    if list {
+        let mut values = Vec::new();
+        let records = list_tree(facade, record, &BTreeMap::new(), &mut values)?;
+        CHECKING.with(|slot| {
+            if let Some(state) = slot.borrow_mut().as_mut() {
+                state.result.values.extend(values);
+            }
+        });
+        return Ok(records);
+    }
     let mut found = Findings {
         info,
         location,
@@ -191,8 +218,16 @@ pub(super) fn check_record(facade: &EntityFacade, record: &Record) -> Result<u64
     Ok(records)
 }
 
-/// A service element is not called by a check, as Java's.
+/// A service element is not called by a check or a list, as Java's.
 pub(super) fn skip_service(service: &DataFileService) {
+    if CHECKING.with(|slot| slot.borrow().as_ref().is_some_and(|state| state.list)) {
+        tracing::warn!(
+            "For load to EntityList not calling service [{}] with parameters {:?}",
+            service.name,
+            service.parameters
+        );
+        return;
+    }
     let message = format!(
         "Doing check only so not calling service [{}] with parameters {:?}",
         service.name, service.parameters
@@ -202,6 +237,52 @@ pub(super) fn skip_service(service: &DataFileService) {
             state.result.messages.push(message);
         }
     });
+}
+
+/// The values of one record tree, the record first and then its nested records, as Java's
+/// `addValuesFromPlainMapRecursive`: each nested record gets the keys of the records it is in, as a load passes them.
+fn list_tree(
+    facade: &EntityFacade,
+    record: &Record,
+    ancestor: &BTreeMap<String, Value>,
+    values: &mut Vec<EntityValue>,
+) -> Result<u64, Error> {
+    let mut fields = record.fields.clone();
+    inherit_pk_fields(facade, &record.entity, ancestor, &mut fields)?;
+    convert_fields(facade, &record.entity, &mut fields)?;
+    let pk_names = facade.with_entity(&record.entity, |entity, _, _| {
+        Ok(entity
+            .pk_field_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>())
+    })?;
+    let pk: Vec<(String, Value)> = pk_names
+        .iter()
+        .map(|name| (name.clone(), fields.get(name).cloned().unwrap_or(Value::Null)))
+        .collect();
+    let mut value = facade.make_value(&record.entity)?;
+    for (name, field) in fields {
+        value.set(&name, field);
+    }
+    values.push(value);
+    let shared = shared_keys(pk, ancestor);
+    let mut records = 1_u64;
+    for child in &record.children {
+        records = records.saturating_add(list_tree(facade, child, &shared, values)?);
+    }
+    Ok(records)
+}
+
+/// The keys a record passes to its nested records: its own primary key, then those of the records it is in.
+fn shared_keys(pk: Vec<(String, Value)>, ancestor: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+    let mut shared: BTreeMap<String, Value> = pk.into_iter().filter(|(_, value)| !value.is_null()).collect();
+    for (name, value) in ancestor {
+        if !value.is_null() {
+            shared.entry(name.clone()).or_insert_with(|| value.clone());
+        }
+    }
+    shared
 }
 
 /// What the check of one record tree found.
@@ -312,12 +393,7 @@ fn check_tree(
         }
     }
     // The nested records get this record's keys, as a load passes them down.
-    let mut shared: BTreeMap<String, Value> = pk.into_iter().filter(|(_, value)| !value.is_null()).collect();
-    for (name, value) in ancestor {
-        if !value.is_null() {
-            shared.entry(name.clone()).or_insert_with(|| value.clone());
-        }
-    }
+    let shared = shared_keys(pk, ancestor);
     let mut records = 1_u64;
     for child in &record.children {
         records = records.saturating_add(check_tree(facade, child, &shared, found)?);

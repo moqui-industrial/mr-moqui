@@ -339,6 +339,69 @@ fn matches_uses_the_profile_fts_style() {
     );
 }
 
+/// P3-20, Java's `FtsSql`: a `LIKE` on a `text-fts` field is the full-text predicate and a `LOWER(col) LIKE` per word of
+/// three or more characters; a prefix-only pattern, one with no such word, a field that is not `text-fts`, and a profile
+/// with no `fts-style` stay SQL `LIKE`.
+#[test]
+fn like_on_a_text_fts_field_is_a_full_text_search() {
+    let (model, dialects) = framework();
+    let fts = model.entity("moqui.test.TestFts").unwrap();
+    let postgres = dialects.get("postgres").unwrap();
+    let mysql = dialects.get("mysql").unwrap();
+    let render = |dialect, condition: &Condition| {
+        select(fts, dialect, &[], Some(condition), &[], LimitOffset::default()).unwrap()
+    };
+
+    let like = Condition::like("body", Value::string("%Big Warehouse%"));
+    let pg = render(postgres, &like);
+    assert!(
+        pg.sql.contains(
+            "(\"body_tsv\" @@ plainto_tsquery('english', ?) AND LOWER(\"body\") LIKE ? AND LOWER(\"body\") LIKE ?)"
+        ),
+        "{}",
+        pg.sql
+    );
+    assert_eq!(
+        pg.params,
+        vec![
+            Value::string("Big Warehouse"),
+            Value::string("%big%"),
+            Value::string("%warehouse%")
+        ]
+    );
+    let not = render(postgres, &Condition::not_like("body", Value::string("%warehouse%")));
+    assert!(
+        not.sql
+            .contains("NOT (\"body_tsv\" @@ plainto_tsquery('english', ?) AND LOWER(\"body\") LIKE ?)"),
+        "{}",
+        not.sql
+    );
+
+    let my = render(mysql, &Condition::like("body", Value::string("%ware-house +big%")));
+    assert!(
+        my.sql
+            .contains("(MATCH (`body`) AGAINST (? IN BOOLEAN MODE) AND LOWER(`body`) LIKE ? AND LOWER(`body`) LIKE ?)"),
+        "{}",
+        my.sql
+    );
+    assert_eq!(my.params[0], Value::string("+warehouse +big"));
+
+    for (dialect, pattern) in [(postgres, "ware%"), (postgres, "%an%"), (mysql, "%%")] {
+        let plain = render(dialect, &Condition::like("body", Value::string(pattern)));
+        assert!(
+            plain.sql.contains("LIKE ?") && !plain.sql.contains("tsquery") && !plain.sql.contains("MATCH"),
+            "{}",
+            plain.sql
+        );
+    }
+    let note = render(postgres, &Condition::like("note", Value::string("%warehouse%")));
+    assert!(!note.sql.contains("tsquery"), "{}", note.sql);
+    let mut no_style = postgres.clone();
+    no_style.fts_style = None;
+    let off = render(&no_style, &like);
+    assert!(!off.sql.contains("tsquery"), "{}", off.sql);
+}
+
 #[test]
 fn mysql_limit_order_and_name_replace() {
     let (model, dialects) = framework();

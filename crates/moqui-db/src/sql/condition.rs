@@ -685,6 +685,12 @@ impl<'a> Writer<'a> {
     /// One field against values. `ignore_case` upper-cases the column when it is text, and
     /// every text value, as Java does.
     fn compare(&mut self, condition: &Condition, columns: &Columns<'_>, ignore_case: bool) -> Result<(), Error> {
+        if let Condition::Like(field, value) | Condition::NotLike(field, value) = condition {
+            let column = columns(field)?;
+            if self.fts_like(&column, value, matches!(condition, Condition::NotLike(..)))? {
+                return Ok(());
+            }
+        }
         let fold = |value: &Value| -> Value {
             match value {
                 Value::String(text) if ignore_case => Value::String(text.to_uppercase()),
@@ -808,6 +814,69 @@ impl<'a> Writer<'a> {
         Ok(())
     }
 
+    /// Java's `FtsSql.appendIfRewritten`: a `LIKE` or `NOT LIKE` on a `text-fts` field of a plain entity is a full-text
+    /// search that every word of three or more characters must match, with a `LOWER(column) LIKE` per word so a stemmed
+    /// match alone is not enough. A prefix-only pattern (`foo%`), a pattern with no such word, and a group with no
+    /// `fts-style` stay SQL `LIKE`; false then, with nothing written. The predicate is in parentheses, where Java appends
+    /// the `AND`s bare. Unlike Java, a view alias (no `fts` column here) stays `LIKE`, and there is no `FtsSql.disable`:
+    /// with no `_tsv` column the find fails, as the table check logged its DDL failure.
+    fn fts_like(&mut self, column: &Column, value: &Value, not: bool) -> Result<bool, Error> {
+        let (Some(tsv), Value::String(pattern)) = (&column.fts, value) else {
+            return Ok(false);
+        };
+        if fts_prefix_only(pattern) {
+            return Ok(false);
+        }
+        let words = fts_words(pattern);
+        if words.is_empty() {
+            return Ok(false);
+        }
+        let (predicate, query) = match self.dialect.fts_style.as_deref() {
+            Some("postgres-tsvector") => {
+                let config = fts_config(self.dialect)?;
+                (format!("{tsv} @@ plainto_tsquery('{config}', "), words.join(" "))
+            }
+            Some("mysql-fulltext") => {
+                // Letters, digits and underscore only: boolean-mode syntax characters are dropped, not escaped.
+                let plain: Vec<String> = words
+                    .iter()
+                    .map(|word| {
+                        word.chars()
+                            .filter(|ch| ch.is_alphanumeric() || *ch == '_')
+                            .collect::<String>()
+                    })
+                    .filter(|word| word.chars().count() >= 3)
+                    .collect();
+                if plain.is_empty() {
+                    return Ok(false);
+                }
+                let query = plain
+                    .iter()
+                    .map(|word| format!("+{word}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (format!("MATCH ({}) AGAINST (", column.sql), query)
+            }
+            _ => return Ok(false),
+        };
+        self.push(if not { "NOT (" } else { "(" });
+        self.push(&predicate);
+        self.bind(Value::String(query));
+        self.push(if self.dialect.fts_style.as_deref() == Some("mysql-fulltext") {
+            " IN BOOLEAN MODE)"
+        } else {
+            ")"
+        });
+        for word in &words {
+            self.push(" AND LOWER(");
+            self.push(&column.sql);
+            self.push(") LIKE ");
+            self.bind(Value::String(format!("%{}%", word.to_lowercase())));
+        }
+        self.push(")");
+        Ok(true)
+    }
+
     fn matches(&mut self, column: &Column, value: Value) -> Result<(), Error> {
         match self.dialect.fts_style.as_deref() {
             Some("postgres-tsvector") => {
@@ -900,6 +969,25 @@ impl<'a> Writer<'a> {
         }
         Ok(())
     }
+}
+
+/// Java's `FtsSql.prefixOnly`: `foo%` with no other wildcard, which stays SQL `LIKE`.
+fn fts_prefix_only(pattern: &str) -> bool {
+    pattern.chars().count() >= 2
+        && !pattern.contains('_')
+        && pattern.ends_with('%')
+        && pattern.find('%') == Some(pattern.len() - 1)
+}
+
+/// Java's `FtsSql.tokens(stripWildcards(pattern))`: the words of the pattern without its wildcards, three or more
+/// characters long.
+fn fts_words(pattern: &str) -> Vec<String> {
+    let stripped: String = pattern.chars().filter(|ch| *ch != '%' && *ch != '_').collect();
+    stripped
+        .split_whitespace()
+        .filter(|word| word.chars().count() >= 3)
+        .map(str::to_string)
+        .collect()
 }
 
 pub(crate) fn fts_config(dialect: &Dialect) -> Result<String, Error> {

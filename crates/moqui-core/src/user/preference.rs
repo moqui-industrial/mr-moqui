@@ -224,7 +224,8 @@ fn group_values(user_id: Option<&str>) -> Result<Vec<Value>, Error> {
     Ok(user_group_ids(user_id)?.into_iter().map(Value::String).collect())
 }
 
-/// `EntityList.filterByDate`: a missing from date has started and a missing thru date is open.
+/// `EntityList.filterByDate`: a missing from date has started and a missing thru date is open. Both ends are inclusive,
+/// so a row whose thru date is now is still open.
 fn date_open(row: &EntityValue, from: &str, thru: &str, now: &Value) -> bool {
     let started = match row.get(from) {
         None | Some(Value::Null) => true,
@@ -232,7 +233,7 @@ fn date_open(row: &EntityValue, from: &str, thru: &str, now: &Value) -> bool {
     };
     let open = match row.get(thru) {
         None | Some(Value::Null) => true,
-        Some(thru) => compare_obj(thru, now).is_ok_and(|order| order.is_gt()),
+        Some(thru) => compare_obj(thru, now).is_ok_and(|order| order.is_ge()),
     };
     started && open
 }
@@ -327,6 +328,25 @@ mod tests {
         group_preference(facade, ALL_USERS, "page.size", "20", 9);
         group_preference(facade, "EDITORS", "page.size", "50", 1);
         group_preference(facade, "FORMER", "page.size", "99", 0);
+    }
+
+    /// As Java's `filterByDate`, both ends are inclusive: a row from or thru now is in date.
+    #[test]
+    fn a_row_from_or_thru_now_is_in_date() {
+        let facade = crate::testing::open();
+        let now = crate::user::stamp_value(5);
+        let member = |from: i64, thru: Option<i64>| {
+            let mut value = facade.make_value(GROUP_MEMBER).unwrap();
+            value.set("fromDate", crate::user::stamp_value(from));
+            if let Some(thru) = thru {
+                value.set("thruDate", crate::user::stamp_value(thru));
+            }
+            value
+        };
+        assert!(date_open(&member(5, None), "fromDate", "thruDate", &now));
+        assert!(date_open(&member(1, Some(5)), "fromDate", "thruDate", &now));
+        assert!(!date_open(&member(1, Some(4)), "fromDate", "thruDate", &now));
+        assert!(!date_open(&member(6, None), "fromDate", "thruDate", &now));
     }
 
     #[test]

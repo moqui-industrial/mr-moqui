@@ -46,8 +46,13 @@ impl DbCancel for NoCancel {
 }
 
 impl DbConnection for FakeConn {
-    fn execute(&mut self, _sql: &str, _params: &[Value]) -> Result<u64, Error> {
-        Ok(0)
+    /// An update matches the row it names, so an update by primary key succeeds as against a database that has it.
+    fn execute(&mut self, sql: &str, _params: &[Value]) -> Result<u64, Error> {
+        Ok(u64::from(
+            sql.trim_start()
+                .get(..6)
+                .is_some_and(|verb| verb.eq_ignore_ascii_case("update")),
+        ))
     }
 
     fn query(&mut self, _sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
@@ -2197,6 +2202,40 @@ fn the_stamp_is_the_transaction_start_and_a_changed_stamp_is_kept() {
     assert_eq!(stamp("I1"), Some(chosen));
 }
 
+/// P1-15: on an entity whose update does not read the row, a stamp the caller set on a found value is kept, and a value
+/// whose stamp was not touched gets the update's.
+#[test]
+fn a_stamp_set_on_a_found_value_is_kept_without_a_row_read() {
+    let facade = crate::testing::open();
+    let entity = "moqui.test.TestEntity";
+    let mut row = facade.make_value(entity).unwrap();
+    row.set("testId", Value::string("STAMPED"));
+    row.create(&facade).unwrap();
+    let read = || {
+        facade
+            .find(entity)
+            .unwrap()
+            .eq("testId", Value::string("STAMPED"))
+            .use_cache(false)
+            .one()
+            .unwrap()
+            .unwrap()
+    };
+    let chosen = moqui_lib::object::basic_convert(&Value::I64(1_000_000_000_000), "java.sql.Timestamp").value;
+    let mut found = read();
+    found.set("testMedium", Value::string("chosen stamp"));
+    found.set("lastUpdatedStamp", chosen.clone());
+    found.update(&facade).unwrap();
+    assert_eq!(read().get("lastUpdatedStamp"), Some(&chosen));
+
+    let mut found = read();
+    found.set("testMedium", Value::string("own stamp"));
+    found.update(&facade).unwrap();
+    let after = read();
+    assert_eq!(after.get("testMedium"), Some(&Value::string("own stamp")));
+    assert_ne!(after.get("lastUpdatedStamp"), Some(&chosen));
+}
+
 /// Java's `optimistic-lock`: an update of a value read before another update of the row is refused.
 #[test]
 fn optimistic_lock_refuses_an_update_of_a_stale_value() {
@@ -2505,6 +2544,60 @@ fn a_db_view_entity_is_built_from_its_rows_and_again_when_they_change() {
 /// AGENTS.md failure tolerance: a `DbViewEntity` with a member that is not an entity, or an alias of a field its
 /// member does not have, is logged with its name once and is not found, until its rows change; other entities and
 /// views go on. A name that is no entity is not found, with nothing logged.
+/// A view built at runtime has its aliases as fields in the entity JSON schema and in a CSV of its rows (P5-19).
+#[test]
+fn a_db_view_entity_has_its_aliases_in_the_schema_and_the_csv() {
+    let facade = crate::testing::open();
+    seed_enumerations(&facade);
+    create_db_view(
+        &facade,
+        "EnumWithType",
+        &[
+            ("MASTER", "moqui.basic.Enumeration", ""),
+            ("TYPE", "moqui.basic.EnumerationType", "MASTER"),
+        ],
+        &[
+            ("enumId", "MASTER", "enumId"),
+            ("description", "MASTER", "description"),
+            ("typeDescription", "TYPE", "description"),
+        ],
+    );
+    let schema = super::schema::document(&facade, &["EnumWithType".to_string()], false).unwrap();
+    let Value::Map(root) = &schema else {
+        panic!("not a map: {schema:?}");
+    };
+    let Some(Value::Map(properties)) = root.get("properties") else {
+        panic!("no properties in {schema:?}");
+    };
+    let mut names: Vec<&str> = properties.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["description", "enumId", "typeDescription"]);
+
+    let mut writer = super::data_writer::EntityDataWriter::new(&facade);
+    writer
+        .entity_name("EnumWithType")
+        .file_type(super::data_writer::DataFileType::Csv);
+    let (csv, _) = writer.text().unwrap();
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(lines[0], "test.dbview.EnumWithType,export,enumId");
+    let header: Vec<&str> = lines[1].split(',').collect();
+    let row = lines
+        .iter()
+        .find(|line| {
+            line.split(',')
+                .nth(header.iter().position(|name| *name == "enumId").unwrap())
+                == Some("E1")
+        })
+        .unwrap_or_else(|| panic!("no E1 in {csv}"));
+    let cells: Vec<&str> = row.split(',').collect();
+    let at = |name: &str| cells[header.iter().position(|column| *column == name).unwrap()];
+    assert_eq!(
+        (at("description"), at("typeDescription")),
+        ("Enum E1", "Type one"),
+        "{csv}"
+    );
+}
+
 #[test]
 fn a_db_view_entity_that_does_not_build_is_logged_and_not_found() {
     let facade = crate::testing::open();

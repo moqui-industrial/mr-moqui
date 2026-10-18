@@ -806,6 +806,32 @@ fn data_loader_check_info_gives_diff_rows() {
     );
 }
 
+/// Java's `list()` (P4a-18): the values of the records, a nested record after the one it is in and with its key, and
+/// nothing written.
+#[test]
+fn data_loader_list_gives_the_values_and_writes_nothing() {
+    let context = database();
+    let _entered = context.enter();
+    holds(
+        r#"(function () {
+            ec.artifactExecution.disableAuthz();
+            const values = ec.entity.makeDataLoader().xmlText(`<entity-facade-xml>
+                <moqui.service.job.ServiceJob jobName="listed_job" serviceName="example">
+                    <parameters parameterName="days" parameterValue="9"/>
+                </moqui.service.job.ServiceJob>
+                <moqui.basic.Enumeration enumId="LISTED" enumTypeId="LISTED_TYPE" description="Listed"/>
+            </entity-facade-xml>`).list();
+            const job = values.get(0), parameter = values.get(1);
+            return values.size() === 3
+                && job.jobName === "listed_job" && job.serviceName === "example"
+                && parameter.jobName === "listed_job" && parameter.parameterName === "days" && parameter.parameterValue === "9"
+                && values.get(2).enumId === "LISTED"
+                && ec.entity.find("moqui.service.job.ServiceJob").condition("jobName", "listed_job").one() == null
+                && ec.entity.find("moqui.basic.Enumeration").condition("enumId", "LISTED").one() == null;
+        })()"#,
+    );
+}
+
 #[test]
 fn order_map_list_action_sorts_an_entity_list() {
     let context = database();

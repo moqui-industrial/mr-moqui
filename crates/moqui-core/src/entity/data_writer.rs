@@ -502,15 +502,18 @@ impl EntityDataWriter {
         )
     }
 
-    /// The two CSV header lines: the entity (or table) name, `export`, and the primary key fields; then every field.
+    /// The two CSV header lines: the entity (or table) name, `export`, and the primary key fields; then every field. A
+    /// view's fields are its aliases, and an alias's column name is its name underscored, as Java's `FieldInfo`.
     fn csv_header(&self, name: &str) -> Result<String, Error> {
         let table_columns = self.table_column_names;
         self.facade.with_entity(name, |entity, _, _| {
-            let label = |field: &moqui_db::model::FieldDefinition| {
-                if table_columns {
+            let label = |name: &str| {
+                if !table_columns {
+                    name.to_string()
+                } else if let Some(field) = entity.field(name).filter(|_| !entity.is_view) {
                     field.column_name.clone()
                 } else {
-                    field.name.clone()
+                    moqui_db::model::camel_case_to_underscored(name)
                 }
             };
             let mut out = if table_columns {
@@ -519,12 +522,13 @@ impl EntityDataWriter {
                 entity.full_name.clone()
             };
             out.push_str(",export");
-            for field in entity.fields.iter().filter(|field| field.is_pk) {
+            for field in entity.pk_field_names() {
                 out.push(',');
                 out.push_str(&label(field));
             }
             out.push('\n');
-            out.push_str(&entity.fields.iter().map(label).collect::<Vec<_>>().join(","));
+            let fields: Vec<String> = entity.field_names().into_iter().map(label).collect();
+            out.push_str(&fields.join(","));
             out.push('\n');
             Ok(out)
         })
@@ -534,12 +538,13 @@ impl EntityDataWriter {
         let iso = self.iso_date_time;
         self.facade.with_entity(name, |entity, _, _| {
             let mut out = String::new();
+            let fields = entity.field_names();
             for row in rows {
-                for (index, field) in entity.fields.iter().enumerate() {
+                for (index, field) in fields.iter().enumerate() {
                     if index > 0 {
                         out.push(',');
                     }
-                    csv_cell(&mut out, row.get(&field.name), iso);
+                    csv_cell(&mut out, row.get(*field), iso);
                 }
                 out.push('\n');
             }
@@ -644,6 +649,7 @@ fn add_error(text: impl Into<String>) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     use moqui_lib::object::Value;
@@ -734,6 +740,57 @@ mod tests {
         let before = std::fs::read(&zip_path).unwrap();
         assert_eq!(writer.zip_directory("data", zip_name).unwrap(), 0);
         assert_eq!(std::fs::read(&zip_path).unwrap(), before);
+    }
+
+    /// A view's columns are its aliases, as Java's `getAllFieldNames`; with table column names, an alias's column is its
+    /// name underscored.
+    #[test]
+    fn a_csv_of_a_view_has_a_column_per_alias() {
+        let source = crate::testing::open();
+        let mut kind = source.make_value("moqui.basic.EnumerationType").unwrap();
+        kind.set("enumTypeId", Value::string("CsvType"));
+        kind.set("description", Value::string("Csv type"));
+        kind.create(&source).unwrap();
+        let mut row = source.make_value("moqui.basic.Enumeration").unwrap();
+        row.set("enumId", Value::string("CsvOne"));
+        row.set("enumTypeId", Value::string("CsvType"));
+        row.set("description", Value::string("Csv one"));
+        row.create(&source).unwrap();
+
+        let mut writer = EntityDataWriter::new(&source);
+        writer
+            .entity_name("moqui.basic.EnumerationAndType")
+            .file_type(DataFileType::Csv)
+            .filter_map(BTreeMap::from([("enumTypeId".to_string(), Value::string("CsvType"))]));
+        let (csv, written) = writer.text().unwrap();
+        assert_eq!(written, 1, "{csv}");
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines[0], "moqui.basic.EnumerationAndType,export,enumId", "{csv}");
+        let header: Vec<&str> = lines[1].split(',').collect();
+        let at = |name: &str| {
+            header
+                .iter()
+                .position(|column| *column == name)
+                .unwrap_or_else(|| panic!("no {name} in {csv}"))
+        };
+        let cells: Vec<&str> = lines[2].split(',').collect();
+        assert_eq!(cells[at("enumId")], "CsvOne", "{csv}");
+        assert_eq!(cells[at("typeDescription")], "Csv type", "{csv}");
+
+        let mut writer = EntityDataWriter::new(&source);
+        writer
+            .entity_name("moqui.basic.EnumerationAndType")
+            .file_type(DataFileType::Csv)
+            .table_column_names(true)
+            .filter_map(BTreeMap::from([("enumTypeId".to_string(), Value::string("CsvType"))]));
+        let (csv, _) = writer.text().unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert!(lines[0].ends_with(",export,ENUM_ID"), "{csv}");
+        let header: Vec<&str> = lines[1].split(',').collect();
+        assert!(
+            header.contains(&"ENUM_TYPE_ID") && header.contains(&"TYPE_DESCRIPTION"),
+            "{csv}"
+        );
     }
 
     #[test]
