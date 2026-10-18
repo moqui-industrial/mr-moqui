@@ -1,0 +1,216 @@
+Context
+
+The qvt render mode (Vue 3.5.44 + Quasar 2.35.1, /qapps) was ported from the Java tree's Quasar 1 / Vue 2 client. The macros
+(ScreenQvt.js, ScreenQvtStatic.js), the widget wrappers and shell (WebrootVue.qvt.js) and the style sheet (WebrootVue.qvt.css)
+carried the Quasar 1 choices over: every button is dense outline, the field label is pushed into the outline border by ~20 lines of
+CSS, cards are made transparent, the table CSS is a copy of Quasar 1.12 rules, and the shell uses a hand-made menu column instead of
+a drawer. Some overrides target selectors that no longer exist in Quasar 2 (.q-btn__wrapper). The goal is a clean, modern,
+consistent UI using what Quasar 2.35 provides natively, with fewer overrides.
+
+Decisions already taken with the user:
+- Screen links in form-list cells become plain text links; elsewhere links become tonal (soft tinted) buttons. Transition
+  links stay buttons everywhere.
+- Field labels: Quasar native stacked label inside the outlined box; remove the notch CSS.
+- Form submit keeps the outline-until-changed signal.
+
+Findings
+
+Style sheet runtime/base-component/webroot/screen/webroot/css/WebrootVue.qvt.css
+
+┌──────────┬───────────────────────────────────────────────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────┐
+│  Lines   │                               Rule                                │                                           Verdict                                            │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│          │ .q-btn{margin:2px}, .q-btn--dense .q-btn__wrapper,                │ .q-btn__wrapper does not exist in Quasar 2 (dead). Replace with a small .q-btn margin and    │
+│ 59-67    │ .m-link.q-btn--flat .q-btn__wrapper, .q-btn                       │ icon size via props/one rule.                                                                │
+│          │ .q-icon{18px;padding:2px 0}                                       │                                                                                              │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│          │ label-to-notch block, .q-field__label{z-index}, disabled opacity, │ Remove entirely. Quasar 2 dense+outlined+stack-label floats the label at translateY(-30%)    │
+│ 71-91    │  focused .q-field__input underline + margin-left:8px              │ scale(.75) natively. The focused underline inside an outlined box is a second focus          │
+│          │                                                                   │ indicator; drop it (update the CSS test that asserts it).                                    │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 73-75    │ .q-field--dense{margin:6px 0}                                     │ Remove; spacing comes from the field box (q-pa-xs) and hide-bottom-space.                    │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 97-100   │ .q-field--with-bottom{padding-bottom:0} hacks                     │ Replace with the hide-bottom-space prop on every wrapper.                                    │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 50-55    │ .q-card{background:transparent} at ≥576px, dialog card            │ Remove. Cards get the surface color (light) / --q-dark (dark).                               │
+│          │ white/black                                                       │                                                                                              │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 38-39,   │ dark menu/drawer/menu column pure #000                            │ Remove; Quasar dark surfaces (--q-dark #1d1d1d) are the modern look. Set dark/dark-page      │
+│ 45       │                                                                   │ brand if a tint is wanted.                                                                   │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 41-47    │ .shell-row with calc(100vh - 86px), .app-menu-col,                │ Remove with the switch to q-drawer (window scroll returns; reveal header works again).       │
+│          │ .app-menu-overlay                                                 │                                                                                              │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 95       │ .q-field__marginal .q-checkbox__label{10px}                       │ Remove with the "Not" toggle rework.                                                         │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 113-115  │ .form-list-nav-row                                                │ Keep, retune (13px → inherit, q-bar rule unused).                                            │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│          │                                                                   │ Keep (needed: the rows are div.tr so Quasar's tr/td rules do not apply) but refresh values   │
+│ 129-165  │ Quasar 1.12 table rules adapted to div tables                     │ to 2.35: th 12px/500, dense cells 4px 8px, 28px rows; border colors #0000001f light /        │
+│          │                                                                   │ #ffffff47 dark; hover rgba(0,0,0,.03).                                                       │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 232-237  │ .panel, .panel-heading (Bootstrap names)                          │ Remove after field-group box="true" writes m-container-box.                                  │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 14-19,   │ heading scale, p margin                                           │ Keep.                                                                                        │
+│ 21       │                                                                   │                                                                                              │
+├──────────┼───────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 3-9,     │ links, text helpers, dl/float/diagram, print                      │ Keep; print block: hide .q-drawer instead of .app-menu-col.                                  │
+│ 170-220  │                                                                   │                                                                                              │
+└──────────┴───────────────────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+New rules to add (small): .m-btn-tonal (primary at 12% via color-mix, text primary), .m-btn-tonal.text-negative variant,
+.m-link-text (primary, underline on hover), accent border per type on m-container-box, .q-table .th sort icon alignment.
+Everything else should come from Quasar props.
+
+Buttons (macros + components)
+
+Every q-btn is dense outline no-caps (ScreenQvt.js submit, reset_, linkElement, linkForm, dynamicDialog, nav,
+pageSizeMenu, savedFindsDialogBody, findDialogBody, textDialog, buttonMenuMacro; mirrored in ScreenQvtStatic.js lines
+522-1399; components m-container-dialog, m-dynamic-dialog, m-form-column-config, m-form-paginate, m-form-go-page,
+m-qapps-root). Outline = transparent background, so a list row with four links reads as four hollow boxes.
+
+Adopt one hierarchy and apply it everywhere:
+
+┌──────────────┬────────────────────────────────────────────────────────────────────────────────────────────────┬──────────────────────────────────────────────────────────────┐
+│     Role     │                                             Where                                              │                            Quasar                            │
+├──────────────┼────────────────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│              │                                                                                                │ unelevated no-caps color="primary" when fields changed,      │
+│ Primary      │ form-single/dialog submit, Save New Find, Sign in, Export Text                                 │ outline until then (kept per decision). Non-form submits:    │
+│              │                                                                                                │ unelevated.                                                  │
+├──────────────┼────────────────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ Secondary    │ links outside list cells, transition links, container-dialog/dynamic-dialog open buttons,      │ unelevated no-caps dense class="m-btn-tonal" (+              │
+│ (tonal)      │ button-menu, Find Options / Columns / Saved Finds, Clear Parameters, column-config buttons,    │ text-color="negative" for btn-type="danger")                 │
+│              │ re-login secondary                                                                             │                                                              │
+├──────────────┼────────────────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ Tertiary     │ reset, page-size menu, dialog close, header icons, pagination, date/period mode toggles, md    │ flat dense (icon-only ones round)                            │
+│              │ preview, row-action tool icon                                                                  │                                                              │
+├──────────────┼────────────────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ Text link    │ screen links with default link-type inside a form-list cell; link-type="anchor" anywhere       │ m-link with class m-link-text, no q-btn                      │
+├──────────────┼────────────────────────────────────────────────────────────────────────────────────────────────┼──────────────────────────────────────────────────────────────┤
+│ Export       │ CSV / XLS / Text / Print in the list nav                                                       │ one q-btn-dropdown flat dense icon="download" with a q-list  │
+│              │                                                                                                │ dense of items instead of four buttons                       │
+└──────────────┴────────────────────────────────────────────────────────────────────────────────────────────────┴──────────────────────────────────────────────────────────────┘
+
+Icon size: pass size="sm" on icon-only flat buttons rather than the global 18px rule, or keep one global rule
+.q-btn .q-icon{font-size:1.3em}.
+
+Field widgets (WebrootVue.qvt.js)
+
+- All wrappers: keep dense outlined stack-label; add hide-bottom-space and no-error-icon; drop style="max-width:max-content" on
+  m-date-time in favor of input-class/size.
+- m-drop-down: use use-chips for multiple (remove the custom q-chip prepend and hide-selected toggle); for single with
+  use-input add fill-input hide-selected; keep options-dense, behavior="menu", clearable. The show-not checkbox in the
+  after slot becomes a q-toggle dense size="xs" label="Not" in append (removes the 10px label CSS).
+- m-check / m-radio with options: m-field wrapper switches to borderless so a group of radios is not boxed like an input;
+  inner q-option-group inline dense size="sm" replaces the v-for of q-checkbox/q-radio (same model-value, val,
+  true-value/false-value semantics stay on the single-checkbox branch).
+- m-display with label-wrapper: q-field dense borderless stack-label readonly with the text in the control slot, so a
+  display value does not look like an editable input. Keep loading.
+- m-text-find: the Not / operator / Ignore-case row becomes a q-btn-dropdown flat dense icon="tune" in the input's append
+  slot holding a q-list with the operator q-select (borderless) and two q-toggles. Same field names, same fields object.
+- m-date-time: keep the mask input; q-date/q-time get today-btn / now-btn and q-popup-proxy cover; icons size="xs".
+- m-date-period: the offset/period q-selects move from before to a q-btn-dropdown flat dense beside the input, or stay but
+  borderless; the mode and clear buttons are flat round dense size="sm".
+- m-file: add use-chips counter when multiple, append icon attach_file.
+- m-text-area html: label as text-caption text-grey-7; q-editor gets flat bordered look via content-class.
+- m-field (generic): add hide-bottom-space.
+- Changed-field tint: keep bg-color blue-1 / blue-10.
+
+Form layout (macros)
+
+- fieldBox: q-ma-sm → q-pa-xs (single source of spacing, pairs with removing the 6px field margin). field-row columns get
+  q-col-gutter-sm. big-row becomes row items-center q-gutter-x-sm.
+- field-group box="true": write <m-container-box type="default" title="..."> instead of the Bootstrap panel markup.
+- field-accordion: one q-list bordered class="rounded-borders" around the groups (the macro already writes <q-list>), each
+  group a q-expansion-item expand-separator dense with header-class="text-weight-medium"; drop the nested
+  q-list bordered padding per group.
+- button-menu items: q-item clickable v-close-popup (hover/ripple) with the link as text.
+- formOpen: q-my-md → q-mb-md.
+
+form-list (macros + components)
+
+- Keep the div table and the q-table__container q-table--dense q-table--flat classes; add q-table--bordered look via
+  bordered class on the container for a card-like list.
+- Row selection: native <input type="checkbox" style="transform:scale(1.3)"> → q-checkbox dense size="sm" with @update:model-value
+  handler receiving (value, evt) for the shift-range (clickCheckbox reads evt.shiftKey). Header "Row Actions" button → flat round dense icon="more_vert".
+- Sort: material arrow_drop_up / arrow_drop_down icons via q-icon inside the two m-links, active one text-primary, inactive
+  text-grey-5; keep the two-link semantics and the .form-order-by class (the CSS test checks same-line layout).
+- Nav row: row items-center q-gutter-x-xs q-px-sm q-py-xs; tools as tonal buttons; exports in one dropdown; "No results found" as
+  q-badge outline color="warning".
+- Pagination: replace m-form-paginate's eight flat buttons and m-form-go-page with Quasar q-pagination (:model-value="pageIndex+1",
+  :max="pageMaxIndex+1", :max-pages="7", direction-links boundary-links size="sm" input for the jump box when pageMaxIndex > 4),
+  plus a text-caption "low-high / count". Keep the component names and props so the static macros and m-form-list need no change
+  beyond markup; setIndex stays.
+- Page size: q-btn-dropdown flat dense (tertiary) with q-list dense.
+- Find Options dialog body: Clear Parameters tonal; fields in a row q-col-gutter-sm of col-12 col-sm-6.
+- Saved finds: q-list separator with q-item; the per-find buttons flat dense size="sm".
+
+Containers and dialogs
+
+- m-container-box: header q-card-section class="row items-center no-wrap q-py-xs q-px-sm", title text-subtitle1 text-weight-medium,
+  toggle flat round dense size="sm", body in q-slide-transition; type → left accent border class m-box-{type} (info,
+  warning, success, danger map to Quasar colors). Keep slots header, toolbar, default.
+- m-dialog: q-card with title row q-card-section row items-center q-pb-none (text-h6, drag cursor stays on it), close
+  flat round dense v-close-popup, q-separator, body q-card-section class="scroll" style="max-height:80vh". :maximized="$q.screen.lt.sm".
+- m-dynamic-dialog / m-container-dialog open buttons: tonal, icon open_in_new kept.
+- Subscreens tabs: add narrow-indicator inline-label and class="text-grey-7"; keep separator.
+
+Shell (m-qapps-root)
+
+- Layout view="hHh LpR fFf" kept. Replace the custom shell-row / app-menu-col with q-drawer v-model="leftOpen" side="left" show-if-above bordered :width="260" :breakpoint="1023" (mobile overlay and page padding come free; window scroll returns, so
+  reveal works and document.scrollTop = 0 in setUrl is meaningful again). q-page-container > q-page padding.
+- Header: q-header bordered with a neutral surface (bg-white text-dark light, bg-dark dark via the body--dark class) and
+  q-toolbar dense; dev/test tint rules kept as body.dev .q-header. Breadcrumb trail → q-breadcrumbs with q-breadcrumbs-el
+  (gt-xs), sibling menus as q-btn-dropdown flat dense no-caps items; keep m-link navigation.
+- Loading: q-circular-progress → this.$q.loadingBar.start()/stop() driven by a watcher on loading (plugin is already installed,
+  never started).
+- Right icons: flat round dense with tooltips. Notifications menu: q-list of q-item with q-item-section avatar icon colored by
+  type (replace nested q-banner). Account menu: q-list (q-item clickable Logout, Re-login; q-item with q-toggle Dark mode;
+  the account plugins in a section) instead of the card with vertical actions.
+- Left menu items: keep q-expansion-item nesting but with header-class, expand-icon-class="text-grey-6", and m-menu-item-content
+  rendered as proper q-item-section avatar (icon, size="xs") + q-item-section (label), active → text-primary text-weight-medium.
+- Footer: q-footer bordered class="bg-grey-2 text-grey-8" (dark: default) q-pa-xs text-caption; drop reveal.
+- Brand: allow config.quasar.brand from a theme resource (STRT_QUASAR_CONFIG JSON) in qapps.xml pre-actions; default keeps
+  Quasar's palette plus info: #1e7b8e.
+
+Implementation steps
+
+1. CSS (webroot/screen/webroot/css/WebrootVue.qvt.css): remove the blocks listed above, refresh the table block, add the
+   .m-btn-tonal, .m-link-text, .m-box-* rules. Update css/WebrootVue.qvt.test.js (drop the focused-underline assertion, keep
+   link/sort checks).
+2. Button hierarchy in the macros: in framework/template/screen/ScreenQvt.js change submit, reset_, linkElement (+ the
+   inField-in-list detection: st.fieldForm of a form-list or a new st.inList flag set in formList), linkForm, dynamicDialog,
+   containerDialog, nav (exports dropdown), pageSizeMenu, findDialogBody, savedFindsDialogBody, textDialog, buttonMenuMacro,
+   fieldGroup/fieldGroupClose, fieldBox, formOpen, headerCell, row checkbox. Mirror each in
+   framework/template/screen/ScreenQvtStatic.js (same function names: lines 522, 537, 798, 806, 1117, 1331-1399, plus its fieldGroup,
+   fieldBox, header cell and row checkbox).
+3. Components (webroot/screen/webroot/js/WebrootVue.qvt.js): m-container-box, m-dialog, m-container-dialog, m-dynamic-dialog,
+   m-form-paginate, m-form-go-page, m-form-column-config, m-form-list (nav/check markup), m-field, m-date-time, m-date-period,
+   m-display, m-drop-down, m-text-line, m-text-area, m-check, m-radio, m-file, m-text-find, m-subscreens-tabs,
+   m-menu-*, m-qapps-root, and the loading watcher in rootOptions. Keep every prop and slot name (the macros, the static macros
+   and m-form-list depend on them).
+4. Shell config: webroot/screen/webroot/qapps.xml adds the optional quasar config from a theme value; data/WebrootQuasarThemeData.xml
+   gets a commented example.
+5. AppList / tools: webroot/screen/webroot/apps/AppList.xml qvt text (q-btn outline → tonal); tools/template/AutoScreenMenu.qvt.fancy
+   tabs props; tools/screen/Tools/Service/ServiceLoadRunner.xml buttons.
+6. Docs: webroot/screen/webroot/js/README.md (the wrappers add dense outlined stack-label hide-bottom-space; the button hierarchy;
+   q-drawer), webroot/screen/webroot/README.md row for the CSS.
+7. Goldens and precompiled renders: UPDATE_GOLDEN=1 cargo test -p moqui-core --lib screen::tests::qvt for
+   crates/moqui-core/src/script/testdata/screen/qvt/render/*.qvt, then review the diffs; the qvt/*.js and qvt-static/*.js expectation
+   files that match dense outline (html-containers.js, ignored.js, and the static ones) are edited by hand;
+   UPDATE_GOLDEN=1 cargo test -p moqui-core --lib client_components_are_precompiled regenerates js/WebrootVue.qvt.render.js.
+   crates/moqui-host/tests/gate3_browser.rs selectors (.q-btn by text, #EnumList_table .thead .q-btn, .q-field--error) still
+   match; re-run to confirm.
+
+Order: 1 → 3 → 2 (macros last, so the wrappers are ready when the goldens change) → 7 → 4, 5, 6.
+
+Verification
+
+- cargo test -p moqui-core --lib screen::tests::qvt (goldens, template compile check, precompiled renders) and
+  node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.test.js (every component template compiles).
+- CHROMIUM_PATH=... node --test runtime/base-component/webroot/screen/webroot/css/WebrootVue.qvt.test.js.
+- cargo test -p moqui-host --test gate3 and gate3_browser (Find Options, Saved Finds, Columns, row actions, validation errors).
+- Run the server and open /qapps/tools and /qapps/system: check light and dark, the drawer at < 1024px, a form-single with every
+  field type (crates/moqui-core/src/script/testdata/screen/qvt/render/fields.xml is the fixture), a form-list with header find,
+  row selection, saved finds, exports and pagination, a dialog with a form, and the account/notification menus.
+
