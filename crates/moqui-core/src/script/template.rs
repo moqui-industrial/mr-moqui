@@ -18,7 +18,8 @@
 //! The trusted renderer runs that function on the script runtime with the live context. The
 //! locked-down renderer runs it in a separate QuickJS context that holds nothing but the plain
 //! snapshot of a map, `format` and `localize`. Tags are listed in Templating in
-//! `plans/archive/Architecture-Proposal.md`.
+//! `plans/archive/Architecture-Proposal.md`. Every template also has `raw(v)` (output as is), `html(v)` (HTML escaped
+//! once) and `cssString(v)` (a quoted CSS string that cannot end a `<style>` element, for `@page` margin boxes).
 
 use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex};
@@ -556,6 +557,7 @@ const $s = (v) => v instanceof $Raw ? v.s : v == null ? "" : String(v);
 const $h = (v) => v instanceof $Raw ? v.s : v == null ? "" : $esc(v);
 const html = (v) => new $Raw($h(v));
 const raw = (v) => new $Raw($s(v));
+const cssString = (v) => new $Raw('"' + $s(v).replace(/[\\"<>\r\n]/g, (c) => c === "\n" ? "\\A " : "\\" + c.charCodeAt(0).toString(16).toUpperCase() + " ") + '"');
 const $list = (v) => v == null ? [] : Array.isArray(v) ? v : typeof v === "string" ? [v] : typeof v[Symbol.iterator] === "function" ? Array.from(v) : typeof v.length === "number" ? Array.from({length: v.length}, (_, i) => v[i]) : Object.values(v);
 const $o = [];
 "#;
@@ -933,7 +935,7 @@ pub fn unwrap_json(value: &Value) -> serde_json::Value {
 // ---- locked-down context ----
 
 const SANDBOX_PRELUDE: &str = r#"
-const $reserved = new Set(["html", "raw"]);
+const $reserved = new Set(["html", "raw", "cssString"]);
 globalThis.$scope = (data) => new Proxy(JSON.parse(data), {
     has: (t, k) => typeof k === "string" && !k.startsWith("$") && !$reserved.has(k) && !(k in globalThis),
     get: (t, k) => k === Symbol.unscopables ? undefined : (t[k] === undefined ? null : t[k]),

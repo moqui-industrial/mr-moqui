@@ -53,8 +53,8 @@ No access-control finding is open.
 
 - **P6b-01** — decided 2026-10-16 and done: Java's record-and-return contract is adopted; see
   [Phase 6](#phase-6-checked-and-found-equivalent).
-- **P8a-41** — whether every print job asks for portrait and monochrome, as cups4j's builder defaults make Java's do,
-  or keeps the print queue's defaults, as now; see [P8a-41](#p8a-41--portrait-and-monochrome-on-every-job).
+- **P8a-41** — decided 2026-10-18 and done: a per-job orientation and color mode, sent only when the job names them;
+  see [P8a-41](#p8a-41--portrait-and-monochrome-on-every-job).
 
 ### Stale code comments (small to-dos)
 
@@ -902,6 +902,11 @@ sends neither. Left open for a decision: matching Java greys every job on a colo
 which a deployment moving from Java has today but may not have chosen; keeping the queue's defaults would be an
 accepted difference. Setting either per job (a `PrintJob` field or a `print#DocumentInterface` parameter) would be an
 addition beyond Java.
+
+Resolved 2026-10-18 as the per-job setting: `PrintJob` has `orientation` (`portrait` or `landscape`) and `colorMode`
+(`color` or `monochrome`), `print#DocumentInterface` takes both, and the IPP client sends `orientation-requested` and
+`print-color-mode` only when the job names them (`moqui-host/src/ipp.rs` `add_job_attributes`). A job that names
+neither gets the queue's defaults; recorded in [Parity-Diffs](../Parity-Diffs.md#print-fixes-2026-10-18).
 
 ### Findings — 8b mail / email services
 

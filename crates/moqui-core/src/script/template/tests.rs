@@ -341,6 +341,23 @@ fn markdown_fancy_tag_lines_in_a_table_do_not_become_rows() {
 }
 
 #[test]
+fn css_string_quotes_text_for_a_style_element() {
+    crate::script::clear_context_stack();
+    crate::script::set_context_name("t", Value::string("a\"b\\c</style>\r\nd & e")).unwrap();
+    let out = render_trusted(
+        "<style>p { content: ${cssString(t)} counter(page); }</style>",
+        Escape::Html,
+    )
+    .unwrap();
+    assert_eq!(
+        out,
+        "<style>p { content: \"a\\22 b\\5C c\\3C /style\\3E \\D \\A d & e\" counter(page); }</style>"
+    );
+    assert_eq!(render_trusted("${cssString(null)}", Escape::Html).unwrap(), "\"\"");
+    crate::script::clear_context_stack();
+}
+
+#[test]
 fn assign_reads_the_context_value_before_it_and_its_own_value_after() {
     crate::script::clear_context_stack();
     crate::script::set_context_name("n", Value::I32(5)).unwrap();

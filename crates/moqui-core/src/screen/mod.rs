@@ -204,16 +204,30 @@ fn dispatch_request(
     login_error: Option<&str>,
     (header_authenticated, new_session): (bool, bool),
 ) -> Result<WebResponse, Error> {
+    // `/fop/<path>`, Java's `MoquiFopServlet`: the screen at `<path>` as `html-print`, sent as PDF. The `filename`
+    // parameter (else `saveFilename`) makes it a download.
+    let fop_path = fop_screen_path(&request.path);
+    let fop_parameters;
+    let parameters = if fop_path.is_some() && !parameters.contains_key("saveFilename") {
+        let mut with_name = parameters.clone();
+        if let Some(filename) = parameters.get("filename") {
+            with_name.insert("saveFilename".to_string(), filename.clone());
+        }
+        fop_parameters = with_name;
+        &fop_parameters
+    } else {
+        parameters
+    };
     let job = render::Job {
         request,
         root,
-        path: &request.path,
+        path: fop_path.unwrap_or(&request.path),
         method: &request.method,
         parameters,
         json_list,
         login_error,
         header_authenticated,
-        render_mode: None,
+        render_mode: fop_path.map(|_| "xsl-fo"),
         enforce_request_checks: true,
         new_session,
         started: Instant::now(),
@@ -232,16 +246,67 @@ fn dispatch_request(
         }
         return Ok(web::json_error(status, &message));
     }
+    // The render's transaction is done; the worker waits on the PDF engine before the session work ends.
+    let pdf = if fop_path.is_some() {
+        match fop_response() {
+            Ok(pdf) => Some(pdf),
+            Err(err) => {
+                let message = web::error_text(500, &err);
+                if let Some(page) = error_page(factory, request, root, parameters, 500, &err, &message) {
+                    return Ok(page);
+                }
+                return Ok(web::json_error(500, &message));
+            }
+        }
+    } else {
+        None
+    };
     if let Err(err) = end.finish() {
         if !web::output_sent() {
             return Ok(web::json_error(500, &web::error_text(500, &err)));
         }
+    }
+    if let Some(pdf) = pdf {
+        return Ok(pdf);
     }
     let (status, headers, body, sent) = web::take_output();
     Ok(WebResponse {
         status: if sent { status } else { 200 },
         headers,
         body,
+    })
+}
+
+/// The screen path of a `/fop/...` request, the path after `/fop`. `None` for any other path.
+fn fop_screen_path(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/fop")?;
+    (rest.is_empty() || rest.starts_with('/')).then_some(rest)
+}
+
+/// The response of a `/fop` request whose render succeeded: its `html-print` document as PDF, with the render's headers
+/// but the content type, and `inline` when the render named no file. Another outcome, such as a redirect to the login
+/// screen, is sent as it is.
+fn fop_response() -> Result<WebResponse, Error> {
+    let (status, headers, body, sent) = web::take_output();
+    if sent && status != 200 {
+        return Ok(WebResponse { status, headers, body });
+    }
+    let bytes = PdfRenderer::render(&String::from_utf8_lossy(&body))?;
+    let mut headers: Vec<(String, String)> = headers
+        .into_iter()
+        .filter(|(name, _)| !name.eq_ignore_ascii_case("content-type"))
+        .collect();
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-disposition"))
+    {
+        headers.push(("Content-Disposition".to_string(), "inline".to_string()));
+    }
+    headers.push(("Content-Type".to_string(), "application/pdf".to_string()));
+    Ok(WebResponse {
+        status: 200,
+        headers,
+        body: bytes,
     })
 }
 

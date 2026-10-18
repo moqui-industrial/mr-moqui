@@ -530,6 +530,65 @@ fn basic_auth_writes_skip_the_session_token_but_a_cookie_session_does_not() {
     assert_eq!(response.status, 401, "{}", response.body_text());
 }
 
+/// `/fop/<path>` sends the screen at `<path>` as `html-print` made into a PDF, as Java's `MoquiFopServlet`.
+#[test]
+fn fop_sends_the_print_document_of_the_screen_as_pdf() {
+    struct MarkPdf;
+    impl crate::screen::PdfEngine for MarkPdf {
+        fn render(&self, html: &str) -> Result<Vec<u8>, crate::context::Error> {
+            let printed = html.starts_with("<!DOCTYPE html>") && html.contains("Statement body");
+            Ok(format!("%PDF {printed}").into_bytes())
+        }
+    }
+    let _pdf = crate::screen::pdf_test_lock();
+    let dir = std::env::temp_dir().join(format!("moqui-screen-fop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Root")).unwrap();
+    std::fs::write(
+        dir.join("Root.xml"),
+        r#"<screen require-authentication="false"><widgets><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Root/Doc.xml"),
+        r#"<screen require-authentication="false"><widgets><label text="Statement body"/></widgets></screen>"#,
+    )
+    .unwrap();
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let world = World::open("");
+    crate::screen::install_pdf_engine(Arc::new(MarkPdf));
+
+    let mut named = request("GET", "/fop/Doc");
+    named.query.push(("filename".into(), "Statement 1.pdf".into()));
+    let response = serve_at(&world.factory, named, &root);
+    assert_eq!(response.status, 200, "{}", response.body_text());
+    assert_eq!(response.header("content-type"), Some("application/pdf"));
+    assert_eq!(response.body, b"%PDF true");
+    assert_eq!(
+        response.header("content-disposition"),
+        Some("attachment; filename=\"Statement_1.pdf\"; filename*=utf-8''Statement%201.pdf")
+    );
+    // with no file name the browser shows it
+    let response = serve_at(&world.factory, request("GET", "/fop/Doc"), &root);
+    assert_eq!(response.header("content-disposition"), Some("inline"));
+    // the rest of the path is a screen path, and the plain path is still the html screen
+    let response = serve_at(&world.factory, request("GET", "/fop/Missing"), &root);
+    assert_eq!(response.status, 404, "{}", response.body_text());
+    let response = serve_at(&world.factory, request("GET", "/Doc"), &root);
+    assert!(response.body_text().contains("Statement body"));
+    assert_ne!(response.header("content-type"), Some("application/pdf"));
+    // no engine: the reason is the error
+    crate::screen::clear_pdf_engine();
+    let response = serve_at(&world.factory, request("GET", "/fop/Doc"), &root);
+    assert_eq!(response.status, 500, "{}", response.body_text());
+    assert!(
+        response.body_text().contains("PDF is not available"),
+        "{}",
+        response.body_text()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 mod authc;
 mod files;
 mod forms;

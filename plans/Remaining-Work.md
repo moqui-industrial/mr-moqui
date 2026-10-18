@@ -22,7 +22,10 @@ Summary derived from the archived plans on 2026-10-14, extended 2026-10-16 with 
 | Search | Semantic retrieval has the `Embedder` trait and a development hash embedder only; no local model (`semantic` cargo feature) | [Implementation-Phases, Phase 9](archive/Implementation-Phases.md) |
 | Search | Postgres broad queries (common words: rank, facets, proximity) take tens to hundreds of ms at 50k documents; candidates are a stored per-field `tsvector`, a ranked-row cap, and measuring cover density on a real corpus. Hybrid `k` and weights wait on a relevance set | [Performance, Search](Performance.md) |
 | IronStone | The `boss` menu has Search, QuickSearch and SalesSummary only; SalesAnalysis, SimpleReport and the User screens are not converted | ironstone-boss `mr-moqui` branch |
-| MarbleERP | Acceptance work after the migration: wiki fixtures, exhaustive role and organization isolation, CSRF, every mounted QVT interaction, physical checks and scanners, FOP pagination parity | [MarbleERPMigration, Limits](archive/MarbleERPMigration.md#limits) |
+| MarbleERP | Acceptance work after the migration: wiki fixtures, exhaustive role and organization isolation, CSRF, every mounted QVT interaction, physical checks and scanners, FOP pagination parity for the running page header (XSL-FO repeated it on every page; the `.print.html.fancy` ports print it on the first; the running footers are done) | [MarbleERPMigration, Limits](archive/MarbleERPMigration.md#limits) |
+| Print | `ec.resource.code128Svg` is not implemented, so the 13 `.print.html.fancy` templates that call it (order, shipment pick, pack, insert and by-package, load pick, bill of lading, box types, production run pick, timesheet, badge) fail with "not a function" | Found 2026-10-18 verifying the print fixes ([Markdown-PDF-Review](archive/Markdown-PDF-Review.md#repository-findings)) |
+| Components | Since the 2026-10-17 component renames (`SimpleScreens` to `MrSimpleScreens`, `mantle-usl` to `mr-mantle-usl`), `component://SimpleScreens/...` (710 references in MrSimpleScreens) and `component://mantle-usl/...` (6, in `ShipmentServices.xml` and `PartyServices.xml`) no longer resolve; `moqui test mr-mantle-usl` has 10 failing features, at least 3 of them directly from this | same |
+| Demo data | The demo check signature `component://webroot/screen/webroot/images/LincolnSignature.png` is not in this repo's webroot, so the payment check prints a broken image | same |
 | Docs | A `docs/Testing.md` for `moqui test` (spec format, script API, power asserts, runner), extracted from the archived design; today the design and `mr-mantle-usl/test/README.md` are the only description | [TestHarness](archive/TestHarness.md) |
 
 ## Parity gap review
@@ -39,7 +42,6 @@ Open findings from the entity and service review (none High; IDs link to the fin
 | [P3-21](archive/EntityService-Parity-Review.md#p3-21--foreign-key-existence-by-name) | A foreign key counts as present only by its computed name; Java matches the key columns, so a database whose keys Java named differently (MySQL `name_fk`) gets a second constraint | Med | Needs a catalog read of key columns per group |
 | [P4a-18](archive/EntityService-Parity-Review.md#p4a-18--entitydataloaderlist-not-ported) | `EntityDataLoader.list()` is not ported | Low | Open for want of a caller: nothing in `runtime/` uses it |
 | [P5-19](archive/EntityService-Parity-Review.md#p5-19--entity-schema-and-data-writer-csv-of-a-view-have-no-fields) | The entity JSON schema and the data writer's CSV of a view have no fields (the model keeps a view's fields as aliases); fix is to read `field_names` and the alias types as `EntitySnap` does | Med | Includes views the runtime overlay builds |
-| [P8a-41](archive/EntityService-Parity-Review.md#p8a-41--portrait-and-monochrome-on-every-job) | Every Java print job asks for portrait and monochrome (cups4j builder defaults); Rust sends neither, so the queue's defaults apply | Med | Decision open: match Java, or accept the queue defaults as a difference, or add a per-job setting |
 
 Noted by the review but outside it:
 
@@ -58,6 +60,8 @@ The [Code-Quality-Review](archive/Code-Quality-Review.md) of 2026-10-14 was reso
 - **Test isolation:** `screen/cache.rs` and `script/runtime/facades.rs` still read `instance_purpose` directly.
 
 ## Checked and done (removed from the list)
+
+- Print (2026-10-18), from [Markdown-PDF-Review](archive/Markdown-PDF-Review.md#repository-findings): an `<img>` whose `src` is a resource location is inlined as a `data:` URL before the PDF engine (`screen/pdf.rs`), so logos, signatures and face images print; `/fop/<path>` sends the screen as a PDF, as Java's `MoquiFopServlet` (`screen/mod.rs`), so the 30 PDF links in tools and MrSimpleScreens work again; the 12 print documents whose XSL-FO had a running footer print it on every page, with the page number, as an `@page` margin box (`cssString` in the template prelude); P8a-41 is a per-job `orientation` and `colorMode` on `PrintJob`, sent only when given.
 
 - Postgres `NOTIFY` cluster channel: `cluster_transport=notify`, `moqui-host/src/cluster_notify.rs`, with an integration test.
 - The russh SSH cluster sender: `moqui-host/src/ssh/cluster.rs`.

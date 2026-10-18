@@ -55,6 +55,12 @@ pub struct PrintDocument {
     pub duplex: Option<bool>,
     /// `page-ranges` as text, such as `1-3,5`.
     pub page_ranges: Option<String>,
+    /// `orientation-requested`: portrait when true, landscape when false. cups4j sent portrait on every job; none
+    /// leaves it to the queue.
+    pub portrait: Option<bool>,
+    /// `print-color-mode`: color when true, monochrome when false. cups4j sent monochrome (as CUPS's `output-mode`) on
+    /// every job; none leaves it to the queue.
+    pub color: Option<bool>,
 }
 
 /// The outcome of a print request: the job id, and the server's description when it did not take the job.

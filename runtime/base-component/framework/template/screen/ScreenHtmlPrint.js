@@ -76,12 +76,14 @@ const $formList = (name, range, cols) => {
 
     const e = (expression) => `sri.write($e(${expression}));\n`;
 
-    // The document around the outermost screen's widgets. Only the first widgets of a render writes it.
+    // The document around the outermost screen's widgets. Only the first widgets of a render writes it. The title in
+    // the @top-center margin box is a CSS string in the style element: no quote or backslash, and no < or > that
+    // could end the element.
     const documentCode = (children) => js`
         const $document = sri.once("html-print-document");
         if ($document) {
             const $title = documentTitle ? String(documentTitle) : "";
-            const $cssTitle = $title.replace(/[\\\\"\\n\\r]/g, " ");
+            const $cssTitle = $title.replace(/[\\\\"\\n\\r<>]/g, " ");
             let $pages = "";
             for (const $name of Object.keys($masters)) {
                 const $m = $masters[$name];

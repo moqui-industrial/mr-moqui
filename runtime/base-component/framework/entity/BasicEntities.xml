@@ -735,6 +735,8 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="copies" type="number-integer"/>
         <field name="duplex" type="text-indicator"/>
         <field name="pageRanges" type="text-short"/>
+        <field name="orientation" type="text-short"><description>portrait or landscape; empty for the print queue's default</description></field>
+        <field name="colorMode" type="text-short"><description>color or monochrome; empty for the print queue's default</description></field>
         <field name="contentType" type="text-short"/>
         <field name="document" type="binary-very-long"/>
         <relationship type="one" related="moqui.basic.print.NetworkPrinter" short-alias="printer"/>

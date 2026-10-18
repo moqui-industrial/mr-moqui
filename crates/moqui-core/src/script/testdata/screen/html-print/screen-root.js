@@ -1,7 +1,7 @@
 const $document = sri.once("html-print-document");
 if ($document) {
     const $title = documentTitle ? String(documentTitle) : "";
-    const $cssTitle = $title.replace(/[\\"\n\r]/g, " ");
+    const $cssTitle = $title.replace(/[\\"\n\r<>]/g, " ");
     let $pages = "";
     for (const $name of Object.keys($masters)) {
         const $m = $masters[$name];

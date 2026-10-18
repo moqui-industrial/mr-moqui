@@ -100,6 +100,8 @@ fn job_fields(parameters: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
         "copies",
         "duplex",
         "pageRanges",
+        "orientation",
+        "colorMode",
         "contentType",
     ]
     .iter()
@@ -410,6 +412,17 @@ fn send_job(
         copies: Some(copies).filter(|copies| *copies > 0),
         duplex: Some(map_text(job, "duplex") == "Y"),
         page_ranges: optional("pageRanges"),
+        // Sent only when the job names them (an addition: cups4j asked for portrait and monochrome on every job).
+        portrait: match map_text(job, "orientation").as_str() {
+            "portrait" => Some(true),
+            "landscape" => Some(false),
+            _ => None,
+        },
+        color: match map_text(job, "colorMode").as_str() {
+            "color" => Some(true),
+            "monochrome" => Some(false),
+            _ => None,
+        },
     };
     let client = match crate::print::client() {
         Ok(client) => client,

@@ -160,15 +160,20 @@ fn a_print_job_is_sent_through_the_print_client_and_its_status_follows_the_serve
         ("jobName", "Test job"),
         ("copies", "2"),
         ("duplex", "Y"),
+        ("orientation", "landscape"),
+        ("colorMode", "monochrome"),
     ]);
     call.insert("inputStream".to_string(), Value::Bytes(b"hello printer".to_vec()));
     let out = crate::service::sync("org.moqui.impl.PrintServices.print#Document", &call).unwrap();
     let id = to_plain_string(out.get("printJobId").unwrap());
+    let failed_id = id.clone();
     assert!(!id.is_empty(), "{out:?}");
     assert_eq!(errors(&context), crate::print::PRINTING_UNAVAILABLE);
     // The create and the failed send each ran in their own transaction, so the record stays with the moved status.
     assert_eq!(job_field(&facade, &id, "statusId"), "PtjSendFailed");
     assert_eq!(job_field(&facade, &id, "jobName"), "Test job");
+    assert_eq!(job_field(&facade, &id, "orientation"), "landscape");
+    assert_eq!(job_field(&facade, &id, "colorMode"), "monochrome");
     assert_eq!(
         job_field(&facade, &id, "errorMessage"),
         crate::print::PRINTING_UNAVAILABLE
@@ -200,7 +205,31 @@ fn a_print_job_is_sent_through_the_print_client_and_its_status_follows_the_serve
         assert_eq!(sent.bytes, b"hello printer");
         assert_eq!(sent.content_type, "text/plain");
         assert_eq!((sent.copies, sent.duplex), (Some(2), Some(true)));
+        assert_eq!((sent.portrait, sent.color), (Some(false), Some(false)));
     }
+    // A send of the stored record (the job whose first send failed) takes them from the record.
+    crate::service::sync(
+        "org.moqui.impl.PrintServices.send#PrintJob",
+        &params(&[("printJobId", &failed_id)]),
+    )
+    .unwrap();
+    assert_eq!(errors(&context), "");
+    assert_eq!(job_field(&facade, &failed_id, "statusId"), "PtjPending");
+    {
+        let printed = printer.printed.lock().unwrap();
+        let sent = printed.last().unwrap();
+        assert_eq!((sent.portrait, sent.color), (Some(false), Some(false)));
+    }
+    // A value the job cannot name is a validation error.
+    let mut sideways = call.clone();
+    sideways.insert("orientation".to_string(), Value::string("sideways"));
+    crate::service::sync("org.moqui.impl.PrintServices.print#Document", &sideways).unwrap();
+    assert!(
+        errors(&context).contains("Orientation must be portrait or landscape"),
+        "{}",
+        errors(&context)
+    );
+    context.message().clear();
 
     // The details come from the server and move the status.
     let details = crate::service::sync(
@@ -341,6 +370,8 @@ fn a_send_takes_cups4j_defaults_and_fails_with_no_document_and_a_hold_needs_a_se
         let sent = printed.last().unwrap();
         assert_eq!(sent.bytes, b"bare");
         assert_eq!((sent.copies, sent.duplex), (Some(1), Some(false)));
+        // Unlike cups4j, no orientation or color is asked for when the job names none.
+        assert_eq!((sent.portrait, sent.color), (None, None));
     }
 
     crate::service::sync(

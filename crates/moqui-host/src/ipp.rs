@@ -24,7 +24,9 @@
 //! sends none and the server types the document; the `printer-uri` is the one the server gave, posted to on this
 //! server, where CUPS4J writes this server's host with no port and the path; a hold, release or cancel names the job by
 //! `printer-uri` and `job-id`, where CUPS4J posts a `job-uri` to `/jobs/<id>`; and a CUPS-Get-Printers the server
-//! refuses for any reason but not-found is an error, where CUPS4J reads it as no printers (accepted, P8a-37).
+//! refuses for any reason but not-found is an error, where CUPS4J reads it as no printers (accepted, P8a-37). A job's
+//! `orientation-requested` and `print-color-mode` are sent only when the job names them, where CUPS4J sent portrait and
+//! a monochrome `output-mode` on every job (P8a-41).
 
 use std::io::{Cursor, Read};
 use std::sync::{Arc, OnceLock};
@@ -154,6 +156,36 @@ fn add_job(request: &mut IppRequestResponse, name: &str, value: IppValue) -> Res
     request
         .attributes_mut()
         .add(DelimiterTag::JobAttributes, attribute(name, value)?);
+    Ok(())
+}
+
+/// The job attributes of a Print-Job, each one the document sets.
+fn add_job_attributes(message: &mut IppRequestResponse, document: &PrintDocument) -> Result<(), Error> {
+    if let Some(copies) = document.copies {
+        add_job(message, "copies", IppValue::Integer(copies))?;
+    }
+    if let Some(duplex) = document.duplex {
+        let sides = if duplex { "two-sided-long-edge" } else { "one-sided" };
+        add_job(message, "sides", keyword(sides)?)?;
+    }
+    if let Some(ranges) = document.page_ranges.as_deref().map(page_ranges).transpose()?.flatten() {
+        add_job(message, "page-ranges", ranges)?;
+    }
+    if let Some(portrait) = document.portrait {
+        // RFC 8011 orientation-requested: 3 is portrait, 4 is landscape.
+        add_job(
+            message,
+            "orientation-requested",
+            IppValue::Enum(if portrait { 3 } else { 4 }),
+        )?;
+    }
+    if let Some(color) = document.color {
+        add_job(
+            message,
+            "print-color-mode",
+            keyword(if color { "color" } else { "monochrome" })?,
+        )?;
+    }
     Ok(())
 }
 
@@ -341,16 +373,7 @@ impl PrintClient for IppPrintClient {
             "document-format",
             IppValue::MimeMediaType(format.try_into().map_err(parse_error)?),
         )?;
-        if let Some(copies) = document.copies {
-            add_job(&mut message, "copies", IppValue::Integer(copies))?;
-        }
-        if let Some(duplex) = document.duplex {
-            let sides = if duplex { "two-sided-long-edge" } else { "one-sided" };
-            add_job(&mut message, "sides", keyword(sides)?)?;
-        }
-        if let Some(ranges) = document.page_ranges.as_deref().map(page_ranges).transpose()?.flatten() {
-            add_job(&mut message, "page-ranges", ranges)?;
-        }
+        add_job_attributes(&mut message, document)?;
         *message.payload_mut() = IppPayload::new(Cursor::new(document.bytes.clone()));
         let response = send(server, &uri_path(&printer_uri), message)?;
         let job_id = response
@@ -525,5 +548,45 @@ mod tests {
         let mut payload = Vec::new();
         parsed.into_payload().read_to_end(&mut payload).unwrap();
         assert_eq!(payload, b"hello");
+    }
+
+    #[test]
+    fn orientation_and_color_are_sent_only_when_the_job_names_them() {
+        let job_of = |document: &PrintDocument| {
+            let mut message = request(Operation::PrintJob, Some("ipp://localhost:631/printers/gate")).unwrap();
+            add_job_attributes(&mut message, document).unwrap();
+            let mut body = Vec::new();
+            message.into_read().read_to_end(&mut body).unwrap();
+            let parsed = IppParser::new(ipp::reader::IppReader::new(Cursor::new(body)))
+                .parse()
+                .unwrap();
+            let job = parsed
+                .attributes()
+                .groups_of(DelimiterTag::JobAttributes)
+                .next()
+                .cloned();
+            job.unwrap_or_else(|| IppAttributeGroup::new(DelimiterTag::JobAttributes))
+        };
+        let landscape = job_of(&PrintDocument {
+            portrait: Some(false),
+            color: Some(false),
+            ..PrintDocument::default()
+        });
+        assert_eq!(int_of(&landscape, "orientation-requested"), Some(4));
+        assert_eq!(text_of(&landscape, "print-color-mode").as_deref(), Some("monochrome"));
+        let portrait = job_of(&PrintDocument {
+            portrait: Some(true),
+            color: Some(true),
+            ..PrintDocument::default()
+        });
+        assert_eq!(int_of(&portrait, "orientation-requested"), Some(3));
+        assert_eq!(text_of(&portrait, "print-color-mode").as_deref(), Some("color"));
+        let plain = job_of(&PrintDocument {
+            copies: Some(1),
+            ..PrintDocument::default()
+        });
+        assert_eq!(int_of(&plain, "copies"), Some(1));
+        assert_eq!(int_of(&plain, "orientation-requested"), None);
+        assert_eq!(text_of(&plain, "print-color-mode"), None);
     }
 }

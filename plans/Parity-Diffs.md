@@ -138,3 +138,14 @@ Behaviour changes made when the [Code-Quality-Review](archive/Code-Quality-Revie
 | entity REST | Request `pageSize` is capped at `entity_rest_max_page_size` (1000); `pageNoLimit` still lifts the cap, as in Java | Same as P5-14 above |
 | SFTP | The default port is 22 | The protocol's port; review phase 6 |
 | data writer | Zip entries are deflated | Smaller exports; review phase 6 |
+
+## Print fixes (2026-10-18)
+
+The print findings of [Markdown-PDF-Review](archive/Markdown-PDF-Review.md#repository-findings) and the decision on P8a-41, where the fix differs from Java on purpose.
+
+| Area | Difference | Rationale / where documented |
+|---|---|---|
+| PDF images | An `<img>` source that is a resource location is read through the resource facade and inlined, as Java's FOP resolver read it; an `http` or `https` source is not fetched, where Java's default resolver fetched it, and a source that is not a png, jpeg, gif, webp, bmp or svg image is not inlined | The PDF page makes no request (no network, no server, no session); module doc of `screen/pdf.rs` |
+| PDF footers | The XSL-FO running footer is an `@page` margin box; a document printed several to a render (payment detail, shipment pack) numbers its pages through the render, where XSL-FO restarted each payment at page 1 | Chromium ignores `counter-reset: page`; comments in `PaymentDetail.print.html.fancy` and `ShipmentPack-shipmentPackPageSequence.html.fancy` |
+| `/fop` | `/fop/<path>` makes only PDF: a `contentType` of `application/postscript` gives a PDF, as P8a-17 records for `print#ScreenDocument` | The PDF engine makes only PDF; `fop_screen_path` in `screen/mod.rs` |
+| print jobs | P8a-41: `orientation-requested` and `print-color-mode` are sent only when the job's `orientation` or `colorMode` names them; Java's cups4j asked for portrait and a monochrome `output-mode` on every job | A color logo or a landscape page is not changed by a default nobody chose; module doc of `moqui-host/src/ipp.rs` |

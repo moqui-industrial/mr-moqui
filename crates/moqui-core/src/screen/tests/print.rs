@@ -306,6 +306,63 @@ fn the_pdf_renderer_uses_the_installed_engine_or_reports_that_it_is_not_availabl
     crate::screen::clear_pdf_engine();
 }
 
+/// Keeps the last document it was given.
+#[derive(Default)]
+struct CapturePdf(std::sync::Mutex<String>);
+
+impl crate::screen::PdfEngine for CapturePdf {
+    fn render(&self, html: &str) -> Result<Vec<u8>, crate::context::Error> {
+        *moqui_lib::sync::lock(&self.0) = html.to_string();
+        Ok(b"%PDF-capture".to_vec())
+    }
+}
+
+#[test]
+fn resource_images_reach_the_pdf_engine_as_data_urls() {
+    use base64::Engine;
+
+    let _pdf = crate::screen::pdf_test_lock();
+    let context = ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    let dir = std::env::temp_dir().join(format!("moqui-pdf-images-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut png = Vec::new();
+    image::RgbImage::new(2, 2)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    std::fs::write(dir.join("a&b.png"), &png).unwrap();
+    let svg = "<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"/>";
+    std::fs::write(dir.join("mark.svg"), svg).unwrap();
+    std::fs::write(dir.join("notes.txt"), "not an image").unwrap();
+    let file = |name: &str| format!("file://{}", dir.join(name).display());
+    let engine = std::sync::Arc::new(CapturePdf::default());
+    crate::screen::install_pdf_engine(engine.clone());
+
+    // kept as written: a data URL, an https URL, a file that is not an image, a missing file, a path with no scheme,
+    // and an element that is not an img
+    let kept = format!(
+        "<img src=\"data:image/gif;base64,R0lG\"><img src=\"https://example.com/x.png\"><img src=\"{}\">\
+         <img src=\"{}\"><img src=\"/ssstatic/x.png\"><imgx src=\"{}\">",
+        file("notes.txt"),
+        file("missing.png"),
+        file("mark.svg"),
+    );
+    let html = format!(
+        "<p><IMG class=\"logo\" src=\"{}\" alt=\"logo\"></p><img alt='' src='{}'/>{kept}",
+        file("a&amp;b.png"),
+        file("mark.svg"),
+    );
+    assert_eq!(PdfRenderer::render(&html).unwrap(), b"%PDF-capture");
+    let expected = format!(
+        "<p><IMG class=\"logo\" src=\"data:image/png;base64,{}\" alt=\"logo\"></p><img alt='' src='data:image/svg+xml;base64,{}'/>{kept}",
+        base64::engine::general_purpose::STANDARD.encode(&png),
+        base64::engine::general_purpose::STANDARD.encode(svg),
+    );
+    assert_eq!(*moqui_lib::sync::lock(&engine.0), expected);
+    crate::screen::clear_pdf_engine();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- the fancy renderers in a screen ----
 
 #[test]

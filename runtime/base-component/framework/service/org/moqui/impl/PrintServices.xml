@@ -34,6 +34,12 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="copies" type="Integer" default="1"/>
             <parameter name="duplex" default-value="N"/>
             <parameter name="pageRanges"/>
+            <parameter name="orientation"><description>portrait or landscape (IPP orientation-requested); empty leaves it
+                to the print queue. Java's cups4j asked for portrait on every job.</description>
+                <matches regexp="portrait|landscape" message="Orientation must be portrait or landscape"/></parameter>
+            <parameter name="colorMode"><description>color or monochrome (IPP print-color-mode); empty leaves it to the
+                print queue. Java's cups4j asked for monochrome on every job.</description>
+                <matches regexp="color|monochrome" message="Color mode must be color or monochrome"/></parameter>
         </in-parameters>
         <out-parameters>
             <parameter name="printJobId"/>
