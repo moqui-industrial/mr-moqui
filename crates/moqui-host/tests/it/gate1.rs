@@ -424,10 +424,84 @@ fn mysql_metadata_insert_and_select() {
         .unwrap();
     assert_eq!(found.get("testMedium").and_then(Value::as_str), Some("mysql"));
     found.delete(&facade).unwrap();
+
+    // A foreign key is found by its columns (P3-21): a second facade's check adds none, and a LIKE on a text-fts field
+    // is a boolean-mode full-text search (P3-20).
+    let keyed = [
+        "moqui.basic.EnumerationType",
+        "moqui.basic.Enumeration",
+        "moqui.test.TestFts",
+    ];
+    facade.check_tables(&keyed).unwrap();
+    drop(facade);
+    let fk_count = || {
+        let mut conn = driver.connect().unwrap();
+        let rows = conn
+            .query(
+                "SELECT COUNT(DISTINCT constraint_name) AS n FROM information_schema.key_column_usage \
+                 WHERE table_schema = database() AND table_name = 'ENUMERATION' AND referenced_table_name = 'ENUMERATION_TYPE'",
+                &[],
+            )
+            .unwrap();
+        rows[0].get("n").map(moqui_lib::object::to_plain_string)
+    };
+    assert_eq!(fk_count().as_deref(), Some("1"));
+    // The key again under the name MySQL gives a `name_fk` key, so only its columns say it is there.
+    let mut conn = driver.connect().unwrap();
+    let name = conn
+        .query(
+            "SELECT constraint_name AS name FROM information_schema.key_column_usage WHERE table_schema = database() \
+             AND table_name = 'ENUMERATION' AND referenced_table_name = 'ENUMERATION_TYPE'",
+            &[],
+        )
+        .unwrap()[0]
+        .get("name")
+        .map(moqui_lib::object::to_plain_string)
+        .unwrap();
+    conn.execute(&format!("ALTER TABLE `ENUMERATION` DROP FOREIGN KEY `{name}`"), &[])
+        .unwrap();
+    conn.execute(
+        "ALTER TABLE `ENUMERATION` ADD CONSTRAINT `ENUMERATION_ibfk_1` FOREIGN KEY (`ENUM_TYPE_ID`) \
+         REFERENCES `ENUMERATION_TYPE` (`ENUM_TYPE_ID`)",
+        &[],
+    )
+    .unwrap();
+    drop(conn);
+    let facade =
+        moqui_host::db::entity_facade::open_entity_facade_dialect(&framework, Arc::clone(&driver), pool(), "mysql")
+            .unwrap();
+    facade.check_tables(&keyed).unwrap();
+    assert_eq!(fk_count().as_deref(), Some("1"));
+    for (id, body) in [("F1", "The big warehouse"), ("F2", "Boats")] {
+        let mut row = facade.make_value("moqui.test.TestFts").unwrap();
+        row.set("testFtsId", Value::string(id));
+        row.set("body", Value::string(body));
+        row.create(&facade).unwrap();
+    }
+    let found = facade
+        .find("moqui.test.TestFts")
+        .unwrap()
+        .condition(moqui_core::entity::Condition::like(
+            "body",
+            Value::string("%warehouse%"),
+        ))
+        .list()
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found
+            .iter()
+            .next()
+            .and_then(|row| row.get("testFtsId"))
+            .and_then(Value::as_str),
+        Some("F1")
+    );
     drop(facade);
     let mut conn = driver.connect().unwrap();
-    conn.execute("DROP TABLE IF EXISTS `TestEntity`", &[]).unwrap();
-    eprintln!("MySQL smoke inserted and selected moqui.test.TestEntity");
+    for table in ["TEST_ENTITY", "TEST_FTS", "ENUMERATION", "ENUMERATION_TYPE"] {
+        conn.execute(&format!("DROP TABLE IF EXISTS `{table}`"), &[]).unwrap();
+    }
+    eprintln!("MySQL smoke inserted and selected moqui.test.TestEntity, found a key by its columns and a text by word");
 }
 
 #[cfg(feature = "mysql")]

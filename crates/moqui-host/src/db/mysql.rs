@@ -960,6 +960,41 @@ mod driver {
             assert!(parse_test_spec("not a target").is_none());
         }
 
+        /// The server bounds only SELECT by `max_execution_time` (MariaDB bounds every statement by `max_statement_time`);
+        /// a statement of another kind that runs past the transaction's deadline is ended by the deadline timer's
+        /// `KILL QUERY`, so neither server keeps a timed-out write running.
+        #[test]
+        fn a_statement_past_the_transaction_deadline_is_killed() {
+            let Some(driver) = test_driver() else {
+                tracing::debug!("MySQL was not reachable");
+                return;
+            };
+            let manager = must(moqui_core::transaction::TransactionManager::new(
+                Arc::new(driver),
+                moqui_core::transaction::PoolConfig {
+                    min: 0,
+                    max: 2,
+                    reserve: 1,
+                    acquire_timeout: std::time::Duration::from_secs(10),
+                    ..Default::default()
+                },
+            ));
+            let started = std::time::Instant::now();
+            let outcome = manager.run(
+                moqui_core::transaction::TransactionAttribute::ForceNew,
+                Some(std::time::Duration::from_secs(1)),
+                || manager.with_connection(|conn| conn.execute("DO SLEEP(6)", &[])),
+            );
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < std::time::Duration::from_secs(4),
+                "ran {elapsed:?}: {outcome:?}"
+            );
+            // MySQL ends a killed DO SLEEP early with a result of 1 rather than an error; the frame is rollback-only
+            // either way, so the run fails.
+            assert!(outcome.is_err(), "{outcome:?}");
+        }
+
         #[test]
         fn round_trip_stream_and_statement_cache() {
             let Some(driver) = test_driver() else {
