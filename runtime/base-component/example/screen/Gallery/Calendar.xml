@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Gallery: the 3.7 Calendar archetype as a .qvue screen (style-guide 4.8). The component is Calendar.qvue next to
+    this file; the month is a URL parameter, the events come from the events transition (an inline list made for the
+    month asked), and the quick-create form posts to createEvent, which writes nothing. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Calendar" default-menu-index="7" render-modes="vue,qvue" server-static="vue,qvue">
+
+    <parameter name="month"/>
+
+    <transition name="events" method="get" read-only="true">
+        <actions><script><![CDATA[
+            const now = new Date()
+            const pad = (n) => String(n).padStart(2, '0')
+            const current = `${now.getFullYear()}-${pad(now.getMonth() + 1)}`
+            const monthText = month && /^\d{4}-\d{2}$/.test(String(month)) ? String(month) : current
+            const year = Number(monthText.slice(0, 4)), monthNum = Number(monthText.slice(5, 7))
+            const dayCount = new Date(year, monthNum, 0).getDate()
+            // kinds map to semantic colors in the component: meeting primary, call info, deadline warning, done positive
+            const ev = (day, startHour, endHour, title, kind) => ({ id: `${monthText}-${pad(day)}-${kind}-${startHour}`, title, kind,
+                start: `${monthText}-${pad(Math.min(day, dayCount))} ${pad(startHour)}:00`, end: `${monthText}-${pad(Math.min(day, dayCount))} ${pad(endHour)}:00` })
+            const events = [
+                ev(2, 9, 10, 'Pipeline review', 'meeting'), ev(2, 14, 15, 'Call Acme about the renewal', 'call'),
+                ev(5, 17, 18, 'Quote Q-10077 due', 'deadline'), ev(9, 11, 12, 'Beta Inc. discovery call', 'call'),
+                ev(12, 9, 17, 'Trade show, hall 3', 'meeting'), ev(13, 9, 17, 'Trade show, hall 3', 'meeting'),
+                ev(16, 10, 11, 'Invoice INV-2201 paid', 'done'), ev(19, 15, 16, 'Delta Corp. demo', 'meeting'),
+                ev(23, 17, 18, 'Proposal to Kappa due', 'deadline'), ev(26, 9, 10, 'Monthly close', 'done'),
+                ev(28, 13, 14, 'Call Gamma LLC', 'call') ]
+            if (monthText === current) {
+                const today = now.getDate()
+                events.push(ev(today, 10, 11, 'Weekly pipeline review', 'meeting'), ev(today, 16, 17, 'Reply to RFQ-2041', 'deadline'))
+            }
+            ec.web.sendJsonResponse({ month: monthText, events })
+        ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="createEvent" method="post">
+        <actions><message>Would create event ${title} from ${start} to ${end} (nothing is written in the gallery)</message></actions>
+        <default-response url="."/>
+    </transition>
+
+    <widgets>
+        <render-mode>
+            <text type="qvue" location="component://example/screen/Gallery/Calendar.qvue" template="false"/>
+            <text type="html,qvt"><![CDATA[<p><strong>The Calendar is a .qvue screen: open it under /qapps (the qvt render mode).</strong></p>]]></text>
+        </render-mode>
+    </widgets>
+</screen>

@@ -251,8 +251,10 @@ fn sri_get_render_mode(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     host_guard(&ctx, || with_render(&ctx, false, |state| Ok(state.render_mode.clone())))
 }
 
-fn sri_encode_html(ctx: Ctx<'_>, text: String) -> rquickjs::Result<String> {
-    host_guard(&ctx, || Ok(logic::encode_html(&text)))
+/// `sri.encodeHtml(text)`: null-safe as Java's `WebUtilities.encodeHtml`, so a null or undefined argument is empty
+/// text and a number or a boolean is its text.
+fn sri_encode_html(ctx: Ctx<'_>, text: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || Ok(logic::encode_html(&text_or_empty(&ctx, text.0.as_ref())?)))
 }
 
 fn screen_def_object<'js>(ctx: &Ctx<'js>, def: &crate::screen::ScreenDef) -> rquickjs::Result<Object<'js>> {
@@ -992,5 +994,15 @@ mod tests {
             ErrorKind::Unauthorized
         );
         assert_eq!(kind_after("throw 'text';"), ErrorKind::General);
+    }
+
+    #[test]
+    fn sri_encode_html_is_null_safe() {
+        let holds = |expression: &str| assert!(super::super::eval_condition(expression).unwrap(), "{expression}");
+        super::super::clear_context_stack();
+        holds(r#"sri.encodeHtml(null) === "" && sri.encodeHtml(undefined) === "" && sri.encodeHtml() === """#);
+        holds(
+            r#"sri.encodeHtml(7) === "7" && sri.encodeHtml(true) === "true" && sri.encodeHtml("<&>") === "&lt;&amp;&gt;""#,
+        );
     }
 }

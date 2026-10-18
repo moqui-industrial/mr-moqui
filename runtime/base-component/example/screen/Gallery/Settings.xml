@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Gallery screen for the 3.9 Settings archetype of the style guide: an index of settings groups as cards, then one
+    settings page with a form over a read-only snapshot and a plain configuration list. Nothing is written. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Settings" default-menu-index="9">
+
+    <transition name="saveGeneral"><actions>
+        <message message="General settings saved (gallery demo: nothing is written)" type="success"/>
+    </actions><default-response url="."/></transition>
+    <transition name="resetGeneral"><actions>
+        <message message="General settings reset to their defaults (gallery demo: nothing is written)" type="warning"/>
+    </actions><default-response url="."/></transition>
+
+    <actions>
+        <set field="general" from="{organizationName: 'IronStone Demo Co.', baseCurrencyUomId: 'USD', defaultLocale: 'en_US',
+            timeZone: 'America/Denver', lengthUomId: 'LEN_m', requireTwoFactor: 'Y'}"/>
+        <entity-find entity-name="moqui.basic.Enumeration" list="geoTypeList">
+            <econdition field-name="enumTypeId" value="GeoType"/>
+            <order-by field-name="sequenceNum,description"/>
+        </entity-find>
+    </actions>
+    <widgets>
+        <container-box type="info"><box-header title="Archetype 3.9 Settings"/><box-body>
+            <label text="An app's settings index as a row of cards, one per group with a line of description and the links into its pages, then one settings page: a form over a read-only snapshot with a drop-down, a flag, Save and a confirmed danger action, and a plain configuration list that uses auto-fields-entity." type="p"/>
+            <label text="No §8 fallbacks. The general settings are a static snapshot in the screen actions; the index links go to the Tools and System apps." type="p"/>
+        </box-body></container-box>
+
+        <container-row>
+            <row-col md="3"><container-box><box-header title="General"/><box-body>
+                <label text="Organization, base currency, locale, time zone and sign-in rules." type="p"/>
+                <link url="." text="General settings" icon="tune"/>
+                <link url="//apps/system/Localization" url-type="screen" text="Localization" icon="translate"/>
+            </box-body></container-box></row-col>
+            <row-col md="3"><container-box><box-header title="Users and groups"/><box-body>
+                <label text="Who can sign in, which groups they are in and what each group may do." type="p"/>
+                <link url="//apps/system/Security/UserAccount" url-type="screen" text="User accounts" icon="person"/>
+                <link url="//apps/system/Security/UserGroup" url-type="screen" text="User groups" icon="group"/>
+            </box-body></container-box></row-col>
+            <row-col md="3"><container-box><box-header title="Enumerations"/><box-body>
+                <label text="The coded lists the apps choose from: types, categories and reasons." type="p"/>
+                <link url="//apps/tools/AutoScreen/AutoFind" url-type="screen" text="Enumerations" icon="list">
+                    <parameter name="aen" value="moqui.basic.Enumeration"/></link>
+                <link url="//apps/tools/AutoScreen/AutoFind" url-type="screen" text="Types" icon="category">
+                    <parameter name="aen" value="moqui.basic.EnumerationType"/></link>
+            </box-body></container-box></row-col>
+            <row-col md="3"><container-box><box-header title="Status flows"/><box-body>
+                <label text="The statuses a record moves through and the transitions between them." type="p"/>
+                <link url="//apps/tools/StatusFlows" url-type="screen" text="Status flows" icon="account_tree"/>
+                <link url="//apps/tools/AutoScreen/AutoFind" url-type="screen" text="Status items" icon="flag">
+                    <parameter name="aen" value="moqui.basic.StatusItem"/></link>
+            </box-body></container-box></row-col>
+        </container-row>
+
+        <label text="General" type="h6" style="q-mt-md"/>
+        <container-box><box-header title="Organization and defaults"/><box-body>
+            <form-single name="GeneralSettings" transition="saveGeneral" map="general">
+                <field name="organizationName"><default-field title="Organization"><display/></default-field></field>
+                <field name="baseCurrencyUomId"><default-field title="Base currency">
+                    <display-entity entity-name="moqui.basic.Uom" text="${description} (${abbreviation})"/></default-field></field>
+                <field name="defaultLocale"><default-field title="Default locale"><display/></default-field></field>
+                <field name="timeZone"><default-field title="Time zone"><display/></default-field></field>
+                <field name="lengthUomId"><default-field title="Default length unit">
+                    <drop-down><entity-options key="${uomId}" text="${description} (${abbreviation})">
+                        <entity-find entity-name="moqui.basic.Uom">
+                            <econdition field-name="uomTypeEnumId" value="UT_LENGTH_MEASURE"/>
+                            <order-by field-name="description"/></entity-find>
+                    </entity-options></drop-down></default-field></field>
+                <field name="requireTwoFactor"><default-field title="Sign in">
+                    <check><option key="Y" text="Require a second factor for every user"/></check></default-field></field>
+                <field name="saveButton"><default-field title="Save"><submit/></default-field></field>
+                <field name="resetButton"><default-field><link url="resetGeneral" text="Reset to defaults" btn-type="danger" icon="restart_alt"
+                        confirmation="Reset every general setting of IronStone Demo Co. to its default? This cannot be undone."/></default-field></field>
+                <field-layout>
+                    <field-row><field-ref name="organizationName"/><field-ref name="baseCurrencyUomId"/></field-row>
+                    <field-row><field-ref name="defaultLocale"/><field-ref name="timeZone"/></field-row>
+                    <field-row><field-ref name="lengthUomId"/><field-ref name="requireTwoFactor"/></field-row>
+                    <field-row-big><field-ref name="saveButton"/><field-ref name="resetButton"/></field-row-big>
+                </field-layout>
+            </form-single>
+        </box-body></container-box>
+
+        <container-box><box-header title="Geo types (an enumeration, auto-fields-entity)"/><box-body-nopad>
+            <form-list name="GeoTypeList" list="geoTypeList" skip-form="true" paginate="false">
+                <auto-fields-entity entity-name="moqui.basic.Enumeration" field-type="display">
+                    <exclude field-name="parentEnumId"/><exclude field-name="enumCode"/><exclude field-name="statusFlowId"/>
+                    <exclude field-name="optionValue"/><exclude field-name="optionIndicator"/>
+                    <exclude field-name="relatedEnumId"/><exclude field-name="relatedEnumTypeId"/>
+                </auto-fields-entity>
+            </form-list>
+        </box-body-nopad></container-box>
+    </widgets>
+</screen>

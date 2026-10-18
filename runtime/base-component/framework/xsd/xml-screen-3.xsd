@@ -795,7 +795,9 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="height" type="xs:string" default="600"/>
         <xs:attribute name="condition" type="xs:string"/>
         <xs:attribute name="type" type="color-context" default="primary"/>
-        <xs:attribute name="icon" type="xs:string"/>
+        <xs:attribute name="icon" type="xs:string"><xs:annotation><xs:documentation>
+            The icon of the button, in place of the default open_in_new: a Material Icons name (add, edit) or, with a space or an
+            fa prefix (fa fa-plus), CSS classes.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>
 
     <xs:element name="dynamic-dialog" substitutionGroup="StandaloneFields"><xs:annotation>
@@ -814,7 +816,9 @@ along with this software (see the LICENSE.md file). If not, see
             names and values from in addition to the parameter sub-elements.</xs:documentation></xs:annotation></xs:attribute>
         <xs:attribute name="condition" type="xs:string"/>
         <xs:attribute name="type" type="color-context" default="primary"/>
-        <xs:attribute name="icon" type="xs:string"/>
+        <xs:attribute name="icon" type="xs:string"><xs:annotation><xs:documentation>
+            The icon of the button, in place of the default open_in_new: a Material Icons name (visibility, edit) or, with a space
+            or an fa prefix (fa fa-eye), CSS classes.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>
     <xs:element name="dynamic-container" substitutionGroup="StandaloneFields"><xs:annotation>
         <xs:documentation>Container contents are immediately loaded from the server at the given
@@ -850,11 +854,14 @@ along with this software (see the LICENSE.md file). If not, see
             </xs:documentation></xs:annotation>
         </xs:attribute>
         <xs:attribute name="icon" type="xs:string"><xs:annotation>
-            <xs:documentation>Icon name, actually an icon style used in an 'i' element in HTML output.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:documentation>An icon before the text: a Material Icons name (more_vert, tune) or, with a space or an fa prefix
+                (fa fa-ellipsis-v), CSS classes for an 'i' element.</xs:documentation></xs:annotation></xs:attribute>
         <xs:attribute name="badge" type="xs:string"><xs:annotation>
             <xs:documentation>Text to put in a badge on the right side</xs:documentation></xs:annotation></xs:attribute>
         <xs:attribute name="tooltip" type="xs:string"/>
-        <xs:attribute name="btn-type" type="color-context" default="primary"/>
+        <xs:attribute name="btn-type" type="color-context" default="primary"><xs:annotation><xs:documentation>
+            The color of the menu button, as on link: tonal without it or in the given color, the filled primary button
+            with primary written explicitly.</xs:documentation></xs:annotation></xs:attribute>
         <xs:attribute name="condition" type="xs:string"><xs:annotation><xs:documentation>
             If specified and evaluates to false link is not rendered.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>

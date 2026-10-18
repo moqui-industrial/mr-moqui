@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Gallery screen for the 3.11 Dialog archetype of the style guide: a short list of enumerations with a New
+    container-dialog (600 px, background submit), an Edit container-dialog per row and a View dynamic-dialog (900 px)
+    that loads the Detail gallery screen. Nothing is written. The _openDialog URL parameter (read by the qvt macros)
+    opens a dialog on load, which is how the dialogs are verified open. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Dialog" default-menu-index="11">
+
+    <transition name="createEnum"><actions>
+        <message message="Enumeration ${enumId || ''} created (gallery demo: nothing is written)" type="success"/>
+    </actions><default-response type="none"/></transition>
+    <transition name="updateEnum"><actions>
+        <message message="Enumeration ${enumId || ''} updated (gallery demo: nothing is written)" type="success"/>
+    </actions><default-response url="."/></transition>
+    <transition name="viewDetail"><default-response url="../Detail"/></transition>
+
+    <actions>
+        <entity-find entity-name="moqui.basic.Enumeration" list="enumList">
+            <econdition field-name="enumTypeId" value="ComparisonOperator"/>
+            <order-by field-name="description"/>
+        </entity-find>
+        <entity-find entity-name="moqui.basic.EnumerationType" list="enumTypeList">
+            <order-by field-name="description"/>
+        </entity-find>
+    </actions>
+    <widgets>
+        <container-box type="info"><box-header title="Archetype 3.11 Dialog"/><box-body>
+            <label text="Create and edit without leaving the list: New is a 600 px container-dialog with a single-column form-single whose submit confirms and posts in the background (the dialog closes and a message shows); Edit is a container-dialog per row; View is a 900 px dynamic-dialog that loads the Detail gallery screen for the row. One primary and the close button per dialog; dialogs are maximized below 600 px." type="p"/>
+            <label text="No §8 fallbacks. The form attributes for a background submit are background-submit, background-hide-id and background-reload-id (the XSD names); the style guide's submit-reload-id is the name of the m-form property they become." type="p"/>
+        </box-body></container-box>
+
+        <container-box><box-header title="Comparison operators"/><box-toolbar>
+            <container-dialog id="NewEnumDialog" button-text="New" icon="add" width="600" title="New enumeration">
+                <form-single name="NewEnum" transition="createEnum" background-submit="true" background-hide-id="NewEnumDialog" focus-field="enumId">
+                    <field name="enumTypeId"><default-field title="Type">
+                        <drop-down><list-options list="enumTypeList" key="${enumTypeId}" text="${description}"/></drop-down></default-field></field>
+                    <field name="enumId"><default-field title="ID"><text-line size="30"/></default-field></field>
+                    <field name="description"><default-field title="Description"><text-line size="40"/></default-field></field>
+                    <field name="sequenceNum"><default-field title="Sequence"><text-line size="6"/></default-field></field>
+                    <field name="enumCode"><default-field title="Code"><text-line size="20"/></default-field></field>
+                    <field name="createButton"><default-field title="Create"><submit confirmation="Create this enumeration?"/></default-field></field>
+                </form-single>
+            </container-dialog>
+        </box-toolbar><box-body-nopad>
+            <form-list name="EnumList" list="enumList" skip-form="true" paginate="false">
+                <field name="enumId"><default-field title="ID">
+                    <link url="viewDetail" text="${enumId}" link-type="anchor"><parameter name="enumId"/></link></default-field></field>
+                <field name="description"><default-field title="Description"><display/></default-field></field>
+                <field name="enumCode"><default-field title="Code"><display/></default-field></field>
+                <field name="editDialog"><default-field title="">
+                    <container-dialog id="EditEnumDialog" button-text="Edit" icon="edit" width="600" title="Edit ${enumId}">
+                        <form-single name="EditEnum" transition="updateEnum">
+                            <field name="enumId"><default-field title="ID"><display/></default-field></field>
+                            <field name="enumTypeId"><default-field title="Type">
+                                <display-entity entity-name="moqui.basic.EnumerationType"/></default-field></field>
+                            <field name="description"><default-field title="Description"><text-line size="40"/></default-field></field>
+                            <field name="enumCode"><default-field title="Code"><text-line size="20"/></default-field></field>
+                            <field name="updateButton"><default-field title="Update"><submit/></default-field></field>
+                        </form-single>
+                    </container-dialog>
+                </default-field></field>
+                <field name="viewDialog"><default-field title="">
+                    <dynamic-dialog id="ViewEnumDialog" button-text="View" transition="viewDetail" width="900" title="Enumeration ${enumId}">
+                        <parameter name="enumId"/></dynamic-dialog>
+                </default-field></field>
+            </form-list>
+        </box-body-nopad></container-box>
+    </widgets>
+</screen>

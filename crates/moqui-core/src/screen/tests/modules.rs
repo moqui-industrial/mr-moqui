@@ -91,7 +91,8 @@ fn recorded_strings(source: &str) -> Vec<String> {
 
 /// Each template puts `{}` where a value goes and lists the modes that must write that value out.
 const TEMPLATES: &[(&str, &[&str])] = &[
-    (r#"<label text="{}"/>"#, &["text", "csv", "html-print"]),
+    // csv writes no label: its text would run into the header row of the list
+    (r#"<label text="{}"/>"#, &["text", "html-print"]),
     (r#"<container-dialog button-text="{}"/>"#, &["text"]),
     (r#"<image alt="{}"/>"#, &["text", "html-print"]),
     (r#"<section name="{}"/>"#, &["text", "csv", "xml", "html-print"]),
@@ -313,8 +314,8 @@ fn a_section_is_generated_once_per_mode_and_again_when_its_file_changes() {
     }
     assert_eq!(first.generated.unit_count(), 2);
     assert!(Arc::ptr_eq(&first, &def()));
-    // another mode makes its own units
-    assert_eq!(render("csv").body_text(), "onetwo");
+    // another mode makes its own units (csv writes no labels, so the body is empty)
+    assert_eq!(render("csv").body_text(), "");
     assert_eq!(first.generated.unit_count(), 4);
 
     std::fs::write(
@@ -366,6 +367,7 @@ fn every_base_component_screen_generates_in_all_three_modes() {
     }
     // A factory that knows the components, so component:// locations resolve.
     let _env = super::Env::new();
+    let _example = crate::testing::ExampleOff::new();
     let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime");
     let factory = ExecutionContextFactory::boot(runtime).unwrap();
     factory.set_entity(crate::testing::open());

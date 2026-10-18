@@ -16,7 +16,9 @@
 //!
 //! One runtime per thread. Bare names resolve through a proxy on `globalThis`
 //! that reads the thread-local context stack. `ec` is an own property of
-//! `globalThis` and hosts the calls XML actions emit.
+//! `globalThis` and hosts the calls XML actions emit. The bare name `context` is
+//! the stack itself, as Java's `ContextStack` is: a proxy whose reads and writes
+//! are those of the bare names (see [`CONTEXT_PROXY`]).
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -388,6 +390,11 @@ struct Engine {
     objects: RefCell<HashMap<&'static str, Persistent<Object<'static>>>>,
     /// Ids of the mode runtimes this engine has already run.
     runtimes: RefCell<std::collections::HashSet<u64>>,
+    /// The object the bare name `context` reads as: the stack itself, made once (see [`CONTEXT_PROXY`]).
+    context_proxy: Persistent<JsValue<'static>>,
+    /// Whether [`flush_tracked`] is writing this engine's tracked values back. A `context` converted meanwhile
+    /// (a tracked map that holds it) reads the stack as it is, instead of flushing again inside the flush.
+    flushing: Cell<bool>,
     object_utilities: Persistent<Object<'static>>,
     collection_utilities: Persistent<Object<'static>>,
     string_utilities: Persistent<Object<'static>>,
@@ -711,6 +718,11 @@ fn with_context<R>(body: impl FnOnce(&Ctx) -> Result<R, Error>) -> Result<R, Err
 /// converted at every call. So a change through a held object after a call, before its name is read again, is
 /// not on the stack for host code that reads the stack directly until the end of the script.
 fn flush_tracked(ctx: &Ctx<'_>, engine: &Engine, mode: Flush) -> Result<(), Error> {
+    if engine.flushing.replace(true) {
+        // Inside this engine's own flush (see `context_combined_map`): the values are being written already.
+        return Ok(());
+    }
+    let _flushing = Flushing(&engine.flushing);
     if mode == Flush::End {
         readopt_all(engine);
     }
@@ -755,6 +767,15 @@ fn flush_tracked(ctx: &Ctx<'_>, engine: &Engine, mode: Flush) -> Result<(), Erro
     match first {
         Some(err) => Err(err),
         None => Ok(()),
+    }
+}
+
+/// Clears an engine's `flushing` flag when the flush ends, also by an error or a panic.
+struct Flushing<'a>(&'a Cell<bool>);
+
+impl Drop for Flushing<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
     }
 }
 
@@ -865,6 +886,8 @@ impl Engine {
             )),
             objects: RefCell::new(HashMap::new()),
             runtimes: RefCell::new(std::collections::HashSet::new()),
+            context_proxy: helpers.context_proxy,
+            flushing: Cell::new(false),
             object_utilities: helpers.object_utilities,
             collection_utilities: helpers.collection_utilities,
             string_utilities: helpers.string_utilities,
@@ -877,6 +900,7 @@ impl Engine {
 }
 
 struct Helpers {
+    context_proxy: Persistent<JsValue<'static>>,
     object_utilities: Persistent<Object<'static>>,
     collection_utilities: Persistent<Object<'static>>,
     string_utilities: Persistent<Object<'static>>,
@@ -899,7 +923,9 @@ fn install_context(ctx: &Ctx<'_>) -> Result<Helpers, Error> {
     install_entity_prototypes(ctx)?;
     freeze_host_globals(ctx, builtins)?;
     install_proxy(ctx)?;
+    let context_proxy = make_context_proxy(ctx)?;
     Ok(Helpers {
+        context_proxy: Persistent::save(ctx, context_proxy),
         object_utilities: Persistent::save(ctx, object_utilities),
         collection_utilities: Persistent::save(ctx, collection_utilities),
         string_utilities: Persistent::save(ctx, string_utilities),
@@ -978,31 +1004,36 @@ fn proxy_get<'js>(
 }
 
 fn proxy_get_inner<'js>(ctx: &Ctx<'js>, property: &ProxyProperty<'js>) -> rquickjs::Result<JsValue<'js>> {
-    let ctx = ctx.clone();
     if property.is_symbol() {
-        return Undefined.into_js(&ctx);
+        return Undefined.into_js(ctx);
     }
-    let name = property.to_string()?;
+    read_name(ctx, &property.to_string()?)
+}
+
+/// A bare `name` read: the script's own object of a list or map it already read, else the stack's value, tracked when
+/// it is a list or map. `context` is the stack itself. A missing name is a helper object by that name, else null.
+fn read_name<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<JsValue<'js>> {
+    let ctx = ctx.clone();
     if let Some(engine) = current_engine() {
-        let saved = engine.tracked.borrow().get(&name).cloned();
-        if let Some(saved) = saved.or_else(|| readopt(&engine, &name)) {
+        let saved = engine.tracked.borrow().get(name).cloned();
+        if let Some(saved) = saved.or_else(|| readopt(&engine, name)) {
             return saved.restore(&ctx);
         }
     }
-    match stack_get(&name) {
+    match stack_get(name) {
         Lookup::Value(value @ (Value::List(_) | Value::Map(_))) => {
             let js = host_to_js(&ctx, value)?;
             if let Some(engine) = current_engine() {
                 engine
                     .tracked
                     .borrow_mut()
-                    .insert(name, Persistent::save(&ctx, js.clone()));
+                    .insert(name.to_string(), Persistent::save(&ctx, js.clone()));
             }
             Ok(js)
         }
         Lookup::Value(value) => host_to_js(&ctx, value),
-        Lookup::Context => context_snapshot(&ctx),
-        Lookup::Missing => match helper_object(&ctx, &name)? {
+        Lookup::Context => context_proxy(&ctx),
+        Lookup::Missing => match helper_object(&ctx, name)? {
             Some(helper) => helper.into_js(&ctx),
             None => Null.into_js(&ctx),
         },
@@ -1020,14 +1051,19 @@ fn proxy_set<'js>(
 }
 
 fn proxy_set_inner<'js>(ctx: &Ctx<'js>, property: &ProxyProperty<'js>, value: &JsValue<'js>) -> rquickjs::Result<bool> {
-    let ctx = ctx.clone();
     if property.is_symbol() {
         return Ok(true);
     }
-    let name = property.to_string()?;
+    write_name(ctx, &property.to_string()?, value)?;
+    Ok(true)
+}
+
+/// A bare `name = value`: the value goes on the stack's top frame, and a plain list or map stays the script's object.
+fn write_name<'js>(ctx: &Ctx<'js>, name: &str, value: &JsValue<'js>) -> rquickjs::Result<()> {
+    let ctx = ctx.clone();
     if let Some(engine) = current_engine() {
-        engine.tracked.borrow_mut().remove(&name);
-        engine.released.borrow_mut().remove(&name);
+        engine.tracked.borrow_mut().remove(name);
+        engine.released.borrow_mut().remove(name);
     }
     let host = js_to_host(&ctx, value)?;
     // A list or map put under a name stays the script's object, so `entry = list[i]; entry.field = x` changes the
@@ -1036,7 +1072,7 @@ fn proxy_set_inner<'js>(ctx: &Ctx<'js>, property: &ProxyProperty<'js>, value: &J
     STACK.with(|stack| {
         stack
             .borrow_mut()
-            .put(name.clone(), host)
+            .put(name, host)
             .map(|_| ())
             .map_err(|err| Exception::throw_message(&ctx, err.message()))
     })?;
@@ -1045,15 +1081,18 @@ fn proxy_set_inner<'js>(ctx: &Ctx<'js>, property: &ProxyProperty<'js>, value: &J
             engine
                 .tracked
                 .borrow_mut()
-                .insert(name, Persistent::save(&ctx, value.clone()));
+                .insert(name.to_string(), Persistent::save(&ctx, value.clone()));
         }
     }
-    Ok(true)
+    Ok(())
 }
 
 /// An array or an object made by `{}` or `new Object()`, the values that convert to a host list or map and back
-/// as the same shape: not a `Set`, a `Map`, a class instance or an exotic host object.
+/// as the same shape: not a `Set`, a `Map`, a class instance, an exotic host object or a proxy (`context`, an entity).
 fn is_plain_collection(value: &JsValue<'_>) -> bool {
+    if value.as_proxy().is_some() {
+        return false;
+    }
     if value.is_array() {
         return true;
     }
@@ -1080,15 +1119,107 @@ fn global_has_own(ctx: &Ctx<'_>, name: &str) -> rquickjs::Result<bool> {
     has_own.call((This(globals), name))
 }
 
-/// `context` reads as a plain object of every visible name. A write to it does not reach the stack.
-fn context_snapshot<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-    if let Some(engine) = current_engine() {
-        readopt_all(&engine);
+/// The target of the `context` proxy. It marks the proxy for [`js_value_to_host`], which converts it to the combined
+/// map of the visible names, as Java passes the stack itself to a call that takes a `Map`.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(super) struct HostContextStack {}
+
+/// The bare name `context`: the stack itself, as Java's `ContextStack`. Each trap is the bare-name proxy's: `context.x`
+/// reads as a bare `x` (`read`), `context.x = v` is a bare `x = v` (`write`), `'x' in context` holds for a visible name
+/// (`has`), `Object.keys(context)` and a spread list the visible names (`names`) and `delete context.x` removes the name
+/// from the top frame (`remove`). The `Map` methods of Java's stack that ported scripts call (`context.get(name)`,
+/// `context.put(name, value)`) are there for a name no frame holds: a context value of that name wins, as a bare one.
+const CONTEXT_PROXY: &str = r#"(function (target, read, write, has, names, remove) {
+    const methods = {
+        get: (name) => read(String(name)),
+        put: (name, value) => { const old = read(String(name)); write(String(name), value); return old; },
+        putAll: (map) => { for (const [key, value] of Object.entries(map || {})) write(key, value); },
+        remove: (name) => { const old = read(String(name)); remove(String(name)); return old; },
+        containsKey: (name) => has(String(name)),
+        keySet: () => names(),
+        getCombinedMap: () => { const out = {}; for (const key of names()) out[key] = read(key); return out; }
+    };
+    return new Proxy(target, {
+        get(target, key) {
+            if (typeof key !== "string") return undefined;
+            if (!has(key) && Object.prototype.hasOwnProperty.call(methods, key)) return methods[key];
+            return read(key);
+        },
+        set(target, key, value) { if (typeof key === "string") write(key, value); return true; },
+        deleteProperty(target, key) { if (typeof key === "string") remove(key); return true; },
+        has(target, key) { return typeof key === "string" && (key === "context" || has(key)); },
+        ownKeys() { return names(); },
+        getOwnPropertyDescriptor(target, key) {
+            return typeof key === "string" && has(key)
+                ? { value: read(key), writable: true, enumerable: true, configurable: true } : undefined;
+        }
+    });
+})"#;
+
+fn make_context_proxy<'js>(ctx: &Ctx<'js>) -> Result<JsValue<'js>, Error> {
+    let target = caught(ctx, "context", Class::instance(ctx.clone(), HostContextStack {}))?;
+    let read = caught(ctx, "context", Function::new(ctx.clone(), context_read))?;
+    let write = caught(ctx, "context", Function::new(ctx.clone(), context_write))?;
+    let has = caught(ctx, "context", Function::new(ctx.clone(), context_has))?;
+    let names = caught(ctx, "context", Function::new(ctx.clone(), context_names))?;
+    let remove = caught(ctx, "context", Function::new(ctx.clone(), context_remove))?;
+    let make: Function = eval_js(ctx, CONTEXT_PROXY)?;
+    caught(ctx, "context", make.call((target, read, write, has, names, remove)))
+}
+
+/// The `context` proxy of the running engine, made once with it.
+fn context_proxy<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+    match current_engine() {
+        Some(engine) => engine.context_proxy.clone().restore(ctx),
+        None => make_context_proxy(ctx).map_err(|err| Exception::throw_message(ctx, err.message())),
     }
-    flush_current(ctx, false)?;
-    let mut visible = STACK.with(|stack| stack.borrow().combined_map());
-    visible.retain(|_, value| !matches!(value, Value::Bytes(_)));
-    collection_to_js(ctx, Value::Map(visible))
+}
+
+fn context_read<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || read_name(&ctx, &name))
+}
+
+fn context_write<'js>(ctx: Ctx<'js>, name: String, value: JsValue<'js>) -> rquickjs::Result<()> {
+    host_guard(&ctx, || write_name(&ctx, &name, &value))
+}
+
+fn context_has(ctx: Ctx<'_>, name: String) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || Ok(STACK.with(|stack| stack.borrow().contains_key(&name))))
+}
+
+fn context_names<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let names = STACK.with(|stack| stack.borrow().combined_keys());
+        host_to_js(&ctx, Value::List(names.into_iter().map(Value::String).collect()))
+    })
+}
+
+/// `delete context.x`: the name goes from the top frame, as Java's `ContextStack.remove`, and the script's object of it
+/// is forgotten.
+fn context_remove(ctx: Ctx<'_>, name: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        if let Some(engine) = current_engine() {
+            engine.tracked.borrow_mut().remove(&name);
+            engine.released.borrow_mut().remove(&name);
+        }
+        STACK.with(|stack| {
+            stack.borrow_mut().remove(&name);
+        });
+        Ok(())
+    })
+}
+
+/// The combined map of the visible names, for `context` passed to a host call that takes a map: as Java passes the
+/// stack itself. The script's tracked lists and maps are written first, so the map has what the script changed.
+pub(super) fn context_combined_map(ctx: &Ctx<'_>) -> Result<Value, Error> {
+    if let Some(engine) = current_engine() {
+        if !engine.flushing.get() {
+            readopt_all(&engine);
+            flush_tracked(ctx, &engine, Flush::Keep)?;
+        }
+    }
+    Ok(Value::Map(STACK.with(|stack| stack.borrow().combined_map())))
 }
 
 /// Set a name on the stack from host code, forgetting any list or map the script already read
@@ -1871,6 +2002,104 @@ mod tests {
 
     fn plain(name: &str) -> Option<String> {
         context_value(name).map(|value| moqui_lib::object::to_plain_string(&value))
+    }
+
+    #[test]
+    fn context_is_the_stack_itself() -> Result<(), Error> {
+        clear_context_stack();
+        // The StatusFlows pattern: a script-local value written to the stack through `context`.
+        run_script("let t = 'a'; context.t2 = t + 'b'")?;
+        assert_eq!(plain("t2"), Some("ab".to_string()));
+        holds("t2 === 'ab' && context.t2 === 'ab'");
+        // A read through `context` sees what the host set, and a missing name reads as a bare one does.
+        set_context_name("fromHost", Value::string("host"))?;
+        holds("context.fromHost === 'host' && context.noSuchName === null && 'fromHost' in context");
+        holds("!('noSuchName' in context) && 'context' in context && context.context === context");
+        holds("Object.keys(context).includes('fromHost') && Object.keys(context).includes('t2')");
+        holds("!Object.keys(context).includes('context') && ({...context}).fromHost === 'host'");
+        run_script("let seen = []; for (const k in context) seen.push(k); forInSaw = seen.includes('t2')")?;
+        assert_eq!(plain("forInSaw"), Some("true".to_string()));
+        // Java's Map methods, for names no frame holds.
+        run_script(
+            "context.put('viaPut', 1); gotViaGet = context.get('viaPut'); hasIt = context.containsKey('viaPut')",
+        )?;
+        assert_eq!(plain("viaPut"), Some("1".to_string()));
+        assert_eq!(plain("gotViaGet"), Some("1".to_string()));
+        assert_eq!(plain("hasIt"), Some("true".to_string()));
+        set_context_name("get", Value::string("a value named get"))?;
+        holds("context.get === 'a value named get'");
+        // `delete` removes the name from the top frame; the stack stays valid.
+        run_script("delete context.viaPut; delete context.get")?;
+        assert_eq!(plain("viaPut"), None);
+        holds("!('viaPut' in context) && typeof context.get === 'function'");
+        // The stack refuses the name `context` itself, through the proxy as for a bare assignment.
+        assert!(run_script("context.context = 1").is_err());
+        assert!(run_script("context = {}").is_err());
+        clear_context_stack();
+        Ok(())
+    }
+
+    #[test]
+    fn a_map_assigned_through_context_is_tracked_like_a_bare_one() -> Result<(), Error> {
+        clear_context_stack();
+        run_script("const m = {a: 1}; context.held = m; m.b = 2; const l = [1]; context.heldList = l; l.push(2)")?;
+        holds("held.a === 1 && held.b === 2 && heldList.length === 2");
+        // A read through `context` is the script's own tracked object, as a bare read is.
+        run_script("const again = context.held; again.c = 3; context.heldList.push(3)")?;
+        holds("held.c === 3 && heldList.length === 3 && context.heldList === heldList");
+        // `context` itself is never tracked as a map: holding it under a name stores the visible map once.
+        run_script("copied = context; copied2 = {inner: context}")?;
+        holds("typeof copied === 'object' && copied.held.c === 3 && copied2.inner.heldList.length === 3");
+        run_script("more = 1")?;
+        holds("copied.more === undefined && copied2.inner.more === undefined");
+        clear_context_stack();
+        Ok(())
+    }
+
+    #[test]
+    fn context_passed_to_a_host_call_is_the_combined_map() -> Result<(), Error> {
+        clear_context_stack();
+        set_context_name("outerName", Value::string("outer"))?;
+        push_context_frame();
+        set_context_name("innerName", Value::I32(2))?;
+        with_ctx(|ctx| {
+            // A host function that converts its argument as `ec.service` and `ec.resource.expand` convert a map.
+            let keys = rquickjs::Function::new(
+                ctx.clone(),
+                |ctx: Ctx<'_>, value: rquickjs::Value<'_>| -> rquickjs::Result<String> {
+                    let host = super::js_to_host(&ctx, &value)?;
+                    let Value::Map(map) = host else {
+                        return Ok("not a map".to_string());
+                    };
+                    let mut keys: Vec<String> = map
+                        .iter()
+                        .map(|(key, value)| format!("{key}={}", moqui_lib::object::to_plain_string(value)))
+                        .collect();
+                    keys.sort();
+                    Ok(keys.join(","))
+                },
+            )
+            .map_err(js_error)?;
+            // Defined, not set: a set on `globalThis` goes to the context stack.
+            ctx.globals()
+                .prop("hostMapKeys", rquickjs::object::Property::from(keys))
+                .map_err(js_error)?;
+            assert!(step(
+                ctx,
+                "rows = [1]; rows.push(2); seenEntries = hostMapKeys(context); true"
+            )?);
+            Ok(())
+        })?;
+        assert_eq!(
+            plain("seenEntries"),
+            Some("innerName=2,outerName=outer,rows=1,2".to_string())
+        );
+        // The existing host paths take it too: the map argument of `expand` and `paginateList`.
+        holds("ec.resource.expand('${innerName}-${outerName}', '', context) === '2-outer'");
+        run_script("CollectionUtilities.paginateList('rows', 'rowsPage', context)")?;
+        holds("rowsPage.length === 2 && rowsPageCount === 2");
+        clear_context_stack();
+        Ok(())
     }
 
     #[test]

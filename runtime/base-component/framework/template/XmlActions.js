@@ -99,6 +99,10 @@
         return `ec.entity.conditionFactory.makeCondition([${parts.join(", ")}], ${jsString(attr(node, "combine") || "and")})`;
     };
 
+    // A limit or offset: as written when it is a number, or expanded to text when it has ${}, as Java's
+    // `ec.resource.expand(...) as Integer`; the host find reads the integer, and empty or non-numeric text is no limit.
+    const countExpr = (text) => text.indexOf("$") >= 0 && text.charAt(text.length - 1) !== "$" ? expandExpr(text) : text;
+
     // ec.entity.find(...) through the options that entity-find-one and the find-by-condition elements share.
     const findHead = (node, distinct) => joinPresent([
         // An entity name with ${} is expanded, as the Groovy string of the Java template was.
@@ -130,8 +134,8 @@
         const cached = attr(node, "cache") === "true";
         return joinPresent([
             findHead(node, true),
-            has(node, "offset") && `.offset(${attr(node, "offset")})`,
-            has(node, "limit") && `.limit(${attr(node, "limit")})`,
+            has(node, "offset") && `.offset(${countExpr(attr(node, "offset"))})`,
+            has(node, "limit") && `.limit(${countExpr(attr(node, "limit"))})`,
             childrenNamed(node, "select-field").map((kid) => `.selectField(${literalOrExpand(attr(kid, "field-name"))})`).join(""),
             // The fields a form-list shows, set by the screen on the copy of its entity-find (not a schema attribute).
             has(node, "form-select-fields") && `.selectFormFields(${jsString(attr(node, "form-select-fields"))})`,

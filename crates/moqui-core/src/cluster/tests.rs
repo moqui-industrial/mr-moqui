@@ -473,6 +473,7 @@ fn cluster_tls_pair_is_stable_and_a_cert_without_a_key_fails() {
     let _clean = Clean;
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let _env = ConfGuard::new(root.clone());
+    let _example = crate::testing::ExampleOff::new();
     let before = repo_env_stamp(&root);
     let temp = TempRuntime::new("cluster-cert");
     std::os::unix::fs::symlink(root.join("runtime/base-component"), temp.path().join("base-component")).unwrap();

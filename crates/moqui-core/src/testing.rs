@@ -30,6 +30,31 @@ use crate::driver::{DbCancel, DbConnection, DbDriver, DbRow};
 use crate::entity::{EntityFacade, EntityGroup};
 use crate::transaction::{PoolConfig, TransactionManager};
 
+/// Leaves the example component out of a boot of the repository runtime. The component is on by default and its
+/// `MoquiConf.xml` selects a tool factory that only a binary linking the `example` crate has (the `moqui` binary and
+/// the host integration tests); this crate's own tests cannot link it, since `example` depends on this crate. Clears
+/// the property when dropped.
+pub struct ExampleOff;
+
+impl ExampleOff {
+    pub fn new() -> Self {
+        moqui_lib::env::set_property("example_disabled", "true");
+        ExampleOff
+    }
+}
+
+impl Default for ExampleOff {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for ExampleOff {
+    fn drop(&mut self) {
+        moqui_lib::env::clear_property("example_disabled");
+    }
+}
+
 type Row = BTreeMap<String, Value>;
 type Tables = BTreeMap<String, Vec<Row>>;
 

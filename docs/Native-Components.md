@@ -107,4 +107,4 @@ Register a constructor with `registry.tool("my_component::ClientFactory", constr
 
 Existing built-in XLSX/image/SFTP/IPP support is unchanged. This API does not load JARs, Java tool classes, Java widget renderers, servlet filters, FOP, Hazelcast or Drools. Port component code and explicitly select its Rust implementation identifiers. Rebuild the application whenever native code/dependencies change.
 
-Executable public-API examples and tests: `crates/moqui-core/tests/native_components.rs`. A worked component, off by default, with specs: `runtime/base-component/example` (`./moq test example -D example_disabled=false`).
+Executable public-API examples and tests: `crates/moqui-core/tests/native_components.rs`. A worked component, on by default, with specs: `runtime/base-component/example` (`./moq test example`; `-D example_disabled=true` leaves it out).

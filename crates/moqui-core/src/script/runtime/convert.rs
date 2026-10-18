@@ -284,6 +284,10 @@ fn js_value_to_host_in<'js>(ctx: &Ctx<'_>, value: &JsValue<'js>, path: &mut Vec<
             if let Some(class) = target.as_class::<HostEntity>() {
                 return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
             }
+            // `context` is the stack: a call that takes it as a map gets the visible names, as Java passes the stack.
+            if target.as_class::<HostContextStack>().is_some() {
+                return context_combined_map(ctx);
+            }
         }
     }
     if let Some(object) = value.as_object() {

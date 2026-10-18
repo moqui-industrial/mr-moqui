@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Gallery: the 3.6 Board archetype as the .qvue path of style-guide 4.8. The component is Board.qvue next to this
+    file; this screen serves it in the qvue render mode and answers the component's data and action requests with
+    the transitions below. Nothing is written: moveCard answers with a message. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Board" default-menu-index="6" render-modes="vue,qvue" server-static="vue,qvue">
+
+    <!-- the stages and cards of the pipeline, an inline list: the gallery has no business entities -->
+    <transition name="boardRows" method="get" read-only="true">
+        <actions><script><![CDATA[
+            const stages = [
+                { id: 'qualify', name: 'Qualify', color: 'grey-6' }, { id: 'propose', name: 'Propose', color: 'primary' },
+                { id: 'negotiate', name: 'Negotiate', color: 'warning' }, { id: 'won', name: 'Won', color: 'positive' },
+                { id: 'lost', name: 'Lost', color: 'negative' } ]
+            const row = (id, title, amount, owner, stage, next) => ({ id, title, amount, owner, stage, next })
+            const rows = [
+                row('OPP-1001', 'Acme Co. warehouse expansion', 120000, 'JD', 'qualify', 'Call tomorrow 10:00'),
+                row('OPP-1002', 'Beta Inc. pilot program', 45000, 'MS', 'qualify', 'Send deck by Friday'),
+                row('OPP-1003', 'Gamma LLC renewal', 18500, 'JD', 'propose', 'Quote Q-10077 sent'),
+                row('OPP-1004', 'Delta Corp. new line', 230000, 'AK', 'propose', 'Demo on the 24th'),
+                row('OPP-1005', 'Epsilon retail rollout', 76000, 'MS', 'negotiate', 'Legal review of terms'),
+                row('OPP-1006', 'Zeta Partners add-on', 9800, 'AK', 'won', 'Kickoff scheduled'),
+                row('OPP-1007', 'Eta Foods seasonal order', 32000, 'JD', 'won', 'Invoice INV-2201 paid'),
+                row('OPP-1008', 'Theta Systems migration', 150000, 'MS', 'lost', 'Lost to incumbent'),
+                row('OPP-1009', 'Iota Health devices', 64000, 'AK', 'qualify', 'Qualify budget owner'),
+                row('OPP-1010', 'Kappa Logistics fleet', 410000, 'JD', 'negotiate', 'Counter offer due Monday') ]
+            ec.web.sendJsonResponse({ stages, rows })
+        ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
+    <!-- a card dragged to another column posts here; the message comes back as a notification -->
+    <transition name="moveCard" method="post">
+        <actions><message>moved ${id} to ${stage}</message></actions>
+        <default-response url="."/>
+    </transition>
+
+    <widgets>
+        <render-mode>
+            <text type="qvue" location="component://example/screen/Gallery/Board.qvue" template="false"/>
+            <text type="html,qvt"><![CDATA[<p><strong>The Board is a .qvue screen: open it under /qapps (the qvt render mode).</strong></p>]]></text>
+        </render-mode>
+    </widgets>
+</screen>

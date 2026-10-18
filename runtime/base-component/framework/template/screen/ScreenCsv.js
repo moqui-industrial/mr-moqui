@@ -16,7 +16,8 @@
 // titles and a line for each row, a form-single is ignored, and elements it does not name are no-ops.
 //
 // Differences from the FreeMarker macros: a date-time with no format is formatted with the type's default
-// pattern, where FreeMarker failed on a date it could not treat as text.
+// pattern, where FreeMarker failed on a date it could not treat as text. A label is not written: the FreeMarker
+// macro wrote its text with no line break after it, so the header row of the list ran on from the label.
 (function (T, S) {
     "use strict";
 
@@ -83,18 +84,6 @@ const $sep = () => { if ($hasPrev) sri.write(","); else $hasPrev = true; };
         ` : body;
     });
 
-    const labelMacro = stmt((node) => {
-        const condition = attr(node, "condition");
-        const textMap = attr(node, "text-map");
-        const text = textMap ? `ec.resource.expand(${jsString(attr(node, "text"))}, "", ${raw(textMap)})` : expandExpr(attr(node, "text"));
-        const body = csv(text);
-        return condition ? js`
-            if (${raw(condition)}) {
-                ${body}
-            }
-        ` : body;
-    });
-
     // The code for one cell, which first writes the comma that separates it from the cell before.
     const cellCode = (field) => fieldChain(field, (sub) =>
         widgetless(sub) ? "" : setCode(sub) + "$sep();\n" + widgetsSource(sub));
@@ -149,7 +138,6 @@ const $sep = () => { if ($hasPrev) sri.write(","); else $hasPrev = true; };
         "panel-footer": stmt((node, children) => children),
         "section-include": stmt((node) => `sri.renderSectionInclude(${S.bareLit(node)});`),
         "link": linkMacro,
-        "label": labelMacro,
         "form-list": formListMacro,
         "field": stmt((node, children) => children),
         "conditional-field": stmt((node, children) => children),

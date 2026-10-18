@@ -24,6 +24,9 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+// the example component loads with the repository runtime; link its tool factory as the moqui binary does
+use example as _;
+
 mod backup;
 mod cluster_notify;
 mod elfinder;

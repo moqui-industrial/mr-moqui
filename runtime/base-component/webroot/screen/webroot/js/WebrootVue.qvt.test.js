@@ -174,6 +174,45 @@ test("an m-form keeps its own field errors and leaves the rest to notify", () =>
     assert.equal(placedPretty.errors, "Other");
 });
 
+test("a tree node draws the children it loads, is a leaf on false, and keeps the ones that came inline", async () => {
+    const options = qvt.components["m-tree-item"];
+    assert.match(options.template, /v-for="child in children"/, "the list drawn is the children computed, not model.children (the server's boolean)");
+    const node = (model, loadedChildren, top) => {
+        const self = { model, loadedChildren: loadedChildren === undefined ? null : loadedChildren, top: top || { items: "/apps/Gallery/Widgets/actions/EnumTree", currentPath: null, parameters: {} } };
+        Object.keys(options.computed).forEach((name) => Object.defineProperty(self, name, { get: () => options.computed[name].call(self) }));
+        return self;
+    };
+    // children: true is a folder with nothing to draw yet; false is a leaf; a list came inline (open-path)
+    const lazy = node({ id: "A", text: "A", li_attr: { treeNodeName: "TypeNode" }, children: true });
+    assert.equal(lazy.isFolder, true);
+    assert.equal(lazy.hasChildren, false);
+    const leaf = node({ id: "L", text: "L", children: false });
+    assert.equal(leaf.isFolder, false);
+    assert.equal(leaf.hasChildren, false);
+    const inline = node({ id: "I", text: "I", state: { opened: true }, children: [{ id: "I/1", text: "one", children: false }] });
+    assert.equal(inline.hasChildren, true);
+    assert.equal(inline.children[0].id, "I/1");
+    // opening a lazy node fetches <tree url> with the node's id and name, and the list answered is what it draws
+    const original = moqui.request;
+    const requests = [];
+    moqui.request = (url, opts) => { requests.push([url, opts.params]); return Promise.resolve({ json: [{ id: "A/1", text: "a one", children: false }] }); };
+    options.watch.open.call(lazy, true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(requests, [["/apps/Gallery/Widgets/actions/EnumTree", { treeNodeId: "A", treeNodeName: "TypeNode", treeOpenPath: null }]]);
+    assert.equal(lazy.hasChildren, true);
+    assert.deepEqual(lazy.children.map((child) => child.id), ["A/1"]);
+    // an inline node does not fetch, and an answer that is not a list leaves a lazy node to fetch again
+    options.watch.open.call(inline, true);
+    moqui.request = () => Promise.resolve({ json: { errors: "no" } });
+    const other = node({ id: "B", text: "B", children: true });
+    options.watch.open.call(other, true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(requests.length, 1);
+    assert.equal(other.loadedChildren, null);
+    assert.equal(other.isFolder, true);
+    moqui.request = original;
+});
+
 test("a field widget puts its form's error on the Quasar field", () => {
     const mixinOwner = qvt.components["m-text-line"];
     const errorAttrs = mixinOwner.mixins.map((m) => m.computed && m.computed.errorAttrs).find((f) => f);

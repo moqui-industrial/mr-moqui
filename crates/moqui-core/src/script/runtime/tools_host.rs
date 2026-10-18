@@ -25,7 +25,7 @@ use moqui_lib::node::MNode;
 
 const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     // ---- collections ----
-    // `context` is a read-only view of the stack here, so the page values are set on the stack by name.
+    // `context` is the stack; the page values are set on it by bare name, as the generated screen code reads them.
     // A list that is already a page, `{page}AlreadyPaginated` or a `{page}Count` from a paginated find (which sets the
     // range of the whole result), is the page as it is, as `paginateParameters` marks it and the screen's paginate does.
     cu.paginateList = function (listName, pageListName, context) {

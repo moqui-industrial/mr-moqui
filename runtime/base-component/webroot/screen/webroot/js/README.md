@@ -126,33 +126,48 @@ input. Raw `q-input`, `q-select`, `q-date` and `q-field` are not written by a ma
 `q-expansion-item`, `q-checkbox` and the layout classes are.
 
 Buttons are of three kinds, so a screen reads the same everywhere: a `submit` is `unelevated color="primary"` once a field of its form changed
-(`outline` until then); a secondary action (a `link` outside a form-list cell, a transition link, a `button-menu`, a dialog's button, the Find
-Options / Columns / Saved Finds tools of a list) is tonal, `unelevated class="m-btn-tonal"` with `text-<color>` for its `btn-type`
-(`../css/WebrootVue.qvt.css`); a minor one (`reset`, page size, the export menu, icon buttons) is `flat`. A screen link with the default link-type
-inside a form-list cell, and `link-type="anchor"` anywhere, is text (`m-link-text`); `anchor-button` keeps the button in a cell. The exports of a
-list (csv, xlsx, text, print) are the items of one `q-btn-dropdown`, and the page buttons are a `q-pagination`.
+(`outline` until then), and a `link` or `button-menu` with an explicit `btn-type="primary"` is the same filled primary button (the one main
+action of a title row); a secondary action (a `link` outside a form-list cell, a transition link, a `button-menu`, a dialog's button, the Find
+Options / Columns / Saved Finds tools of a list) is tonal, `unelevated class="m-btn-tonal"` with `text-<color>` for a `btn-type` other than
+primary (`../css/WebrootVue.qvt.css`); a minor one (`reset`, `hidden-form-link`, page size, the export menu, icon buttons) is `flat`. A screen
+link with the default link-type inside a form-list cell, and `link-type="anchor"` anywhere, is text (`m-link-text`); `anchor-button` keeps the
+button in a cell. A `container-dialog` or `dynamic-dialog` button inside a form-list cell is flat and dense like the other in-cell links: the
+container-dialog's button comes through the component's `button` slot (`q-btn dense flat class="m-link"`), the dynamic-dialog gets
+`button-class="m-btn-flat"`; outside a cell both are the component's tonal button with the `icon` attribute as `button-icon` (default
+`open_in_new`). The exports of a list (csv, xlsx, text, print) are the items of one `q-btn-dropdown`, and the page buttons are a
+`q-pagination`, in a `form-list-nav-row` above the table (with the tools) and another below it.
+
+The `icon` attribute of `link`, `submit`, `button-menu` and the dialogs is a Material Icons name (`add`, `edit`; a `sym_o_*` name later),
+written as `<q-icon name="…" size="sm">`, or CSS classes when the value has a space or an `fa` prefix (`fa fa-plus`), written as
+`<i class="… q-icon">`; the dialogs give either form to the `icon` prop of their `q-btn`. The cells of a `field-row` are `col-xs-12 col-sm-6`
+(two fields side by side from 600px, stacked below), `col-sm-4` for three fields and `col-sm-3` for four.
+
+Two small classes of the style guide are in the same sheet: `.m-muted` for a caption (`grey-7`, and `grey-5` under `body--dark`), and `.m-tonal` on a
+`q-chip` or `q-badge` for the tint of `.m-btn-tonal` (a status chip is `q-chip dense square class="m-tonal text-positive"`: the tint follows the text
+color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class would cover it; primary without one). A list's row selection column is
+`m-sel` (as narrow as its checkbox), and a list wider than its card scrolls inside it (`overflow-x` on `.q-table__container`).
 
 | Component | For |
 |---|---|
 | `m-form` | form-single and rows of a form-list: `fields-initial`, `v-slot:default="formProps"` (`fields`, `hasFieldsChanged`, `fieldChanged`, checkbox set), submit by `fetch` (JSON answer, or a download), `submit-message`, `submit-reload-id`, `submit-hide-id`, `focus-field`, `exclude-empty-fields`, `parent-checkbox-set`, `validation-errors-initial`; the validation errors of its own fields go in `fieldErrors`, which the field wrappers show on the Quasar field |
 | `m-form-link` | a form that goes to a screen: the fields become the query. Slot `fields`, `clearForm` |
 | `m-checkbox-set` | selected rows: `checkbox-count`, `checkbox-parameter`, `checkbox-list-mode`, `checkbox-values` |
-| `m-form-list` | a list drawn by the client from rows it fetches, with sort, pages, selection and sub rows (see below) |
+| `m-form-list` | a list drawn by the client from rows it fetches, with sort, pages, selection (the `m-sel` column) and sub rows (see below); the page buttons are written again under a list of more than one page, after the table |
 | `m-form-paginate`, `m-form-go-page`, `m-form-column-config` | page buttons, jump to a page, the column picker |
 | `m-scope`, `m-static-form-list` | written by `ScreenQvtStatic.js` only: a scope over a form-single's map, and the form-list of a server-static screen (see Server-static screens) |
 | `m-text-line`, `m-text-area` | text input. `m-text-area` with `editor-type` `html` is `QEditor`, and `md` is a text area with a Marked preview |
 | `m-drop-down` | `options`, `options-url`, `options-parameters`, `depends-on`, `server-search`, `multiple`, `allow-empty`, `combo`, `submit-on-select`, `options-load-init` |
-| `m-date-time`, `m-date-period` | `QDate` and `QTime` in a popup; period and from-thru |
+| `m-date-time`, `m-date-period` | `QDate` and `QTime` in a popup; period and from-thru. In period mode the field is the base date (`_pdate`) and the period and offset selects (`_period`, `_poffset`) are in the menu of the `event_repeat` button in its append slot, which reads the choice ("Last Month") once made; the `date_range` button switches to from-thru (`_from`, `_thru`) |
 | `m-display` | text or a read-only field (`label-wrapper`), `display`, `value-url` |
 | `m-check`, `m-radio`, `m-file`, `m-field`, `m-text-find`, `m-range-find` | the other widgets |
 | `m-editable` | click to edit, `QPopupEdit`, `url`, `url-parameters`, `parameter-name`, `widget-type`, `load-url` |
 | `m-link` | a screen link: `href`, `load-id`, `confirmation`. A `data-confirm` attribute on any button or link is asked first |
 | `m-container-box`, `m-box-body`, `m-container-dialog`, `m-dialog` | boxes and dialogs |
-| `m-dynamic-container`, `m-dynamic-dialog` | a screen loaded into a container, or a dialog, with `load`, `reload` and `hide` |
-| `m-tree-top`, `m-tree-item` | tree |
+| `m-dynamic-container`, `m-dynamic-dialog` | a screen loaded into a container, or a dialog, with `load`, `reload` and `hide`; the dialog's button takes `button-text`, `button-class`, `color` and `button-icon` (default `open_in_new`), as `m-container-dialog` does |
+| `m-tree-top`, `m-tree-item` | tree: `items` is the node list or its URL (`<screen>/actions/<tree>`, posted `treeNodeId`, `treeNodeName`, `treeOpenPath`). A node's `children` is a list when it came inline (on `open-path`), `true` to load from the URL when the node is opened, `false` for a leaf |
 | `m-subscreens-tabs` (also `m-subscreens-menu`), `m-subscreens-active`, `m-subscreens-panel` | the subscreen menu and the place of the active subscreen |
 | `m-menu-nav-item`, `m-menu-subscreen-item`, `m-menu-item-content` | the navigation of the shell |
-| `m-chart`, `m-mermaid` | Chart.js 4 and Mermaid 11, loaded on first use |
+| `m-chart`, `m-mermaid` | Chart.js 4 and Mermaid 11, loaded on first use. `m-chart` takes `config`; `m-mermaid` takes the diagram in its `text` attribute (the compiler condenses the line breaks of slot content), `height` and `config` |
 | `m-script`, `m-stylesheet` | `<script>` and `<link>` of a screen's text |
 
 `m-form-list` takes `rows` (a list, or the URL of the rows, else `<current screen>/actions/<name>`), `search`, `list-name`, `action`, `multi`,

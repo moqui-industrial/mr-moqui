@@ -275,6 +275,17 @@ impl ContextStack {
         keys
     }
 
+    /// The visible keys in the order of [`Self::combined_map`], without copying the values.
+    pub fn combined_keys(&self) -> Vec<String> {
+        let mut keys = IndexMap::new();
+        for frame in self.frames[..=self.index].iter().flatten() {
+            for key in frame.borrow().keys() {
+                keys.insert(key.clone(), ());
+            }
+        }
+        keys.into_keys().collect()
+    }
+
     /// Root first, so a higher frame overrides a lower one.
     pub fn combined_map(&self) -> IndexMap<String, Value> {
         let mut combined = IndexMap::new();
@@ -358,9 +369,11 @@ mod tests {
         stack.push_map(Rc::clone(&frame)).unwrap();
         stack.put("b", Value::I32(2)).unwrap();
         assert_eq!(frame.borrow().get("b"), Some(&Value::I32(2)));
+        assert_eq!(stack.combined_keys(), vec!["a".to_string(), "b".to_string()]);
         stack.push_context();
         assert_eq!(stack.get("a"), Lookup::Missing);
         stack.put("c", Value::I32(3)).unwrap();
+        assert_eq!(stack.combined_keys(), vec!["c".to_string()]);
         stack.pop_context().unwrap();
         assert_eq!(stack.get("a"), Lookup::Value(Value::I32(1)));
         assert_eq!(stack.get("b"), Lookup::Value(Value::I32(2)));

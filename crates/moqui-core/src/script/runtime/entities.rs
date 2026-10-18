@@ -140,6 +140,34 @@ pub(super) fn take_find(ctx: &Ctx<'_>, slot: &RefCell<Option<EntityFind>>) -> rq
         .ok_or_else(|| Exception::throw_message(ctx, "entity find was already used"))
 }
 
+/// The integer of a `limit` or `offset` argument, `what`. A number is itself. Text is what an entity-find's
+/// `limit="${expr}"` expands to, read as Java's `as Integer`: trimmed and parsed, a whole number in decimal form too.
+/// Null, undefined, empty text or text that is not a number is `None`, no limit, logged at debug: the find still runs.
+fn find_count(ctx: &Ctx<'_>, what: &str, value: &JsValue<'_>) -> rquickjs::Result<Option<i64>> {
+    if value.is_null() || value.is_undefined() {
+        return Ok(None);
+    }
+    let Some(text) = value.as_string() else {
+        return js_i64(ctx, value).map(Some);
+    };
+    let text = text.to_string()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if let Ok(number) = trimmed.parse::<i64>() {
+        return Ok(Some(number));
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    match trimmed.parse::<f64>() {
+        Ok(number) if number.fract() == 0.0 && number.abs() < 9_007_199_254_740_992.0 => Ok(Some(number as i64)),
+        _ => {
+            tracing::debug!("entity find {what} {trimmed:?} is not an integer; no {what} applied");
+            Ok(None)
+        }
+    }
+}
+
 pub(super) fn prefixed_field(prefix: &str, field: &str) -> String {
     if prefix.is_empty() {
         return field.to_string();
@@ -272,16 +300,21 @@ impl HostFind {
         })
     }
 
+    /// `limit(count)`: a number, or the text an expanded `limit="${expr}"` of an entity-find gives (see
+    /// [`find_count`]). Null, empty or not a number leaves the find without a limit.
     fn limit<'js>(&self, ctx: Ctx<'js>, value: JsValue<'js>) -> rquickjs::Result<Class<'js, HostFind>> {
         host_guard(&ctx, || {
-            let number = js_i64(&ctx, &value)?;
-            let find = take_find(&ctx, &self.inner)?.limit(number);
+            let find = take_find(&ctx, &self.inner)?;
+            let find = match find_count(&ctx, "limit", &value)? {
+                Some(number) => find.limit(number),
+                None => find,
+            };
             wrap_find(&ctx, find)
         })
     }
 
     /// `offset(offset)`, or `offset(pageIndex, pageSize)` for the offset `pageIndex * pageSize`, as Java's. The page
-    /// size is not kept: `limit` sets it.
+    /// size is not kept: `limit` sets it. The arguments are as `limit` takes them.
     fn offset<'js>(
         &self,
         ctx: Ctx<'js>,
@@ -289,12 +322,16 @@ impl HostFind {
         page_size: Opt<JsValue<'js>>,
     ) -> rquickjs::Result<Class<'js, HostFind>> {
         host_guard(&ctx, || {
-            let mut number = js_i64(&ctx, &value)?;
+            let find = take_find(&ctx, &self.inner)?;
+            let Some(mut number) = find_count(&ctx, "offset", &value)? else {
+                return wrap_find(&ctx, find);
+            };
             if let Some(size) = page_size.0.as_ref().filter(|size| !size.is_undefined()) {
-                number = number.saturating_mul(js_i64(&ctx, size)?);
+                if let Some(size) = find_count(&ctx, "page size", size)? {
+                    number = number.saturating_mul(size);
+                }
             }
-            let find = take_find(&ctx, &self.inner)?.offset(number);
-            wrap_find(&ctx, find)
+            wrap_find(&ctx, find.offset(number))
         })
     }
 

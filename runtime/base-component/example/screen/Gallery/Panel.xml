@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Gallery: the 3.14 Panel archetype of the style guide, the content of the tray panel's Today tab rendered as a
+    normal screen in a 400 px column: groups with captions, dense list items with an icon by kind and two flat
+    quick actions, the open approvals line, an empty group, and the quick-create dialog with its context chip. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Panel" default-menu-index="13">
+
+    <!-- the quick actions and the quick create write nothing: a message comes back and the panel stays -->
+    <transition name="markDone" method="post">
+        <actions><message>Marked done: ${itemTitle} (nothing is written in the gallery)</message></actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="snooze" method="post">
+        <actions><message>Snoozed to tomorrow: ${itemTitle} (nothing is written in the gallery)</message></actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="createQuick" method="post">
+        <actions><message>Would create ${kind}: ${title} (nothing is written in the gallery)</message></actions>
+        <default-response url="."/>
+    </transition>
+    <!-- an item opens its record in the canvas; here the Detail archetype stands for the record -->
+    <transition name="openRecord"><default-response url="../Detail"/></transition>
+    <transition name="openNotifications"><default-response url="../Landing"/></transition>
+
+    <actions><script><![CDATA[
+        const now = new Date()
+        const pad = (n) => String(n).padStart(2, '0')
+        const dateText = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+        const todayText = dateText(now)
+        const yesterdayText = dateText(new Date(now.getTime() - 86400000))
+        const icons = { task: 'task_alt', call: 'call', email: 'mail', meeting: 'groups', event: 'event' }
+        const item = (id, kind, title, time, record) => ({ id, kind, icon: icons[kind], title, time, record })
+        overdueList = [
+            item('1', 'task', 'Send revised quote', yesterdayText + ' 17:00', 'Quote Q-10077 &#183; Acme Co.'),
+            item('2', 'call', 'Call back about the delivery date', yesterdayText + ' 11:30', 'Order SO10023 &#183; Acme Co.') ]
+        dueTodayList = [
+            item('3', 'email', 'Reply to the RFQ questions', '10:00', 'RFQ-2041 &#183; Beta Inc.'),
+            item('4', 'meeting', 'Weekly pipeline review', '14:00', 'Sales team &#183; Room 2'),
+            item('5', 'event', 'Trade show setup', '16:30', 'Event EV-88'),
+            item('6', 'task', 'Approve purchase request', '17:00', 'Request PR-512') ]
+        laterTodayList = []
+        todayLabel = now.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
+        approvalsWaiting = 3
+    ]]></script></actions>
+    <widgets>
+        <container-box type="info"><box-header title="Archetype 3.14 Panel"/><box-body>
+            <label type="p" text="The Today tab of the tray panel as a normal screen: groups Overdue, Due today and Later today as captions over dense lists, an icon by kind, two flat quick actions per item, the open approvals line, an empty group, and the quick-create dialog with a context chip above six fields. The column is col-5 at 1280 px to stand for the panel's 400 px; on a phone it is the full width."/>
+            <label type="p" text="Fallbacks for style-guide section 8: the tray panel frame does not exist, so this is the content only; the context chip is a q-chip until the screen context element exists; the approvals count is a fixed number until the notification counts arrive."/>
+        </box-body></container-box>
+
+        <container-row><row-col xs="12" sm="7" md="5" lg="4">
+            <container style="row items-baseline q-mb-xs">
+                <label type="h6" text="Today" style="q-my-none"/>
+                <label type="span" text="${todayLabel}" style="text-caption q-ml-sm"/>
+            </container>
+
+            <!-- Overdue -->
+            <container style="row items-center q-mt-sm q-mb-xs">
+                <label type="span" text="Overdue" style="text-subtitle2 text-warning"/>
+                <render-mode><text type="qvt"><![CDATA[<q-badge class="q-ml-xs" color="warning" text-color="dark">${overdueList.length}</q-badge>]]></text></render-mode>
+            </container>
+            <render-mode><text type="qvt"><![CDATA[<q-list dense bordered class="rounded-borders">]]></text></render-mode>
+            <section-iterate name="OverdueItems" list="overdueList" entry="item"><widgets>
+                <render-mode><text type="qvt"><![CDATA[
+                    <q-item class="q-px-sm">
+                        <q-item-section avatar><q-icon name="${item.icon}" color="warning" size="xs"></q-icon></q-item-section>
+                        <q-item-section><q-item-label lines="1">]]></text></render-mode>
+                <link url="openRecord" link-type="anchor" text="${item.title}"><parameter name="enumId" from="item.id"/></link>
+                <render-mode><text type="qvt"><![CDATA[</q-item-label><q-item-label caption lines="1">${item.time} &#183; ${item.record}</q-item-label></q-item-section>
+                        <q-item-section side class="q-pl-none"><div class="row no-wrap items-center">]]></text></render-mode>
+                <link url="markDone" link-type="hidden-form-link" icon="check" text="" tooltip="Mark done"><parameter name="itemTitle" from="item.title"/></link>
+                <link url="snooze" link-type="hidden-form-link" icon="schedule" text="" tooltip="Snooze to tomorrow"><parameter name="itemTitle" from="item.title"/></link>
+                <render-mode><text type="qvt"><![CDATA[</div></q-item-section></q-item>]]></text></render-mode>
+            </widgets></section-iterate>
+            <render-mode><text type="qvt"><![CDATA[</q-list>]]></text></render-mode>
+
+            <!-- Due today -->
+            <container style="row items-center q-mt-md q-mb-xs">
+                <label type="span" text="Due today" style="text-subtitle2"/>
+                <render-mode><text type="qvt"><![CDATA[<q-badge class="q-ml-xs" color="primary">${dueTodayList.length}</q-badge>]]></text></render-mode>
+            </container>
+            <render-mode><text type="qvt"><![CDATA[<q-list dense bordered class="rounded-borders">]]></text></render-mode>
+            <section-iterate name="DueTodayItems" list="dueTodayList" entry="item"><widgets>
+                <render-mode><text type="qvt"><![CDATA[
+                    <q-item class="q-px-sm">
+                        <q-item-section avatar><q-icon name="${item.icon}" color="primary" size="xs"></q-icon></q-item-section>
+                        <q-item-section><q-item-label lines="1">]]></text></render-mode>
+                <link url="openRecord" link-type="anchor" text="${item.title}"><parameter name="enumId" from="item.id"/></link>
+                <render-mode><text type="qvt"><![CDATA[</q-item-label><q-item-label caption lines="1">${item.time} &#183; ${item.record}</q-item-label></q-item-section>
+                        <q-item-section side class="q-pl-none"><div class="row no-wrap items-center">]]></text></render-mode>
+                <link url="markDone" link-type="hidden-form-link" icon="check" text="" tooltip="Mark done"><parameter name="itemTitle" from="item.title"/></link>
+                <link url="snooze" link-type="hidden-form-link" icon="schedule" text="" tooltip="Snooze to tomorrow"><parameter name="itemTitle" from="item.title"/></link>
+                <render-mode><text type="qvt"><![CDATA[</div></q-item-section></q-item>]]></text></render-mode>
+            </widgets></section-iterate>
+            <render-mode><text type="qvt"><![CDATA[</q-list>]]></text></render-mode>
+
+            <!-- Later today: the empty state of a group -->
+            <container style="row items-center q-mt-md q-mb-xs">
+                <label type="span" text="Later today" style="text-subtitle2"/>
+            </container>
+            <render-mode><text type="qvt"><![CDATA[<q-list dense bordered class="rounded-borders">]]></text></render-mode>
+            <section-iterate name="LaterTodayItems" list="laterTodayList" entry="item"><widgets>
+                <render-mode><text type="qvt"><![CDATA[<q-item class="q-px-sm"><q-item-section avatar><q-icon name="${item.icon}" size="xs"></q-icon></q-item-section>
+                    <q-item-section><q-item-label lines="1">${item.title}</q-item-label><q-item-label caption>${item.time} &#183; ${item.record}</q-item-label></q-item-section></q-item>]]></text></render-mode>
+            </widgets></section-iterate>
+            <section name="LaterTodayEmpty" condition="!laterTodayList || laterTodayList.length == 0"><widgets>
+                <render-mode><text type="qvt"><![CDATA[<q-item class="q-px-sm"><q-item-section avatar><q-icon name="check_circle" color="positive" size="xs"></q-icon></q-item-section>
+                    <q-item-section><q-item-label :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Nothing due later today</q-item-label></q-item-section></q-item>]]></text></render-mode>
+            </widgets></section>
+            <render-mode><text type="qvt"><![CDATA[</q-list>]]></text></render-mode>
+
+            <!-- the approvals line links to the Notifications tab -->
+            <render-mode><text type="qvt"><![CDATA[<q-banner dense rounded class="q-mt-md" :class="$q.dark.isActive ? 'bg-grey-9' : 'bg-grey-2'">
+                <template v-slot:avatar><q-icon name="how_to_reg" color="info" size="sm"></q-icon></template>
+                <span class="text-weight-medium">${approvalsWaiting} approvals</span> waiting on you.]]></text></render-mode>
+            <link url="openNotifications" link-type="anchor" text="Open Notifications" style="q-ml-xs"/>
+            <render-mode><text type="qvt"><![CDATA[</q-banner>]]></text></render-mode>
+
+            <!-- quick create: the dialog the header's + opens, with the context chip above six fields -->
+            <container style="q-mt-md">
+                <container-dialog id="QuickCreate" button-text="New task" title="Quick create" width="420">
+                    <render-mode><text type="qvt"><![CDATA[<q-chip dense square icon="link" class="q-ml-none q-mb-sm">Linked to: Enumeration ScreenThemeType</q-chip>]]></text></render-mode>
+                    <form-single name="QuickCreateForm" transition="createQuick" focus-field="title">
+                        <field name="title"><default-field title="Title"><text-line/></default-field></field>
+                        <field name="kind"><default-field title="Kind"><drop-down>
+                            <option key="task" text="Task"/><option key="call" text="Call"/><option key="email" text="Email"/>
+                            <option key="meeting" text="Meeting"/><option key="event" text="Event"/>
+                        </drop-down></default-field></field>
+                        <field name="dueDate"><default-field title="Due"><date-time type="date-time"/></default-field></field>
+                        <field name="assigneeUserId"><default-field title="Assignee"><drop-down allow-empty="true">
+                            <entity-options key="${userId}" text="${userFullName} (${username})"><entity-find entity-name="moqui.security.UserAccount" limit="20">
+                                <order-by field-name="userFullName"/></entity-find></entity-options>
+                        </drop-down></default-field></field>
+                        <field name="priority"><default-field title="Priority"><radio no-current-selected-key="2">
+                            <option key="1" text="High"/><option key="2" text="Normal"/><option key="3" text="Low"/>
+                        </radio></default-field></field>
+                        <field name="notes"><default-field title="Notes"><text-area rows="2"/></default-field></field>
+                        <field name="createButton"><default-field title="Create"><submit/></default-field></field>
+                    </form-single>
+                </container-dialog>
+            </container>
+        </row-col></container-row>
+    </widgets>
+</screen>

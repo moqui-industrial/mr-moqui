@@ -133,6 +133,20 @@ fn finds_conditions_pages_and_update_all() {
     holds(
         r#"(function () { const f = ec.entity.find("moqui.basic.Enumeration"); return f.getPageIndex() === 0 && f.getPageSize() === 20; })()"#,
     );
+    // The text an expanded `limit="${expr}"` gives: an integer applies, and empty, null or not a number is no limit.
+    holds(
+        r#"(function () { const f = ec.entity.find("moqui.basic.Enumeration").orderBy("sequenceNum").offset("1", "2").limit(" 2 ");
+        return f.getOffset() === 2 && f.getLimit() === 2 && f.list().length === 1; })()"#,
+    );
+    holds(
+        r#"(function () { const f = ec.entity.find("moqui.basic.Enumeration").limit("").offset("");
+        return f.getLimit() === null && f.list().length === 3; })()"#,
+    );
+    holds(
+        r#"(function () { const f = ec.entity.find("moqui.basic.Enumeration").limit("abc").offset(null).limit(null);
+        return f.getLimit() === null && f.list().length === 3; })()"#,
+    );
+    holds(r#"ec.entity.find("moqui.basic.Enumeration").limit("2.0").list().length === 2"#);
     // updateAll
     holds(
         r#"ec.entity.find("moqui.basic.Enumeration").condition("enumTypeId", "T1").updateAll({description: "same"}) === 3"#,
