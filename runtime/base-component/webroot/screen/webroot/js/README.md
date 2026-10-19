@@ -322,6 +322,13 @@ entity filters, so it shows only what the user may see. `example.ExampleServices
 two seconds: requests inside that window fold into one send at its end. Inside a transaction the request waits for the commit, and the
 sends are made on a server thread, so the caller never waits for the counts. The EECAs and SECAs on the records the counts read call it.
 
+**The `emailSyncProgress` topic.** While `org.moqui.impl.EmailClientServices.sync#EmailAccount` fetches mail it sends the account's owner
+and members a NotificationMessage on the topic `emailSyncProgress` (not persisted, `showAlert` false), at most one a second and one when
+it ends, whose `message` is `{emailAccountId, done, folderCount, foldersDone, folderName, folderPath, folderKept, folderFetched,
+folderToFetch, folderPending, fetched, toFetch, pending}`, with `outcome`, `message` and `newCount` when `done`. A screen listens with
+`moqui.webrootVue.notificationClient.registerListener('emailSyncProgress', fn)` and shows, for a first sync, "Syncing {folderKept +
+folderFetched} of {folderKept + folderPending}". A sync with nothing to fetch sends nothing.
+
 **`GET /shellCounts`** (read-only, 401 without a user): `{counts}`, what `get#ShellCounts` answers for the current user (null without a counts
 service). The shell asks it every five minutes while the notification socket is down.
 

@@ -27,7 +27,7 @@ use moqui_lib::object::{to_plain_string, Value};
 use moqui_lib::sync::lock;
 use serde_json::json;
 
-use super::fake_servers::{fake_dns_with_mx, fake_http, FakeCode, FakeImap, FakeProvider, FakeSmtp};
+use super::fake_servers::{fake_dns_with_mx, fake_http, FakeCode, FakeImap, FakePop, FakeProvider, FakeSmtp};
 use crate::context::{ExecutionContext, ExecutionContextFactory};
 use crate::entity::crypto::CryptConfig;
 use crate::entity::{EntityFacade, EntityValue};
@@ -828,6 +828,120 @@ fn xoauth2_for_the_sync_the_server_test_and_a_send() {
         vec!["XOAUTH2 refused".to_string(), "XOAUTH2 ok".to_string()]
     );
     assert_eq!(state.messages.len(), 2);
+}
+
+/// A POP3 account signs in with AUTH XOAUTH2 (no USER or PASS): its sign-in asks for the provider's POP scope and
+/// refuses a grant without it, its refreshes ask for it too, the server test signs in the same way, and a token the server
+/// refuses is replaced by a new one once.
+#[test]
+fn pop3_signs_in_with_xoauth2_and_the_pop_scope() {
+    const POP_SCOPE: &str = "https://mail.example.test/pop";
+    let _serial = serial();
+    let _lock = crate::user::session::cookie_property_lock();
+    let _properties = Properties::set();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    user(&facade, "alice");
+    login("alice");
+    let fake = FakeProvider::start(CLIENT, SECRET, REDIRECT);
+    let imap = FakeImap::start(&[]);
+    let smtp = FakeSmtp::start("alice@gmail.test");
+    let pop = FakePop::start();
+    lock(&pop.oauth).0 = "alice@gmail.test".to_string();
+    pop.add(
+        "u1",
+        "Message-ID: <p1@example.com>\nFrom: bob@example.com\nTo: alice@gmail.test\nSubject: One\nDate: Mon, 19 Oct 2026 10:00:00 +0000\n\nHi\n",
+    );
+    provider_row(&facade, "EopTest", &fake, (imap.port, smtp.port), true);
+    update(
+        &facade,
+        PROVIDER,
+        ("oauthProviderEnumId", "EopTest"),
+        &[("popScope", text(POP_SCOPE)), ("refreshParams", text("scope={scope}"))],
+    );
+    // an account signed in (over IMAP), whose server then reads POP3
+    let done = sign_in(&fake, "alice@gmail.test", None);
+    assert_eq!(out_text(&done, "status"), "success", "{done:?}");
+    let account_id = out_text(&done, "emailAccountId");
+    ok(
+        "update#EmailAccount",
+        &[
+            ("emailAccountId", text(&account_id)),
+            ("storeHost", text("127.0.0.1")),
+            ("storePort", text(&pop.port.to_string())),
+            ("storeProtocol", text("pop3")),
+        ],
+    );
+    // its sign-in asks for the POP scope, and a grant without it is refused
+    let parameters = [
+        ("oauthProviderEnumId", text("EopTest")),
+        ("emailAccountId", text(&account_id)),
+    ];
+    let (started, _) = begin(&parameters);
+    assert!(
+        started["scope"].split(' ').any(|scope| scope == POP_SCOPE),
+        "{started:?}"
+    );
+    let code = code_for(&fake, &started, claims(&started, "alice@gmail.test"), MAIL_SCOPE);
+    let refused = callback(&[("state", &started["state"]), ("code", &code)]);
+    assert_eq!(out_text(&refused, "errorCode"), "scopeNotGranted", "{refused:?}");
+    let (started, _) = begin(&parameters);
+    let granted = format!("{MAIL_SCOPE} {POP_SCOPE}");
+    let code = code_for(&fake, &started, claims(&started, "alice@gmail.test"), &granted);
+    let done = callback(&[("state", &started["state"]), ("code", &code)]);
+    assert_eq!(out_text(&done, "status"), "success", "{done:?}");
+    let access = lock(&fake.state).access_tokens.last().cloned().unwrap();
+    lock(&pop.oauth).1.push(access);
+
+    let synced = ok("sync#EmailAccount", &[("emailAccountId", text(&account_id))]);
+    assert_eq!(out_text(&synced, "outcome"), "synced", "{synced:?}");
+    assert_eq!(out_text(&synced, "newCount"), "1");
+    let log = lock(&pop.log).clone();
+    assert!(log.iter().any(|line| line == "AUTH XOAUTH2"), "{log:?}");
+    assert!(log.iter().any(|line| line == "XOAUTH2 ok"), "{log:?}");
+    assert!(
+        !log.iter()
+            .any(|line| line.starts_with("USER") || line.starts_with("PASS")),
+        "{log:?}"
+    );
+    assert_no_token(&fake, "the POP3 log", &format!("{log:?}"));
+
+    let tested = ok(
+        "test#EmailAccount",
+        &[("emailAccountId", text(&account_id)), ("testSmtp", Value::Bool(false))],
+    );
+    assert_eq!(tested.get("success"), Some(&Value::Bool(true)), "{tested:?}");
+    assert!(format!("{tested:?}").contains("with XOAUTH2"), "{tested:?}");
+
+    // the server stops taking the token: a new one (asking for the POP scope) and the sync goes on
+    let next = format!("at-{}", lock(&fake.state).next_number());
+    {
+        let mut oauth = lock(&pop.oauth);
+        oauth.1.clear();
+        oauth.1.push(next.clone());
+    }
+    pop.add(
+        "u2",
+        "Message-ID: <p2@example.com>\nFrom: bob@example.com\nTo: alice@gmail.test\nSubject: Two\nDate: Mon, 19 Oct 2026 11:00:00 +0000\n\nHi again\n",
+    );
+    let synced = ok("sync#EmailAccount", &[("emailAccountId", text(&account_id))]);
+    assert_eq!(out_text(&synced, "outcome"), "synced", "{synced:?}");
+    assert_eq!(out_text(&synced, "newCount"), "1");
+    assert_eq!(lock(&fake.state).access_tokens.last(), Some(&next));
+    let refresh_scope = lock(&fake.state)
+        .requests
+        .iter()
+        .rev()
+        .find(|(_, form)| form.get("grant_type").map(String::as_str) == Some("refresh_token"))
+        .and_then(|(_, form)| form.get("scope").cloned())
+        .unwrap_or_default();
+    assert!(
+        refresh_scope.split(' ').any(|scope| scope == POP_SCOPE),
+        "{refresh_scope}"
+    );
+    let log = lock(&pop.log).clone();
+    assert!(log.iter().any(|line| line == "XOAUTH2 refused"), "{log:?}");
 }
 
 /// Removing an account revokes its refresh token at the provider and deletes it here; not when another server here

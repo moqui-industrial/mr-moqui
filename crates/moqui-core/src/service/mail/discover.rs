@@ -41,7 +41,7 @@ use std::time::{Duration, Instant};
 use indexmap::IndexMap;
 use moqui_lib::error::Error as LibError;
 use moqui_lib::node::MNode;
-use moqui_lib::object::Value;
+use moqui_lib::object::{to_plain_string, Value};
 
 use super::implementation::note_error;
 use crate::entity::EntityFacade;
@@ -215,8 +215,15 @@ pub(super) fn discover_server(
             "smtpStartTls".into(),
             Value::string(if outgoing.socket == "STARTTLS" { "Y" } else { "N" }),
         );
-        if !out.contains_key("mailUsername") {
-            out.insert("mailUsername".into(), Value::string(&outgoing.username));
+        match out.get("mailUsername").map(to_plain_string) {
+            None => {
+                out.insert("mailUsername".into(), Value::string(&outgoing.username));
+            }
+            // an outgoing server that signs in as another user: its own SMTP sign-in
+            Some(incoming) if !outgoing.username.is_empty() && !outgoing.username.eq_ignore_ascii_case(&incoming) => {
+                out.insert("smtpUsername".into(), Value::string(&outgoing.username));
+            }
+            Some(_) => {}
         }
     }
     out.insert(

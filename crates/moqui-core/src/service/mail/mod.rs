@@ -27,6 +27,7 @@ use moqui_lib::object::Value;
 use crate::entity::EntityFacade;
 use crate::service::rust_services::RustServiceFn;
 
+mod contacts;
 #[cfg(feature = "mail")]
 mod discover;
 #[cfg(feature = "mail")]
@@ -56,6 +57,8 @@ mod fake_servers;
 #[cfg(all(test, feature = "mail"))]
 mod oauth_tests;
 #[cfg(all(test, feature = "mail"))]
+mod settings_tests;
+#[cfg(all(test, feature = "mail"))]
 mod sync_tests;
 
 pub(in crate::service) fn register(map: &mut BTreeMap<&'static str, RustServiceFn>) -> Result<(), String> {
@@ -75,7 +78,17 @@ pub(in crate::service) fn register(map: &mut BTreeMap<&'static str, RustServiceF
     rust_service!(map, get_oauth_providers)?;
     rust_service!(map, revoke_oauth_sign_in)?;
     rust_service!(map, revoke_oauth_token)?;
+    rust_service!(map, filter_contact_addresses)?;
     Ok(())
+}
+
+/// `filter#ContactAddresses`, with or without mail built in: the app's hook says which senders are a user's contacts
+/// ([`contacts`]).
+fn filter_contact_addresses(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    contacts::filter_contact_addresses(parameters, facade)
 }
 
 /// Start the IMAP IDLE workers on the scheduler's tick (`email_idle_enabled`). The host calls it once after boot.
@@ -246,6 +259,10 @@ mod tests {
             (
                 std::any::type_name_of_val(&super::revoke_oauth_token),
                 "revoke_oauth_token",
+            ),
+            (
+                std::any::type_name_of_val(&super::filter_contact_addresses),
+                "filter_contact_addresses",
             ),
         ] {
             assert_eq!(function, format!("moqui_core::service::mail::{path}"));
