@@ -120,7 +120,8 @@ const STATIC_LIST: &str = r#"<screen require-authentication="false" server-stati
     </actions>
     <widgets>
         <label text="Enumerations of ${ec.user.username}" type="h4"/>
-        <form-list name="EnumList" list="enumList" header-dialog="true" saved-finds="true" show-csv-button="true" select-columns="true">
+        <form-list name="EnumList" list="enumList" header-dialog="true" saved-finds="true" show-csv-button="true" select-columns="true" views="list,board">
+            <view-board group-field="enumTypeId" card-fields="description"/>
             <row-selection id-field="enumId"><action><dialog button-text="Pick"/>
                 <form-single name="PickForm" transition="pickEnums"><field name="go"><default-field title="Pick Them"><submit/></default-field></field></form-single>
             </action></row-selection>

@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Gallery: the list views of style-guide §8.2 (form-list views, view-board, view-calendar) over the example records
+    (moqui.example.Example, data/ExampleDemoData.xml), with real transitions: a card moved to another column updates the status
+    through the entity's update service, which refuses a move the status flow does not allow; an event moved or resized
+    updates its start and end; a click on empty time creates an example. The archetypes are §3.6 Board and §3.7 Calendar; the
+    .qvue Board and Calendar screens stay as the custom path of §4.8. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Views" default-menu-index="17">
+
+    <transition name="updateExampleStatus">
+        <service-call name="update#moqui.example.Example" in-map="{exampleId: exampleId, statusId: statusId}"/>
+        <default-response url="."/>
+    </transition>
+    <transition name="updateExampleTimes">
+        <actions>
+            <!-- the type is the resource of the day mode: a move to another column posts it -->
+            <set field="params" from="Object.assign({exampleId: exampleId, exampleDate: exampleDate, exampleEndDate: exampleEndDate}, exampleTypeEnumId ? {exampleTypeEnumId: exampleTypeEnumId} : {})"/>
+            <service-call name="update#moqui.example.Example" in-map="params"/>
+        </actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="createExample">
+        <actions>
+            <service-call name="create#moqui.example.Example" out-map="created" in-map="{exampleName: exampleName, exampleDate: exampleDate,
+                    exampleEndDate: exampleEndDate, allDay: allDay || 'N', exampleTypeEnumId: exampleTypeEnumId || 'EXT_MADE_UP', statusId: 'EXST_IN_DESIGN'}"/>
+            <message>Created example ${created.exampleId}: ${exampleName}</message>
+        </actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="updateExample">
+        <service-call name="update#moqui.example.Example"/>
+        <default-response url="."><parameter name="exampleId"/></default-response>
+    </transition>
+
+    <actions>
+        <entity-find-one entity-name="moqui.example.Example" value-field="example"/>
+    </actions>
+    <widgets>
+        <container-box type="info"><box-header title="Section 8.2 List views: board and calendar"/><box-body>
+            <label type="p" text="One form-list of example records with views=&quot;board,list,calendar&quot;: the switch at the right above the list keeps the choice per form (the LIST_VIEW_ preference; a view parameter in the URL picks one). The board has a column per Example status in its flow order with the count and the sum of sizes; a card shows the name (its link opens the example above the list), the type and start, and the size as a badge. Drag a card to another column: the status moves through update#moqui.example.Example, and a move the flow refuses (In Design to Complete) goes back with its message."/>
+            <label type="p" text="The calendar shows each example from its start to its end, colored by status, in month, week, day and list modes; in day mode each type is a column. Drag an event to move it, its lower edge to resize it (the start and end are posted), and click or drag on empty time to create an example there. The Find Options, saved finds and page size of the list apply to every view."/>
+        </box-body></container-box>
+
+        <section name="EditExampleSection" condition="example"><widgets>
+            <container-box><box-header title="Example ${example.exampleName}"/><box-toolbar>
+                <link url="." text="Close" icon="sym_o_close" link-type="anchor-button" btn-type="default"/>
+            </box-toolbar><box-body>
+                <form-single name="EditExample" map="example" transition="updateExample">
+                    <field name="exampleId"><default-field><hidden/></default-field></field>
+                    <field name="exampleName"><default-field title="Name"><text-line size="40"/></default-field></field>
+                    <field name="exampleTypeEnumId"><default-field title="Type">
+                        <drop-down><entity-options key="${enumId}" text="${description}">
+                            <entity-find entity-name="moqui.basic.Enumeration" cache="true"><econdition field-name="enumTypeId" value="ExampleType"/>
+                                <order-by field-name="sequenceNum"/></entity-find></entity-options></drop-down></default-field></field>
+                    <field name="statusId"><default-field title="Status"><display-entity entity-name="moqui.basic.StatusItem"/></default-field></field>
+                    <field name="exampleSize"><default-field title="Size"><text-line size="6"/></default-field></field>
+                    <field name="exampleDate"><default-field title="Starts"><date-time/></default-field></field>
+                    <field name="exampleEndDate"><default-field title="Ends"><date-time/></default-field></field>
+                    <field name="submitButton"><default-field title="Save"><submit/></default-field></field>
+                    <field-layout><field-row><field-ref name="exampleName"/><field-ref name="exampleTypeEnumId"/></field-row>
+                        <field-row><field-ref name="statusId"/><field-ref name="exampleSize"/></field-row>
+                        <field-row><field-ref name="exampleDate"/><field-ref name="exampleEndDate"/></field-row>
+                        <field-ref name="submitButton"/></field-layout>
+                </form-single>
+            </box-body></container-box>
+        </widgets></section>
+
+        <form-list name="ExampleList" list="exampleList" views="board,list,calendar" header-dialog="true" saved-finds="true" show-page-size="true">
+            <entity-find entity-name="moqui.example.Example" list="exampleList">
+                <search-form-inputs default-order-by="exampleDate,exampleId"/>
+            </entity-find>
+            <view-board group-field="statusId" card-title-field="exampleName" card-fields="exampleTypeEnumId,exampleDate" badge-field="exampleSize"
+                    sum-field="exampleSize" sum-format="#,##0" transition="updateExampleStatus"/>
+            <view-calendar start-field="exampleDate" end-field="exampleEndDate" title-field="exampleName" color-field="statusId" all-day-field="allDay"
+                    resource-field="exampleTypeEnumId" transition="updateExampleTimes" create-transition="createExample" card-fields="exampleTypeEnumId,exampleSize"/>
+
+            <field name="exampleId"><default-field><hidden/></default-field></field>
+            <field name="exampleName"><header-field title="Name" show-order-by="true"><text-find size="20" hide-options="true"/></header-field>
+                <default-field><link url="." text="${exampleName}" parameter-map="{exampleId: exampleId}"/></default-field></field>
+            <field name="statusId"><header-field title="Status" show-order-by="true">
+                    <drop-down allow-empty="true" allow-multiple="true"><entity-options key="${statusId}" text="${description}">
+                        <entity-find entity-name="moqui.basic.StatusItem" cache="true"><econdition field-name="statusTypeId" value="Example"/>
+                            <order-by field-name="sequenceNum"/></entity-find></entity-options></drop-down></header-field>
+                <default-field><display-entity entity-name="moqui.basic.StatusItem"/></default-field></field>
+            <field name="exampleTypeEnumId"><header-field title="Type" show-order-by="true">
+                    <drop-down allow-empty="true"><entity-options key="${enumId}" text="${description}">
+                        <entity-find entity-name="moqui.basic.Enumeration" cache="true"><econdition field-name="enumTypeId" value="ExampleType"/>
+                            <order-by field-name="sequenceNum"/></entity-find></entity-options></drop-down></header-field>
+                <default-field title="Type"><display-entity entity-name="moqui.basic.Enumeration"/></default-field></field>
+            <field name="exampleSize" align="right"><header-field title="Size" show-order-by="true"><range-find size="4"/></header-field>
+                <default-field title="Size"><display/></default-field></field>
+            <field name="exampleDate"><header-field title="Starts" show-order-by="true"><date-period/></header-field>
+                <default-field title="Starts"><display format="EEE MMM d, HH:mm"/></default-field></field>
+            <field name="exampleEndDate"><default-field title="Ends"><display format="EEE MMM d, HH:mm"/></default-field></field>
+            <field name="findButton"><header-field title="Find"><submit/></header-field></field>
+        </form-list>
+    </widgets>
+</screen>

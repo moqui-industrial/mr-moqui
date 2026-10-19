@@ -32,7 +32,8 @@
 //    holds: name_display, and mqOpt_{form}_{field}_{sub}_{widget} for the options of a widget;
 //  - a link that the user may not use is still written (the server refuses the request), and no icon comes from the theme;
 //  - include-screen is written inline. A form-list writes the find dialog, saved finds, the exports, a multi form, the column picker,
-//    row-selection, the first/second/last rows and aggregated sub-rows; their data comes with the form request.
+//    row-selection, the first/second/last rows, aggregated sub-rows and the board and calendar views (a card slot over the row's scope);
+//    their data comes with the form request.
 (function (T, S) {
     "use strict";
 
@@ -280,7 +281,7 @@
         const st = {};
         const saved = [];
         const reset = () => {
-            Object.assign(st, { formName: "", fieldForm: "", owner: "", inForm: false, inRow: false, inList: false, listName: "", multi: false, accordion: "", accIndex: 0, accActive: "", selectedForm: false });
+            Object.assign(st, { formName: "", fieldForm: "", owner: "", inForm: false, inRow: false, inCard: false, inList: false, listName: "", multi: false, accordion: "", accIndex: 0, accActive: "", selectedForm: false });
             saved.length = 0;
         };
         reset();
@@ -798,7 +799,7 @@
             } else {
                 w("<m-display" + A(out) + '><span v-text="' + e(text) + '"></span></m-display>');
             }
-            if ((!at(n, "also-hidden") || at(n, "also-hidden") === "true") && !dyn) {
+            if ((!at(n, "also-hidden") || at(n, "also-hidden") === "true") && !dyn && !st.inCard) {
                 w("<input" + A({ type: "hidden", name, ":value": "$mq.str(" + baseValue(field, "") + ")", form: owner() }) + ">");
             }
         };
@@ -824,7 +825,7 @@
                 out[":display"] = text;
                 w("<m-display" + A(out) + "></m-display>");
             } else w("<m-display" + A(out) + '><span v-text="' + e(text) + '"></span></m-display>');
-            if (!at(n, "also-hidden") || at(n, "also-hidden") === "true") {
+            if ((!at(n, "also-hidden") || at(n, "also-hidden") === "true") && !st.inCard) {
                 w("<input" + A({ type: "hidden", name, ":value": "$mq.str(" + baseValue(field, "") + ")", form: owner() }) + ">");
             }
         };
@@ -1230,8 +1231,11 @@
                 attrs["form-location"] = name;
                 attrs["find-action"] = sri.staticUrl("formSaveFind", "transition").path;
             }
+            // the board and calendar views over the rows the list fetches
+            const views = viewsOf(n);
+            if (views) Object.assign(attrs, views.attrs);
             w("<m-static-form-list" + A(attrs) + ">");
-            return { found };
+            return { found, views };
         };
 
         const rowFormOpen = (n, cfg, fields, opened) => {
@@ -1701,6 +1705,104 @@
             w("</template>");
         };
 
+        // ---- form-list views ----
+
+        // The views of a form-list, as ScreenQvt.js writes them, for m-static-form-list: the board's and calendar's settings (the
+        // transitions as paths of this screen, the key fields, color-map), and a card slot over the row's scope with the title, badge and
+        // card fields written as the row slot writes their cells. The rows are the ones the list fetches; the columns of a status board and
+        // the colors of a status calendar are asked of the root screen's listViewColumns transition by the browser. null without a view
+        // element.
+        const viewsOf = (n) => {
+            const board = first(n, "view-board");
+            const calendar = first(n, "view-calendar");
+            if (!board && !calendar) return null;
+            const of = (el, name) => (el ? at(el, name) : "");
+            const names = (text) => String(text || "").split(",").map((name) => name.trim()).filter((name) => name);
+            const literal = (el, name) => {
+                const text = of(el, name);
+                if (text && isDynamic(text)) { note("view-expression", el, name + " of " + el.name + " is an expression, which a server-static list does not expand"); return ""; }
+                return text;
+            };
+            const fields = kids(n, "field");
+            const byName = {};
+            fields.forEach((field) => { byName[at(field, "name")] = field; });
+            // a field that has only a hidden widget is no column (ScreenSupport listFieldHiddenWidget)
+            const hiddenOnly = (field) => {
+                const dflt = first(field, "default-field");
+                if (dflt && !first(dflt, "hidden") && !first(dflt, "ignored")) return false;
+                return !kids(field, "conditional-field").some((sub) => !first(sub, "hidden") && !first(sub, "ignored"));
+            };
+            const firstShown = fields.find((field) => !hiddenOnly(field));
+            const titleName = of(board, "card-title-field") || of(calendar, "title-field") || (firstShown ? at(firstShown, "name") : "");
+            const cardNames = names(of(board, "card-fields")).length ? names(of(board, "card-fields")) : names(of(calendar, "card-fields"));
+            const hiddenKeys = fields.filter((field) => { const dflt = first(field, "default-field"); return dflt && first(dflt, "hidden"); }).map((field) => at(field, "name"));
+            const selection = first(n, "row-selection");
+            const keyFields = (el) => {
+                const given = names(of(el, "key-fields"));
+                if (given.length) return given;
+                if (hiddenKeys.length) return hiddenKeys;
+                if (selection && at(selection, "id-field")) return [at(selection, "id-field")];
+                return titleName ? [titleName] : [];
+            };
+            const path = (name) => (name ? sri.staticUrl(name, "transition").path : null);
+            const colors = {};
+            names(of(calendar, "color-map")).forEach((pair) => {
+                const cut = pair.lastIndexOf(":");
+                if (cut > 0) colors[pair.slice(0, cut).trim()] = pair.slice(cut + 1).trim();
+            });
+            const boardCfg = board ? {
+                groupField: at(board, "group-field"), titleField: titleName, sumField: of(board, "sum-field") || null, sumFormat: of(board, "sum-format") || null,
+                parameterName: of(board, "parameter-name") || null, keyFields: keyFields(board), columnOrder: names(literal(board, "column-order")),
+                statusTypeId: literal(board, "status-type-id") || null, transition: path(of(board, "transition")), parameters: {}
+            } : null;
+            const calendarCfg = calendar ? {
+                startField: at(calendar, "start-field"), endField: of(calendar, "end-field") || null, titleField: of(calendar, "title-field") || titleName,
+                colorField: of(calendar, "color-field") || null, allDayField: of(calendar, "all-day-field") || null, resourceField: of(calendar, "resource-field") || null,
+                keyFields: keyFields(calendar), modes: names(of(calendar, "modes")), transition: path(of(calendar, "transition")), parameters: {},
+                createTransition: path(of(calendar, "create-transition")), createParameters: {}, createScreen: path(of(calendar, "create-screen")),
+                colors: Object.keys(colors).length ? colors : null
+            } : null;
+            if (((board && of(board, "transition")) || (calendar && (of(calendar, "transition") || of(calendar, "create-transition")))) && first(n, "hidden-parameters")) {
+                note("view-hidden-parameters", n, "the hidden-parameters of form-list " + at(n, "name") + " are not posted by its board or calendar in a server-static screen");
+            }
+            const base = sri.staticUrl(".", "transition").path || "";
+            return {
+                attrs: { ":views": js_(names(of(n, "views"))), ":board": boardCfg ? js_(boardCfg) : null, ":calendar": calendarCfg ? js_(calendarCfg) : null,
+                    "views-location": String(base === "#" ? "" : base).replace(/^\/(apps|qapps)(?=\/|$)/, "") + "#" + at(n, "name") },
+                titleName, badgeName: of(board, "badge-field"), cardNames: cardNames.filter((name) => byName[name]), byName
+            };
+        };
+        // the card slot: each part the field's cell (as the row slot writes it, outside a form), else its value
+        const cardSlot = (n, v) => {
+            w('<template v-slot:card="_ctx">');
+            push();
+            Object.assign(st, { inRow: true, inForm: false, inCard: true, fieldForm: at(n, "name") + "_card", owner: "" });
+            const cell = (name) => {
+                const field = v.byName[name];
+                if (!field) { if (name) w('<span v-text="' + e("$mq.str(" + scopeRef(name + "_display") + " || " + scopeRef(name) + ")") + '"></span>'); return; }
+                cellBody(field, (sub) => {
+                    if (kids(sub, "ignored").length || kids(sub, "hidden").length) return;
+                    w("<div" + A({ class: cellStyle(at(sub, "container-style"), at(field, "align")) }) + ">");
+                    subWidgets(sub);
+                    w("</div>");
+                });
+            };
+            w('<div class="m-card-head row no-wrap"><div class="m-card-title">');
+            cell(v.titleName);
+            w("</div>");
+            if (v.badgeName) { w('<div class="m-card-badge">'); cell(v.badgeName); w("</div>"); }
+            w("</div>");
+            v.cardNames.forEach((name) => {
+                const field = v.byName[name];
+                const sub = first(field, "header-field") || first(field, "default-field") || kids(field, "conditional-field")[0];
+                w('<div class="m-card-field"><span class="m-card-label m-muted" v-text="' + e(sub ? titleExpr(sub) : sq(name)) + '"></span><span class="m-card-value">');
+                cell(name);
+                w("</span></div>");
+            });
+            pop();
+            w("</template>");
+        };
+
         const formList = (n, columnFieldLists, allFields) => {
             const cfg = {};
             const name = at(n, "name");
@@ -1731,6 +1833,7 @@
             if (flags.columns) {
                 columnSlots(n, cols, headerFields, flags, cfg);
                 if (cfg.selection) selectionSlot(cfg.selection);
+                if (opened.views) cardSlot(n, opened.views);
                 w("</m-static-form-list>\n");
                 pop();
                 return;
@@ -1792,6 +1895,7 @@
             });
             if (subLists.length) subSlots(subLists);
             if (cfg.selection) selectionSlot(cfg.selection);
+            if (opened.views) cardSlot(n, opened.views);
             w("</m-static-form-list>\n");
             pop();
         };
@@ -1858,6 +1962,19 @@
             if (at(n, "dark") && at(n, "dark") !== "auto") out.dark = at(n, "dark");
             plainAttr(out, "class", at(n, "style"), n);
             w(withCondition(n, "<m-html-view" + A(out) + "></m-html-view>\n"));
+        };
+
+        // A markdown-view as ScreenQvt.js writes it, the text and base path bound over the scope.
+        const markdownView = (n) => {
+            const out = {};
+            plainAttr(out, "id", at(n, "id"), n);
+            plainAttr(out, "text", at(n, "text"), n);
+            plainAttr(out, "base-path", at(n, "base-path"), n);
+            if (at(n, "heading-prefix") && at(n, "heading-prefix") !== "md-") plainAttr(out, "heading-prefix", at(n, "heading-prefix"), n);
+            if (at(n, "strip-title")) textAttr(out, "strip-title", at(n, "strip-title"), n, true);
+            if (at(n, "wiki-links") === "true") out[":wiki-links"] = "true";
+            plainAttr(out, "class", at(n, "style"), n);
+            w(withCondition(n, "<m-markdown" + A(out) + "></m-markdown>\n"));
         };
 
         // ---- dashboards ----
@@ -1950,7 +2067,7 @@
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
             split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose, screenContext,
-            numberCard, dashboardOpen, chatter, recordFiles, splitOpen, htmlView, statusBar
+            numberCard, dashboardOpen, chatter, recordFiles, splitOpen, htmlView, markdownView, statusBar
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -2156,6 +2273,7 @@
         "chatter": widget("chatter", false),
         "record-files": widget("recordFiles", false),
         "html-view": widget("htmlView", false),
+        "markdown-view": widget("markdownView", false),
         "form-single": formSingleMacro,
         "form-list": formListMacro
     });

@@ -15,8 +15,10 @@ along with this software (see the LICENSE.md file). If not, see
 <!-- The status display of a record (IronStone style-guide §3.3, §5.2, §8.2): the color of each status by its meaning, and
     the status-bar element's row of stages with the transitions the user may take from the current status. No Java
     counterpart. The status-bar macros call get#StatusBar when they render (ScreenQvt.js, ScreenHtml.js), and the browser
-    of a server-static screen asks the statusBar transition of the root screen (webroot.xml) for it. StatusItem and
-    StatusFlowTransition are configuration and are read from the cache. -->
+    of a server-static screen asks the statusBar transition of the root screen (webroot.xml) for it. get#ListViewColumns is
+    the columns of a form-list board and the colors of a calendar (view-board, view-calendar), which the macros call and the
+    browser asks the listViewColumns transition for. StatusItem and StatusFlowTransition are configuration and are read from
+    the cache. -->
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
 
     <service verb="get" noun="StatusColors" authenticate="false" allow-remote="false" transaction="ignore">
@@ -164,6 +166,69 @@ along with this software (see the LICENSE.md file). If not, see
             next = pick
             const rank = (transition) => (transition.isNext ? 0 : transition.isDanger ? 2 : 1)
             transitions.sort((left, right) => rank(left) - rank(right) || (left.stageIndex < 0 ? 99 : left.stageIndex) - (right.stageIndex < 0 ? 99 : right.stageIndex))
+        ]]></script></actions>
+    </service>
+    <service verb="get" noun="ListViewColumns" authenticate="false" allow-remote="false" transaction="ignore">
+        <description>The columns of a form-list board and the colors of a calendar (the view-board and view-calendar elements,
+            style-guide §3.6, §3.7, §8.2): for a status field (status true, or a statusTypeId), every status of the type in
+            sequenceNum order (the type given, else the types of the status values) with its label (the description) and color
+            (get#StatusColors), then each other value; for another field each value with the description of the status or
+            enumeration it is, else the value as its label. flow is the StatusFlowTransition rows of the flow (Default when not
+            given) between the statuses, which tell the board where a card may go.</description>
+        <in-parameters>
+            <parameter name="values" type="List"/>
+            <parameter name="statusTypeId"/>
+            <parameter name="statusFlowId"/>
+            <parameter name="status" type="Boolean" default="false"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="columns" type="List"><parameter name="column" type="Map"><description>value, label, color</description></parameter></parameter>
+            <parameter name="flow" type="List"><parameter name="step" type="Map"><description>statusId, toStatusId</description></parameter></parameter>
+        </out-parameters>
+        <actions><script><![CDATA[
+            const text = (value) => (value == null ? '' : String(value).trim())
+            const given = Array.from(values || []).map(text).filter((value) => value)
+            const find = (entity, field, value) => ec.entity.find(entity).condition(field, value).useCache(true).disableAuthz().one()
+            const items = []
+            const seen = new Set()
+            const add = (value, label, isStatus) => {
+                if (!value || seen.has(value)) return
+                seen.add(value)
+                items.push({value: value, label: label || value, isStatus: isStatus})
+            }
+            if (status || text(statusTypeId)) {
+                const types = []
+                if (text(statusTypeId)) types.push(text(statusTypeId))
+                else for (const value of given) {
+                    const item = find('moqui.basic.StatusItem', 'statusId', value)
+                    if (item && item.statusTypeId && !types.includes(String(item.statusTypeId))) types.push(String(item.statusTypeId))
+                }
+                for (const type of types) {
+                    const typeItems = Array.from(ec.entity.find('moqui.basic.StatusItem').condition('statusTypeId', type)
+                            .orderBy('sequenceNum').orderBy('statusId').useCache(true).disableAuthz().list())
+                    for (const item of typeItems) add(String(item.statusId), text(item.description), true)
+                }
+            }
+            for (const value of given) {
+                if (seen.has(value)) continue
+                const item = find('moqui.basic.StatusItem', 'statusId', value)
+                if (item) { add(value, text(item.description), true); continue }
+                const enumeration = find('moqui.basic.Enumeration', 'enumId', value)
+                add(value, enumeration ? text(enumeration.description) : value, false)
+            }
+            const statusIds = items.filter((item) => item.isStatus).map((item) => item.value)
+            const colors = statusIds.length ? (ec.service.sync().name('org.moqui.impl.StatusServices.get#StatusColors')
+                    .parameter('statusIdList', statusIds).call()?.colors || {}) : {}
+            columns = items.map((item) => ({value: item.value, label: item.label, color: item.isStatus ? (colors[item.value] || 'grey-7') : null}))
+            flow = []
+            if (statusIds.length) {
+                const rows = Array.from(ec.entity.find('moqui.basic.StatusFlowTransition').condition('statusFlowId', text(statusFlowId) || 'Default')
+                        .condition('statusId', 'in', statusIds).orderBy('statusId').orderBy('transitionSequence').orderBy('toStatusId').useCache(true).disableAuthz().list())
+                for (const row of rows) {
+                    if (row.userPermissionId && !ec.user.hasPermission(String(row.userPermissionId))) continue
+                    flow.push({statusId: String(row.statusId), toStatusId: String(row.toStatusId)})
+                }
+            }
         ]]></script></actions>
     </service>
 </services>

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Examples for the gallery's List views screen (screen/Gallery/Views.xml): each status of the Example flow, the four types,
+    sizes to sum, times in the second half of October 2026 (some at the same time, one all day, one over two days) -->
+<entity-facade-xml type="demo">
+    <moqui.example.Example exampleId="EX_100" exampleName="Warehouse layout study" exampleTypeEnumId="EXT_REAL_WORLD" statusId="EXST_IN_DESIGN"
+            exampleSize="8" exampleDate="2026-10-19 09:00:00" exampleEndDate="2026-10-19 10:30:00" description="Aisles and docks for the new site"/>
+    <moqui.example.Example exampleId="EX_101" exampleName="Pricing rules review" exampleTypeEnumId="EXT_MADE_UP" statusId="EXST_IN_DESIGN"
+            exampleSize="3" exampleDate="2026-10-19 10:00:00" exampleEndDate="2026-10-19 11:00:00"/>
+    <moqui.example.Example exampleId="EX_102" exampleName="Vendor onboarding" exampleTypeEnumId="EXT_REAL_WORLD" statusId="EXST_DEFINED"
+            exampleSize="5" exampleDate="2026-10-20 13:00:00" exampleEndDate="2026-10-20 15:00:00"/>
+    <moqui.example.Example exampleId="EX_103" exampleName="Label printer setup" exampleTypeEnumId="EXT_CONTRIVED" statusId="EXST_DEFINED"
+            exampleSize="2" exampleDate="2026-10-21 08:30:00" exampleEndDate="2026-10-21 09:00:00"/>
+    <moqui.example.Example exampleId="EX_104" exampleName="Quarterly planning" exampleTypeEnumId="EXT_INSPIRED" statusId="EXST_APPROVED"
+            exampleSize="13" exampleDate="2026-10-22 00:00:00" exampleEndDate="2026-10-23 00:00:00" allDay="Y"/>
+    <moqui.example.Example exampleId="EX_105" exampleName="Returns workflow" exampleTypeEnumId="EXT_MADE_UP" statusId="EXST_APPROVED"
+            exampleSize="5" exampleDate="2026-10-22 14:00:00" exampleEndDate="2026-10-22 16:30:00"/>
+    <moqui.example.Example exampleId="EX_106" exampleName="Barcode scanning" exampleTypeEnumId="EXT_REAL_WORLD" statusId="EXST_IMPLEMENTED"
+            exampleSize="8" exampleDate="2026-10-23 09:00:00" exampleEndDate="2026-10-23 12:00:00"/>
+    <moqui.example.Example exampleId="EX_107" exampleName="Invoice templates" exampleTypeEnumId="EXT_CONTRIVED" statusId="EXST_TESTED"
+            exampleSize="3" exampleDate="2026-10-26 11:00:00" exampleEndDate="2026-10-26 12:00:00"/>
+    <moqui.example.Example exampleId="EX_108" exampleName="Customer portal launch" exampleTypeEnumId="EXT_INSPIRED" statusId="EXST_COMPLETE"
+            exampleSize="21" exampleDate="2026-10-27 00:00:00" exampleEndDate="2026-10-29 00:00:00" allDay="Y"/>
+    <moqui.example.Example exampleId="EX_109" exampleName="Legacy import" exampleTypeEnumId="EXT_MADE_UP" statusId="EXST_CANCELLED"
+            exampleSize="1" exampleDate="2026-10-28 15:00:00" exampleEndDate="2026-10-28 16:00:00"/>
+    <moqui.example.Example exampleId="EX_110" exampleName="Shift schedule" exampleTypeEnumId="EXT_REAL_WORLD" statusId="EXST_IN_DESIGN"
+            exampleSize="5" exampleDate="2026-10-29 07:00:00" exampleEndDate="2026-10-29 08:00:00"/>
+</entity-facade-xml>

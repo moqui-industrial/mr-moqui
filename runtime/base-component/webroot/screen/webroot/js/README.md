@@ -69,7 +69,7 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 
 The tests are `MoquiLib.test.js`, `MoquiL10n.test.js`, `WebrootVue.qvt.test.js`, `WebrootVue.qvt.shell.test.js` (the palette, the key map, the
 screen context's forms and the root's shell data), `WebrootVue.qvt.records.test.js` (the HTML of the rich-text editor, the record panel URL,
-avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer), `WebrootVue.qvt.htmlview.test.js` (m-html-view's cleaning), `WebrootPublic.qvt.test.js` (the public shell's screen load and links), `WebrootChat.test.js` (the chat store: presence,
+avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer), `WebrootVue.qvt.htmlview.test.js` (m-html-view's cleaning), `WebrootVue.qvt.views.test.js` (the board's columns, the calendar's times, events and lanes, and what a move posts), `WebrootVue.qvt.markdown.test.js` (m-markdown on the vendored Marked: heading ids, links, wiki links, tables), `WebrootPublic.qvt.test.js` (the public shell's screen load and links), `WebrootChat.test.js` (the chat store: presence,
 typing, read markers, unread counts, a pushed event merged into a timeline, do not disturb, the status components) and `WebrootVue.qvt.static.test.js` (the script and package
 the server answers for `crates/moqui-core` `testdata/Static/Items` run on the real Vue runtime over a fake DOM; every component template compiles with the vendored
 Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
@@ -206,6 +206,8 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-avatar` | a `q-avatar`: `image` (a face image URL; initials when it does not load), else the initials of `name` on a color of the name (`moqui.avatar`), else a person icon; `size` (32px), `color`, `text-color`, `square`, `rounded`, `tooltip` (the name); `presence` (`online`, `away`, `dnd`, `offline`) draws a dot, and `user-id` the dot of that user's presence from the chat store (asked for once mounted), nothing without either |
 | `m-record-card` | a compact card of a record: `record-entity`, `record-id`, and `card-url` (asked once per page for each record, GET with `recordEntity` and `recordId` and `card-parameters`) or `card` (the JSON itself); `dense`. See Record cards below |
 | `m-html-view` | an email or other untrusted HTML body in a frame sandboxed without scripts: `html` (or `text`, a text/plain body), `allow-remote` (a trusted sender: remote images at once), `cid-map` (`{contentId: url}` of the inline images), `collapse-quotes` (true), `images-bar` (true: the "Show images" bar), `dark` (`auto`, `on`, `off`), `title`; emits `remote-images` (how many were hidden), `show-images` (the bar's button was pressed), `loaded` (`{height, blocked}`). In XML the `html-view` element. See Email bodies below |
+| `m-list-views` | the views of a form-list (`views`, `view-board`, `view-calendar`): the list in the default slot and its board or calendar over the same rows. `rows` (the page's rows: the fields the views read as plain values, with `{field}_display` text), `board` and `calendar` (the settings below), `views`, `view`, `form-location` (the key of the `LIST_VIEW_` preference), `reload` (an m-static-form-list's fetch), `info-url` (`/listViewColumns`); a card is the `card_{index}` slot, else the `card` slot with `{index, row}`. See List views below |
+| `m-markdown` | markdown text as HTML: Marked (GitHub flavored) and DOMPurify, loaded on first use; `text`, `base-path` (a relative link is resolved from it), `resolve-link` (a function `(href, {kind, text, image})` that answers a new href, `{href, missing, title, className, external}`, or nothing for the default), `heading-prefix` (`md-`: each heading's id is the prefix and its words, made unique), `strip-title` (a first h1 with this text is left out), `wiki-links` (`[[path]]` and `[[path\|text]]` are `wiki:path` links, for the resolver); emits `outline` (`[{id, level, text}]`), `rendered` (the element) and `link` (`{href, event, anchor, preventDefault()}`, before an application link is followed; `preventDefault()` leaves it to the host, as a wiki opens a page in place). A link to another site opens in a new tab with `noopener noreferrer`, an application path goes through `setUrl` (Ctrl or Cmd: a new tab), `#id` scrolls to the heading; tables are in a scrolling `q-table` container and tables and code blocks take their tint from the text color, so both read in dark mode. In XML the `markdown-view` element (html and the text modes: the text as it is). The pure part is `moqui.markdown` (`render(marked, text, options)`, `sanitize`, `expandWikiLinks`, `slug`, `resolve`) |
 | `m-chart`, `m-mermaid` | Chart.js 4 and Mermaid 11, loaded on first use. `m-chart` takes `config`; `m-mermaid` takes the diagram in its `text` attribute (the compiler condenses the line breaks of slot content), `height` and `config` |
 | `m-script`, `m-stylesheet` | `<script>` and `<link>` of a screen's text |
 
@@ -540,6 +542,40 @@ template text, so nothing in a message is compiled; a server-static screen binds
 HTML on the server (`StringUtilities.cleanHtml`, the safe set without styles) into a frame sandboxed without scripts that loads
 no image but `data:`; the text and print modes write the text (or the HTML's text).
 
+## List views: board and calendar
+
+style-guide §3.6, §3.7 and §8.2: `<form-list views="board,list,calendar">` with a `view-board` and a `view-calendar` (xml-form-3.xsd)
+is an `m-list-views` around the list. The views are a client switch over the rows of the list's page, so a filter of Find Options or the
+head, a sort, a saved find, another page or page size change what each shows; the list's nav row (and a head with find fields) stays
+above the board and calendar, its rows are hidden. The switch (`q-btn-toggle`, list, board and calendar icons) is above the list; the view
+is the URL's `view` parameter, else the one chosen for the form in this tab, else the user's `LIST_VIEW_{screen path}#{form}` preference
+(set through `$root.setPreference` on a switch), else the first of `views`. Back to the list after a move, the screen is loaded again
+(`reloadContainer` of the screen's container, else `reloadSubscreens`; an m-static-form-list fetches its rows), so the list has what changed.
+
+| `board` | |
+|---|---|
+| `groupField`, `titleField`, `sumField`, `sumFormat` | the column of a row, its card's title for the default card, and the sum in each column's head (`#,##0.##`) |
+| `columns`, `flow` | the known columns in order (`{value, label, color}`) and where a status may go (`{statusId: [toStatusId]}`); the server-merged macros write them from `org.moqui.impl.StatusServices.get#ListViewColumns` (every status of the type in sequence order, with the status color map's colors, then the other values with the description of the status or enumeration they are), a server-static list asks the root screen's `listViewColumns` transition for them with the values its rows have |
+| `columnOrder`, `statusTypeId` | the columns given (each shown even with no card), and the status type when the rows may not have every status |
+| `transition`, `parameters`, `keyFields`, `parameterName` | a card dropped in another column posts `transition` with `parameters` (the transition's and the list's `hidden-parameters`), the row's key fields and the new value as `parameterName` (else `groupField`); a refusal (errors in the answer, or a failed request) puts it back and shows the message. While a card is dragged the columns its status may go to (`flow`) are outlined and the others dimmed |
+
+The cards move with SortableJS (`libs/sortablejs`, loaded when the board is first shown) in its fallback mode, so a mouse, a pen and a
+touch (after a short press) drag the same way and the page keeps its vertical scroll; within a column the order is the list's. A click on a
+card follows the first link of its title (the title field's cell, as the list writes it), unless it was on a link or button. Columns scroll
+sideways, 82% of the width each on a phone.
+
+| `calendar` | |
+|---|---|
+| `startField`, `endField`, `allDayField`, `titleField`, `colorField`, `colors`, `resourceField`, `resources` | an event from a row: a time stamp (epoch millis, as the server sends one) in the user's time zone, a date (`yyyy-MM-dd`) as a whole day, `Y` in the all-day field as whole days (a time stamp end at midnight is the day after the last); no end is an hour. `colors` is `color-map` (and the status colors of a status field), else a brand color by the value's hash (`moqui.listViews.colorOf`). `resources` (`{value, label}`) adds to the rows' |
+| `modes` | `month`, `week`, `day`, `list` (agenda), the first shown first; on a phone day and list. The mode and day are kept for the form in this tab |
+| `transition`, `parameters`, `keyFields` | a drag moves an event (15 minutes in the week and day grid, by days in the month and the all-day row), its lower edge resizes it; the transition is posted with the key fields, the new start and end (epoch millis, or a date for a date-only value; a date-only end is the last day) and, in the day mode with a resource field, the new resource. A refusal puts it back |
+| `createTransition`, `createParameters`, `createScreen` | a click or drag on empty time (a day in the month) opens the quick create: `createScreen` in the dialog with the start and end (`yyyy-MM-dd HH:mm`, the user's zone) and resource as parameters, else a form posting `createTransition` with the title, start, end, all day and resource |
+
+A click on an event opens its card (the same `card_{index}` slot) in a menu by it. The day mode with a resource field has a column for
+each resource. Times are wall clock in the user's zone (`moqui.listViews.wall` and `millis` over `Intl.DateTimeFormat`), as UTC day
+numbers and minutes, so the browser's own zone never counts. The pure part is `moqui.listViews` (`views`, `boardColumns`, `events`,
+`layoutDay`, `monthWeeks`, `moveParams`, `parseTime`, `timeOut`).
+
 ## Layout panels: split, wizard and stack
 
 **`m-container-split`** (style-guide §3.8). From 1024 px (`$q.screen.gt.sm`) a `q-splitter` with `unit="px"`: the side at
@@ -685,6 +721,8 @@ screen package, `private, no-store`) and shows the render function over it.
 - **An editable select's lookups.** The options of an `editable` select's `list-options` and `entity-options` are in the package by its id
   (`mqOpt_editable_{id}`; a form-single's in its `mqExtra_{form}`), and the template adds them to its `option` elements. It needs a plain id, and
   not in a form-list row (the report notes `editable-options` there).
+- **`m-static-form-list`** takes `views`, `board`, `calendar` and `views-location` as m-list-views does, and a `card` slot over the row's scope, and puts
+  its table in an m-list-views over the rows it fetched (its fetch is the views' reload).
 - **`m-static-form-list`** fetches `<path>/actions/<name>` with the request's parameters and the page and sort it has changed (`setPageIndex`, `sortBy`,
   `orderBy`), draws `m-form-paginate` and `m-form-go-page`, the `header` slot (`sortBy`, `orderBy`, `action`, `orderByField`) and the `row` slot once for each row with
   the row on the scope of the screen (`rowIndex` is a name of it). The rows of each answer are new components (an `m-form` copies its

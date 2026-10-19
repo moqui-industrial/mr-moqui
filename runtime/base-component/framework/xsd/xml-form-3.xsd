@@ -218,6 +218,79 @@ along with this software (see the LICENSE.md file). If not, see
                     Corresponds to FormConfig.configTypeEnumId for per-user and other saved form configurations.
                 </xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
+            <xs:element name="view-board" minOccurs="0"><xs:annotation><xs:documentation>
+                The list's rows as cards in columns by a field (IronStone style-guide §3.6, §8.2): a column for each value of
+                group-field, with its count (and the sum of sum-field) in its header; a card shows the title field's cell (its
+                link opens the record), a badge and two to four fields. The columns follow the status flow when group-field is
+                a status (statusId or a name ending in StatusId, or status-type-id given: every status of the type in sequence
+                order, with its label and color), else column-order, else the values in the order of the rows. A card dragged
+                to another column posts transition with the row's key fields and the new value; a refused move goes back with
+                the answer's message. The board is a view of the list (form-list views): the same rows, so its filters, sort,
+                saved finds and page apply, and the list's page size. In qvt the cards are the fields' cells as the list
+                writes them (m-list-views); html shows the list.
+            </xs:documentation></xs:annotation><xs:complexType>
+                <xs:attribute name="group-field" type="xs:string" use="required"><xs:annotation><xs:documentation>The field
+                    whose value is a card's column, usually the status.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="card-title-field" type="xs:string"><xs:annotation><xs:documentation>The field whose cell is
+                    the title of a card; a click on the card follows its link. Defaults to the first field of the list.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="card-fields" type="xs:string"><xs:annotation><xs:documentation>A comma list of two to four
+                    fields shown under the title with their titles.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="badge-field" type="xs:string"><xs:annotation><xs:documentation>A field shown as a tinted
+                    badge by the title.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="sum-field" type="xs:string"><xs:annotation><xs:documentation>A number field summed in each
+                    column's header.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="sum-format" type="xs:string"><xs:annotation><xs:documentation>The number pattern of the sum,
+                    #,##0.## by default.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="transition" type="xs:string"><xs:annotation><xs:documentation>The transition a move posts:
+                    the key fields, the transition's parameters and the list's hidden-parameters, and the new value as
+                    parameter-name. Without it the cards do not move.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="parameter-name" type="xs:string"><xs:annotation><xs:documentation>The name the new value is
+                    posted as; group-field by default.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="key-fields" type="xs:string"><xs:annotation><xs:documentation>A comma list of the fields that
+                    identify a row; by default the fields whose widget is hidden, else the row-selection id-field.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="column-order" type="xs:string"><xs:annotation><xs:documentation>A comma list (or a ${}
+                    expression of a list) of the column values in order; each is a column even with no card. A status or an
+                    enumeration takes its description as the column label.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="status-type-id" type="xs:string"><xs:annotation><xs:documentation>The status type whose
+                    statuses are the columns, when the rows may not show every status.</xs:documentation></xs:annotation></xs:attribute>
+            </xs:complexType></xs:element>
+            <xs:element name="view-calendar" minOccurs="0"><xs:annotation><xs:documentation>
+                The list's rows on a calendar (IronStone style-guide §3.7, §8.2): month, week, day and list (agenda) modes over
+                each row's start-field (and end-field), titled by title-field and colored by color-field (a status by the
+                status color map, else color-map, else a brand color by the value). A drag moves an event and its lower edge
+                resizes it, posting transition with the key fields and the new start and end (epoch millis for a time stamp, a
+                date for a date). A click on empty time opens the quick create: create-screen in a dialog with the start and
+                end as parameters, else a form that posts create-transition with the title, start and end. With resource-field
+                the day mode has a column for each resource, and a move to another column posts the new resource. The same
+                rows as the list: its filters, saved finds and page select what is shown. In qvt an m-list-views; html shows
+                the list.
+            </xs:documentation></xs:annotation><xs:complexType>
+                <xs:attribute name="start-field" type="xs:string" use="required"/>
+                <xs:attribute name="end-field" type="xs:string"><xs:annotation><xs:documentation>Without it a timed event is an
+                    hour long and an all-day event one day.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="title-field" type="xs:string"><xs:annotation><xs:documentation>The field whose text titles an
+                    event; the view-board's card-title-field, else the first field, by default.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="color-field" type="xs:string"/>
+                <xs:attribute name="color-map" type="xs:string"><xs:annotation><xs:documentation>Colors by value of color-field,
+                    as value:color pairs in a comma list (EXT_MADE_UP:info,EXT_REAL_WORLD:positive); the brand color names of
+                    style-guide §5.1.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="all-day-field" type="xs:string"><xs:annotation><xs:documentation>A Y/N field: Y is an
+                    all-day event (a date start is one too).</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="resource-field" type="xs:string"><xs:annotation><xs:documentation>The room, equipment or
+                    person of an event: the day mode has a column for each.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="transition" type="xs:string"><xs:annotation><xs:documentation>The transition a move or resize
+                    posts; without it events do not move.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="create-transition" type="xs:string"><xs:annotation><xs:documentation>The transition the quick
+                    create form posts (title-field, start-field, end-field, all-day-field and resource-field).</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="create-screen" type="xs:string"><xs:annotation><xs:documentation>A screen (a path or
+                    transition of this one) loaded in the quick create dialog, with the start and end (yyyy-MM-dd HH:mm) and
+                    resource as parameters.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="key-fields" type="xs:string"><xs:annotation><xs:documentation>As view-board key-fields.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="modes" type="xs:string" default="month,week,day,list"><xs:annotation><xs:documentation>The
+                    modes offered, the first shown first; on a phone day and list.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="card-fields" type="xs:string"><xs:annotation><xs:documentation>The fields of the card an event
+                    shows when clicked; the view-board's card-fields by default.</xs:documentation></xs:annotation></xs:attribute>
+            </xs:complexType></xs:element>
 
         </xs:sequence>
         <xs:attribute name="name" type="name-upper" use="required">
@@ -322,6 +395,13 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="dynamic" type="boolean" default="false">
             <xs:annotation><xs:documentation>If true then this form will be considered dynamic and the internal
                 definition will be built up each time it is used instead of only when first referred to.</xs:documentation></xs:annotation>
+        </xs:attribute>
+        <xs:attribute name="views" type="xs:string">
+            <xs:annotation><xs:documentation>The views of the list the user may switch between (IronStone style-guide §8.2), a comma
+                list of list, board and calendar, the first shown first: board needs a view-board element and calendar a
+                view-calendar. A view is a client switch over the same rows, so the filters, sort, saved finds and page apply to each.
+                The switch is above the list; the choice is kept as the user's LIST_VIEW_ preference for the form, and a view
+                parameter in the URL picks one. Without it, list and the view elements there are.</xs:documentation></xs:annotation>
         </xs:attribute>
         <xs:attribute name="server-static" type="xs:string">
             <xs:annotation><xs:documentation>See details for the screen.@server-static attribute. Defaults to the screen's value.</xs:documentation></xs:annotation>

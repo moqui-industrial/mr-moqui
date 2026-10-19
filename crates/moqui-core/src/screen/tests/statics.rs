@@ -301,6 +301,7 @@ fn the_qvt_fixture_screens_become_templates_that_compile() {
         "cells",
         "status",
         "mobile",
+        "views",
     ] {
         let (html, report) = static_fixture(name);
         golden(&format!("render/{name}.html"), &html);
@@ -1039,4 +1040,32 @@ fn a_status_bar_and_expression_styles_are_bound_in_a_static_template() {
     ] {
         assert!(cells.contains(expected), "{expected} in {cells}");
     }
+}
+
+/// The views of a form-list in a server-static screen: m-static-form-list gets the board's and calendar's settings (the transitions as
+/// paths of the screen, the key fields, color-map) and a card slot over the row's scope with the title, badge and card fields as the
+/// row slot writes them (no hidden input for a display); the rows are the ones it fetches. markdown-view is bound over the scope.
+#[test]
+fn form_list_views_and_the_markdown_view_in_a_static_template() {
+    let (html, report) = static_fixture("views");
+    for expected in [
+        r#":views="['board','list','calendar']""#,
+        "'groupField':'stage','titleField':'name','sumField':'points'",
+        "'keyFields':['taskId'],'columnOrder':[]",
+        "'transition':'/moveTask'",
+        "'createTransition':'/newTask'",
+        "'colors':{'todo':'info','doing':'warning'}",
+        r#"views-location="/#Tasks""#,
+        r#"<template v-slot:card="_ctx"><div class="m-card-head row no-wrap"><div class="m-card-title">"#,
+        r#"<span class="m-card-label m-muted" v-text="ec.l10n.localize('Owner')"></span>"#,
+        r#"<m-markdown id="Notes""#,
+        r#":wiki-links="true""#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    let card = &html[html.find(r#"<template v-slot:card="_ctx">"#).unwrap()..];
+    let card = &card[..card.find("</template>").unwrap()];
+    assert!(!card.contains(r#"type="hidden""#), "no hidden input in a card: {card}");
+    assert!(card.contains("Tasks_card_"), "a card's ids are its own: {card}");
+    eprintln!("{}", report.render());
 }
