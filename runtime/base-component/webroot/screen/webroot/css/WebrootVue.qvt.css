@@ -271,7 +271,7 @@ span.hover-image-container:hover img.hover-image { display: initial; margin: 10p
 .m-status-bar { gap: 6px 12px; }
 .m-status-stages { gap: 4px; }
 .m-status-actions { gap: 6px; }
-.m-status-form { display: inline-flex; }
+form.q-form.m-status-form, .m-status-form { display: inline-flex; width: auto; }
 .m-status-sep { margin: 0 -2px; }
 .markdown-preview { border: 1px solid rgba(0,0,0,0.12); margin-top: 4px; }
 
