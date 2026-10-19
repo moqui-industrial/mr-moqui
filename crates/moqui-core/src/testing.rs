@@ -14,8 +14,8 @@
 
 //! An in-memory SQL database for unit tests. It understands the statements the entity layer writes
 //! for the framework entities: single-table inserts, updates, deletes, and selects with `AND`,
-//! `OR`, `IN`, `IS NULL`, ordering, and paging, view selects that join member tables on equal columns, and the
-//! sequence refill.
+//! `OR`, `IN`, `IS NULL`, `UPPER(...) LIKE UPPER(?)`, ordering, and paging, view selects that join member tables on
+//! equal columns, and the sequence refill.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -656,9 +656,16 @@ fn count_slots(pred: &Pred) -> usize {
 
 fn eval_pred(pred: &Pred, row: &Row, params: &[Value], idx: &mut usize) -> Result<bool, Error> {
     match pred {
-        Pred::Cmp { field, op } => {
+        Pred::Cmp { field, op, upper } => {
             let param = take_param(params, idx)?;
             let left = row.get(field).cloned().unwrap_or(Value::Null);
+            if *upper {
+                let fold = |value: &Value| match value {
+                    Value::String(text) => Value::String(text.to_uppercase()),
+                    other => other.clone(),
+                };
+                return Ok(compare(&fold(&left), *op, &fold(param)));
+            }
             Ok(compare(&left, *op, param))
         }
         Pred::In { field, slots, negated } => {
@@ -697,6 +704,10 @@ fn eval_pred(pred: &Pred, row: &Row, params: &[Value], idx: &mut usize) -> Resul
 }
 
 fn compare(left: &Value, op: Op, right: &Value) -> bool {
+    // As SQL: an order comparison with a null is not true.
+    if matches!(op, Op::Lt | Op::Gt | Op::Le | Op::Ge) && (left.is_null() || right.is_null()) {
+        return false;
+    }
     let ordering = cmp_values(left, right);
     match op {
         Op::Eq => left == right,
@@ -821,9 +832,11 @@ struct SelectQuery {
 }
 
 enum Pred {
+    /// `"field" op ?`, or with `upper` `UPPER("field") op UPPER(?)`, a comparison that ignores case.
     Cmp {
         field: String,
         op: Op,
+        upper: bool,
     },
     /// `IN (?, ...)` with `slots` placeholders, or `NOT IN` when `negated`. An empty list is false.
     /// A null never matches either, as in SQL.
@@ -1141,7 +1154,14 @@ fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
         cur.expect_symbol(b')')?;
         return Ok(pred);
     }
+    let upper = cur.eat_keyword("UPPER") || cur.eat_keyword("LOWER");
+    if upper {
+        cur.expect_symbol(b'(')?;
+    }
     let field = cur.quoted()?;
+    if upper {
+        cur.expect_symbol(b')')?;
+    }
     if cur.eat_keyword("IS") {
         let negated = cur.eat_keyword("NOT");
         cur.expect_keyword("NULL")?;
@@ -1149,10 +1169,11 @@ fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
     }
     let negated = cur.eat_keyword("NOT");
     if cur.eat_keyword("LIKE") {
-        cur.expect_symbol(b'?')?;
+        expect_slot(cur, upper)?;
         return Ok(Pred::Cmp {
             field,
             op: if negated { Op::NotLike } else { Op::Like },
+            upper,
         });
     }
     if cur.eat_keyword("IN") {
@@ -1171,8 +1192,21 @@ fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
     let Some(op) = cur.eat_op() else {
         return Err(cur.fail("expected comparison"));
     };
-    cur.expect_symbol(b'?')?;
-    Ok(Pred::Cmp { field, op })
+    expect_slot(cur, upper)?;
+    Ok(Pred::Cmp { field, op, upper })
+}
+
+/// The `?` of a comparison, inside `UPPER(...)` or `LOWER(...)` when the field was.
+fn expect_slot(cur: &mut Cur, upper: bool) -> Result<(), Error> {
+    if upper {
+        if !(cur.eat_keyword("UPPER") || cur.eat_keyword("LOWER")) {
+            return Err(cur.fail("expected UPPER(?)"));
+        }
+        cur.expect_symbol(b'(')?;
+        cur.expect_symbol(b'?')?;
+        return cur.expect_symbol(b')');
+    }
+    cur.expect_symbol(b'?')
 }
 
 fn fold(mut parts: Vec<Pred>, and: bool) -> Pred {

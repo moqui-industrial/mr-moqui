@@ -13,8 +13,8 @@
  */
 
 //! Outbound SMTP and inbound IMAP/POP3 for the email services. The bodies live in [`implementation`] when the `mail`
-//! feature is on. These three functions are the registry entries either way, so a host built without mail still
-//! resolves the locations and reports that mail is not built in.
+//! feature is on. These functions are the registry entries either way, so a host built without mail still resolves
+//! the locations and reports that mail is not built in.
 
 use std::collections::BTreeMap;
 
@@ -30,10 +30,14 @@ mod implementation;
 #[cfg(all(test, feature = "mail"))]
 pub(crate) use implementation::{SharedSinkGuard, SinkGuard};
 
+#[cfg(all(test, feature = "mail"))]
+mod client_tests;
+
 pub(in crate::service) fn register(map: &mut BTreeMap<&'static str, RustServiceFn>) -> Result<(), String> {
     rust_service!(map, send_template)?;
     rust_service!(map, send_message)?;
     rust_service!(map, poll_server)?;
+    rust_service!(map, test_server)?;
     Ok(())
 }
 
@@ -85,6 +89,22 @@ fn poll_server(
     unavailable("org.moqui.impl.EmailServices.poll#EmailServer")
 }
 
+#[cfg(feature = "mail")]
+fn test_server(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    implementation::test_server(parameters, facade)
+}
+
+#[cfg(not(feature = "mail"))]
+fn test_server(
+    _parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    unavailable("org.moqui.impl.EmailServices.test#EmailServer")
+}
+
 #[cfg(not(feature = "mail"))]
 fn unavailable(name: &str) -> Result<BTreeMap<String, Value>, LibError> {
     Err(LibError::new(format!(
@@ -107,6 +127,10 @@ mod tests {
         assert_eq!(
             std::any::type_name_of_val(&super::poll_server),
             "moqui_core::service::mail::poll_server"
+        );
+        assert_eq!(
+            std::any::type_name_of_val(&super::test_server),
+            "moqui_core::service::mail::test_server"
         );
     }
 }
