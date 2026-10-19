@@ -1156,3 +1156,37 @@ fn a_time_stamp_field_formats_with_no_pattern() {
     })()"#,
     );
 }
+
+/// `ec.resource.getLocationText(location, charset)` decodes the bytes in the charset named (Java's second argument, the cache
+/// flag, still reads UTF-8), and a resource's stream reads in one with `getText(charset)`; an unknown charset is an error.
+#[test]
+fn location_text_and_a_stream_read_in_the_charset_given() {
+    clear_context_stack();
+    let context = ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    let dir = std::env::temp_dir().join(format!("moqui-charset-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // "Zoë “x”" in windows-1252, and "hé" in UTF-16 with a little-endian byte order mark
+    std::fs::write(dir.join("w.txt"), [b'Z', b'o', 0xEB, b' ', 0x93, b'x', 0x94]).unwrap();
+    std::fs::write(dir.join("u.txt"), [0xFF, 0xFE, b'h', 0, 0xE9, 0]).unwrap();
+    std::fs::write(dir.join("plain.txt"), "plain é").unwrap();
+    set_dir(&dir);
+    holds(
+        r##"(function () {
+            return ec.resource.getLocationText(dir + "/w.txt", "windows-1252") === "Zoë “x”"
+                && ec.resource.getLocationText(dir + "/u.txt", "UTF-16") === "﻿hé"
+                && ec.resource.getLocationText(dir + "/plain.txt", false) === "plain é"
+                && ec.resource.getLocationText(dir + "/plain.txt") === "plain é"
+                && ec.resource.getLocationReference(dir + "/w.txt").getInputStream().getText("windows-1252") === "Zoë “x”"
+                && ec.resource.getLocationReference(dir + "/plain.txt").getInputStream().getText() === "plain é";
+        })()"##,
+    );
+    holds(
+        r##"(function () {
+            try { ec.resource.getLocationText(dir + "/w.txt", "no-such-charset"); return false; }
+            catch (e) { return String(e).includes("Unsupported charset no-such-charset"); }
+        })()"##,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    clear_context_stack();
+}

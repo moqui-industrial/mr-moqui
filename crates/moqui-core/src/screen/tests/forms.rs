@@ -911,3 +911,90 @@ fn a_multi_form_post_calls_the_transition_service_for_each_row() {
     assert_eq!(medium("R1").as_deref(), Some("second"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `ec.web.sendTextResponse(text, contentType, filename)` sends the text with that type (UTF-8, text/plain by default) and with
+/// a file name as an attachment of that name, a null text as empty; an uploaded file reads in the charset given to
+/// `getString(charset)` (and its stream to `getText(charset)`), UTF-8 without one.
+#[test]
+fn a_text_response_takes_a_type_and_a_file_name_and_an_upload_reads_in_its_charset() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-text-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("Text.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        &root,
+        r#"<screen require-authentication="false">
+    <transition name="csv" read-only="true"><actions><script>ec.web.sendTextResponse('a,b\n', 'text/csv', 'Report 1.csv')</script></actions>
+        <default-response type="none"/></transition>
+    <transition name="page" read-only="true"><actions><script>ec.web.sendTextResponse('&lt;p&gt;x&lt;/p&gt;', 'text/html', null)</script></actions>
+        <default-response type="none"/></transition>
+    <transition name="none" read-only="true"><actions><script>ec.web.sendTextResponse(null)</script></actions>
+        <default-response type="none"/></transition>
+    <transition name="upload" require-session-token="false">
+        <actions><script><![CDATA[
+            const doc = ec.web.multiPartParameters.doc
+            ec.web.sendJsonResponse({utf8: doc.getString(), w1252: doc.getString('windows-1252'), latin: doc.getString('ISO-8859-1'),
+                stream: doc.getInputStream().getText('windows-1252')})
+        ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
+    <widgets><label text="text"/></widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    let csv = serve_at(&world.factory, request("GET", "/csv"), &root);
+    assert_eq!(csv.status, 200, "{}", csv.body_text());
+    assert_eq!(csv.body_text(), "a,b\n");
+    assert_eq!(csv.header("Content-Type"), Some("text/csv;charset=UTF-8"));
+    assert_eq!(
+        csv.header("Content-Disposition"),
+        Some("attachment; filename=\"Report_1.csv\"; filename*=utf-8''Report%201.csv")
+    );
+    let html = serve_at(&world.factory, request("GET", "/page"), &root);
+    assert_eq!(
+        html.header("Content-Type"),
+        Some("text/html;charset=UTF-8"),
+        "{}",
+        html.body_text()
+    );
+    assert_eq!(html.header("Content-Disposition"), None);
+    assert_eq!(html.body_text(), "<p>x</p>");
+    let none = serve_at(&world.factory, request("GET", "/none"), &root);
+    assert_eq!(none.status, 200);
+    assert_eq!(none.body_text(), "");
+    assert_eq!(none.header("Content-Type"), Some("text/plain;charset=UTF-8"));
+
+    // "café “quoted”" in windows-1252: é is E9, the quotes 93 and 94
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        b"--BoUnD\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"contacts.csv\"\r\nContent-Type: text/csv\r\n\r\n",
+    );
+    body.extend_from_slice(&[
+        b'c', b'a', b'f', 0xE9, b' ', 0x93, b'q', b'u', b'o', b't', b'e', b'd', 0x94,
+    ]);
+    body.extend_from_slice(b"\r\n--BoUnD--\r\n");
+    let mut post = request("POST", "/upload");
+    post.set_header("content-type", "multipart/form-data; boundary=BoUnD");
+    post.body = body;
+    let answer = serve_at(&world.factory, post, &root);
+    assert_eq!(answer.status, 200, "{}", answer.body_text());
+    let json = crate::service::parse_json(&answer.body_text()).unwrap();
+    let get = |key: &str| match &json {
+        moqui_lib::object::Value::Map(map) => moqui_lib::object::to_plain_string(map.get(key).unwrap()),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(get("w1252"), "café \u{201c}quoted\u{201d}");
+    assert_eq!(get("stream"), "café \u{201c}quoted\u{201d}");
+    assert_eq!(
+        get("latin"),
+        "café \u{93}quoted\u{94}",
+        "ISO-8859-1 is byte for byte, as Java"
+    );
+    assert_eq!(
+        get("utf8"),
+        "caf\u{fffd} \u{fffd}quoted\u{fffd}",
+        "not UTF-8: replaced, as Java's decoder"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

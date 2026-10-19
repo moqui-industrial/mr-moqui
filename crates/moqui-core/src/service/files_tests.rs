@@ -1205,6 +1205,137 @@ fn shares_and_public_links_with_password_expiry_revoke_and_a_file_drop() {
     assert!(actions.contains(&"version".to_string()), "{actions:?}");
 }
 
+/// The drive's hidden trash folder is not reached by its path: a public link to the whole drive (no share path) lists,
+/// downloads and uploads nothing under `.trash`, a member or a share reads it only through list#Trash, nothing is uploaded
+/// into it or shared from it, and its owner still opens it.
+#[test]
+fn the_trash_is_not_reached_through_a_link_to_the_whole_drive_or_by_its_path() {
+    let (context, facade) = setup();
+    let _entered = context.enter();
+    install();
+    users(&facade);
+    login("alice");
+    let bin = drive("folder", "Bin", &[]);
+    ok(
+        "upload#Resource",
+        &[
+            ("driveId", text(&bin)),
+            ("fileList", files(&[("a.txt", "A"), ("secret.txt", "S")])),
+        ],
+    );
+    let trashed = ok(
+        "trash#Resource",
+        &[("driveId", text(&bin)), ("path", text("secret.txt"))],
+    );
+    let trash_id = field(&maps(&trashed, "trashList")[0], "trashId");
+    let in_trash = format!(".trash/{trash_id}/secret.txt");
+    assert_eq!(
+        read(&format!("dbresource://drive/shared/{bin}/{in_trash}")),
+        "S",
+        "the trash copy is where the paths below look"
+    );
+    ok("add#DriveMember", &[("driveId", text(&bin)), ("userId", text("bob"))]);
+    let link = ok(
+        "share#Resource",
+        &[
+            ("driveId", text(&bin)),
+            ("isLink", text("Y")),
+            ("permissionEnumId", text("RspEdit")),
+        ],
+    );
+    let token = out_text(&link, "linkToken");
+    refused(
+        "share#Resource",
+        &[
+            ("driveId", text(&bin)),
+            ("path", text(&in_trash)),
+            ("isLink", text("Y")),
+        ],
+        "File not found",
+    );
+    refused(
+        "upload#Resource",
+        &[
+            ("driveId", text(&bin)),
+            ("path", text(".trash")),
+            ("file", upload("x.txt", b"x")),
+        ],
+        "Folder not found",
+    );
+    // the owner opens the trash folder by its path
+    assert_eq!(
+        names(&ok("list#Folder", &[("driveId", text(&bin)), ("path", text(".trash"))])),
+        [trash_id.as_str()]
+    );
+
+    logout();
+    assert_eq!(names(&ok("list#PublicShare", &[("token", text(&token))])), ["a.txt"]);
+    for path in [
+        ".trash",
+        ".trash/",
+        &format!(".trash/{trash_id}"),
+        &format!("./.trash/{trash_id}"),
+    ] {
+        refused(
+            "list#PublicShare",
+            &[("token", text(&token)), ("path", text(path))],
+            "Not found",
+        );
+    }
+    refused(
+        "download#PublicShare",
+        &[("token", text(&token)), ("path", text(&in_trash))],
+        "Not found",
+    );
+    refused(
+        "download#PublicShare",
+        &[("token", text(&token)), ("path", text(".trash"))],
+        "Not found",
+    );
+    refused(
+        "upload#PublicShare",
+        &[
+            ("token", text(&token)),
+            ("path", text(".trash")),
+            ("file", upload("drop.txt", b"d")),
+        ],
+        "Not found",
+    );
+    let file = ok(
+        "download#PublicShare",
+        &[("token", text(&token)), ("path", text("a.txt"))],
+    );
+    assert_eq!(read(&out_text(&file, "location")), "A");
+
+    // a member sees the trash through list#Trash, not by its path
+    login("bob");
+    assert_eq!(
+        maps(&ok("list#Trash", &[("driveId", text(&bin))]), "trashList").len(),
+        1
+    );
+    refused(
+        "list#Folder",
+        &[("driveId", text(&bin)), ("path", text(".trash"))],
+        "Folder not found",
+    );
+    refused(
+        "get#ResourceInfo",
+        &[("driveId", text(&bin)), ("path", text(&in_trash))],
+        "File not found",
+    );
+    let found = ok(
+        "find#Resources",
+        &[
+            ("driveId", text(&bin)),
+            ("path", text(".trash")),
+            ("text", text("secret")),
+        ],
+    );
+    assert!(maps(&found, "resultList").is_empty(), "{found:?}");
+    let everywhere = ok("find#Resources", &[("text", text("secret"))]);
+    assert!(maps(&everywhere, "resultList").is_empty(), "{everywhere:?}");
+}
+
 #[test]
 fn an_upload_past_the_quota_is_refused_whole() {
     let (context, facade) = setup();
