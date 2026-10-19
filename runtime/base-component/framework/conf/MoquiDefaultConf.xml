@@ -233,6 +233,9 @@
         <!-- The mail capture for specs: with mail_capture_sends=true, or ec.factory.getTool('MailCapture').enable() in a
              spec, send#EmailMessage keeps the message in memory instead of connecting (docs/Testing.md) -->
         <tool-factory class="moqui_core::service::mail_capture::MailCaptureToolFactory" init-priority="5"/>
+        <!-- The notification capture for specs: ec.factory.getTool('NotificationCapture').enable() listens on the
+             notification topic as the host's socket does, so the shell counts are sent, and keeps the messages -->
+        <tool-factory class="moqui_core::notify::capture::NotificationCaptureToolFactory" init-priority="5"/>
     </tools>
 
     <cache-list warm-on-start="true" local-factory="MCache" distributed-factory="MCache">

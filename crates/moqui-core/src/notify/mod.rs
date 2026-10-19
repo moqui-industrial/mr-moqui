@@ -14,6 +14,7 @@
 
 //! In-process notifications. The host WebSocket subscribes; cluster fan-out is [`crate::cluster::publish`].
 
+pub mod capture;
 mod message;
 mod topic;
 

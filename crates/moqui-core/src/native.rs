@@ -281,8 +281,9 @@ impl NativeRegistry {
         let mut registry = Self::default();
         // the framework's own tool factories (VCard, ICalendar, MailCapture), which MoquiDefaultConf.xml selects
         crate::pim::register(&mut registry)?;
-        // and the mail capture for specs (MailCapture)
+        // and the mail and notification captures for specs (MailCapture, NotificationCapture)
         crate::service::mail_capture::register(&mut registry)?;
+        crate::notify::capture::register(&mut registry)?;
         for component in components {
             let mut entries = inventory::iter::<NativeComponent>
                 .into_iter()
