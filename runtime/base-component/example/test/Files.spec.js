@@ -44,9 +44,10 @@ feature("uploads keep versions with their notes, as history rows and as one comm
             gitList: files("list#Folder", { driveId: gitDriveId, path: "docs" }).fileList,
             moved: files("get#Versions", { driveId: gitDriveId, path: "old/c.md" }).versionList,
             log: ec.resource.getChangeLog(`git://DRIVE_${gitDriveId}/docs`, 10),
-            drives: files("get#UserDrives").driveList }
+            drives: files("get#UserDrives").driveList, sized: files("get#UserDrives", { includeUsage: true }).driveList,
+            usage: files("get#DriveUsage", { driveId: folderDriveId }).usageList }
     },
-    then({ commit, changeSet, folderVersions, gitList, moved, log, drives }) {
+    then({ commit, changeSet, folderVersions, gitList, moved, log, drives, sized, usage }) {
         commit.versionName.length == 40
         commit.uploadedList.map((row) => row.outcome) == ["created", "created", "created"]
         folderVersions.map((version) => version.note) == ["Second", "First"]
@@ -59,7 +60,9 @@ feature("uploads keep versions with their notes, as history rows and as one comm
         moved.map((version) => version.note) == ["Tidy", "First drafts"]
         log.map((entry) => entry.note) == ["Tidy", "Edited b", "First drafts"]
         drives[0].isPersonal == true
-        drives.find((drive) => drive.driveId === folderDriveId).usedBytes == 15
+        drives.find((drive) => drive.driveId === folderDriveId).usedBytes == null
+        sized.find((drive) => drive.driveId === folderDriveId).usedBytes == 15
+        usage[0].usedBytes == 15
     },
 })
 
@@ -114,18 +117,22 @@ feature("drive files are search documents, found by name", {
     when() {
         ec.user.internalLoginUser("filesOwner")
         files("upload#Resource", { driveId: folderDriveId, path: "reports", file: uploadedFile("Quarterly Budget.csv", "a,b\n") })
-        files("set#Tags", { driveId: folderDriveId, path: "reports/Quarterly Budget.csv", tagNameList: ["finance"] })
+        const tagId = files("set#Tags", { driveId: folderDriveId, path: "reports/Quarterly Budget.csv", tagNameList: ["finance"] }).tagList[0].tagId
         const found = files("find#Resources", { text: "quarterly" })
         const tagged = files("find#Resources", { text: "finance" })
+        // by the tag: on the index a term on the document's tagIds list
+        const byTag = files("find#Resources", { tagId: tagId })
         ec.user.internalLoginUser("filesEditor")
         const asEditor = files("find#Resources", { text: "quarterly" })
-        return { found, tagged, asEditor, available: ec.search.isAvailable() }
+        return { found, tagged, byTag, asEditor, available: ec.search.isAvailable() }
     },
-    then({ found, tagged, asEditor, available }) {
+    then({ found, tagged, byTag, asEditor, available }) {
         found.usedIndex == available
         found.resultList.map((row) => row.path) == ["reports/Quarterly Budget.csv"]
         found.resultList[0].fileType == "spreadsheet"
         tagged.resultList.length == (available ? 1 : 0)
+        byTag.usedIndex == available
+        byTag.resultList.map((row) => row.path) == ["reports/Quarterly Budget.csv"]
         asEditor.resultList.length == 1
     },
 })

@@ -22,6 +22,11 @@
 //!   current user may see a record, so a user who is not a member may read and join the room bound to it. The framework
 //!   cannot read an app's records; IronStone BOSS points the theme value at Mantle's
 //!   `mantle.party.CommunicationServices.get#RecordLinkInfo`, which takes `checkOnly` and answers `recordVisible`.
+//!   `FileServices.check#RecordPaths` asks it too, for the record folders of a records drive.
+//!
+//!   The hook is called in the caller's transaction (a record made earlier in it is seen), so with `checkOnly` it must
+//!   answer without adding an error: an error in a service call marks the transaction rollback-only even when its
+//!   errors are taken back (`call_tolerant`), and the caller's work would then roll back at its commit.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
@@ -195,7 +200,8 @@ fn check_record_visible(
     let Some(service) = service else {
         if first_time(&format!("none:{theme}")) {
             tracing::info!(
-                "Theme {theme} names no {RECORD_VISIBLE}: a chat room bound to a record is reached only by its members"
+                "Theme {theme} names no {RECORD_VISIBLE}: a chat room bound to a record is reached only by its members, \
+                 and a records drive's record folders only by its managers"
             );
         }
         return Ok(answer(false, None));

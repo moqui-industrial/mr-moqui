@@ -271,6 +271,7 @@ pub fn content_type_for_name(filename: &str) -> Option<&'static str> {
         "svg" => "image/svg+xml",
         "pdf" => "application/pdf",
         "gz" => "application/gzip",
+        "zip" => "application/zip",
         _ => return None,
     })
 }

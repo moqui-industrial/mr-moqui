@@ -735,9 +735,24 @@ impl HostWeb {
         })
     }
 
-    fn send_resource_response(&self, ctx: Ctx<'_>, location: String, inline: Opt<bool>) -> rquickjs::Result<()> {
+    /// `sendResourceResponse(location, inline, fileName)`: a `#versionName` suffix sends that version, and a file name
+    /// names the attachment (a zip or a copy kept under a random name).
+    fn send_resource_response<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        location: String,
+        inline: Opt<JsValue<'js>>,
+        file_name: Opt<JsValue<'js>>,
+    ) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            crate::web::send_resource_response(&location, inline.0.unwrap_or(false));
+            let inline = inline.0.as_ref().is_some_and(|value| value.as_bool() == Some(true));
+            let file_name = match file_name.0.as_ref() {
+                Some(value) if !value.is_null() && !value.is_undefined() => {
+                    Some(rquickjs::convert::Coerced::<String>::from_js(&ctx, value.clone())?.0)
+                }
+                _ => None,
+            };
+            crate::web::send_resource_response(&location, inline, file_name.as_deref());
             Ok(())
         })
     }

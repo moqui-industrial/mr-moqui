@@ -1074,7 +1074,11 @@ fn resource_versions_diffs_and_location_text_of_a_version() {
                 && diff.unifiedDiff.startsWith("--- 01\n+++ 02\n") && toCurrent.toName === "current"
                 && ec.resource.getLocationText(location + "#01") === "first line\nsecond line\n"
                 && ec.resource.getLocationText(location) === "first line\nsecond line changed\nthird line\n"
-                && ec.resource.getLocationReference(location + "#01").getText() === "first line\nsecond line changed\nthird line\n"
+                && ec.resource.getLocationReference(location + "#01").getText() === "first line\nsecond line\n"
+                && ec.resource.getLocationReference(location + "#01").openStream().getText() === "first line\nsecond line\n"
+                && ec.resource.getLocationReference(location + "#01").getInputStream().readAllBytes().length === 23
+                && ec.resource.getLocationReference(location + "#09").openStream() === null
+                && ec.resource.getLocationReference(location).openStream().getText().includes("changed")
                 && ec.resource.template(location + "#01", "").includes("second line")
                 && !ec.resource.template(location + "#01", "").includes("changed")
                 && ec.resource.template(location, "").includes("changed");

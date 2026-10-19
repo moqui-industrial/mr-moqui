@@ -148,6 +148,8 @@ cannot be.
 | `ec.resource.putContent(location, content, note)` | The same for text, a `Uint8Array`, an uploaded file or a stream |
 | `ec.resource.restoreVersion(location, versionName, note)` | That version written back as the newest (on `git://` one commit that puts the entry of that commit back, so a directory deleted later comes back whole); the new version's name |
 | `ec.resource.getVersionBytes(location, versionName)` | A version's bytes as a `Uint8Array`, or null |
+| `ec.resource.getLocationReference("location#versionName")` | The file's reference, whose `openStream()`, `getInputStream()` and `getText()` read that version (null when it is not there) |
+| `ec.web.sendResourceResponse("location#versionName", inline, fileName)` | That version as the response (404 when it is not there) |
 
 In Rust: `ResourceFacade::write_bytes_noted`, `restore_version`, and `ResourceProvider::write_bytes_noted` (a provider
 that keeps no notes need not implement it).
@@ -209,12 +211,15 @@ root location with an owner, members and a quota:
 reaches a drive they own or are a current `ResourceDriveMember` of (a user or a user group) with `RdpView`, `RdpEdit` or
 `RdpManage`; a `ResourceShare` to the user, one of their groups or their party grants its permission on its path and
 below (`RspView`, `RspEdit`, or `RspUpload`: files may only be added). A mirror and an archived drive are read only. What
-the user cannot reach is "not found". `get#DriveAccess` answers the level.
+the user cannot reach is "not found". `get#DriveAccess` answers the level, and every service asks it, so a records drive's
+rule (below) holds for every caller.
 
 **Services.** Drives: `create#Drive`, `update#Drive`, `archive#Drive`, `add#DriveMember`, `remove#DriveMember`,
-`get#DriveMembers`, `get#UserDrives` (with the bytes used), `export#Drive` (a `db` repository as a bare repository on
-disk, a folder drive as a zip). Files: `list#Folder` (size, modified and modified by from the last change, version and
-note, shared, favorite, tags, content and file type), `get#ResourceInfo`, `find#Resources` (through the `MoquiDriveFile`
+`get#DriveMembers`, `get#UserDrives` (the bytes used only with `includeUsage`, and a records drive's only with
+`includeRecordsUsage` too, as sizing reads every file under a drive), `get#DriveUsage` (the bytes of one drive or a list,
+for a quota bar shown when it is needed; a records drive's for its managers), `export#Drive` (a `db` repository as a bare
+repository on disk, a folder drive as a zip). Files: `list#Folder` (size, modified and modified by from the last change,
+version and note, shared, favorite, tags, content and file type), `get#ResourceInfo`, `find#Resources` (through the `MoquiDriveFile`
 search document when search is available, else a walk), `find#Recent`, `upload#Resource` (one change set, a version note,
 conflicts replace, keepBoth or skip, the quota), `save#Text`, `create#Folder`, `rename#Resource`, `move#Resource` and
 `copy#Resource` (within a drive one change set; a move across drives is a copy and a trash), `download#Zip`,
@@ -226,23 +231,67 @@ commit and `ResourceTrash.versionName` is the version before), `list#Trash`, `re
 `share#Resource` (people or a link; a link's random token is returned once and only its hash kept, as the password),
 `revoke#Share`, `accept#Share`, `decline#Share`, `get#Shares` (outgoing, links, incoming), `set#Favorite`,
 `get#Favorites`, `set#Tags`, `get#Tags`. A move or rename carries the path's shares, favorites, tags and recent rows.
+`upload#Resource` takes uploaded files or streams (`ref.openStream()`, named by `relativePathList`); a stream passed to a
+service, or kept in the context, stays the stream, and anything else that is not a file (an object, a list) fails that
+item: no write stores a value as its text.
+
+**Downloads.** `get#ResourceInfo` gives a location (`location#versionName` for a past version), `download#Zip` a zip under
+`runtime://tmp/drive-zip` with its name. Send either with `ec.web.sendResourceResponse(location, inline, fileName)`: a
+version suffix sends that version, `fileName` names the attachment (`Content-Disposition`, so a zip or a copy under a
+random name downloads under its own name), a type the name does not tell is `application/octet-stream`, and the response
+is `Cache-Control: private, no-store` (only an application's own `component://` or `classpath://` file shown inline may be
+kept by a shared cache). `clean#DriveTempFiles` (the `clean_DriveTempFiles_hourly` job) removes what is older than a day
+under `runtime://tmp/drive-*` (zips, exports, any copies an application keeps there) and `runtime://tmp/preview`.
 
 **Public links.** `check#PublicShareToken` (the token route's check), `open#PublicShare` (the token, then the password:
 a grant for an hour, an HMAC of the share and its expiry keyed by the share's secrets; counts the opening),
 `list#PublicShare`, `download#PublicShare` (a file, or a folder as a zip) and `upload#PublicShare` (a file drop with the
 uploader's name in the version note; names never replace). Each is anonymous and checks the token before it reads
-anything else, and never answers about a path outside the share.
+anything else, and never answers about a path outside the share. A public page's visitor has no user, and a file on the
+database tree is entity rows that visitor may not read, so the page does not send the location itself:
+`download#PublicShare` with `sendResponse: true` (and `inline: true` for a picture or a PDF to show in the page) writes the
+response after its token and grant checks, under its own anonymous-all authorization, named by the file (a folder as
+`<name>.zip`), and sends nothing after an error, so the transition answers then:
+
+```xml
+<transition name="download" method="get" read-only="true">
+    <actions><script><![CDATA[
+        ec.service.sync().name('org.moqui.impl.FileServices.download#PublicShare').parameters({token: token || '',
+            grant: grant || null, path: path || null, sendResponse: true, inline: String(inline) === 'true'}).call()
+        if (ec.message.hasError()) ec.web.sendJsonResponse({})
+    ]]></script></actions>
+    <default-response type="none"/>
+</transition>
+```
 
 **Records drive.** Its `ResourceDriveRecordFolder` rows map a top folder (or a pattern such as `asset/*/maintenance`) to
 the record entity and id field of the folders below it; the application that writes those folders seeds them.
 `list#Folder` shows the mapped folders at the top with their labels, and gives each record folder `recordEntityName`,
 `idField` and `recordId`.
 
+Its access is the records' own. A member below the manage level (its users may well all be members, through an
+`ALL_USERS` row) reaches only the paths in the map whose records they may see, as the record visibility hook answers:
+`check#RecordPaths` maps a path to the records it is in (`party/P1/...` is in Party `P1`; `asset/A1/maintenance/M7/...`
+in Asset `A1` and AssetMaintenance `M7`, both checked) and asks `ChatServices.check#RecordVisible`, the service the
+user's theme names in `STRT_RECORD_VISIBLE_SERVICE`, called as the user with `checkOnly` (IronStone names Mantle's
+`get#RecordLinkInfo`); each record is asked once per request (the execution context's `sharedMap`). With no such theme
+value no record folder is reached (logged once), only the map. A path outside the map, the trash folder included, is
+"not found"; so is a record the user may not see, through a share too, for reads and writes alike. Managers (the owner,
+`RdpManage`) and internal work reach every path. `get#DriveAccess` and `get#ResourceInfo` give `recordList`, the records
+of the path, innermost first.
+
+The lists follow it: `list#Folder` lists the record folders of a mapped folder that the user may see, asking the newest
+`recordLimit` (200) and counting the rest in `moreRecordCount` (a folder of thousands of records is not a hook call for
+each; open a record's folder by its path, or search); `find#Resources` (the index's hits, or a walk that does not go into
+the others), `find#Recent`, `get#Favorites`, `list#Trash`, `get#Activity`, `download#Zip` and `copy#Resource` leave out
+what is in records the user may not see.
+
 **Search.** `MoquiDriveFile` (index `moqui_drive`) has no row behind it: `index#DriveFiles` builds the documents (drive,
 path, name, folder, content and file type, size, modified date and user, tags) on each upload, write, rename, move, copy,
 tag change, restore and trash (which removes them), and `index#MirrorDrives` brings a mirror's documents to its head
-after a fetch (the `Files.secas.xml` rules). `find#Resources` filters by the drives the user may open. Extracted text is
-later.
+after a fetch (the `Files.secas.xml` rules). `find#Resources` filters by the drives the user may open, and by `tagId`
+through the `tagIds` list: on Postgres a field `eq` or `in` on a root keyword field also matches an element of a list
+held there, as an Elastic term query does. Extracted text is later.
 
 ## Wiki pages
 
