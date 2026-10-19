@@ -95,6 +95,16 @@ fn run_command(
 enum Store {
     Db,
     File(PathBuf),
+    /// A scheme served by a resource provider (`git://`): every operation goes through the resource facade.
+    Facade,
+}
+
+/// A resource facade call in the current execution context.
+fn with_resources<T>(
+    body: impl FnOnce(&crate::context::ResourceFacade) -> Result<T, crate::context::Error>,
+) -> Result<T, LibError> {
+    ExecutionContext::with_current(|ec| body(ec.factory().resource()).map_err(|err| LibError::new(err.message())))
+        .ok_or_else(|| LibError::new("elFinder has no execution context"))?
 }
 
 /// One file or directory under the volume, by its logical location.
@@ -186,6 +196,12 @@ impl Connector<'_> {
                 store: Store::Db,
             });
         }
+        if with_resources(|resources| Ok(resources.has_provider(location)))? {
+            return Ok(Entry {
+                location: location.to_string(),
+                store: Store::Facade,
+            });
+        }
         let path = ExecutionContext::with_current(|ec| {
             let resource = ec
                 .factory()
@@ -210,6 +226,7 @@ impl Connector<'_> {
         let store = match &parent.store {
             Store::Db => Store::Db,
             Store::File(path) => Store::File(path.join(name)),
+            Store::Facade => Store::Facade,
         };
         Entry { location, store }
     }
@@ -221,6 +238,9 @@ impl Connector<'_> {
                 .stat_db_resource(&entry.location)?
                 .is_some_and(|stat| !stat.is_file)),
             Store::File(path) => Ok(path.is_dir()),
+            Store::Facade => {
+                with_resources(|resources| Ok(resources.stat(&entry.location)?.is_some_and(|stat| !stat.is_file)))
+            }
         }
     }
 
@@ -244,6 +264,15 @@ impl Connector<'_> {
                     names.push(item.file_name().to_string_lossy().into_owned());
                 }
                 names
+            }
+            Store::Facade => {
+                if !self.is_directory(entry)? {
+                    return Ok(Vec::new());
+                }
+                with_resources(|resources| resources.list(&entry.location))?
+                    .into_iter()
+                    .map(|child| child.name)
+                    .collect()
             }
         };
         names.sort();
@@ -287,6 +316,10 @@ impl Connector<'_> {
                     .map_or(0, std::fs::Metadata::len);
                 (path.is_dir(), millis, size)
             }
+            Store::Facade => match with_resources(|resources| resources.stat(&entry.location))? {
+                Some(stat) => (!stat.is_file, stat.last_modified.unwrap_or(0), stat.size),
+                None => (false, 0, 0),
+            },
         };
         let mut info = IndexMap::new();
         let name = if root {
@@ -427,7 +460,7 @@ impl Connector<'_> {
     /// removed, and what it points to, which may be outside the volume, is left alone.
     fn is_own_directory(&self, entry: &Entry) -> Result<bool, LibError> {
         match &entry.store {
-            Store::Db => self.is_directory(entry),
+            Store::Db | Store::Facade => self.is_directory(entry),
             Store::File(path) => Ok(std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())),
         }
     }
@@ -441,7 +474,13 @@ impl Connector<'_> {
                 deleted.push(Value::string(self.hash(&self.relative_to_root(&child.location))));
             }
         }
-        if self.delete_entry(dir)? {
+        // A git directory is gone once its last file is (git keeps no empty directories); it was deleted all the same.
+        let vanished = || -> Result<bool, LibError> {
+            Ok(matches!(dir.store, Store::Facade)
+                && !self.is_root(&dir.location)
+                && with_resources(|resources| resources.stat(&dir.location))?.is_none())
+        };
+        if self.delete_entry(dir)? || vanished()? {
             deleted.push(Value::string(self.hash(&self.relative_to_root(&dir.location))));
         }
         Ok(deleted)
@@ -461,6 +500,12 @@ impl Connector<'_> {
             } else {
                 std::fs::remove_file(path).is_ok()
             }),
+            Store::Facade => {
+                if self.is_root(&entry.location) {
+                    return Ok(false);
+                }
+                with_resources(|resources| resources.delete(&entry.location))
+            }
         }
     }
 
@@ -473,6 +518,7 @@ impl Connector<'_> {
                     std::fs::create_dir(path).map_err(|err| io_error(&entry.location, &err))?;
                 }
             }
+            Store::Facade => with_resources(|resources| resources.make_directory(&entry.location))?,
         }
         Ok(entry)
     }
@@ -488,6 +534,7 @@ impl Connector<'_> {
                     .open(path)
                     .map_err(|err| io_error(&entry.location, &err))?;
             }
+            Store::Facade => with_resources(|resources| resources.write_bytes(&entry.location, &[]))?,
         }
         Ok(entry)
     }
@@ -496,6 +543,7 @@ impl Connector<'_> {
         match &entry.store {
             Store::Db => self.facade.write_db_resource(&entry.location, bytes),
             Store::File(path) => std::fs::write(path, bytes).map_err(|err| io_error(&entry.location, &err)),
+            Store::Facade => with_resources(|resources| resources.write_bytes(&entry.location, bytes)),
         }
     }
 
@@ -516,6 +564,10 @@ impl Connector<'_> {
                     Vec::new()
                 }
             }
+            Store::Facade => with_resources(|resources| match resources.stat(&entry.location)? {
+                Some(stat) if stat.is_file => resources.get(&entry.location)?.read_bytes(),
+                _ => Ok(Vec::new()),
+            })?,
         };
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
@@ -532,6 +584,7 @@ impl Connector<'_> {
                 };
                 std::fs::rename(path, new_path).map_err(|err| io_error(&entry.location, &err))
             }
+            Store::Facade => with_resources(|resources| resources.rename(&entry.location, new_location)),
         }
     }
 
@@ -747,8 +800,13 @@ impl Connector<'_> {
     }
 }
 
+/// In production only roots that hold data, not code, take writes: `dbresource://`, `content://`, and `git://`
+/// repositories.
 fn writes_restricted(production: bool, resource_root: &str) -> bool {
-    production && !(resource_root.starts_with("dbresource://") || resource_root.starts_with("content://"))
+    production
+        && !(resource_root.starts_with("dbresource://")
+            || resource_root.starts_with("content://")
+            || resource_root.starts_with("git://"))
 }
 
 /// The path a hash names, or `None` for anything that is not a hash of a UTF-8 path. The volume ID alone is the empty

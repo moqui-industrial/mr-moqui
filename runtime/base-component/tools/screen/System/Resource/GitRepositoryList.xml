@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a 
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The repositories behind git:// resource locations (moqui.resource.GitRepository; docs/Revision-Management.md). -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Git Repositories" default-menu-index="2">
+
+    <transition name="gitRepositoryDetail"><default-response url="../GitRepositoryDetail"/></transition>
+    <transition name="createGitRepository"><service-call name="create#moqui.resource.GitRepository"/>
+        <default-response url="../GitRepositoryDetail"/></transition>
+    <transition name="fetchGitRepository"><service-call name="org.moqui.impl.GitServices.fetch#GitRepository"/>
+        <default-response url="."/></transition>
+
+    <actions>
+        <entity-find entity-name="moqui.resource.GitRepository" list="gitRepositoryList">
+            <search-form-inputs default-order-by="repositoryId"/>
+        </entity-find>
+    </actions>
+    <widgets>
+        <container-dialog id="CreateGitRepositoryDialog" button-text="Create Git Repository">
+            <form-single name="CreateGitRepository" transition="createGitRepository">
+                <field name="repositoryId"><default-field title="ID"
+                        tooltip="The first segment of a location: git://ID/path/to/file.md"><text-line size="20"/></default-field></field>
+                <field name="description"><default-field><text-line size="50"/></default-field></field>
+                <field name="repositoryKind"><default-field title="Kind">
+                    <drop-down no-current-selected-key="db">
+                        <option key="db" text="db: objects and refs in the database"/>
+                        <option key="local" text="local: a bare repository on disk"/>
+                        <option key="remote" text="remote: a read-only mirror fetched from a URL"/>
+                    </drop-down>
+                </default-field></field>
+                <field name="remoteUrl"><default-field title="Remote URL"
+                        tooltip="Fetched from by a remote repository, and imported from by a db repository"><text-line size="60"/></default-field></field>
+                <field name="branch"><default-field tooltip="main when empty"><text-line size="20"/></default-field></field>
+                <field name="submitButton"><default-field title="Create"><submit/></default-field></field>
+            </form-single>
+        </container-dialog>
+        <form-list name="GitRepositoryList" list="gitRepositoryList" skip-form="true">
+            <field name="repositoryId">
+                <header-field title="ID" show-order-by="true"><text-find size="10" hide-options="true"/></header-field>
+                <default-field><link text="${repositoryId}" url="gitRepositoryDetail" link-type="anchor"/></default-field>
+            </field>
+            <field name="description">
+                <header-field show-order-by="true"><text-find size="20" hide-options="true"/></header-field>
+                <default-field><display/></default-field>
+            </field>
+            <field name="repositoryKind">
+                <header-field title="Kind" show-order-by="true">
+                    <drop-down allow-empty="true"><option key="db"/><option key="local"/><option key="remote"/></drop-down>
+                </header-field>
+                <default-field><display/></default-field>
+            </field>
+            <field name="branch"><default-field><display text="${branch ?? 'main'}"/></default-field></field>
+            <field name="remoteUrl"><default-field title="Remote URL"><display/></default-field></field>
+            <field name="headCommitId"><default-field title="Head">
+                <display text="${headCommitId ? headCommitId.substring(0, 10) : ''}"/></default-field></field>
+            <field name="lastFetchDate">
+                <header-field title="Last Fetch" show-order-by="true"/>
+                <default-field><display/></default-field>
+            </field>
+            <field name="lastFetchError"><default-field title="Fetch Error"><display/></default-field></field>
+            <field name="fetchButton"><default-field title="">
+                <link url="fetchGitRepository" text="Fetch" condition="repositoryKind == 'remote'"
+                        parameter-map="{repositoryId:repositoryId}"/>
+            </default-field></field>
+            <field name="find"><header-field title="Find"><submit/></header-field>
+                <default-field><display text=" "/></default-field></field>
+        </form-list>
+    </widgets>
+</screen>

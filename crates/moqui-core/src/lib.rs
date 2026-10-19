@@ -25,6 +25,7 @@ pub mod native;
 pub mod notify;
 pub mod outbound;
 pub mod print;
+pub mod resource;
 pub mod screen;
 pub mod script;
 pub mod search;

@@ -24,6 +24,21 @@ What is not ported on purpose (JSON-RPC, the Groovy and Java runners, the databa
 | Tests | `cargo test -p moqui-host --test gate3_browser`: in the server-merged qvt ArtifactGroupDetail a form-list drop-down shows its title, not the selected option (`Always Allow (overrides Deny)` is not on the page); and the static-qvt tests first run the compatibility report over every screen in `runtime/`, which is slow with the mantle components present: `qvt_report` in `cargo test-slow` passed but took 3 hours on the debug build (with another test run on the machine), and `moqui lint --screens --qvt-static` on the release build had not finished after 10 minutes | found 2026-10-18 |
 | Tests | `moqui test mantle-usl SimpleScreens`: 15 of the SimpleScreensRender features fail, the same with or without the 2026-10-18 changes. Among them, the print screens are asked for with `renderMode=xsl-fo` in the path, which the screen test does not apply, so they render nothing; with `makeTest().renderMode("html-print")` they render | found 2026-10-18 |
 
+## Revision management follow-ups (2026-10-18)
+
+Built: [Revision-Management](../docs/Revision-Management.md) (dbresource reverse deltas, the version diff API, `git://` resources, the gallery's Editor archetype).
+
+| Area | Item | Source |
+|---|---|---|
+| Git | No push: gitoxide has none yet. A `db` repository is published by `export#GitRepository` and the git command line. Add `push#GitRepository` when gix supports it | `resource/git/fs.rs` |
+| Git | SSH and `file://` fetches run the system `ssh` and `git-upload-pack`; an in-process SSH transport over `russh` (already linked for the SSH server) would drop that | same |
+| Git | File history walks the first-parent line from the head on each call; a cache of each path's versions by head commit would serve large repositories | `resource/git/ops.rs` `history` |
+| Git | SHA-1 repositories only; no submodules, LFS, tags as versions, or signed commits | same |
+| Screens | The Editor archetype uses `text-area editor-type="md"`; the co-editing component of the style guide (§8) is not built | `example/screen/Gallery/Editor.xml` |
+| Screens | `sri.baseLinkUrl(url)` is kept on the render (`RenderState.base_link_url`) but nothing reads it: Java's markdown renderers resolve a page's relative links against `getBaseLinkUri()`, and the port's markdown leaves them as written, so a relative link in a wiki page is relative to the screen URL | `screen/render.rs`; Java `ScreenRenderImpl.getBaseLinkUri` |
+| MrSimpleScreens | Groovy `take()` is still called in `Order/FindOrder.xml`, `Shipment/FindShipment.xml` and `Accounting/Reports/AccountLedger.xml` (no JS shim); the wiki screens' calls were changed to `substring` | found 2026-10-18 |
+| Tests | `cargo lint-min` fails: `tests/common/mod.rs` calls `moqui_host::pdf::downloaded_chromium`, which the `pdf` feature leaves out (from the chromium-download commit) | found 2026-10-18 |
+
 ## Found by the screen archetype gallery (2026-10-18)
 
 The gallery (`runtime/base-component/example/screen/Gallery/`, [style-guide §10](../runtime/component/ironstone-boss/plan/style-guide.md)) exercised the qvt render mode and the script runtime; these are the findings not fixed that day (the fixed ones are in the gallery commit and, where they differ from Java on purpose, in [Parity-Diffs](Parity-Diffs.md#gallery-fixes-2026-10-18)).

@@ -68,3 +68,53 @@ fn text_mode_shows_the_markdown_source() {
     assert!(out.contains("Some *emphasis*"), "{out}");
     assert!(!out.contains("<h1>") && !out.contains("Hello"), "{out}");
 }
+
+/// The `sri` and `ec.resource` calls the wiki screens make before they render a page: the path name lists of
+/// `getScreenUrlInfo()`, `getCurrentScreenUrl().getScreenOnlyPath()` (no extra path), `baseLinkUrl`, and the template
+/// extensions for the page type drop-down.
+#[test]
+fn the_wiki_screens_url_and_template_calls_answer() {
+    let dir = std::env::temp_dir().join(format!("moqui-wiki-sri-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Root")).unwrap();
+    std::fs::write(
+        dir.join("Root.xml"),
+        r#"<screen require-authentication="false"><subscreens default-item="Page"/><widgets><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Root/Page.xml"),
+        r#"<screen require-authentication="false" allow-extra-path="true">
+            <actions><script><![CDATA[
+                const info = sri.getScreenUrlInfo()
+                fullPath = info.fullPathNameList.join('/')
+                extraPath = info.extraPathNameList.join('/')
+                screenOnly = sri.getCurrentScreenUrl().getScreenOnlyPath()
+                sri.baseLinkUrl('https://example.com/wiki')
+                baseLink = sri.getBaseLinkUrl()
+                sri.baseLinkUrl(null)
+                baseLinkAfter = String(sri.getBaseLinkUrl())
+                extensions = ec.resource.getTemplateRendererExtensionSet().includes('md')
+            ]]></script></actions>
+            <widgets><label text="full=${fullPath} extra=${extraPath} only=${screenOnly} base=${baseLink} after=${baseLinkAfter} md=${extensions}"/></widgets>
+        </screen>"#,
+    )
+    .unwrap();
+    let context = ExecutionContextFactory::test_context();
+    let output = make_render(context.factory())
+        .root_screen(dir.join("Root.xml").to_string_lossy().into_owned())
+        .screen_path("Page/SPACE/Some Page")
+        .render_mode("text")
+        .render()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = output.body_text();
+    assert!(
+        out.contains("full=Page/SPACE/Some Page extra=SPACE/Some Page only=/Page "),
+        "{out}"
+    );
+    assert!(
+        out.contains("base=https://example.com/wiki after=null md=true"),
+        "{out}"
+    );
+}

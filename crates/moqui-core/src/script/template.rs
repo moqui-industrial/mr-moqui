@@ -387,6 +387,16 @@ impl TemplateRegistry {
         }
     }
 
+    /// The registered extensions, in conf order without repeats (`ResourceFacade.getTemplateRendererExtensionSet`).
+    pub fn extensions(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        self.by_extension
+            .iter()
+            .filter(|(extension, _)| seen.insert(extension.clone()))
+            .map(|(extension, _)| extension.clone())
+            .collect()
+    }
+
     /// The renderer for the longest registered extension `location` ends with.
     pub fn renderer_for(&self, location: &str) -> Option<Arc<dyn TemplateRenderer>> {
         // A `#version` suffix names a version, not part of the file name.
@@ -464,12 +474,27 @@ impl TemplateRegistry {
         key: &str,
         prepare: impl FnOnce(&str) -> Result<String, Error>,
     ) -> Result<Arc<str>, Error> {
-        let resource = factory.resource().get(location.split('#').next().unwrap_or(location))?;
-        // A file is kept by its modified time. A database or http resource has none, and its text is
-        // already in hand, so it is kept by a hash of that text: the markdown is not converted again.
-        let (stamp, source) = match resource.last_modified() {
-            Some(modified) => (modified, None),
-            None => {
+        let resources = factory.resource();
+        let path = location.split('#').next().unwrap_or(location);
+        // A `#versionName` suffix on storage that keeps versions renders that version, as Java's `getLocationText`.
+        let versioned = resources.supports_version(path);
+        let version = crate::context::split_version(location)
+            .map(|(_, version)| version)
+            .filter(|_| versioned);
+        let resource = resources.get(path)?;
+        // A file is kept by its modified time. A database or http resource, or a version, has none, and its text is
+        // already in hand, so it is kept by a hash of that text: the markdown is not converted again. Storage that
+        // keeps versions is kept by its text too: a git commit's time is whole seconds, the same for two quick saves.
+        let modified = if versioned { None } else { resource.last_modified() };
+        let (stamp, source) = match (version, modified) {
+            (Some(version), _) => {
+                let source = resources
+                    .version_text(path, version)?
+                    .ok_or_else(|| Error::new(format!("version {version} not found: {path}")))?;
+                (text_stamp(&source), Some(source))
+            }
+            (None, Some(modified)) => (modified, None),
+            (None, None) => {
                 let source = resource.read_text()?;
                 (text_stamp(&source), Some(source))
             }

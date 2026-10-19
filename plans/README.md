@@ -10,7 +10,7 @@ Design, status and review documents for the MR-Moqui port. The first pass is com
 **Reference** (long-lived, kept current)
 - [Parity-Mapping.md](Parity-Mapping.md): every Rust module mapped to the Java, Groovy, XML and FreeMarker it was ported from, and the reverse index; what is excluded on purpose; the cross-cutting threads a review carries.
 - [Parity-Diffs.md](Parity-Diffs.md): the deliberate behaviour differences from Java inside ported features, each with its rationale and the code comment that records it. Companion to the mapping.
-- User guides for built features are in [`../docs/`](../docs/), not here: [Native-Components](../docs/Native-Components.md) and [Testing](../docs/Testing.md) (`moqui test`).
+- User guides for built features are in [`../docs/`](../docs/), not here: [Native-Components](../docs/Native-Components.md), [Testing](../docs/Testing.md) (`moqui test`) and [Revision-Management](../docs/Revision-Management.md) (version diffs, `git://` resources).
 
 **Next phase: performance** (digested in Performance-Summary)
 - [Performance.md](Performance.md): the target (100,000 durable commits or reads per second), one-node and maximum-scale setups, startup budget, capacity limits.

@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The repositories behind git:// resource locations (moqui.resource.GitRepository). No Java counterpart. The bodies
+    are Rust: crates/moqui-core/src/service/git.rs over crates/moqui-core/src/resource/git. Guide:
+    docs/Revision-Management.md. -->
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+    <service verb="fetch" noun="GitRepository" type="rust" location="moqui_core::service::git::fetch_repository">
+        <description>Fetch the branch of a remote kind repository from its remoteUrl into its bare mirror, created by
+            the first fetch. The local branch is replaced by the remote one. Records lastFetchDate, lastFetchError and
+            headCommitId on the repository. Refused in sim mode.</description>
+        <in-parameters><parameter name="repositoryId" required="true"/></in-parameters>
+        <out-parameters><parameter name="headCommitId"/></out-parameters>
+    </service>
+    <service verb="fetch" noun="AllGitRepositories" type="rust" location="moqui_core::service::git::fetch_all_repositories">
+        <description>Fetch every remote kind repository whose fetchIntervalMinutes has passed since its lastFetchDate
+            (for the fetch_AllGitRepositories_frequent ServiceJob). A repository that fails has its error recorded and
+            logged, and the others are still fetched.</description>
+        <out-parameters>
+            <parameter name="fetchedIds" type="List"/>
+            <parameter name="failedIds" type="List"/>
+        </out-parameters>
+    </service>
+    <service verb="init" noun="GitRepository" type="rust" location="moqui_core::service::git::init_repository">
+        <description>Make a repository ready: create the bare repository of a local kind (a local repository is also
+            created on its first use), fetch a remote kind for the first time. A db kind needs nothing.</description>
+        <in-parameters><parameter name="repositoryId" required="true"/></in-parameters>
+    </service>
+    <service verb="export" noun="GitRepository" type="rust" location="moqui_core::service::git::export_repository">
+        <description>Write a db kind repository as a bare repository on disk, with its branch and HEAD, so it can be
+            cloned and pushed with the git command line. Object ids are the same as in the database.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="targetPath"><description>Relative to the runtime directory unless absolute; the
+                repository's localPath (default runtime/git/repositoryId) when empty</description></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="exportPath"/>
+            <parameter name="objectCount" type="Integer"/>
+        </out-parameters>
+    </service>
+    <service verb="import" noun="GitRepository" type="rust" location="moqui_core::service::git::import_repository">
+        <description>Copy a branch, with all of its history, into a db kind repository, replacing its branch.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="source"><description>git://otherRepositoryId, a repository directory (bare or not), or a
+                URL to fetch (HTTPS; file and ssh run the system git and ssh); the repository's remoteUrl when
+                empty</description></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="headCommitId"/>
+            <parameter name="objectCount" type="Integer"/>
+        </out-parameters>
+    </service>
+</services>

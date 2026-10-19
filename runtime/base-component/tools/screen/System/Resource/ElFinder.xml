@@ -14,7 +14,7 @@ along with this software (see the LICENSE.md file). If not, see
 -->
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
-        default-menu-title="elFinder">
+        default-menu-title="elFinder" default-menu-index="1">
 
     <parameter name="resourceRoot"/>
     <always-actions>
@@ -41,6 +41,9 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- component://webroot and file:runtime stay selectable for browse; write commands are refused when instance_purpose is production -->
         <set field="rootOptions" from="[mantleContentRoot, 'dbresource://', 'component://webroot', 'file:runtime']"/>
         <if condition="mantleContentLargeRoot != mantleContentRoot"><script>rootOptions.push(mantleContentLargeRoot)</script></if>
+        <!-- each git repository's root (moqui.resource.GitRepository); writes there are commits -->
+        <entity-find entity-name="moqui.resource.GitRepository" list="gitRepositoryList"><order-by field-name="repositoryId"/></entity-find>
+        <script>for (const repository of gitRepositoryList) rootOptions.push('git://' + repository.repositoryId)</script>
     </actions>
     <widgets>
         <form-single name="SelectRoot" transition=".">

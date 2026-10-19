@@ -15,7 +15,7 @@
 //! Script facade: server expressions and XML actions on QuickJS.
 
 mod actions;
-mod bounded;
+pub(crate) mod bounded;
 pub mod groovy_convert;
 mod lint_hazards;
 mod parse;

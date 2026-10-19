@@ -51,6 +51,46 @@ along with this software (see the LICENSE.md file). If not, see
         <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
     </entity>
 
+    <!-- Git repositories for git:// resource locations (crates/moqui-core/src/resource/git, docs/Revision-Management.md).
+        No Java counterpart. The repositoryId is the first segment of a location: git://<repositoryId>/<path>. -->
+    <entity entity-name="GitRepository" package="moqui.resource" use="nontransactional" short-alias="gitRepositories">
+        <field name="repositoryId" type="id" is-pk="true"/>
+        <field name="description" type="text-medium"/>
+        <field name="repositoryKind" type="text-short">
+            <description>remote (a read-only mirror of remoteUrl, kept by fetch), local (a bare repository at localPath
+                that commits are written to), or db (the objects and refs in GitObject and GitRef)</description></field>
+        <field name="remoteUrl" type="text-medium"><description>For remote: the HTTPS (or file, or ssh through the
+            system ssh binary) URL fetched from. For local and db: where import#GitRepository reads from when no
+            source is given.</description></field>
+        <field name="branch" type="text-short"><description>The branch locations read and write; main when empty</description></field>
+        <field name="localPath" type="text-medium"><description>The bare repository directory for remote and local
+            kinds, relative to the runtime directory unless absolute; runtime/git/repositoryId when empty</description></field>
+        <field name="username" type="text-medium"/>
+        <field name="accessToken" type="text-medium" encrypt="true"><description>HTTPS password or token for fetch</description></field>
+        <field name="fetchIntervalMinutes" type="number-integer"><description>For remote: fetch#AllGitRepositories
+            fetches this repository when this long has passed since the last fetch; never when empty</description></field>
+        <field name="lastFetchDate" type="date-time"/>
+        <field name="lastFetchError" type="text-long"/>
+        <field name="headCommitId" type="text-short"><description>The branch head after the last write or fetch</description></field>
+        <relationship type="many" related="moqui.resource.GitRef" short-alias="refs"><key-map field-name="repositoryId"/></relationship>
+    </entity>
+    <entity entity-name="GitObject" package="moqui.resource" use="nontransactional" cache="never">
+        <description>A git object of a db kind repository: its raw content without the git header, uncompressed (the
+            database compresses large values), keyed by its SHA-1 hex id.</description>
+        <field name="repositoryId" type="id" is-pk="true"/>
+        <field name="objectId" type="text-short" is-pk="true"/>
+        <field name="objectType" type="text-short"><description>commit, tree, blob, or tag</description></field>
+        <field name="objectSize" type="number-integer"/>
+        <field name="objectData" type="binary-very-long"/>
+        <relationship type="one" related="moqui.resource.GitRepository"/>
+    </entity>
+    <entity entity-name="GitRef" package="moqui.resource" use="nontransactional" cache="never">
+        <field name="repositoryId" type="id" is-pk="true"/>
+        <field name="refName" type="text-medium" is-pk="true"><description>refs/heads/branch</description></field>
+        <field name="objectId" type="text-short"/>
+        <relationship type="one" related="moqui.resource.GitRepository"/>
+    </entity>
+
     <!-- ========================================================= -->
     <!-- moqui.resource.wiki -->
     <!-- ========================================================= -->

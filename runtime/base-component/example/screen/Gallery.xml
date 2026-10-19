@@ -34,6 +34,7 @@ along with this software (see the LICENSE.md file). If not, see
         <subscreens-item name="Report" menu-title="Report" menu-index="12" location="component://example/screen/Gallery/Report.xml"/>
         <subscreens-item name="Panel" menu-title="Panel" menu-index="13" location="component://example/screen/Gallery/Panel.xml"/>
         <subscreens-item name="Widgets" menu-title="Widgets" menu-index="14" location="component://example/screen/Gallery/Widgets.xml"/>
+        <subscreens-item name="Editor" menu-title="Editor" menu-index="15" location="component://example/screen/Gallery/Editor.xml"/>
     </subscreens>
 
     <widgets><subscreens-panel id="gallery-panel" type="popup"/></widgets>

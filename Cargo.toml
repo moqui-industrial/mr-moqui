@@ -161,6 +161,19 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 # Java component read and wrote through ImageIO and TwelveMonkeys, less wbmp and SVG.
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 
+# Line diffs for DbResource version history (stored reverse deltas) and the version compare view. Apache-2.0, no
+# required dependencies; `inline` is the word-level highlight of a changed line.
+similar = { version = "3.2", default-features = false, features = ["text", "inline"] }
+# Git resource locations (git://, crates/moqui-core/src/resource/git). gitoxide is pure Rust; libgit2 (git2) fails the
+# license gate and links OpenSSL. Defaults stay off; HTTPS fetch goes through the workspace reqwest 0.13 on rustls
+# (aws-lc). No push upstream yet, SSH remotes run the system ssh binary.
+gix = { version = "0.89", default-features = false, features = [
+    "sha1",
+    "parallel",
+    "blocking-network-client",
+    "blocking-http-transport-reqwest-rust-tls",
+] }
+
 # --- moqui-host ---
 # rt-multi-thread is for axum. postgres::Client builds its own current_thread runtime.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "io-util"] }

@@ -355,12 +355,24 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     };
 
     // ---- resources: the parts of ResourceReference the tools screens and services call ----
-    // A version of a `dbresource://` file: `{versionName, previousVersionName, versionDate, userId}`.
+    // A version of a `dbresource://` or `git://` file: `{versionName, previousVersionName, versionDate, userId}`, with
+    // Java's `Version` methods; `location` is kept for `getText`, `getPreviousVersion` and `getNextVersions`.
     wrappers.ResourceVersion = (version) => Object.assign(version, {
         getVersionName: () => version.versionName, getPreviousVersionName: () => version.previousVersionName,
-        getVersionDate: () => version.versionDate, getUserId: () => version.userId
+        getVersionDate: () => version.versionDate, getUserId: () => version.userId,
+        getText: () => host.resourceVersionText(version.location, String(version.versionName)),
+        getPreviousVersion: () => version.previousVersionName == null ? null
+            : makeVersion(host.resourceVersion(version.location, "named", String(version.previousVersionName)), version.location),
+        getNextVersions: () => host.resourceNextVersions(version.location, String(version.versionName))
+            .map((next) => makeVersion(next, version.location)),
+        getMap: () => ({ versionName: version.versionName, previousVersionName: version.previousVersionName,
+            versionDate: version.versionDate, userId: version.userId })
     });
-    const makeVersion = (version) => wrap("ResourceVersion", version);
+    const makeVersion = (version, location) => {
+        if (version == null) return null;
+        Object.defineProperty(version, "location", { value: location, enumerable: false });
+        return wrap("ResourceVersion", version);
+    };
     // `childOfLocation` is the directory `findChildFile` found the file under, kept as data for `getActualChildPath`.
     const childOf = (childRef, directoryRef) => { if (childRef != null) childRef.childOfLocation = directoryRef.location; return childRef; };
     const joinPath = (location, path) => location.replace(/\/$/, "") + (path.charAt(0) === "/" ? "" : "/") + path;
@@ -401,11 +413,16 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
                 if (info != null && info.exists) host.resourceMove(ref.location, String(newLocation));
             },
             supportsVersion: () => host.resourceSupportsVersion(ref.location),
-            getVersion: (versionName) => makeVersion(host.resourceVersion(ref.location, "named", String(versionName))),
-            getCurrentVersion: () => makeVersion(host.resourceVersion(ref.location, "current")),
-            getRootVersion: () => makeVersion(host.resourceVersion(ref.location, "root")),
-            getVersionHistory: () => host.resourceVersionHistory(ref.location).map(makeVersion),
-            getNextVersions: (versionName) => host.resourceNextVersions(ref.location, String(versionName)).map(makeVersion),
+            getVersion: (versionName) => makeVersion(host.resourceVersion(ref.location, "named", String(versionName)), ref.location),
+            getCurrentVersion: () => makeVersion(host.resourceVersion(ref.location, "current"), ref.location),
+            getRootVersion: () => makeVersion(host.resourceVersion(ref.location, "root"), ref.location),
+            getVersionHistory: () => host.resourceVersionHistory(ref.location).map((version) => makeVersion(version, ref.location)),
+            getNextVersions: (versionName) => host.resourceNextVersions(ref.location, String(versionName))
+                .map((version) => makeVersion(version, ref.location)),
+            // the line diff between two versions (an empty name is the current text): {fromName, toName, unifiedDiff,
+            // html, stats: {insertions, deletions, hunks}, hunks}
+            getVersionDiff: (versionNameLhs, versionNameRhs) => host.resourceVersionDiff(ref.location,
+                versionNameLhs == null ? "" : String(versionNameLhs), versionNameRhs == null ? "" : String(versionNameRhs)),
             // the directory named as this file without its extensions, or this directory
             findMatchingDirectory: function () {
                 if (ref.directory) return ref;
@@ -1623,11 +1640,10 @@ fn missing_info_value(location: &str) -> Value {
     Value::Map(map)
 }
 
+/// The text at a location; a `#versionName` suffix reads that version (`ec.resource.getLocationText`).
 fn resource_text(ctx: Ctx<'_>, location: String) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
-        resource_ref(&ctx, &location)?
-            .read_text()
-            .map_err(|err| throw_context(&ctx, &err))
+        with_resources(&ctx, |resources| resources.location_text(&location))
     })
 }
 
@@ -1723,12 +1739,15 @@ fn resource_copy(ctx: Ctx<'_>, from: String, to: String) -> rquickjs::Result<()>
     })
 }
 
-/// `supportsVersion`: only `dbresource://` files keep versions, as in Java.
-fn resource_supports_version(location: String) -> bool {
-    location.starts_with("dbresource:")
+/// `supportsVersion`: `dbresource://` files keep versions, as in Java, and so does a provider scheme that says so
+/// (`git://`).
+fn resource_supports_version(ctx: Ctx<'_>, location: String) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || {
+        with_ec(&ctx, |ec| ec.factory().resource().supports_version(&location))
+    })
 }
 
-fn version_value(version: crate::entity::DbResourceVersion) -> Value {
+fn version_value(version: crate::context::ResourceVersion) -> Value {
     let mut map = indexmap::IndexMap::new();
     map.insert("versionName".to_string(), Value::string(version.version_name));
     map.insert(
@@ -1740,6 +1759,14 @@ fn version_value(version: crate::entity::DbResourceVersion) -> Value {
     Value::Map(map)
 }
 
+/// A resource facade call from a host function: a facade error is a script exception.
+fn with_resources<T>(
+    ctx: &Ctx<'_>,
+    body: impl FnOnce(&crate::context::ResourceFacade) -> Result<T, crate::context::Error>,
+) -> rquickjs::Result<T> {
+    with_ec(ctx, |ec| body(ec.factory().resource()))?.map_err(|err| throw_context(ctx, &err))
+}
+
 /// `getCurrentVersion`, `getRootVersion` and `getVersion(name)`: `{versionName, previousVersionName, versionDate,
 /// userId}`, or null.
 fn resource_version<'js>(
@@ -1749,16 +1776,11 @@ fn resource_version<'js>(
     name: Opt<String>,
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        if !resource_supports_version(location.clone()) {
-            return Null.into_js(&ctx);
-        }
-        let facade = facade_of(&ctx)?;
-        let found = match which.as_str() {
-            "current" => facade.db_resource_current_version(&location),
-            "root" => facade.db_resource_root_version(&location),
-            _ => facade.db_resource_version(&location, name.0.as_deref().unwrap_or_default()),
-        }
-        .map_err(|err| throw_lib(&ctx, &err))?;
+        let found = with_resources(&ctx, |resources| match which.as_str() {
+            "current" => resources.current_version(&location),
+            "root" => resources.root_version(&location),
+            _ => resources.version(&location, name.0.as_deref().unwrap_or_default()),
+        })?;
         host_to_js(&ctx, found.map_or(Value::Null, version_value))
     })
 }
@@ -1766,12 +1788,7 @@ fn resource_version<'js>(
 /// `getVersionHistory`: newest first.
 fn resource_version_history<'js>(ctx: Ctx<'js>, location: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        if !resource_supports_version(location.clone()) {
-            return host_to_js(&ctx, Value::List(Vec::new()));
-        }
-        let versions = facade_of(&ctx)?
-            .db_resource_version_history(&location)
-            .map_err(|err| throw_lib(&ctx, &err))?;
+        let versions = with_resources(&ctx, |resources| resources.version_history(&location))?;
         host_to_js(&ctx, Value::List(versions.into_iter().map(version_value).collect()))
     })
 }
@@ -1783,12 +1800,7 @@ fn resource_next_versions<'js>(
     version_name: String,
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        if !resource_supports_version(location.clone()) {
-            return host_to_js(&ctx, Value::List(Vec::new()));
-        }
-        let versions = facade_of(&ctx)?
-            .db_resource_next_versions(&location, &version_name)
-            .map_err(|err| throw_lib(&ctx, &err))?;
+        let versions = with_resources(&ctx, |resources| resources.next_versions(&location, &version_name))?;
         host_to_js(&ctx, Value::List(versions.into_iter().map(version_value).collect()))
     })
 }
@@ -1796,16 +1808,24 @@ fn resource_next_versions<'js>(
 /// `getText(versionName)`: the text of one version, or null when there is no such version.
 fn resource_version_text<'js>(ctx: Ctx<'js>, location: String, version_name: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
-        if !resource_supports_version(location.clone()) {
-            return Null.into_js(&ctx);
-        }
-        let bytes = facade_of(&ctx)?
-            .read_db_resource_version(&location, &version_name)
-            .map_err(|err| throw_lib(&ctx, &err))?;
-        match bytes {
-            Some(bytes) => host_to_js(&ctx, Value::string(String::from_utf8_lossy(&bytes).into_owned())),
+        match with_resources(&ctx, |resources| resources.version_text(&location, &version_name))? {
+            Some(text) => host_to_js(&ctx, Value::string(text)),
             None => Null.into_js(&ctx),
         }
+    })
+}
+
+/// `getVersionDiff(versionNameLhs, versionNameRhs)`: the line diff from one version to the other (an empty name is
+/// the current text) as `{fromName, toName, unifiedDiff, html, stats, hunks}`. A version that is not there throws.
+fn resource_version_diff<'js>(
+    ctx: Ctx<'js>,
+    location: String,
+    lhs: String,
+    rhs: String,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let diff = with_resources(&ctx, |resources| resources.version_diff(&location, &lhs, &rhs))?;
+        host_to_js(&ctx, diff.to_value())
     })
 }
 
@@ -2467,6 +2487,7 @@ pub(super) fn install<'js>(
     method!("resourceVersionHistory", resource_version_history);
     method!("resourceNextVersions", resource_next_versions);
     method!("resourceVersionText", resource_version_text);
+    method!("resourceVersionDiff", resource_version_diff);
     method!("restSend", rest_send);
     method!("runTokenCommand", run_token_command);
     method!("testConfConnection", test_conf_connection);

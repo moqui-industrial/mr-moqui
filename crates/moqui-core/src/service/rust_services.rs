@@ -63,6 +63,8 @@ fn build() -> BTreeMap<&'static str, RustServiceFn> {
         super::tools::register(&mut map),
         super::images::register(&mut map),
         super::spreadsheet::register(&mut map),
+        #[cfg(feature = "git")]
+        super::git::register(&mut map),
     ] {
         if let Err(error) = result {
             errors.push(error);
@@ -79,45 +81,53 @@ mod tests {
         let map = super::build();
         let mut keys: Vec<&str> = map.keys().copied().collect();
         keys.sort_unstable();
-        assert_eq!(
-            keys,
-            vec![
-                "moqui_core::service::backup::backup_embedded_database",
-                "moqui_core::service::elfinder::run_command",
-                "moqui_core::service::images::convert_image",
-                "moqui_core::service::images::image_reader_file_suffixes",
-                "moqui_core::service::images::image_reader_mime_types",
-                "moqui_core::service::images::image_writer_file_suffixes",
-                "moqui_core::service::images::image_writer_mime_types",
-                "moqui_core::service::images::write_image_service",
-                "moqui_core::service::mail::poll_server",
-                "moqui_core::service::mail::send_message",
-                "moqui_core::service::mail::send_template",
-                "moqui_core::service::spreadsheet::load_spreadsheet_entity",
-                "moqui_core::service::spreadsheet::read_spreadsheet",
-                "moqui_core::service::sso::handle_callback",
-                "moqui_core::service::sso::login_user",
-                "moqui_core::service::sso::logout_user",
-                "moqui_core::service::system_sync::entity_sync::get_data",
-                "moqui_core::service::system_sync::entity_sync::include_list",
-                "moqui_core::service::system_sync::entity_sync::internal_run",
-                "moqui_core::service::system_sync::entity_sync::put_data",
-                "moqui_core::service::system_sync::entity_sync::run_sync",
-                "moqui_core::service::system_sync::message::send_rest",
-                "moqui_core::service::system_sync::sftp::poll",
-                "moqui_core::service::system_sync::sftp::send",
-                "moqui_core::service::tools::cancel_print_job",
-                "moqui_core::service::tools::get_print_job_details",
-                "moqui_core::service::tools::get_server_printers",
-                "moqui_core::service::tools::hold_print_job",
-                "moqui_core::service::tools::print_document",
-                "moqui_core::service::tools::print_resource_document",
-                "moqui_core::service::tools::print_screen_document",
-                "moqui_core::service::tools::release_print_job",
-                "moqui_core::service::tools::rewrite_encrypted_fields",
-                "moqui_core::service::tools::send_document_notifications",
-                "moqui_core::service::tools::send_print_job_internal",
-            ]
-        );
+        let mut expected = vec![
+            "moqui_core::service::backup::backup_embedded_database",
+            "moqui_core::service::elfinder::run_command",
+            "moqui_core::service::images::convert_image",
+            "moqui_core::service::images::image_reader_file_suffixes",
+            "moqui_core::service::images::image_reader_mime_types",
+            "moqui_core::service::images::image_writer_file_suffixes",
+            "moqui_core::service::images::image_writer_mime_types",
+            "moqui_core::service::images::write_image_service",
+            "moqui_core::service::mail::poll_server",
+            "moqui_core::service::mail::send_message",
+            "moqui_core::service::mail::send_template",
+            "moqui_core::service::spreadsheet::load_spreadsheet_entity",
+            "moqui_core::service::spreadsheet::read_spreadsheet",
+            "moqui_core::service::sso::handle_callback",
+            "moqui_core::service::sso::login_user",
+            "moqui_core::service::sso::logout_user",
+            "moqui_core::service::system_sync::entity_sync::get_data",
+            "moqui_core::service::system_sync::entity_sync::include_list",
+            "moqui_core::service::system_sync::entity_sync::internal_run",
+            "moqui_core::service::system_sync::entity_sync::put_data",
+            "moqui_core::service::system_sync::entity_sync::run_sync",
+            "moqui_core::service::system_sync::message::send_rest",
+            "moqui_core::service::system_sync::sftp::poll",
+            "moqui_core::service::system_sync::sftp::send",
+            "moqui_core::service::tools::cancel_print_job",
+            "moqui_core::service::tools::get_print_job_details",
+            "moqui_core::service::tools::get_server_printers",
+            "moqui_core::service::tools::hold_print_job",
+            "moqui_core::service::tools::print_document",
+            "moqui_core::service::tools::print_resource_document",
+            "moqui_core::service::tools::print_screen_document",
+            "moqui_core::service::tools::release_print_job",
+            "moqui_core::service::tools::rewrite_encrypted_fields",
+            "moqui_core::service::tools::send_document_notifications",
+            "moqui_core::service::tools::send_print_job_internal",
+        ];
+        if cfg!(feature = "git") {
+            expected.extend([
+                "moqui_core::service::git::export_repository",
+                "moqui_core::service::git::fetch_all_repositories",
+                "moqui_core::service::git::fetch_repository",
+                "moqui_core::service::git::import_repository",
+                "moqui_core::service::git::init_repository",
+            ]);
+            expected.sort_unstable();
+        }
+        assert_eq!(keys, expected);
     }
 }

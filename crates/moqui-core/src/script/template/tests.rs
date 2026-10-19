@@ -365,3 +365,18 @@ fn assign_reads_the_context_value_before_it_and_its_own_value_after() {
     assert_eq!(out, "56");
     crate::script::clear_context_stack();
 }
+
+#[test]
+fn the_extension_set_lists_each_registered_extension_once_in_conf_order() {
+    let registry = TemplateRegistry::parse("<moqui-conf/>");
+    let extensions = registry.extensions();
+    assert_eq!(extensions.first().map(String::as_str), Some("fancy"));
+    assert!(extensions.iter().any(|extension| extension == "md"), "{extensions:?}");
+    assert!(
+        extensions.iter().any(|extension| extension == "md.fancy"),
+        "{extensions:?}"
+    );
+    let mut unique = extensions.clone();
+    unique.dedup();
+    assert_eq!(unique, extensions);
+}

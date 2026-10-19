@@ -845,3 +845,75 @@ fn wiki_pages_keep_versions_and_move_clone_and_delete() {
             .exists
     );
 }
+
+/// A wiki space whose pages are `git://` files in a database repository: the wiki services use only the resource
+/// API, so page versions are commits; then the GitServices export it, and refuse a fetch of a non-mirror.
+#[cfg(feature = "git")]
+#[test]
+fn a_wiki_space_on_a_git_repository_keeps_commits_as_versions() {
+    let (facade, context) = setup();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    context.factory().resource().install_git().unwrap();
+    install(&["EntityServices.xml", "impl/WikiServices.xml", "impl/GitServices.xml"]);
+    seed(
+        &facade,
+        "moqui.resource.GitRepository",
+        &[("repositoryId", "wiki"), ("repositoryKind", "db")],
+    );
+    let sync = |name: &str, pairs: &[(&str, &str)]| {
+        let out = crate::service::sync(name, &params(pairs)).unwrap_or_else(|err| panic!("{name}: {err}"));
+        assert_eq!(errors(&context), "", "{name}");
+        out
+    };
+    sync(
+        "org.moqui.impl.WikiServices.create#WikiSpace",
+        &[
+            ("wikiSpaceId", "GTS"),
+            ("description", "Git space"),
+            ("rootPageDirectory", "git://wiki"),
+        ],
+    );
+    for text in ["one", "two"] {
+        sync(
+            "org.moqui.impl.WikiServices.update#WikiPage",
+            &[("wikiSpaceId", "GTS"), ("pageName", "Page1"), ("pageText", text)],
+        );
+    }
+    let location = "git://wiki/GTS/Page1.md";
+    let history = context.factory().resource().version_history(location).unwrap();
+    assert_eq!(history.len(), 2);
+    let info = sync(
+        "org.moqui.impl.WikiServices.get#WikiPageInfo",
+        &[("wikiSpaceId", "GTS"), ("pagePath", "Page1")],
+    );
+    assert_eq!(text(&info, "currentVersionName"), history[0].version_name);
+    assert_eq!(text(&info, "pageLocation"), location);
+    let first = sync(
+        "org.moqui.impl.WikiServices.get#PublishedWikiPageText",
+        &[
+            ("wikiSpaceId", "GTS"),
+            ("pagePath", "Page1"),
+            ("versionName", &history[1].version_name),
+        ],
+    );
+    assert_eq!(text(&first, "pageText"), "one");
+
+    let target = std::env::temp_dir().join(format!("moqui-wiki-git-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&target);
+    let exported = sync(
+        "org.moqui.impl.GitServices.export#GitRepository",
+        &[("repositoryId", "wiki"), ("targetPath", &target.to_string_lossy())],
+    );
+    assert_eq!(text(&exported, "exportPath"), target.to_string_lossy());
+    assert!(target.join("HEAD").is_file());
+    let _ = std::fs::remove_dir_all(&target);
+
+    let out = crate::service::sync(
+        "org.moqui.impl.GitServices.fetch#GitRepository",
+        &params(&[("repositoryId", "wiki")]),
+    )
+    .expect("a business failure is a message, not an Err");
+    assert!(!out.contains_key("headCommitId"));
+    assert!(errors(&context).contains("not a remote mirror"), "{}", errors(&context));
+}
