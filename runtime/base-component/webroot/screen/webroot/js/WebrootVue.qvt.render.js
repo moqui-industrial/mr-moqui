@@ -316,7 +316,7 @@
               ]))
             }
         } },
-        "m-container-split": { hash: "cf30438c", make: function (Vue) {
+        "m-container-split": { hash: "7ec2b534", make: function (Vue) {
             const { resolveComponent: _resolveComponent, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, renderSlot: _renderSlot, vShow: _vShow, withDirectives: _withDirectives, createElementBlock: _createElementBlock, normalizeStyle: _normalizeStyle, withCtx: _withCtx, createVNode: _createVNode, normalizeClass: _normalizeClass } = Vue
 
             return function render(_ctx, _cache) {
@@ -336,7 +336,7 @@
                   limits: [_ctx.layout.min, _ctx.layout.max],
                   reverse: _ctx.right,
                   disable: _ctx.layout.stacked,
-                  style: _normalizeStyle(_ctx.height && !_ctx.layout.stacked ? {height: _ctx.height} : undefined),
+                  style: _normalizeStyle(_ctx.paneHeight ? {height: _ctx.paneHeight} : undefined),
                   "separator-class": "m-split-separator"
                 }, {
                   before: _withCtx(() => [
@@ -1007,20 +1007,32 @@
               ]))
             }
         } },
-        "m-editable": { hash: "83a53495", make: function (Vue) {
-            const { createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, withKeys: _withKeys, createVNode: _createVNode, withCtx: _withCtx, resolveDynamicComponent: _resolveDynamicComponent, openBlock: _openBlock, createBlock: _createBlock } = Vue
+        "m-editable": { hash: "49667c8e", make: function (Vue) {
+            const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, resolveComponent: _resolveComponent, createBlock: _createBlock, createVNode: _createVNode, withKeys: _withKeys, withCtx: _withCtx, resolveDynamicComponent: _resolveDynamicComponent, normalizeClass: _normalizeClass } = Vue
 
             return function render(_ctx, _cache) {
+              const _component_q_select = _resolveComponent("q-select")
+              const _component_q_date = _resolveComponent("q-date")
+              const _component_q_time = _resolveComponent("q-time")
               const _component_q_input = _resolveComponent("q-input")
               const _component_q_popup_edit = _resolveComponent("q-popup-edit")
 
               return (_openBlock(), _createBlock(_resolveDynamicComponent(_ctx.labelType), {
                 id: _ctx.id,
-                class: "editable-label cursor-pointer",
+                class: _normalizeClass(["editable-label cursor-pointer", {'m-editable-empty': _ctx.isEmpty}]),
                 title: _ctx.tooltip
               }, {
                 default: _withCtx(() => [
-                  _createElementVNode("span", { innerHTML: _ctx.shown }, null, 8, ["innerHTML"]),
+                  (_ctx.isEmpty)
+                    ? (_openBlock(), _createElementBlock("span", {
+                        key: 0,
+                        class: "m-muted m-editable-placeholder",
+                        textContent: _toDisplayString(_ctx.placeholder || _ctx.tooltip)
+                      }, null, 8, ["textContent"]))
+                    : (_openBlock(), _createElementBlock("span", {
+                        key: 1,
+                        innerHTML: _ctx.shown
+                      }, null, 8, ["innerHTML"])),
                   _createVNode(_component_q_popup_edit, {
                     modelValue: _ctx.editValue,
                     "onUpdate:modelValue": $event => ((_ctx.editValue) = $event),
@@ -1031,21 +1043,60 @@
                     onSave: _ctx.save
                   }, {
                     default: _withCtx((scope) => [
-                      _createVNode(_component_q_input, {
-                        modelValue: scope.value,
-                        "onUpdate:modelValue": $event => ((scope.value) = $event),
-                        dense: "",
-                        autofocus: "",
-                        type: _ctx.widgetType === 'textarea' ? 'textarea' : 'text',
-                        loading: _ctx.saving,
-                        onKeyup: _withKeys($event => (_ctx.widgetType === 'textarea' ? null : scope.set()), ["enter"])
-                      }, null, 8, ["modelValue", "onUpdate:modelValue", "type", "loading", "onKeyup"])
+                      (_ctx.widgetType === 'select')
+                        ? (_openBlock(), _createBlock(_component_q_select, {
+                            key: 0,
+                            modelValue: scope.value,
+                            "onUpdate:modelValue": $event => ((scope.value) = $event),
+                            options: _ctx.selectOptions,
+                            "emit-value": "",
+                            "map-options": "",
+                            dense: "",
+                            outlined: "",
+                            "options-dense": "",
+                            autofocus: "",
+                            loading: _ctx.saving || _ctx.loadingOptions,
+                            class: "m-editable-select"
+                          }, null, 8, ["modelValue", "onUpdate:modelValue", "options", "loading"]))
+                        : (_ctx.isDate)
+                          ? (_openBlock(), _createElementBlock("div", {
+                              key: 1,
+                              class: "row no-wrap q-gutter-sm m-editable-date"
+                            }, [
+                              _createVNode(_component_q_date, {
+                                modelValue: scope.value,
+                                "onUpdate:modelValue": $event => ((scope.value) = $event),
+                                mask: _ctx.dateMask,
+                                minimal: "",
+                                flat: ""
+                              }, null, 8, ["modelValue", "onUpdate:modelValue", "mask"]),
+                              (_ctx.widgetType === 'date-time')
+                                ? (_openBlock(), _createBlock(_component_q_time, {
+                                    key: 0,
+                                    modelValue: scope.value,
+                                    "onUpdate:modelValue": $event => ((scope.value) = $event),
+                                    mask: _ctx.dateMask,
+                                    format24h: "",
+                                    flat: ""
+                                  }, null, 8, ["modelValue", "onUpdate:modelValue", "mask"]))
+                                : _createCommentVNode("", true)
+                            ]))
+                          : (_openBlock(), _createBlock(_component_q_input, {
+                              key: 2,
+                              modelValue: scope.value,
+                              "onUpdate:modelValue": $event => ((scope.value) = $event),
+                              dense: "",
+                              autofocus: "",
+                              type: _ctx.widgetType === 'textarea' ? 'textarea' : 'text',
+                              loading: _ctx.saving,
+                              onKeyup: _withKeys($event => (_ctx.widgetType === 'textarea' ? null : scope.set()), ["enter"])
+                            }, null, 8, ["modelValue", "onUpdate:modelValue", "type", "loading", "onKeyup"]))
                     ]),
                     _: 1
                   }, 8, ["modelValue", "onUpdate:modelValue", "label-set", "label-cancel", "onBeforeShow", "onSave"])
                 ]),
                 _: 1
-              }, 8, ["id", "title"]))
+              }, 8, ["id", "class", "title"]))
             }
         } },
         "m-field": { hash: "15d75803", make: function (Vue) {
@@ -3859,6 +3910,81 @@
                 : _createCommentVNode("", true)
             }
         } },
+        "m-status-bar": { hash: "bbb0c182", make: function (Vue) {
+            const { renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, resolveComponent: _resolveComponent, createBlock: _createBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, mergeProps: _mergeProps, withCtx: _withCtx, createVNode: _createVNode, createElementVNode: _createElementVNode } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_icon = _resolveComponent("q-icon")
+              const _component_q_chip = _resolveComponent("q-chip")
+              const _component_q_btn = _resolveComponent("q-btn")
+              const _component_m_form = _resolveComponent("m-form")
+
+              return (_openBlock(), _createElementBlock("div", {
+                class: "m-status-bar row items-center",
+                id: _ctx.id,
+                "data-status": _ctx.view.current ? _ctx.view.current.statusId : null
+              }, [
+                _createElementVNode("div", { class: "m-status-stages row items-center" }, [
+                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.view.stages, (stage, index) => {
+                    return (_openBlock(), _createElementBlock(_Fragment, {
+                      key: stage.statusId + ':' + index
+                    }, [
+                      index
+                        ? (_openBlock(), _createBlock(_component_q_icon, {
+                            key: 0,
+                            name: "sym_o_chevron_right",
+                            size: "xs",
+                            class: "m-muted m-status-sep"
+                          }))
+                        : _createCommentVNode("", true),
+                      _createVNode(_component_q_chip, _mergeProps({
+                        dense: "",
+                        square: "",
+                        ripple: false
+                      }, { ref_for: true }, stage.chip, {
+                        "data-stage": stage.statusId,
+                        "data-state": stage.state
+                      }), {
+                        default: _withCtx(() => [
+                          _createTextVNode(_toDisplayString(stage.label), 1)
+                        ]),
+                        _: 2
+                      }, 1040, ["data-stage", "data-state"])
+                    ], 64))
+                  }), 128))
+                ]),
+                (_ctx.action && _ctx.view.buttons.length)
+                  ? (_openBlock(), _createElementBlock("div", {
+                      key: 0,
+                      class: "m-status-actions row items-center"
+                    }, [
+                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.view.buttons, (item) => {
+                        return (_openBlock(), _createBlock(_component_m_form, {
+                          key: item.toStatusId,
+                          action: _ctx.action,
+                          "fields-initial": _ctx.fieldsOf(item),
+                          class: "m-status-form"
+                        }, {
+                          default: _withCtx(() => [
+                            _createVNode(_component_q_btn, _mergeProps({
+                              dense: "",
+                              "no-caps": "",
+                              unelevated: "",
+                              type: "submit"
+                            }, { ref_for: true }, item.button, {
+                              label: item.label,
+                              "data-confirm": item.confirm,
+                              "data-to-status": item.toStatusId
+                            }), null, 16, ["label", "data-confirm", "data-to-status"])
+                          ]),
+                          _: 2
+                        }, 1032, ["action", "fields-initial"]))
+                      }), 128))
+                    ]))
+                  : _createCommentVNode("", true)
+              ], 8, ["id", "data-status"]))
+            }
+        } },
         "m-stylesheet": { hash: "e8119ca2", make: function (Vue) {
             const { openBlock: _openBlock, createElementBlock: _createElementBlock } = Vue
 
@@ -3965,13 +4091,15 @@
               ], 8, ["id"]))
             }
         } },
-        "m-subscreens-wizard": { hash: "9b1a865a", make: function (Vue) {
-            const { renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, resolveComponent: _resolveComponent, createBlock: _createBlock, withCtx: _withCtx, createCommentVNode: _createCommentVNode, createVNode: _createVNode, createElementVNode: _createElementVNode } = Vue
+        "m-subscreens-wizard": { hash: "b8c5e0fa", make: function (Vue) {
+            const { renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, resolveComponent: _resolveComponent, createBlock: _createBlock, withCtx: _withCtx, createCommentVNode: _createCommentVNode, createVNode: _createVNode, toDisplayString: _toDisplayString, createElementVNode: _createElementVNode } = Vue
 
             return function render(_ctx, _cache) {
               const _component_q_step = _resolveComponent("q-step")
               const _component_q_stepper = _resolveComponent("q-stepper")
               const _component_m_subscreens_active = _resolveComponent("m-subscreens-active")
+              const _component_q_spinner = _resolveComponent("q-spinner")
+              const _component_q_inner_loading = _resolveComponent("q-inner-loading")
               const _component_q_btn = _resolveComponent("q-btn")
               const _component_q_space = _resolveComponent("q-space")
 
@@ -4016,7 +4144,23 @@
                   ref: "body",
                   class: "m-wizard-body"
                 }, [
-                  _createVNode(_component_m_subscreens_active)
+                  _createVNode(_component_m_subscreens_active),
+                  _createVNode(_component_q_inner_loading, {
+                    showing: _ctx.submitting,
+                    class: "m-wizard-working"
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_q_spinner, {
+                        color: "primary",
+                        size: "40px"
+                      }),
+                      _createElementVNode("div", {
+                        class: "text-caption m-muted q-mt-sm",
+                        textContent: _toDisplayString(_ctx.workingLabel)
+                      }, null, 8, ["textContent"])
+                    ]),
+                    _: 1
+                  }, 8, ["showing"])
                 ], 512),
                 (_ctx.steps.length)
                   ? (_openBlock(), _createElementBlock("div", {
@@ -4031,8 +4175,9 @@
                             class: "m-btn-tonal m-wizard-back",
                             icon: "arrow_back",
                             label: _ctx.backLabel,
+                            disable: _ctx.submitting,
                             onClick: _ctx.back
-                          }, null, 8, ["label", "onClick"]))
+                          }, null, 8, ["label", "disable", "onClick"]))
                         : _createCommentVNode("", true),
                       _createVNode(_component_q_space),
                       (!_ctx.isLast || _ctx.hasForm)

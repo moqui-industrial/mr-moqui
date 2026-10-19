@@ -69,10 +69,20 @@ fn run_unit(ctx: &Ctx<'_>, unit: &Unit) -> Result<(), Error> {
             function
         }
     };
+    // the depth this unit starts at, back to it when the unit ends however it ends
+    struct Depth<'a>(&'a Cell<u32>, u32);
+    impl Drop for Depth<'_> {
+        fn drop(&mut self) {
+            self.0.set(self.1);
+        }
+    }
+    let depth = engine.unit_depth.get();
+    engine.unit_depth.set(depth.saturating_add(1));
+    let _depth = Depth(&engine.unit_depth, depth);
     let mark = StackMark::new();
     let result = in_unit_scope(ctx, || {
         function
-            .call::<_, ()>(())
+            .call::<_, ()>((depth,))
             .catch(ctx)
             .map_err(|caught| Error::of_kind(caught_kind(&caught), caught.to_string()))
     });

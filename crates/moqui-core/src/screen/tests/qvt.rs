@@ -182,7 +182,7 @@ fn a_dashboard_lays_out_number_cards() {
             "html",
             vec![
                 r#"<div id="Counters" class="dashboard counters" style="--dashboard-min:160px"><div class="dashboard-item">"#,
-                r#"<a href="/Orders?statusId=Open" class="number-card"><span class="number-card-title">Open orders</span><strong class="number-card-value">42</strong><span class="number-card-delta" data-tone="good">+3</span></a>"#,
+                r#"<a href="/Orders?statusId=Open" class="number-card"><span class="material-symbols-outlined icon" aria-hidden="true">receipt_long</span> <span class="number-card-title">Open orders</span><strong class="number-card-value">42</strong><span class="number-card-delta" data-tone="good">+3</span></a>"#,
                 r#"<span class="number-card-delta" data-tone="bad">+1</span>"#,
                 r#"<div id="Revenue" class="number-card wide" data-size="sm"><i class="fa fa-dollar"></i> <span class="number-card-title">Revenue {{x}} &amp; more</span>"#,
                 r#"<span class="number-card-delta" data-tone="bad">-5%</span>"#,
@@ -608,4 +608,277 @@ fn client_components_are_precompiled() {
     for banned in ["with (", "with(", "new Function", "eval("] {
         assert!(!made.contains(banned), "{banned}");
     }
+}
+
+/// A section in a form-list cell is a unit of its own: it starts from the list's state (its links are in-cell links with the
+/// row's ids, a dialog's button is the flat in-cell one) and gives the state back, so the cells after it in the row and the
+/// rows after it are still in the list. A link's btn-type is expanded in each row and entry, an editable is a select, a date
+/// picker or the placeholder of an empty text with display-if-empty, and a container-row takes the row-col elements of a
+/// section-iterate, their sizes expanded.
+#[test]
+fn a_section_in_a_list_cell_keeps_the_list_and_link_styles_are_expanded() {
+    let out = check("cells", &[]);
+    for expected in [
+        // the container-dialog in the section has the row's id and is the in-cell flat button, its form's fields the row's ids
+        r#"<m-container-dialog id="RefuseDialog_0" color="negative" button-text="Refuse" title="Refuse"><template v-slot:button><q-btn dense flat no-caps class="m-link" label="Refuse"></q-btn></template>"#,
+        r#"id="RefuseForm_reason_0""#,
+        // the link after the section, in this row and the next: a text link of the list with the row's id
+        r#"<a href="/open" id="Cells_open_0_open" class="m-link-text">Open A1</a>"#,
+        r#"<a href="/open" id="Cells_open_1_open" class="m-link-text">Open A2</a>"#,
+        r#"<a href="/open" id="Cells_chip_1_open">"#,
+        // btn-type from an expression: primary in the first row, danger (negative) in the second
+        r#"<q-btn dense unelevated no-caps color="primary" class="m-link">Chip</q-btn>"#,
+        r#"<q-btn dense unelevated no-caps class="m-btn-tonal text-negative m-link">Chip</q-btn>"#,
+        // and in a section-iterate
+        r#"<q-btn dense unelevated no-caps color="primary" class="m-link">All</q-btn>"#,
+        r#"<q-btn dense unelevated no-caps class="m-btn-tonal text-primary m-link">Mine</q-btn>"#,
+        // editable: the empty note of the second row with its placeholder, a select with options and the current key,
+        // a select from editable-load, a date and an empty date-time
+        r#"id="NoteEdit_1" label-type="span" label-value="""#,
+        r#"widget-type="select""#,
+        r#"value="B" :options="[{'value':'A','label':'First'},{'value':'B','label':'Second'}]""#,
+        r#"load-url="/kindOptions""#,
+        r#"widget-type="date""#,
+        r#"widget-type="date-time""#,
+        r#"placeholder="Click to edit""#,
+        // container-row: the expanded sizes, and a column per entry of the section-iterate
+        r#"<div class="q-px-xs col-lg-8 col-md-8 col-sm-12 col-xs-12">"#,
+        r#"<div class="q-px-xs col-md-2 col-sm-12 col-xs-12"><span class="text-inline">col All</span>"#,
+        r#"<div class="q-px-xs col-md-2 col-sm-12 col-xs-12"><span class="text-inline">col Mine</span>"#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    // the open link of each row is in the list, never the tonal button of a link outside a list
+    assert!(
+        !out.contains(r#"class="m-btn-tonal text-primary m-link">Open"#),
+        "{out}"
+    );
+    // an empty editable without display-if-empty writes nothing
+    assert!(!out.contains(r#"id="Hidden""#), "{out}");
+}
+
+/// `columns type="mobile"` are the columns of a request with `_uiType=mobile` (the client sends it below 600 px), as Java;
+/// the untyped columns otherwise.
+#[test]
+fn mobile_columns_are_chosen_by_the_ui_type() {
+    let desktop = render_path("mobile", "", &[]);
+    let mobile = render_path("mobile", "", &[("_uiType", "mobile")]);
+    assert_compiles(
+        &["mobile".to_string(), "mobile ui".to_string()],
+        &[desktop.clone(), mobile.clone()],
+    );
+    // desktop: a column per field; mobile: the title and caption in one cell, the action in the other
+    let count = |text: &str, needle: &str| text.matches(needle).count();
+    assert_eq!(count(&desktop, "Widget"), 1, "{desktop}");
+    assert!(
+        count(&desktop, "class=\"th") > count(&mobile, "class=\"th"),
+        "fewer header cells on a phone:\n{desktop}\n{mobile}"
+    );
+    assert!(mobile.contains("note A"), "{mobile}");
+}
+
+/// A test context with the framework's services and a database holding the EntitySync statuses and their Default flow.
+fn status_context() -> crate::context::ExecutionContext {
+    let context = ExecutionContextFactory::test_context_in(
+        "",
+        crate::service::ServicePools::idle(),
+        crate::context::framework_dir(),
+    );
+    let facade = crate::testing::open();
+    facade.assume_db_tables();
+    context.factory().set_entity(facade.clone());
+    {
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        crate::service::load_definitions().unwrap();
+        let row = |entity: &str, fields: &[(&str, &str)]| {
+            let mut value = facade.make_value(entity).unwrap();
+            for (name, field) in fields {
+                value.set(*name, Value::string(*field));
+            }
+            value.create(&facade).unwrap();
+        };
+        row(
+            "moqui.basic.StatusType",
+            &[("statusTypeId", "EntitySync"), ("description", "Entity Sync")],
+        );
+        for (id, sequence, description) in [
+            ("EsNotStarted", "1", "Not Started"),
+            ("EsRunning", "2", "Running"),
+            ("EsComplete", "4", "Complete"),
+            ("EsOtherError", "98", "Other Error"),
+        ] {
+            row(
+                "moqui.basic.StatusItem",
+                &[
+                    ("statusId", id),
+                    ("statusTypeId", "EntitySync"),
+                    ("sequenceNum", sequence),
+                    ("description", description),
+                ],
+            );
+        }
+        row(
+            "moqui.basic.StatusFlow",
+            &[("statusFlowId", "Default"), ("description", "Default")],
+        );
+        for (from, to, name) in [
+            ("EsNotStarted", "EsRunning", "Running"),
+            ("EsRunning", "EsComplete", "Complete"),
+            ("EsRunning", "EsOtherError", "Error"),
+            ("EsRunning", "EsNotStarted", "Reset Not Started"),
+            ("EsComplete", "EsRunning", "Running"),
+            ("EsOtherError", "EsRunning", "Running"),
+        ] {
+            row(
+                "moqui.basic.StatusFlowTransition",
+                &[
+                    ("statusFlowId", "Default"),
+                    ("statusId", from),
+                    ("toStatusId", to),
+                    ("transitionName", name),
+                ],
+            );
+        }
+    }
+    context
+}
+
+/// The status-bar element (style-guide §8.2): the stages of the status type in sequence order with the current one filled
+/// and the ones before it done, the statuses that wait or end badly off the row unless current, the colors by the status
+/// color map, and the transitions from the current status as buttons that post the transition with the new status, the
+/// next stage the primary one; read-only, allowed statuses, given stages and the html and text fallbacks.
+#[test]
+fn a_status_bar_shows_the_stages_and_the_transitions_of_the_flow() {
+    let context = status_context();
+    let _entered = context.enter();
+    let render = |mode: &str, parameters: &[(&str, &str)]| -> String {
+        let map: BTreeMap<String, Value> = parameters
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), Value::string(*value)))
+            .collect();
+        make_render(context.factory())
+            .root_screen(render_dir().join("status.xml").to_string_lossy().into_owned())
+            .screen_path("")
+            .render_mode(mode)
+            .parameters(map)
+            .render()
+            .unwrap_or_else(|err| panic!("status {mode}: {err}"))
+            .body_text()
+    };
+    let out = render("qvt", &[]);
+    let path = render_dir().join("status.qvt");
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::write(&path, &out).unwrap();
+    } else {
+        let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing {}", path.display()));
+        assert_eq!(out, expected, "status differs from {}", path.display());
+    }
+    assert_compiles(&["status".to_string()], std::slice::from_ref(&out));
+
+    let bar = |id: &str| -> serde_json::Value {
+        let start = out
+            .find(&format!("<m-status-bar id=\"{id}\""))
+            .unwrap_or_else(|| panic!("{id} in {out}"));
+        let rest = &out[start..];
+        let at = rest.find(":bar=\"").unwrap() + 6;
+        let text = &rest[at..at + rest[at..].find('"').unwrap()];
+        // a JavaScript object literal with single quotes (no label here has one)
+        serde_json::from_str(&text.replace('\'', "\"").replace("&amp;", "&")).unwrap()
+    };
+    let states = |value: &serde_json::Value| -> Vec<String> {
+        value["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|stage| {
+                format!(
+                    "{}:{}:{}",
+                    stage["statusId"].as_str().unwrap(),
+                    stage["state"].as_str().unwrap(),
+                    stage["color"].as_str().unwrap()
+                )
+            })
+            .collect()
+    };
+    let buttons = |value: &serde_json::Value| -> Vec<String> {
+        value["transitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tr| {
+                let next = if tr["isNext"] == true { "next" } else { "" };
+                let danger = if tr["isDanger"] == true { "danger" } else { "" };
+                format!("{}:{next}{danger}", tr["toStatusId"].as_str().unwrap())
+            })
+            .collect()
+    };
+    let running = bar("SyncStatus");
+    assert_eq!(
+        states(&running),
+        [
+            "EsNotStarted:done:grey-7",
+            "EsRunning:current:primary",
+            "EsComplete:todo:positive"
+        ],
+        "the error status waits off the row"
+    );
+    assert_eq!(
+        buttons(&running),
+        ["EsComplete:next", "EsNotStarted:", "EsOtherError:danger"]
+    );
+    assert!(
+        out.contains(r#"action="/setStatus" :parameters="{'entitySyncId':'S1'}" title="Sync S1""#),
+        "{out}"
+    );
+    let read_only = bar("ReadOnly");
+    assert_eq!(states(&read_only).len(), 3);
+    assert!(buttons(&read_only).is_empty());
+    let read_only_tag = out[out.find("id=\"ReadOnly\"").unwrap()..]
+        .split("</m-status-bar>")
+        .next()
+        .unwrap();
+    assert!(!read_only_tag.contains("action="), "{out}");
+    let staged = bar("Staged");
+    assert_eq!(
+        states(&staged),
+        [
+            "EsNotStarted:todo:grey-7",
+            "EsRunning:todo:primary",
+            "EsComplete:todo:positive",
+            "EsOtherError:current:negative"
+        ],
+        "ended badly: last, nothing done"
+    );
+    assert_eq!(
+        buttons(&staged),
+        ["EsRunning:next"],
+        "back to the earliest stage it leads to"
+    );
+    assert!(out.contains(r#":confirm="false""#), "{out}");
+    assert_eq!(buttons(&bar("Allowed")), ["EsComplete:next"]);
+    assert!(out.contains(r#"parameter-name="toStatusId""#), "{out}");
+    assert!(!out.contains(r#"id="None""#), "no status, no bar: {out}");
+
+    // the status from the request
+    let complete = render("qvt", &[("statusId", "EsComplete")]);
+    assert!(
+        complete.contains("{'statusId':'EsComplete','label':'Complete','color':'positive','state':'current'}"),
+        "{complete}"
+    );
+
+    // html: chips and a form per transition, the next one primary, each confirming
+    let html = render("html", &[]);
+    for expected in [
+        r#"<div id="SyncStatus" class="status-bar" data-status="EsRunning">"#,
+        r#"<span class="status-chip" data-state="done" data-color="grey-7" data-stage="EsNotStarted">&check; Not Started</span>"#,
+        r#"data-state="current" data-color="primary" data-stage="EsRunning" aria-current="step">Running</span>"#,
+        r#"<input type="hidden" name="entitySyncId" value="S1"><input type="hidden" name="statusId" value="EsComplete"><button type="submit" data-btn="primary" data-to-status="EsComplete" data-confirm="Complete: Sync S1?">Complete</button>"#,
+        r#"data-btn="danger" data-to-status="EsOtherError""#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    // text: the current status's description
+    let text = render("text", &[]);
+    assert!(text.contains("Status: Running"), "{text}");
 }

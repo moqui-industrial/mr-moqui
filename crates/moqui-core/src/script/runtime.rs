@@ -391,6 +391,9 @@ struct Engine {
     objects: RefCell<HashMap<&'static str, Persistent<Object<'static>>>>,
     /// Ids of the mode runtimes this engine has already run.
     runtimes: RefCell<std::collections::HashSet<u64>>,
+    /// How many screen units are running, one inside another (a section in a form-list cell runs inside the list's unit).
+    /// A unit gets the depth it starts at, so the outermost one starts its mode's render state afresh.
+    unit_depth: Cell<u32>,
     /// The object the bare name `context` reads as: the stack itself, made once (see [`CONTEXT_PROXY`]).
     context_proxy: Persistent<JsValue<'static>>,
     /// Whether [`flush_tracked`] is writing this engine's tracked values back. A `context` converted meanwhile
@@ -887,6 +890,7 @@ impl Engine {
             )),
             objects: RefCell::new(HashMap::new()),
             runtimes: RefCell::new(std::collections::HashSet::new()),
+            unit_depth: Cell::new(0),
             context_proxy: helpers.context_proxy,
             flushing: Cell::new(false),
             object_utilities: helpers.object_utilities,

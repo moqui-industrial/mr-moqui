@@ -1,0 +1,19 @@
+<screen require-authentication="false">
+    <transition name="setStatus"><default-response type="none"/></transition>
+    <actions>
+        <set field="syncId" value="S1"/>
+        <set field="statusId" from="statusId || 'EsRunning'"/>
+        <set field="canUpdate" from="false"/>
+    </actions>
+    <widgets>
+        <!-- the stages of the type, the current one filled; the transitions from it, the next stage primary -->
+        <status-bar id="SyncStatus" status-id="${statusId}" transition="setStatus" title="Sync ${syncId}" parameter-map="{entitySyncId: syncId}"/>
+        <!-- read-only: the same stages, no buttons -->
+        <status-bar id="ReadOnly" status-id="EsRunning" transition="setStatus" read-only="${!canUpdate}"/>
+        <!-- given stages, and a current status off them that ended badly: last, nothing done -->
+        <status-bar id="Staged" status-id="EsOtherError" stages="EsNotStarted,EsRunning,EsComplete" transition="setStatus" confirm="false"/>
+        <!-- only the statuses allowed, from a list expression -->
+        <status-bar id="Allowed" status-id="EsRunning" transition="setStatus" allowed-status-ids="${['EsComplete']}" parameter-name="toStatusId"/>
+        <status-bar id="None" status-id="${nothing}" transition="setStatus"/>
+    </widgets>
+</screen>

@@ -183,6 +183,24 @@
         const push = () => { saved.push(Object.assign({}, st)); };
         const pop = () => { const old = saved.pop(); if (old) Object.assign(st, old); };
 
+        // A unit inside another (a section in a form-list cell, an included screen) starts from the state of the one around it, so
+        // its links are the list's in-cell links with the row's ids, and gives that state back when it ends, so the rows after it
+        // render as before. The outermost unit ($depth 0) starts afresh.
+        const units = [];
+        const enter = (depth) => {
+            if (!depth) { units.length = 0; reset(); return; }
+            units.push({ st: Object.assign({}, st), saved: saved.slice() });
+        };
+        const leave = (depth) => {
+            if (!depth) return;
+            const outer = units.pop();
+            if (!outer) return;
+            Object.keys(st).forEach((key) => { delete st[key]; });
+            Object.assign(st, outer.st);
+            saved.length = 0;
+            outer.saved.forEach((item) => saved.push(item));
+        };
+
         const sec = () => {
             const value = ec.context.get("sectionEntryIndex");
             return value === null || value === undefined || value === "" ? "" : "_" + value;
@@ -494,7 +512,7 @@
             const title = label(n);
             const text = at(n, "text") ? x(at(n, "text")) : title;
             const confirmation = x(at(n, "confirmation"));
-            const iconClass = at(n, "icon") || sri.getThemeIconClass(text) || "";
+            const iconClass = xn(at(n, "icon")) || sri.getThemeIconClass(text) || "";
             const image = first(n, "image");
             let body = tooltipTag(tip(n)) + (iconClass ? iconTag(iconClass, !image) : "");
             if (image) {
@@ -504,7 +522,7 @@
             w("<q-btn" + A({
                 dense: true, ":outline": st.inForm ? "!formProps.hasFieldsChanged" : null, ":unelevated": st.inForm ? "formProps.hasFieldsChanged" : null,
                 unelevated: st.inForm ? null : true, "no-caps": true, type: "submit",
-                name: fnm(n), value: fnm(n), id: fid(n), color: quasarColor(at(n, "type") || "primary") || null, disabled: st.disabled || null,
+                name: fnm(n), value: fnm(n), id: fid(n), color: quasarColor(xn(at(n, "type")) || "primary") || null, disabled: st.disabled || null,
                 "data-confirm": confirmation || null, form: owner()
             }) + ">" + body + "</q-btn>");
         };
@@ -790,7 +808,7 @@
         const linkElement = (n, parts, formId) => {
             const style = xn(at(n, "style")) || null;
             const linkType = at(n, "link-type");
-            const btnType = at(n, "btn-type");
+            const btnType = xn(at(n, "btn-type"));
             // A screen link in a form-list cell is text (as is link-type anchor anywhere); the others are tonal buttons, or the filled
             // primary button with btn-type="primary".
             const textLink = linkType === "anchor" || (st.inList && linkType !== "anchor-button");
@@ -798,7 +816,7 @@
                 if (parts.anchor && textLink) return '<span class="text-grey-5">' + linkBody(n, parts.text, parts.img) + "</span>";
                 return "<span><q-btn" + A({
                     dense: true, "no-caps": true, disabled: true, flat: true, class: cls("m-link", style), id: formId || null, label: parts.text || null
-                }) + ">" + (at(n, "icon") ? iconTag(xn(at(n, "icon")), false) : "") + "</q-btn></span>";
+                }) + ">" + (xn(at(n, "icon")) ? iconTag(xn(at(n, "icon")), false) : "") + "</q-btn></span>";
             }
             const confirmation = x(at(n, "confirmation"));
             if (parts.anchor) {
@@ -808,7 +826,7 @@
                 const tag = screen ? "m-link" : "a";
                 const inner = linkBody(n, parts.text, parts.img) + "";
                 return "<" + tag + A({
-                    href, id: formId || null, target: at(n, "target-window") || null, "load-id": at(n, "dynamic-load-id") || null,
+                    href, id: formId || null, target: xn(at(n, "target-window")) || null, "load-id": xn(at(n, "dynamic-load-id")) || null,
                     "data-confirm": confirmation || null, class: textLink ? cls("m-link-text", style) : null
                 }) + ">" + (textLink ? inner : "<q-btn" + A(Object.assign({ dense: true, unelevated: true, "no-caps": true }, btnKind(btnType, "m-link", style))) + ">" + inner + "</q-btn>") + "</" + tag + ">";
             }
@@ -844,7 +862,7 @@
             let out = "<" + tag + A(Object.assign({
                 action: parts.url.path, name: formId || null, id: formId || null,
                 method: isForm && parts.url.getTransitionMethod() === "get" ? "GET" : null,
-                "read-only": isForm && parts.url.isReadOnly() ? true : null, target: at(n, "target-window") || null
+                "read-only": isForm && parts.url.isReadOnly() ? true : null, target: xn(at(n, "target-window")) || null
             }, linkBackground(n, isForm))) + ">";
             Object.keys(params).forEach((key) => { out += hiddenInput(key, params[key] === null || params[key] === undefined ? "" : params[key]); });
             if (!formId) {
@@ -854,7 +872,7 @@
                     out += "<input" + A({ type: "image", src: sri.makeUrlByType(at(img, "url"), at(img, "url-type") || "content", null, "true").url, alt: at(img, "alt") || null, "data-confirm": confirmation || null }) + ">";
                 } else {
                     const linkType = at(n, "link-type");
-                    const btnType = at(n, "btn-type");
+                    const btnType = xn(at(n, "btn-type"));
                     const color = quasarColor(btnType || "primary") || null;
                     const style = xn(at(n, "style")) || null;
                     // hidden-form-link is the flat (minor) button in its color; the others are tonal, or filled with btn-type="primary"
@@ -887,17 +905,27 @@
             w(linkForm(n, parts, id) + open + linkElement(n, parts, id) + close + "\n");
         };
 
+        // Click to edit. An empty text writes nothing unless display-if-empty, which shows the placeholder to click; a select takes
+        // its options as a drop-down does (option, list-options, entity-options) or from the editable-load transition, and date
+        // and date-time edit with the date (and time) picker.
         const editable = (n) => {
             const url = sri.makeUrlByType(at(n, "transition"), "transition", n, "true");
-            const text = ec.resource.expand(at(n, "text"), "");
-            if (!String(text).trim()) return;
+            let text = ec.resource.expand(at(n, "text"), "");
+            if (text === null || text === undefined || text === "null") text = "";
+            const empty = !String(text).trim();
+            if (empty && xn(at(n, "display-if-empty")) !== "true") return;
             const load = first(n, "editable-load");
             let loadUrl = null;
             if (load) loadUrl = sri.makeUrlByType(at(load, "transition"), "transition", load, "true");
+            const widgetType = at(n, "widget-type") || "textarea";
+            const options = widgetType === "select" ? optionList(sri.getFieldOptions(n)) : null;
+            const value = n.attrs && n.attrs.value !== undefined ? xn(at(n, "value")) : null;
             w("<m-editable" + A({
-                id: nodeId(n), "label-type": at(n, "type") || "span", "label-value": at(n, "encode") === "true" ? e(text).replace(/\n/g, "<br>") : text,
+                id: nodeId(n), "label-type": at(n, "type") || "span", "label-value": empty ? "" : at(n, "encode") === "true" ? e(text).replace(/\n/g, "<br>") : text,
                 url: url.url, ":url-parameters": js_(url.getParameterMap()), "parameter-name": at(n, "parameter-name") || "value",
-                "widget-type": at(n, "widget-type") || "textarea", indicator: L("Saving"), tooltip: L("Click to edit"), cancel: L("Cancel"), submit: L("Save"),
+                "widget-type": widgetType, indicator: L("Saving"), tooltip: L("Click to edit"), cancel: L("Cancel"), submit: L("Save"),
+                placeholder: empty ? L("Click to edit") : null, value: value === null || value === "null" ? null : value,
+                ":options": options && options.length ? js_(options) : null,
                 "load-url": loadUrl ? loadUrl.url : null, ":load-parameters": loadUrl ? js_(loadUrl.getParameterMap()) : null
             }) + "></m-editable>");
         };
@@ -1069,14 +1097,20 @@
         };
 
         const rowOpen = (kind, style) => w("<div" + A({ class: cls(kind, xn(style) || null) }) + ">");
+        // the sizes may be expressions (lg="${wide}"); an empty one is not given
         const colOpen = (n, plain) => {
-            const hasLg = !!at(n, "lg");
-            const hasMd = !!at(n, "md");
-            const hasSm = !!at(n, "sm");
+            const size = (key) => { const value = xn(at(n, key)); return value && value !== "null" ? value : ""; };
+            const lg = size("lg");
+            const md = size("md");
+            const sm = size("sm");
+            const xs = size("xs");
+            const hasLg = !!lg;
+            const hasMd = !!md;
+            const hasSm = !!sm;
             const classes = [
-                plain ? null : "q-px-xs", hasLg ? "col-lg-" + at(n, "lg") : null, hasMd ? "col-md-" + at(n, "md") : hasLg && !plain ? "col-md-12" : null,
-                hasSm ? "col-sm-" + at(n, "sm") : (hasLg || hasMd) && !plain ? "col-sm-12" : null,
-                at(n, "xs") ? "col-xs-" + at(n, "xs") : (hasLg || hasMd || hasSm) && !plain ? "col-xs-12" : null, xn(at(n, "style")) || null
+                plain ? null : "q-px-xs", hasLg ? "col-lg-" + lg : null, hasMd ? "col-md-" + md : hasLg && !plain ? "col-md-12" : null,
+                hasSm ? "col-sm-" + sm : (hasLg || hasMd) && !plain ? "col-sm-12" : null,
+                xs ? "col-xs-" + xs : (hasLg || hasMd || hasSm) && !plain ? "col-xs-12" : null, xn(at(n, "style")) || null
             ];
             w("<div" + A({ class: cls(...classes) }) + ">");
         };
@@ -1669,6 +1703,49 @@
 
         // ---- dashboards ----
 
+        // A list attribute of status ids: a comma list, or one ${} expression of a list; null when the attribute is not given.
+        const idList = (text) => {
+            if (text === null || text === undefined || text === "") return null;
+            const whole = /^\s*\$\{([\s\S]*)\}\s*$/.exec(text);
+            let value = whole ? ec.resource.expression(whole[1], "") : null;
+            if (value === null || value === undefined) value = whole ? [] : xn(text);
+            if (typeof value === "string") value = value.split(",");
+            return Array.from(value || []).map((id) => (id === null || id === undefined ? "" : String(id).trim())).filter((id) => id && id !== "null");
+        };
+        // The status flow of a record as get#StatusBar answers it (StatusServices.xml), for the status-bar element.
+        const statusBarData = (n) => {
+            const statusId = xn(at(n, "status-id"));
+            if (!statusId || statusId === "null") return null;
+            const readOnly = xn(at(n, "read-only")) === "true";
+            const out = ec.service.sync().name("org.moqui.impl.StatusServices.get#StatusBar").parameters({
+                statusId, statusTypeId: xn(at(n, "status-type-id")) || null, statusFlowId: xn(at(n, "status-flow-id")) || null,
+                stageStatusIds: idList(at(n, "stages")), allowedToStatusIds: readOnly ? [] : idList(at(n, "allowed-status-ids"))
+            }).disableAuthz().call() || {};
+            const stages = Array.from(out.stages || []).map((stage) => ({ statusId: stage.statusId, label: stage.label, color: stage.color, state: stage.state }));
+            const transitions = readOnly ? [] : Array.from(out.transitions || []).map((tr) => ({
+                toStatusId: tr.toStatusId, label: tr.label, color: tr.color, isNext: !!tr.isNext, isDanger: !!tr.isDanger
+            }));
+            const current = out.current ? { statusId: out.current.statusId, label: out.current.label, color: out.current.color } : null;
+            return { current, stages, transitions, readOnly };
+        };
+        // status-bar: the stage chips and the transition buttons of m-status-bar, the data written in (no request from the browser).
+        const statusBar = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const bar = statusBarData(n);
+            if (!bar) return;
+            let url = null;
+            if (at(n, "transition") && !bar.readOnly && bar.transitions.length) {
+                url = sri.makeUrlByType(at(n, "transition"), "transition", n, "true");
+                if (url.getDisableLink()) url = null;
+            }
+            w("<m-status-bar" + A({
+                id: nodeId(n) || null, class: xn(at(n, "style")) || null, ":bar": js_({ current: bar.current, stages: bar.stages, transitions: url ? bar.transitions : [] }),
+                action: url ? url.path : null, ":parameters": url ? js_(url.getParameterMap()) : null,
+                "parameter-name": at(n, "parameter-name") && at(n, "parameter-name") !== "statusId" ? at(n, "parameter-name") : null,
+                title: at(n, "title") ? x(at(n, "title")) : null, ":confirm": xn(at(n, "confirm")) === "false" ? "false" : null
+            }) + "></m-status-bar>\n");
+        };
+
         // A number-card (style-guide §8.2): an m-number-card with the title localized, the value and delta as expanded, and the
         // link as a screen link resolves (a path or transition of this screen, with its query); a link to something other than a
         // screen is a plain anchor (external). Nothing for a false condition.
@@ -1693,7 +1770,7 @@
         };
 
         const h = {
-            reset, push, pop, e, t, A, cls, at, x, xn, nodeId, cond, fid, fnm, fieldRef, st,
+            reset, enter, leave, push, pop, e, t, A, cls, at, x, xn, nodeId, cond, fid, fnm, fieldRef, st,
             textLine, textArea, password, file, hidden, reset_, submit, dateTime, dateFind, datePeriod, rangeFind, textFind,
             dropDown, check: (n) => checkOrRadio(n, "checkbox"), radio: (n) => checkOrRadio(n, "radio"), display: displayWidget, displayEntity,
             image, label: labelWidget, link, editable, containerDialog, dynamicDialog, dynamicContainer, tree,
@@ -1701,13 +1778,15 @@
             formList, rowCellOpen, rowCellClose, valueText, sectionPaginate, headerCell,
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
-            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard, chatter, recordFiles, splitOpen, htmlView
+            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard, chatter, recordFiles, splitOpen, htmlView, statusBar
         };
         Object.defineProperty(globalThis, "$mqQvt", { value: h, configurable: true });
     };
 
     const runtime = "(" + runtimeFunction.toString() + ")();";
-    const prelude = "const $v = globalThis.$mqQvt;\n$v.reset();\n";
+    // a unit keeps the render state of the unit around it and gives it back when it ends (enter and leave above)
+    const prelude = "const $v = globalThis.$mqQvt;\n$v.enter($depth);\ntry {\n";
+    const epilogue = "} finally {\n$v.leave($depth);\n}\n";
 
     // ---- macros ----
 
@@ -2024,7 +2103,12 @@
             }
         `.replace(/\n$/, "");
         // A field with only a hidden widget has no column, and its value goes in the fields-initial of the row.
-        const cols = columns.map((column) => "[" + column.map(columnField).join(",\n") + "]").join(",\n");
+        // the columns of each type (columns type="mobile"), chosen by the request's _uiType as Java does; the untyped ones otherwise
+        const colsOf = (set) => set.map((column) => "[" + column.map(columnField).join(",\n") + "]").join(",\n");
+        const types = childrenNamed(node, "columns").map((kid) => attr(kid, "type")).filter((type, index, all) => type && all.indexOf(type) === index);
+        // with typed columns the list is spread from the set of the request's type: ...(_uiType is mobile ? [mobile] : [default])
+        const cols = !types.length ? colsOf(columns) : "..." + types.reduceRight((rest, type) =>
+            `(String(ec.context.get("_uiType") || "") === ${lit(type)} ? [\n${colsOf(S.formListColumns(node, type))}\n] : ${rest})`, `[\n${colsOf(columns)}\n]`);
         return js`
             if (sri.doBoundaryComments()) sri.write(${lit(`<!-- BEGIN form-list[@name=${attr(node, "name")}] -->\n`)});
             {
@@ -2071,14 +2155,17 @@
         `;
     });
 
-    const containerRowMacro = stmt((node) => js`
+    // A container-row writes its children in order: each row-col its column, and a section or section-iterate the row-col
+    // elements of its widgets (a column per entry).
+    const containerRowMacro = stmt((node, children) => js`
         $v.rowOpen("row", ${lit(attr(node, "style"))});
-        ${childrenNamed(node, "row-col").map((col) => js`
-            $v.colOpen(${bareLit(col)}, false);
-            ${col.source}
-            sri.write("</div>");
-        `).join("")}
+        ${children}
         sri.write("</div>\\n");
+    `);
+    const rowColMacro = stmt((node, children) => js`
+        $v.colOpen(${bareLit(node)}, false);
+        ${children}
+        sri.write("</div>");
     `);
 
     // A dashboard: its children in a responsive grid (m-dashboard: CSS grid columns of at least min-width px, as many as fit),
@@ -2153,10 +2240,10 @@
                 if ($text === "null") $text = "";
                 if ($text || ${!!image} || ${!!attr(node, "icon")}) {
                     if (${lit(attr(node, "encode"))} !== "false") $text = $v.t($text);
-                    let $icon = ${lit(attr(node, "icon"))};
+                    let $icon = ${attr(node, "icon") ? noL10n(attr(node, "icon")) : '""'};
                     if (!$icon && $text) $icon = sri.getThemeIconClass($text) || "";
                     const $badge = ec.resource.expand(${lit(attr(node, "badge"))}, "");
-                    sri.write("<q-btn-dropdown" + $v.A(Object.assign({dense: true, unelevated: true, "no-caps": true}, $v.btnKind(${lit(attr(node, "btn-type"))}, ${attr(node, "style") ? noL10n(attr(node, "style")) : "null"}))) + "><template v-slot:label>" +
+                    sri.write("<q-btn-dropdown" + $v.A(Object.assign({dense: true, unelevated: true, "no-caps": true}, $v.btnKind(${attr(node, "btn-type") ? noL10n(attr(node, "btn-type")) : "null"}, ${attr(node, "style") ? noL10n(attr(node, "style")) : "null"}))) + "><template v-slot:label>" +
                         ${attr(node, "tooltip") ? `$v.tooltipTag(ec.resource.expand(${lit(attr(node, "tooltip"))}, "")) + ` : ""}
                         ($icon ? $v.iconTag($icon, !!$text) : ""));
                     // as Java: the image child in the place of the text
@@ -2212,7 +2299,7 @@
         "box-body": stmt((node, children) => children),
         "box-body-nopad": stmt((node, children) => children),
         "container-row": containerRowMacro,
-        "row-col": stmt((node, children) => children),
+        "row-col": rowColMacro,
         "container-panel": containerPanelMacro,
         "container-split": containerSplitMacro,
         "split-side": stmt((node, children) => children),
@@ -2238,6 +2325,7 @@
         "chatter": widget("chatter", false),
         "record-files": widget("recordFiles", false),
         "html-view": widget("htmlView", false),
+        "status-bar": widget("statusBar", true),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,
@@ -2275,5 +2363,5 @@
     // the form-list macro places inside its menu, so they are generated.
     const opaque = S.opaqueElements.filter((name) => !["button-menu", "row-selection", "action"].includes(name));
 
-    return { macros, opaque, prelude, runtime };
+    return { macros, opaque, prelude, epilogue, runtime };
 })

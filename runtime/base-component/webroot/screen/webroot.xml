@@ -65,6 +65,25 @@ along with this software (see the LICENSE.md file). If not, see
             ]]></script></actions>
         <default-response type="none"/>
     </transition>
+    <!-- The status flow of a status-bar in a server-static screen, which the browser asks for (m-status-bar barUrl): what
+        org.moqui.impl.StatusServices.get#StatusBar answers ({current, stages, transitions, next}) for statusId, statusTypeId,
+        statusFlowId, stages and allowedStatusIds (comma lists) and readOnly (no transitions). Status items and flows are
+        configuration, read without authorization; a transition with a userPermissionId is offered only with that permission. -->
+    <transition name="statusBar" read-only="true" begin-transaction="false">
+        <parameter name="statusId"/><parameter name="statusTypeId"/><parameter name="statusFlowId"/><parameter name="stages"/>
+        <parameter name="allowedStatusIds"/><parameter name="readOnly"/>
+        <actions><script><![CDATA[
+            const params = ec.web.parameters
+            const list = (value) => value == null || value === '' ? null : String(value).split(',').map((id) => id.trim()).filter((id) => id)
+            const readOnly = String(params.readOnly || '') === 'true'
+            const allowed = readOnly ? [] : (params.allowedStatusIds == null ? null : (list(params.allowedStatusIds) || []))
+            const out = ec.service.sync().name('org.moqui.impl.StatusServices.get#StatusBar').parameters({statusId: params.statusId || null,
+                statusTypeId: params.statusTypeId || null, statusFlowId: params.statusFlowId || null, stageStatusIds: list(params.stages),
+                allowedToStatusIds: allowed}).disableAuthz().call() || {}
+            ec.web.sendJsonResponse({current: out.current ?? null, stages: out.stages || [], transitions: out.transitions || [], next: out.next ?? null})
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
     <!-- The badge counts alone, for the shell's poll while the notification socket is down: {counts}, what
         org.moqui.impl.ShellServices.get#ShellCounts answers for the current user (null without a counts service). 401
         without a user. -->

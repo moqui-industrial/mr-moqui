@@ -589,6 +589,9 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:sequence>
             <xs:element minOccurs="0" maxOccurs="unbounded" ref="parameter"/>
             <xs:element minOccurs="0" ref="editable-load"/>
+            <xs:choice minOccurs="0" maxOccurs="unbounded"><xs:annotation><xs:documentation>The options of a select, as a
+                drop-down's.</xs:documentation></xs:annotation>
+                <xs:element ref="entity-options"/><xs:element ref="list-options"/><xs:element ref="option"/></xs:choice>
         </xs:sequence>
         <xs:attribute name="id" type="xs:string" use="required"/>
         <xs:attribute name="text" type="xs:string" use="required"/>
@@ -601,11 +604,20 @@ along with this software (see the LICENSE.md file). If not, see
             </xs:restriction></xs:simpleType>
         </xs:attribute>
         <xs:attribute name="widget-type" default="textarea">
+            <xs:annotation><xs:documentation>The editor: textarea; text-line; select, whose options are the option,
+                list-options and entity-options elements, or what editable-load answers (a list of value and label, or a map
+                of key to label with the current key under selected); date (yyyy-MM-dd) or date-time (yyyy-MM-dd HH:mm), a
+                date picker.</xs:documentation></xs:annotation>
             <xs:simpleType><xs:restriction base="xs:token">
                 <xs:enumeration value="textarea"/>
+                <xs:enumeration value="text-line"/>
                 <xs:enumeration value="select"/>
+                <xs:enumeration value="date"/>
+                <xs:enumeration value="date-time"/>
             </xs:restriction></xs:simpleType>
         </xs:attribute>
+        <xs:attribute name="value" type="xs:string"><xs:annotation><xs:documentation>The current value of a select (the
+            key of its option) when the text is its label; by default the option whose label is the text.</xs:documentation></xs:annotation></xs:attribute>
         <xs:attribute name="encode" type="boolean" default="false">
             <xs:annotation><xs:documentation>
                 If true text will be encoded so that it does not interfere with markup of the target output.

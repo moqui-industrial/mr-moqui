@@ -132,7 +132,7 @@
         "container-box": named("box-body", "box-body-nopad"),
         "box-body": children,
         "box-body-nopad": children,
-        "container-row": named("row-col"),
+        "container-row": children,
         "row-col": children,
         "container-panel": named("panel-header", "panel-left", "panel-center", "panel-right", "panel-footer"),
         "panel-header": children,

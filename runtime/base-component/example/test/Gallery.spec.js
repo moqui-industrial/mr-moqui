@@ -211,3 +211,55 @@ feature("the editor's #space space keeps versions, compares, views and restores 
         page.getText() == page.getText(previous)
     },
 })
+
+// The Detail's status-bar over the framework's EntitySync flow: the stages with the current one, the transitions from it (the next
+// stage the primary action, Error the danger one), and setStatus answering the screen with the new status; the root screen's
+// statusBar transition answers the same flow for a server-static screen.
+feature("the Detail's status-bar shows the EntitySync flow and its transition moves the status", {
+    expect() {
+        const gallery = () => ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt")
+        const detail = gallery().render("Detail", { lastStandalone: "-2", enumId: "STT_INTERNAL_QUASAR", syncStatusId: "EsRunning" }, null)
+        const bar = (detail.output.match(/<m-status-bar id="DetailStatus"[^>]*>/) || [""])[0]
+        const moved = gallery().render("Detail/setStatus", { enumId: "STT_INTERNAL_QUASAR", statusId: "EsComplete" }, "post")
+        const webroot = ec.screen.makeTest().rootScreen("component://webroot/screen/webroot.xml")
+        const flow = JSON.parse(webroot.render("statusBar", { statusId: "EsRunning" }, null).output)
+        const colors = ec.service.sync().name("org.moqui.impl.StatusServices.get#StatusColors")
+            .parameter("statusIdList", ["EsNotStarted", "EsRunning", "EsComplete", "EsOtherError"]).call().colors
+        detail.status == 200
+        detail.errorMessages.length == 0
+        bar.includes("'statusId':'EsRunning','label':'Running','color':'primary','state':'current'")
+        bar.includes("'statusId':'EsNotStarted','label':'Not Started','color':'grey-7','state':'done'")
+        bar.includes("'toStatusId':'EsComplete','label':'Complete','color':'positive','isNext':true")
+        bar.includes("'toStatusId':'EsOtherError','label':'Error','color':'negative','isNext':false,'isDanger':true")
+        bar.includes("/Detail/setStatus\"")
+        bar.includes("'enumId':'STT_INTERNAL_QUASAR'")
+        moved.errorMessages.length == 0
+        flow.current.statusId == "EsRunning"
+        flow.stages.map((stage) => stage.statusId).join(",") == "EsNotStarted,EsRunning,EsComplete"
+        flow.next.toStatusId == "EsComplete"
+        colors.EsNotStarted == "grey-7" && colors.EsRunning == "primary" && colors.EsComplete == "positive" && colors.EsOtherError == "negative"
+    },
+})
+
+// The Widgets list whose cells hold a section: the section's dialog and the links after it are the row's (in-cell buttons and
+// text links with the row index), the filter chips take their btn-type from an expression, and an editable is a select, a date
+// picker or an empty value with its placeholder.
+feature("the Widgets list cells keep their row after a section, and chips and editables take expressions", {
+    expect() {
+        const test = ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt")
+        const str = test.render("Widgets", { lastStandalone: "-2", chip: "mine" }, null)
+        str.status == 200
+        str.errorMessages.length == 0
+        str.output.includes('<m-container-dialog id="RefuseDialog_0"')
+        str.output.includes('<m-container-dialog id="RefuseDialog_2"')
+        !str.output.includes('<m-container-dialog id="RefuseDialog_1"')
+        str.output.includes('id="ApprovalList_open_1_openDetail"')
+        str.output.includes('id="ApprovalList_open_2_openDetail"')
+        str.output.includes('color="primary" class="m-link q-mr-xs">Mine</q-btn>')
+        str.output.includes('class="m-btn-tonal text-primary m-link q-mr-xs">All</q-btn>')
+        str.output.includes('id="WidgetEditableKind"') && str.output.includes('widget-type="select"') && str.output.includes('value="b"')
+        str.output.includes('widget-type="date"')
+        str.output.includes('id="ApprovalNote_1"') && str.output.includes('placeholder="Click to edit"')
+        str.output.includes('<div class="q-px-xs col-md-6 col-sm-12 col-xs-12">')
+    },
+})
