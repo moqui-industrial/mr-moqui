@@ -17,7 +17,6 @@
 
 use std::collections::BTreeMap;
 
-use indexmap::IndexMap;
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{is_empty, to_plain_string, Value};
 
@@ -25,7 +24,7 @@ use crate::context::ExecutionContext;
 use crate::entity::EntityFacade;
 use crate::resource::git::browse::{short_name, RefInfo};
 use crate::resource::git::diff::{FileChange, FileDiff};
-use crate::resource::git::ops::{CommitDetails, Signature, TagDetails};
+use crate::resource::git::values::{commit_value, map, opt_text, tag_value, timestamp};
 use crate::resource::git::{GitProvider, GIT_ARTIFACT_TYPE};
 
 pub(in crate::service) fn register(
@@ -42,6 +41,8 @@ pub(in crate::service) fn register(
     rust_service!(map, get_commit_diff)?;
     rust_service!(map, get_blob)?;
     rust_service!(map, get_clone_urls)?;
+    rust_service!(map, process_update)?;
+    rust_service!(map, process_pending_updates)?;
     Ok(())
 }
 
@@ -208,88 +209,6 @@ fn viewable(parameters: &BTreeMap<String, Value>) -> Option<(GitProvider, String
             None
         }
     }
-}
-
-fn map(entries: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
-    Value::Map(
-        entries
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value))
-            .collect(),
-    )
-}
-
-fn opt_text(text: &str) -> Value {
-    if text.is_empty() {
-        Value::Null
-    } else {
-        Value::string(text)
-    }
-}
-
-fn timestamp(seconds: i64) -> Value {
-    jiff::Timestamp::from_second(seconds).map_or(Value::Null, Value::Timestamp)
-}
-
-fn signature_into(entries: &mut Vec<(&'static str, Value)>, names: [&'static str; 3], signature: &Signature) {
-    entries.push((names[0], opt_text(&signature.name)));
-    entries.push((names[1], opt_text(&signature.email)));
-    entries.push((names[2], timestamp(signature.seconds)));
-}
-
-/// A commit as a map: ids, people and dates, the message, its summary and body, its trailers by name (each a list of
-/// values), and the Moqui user of a commit made through `git://`.
-fn commit_value(commit: &CommitDetails) -> Value {
-    let id = commit.id.to_string();
-    let summary = commit.summary().to_string();
-    let body = commit
-        .message
-        .trim()
-        .split_once('\n')
-        .map_or("", |(_, rest)| rest)
-        .trim()
-        .to_string();
-    let mut trailers: IndexMap<String, Value> = IndexMap::new();
-    for (name, value) in commit.trailers() {
-        if let Value::List(values) = trailers.entry(name).or_insert_with(|| Value::List(Vec::new())) {
-            values.push(Value::string(value));
-        }
-    }
-    let mut entries = vec![
-        ("commitId", Value::string(&id)),
-        ("shortId", Value::string(&id[..10])),
-        ("treeId", Value::string(commit.tree.to_string())),
-        (
-            "parentIds",
-            Value::List(commit.parents.iter().map(|parent| Value::string(parent.to_string())).collect()),
-        ),
-    ];
-    signature_into(&mut entries, ["authorName", "authorEmail", "authorDate"], &commit.author);
-    signature_into(&mut entries, ["committerName", "committerEmail", "committerDate"], &commit.committer);
-    entries.extend([
-        ("summary", Value::string(summary)),
-        ("body", opt_text(&body)),
-        ("message", Value::string(&commit.message)),
-        ("trailers", Value::Map(trailers)),
-        (
-            "moquiUserId",
-            crate::resource::git::ops::user_of(&commit.message).map_or(Value::Null, Value::string),
-        ),
-    ]);
-    map(entries)
-}
-
-fn tag_value(tag: &TagDetails) -> Value {
-    let mut entries = vec![
-        ("tagName", Value::string(&tag.name)),
-        ("targetId", Value::string(tag.target.to_string())),
-        ("targetType", Value::string(tag.target_kind.to_string())),
-        ("message", Value::string(tag.message.trim_end())),
-    ];
-    if let Some(tagger) = &tag.tagger {
-        signature_into(&mut entries, ["taggerName", "taggerEmail", "taggerDate"], tagger);
-    }
-    map(entries)
 }
 
 fn ref_value(info: &RefInfo, branch: &str) -> Value {
@@ -572,4 +491,44 @@ fn get_clone_urls(
         ("httpsUrl", Value::string(http)),
         ("sshUrl", ssh.map_or(Value::Null, Value::string)),
     ]))
+}
+
+// ---- gitECA events ----
+
+/// `process#GitUpdate`: run the post events of a pending update. Out: `ecaStatus`.
+fn process_update(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+    let Some((provider, _)) = provider_and_id(parameters, false) else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(update_id) = text(parameters, "updateId") else {
+        add_error("updateId is required");
+        return Ok(BTreeMap::new());
+    };
+    match provider.process_update(&update_id) {
+        Ok(status) => Ok(out([("ecaStatus", Value::string(status))])),
+        Err(err) => {
+            add_error(err.message());
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// `process#PendingGitUpdates`: run every pending update. Out: `processedCount`, `failedCount`.
+fn process_pending_updates(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    let Some((provider, _)) = provider_and_id(parameters, false) else {
+        return Ok(BTreeMap::new());
+    };
+    match provider.process_pending() {
+        Ok((processed, failed)) => Ok(out([
+            ("processedCount", count(processed)),
+            ("failedCount", count(failed)),
+        ])),
+        Err(err) => {
+            add_error(err.message());
+            Ok(BTreeMap::new())
+        }
+    }
 }

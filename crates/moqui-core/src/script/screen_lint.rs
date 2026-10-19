@@ -497,6 +497,7 @@ const GROOVY_ROOTS: &[&str] = &[
     "secas",
     "eecas",
     "emecas",
+    "gitecas",
     "entity-facade-xml",
     "seed-data",
 ];

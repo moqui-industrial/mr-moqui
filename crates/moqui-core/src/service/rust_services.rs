@@ -64,6 +64,7 @@ fn build() -> BTreeMap<&'static str, RustServiceFn> {
         super::images::register(&mut map),
         super::spreadsheet::register(&mut map),
         super::shell::register(&mut map),
+        super::user_keys::register(&mut map),
         #[cfg(feature = "git")]
         super::git::register(&mut map),
     ] {
@@ -120,6 +121,10 @@ mod tests {
             "moqui_core::service::tools::rewrite_encrypted_fields",
             "moqui_core::service::tools::send_document_notifications",
             "moqui_core::service::tools::send_print_job_internal",
+            "moqui_core::service::user_keys::create_access_token",
+            "moqui_core::service::user_keys::create_ssh_key",
+            "moqui_core::service::user_keys::delete_ssh_key",
+            "moqui_core::service::user_keys::revoke_access_token",
         ];
         if cfg!(feature = "git") {
             expected.extend([
@@ -134,6 +139,8 @@ mod tests {
                 "moqui_core::service::git::get_refs",
                 "moqui_core::service::git::import_repository",
                 "moqui_core::service::git::init_repository",
+                "moqui_core::service::git::process_pending_updates",
+                "moqui_core::service::git::process_update",
             ]);
             expected.sort_unstable();
         }

@@ -674,7 +674,7 @@ fn names_in_dir(root: &Path, dir: &Path, names: &mut BTreeSet<String>) {
         if path.is_dir() {
             names_in_dir(root, &path, names);
         } else if file_name.ends_with(".xml")
-            && ![".secas.xml", ".emecas.xml", ".rest.xml"]
+            && ![".secas.xml", ".emecas.xml", ".gitecas.xml", ".rest.xml"]
                 .iter()
                 .any(|suffix| file_name.ends_with(suffix))
         {

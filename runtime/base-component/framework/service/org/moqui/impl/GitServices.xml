@@ -155,4 +155,21 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="sshUrl"/>
         </out-parameters>
     </service>
+    <!-- gitECA events: each push, mirror fetch, import and (when a rule listens) git:// write is a GitUpdate, whose post
+        events run on the git pool soon after it. -->
+    <service verb="process" noun="GitUpdate" type="rust" location="moqui_core::service::git::process_update">
+        <description>Run the gitECA post events (ref-update, commit, tag, post-receive) of a pending GitUpdate, as the
+            user who made it. Nothing when it is not pending (it ran, or another worker has it).</description>
+        <in-parameters><parameter name="updateId" required="true"/></in-parameters>
+        <out-parameters><parameter name="ecaStatus"/></out-parameters>
+    </service>
+    <service verb="process" noun="PendingGitUpdates" type="rust" location="moqui_core::service::git::process_pending_updates">
+        <description>Run the post events of every pending GitUpdate, after putting back the ones a restart cut short
+            (for the process_PendingGitUpdates_frequent ServiceJob). One that fails is recorded on its row and logged,
+            and the others still run.</description>
+        <out-parameters>
+            <parameter name="processedCount" type="Integer"/>
+            <parameter name="failedCount" type="Integer"/>
+        </out-parameters>
+    </service>
 </services>

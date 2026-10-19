@@ -42,7 +42,7 @@ use gix::ObjectId;
 use super::store::{GitStore, RefEdit, RefOutcome};
 use super::{GitProvider, Repo, RepositoryKind, GIT_ARTIFACT_TYPE};
 use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
-use crate::resource::git::revwalk;
+use crate::resource::git::{events, revwalk};
 use crate::service::RequestPool;
 
 /// Git's own error for the protocol layer.
@@ -564,7 +564,6 @@ struct Session<'a> {
     provider: &'a GitProvider,
     repo: &'a Repo,
     transport: &'static str,
-    #[allow(dead_code)]
     client: String,
 }
 
@@ -592,8 +591,9 @@ impl Session<'_> {
     }
 
     /// Whether a command may be made, against the repository with the pushed objects over it: its name, its old
-    /// value, what it points to, and the user's authorization for what it does.
-    fn check_command(&self, view: &dyn GitStore, command: &receive::Command) -> Result<(), String> {
+    /// value, what it points to, and the user's authorization for what it does. How it changes the ref: create, update
+    /// (a fast-forward), force or delete.
+    fn check_command(&self, view: &dyn GitStore, command: &receive::Command) -> Result<&'static str, String> {
         let id = &self.repo.definition.id;
         let name = command.name.as_str();
         if gix::validate::reference::name(name.as_bytes().as_bstr()).is_err()
@@ -644,6 +644,10 @@ impl Session<'_> {
             } else {
                 format!("permission denied: {action} on repository {id}")
             }
+        })?;
+        Ok(match (action, command.new) {
+            ("delete", Some(_)) => "force",
+            (action, _) => action,
         })
     }
 
@@ -655,8 +659,10 @@ impl Session<'_> {
             return Ok(());
         };
         let store = self.repo.store.as_ref();
+        let definition = &self.repo.definition;
         let refs_before = store.list_refs("refs/")?;
-        let mut results: Vec<Result<(), String>> = vec![Ok(()); request.commands.len()];
+        // each command's change type while it may still be made, else why not
+        let mut results: Vec<Result<&'static str, String>> = vec![Ok("update"); request.commands.len()];
         let needs_pack = request.commands.iter().any(|command| command.new.is_some());
         let mut quarantine = None;
         if needs_pack {
@@ -664,7 +670,7 @@ impl Session<'_> {
             match pack_in::receive(store, &mut input, &dir, max_object_size(), pack_threads()) {
                 Ok(received) => quarantine = Some(received),
                 Err(err) => {
-                    tracing::warn!(repository = %self.repo.definition.id, "a pushed pack was refused: {err}");
+                    tracing::warn!(repository = %definition.id, "a pushed pack was refused: {err}");
                     let results = vec![Err("unpacker error".to_string()); request.commands.len()];
                     return receive::report(out, &request, Err(err.message().to_string()), &results);
                 }
@@ -673,14 +679,21 @@ impl Session<'_> {
         let shallow: HashSet<ObjectId> = request.shallow.iter().copied().collect();
         if let Some(received) = &quarantine {
             if let Err(err) = received.check_closure(&shallow) {
-                tracing::warn!(repository = %self.repo.definition.id, "a pushed pack is incomplete: {err}");
+                tracing::warn!(repository = %definition.id, "a pushed pack is incomplete: {err}");
                 receive::message(out, &request, err.message())?;
                 for result in &mut results {
                     *result = Err("missing necessary objects".into());
                 }
             }
         }
-        {
+        let origin = events::UpdateOrigin {
+            source: "push",
+            transport: self.transport,
+            user_id: current_user(),
+            remote_address: Some(self.client.clone()).filter(|client| !client.is_empty()),
+            push_options: request.options.clone(),
+        };
+        let refs: Vec<events::RefUpdate> = {
             let view: &dyn GitStore = match &quarantine {
                 Some(received) => received,
                 None => store,
@@ -690,7 +703,42 @@ impl Session<'_> {
                     *result = self.check_command(view, command);
                 }
             }
-        }
+            let refs: Vec<events::RefUpdate> = request
+                .commands
+                .iter()
+                .zip(&results)
+                .map(|(command, result)| events::RefUpdate {
+                    name: command.name.clone(),
+                    old: command.old,
+                    new: command.new,
+                    change_type: match (result, command.old, command.new) {
+                        (Ok(change_type), _, _) => (*change_type).to_string(),
+                        (_, None, _) => "create".into(),
+                        (_, _, None) => "delete".into(),
+                        _ => "update".into(),
+                    },
+                })
+                .collect();
+            // gitECA pre-receive and pre-ref-update rules, on the refs the push may still make
+            let candidates: Vec<usize> = (0..results.len()).filter(|index| results[*index].is_ok()).collect();
+            if !candidates.is_empty() {
+                let decided = events::pre_receive(view, &definition.id, &definition.branch, &origin, &refs, &candidates);
+                for message in &decided.messages {
+                    receive::message(out, &request, message)?;
+                }
+                if let Some(reason) = &decided.refused {
+                    receive::message(out, &request, &format!("push declined: {reason}"))?;
+                    for index in &candidates {
+                        results[*index] = Err(format!("pre-receive hook declined: {reason}"));
+                    }
+                }
+                for (index, reason) in &decided.refused_refs {
+                    receive::message(out, &request, &format!("{} declined: {reason}", refs[*index].name))?;
+                    results[*index] = Err(format!("hook declined: {reason}"));
+                }
+            }
+            refs
+        };
         if request.has("atomic") && results.iter().any(Result::is_err) {
             for result in &mut results {
                 if result.is_ok() {
@@ -699,8 +747,22 @@ impl Session<'_> {
             }
         }
         let accepted: Vec<usize> = (0..results.len()).filter(|index| results[*index].is_ok()).collect();
+        let recorded: Vec<(events::RefUpdate, String)> = refs
+            .iter()
+            .zip(&results)
+            .map(|(reference, result)| {
+                (
+                    reference.clone(),
+                    match result {
+                        Ok(_) => "pending".to_string(),
+                        Err(reason) => reason.clone(),
+                    },
+                )
+            })
+            .collect();
+        let update_id = self.provider.begin_update(&definition.id, &origin, &refs_before, &recorded);
         if !accepted.is_empty() {
-            let lock = self.provider.lock_of(&self.repo.definition.id);
+            let lock = self.provider.lock_of(&definition.id);
             let _turn = moqui_lib::sync::lock(&lock);
             let stored = match quarantine.as_mut() {
                 Some(received) => received.accept().map(|_| ()),
@@ -708,7 +770,7 @@ impl Session<'_> {
             };
             match stored {
                 Err(err) => {
-                    tracing::error!(repository = %self.repo.definition.id, "pushed objects not stored: {err}");
+                    tracing::error!(repository = %definition.id, "pushed objects not stored: {err}");
                     for index in &accepted {
                         results[*index] = Err(format!("cannot store the objects: {}", err.message()));
                     }
@@ -728,15 +790,17 @@ impl Session<'_> {
                     match store.update_refs(&edits, request.has("atomic")) {
                         Ok(outcomes) => {
                             for (index, outcome) in accepted.iter().zip(outcomes) {
-                                results[*index] = match outcome {
-                                    RefOutcome::Updated => Ok(()),
-                                    RefOutcome::Stale => Err("stale info: the ref moved; fetch first".into()),
-                                    RefOutcome::Aborted => Err("atomic push failed".into()),
-                                };
+                                match outcome {
+                                    RefOutcome::Updated => {}
+                                    RefOutcome::Stale => {
+                                        results[*index] = Err("stale info: the ref moved; fetch first".into());
+                                    }
+                                    RefOutcome::Aborted => results[*index] = Err("atomic push failed".into()),
+                                }
                             }
                         }
                         Err(err) => {
-                            tracing::error!(repository = %self.repo.definition.id, "refs not updated: {err}");
+                            tracing::error!(repository = %definition.id, "refs not updated: {err}");
                             for index in &accepted {
                                 results[*index] = Err(format!("failed to update ref: {}", err.message()));
                             }
@@ -746,10 +810,29 @@ impl Session<'_> {
             }
         }
         drop(quarantine);
+        let results: Vec<Result<(), String>> = results.into_iter().map(|result| result.map(|_| ())).collect();
         if results.iter().any(Result::is_ok) {
             self.updated(&request, &results, &refs_before);
         }
-        receive::report(out, &request, Ok(()), &results)
+        receive::report(out, &request, Ok(()), &results)?;
+        if let Some(update_id) = update_id {
+            let outcomes: Vec<(String, String)> = request
+                .commands
+                .iter()
+                .zip(&results)
+                .map(|(command, result)| {
+                    (
+                        command.name.clone(),
+                        match result {
+                            Ok(()) => "ok".to_string(),
+                            Err(reason) => reason.clone(),
+                        },
+                    )
+                })
+                .collect();
+            self.provider.finish_update(&update_id, &outcomes);
+        }
+        Ok(())
     }
 
     /// After a push changed refs: the head on the repository's row, the default branch of an empty repository, and

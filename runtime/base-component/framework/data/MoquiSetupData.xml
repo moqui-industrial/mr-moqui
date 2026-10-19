@@ -97,6 +97,10 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- Fetches the remote kind GitRepository mirrors that have a fetchIntervalMinutes; nothing to do without them -->
     <moqui.service.job.ServiceJob jobName="fetch_AllGitRepositories_frequent" description="Fetch remote Git repository mirrors"
             serviceName="org.moqui.impl.GitServices.fetch#AllGitRepositories" cronExpression="0 0/5 * * * ?" paused="N"/>
+    <!-- Runs the gitECA post events of git updates left pending (a full git pool, a restart); each runs soon after its
+        push, fetch or write as a rule, so this usually finds nothing -->
+    <moqui.service.job.ServiceJob jobName="process_PendingGitUpdates_frequent" description="Run pending gitECA events"
+            serviceName="org.moqui.impl.GitServices.process#PendingGitUpdates" cronExpression="0 * * * * ?" paused="N"/>
 
     <!-- Change paused to 'N' to run the poll EmailServer job; NOTE emailServerId=SYSTEM, change if needed along with run frequency -->
     <moqui.service.job.ServiceJob jobName="poll_EmailServer_frequent" description="Poll EmailServer to get new messages"

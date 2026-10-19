@@ -239,6 +239,8 @@ pub(crate) struct Credentials {
 pub(crate) struct FetchOutcome {
     /// The branch's head after the fetch, or `None` when the remote branch has no commits.
     pub head: Option<ObjectId>,
+    /// The local branches and tags before the fetch.
+    pub before: Vec<(String, ObjectId)>,
     /// The local branches and tags that were created, moved or deleted.
     pub changes: Vec<RefChange>,
 }
@@ -333,5 +335,6 @@ pub(crate) fn fetch(
     Ok(FetchOutcome {
         head: store.read_ref(&super::ops::branch_ref(branch))?,
         changes: ref_changes(&before, &after),
+        before,
     })
 }

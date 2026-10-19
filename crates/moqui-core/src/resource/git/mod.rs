@@ -26,6 +26,7 @@
 pub(crate) mod browse;
 pub(crate) mod db;
 pub(crate) mod diff;
+pub(crate) mod events;
 pub(crate) mod fs;
 pub(crate) mod ops;
 pub(crate) mod revwalk;
@@ -33,6 +34,7 @@ pub mod server;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;
+pub(crate) mod values;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -321,9 +323,31 @@ impl GitProvider {
     ) -> Result<Option<ObjectId>, Error> {
         let lock = self.lock_of(&repo.definition.id);
         let _turn = moqui_lib::sync::lock(&lock);
+        // the refs before, only when a gitECA rule listens for writes
+        let prior = if crate::service::git_eca::listening_after("write") {
+            repo.store.list_refs("refs/").ok()
+        } else {
+            None
+        };
         let made = ops::commit(repo.store.as_ref(), &repo.definition.branch, &self.author(), edits)?;
         if let Some(id) = made {
             self.remember_head(&repo.definition.id, Some(id), None);
+            if let Some(prior) = prior {
+                let name = ops::branch_ref(&repo.definition.branch);
+                let old = prior.iter().find(|(candidate, _)| *candidate == name).map(|(_, id)| *id);
+                let origin = events::UpdateOrigin {
+                    source: "write",
+                    transport: "internal",
+                    user_id: crate::user::current_user_id().ok().flatten(),
+                    ..Default::default()
+                };
+                let change = store::RefChange {
+                    name,
+                    old,
+                    new: Some(id),
+                };
+                self.record_update(&repo.definition.id, &origin, repo.store.as_ref(), &prior, &[change]);
+            }
         }
         Ok(made)
     }
@@ -467,6 +491,21 @@ impl GitProvider {
                     );
                 }
                 self.remember_head(repository_id, fetched.head, Some(None));
+                if let Ok(repo) = self.repo(repository_id) {
+                    let origin = events::UpdateOrigin {
+                        source: "fetch",
+                        transport: "internal",
+                        user_id: crate::user::current_user_id().ok().flatten(),
+                        ..Default::default()
+                    };
+                    self.record_update(
+                        repository_id,
+                        &origin,
+                        repo.store.as_ref(),
+                        &fetched.before,
+                        &fetched.changes,
+                    );
+                }
                 Ok(fetched.head.map(|id| id.to_string()))
             }
             Err(err) => {
@@ -670,6 +709,7 @@ impl GitProvider {
             Ok(())
         })?;
         let name = ops::branch_ref(branch);
+        let prior = repo.store.list_refs("refs/")?;
         let current = repo.store.read_ref(&name)?;
         if !repo.store.compare_and_set_ref(&name, current, head)? {
             return Err(Error::new(format!(
@@ -678,6 +718,20 @@ impl GitProvider {
         }
         drop(_turn);
         self.remember_head(repository_id, Some(head), None);
+        if current != Some(head) {
+            let origin = events::UpdateOrigin {
+                source: "import",
+                transport: "internal",
+                user_id: crate::user::current_user_id().ok().flatten(),
+                ..Default::default()
+            };
+            let change = store::RefChange {
+                name,
+                old: current,
+                new: Some(head),
+            };
+            self.record_update(repository_id, &origin, repo.store.as_ref(), &prior, &[change]);
+        }
         Ok((head.to_string(), count))
     }
 }

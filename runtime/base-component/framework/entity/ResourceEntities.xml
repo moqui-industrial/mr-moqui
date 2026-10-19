@@ -91,6 +91,40 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="objectId" type="text-short"/>
         <relationship type="one" related="moqui.resource.GitRepository"/>
     </entity>
+    <entity entity-name="GitUpdate" package="moqui.resource" use="nontransactional" cache="never">
+        <description>One change to the refs of a repository: a push (each one, accepted or not, so this is the push
+            log), a fetch of a mirror, an import, or (when a gitECA rule listens for them) a write through git://. The
+            gitECA rules of its post events (ref-update, commit, tag, post-receive) run from it after the change, so
+            a restart does not lose them (ecaStatus pending, then running, done or failed).</description>
+        <field name="updateId" type="id" is-pk="true"/>
+        <field name="repositoryId" type="id"/>
+        <field name="source" type="text-short"><description>push, fetch, import or write</description></field>
+        <field name="transport" type="text-short"><description>http, ssh or internal</description></field>
+        <field name="userId" type="id"><description>Who pushed or wrote; empty for a fetch run by a job</description></field>
+        <field name="remoteAddress" type="text-short"/>
+        <field name="updateDate" type="date-time"/>
+        <field name="priorTips" type="text-very-long"><description>The ids every ref pointed to before the change,
+            separated by spaces: the commits new to the repository are those the new refs reach and these do
+            not</description></field>
+        <field name="pushOptions" type="text-long"/>
+        <field name="ecaStatus" type="text-short"><description>recording (the refs are being changed), pending,
+            running, done, failed, or none (nothing changed)</description></field>
+        <field name="ecaError" type="text-long"/>
+        <field name="processedDate" type="date-time"/>
+        <relationship type="one" related="moqui.resource.GitRepository"/>
+        <relationship type="many" related="moqui.resource.GitUpdateRef" short-alias="refs"><key-map field-name="updateId"/></relationship>
+        <index name="GIT_UPDATE_STATUS"><index-field name="ecaStatus"/></index>
+        <index name="GIT_UPDATE_REPO"><index-field name="repositoryId"/><index-field name="updateDate"/></index>
+    </entity>
+    <entity entity-name="GitUpdateRef" package="moqui.resource" use="nontransactional" cache="never">
+        <field name="updateId" type="id" is-pk="true"/>
+        <field name="refName" type="text-medium" is-pk="true"/>
+        <field name="oldObjectId" type="text-short"/>
+        <field name="newObjectId" type="text-short"/>
+        <field name="changeType" type="text-short"><description>create, update (a fast-forward), force or delete</description></field>
+        <field name="result" type="text-medium"><description>ok, pending while it is made, or why it was refused</description></field>
+        <relationship type="one" related="moqui.resource.GitUpdate"/>
+    </entity>
 
     <!-- ========================================================= -->
     <!-- moqui.resource.wiki -->

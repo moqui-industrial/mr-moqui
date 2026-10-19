@@ -181,9 +181,10 @@ pub(crate) fn report(
     out.flush().map_err(io_error)
 }
 
-/// A progress or rule message, shown by the client as `remote: ...`: on band 2 with a side-band and not `quiet`.
+/// A message for the client, shown as `remote: ...`: on band 2 when there is a side-band. As git sends its hooks'
+/// output, `quiet` (which only stops progress) does not stop these.
 pub(crate) fn message(out: &mut dyn Write, request: &PushRequest, text: &str) -> Result<(), Error> {
-    if !request.has("side-band-64k") || request.has("quiet") {
+    if !request.has("side-band-64k") {
         return Ok(());
     }
     let mut text = text.trim_end().to_string();

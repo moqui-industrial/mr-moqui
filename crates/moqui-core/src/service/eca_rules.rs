@@ -12,8 +12,8 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Service and email ECA rules, loaded once per factory from every component's `service/` directory
-//! (`*.secas.xml` and `*.emecas.xml`), as `ServiceFacadeImpl` does.
+//! Service, email and git ECA rules, loaded once per factory from every component's `service/` directory
+//! (`*.secas.xml`, `*.emecas.xml` and `*.gitecas.xml`), as `ServiceFacadeImpl` does for the first two.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -21,6 +21,7 @@ use std::sync::{Arc, RwLock};
 use moqui_lib::node::MNode;
 
 use super::email_eca::{email_rule_from, EmailRule};
+use super::git_eca::{git_rule_from, GitRule};
 use super::seca::{seca_rule_from, SecaIndex, SecaRule};
 use crate::context::{ExecutionContext, ExecutionContextFactory};
 
@@ -31,16 +32,50 @@ pub(super) struct EcaRules {
     /// `seca` by `when` and service.
     pub(super) seca_index: SecaIndex,
     pub(super) email: Vec<Arc<EmailRule>>,
+    /// gitECA rules in priority order, a later rule with the same id having replaced an earlier one.
+    pub(super) git: Vec<Arc<GitRule>>,
 }
 
 impl EcaRules {
-    fn new(seca: Vec<Arc<SecaRule>>, email: Vec<Arc<EmailRule>>) -> Self {
+    fn new(seca: Vec<Arc<SecaRule>>, email: Vec<Arc<EmailRule>>, git: Vec<Arc<GitRule>>) -> Self {
         Self {
             seca_index: SecaIndex::new(&seca),
             seca,
             email,
+            git,
         }
     }
+
+    /// The same rules with gitECA rules from XML text, for tests.
+    #[cfg(test)]
+    pub(super) fn with_git(mut self, git_xml: &str) -> Self {
+        let root = MNode::parse_text("gitecas", git_xml).expect("gitecas xml");
+        self.git = git_rules(root.children_named("giteca").iter(), &mut 0);
+        self
+    }
+}
+
+/// gitECA rules from their elements: one that cannot run is logged and skipped; a rule with an id replaces an earlier
+/// one with the same id in place; then by priority.
+fn git_rules<'a>(nodes: impl Iterator<Item = &'a MNode>, skipped: &mut usize) -> Vec<Arc<GitRule>> {
+    let mut rules: Vec<Arc<GitRule>> = Vec::new();
+    for node in nodes {
+        match git_rule_from(node) {
+            Ok(rule) => {
+                let rule = Arc::new(rule);
+                match rule.id.clone().and_then(|id| rules.iter().position(|old| old.id.as_deref() == Some(&id))) {
+                    Some(at) => rules[at] = rule,
+                    None => rules.push(rule),
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "Skipping gitECA rule");
+                *skipped += 1;
+            }
+        }
+    }
+    rules.sort_by_key(|rule| rule.priority);
+    rules
 }
 
 type Shared = RwLock<Arc<EcaRules>>;
@@ -67,7 +102,9 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
     let mut seca_by_id: HashMap<String, Arc<SecaRule>> = HashMap::new();
     let mut seca: Vec<Arc<SecaRule>> = Vec::new();
     let mut email = Vec::new();
-    let (mut seca_files, mut email_files, mut no_id, mut skipped) = (0_usize, 0_usize, 0_usize, 0_usize);
+    let mut git_nodes: Vec<MNode> = Vec::new();
+    let (mut seca_files, mut email_files, mut git_files, mut no_id, mut skipped) =
+        (0_usize, 0_usize, 0_usize, 0_usize, 0_usize);
     let facade = factory.entity();
     let mut known_services = None;
     let started = std::time::Instant::now();
@@ -81,7 +118,8 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
         for path in paths {
             let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
             let is_seca = name.ends_with(".secas.xml");
-            if !is_seca && !name.ends_with(".emecas.xml") {
+            let is_git = name.ends_with(".gitecas.xml");
+            if !is_seca && !is_git && !name.ends_with(".emecas.xml") {
                 continue;
             }
             let root = match MNode::parse_file(&path) {
@@ -91,7 +129,10 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
                     continue;
                 }
             };
-            if is_seca {
+            if is_git {
+                git_files += 1;
+                git_nodes.extend(root.children_named("giteca"));
+            } else if is_seca {
                 seca_files += 1;
                 for node in root.children_named("seca") {
                     // As Java: a rule that cannot run is logged and skipped, and the others still load.
@@ -142,7 +183,13 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
         "Loaded [{}] Email ECA rules from {email_files} .emecas.xml files",
         email.len()
     );
-    EcaRules::new(seca, email)
+    let mut git_skipped = 0;
+    let git = git_rules(git_nodes.iter(), &mut git_skipped);
+    tracing::info!(
+        "Loaded [{}] git ECA rules from {git_files} .gitecas.xml files, {git_skipped} skipped",
+        git.len()
+    );
+    EcaRules::new(seca, email, git)
 }
 
 /// Parse rules from XML text, for tests.
@@ -167,5 +214,5 @@ pub(super) fn from_xml(seca_xml: &str, email_xml: &str) -> EcaRules {
             .map(|node| Arc::new(email_rule_from(node)))
             .collect();
     }
-    EcaRules::new(seca, email)
+    EcaRules::new(seca, email, Vec::new())
 }

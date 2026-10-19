@@ -36,7 +36,9 @@ mod pool;
 mod remote;
 mod request_pool;
 mod rest;
+pub(crate) mod git_eca;
 pub(crate) mod rule_actions;
+mod user_keys;
 mod schedule;
 #[cfg(test)]
 mod script_ports_tests;

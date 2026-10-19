@@ -645,3 +645,206 @@ fn ssh_commands_name_a_service_and_a_repository() {
     assert_eq!(parse_ssh_command("git-upload-pack '../etc/passwd'"), None);
     assert_eq!(parse_ssh_command("git-upload-packx 'code'"), None);
 }
+
+// ---- gitECA rules on pushes ----
+
+const RULES: &str = r#"<gitecas>
+    <giteca rule-name="NoWip" event="pre-receive">
+        <condition><expression>newCommits.some(c => c.summary.startsWith('WIP'))</expression></condition>
+        <actions><message error="true">WIP commits are not accepted</message></actions>
+    </giteca>
+    <giteca rule-name="Hello" event="pre-receive"><actions><message>Hello from moqui</message></actions></giteca>
+    <giteca rule-name="ProtectMain" event="pre-ref-update" ref-pattern="refs/heads/main">
+        <condition><expression>changeType == 'force'</expression></condition>
+        <actions><message error="true">main cannot be forced</message></actions>
+    </giteca>
+    <giteca rule-name="RecordCommits" event="commit">
+        <actions>
+            <entity-make-value entity-name="moqui.test.TestEntity" value-field="row"
+                map="{testId: 'C' + commit.shortId, testMedium: commit.summary, value: refName, testLong: (commit.trailers.Task || []).join(',')}"/>
+            <entity-create value-field="row"/>
+        </actions>
+    </giteca>
+    <giteca rule-name="RecordTags" event="tag">
+        <actions>
+            <entity-make-value entity-name="moqui.test.TestEntity" value-field="row"
+                map="{testId: 'T' + tag.tagName, testMedium: tag.message ?? '', value: tag.annotated ? 'annotated' : 'light'}"/>
+            <entity-create value-field="row"/>
+        </actions>
+    </giteca>
+    <giteca rule-name="RecordMain" event="ref-update" default-branch-only="true">
+        <actions>
+            <entity-make-value entity-name="moqui.test.TestEntity" value-field="row"
+                map="{testId: 'R' + updateId, testMedium: changeType, testNumberInteger: newCommitIds.length}"/>
+            <entity-create value-field="row"/>
+        </actions>
+    </giteca>
+    <giteca rule-name="FailsOnPurpose" event="post-receive" priority="9">
+        <actions><message error="true">post rule failed on purpose</message></actions>
+    </giteca>
+</gitecas>"#;
+
+/// Wait until no update of the fixture is still to run.
+fn settled(fixture: &Fixture) -> Vec<EntityValue> {
+    let started = std::time::Instant::now();
+    loop {
+        let rows = {
+            let _entered = fixture.context.enter();
+            let _authz = fixture.context.disable_authz();
+            fixture
+                .entity
+                .find(crate::resource::git::events::GIT_UPDATE)
+                .unwrap()
+                .order_by("updateId", false)
+                .list()
+                .unwrap()
+        };
+        let busy = rows.iter().any(|row| {
+            matches!(
+                row.get("ecaStatus").and_then(Value::as_str),
+                Some("recording" | "pending" | "running")
+            )
+        });
+        if !busy {
+            return rows.iter().cloned().collect();
+        }
+        assert!(started.elapsed().as_secs() < 30, "git updates did not settle");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+fn test_rows(fixture: &Fixture) -> HashMap<String, EntityValue> {
+    let _entered = fixture.context.enter();
+    let _authz = fixture.context.disable_authz();
+    fixture
+        .entity
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .list()
+        .unwrap()
+        .iter()
+        .map(|row| (row.get("testId").and_then(Value::as_str).unwrap_or_default().to_string(), row.clone()))
+        .collect()
+}
+
+#[test]
+fn git_eca_rules_check_pushes_and_see_their_commits_and_tags() {
+    if !git_available() {
+        eprintln!("skipped: git is not on the PATH");
+        return;
+    }
+    let fixture = fixture("eca");
+    crate::service::git_eca::install(fixture.context.factory(), RULES);
+    define(&fixture, "eca", "db");
+    let base = http_server(fixture.context.factory());
+    let home = fixture.dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let url = url_with(&base, WRITER, "eca");
+    let work = fixture.dir.join("work");
+    git_ok(&fixture.dir, &home, &["clone", &url, &work.to_string_lossy()]);
+
+    // a pre-receive rule refuses a WIP commit; every rule's messages show
+    write_file(&work, "a.txt", "a\n");
+    git_ok(&work, &home, &["add", "."]);
+    git_ok(&work, &home, &["commit", "-m", "WIP first try"]);
+    let (ok, out) = git_in(&work, &home, &["push", "origin", "main"]);
+    assert!(!ok && out.contains("WIP commits are not accepted") && out.contains("Hello from moqui"), "{out}");
+    assert_eq!(head_of(&fixture, "eca", "refs/heads/main"), None);
+
+    // accepted: the commit rule sees each commit, its ref and its trailers
+    git_ok(&work, &home, &["commit", "--amend", "-m", "First commit\n\nTask: ECA-100001"]);
+    write_file(&work, "b.txt", "b\n");
+    git_ok(&work, &home, &["add", "."]);
+    git_ok(&work, &home, &["commit", "-m", "Second commit"]);
+    let out = git_ok(&work, &home, &["push", "origin", "main"]);
+    assert!(out.contains("Hello from moqui"), "{out}");
+    git_ok(&work, &home, &["tag", "-a", "v1", "-m", "Version one"]);
+    git_ok(&work, &home, &["tag", "light"]);
+    git_ok(&work, &home, &["push", "origin", "--tags"]);
+    let updates = settled(&fixture);
+    let rows = test_rows(&fixture);
+    let first = git_ok(&work, &home, &["rev-parse", "HEAD~1"]);
+    let first = rows.get(&format!("C{}", &first.trim()[..10])).expect("the first commit's row");
+    assert_eq!(first.get("testMedium").and_then(Value::as_str), Some("First commit"));
+    assert_eq!(first.get("value").and_then(Value::as_str), Some("refs/heads/main"));
+    assert_eq!(first.get("testLong").and_then(Value::as_str), Some("ECA-100001"));
+    assert_eq!(rows.keys().filter(|id| id.starts_with('C')).count(), 2, "{:?}", rows.keys());
+    assert_eq!(rows["Tv1"].get("value").and_then(Value::as_str), Some("annotated"));
+    assert_eq!(rows["Tv1"].get("testMedium").and_then(Value::as_str), Some("Version one"));
+    assert_eq!(rows["Tlight"].get("value").and_then(Value::as_str), Some("light"));
+
+    // the push log: the refused push, the branch push and the tag push; the failing rule is recorded and the others ran
+    let field = |row: &EntityValue, name: &str| row.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
+    let statuses: Vec<String> = updates.iter().map(|row| field(row, "ecaStatus")).collect();
+    assert_eq!(statuses, ["none", "failed", "failed"], "{updates:?}");
+    assert!(field(&updates[1], "ecaError").contains("post rule failed on purpose"));
+    let main = rows
+        .get(&format!("R{}", field(&updates[1], "updateId")))
+        .expect("the ref-update row of main");
+    assert_eq!(main.get("testMedium").and_then(Value::as_str), Some("create"));
+    assert_eq!(
+        moqui_lib::object::to_plain_string(main.get("testNumberInteger").unwrap_or(&Value::Null)),
+        "2"
+    );
+
+    // a pre-ref-update rule protects main from a force push
+    git_ok(&work, &home, &["commit", "--amend", "-m", "Second commit, rewritten"]);
+    let (ok, out) = git_in(&work, &home, &["push", "--force", "origin", "main"]);
+    assert!(!ok && out.contains("main cannot be forced"), "{out}");
+}
+
+#[test]
+fn mirror_fetches_and_opted_in_writes_raise_events() {
+    if !git_available() {
+        eprintln!("skipped: a file:// fetch runs git-upload-pack, and git is not on the PATH");
+        return;
+    }
+    let fixture = fixture("sources");
+    crate::service::git_eca::install(
+        fixture.context.factory(),
+        r#"<gitecas>
+            <giteca rule-name="FetchedCommits" event="commit" source="fetch">
+                <actions>
+                    <entity-make-value entity-name="moqui.test.TestEntity" value-field="row"
+                        map="{testId: 'F' + commit.shortId, testMedium: commit.summary, value: source}"/>
+                    <entity-create value-field="row"/>
+                </actions>
+            </giteca>
+            <giteca rule-name="Writes" event="commit" source="write" repository-pattern="src.*">
+                <actions>
+                    <entity-make-value entity-name="moqui.test.TestEntity" value-field="row"
+                        map="{testId: 'W' + commit.shortId, testMedium: commit.summary, value: userId ?? ''}"/>
+                    <entity-create value-field="row"/>
+                </actions>
+            </giteca>
+        </gitecas>"#,
+    );
+    define(&fixture, "src", "local");
+    {
+        let _entered = fixture.context.enter();
+        let _authz = fixture.context.disable_authz();
+        let mut row = EntityValue::make(&fixture.entity, crate::resource::git::GIT_REPOSITORY).unwrap();
+        row.set("repositoryId", Value::string("mirror"));
+        row.set("repositoryKind", Value::string("remote"));
+        row.set("localPath", Value::string(fixture.dir.join("mirror.git").to_string_lossy()));
+        row.set("remoteUrl", Value::string(format!("file://{}", fixture.dir.join("src.git").display())));
+        row.create(&fixture.entity).unwrap();
+    }
+    {
+        let _entered = fixture.context.enter();
+        crate::user::internal_login_user(WRITER).unwrap();
+        let resources = fixture.context.factory().resource();
+        resources.write_bytes("git://src/a.md", b"one\n").unwrap();
+        resources.write_bytes("git://src/a.md", b"two\n").unwrap();
+        resources.git().unwrap().fetch("mirror").unwrap();
+        crate::user::logout().unwrap();
+    }
+    settled(&fixture);
+    let rows = test_rows(&fixture);
+    let writes: Vec<&EntityValue> = rows.iter().filter(|(id, _)| id.starts_with('W')).map(|(_, row)| row).collect();
+    assert_eq!(writes.len(), 2, "{:?}", rows.keys());
+    assert!(writes.iter().all(|row| row.get("value").and_then(Value::as_str) == Some(WRITER)));
+    let fetched: Vec<&EntityValue> = rows.iter().filter(|(id, _)| id.starts_with('F')).map(|(_, row)| row).collect();
+    assert_eq!(fetched.len(), 2, "{:?}", rows.keys());
+    assert!(fetched.iter().all(|row| row.get("value").and_then(Value::as_str) == Some("fetch")));
+}

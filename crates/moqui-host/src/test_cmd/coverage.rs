@@ -39,7 +39,7 @@ impl FileCoverage {
 /// The service files that are not service definitions: REST mappings and ECA rule files.
 fn is_definition_file(name: &str) -> bool {
     name.ends_with(".xml")
-        && ![".rest.xml", ".secas.xml", ".eecas.xml", ".emecas.xml"]
+        && ![".rest.xml", ".secas.xml", ".eecas.xml", ".emecas.xml", ".gitecas.xml"]
             .iter()
             .any(|suffix| name.ends_with(suffix))
 }
