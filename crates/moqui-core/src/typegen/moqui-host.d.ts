@@ -442,6 +442,14 @@ interface MoquiUserFacade {
     setEffectiveTime(time: TimestampInput | null): void;
     readonly passwordRules: { minLength: number; minDigits: number; minOthers: number };
     getPreference(key: string): string | null;
+    /** The `moqui.server.Visit` id of this session, null outside one. */
+    readonly visitId: string | null;
+    getVisitId(): string | null;
+    /** The `moqui.server.Visit` of this session as a map, null outside one. */
+    readonly visit: MoquiMap | null;
+    getVisit(): MoquiMap | null;
+    /** End another session of the signed-in user by its visit (`org.moqui.impl.UserServices.end#UserVisit`); the web sessions ended. */
+    endVisit(visitId: string): number;
     loginUser(username: string, password: string): boolean;
     internalLoginUser(username: string): boolean;
     logoutUser(): boolean;
@@ -802,6 +810,8 @@ interface MoquiScreenRenderer {
     getThemeValues(resourceTypeEnumId: string): string[];
     getMenuItems(path?: string): MoquiMenuItem[];
     getMenuData(pathNames: string[]): MoquiMap[] | null;
+    /** The `<shell-providers>` of the apps the user may open, `{apps: [{name, title, image, imageType, path, providers}]}`, only `kind` in each `providers` when given; kept per session. */
+    getShellProviders(kind?: "quickCreate" | "todaySources" | "paletteActions" | "paletteTypes" | "paletteSources" | "notificationTopics" | "keymaps" | "accountMenuItems" | null): MoquiMap;
     appendToAfterScreenWriter(text: string): void;
     appendToScriptWriter(text: string): void;
     getAfterScreenWriterText(): string;

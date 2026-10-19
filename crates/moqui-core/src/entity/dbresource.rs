@@ -997,4 +997,36 @@ mod tests {
             Some(page(4).into_bytes())
         );
     }
+
+    /// `ResourceRef::size` of a `dbresource://` file is its data length, for the file and for one found among a
+    /// directory's children, whose bytes are read when asked for.
+    #[test]
+    fn a_db_resource_ref_has_its_size_and_a_child_its_bytes() {
+        let (facade, context) = facade();
+        let _entered = context.enter();
+        facade
+            .write_db_resource("dbresource://files/a·b.txt", "héllo".as_bytes())
+            .unwrap();
+        facade.write_db_resource("dbresource://files/empty.txt", b"").unwrap();
+        let resources = context.factory().resource();
+        let file = resources.get("dbresource://files/a·b.txt").unwrap();
+        assert_eq!(file.size(), Some(6));
+        assert_eq!(resources.get("dbresource://files/empty.txt").unwrap().size(), Some(0));
+        let directory = resources.get("dbresource://files").unwrap();
+        assert_eq!(directory.size(), None);
+        let child = directory.find_child_file("a·b.txt");
+        assert_eq!(child.size(), Some(6));
+        assert_eq!(child.read_text().unwrap(), "héllo");
+        let listed: Vec<_> = directory
+            .children()
+            .unwrap()
+            .iter()
+            .map(|child| (child.size(), child.read_bytes().unwrap().len()))
+            .collect();
+        assert!(
+            listed.contains(&(Some(6), 6)) && listed.contains(&(Some(0), 0)),
+            "{listed:?}"
+        );
+        assert_eq!(directory.find_child_file("missing.txt").size(), None);
+    }
 }

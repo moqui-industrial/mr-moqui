@@ -824,6 +824,18 @@
             w(withCondition(n, "<" + type + A(out) + "></" + type + ">\n"));
         };
 
+        // A url that a ${} expression makes is known only in the browser: it is bound over the scope as other expressions are, and
+        // $mq.link resolves a relative path in it against this screen's path, as the server render resolves a link's url.
+        const dynamicPath = (n, attr) => {
+            const base = sri.staticUrl(".", "transition").path;
+            return "$mq.link(" + exp(at(n, attr), n, attr, false) + "," + sq(base && base !== "#" ? base : "") + ")";
+        };
+        const urlOfPath = (n, pathExpr, extra, target) => {
+            const given = targetOf(n, target);
+            const map = given ? "$mq.merge(" + given + "," + mapOf(n) + ")" : mapOf(n);
+            return "$mq.url(" + pathExpr + "," + paramsOf(n, extra) + "," + map + ")";
+        };
+
         // The way a link is written: a screen link, a plain link, or a form that posts a transition.
         const link = (n, inField) => {
             const urlType = at(n, "url-type") || "transition";
@@ -852,12 +864,15 @@
             const toAlias = !!(found && at(n, "expand-transition-url") !== "false" && found.screenPath);
             const navPath = toAlias ? found.screenPath : (found ? found.path : "");
             const navParams = toAlias ? found.screenParameters : (found ? found.parameters : null);
+            // A ${} url: the expression over the scope, resolved in the browser (m-link follows an external one as a plain anchor).
+            const dynamic = !!found && isDynamic(at(n, "url") || "");
             let out = "";
             if (anchor) {
                 // A type=none or plain-response transition is not a screen URL, so the anchor is <a> and the client
                 // does not setUrl it. An unresolved ${} target stays an m-link.
                 const toScreen = !!(found && found.screenUrl);
-                const href = found ? (noParam ? sq(navPath) : urlOf(n, navPath, query.extra, navParams)) : exp(at(n, "url"), n, "url", false);
+                const href = dynamic ? (noParam ? dynamicPath(n, "url") : urlOfPath(n, dynamicPath(n, "url"), null, null)) :
+                    found ? (noParam ? sq(navPath) : urlOf(n, navPath, query.extra, navParams)) : exp(at(n, "url"), n, "url", false);
                 const tag = toScreen ? "m-link" : "a";
                 // A screen link in a form-list cell is text (as is link-type anchor anywhere); the others are tonal buttons.
                 const textLink = linkType === "anchor" || (st.inList && linkType !== "anchor-button");
@@ -872,9 +887,19 @@
                 const button = img ?
                     "<input" + A({ type: "image", ":src": exp(at(img, "url"), img, "url", false), ":alt": exp(at(img, "alt") || "image", img, "alt", true) }) + ">" :
                     "<q-btn" + A(Object.assign({ dense: true, "no-caps": true, type: "submit", flat: hiddenLink ? true : null, unelevated: hiddenLink ? null : true },
-                        hiddenLink ? { class: cls("m-link", color ? "text-" + color : null, style) } : btnKind(btnType, "m-link", style), confirmAttr)) + ">" + tooltip + body + "</q-btn>";
-                const attrs = { action: found ? found.path : at(n, "url"), ":fields-initial": fieldsInitial, "v-slot:default": "formProps", "read-only": isForm && found && found.readOnly ? true : null, target: at(n, "target-window") || null };
+                        hiddenLink ? { class: cls("m-link", "m-link-left", color ? "text-" + color : null, style) } : btnKind(btnType, "m-link", style), confirmAttr)) + ">" + tooltip + body + "</q-btn>";
+                const attrs = { action: found && !dynamic ? found.path : at(n, "url"), ":fields-initial": fieldsInitial, "v-slot:default": "formProps", "read-only": isForm && found && found.readOnly ? true : null, target: at(n, "target-window") || null };
+                if (dynamic) {
+                    delete attrs.action;
+                    attrs[":action"] = dynamicPath(n, "url");
+                }
                 if (isForm && found && found.method === "get") attrs.method = "GET";
+                // the background-* attributes of a form-single, as the m-form's submit-* properties (ScreenQvt.js linkBackground)
+                if (isForm) {
+                    if (at(n, "background-message")) textAttr(attrs, "submit-message", at(n, "background-message"), n, true);
+                    plainAttr(attrs, "submit-reload-id", at(n, "background-reload-id"), n);
+                    plainAttr(attrs, "submit-hide-id", at(n, "background-hide-id"), n);
+                }
                 out = "<" + tag + A(attrs) + ">" + button + "</" + tag + ">";
             }
             const wrapper = inField && linkType === "anchor" && n.parent && n.parent.parent && n.parent.parent.parent && n.parent.parent.parent.name === "form-single";
@@ -911,6 +936,7 @@
             textAttr(out, "button-text", at(n, "button-text"), n, true);
             if (at(n, "title")) textAttr(out, "title", at(n, "title"), n, true);
             else if (at(n, "button-text")) textAttr(out, "title", at(n, "button-text"), n, true);
+            if (at(n, "tooltip")) textAttr(out, "tooltip", at(n, "tooltip"), n, true);
             const open = at(n, "condition") ? '<template v-if="' + e(X(at(n, "condition"), n, "condition")) + '">' : "";
             let slot = "";
             if (inCell) {
@@ -1769,7 +1795,10 @@
             plainAttr(out, "delta", at(n, "delta"), n);
             if (at(n, "delta-good")) out["delta-good"] = at(n, "delta-good");
             plainAttr(out, "icon", at(n, "icon"), n);
-            if (at(n, "link")) {
+            if (at(n, "link") && isDynamic(at(n, "link"))) {
+                // known only in the browser: resolved against this screen there; m-link follows an external one as an anchor
+                out[":href"] = dynamicPath(n, "link");
+            } else if (at(n, "link")) {
                 const query = splitQuery(at(n, "link"));
                 const found = sri.staticUrl(query.path, "transition");
                 const toAlias = !!(found && found.screenPath);

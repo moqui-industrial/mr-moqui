@@ -430,8 +430,9 @@ fn the_suite_shell_palette_quick_create_and_keys_work_in_chromium() {
 /// (`gallery/Panel` for Today, `gallery/Landing` for Notifications, `gallery/List` for Mail, `gallery/Split` for
 /// Messages): the counters appear and the notify history goes; Today opens the tray with the Panel archetype inside it, in
 /// Assist's reach; a tab is loaded once and kept, the tray stays open across navigation and Esc closes it; a `shellCounts`
-/// message sets the badges; below 600 px Mail and Messages are one button. With `MOQUI_SHELL_SHOTS=<dir>` it saves PNGs of
-/// the open tray, light and dark, 1280 and 390 px wide.
+/// message sets the badges; below 600 px Mail and Messages are one button, the tray tabs one tray button, the app title gives way
+/// to the launcher and nothing overflows. With `MOQUI_SHELL_SHOTS=<dir>` it saves PNGs of the header and of the open tray, light
+/// and dark, 1280 and 390 px wide.
 #[test]
 fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
     let gate = start_with_data(
@@ -559,6 +560,43 @@ fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
          && document.getElementById('m-canvas').innerText.indexOf('Archetype 3.2') >= 0",
         WAIT,
     );
+    // at 390 px the launcher stands for the app title, Search is an icon, the tray tabs are one tray button (badge their sum)
+    // that opens the tray, and nothing in the header overflows
+    browser.eval("moqui.webrootVue.onShellNotification({topic: 'shellCounts', message: {today: 2, email: 3, messages: 2, notifications: 1}}), true");
+    browser.wait_for(
+        "one tray button",
+        "!!document.getElementById('m-counter-tray') && !document.getElementById('m-counter-today') && !document.getElementById('m-counter-notifications') \
+         && (document.querySelector('#m-counter-tray .q-badge') || {}).innerText === '3'",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("(() => { const title = document.querySelector('#top .q-toolbar__title'); return !title || title.offsetParent === null; })()"),
+        true,
+        "no app title below 600 px"
+    );
+    assert_eq!(
+        browser.eval("!document.querySelector('#m-search .q-btn__content .block')"),
+        true,
+        "Search is an icon"
+    );
+    let overflow = browser.eval(
+        "(() => { const bar = document.querySelector('#top .q-toolbar'); const right = bar.getBoundingClientRect().right; \
+         return Array.from(bar.children).filter((el) => el.offsetParent !== null && el.getBoundingClientRect().right > right + 1).map((el) => el.id || el.className).join(' | ') \
+         + (bar.scrollWidth > bar.clientWidth + 1 ? ' scroll ' + bar.scrollWidth + '>' + bar.clientWidth : ''); })()",
+    );
+    assert_eq!(overflow, "", "nothing in the header overflows at 390 px");
+    browser.click("the tray button", "document.getElementById('m-counter-tray')");
+    browser.wait_for(
+        "the tray from its button",
+        "!!document.getElementById('m-tray') && document.getElementById('m-tray').offsetParent !== null",
+        WAIT,
+    );
+    browser.click("the tray button again", "document.getElementById('m-counter-tray')");
+    browser.wait_for(
+        "the tray closed",
+        "document.getElementById('m-tray').offsetParent === null",
+        WAIT,
+    );
     browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
     assert_clean(&mut browser, "the tray");
 
@@ -572,7 +610,19 @@ fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
                 serde_json::json!({"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 600}),
             );
             browser.navigate(&detail);
-            browser.wait_for("the counters", "!!document.getElementById('m-counter-today')", WAIT);
+            browser.wait_for(
+                "the counters",
+                "!!document.getElementById('m-counter-today') || !!document.getElementById('m-counter-tray')",
+                WAIT,
+            );
+            // the header alone first (the tray covers the canvas at 390 px, and a page keeps it open from the last)
+            browser.eval("moqui.webrootVue.closeTray(), true");
+            browser.pump(Duration::from_millis(500));
+            let shot = browser.call("Page.captureScreenshot", serde_json::json!({"format": "png"}));
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(shot["data"].as_str().unwrap())
+                .unwrap();
+            std::fs::write(dir.join(format!("header-{width}.png")), bytes).unwrap();
             for dark in [false, true] {
                 let mode = if dark { "dark" } else { "light" };
                 browser.eval(&format!(
@@ -929,6 +979,60 @@ fn the_split_stacks_and_the_wizard_steps_in_chromium() {
         WAIT,
     );
     assert_clean(&mut browser, "the wizard");
+}
+
+/// The gallery Dialog: the New container-dialog registers as a container of the root by its id, so the form in it, with
+/// `background-hide-id="NewEnumDialog"`, closes it once its background submit is answered; the page stays the list.
+#[test]
+fn a_background_submit_closes_the_container_dialog_it_names_in_chromium() {
+    let gate = start("browser-dialog");
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    browser.navigate(&format!("{base}/qapps/gallery/Dialog"));
+    browser.eval(FETCH_SPY);
+    browser.wait_for(
+        "the list with its New dialog registered",
+        "!!moqui.webrootVue && !!moqui.webrootVue.activeContainers.NewEnumDialog && document.body.innerText.indexOf('Comparison operators') >= 0",
+        WAIT,
+    );
+    // the submit asks first (data-confirm); the test answers yes
+    browser.eval("(() => { window.confirm = () => true; return true; })()");
+    browser.click("New", &by_text("button", "New"));
+    browser.wait_for(
+        "the dialog open",
+        "!!document.querySelector('.q-dialog [name=enumId]') && document.querySelector('.q-dialog').innerText.indexOf('New enumeration') >= 0",
+        WAIT,
+    );
+    browser.click("the id", "document.querySelector('.q-dialog [name=enumId]')");
+    browser.type_text("GATE_DLG");
+    browser.click("Create", &by_text(".q-dialog button", "Create"));
+    let answer = fetched(&mut browser, "the create post", "/createEnum");
+    assert_eq!(answer["status"], 200, "{answer}");
+    browser.wait_for(
+        "the dialog closed by its id",
+        "!document.querySelector('.q-dialog [name=enumId]') && location.pathname.endsWith('/gallery/Dialog')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("document.body.innerText.indexOf('Comparison operators') >= 0"),
+        true,
+        "the list is still the page"
+    );
+    // opened again, the root's hideContainer by its id closes it too
+    browser.click("New", &by_text("button", "New"));
+    browser.wait_for(
+        "the dialog open again",
+        "!!document.querySelector('.q-dialog [name=enumId]')",
+        WAIT,
+    );
+    browser.eval("(() => { moqui.webrootVue.hideContainer('NewEnumDialog'); return true; })()");
+    browser.wait_for(
+        "the dialog closed by hideContainer",
+        "!document.querySelector('.q-dialog [name=enumId]')",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the gallery Dialog");
 }
 
 /// The Detail screen's Chatter column with the @ list of the note editor open, and the rich editors of the Widgets screen, light

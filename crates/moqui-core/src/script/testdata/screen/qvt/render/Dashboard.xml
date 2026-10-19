@@ -4,6 +4,7 @@
         <set field="openCount" from="42"/>
         <set field="lateCount" from="3"/>
         <set field="showHidden" from="false"/>
+        <set field="orderStatus" from="'Held'"/>
     </actions>
     <widgets>
         <dashboard id="Counters" min-width="160" style="counters">
@@ -15,5 +16,7 @@
         </dashboard>
         <dashboard><number-card title="Plain" value="7"/></dashboard>
         <link url="Orders?statusId=Open&amp;sort=-date" text="All open" link-type="anchor"/>
+        <dashboard><number-card title="Held orders" value="1" link="Orders?statusId=${orderStatus}"/></dashboard>
+        <link url="${'Orders'}" text="Dynamic orders" link-type="anchor"><parameter name="sort" value="-date"/></link>
     </widgets>
 </screen>

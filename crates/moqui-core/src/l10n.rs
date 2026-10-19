@@ -251,6 +251,39 @@ fn decimal_of(value: &Value) -> Option<Decimal> {
     }
 }
 
+/// Whether `pattern` is a Java date pattern (`SimpleDateFormat`, as `L10nFacade` formats with) rather than a
+/// `DecimalFormat` number pattern: outside quotes it has a date or time field letter (`G y Y M L w W D d F E u a H
+/// k K h m s S z Z X x`) and none of the number pattern's digits `#` and `0`. So `h:mm a`, `mm:ss` and `EEE` are
+/// dates, `#,##0.00`, `0.###E0` and `#,##0 'units'` numbers.
+pub fn is_date_pattern(pattern: &str) -> bool {
+    let mut quoted = false;
+    let mut date_letter = false;
+    for ch in pattern.chars() {
+        if ch == '\'' {
+            quoted = !quoted;
+        } else if !quoted {
+            if ch == '#' || ch == '0' {
+                return false;
+            }
+            date_letter |= "GyYMLwWDdFEuaHkKhmsSzZXx".contains(ch);
+        }
+    }
+    date_letter
+}
+
+/// Epoch millis text, as a time stamp reaches a script or a server-static screen's data (a `Timestamp` field is its
+/// millis text there): 12 or 13 digits from 2001-09-09 (`1000000000000`) to before 2100. `ec.l10n.format` with no
+/// pattern reads such text as the time stamp it was, which Java, holding the `Timestamp`, formats `yyyy-MM-dd HH:mm`.
+pub fn epoch_millis_text(text: &str) -> Option<i64> {
+    let text = text.trim();
+    if !(12..=13).contains(&text.len()) || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse::<i64>()
+        .ok()
+        .filter(|millis| (1_000_000_000_000..4_102_444_800_000).contains(millis))
+}
+
 /// `ec.l10n.format`: a value as text. A string is itself. Dates use the zone, numbers use the
 /// pattern or the default of grouping with up to twelve fraction digits, and a map or list is JSON.
 ///
@@ -550,6 +583,54 @@ mod tests {
         assert!(localize(&"x".repeat(255)).is_ok());
         let err = localize(&"x".repeat(256)).unwrap_err();
         assert!(err.to_string().contains("255"), "{err}");
+    }
+
+    #[test]
+    fn epoch_millis_text_is_a_time_stamp_of_this_century() {
+        assert_eq!(super::epoch_millis_text("1709647629000"), Some(1_709_647_629_000));
+        assert_eq!(super::epoch_millis_text(" 1000000000000 "), Some(1_000_000_000_000));
+        for text in [
+            "",
+            "100050",
+            "999999999999",
+            "4102444800000",
+            "17096476290001",
+            "-1709647629000",
+            "1709647629000.5",
+            "CT-REQ",
+        ] {
+            assert_eq!(super::epoch_millis_text(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_date_pattern_is_told_from_a_number_pattern() {
+        for pattern in [
+            "h:mm a",
+            "HH:mm",
+            "EEE",
+            "mm:ss",
+            "yyyy-MM-dd",
+            "a",
+            "w",
+            "z",
+            "d MMM 'at' h",
+            "Y-ww",
+        ] {
+            assert!(super::is_date_pattern(pattern), "{pattern}");
+        }
+        for pattern in [
+            "#,##0.00",
+            "0",
+            "0.###E0",
+            "#,##0 'units'",
+            "00000",
+            "",
+            "'hello'",
+            "0.0%",
+        ] {
+            assert!(!super::is_date_pattern(pattern), "{pattern}");
+        }
     }
 
     #[test]

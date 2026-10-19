@@ -94,8 +94,42 @@ fn http_get(url: &str, sim: bool) -> Result<String, String> {
 struct DbSnap {
     exists: bool,
     is_file: bool,
+    /// The file's bytes, when `loaded`.
     bytes: Vec<u8>,
+    /// False for a file found among a directory's children, whose bytes are read when asked for.
+    loaded: bool,
     children: Vec<DbSnapChild>,
+}
+
+impl DbSnap {
+    /// A file under a directory snapshot: its bytes are read on use.
+    fn child_file() -> Self {
+        Self {
+            exists: true,
+            is_file: true,
+            bytes: Vec::new(),
+            loaded: false,
+            children: Vec::new(),
+        }
+    }
+
+    /// The file's bytes: the snapshot's, or for a child file a read of its location now.
+    fn file_bytes(&self, location: &str) -> Result<std::borrow::Cow<'_, [u8]>, Error> {
+        if !self.exists || !self.is_file {
+            return Err(Error::new(format!("not a file: {location}")));
+        }
+        if self.loaded {
+            return Ok(std::borrow::Cow::Borrowed(&self.bytes));
+        }
+        let facade = super::ExecutionContext::with_current(|ec| ec.factory().entity())
+            .flatten()
+            .ok_or_else(|| Error::new("database resource is not available"))?;
+        let info = facade.read_db_resource(location).map_err(Error::from)?;
+        if !info.exists || !info.is_file {
+            return Err(Error::new(format!("not a file: {location}")));
+        }
+        Ok(std::borrow::Cow::Owned(info.bytes))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -177,13 +211,8 @@ impl ResourceRef {
                 .fetch()
                 .clone()
                 .map_err(|message| Error::new(format!("{message}: {}", self.location))),
-            Stored::Db(snap) => {
-                if !snap.exists || !snap.is_file {
-                    return Err(Error::new(format!("not a file: {}", self.location)));
-                }
-                String::from_utf8(snap.bytes.clone())
-                    .map_err(|_| Error::new(format!("dbresource is not utf-8: {}", self.location)))
-            }
+            Stored::Db(snap) => String::from_utf8(snap.file_bytes(&self.location)?.into_owned())
+                .map_err(|_| Error::new(format!("dbresource is not utf-8: {}", self.location))),
         }
     }
 
@@ -197,21 +226,21 @@ impl ResourceRef {
                 .clone()
                 .map(String::into_bytes)
                 .map_err(|message| Error::new(format!("{message}: {}", self.location))),
-            Stored::Db(snap) => {
-                if !snap.exists || !snap.is_file {
-                    return Err(Error::new(format!("not a file: {}", self.location)));
-                }
-                Ok(snap.bytes.clone())
-            }
+            Stored::Db(snap) => Ok(snap.file_bytes(&self.location)?.into_owned()),
         }
     }
 
-    /// The size in bytes of a file resource. Other kinds have none.
+    /// The size in bytes of a file resource: a file, a provider's file, or a `dbresource://` file (the length of its
+    /// data: `DbResourceFile` has no size column). A directory, a missing file and an `http` resource have none.
     pub fn size(&self) -> Option<u64> {
         match &self.stored {
             Stored::Native(provider) => provider.stat(&self.location).ok().flatten().map(|stat| stat.size),
             Stored::File(file) => file.size().ok(),
-            Stored::Db(_) | Stored::Http(_) => None,
+            Stored::Db(snap) => snap
+                .file_bytes(&self.location)
+                .ok()
+                .and_then(|bytes| u64::try_from(bytes.len()).ok()),
+            Stored::Http(_) => None,
         }
     }
 
@@ -255,12 +284,7 @@ impl ResourceRef {
                 .filter(|child| child.is_file)
                 .map(|child| Self {
                     location: child.location.clone(),
-                    stored: Stored::Db(DbSnap {
-                        exists: true,
-                        is_file: true,
-                        bytes: Vec::new(),
-                        children: Vec::new(),
-                    }),
+                    stored: Stored::Db(DbSnap::child_file()),
                 })
                 .collect()),
         }
@@ -300,12 +324,7 @@ impl ResourceRef {
                 {
                     return Self {
                         location: child.location.clone(),
-                        stored: Stored::Db(DbSnap {
-                            exists: true,
-                            is_file: true,
-                            bytes: Vec::new(),
-                            children: Vec::new(),
-                        }),
+                        stored: Stored::Db(DbSnap::child_file()),
                     };
                 }
                 Self {
@@ -314,6 +333,7 @@ impl ResourceRef {
                         exists: false,
                         is_file: false,
                         bytes: Vec::new(),
+                        loaded: true,
                         children: Vec::new(),
                     }),
                 }
@@ -835,6 +855,7 @@ fn db_snap(location: &str, info: &DbResourceInfo) -> DbSnap {
         exists: info.exists,
         is_file: info.is_file,
         bytes: info.bytes.clone(),
+        loaded: true,
         children: info
             .children
             .iter()

@@ -306,7 +306,8 @@ fn the_qvt_fixture_screens_become_templates_that_compile() {
 }
 
 /// A number-card of a server-static screen is bound over the scope as a label is: the value and delta expressions are
-/// the scope's, the title localized, the link the screen's path with its query, and a condition a v-if.
+/// the scope's, the title localized, the link the screen's path with its query, and a condition a v-if. A link url with
+/// `${}` (a card's or a link's) is bound too and resolved against the screen's path in the browser (`$mq.link`).
 #[test]
 fn a_number_card_is_bound_over_the_scope_in_a_static_template() {
     let (html, _) = static_fixture("Dashboard");
@@ -322,6 +323,14 @@ fn a_number_card_is_bound_over_the_scope_in_a_static_template() {
         assert!(html.contains(expected), "{expected} in {html}");
     }
     assert!(!html.contains(">42<") && !html.contains("value=\"42\""), "{html}");
+    // a ${} url is bound over the scope and resolved against the screen in the browser, not written as its text
+    for expected in [
+        r#":href="$mq.link(ec.resource.expandNoL10n('Orders?statusId=${orderStatus}',{'orderStatus':()=&gt;(orderStatus)}),'/')""#,
+        r#"<m-link :href="$mq.url($mq.link(ec.resource.expandNoL10n('${\'Orders\'}',{'\'Orders\'':()=&gt;('Orders')}),'/'),{'sort':"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    assert!(!html.contains("$mq.url('${"), "{html}");
 }
 
 /// The screen context of a server-static screen is bound in the browser over the screen's data (R18): each `${}` of the

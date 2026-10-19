@@ -780,6 +780,18 @@ fn sri_get_shell_data<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
     })
 }
 
+/// `sri.getShellProviders(kind)`: the providers of the apps the user may open without the menus and counts of
+/// `getShellData` (`screen/shell.rs` `shell_providers`), only `kind` in each app's providers when given; kept per session.
+fn sri_get_shell_providers<'js>(ctx: Ctx<'js>, kind: Opt<JsValue<'js>>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let kind = optional_text(&ctx, kind.0.as_ref())?;
+        let found = with_render(&ctx, false, |state| {
+            crate::screen::shell::shell_providers(state, kind.as_deref())
+        })?;
+        collection_to_js(&ctx, found)
+    })
+}
+
 /// `sri.getShellSearch(text, groups, limit)`: the palette groups of the `shellSearch` transition, or null after an error
 /// was sent. Each argument may be null.
 fn sri_get_shell_search<'js>(
@@ -1031,6 +1043,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getMenuItems", sri_get_menu_items);
     method!("getMenuData", sri_get_menu_data);
     method!("getShellData", sri_get_shell_data);
+    method!("getShellProviders", sri_get_shell_providers);
     method!("getShellSearch", sri_get_shell_search);
     method!("staticUrl", sri_static_url);
     method!("staticCheck", sri_static_check);

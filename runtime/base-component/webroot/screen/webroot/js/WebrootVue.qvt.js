@@ -38,6 +38,49 @@
     moqui.isIconClass = (image) => /\s/.test(image || "") || String(image || "").startsWith("fa-");
 
     const rootVm = () => moqui.webrootVue;
+
+    /* ========== user preferences ========== */
+
+    // The user's preferences in the page are config.preferences (the snapshot the server wrote). moqui.applyPreference(key, value)
+    // keeps a new value there and applies at once one the shell reads: QUASAR_DARK (dark mode), QUASAR_LEFT_OPEN (the app drawer),
+    // KEYMAP (the key overrides) and SHELL_DENSITY (comfortable or compact: the m-density-compact body class). A response to a request
+    // that set preferences carries them (the X-Moqui-Preferences header, which moqui.request reads), and they are applied the same
+    // way, so a Preferences screen that saves through its own transition needs nothing more; one that saves in the browser alone
+    // calls moqui.applyPreference itself. Another key is only kept.
+    moqui.preferenceAppliers = {
+        QUASAR_DARK: (value, vm) => { if (vm && vm.$q && vm.$q.dark) vm.$q.dark.set(value === "true"); },
+        QUASAR_LEFT_OPEN: (value, vm) => { if (vm && "leftOpen" in vm) vm.leftOpen = value === "true"; },
+        KEYMAP: (value) => { if (!moqui.keymap.setOverrides(value === undefined ? null : value)) console.info("The KEYMAP preference is not JSON of {scope: {action: keys}}, ignored"); },
+        SHELL_DENSITY: (value) => moqui.applyDensity(value)
+    };
+    moqui.applyPreference = (key, value) => {
+        if (!key) return;
+        const text = value === null || value === undefined ? null : String(value);
+        const config = qvt.config || moqui.config;
+        if (config) {
+            if (!config.preferences) config.preferences = {};
+            if (text === null || text === "") delete config.preferences[key];
+            else config.preferences[key] = text;
+            if (key === "SHELL_DENSITY") config.density = text || "comfortable";
+        }
+        const applier = moqui.preferenceAppliers[key];
+        if (applier) applier(text, rootVm());
+    };
+    moqui.applyPreferences = (map) => { if (moqui.isPlainObject(map)) Object.keys(map).forEach((key) => moqui.applyPreference(key, map[key])); };
+    moqui.onPreferences = moqui.applyPreferences;
+    // SHELL_DENSITY: compact puts m-density-compact on the body (the style sheet tightens the page, lists, fields and cards);
+    // comfortable, empty or anything else is the default.
+    moqui.applyDensity = (value) => {
+        const body = root.document && root.document.body;
+        if (body && body.classList) body.classList.toggle("m-density-compact", value === "compact");
+    };
+    // SHELL_START_APP: the /qapps address with no path opens that app (config.startApp, set by the server only for an app the user
+    // may open) in place of the app list.
+    moqui.startPath = (pathname, linkBasePath, startApp) => {
+        const base = linkBasePath || "/qapps";
+        if (!startApp || (pathname !== base && pathname !== base + "/")) return pathname;
+        return base + "/" + startApp;
+    };
     const notify = (options) => {
         const vm = rootVm();
         if (vm && vm.$q) vm.$q.notify(options);
@@ -51,6 +94,33 @@
     moqui.notifyOptsInfo = { timeout: 5000, type: "info" };
     moqui.notifyOptsError = { timeout: 15000, type: "negative" };
 
+    // Whether a link leaves the application: another scheme or host. A path, a relative link and a URL of this origin stay in the shell.
+    moqui.isExternalLink = (link) => {
+        const text = String(link || "").trim();
+        if (/^\/\//.test(text)) return true;
+        if (!/^[a-z][a-z0-9+.-]*:/i.test(text)) return false;
+        const location = root.location;
+        return !(location && location.origin && (text === location.origin || text.indexOf(location.origin + "/") === 0));
+    };
+    // Follow a link of a message or notification: an app link through the shell ($root.setUrl), an external one in a new window.
+    moqui.openLink = (link) => {
+        if (!link) return;
+        const text = String(link).trim();
+        if (moqui.isExternalLink(text)) {
+            if (root.open) root.open(text, "_blank", "noopener");
+            return;
+        }
+        const location = root.location;
+        const path = location && location.origin && text.indexOf(location.origin) === 0 ? text.slice(location.origin.length) || "/" : text;
+        if (rootVm() && rootVm().setUrl) rootVm().setUrl(path);
+        else if (location) location.href = path;
+    };
+    // The Quasar Notify action of a message with a link: a button that follows it.
+    moqui.linkNotifyAction = (link, linkText) => ({ label: linkText || (moqui.l10n ? moqui.l10n.localize("Open") : "Open"), color: "white", noCaps: true,
+        handler: () => moqui.openLink(link) });
+
+    // The messages, errors and validation errors of an answer as notifications. A message is a text or a map
+    // {message, type, link, linkText}: with a link the notification has a button (linkText, "Open" by default) that follows it.
     moqui.notifyMessages = (messages, errors, validationErrors) => {
         let notified = false;
         const show = (options, message, type) => {
@@ -62,10 +132,12 @@
             (Array.isArray(messages) ? messages : [messages]).forEach((item) => {
                 if (moqui.isPlainObject(item)) {
                     const type = moqui.getQuasarColor(item.type) || "info";
-                    notify(Object.assign({}, moqui.notifyOptsInfo, { type, message: item.message }));
-                    addNotify(item.message, type);
+                    const options = Object.assign({}, moqui.notifyOptsInfo, { type, message: item.message });
+                    if (item.link) options.actions = [moqui.linkNotifyAction(item.link, item.linkText)];
+                    notify(options);
+                    addNotify(item.message, type, item.link || undefined);
                     notified = true;
-                } else show(moqui.notifyOptsInfo, item, "info");
+                } else if (item !== null && item !== undefined && item !== "") show(moqui.notifyOptsInfo, item, "info");
             });
         }
         if (errors) (Array.isArray(errors) ? errors : [errors]).forEach((item) => show(moqui.notifyOptsError, item, "negative"));
@@ -111,7 +183,7 @@
     moqui.notifyGrowl = (jsonObj) => {
         if (!jsonObj) return;
         const options = Object.assign({}, moqui.notifyOptsInfo, { type: moqui.getQuasarColor(jsonObj.type) || "info", message: jsonObj.title });
-        if (jsonObj.link) options.actions = [{ label: "View", color: "white", handler: () => rootVm().setUrl(jsonObj.link) }];
+        if (jsonObj.link) options.actions = [moqui.linkNotifyAction(jsonObj.link, "View")];
         notify(options);
         addNotify(jsonObj.title, jsonObj.type, jsonObj.link, jsonObj.icon);
     };
@@ -401,6 +473,23 @@
             const query = qvt.helpers.qs(params, map);
             return query ? path + (path.indexOf("?") >= 0 ? "&" : "?") + query : path;
         },
+        // The url a ${} expression of a link gave, as the server render resolves one: a relative path against the screen's own path
+        // (base, a directory: "Detail" under it, ".." its parent), with its query; an absolute path, an anchor and an external
+        // URL as they are.
+        link: (text, base) => {
+            const value = text === null || text === undefined ? "" : String(text).trim();
+            if (!value) return base || "";
+            if (value.charAt(0) === "/" || value.charAt(0) === "#" || moqui.isExternalLink(value)) return value;
+            const cut = value.search(/[?#]/);
+            const path = cut < 0 ? value : value.slice(0, cut);
+            const parts = String(base || "").split("/").filter((part) => part);
+            path.split("/").forEach((part) => {
+                if (part === "" || part === ".") return;
+                if (part === "..") parts.pop();
+                else parts.push(part);
+            });
+            return "/" + parts.join("/") + (cut < 0 ? "" : value.slice(cut));
+        },
         // A text-map of a text: whether the map has the name, or with value true the entry itself.
         inMap: (map, name, value) => {
             const has = map !== null && map !== undefined && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, name);
@@ -461,8 +550,15 @@
     qvt.formatValue = (value, pattern, type) => {
         if (value === null || value === undefined || value === "") return "";
         let kind = type === "date-time" ? "timestamp" : type;
+        // No pattern: epoch millis text (a time stamp in the screen's data) is the time stamp, as l10n.rs epoch_millis_text
+        if (!kind && !pattern && typeof value === "string" && /^\d{12,13}$/.test(value.trim())) {
+            const millis = Number(value.trim());
+            if (millis >= 1e12 && millis < 4102444800000) { kind = "timestamp"; value = millis; }
+        }
         if (!kind && pattern && typeof value === "string") {
             if (NUMBER_TEXT.test(value.trim()) && /[#0]/.test(pattern) && !/[yMdHhms]/.test(pattern.replace(/'[^']*'/g, ""))) kind = "number";
+            // epoch millis text with a date pattern (h:mm a as well as yyyy-MM-dd)
+            else if (/^-?\d{9,}$/.test(value.trim()) && moqui.l10n.isDatePattern(pattern)) { kind = "timestamp"; value = Number(value.trim()); }
             else if (/^\d{4}-\d\d-\d\d/.test(value)) kind = /^\d{4}-\d\d-\d\d$/.test(value) ? "date" : "timestamp";
             else if (/^\d\d:\d\d/.test(value)) kind = "time";
         }
@@ -879,12 +975,19 @@
 
     /* ========== inline components ========== */
 
+    // A screen link: setUrl in the shell. An external href (another scheme or host, as a ${} url of a server-static screen can give)
+    // is a plain anchor the browser follows.
     component("m-link", {
         name: "mLink",
         props: { href: { type: String, required: true }, loadId: String, confirmation: String },
-        template: '<a :href="linkHref" @click.prevent="go" class="q-link"><slot></slot></a>',
+        template: '<a :href="linkHref" @click="go" class="q-link"><slot></slot></a>',
         methods: {
             go(event) {
+                if (this.external) {
+                    if (this.confirmation && this.confirmation.length && !root.confirm(this.confirmation)) event.preventDefault();
+                    return;
+                }
+                event.preventDefault();
                 if (event.button !== 0) return;
                 if (this.confirmation && this.confirmation.length && !root.confirm(this.confirmation)) return;
                 if (this.loadId && this.loadId.length > 0) this.$root.loadContainer(this.loadId, this.href);
@@ -892,7 +995,10 @@
                 else this.$root.setUrl(this.linkHref);
             }
         },
-        computed: { linkHref() { return this.$root.getLinkPath(this.href); } }
+        computed: {
+            external() { return moqui.isExternalLink(this.href); },
+            linkHref() { return this.external ? this.href : this.$root.getLinkPath(this.href); }
+        }
     });
 
     component("m-script", {
@@ -1002,17 +1108,25 @@
         }
     });
 
+    // A container-dialog is a container of the root by its id (addContainer), so a form's background-hide-id (submit-hide-id) naming
+    // it closes it; its content is the page's, so reload and load do nothing. tooltip is the button's (and the slot button's).
     component("m-container-dialog", {
         name: "mContainerDialog",
-        props: { id: String, color: String, buttonText: String, buttonClass: String, title: String, width: String, openDialog: { type: Boolean, default: false }, buttonIcon: { type: String, default: "open_in_new" } },
+        props: { id: String, color: String, buttonText: String, buttonClass: String, title: String, width: String, openDialog: { type: Boolean, default: false },
+            buttonIcon: { type: String, default: "open_in_new" }, tooltip: String },
         data() { return { isShown: false }; },
         template:
             '<span>' +
-                '<span @click="show()"><slot name="button"><q-btn dense unelevated no-caps :icon="buttonIcon" :label="buttonText" :class="moqui.tonalClass(color, buttonClass)"></q-btn></slot></span>' +
+                '<span @click="show()"><slot name="button"><q-btn dense unelevated no-caps :icon="buttonIcon" :label="buttonText" :class="moqui.tonalClass(color, buttonClass)"></q-btn></slot>' +
+                    '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip></span>' +
                 '<m-dialog v-model="isShown" :id="id" :title="title" :color="color" :width="width"><slot></slot></m-dialog>' +
             '</span>',
-        methods: { show() { this.isShown = true; }, hide() { this.isShown = false; } },
-        mounted() { if (this.openDialog) this.isShown = true; }
+        methods: { show() { this.isShown = true; }, hide() { this.isShown = false; }, reload() {}, load() {} },
+        mounted() {
+            if (this.id) this.$root.addContainer(this.id, this);
+            if (this.openDialog) this.isShown = true;
+        },
+        beforeUnmount() { if (this.id) this.$root.removeContainer(this.id, this); }
     });
 
     component("m-dynamic-container", {
@@ -1041,7 +1155,8 @@
                 moqui.loadComponent(newUrl, (comp) => { this.curComponent = comp; }, this.id);
             }
         },
-        mounted() { this.$root.addContainer(this.id, this); this.curUrl = this.url; }
+        mounted() { this.$root.addContainer(this.id, this); this.curUrl = this.url; },
+        beforeUnmount() { this.$root.removeContainer(this.id, this); }
     });
 
     component("m-dynamic-dialog", {
@@ -1082,7 +1197,8 @@
         mounted() {
             this.$root.addContainer(this.id, this);
             if (this.openDialog) this.isShown = true;
-        }
+        },
+        beforeUnmount() { this.$root.removeContainer(this.id, this); }
     });
 
     component("m-tree-top", {
@@ -1387,6 +1503,8 @@
         props: { fieldsInitial: Object, action: { type: String, required: true }, method: { type: String, default: "POST" }, readOnly: { type: Boolean, default: false },
             submitMessage: String, submitReloadId: String, submitHideId: String, focusField: String, noValidate: Boolean, excludeEmptyFields: Boolean,
             parentCheckboxSet: Object, checkboxOptional: Boolean, bodyParameterNames: Array, validationErrorsInitial: Array },
+        // submitted: after a background submit whose answer has no errors, with the answer (the JSON, or the text), so a .qvue host can react
+        emits: ["submitted"],
         data() {
             return { fields: Object.assign({}, this.fieldsInitial), fieldsOriginal: Object.assign({}, this.fieldsInitial), buttonClicked: null,
                 fieldErrors: {}, fieldErrorValues: {} };
@@ -1519,7 +1637,8 @@
                     if (wizard) notified = true;
                     else if (resp.screenUrl && resp.screenUrl.length > 0) this.$root.setUrl(resp.screenUrl);
                     else if (resp.redirectUrl && resp.redirectUrl.length > 0) root.location.href = resp.redirectUrl;
-                } else console.warn("m-form no response or non-JSON response");
+                // an empty answer is a transition's type="none" response; other text that is not JSON is worth a warning
+                } else if (resp) console.warn("m-form non-JSON response");
                 if (this.submitHideId && this.submitHideId.length > 0) this.$root.hideContainer(this.submitHideId);
                 else if (this.mSubmitHide && !moqui.responseHasErrors(resp)) this.mSubmitHide.hide();
                 if (this.submitReloadId && this.submitReloadId.length > 0) this.$root.reloadContainer(this.submitReloadId);
@@ -1528,6 +1647,7 @@
                     addNotify(this.submitMessage, "success");
                 } else if (!notified) notify(Object.assign({}, moqui.notifyOpts, { message: "Submit successful" }));
                 if (wizard) wizard.stepAnswered(this, resp);
+                if (!moqui.responseHasErrors(resp)) this.$emit("submitted", resp);
             }
         },
         mounted() {
@@ -2692,9 +2812,10 @@
     // the @ list; the plain-text toggle (v-model:plain) turns the value into plain text and back. When the library does not
     // load, the field is the html editor of m-text-area.
     let richTextCount = 0;
-    // one load of the library for the page, so every editor gets its answer (a failed script stays failed until a reload)
+    // one load of the library for the page, so every editor gets its answer; after a failure the next editor tries again
     let tiptapLoad = null;
-    const loadTiptap = () => tiptapLoad || (tiptapLoad = moqui.loadScript("/libs/tiptap/tiptap.min.js", null, () => !!root.Tiptap));
+    const loadTiptap = () => tiptapLoad || (tiptapLoad = moqui.loadScript("/libs/tiptap/tiptap.min.js", null, () => !!root.Tiptap)
+        .catch((error) => { tiptapLoad = null; throw error; }));
     component("m-rich-text", {
         name: "mRichText",
         mixins: [fieldMixin, localValueMixin],
@@ -4135,7 +4256,8 @@
         "            </div></q-menu>\n" +
         "        </q-btn>\n" +
         // the current app's title; the theme's title outside an app (the AppList)
-        "        <q-toolbar-title v-if=\"headerTitle\" shrink class=\"text-subtitle1 text-weight-medium q-pr-sm\">{{headerTitle}}</q-toolbar-title>\n" +
+        // (below 600 px the launcher stands for it: the title is hidden, style-guide §2.2 and §7)
+        "        <q-toolbar-title v-if=\"headerTitle\" shrink class=\"gt-xs text-subtitle1 text-weight-medium q-pr-sm\">{{headerTitle}}</q-toolbar-title>\n" +
         // the screen path from the app root: not the apps root, nor the app root whose title the header shows (style-guide §2.2)
         "        <q-breadcrumbs id=\"m-breadcrumbs\" class=\"gt-xs\" gutter=\"xs\" separator-color=\"grey-5\" active-color=\"grey-8\">\n" +
         "            <template v-for=\"(navMenuItem, menuIndex) in navMenuList\" :key=\"navMenuItem.path || menuIndex\"><template v-if=\"menuIndex >= breadcrumbStart\">\n" +
@@ -4176,7 +4298,7 @@
         "        </q-btn>\n" +
         // Today, Chat, Mail, Messages and Notifications, each only when the theme names its screen; the tray ones open the tray on their tab
         "        <q-btn v-for=\"counter in headerCounters\" :key=\"counter.key\" flat round dense :id=\"'m-counter-' + counter.key\" :icon=\"counter.icon\"\n" +
-        "                :class=\"{'text-primary': counter.tray && trayOpen && trayTab === counter.key}\" @click=\"counter.tray ? toggleTray(counter.key) : setUrl(counter.url)\">\n" +
+        "                :class=\"{'text-primary': counter.tray && trayOpen && (counter.any || trayTab === counter.key)}\" @click=\"counter.tray ? toggleTray(counter.any ? null : counter.key) : setUrl(counter.url)\">\n" +
         "            <q-badge v-if=\"counterCount(counter)\" floating rounded color=\"negative\">{{counterText(counter)}}</q-badge>\n" +
         "            <q-tooltip>{{counter.label}}</q-tooltip>\n" +
         "        </q-btn>\n" +
@@ -4199,7 +4321,7 @@
         "            <q-tooltip>{{labels.notifyHistory}}</q-tooltip>\n" +
         "            <q-menu><q-list dense separator style=\"min-width:320px;max-width:440px;\">\n" +
         "                <q-item v-if=\"!notifyHistoryList.length\"><q-item-section class=\"text-grey-6\">{{labels.notifyHistory}}</q-item-section></q-item>\n" +
-        "                <q-item v-for=\"(histItem, histIndex) in notifyHistoryList\" :key=\"histIndex\" :clickable=\"!!histItem.link\" :to=\"histItem.link || undefined\">\n" +
+        "                <q-item v-for=\"(histItem, histIndex) in notifyHistoryList\" :key=\"histIndex\" :clickable=\"!!histItem.link\" @click=\"histItem.link && moqui.openLink(histItem.link)\">\n" +
         "                    <q-item-section avatar><q-icon :name=\"notifyIcon(histItem.type)\" :color=\"getQuasarColor(histItem.type) || 'info'\"></q-icon></q-item-section>\n" +
         "                    <q-item-section><q-item-label>{{histItem.message}}</q-item-label><q-item-label caption>{{histItem.time}}</q-item-label></q-item-section>\n" +
         "                </q-item>\n" +
@@ -4407,6 +4529,8 @@
             },
             // a container component has reload(), load(url) and hide()
             addContainer(contId, comp) { this.activeContainers[contId] = comp; },
+            // an unmounted container takes its registration back, unless another has the id since
+            removeContainer(contId, comp) { if (this.activeContainers[contId] === comp) delete this.activeContainers[contId]; },
             reloadContainer(contId) { const comp = this.activeContainers[contId]; if (comp) comp.reload(); else console.error("Container with ID " + contId + " not found, not reloading"); },
             loadContainer(contId, url) { const comp = this.activeContainers[contId]; if (comp) comp.load(url); else console.error("Container with ID " + contId + " not found, not loading url " + url); },
             hideContainer(contId) { const comp = this.activeContainers[contId]; if (comp && comp.hide) comp.hide(); else console.error("Container with ID " + contId + " not found, not hiding"); },
@@ -4492,7 +4616,15 @@
                 this.saveTray();
             },
             closeTray() { this.trayOpen = false; this.saveTray(); },
-            toggleTray(key) { if (this.trayOpen && this.trayTab === key) this.closeTray(); else this.openTray(key); },
+            // key null: the one tray button of a phone header, which closes the tray, or opens it on its last tab (else the first)
+            toggleTray(key) {
+                if (key === null || key === undefined) {
+                    if (this.trayOpen) this.closeTray();
+                    else this.openTray(this.trayTabs.some((tab) => tab.key === this.trayTab) ? this.trayTab : (this.trayTabs[0] || {}).key);
+                    return;
+                }
+                if (this.trayOpen && this.trayTab === key) this.closeTray(); else this.openTray(key);
+            },
             reloadTrayTab(key) { if (key && this.trayLoaded[key] && this.shellTray) this.shellTray.reload(key); },
             keepTrayScroll(key, top) {
                 this.trayScroll[key] = top;
@@ -4842,15 +4974,23 @@
             },
             // the header's count buttons in their order: Today, Chat, Mail and Messages (links), Notifications, each when its theme
             // value is set; `counts` are the shellCounts keys of its badge. Below 600 px Mail and Messages are one button to the mail
-            // screen with the two counts summed. The updates count has no button: the Notifications tab shows it.
+            // screen with the two counts summed, and the tray tabs (Today, Chat, Notifications) one tray button (key tray, any: it
+            // opens the tray on its last tab, whose tabs switch) with their counts summed, so a phone header does not overflow. The
+            // updates count has no button: the Notifications tab shows it.
             headerCounters() {
                 const tray = (key) => this.trayTabs.find((tab) => tab.key === key);
                 const values = this.shellValues;
+                const narrow = !!(this.$q && this.$q.screen && this.$q.screen.lt.sm);
                 const out = [];
-                ["today", "chat"].forEach((key) => { const tab = tray(key); if (tab) out.push({ key, icon: tab.icon, label: tab.label, tray: true, counts: [key] }); });
+                const trayTabs = this.trayTabs.filter((tab) => ["today", "chat", "notifications"].indexOf(tab.key) >= 0);
+                const foldTray = narrow && trayTabs.length > 1;
+                if (foldTray) {
+                    const icon = (tray("notifications") || trayTabs[0]).icon;
+                    out.push({ key: "tray", icon, label: trayTabs.map((tab) => tab.label).join(", "), tray: true, any: true, counts: trayTabs.map((tab) => tab.key) });
+                }
+                if (!foldTray) ["today", "chat"].forEach((key) => { const tab = tray(key); if (tab) out.push({ key, icon: tab.icon, label: tab.label, tray: true, counts: [key] }); });
                 const mail = values.mailScreen ? { key: "email", icon: "sym_o_mail", label: this.labels.mail, url: values.mailScreen, tray: false, counts: ["email"] } : null;
                 const messages = values.messagesScreen ? { key: "messages", icon: "sym_o_forum", label: this.labels.messages, url: values.messagesScreen, tray: false, counts: ["messages"] } : null;
-                const narrow = !!(this.$q && this.$q.screen && this.$q.screen.lt.sm);
                 if (mail && messages && narrow) {
                     out.push({ key: "mail", icon: "sym_o_mail", label: this.labels.mail, url: mail.url, tray: false, counts: ["email", "messages"] });
                 } else {
@@ -4858,7 +4998,7 @@
                     if (messages) out.push(messages);
                 }
                 const notifications = tray("notifications");
-                if (notifications) out.push({ key: "notifications", icon: notifications.icon, label: notifications.label, tray: true, counts: ["notifications"] });
+                if (notifications && !foldTray) out.push({ key: "notifications", icon: notifications.icon, label: notifications.label, tray: true, counts: ["notifications"] });
                 return out;
             },
             paletteKeyHint() { return keymap.isMac ? "⌘K" : "Ctrl K"; },
@@ -4907,6 +5047,7 @@
             moqui.appRootPath = this.appRootPath;
             moqui.onSessionToken = (token) => { if (token !== this.moquiSessionToken) this.setSessionToken(token, true); };
             this.$q.dark.set(!!config.darkMode);
+            moqui.applyDensity(config.density);
             // Open the socket only for a signed in user, and when the server names an endpoint (/notws by default).
             if (config.notificationEndpoint && config.userId) {
                 const wsScheme = root.location.protocol === "https:" ? "wss://" : "ws://";
@@ -4929,7 +5070,7 @@
         mounted() {
             // the shell is hidden until Vue has compiled it
             root.document.getElementById("apps-root").style.display = "";
-            this.setUrl(root.location.pathname + root.location.search);
+            this.setUrl(moqui.startPath(root.location.pathname, this.linkBasePath, config.startApp) + root.location.search);
             if (this.notificationClient) {
                 this.notificationClient.registerListener("ALL");
                 this.notificationClient.registerListener("ALL", this.onShellNotification);

@@ -139,19 +139,25 @@ test("request sends the token on writes, parses json, and rejects with the respo
         calls.push([url, init]);
         const ok = !String(url).includes("fail");
         return Promise.resolve({
-            ok, status: ok ? 200 : 500, statusText: "", headers: new Map([["X-CSRF-Token", "t2"]]),
+            ok, status: ok ? 200 : 500, statusText: "",
+            headers: new Map([["X-CSRF-Token", "t2"], ["X-Moqui-Preferences", encodeURIComponent(JSON.stringify({ SHELL_DENSITY: "compact", KEYMAP: "É" }))]]),
             text: () => Promise.resolve(ok ? '{"a":1}' : '{"errors":"bad"}')
         });
     };
     moqui.sessionToken = "t1";
     let seen = "";
     moqui.onSessionToken = (token) => { seen = token; };
+    // the preferences the request set, decoded for the page to apply
+    const preferences = [];
+    moqui.onPreferences = (map) => preferences.push(map);
     // a Map stands in for Headers: get() works on both
     const good = await moqui.request("/x", { method: "post", params: { a: "b c" } });
     assert.deepEqual(good.json, { a: 1 });
     assert.equal(calls[0][1].headers["X-CSRF-Token"], "t1");
     assert.equal(calls[0][1].body, "a=b%20c");
     assert.equal(seen, "t2");
+    assert.deepEqual(preferences[0], { SHELL_DENSITY: "compact", KEYMAP: "É" });
+    delete moqui.onPreferences;
     await moqui.request("/x?y=1", { params: { a: 1 } });
     assert.equal(calls[1][0], "/x?y=1&a=1");
     assert.equal(calls[1][1].headers["X-CSRF-Token"], undefined);
@@ -164,4 +170,50 @@ test("a qjs response is an object expression, define, or statements", () => {
     assert.equal(moqui.evalComponentJs("define([], function () { return { name: 'D' }; });").name, "D");
     assert.equal(moqui.evalComponentJs("var x = { name: 'S' }; return x;").name, "S");
     assert.throws(() => moqui.evalComponentJs("{ nope"));
+});
+
+// A document with a head whose scripts load or fail when the test says (fail: the srcs that fail on their next load).
+const fakeDocument = (fail) => {
+    const head = { children: [], appendChild(node) { node.parentNode = head; head.children.push(node);
+        setTimeout(() => { if (fail.has(node.src)) { fail.delete(node.src); node.onerror && node.onerror(); } else if (node.onload) node.onload(); }, 5); },
+        removeChild(node) { head.children = head.children.filter((item) => item !== node); node.parentNode = null; } };
+    return { head, created: 0,
+        createElement() { this.created += 1; return { dataset: {}, getAttribute(name) { return name === "src" ? this.src : null; } }; },
+        querySelectorAll() { return head.children.slice(); } };
+};
+
+test("loadScript: a failed load rejects every waiter and a later call tries again; a load is shared", async () => {
+    const savedDocument = globalThis.document;
+    const savedError = console.error;
+    console.error = () => {};
+    try {
+        const fail = new Set(["/libs/x.js"]);
+        globalThis.document = fakeDocument(fail);
+        const calls = [];
+        const first = moqui.loadScript("/libs/x.js", (error) => calls.push(error ? "error" : "ok"));
+        const second = moqui.loadScript("/libs/x.js");
+        await assert.rejects(first, /Error loading script \/libs\/x.js/);
+        await assert.rejects(second, /Error loading script/);
+        assert.deepEqual(calls, ["error"]);
+        assert.equal(document.created, 1, "the waiters share one load");
+        assert.equal(document.head.children.length, 0, "the failed element is removed");
+        // a retry loads it, and a call after that is answered by the same load
+        const script = await moqui.loadScript("/libs/x.js");
+        assert.equal(script.dataset.mqState, "loaded");
+        assert.equal(await moqui.loadScript("/libs/x.js"), script);
+        assert.equal(document.created, 2);
+        // a library that never sets its global rejects after the validate tries (shortened here)
+        const savedRetry = moqui.retryValidateCallback;
+        moqui.retryValidateCallback = (callback, validate, count, onFail) => (validate() ? callback() : onFail());
+        try {
+            await assert.rejects(moqui.loadScript("/libs/x.js", null, () => false), /library is not there/);
+            assert.equal(await moqui.loadScript("/libs/x.js", null, () => true), script);
+        } finally {
+            moqui.retryValidateCallback = savedRetry;
+        }
+    } finally {
+        moqui.scriptLoads.clear();
+        globalThis.document = savedDocument;
+        console.error = savedError;
+    }
 });

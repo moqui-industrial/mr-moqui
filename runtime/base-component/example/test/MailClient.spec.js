@@ -1,7 +1,8 @@
 // The framework's mail client (org.moqui.impl.EmailClientServices) on the real database: the SQL the message list
 // writes (case-insensitive LIKE, NOT IN with nulls, the date cursor), filing and a delete forever under the foreign
-// keys, a send that cannot connect waiting in the Outbox, and removing an account with its mail. The access rules, the
-// views and the sends in full are the Rust tests in crates/moqui-core/src/service/mail/client_tests.rs.
+// keys, a send that cannot connect waiting in the Outbox, a send that goes (through the mail capture, docs/Testing.md
+// "Mail"), and removing an account with its mail. The access rules, the views and the sends in full are
+// the Rust tests in crates/moqui-core/src/service/mail/client_tests.rs.
 
 const SERVICES = "org.moqui.impl.EmailClientServices"
 const base = Date.now() - 10 * 86400000
@@ -122,13 +123,20 @@ feature("filing, and a delete forever that keeps the rest of the thread", {
 
 feature("a send that cannot connect waits in the Outbox, and goes back to Drafts", {
     when() {
-        const draftId = mail("save#Draft", { emailAccountId: accountId, parentEmailMessageId: "MCM2", toAddresses: "\"Sender\" <mcm2@sender.example.com>",
-            body: "<p>Thanks</p>" }).emailMessageId
-        const sent = mail("send#Draft", { emailMessageId: draftId })
-        const outbox = mail("find#Messages", { view: "outbox", threadMode: false })
-        mail("cancel#ScheduledSend", { emailMessageId: draftId })
-        const draft = ec.entity.find("moqui.basic.email.EmailMessage").condition("emailMessageId", draftId).one()
-        return { sent, outbox, draft, draftId }
+        // a real connection, to port 1, where nothing listens: the capture is off for this send, whatever the run says
+        const capture = ec.factory.getTool("MailCapture")
+        capture.disable()
+        try {
+            const draftId = mail("save#Draft", { emailAccountId: accountId, parentEmailMessageId: "MCM2", toAddresses: "\"Sender\" <mcm2@sender.example.com>",
+                body: "<p>Thanks</p>" }).emailMessageId
+            const sent = mail("send#Draft", { emailMessageId: draftId })
+            const outbox = mail("find#Messages", { view: "outbox", threadMode: false })
+            mail("cancel#ScheduledSend", { emailMessageId: draftId })
+            const draft = ec.entity.find("moqui.basic.email.EmailMessage").condition("emailMessageId", draftId).one()
+            return { sent, outbox, draft, draftId }
+        } finally {
+            capture.reset()
+        }
     },
     then({ sent, outbox, draft, draftId }) {
         sent.sent == false
@@ -138,6 +146,35 @@ feature("a send that cannot connect waits in the Outbox, and goes back to Drafts
         draft.statusId == "ES_DRAFT"
         draft.subject == "Re: Subject MCM2"
         draft.inReplyTo == null
+    },
+})
+
+feature("a send goes: kept by the mail capture instead of connecting, and sent with its status", {
+    when() {
+        const capture = ec.factory.getTool("MailCapture")
+        capture.enable()
+        try {
+            capture.clear()
+            const draftId = mail("save#Draft", { emailAccountId: accountId, parentEmailMessageId: "MCM2", toAddresses: "\"Sender\" <mcm2@sender.example.com>",
+                subject: "Re: the plan · v2", body: "<p>Agreed</p>" }).emailMessageId
+            const sent = mail("send#Draft", { emailMessageId: draftId })
+            const row = ec.entity.find("moqui.basic.email.EmailMessage").condition("emailMessageId", draftId).one()
+            return { enabled: capture.isEnabled(), sent, row, captured: capture.getMessages() }
+        } finally {
+            capture.reset()
+        }
+    },
+    then({ enabled, sent, row, captured }) {
+        enabled == true
+        sent.sent == true
+        sent.statusId == "ES_SENT"
+        row.statusId == "ES_SENT"
+        row.sentDate != null
+        captured.length == 1
+        captured[0].subject == "Re: the plan · v2"
+        captured[0].toList.length == 1
+        captured[0].toList[0].includes("mcm2@sender.example.com")
+        captured[0].body.includes("Agreed")
     },
 })
 
@@ -151,7 +188,7 @@ feature("removing an account deletes its mail, folders, labels and server", {
             account: ec.entity.find("moqui.basic.email.EmailAccount").condition("emailAccountId", accountId).count() }
     },
     then({ out, serverId, messages, folders, account }) {
-        out.deletedMessageCount == 6
+        out.deletedMessageCount == 7
         out.keptMessageCount == 0
         messages == 0
         folders == 0

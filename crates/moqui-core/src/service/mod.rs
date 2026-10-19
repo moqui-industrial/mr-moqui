@@ -32,6 +32,7 @@ pub mod info;
 mod inline_tests;
 mod jobs;
 mod mail;
+pub mod mail_capture;
 mod pool;
 mod remote;
 mod request_pool;

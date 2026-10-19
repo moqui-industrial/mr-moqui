@@ -709,9 +709,15 @@ fn compare(left: &Value, op: Op, right: &Value) -> bool {
         return false;
     }
     let ordering = cmp_values(left, right);
+    // Numbers of two types (an `I32` condition value against an `I64` column, a decimal against an integer) are
+    // compared by value, as the database compares them.
+    let equal = match (numeric(left), numeric(right)) {
+        (Some(a), Some(b)) => a == b,
+        _ => left == right,
+    };
     match op {
-        Op::Eq => left == right,
-        Op::Ne => left != right,
+        Op::Eq => equal,
+        Op::Ne => !equal,
         Op::Lt => ordering == std::cmp::Ordering::Less,
         Op::Gt => ordering == std::cmp::Ordering::Greater,
         Op::Le => ordering != std::cmp::Ordering::Greater,
@@ -748,7 +754,22 @@ fn cmp_values(left: &Value, right: &Value) -> std::cmp::Ordering {
     if right.is_null() {
         return std::cmp::Ordering::Less;
     }
+    if let (Some(a), Some(b)) = (numeric(left), numeric(right)) {
+        return a.cmp(&b);
+    }
     compare_obj(left, right).unwrap_or(std::cmp::Ordering::Equal)
+}
+
+/// A number value as a decimal, for comparing numbers of different types; text and other values are `None`.
+fn numeric(value: &Value) -> Option<moqui_lib::format::Decimal> {
+    use moqui_lib::format::Decimal;
+    match value {
+        Value::I32(number) => Some(Decimal::from(*number)),
+        Value::I64(number) => Some(Decimal::from(*number)),
+        Value::F64(number) => number.to_string().parse().ok(),
+        Value::Decimal(number) => Some(*number),
+        _ => None,
+    }
 }
 
 /// Nulls sort last unless the key says first, in either direction, as the SQL is written.

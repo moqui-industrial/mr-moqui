@@ -465,8 +465,21 @@ test("the helpers a template calls", () => {
     assert.equal(mq.fmt("2024-03-05 14:07:09.0", "yyyy-MM-dd HH:mm", "date-time"), "2024-03-05 14:07");
     assert.equal(mq.fmt("12:30:00", "HH:mm"), "12:30");
     assert.equal(mq.fmt("", "#"), "");
+    // epoch millis text, as a time stamp is in the data: with any date pattern, and with none (as ec.l10n.format on the server)
+    assert.equal(mq.fmt("1709647629000", "h:mm a"), "2:07 PM");
+    assert.equal(mq.fmt("1709647629000", null), "2024-03-05 14:07");
+    assert.equal(mq.fmt("100050", null), "100050");
+    assert.equal(mq.fmt("1709647629000", "#,##0"), "1,709,647,629,000");
     assert.equal(mq.url("/a/b", { x: "1 2", y: null, z: "" }, { m: "q&r" }), "/a/b?m=q%26r&x=1%202");
     assert.equal(mq.url("/a", {}, null), "/a");
+    // a url a ${} expression gave, resolved against the screen's path as the server resolves a link's url
+    assert.equal(mq.link("Detail?x=1", "/apps/gallery/Landing"), "/apps/gallery/Landing/Detail?x=1");
+    assert.equal(mq.link("../Orders/./Find", "/apps/gallery/Landing"), "/apps/gallery/Orders/Find");
+    assert.equal(mq.link(".", "/apps/gallery/Landing"), "/apps/gallery/Landing");
+    assert.equal(mq.link("/qapps/Sales/Order", "/apps/x"), "/qapps/Sales/Order");
+    assert.equal(mq.link("https://example.com/late", "/apps/x"), "https://example.com/late");
+    assert.equal(mq.link("", "/apps/x"), "/apps/x");
+    assert.equal(mq.link("Orders?statusId=Held", "/"), "/Orders?statusId=Held");
     // a link's target parameters sit under its parameter-map and its own parameters
     assert.equal(mq.url("/a", { id: "own" }, mq.merge({ id: "target", page: "2", none: null }, { page: "3" })), "/a?id=own&page=3");
     assert.deepEqual(mq.given({ a: "1", b: null, c: "", d: undefined, e: 0 }), { a: "1", e: 0 });

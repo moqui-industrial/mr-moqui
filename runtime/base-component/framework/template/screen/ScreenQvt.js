@@ -813,10 +813,24 @@
                 }) + ">" + (textLink ? inner : "<q-btn" + A(Object.assign({ dense: true, unelevated: true, "no-caps": true }, btnKind(btnType, "m-link", style))) + ">" + inner + "</q-btn>") + "</" + tag + ">";
             }
             if (!formId) return "";
+            // hidden-form-link is the flat (minor) button in its color, its text at the left as a text link's (m-link-left)
+            if (linkType === "hidden-form-link") {
+                const color = quasarColor(btnType || "primary") || null;
+                return "<q-btn" + A({
+                    dense: true, flat: true, "no-caps": true, type: "submit", form: formId, id: formId + "_button",
+                    class: cls("m-link", "m-link-left", color ? "text-" + color : null, style), "data-confirm": confirmation || null
+                }) + ">" + linkBody(n, parts.text, parts.img) + "</q-btn>";
+            }
             return "<q-btn" + A(Object.assign({
                 dense: true, unelevated: true, "no-caps": true, type: "submit", form: formId, id: formId + "_button"
             }, btnKind(btnType, style), { "data-confirm": confirmation || null })) + ">" + linkBody(n, parts.text, parts.img) + "</q-btn>";
         };
+
+        // The background-* attributes of a link that posts through a form, as a form-single's: the m-form's submit-* properties.
+        const linkBackground = (n, isForm) => (isForm ? {
+            "submit-message": at(n, "background-message") ? x(at(n, "background-message")) : null,
+            "submit-reload-id": xn(at(n, "background-reload-id")) || null, "submit-hide-id": xn(at(n, "background-hide-id")) || null
+        } : {});
 
         const hiddenInput = (name, value, form) => "<input" + A({ type: "hidden", name, value, form: form || null }) + ">";
 
@@ -827,11 +841,11 @@
             const isForm = parts.url.isTransition();
             const tag = isForm ? "m-form" : "m-form-link";
             const params = parts.url.getParameterMap();
-            let out = "<" + tag + A({
+            let out = "<" + tag + A(Object.assign({
                 action: parts.url.path, name: formId || null, id: formId || null,
                 method: isForm && parts.url.getTransitionMethod() === "get" ? "GET" : null,
                 "read-only": isForm && parts.url.isReadOnly() ? true : null, target: at(n, "target-window") || null
-            }) + ">";
+            }, linkBackground(n, isForm))) + ">";
             Object.keys(params).forEach((key) => { out += hiddenInput(key, params[key] === null || params[key] === undefined ? "" : params[key]); });
             if (!formId) {
                 const confirmation = x(at(n, "confirmation"));
@@ -847,7 +861,7 @@
                     const flat = linkType === "hidden-form-link";
                     out += "<q-btn" + A(Object.assign({
                         dense: true, "no-caps": true, type: "submit", flat: flat ? true : null, unelevated: flat ? null : true
-                    }, flat ? { class: cls("m-link", color ? "text-" + color : null, style) } : btnKind(btnType, "m-link", style), { "data-confirm": confirmation || null })) + ">" + linkBody(n, parts.text, null) + "</q-btn>";
+                    }, flat ? { class: cls("m-link", "m-link-left", color ? "text-" + color : null, style) } : btnKind(btnType, "m-link", style), { "data-confirm": confirmation || null })) + ">" + linkBody(n, parts.text, null) + "</q-btn>";
                 }
             }
             return out + "</" + tag + ">";
@@ -903,7 +917,7 @@
             w("<m-container-dialog" + A({
                 id, color: quasarColor(xn(at(n, "type") || "primary")) || null, width: at(n, "width") || null, "button-text": buttonText,
                 "button-icon": inCell ? null : buttonIcon, "button-class": inCell ? null : buttonStyle, title: x(at(n, "title")) || buttonText,
-                "open-dialog": ctx("_openDialog") === id ? true : null
+                tooltip: x(at(n, "tooltip")) || null, "open-dialog": ctx("_openDialog") === id ? true : null
             }) + ">");
             if (inCell) w("<template v-slot:button><q-btn" + A({ dense: true, flat: true, "no-caps": true, class: cls("m-link", buttonStyle), icon: buttonIcon, label: buttonText }) + "></q-btn></template>");
             return true;

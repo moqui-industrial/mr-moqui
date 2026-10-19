@@ -1053,7 +1053,7 @@ fn locked_format(ctx: Ctx<'_>, value: JsValue<'_>, pattern: Opt<String>) -> rqui
         // parser, so trying it first would print a quantity as a date.)
         match pattern.0.as_deref().filter(|pattern| !pattern.is_empty()) {
             // A date alone (`yyyy-MM-dd`) is a date, formatted with no time zone shift, as Java formats a Date.
-            Some(pattern) if is_date_pattern(pattern) => {
+            Some(pattern) if crate::l10n::is_date_pattern(pattern) => {
                 let trimmed = text.trim();
                 let date_only = trimmed.len() == 10 && trimmed.as_bytes()[4] == b'-' && trimmed.as_bytes()[7] == b'-';
                 date_only
@@ -1067,7 +1067,10 @@ fn locked_format(ctx: Ctx<'_>, value: JsValue<'_>, pattern: Opt<String>) -> rqui
                 .parse::<moqui_lib::format::Decimal>()
                 .map(Value::Decimal)
                 .unwrap_or(Value::String(text)),
-            None => Value::String(text),
+            // No pattern: epoch millis text is the time stamp it was, as `ec.l10n.format` reads it.
+            None => crate::l10n::epoch_millis_text(&text)
+                .map(|millis| moqui_lib::object::basic_convert(&Value::I64(millis), "java.sql.Timestamp").value)
+                .unwrap_or(Value::String(text)),
         }
     } else if let Some(number) = value.as_int() {
         Value::I64(i64::from(number))
@@ -1079,19 +1082,6 @@ fn locked_format(ctx: Ctx<'_>, value: JsValue<'_>, pattern: Opt<String>) -> rqui
         Value::Null
     };
     crate::l10n::format_value(&host, pattern.0.as_deref()).map_err(|err| Exception::throw_message(&ctx, err.message()))
-}
-
-/// A Java date pattern has a letter of a date or time field outside quotes; a number pattern has none.
-fn is_date_pattern(pattern: &str) -> bool {
-    let mut quoted = false;
-    for ch in pattern.chars() {
-        if ch == '\'' {
-            quoted = !quoted;
-        } else if !quoted && "GyYMLwWDdFEuaHkKhmsSzZX".contains(ch) {
-            return true;
-        }
-    }
-    false
 }
 
 fn locked_localize(ctx: Ctx<'_>, text: String) -> rquickjs::Result<String> {

@@ -309,7 +309,7 @@ Framework service XML with no Rust body (`BasicServices`, `UserServices`, `Serve
 | `screen/screen_test.rs` | `ScreenTestImpl`, `ScreenTest`. | Port |
 | `screen/saved_finds.rs` | `ScreenForm` saved-find statics and the `ScreenRenderImpl` / `ScreenDefinition` uses (`formSaveFind`, `formSelectColumns`, `screenDoc`). | Port |
 | `screen/menu.rs` | `sri.getMenuData` on the root `menuData` transition. | Port |
-| `screen/shell.rs` | No Java basis: `<shell-providers>`, `sri.getShellData` (the root `shellData` transition) and `sri.getShellSearch` (`shellSearch`) of the IronStone suite shell. | Native |
+| `screen/shell.rs` | No Java basis: `<shell-providers>`, `sri.getShellData` (the root `shellData` transition), `sri.getShellProviders` (the providers alone, kept per session) and `sri.getShellSearch` (`shellSearch`) of the IronStone suite shell. | Native |
 | `screen/sri/mod.rs` | `sri` object `ScreenRenderImpl` exposes to macros. `WebUtilities.encodeHtml`. | Port |
 | `screen/sri/fields.rs` | Field values, `parameter` and `set`, validation hints. | Port |
 | `screen/sri/forms.rs` | Dynamic forms, user columns, saved finds, form-list rows. | Port |

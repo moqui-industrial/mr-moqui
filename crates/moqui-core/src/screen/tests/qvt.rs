@@ -87,6 +87,14 @@ fn containers_links_and_labels() {
     let out = check("containers", &[]);
     // data is text and not an interpolation
     assert!(!out.contains("{{"), "{out}");
+    // a container-dialog's tooltip, expanded; a hidden-form-link is a flat button with its text at the left, and its
+    // background-* attributes are the m-form's submit-* properties, as a form-single's
+    for expected in [
+        r#"<m-container-dialog id="TipDlg" color="primary" button-text="" button-icon="sym_o_add" title="" tooltip="Add for Ada">"#,
+        r#"<m-form action="/save" read-only submit-message="Saved Ada" submit-reload-id="Dyn" submit-hide-id="Dlg"><q-btn dense no-caps type="submit" flat class="m-link m-link-left text-primary">Mark done</q-btn></m-form>"#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
 }
 
 #[test]
@@ -163,6 +171,8 @@ fn a_dashboard_lays_out_number_cards() {
         r#"<div class="m-dashboard-item"></div>"#,
         r#"<m-number-card id="Revenue" title="Revenue {{x}} &amp; more" value="$1,200" delta="-5%" icon="fa fa-dollar" size="sm" class="wide"></m-number-card>"#,
         r#"<div class="m-dashboard"><div class="m-dashboard-item"><m-number-card title="Plain" value="7"></m-number-card>"#,
+        // a ${} url is expanded and resolved against the screen on the server
+        r#"<m-number-card title="Held orders" value="1" href="/Orders?statusId=Held"></m-number-card>"#,
     ] {
         assert!(out.contains(expected), "{expected} in {out}");
     }

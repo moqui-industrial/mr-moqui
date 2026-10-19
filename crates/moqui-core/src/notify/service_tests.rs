@@ -377,13 +377,54 @@ fn a_user_lists_decides_and_marks_only_their_own_notifications() {
     );
     assert_eq!(count(&marked, "viewedCount"), 1, "Bob's id is not Alice's to mark");
     assert!(!viewed(&facade, &bobs, "bob"));
+    // an approval is decided, not read: all of an inbox, or all, leaves the one still waiting; its id marks it
+    let marked = call(
+        "mark#NotificationsViewed",
+        &[("inboxEnumId", Value::string("NinNotifications"))],
+    );
+    assert_eq!(count(&marked, "viewedCount"), 0, "the approval still waiting");
     let marked = call("mark#NotificationsViewed", &[]);
-    assert_eq!(count(&marked, "viewedCount"), 1, "the approval still waiting");
+    assert_eq!(count(&marked, "viewedCount"), 0, "the approval still waiting");
+    assert!(!viewed(&facade, &approve_big, "alice"));
     let none = call(
         "get#UserNotifications",
         &[("viewed", Value::string("N")), ("inboxEnumId", Value::string("all"))],
     );
-    assert!(titles(&none).is_empty());
+    assert_eq!(titles(&none), ["Approve PO2"]);
+    let marked = call(
+        "mark#NotificationsViewed",
+        &[("notificationMessageId", Value::string(&approve_big))],
+    );
+    assert_eq!(count(&marked, "viewedCount"), 1, "an explicit id is marked");
+
+    // one approval to two recipients: the first decision is final for the message, so the other no longer sees it waiting
+    {
+        let _authz = ctx.disable_authz();
+        account(&facade, "carol", "carol@example.com");
+    }
+    login("bob");
+    let shared = {
+        let mut note = NotificationMessage::new();
+        note.topic("Approve")
+            .user_ids(["alice", "carol"])
+            .title("Approve PO4")
+            .persist(true)
+            .record("mantle.order.OrderHeader", "PO4")
+            .reason("approval");
+        note.send().unwrap();
+        note.notification_message_id().unwrap().to_string()
+    };
+    login("carol");
+    assert_eq!(count(&call("get#UserNotifications", &[]), "approvalCount"), 1);
+    login("alice");
+    call(
+        "approve#NotificationMessage",
+        &[("notificationMessageId", Value::string(&shared))],
+    );
+    assert_eq!(errors(), "");
+    assert!(viewed(&facade, &shared, "alice") && viewed(&facade, &shared, "carol"));
+    login("carol");
+    assert_eq!(count(&call("get#UserNotifications", &[]), "approvalCount"), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

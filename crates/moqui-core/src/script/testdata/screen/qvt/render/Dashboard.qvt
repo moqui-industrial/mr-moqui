@@ -6,3 +6,6 @@
 <div class="m-dashboard"><div class="m-dashboard-item"><m-number-card title="Plain" value="7"></m-number-card>
 </div></div>
 <m-link href="/Orders?sort=-date&amp;statusId=Open" class="m-link-text">All open</m-link>
+<div class="m-dashboard"><div class="m-dashboard-item"><m-number-card title="Held orders" value="1" href="/Orders?statusId=Held"></m-number-card>
+</div></div>
+<m-link href="/Orders?sort=-date" class="m-link-text">Dynamic orders</m-link>

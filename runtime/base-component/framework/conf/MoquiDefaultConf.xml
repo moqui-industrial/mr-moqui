@@ -208,6 +208,9 @@
         <!-- The framework's own: vCard parse and write, iCalendar parse, write and RRULE expansion (moqui_core::pim) -->
         <tool-factory class="moqui_core::pim::VCardToolFactory" init-priority="5"/>
         <tool-factory class="moqui_core::pim::ICalendarToolFactory" init-priority="5"/>
+        <!-- The mail capture for specs: with mail_capture_sends=true, or ec.factory.getTool('MailCapture').enable() in a
+             spec, send#EmailMessage keeps the message in memory instead of connecting (docs/Testing.md) -->
+        <tool-factory class="moqui_core::service::mail_capture::MailCaptureToolFactory" init-priority="5"/>
     </tools>
 
     <cache-list warm-on-start="true" local-factory="MCache" distributed-factory="MCache">

@@ -975,6 +975,9 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="icon" type="xs:string"><xs:annotation><xs:documentation>
             The icon of the button, in place of the default open_in_new: a Material Icons name (add, edit) or, with a space or an
             fa prefix (fa fa-plus), CSS classes.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="tooltip" type="xs:string"><xs:annotation><xs:documentation>
+            Text shown when the pointer is over the button (a q-tooltip in qvt, the title in html), localized and expanded as the
+            button-text is; an icon-only button should have one.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>
 
     <xs:element name="dynamic-dialog" substitutionGroup="StandaloneFields"><xs:annotation>

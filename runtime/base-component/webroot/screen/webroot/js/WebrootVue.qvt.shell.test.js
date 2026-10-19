@@ -304,15 +304,37 @@ test("the root's shell: the current app and its title, the + menu, the account m
     assert.deepEqual(vm.headerCounters.map((counter) => vm.counterText(counter)), ["3", "99+", "2", "0"]);
     assert.equal(vm.countOf("notifications"), 0);
     assert.equal(vm.countOf("chat"), 0);
-    // below 600 px Mail and Messages are one button to the mail screen with the counts summed; the updates have no button
+    // below 600 px Mail and Messages are one button to the mail screen with the counts summed, and the tray tabs one tray button
+    // with theirs; the updates have no button
     vm.$q = { screen: { lt: { sm: true } } };
-    vm.shellCounts = { email: 3, messages: 2 };
-    assert.deepEqual(vm.headerCounters.map((counter) => counter.key), ["today", "mail", "notifications"]);
+    vm.shellCounts = { email: 3, messages: 2, today: 1, notifications: 4 };
+    assert.deepEqual(vm.headerCounters.map((counter) => counter.key), ["tray", "mail"]);
+    assert.deepEqual(vm.headerCounters[0].counts, ["today", "notifications"]);
+    assert.equal(vm.headerCounters[0].label, "Today, Notifications");
+    assert.equal(vm.headerCounters[0].icon, "sym_o_notifications");
+    assert.equal(vm.counterText(vm.headerCounters[0]), "5");
     assert.equal(vm.counterText(vm.headerCounters[1]), "5");
     assert.equal(vm.headerCounters[1].url, "/qapps/Comms/Inbox");
     vm.shellData.shell.mailScreen = null;
-    assert.deepEqual(vm.headerCounters.map((counter) => counter.key), ["today", "messages", "notifications"], "Messages alone stays");
+    assert.deepEqual(vm.headerCounters.map((counter) => counter.key), ["tray", "messages"], "Messages alone stays");
     vm.shellData.shell.mailScreen = "/qapps/Comms/Inbox";
+    // the tray button opens the tray on its last tab, else the first, and closes it
+    vm.toggleTray(null);
+    assert.equal(vm.trayOpen, true);
+    assert.equal(vm.trayTab, "today");
+    vm.toggleTray(null);
+    assert.equal(vm.trayOpen, false);
+    vm.trayTab = "notifications";
+    vm.toggleTray(null);
+    assert.equal(vm.trayTab, "notifications");
+    vm.closeTray();
+    vm.trayTab = null;
+    vm.trayLoaded = {};
+    // one tray tab alone keeps its own button
+    const trayChat = vm.shellData.shell.trayToday;
+    vm.shellData.shell.trayToday = null;
+    assert.deepEqual(vm.headerCounters.map((counter) => counter.key), ["mail", "notifications"]);
+    vm.shellData.shell.trayToday = trayChat;
     delete vm.$q;
     vm.shellCounts = vm.shellData.counts;
     // the tray opens on a tab it has, keeps it loaded, and closes; Esc closes it when no dialog or menu is open
@@ -386,14 +408,19 @@ test("a form in the quick-create dialog closes it when it submits without errors
     assert.deepEqual(comp.inject.mSubmitHide, { default: null });
     assert.deepEqual(qvt.components["m-shell-quick-create"].provide.call({ me: 1 }), { mSubmitHide: { me: 1 } });
     const hidden = [];
+    const emitted = [];
     const make = (extra) => Object.assign({ $root: { setUrl() {}, hideContainer: (id) => hidden.push("container " + id), reloadContainer() {} },
-        submitHideId: null, submitReloadId: null, submitMessage: "Saved", mSubmitHide: { hide: () => hidden.push("dialog") }, fields: {} }, extra);
+        submitHideId: null, submitReloadId: null, submitMessage: "Saved", mSubmitHide: { hide: () => hidden.push("dialog") }, fields: {},
+        $emit: (name, value) => emitted.push([name, value]) }, extra);
     comp.methods.handleResponse.call(make(), { messageInfos: [] });
     comp.methods.handleResponse.call(make(), { errors: ["no"] });
     comp.methods.handleResponse.call(make(), { validationErrors: [{ field: "x", message: "bad" }] });
     comp.methods.handleResponse.call(make({ submitHideId: "MyDialog" }), {});
     comp.methods.handleResponse.call(make({ mSubmitHide: null }), {});
     assert.deepEqual(hidden, ["dialog", "container MyDialog"]);
+    // submitted: once for each answer without errors, with the answer
+    assert.deepEqual(comp.emits, ["submitted"]);
+    assert.deepEqual(emitted, [["submitted", { messageInfos: [] }], ["submitted", {}], ["submitted", {}]]);
     assert.equal(moqui.responseHasErrors({ errors: "" }), false);
     assert.equal(moqui.responseHasErrors({ errors: [] }), false);
     assert.equal(moqui.responseHasErrors("text"), false);
@@ -408,4 +435,41 @@ test("the shell components compile and the header has each element of the design
     assert.match(shell, /<q-btn v-if="!shellValues.trayNotifications" flat round dense icon="notifications">/);
     assert.match(qvt.components["m-shell-tray"].template, /<q-card id="m-tray"/);
     assert.match(qvt.components["m-shell-quick-create"].template, /id="m-quick-create"/);
+});
+
+test("a preference applies at once: dark mode, the drawer, the key overrides and the density; the start app opens on /qapps alone", () => {
+    const savedConfig = qvt.config;
+    const savedDocument = globalThis.document;
+    const classes = new Set();
+    globalThis.document = { body: { classList: { toggle: (name, on) => { if (on) classes.add(name); else classes.delete(name); } } } };
+    qvt.config = { preferences: { OTHER: "x" } };
+    let dark = null;
+    moqui.webrootVue = { $q: { dark: { set: (value) => { dark = value; } } }, leftOpen: false };
+    try {
+        moqui.applyPreference("QUASAR_DARK", "true");
+        assert.equal(dark, true);
+        moqui.applyPreference("QUASAR_LEFT_OPEN", "true");
+        assert.equal(moqui.webrootVue.leftOpen, true);
+        moqui.applyPreference("SHELL_DENSITY", "compact");
+        assert.ok(classes.has("m-density-compact"));
+        assert.equal(qvt.config.density, "compact");
+        // the X-Moqui-Preferences answer of a request is a map, applied the same way
+        moqui.onPreferences({ SHELL_DENSITY: "comfortable", KEYMAP: '{"global": {"palette": "Mod+P"}}', NEW_KEY: "v" });
+        assert.ok(!classes.has("m-density-compact"));
+        assert.deepEqual(keymap.overrides, { global: { palette: "Mod+P" } });
+        assert.deepEqual(qvt.config.preferences, { OTHER: "x", QUASAR_DARK: "true", QUASAR_LEFT_OPEN: "true", SHELL_DENSITY: "comfortable",
+            KEYMAP: '{"global": {"palette": "Mod+P"}}', NEW_KEY: "v" });
+        moqui.applyPreference("KEYMAP", "");
+        assert.deepEqual(keymap.overrides, {});
+        assert.equal(qvt.config.preferences.KEYMAP, undefined, "an empty value is removed");
+        // SHELL_START_APP
+        assert.equal(moqui.startPath("/qapps", "/qapps", "Commons"), "/qapps/Commons");
+        assert.equal(moqui.startPath("/qapps/", "/qapps", "Commons"), "/qapps/Commons");
+        assert.equal(moqui.startPath("/qapps/Sales/Order", "/qapps", "Commons"), "/qapps/Sales/Order");
+        assert.equal(moqui.startPath("/qapps", "/qapps", ""), "/qapps");
+    } finally {
+        delete moqui.webrootVue;
+        qvt.config = savedConfig;
+        globalThis.document = savedDocument;
+    }
 });

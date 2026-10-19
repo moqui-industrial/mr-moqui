@@ -269,11 +269,12 @@
               }, 8, ["class"]))
             }
         } },
-        "m-container-dialog": { hash: "b90974f8", make: function (Vue) {
-            const { renderSlot: _renderSlot, resolveComponent: _resolveComponent, normalizeClass: _normalizeClass, createVNode: _createVNode, createElementVNode: _createElementVNode, withCtx: _withCtx, openBlock: _openBlock, createElementBlock: _createElementBlock } = Vue
+        "m-container-dialog": { hash: "416fea64", make: function (Vue) {
+            const { renderSlot: _renderSlot, resolveComponent: _resolveComponent, normalizeClass: _normalizeClass, createVNode: _createVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, createElementVNode: _createElementVNode, createElementBlock: _createElementBlock } = Vue
 
             return function render(_ctx, _cache) {
               const _component_q_btn = _resolveComponent("q-btn")
+              const _component_q_tooltip = _resolveComponent("q-tooltip")
               const _component_m_dialog = _resolveComponent("m-dialog")
 
               return (_openBlock(), _createElementBlock("span", null, [
@@ -289,7 +290,15 @@
                       label: _ctx.buttonText,
                       class: _normalizeClass(_ctx.moqui.tonalClass(_ctx.color, _ctx.buttonClass))
                     }, null, 8, ["icon", "label", "class"])
-                  ])
+                  ]),
+                  (_ctx.tooltip)
+                    ? (_openBlock(), _createBlock(_component_q_tooltip, { key: 0 }, {
+                        default: _withCtx(() => [
+                          _createTextVNode(_toDisplayString(_ctx.tooltip), 1)
+                        ]),
+                        _: 1
+                      }))
+                    : _createCommentVNode("", true)
                 ], 8, ["onClick"]),
                 _createVNode(_component_m_dialog, {
                   modelValue: _ctx.isShown,
@@ -1670,13 +1679,13 @@
                 : _createCommentVNode("", true)
             }
         } },
-        "m-link": { hash: "5b271294", make: function (Vue) {
-            const { renderSlot: _renderSlot, withModifiers: _withModifiers, openBlock: _openBlock, createElementBlock: _createElementBlock } = Vue
+        "m-link": { hash: "449c1400", make: function (Vue) {
+            const { renderSlot: _renderSlot, openBlock: _openBlock, createElementBlock: _createElementBlock } = Vue
 
             return function render(_ctx, _cache) {
               return (_openBlock(), _createElementBlock("a", {
                 href: _ctx.linkHref,
-                onClick: _withModifiers(_ctx.go, ["prevent"]),
+                onClick: _ctx.go,
                 class: "q-link"
               }, [
                 _renderSlot(_ctx.$slots, "default")
@@ -1978,7 +1987,7 @@
               }, 8, ["href", "class"]))
             }
         } },
-        "m-qapps-root": { hash: "dd0727b3", make: function (Vue) {
+        "m-qapps-root": { hash: "fbb9912b", make: function (Vue) {
             const { resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, renderList: _renderList, Fragment: _Fragment, createElementVNode: _createElementVNode, normalizeClass: _normalizeClass, resolveDirective: _resolveDirective, withDirectives: _withDirectives, resolveDynamicComponent: _resolveDynamicComponent, withModifiers: _withModifiers } = Vue
 
             return function render(_ctx, _cache) {
@@ -2130,7 +2139,7 @@
                               ? (_openBlock(), _createBlock(_component_q_toolbar_title, {
                                   key: 0,
                                   shrink: "",
-                                  class: "text-subtitle1 text-weight-medium q-pr-sm"
+                                  class: "gt-xs text-subtitle1 text-weight-medium q-pr-sm"
                                 }, {
                                   default: _withCtx(() => [
                                     _createTextVNode(_toDisplayString(_ctx.headerTitle), 1)
@@ -2344,8 +2353,8 @@
                                 dense: "",
                                 id: 'm-counter-' + counter.key,
                                 icon: counter.icon,
-                                class: _normalizeClass({'text-primary': counter.tray && _ctx.trayOpen && _ctx.trayTab === counter.key}),
-                                onClick: $event => (counter.tray ? _ctx.toggleTray(counter.key) : _ctx.setUrl(counter.url))
+                                class: _normalizeClass({'text-primary': counter.tray && _ctx.trayOpen && (counter.any || _ctx.trayTab === counter.key)}),
+                                onClick: $event => (counter.tray ? _ctx.toggleTray(counter.any ? null : counter.key) : _ctx.setUrl(counter.url))
                               }, {
                                 default: _withCtx(() => [
                                   (_ctx.counterCount(counter))
@@ -2466,7 +2475,7 @@
                                               return (_openBlock(), _createBlock(_component_q_item, {
                                                 key: histIndex,
                                                 clickable: !!histItem.link,
-                                                to: histItem.link || undefined
+                                                onClick: $event => (histItem.link && _ctx.moqui.openLink(histItem.link))
                                               }, {
                                                 default: _withCtx(() => [
                                                   _createVNode(_component_q_item_section, { avatar: "" }, {
@@ -2497,7 +2506,7 @@
                                                   }, 1024)
                                                 ]),
                                                 _: 2
-                                              }, 1032, ["clickable", "to"]))
+                                              }, 1032, ["clickable", "onClick"]))
                                             }), 128))
                                           ]),
                                           _: 1

@@ -578,7 +578,15 @@
         const linkForm = (n, parts, formId) => {
             if (parts.url.getDisableLink() || parts.anchor) return "";
             const params = parts.url.getParameterMap();
-            let out = "<form" + A({ method: "post", action: parts.url.url, name: formId || null, id: formId || null, target: at(n, "target-window") || null }) + ">" +
+            // the background-* attributes of a form-single; any of them posts the link in the background
+            const reload = at(n, "background-reload-id") || null;
+            const hide = at(n, "background-hide-id") || null;
+            const message = at(n, "background-message") ? x(at(n, "background-message")) : null;
+            const background = at(n, "background-submit") === "true" || !!(reload || hide || message);
+            let out = "<form" + A({
+                method: "post", action: parts.url.url, name: formId || null, id: formId || null, target: at(n, "target-window") || null,
+                "data-bg": background ? true : null, "data-reload": reload, "data-msg": message, "data-hide": hide
+            }) + ">" +
                 "<input" + A({ type: "hidden", name: "moquiSessionToken", value: token() }) + ">";
             Object.keys(params).forEach((key) => { out += "<input" + A({ type: "hidden", name: key, value: params[key] === null || params[key] === undefined ? "" : params[key] }) + ">"; });
             if (!formId) {
@@ -633,8 +641,11 @@
 
         const dialogOpen = (n, id, text, extra) => {
             const iconClass = at(n, "icon") || "fa fa-share";
+            // a container-dialog's tooltip is the button's title
+            const tooltip = at(n, "tooltip") ? x(at(n, "tooltip")) : "";
             return "<button" + A({
-                type: "button", id: id + "-button", "data-dialog": id, "data-btn": xn(at(n, "type")) || "primary", class: xn(at(n, "button-style")) || null, title: text, "aria-label": text
+                type: "button", id: id + "-button", "data-dialog": id, "data-btn": xn(at(n, "type")) || "primary", class: xn(at(n, "button-style")) || null,
+                title: tooltip || text, "aria-label": text
             }) + ">" + icon(iconClass) + e(text) + "</button>";
         };
         const dialogShell = (n, id, text, bodyAttrs, body, extra) =>

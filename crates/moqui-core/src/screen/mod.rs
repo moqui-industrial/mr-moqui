@@ -144,6 +144,8 @@ fn handle(
         .map(user::verify_session_cookie)
         .transpose()?
         .flatten();
+    // a visit this request starts (at the bind, or at a login on a session that put it off) records the request
+    let _visit_request = user::session::VisitRequestGuard::set(web::visit_request(request));
     let guard = user::bind(
         factory,
         session_cookie.as_deref(),
@@ -185,13 +187,20 @@ fn handle(
         login_error.as_deref(),
         (header_authenticated, new_session),
     )?;
-    let response = attach_session(
+    let mut response = attach_session(
         response,
         &guard,
         presented.as_deref(),
         visitor_cookie.as_deref(),
         token_before,
     )?;
+    // the preferences this request set, for the page to apply at once (js/README.md, Preferences)
+    let changed = web::take_changed_preferences();
+    if !changed.is_empty() {
+        response
+            .headers
+            .push(("X-Moqui-Preferences".to_string(), web::preferences_header(&changed)));
+    }
     drop(guard);
     Ok(response)
 }

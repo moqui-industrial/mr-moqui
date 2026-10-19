@@ -51,7 +51,18 @@ test("format picks by the type of the value, and a string stays as it is", () =>
     assert.equal(l10n.format("2024-03-05", "MM/dd/yyyy", "date"), "03/05/2024");
     assert.equal(l10n.format(new Date(Date.UTC(2024, 2, 5, 14, 7, 9)), "HH:mm"), "06:07");
     assert.equal(l10n.format(true), "true");
+    // epoch millis with any date pattern is a time stamp; a number pattern keeps it a number
+    const millis = Date.UTC(2024, 2, 5, 14, 7, 9);
+    assert.equal(l10n.format(millis, "h:mm a"), "6:07 AM");
+    assert.equal(l10n.format(millis, "EEE h:mm a"), "Tue 6:07 AM");
+    assert.equal(l10n.format(millis, "HH:mm"), "06:07");
+    assert.equal(l10n.format(1234.5, "#,##0.00"), "1,234.50");
     l10n.setTimeZone("UTC");
+});
+
+test("a date pattern is told from a number pattern by its letters outside quotes", () => {
+    for (const pattern of ["h:mm a", "HH:mm", "EEE", "mm:ss", "yyyy-MM-dd", "a", "w", "z", "d MMM 'at' h"]) assert.ok(l10n.isDatePattern(pattern), pattern);
+    for (const pattern of ["#,##0.00", "0", "0.###E0", "#,##0 'units'", "00000", "", "'hello'"]) assert.ok(!l10n.isDatePattern(pattern), pattern);
 });
 
 test("currency uses the symbol and fraction digits of the unit, and no symbol when asked", () => {

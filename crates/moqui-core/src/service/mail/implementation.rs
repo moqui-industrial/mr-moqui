@@ -1048,6 +1048,25 @@ fn deliver(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
     if push_sink(letter) {
         return Ok(());
     }
+    // mail_capture_sends (moqui test): kept for the spec instead of sent (service/mail_capture.rs)
+    if crate::service::mail_capture::enabled() {
+        crate::service::mail_capture::record(crate::service::mail_capture::CapturedMail {
+            subject: letter.subject.clone(),
+            from_address: letter.from_address.clone(),
+            from_name: letter.from_name.clone(),
+            to: letter.to.clone(),
+            cc: letter.cc.clone(),
+            bcc: letter.bcc.clone(),
+            reply_to: letter.reply_to.clone(),
+            body: letter.body.clone(),
+            body_text: letter.body_text.clone(),
+            message_id: letter.message_id.clone(),
+            in_reply_to: letter.in_reply_to.clone(),
+            references: letter.references.clone(),
+            attachment_names: letter.attachments.iter().map(|part| part.filename.clone()).collect(),
+        });
+        return Ok(());
+    }
     lettre_send(letter, server)
 }
 

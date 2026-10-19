@@ -325,16 +325,20 @@ fn l10n_format(ctx: Ctx<'_>, value: JsValue<'_>, pattern: Opt<JsValue<'_>>) -> r
             _ => None,
         };
         let host = match pattern.as_deref() {
-            Some(pattern) if is_date_pattern(pattern) => epoch_millis_timestamp(&host).unwrap_or(host),
+            // Any date pattern (`h:mm a` as well as `yyyy-MM-dd`), as `l10n::is_date_pattern` reads one.
+            Some(pattern) if l10n::is_date_pattern(pattern) => epoch_millis_timestamp(&host).unwrap_or(host),
+            // No pattern: a time stamp is epoch millis text in a script (`temporal_text`), so such text is formatted as
+            // the time stamp, `yyyy-MM-dd HH:mm`, as Java formats the `Timestamp` it holds.
+            Some("") | None => match &host {
+                Value::String(text) => l10n::epoch_millis_text(text)
+                    .and_then(|millis| epoch_millis_timestamp(&Value::I64(millis)))
+                    .unwrap_or(host),
+                _ => host,
+            },
             _ => host,
         };
         l10n::format_value(&host, pattern.as_deref()).map_err(|err| throw_error(&ctx, &Error::new(err.message())))
     })
-}
-
-/// A date pattern such as `dd MMM yyyy` or `HH:mm`, not a number pattern such as `#,##0.00`.
-fn is_date_pattern(pattern: &str) -> bool {
-    pattern.contains(['y', 'd', 'H', 'E']) && !pattern.contains(['#', '0'])
 }
 
 /// A date or timestamp reaches a script as epoch millis, so a whole number formatted with a date pattern is a
@@ -1005,6 +1009,53 @@ mod tests {
         holds(
             r#"ec.l10n.format("1791979200000", "yyyy") === "2026" && ec.l10n.format(1791979200000 - 1, "yyyy") === "2026""#,
         );
+    }
+
+    /// Every `SimpleDateFormat` pattern formats a time stamp, epoch millis or millis text, not only those with `y`,
+    /// `d`, `H` or `E` (`h:mm a` gave the millis back); a number pattern still formats a number.
+    #[test]
+    fn a_date_pattern_formats_a_time_stamp_whatever_its_letters() {
+        clear_context_stack();
+        let context = ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        // 2024-03-05 14:07:09 UTC, a Tuesday; the test session is in UTC.
+        set_context_name("millis", Value::I64(1_709_647_629_000)).unwrap();
+        let stamp = jiff::Timestamp::from_millisecond(1_709_647_629_000).unwrap();
+        set_context_name("stamp", Value::Timestamp(stamp)).unwrap();
+        let table = [
+            ("h:mm a", "2:07 PM"),
+            ("hh:mm a", "02:07 PM"),
+            ("HH:mm", "14:07"),
+            ("EEE h:mm a", "Tue 2:07 PM"),
+            ("K:mm a", "2:07 PM"),
+            ("k:mm", "14:07"),
+            ("mm:ss", "07:09"),
+            ("a", "PM"),
+            ("MMM d", "Mar 5"),
+            ("EEEE", "Tuesday"),
+            ("yyyy-MM-dd'T'HH:mm:ss", "2024-03-05T14:07:09"),
+            ("D", "65"),
+            ("w", "10"),
+            ("W", "2"),
+            ("F", "1"),
+            ("YYYY", "2024"),
+            ("G", "AD"),
+            ("z", "UTC"),
+            ("HH:mm:ss.SSS", "14:07:09.000"),
+        ];
+        for (pattern, expect) in table {
+            for value in ["millis", "String(millis)", "stamp"] {
+                holds(&format!(r#"ec.l10n.format({value}, "{pattern}") === "{expect}""#));
+            }
+        }
+        holds(r##"ec.l10n.format(1234.5, "#,##0.00") === "1,234.50" && ec.l10n.format(42, "0") === "42""##);
+        // No pattern: epoch millis text (a time stamp field as a script sees it) is a time stamp, other text itself.
+        holds(
+            r#"ec.l10n.format(String(millis), null) === "2024-03-05 14:07" && ec.l10n.format(stamp, "") === "2024-03-05 14:07""#,
+        );
+        holds(r#"ec.l10n.format(stamp) === "2024-03-05 14:07" && ec.l10n.format(millis) === "1,709,647,629,000""#);
+        holds(r#"ec.l10n.format("100050", null) === "100050" && ec.l10n.format("CT-REQ", null) === "CT-REQ""#);
+        clear_context_stack();
     }
 
     #[test]

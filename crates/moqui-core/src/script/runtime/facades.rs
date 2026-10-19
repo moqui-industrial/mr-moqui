@@ -17,7 +17,7 @@
 use super::*;
 use moqui_lib::object::Value;
 
-/// A named framework cache. A cache the conf does not define reads as empty and ignores writes.
+/// A named framework cache. A name the conf does not define is made with the default settings on first use, as Java.
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub(super) struct HostCache {
@@ -33,13 +33,12 @@ impl HostCache {
     fn with_cache<T>(
         &self,
         ctx: &Ctx<'_>,
-        fallback: T,
         body: impl FnOnce(&moqui_lib::cache::MCache<String, Value>) -> Result<T, moqui_lib::error::Error>,
     ) -> rquickjs::Result<T> {
-        let found = with_ec(ctx, |ec| ec.factory().cache().get(&self.name))?;
+        // A name with no conf entry is made with the default settings on first use, as Java's `getCache`.
+        let found = with_ec(ctx, |ec| ec.factory().cache().get_or_create(&self.name))?;
         match found {
-            Ok(Some(cache)) => body(&cache).map_err(|err| throw_lib(ctx, &err)),
-            Ok(None) => Ok(fallback),
+            Ok(cache) => body(&cache).map_err(|err| throw_lib(ctx, &err)),
             Err(err) => Err(Exception::throw_message(ctx, err.message())),
         }
     }
@@ -49,7 +48,7 @@ impl HostCache {
 impl HostCache {
     fn get<'js>(&self, ctx: Ctx<'js>, key: String) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
-            let found = self.with_cache(&ctx, None, |cache| cache.get(&key))?;
+            let found = self.with_cache(&ctx, |cache| cache.get(&key))?;
             match found {
                 Some(value) => host_to_js(&ctx, value),
                 None => Null.into_js(&ctx),
@@ -60,29 +59,30 @@ impl HostCache {
     fn put(&self, ctx: Ctx<'_>, key: String, value: JsValue<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let value = js_to_host(&ctx, &value)?;
-            self.with_cache(&ctx, (), |cache| cache.put(key, value))
+            self.with_cache(&ctx, |cache| cache.put(key, value))
         })
     }
 
     fn remove(&self, ctx: Ctx<'_>, key: String) -> rquickjs::Result<bool> {
-        host_guard(&ctx, || self.with_cache(&ctx, false, |cache| cache.remove(&key)))
+        host_guard(&ctx, || self.with_cache(&ctx, |cache| cache.remove(&key)))
     }
 
     fn contains_key(&self, ctx: Ctx<'_>, key: String) -> rquickjs::Result<bool> {
-        host_guard(&ctx, || self.with_cache(&ctx, false, |cache| cache.contains_key(&key)))
+        host_guard(&ctx, || self.with_cache(&ctx, |cache| cache.contains_key(&key)))
     }
 
     /// Clear the cache. A name that is not a conf cache may be the screen definitions or an entity list cache.
     fn clear(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
             let cleared = with_ec(&ctx, |ec| ec.factory().cache().clear(&self.name))?;
-            match cleared {
-                Ok(true) => Ok(()),
-                Ok(false) => super::tools_host::clear_other_cache(&self.name)
-                    .map(|_| ())
-                    .map_err(|err| throw_lib(&ctx, &err)),
-                Err(err) => Err(Exception::throw_message(&ctx, err.message())),
+            if let Err(err) = cleared {
+                return Err(Exception::throw_message(&ctx, err.message()));
             }
+            // Also the screen or entity list cache of that name: a `get` of it made an empty conf cache, which the
+            // line above cleared.
+            super::tools_host::clear_other_cache(&self.name)
+                .map(|_| ())
+                .map_err(|err| throw_lib(&ctx, &err))
         })
     }
 }
@@ -514,6 +514,67 @@ impl HostUser {
                 Some(millis)
             };
             with_ec(&ctx, |ec| ec.set_effective_time(millis))
+        })
+    }
+
+    /// The `moqui.server.Visit` id of this session, or null (Java's `getVisitId`).
+    #[qjs(get, rename = "visitId")]
+    fn visit_id_property<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || match crate::user::visit_id() {
+            Ok(Some(id)) => id.into_js(&ctx),
+            Ok(None) => Null.into_js(&ctx),
+            Err(err) => Err(Exception::throw_message(&ctx, err.message())),
+        })
+    }
+
+    fn get_visit_id<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        self.visit_id_property(ctx)
+    }
+
+    /// The `moqui.server.Visit` of this session as a map, or null (Java's `getVisit`).
+    #[qjs(get, rename = "visit")]
+    fn visit_property<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let found = (|| -> Result<Option<Value>, Error> {
+                let Some(visit_id) = crate::user::visit_id()? else {
+                    return Ok(None);
+                };
+                let Some(facade) = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() else {
+                    return Ok(None);
+                };
+                let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+                let row = facade
+                    .find("moqui.server.Visit")?
+                    .eq("visitId", Value::string(visit_id))
+                    .one()?;
+                Ok(row.map(|row| {
+                    Value::Map(
+                        row.fields()
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect(),
+                    )
+                }))
+            })();
+            match found {
+                Ok(Some(map)) => host_to_js(&ctx, map),
+                Ok(None) => Null.into_js(&ctx),
+                Err(err) => Err(Exception::throw_message(&ctx, err.message())),
+            }
+        })
+    }
+
+    fn get_visit<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        self.visit_property(ctx)
+    }
+
+    /// `endVisit(visitId)`: end another session of the signed-in user (`org.moqui.impl.UserServices.end#UserVisit`);
+    /// the number of web sessions ended. An error for the current visit or one that is not the user's.
+    fn end_visit(&self, ctx: Ctx<'_>, visit_id: String) -> rquickjs::Result<i64> {
+        host_guard(&ctx, || {
+            crate::user::end_user_visit(&visit_id)
+                .map(|count| i64::try_from(count).unwrap_or(i64::MAX))
+                .map_err(|err| Exception::throw_message(&ctx, err.message()))
         })
     }
 

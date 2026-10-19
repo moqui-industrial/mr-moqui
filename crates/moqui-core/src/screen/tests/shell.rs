@@ -38,6 +38,18 @@ const ROOT: &str = r#"<screen require-authentication="false">
         const shellData = sri.getShellData()
         if (shellData != null) ec.web.sendJsonResponse(shellData)
     ]]></script></actions><default-response type="none"/></transition>
+    <transition name="shellProviders" read-only="true" begin-transaction="false"><actions><script><![CDATA[
+        const kind = ec.web.parameters.kind
+        // twice in one request: the second is the kept one
+        const first = sri.getShellProviders(kind)
+        const again = sri.getShellProviders(kind)
+        ec.web.sendJsonResponse({first: first, same: JSON.stringify(first) === JSON.stringify(again)})
+    ]]></script></actions><default-response type="none"/></transition>
+    <transition name="savePreference"><actions><script><![CDATA[
+        ec.user.setPreference('SHELL_DENSITY', 'compact')
+        ec.user.setPreference('KEYMAP', '{"global": {"palette": "Mod+É"}}')
+        ec.web.sendJsonResponse({saved: true})
+    ]]></script></actions><default-response type="none"/></transition>
     <transition name="shellSearch" read-only="true" begin-transaction="false"><actions><script><![CDATA[
         const params = ec.web.parameters
         const found = sri.getShellSearch(params.text, params.groups, params.limit)
@@ -568,6 +580,188 @@ fn shell_data_lists_the_apps_the_user_may_open_with_their_menus_providers_theme_
     let (status, _) = get(&world, &root, None, "/shellData", &[]);
     assert_eq!(status, 401);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `sri.getShellProviders(kind)` answers the providers of `getShellData` without the menus, record screens and counts, all
+/// kinds or the one asked for, for the apps the user may open; a kind that is not one is an error. It is kept per session,
+/// user, locale and theme: the second call of a request is the kept answer, a login drops it, and a changed app root
+/// screen file is read again.
+#[test]
+fn shell_providers_are_the_providers_of_the_shell_data_alone_and_kept_per_session() {
+    let dir = tree("providers");
+    let world = world(&dir);
+    let root = root_of(&dir);
+    let (status, data) = get(&world, &root, Some("plain"), "/shellData", &[]);
+    assert_eq!(status, 200, "{data}");
+    let (status, answer) = get(&world, &root, Some("plain"), "/shellProviders", &[]);
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(answer["same"], true, "{answer}");
+    let providers = &answer["first"];
+    assert_eq!(names(&providers["apps"], "name"), ["open"], "{providers}");
+    let open = &providers["apps"][0];
+    assert_eq!(
+        open["providers"], data["apps"][0]["providers"],
+        "the same providers as the shell data"
+    );
+    assert_eq!(open["title"], "Open App");
+    assert_eq!(open["path"], "/qapps/open");
+    for left_out in ["menu", "recordScreens"] {
+        assert!(open.get(left_out).is_none(), "{left_out} in {open}");
+    }
+    assert!(
+        providers.get("counts").is_none() && providers.get("shell").is_none(),
+        "{providers}"
+    );
+    // one kind
+    let (_, answer) = get(
+        &world,
+        &root,
+        Some("plain"),
+        "/shellProviders",
+        &[("kind", "todaySources")],
+    );
+    assert_eq!(
+        answer["first"]["apps"][0]["providers"],
+        json!({"todaySources": [{"service": "test.Shell.get#TodayItems", "label": "Open items"}]}),
+        "{answer}"
+    );
+    // a login drops the session's: ADMIN gets the secret app too
+    let (_, admin) = get(
+        &world,
+        &root,
+        Some("admin"),
+        "/shellProviders",
+        &[("kind", "paletteTypes")],
+    );
+    assert_eq!(names(&admin["first"]["apps"], "name"), ["open", "secret"], "{admin}");
+    assert_eq!(
+        admin["first"]["apps"][1]["providers"],
+        json!({"paletteTypes": ["SecretDoc"]})
+    );
+    let (status, _) = get(&world, &root, Some("plain"), "/shellProviders", &[("kind", "menus")]);
+    assert_ne!(status, 200, "not a provider kind");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The kept providers of a key are used while the screens they were read from are current and dropped by a session's
+/// prefix (a login or logout in it); a changed screen file is a miss.
+#[test]
+fn kept_shell_providers_follow_their_screens_and_the_session() {
+    let dir = tree("providers-kept");
+    let world = world(&dir);
+    let facade = crate::screen::ScreenFacade::of(&world.factory);
+    facade.set_check_interval(Some(std::time::Duration::ZERO));
+    let location = dir.join("Apps/Open.xml").to_string_lossy().into_owned();
+    let def = facade.screen_def(&world.factory, &location).unwrap();
+    facade.put_shell_providers(
+        "v1\u{1}plain".to_string(),
+        json_value(json!({"apps": []})),
+        vec![Arc::clone(&def)],
+    );
+    facade.put_shell_providers(
+        "v2\u{1}plain".to_string(),
+        json_value(json!({"apps": [1]})),
+        vec![Arc::clone(&def)],
+    );
+    assert!(facade.cached_shell_providers(&world.factory, "v1\u{1}plain").is_some());
+    facade.forget_shell_providers("v1\u{1}");
+    assert!(facade.cached_shell_providers(&world.factory, "v1\u{1}plain").is_none());
+    assert!(facade.cached_shell_providers(&world.factory, "v2\u{1}plain").is_some());
+    // the app root screen changes: the kept providers are not used
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let text = std::fs::read_to_string(&location).unwrap();
+    std::fs::write(&location, text.replace("Open items", "Open items now")).unwrap();
+    let modified = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+    let _ = std::fs::File::options()
+        .write(true)
+        .open(&location)
+        .and_then(|file| file.set_modified(modified));
+    assert!(facade.cached_shell_providers(&world.factory, "v2\u{1}plain").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A request that sets user preferences tells the page in its response: `X-Moqui-Preferences`, the JSON map of what it set,
+/// percent-encoded as `encodeURIComponent`; a request that sets none has no such header.
+#[test]
+fn a_response_carries_the_preferences_its_request_set() {
+    let dir = tree("preferences");
+    let world = world(&dir);
+    let root = root_of(&dir);
+    let mut post = request("POST", "/savePreference");
+    post.set_header("authorization", basic("plain"));
+    post.set_header("user-agent", "GateAgent/1.0");
+    post.set_header("accept-language", "de-DE,de;q=0.9");
+    post.set_header("referer", "https://example.com/from");
+    let response = serve_at(&world.factory, post, &root);
+    assert_eq!(response.status, 200, "{}", response.body_text());
+    // the visit the login started records the request, as Java's
+    {
+        let ctx = world.factory.new_context();
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        let facade = world.factory.entity().unwrap();
+        let visits = facade
+            .find("moqui.server.Visit")
+            .unwrap()
+            .eq("userId", Value::string("plain"))
+            .list()
+            .unwrap();
+        let visit = visits.iter().next().expect("a visit of the login");
+        let text = |field: &str| {
+            visit
+                .get(field)
+                .map(moqui_lib::object::to_plain_string)
+                .unwrap_or_default()
+        };
+        assert_eq!(text("initialUserAgent"), "GateAgent/1.0");
+        assert_eq!(text("initialLocale"), "de_DE");
+        assert_eq!(text("initialReferrer"), "https://example.com/from");
+        assert!(
+            text("initialRequest").ends_with("/savePreference"),
+            "{}",
+            text("initialRequest")
+        );
+        assert_eq!(text("webappName"), "webroot");
+    }
+    let header = response
+        .headers
+        .iter()
+        .find(|(name, _)| name == "X-Moqui-Preferences")
+        .map(|(_, value)| value.clone())
+        .unwrap_or_else(|| panic!("no preferences header: {:?}", response.headers));
+    assert!(header.is_ascii() && !header.contains(['"', '{', ' ']), "{header}");
+    let decoded = String::from_utf8(
+        (0..header.len())
+            .scan(0, |skip, at| {
+                if *skip > 0 {
+                    *skip -= 1;
+                    return Some(None);
+                }
+                if header.as_bytes()[at] == b'%' {
+                    *skip = 2;
+                    Some(Some(u8::from_str_radix(&header[at + 1..at + 3], 16).unwrap()))
+                } else {
+                    Some(Some(header.as_bytes()[at]))
+                }
+            })
+            .flatten()
+            .collect(),
+    )
+    .unwrap();
+    let map: serde_json::Value = serde_json::from_str(&decoded).unwrap();
+    assert_eq!(
+        map,
+        json!({"KEYMAP": "{\"global\": {\"palette\": \"Mod+É\"}}", "SHELL_DENSITY": "compact"})
+    );
+    let mut again = request("GET", "/shellData");
+    again.set_header("authorization", basic("plain"));
+    let response = serve_at(&world.factory, again, &root);
+    assert!(!response.headers.iter().any(|(name, _)| name == "X-Moqui-Preferences"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn json_value(json: serde_json::Value) -> Value {
+    moqui_lib::json::from_json(&json)
 }
 
 /// In the html mode the chatter and record-files elements are a plain link to the subscreen of the current app root that the

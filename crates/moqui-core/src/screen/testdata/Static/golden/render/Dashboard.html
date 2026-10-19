@@ -7,3 +7,6 @@
 <div class="m-dashboard"><div class="m-dashboard-item"><m-number-card :title="ec.l10n.localize('Plain')" value="7"></m-number-card>
 </div></div>
 <m-link :href="$mq.url('/Orders',{'statusId':'Open','sort':'-date'},$mq.merge({'statusId':$scope['statusId']},null))" class="m-link-text"><span v-text="ec.l10n.localize('All open')"></span></m-link>
+<div class="m-dashboard"><div class="m-dashboard-item"><m-number-card :title="ec.l10n.localize('Held orders')" value="1" :href="$mq.link(ec.resource.expandNoL10n('Orders?statusId=${orderStatus}',{'orderStatus':()=&gt;(orderStatus)}),'/')"></m-number-card>
+</div></div>
+<m-link :href="$mq.url($mq.link(ec.resource.expandNoL10n('${\'Orders\'}',{'\'Orders\'':()=&gt;('Orders')}),'/'),{'sort':ec.l10n.localize('-date')},null)" class="m-link-text"><span v-text="ec.l10n.localize('Dynamic orders')"></span></m-link>

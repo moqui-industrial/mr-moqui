@@ -214,3 +214,24 @@ IronStone impl-drawers-commons M4 and M7 (framework). `container-split` and the 
 |---|---|---|
 | `subscreens-panel` | `type="wizard"` (a stepper whose Next submits the step's form and follows its answer) and `type="stack"` (a breadcrumb back to the first subscreen) render; Java's XSD had them TABLED and its macros wrote a "LATER ... not yet supported" heading | The wizard archetype of the IronStone style guide (§3.10); XSD documentation of `subscreens-panel`, `m-subscreens-wizard` in `WebrootVue.qvt.js` |
 | screen menu data | A screen with a wizard or stack panel reports `hasTabMenu` true, as a tab panel does, so the shell's breadcrumb does not add a menu of its steps | The stepper and the breadcrumb are the panel's own menu; `screen/definition.rs` |
+
+## Framework gaps from the IronStone screens (2026-10-19)
+
+Fixes of the gaps the BOSS screens found; where a fix differs from Java on purpose, or adds what Java has not.
+
+| Area | Difference | Rationale / where documented |
+|---|---|---|
+| `ec.l10n.format` | Epoch millis text (12 or 13 digits, 2001 to 2099) with no pattern is formatted as a time stamp (`yyyy-MM-dd HH:mm`); Java returns a `String` as it is | A time stamp reaches a script and a server-static screen's data as its millis text (`temporal_text`), where Java's script holds the `Timestamp`, so `${ec.l10n.format(statusHistory.changedDate, null)}` showed the millis. Doc comment at `epoch_millis_text` in `l10n.rs`; the client's `$mq.fmt` does the same |
+| date patterns | The week fields `Y`, `w`, `W` and `F` follow the `en_US` calendar (weeks from Sunday, week 1 holds January 1) whatever the locale; `u` is the year (`DateTimeFormatter`), not `SimpleDateFormat`'s day of the week | The formatter has no locale calendar data; module doc of `moqui-lib/src/datefmt.rs` |
+| cache facade | `ec.cache.getCache(name)` with no conf entry makes the cache with the default settings on first use, as Java; `clear()` of a name also clears the screen or entity list cache of that name | Java parity; doc comment at `CacheFacade::get_or_create` |
+| in-memory test db | Numbers of two types (an `I32` condition value, an `I64` column, a decimal) compare by value | As the database compares them; `numeric` in `testing.rs` |
+| spec rewrite | In a `then` or `expect` block a line that starts with `/`, `` ` ``, `(` or `[` after a line that ended an expression is its own condition (a `;` is put before it), as each line is in Spock; JavaScript would join it to the line before | Module doc of `testkit/lines.rs`; docs/Testing.md, Pitfalls |
+| notifications | `mark#NotificationsViewed` of all of an inbox leaves the approvals waiting, and an approve or refuse marks every recipient's row viewed | No Java counterpart (no approvals in Java); the service file's top comment |
+| `link` | `background-submit`, `background-reload-id`, `background-hide-id` and `background-message` on a link that posts through a hidden form, as on a `form-single`; Java's `link` has none | xml-form-3.xsd; js/README.md |
+| `container-dialog` | `tooltip`; the qvt `m-container-dialog` registers as a container of the root by its id, so `background-hide-id` closes it; Java's did not register | xml-screen-3.xsd; js/README.md |
+| `messageInfos` | A message info may carry `link` and `linkText`, a button of its notification | js/README.md, "Shell data and providers" |
+| preferences | A response to a request that set user preferences has `X-Moqui-Preferences` (the JSON of what it set), which the qvt client applies (`moqui.applyPreference`) | js/README.md, "Preferences"; `preferences_header` in `web/mod.rs` |
+| Visit | `sessionId` is the web session id at the visit's start (it changes at a password login's rotation; the `HttpSession` row keeps the visit), and `clientHostName` is the client address (no name lookup) | Java's `request.getRemoteHost()` without lookups gives the address; `create_visit` in `user/session.rs` |
+| sessions | `org.moqui.impl.UserServices.end#UserVisit` and `ec.user.endVisit(visitId)` end another session of the user; `ec.user.visitId` and `ec.user.visit` as Java's `getVisitId` and `getVisit` | No Java counterpart for ending another session; doc comment at `end_user_visit` |
+| mail | With `mail_capture_sends=true`, or the `MailCapture` tool enabled by a spec, `send#EmailMessage` keeps the message in memory (`ec.factory.getTool('MailCapture')`) instead of connecting | docs/Testing.md, "Mail"; module doc of `service/mail_capture.rs` |
+| shell | `sri.getShellProviders(kind)`, the providers of `getShellData` alone, kept per session | js/README.md, "Shell data and providers"; doc comment at `shell_providers` |

@@ -14,9 +14,12 @@
 
 //! Java `DateTimeFormatter` and `SimpleDateFormat` patterns, root locale (English names).
 //!
-//! The letters are the subset screens and reports use: `G y u M L d D E a h H k K m s S Z X x z`,
+//! The letters are `SimpleDateFormat`'s: `G y Y u M L w W d D F E a h H k K m s S Z X x z`,
 //! quoted literals, and `''` for a quote. Any other ASCII letter is an error, so a pattern this
-//! does not understand is reported instead of printed wrong. Zone letters follow
+//! does not understand is reported instead of printed wrong. `u` is the year, as `DateTimeFormatter`
+//! has it (`SimpleDateFormat`'s day number of the week is not used by the screens). The week fields
+//! `Y`, `w` and `W` follow the `en_US` calendar `L10nFacade` formats with by default: weeks start on
+//! Sunday and week 1 of a year (or month) is the one that holds its first day. Zone letters follow
 //! `SimpleDateFormat`, which `L10nFacade` uses: `z` is the short name (`PST`), `Z` is `-0800` at
 //! any count, and `X`, `XX`, `XXX` are `-08`, `-0800`, `-08:00`.
 
@@ -111,6 +114,21 @@ fn field(zoned: &Zoned, letter: char, count: usize, pattern: &str, out: &mut Str
         }
         'd' => pad(out, i64::from(zoned.day()), count),
         'D' => pad(out, i64::from(zoned.day_of_year()), count),
+        'F' => pad(out, i64::from((zoned.day() - 1) / 7 + 1), count),
+        'W' => {
+            let first = zoned.date().first_of_month();
+            let lead = i64::from(first.weekday().to_sunday_zero_offset());
+            pad(out, (i64::from(zoned.day()) - 1 + lead) / 7 + 1, count);
+        }
+        'w' => pad(out, week_of_year(zoned.date()).1, count),
+        'Y' => {
+            let year = week_of_year(zoned.date()).0;
+            if count == 2 {
+                pad(out, year.rem_euclid(100), 2);
+            } else {
+                pad(out, year, count);
+            }
+        }
         'E' => {
             let name = weekday_name(zoned.weekday());
             if count >= 4 {
@@ -154,6 +172,21 @@ fn field(zoned: &Zoned, letter: char, count: usize, pattern: &str, out: &mut Str
         }
     }
     Ok(())
+}
+
+/// The week year and week of `date` in the `en_US` calendar: weeks from Sunday, and week 1 is the week that holds
+/// January 1, so the last days of December can be week 1 of the next year.
+fn week_of_year(date: jiff::civil::Date) -> (i64, i64) {
+    let year = i64::from(date.year());
+    let weekday = i64::from(date.weekday().to_sunday_zero_offset());
+    let week_start_day = i64::from(date.day_of_year()) - weekday;
+    let days_in_year = i64::from(date.days_in_year());
+    // The week holds next January 1 when it runs past the year's last day.
+    if week_start_day + 6 > days_in_year {
+        return (year + 1, 1);
+    }
+    let jan1_weekday = i64::from(date.first_of_year().weekday().to_sunday_zero_offset());
+    (year, (i64::from(date.day_of_year()) - 1 + jan1_weekday) / 7 + 1)
 }
 
 fn pad(out: &mut String, value: i64, width: usize) {
@@ -459,7 +492,9 @@ mod tests {
         );
         assert_eq!(format(&zoned, "''yy'' Z").unwrap(), "'26' -0800");
         assert_eq!(format(&at("UTC"), "X").unwrap(), "Z");
-        assert!(format(&zoned, "yyyy ww").is_err());
+        // the week fields are SimpleDateFormat's (en_US weeks); a letter it does not have is an error
+        assert_eq!(format(&zoned, "YYYY ww W F").unwrap(), "2026 02 2 1");
+        assert!(format(&zoned, "yyyy qq").is_err());
         assert!(format(&zoned, "'open").is_err());
     }
 

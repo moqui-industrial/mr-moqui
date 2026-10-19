@@ -347,3 +347,45 @@ feature("a failing thread fails the feature", {
         failure(&result, 1).message
     );
 }
+
+/// A regex literal, a string or a template with non-ASCII text in a `then` block runs, and a failing one draws its
+/// diagram under the right characters.
+#[test]
+fn unicode_in_conditions_runs_and_draws_its_diagram() {
+    let result = run(r#"
+feature("unicode passes", {
+    when() { return { label: "Today · 3 — é", n: 2 } },
+    then({ label, n }) {
+        label.length == 13
+        /^Today · \d+ — é$/.test(label)
+        label.match(/[·•]/u) != null
+        `· ${n} ·` == "· 2 ·"
+        'é·' + n == "é·2"
+    },
+})
+feature("unicode fails", {
+    when() { return { label: "Today · 3" } },
+    then({ label }) {
+        /^Tomorrow · \d+$/.test(label) || label == "é·"
+    },
+})
+"#);
+    assert_eq!(
+        outcomes(&result),
+        vec![
+            ("unicode passes".to_string(), "passed"),
+            ("unicode fails".to_string(), "failed")
+        ],
+        "{:?}",
+        result.cases
+    );
+    let failure = failure(&result, 1);
+    assert_eq!(failure.kind, "assertion", "{failure:?}");
+    let lines: Vec<&str> = failure.message.lines().collect();
+    assert_eq!(lines[2], r#"/^Tomorrow · \d+$/.test(label) || label == "é·""#);
+    // The bar under `label ==` is under its `==`, counted in characters, not UTF-8 bytes.
+    let bars: Vec<char> = lines[3].chars().collect();
+    let column = |needle: &str| lines[2][..lines[2].find(needle).unwrap()].chars().count();
+    assert_eq!(bars.get(column("==")), Some(&'|'), "{}", failure.message);
+    assert_eq!(bars.get(column("test")), Some(&'|'), "{}", failure.message);
+}

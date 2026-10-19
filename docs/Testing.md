@@ -153,11 +153,41 @@ function, is refused when the file loads rather than run with conditions that ca
 `fromDate` defaults; the runner clears it after the spec. `ec.entity.tempSetSequencedIdPrimary` and
 `tempResetSequencedIdPrimary` are what `tempSequences` calls.
 
+## Mail
+
+A spec checks a send that goes, with no mail server, through the mail capture: while it is on, `send#EmailMessage`,
+and so `send#EmailTemplate` and the mail client's `send#Draft`, does all of a real send (the `EmailMessage` row, its
+`ES_SENT` status and `sentDate`, the mail client's Sent folder) except connect, and keeps the message in memory. The
+`EmailServer` must still have an SMTP host, as for a real send (an empty one sends nothing); it is never connected. A
+spec turns it on for itself, and the conf property `mail_capture_sends=true` turns it on for a whole run
+(`mail_capture_sends=true ./moq test ...`) or a server that must not send mail; it is off otherwise, so a spec that
+checks a send that cannot connect sees one. The tool reads and clears what was captured:
+
+```js
+const capture = ec.factory.getTool("MailCapture")
+spec({ setupSpec() { capture.enable() }, cleanupSpec() { capture.reset() } })
+// in a feature
+capture.clear()
+const sent = call("org.moqui.impl.EmailClientServices.send#Draft", { emailMessageId: draftId })
+capture.last().toList            // ["customer@example.com"]
+```
+
+| Method | |
+|---|---|
+| `getMessages()` | The captured messages, oldest first, each `{subject, fromAddress, fromName, toList, ccList, bccList, replyToList, body, bodyText, messageId, inReplyTo, references, attachmentNames, capturedDate}` (the 500 most recent) |
+| `last()`, `count()`, `clear()` | The newest one (or null), how many, and forget them |
+| `enable()`, `disable()`, `reset()` | Capture on or off for this server whatever the property says, and back to the property; reset it when the spec ends, as the switch outlives the spec |
+| `isEnabled()` | Whether a send now is captured |
+
+The capture is a tool of the framework (`moqui_core::service::mail_capture`, in `MoquiDefaultConf.xml`).
+
 ## Pitfalls
 
-- A line that starts with `[`, `(` or a template literal continues the line before it, since JavaScript inserts no
-  semicolon there: `x == 1` then a line `[a, b] == c` is one expression. Start such a line with `;`, or put the list in a
-  variable.
+- Outside a `then` or `expect` block, a line that starts with `[`, `(`, `/` or a template literal continues the line
+  before it, since JavaScript inserts no semicolon there: `x = 1` then a line `[a, b].forEach(f)` is one expression.
+  Start such a line with `;`, or put the list in a variable. In a `then` or `expect` block each line is its own
+  condition, as in Spock: the rewrite ends the line before such a line when it ended an expression, so
+  `/^Today · \d+$/.test(label)` on its own line is a regular expression, not a division.
 - Decimals from services are objects: `+`, `<` and `Number()` on them throw outside a condition. Use their methods
   (`add`, `subtract`, `multiply`, `negate`, `compare`), or `dec`.
 - `parallel` runs its function from its source text on other threads, so it cannot use the spec's variables. Pass what it

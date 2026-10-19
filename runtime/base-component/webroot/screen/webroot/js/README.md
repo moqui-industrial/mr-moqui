@@ -58,7 +58,7 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 
 | File | What |
 |---|---|
-| `MoquiLib.js` | the `moqui` object: type checks, `deepCopy`, field comparison, `objToSearch` / `searchToObj` / `parseHref` / `makeHref`, `request` (fetch with the session token), `loadScript` / `loadStylesheet`, `parseVue` and `evalComponentJs` (the `qvue` and `qjs` text), `NotificationClient`, `LruMap`. Runs under Node. |
+| `MoquiLib.js` | the `moqui` object: type checks, `deepCopy`, field comparison, `objToSearch` / `searchToObj` / `parseHref` / `makeHref`, `request` (fetch with the session token; it hands a response's `X-CSRF-Token` to `moqui.onSessionToken` and its `X-Moqui-Preferences` to `moqui.onPreferences`), `loadScript` / `loadStylesheet`, `parseVue` and `evalComponentJs` (the `qvue` and `qjs` text), `NotificationClient`, `LruMap`. Runs under Node. `loadScript(src, callback, validate)` loads a script once (`moqui.scriptLoads`, one promise per src): a call while it loads waits for it; when it fails every waiter is rejected (and the callback gets the error) and the element is removed, so a later call loads it again; a `validate` that never sees its library rejects after its retries (about 20 s). |
 | `MoquiL10n.js` | `moqui.l10n`: `format`, `formatCurrency`, `formatCurrencyNoSymbol` and `localize`. A copy of `crates/moqui-lib` `format.rs` and `datefmt.rs`: Java `DecimalFormat` and date pattern subset, HALF_EVEN on decimal text. `MoquiL10n.test.js` runs `crates/moqui-lib/testdata/format-vectors.json`. |
 | `WebrootVue.qvt.js` | the `m-*` components and the application. `moqui.qvt.components` holds the definitions. |
 | `MoquiQzComponent.js` | QZ Tray 2.3 printing, loaded after `/libs/qz-tray/qz-tray.js` and only when the user preference `qz.print.enabled` is `true`. |
@@ -91,6 +91,7 @@ inline script and no inline event handler, and the settings are a data block:
 | `userId`, `username`, `userFullName` | the signed-in user |
 | `locale`, `timeZone`, `quasarLang` | `en-US` style tag, zone name, and the key of the language pack in `Quasar.Lang` (`enUS`, `ptBR`, `zhCN`, `de`, ...) |
 | `darkMode`, `leftOpen` | the preferences `QUASAR_DARK` and `QUASAR_LEFT_OPEN` |
+| `density`, `startApp` | `SHELL_DENSITY` (`comfortable` or `compact`) and `SHELL_START_APP`, the app the user may open that `/qapps` with no path opens (empty for the app list) |
 | `notificationEndpoint` | the path of the notification WebSocket, from `webapp_notification_endpoint`. Empty means no socket is opened. |
 | `navPlugins`, `accountPlugins` | theme values `STRT_HEADER_NAVBAR_COMP` and `STRT_HEADER_ACCOUNT_COMP`: URLs of components for the header |
 | `qz` | `{enabled}`: print through QZ Tray |
@@ -131,7 +132,10 @@ Buttons are of three kinds, so a screen reads the same everywhere: a `submit` is
 (`outline` until then), and a `link` or `button-menu` with an explicit `btn-type="primary"` is the same filled primary button (the one main
 action of a title row); a secondary action (a `link` outside a form-list cell, a transition link, a `button-menu`, a dialog's button, the Find
 Options / Columns / Saved Finds tools of a list) is tonal, `unelevated class="m-btn-tonal"` with `text-<color>` for a `btn-type` other than
-primary (`../css/WebrootVue.qvt.css`); a minor one (`reset`, `hidden-form-link`, page size, the export menu, icon buttons) is `flat`. A screen
+primary (`../css/WebrootVue.qvt.css`); a minor one (`reset`, `hidden-form-link`, page size, the export menu, icon buttons) is `flat`, and a
+`hidden-form-link` keeps its text at the left as a text link's (`m-link-left`: Quasar centers a button's content). A link that posts
+through a hidden form takes a form-single's `background-reload-id`, `background-hide-id` and `background-message` (the `m-form`'s
+`submit-reload-id`, `submit-hide-id` and `submit-message`; the html mode posts it in the background with any of them or `background-submit`). A screen
 link with the default link-type inside a form-list cell, and `link-type="anchor"` anywhere, is text (`m-link-text`); `anchor-button` keeps the
 button in a cell. A `container-dialog` or `dynamic-dialog` button inside a form-list cell is flat and dense like the other in-cell links: the
 container-dialog's button comes through the component's `button` slot (`q-btn dense flat class="m-link"`), the dynamic-dialog gets
@@ -154,7 +158,7 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 
 | Component | For |
 |---|---|
-| `m-form` | form-single and rows of a form-list: `fields-initial`, `v-slot:default="formProps"` (`fields`, `hasFieldsChanged`, `fieldChanged`, checkbox set), submit by `fetch` (JSON answer, or a download), `submit-message`, `submit-reload-id`, `submit-hide-id`, `focus-field`, `exclude-empty-fields`, `parent-checkbox-set`, `validation-errors-initial`; the validation errors of its own fields go in `fieldErrors`, which the field wrappers show on the Quasar field |
+| `m-form` | form-single and rows of a form-list: `fields-initial`, `v-slot:default="formProps"` (`fields`, `hasFieldsChanged`, `fieldChanged`, checkbox set), submit by `fetch` (JSON answer, or a download), `submit-message`, `submit-reload-id`, `submit-hide-id`, `focus-field`, the `submitted` event (with the answer, the JSON or the text) after a submit whose answer has no errors, for a `.qvue` host (`<m-form @submitted="...">`), `exclude-empty-fields`, `parent-checkbox-set`, `validation-errors-initial`; the validation errors of its own fields go in `fieldErrors`, which the field wrappers show on the Quasar field |
 | `m-form-link` | a form that goes to a screen: the fields become the query. Slot `fields`, `clearForm` |
 | `m-checkbox-set` | selected rows: `checkbox-count`, `checkbox-parameter`, `checkbox-list-mode`, `checkbox-values` |
 | `m-form-list` | a list drawn by the client from rows it fetches, with sort, pages, selection (the `m-sel` column) and sub rows (see below); the page buttons are written again under a list of more than one page, after the table |
@@ -167,8 +171,8 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-display` | text or a read-only field (`label-wrapper`), `display`, `value-url` |
 | `m-check`, `m-radio`, `m-file`, `m-field`, `m-text-find`, `m-range-find` | the other widgets |
 | `m-editable` | click to edit, `QPopupEdit`, `url`, `url-parameters`, `parameter-name`, `widget-type`, `load-url` |
-| `m-link` | a screen link: `href`, `load-id`, `confirmation`. A `data-confirm` attribute on any button or link is asked first |
-| `m-container-box`, `m-box-body`, `m-container-dialog`, `m-dialog` | boxes and dialogs |
+| `m-link` | a screen link: `href`, `load-id`, `confirmation`; an external `href` (another scheme or host, `moqui.isExternalLink`) is a plain anchor the browser follows. A `data-confirm` attribute on any button or link is asked first |
+| `m-container-box`, `m-box-body`, `m-container-dialog`, `m-dialog` | boxes and dialogs. `m-container-dialog` (`container-dialog`) registers with the root by its `id` while mounted (`addContainer`, taken back with `removeContainer` when unmounted), so a form's `background-hide-id` (`submit-hide-id`) and `$root.hideContainer(id)` close it; its `reload` and `load` do nothing (the content is the page's). `tooltip` (the `container-dialog` attribute) is a `q-tooltip` on its button, the slot button of a list cell too |
 | `m-dynamic-container`, `m-dynamic-dialog` | a screen loaded into a container, or a dialog, with `load`, `reload` and `hide`; the dialog's button takes `button-text`, `button-class`, `color` and `button-icon` (default `open_in_new`), as `m-container-dialog` does |
 | `m-tree-top`, `m-tree-item` | tree: `items` is the node list or its URL (`<screen>/actions/<tree>`, posted `treeNodeId`, `treeNodeName`, `treeOpenPath`). A node's `children` is a list when it came inline (on `open-path`), `true` to load from the URL when the node is opened, `false` for a leaf |
 | `m-subscreens-tabs` (also `m-subscreens-menu`), `m-subscreens-active`, `m-subscreens-panel` | the subscreen menu and the place of the active subscreen |
@@ -256,6 +260,14 @@ once per page load:
   `notifications` (unviewed in the Notifications inbox, approvals included), `approvals` and `updates` (unviewed in the Updates inbox,
   which no header badge shows). Null when the theme names none, or the service is missing or fails (logged once per service name).
 
+**`sri.getShellProviders(kind)`**, for a screen that only reads the providers (the tray's Today panel reads `todaySources`, the
+Notifications panel `notificationTopics`): `{apps: [{name, title, image, imageType, path, providers}]}`, the apps and providers of
+`getShellData` without the menus, record screens, theme values and counts; with `kind` (`quickCreate`, `todaySources`,
+`paletteActions`, `paletteTypes`, `paletteSources`, `notificationTopics`, `keymaps`, `accountMenuItems`) each app's `providers` holds
+that list alone, and another kind is an error. It is kept per session (visit), user, locale and theme while the app root screens are
+current (a screen file changed in development, an app added) for up to ten minutes, and dropped on a login or logout in the session;
+no user gives no apps. `getShellData` is unchanged.
+
 **`GET /shellSearch?text=&groups=&limit=`** (read-only, 401 without a user): the palette's provider groups.
 
 ```
@@ -297,7 +309,9 @@ beside Java's keys (`topic`, `subTopic`, `sentDate`, `notificationMessageId`, `t
 `ec.makeNotificationMessage().reason('mention').record(entityName, id).actorUserId(id).appName(name)`. The screens read the current user's
 notifications only through `org.moqui.impl.NotificationServices`: `get#UserNotifications` (by inbox, reason, app, topic, read state, dates,
 text, approvals waiting; paged; with the unread of each inbox and the approvals waiting), `mark#NotificationsViewed` (ids, or all of an
-inbox), and `approve#NotificationMessage` and `refuse#NotificationMessage`, which call the services the topic names
+inbox, which leaves the approvals waiting: an approval is decided, not read), and `approve#NotificationMessage` and
+`refuse#NotificationMessage`, whose decision is final for the message (every recipient's row is marked viewed, so the others no longer
+see it waiting; an approval that each of several users decides is a message per user), which call the services the topic names
 (`approveServiceName`, `refuseServiceName`) with `recordEntityName`, `recordId`, `message` (the messageJson map) and, for a refuse,
 `reason` (required when the topic has `refuseReasonRequired`).
 
@@ -335,10 +349,15 @@ latest counts). The header, left to right (IronStone style-guide ยง2.2, design ย
   in the screen context. A kind opens its link (as `/apps/...`) in `m-shell-quick-create`, an `m-dialog` with an `m-dynamic-container`, with
   `recordEntity`, `recordId` and `recordTitle` from the screen context. An `m-form` in it with no `submit-hide-id` closes it when the answer has
   no errors (it injects `mSubmitHide`); going to another screen closes it too. A quick-create screen answers its form with JSON (messages in
-  `messageInfos`) and no `screenUrl` to stay on the page (example `Gallery/QuickNote.xml`), or with a `screenUrl` to open the new record.
+  `messageInfos`) and no `screenUrl` to stay on the page (example `Gallery/QuickNote.xml`), or with a `screenUrl` to open the new record. A
+  message info may carry a `link` and `linkText`: `{messageInfos: [{message, type, link, linkText}]}` notifies with a button (`linkText`, "Open"
+  by default) that follows it (`moqui.openLink`: an app link through `$root.setUrl`, an external one in a new window), so a quick create can
+  offer the record it made and stay. A transition's `<message>` has no link; `moqui.notifyMessages` takes texts and maps alike.
 - **Today, Chat, Mail, Messages, Notifications**: each only when its theme value is set (R27). Today, Chat and Notifications open the tray on
   their tab; Mail (`m-counter-email`) links to `shell.mailScreen` and Messages (`m-counter-messages`) to `shell.messagesScreen`. Below 600 px
-  Mail and Messages are one button (`m-counter-mail`) to the mail screen whose badge is their sum. Badges are `shellCounts.today`, `chat`,
+  Mail and Messages are one button (`m-counter-mail`) to the mail screen whose badge is their sum, the tray tabs one tray button
+  (`m-counter-tray`, the Notifications icon) whose badge is their sum and that opens the tray on its last tab (its tabs switch), and the app
+  title gives way to the launcher, so a phone header holds menu, launcher, Search, `+`, the tray, Mail, the theme plugins and the account. Badges are `shellCounts.today`, `chat`,
   `email`, `messages` and `notifications` (a number, or a map's `total`); `updates` has no badge. Without a Notifications tab the
   notify-history menu stays. The screen history is the palette's Recent.
 - **Account menu**: the `accountMenuItems` of every app after the user's name. The right `q-drawer` slot stays free for Assist (R1).
@@ -365,6 +384,20 @@ types; while a dialog is open single keys wait. The shell's own: Mod+K the palet
 closes those), `?` the overlay of the keys on now, `c` the current app's first `+` kind. The apps' `keymap` providers: an empty or `global`
 scope everywhere, another while its app is the current one. The `KEYMAP` user preference (`config.preferences`) changes keys:
 `{"global": {"palette": "Mod+P", "g c": "g x"}}`, by scope, the binding's `action` or else its keys.
+
+## Preferences
+
+The user's preferences in the page are `config.preferences` (the keys the user has set, read through `ec.user.getPreference`),
+`config.density` and `config.startApp`. **`moqui.applyPreference(key, value)`** keeps a new value there and applies at once one
+the shell reads: `QUASAR_DARK` (`$q.dark`), `QUASAR_LEFT_OPEN` (the drawer), `KEYMAP` (`moqui.keymap.setOverrides`) and
+`SHELL_DENSITY` (`moqui.applyDensity`: `compact` puts `m-density-compact` on the body, whose rules in `../css/WebrootVue.qvt.css`
+tighten the page, boxes, list rows, fields and menu items; anything else is the comfortable default). Another key is only kept.
+`moqui.applyPreferences(map)` applies a map. **The server tells the page**: a response to a request that set preferences
+(`ec.user.setPreference`, `set#Preference`) has the header `X-Moqui-Preferences`, the JSON map of what it set (null for a removed
+key) percent-encoded as `encodeURIComponent` encodes; `moqui.request` decodes it and calls `moqui.onPreferences`, which is
+`moqui.applyPreferences`. So a Preferences screen that saves through its own transition, whatever it answers, changes the page
+without a reload; one that saves in the browser alone calls `moqui.applyPreference`. `SHELL_START_APP` applies to the next
+`/qapps` page (`moqui.startPath`): the server sends `startApp` only for an app the user may open (`sri.getShellProviders`).
 
 ## Record panels, rich text, avatars and record cards
 
@@ -481,7 +514,10 @@ screen package, `private, no-store`) and shows the render function over it.
   `table[expr]()`, the table of functions the compiled template carries for the expressions of that text, so nothing is evaluated from text.
   An expression that is not in the table throws.
 - **`$mq`** (`qvt.helpers`): `str`, `dflt`, `nul`, `cur` (current value of a drop-down, check or radio), `fmt` (a value as text with a Java pattern, picking number,
-  date or time from the pattern for a string), `merge`, `url` / `qs` (path and query from a parameter map), `shown` (`visible-when`).
+  date or time from the pattern for a string; epoch millis text is a time stamp with any date pattern, and with no pattern, as `ec.l10n.format`
+  on the server), `merge`, `url` / `qs` (path and query from a parameter map), `link` (the url a `${}` expression of a link or number-card gave:
+  a relative path resolved against the screen's own path, as the server render resolves a link's url; an absolute path or an external URL as
+  it is), `shown` (`visible-when`).
 - **`m-static-form-list`** fetches `<path>/actions/<name>` with the request's parameters and the page and sort it has changed (`setPageIndex`, `sortBy`,
   `orderBy`), draws `m-form-paginate` and `m-form-go-page`, the `header` slot (`sortBy`, `orderBy`, `action`, `orderByField`) and the `row` slot once for each row with
   the row on the scope of the screen (`rowIndex` is a name of it). The rows of each answer are new components (an `m-form` copies its

@@ -22,4 +22,8 @@
 <a href="http://example.com/x">Out</a>
 <p class="muted" title="tip">Line Ada</p>
 <span>a &lt; b<br>next</span>
-<img src="/img.png" alt="Logo" width="20" height="20" class="logo"><b>raw</b><i>Ada</i><dialog id="DynDlg" class="dynamic-dialog" style="--w:760px" data-load="/edit?id=R7"><header><h4>Edit</h4><button type="button" class="close" data-close aria-label="Close">&times;</button></header><div class="body"><span class="loading">Loading...</span></div></dialog>
+<img src="/img.png" alt="Logo" width="20" height="20" class="logo"><b>raw</b><i>Ada</i><button type="button" id="TipDlg-button" data-dialog="TipDlg" data-btn="primary" title="Add for Ada" aria-label="Add"><i class="fa fa-plus"></i> Add</button><dialog id="TipDlg" class="container-dialog" style="--w:760px"><header><h4>Add</h4><button type="button" class="close" data-close aria-label="Close">&times;</button></header><div class="body">
+<span>tip body</span>
+</div></dialog>
+<form method="post" action="/save" data-bg data-reload="Dyn" data-msg="Saved Ada" data-hide="Dlg"><input type="hidden" name="moquiSessionToken" value="TOKEN"><button type="submit" data-btn="plain">Mark done</button></form>
+<dialog id="DynDlg" class="dynamic-dialog" style="--w:760px" data-load="/edit?id=R7"><header><h4>Edit</h4><button type="button" class="close" data-close aria-label="Close">&times;</button></header><div class="body"><span class="loading">Loading...</span></div></dialog>

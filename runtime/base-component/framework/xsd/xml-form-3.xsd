@@ -509,6 +509,19 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="dynamic-load-id" type="xs:string"><xs:annotation><xs:documentation>
             If specified URL will be loaded into the dynamic-container with this ID.
         </xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="background-submit" type="boolean" default="false"><xs:annotation><xs:documentation>
+            For a link that posts through a hidden form (link-type hidden-form or hidden-form-link, or auto for a transition
+            with actions), as the form-single attribute: post in the background without reloading the screen. The qvt client
+            always posts such a form in the background; in html it is this or any of the three below.
+        </xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="background-reload-id" type="xs:string"><xs:annotation><xs:documentation>
+            For a link that posts through a hidden form: after the post reload the dynamic-container with this id.
+        </xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="background-hide-id" type="xs:string"><xs:annotation><xs:documentation>
+            For a link that posts through a hidden form: after the post hide the dialog (a container-dialog or dynamic-dialog)
+            with this id.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="background-message" type="xs:string"><xs:annotation><xs:documentation>
+            For a link that posts through a hidden form: after the post show this message.</xs:documentation></xs:annotation></xs:attribute>
         <xs:attribute name="condition" type="xs:string"><xs:annotation><xs:documentation>
             If specified and evaluates to false link is not rendered.</xs:documentation></xs:annotation></xs:attribute>
         <xs:attribute name="entity-name" type="xs:string"/>
