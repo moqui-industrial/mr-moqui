@@ -36,6 +36,8 @@
 //  - The navigation bar sits above the table of a form-list and not in a table row.
 //  - The mask of a text-line is converted from the Inputmask patterns (9, a, *) to Quasar mask tokens.
 //  - In fields-initial a link does not replace the _display text of a display or display-entity before it in the same field.
+//  - A form-list with views (view-board, view-calendar; not in Java) is in an m-list-views with its rows' values and a card slot
+//    per row.
 (function (T, S) {
     "use strict";
 
@@ -182,6 +184,24 @@
         reset();
         const push = () => { saved.push(Object.assign({}, st)); };
         const pop = () => { const old = saved.pop(); if (old) Object.assign(st, old); };
+
+        // A unit inside another (a section in a form-list cell, an included screen) starts from the state of the one around it, so
+        // its links are the list's in-cell links with the row's ids, and gives that state back when it ends, so the rows after it
+        // render as before. The outermost unit ($depth 0) starts afresh.
+        const units = [];
+        const enter = (depth) => {
+            if (!depth) { units.length = 0; reset(); return; }
+            units.push({ st: Object.assign({}, st), saved: saved.slice() });
+        };
+        const leave = (depth) => {
+            if (!depth) return;
+            const outer = units.pop();
+            if (!outer) return;
+            Object.keys(st).forEach((key) => { delete st[key]; });
+            Object.assign(st, outer.st);
+            saved.length = 0;
+            outer.saved.forEach((item) => saved.push(item));
+        };
 
         const sec = () => {
             const value = ec.context.get("sectionEntryIndex");
@@ -464,6 +484,7 @@
             const name = fnm(n);
             w("<m-text-line" + A(Object.assign({
                 id: fid(n), type: "password", name, label: label(n), size: at(n, "size") || "25", maxlength: at(n, "maxlength") || null,
+                autocomplete: xn(at(n, "autocomplete")) || "new-password",
                 required: check.required || null, disable: st.disabled || null, form: owner(), tooltip: tip(n)
             }, bindOnly(name, ""))) + "></m-text-line>");
         };
@@ -494,7 +515,7 @@
             const title = label(n);
             const text = at(n, "text") ? x(at(n, "text")) : title;
             const confirmation = x(at(n, "confirmation"));
-            const iconClass = at(n, "icon") || sri.getThemeIconClass(text) || "";
+            const iconClass = xn(at(n, "icon")) || sri.getThemeIconClass(text) || "";
             const image = first(n, "image");
             let body = tooltipTag(tip(n)) + (iconClass ? iconTag(iconClass, !image) : "");
             if (image) {
@@ -504,7 +525,7 @@
             w("<q-btn" + A({
                 dense: true, ":outline": st.inForm ? "!formProps.hasFieldsChanged" : null, ":unelevated": st.inForm ? "formProps.hasFieldsChanged" : null,
                 unelevated: st.inForm ? null : true, "no-caps": true, type: "submit",
-                name: fnm(n), value: fnm(n), id: fid(n), color: quasarColor(at(n, "type") || "primary") || null, disabled: st.disabled || null,
+                name: fnm(n), value: fnm(n), id: fid(n), color: quasarColor(xn(at(n, "type")) || "primary") || null, disabled: st.disabled || null,
                 "data-confirm": confirmation || null, form: owner()
             }) + ">" + body + "</q-btn>");
         };
@@ -790,7 +811,7 @@
         const linkElement = (n, parts, formId) => {
             const style = xn(at(n, "style")) || null;
             const linkType = at(n, "link-type");
-            const btnType = at(n, "btn-type");
+            const btnType = xn(at(n, "btn-type"));
             // A screen link in a form-list cell is text (as is link-type anchor anywhere); the others are tonal buttons, or the filled
             // primary button with btn-type="primary".
             const textLink = linkType === "anchor" || (st.inList && linkType !== "anchor-button");
@@ -798,7 +819,7 @@
                 if (parts.anchor && textLink) return '<span class="text-grey-5">' + linkBody(n, parts.text, parts.img) + "</span>";
                 return "<span><q-btn" + A({
                     dense: true, "no-caps": true, disabled: true, flat: true, class: cls("m-link", style), id: formId || null, label: parts.text || null
-                }) + ">" + (at(n, "icon") ? iconTag(xn(at(n, "icon")), false) : "") + "</q-btn></span>";
+                }) + ">" + (xn(at(n, "icon")) ? iconTag(xn(at(n, "icon")), false) : "") + "</q-btn></span>";
             }
             const confirmation = x(at(n, "confirmation"));
             if (parts.anchor) {
@@ -808,7 +829,7 @@
                 const tag = screen ? "m-link" : "a";
                 const inner = linkBody(n, parts.text, parts.img) + "";
                 return "<" + tag + A({
-                    href, id: formId || null, target: at(n, "target-window") || null, "load-id": at(n, "dynamic-load-id") || null,
+                    href, id: formId || null, target: xn(at(n, "target-window")) || null, "load-id": xn(at(n, "dynamic-load-id")) || null,
                     "data-confirm": confirmation || null, class: textLink ? cls("m-link-text", style) : null
                 }) + ">" + (textLink ? inner : "<q-btn" + A(Object.assign({ dense: true, unelevated: true, "no-caps": true }, btnKind(btnType, "m-link", style))) + ">" + inner + "</q-btn>") + "</" + tag + ">";
             }
@@ -844,7 +865,7 @@
             let out = "<" + tag + A(Object.assign({
                 action: parts.url.path, name: formId || null, id: formId || null,
                 method: isForm && parts.url.getTransitionMethod() === "get" ? "GET" : null,
-                "read-only": isForm && parts.url.isReadOnly() ? true : null, target: at(n, "target-window") || null
+                "read-only": isForm && parts.url.isReadOnly() ? true : null, target: xn(at(n, "target-window")) || null
             }, linkBackground(n, isForm))) + ">";
             Object.keys(params).forEach((key) => { out += hiddenInput(key, params[key] === null || params[key] === undefined ? "" : params[key]); });
             if (!formId) {
@@ -854,7 +875,7 @@
                     out += "<input" + A({ type: "image", src: sri.makeUrlByType(at(img, "url"), at(img, "url-type") || "content", null, "true").url, alt: at(img, "alt") || null, "data-confirm": confirmation || null }) + ">";
                 } else {
                     const linkType = at(n, "link-type");
-                    const btnType = at(n, "btn-type");
+                    const btnType = xn(at(n, "btn-type"));
                     const color = quasarColor(btnType || "primary") || null;
                     const style = xn(at(n, "style")) || null;
                     // hidden-form-link is the flat (minor) button in its color; the others are tonal, or filled with btn-type="primary"
@@ -887,17 +908,27 @@
             w(linkForm(n, parts, id) + open + linkElement(n, parts, id) + close + "\n");
         };
 
+        // Click to edit. An empty text writes nothing unless display-if-empty, which shows the placeholder to click; a select takes
+        // its options as a drop-down does (option, list-options, entity-options) or from the editable-load transition, and date
+        // and date-time edit with the date (and time) picker.
         const editable = (n) => {
             const url = sri.makeUrlByType(at(n, "transition"), "transition", n, "true");
-            const text = ec.resource.expand(at(n, "text"), "");
-            if (!String(text).trim()) return;
+            let text = ec.resource.expand(at(n, "text"), "");
+            if (text === null || text === undefined || text === "null") text = "";
+            const empty = !String(text).trim();
+            if (empty && xn(at(n, "display-if-empty")) !== "true") return;
             const load = first(n, "editable-load");
             let loadUrl = null;
             if (load) loadUrl = sri.makeUrlByType(at(load, "transition"), "transition", load, "true");
+            const widgetType = at(n, "widget-type") || "textarea";
+            const options = widgetType === "select" ? optionList(sri.getFieldOptions(n)) : null;
+            const value = n.attrs && n.attrs.value !== undefined ? xn(at(n, "value")) : null;
             w("<m-editable" + A({
-                id: nodeId(n), "label-type": at(n, "type") || "span", "label-value": at(n, "encode") === "true" ? e(text).replace(/\n/g, "<br>") : text,
+                id: nodeId(n), "label-type": at(n, "type") || "span", "label-value": empty ? "" : at(n, "encode") === "true" ? e(text).replace(/\n/g, "<br>") : text,
                 url: url.url, ":url-parameters": js_(url.getParameterMap()), "parameter-name": at(n, "parameter-name") || "value",
-                "widget-type": at(n, "widget-type") || "textarea", indicator: L("Saving"), tooltip: L("Click to edit"), cancel: L("Cancel"), submit: L("Save"),
+                "widget-type": widgetType, indicator: L("Saving"), tooltip: L("Click to edit"), cancel: L("Cancel"), submit: L("Save"),
+                placeholder: empty ? L("Click to edit") : null, value: value === null || value === "null" ? null : value,
+                ":options": options && options.length ? js_(options) : null,
                 "load-url": loadUrl ? loadUrl.url : null, ":load-parameters": loadUrl ? js_(loadUrl.getParameterMap()) : null
             }) + "></m-editable>");
         };
@@ -1069,14 +1100,20 @@
         };
 
         const rowOpen = (kind, style) => w("<div" + A({ class: cls(kind, xn(style) || null) }) + ">");
+        // the sizes may be expressions (lg="${wide}"); an empty one is not given
         const colOpen = (n, plain) => {
-            const hasLg = !!at(n, "lg");
-            const hasMd = !!at(n, "md");
-            const hasSm = !!at(n, "sm");
+            const size = (key) => { const value = xn(at(n, key)); return value && value !== "null" ? value : ""; };
+            const lg = size("lg");
+            const md = size("md");
+            const sm = size("sm");
+            const xs = size("xs");
+            const hasLg = !!lg;
+            const hasMd = !!md;
+            const hasSm = !!sm;
             const classes = [
-                plain ? null : "q-px-xs", hasLg ? "col-lg-" + at(n, "lg") : null, hasMd ? "col-md-" + at(n, "md") : hasLg && !plain ? "col-md-12" : null,
-                hasSm ? "col-sm-" + at(n, "sm") : (hasLg || hasMd) && !plain ? "col-sm-12" : null,
-                at(n, "xs") ? "col-xs-" + at(n, "xs") : (hasLg || hasMd || hasSm) && !plain ? "col-xs-12" : null, xn(at(n, "style")) || null
+                plain ? null : "q-px-xs", hasLg ? "col-lg-" + lg : null, hasMd ? "col-md-" + md : hasLg && !plain ? "col-md-12" : null,
+                hasSm ? "col-sm-" + sm : (hasLg || hasMd) && !plain ? "col-sm-12" : null,
+                xs ? "col-xs-" + xs : (hasLg || hasMd || hasSm) && !plain ? "col-xs-12" : null, xn(at(n, "style")) || null
             ];
             w("<div" + A({ class: cls(...classes) }) + ">");
         };
@@ -1395,6 +1432,9 @@
             const checkboxAttrs = rowSel ? {
                 "checkbox-parameter": rowSel.parameter || rowSel.idField, ":checkbox-list-mode": rowSel.listMode || "false", ":checkbox-values": arr(ids)
             } : {};
+            // the board and calendar views around the list (a list split in parts with skip-start or skip-end has none)
+            const views = cfg.views && !skipStart && !skipEnd ? Object.assign({ valueDescs: cfg.valueDescs.r }, cfg.views) : null;
+            if (views) viewsOpen(info, n, views, formId);
 
             if (!skipStart) {
                 if (multi) {
@@ -1574,6 +1614,7 @@
                 w("</div>\n");
                 if (multi) w("</m-form>\n");
                 else if (rowSel && !skipStart) w("</m-checkbox-set>\n");
+                if (views) w("</m-list-views>\n");
             }
             pop();
         };
@@ -1620,6 +1661,167 @@
                 return (from ? L("From") + " " + from : "") + (thru ? " " + L("to") + " " + thru : "");
             }
             return sri.getFieldValueString(n);
+        };
+
+        // ---- form-list views ----
+
+        // The views of a form-list (views, view-board, view-calendar; style-guide §3.6, §3.7, §8.2): an m-list-views around the list, with the
+        // fields of each row the views read (the key fields, the group, sum, times, color and resource, the title and card fields) as plain
+        // values and their _display text, the board's columns and the calendar's colors, and a card_{index} slot per row: the title, badge and
+        // card fields written as the list writes their cells (outside the row's form), so a card reads as its row does and its title link
+        // opens the record. A column of a status board is each status of its type in sequence order (get#ListViewColumns), and the flow's
+        // transitions tell the board where a card may go.
+        // the key of the user's choice of view (the LIST_VIEW_ preference): the screen's path and the form's name
+        const viewsKey = (n) => String(sri.getScreenUrlInstance().path || "").replace(/^\/(apps|qapps)(?=\/|$)/, "") + "#" + at(n, "name");
+        const listOf = (text) => idList(text) || [];
+        const viewTransition = (name) => {
+            if (!name) return null;
+            const url = sri.makeUrlByType(name, "transition", null, "false");
+            return url.getDisableLink() ? null : url;
+        };
+        const colorMap = (text) => {
+            const out = {};
+            String(text || "").split(",").forEach((pair) => {
+                const cut = pair.lastIndexOf(":");
+                if (cut > 0) out[pair.slice(0, cut).trim()] = pair.slice(cut + 1).trim();
+            });
+            return out;
+        };
+        const listViewColumns = (values, statusTypeId, status, statusFlowId) => {
+            const out = ec.service.sync().name("org.moqui.impl.StatusServices.get#ListViewColumns").parameters({
+                values, statusTypeId: statusTypeId || null, status: !!status, statusFlowId: statusFlowId || null
+            }).disableAuthz().call() || {};
+            const columns = Array.from(out.columns || []).map((column) => ({
+                value: String(column.value), label: String(column.label || column.value), color: column.color ? String(column.color) : ""
+            }));
+            const flow = {};
+            Array.from(out.flow || []).forEach((step) => { const from = String(step.statusId); (flow[from] = flow[from] || []).push(String(step.toStatusId)); });
+            return { columns, flow };
+        };
+        const viewsOpen = (info, n, v, formId) => {
+            const board = v.board;
+            const calendar = v.calendar;
+            const ab = (name) => (board ? at(board, name) : "");
+            const ac = (name) => (calendar ? at(calendar, name) : "");
+            const needed = [];
+            const need = (name) => { if (name && needed.indexOf(name) < 0) needed.push(name); };
+            v.keys.board.concat(v.keys.calendar).forEach(need);
+            need(v.title.name);
+            if (v.badge) need(v.badge.name);
+            v.fields.forEach((f) => need(f.name));
+            ["group-field", "sum-field"].forEach((name) => need(ab(name)));
+            ["start-field", "end-field", "title-field", "color-field", "all-day-field", "resource-field"].forEach((name) => need(ac(name)));
+            const plain = (value) => (value === null || value === undefined ? null : typeof value === "object" ? String(value) : value);
+            const rows = [];
+            for (let i = 0; i < info.count; i++) {
+                sri.startFormListRow(info, i);
+                try {
+                    if (ctx("_moquiRowType") === "total") { rows.push({ _moquiRowType: "total" }); continue; }
+                    const shown = fieldValues({}, v.valueDescs);
+                    const row = {};
+                    needed.forEach((name) => {
+                        row[name] = plain(ec.context.get(name));
+                        const display = shown[name + "_display"];
+                        if (display !== undefined && display !== null && display !== "" && String(display) !== String(row[name] === null ? "" : row[name])) row[name + "_display"] = String(display);
+                    });
+                    rows.push(row);
+                } finally {
+                    sri.endFormListRow();
+                }
+            }
+            const distinct = (list) => list.map((value) => (value === null || value === undefined ? "" : String(value))).filter((value, index, all) => value && all.indexOf(value) === index);
+            const hidden = hiddenParams(n);
+            let boardCfg = null;
+            if (board) {
+                const group = ab("group-field");
+                const order = listOf(ab("column-order"));
+                const statusTypeId = xn(ab("status-type-id"));
+                const statusFlowId = xn(ab("status-flow-id"));
+                const isStatus = !!statusTypeId || /^statusId$|StatusId$/.test(group);
+                const url = viewTransition(ab("transition"));
+                boardCfg = {
+                    groupField: group, titleField: v.title.name, sumField: ab("sum-field") || null, sumFormat: ab("sum-format") || null,
+                    parameterName: ab("parameter-name") || null, keyFields: v.keys.board, columnOrder: order, statusTypeId: statusTypeId || null,
+                    statusFlowId: statusFlowId || null,
+                    transition: url ? url.path : null, parameters: url ? Object.assign({}, url.getParameterMap(), hidden) : null, columns: [], flow: {}
+                };
+                if (isStatus || order.length) {
+                    const known = listViewColumns(distinct(order.concat(rows.map((row) => row[group]))), statusTypeId, isStatus, statusFlowId);
+                    boardCfg.columns = known.columns;
+                    boardCfg.flow = known.flow;
+                }
+            }
+            let calendarCfg = null;
+            if (calendar) {
+                const url = viewTransition(ac("transition"));
+                const create = viewTransition(ac("create-transition"));
+                const screen = ac("create-screen") ? sri.makeUrlByType(ac("create-screen"), "transition", null, "false") : null;
+                const colorField = ac("color-field");
+                const colors = colorMap(ac("color-map"));
+                if (colorField && /^statusId$|StatusId$/.test(colorField)) {
+                    const known = listViewColumns(distinct(rows.map((row) => row[colorField])), null, true);
+                    known.columns.forEach((column) => { if (column.color && !colors[column.value]) colors[column.value] = column.color; });
+                }
+                calendarCfg = {
+                    startField: ac("start-field"), endField: ac("end-field") || null, titleField: ac("title-field") || v.title.name, colorField: colorField || null,
+                    allDayField: ac("all-day-field") || null, resourceField: ac("resource-field") || null, keyFields: v.keys.calendar, modes: listOf(ac("modes")),
+                    transition: url ? url.path : null, parameters: url ? Object.assign({}, url.getParameterMap(), hidden) : null,
+                    createTransition: create ? create.path : null, createParameters: create ? Object.assign({}, create.getParameterMap(), hidden) : null,
+                    createScreen: screen && !screen.getDisableLink() ? screen.getUrlWithParams() : null, colors
+                };
+                // range-find: the rows of the dates shown, from the screen's form request with the range added (no paging)
+                if (ac("range-find") === "true") {
+                    const actions = sri.makeUrlByType("actions", "transition", null, "false");
+                    if (actions && !actions.getDisableLink()) {
+                        Object.assign(calendarCfg, { rangeFind: true, rangeUrl: actions.path + "/" + encodeURIComponent(at(n, "name")), listName: at(n, "list") || null });
+                    }
+                }
+            }
+            w("<m-list-views" + A({
+                id: formId + "_views", "form-name": at(n, "name"), "form-location": viewsKey(n), ":views": js_(listOf(at(n, "views"))), ":rows": js_(rows),
+                ":board": boardCfg ? js_(boardCfg) : null, ":calendar": calendarCfg ? js_(calendarCfg) : null
+            }) + ">\n");
+            // a card per row, outside the row's form: its cells show their text, links and dialogs as in the list
+            push();
+            Object.assign(st, { inForm: false, skipForm: true, multi: false, owner: "" });
+            const cell = (part) => {
+                if (part && part.cell) part.cell();
+            };
+            for (let i = 0; i < info.count; i++) {
+                if (rows[i] && rows[i]._moquiRowType) continue;
+                sri.startFormListRow(info, i);
+                try {
+                    st.entry = "c" + i;
+                    w('<template v-slot:card_' + i + '><div class="m-card-head row no-wrap"><div class="m-card-title">');
+                    if (v.title.cell) cell(v.title);
+                    else w(t(rows[i][v.title.name + "_display"] || rows[i][v.title.name] || ""));
+                    w("</div>");
+                    if (v.badge) { w('<div class="m-card-badge">'); cell(v.badge); w("</div>"); }
+                    w("</div>");
+                    v.fields.forEach((f) => {
+                        w('<div class="m-card-field"><span class="m-card-label m-muted">' + t(f.label()) + '</span><span class="m-card-value">');
+                        cell(f);
+                        w("</span></div>");
+                    });
+                    w("</template>\n");
+                } finally {
+                    st.entry = "";
+                    sri.endFormListRow();
+                }
+            }
+            pop();
+        };
+
+        // markdown-view: an m-markdown with the markdown as an attribute value (never template text, so nothing in it is compiled), the
+        // base path and the heading options. Nothing for a false condition.
+        const markdownView = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const value = (text) => (text && text !== "null" ? text : null);
+            w("<m-markdown" + A({
+                id: nodeId(n) || null, text: value(xn(at(n, "text"))) || "", "base-path": value(xn(at(n, "base-path"))),
+                "heading-prefix": at(n, "heading-prefix") && at(n, "heading-prefix") !== "md-" ? xn(at(n, "heading-prefix")) : null,
+                "strip-title": value(x(at(n, "strip-title"))), ":wiki-links": at(n, "wiki-links") === "true" ? "true" : null, class: value(xn(at(n, "style")))
+            }) + "></m-markdown>\n");
         };
 
         // ---- the shell ----
@@ -1669,6 +1871,49 @@
 
         // ---- dashboards ----
 
+        // A list attribute of status ids: a comma list, or one ${} expression of a list; null when the attribute is not given.
+        const idList = (text) => {
+            if (text === null || text === undefined || text === "") return null;
+            const whole = /^\s*\$\{([\s\S]*)\}\s*$/.exec(text);
+            let value = whole ? ec.resource.expression(whole[1], "") : null;
+            if (value === null || value === undefined) value = whole ? [] : xn(text);
+            if (typeof value === "string") value = value.split(",");
+            return Array.from(value || []).map((id) => (id === null || id === undefined ? "" : String(id).trim())).filter((id) => id && id !== "null");
+        };
+        // The status flow of a record as get#StatusBar answers it (StatusServices.xml), for the status-bar element.
+        const statusBarData = (n) => {
+            const statusId = xn(at(n, "status-id"));
+            if (!statusId || statusId === "null") return null;
+            const readOnly = xn(at(n, "read-only")) === "true";
+            const out = ec.service.sync().name("org.moqui.impl.StatusServices.get#StatusBar").parameters({
+                statusId, statusTypeId: xn(at(n, "status-type-id")) || null, statusFlowId: xn(at(n, "status-flow-id")) || null,
+                stageStatusIds: idList(at(n, "stages")), allowedToStatusIds: readOnly ? [] : idList(at(n, "allowed-status-ids"))
+            }).disableAuthz().call() || {};
+            const stages = Array.from(out.stages || []).map((stage) => ({ statusId: stage.statusId, label: stage.label, color: stage.color, state: stage.state }));
+            const transitions = readOnly ? [] : Array.from(out.transitions || []).map((tr) => ({
+                toStatusId: tr.toStatusId, label: tr.label, color: tr.color, isNext: !!tr.isNext, isDanger: !!tr.isDanger
+            }));
+            const current = out.current ? { statusId: out.current.statusId, label: out.current.label, color: out.current.color } : null;
+            return { current, stages, transitions, readOnly };
+        };
+        // status-bar: the stage chips and the transition buttons of m-status-bar, the data written in (no request from the browser).
+        const statusBar = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const bar = statusBarData(n);
+            if (!bar) return;
+            let url = null;
+            if (at(n, "transition") && !bar.readOnly && bar.transitions.length) {
+                url = sri.makeUrlByType(at(n, "transition"), "transition", n, "true");
+                if (url.getDisableLink()) url = null;
+            }
+            w("<m-status-bar" + A({
+                id: nodeId(n) || null, class: xn(at(n, "style")) || null, ":bar": js_({ current: bar.current, stages: bar.stages, transitions: url ? bar.transitions : [] }),
+                action: url ? url.path : null, ":parameters": url ? js_(url.getParameterMap()) : null,
+                "parameter-name": at(n, "parameter-name") && at(n, "parameter-name") !== "statusId" ? at(n, "parameter-name") : null,
+                title: at(n, "title") ? x(at(n, "title")) : null, ":confirm": xn(at(n, "confirm")) === "false" ? "false" : null
+            }) + "></m-status-bar>\n");
+        };
+
         // A number-card (style-guide §8.2): an m-number-card with the title localized, the value and delta as expanded, and the
         // link as a screen link resolves (a path or transition of this screen, with its query); a link to something other than a
         // screen is a plain anchor (external). Nothing for a false condition.
@@ -1693,7 +1938,7 @@
         };
 
         const h = {
-            reset, push, pop, e, t, A, cls, at, x, xn, nodeId, cond, fid, fnm, fieldRef, st,
+            reset, enter, leave, push, pop, e, t, A, cls, at, x, xn, nodeId, cond, fid, fnm, fieldRef, st,
             textLine, textArea, password, file, hidden, reset_, submit, dateTime, dateFind, datePeriod, rangeFind, textFind,
             dropDown, check: (n) => checkOrRadio(n, "checkbox"), radio: (n) => checkOrRadio(n, "radio"), display: displayWidget, displayEntity,
             image, label: labelWidget, link, editable, containerDialog, dynamicDialog, dynamicContainer, tree,
@@ -1701,13 +1946,16 @@
             formList, rowCellOpen, rowCellClose, valueText, sectionPaginate, headerCell,
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
-            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard, chatter, recordFiles, splitOpen, htmlView
+            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard, chatter, recordFiles, splitOpen, htmlView, statusBar,
+            markdownView
         };
         Object.defineProperty(globalThis, "$mqQvt", { value: h, configurable: true });
     };
 
     const runtime = "(" + runtimeFunction.toString() + ")();";
-    const prelude = "const $v = globalThis.$mqQvt;\n$v.reset();\n";
+    // a unit keeps the render state of the unit around it and gives it back when it ends (enter and leave above)
+    const prelude = "const $v = globalThis.$mqQvt;\n$v.enter($depth);\ntry {\n";
+    const epilogue = "} finally {\n$v.leave($depth);\n}\n";
 
     // ---- macros ----
 
@@ -1982,6 +2230,47 @@
         `.replace(/\n$/, "");
     };
 
+    // The views of a form-list for the runtime (viewsOpen): the view-board and view-calendar elements, the key fields of each (key-fields,
+    // else the fields whose widget is hidden, else the row-selection id-field), and the cards' title, badge and fields with the code of
+    // their cells, as the list writes them; null without a view element.
+    const viewsConfig = (node, fields) => {
+        const board = child(node, "view-board");
+        const calendar = child(node, "view-calendar");
+        if (!board && !calendar) return "null";
+        const of = (el, name) => (el ? attr(el, name) : "");
+        const names = (text) => String(text || "").split(",").map((name) => name.trim()).filter((name) => name);
+        const byName = {};
+        fields.forEach((field) => { byName[attr(field, "name")] = field; });
+        const firstShown = fields.find((field) => !S.listFieldHiddenWidget(field));
+        const titleName = of(board, "card-title-field") || of(calendar, "title-field") || (firstShown ? attr(firstShown, "name") : "");
+        const cardNames = names(of(board, "card-fields")).length ? names(of(board, "card-fields")) : names(of(calendar, "card-fields"));
+        const hiddenKeys = fields.filter((field) => { const dflt = child(field, "default-field"); return dflt && child(dflt, "hidden"); }).map((field) => attr(field, "name"));
+        const selection = child(node, "row-selection");
+        const keyFields = (el) => {
+            if (!el) return [];
+            const given = names(attr(el, "key-fields"));
+            if (given.length) return given;
+            if (hiddenKeys.length) return hiddenKeys;
+            if (selection && attr(selection, "id-field")) return [attr(selection, "id-field")];
+            return titleName ? [titleName] : [];
+        };
+        const cellOf = (name) => (byName[name] ? `() => {\nconst $m = 0;\n${cellCode(byName[name])}}` : "null");
+        const labelOf = (name) => { const sub = byName[name] ? S.headerSub(byName[name]) : null; return sub ? `() => ${titleCode(sub)}` : `() => ec.l10n.localize(${lit(name)})`; };
+        const part = (name) => `{"name": ${lit(name)}, "label": ${labelOf(name)}, "cell": ${cellOf(name)}}`;
+        const badge = of(board, "badge-field");
+        return `{"board": ${board ? bareLit(board) : "null"}, "calendar": ${calendar ? bareLit(calendar) : "null"},
+            "keys": {"board": ${JSON.stringify(keyFields(board))}, "calendar": ${JSON.stringify(keyFields(calendar))}},
+            "title": ${part(titleName)}, "badge": ${badge ? part(badge) : "null"},
+            "fields": [${cardNames.filter((name) => byName[name]).map(part).join(",\n")}]}`;
+    };
+
+    // A form-list for the runtime: its attributes and its hidden-parameters, which every form of the list posts
+    // (sri.getFormHiddenParameters reads them from the literal).
+    const listLit = (node) => {
+        const hidden = child(node, "hidden-parameters");
+        return hidden ? `{"name":${lit(node.name)},"attrs":${JSON.stringify(node.attrs || {})},"children":[${childLit(hidden)}]}` : bareLit(node);
+    };
+
     const formListMacro = stmt((node) => {
         const fields = childrenNamed(node, "field");
         const columns = S.formListColumns(node);
@@ -1998,6 +2287,7 @@
         }
         const cfg = js`
             {
+                "views": ${viewsConfig(node, fields)},
                 "hasFirst": ${hasRow("first-row-field")},
                 "hasSecond": ${hasRow("second-row-field")},
                 "hasLast": ${hasRow("last-row-field")},
@@ -2024,12 +2314,17 @@
             }
         `.replace(/\n$/, "");
         // A field with only a hidden widget has no column, and its value goes in the fields-initial of the row.
-        const cols = columns.map((column) => "[" + column.map(columnField).join(",\n") + "]").join(",\n");
+        // the columns of each type (columns type="mobile"), chosen by the request's _uiType as Java does; the untyped ones otherwise
+        const colsOf = (set) => set.map((column) => "[" + column.map(columnField).join(",\n") + "]").join(",\n");
+        const types = childrenNamed(node, "columns").map((kid) => attr(kid, "type")).filter((type, index, all) => type && all.indexOf(type) === index);
+        // with typed columns the list is spread from the set of the request's type: ...(_uiType is mobile ? [mobile] : [default])
+        const cols = !types.length ? colsOf(columns) : "..." + types.reduceRight((rest, type) =>
+            `(String(ec.context.get("_uiType") || "") === ${lit(type)} ? [\n${colsOf(S.formListColumns(node, type))}\n] : ${rest})`, `[\n${colsOf(columns)}\n]`);
         return js`
             if (sri.doBoundaryComments()) sri.write(${lit(`<!-- BEGIN form-list[@name=${attr(node, "name")}] -->\n`)});
             {
                 const $info = sri.openFormList(${lit(attr(node, "name"))});
-                $v.formList($info, ${bareLit(node)}, [
+                $v.formList($info, ${listLit(node)}, [
                     ${cols}
                 ], ${cfg});
             }
@@ -2061,7 +2356,7 @@
             {
                 const $type = ${noL10n(attr(node, "type") || "default")} || "default";
                 sri.write("<m-container-box" + $v.A({id: ${nodeIdCode(node)}, type: $type, title: ${title ? `ec.resource.expand(${lit(title)}, "")` : "null"},
-                    "initial-open": ${noL10n(attr(node, "initial") || "")} === "closed" ? "false" : null}) + ">");
+                    ":initial-open": ${noL10n(attr(node, "initial") || "")} === "closed" ? "false" : null}) + ">");
             }
             ${header ? `sri.write("<template v-slot:header>");\n${header.source}sri.write("</template>");` : ""}
             ${toolbar ? `sri.write("<template v-slot:toolbar>");\n${toolbar.source}sri.write("</template>");` : ""}
@@ -2071,14 +2366,17 @@
         `;
     });
 
-    const containerRowMacro = stmt((node) => js`
+    // A container-row writes its children in order: each row-col its column, and a section or section-iterate the row-col
+    // elements of its widgets (a column per entry).
+    const containerRowMacro = stmt((node, children) => js`
         $v.rowOpen("row", ${lit(attr(node, "style"))});
-        ${childrenNamed(node, "row-col").map((col) => js`
-            $v.colOpen(${bareLit(col)}, false);
-            ${col.source}
-            sri.write("</div>");
-        `).join("")}
+        ${children}
         sri.write("</div>\\n");
+    `);
+    const rowColMacro = stmt((node, children) => js`
+        $v.colOpen(${bareLit(node)}, false);
+        ${children}
+        sri.write("</div>");
     `);
 
     // A dashboard: its children in a responsive grid (m-dashboard: CSS grid columns of at least min-width px, as many as fit),
@@ -2153,10 +2451,10 @@
                 if ($text === "null") $text = "";
                 if ($text || ${!!image} || ${!!attr(node, "icon")}) {
                     if (${lit(attr(node, "encode"))} !== "false") $text = $v.t($text);
-                    let $icon = ${lit(attr(node, "icon"))};
+                    let $icon = ${attr(node, "icon") ? noL10n(attr(node, "icon")) : '""'};
                     if (!$icon && $text) $icon = sri.getThemeIconClass($text) || "";
                     const $badge = ec.resource.expand(${lit(attr(node, "badge"))}, "");
-                    sri.write("<q-btn-dropdown" + $v.A(Object.assign({dense: true, unelevated: true, "no-caps": true}, $v.btnKind(${lit(attr(node, "btn-type"))}, ${attr(node, "style") ? noL10n(attr(node, "style")) : "null"}))) + "><template v-slot:label>" +
+                    sri.write("<q-btn-dropdown" + $v.A(Object.assign({dense: true, unelevated: true, "no-caps": true}, $v.btnKind(${attr(node, "btn-type") ? noL10n(attr(node, "btn-type")) : "null"}, ${attr(node, "style") ? noL10n(attr(node, "style")) : "null"}))) + "><template v-slot:label>" +
                         ${attr(node, "tooltip") ? `$v.tooltipTag(ec.resource.expand(${lit(attr(node, "tooltip"))}, "")) + ` : ""}
                         ($icon ? $v.iconTag($icon, !!$text) : ""));
                     // as Java: the image child in the place of the text
@@ -2212,7 +2510,7 @@
         "box-body": stmt((node, children) => children),
         "box-body-nopad": stmt((node, children) => children),
         "container-row": containerRowMacro,
-        "row-col": stmt((node, children) => children),
+        "row-col": rowColMacro,
         "container-panel": containerPanelMacro,
         "container-split": containerSplitMacro,
         "split-side": stmt((node, children) => children),
@@ -2238,6 +2536,8 @@
         "chatter": widget("chatter", false),
         "record-files": widget("recordFiles", false),
         "html-view": widget("htmlView", false),
+        "markdown-view": widget("markdownView", false),
+        "status-bar": widget("statusBar", true),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,
@@ -2275,5 +2575,5 @@
     // the form-list macro places inside its menu, so they are generated.
     const opaque = S.opaqueElements.filter((name) => !["button-menu", "row-selection", "action"].includes(name));
 
-    return { macros, opaque, prelude, runtime };
+    return { macros, opaque, prelude, epilogue, runtime };
 })

@@ -17,7 +17,7 @@ along with this software (see the LICENSE.md file). If not, see
 <template><div>
     <m-container-box type="info" title="Archetype 3.6 Board">
         <p class="q-mb-xs">A list shown as columns by stage with cards: each column header has the stage, its count and its sum; a card shows the title, amount, owner initials and the next activity; a card opens the Detail archetype. Drag a card to another column: the stage change posts to the moveCard transition and its message shows as a notification. The search filters the cards on the client. Columns scroll horizontally at narrow widths.</p>
-        <p class="q-mb-none">Fallbacks for style-guide section 8: <code>view-board</code> on form-list does not exist, so this is the .qvue path (a component file served as the screen, data from the boardRows transition); the list / board / calendar toggle is a q-btn-toggle that links to the List and Calendar screens until <code>views</code> exists.</p>
+        <p class="q-mb-none">The .qvue path of style-guide 4.8, for a board an XML form-list cannot be (a component file served as the screen, data from the boardRows transition); the list / board / calendar toggle is a q-btn-toggle that links to the List and Calendar screens. A form-list with <code>views</code> and <code>view-board</code> (section 8.2) is the Views screen.</p>
     </m-container-box>
 
     <div class="row items-center q-col-gutter-sm q-mb-sm q-px-sm">

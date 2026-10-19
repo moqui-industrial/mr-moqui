@@ -34,7 +34,7 @@ pub(super) const ATTACHMENT: &str = "moqui.basic.email.EmailMessageAttachment";
 /// The longest snippet, as `save#Draft` keeps it.
 const SNIPPET_LENGTH: usize = 140;
 /// The most of the raw header block kept in `headersString`.
-const HEADERS_MAX: usize = 65_536;
+pub(super) const HEADERS_MAX: usize = 65_536;
 
 /// A file of a message: an attachment, or an inline part the HTML refers to by `cid:`.
 pub(super) struct PartFile {

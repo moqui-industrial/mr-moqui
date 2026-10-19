@@ -17,7 +17,7 @@ default = ["maximal"]
 # Default package (`./moq build`): the web server on embedded Postgres, PDF, and outbound mail.
 lite = ["axum", "embedded-postgres", "pdf", "smtp"]
 # Enterprise package (`./moq build --enterprise`): everything, with the databases external.
-enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx", "ssh", "sso", "print"]
+enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx", "ssh", "sso", "print", "inbound-smtp"]
 # Maximal package (`./moq build --release`, and the debug build): everything, Postgres embedded.
 maximal = ["enterprise", "embedded-postgres"]
 
@@ -33,6 +33,9 @@ ssh = ["dep:russh", "dep:russh-sftp"]
 sso = ["dep:huskarl", "dep:p256", "dep:form_urlencoded"]
 # Network printing over IPP (moqui_core::print).
 print = ["dep:ipp"]
+# The SMTP listener for hosted and shared mail accounts behind the edge gateway (src/smtp.rs, Tokio only); it stores
+# through the inbound mail of imap. It starts only when smtp_listen_port is set. docs/Mail-Inbound.md.
+inbound-smtp = ["imap"]
 # Framework features, forwarded to moqui-core.
 mail = ["smtp", "imap"]
 smtp = ["moqui-core/smtp"]

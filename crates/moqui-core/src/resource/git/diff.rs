@@ -229,6 +229,7 @@ mod tests {
             name: "Test".into(),
             email: "test@example.com".into(),
             user_id: None,
+            seconds: None,
         };
         commit(store, "main", &author, |_| Ok(Some((edits.clone(), "change".into()))))
             .unwrap()

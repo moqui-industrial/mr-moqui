@@ -68,7 +68,8 @@ pub struct ErrorInfo {
 impl ErrorInfo {
     #[must_use]
     pub fn new(status: u16, error: &Error, request_path: &str) -> Self {
-        let message = error.message().to_string();
+        // the text for the page; the stack and the Rust source location are the trace, and the log
+        let message = crate::context::client_text(error.message());
         let artifact = error.denied().map(|denied| ArtifactInfo {
             name: denied.name.clone(),
             action: denied.action.clone(),

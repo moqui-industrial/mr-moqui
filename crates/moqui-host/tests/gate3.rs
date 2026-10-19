@@ -793,6 +793,32 @@ fn artifact_group_detail_renders_as_qvt_and_answers_qjs_and_qvue() {
     assert!(qvue.starts_with("<template><p>{{count}}</p></template>"), "{qvue}");
     assert!(qvue.contains("export default"), "{qvue}");
 
+    // a .qvt request that names the client modes (moqui.loadComponent for a container's URL) gets the first of them the screen's
+    // render-modes name, and X-Moqui-Qvt says which: the gallery's QuickTask is qvue alone. GateCompanion's modes are all, so it
+    // stays qvt; without the header a qvue screen has no qvt.
+    let with_modes = |path: &str| {
+        exchange(
+            address,
+            &http_request(
+                "GET",
+                path,
+                &[("Authorization", &john), ("X-Moqui-Client-Modes", "qvue,qjs")],
+                "",
+            ),
+        )
+    };
+    let (status, headers, task) = with_modes("/apps/gallery/QuickTask.qvt?recordId=R1");
+    assert_eq!(status, 200, "{task}");
+    assert_eq!(header(&headers, "x-moqui-qvt").as_deref(), Some("qvue"));
+    assert_eq!(header(&headers, "cache-control").as_deref(), Some("private, no-store"));
+    assert!(task.contains("<template>") && task.contains("module.exports"), "{task}");
+    let (status, _, body) = get("/apps/gallery/QuickTask.qvt");
+    assert_eq!(status, 404, "{body}");
+    let (status, headers, body) = with_modes("/apps/GateCompanion.qvt");
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(header(&headers, "x-moqui-qvt").as_deref(), Some("merged-fragment"));
+    assert_eq!(body, template);
+
     // unknown render modes and /vapps are not there
     let (status, _, _) = get("/apps/System/Security/ArtifactGroup/ArtifactGroupDetail.vuet?artifactGroupId=SYSTEM_APP");
     assert_eq!(status, 404);
@@ -1178,4 +1204,45 @@ fn a_token_route_renders_its_screen_in_the_public_shell_after_the_token_check() 
     // a path that is no token is not the route's
     let (status, _, _) = exchange(address, &http_request("GET", "/tk/x", &html, ""));
     assert_eq!(status, 404);
+
+    // a POST to the page's URL itself (an RFC 8058 one-click): with the route's post-transition, that transition runs
+    // after the token check; without one it is the shell page, as a GET is
+    let form = [("Content-Type", "application/x-www-form-urlencoded")];
+    let (status, _, posted) = exchange(
+        address,
+        &http_request(
+            "POST",
+            &format!("/tkp/{LINK_TOKEN}"),
+            &form,
+            "List-Unsubscribe=One-Click",
+        ),
+    );
+    assert_eq!(status, 200, "{posted}");
+    let posted: serde_json::Value = serde_json::from_str(&posted).unwrap_or_else(|err| panic!("{err}: {posted}"));
+    assert_eq!(posted["fileList"][0]["name"], "docs", "{posted}");
+    let (status, _, page) = exchange(address, &http_request("GET", &format!("/tkp/{LINK_TOKEN}"), &html, ""));
+    assert_eq!(status, 200, "{page}");
+    assert!(
+        page.contains("<div id=\"public-root\""),
+        "a GET is still the shell: {page}"
+    );
+    let (status, _, page) = exchange(
+        address,
+        &http_request(
+            "POST",
+            &format!("/tk/{LINK_TOKEN}"),
+            &form,
+            "List-Unsubscribe=One-Click",
+        ),
+    );
+    assert_eq!(status, 200, "{page}");
+    assert!(page.contains("<div id=\"public-root\""), "no post-transition: {page}");
+    for token in ["NoSuchToken000000000000", REVOKED_TOKEN] {
+        let (status, _, answer) = exchange(
+            address,
+            &http_request("POST", &format!("/tkp/{token}"), &form, "List-Unsubscribe=One-Click"),
+        );
+        assert_eq!(status, 404, "{answer}");
+        assert!(!answer.contains("docs"), "{answer}");
+    }
 }

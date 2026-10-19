@@ -204,6 +204,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
             }
         }]
     ], {
+    "views": null,
     "hasFirst": false,
     "hasSecond": false,
     "hasLast": false,
@@ -325,6 +326,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Cols] -->\n"
             }
         }]
     ], {
+    "views": null,
     "hasFirst": false,
     "hasSecond": false,
     "hasLast": false,

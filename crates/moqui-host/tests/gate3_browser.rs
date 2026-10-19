@@ -426,6 +426,98 @@ fn the_suite_shell_palette_quick_create_and_keys_work_in_chromium() {
     }
 }
 
+/// A `.qvue` screen that the theme and the provider name without its extension (the gallery's QuickTask, `render-modes="qvue"`)
+/// loads as qvue in a tray tab and in the quick-create dialog: `moqui.loadComponent` asks for `.qvt` with `X-Moqui-Client-Modes`
+/// and the server answers the qvue. The component reads its own query and path through `inject: ["mScreen"]`, the tray's
+/// `shellCounts` refresh calls its `shellRefresh()` instead of mounting it again (what was typed stays), and its Discard asks with
+/// `$q.dialog` (Quasar's Dialog plugin).
+#[test]
+fn a_qvue_screen_loads_in_the_tray_and_quick_create_and_refreshes_in_place_in_chromium() {
+    let gate = start_with_data(
+        "browser-qvue",
+        r#"<entity-facade-xml type="seed">
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="900" resourceTypeEnumId="STRT_TRAY_TODAY" resourceValue="gallery/QuickTask"/>
+        </entity-facade-xml>"#,
+    );
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    let detail = format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR");
+    browser.navigate(&detail);
+    browser.wait_for(
+        "the Today counter and the record of the screen context",
+        "!!document.getElementById('m-counter-today') && !!moqui.webrootVue.shellData && (moqui.webrootVue.screenRecord || {}).id === 'STT_INTERNAL_QUASAR'",
+        WAIT,
+    );
+    browser.eval(FETCH_SPY);
+    browser.click("Today", "document.getElementById('m-counter-today')");
+    browser.wait_for(
+        "the qvue screen in the tray, with its own path",
+        "!!document.querySelector('#m-tray #GalleryTaskStatus') && document.querySelector('#m-tray #GalleryTaskStatus').innerText.indexOf('/apps/gallery/QuickTask · refreshed 0') >= 0",
+        WAIT,
+    );
+    let loaded = fetched(&mut browser, "the tray tab's load", "/apps/gallery/QuickTask.qvt");
+    assert_eq!(loaded["status"], 200, "{loaded}");
+    // what is typed stays through the refresh of a shellCounts push: the screen refreshes itself
+    browser.click(
+        "the task field",
+        "document.querySelector('#m-tray [id=\"GalleryTask_taskName\"]')",
+    );
+    browser.type_text("kept");
+    browser.eval("moqui.webrootVue.onShellNotification({topic: 'shellCounts', message: {today: 1}}), true");
+    browser.wait_for(
+        "refreshed in place",
+        "document.querySelector('#m-tray #GalleryTaskStatus').innerText.indexOf('refreshed 1') >= 0 \
+         && document.querySelector('#m-tray [id=\"GalleryTask_taskName\"]').value === 'kept'",
+        WAIT,
+    );
+    browser.eval("moqui.webrootVue.closeTray(), true");
+
+    // the + menu: the qvue kind gets the record of the screen context from its own query; Discard asks first
+    browser.click("the + menu", "document.getElementById('m-quick-create-menu')");
+    browser.click("the qvue kind", &by_text(".q-menu .q-item", "Gallery task"));
+    browser.wait_for(
+        "the qvue screen in the dialog with the record",
+        "!!document.getElementById('m-quick-create') && document.getElementById('m-quick-create').innerText.indexOf('On moqui.basic.Enumeration STT_INTERNAL_QUASAR') >= 0",
+        WAIT,
+    );
+    browser.click("Discard", &by_text("#m-quick-create button", "Discard"));
+    browser.wait_for(
+        "the confirmation of $q.dialog",
+        "Array.from(document.querySelectorAll('.q-dialog')).some((el) => el.innerText.indexOf('Discard the task?') >= 0)",
+        WAIT,
+    );
+    browser.click("OK", &by_text(".q-dialog button", "OK"));
+    browser.wait_for(
+        "the quick-create dialog closed",
+        "!document.getElementById('m-quick-create')",
+        WAIT,
+    );
+    // Save posts to the transition under the screen's own path, with the record
+    browser.click("the + menu", "document.getElementById('m-quick-create-menu')");
+    browser.click("the qvue kind", &by_text(".q-menu .q-item", "Gallery task"));
+    browser.wait_for(
+        "the qvue screen in the dialog",
+        "!!document.querySelector('#m-quick-create [id=\"GalleryTask_taskName\"]')",
+        WAIT,
+    );
+    browser.click(
+        "the task field",
+        "document.querySelector('#m-quick-create [id=\"GalleryTask_taskName\"]')",
+    );
+    browser.type_text("From the gate");
+    browser.click("Save", &by_text("#m-quick-create button", "Save"));
+    browser.wait_for(
+        "the task's message",
+        "Array.from(document.querySelectorAll('.q-notification')).some((el) => el.innerText.indexOf('the task \"From the gate\" would be saved on moqui.basic.Enumeration STT_INTERNAL_QUASAR') >= 0)",
+        WAIT,
+    );
+    browser.wait_for("the dialog closed", "!document.getElementById('m-quick-create')", WAIT);
+    let posted = fetched(&mut browser, "the task post", "/apps/gallery/QuickTask/saveTask");
+    assert_eq!(posted["status"], 200, "{posted}");
+    assert_clean(&mut browser, "a qvue screen in the tray and quick create");
+}
+
 /// The tray panel of the suite shell, with theme values on DEFAULT_QUASAR that name gallery screens as BOSS names its own
 /// (`gallery/Panel` for Today, `gallery/Landing` for Notifications, `gallery/List` for Mail, `gallery/Split` for
 /// Messages): the counters appear and the notify history goes; Today opens the tray with the Panel archetype inside it, in
@@ -807,6 +899,190 @@ fn the_record_panels_and_the_rich_text_editor_work_in_chromium() {
                 .all(|problem| format!("{problem:?}").to_lowercase().contains("tiptap")),
         "only the blocked script is reported: {problems:#?}"
     );
+}
+
+/// Presence and the account menu's status (IronStone M10, `js/WebrootChat.js`): the heartbeat makes the user online, which the
+/// dot of the account avatar and of an avatar with the user's id in a screen (the gallery Chatter) show; the menu sets do not
+/// disturb (the dot follows, the page's toasts are off) and a status message; another user's status, set on the server, comes
+/// to the page on the userStatus topic because the two share a room.
+#[test]
+fn the_account_status_and_the_presence_dots_work_in_chromium() {
+    let gate = start_with_data(
+        "browser-status",
+        r#"<entity-facade-xml type="seed">
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="920" resourceTypeEnumId="STRT_CHATTER_SCREEN" resourceValue="Chatter"/>
+            <moqui.security.UserAccount userId="GATE_ADA" username="gate.ada" userFullName="Ada Lovelace"/>
+            <moqui.security.UserPreference userId="EX_JOHN_DOE" preferenceKey="CHAT_STATUS_PRESETS"
+                preferenceValue="[{&quot;emoji&quot;:&quot;🚀&quot;,&quot;text&quot;:&quot;Shipping&quot;,&quot;clearAfter&quot;:&quot;60&quot;},{&quot;emoji&quot;:&quot;📅&quot;,&quot;text&quot;:&quot;In a meeting&quot;,&quot;clearAfter&quot;:&quot;0&quot;}]"/>
+            <moqui.chat.ChatRoom chatRoomId="GATE_DM" roomTypeEnumId="CrtDirect" visibilityEnumId="CrvMembers" directKey="EX_JOHN_DOE,GATE_ADA" lastEventSeq="0"/>
+            <moqui.chat.ChatRoomMember chatRoomId="GATE_DM" userId="EX_JOHN_DOE" roleEnumId="CmrMember" lastReadEventSeq="0" notificationLevelEnumId="CnlAll"/>
+            <moqui.chat.ChatRoomMember chatRoomId="GATE_DM" userId="GATE_ADA" roleEnumId="CmrMember" lastReadEventSeq="0" notificationLevelEnumId="CnlAll"/>
+        </entity-facade-xml>"#,
+    );
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    browser.navigate(&format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR"));
+    browser.eval(FETCH_SPY);
+    // the heartbeat: online, on the account avatar and on the user's avatar in the Chatter panel
+    browser.wait_for(
+        "the account avatar's dot",
+        "!!document.querySelector('#m-account .m-avatar .m-avatar-presence.m-presence-online')",
+        WAIT,
+    );
+    browser.wait_for(
+        "the dot of an avatar with the user's id",
+        "!!document.querySelector('#DetailChatter .m-avatar .m-avatar-presence.m-presence-online')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("moqui.chat.state.me && moqui.chat.state.me.status"),
+        "online"
+    );
+    assert_clean(&mut browser, "presence");
+
+    // the account menu: the status, then do not disturb
+    browser.click("the account menu", "document.getElementById('m-account')");
+    browser.wait_for(
+        "the status in the account menu",
+        "!!document.getElementById('m-status-current') && document.getElementById('m-status-current').innerText.indexOf('Online') >= 0",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("Array.from(document.querySelectorAll('.m-user-status [data-status]')).map((el) => el.dataset.status).join(',')"),
+        "online,away,dnd,invisible,message"
+    );
+    browser.click(
+        "Do not disturb",
+        "document.querySelector('.m-user-status [data-status=dnd]')",
+    );
+    let set = fetched(&mut browser, "the status post", "/setUserStatus");
+    assert_eq!(set["status"], 200, "{set}");
+    let answer: serde_json::Value = serde_json::from_str(set["body"].as_str().unwrap()).unwrap();
+    assert_eq!(answer["myStatus"]["status"], "dnd", "{set}");
+    assert_eq!(answer["myStatus"]["presence"], "dnd", "{set}");
+    browser.wait_for(
+        "the do-not-disturb dot",
+        "!!document.querySelector('#m-account .m-avatar-presence.m-presence-dnd') \
+         && !!document.querySelector('#DetailChatter .m-avatar .m-avatar-presence.m-presence-dnd')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("moqui.chat.quiet() && moqui.webrootVue.notificationClient.displayEnable === false"),
+        true
+    );
+
+    // a status message, kept until it is cleared
+    browser.click("the account menu", "document.getElementById('m-account')");
+    browser.wait_for(
+        "the status message item",
+        "!!document.querySelector('.m-user-status [data-status=message]') && document.querySelector('.m-user-status [data-status=message]').offsetParent !== null",
+        WAIT,
+    );
+    browser.click(
+        "Set a status message",
+        "document.querySelector('.m-user-status [data-status=message]')",
+    );
+    browser.wait_for(
+        "the status dialog",
+        "!!document.querySelector('.q-dialog input[name=statusText]')",
+        WAIT,
+    );
+    // the user's presets (the CHAT_STATUS_PRESETS preference), not the defaults; one fills the dialog
+    assert_eq!(
+        browser.eval("Array.from(document.querySelectorAll('.q-dialog [data-preset]')).map((el) => el.innerText.replace(/\\s+/g, ' ').trim()).join('|')"),
+        "🚀 Shipping 1 hour|📅 In a meeting"
+    );
+    browser.click(
+        "the In a meeting preset",
+        "document.querySelector('.q-dialog [data-preset=\"1\"]')",
+    );
+    browser.wait_for(
+        "the preset in the dialog",
+        "document.querySelector('.q-dialog input[name=statusText]').value === 'In a meeting' && document.querySelector('.q-dialog input[name=emoji]').value === '📅'",
+        WAIT,
+    );
+    browser.click("Save", "document.getElementById('m-status-save')");
+    browser.wait_for(
+        "the saved status message",
+        "moqui.chat.state.me && moqui.chat.state.me.statusText === 'In a meeting' && moqui.chat.state.me.emoji === '📅' && !document.querySelector('.q-dialog input[name=statusText]')",
+        WAIT,
+    );
+    browser.click("the account menu", "document.getElementById('m-account')");
+    browser.wait_for(
+        "the status message in the menu",
+        "!!document.querySelector('#m-status-current .m-status-text') && document.querySelector('#m-status-current .m-status-text').innerText.indexOf('In a meeting') >= 0 \
+         && document.getElementById('m-status-current').innerText.indexOf('Do not disturb') >= 0",
+        WAIT,
+    );
+    {
+        use moqui_lib::object::Value;
+        let factory = gate.server.factory();
+        let ctx = factory.new_context();
+        let entered = ctx.enter();
+        let authz = ctx.disable_authz();
+        let row = factory
+            .entity()
+            .unwrap()
+            .find("moqui.security.UserStatus")
+            .unwrap()
+            .eq("userId", Value::string("EX_JOHN_DOE"))
+            .one()
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.get("statusEnumId").and_then(Value::as_str), Some("UpsDnd"));
+        assert_eq!(row.get("statusText").and_then(Value::as_str), Some("In a meeting"));
+        drop(authz);
+        drop(entered);
+    }
+    browser.press("Escape");
+
+    // another user's status: Ada, in a direct room with John, comes online and busy; the page hears it on userStatus
+    let deadline = std::time::Instant::now() + WAIT;
+    let mut shown = false;
+    while !shown && std::time::Instant::now() < deadline {
+        let factory = gate.server.factory();
+        let ctx = factory.new_context();
+        let entered = ctx.enter();
+        {
+            let _authz = ctx.disable_authz();
+            moqui_core::user::internal_login_user("gate.ada").unwrap();
+        }
+        let call = |name: &str, parameters: &[(&str, moqui_lib::object::Value)]| {
+            let parameters = parameters
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect();
+            moqui_core::service::sync(&format!("org.moqui.impl.ChatServices.{name}"), &parameters)
+                .unwrap_or_else(|err| panic!("{name}: {err}"))
+        };
+        let authz = ctx.disable_authz();
+        call(
+            "heartbeat#UserStatus",
+            &[("idleSeconds", moqui_lib::object::Value::I64(0))],
+        );
+        call(
+            "set#UserStatus",
+            &[
+                ("status", moqui_lib::object::Value::string("dnd")),
+                ("statusText", moqui_lib::object::Value::string("Writing")),
+            ],
+        );
+        drop(authz);
+        drop(entered);
+        let until = std::time::Instant::now() + Duration::from_millis(750);
+        while std::time::Instant::now() < until {
+            browser.pump(Duration::from_millis(100));
+            if browser.try_eval("moqui.chat.presenceOf('GATE_ADA') === 'dnd' && moqui.chat.statusOf('GATE_ADA').statusText === 'Writing'")
+                .is_ok_and(|value| value == serde_json::Value::Bool(true))
+            {
+                shown = true;
+                break;
+            }
+        }
+    }
+    assert!(shown, "the page did not hear Ada's status");
+    assert_clean(&mut browser, "the account status");
 }
 
 /// The gallery Split: a container-split side by side at 1280 px (the side at its width, both panes shown), stacked at 390 px with the
@@ -1356,6 +1632,20 @@ fn qapps_widgets(browser: &mut Browser, base: &str) {
         WAIT,
     );
     browser.eval(FETCH_SPY);
+    // a box with initial="closed" starts closed (its Boolean prop is bound, not the text "false") and opens from its title
+    assert_eq!(
+        browser.eval("(() => { const text = Array.from(document.querySelectorAll('p')).find((el) => el.textContent === 'Shown once opened'); return !!text && text.offsetParent === null; })()"),
+        true
+    );
+    browser.click(
+        "the closed box's title",
+        &by_text(".m-container-box .text-subtitle1", "Gate closed box"),
+    );
+    browser.wait_for(
+        "the box opened",
+        "Array.from(document.querySelectorAll('p')).some((el) => el.textContent === 'Shown once opened' && el.offsetParent !== null)",
+        WAIT,
+    );
     browser.wait_for(
         "Chart.js drew the chart",
         "!!(window.Chart && Chart.getChart(document.querySelector('#GateCharts canvas')))",
@@ -1714,6 +2004,30 @@ fn static_list(browser: &mut Browser, base: &str) {
     browser.wait_for(
         "the dialog closed",
         "document.querySelectorAll('.q-dialog').length === 0",
+        WAIT,
+    );
+
+    // the board view over the rows the list fetched: a column per type, a card per row (its card slot over the row's scope), and
+    // the list's nav row above it; back to the list, the rows are there again
+    browser.click(
+        "Board",
+        "document.querySelector('#EnumList_views .m-list-views-toggle [data-view=board]')",
+    );
+    browser.wait_for(
+        "the board of the page's rows",
+        "document.querySelectorAll('#EnumList_views .m-board-card').length === 20 && document.querySelectorAll('#EnumList_views .m-board-col').length > 0 \
+         && document.querySelector('#EnumList_table .tbody').offsetParent === null",
+        WAIT,
+    );
+    let card = browser.eval("document.querySelector('#EnumList_views .m-board-card').innerText");
+    assert!(card.as_str().unwrap().contains("Description"), "{card}");
+    browser.click(
+        "List",
+        "document.querySelector('#EnumList_views .m-list-views-toggle [data-view=list]')",
+    );
+    browser.wait_for(
+        "the list again",
+        "document.querySelector('#EnumList_table .tbody').offsetParent !== null && document.querySelectorAll('#EnumList_table .tbody .tr').length === 20",
         WAIT,
     );
     assert_clean(browser, &page);
@@ -2219,4 +2533,365 @@ fn a_token_route_page_mounts_its_screen_in_the_public_shell() {
         "document.body && document.body.innerText.includes('This link has expired or was not found.')",
         WAIT,
     );
+}
+
+/// Drag with the mouse from one element to another (each a JavaScript expression of an element), in steps with time between them,
+/// so SortableJS's fallback (it polls the element under the pointer) and the calendar's pointer handlers see the moves.
+fn drag(browser: &mut Browser, what: &str, from: &str, to: &str) {
+    let center = |browser: &mut Browser, element: &str| -> (f64, f64) {
+        let rect = browser.eval(&format!(
+            "(() => {{ const el = {element}; if (!el) return null; const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + Math.min(r.height / 2, 14)]; }})()"
+        ));
+        assert!(rect.is_array(), "{what}: no element {element}");
+        (rect[0].as_f64().unwrap(), rect[1].as_f64().unwrap())
+    };
+    let (x0, y0) = center(browser, from);
+    let (x1, y1) = center(browser, to);
+    let mouse = |browser: &mut Browser, kind: &str, x: f64, y: f64, buttons: i64| {
+        browser.call(
+            "Input.dispatchMouseEvent",
+            serde_json::json!({"type": kind, "x": x, "y": y, "button": "left", "buttons": buttons, "clickCount": 1}),
+        );
+    };
+    mouse(browser, "mouseMoved", x0, y0, 0);
+    mouse(browser, "mousePressed", x0, y0, 1);
+    browser.pump(Duration::from_millis(80));
+    for step in 1..=12 {
+        let part = f64::from(step) / 12.0;
+        mouse(browser, "mouseMoved", x0 + (x1 - x0) * part, y0 + (y1 - y0) * part, 1);
+        browser.pump(Duration::from_millis(60));
+    }
+    browser.pump(Duration::from_millis(150));
+    mouse(browser, "mouseReleased", x1, y1, 0);
+    browser.pump(Duration::from_millis(250));
+}
+
+/// The Views screen's board and its calendar in each mode, light and dark, 1280 and 390 px wide, as PNGs in `dir`.
+fn views_shots(browser: &mut Browser, base: &str, dir: &std::path::Path) {
+    use base64::Engine as _;
+    std::fs::create_dir_all(dir).unwrap();
+    let save = |browser: &mut Browser, name: &str| {
+        browser.pump(Duration::from_millis(600));
+        let shot = browser.call("Page.captureScreenshot", serde_json::json!({"format": "png"}));
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(shot["data"].as_str().unwrap())
+            .unwrap();
+        std::fs::write(dir.join(name), bytes).unwrap();
+    };
+    for (width, height) in [(1280, 900), (390, 844)] {
+        browser.call(
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 600}),
+        );
+        for dark in [false, true] {
+            let mode = if dark { "dark" } else { "light" };
+            for (view, cal_mode) in [
+                ("board", ""),
+                ("calendar", "month"),
+                ("calendar", "week"),
+                ("calendar", "day"),
+                ("calendar", "list"),
+            ] {
+                if width < 600 && (cal_mode == "month" || cal_mode == "week") {
+                    continue;
+                }
+                browser.navigate(&format!("{base}/qapps/gallery/Views?view={view}"));
+                browser.eval(&format!(
+                    "sessionStorage.setItem('moqui.LIST_VIEW_/gallery/Views#ExampleList_cal', JSON.stringify({{mode: '{}', anchor: 20746}})), true",
+                    if cal_mode.is_empty() { "month" } else { cal_mode }
+                ));
+                browser.navigate(&format!("{base}/qapps/gallery/Views?view={view}"));
+                browser.wait_for(
+                    "the view",
+                    &format!("!!document.querySelector('#ExampleList_views[data-view={view}]')"),
+                    WAIT,
+                );
+                browser.eval(&format!("moqui.webrootVue.$q.dark.set({dark}), true"));
+                browser.eval("(() => { const el = document.querySelector('#ExampleList_views'); if (el) el.scrollIntoView(); return true; })()");
+                let name = if cal_mode.is_empty() {
+                    view.to_string()
+                } else {
+                    format!("{view}-{cal_mode}")
+                };
+                save(browser, &format!("views-{name}-{mode}-{width}.png"));
+            }
+        }
+    }
+    browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
+}
+/// The statusId and exampleDate of an example, read on the server.
+fn example_row(gate: &common::Gate, example_id: &str) -> (String, String) {
+    use moqui_lib::object::{to_plain_string, Value};
+    let factory = gate.server.factory();
+    let ctx = factory.new_context();
+    let entered = ctx.enter();
+    let authz = ctx.disable_authz();
+    let row = factory
+        .entity()
+        .unwrap()
+        .find("moqui.example.Example")
+        .unwrap()
+        .eq("exampleId", Value::string(example_id))
+        .use_cache(false)
+        .one()
+        .unwrap()
+        .unwrap();
+    let out = (
+        row.get("statusId").map(to_plain_string).unwrap_or_default(),
+        row.get("exampleDate").map(to_plain_string).unwrap_or_default(),
+    );
+    drop(authz);
+    drop(entered);
+    out
+}
+
+/// The list views of the gallery (style-guide §8.2): the Views screen's form-list opens as its board, a column per Example status in
+/// the flow's order; a card dragged to the next status posts the board's transition and stays there (the database has the status),
+/// a card dragged where the flow does not lead is refused, goes back and the answer's message shows; the calendar's month has the
+/// examples on their days, and an event dragged to another day posts the new start and end (the database has it, and a reload
+/// shows it there); back to the list, the rows come again from the server.
+#[test]
+fn the_form_list_board_and_calendar_move_cards_and_events_in_chromium() {
+    let gate = start_with_data(
+        "browser-views",
+        r#"<entity-facade-xml type="seed">
+            <moqui.example.Example exampleId="GX_A" exampleName="Gate card A" exampleTypeEnumId="EXT_MADE_UP" statusId="EXST_IN_DESIGN"
+                exampleSize="3" exampleDate="1792519200000" exampleEndDate="1792522800000"/>
+            <moqui.example.Example exampleId="GX_B" exampleName="Gate card B" exampleTypeEnumId="EXT_REAL_WORLD" statusId="EXST_DEFINED"
+                exampleSize="5" exampleDate="1792594800000" exampleEndDate="1792598400000"/>
+            <moqui.example.Example exampleId="GX_C" exampleName="Overlapping review" exampleTypeEnumId="EXT_REAL_WORLD" statusId="EXST_APPROVED"
+                exampleSize="8" exampleDate="1792521000000" exampleEndDate="1792526400000"/>
+            <moqui.example.Example exampleId="GX_D" exampleName="Planning day" exampleTypeEnumId="EXT_INSPIRED" statusId="EXST_IMPLEMENTED"
+                exampleSize="13" exampleDate="1792558800000" exampleEndDate="1792645200000" allDay="Y"/>
+            <moqui.example.Example exampleId="GX_E" exampleName="Release" exampleTypeEnumId="EXT_CONTRIVED" statusId="EXST_COMPLETE"
+                exampleSize="2" exampleDate="1792677600000" exampleEndDate="1792681200000"/>
+            <moqui.example.Example exampleId="GX_F" exampleName="Retrospective" exampleTypeEnumId="EXT_MADE_UP" statusId="EXST_IN_DESIGN"
+                exampleSize="1" exampleDate="1793030400000" exampleEndDate="1793034000000"/>
+        </entity-facade-xml>"#,
+    );
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    browser.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({"width": 1920, "height": 1000, "deviceScaleFactor": 1, "mobile": false}),
+    );
+    sign_in(&mut browser, &base);
+    browser.navigate(&format!("{base}/qapps/gallery/Views"));
+    browser.eval(FETCH_SPY);
+    let card = |title: &str| {
+        format!("Array.from(document.querySelectorAll('#ExampleList_views .m-board-card')).find((el) => el.innerText.indexOf({title:?}) >= 0)")
+    };
+    let column_of = |title: &str| {
+        format!(
+            "(() => {{ const el = {}; return el ? el.closest('.m-board-col').dataset.value : null; }})()",
+            card(title)
+        )
+    };
+    let cards_of = |status: &str| {
+        format!("document.querySelector('#ExampleList_views .m-board-col[data-value={status}] .m-board-cards')")
+    };
+    browser.wait_for(
+        "the board with a column per status",
+        "!!document.querySelector('#ExampleList_views[data-view=board] .m-board-col') && document.querySelectorAll('#ExampleList_views .m-board-card').length === 6",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("Array.from(document.querySelectorAll('#ExampleList_views .m-board-col')).map((el) => el.dataset.value).join(',')"),
+        "EXST_IN_DESIGN,EXST_DEFINED,EXST_APPROVED,EXST_IMPLEMENTED,EXST_TESTED,EXST_COMPLETE,EXST_CANCELLED"
+    );
+    assert_eq!(
+        browser.eval("document.querySelector('#ExampleList_views .m-board-col[data-value=EXST_DEFINED] .m-board-col-label').innerText.trim()"),
+        "Defined"
+    );
+    assert_eq!(browser.eval(&column_of("Gate card B")), "EXST_DEFINED");
+    assert_eq!(
+        browser.eval("!!document.querySelector('#ExampleList_views .m-list-views-list .form-list-nav-row') && document.querySelector('#ExampleList_views .m-list-views-list .tbody').offsetParent === null"),
+        true,
+        "the list's nav row stays and its rows are hidden"
+    );
+    assert_clean(&mut browser, "the board");
+
+    // a card to the next status: the transition posts the key and the new status, and the card stays there
+    drag(
+        &mut browser,
+        "Gate card B to Approved",
+        &card("Gate card B"),
+        &cards_of("EXST_APPROVED"),
+    );
+    let moved = fetched(&mut browser, "the status move", "/updateExampleStatus");
+    assert_eq!(moved["status"], 200, "{moved}");
+    browser.wait_for(
+        "the card in Approved",
+        &format!("{} === 'EXST_APPROVED'", column_of("Gate card B")),
+        WAIT,
+    );
+    assert_eq!(example_row(&gate, "GX_B").0, "EXST_APPROVED");
+    assert_clean(&mut browser, "a card moved");
+
+    // a move the flow does not allow: refused, the card goes back, the message shows
+    drag(
+        &mut browser,
+        "Gate card A to Implemented",
+        &card("Gate card A"),
+        &cards_of("EXST_IMPLEMENTED"),
+    );
+    browser.wait_for(
+        "the refused move's answer",
+        "window.__gate.fetches.filter((f) => f.url.indexOf('/updateExampleStatus') >= 0).length === 2",
+        WAIT,
+    );
+    browser.wait_for(
+        "the refusal's message and the card back in In Design",
+        &format!(
+            "{} === 'EXST_IN_DESIGN' && Array.from(document.querySelectorAll('.q-notification')).some((el) => el.innerText.indexOf('Status change not allowed') >= 0)",
+            column_of("Gate card A")
+        ),
+        WAIT,
+    );
+    assert_eq!(example_row(&gate, "GX_A").0, "EXST_IN_DESIGN");
+    let problems = browser.take_problems();
+    assert!(
+        problems.iter().all(|problem| {
+            let text = format!("{problem:?}");
+            text.contains("500") || text.contains("request failed")
+        }),
+        "only the refusal's answer: {problems:#?}"
+    );
+
+    // the calendar: the month with the examples on their days; an event dragged two days later
+    browser.click(
+        "Calendar",
+        "document.querySelector('#ExampleList_views .m-list-views-toggle [data-view=calendar]')",
+    );
+    let chip = |title: &str| {
+        format!("Array.from(document.querySelectorAll('#ExampleList_views .m-cal-month .m-cal-chip')).find((el) => el.innerText.indexOf({title:?}) >= 0)")
+    };
+    let day_of = |title: &str| {
+        format!(
+            "(() => {{ const el = {}; return el ? Number(el.closest('[data-day]').dataset.day) : null; }})()",
+            chip(title)
+        )
+    };
+    browser.wait_for(
+        "the month with the examples",
+        &format!(
+            "!!document.querySelector('#ExampleList_views[data-view=calendar] .m-cal-month') && !!{}",
+            chip("Gate card A")
+        ),
+        WAIT,
+    );
+    // 2026-10-20 in US/Central, the user's zone
+    assert_eq!(browser.eval(&day_of("Gate card A")), 20746);
+    drag(
+        &mut browser,
+        "Gate card A two days later",
+        &chip("Gate card A"),
+        "document.querySelector('#ExampleList_views .m-cal-cell[data-day=\"20748\"]')",
+    );
+    let timed = fetched(&mut browser, "the time move", "/updateExampleTimes");
+    assert_eq!(timed["status"], 200, "{timed}");
+    browser.wait_for(
+        "the event on its new day",
+        &format!("{} === 20748", day_of("Gate card A")),
+        WAIT,
+    );
+    assert_eq!(
+        example_row(&gate, "GX_A").1,
+        "1792692000000",
+        "13:00 Central two days later"
+    );
+    assert_clean(&mut browser, "an event moved");
+
+    // the page again: the calendar is the view kept for the form, and the event is on its new day
+    browser.navigate(&format!("{base}/qapps/gallery/Views"));
+    browser.wait_for(
+        "the calendar again, the event moved",
+        &format!(
+            "!!document.querySelector('#ExampleList_views[data-view=calendar]') && {} === 20748",
+            day_of("Gate card A")
+        ),
+        WAIT,
+    );
+    // back to the list
+    browser.click(
+        "List",
+        "document.querySelector('#ExampleList_views .m-list-views-toggle [data-view=list]')",
+    );
+    browser.wait_for(
+        "the list's rows",
+        "!!document.querySelector('#ExampleList_views[data-view=list]') && document.querySelector('#ExampleList_views .tbody').offsetParent !== null && document.querySelector('#ExampleList_views .tbody').innerText.indexOf('Gate card B') >= 0",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the list again");
+
+    // range-find: with a page of two rows the calendar still shows the month's examples, asked of the form request for the dates it
+    // shows (the find with the range added and no paging), while the list keeps its page of two
+    browser.navigate(&format!("{base}/qapps/gallery/Views?pageSize=2&view=calendar"));
+    browser.wait_for(
+        "the month with an example beyond the list's page",
+        &format!(
+            "!!document.querySelector('#ExampleList_views[data-view=calendar] .m-cal-month') && !!{} && !!{}",
+            chip("Retrospective"),
+            chip("Release")
+        ),
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("document.querySelectorAll('#ExampleList_views .m-list-views-list .tbody .tr').length"),
+        2,
+        "the list keeps its page"
+    );
+    // the next month asks again, for its own dates
+    browser.eval(FETCH_SPY);
+    browser.click(
+        "the next month",
+        "document.querySelector('#ExampleList_views .m-cal-next')",
+    );
+    let asked = fetched(&mut browser, "the next month's rows", "/actions/ExampleList");
+    assert_eq!(asked["status"], 200, "{asked}");
+    let asked_url = asked["url"].as_str().unwrap_or_default().to_string();
+    assert!(
+        asked_url.contains("pageNoLimit=true")
+            && asked_url.contains("exampleDate_")
+            && !asked_url.contains("pageSize="),
+        "{asked_url}"
+    );
+    assert_clean(&mut browser, "the calendar's range");
+
+    // the markdown-view of the Widgets screen: Marked and DOMPurify load, the heading has its id, a table its container, a link to
+    // another site opens in a new tab with noopener, and an app link (from the base path) goes through the shell
+    browser.navigate(&format!("{base}/qapps/gallery/Widgets"));
+    browser.wait_for(
+        "the markdown rendered",
+        "!!document.querySelector('#WidgetMarkdown h2#md-markdown-view')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("(() => { const md = document.getElementById('WidgetMarkdown'); return [!!md.querySelector('.m-md-table table.q-table'), \
+            !!md.querySelector('a[href=\"https://moqui.org\"][target=_blank][rel=\"noopener noreferrer\"]'), !!md.querySelector('pre code'), \
+            !!md.querySelector('a[data-md-link][href=\"/qapps/gallery/List\"]')].join(','); })()"),
+        "true,true,true,true"
+    );
+    // a table narrower than the text: its container (and the container's border) is as wide as the table, not the text
+    assert_eq!(
+        browser.eval("(() => { const md = document.getElementById('WidgetMarkdown'); const box = md.querySelector('.m-md-table'); \
+            const table = box.querySelector('table'); const boxWidth = box.getBoundingClientRect().width; \
+            return [Math.abs(boxWidth - table.getBoundingClientRect().width) <= 3, boxWidth < md.getBoundingClientRect().width - 40].join(','); })()"),
+        "true,true"
+    );
+    browser.click(
+        "the app link",
+        "document.querySelector('#WidgetMarkdown a[data-md-link]')",
+    );
+    browser.wait_for(
+        "the List screen through the shell",
+        "location.pathname === '/qapps/gallery/List' && !!document.querySelector('.q-table')",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the markdown view");
+
+    if let Some(dir) = std::env::var_os("MOQUI_SHELL_SHOTS") {
+        views_shots(&mut browser, &base, std::path::Path::new(&dir));
+        assert_clean(&mut browser, "the views in each mode, light and dark");
+    }
 }

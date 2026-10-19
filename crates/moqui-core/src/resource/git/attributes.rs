@@ -163,6 +163,7 @@ mod tests {
             name: "Test".into(),
             email: "test@example.com".into(),
             user_id: None,
+            seconds: None,
         };
         let commit = ops::commit(store, "main", &author, |_| Ok(Some((edits.clone(), "files".into()))))
             .unwrap()

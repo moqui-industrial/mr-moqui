@@ -72,9 +72,11 @@ mail = ["smtp", "imap"]
 # Outbound SMTP: send#EmailMessage and send#EmailTemplate (password reset, notifications), test#EmailServer's SMTP step.
 # rustls reads the extra CA file (email_tls_ca_file); lettre links it already.
 smtp = ["dep:lettre", "dep:rustls"]
-# Inbound: IMAP and POP3 poll, the mail client's sync, IDLE and import, inbound MIME. Replies and the client's sends
-# go out through SMTP, so this includes it.
-imap = ["smtp", "dep:imap", "dep:mail-parser", "dep:webpki-roots"]
+# Inbound: IMAP and POP3 poll, the mail client's sync, IDLE and import, inbound MIME, the OAuth sign-in of mail accounts
+# and the delivery of mail the host's SMTP listener received. Replies and the client's sends go out through SMTP, so
+# this includes it. The OAuth sign-in (service/mail/oauth.rs) calls the providers' token endpoints with the blocking
+# HTTP client, so it turns on http.
+imap = ["smtp", "dep:imap", "dep:mail-parser", "dep:webpki-roots", "http"]
 # remote-rest services, http resource locations, and the OpenSearch backend (blocking reqwest).
 http = ["moqui-lib/http"]
 # Generated self-signed cluster certificate.

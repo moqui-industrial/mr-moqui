@@ -1070,6 +1070,7 @@ default = [\"maximal\"]
 lite = [\"moqui-host/lite\"]
 enterprise = [\"moqui-host/enterprise\"]
 maximal = [\"moqui-host/maximal\"]
+inbound-smtp = [\"moqui-host/inbound-smtp\"]
 
 [dependencies]
 moqui-host = { path = \"$ROOT/crates/moqui-host\", default-features = false }

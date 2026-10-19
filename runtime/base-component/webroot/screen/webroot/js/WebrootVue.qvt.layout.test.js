@@ -51,3 +51,36 @@ test("after an answer the wizard stays on errors, goes where another screen is n
         ["gallery", "Wizard", "Review"], 3, 2), { kind: "url", url: "/apps/gallery/Wizard/Review?done=Y" });
     assert.deepEqual(moqui.wizardAfterAnswer({}, ["gallery", "Wizard", "Review"], 3, 2), { kind: "stay" });
 });
+
+test("a split side by side fills the viewport below its top, so each pane scrolls in itself; stacked the page scrolls", () => {
+    assert.equal(moqui.splitHeight({ stacked: false, top: 120, viewport: 900 }), "764px");
+    // at least 360 px, the height attribute as given, nothing stacked or before the viewport is known
+    assert.equal(moqui.splitHeight({ stacked: false, top: 700, viewport: 800 }), "360px");
+    assert.equal(moqui.splitHeight({ stacked: false, height: "70vh", top: 120, viewport: 900 }), "70vh");
+    assert.equal(moqui.splitHeight({ stacked: true, top: 120, viewport: 900 }), undefined);
+    assert.equal(moqui.splitHeight({ stacked: false, top: 120, viewport: 0 }), undefined);
+    assert.equal(moqui.splitHeight({ stacked: false, top: 100, viewport: 900, margin: 0 }), "800px");
+});
+
+test("the wizard covers the step while its form posts and waits for the screen the answer names", () => {
+    const wizard = moqui.qvt.components["m-subscreens-wizard"];
+    assert.ok(wizard.template.includes('<q-inner-loading :showing="submitting"'), "the step is covered while it posts");
+    assert.ok(wizard.template.includes(':disable="submitting"'), "Back waits");
+    const calls = [];
+    const self = Object.assign({ submitting: true, steps: [{ name: "A", pathWithParams: "/apps/x/W/A" }, { name: "B", pathWithParams: "/apps/x/W/B" }], activeIndex: 1,
+        $root: { currentPathList: ["x", "W", "B"], currentParameters: {}, getLinkPath: (url) => url, setUrl: (url, body, done) => calls.push([url, done]) } }, wizard.methods);
+    // the last step answered the same step with done=Y: the spinner stays until that screen is there
+    wizard.methods.stepAnswered.call(self, null, { screenPathList: ["apps", "x", "W", "B"], screenUrl: "/apps/x/W/B?done=Y" });
+    assert.equal(self.submitting, true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], "/apps/x/W/B?done=Y");
+    calls[0][1]();
+    assert.equal(self.submitting, false);
+    // an answer with errors stays, and the spinner goes at once
+    self.submitting = true;
+    wizard.methods.stepAnswered.call(self, null, { errors: ["no"] });
+    assert.equal(self.submitting, false);
+    // a step form that posts by itself (Enter, its own button) shows the spinner too
+    wizard.methods.stepSubmitting.call(self);
+    assert.equal(self.submitting, true);
+});

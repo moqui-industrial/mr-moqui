@@ -12,9 +12,10 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Scripted local mail servers for the sync tests, on 127.0.0.1 only: an IMAP server with folders, UIDs, flags, modseqs
-//! and the extensions a test turns on (CONDSTORE, QRESYNC, MOVE, UIDPLUS, IDLE, ENABLE), a POP3 server with UIDL, an
-//! HTTP server for autoconfig files and a DNS server for SRV answers.
+//! Scripted local mail servers for the sync tests, on 127.0.0.1 only: an IMAP server with folders, UIDs, flags, modseqs,
+//! the extensions a test turns on (CONDSTORE, QRESYNC, MOVE, UIDPLUS, IDLE, ENABLE) and `AUTHENTICATE XOAUTH2`, a POP3
+//! server with UIDL, an HTTP server for autoconfig files, a DNS server for SRV and MX answers, and for the OAuth tests an
+//! SMTP server with `AUTH XOAUTH2` and an OAuth provider (token endpoint with PKCE, refresh, revocation, user info).
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -56,6 +57,8 @@ pub(super) struct FakeImapState {
     pub(super) modseq: u64,
     /// Every command received, tag removed.
     pub(super) log: Vec<String>,
+    /// The access tokens `AUTHENTICATE XOAUTH2` takes for `user`.
+    pub(super) oauth_tokens: Vec<String>,
     next_validity: u32,
 }
 
@@ -118,6 +121,7 @@ impl FakeImap {
             folders,
             modseq: 1,
             log: Vec::new(),
+            oauth_tokens: Vec::new(),
             next_validity: 5000,
         }));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -423,6 +427,41 @@ fn serve_imap(stream: TcpStream, state: &Mutex<FakeImapState>) -> std::io::Resul
                     &mut writer,
                     &format!("* CAPABILITY IMAP4rev1 {caps}\r\n{tag} OK CAPABILITY done\r\n"),
                 )?;
+            }
+            // XOAUTH2 as Gmail: the initial response after an empty challenge, and on a refused token an error
+            // challenge the client answers with an empty line, then NO
+            "AUTHENTICATE" => {
+                if !args.first().is_some_and(|name| name.eq_ignore_ascii_case("XOAUTH2")) {
+                    write(&mut writer, &format!("{tag} NO unsupported mechanism\r\n"))?;
+                    continue;
+                }
+                let response = match args.get(1) {
+                    Some(initial) => initial.clone(),
+                    None => {
+                        write(&mut writer, "+ \r\n")?;
+                        let mut answer = String::new();
+                        reader.read_line(&mut answer)?;
+                        answer.trim().to_string()
+                    }
+                };
+                let accepted = super::oauth::parse_xoauth2(&response).is_some_and(|(user, token)| {
+                    let state = lock(state);
+                    user == state.user && state.oauth_tokens.contains(&token)
+                });
+                if accepted {
+                    write(&mut writer, &format!("{tag} OK AUTHENTICATE completed\r\n"))?;
+                } else {
+                    write(
+                        &mut writer,
+                        "+ eyJzdGF0dXMiOiI0MDAiLCJzY2hlbWVzIjoiQmVhcmVyIiwic2NvcGUiOiJodHRwczovL21haWwuZ29vZ2xlLmNvbS8ifQ==\r\n",
+                    )?;
+                    let mut empty = String::new();
+                    reader.read_line(&mut empty)?;
+                    write(
+                        &mut writer,
+                        &format!("{tag} NO [AUTHENTICATIONFAILED] Invalid credentials (Failure)\r\n"),
+                    )?;
+                }
             }
             "LOGIN" => {
                 let ok = {
@@ -971,22 +1010,32 @@ pub(super) struct FakePop {
     pub(super) port: u16,
     pub(super) messages: PopMessages,
     pub(super) log: Arc<Mutex<Vec<String>>>,
+    /// The user and the access tokens `AUTH XOAUTH2` takes.
+    pub(super) oauth: PopOAuth,
 }
+
+type PopOAuth = Arc<Mutex<(String, Vec<String>)>>;
 
 impl FakePop {
     pub(super) fn start() -> Self {
         let messages: PopMessages = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::new(Mutex::new(Vec::new()));
+        let oauth: PopOAuth = Arc::new(Mutex::new((String::new(), Vec::new())));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let (shared, shared_log) = (Arc::clone(&messages), Arc::clone(&log));
+        let (shared, shared_log, shared_oauth) = (Arc::clone(&messages), Arc::clone(&log), Arc::clone(&oauth));
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
-                let _ = serve_pop(stream, &shared, &shared_log);
+                let _ = serve_pop(stream, &shared, &shared_log, &shared_oauth);
             }
         });
-        Self { port, messages, log }
+        Self {
+            port,
+            messages,
+            log,
+            oauth,
+        }
     }
 
     pub(super) fn add(&self, uidl: &str, raw: &str) {
@@ -1006,6 +1055,7 @@ fn serve_pop(
     stream: TcpStream,
     messages: &Mutex<Vec<(String, Vec<u8>, bool)>>,
     log: &Mutex<Vec<String>>,
+    oauth: &Mutex<(String, Vec<String>)>,
 ) -> std::io::Result<()> {
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
@@ -1022,6 +1072,26 @@ fn serve_pop(
         let command = words.next().unwrap_or("").to_ascii_uppercase();
         let argument: usize = words.next().and_then(|word| word.parse().ok()).unwrap_or(0);
         match command.as_str() {
+            // SASL XOAUTH2 after the continuation (RFC 5034); a refused token gets the error challenge, then -ERR
+            "AUTH" if text.eq_ignore_ascii_case("AUTH XOAUTH2") => {
+                write(&mut writer, "+ \r\n")?;
+                let mut answer = String::new();
+                reader.read_line(&mut answer)?;
+                let accepted = super::oauth::parse_xoauth2(answer.trim()).is_some_and(|(user, token)| {
+                    let oauth = lock(oauth);
+                    user == oauth.0 && oauth.1.contains(&token)
+                });
+                lock(log).push(format!("XOAUTH2 {}", if accepted { "ok" } else { "refused" }));
+                if accepted {
+                    write(&mut writer, "+OK signed in\r\n")?;
+                } else {
+                    // {"status":"401","schemes":"bearer"}
+                    write(&mut writer, "+ eyJzdGF0dXMiOiI0MDEiLCJzY2hlbWVzIjoiYmVhcmVyIn0=\r\n")?;
+                    let mut empty = String::new();
+                    reader.read_line(&mut empty)?;
+                    write(&mut writer, "-ERR [AUTH] invalid credentials\r\n")?;
+                }
+            }
             "USER" => write(&mut writer, "+OK\r\n")?,
             "PASS" => {
                 if text.ends_with(" pop-password") {
@@ -1124,6 +1194,14 @@ pub(super) fn fake_http(pages: HashMap<String, String>) -> u16 {
 
 /// A DNS server answering SRV queries from `records` (name to priority, weight, port, target). Returns its port.
 pub(super) fn fake_dns(records: HashMap<String, (u16, u16, u16, String)>) -> u16 {
+    fake_dns_with_mx(records, HashMap::new())
+}
+
+/// [`fake_dns`], answering MX queries from `mx` (domain to its MX hosts) too.
+pub(super) fn fake_dns_with_mx(
+    records: HashMap<String, (u16, u16, u16, String)>,
+    mx: HashMap<String, Vec<String>>,
+) -> u16 {
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let port = socket.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -1146,10 +1224,37 @@ pub(super) fn fake_dns(records: HashMap<String, (u16, u16, u16, String)>) -> u16
             }
             let question_end = offset + 5;
             let name = labels.join(".");
-            let mut answer = query[..question_end].to_vec();
+            let kind = query
+                .get(offset + 1..offset + 3)
+                .map_or(0, |bytes| u16::from_be_bytes([bytes[0], bytes[1]]));
+            let mut answer = query[..question_end.min(query.len())].to_vec();
             answer[2] = 0x81;
             answer[3] = 0x80;
-            if let Some((priority, weight, port, target)) = records.get(&name) {
+            let encode = |host: &str| {
+                let mut bytes = Vec::new();
+                for label in host.split('.') {
+                    bytes.push(u8::try_from(label.len()).unwrap());
+                    bytes.extend_from_slice(label.as_bytes());
+                }
+                bytes.push(0);
+                bytes
+            };
+            if kind == 15 {
+                match mx.get(&name) {
+                    Some(hosts) => {
+                        answer[6] = 0;
+                        answer[7] = u8::try_from(hosts.len()).unwrap();
+                        for (index, host) in hosts.iter().enumerate() {
+                            let host_bytes = encode(host);
+                            answer.extend_from_slice(&[0xC0, 0x0C, 0x00, 0x0F, 0x00, 0x01, 0, 0, 0, 60]);
+                            answer.extend_from_slice(&u16::try_from(2 + host_bytes.len()).unwrap().to_be_bytes());
+                            answer.extend_from_slice(&u16::try_from(10 * (index + 1)).unwrap().to_be_bytes());
+                            answer.extend_from_slice(&host_bytes);
+                        }
+                    }
+                    None => answer[3] = 0x83,
+                }
+            } else if let Some((priority, weight, port, target)) = records.get(&name) {
                 answer[6] = 0;
                 answer[7] = 1;
                 let mut target_bytes = Vec::new();
@@ -1171,4 +1276,401 @@ pub(super) fn fake_dns(records: HashMap<String, (u16, u16, u16, String)>) -> u16
         }
     });
     port
+}
+
+// ---- SMTP with XOAUTH2 ----
+
+/// What the fake SMTP server knows and saw.
+#[derive(Default)]
+pub(super) struct FakeSmtpState {
+    pub(super) user: String,
+    /// The access tokens `AUTH XOAUTH2` takes for `user`.
+    pub(super) tokens: Vec<String>,
+    /// Each AUTH: mechanism and whether it was accepted, such as `XOAUTH2 ok` or `PLAIN bob ok` (never the token).
+    pub(super) auths: Vec<String>,
+    /// The users and passwords `AUTH PLAIN` takes.
+    pub(super) passwords: Vec<(String, String)>,
+    /// Each message: the envelope sender, the recipients and the data.
+    pub(super) messages: Vec<(String, Vec<String>, String)>,
+}
+
+/// An ESMTP server offering AUTH XOAUTH2 on 127.0.0.1; mail is taken only after a sign-in.
+pub(super) struct FakeSmtp {
+    pub(super) port: u16,
+    pub(super) state: Arc<Mutex<FakeSmtpState>>,
+}
+
+impl FakeSmtp {
+    pub(super) fn start(user: &str) -> Self {
+        let state = Arc::new(Mutex::new(FakeSmtpState {
+            user: user.to_string(),
+            ..FakeSmtpState::default()
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let shared = Arc::clone(&state);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let state = Arc::clone(&shared);
+                std::thread::spawn(move || {
+                    let _ = serve_smtp(stream, &state);
+                });
+            }
+        });
+        Self { port, state }
+    }
+}
+
+fn serve_smtp(stream: TcpStream, state: &Mutex<FakeSmtpState>) -> std::io::Result<()> {
+    let mut writer = stream.try_clone()?;
+    let mut reader = BufReader::new(stream);
+    write(&mut writer, "220 fake.example.com ESMTP\r\n")?;
+    let mut signed_in = false;
+    let mut from = String::new();
+    let mut recipients = Vec::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            return Ok(());
+        }
+        let text = line.trim_end().to_string();
+        let upper = text.to_ascii_uppercase();
+        if upper.starts_with("EHLO") || upper.starts_with("HELO") {
+            write(
+                &mut writer,
+                "250-fake.example.com\r\n250-AUTH XOAUTH2 PLAIN\r\n250 8BITMIME\r\n",
+            )?;
+        } else if upper.starts_with("AUTH PLAIN") {
+            use base64::Engine;
+            let response = match text.split_whitespace().nth(2) {
+                Some(initial) => initial.to_string(),
+                None => {
+                    write(&mut writer, "334 \r\n")?;
+                    let mut answer = String::new();
+                    reader.read_line(&mut answer)?;
+                    answer.trim().to_string()
+                }
+            };
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(response.trim())
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .unwrap_or_default();
+            let mut parts = decoded.split('\0').skip(1);
+            let user = parts.next().unwrap_or_default().to_string();
+            let password = parts.next().unwrap_or_default().to_string();
+            let accepted = lock(state)
+                .passwords
+                .iter()
+                .any(|(known, secret)| *known == user && *secret == password);
+            lock(state)
+                .auths
+                .push(format!("PLAIN {user} {}", if accepted { "ok" } else { "refused" }));
+            if accepted {
+                signed_in = true;
+                write(&mut writer, "235 2.7.0 Accepted\r\n")?;
+            } else {
+                write(&mut writer, "535 5.7.8 Username and Password not accepted\r\n")?;
+            }
+        } else if upper.starts_with("AUTH XOAUTH2") {
+            let response = match text.split_whitespace().nth(2) {
+                Some(initial) => initial.to_string(),
+                None => {
+                    write(&mut writer, "334 \r\n")?;
+                    let mut answer = String::new();
+                    reader.read_line(&mut answer)?;
+                    answer.trim().to_string()
+                }
+            };
+            let accepted = super::oauth::parse_xoauth2(&response).is_some_and(|(user, token)| {
+                let state = lock(state);
+                user == state.user && state.tokens.contains(&token)
+            });
+            lock(state)
+                .auths
+                .push(format!("XOAUTH2 {}", if accepted { "ok" } else { "refused" }));
+            if accepted {
+                signed_in = true;
+                write(&mut writer, "235 2.7.0 Accepted\r\n")?;
+            } else {
+                write(&mut writer, "535 5.7.8 Username and Password not accepted\r\n")?;
+            }
+        } else if upper.starts_with("AUTH") {
+            lock(state).auths.push("other refused".to_string());
+            write(&mut writer, "504 5.5.4 Unrecognized authentication type\r\n")?;
+        } else if upper.starts_with("MAIL FROM:") {
+            if signed_in {
+                from = text[10..].trim().trim_matches(['<', '>']).to_string();
+                recipients.clear();
+                write(&mut writer, "250 OK\r\n")?;
+            } else {
+                write(&mut writer, "530 5.7.0 Authentication Required\r\n")?;
+            }
+        } else if upper.starts_with("RCPT TO:") {
+            recipients.push(text[8..].trim().trim_matches(['<', '>']).to_string());
+            write(&mut writer, "250 OK\r\n")?;
+        } else if upper == "DATA" {
+            write(&mut writer, "354 Go ahead\r\n")?;
+            let mut data = String::new();
+            loop {
+                let mut part = String::new();
+                if reader.read_line(&mut part)? == 0 || part == ".\r\n" || part == ".\n" {
+                    break;
+                }
+                data.push_str(&part);
+            }
+            lock(state)
+                .messages
+                .push((from.clone(), std::mem::take(&mut recipients), data));
+            write(&mut writer, "250 OK queued\r\n")?;
+        } else if upper.starts_with("QUIT") {
+            write(&mut writer, "221 Bye\r\n")?;
+            return Ok(());
+        } else {
+            write(&mut writer, "250 OK\r\n")?;
+        }
+    }
+}
+
+// ---- OAuth provider ----
+
+/// An authorization code the fake provider will exchange: the PKCE challenge it was made with, the ID token's claims,
+/// the scopes it grants, and whether it gives a refresh token.
+#[derive(Clone)]
+pub(super) struct FakeCode {
+    pub(super) challenge: String,
+    pub(super) claims: serde_json::Value,
+    pub(super) scope: String,
+    pub(super) refresh: bool,
+}
+
+#[derive(Default)]
+pub(super) struct FakeProviderState {
+    pub(super) client_id: String,
+    pub(super) client_secret: String,
+    pub(super) redirect_uri: String,
+    pub(super) codes: HashMap<String, FakeCode>,
+    /// The refresh tokens it takes.
+    pub(super) refresh_tokens: Vec<String>,
+    /// Each access token it gave, the latest last.
+    pub(super) access_tokens: Vec<String>,
+    /// The tokens revoked at its revocation endpoint.
+    pub(super) revoked: Vec<String>,
+    /// Each request: the path and the form parameters.
+    pub(super) requests: Vec<(String, HashMap<String, String>)>,
+    /// A refresh gives a new refresh token (as Microsoft).
+    pub(super) rotate: bool,
+    /// How long a refresh takes, so refreshes at once overlap.
+    pub(super) refresh_delay_ms: u64,
+    /// The user info endpoint's answer.
+    pub(super) user_info: Option<serde_json::Value>,
+    next: u32,
+}
+
+impl FakeProviderState {
+    fn next_id(&mut self, prefix: &str) -> String {
+        self.next += 1;
+        format!("{prefix}-{}", self.next)
+    }
+
+    /// The number the next token it gives will have.
+    pub(super) fn next_number(&self) -> u32 {
+        self.next + 1
+    }
+
+    /// The number of requests to `path` with `grant_type` (any when empty).
+    pub(super) fn count(&self, path: &str, grant_type: &str) -> usize {
+        self.requests
+            .iter()
+            .filter(|(seen, form)| {
+                seen == path
+                    && (grant_type.is_empty() || form.get("grant_type").map(String::as_str) == Some(grant_type))
+            })
+            .count()
+    }
+}
+
+/// A fake OAuth 2.0 provider on 127.0.0.1: `POST /token` (authorization_code with PKCE S256, refresh_token),
+/// `POST /revoke` and `GET /userinfo`, with client authentication in the form.
+pub(super) struct FakeProvider {
+    pub(super) port: u16,
+    pub(super) state: Arc<Mutex<FakeProviderState>>,
+}
+
+/// An unsigned JWT with `claims`, as a token endpoint's ID token (its signature is not checked).
+pub(super) fn fake_jwt(claims: &serde_json::Value) -> String {
+    use base64::Engine;
+    let encode = |value: &serde_json::Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.to_string());
+    format!(
+        "{}.{}.c2ln",
+        encode(&serde_json::json!({"alg": "RS256", "typ": "JWT"})),
+        encode(claims)
+    )
+}
+
+impl FakeProvider {
+    pub(super) fn start(client_id: &str, client_secret: &str, redirect_uri: &str) -> Self {
+        let state = Arc::new(Mutex::new(FakeProviderState {
+            client_id: client_id.to_string(),
+            client_secret: client_secret.to_string(),
+            redirect_uri: redirect_uri.to_string(),
+            ..FakeProviderState::default()
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let shared = Arc::clone(&state);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let state = Arc::clone(&shared);
+                std::thread::spawn(move || {
+                    let _ = serve_provider(stream, &state);
+                });
+            }
+        });
+        Self { port, state }
+    }
+
+    pub(super) fn url(&self, path: &str) -> String {
+        format!("http://127.0.0.1:{}{path}", self.port)
+    }
+}
+
+fn form_pairs(body: &str) -> HashMap<String, String> {
+    crate::web::form_pairs(body).into_iter().collect()
+}
+
+fn json_response(writer: &mut TcpStream, status: u16, body: &serde_json::Value) -> std::io::Result<()> {
+    let text = body.to_string();
+    let reason = if status == 200 { "OK" } else { "Error" };
+    write(
+        writer,
+        &format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+            text.len()
+        ),
+    )
+}
+
+fn refresh_answer(writer: &mut TcpStream, state: &mut FakeProviderState, refresh: &str) -> std::io::Result<()> {
+    use serde_json::json;
+    if !state.refresh_tokens.iter().any(|known| known == refresh) {
+        return json_response(
+            writer,
+            400,
+            &json!({"error": "invalid_grant", "error_description": "Token has been expired or revoked."}),
+        );
+    }
+    let access = state.next_id("at");
+    state.access_tokens.push(access.clone());
+    let mut answer = json!({"access_token": access, "token_type": "Bearer", "expires_in": 3599});
+    if state.rotate {
+        let rotated = state.next_id("rt");
+        state.refresh_tokens.push(rotated.clone());
+        answer["refresh_token"] = json!(rotated);
+    }
+    json_response(writer, 200, &answer)
+}
+
+fn serve_provider(stream: TcpStream, shared: &Mutex<FakeProviderState>) -> std::io::Result<()> {
+    use serde_json::json;
+    let mut writer = stream.try_clone()?;
+    let mut reader = BufReader::new(stream);
+    let mut request = String::new();
+    reader.read_line(&mut request)?;
+    let mut length = 0usize;
+    let mut bearer = String::new();
+    loop {
+        let mut header = String::new();
+        if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
+            break;
+        }
+        if let Some((name, value)) = header.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                length = value.trim().parse().unwrap_or(0);
+            } else if name.eq_ignore_ascii_case("authorization") {
+                bearer = value.trim().trim_start_matches("Bearer ").to_string();
+            }
+        }
+    }
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body)?;
+    let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+    let path = path.split('?').next().unwrap_or("/").to_string();
+    let form = form_pairs(&String::from_utf8_lossy(&body));
+    let mut state = lock(shared);
+    state.requests.push((path.clone(), form.clone()));
+    let param = |name: &str| form.get(name).cloned().unwrap_or_default();
+    let client_ok = param("client_id") == state.client_id && param("client_secret") == state.client_secret;
+    match path.as_str() {
+        "/token" => {
+            if !client_ok {
+                return json_response(&mut writer, 401, &json!({"error": "invalid_client"}));
+            }
+            match param("grant_type").as_str() {
+                "authorization_code" => {
+                    let Some(code) = state.codes.remove(&param("code")) else {
+                        return json_response(
+                            &mut writer,
+                            400,
+                            &json!({"error": "invalid_grant", "error_description": "unknown code"}),
+                        );
+                    };
+                    if param("redirect_uri") != state.redirect_uri {
+                        return json_response(
+                            &mut writer,
+                            400,
+                            &json!({"error": "invalid_grant", "error_description": "redirect_uri"}),
+                        );
+                    }
+                    if super::oauth::challenge(&param("code_verifier")) != code.challenge {
+                        return json_response(
+                            &mut writer,
+                            400,
+                            &json!({"error": "invalid_grant", "error_description": "PKCE verification failed"}),
+                        );
+                    }
+                    let access = state.next_id("at");
+                    state.access_tokens.push(access.clone());
+                    let mut answer = json!({
+                        "access_token": access, "token_type": "Bearer", "expires_in": 3599,
+                        "scope": code.scope, "id_token": fake_jwt(&code.claims),
+                    });
+                    if code.refresh {
+                        let refresh = state.next_id("rt");
+                        state.refresh_tokens.push(refresh.clone());
+                        answer["refresh_token"] = json!(refresh);
+                    }
+                    json_response(&mut writer, 200, &answer)
+                }
+                "refresh_token" => {
+                    let refresh = param("refresh_token");
+                    let delay = state.refresh_delay_ms;
+                    if delay > 0 {
+                        drop(state);
+                        std::thread::sleep(Duration::from_millis(delay));
+                        return refresh_answer(&mut writer, &mut lock(shared), &refresh);
+                    }
+                    refresh_answer(&mut writer, &mut state, &refresh)
+                }
+                _ => json_response(&mut writer, 400, &json!({"error": "unsupported_grant_type"})),
+            }
+        }
+        "/revoke" => {
+            let token = param("token");
+            state.revoked.push(token.clone());
+            state.refresh_tokens.retain(|known| *known != token);
+            json_response(&mut writer, 200, &json!({}))
+        }
+        "/userinfo" => match (&state.user_info, state.access_tokens.contains(&bearer)) {
+            (Some(info), true) => {
+                let info = info.clone();
+                json_response(&mut writer, 200, &info)
+            }
+            _ => json_response(&mut writer, 401, &json!({"error": "invalid_token"})),
+        },
+        _ => json_response(&mut writer, 404, &json!({"error": "not_found"})),
+    }
 }

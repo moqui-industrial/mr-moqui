@@ -23,6 +23,12 @@
 //!   fails is reported and the rest still apply.
 //! - The **last change** of a path is the version that last changed it (on `git://` from the path index, so a file's
 //!   date and user are its own commit's, not the branch head's), with its size.
+//! - A **version author** names who wrote a version and when, for a version copied from elsewhere (a wiki page moved
+//!   into other storage with its history replayed): [`with_version_author`] around the writes. On `git://` it is the
+//!   commit's author (name, email and date; the committer stays the current user, now) and its `Moqui-User-Id`; on
+//!   `dbresource://` the history row's `userId` and `versionDate`.
+
+use std::cell::RefCell;
 
 use moqui_lib::object::Value;
 
@@ -83,6 +89,39 @@ impl ResourceChange {
             }
         })
     }
+}
+
+/// Who wrote a version and when, when that is not the current user now: a version copied with its history from other
+/// storage. Either part may be empty, which is the current user or now.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VersionAuthor {
+    pub user_id: Option<String>,
+    /// Milliseconds since the epoch.
+    pub date: Option<i64>,
+}
+
+thread_local! {
+    static VERSION_AUTHOR: RefCell<Option<VersionAuthor>> = const { RefCell::new(None) };
+}
+
+/// Run `body` with the versions it writes (on `git://` and `dbresource://`) attributed to `author`, then put back the
+/// author that was set before. `None` writes as the current user, now.
+pub fn with_version_author<T>(author: Option<VersionAuthor>, body: impl FnOnce() -> T) -> T {
+    struct Restore(Option<VersionAuthor>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            VERSION_AUTHOR.with(|cell| *cell.borrow_mut() = previous);
+        }
+    }
+    let previous = VERSION_AUTHOR.with(|cell| cell.replace(author));
+    let _restore = Restore(previous);
+    body()
+}
+
+/// The author [`with_version_author`] set for the writes on this thread, if any.
+pub(crate) fn version_author() -> Option<VersionAuthor> {
+    VERSION_AUTHOR.with(|cell| cell.borrow().clone())
 }
 
 /// What a change set did.

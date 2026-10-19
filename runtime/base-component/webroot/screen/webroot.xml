@@ -65,6 +65,47 @@ along with this software (see the LICENSE.md file). If not, see
             ]]></script></actions>
         <default-response type="none"/>
     </transition>
+    <!-- The columns of a form-list board and the colors of a calendar in a server-static screen, which the browser asks for
+        (m-list-views infoUrl): what org.moqui.impl.StatusServices.get#ListViewColumns answers ({columns, transitions, colors})
+        for values (a comma list), statusTypeId, statusFlowId (Default when empty) and status (true for a status field). transitions is the flow by status
+        ({statusId: [toStatusId]}), colors the color by value. Status items, enumerations and flows are configuration, read
+        without authorization. -->
+    <transition name="listViewColumns" read-only="true" begin-transaction="false">
+        <parameter name="values"/><parameter name="statusTypeId"/><parameter name="statusFlowId"/><parameter name="status"/>
+        <actions><script><![CDATA[
+            const params = ec.web.parameters
+            const values = params.values == null || params.values === '' ? [] : String(params.values).split(',').map((value) => value.trim()).filter((value) => value)
+            const out = ec.service.sync().name('org.moqui.impl.StatusServices.get#ListViewColumns').parameters({values: values.slice(0, 500),
+                statusTypeId: params.statusTypeId || null, statusFlowId: params.statusFlowId || null,
+                status: String(params.status || '') === 'true'}).disableAuthz().call() || {}
+            const columns = Array.from(out.columns || []).map((column) => ({value: column.value, label: column.label, color: column.color ?? null}))
+            const transitions = {}
+            for (const step of Array.from(out.flow || [])) (transitions[step.statusId] = transitions[step.statusId] || []).push(step.toStatusId)
+            const colors = {}
+            for (const column of columns) if (column.color) colors[column.value] = column.color
+            ec.web.sendJsonResponse({columns: columns, transitions: transitions, colors: colors})
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
+    <!-- The status flow of a status-bar in a server-static screen, which the browser asks for (m-status-bar barUrl): what
+        org.moqui.impl.StatusServices.get#StatusBar answers ({current, stages, transitions, next}) for statusId, statusTypeId,
+        statusFlowId, stages and allowedStatusIds (comma lists) and readOnly (no transitions). Status items and flows are
+        configuration, read without authorization; a transition with a userPermissionId is offered only with that permission. -->
+    <transition name="statusBar" read-only="true" begin-transaction="false">
+        <parameter name="statusId"/><parameter name="statusTypeId"/><parameter name="statusFlowId"/><parameter name="stages"/>
+        <parameter name="allowedStatusIds"/><parameter name="readOnly"/>
+        <actions><script><![CDATA[
+            const params = ec.web.parameters
+            const list = (value) => value == null || value === '' ? null : String(value).split(',').map((id) => id.trim()).filter((id) => id)
+            const readOnly = String(params.readOnly || '') === 'true'
+            const allowed = readOnly ? [] : (params.allowedStatusIds == null ? null : (list(params.allowedStatusIds) || []))
+            const out = ec.service.sync().name('org.moqui.impl.StatusServices.get#StatusBar').parameters({statusId: params.statusId || null,
+                statusTypeId: params.statusTypeId || null, statusFlowId: params.statusFlowId || null, stageStatusIds: list(params.stages),
+                allowedToStatusIds: allowed}).disableAuthz().call() || {}
+            ec.web.sendJsonResponse({current: out.current ?? null, stages: out.stages || [], transitions: out.transitions || [], next: out.next ?? null})
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
     <!-- The badge counts alone, for the shell's poll while the notification socket is down: {counts}, what
         org.moqui.impl.ShellServices.get#ShellCounts answers for the current user (null without a counts service). 401
         without a user. -->
@@ -81,6 +122,83 @@ along with this software (see the LICENSE.md file). If not, see
             ]]></script></actions>
         <default-response type="none"/>
     </transition>
+    <!-- The chat store of the shell (js/WebrootChat.js; org.moqui.impl.ChatServices): the current user's status and
+        heartbeat, the presence of other users, typing, and the chat counts by room. Each acts as the current user only: no
+        app's authorization covers these, so they run without it, as shellCounts does, and pass no userId, so a service
+        that serves another user for internal work never does here. 401 without a user. -->
+    <transition name="userStatus" read-only="true" begin-transaction="false">
+        <actions><script><![CDATA[
+            if (!ec.user.userId) { ec.web.sendJsonError(401, 'Authentication required') } else {
+                const out = ec.service.sync().name('org.moqui.impl.ChatServices.get#UserStatuses').parameter('userIdList', [ec.user.userId])
+                        .disableAuthz().call()
+                ec.web.sendJsonResponse({myStatus: out ? out.myStatus ?? null : null})
+            }
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="setUserStatus" method="post">
+        <parameter name="status"/><parameter name="statusText"/><parameter name="emoji"/><parameter name="clearAtDate"/>
+        <parameter name="clearAfterMinutes"/><parameter name="clearStatus"/>
+        <actions><script><![CDATA[
+            if (!ec.user.userId) { ec.web.sendJsonError(401, 'Authentication required') } else {
+                const params = ec.web.parameters
+                const call = {}
+                for (const name of ['status', 'statusText', 'emoji']) if (params[name] != null) call[name] = String(params[name])
+                // the client sends epoch millis
+                if (params.clearAtDate) call.clearAtDate = /^\d+$/.test(String(params.clearAtDate)) ? Number(params.clearAtDate) : String(params.clearAtDate)
+                if (params.clearAfterMinutes != null && params.clearAfterMinutes !== '') call.clearAfterMinutes = Number(params.clearAfterMinutes)
+                if (String(params.clearStatus) === 'true') call.clearStatus = true
+                const out = ec.service.sync().name('org.moqui.impl.ChatServices.set#UserStatus').parameters(call).disableAuthz().call()
+                ec.web.sendJsonResponse({myStatus: out ? out.myStatus ?? null : null})
+            }
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="userStatusHeartbeat" method="post">
+        <parameter name="idleSeconds"/>
+        <actions><script><![CDATA[
+            if (!ec.user.userId) { ec.web.sendJsonError(401, 'Authentication required') } else {
+                const idle = Number(ec.web.parameters.idleSeconds)
+                const out = ec.service.sync().name('org.moqui.impl.ChatServices.heartbeat#UserStatus')
+                        .parameters(Number.isFinite(idle) ? {idleSeconds: Math.max(0, Math.floor(idle))} : {active: true}).disableAuthz().call()
+                ec.web.sendJsonResponse({myStatus: out ? out.myStatus ?? null : null})
+            }
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="userStatuses" read-only="true" begin-transaction="false">
+        <parameter name="userIds"/>
+        <actions><script><![CDATA[
+            if (!ec.user.userId) { ec.web.sendJsonError(401, 'Authentication required') } else {
+                const ids = String(ec.web.parameters.userIds || '').split(',').map((id) => id.trim()).filter((id) => id).slice(0, 500)
+                const out = ec.service.sync().name('org.moqui.impl.ChatServices.get#UserStatuses').parameter('userIdList', ids)
+                        .disableAuthz().call()
+                ec.web.sendJsonResponse({statusMap: out ? out.statusMap ?? {} : {}})
+            }
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="chatTyping" method="post">
+        <parameter name="chatRoomId" required="true"/><parameter name="typing"/>
+        <actions><script><![CDATA[
+            if (!ec.user.userId) { ec.web.sendJsonError(401, 'Authentication required') } else {
+                const params = ec.web.parameters
+                ec.service.sync().name('org.moqui.impl.ChatServices.signal#Typing').parameters({chatRoomId: String(params.chatRoomId),
+                    typing: String(params.typing) !== 'false'}).disableAuthz().call()
+                ec.web.sendJsonResponse({})
+            }
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="chatUnread" read-only="true" begin-transaction="false">
+        <actions><script><![CDATA[
+            if (!ec.user.userId) { ec.web.sendJsonError(401, 'Authentication required') } else {
+                const out = ec.service.sync().name('org.moqui.impl.ChatServices.get#UnreadCounts').disableAuthz().call() || {}
+                ec.web.sendJsonResponse({total: out.total ?? 0, unread: out.unread ?? 0, mentions: out.mentions ?? 0, roomCounts: out.roomCounts ?? {}})
+            }
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
     <transition name="email"><path-parameter name="emailMessageId"/><actions><script>ec.web.viewEmailMessage()</script></actions>
         <default-response type="none"/></transition>
 
@@ -88,7 +206,7 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- TODO: get fancier with this, crawl screen tree looking for screens that don't require authc, maybe some sort of setting to allow robots or not -->
         <!-- TODO: also generate sitemap XML with paths we want crawled, based on ? -->
         <actions><script><![CDATA[
-            const disallowList = ['apps', 'qapps', 'rest', 'rpc', 'status', 'menuData', 'shellData', 'shellSearch', 'shellCounts', 'llm']
+            const disallowList = ['apps', 'qapps', 'rest', 'rpc', 'status', 'menuData', 'shellData', 'shellSearch', 'shellCounts', 'userStatus', 'setUserStatus', 'userStatusHeartbeat', 'userStatuses', 'chatTyping', 'chatUnread', 'llm']
             let robotsText = "user-agent: *\n"
             for (const disPath of disallowList) robotsText += `disallow: /${disPath}\n`
             ec.web.sendTextResponse(robotsText)

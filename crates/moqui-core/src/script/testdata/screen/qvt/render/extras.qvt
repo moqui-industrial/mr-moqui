@@ -17,5 +17,5 @@
 <m-form-paginate :paginate="{count:3,pageIndex:0,pageSize:20,pageMaxIndex:0,pageRangeLow:1,pageRangeHigh:3}"></m-form-paginate><span class="text-inline">entry 1</span>
 <span class="text-inline">entry 2</span>
 <span class="text-inline">entry 3</span>
-<m-container-box type="default" title="Closed"><template v-slot:header></template><m-box-body><span class="text-inline">inside</span>
+<m-container-box type="default" title="Closed" :initial-open="false"><template v-slot:header></template><m-box-body><span class="text-inline">inside</span>
 </m-box-body></m-container-box>

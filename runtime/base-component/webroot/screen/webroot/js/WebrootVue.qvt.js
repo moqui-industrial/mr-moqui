@@ -19,6 +19,8 @@
 
     const markRaw = (obj) => (root.Vue && root.Vue.markRaw ? root.Vue.markRaw(obj) : obj);
     const component = (name, definition) => { qvt.components[name] = definition; return definition; };
+    // the components of a script loaded before this one (WebrootChat.js: the account menu's status)
+    Object.keys(moqui.qvtComponents || {}).forEach((name) => component(name, moqui.qvtComponents[name]));
 
     moqui.urlExtensions = { js: "qjs", vue: "qvue", qvt: "qvt" };
 
@@ -195,6 +197,26 @@
     moqui.NotFound = markRaw({ template: '<div id="current-page-root"><h4>Screen not found at {{$root.currentPath}}</h4></div>' });
     moqui.EmptyComponent = markRaw({ template: '<div id="current-page-root"><div class="spinner"><div>&nbsp;</div></div></div>' });
 
+    // The screen a component was loaded as (js/README.md, Loading a screen): {url, path, parameters, containerId}, the path without its
+    // query and its .qvt, .qvue or .qjs, the parameters its query. Each m-dynamic-container and m-dynamic-dialog provides it as mScreen
+    // for the screen it loaded (so a tray tab, the quick-create dialog and a record panel too), and the root for the page, so a .qvue
+    // screen reads its own query with inject: ["mScreen"] wherever it is. The members are getters over the loader, so a watch or a
+    // template that reads one follows the next load.
+    moqui.urlScreen = (urlOf, containerId) => {
+        const parts = () => {
+            const url = String(urlOf() || "");
+            const quest = url.indexOf("?");
+            const path = (quest >= 0 ? url.slice(0, quest) : url).replace(/\.(qvt|qvue|qjs)$/, "");
+            return { url, path, search: quest >= 0 ? url.slice(quest + 1) : "" };
+        };
+        return {
+            get url() { return parts().url; },
+            get path() { return parts().path; },
+            get parameters() { return moqui.searchToObj(parts().search); },
+            containerId: containerId || null
+        };
+    };
+
     // A text of a merged qvt response as a component: the template of the screen in a div with the id of its container.
     // A script element is run by m-script and a link element is loaded by m-stylesheet, because Vue ignores both.
     moqui.mergedFragmentComponent = (text, divId) => {
@@ -224,7 +246,12 @@
     };
 
     // path: the screen path, extraPath, search and bodyParameters as the router has them. renderModes lists the render
-    // modes the screen says it supports: qjs or qvue makes the request for that companion instead of qvt.
+    // modes the screen says it supports: qjs or qvue makes the request for that companion instead of qvt. Without them (a string
+    // URL: an m-dynamic-container or m-dynamic-dialog, a tray tab, a quick-create kind) the request is .qvt with
+    // X-Moqui-Client-Modes: qvue,qjs, and the server answers the first of those the screen's render-modes name, saying which in
+    // X-Moqui-Qvt, so a .qvue screen loads as qvue wherever it is loaded, as the router picks it. A path ending in .qvt, .qvue or
+    // .qjs is that mode.
+    moqui.clientModesHeader = "qvue,qjs";
     moqui.loadComponent = (urlInfo, callback, divId) => {
         const jsExt = moqui.urlExtensions.js;
         const vueExt = moqui.urlExtensions.vue;
@@ -263,17 +290,20 @@
         let url = path;
         const modes = renderModes || [];
         let kind = qvtExt;
+        let negotiate = false;
         if (url.slice(-vueExt.length) === vueExt) kind = vueExt;
         else if (url.slice(-jsExt.length) === jsExt) kind = jsExt;
+        else if (url.slice(-qvtExt.length - 1) === "." + qvtExt) kind = qvtExt;
         else if (modes.indexOf(vueExt) >= 0) { url += "." + vueExt; kind = vueExt; }
         else if (modes.indexOf(jsExt) >= 0) { url += "." + jsExt; kind = jsExt; }
-        else url += "." + qvtExt;
+        else { url += "." + qvtExt; negotiate = !renderModes; }
         if (extraPath && extraPath.length > 0) url += "/" + extraPath;
         if (search && search.length > 0) url += "?" + search;
 
         const controller = new root.AbortController();
         const hasBody = bodyParameters && !moqui.isEmptyObject(bodyParameters);
         const options = { signal: controller.signal, accept: "text/html,application/javascript,*/*" };
+        if (negotiate) options.headers = { "X-Moqui-Client-Modes": moqui.clientModesHeader };
         if (hasBody) { options.method = "POST"; options.params = bodyParameters; }
         console.info("loadComponent " + url + (divId ? " id " + divId : ""));
 
@@ -290,6 +320,9 @@
             if (!text) { callback(moqui.NotFound); return; }
             const cacheControl = result.headers.get("Cache-Control") || "";
             const cacheable = cacheControl.indexOf("max-age") >= 0;
+            // the mode the server chose for a .qvt request that named the client modes
+            const answered = negotiate ? result.headers.get("X-Moqui-Qvt") : null;
+            if (answered === vueExt || answered === jsExt) kind = answered;
             if (result.json && moqui.isPlainObject(result.json) && kind === qvtExt) {
                 if (result.json.screenUrl) rootVm().setUrl(result.json.screenUrl);
                 else if (result.json.redirectUrl) root.location.replace(result.json.redirectUrl);
@@ -303,7 +336,7 @@
                 if (comp.template) done(comp, cacheable);
                 else {
                     // the companion has the script and the template is the qvt of the same screen
-                    const qvtUrl = (path.slice(-jsExt.length) === jsExt ? path.slice(0, -jsExt.length) : path) + "." + qvtExt;
+                    const qvtUrl = (path.slice(-jsExt.length - 1) === "." + jsExt ? path.slice(0, -jsExt.length - 1) : path) + "." + qvtExt;
                     moqui.request(qvtUrl + (search ? "?" + search : ""), { signal: controller.signal, accept: "text/html" }).then((htmlResult) => {
                         comp.template = htmlResult.text;
                         done(comp, cacheable);
@@ -427,6 +460,9 @@
         }
     };
 
+    // The Quasar color of a btn-type or a dialog type, as the macros map them: success is positive, danger negative, default none.
+    qvt.quasarColor = (color) => (color === "success" ? "positive" : color === "danger" ? "negative" : color === "default" ? "" : color || "");
+
     // The helpers a template calls as $mq: the few things an expression needs that are not in the language.
     const NUMBER_TEXT = /^[-+]?\d+(\.\d+)?$/;
     qvt.helpers = {
@@ -444,6 +480,28 @@
         },
         // A value as text with a Java pattern. A decimal arrives as a string, so the pattern says what it is.
         fmt: (value, pattern, type) => qvt.formatValue(value, pattern, type),
+        // The kind of a link or menu button by a btn-type that is an expression, as the macros write it (ScreenQvt.js btnKind):
+        // primary is the filled primary button, any other value or none a tonal one in that color; btnText is the text color
+        // class of a flat button (hidden-form-link).
+        btnKind: (btnType, extra) => {
+            const type = btnType === null || btnType === undefined ? "" : String(btnType).trim();
+            if (type === "primary") return { color: "primary", class: extra || undefined };
+            const color = qvt.quasarColor(type || "primary");
+            return { class: ["m-btn-tonal", color ? "text-" + color : "", extra || ""].filter((part) => part).join(" ") };
+        },
+        btnText: (btnType) => {
+            const color = qvt.quasarColor(btnType === null || btnType === undefined ? "primary" : String(btnType).trim() || "primary");
+            return color ? "text-" + color : "";
+        },
+        // The classes of a row-col whose sizes are expressions, as the macros write them (ScreenQvt.js colOpen): each size given,
+        // and the full width below the smallest one given.
+        cols: (lg, md, sm, xs, plain) => {
+            const size = (value) => (value === null || value === undefined || value === "null" ? "" : String(value).trim());
+            const [l, m, s, x] = [size(lg), size(md), size(sm), size(xs)];
+            return [plain ? "" : "q-px-xs", l ? "col-lg-" + l : "", m ? "col-md-" + m : l && !plain ? "col-md-12" : "",
+                s ? "col-sm-" + s : (l || m) && !plain ? "col-sm-12" : "", x ? "col-xs-" + x : (l || m || s) && !plain ? "col-xs-12" : ""]
+                .filter((part) => part).join(" ");
+        },
         merge: (...maps) => {
             const out = {};
             maps.forEach((map) => { if (map && typeof map === "object") Object.keys(map).forEach((key) => { out[key] = map[key]; }); });
@@ -721,7 +779,8 @@
         inject: { mqScope: { default: null }, mqScreen: { default: null } },
         props: { name: { type: String, required: true }, id: String, action: String, listName: String, multi: Boolean, skipForm: Boolean, skipHeader: Boolean,
             rowInitial: Function, formLocation: String, findAction: String, defaultColumns: Array, columnFields: Array, columnsAction: String,
-            headerInitial: Function, subFields: Array, specialRows: Object, selectionIdField: String, selectionParameter: String, selectionListMode: Boolean },
+            headerInitial: Function, subFields: Array, specialRows: Object, selectionIdField: String, selectionParameter: String, selectionListMode: Boolean,
+            views: [Array, String], board: Object, calendar: Object, viewsLocation: String },
         data() { return { pkg: null, searchObj: {}, loading: false, generation: 0 }; },
         computed: {
             idVal() { return this.id && this.id.length ? this.id : this.name; },
@@ -969,7 +1028,13 @@
                     h(V.resolveComponent("m-form-go-page"), { idVal: this.idVal, formList: this }),
                     h(V.resolveComponent("m-form-paginate"), { paginate: this.paginate, formList: this })])
                 : null;
-            return h("div", { class: "q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat" }, [nav, table, bottomNav]);
+            const list = h("div", { class: "q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat" }, [nav, table, bottomNav]);
+            if (!this.board && !this.calendar) return list;
+            // the board and calendar views over the rows fetched, a card the card slot over the row's scope (m-list-views)
+            const viewSlots = { default: () => [list] };
+            if (slots.card) viewSlots.card = (props) => slots.card(this.rowScope(props.index, formScope, null));
+            return h(V.resolveComponent("m-list-views"), { id: this.idVal + "_views", formName: this.name, formLocation: this.viewsLocation || this.formLocation,
+                views: this.views, rows: this.rows, board: this.board, calendar: this.calendar, reload: this.fetchRows }, viewSlots);
         }
     });
 
@@ -1133,8 +1198,20 @@
         name: "mDynamicContainer",
         props: { id: { type: String, required: true }, url: String },
         data() { return { curComponent: moqui.EmptyComponent, curUrl: "" }; },
-        template: '<component :is="curComponent"></component>',
+        provide() { return { mScreen: moqui.urlScreen(() => this.curUrl, this.id) }; },
+        template: '<component :is="curComponent" ref="screen"></component>',
         methods: {
+            // The shell's refresh of a container it keeps (a tray tab, on a shellCounts push and the poll while the socket is down):
+            // the screen's own shellRefresh() when its component has one, so it updates in place (an open chat room stays open),
+            // else a reload.
+            shellRefresh() {
+                const screen = this.$refs.screen;
+                if (screen && typeof screen.shellRefresh === "function") {
+                    try { screen.shellRefresh(); } catch (err) { console.error("shellRefresh of " + this.id + " failed", err); }
+                    return;
+                }
+                this.reload();
+            },
             // the screen again: the content shown stays until the new one is there (a tray tab keeps its place); the same component
             // (a cached one) is made again by a moment without it
             reload() {
@@ -1163,7 +1240,8 @@
         name: "mDynamicDialog",
         props: { id: String, url: { type: String, required: true }, color: String, buttonText: String, buttonClass: String, title: String, width: String,
             openDialog: { type: Boolean, default: false }, dynamicParams: { type: Object, default: null }, buttonIcon: { type: String, default: "open_in_new" } },
-        data() { return { curComponent: moqui.EmptyComponent, curUrl: "", isShown: false }; },
+        data() { return { curComponent: moqui.EmptyComponent, curUrl: "", loadedUrl: "", isShown: false }; },
+        provide() { return { mScreen: moqui.urlScreen(() => this.loadedUrl, this.id) }; },
         template:
             '<span>' +
                 '<q-btn dense unelevated no-caps :icon="buttonIcon" :label="buttonText" :class="moqui.tonalClass(color, buttonClass)" @click="isShown = true"></q-btn>' +
@@ -1176,7 +1254,7 @@
         },
         watch: {
             curUrl(newUrl) {
-                if (!newUrl || newUrl.length === 0) { this.curComponent = moqui.EmptyComponent; return; }
+                if (!newUrl || newUrl.length === 0) { this.curComponent = moqui.EmptyComponent; this.loadedUrl = ""; return; }
                 // values of other fields on the page, by element id, are added to the URL
                 if (moqui.isPlainObject(this.dynamicParams)) {
                     const parts = [];
@@ -1187,6 +1265,7 @@
                     });
                     if (parts.length) newUrl = newUrl + (newUrl.indexOf("?") > 0 ? "&" : "?") + parts.join("&");
                 }
+                this.loadedUrl = newUrl;
                 moqui.loadComponent(newUrl, (comp) => {
                     this.curComponent = comp;
                     this.$nextTick(() => { if (this.$refs.dialog) this.$refs.dialog.focusFirst(); });
@@ -1262,27 +1341,85 @@
 
     /* ========== general field components ========== */
 
-    // Click to edit with the popup editor of Quasar. The text shows as the element named by label-type. The widget type
-    // is textarea or text-line; with load-url the current value is fetched when the editor opens.
+    // The options of an editable select from what its editable-load transition answered: a list of {value, label} (or key and
+    // text, or plain values), or as Java's jEditable a map of key to label with the current key under "selected". Gives
+    // {options, selected}; selected is undefined when the answer names none. Pure, for the node tests.
+    moqui.editableOptions = (answer) => {
+        const one = (item) => {
+            if (moqui.isPlainObject(item)) {
+                const value = item.value !== undefined ? item.value : item.key !== undefined ? item.key : item.id;
+                const label = item.label !== undefined ? item.label : item.text !== undefined ? item.text : item.description;
+                return { value: value === undefined || value === null ? "" : String(value), label: String(label === undefined || label === null ? value : label) };
+            }
+            return { value: String(item), label: String(item) };
+        };
+        if (Array.isArray(answer)) return { options: answer.map(one), selected: undefined };
+        if (moqui.isPlainObject(answer)) {
+            if (Array.isArray(answer.options)) return { options: answer.options.map(one), selected: answer.selected === undefined ? undefined : String(answer.selected) };
+            const options = Object.keys(answer).filter((key) => key !== "selected").map((key) => ({ value: key, label: String(answer[key]) }));
+            return { options, selected: answer.selected === undefined ? undefined : String(answer.selected) };
+        }
+        return { options: [], selected: undefined };
+    };
+
+    // Click to edit with the popup editor of Quasar. The text shows as the element named by label-type, and an empty one as the
+    // placeholder (display-if-empty), so there is something to click. The widget type is textarea or text-line; select (the
+    // options given, or loaded from load-url when the editor opens; value is the current key, else the option whose label is
+    // the text); date or date-time (QDate, with QTime, in yyyy-MM-dd and yyyy-MM-dd HH:mm). With load-url and no select the
+    // current value is fetched when the editor opens.
     component("m-editable", {
         name: "mEditable",
-        props: { id: { type: String, required: true }, labelType: { type: String, default: "span" }, labelValue: { type: String, required: true },
+        props: { id: { type: String, required: true }, labelType: { type: String, default: "span" }, labelValue: { type: String, default: "" },
             url: { type: String, required: true }, urlParameters: { type: Object, default: () => ({}) },
             parameterName: { type: String, default: "value" }, widgetType: { type: String, default: "textarea" },
             loadUrl: String, loadParameters: Object, indicator: { type: String, default: "Saving" }, tooltip: { type: String, default: "Click to edit" },
-            cancel: { type: String, default: "Cancel" }, submit: { type: String, default: "Save" } },
-        data() { return { shown: this.labelValue, editValue: "", saving: false }; },
+            cancel: { type: String, default: "Cancel" }, submit: { type: String, default: "Save" }, placeholder: String,
+            options: Array, value: String },
+        data() {
+            const text = moqui.htmlDecode(String(this.labelValue || "").replace(/<br\s*\/?>/gi, "\n"));
+            let current = this.value;
+            if (current === undefined || current === null) {
+                const match = (this.options || []).find((option) => String(option.label) === text);
+                current = match ? String(match.value) : text;
+            }
+            return { shown: this.labelValue || "", current, editValue: "", saving: false, loadedOptions: null, loadingOptions: false };
+        },
+        computed: {
+            isEmpty() { return !String(this.shown || "").replace(/<[^>]*>/g, "").trim(); },
+            isDate() { return this.widgetType === "date" || this.widgetType === "date-time"; },
+            dateMask() { return this.widgetType === "date-time" ? "YYYY-MM-DD HH:mm" : "YYYY-MM-DD"; },
+            selectOptions() { return (this.loadedOptions || this.options || []).map((option) => ({ value: String(option.value), label: String(option.label) })); }
+        },
         template:
-            '<component :is="labelType" :id="id" class="editable-label cursor-pointer" :title="tooltip">' +
-                '<span v-html="shown"></span>' +
+            '<component :is="labelType" :id="id" class="editable-label cursor-pointer" :class="{\'m-editable-empty\': isEmpty}" :title="tooltip">' +
+                '<span v-if="isEmpty" class="m-muted m-editable-placeholder" v-text="placeholder || tooltip"></span><span v-else v-html="shown"></span>' +
                 '<q-popup-edit v-model="editValue" buttons :label-set="submit" :label-cancel="cancel" @before-show="beforeShow" @save="save" v-slot="scope">' +
-                    '<q-input v-model="scope.value" dense autofocus :type="widgetType === \'textarea\' ? \'textarea\' : \'text\'" :loading="saving" @keyup.enter="widgetType === \'textarea\' ? null : scope.set()"></q-input>' +
+                    '<q-select v-if="widgetType === \'select\'" v-model="scope.value" :options="selectOptions" emit-value map-options dense outlined options-dense autofocus' +
+                        ' :loading="saving || loadingOptions" class="m-editable-select"></q-select>' +
+                    '<div v-else-if="isDate" class="row no-wrap q-gutter-sm m-editable-date">' +
+                        '<q-date v-model="scope.value" :mask="dateMask" minimal flat></q-date>' +
+                        '<q-time v-if="widgetType === \'date-time\'" v-model="scope.value" :mask="dateMask" format24h flat></q-time>' +
+                    '</div>' +
+                    '<q-input v-else v-model="scope.value" dense autofocus :type="widgetType === \'textarea\' ? \'textarea\' : \'text\'" :loading="saving" @keyup.enter="widgetType === \'textarea\' ? null : scope.set()"></q-input>' +
                 '</q-popup-edit>' +
             '</component>',
         methods: {
             beforeShow() {
+                if (this.widgetType === "select") {
+                    this.editValue = this.current;
+                    if (!this.loadUrl || !this.loadUrl.length) return;
+                    this.loadingOptions = true;
+                    const params = Object.assign({ currentValue: this.current }, this.loadParameters);
+                    moqui.request(this.loadUrl, { method: "POST", params, accept: "application/json" }).then((result) => {
+                        this.loadingOptions = false;
+                        const loaded = moqui.editableOptions(result.json);
+                        this.loadedOptions = loaded.options;
+                        if (loaded.selected !== undefined) this.editValue = loaded.selected;
+                    }, (err) => { this.loadingOptions = false; moqui.handleAjaxError(err); });
+                    return;
+                }
                 // the label may hold markup, the editor starts from the text
-                this.editValue = moqui.htmlDecode(String(this.shown).replace(/<br\s*\/?>/gi, "\n"));
+                this.editValue = this.isEmpty ? "" : moqui.htmlDecode(String(this.shown).replace(/<br\s*\/?>/gi, "\n"));
                 if (!this.loadUrl || !this.loadUrl.length) return;
                 const params = Object.assign({ currentValue: this.editValue }, this.loadParameters);
                 moqui.request(this.loadUrl, { method: "POST", params, accept: "application/json,text/plain" }).then((result) => {
@@ -1292,11 +1429,15 @@
                 }, moqui.handleAjaxError);
             },
             save(value) {
-                const params = Object.assign({ parameterName: this.parameterName }, this.urlParameters, { [this.parameterName]: value });
+                const text = value === null || value === undefined ? "" : String(value);
+                const params = Object.assign({ parameterName: this.parameterName }, this.urlParameters, { [this.parameterName]: text });
                 this.saving = true;
                 moqui.request(this.url, { method: "POST", params }).then((result) => {
                     this.saving = false;
-                    this.shown = moqui.htmlEncode(value).replace(/\n/g, "<br>");
+                    this.current = text;
+                    // a select shows the label of the option chosen
+                    const option = this.widgetType === "select" ? this.selectOptions.find((item) => item.value === text) : null;
+                    this.shown = moqui.htmlEncode(option ? option.label : text).replace(/\n/g, "<br>");
                     if (result.json) moqui.notifyMessages(result.json.messageInfos, result.json.errors);
                 }, (err) => { this.saving = false; moqui.handleAjaxError(err); });
             }
@@ -1585,6 +1726,7 @@
 
                 const root_ = this.$root;
                 root_.loading++;
+                if (this.mWizard && this.mWizard.isStepForm(this)) this.mWizard.stepSubmitting(this);
                 let arrived = false;
                 const method = this.method.toUpperCase();
                 let target = this.$root.appRootPath + this.action;
@@ -2371,14 +2513,14 @@
         mixins: [fieldMixin, localValueMixin],
         props: { modelValue: [String, Number], type: { type: String, default: "text" }, id: String, name: String, size: String, fields: Object, label: String,
             tooltip: String, prefix: String, disable: Boolean, mask: String, fillMask: String, reverseFillMask: Boolean, rules: Array, required: Boolean,
-            requiredMessage: { type: String, default: "Required" }, maxlength: String, form: String,
+            requiredMessage: { type: String, default: "Required" }, maxlength: String, form: String, autocomplete: { type: String, default: "off" },
             defaultUrl: String, defaultParameters: Object, dependsOn: Object, dependsOptional: Boolean, defaultLoadInit: Boolean },
         emits: ["update:modelValue"],
         data() { return { loading: false }; },
         template:
             '<q-input dense outlined stack-label hide-bottom-space no-error-icon :label="label" :prefix="prefix" :model-value="local" @update:model-value="onInput" :type="type"' +
                     ' :for="id" :name="name" :size="size" :maxlength="maxlength" :form="form" :loading="loading" :rules="allRules" :disable="disable" :bg-color="bg"' +
-                    ' :mask="mask" :fill-mask="fillMask" :reverse-fill-mask="reverseFillMask" autocapitalize="off" autocomplete="off" v-bind="errorAttrs">' +
+                    ' :mask="mask" :fill-mask="fillMask" :reverse-fill-mask="reverseFillMask" autocapitalize="off" :autocomplete="autocomplete" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
                 '<template v-if="$slots.append" v-slot:append><slot name="append"></slot></template>' +
             '</q-input>',
@@ -3192,6 +3334,8 @@
     // below it, and Back and Next. The current step is the subscreen in the URL. Next submits the step form, the first m-form of the
     // step that is not in a list or a dialog (the forms register through inject mWizard), and moves on when the answer has no errors
     // (moqui.wizardAfterAnswer); a step without a form moves on at once. The last step's button is finishText and only shows with a form.
+    // While the step form posts (by Next, Enter or a button of its own) the step is covered by a spinner and Back and Next wait, until
+    // the answer says to stay or the screen it goes to is there: the last step's submit (an import, a run) may take a while.
     component("m-subscreens-wizard", {
         name: "mSubscreensWizard",
         props: { id: String, finishText: String, nextText: String, backText: String },
@@ -3205,9 +3349,11 @@
                         ' :header-nav="index < activeIndex" :prefix="step.imageType === \'icon\' && step.image ? undefined : String(index + 1)"' +
                         ' :icon="step.imageType === \'icon\' && step.image ? step.image : undefined" :data-step="step.name"></q-step>' +
                 '</q-stepper>' +
-                '<div ref="body" class="m-wizard-body"><m-subscreens-active></m-subscreens-active></div>' +
+                '<div ref="body" class="m-wizard-body"><m-subscreens-active></m-subscreens-active>' +
+                    '<q-inner-loading :showing="submitting" class="m-wizard-working"><q-spinner color="primary" size="40px"></q-spinner>' +
+                        '<div class="text-caption m-muted q-mt-sm" v-text="workingLabel"></div></q-inner-loading></div>' +
                 '<div v-if="steps.length" class="m-wizard-nav row items-center q-gutter-sm">' +
-                    '<q-btn v-if="activeIndex > 0" unelevated no-caps class="m-btn-tonal m-wizard-back" icon="arrow_back" :label="backLabel" @click="back"></q-btn>' +
+                    '<q-btn v-if="activeIndex > 0" unelevated no-caps class="m-btn-tonal m-wizard-back" icon="arrow_back" :label="backLabel" :disable="submitting" @click="back"></q-btn>' +
                     '<q-space></q-space>' +
                     '<q-btn v-if="!isLast || hasForm" unelevated no-caps color="primary" class="m-wizard-next" :icon-right="isLast ? \'check\' : \'arrow_forward\'"' +
                         ' :label="isLast ? finishLabel : nextLabel" :loading="submitting" @click="next"></q-btn>' +
@@ -3224,7 +3370,8 @@
             isLast() { return this.activeIndex >= this.steps.length - 1; },
             nextLabel() { return this.nextText || localized("Next"); },
             backLabel() { return this.backText || localized("Back"); },
-            finishLabel() { return this.finishText || localized("Finish"); }
+            finishLabel() { return this.finishText || localized("Finish"); },
+            workingLabel() { return localized("Working..."); }
         },
         methods: {
             addForm(form) { if (this.forms.indexOf(form) < 0) this.forms.push(form); this.formsChanged(); },
@@ -3240,10 +3387,10 @@
                 return forms[0] || null;
             },
             isStepForm(form) { return this.stepForm() === form; },
-            goTo(index, answerParameters) {
+            goTo(index, answerParameters, onComplete) {
                 const step = this.steps[index];
-                if (!step) return;
-                this.$root.setUrl(this.$root.getLinkPath(moqui.wizardStepUrl(step.pathWithParams, this.$root.currentParameters, answerParameters)));
+                if (!step) { if (onComplete) onComplete(); return; }
+                this.$root.setUrl(this.$root.getLinkPath(moqui.wizardStepUrl(step.pathWithParams, this.$root.currentParameters, answerParameters)), null, onComplete);
             },
             next() {
                 if (this.submitting) return;
@@ -3252,18 +3399,21 @@
                 this.submitting = true;
                 form.submitForm();
             },
-            back() { this.goTo(this.activeIndex - 1, null); },
+            back() { if (!this.submitting) this.goTo(this.activeIndex - 1, null); },
+            stepSubmitting() { this.submitting = true; },
             headerTo(name) {
                 const index = this.steps.findIndex((step) => step.name === name);
                 if (index >= 0 && index < this.activeIndex) this.goTo(index, null);
             },
             stepRefused() { this.submitting = false; },
+            // the spinner stays until the screen the answer names is there (a redirect leaves the page)
             stepAnswered(form, resp) {
-                this.submitting = false;
                 const way = moqui.wizardAfterAnswer(resp, this.$root.currentPathList, this.steps.length, this.activeIndex);
+                const done = () => { this.submitting = false; };
                 if (way.kind === "redirect") root.location.href = way.url;
-                else if (way.kind === "url") this.$root.setUrl(way.url);
-                else if (way.kind === "step") this.goTo(way.index, way.parameters);
+                else if (way.kind === "url") this.$root.setUrl(way.url, null, done);
+                else if (way.kind === "step") this.goTo(way.index, way.parameters, done);
+                else done();
             }
         },
         // before the m-subscreens-active inside registers, as m-subscreens-tabs is mounted before its sibling
@@ -3312,6 +3462,18 @@
         return { stacked, side, min, max: width > 0 ? max : Math.max(sideWidth, min) * 3 };
     };
 
+    // The height of a split's panes side by side: the height attribute when given, else the viewport below the split's top (less
+    // a margin, at least 360 px), so the side list and the main pane each scroll in their own pane and the page does not; none
+    // when stacked, where the page scrolls. Pure, for the node tests.
+    moqui.splitHeight = (options) => {
+        if (options.stacked) return undefined;
+        if (options.height) return String(options.height);
+        const viewport = Number(options.viewport) || 0;
+        if (viewport <= 0) return undefined;
+        const top = Math.max(0, Number(options.top) || 0);
+        return Math.max(360, Math.round(viewport - top - (Number(options.margin) >= 0 ? Number(options.margin) : 16))) + "px";
+    };
+
     // container-split (style-guide §3.8): a q-splitter with the side at side-width px from 1024 px, draggable between 200 px and what
     // leaves min-main to the main pane, its width kept per id in the session and the user's preferences (SPLIT_WIDTH_<id>); stacked
     // below that, where a selection in the URL (select-parameter) shows the main pane with a back button that clears it, and none
@@ -3320,12 +3482,12 @@
         name: "mContainerSplit",
         props: { id: String, sideWidth: { type: [Number, String], default: 320 }, minMain: { type: [Number, String], default: 480 },
             sidePosition: { type: String, default: "left" }, selectParameter: String, backText: String, height: String },
-        data() { return { width: 0, side: null, observer: null, saveTimer: null }; },
+        data() { return { width: 0, side: null, observer: null, saveTimer: null, viewTop: 0, viewport: 0, onResize: null }; },
         template:
             '<div ref="root" class="m-container-split" :id="id" :data-stacked="layout.stacked ? \'true\' : \'false\'"' +
                     ' :class="{\'m-split-stacked\': layout.stacked, \'m-split-right\': right, \'m-split-selected\': selected}">' +
                 '<q-splitter :model-value="layout.side" @update:model-value="drag" unit="px" :limits="[layout.min, layout.max]" :reverse="right"' +
-                        ' :disable="layout.stacked" :style="height && !layout.stacked ? {height: height} : undefined" separator-class="m-split-separator">' +
+                        ' :disable="layout.stacked" :style="paneHeight ? {height: paneHeight} : undefined" separator-class="m-split-separator">' +
                     '<template v-slot:before>' +
                         '<div v-if="right" v-show="showMain" class="m-split-main">' +
                             '<q-btn v-if="backShown" flat dense no-caps icon="arrow_back" :label="backLabel" class="m-split-back" @click="back"></q-btn>' +
@@ -3352,6 +3514,7 @@
                 const value = (this.$root.currentParameters || {})[this.selectParameter];
                 return value !== undefined && value !== null && String(value) !== "";
             },
+            paneHeight() { return moqui.splitHeight({ stacked: this.layout.stacked, height: this.height, top: this.viewTop, viewport: this.viewport }); },
             showSide() { return !this.layout.stacked || !this.selectParameter || !this.selected; },
             showMain() { return !this.layout.stacked || !this.selectParameter || this.selected; },
             backShown() { return this.layout.stacked && !!this.selectParameter && this.selected; },
@@ -3368,6 +3531,13 @@
                     this.saveTimer = null;
                     if (this.$root.setPreference && this.$root.userId) this.$root.setPreference(this.storageKey, String(this.side));
                 }, 800);
+            },
+            // where the split starts in the page and the viewport's height, for the panes' height
+            measure() {
+                const el = this.$refs.root;
+                if (!el || !el.getBoundingClientRect) return;
+                this.viewTop = el.getBoundingClientRect().top + (root.scrollY || root.pageYOffset || 0);
+                this.viewport = root.innerHeight || 0;
             },
             back() {
                 const current = Object.assign({}, this.$root.currentParameters || {});
@@ -3386,14 +3556,18 @@
         mounted() {
             const el = this.$refs.root;
             this.width = el.clientWidth;
+            this.measure();
             if (root.ResizeObserver) {
-                this.observer = new root.ResizeObserver(() => { this.width = el.clientWidth; });
+                this.observer = new root.ResizeObserver(() => { this.width = el.clientWidth; this.measure(); });
                 this.observer.observe(el);
             }
+            this.onResize = () => this.measure();
+            if (root.addEventListener) root.addEventListener("resize", this.onResize);
         },
         beforeUnmount() {
             if (this.observer) this.observer.disconnect();
             if (this.saveTimer) clearTimeout(this.saveTimer);
+            if (this.onResize && root.removeEventListener) root.removeEventListener("resize", this.onResize);
         }
     });
 
@@ -3457,6 +3631,1288 @@
         props: { name: String, size: String },
         template: '<i v-if="isClass" :class="name"></i><q-icon v-else :name="name" :size="size"></q-icon>',
         computed: { isClass() { return moqui.isIconClass(this.name); } }
+    });
+
+    /* ========== status ========== */
+
+    // How a status-bar draws what org.moqui.impl.StatusServices.get#StatusBar answered (style-guide §3.3, §5.2): each stage a chip,
+    // the current one filled in its color, a done one tinted with a check, one to come outlined and muted; each transition a
+    // button, the next stage the filled primary action, the others tonal (negative for those that end badly), with the
+    // confirmation "Label: title?". Pure, for the node tests; m-status-bar binds what it gives.
+    moqui.statusBarView = (bar, options) => {
+        const opts = options || {};
+        const data = bar && typeof bar === "object" ? bar : {};
+        const color = (value) => (value === null || value === undefined || value === "" ? "grey-7" : String(value));
+        const stages = (Array.isArray(data.stages) ? data.stages : []).filter((stage) => stage && stage.statusId).map((stage) => {
+            const state = stage.state === "current" || stage.state === "done" ? stage.state : "todo";
+            const chip = state === "current" ? { color: color(stage.color), "text-color": "white", class: "q-ma-none text-weight-medium m-status-current" } :
+                state === "done" ? { icon: "sym_o_check", class: "q-ma-none m-tonal text-grey-8 m-status-done" } :
+                    { outline: true, class: "q-ma-none text-grey-7 m-status-todo" };
+            return { statusId: String(stage.statusId), label: String(stage.label || stage.statusId), state, chip };
+        });
+        const title = opts.title ? String(opts.title) : "";
+        const buttons = (Array.isArray(data.transitions) ? data.transitions : []).filter((tr) => tr && tr.toStatusId).map((tr) => {
+            const label = String(tr.label || tr.toStatusId);
+            const button = tr.isNext ? { color: "primary", class: "m-status-next" } :
+                { class: "m-btn-tonal " + (tr.isDanger ? "text-negative" : "text-primary") };
+            return { toStatusId: String(tr.toStatusId), label, isNext: !!tr.isNext, isDanger: !!tr.isDanger, button,
+                confirm: opts.confirm === false ? null : label + (title ? ": " + title : "") + "?" };
+        });
+        return { current: data.current || null, stages, buttons };
+    };
+
+    // The status-bar element: the stage chips and, with an action (the transition), the buttons that post it with the new status
+    // in parameterName and the parameters, each in an m-form, so the answer (the screen again, with the new status) is followed
+    // as any form's. The server-merged macros write the bar's data in; a server-static screen gives the status and the bar is
+    // asked of the root screen's statusBar transition (barUrl), again when the status changes.
+    component("m-status-bar", {
+        name: "mStatusBar",
+        props: { id: String, bar: Object, barUrl: { type: String, default: "/statusBar" }, statusId: String, statusTypeId: String, statusFlowId: String,
+            stages: [Array, String], allowedStatusIds: [Array, String], readOnly: Boolean, action: String, parameters: Object,
+            parameterName: { type: String, default: "statusId" }, title: String, confirm: { type: Boolean, default: true } },
+        data() { return { loaded: null }; },
+        template:
+            '<div class="m-status-bar row items-center" :id="id" :data-status="view.current ? view.current.statusId : null">' +
+                '<div class="m-status-stages row items-center">' +
+                    '<template v-for="(stage, index) in view.stages" :key="stage.statusId + \':\' + index">' +
+                        '<q-icon v-if="index" name="sym_o_chevron_right" size="xs" class="m-muted m-status-sep"></q-icon>' +
+                        '<q-chip dense square :ripple="false" v-bind="stage.chip" :data-stage="stage.statusId" :data-state="stage.state">{{ stage.label }}</q-chip>' +
+                    '</template>' +
+                '</div>' +
+                '<div v-if="action && view.buttons.length" class="m-status-actions row items-center">' +
+                    '<m-form v-for="item in view.buttons" :key="item.toStatusId" :action="action" :fields-initial="fieldsOf(item)" class="m-status-form">' +
+                        '<q-btn dense no-caps unelevated type="submit" v-bind="item.button" :label="item.label" :data-confirm="item.confirm"' +
+                            ' :data-to-status="item.toStatusId"></q-btn>' +
+                    '</m-form>' +
+                '</div>' +
+            '</div>',
+        computed: {
+            view() { return moqui.statusBarView(this.bar || this.loaded, { title: this.title, confirm: this.confirm }); },
+            requestKey() {
+                if (this.bar) return null;
+                const list = (value) => (Array.isArray(value) ? value.join(",") : value || "");
+                return [this.statusId || "", this.statusTypeId || "", this.statusFlowId || "", list(this.stages), this.readOnly ? "ro" : list(this.allowedStatusIds)].join("|");
+            }
+        },
+        watch: { requestKey() { this.load(); } },
+        methods: {
+            fieldsOf(item) { return Object.assign({}, this.parameters || {}, { [this.parameterName || "statusId"]: item.toStatusId }); },
+            load() {
+                if (this.bar || !this.statusId) { this.loaded = null; return; }
+                const list = (value) => (Array.isArray(value) ? value.join(",") : value || "");
+                const params = { statusId: this.statusId, statusTypeId: this.statusTypeId || "", statusFlowId: this.statusFlowId || "", stages: list(this.stages) };
+                if (this.readOnly) params.readOnly = "true";
+                else if (this.allowedStatusIds !== undefined && this.allowedStatusIds !== null) params.allowedStatusIds = list(this.allowedStatusIds);
+                const base = this.$root && this.$root.appRootPath ? this.$root.appRootPath : "";
+                moqui.request(base + this.barUrl, { params }).then((result) => { this.loaded = result.json || null; }, moqui.handleAjaxError);
+            }
+        },
+        mounted() { this.load(); }
+    });
+
+    /* ========== list views: a form-list as a board or a calendar ========== */
+
+    // The views of a form-list (style-guide §3.6, §3.7, §8.2; form-list views, view-board, view-calendar): the same rows, filters,
+    // saved finds and page as the list, shown as cards in columns by a field or on a calendar. The rows are the list's page (the
+    // server-merged macros write them in, an m-static-form-list hands over the ones it fetched), so a filter, a sort, a saved find or
+    // another page changes what both views show. The helpers are pure, for the node tests (WebrootVue.qvt.views.test.js);
+    // m-list-views draws them. Times are wall clock in the user's time zone as UTC day numbers and minutes, so the browser's own zone
+    // never counts: a row's time stamp (epoch millis) is read in the zone, and a moved one is posted back as epoch millis.
+    const lvText = (value) => (value === null || value === undefined ? "" : String(value));
+    const lvLocalize = (text) => (moqui.l10n && moqui.l10n.localize ? moqui.l10n.localize(text) : text);
+    const LV_DAY_MS = 86400000;
+    const LV_PALETTE = ["primary", "secondary", "accent", "info", "positive", "warning", "negative"];
+    const lvFormatters = {};
+    const lvFormatter = (tz) => {
+        const key = tz || "";
+        if (lvFormatters[key]) return lvFormatters[key];
+        const options = { hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" };
+        let made;
+        try { made = new Intl.DateTimeFormat("en-US", Object.assign({ timeZone: tz || undefined }, options)); } catch (err) { made = new Intl.DateTimeFormat("en-US", options); }
+        lvFormatters[key] = made;
+        return made;
+    };
+    moqui.listViews = {
+        icons: { list: "sym_o_view_list", board: "sym_o_view_kanban", calendar: "sym_o_calendar_month" },
+        modeIcons: { month: "sym_o_calendar_view_month", week: "sym_o_calendar_view_week", day: "sym_o_calendar_view_day", list: "sym_o_view_agenda" },
+        palette: LV_PALETTE,
+        // The views offered: the views attribute (a comma list or a list) without the ones that have no element, else list and each
+        // element there is; list stays in the list wherever it is named.
+        views(views, board, calendar) {
+            const has = { list: true, board: !!board, calendar: !!calendar };
+            const named = (Array.isArray(views) ? views : lvText(views).split(",")).map((name) => lvText(name).trim()).filter((name) => has[name]);
+            const out = named.filter((name, index) => named.indexOf(name) === index);
+            if (out.length) return out;
+            return ["list"].concat(board ? ["board"] : [], calendar ? ["calendar"] : []);
+        },
+        // a list attribute: a list, or comma text
+        list(value) {
+            if (Array.isArray(value)) return value.map(lvText).map((item) => item.trim()).filter((item) => item);
+            return lvText(value).split(",").map((item) => item.trim()).filter((item) => item);
+        },
+        isStatusField(name) { return /^statusId$|StatusId$/.test(lvText(name)); },
+        // a row's text for a field: what the list shows (its _display text) when the row has one, else the value
+        text(row, field) {
+            if (!row || !field) return "";
+            const shown = row[field + "_display"];
+            return lvText(shown !== undefined && shown !== null && shown !== "" ? shown : row[field]);
+        },
+        number(value) {
+            if (value === null || value === undefined || value === "") return 0;
+            const number = typeof value === "number" ? value : parseFloat(String(value).replace(/[^0-9.eE+-]/g, ""));
+            return isNaN(number) ? 0 : number;
+        },
+        // the key fields of a row as parameters, for the transition a move posts
+        keyParams(row, keyFields) {
+            const out = {};
+            moqui.listViews.list(keyFields).forEach((name) => { if (row && row[name] !== undefined && row[name] !== null) out[name] = lvText(row[name]); });
+            return out;
+        },
+        // a semantic color for a value: the map's (status colors, a color-map attribute), else one of the brand palette by the value's hash,
+        // so the same value always has the same color
+        colorOf(value, colors) {
+            const key = lvText(value);
+            if (colors && colors[key]) return String(colors[key]);
+            if (!key) return "grey-7";
+            let hash = 0;
+            for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0;
+            return LV_PALETTE[Math.abs(hash) % LV_PALETTE.length];
+        },
+        // A color's text class on a tinted chip, and whether white text reads on it filled (warning is light).
+        lightColor(color) { return /^(warning|yellow|amber|lime|grey-[1-4]|white)/.test(lvText(color)); },
+
+        // The columns of a board: the known columns in order (the status flow's, or column-order's, with their labels and colors),
+        // then a column for each other value the rows have, in the order of the rows; each with its rows, count and sum. moved holds the
+        // value of a card moved here, until the list loads again.
+        // The controls of a card whose click is their own, not the card's: links, buttons, form fields and labels, Quasar's buttons,
+        // fields, toggles and clickable chips, an in-place edit (m-editable), anything with a button-like role or marked data-card-control.
+        controlSelector: "a, button, input, select, textarea, label, summary, [contenteditable='true'], [contenteditable=''], [role='button'], " +
+            "[role='checkbox'], [role='switch'], [role='combobox'], [role='link'], [role='menuitem'], .q-btn, .q-field, .q-toggle, .q-checkbox, " +
+            ".q-radio, .q-chip--clickable, .editable-label, .q-popup-edit, [data-card-control]",
+        // whether a click on target (inside card) was on one of the card's controls
+        onControl(target, card) {
+            if (!target || typeof target.closest !== "function") return false;
+            const hit = target.closest(moqui.listViews.controlSelector);
+            if (!hit || hit === card) return false;
+            return !card || typeof card.contains !== "function" || card.contains(hit);
+        },
+        boardColumns(items, board, known, moved) {
+            const lv = moqui.listViews;
+            const cfg = board || {};
+            const group = cfg.groupField;
+            const given = Array.isArray(known) ? known : [];
+            const columns = [];
+            const byValue = {};
+            const labelInRows = (value) => {
+                const hit = (items || []).find((item) => lvText(item.row[group]) === value);
+                return hit ? lv.text(hit.row, group) : "";
+            };
+            const add = (value, label, color) => {
+                const key = lvText(value);
+                if (byValue[key]) return byValue[key];
+                const column = { value: key, label: label || labelInRows(key) || key || lvLocalize("None"), color: color || "", items: [], count: 0, sum: 0 };
+                byValue[key] = column;
+                columns.push(column);
+                return column;
+            };
+            const knownOf = (value) => given.find((column) => lvText(column.value) === value);
+            const order = lv.list(cfg.columnOrder);
+            if (order.length) order.forEach((value) => { const found = knownOf(value); add(value, found && found.label, found && found.color); });
+            else given.forEach((column) => add(column.value, column.label, column.color));
+            (items || []).forEach((item) => {
+                const over = moved && moved[item.index];
+                const value = lvText(over && over.group !== undefined ? over.group : item.row[group]);
+                // a value outside column-order: the label and color the server sent for it (a status's description), else the row's text
+                const found = byValue[value] ? null : knownOf(value);
+                const column = byValue[value] || add(value, (found && found.label) || lv.text(item.row, group), (found && found.color) || "");
+                column.items.push(item);
+                column.count++;
+                if (cfg.sumField) column.sum += lv.number(item.row[cfg.sumField]);
+            });
+            return columns;
+        },
+
+        // ---- time: UTC day numbers and minutes of the wall clock in a zone ----
+        dayOf(year, month, day) { return Math.floor(Date.UTC(year, month - 1, day) / LV_DAY_MS); },
+        ymd(day) { const d = new Date(day * LV_DAY_MS); return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate(), dow: d.getUTCDay() }; },
+        dayKey(day) { const p = moqui.listViews.ymd(day); return p.y + "-" + String(p.m).padStart(2, "0") + "-" + String(p.d).padStart(2, "0"); },
+        wall(millis, tz) {
+            const parts = {};
+            lvFormatter(tz).formatToParts(new Date(Number(millis))).forEach((part) => { parts[part.type] = part.value; });
+            let hour = Number(parts.hour);
+            if (hour === 24) hour = 0;
+            return { day: moqui.listViews.dayOf(Number(parts.year), Number(parts.month), Number(parts.day)), minutes: hour * 60 + Number(parts.minute) };
+        },
+        // the epoch millis of a wall clock time in a zone (the later of the two in a fall-back hour, the shifted one in a spring-forward gap)
+        millis(day, minutes, tz) {
+            const target = day * LV_DAY_MS + minutes * 60000;
+            let guess = target;
+            for (let i = 0; i < 3; i++) {
+                const shown = moqui.listViews.wall(guess, tz);
+                const diff = target - (shown.day * LV_DAY_MS + shown.minutes * 60000);
+                if (diff === 0) return guess;
+                guess += diff;
+            }
+            return guess;
+        },
+        today(tz, now) { return moqui.listViews.wall(now === undefined ? Date.now() : now, tz); },
+        // A value of a row as a time: epoch millis (a time stamp as the server sends one) in the zone, a date (yyyy-MM-dd) as a date
+        // only, a wall clock text (yyyy-MM-dd HH:mm) as it is, other text with a zone by Date.parse; null for nothing.
+        parseTime(value, tz) {
+            const lv = moqui.listViews;
+            if (value === null || value === undefined || value === "") return null;
+            if (typeof value === "number") return Object.assign(lv.wall(value, tz), { dateOnly: false });
+            const text = String(value).trim();
+            if (/^-?\d{9,}$/.test(text)) return Object.assign(lv.wall(Number(text), tz), { dateOnly: false });
+            let match = /^(\d{4})-(\d\d)-(\d\d)$/.exec(text);
+            if (match) return { day: lv.dayOf(+match[1], +match[2], +match[3]), minutes: 0, dateOnly: true };
+            match = /^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)(?::\d\d(?:\.\d+)?)?$/.exec(text);
+            if (match) return { day: lv.dayOf(+match[1], +match[2], +match[3]), minutes: +match[4] * 60 + +match[5], dateOnly: false };
+            const parsed = Date.parse(text);
+            return isNaN(parsed) ? null : Object.assign(lv.wall(parsed, tz), { dateOnly: false });
+        },
+        // what a moved time posts: a date for a date-only value, else epoch millis of the wall clock in the zone
+        timeOut(abs, dateOnly, tz) {
+            const day = Math.floor(abs / 1440);
+            return dateOnly ? moqui.listViews.dayKey(day) : String(moqui.listViews.millis(day, abs - day * 1440, tz));
+        },
+        // wall clock text for a form field (m-date-time): yyyy-MM-dd HH:mm, or yyyy-MM-dd
+        timeText(abs, dateOnly) {
+            const day = Math.floor(abs / 1440);
+            const minutes = abs - day * 1440;
+            return moqui.listViews.dayKey(day) + (dateOnly ? "" : " " + String(Math.floor(minutes / 60)).padStart(2, "0") + ":" + String(minutes % 60).padStart(2, "0"));
+        },
+        weekStart(day, firstDay) {
+            const dow = moqui.listViews.ymd(day).dow;
+            return day - ((dow - (firstDay || 0) + 7) % 7);
+        },
+        monthStart(day) { const p = moqui.listViews.ymd(day); return moqui.listViews.dayOf(p.y, p.m, 1); },
+        // the weeks of the month of anchor: from the week of its first day through the week of its last
+        monthWeeks(anchor, firstDay) {
+            const lv = moqui.listViews;
+            const p = lv.ymd(anchor);
+            const first = lv.dayOf(p.y, p.m, 1);
+            const last = lv.dayOf(p.m === 12 ? p.y + 1 : p.y, p.m === 12 ? 1 : p.m + 1, 1) - 1;
+            const weeks = [];
+            for (let start = lv.weekStart(first, firstDay); start <= last; start += 7) {
+                const days = [];
+                for (let i = 0; i < 7; i++) days.push(start + i);
+                weeks.push(days);
+            }
+            return weeks;
+        },
+        // a month, week or day later or earlier
+        shift(anchor, mode, by) {
+            const lv = moqui.listViews;
+            if (mode === "week") return anchor + 7 * by;
+            if (mode === "day") return anchor + by;
+            const p = lv.ymd(anchor);
+            const months = p.y * 12 + (p.m - 1) + by;
+            const year = Math.floor(months / 12);
+            const month = months - year * 12 + 1;
+            const length = lv.dayOf(month === 12 ? year + 1 : year, month === 12 ? 1 : month + 1, 1) - lv.dayOf(year, month, 1);
+            return lv.dayOf(year, month, Math.min(p.d, length));
+        },
+        // The days a calendar mode shows ({first, last}): the month's weeks, the week, the day, or for the list (agenda) the anchor's month.
+        visibleDays(mode, anchor, firstDay) {
+            const lv = moqui.listViews;
+            if (mode === "week") { const start = lv.weekStart(anchor, firstDay); return { first: start, last: start + 6 }; }
+            if (mode === "day") return { first: anchor, last: anchor };
+            if (mode === "month") { const weeks = lv.monthWeeks(anchor, firstDay); return { first: weeks[0][0], last: weeks[weeks.length - 1][6] }; }
+            const p = lv.ymd(anchor);
+            return { first: lv.monthStart(anchor), last: lv.dayOf(p.m === 12 ? p.y + 1 : p.y, p.m === 12 ? 1 : p.m + 1, 1) - 1 };
+        },
+        // The finds of a calendar's dates (view-calendar range-find): the list's find with the start and end field range added
+        // ({field}_from and {field}_thru, as search-form-inputs reads them) and no paging, a day wider on each side (a date field
+        // reads a time stamp in UTC), as epoch millis. With an end field two: what overlaps the dates (starts before their end and ends
+        // after their start), and what starts in them (an event with no end); else what starts in them.
+        rangeFinds(cal, days, tz) {
+            const lv = moqui.listViews;
+            const from = String(lv.millis(days.first - 1, 0, tz));
+            const thru = String(lv.millis(days.last + 2, 0, tz) - 1);
+            const starts = { pageNoLimit: "true" };
+            starts[cal.startField + "_from"] = from;
+            starts[cal.startField + "_thru"] = thru;
+            if (!cal.endField) return [starts];
+            const overlaps = { pageNoLimit: "true" };
+            overlaps[cal.startField + "_thru"] = thru;
+            overlaps[cal.endField + "_from"] = from;
+            return [overlaps, starts];
+        },
+        // The rows of a range's finds as the calendar's items, each once (by its key fields, else all its values): a row on the list's
+        // page is that item (its index, so its card_{index} slot, and its values as the page has them), another is an item of its own
+        // with an index from 100000.
+        rangeItems(pageItems, lists, keyFields) {
+            const keys = moqui.listViews.list(keyFields);
+            const keyOf = (row) => JSON.stringify(keys.length ? keys.map((name) => lvText(row[name])) : row);
+            const page = {};
+            (pageItems || []).forEach((item) => { page[keyOf(item.row)] = item; });
+            const seen = new Set();
+            const out = [];
+            let next = 100000;
+            (lists || []).forEach((rows) => (Array.isArray(rows) ? rows : []).forEach((row) => {
+                if (!row || typeof row !== "object" || row._moquiRowType) return;
+                const key = keyOf(row);
+                if (seen.has(key)) return;
+                seen.add(key);
+                out.push(page[key] || { index: next++, row });
+            }));
+            return out;
+        },
+
+        // The events of a calendar: each row with a start, its title, color and resource; start and end are minutes from the epoch day 0 of
+        // the wall clock (end exclusive). An all-day event (a date-only start, or the all-day field Y) covers whole days: a date-only end is the
+        // last day, a time stamp end at midnight the day after. A timed event without an end is an hour long. moved and preview hold where a
+        // drag put an event ({start, end, resource} in the same minutes).
+        events(items, cal, tz, moved, preview) {
+            const lv = moqui.listViews;
+            const cfg = cal || {};
+            const out = [];
+            (items || []).forEach((item) => {
+                const row = item.row;
+                const start = lv.parseTime(row[cfg.startField], tz);
+                if (!start) return;
+                const end = cfg.endField ? lv.parseTime(row[cfg.endField], tz) : null;
+                const flag = cfg.allDayField ? lvText(row[cfg.allDayField]) : "";
+                const allDay = start.dateOnly || flag === "Y" || flag === "true";
+                let from = start.day * 1440 + (allDay ? 0 : start.minutes);
+                let thru;
+                if (allDay) {
+                    const endDay = end ? (end.dateOnly || end.minutes > 0 ? end.day + 1 : end.day) : start.day + 1;
+                    thru = Math.max(endDay, start.day + 1) * 1440;
+                } else {
+                    thru = end ? end.day * 1440 + end.minutes : from + 60;
+                    if (thru <= from) thru = from + 30;
+                }
+                let resource = cfg.resourceField ? lvText(row[cfg.resourceField]) : null;
+                const over = (preview && preview.index === item.index ? preview : null) || (moved && moved[item.index]) || null;
+                if (over) {
+                    if (over.start !== undefined) from = over.start;
+                    if (over.end !== undefined) thru = over.end;
+                    if (over.resource !== undefined && over.resource !== null) resource = over.resource;
+                }
+                const colorValue = cfg.colorField ? row[cfg.colorField] : null;
+                out.push({ index: item.index, key: String(item.index), row, title: lv.text(row, cfg.titleField) || lvLocalize("(no title)"), allDay, start: from, end: thru,
+                    startDateOnly: start.dateOnly, endDateOnly: end ? end.dateOnly : start.dateOnly, resource,
+                    color: cfg.colorField ? lv.colorOf(colorValue, cfg.colors) : "primary" });
+            });
+            return out.sort((a, b) => a.start - b.start || b.end - a.end || a.index - b.index);
+        },
+        // The places of the timed events of one day column: each in a lane of its group of overlapping events, lanes the group's width.
+        layoutDay(list) {
+            const sorted = (list || []).slice().sort((a, b) => a.start - b.start || b.end - a.end);
+            const out = [];
+            let group = [];
+            let lanes = [];
+            let groupEnd = -Infinity;
+            const close = () => { group.forEach((entry) => { entry.lanes = lanes.length; }); group = []; lanes = []; };
+            sorted.forEach((ev) => {
+                if (group.length && ev.start >= groupEnd) { close(); groupEnd = -Infinity; }
+                let lane = lanes.findIndex((laneEnd) => laneEnd <= ev.start);
+                if (lane < 0) { lane = lanes.length; lanes.push(ev.end); } else lanes[lane] = ev.end;
+                const entry = { ev, lane, lanes: 1 };
+                group.push(entry);
+                out.push(entry);
+                groupEnd = Math.max(groupEnd, ev.end);
+            });
+            close();
+            return out;
+        },
+        // What a moved or resized event posts: its key fields, the transition's parameters, and the start and end as the row had them (a
+        // date for a date-only value, else epoch millis; a date-only end is the last day), the resource when it changed.
+        moveParams(ev, cal, tz, change) {
+            const lv = moqui.listViews;
+            const cfg = cal || {};
+            const out = Object.assign({}, cfg.parameters || {}, lv.keyParams(ev.row, cfg.keyFields));
+            out[cfg.startParameter || cfg.startField] = lv.timeOut(change.start, ev.startDateOnly, tz);
+            if (cfg.endField) out[cfg.endParameter || cfg.endField] = ev.endDateOnly ? lv.timeOut(change.end - 1, true, tz) : lv.timeOut(change.end, false, tz);
+            if (cfg.resourceField && change.resource !== undefined && change.resource !== null && change.resource !== ev.resource) {
+                out[cfg.resourceParameter || cfg.resourceField] = change.resource;
+            }
+            return out;
+        },
+        snap(minutes, step) { return Math.round(minutes / step) * step; }
+    };
+
+    // The board and calendar of a form-list (the views attribute and the view-board and view-calendar elements), around the list. The list
+    // is the default slot: in the board and calendar its rows are hidden and its nav row (find options, saved finds, the page buttons) and
+    // the head's find fields stay. A card is the card_{index} slot the server-merged macros write for each row, else the card slot with
+    // {index, row} (an m-static-form-list gives it over the row's scope). The view is the URL's view parameter, else the user's choice
+    // (the LIST_VIEW_{form} preference, set on a switch), else the first. A card dragged to another column posts the board's transition
+    // with the row's key fields and the new value; a refusal puts it back with the answer's message. The calendar shows month, week, day
+    // and list (agenda) of the rows by their start (and end), colors by the color field, a drag moves an event and its lower edge
+    // resizes it (the transition with the new start and end, and resource), a click on empty time opens the quick create (the
+    // create-transition's form, or the create-screen) with the time in it. On a phone the board scrolls sideways and the calendar
+    // offers day and list.
+    let listViewsCount = 0;
+    component("m-list-views", {
+        name: "mListViews",
+        inject: { mScreen: { default: null } },
+        props: { id: String, formName: String, formLocation: String, views: [Array, String], view: String, rows: { type: Array, default: () => [] },
+            board: Object, calendar: Object, infoUrl: { type: String, default: "/listViewColumns" }, reload: Function },
+        data() {
+            return { current: "list", uid: "mlv" + (++listViewsCount), moved: {}, dirty: false, info: null, infoKey: "", dragging: null, dragEnded: 0,
+                calMode: "", anchor: 0, drag: null, preview: null, selection: null, pop: { open: false, index: null, when: "" }, anchorRect: { left: 0, top: 0, width: 0, height: 0 },
+                create: { open: false, initial: {}, url: "", dateType: "date-time" }, hourPx: 44, nowAbs: 0, range: { key: "", seq: 0, rows: null } };
+        },
+        template:
+            '<div class="m-list-views" :id="id" :class="\'m-list-views--\' + current" :data-view="current">' +
+                '<div v-if="viewOptions.length > 1" class="m-list-views-bar row items-center no-wrap">' +
+                    '<q-space></q-space>' +
+                    '<q-btn-toggle :model-value="current" @update:model-value="setView" dense unelevated no-caps toggle-color="primary" class="m-list-views-toggle" :options="viewOptions">' +
+                        '<template v-slot:list><q-tooltip>{{labels.list}}</q-tooltip></template>' +
+                        '<template v-slot:board><q-tooltip>{{labels.board}}</q-tooltip></template>' +
+                        '<template v-slot:calendar><q-tooltip>{{labels.calendar}}</q-tooltip></template>' +
+                    '</q-btn-toggle>' +
+                '</div>' +
+                '<div class="m-list-views-list"><slot></slot></div>' +
+                // ---- the board ----
+                '<div v-if="current === \'board\'" ref="board" class="m-board row no-wrap" :class="{\'m-board--dragging\': !!dragging}">' +
+                    '<div v-for="column in columns" :key="column.value" class="m-board-col column no-wrap" :data-value="column.value"' +
+                            ' :class="dragging ? (column.value === dragging.from ? \'m-board-col--from\' : (dragAllowed(column.value) ? \'m-board-col--target\' : \'m-board-col--blocked\')) : \'\'">' +
+                        '<div class="m-board-col-head row items-center no-wrap">' +
+                            '<span class="m-board-col-dot" :class="\'bg-\' + (column.color || \'grey-6\')"></span>' +
+                            '<span class="m-board-col-label ellipsis">{{column.label}}</span>' +
+                            '<q-badge class="m-board-col-count m-tonal q-ml-xs" :class="column.color ? \'text-\' + column.color : \'text-grey-8\'">{{column.count}}</q-badge>' +
+                            '<q-space></q-space>' +
+                            '<span v-if="board.sumField" class="m-board-col-sum m-muted">{{sumText(column.sum)}}</span>' +
+                        '</div>' +
+                        '<div class="m-board-cards col" :data-value="column.value">' +
+                            '<div v-for="item in column.items" :key="item.index" class="m-board-card" :data-index="item.index" @click="openCard($event)">' +
+                                '<slot :name="\'card_\' + item.index" :index="item.index" :row="item.row"><slot name="card" :index="item.index" :row="item.row">' +
+                                    '<div class="m-card-title">{{cardTitle(item.row)}}</div></slot></slot>' +
+                            '</div>' +
+                        '</div>' +
+                        '<div v-if="!column.count" class="m-board-empty m-muted">{{labels.noCards}}</div>' +
+                    '</div>' +
+                    '<div v-if="!columns.length" class="m-board-empty m-muted q-pa-md">{{labels.noCards}}</div>' +
+                '</div>' +
+                // ---- the calendar ----
+                '<div v-if="current === \'calendar\'" class="m-calendar" :class="{\'m-calendar--dragging\': !!drag && drag.moved}">' +
+                    '<div class="m-calendar-bar row items-center no-wrap">' +
+                        '<q-btn unelevated dense no-caps class="m-btn-tonal q-px-sm" :label="labels.today" @click="goToday"></q-btn>' +
+                        '<template v-if="calMode !== \'list\'">' +
+                            '<q-btn flat dense round icon="chevron_left" class="m-cal-prev" @click="shift(-1)"><q-tooltip>{{labels.previous}}</q-tooltip></q-btn>' +
+                            '<q-btn flat dense round icon="chevron_right" class="m-cal-next" @click="shift(1)"><q-tooltip>{{labels.next}}</q-tooltip></q-btn>' +
+                        '</template>' +
+                        '<div class="m-calendar-title ellipsis q-ml-sm" :class="phone ? \'text-subtitle1 text-weight-medium\' : \'text-h6\'">{{rangeTitle}}</div>' +
+                        '<q-space></q-space>' +
+                        '<q-btn-toggle v-if="modeOptions.length > 1" :model-value="calMode" @update:model-value="setMode" dense no-caps unelevated toggle-color="primary" class="m-cal-modes" :options="modeOptions"></q-btn-toggle>' +
+                    '</div>' +
+                    // month
+                    '<q-card v-if="calMode === \'month\'" flat bordered class="m-cal-month">' +
+                        '<div class="row no-wrap m-cal-dow"><div v-for="name in weekdayNames" :key="name" class="col text-center text-caption m-muted">{{name}}</div></div>' +
+                        '<div v-for="week in monthWeeks" :key="week.key" class="row no-wrap m-cal-week">' +
+                            '<div v-for="cell in week.days" :key="cell.day" class="col m-cal-cell" :class="{\'m-cal-cell--out\': !cell.inMonth, \'m-cal-cell--sel\': selection && selection.day === cell.day}"' +
+                                    ' :data-day="cell.day" data-zone="month" @pointerdown="onCellDown($event, cell.day, \'month\', null)">' +
+                                '<div class="m-cal-daynum"><span :class="{\'m-cal-today\': cell.isToday}" @pointerdown.stop @click.stop="goDay(cell.day)">{{cell.dayNum}}</span></div>' +
+                                '<div v-for="ev in cell.items.slice(0, cell.limit)" :key="ev.key" class="m-cal-chip ellipsis" :class="chipClass(ev)" :data-index="ev.index"' +
+                                        ' @pointerdown.stop="onEventDown($event, ev, \'move\')">' +
+                                    '<template v-if="ev.allDay">{{ev.title}}</template>' +
+                                    '<template v-else><span class="m-cal-dot" :class="\'bg-\' + ev.color"></span><span class="m-cal-chip-time">{{ev.shortTime}}</span> {{ev.title}}</template>' +
+                                '</div>' +
+                                '<div v-if="cell.items.length > cell.limit" class="m-cal-more text-primary" @pointerdown.stop @click.stop="goDay(cell.day)">+{{cell.items.length - cell.limit}} {{labels.more}}</div>' +
+                            '</div>' +
+                        '</div>' +
+                    '</q-card>' +
+                    // week and day: the time grid, columns of days or, for a day with a resource field, of resources
+                    '<q-card v-else-if="calMode === \'week\' || calMode === \'day\'" flat bordered class="m-cal-grid">' +
+                        '<div class="row no-wrap m-cal-head">' +
+                            '<div class="m-cal-gutter"></div>' +
+                            '<div v-for="col in gridCols" :key="col.key" class="col m-cal-head-cell text-center ellipsis" :class="{\'m-cal-head-cell--today\': col.isToday}" @click="col.resource === null ? goDay(col.day) : null">' +
+                                '<div class="text-caption" :class="col.isToday ? \'text-primary text-weight-medium\' : \'m-muted\'">{{col.top}}</div><div class="m-cal-head-label">{{col.label}}</div></div>' +
+                        '</div>' +
+                        '<div class="row no-wrap m-cal-allday">' +
+                            '<div class="m-cal-gutter text-caption m-muted">{{labels.allDay}}</div>' +
+                            '<div v-for="col in gridCols" :key="col.key" class="col m-cal-allday-cell" :data-day="col.day" :data-res="col.resource" data-zone="allday"' +
+                                    ' @pointerdown="onCellDown($event, col.day, \'allday\', col.resource)">' +
+                                '<div v-for="ev in col.allDay" :key="ev.key" class="m-cal-chip ellipsis" :class="chipClass(ev)" :data-index="ev.index" @pointerdown.stop="onEventDown($event, ev, \'move\')">{{ev.title}}</div>' +
+                            '</div>' +
+                        '</div>' +
+                        '<div ref="calScroll" class="m-cal-scroll">' +
+                            '<div class="row no-wrap m-cal-hours" :style="{height: (24 * hourPx) + \'px\'}">' +
+                                '<div class="m-cal-gutter relative-position">' +
+                                    '<div v-for="hour in 23" :key="hour" class="m-cal-hour-label text-caption m-muted" :style="{top: (hour * hourPx - 8) + \'px\'}">{{hourLabel(hour)}}</div>' +
+                                '</div>' +
+                                '<div v-for="col in gridCols" :key="col.key" class="col m-cal-col" :style="{backgroundSize: \'100% \' + hourPx + \'px\'}" :data-day="col.day" :data-res="col.resource" data-zone="time"' +
+                                        ' @pointerdown="onCellDown($event, col.day, \'time\', col.resource)">' +
+                                    '<div v-for="place in col.timed" :key="place.ev.key" class="m-cal-event" :class="eventClass(place.ev)" :style="eventStyle(place)" :data-index="place.ev.index"' +
+                                            ' @pointerdown.stop="onEventDown($event, place.ev, \'move\')">' +
+                                        '<div class="m-cal-event-title ellipsis">{{place.ev.title}}</div>' +
+                                        '<div v-if="(place.ev.end - place.ev.start) >= 45" class="m-cal-event-time ellipsis">{{place.ev.timeText}}</div>' +
+                                        '<div v-if="canMove && !phone" class="m-cal-resize" @pointerdown.stop="onEventDown($event, place.ev, \'resize\')"></div>' +
+                                    '</div>' +
+                                    '<div v-if="selection && selection.zone === \'time\' && selection.col === col.key" class="m-cal-selection" :style="spanStyle(selection.start, selection.end, col.day)">{{selectionText}}</div>' +
+                                    '<div v-if="col.isToday" class="m-cal-now" :style="{top: (nowMinutes / 60 * hourPx) + \'px\'}"></div>' +
+                                '</div>' +
+                            '</div>' +
+                        '</div>' +
+                    '</q-card>' +
+                    // list: the agenda of the rows, by day
+                    '<q-card v-else flat bordered class="m-cal-agenda">' +
+                        '<template v-for="(group, groupIndex) in agenda" :key="group.day">' +
+                            '<q-separator v-if="groupIndex > 0"></q-separator>' +
+                            '<div class="m-cal-agenda-day text-subtitle2 q-px-md q-pt-sm" :class="group.isToday ? \'text-primary\' : \'\'">{{group.label}}</div>' +
+                            '<q-list dense class="q-pb-xs">' +
+                                '<q-item v-for="ev in group.items" :key="ev.key" clickable class="m-cal-agenda-item" :data-index="ev.index" @click="openEvent($event, ev)">' +
+                                    '<q-item-section side class="m-cal-agenda-time text-caption">{{ev.allDay ? labels.allDay : (phone ? ev.shortTime : ev.timeText)}}</q-item-section>' +
+                                    '<q-item-section avatar class="m-cal-agenda-dot"><span class="m-cal-dot" :class="\'bg-\' + ev.color"></span></q-item-section>' +
+                                    '<q-item-section><q-item-label>{{ev.title}}</q-item-label><q-item-label v-if="ev.resourceLabel" caption>{{ev.resourceLabel}}</q-item-label></q-item-section>' +
+                                '</q-item>' +
+                            '</q-list>' +
+                        '</template>' +
+                        '<div v-if="!agenda.length" class="q-pa-md m-muted">{{labels.noEvents}}</div>' +
+                    '</q-card>' +
+                    // the event's card, by the event clicked
+                    '<div :id="uid + \'_anchor\'" class="m-cal-anchor" :style="{left: anchorRect.left + \'px\', top: anchorRect.top + \'px\', width: anchorRect.width + \'px\', height: anchorRect.height + \'px\'}"></div>' +
+                    '<q-menu v-model="pop.open" :target="\'#\' + uid + \'_anchor\'" no-parent-event anchor="bottom left" self="top left" class="m-cal-pop">' +
+                        '<div v-if="pop.index !== null" class="m-cal-pop-body q-pa-sm">' +
+                            '<div class="text-caption m-muted q-mb-xs">{{pop.when}}</div>' +
+                            '<slot :name="\'card_\' + pop.index" :index="pop.index" :row="popRow"><slot name="card" :index="pop.index" :row="popRow">' +
+                                '<div class="m-card-title">{{cardTitle(popRow)}}</div></slot></slot>' +
+                        '</div>' +
+                    '</q-menu>' +
+                    // the quick create
+                    '<m-dialog v-model="create.open" :title="labels.newEvent" width="520">' +
+                        '<template v-if="create.open">' +
+                            '<m-dynamic-container v-if="create.url" :id="uid + \'_create\'" :url="create.url"></m-dynamic-container>' +
+                            '<m-form v-else :action="calendar.createTransition" :fields-initial="create.initial" @submitted="afterCreate" v-slot="formProps">' +
+                                '<m-text-line v-if="calendar.titleField" v-model="formProps.fields[calendar.titleField]" :name="calendar.titleField" :id="uid + \'_ctitle\'" :label="labels.title" required></m-text-line>' +
+                                '<div class="row q-col-gutter-sm q-mt-xs">' +
+                                    '<div class="col-12 col-sm-6"><m-date-time v-model="formProps.fields[startName]" :name="startName" :id="uid + \'_cstart\'" :type="create.dateType" :label="labels.starts"></m-date-time></div>' +
+                                    '<div v-if="calendar.endField" class="col-12 col-sm-6"><m-date-time v-model="formProps.fields[endName]" :name="endName" :id="uid + \'_cend\'" :type="create.dateType" :label="labels.ends"></m-date-time></div>' +
+                                '</div>' +
+                                '<div class="row justify-end q-mt-md"><q-btn unelevated dense no-caps color="primary" type="submit" class="q-px-md m-cal-create-submit" :label="labels.create"></q-btn></div>' +
+                            '</m-form>' +
+                        '</template>' +
+                    '</m-dialog>' +
+                '</div>' +
+            '</div>',
+        computed: {
+            lv() { return moqui.listViews; },
+            labels() {
+                const l = lvLocalize;
+                return { list: l("List"), board: l("Board"), calendar: l("Calendar"), today: l("Today"), previous: l("Previous"), next: l("Next"), allDay: l("All day"),
+                    more: l("more"), noCards: l("No cards"), noEvents: l("Nothing to show"), newEvent: l("New"), title: l("Title"), starts: l("Starts"), ends: l("Ends"),
+                    create: l("Create"), month: l("Month"), week: l("Week"), day: l("Day"), agenda: l("List") };
+            },
+            phone() { return !!(this.$q && this.$q.screen && this.$q.screen.lt.sm); },
+            viewList() { return moqui.listViews.views(this.views, this.board, this.calendar); },
+            viewOptions() { return this.viewList.map((name) => ({ value: name, icon: moqui.listViews.icons[name], slot: name, attrs: { "aria-label": this.labels[name], "data-view": name } })); },
+            timeZone() { const config = qvt.config || moqui.config || {}; return config.timeZone || (this.$root && this.$root.timeZone) || ""; },
+            locale() { const config = qvt.config || moqui.config || {}; return lvText(config.locale || (this.$root && this.$root.locale) || "").replace("_", "-") || undefined; },
+            prefKey() { return "LIST_VIEW_" + (this.formLocation || this.formName || ""); },
+            // the rows the views show: the list's page without its total row, each with its index (the card_{index} slot)
+            items() { return (this.rows || []).map((row, index) => ({ index, row: row || {} })).filter((item) => !item.row._moquiRowType); },
+            // ---- board ----
+            columns() {
+                if (!this.board) return [];
+                const known = this.board.columns || (this.info && this.info.columns) || [];
+                return moqui.listViews.boardColumns(this.items, this.board, known, this.moved);
+            },
+            flow() { return (this.board && this.board.flow) || (this.info && this.info.transitions) || null; },
+            canMove() { return !!(this.calendar && this.calendar.transition); },
+            // the calendar's rows: those of the dates shown when it asks for them (range-find), else the list's page
+            rangeOn() { return !!(this.calendar && this.calendar.rangeFind && this.calendar.rangeUrl); },
+            calItems() { return this.rangeOn && this.range.rows ? this.range.rows : this.items; },
+            // ---- calendar ----
+            calendarColors() { return Object.assign({}, this.info && this.info.colors, this.calendar && this.calendar.colors); },
+            events() {
+                if (!this.calendar) return [];
+                const cfg = Object.assign({}, this.calendar, { colors: this.calendarColors });
+                const lv = moqui.listViews;
+                const resources = this.resourceLabels;
+                return lv.events(this.calItems, cfg, this.timeZone, this.moved, this.preview).map((ev) => Object.assign(ev, {
+                    timeText: this.timeRange(ev), shortTime: ev.allDay ? "" : this.clock(ev.start - Math.floor(ev.start / 1440) * 1440),
+                    resourceLabel: ev.resource !== null && ev.resource !== undefined ? (resources[ev.resource] || ev.resource) : ""
+                }));
+            },
+            resourceLabels() {
+                const out = {};
+                const field = this.calendar && this.calendar.resourceField;
+                if (!field) return out;
+                (this.calendar.resources || []).forEach((res) => { out[lvText(res.value)] = res.label || lvText(res.value); });
+                this.calItems.forEach((item) => { const value = lvText(item.row[field]); if (value && !out[value]) out[value] = moqui.listViews.text(item.row, field); });
+                return out;
+            },
+            modeOptions() {
+                const lv = moqui.listViews;
+                let modes = lv.list(this.calendar && this.calendar.modes);
+                if (!modes.length) modes = ["month", "week", "day", "list"];
+                modes = modes.filter((mode) => lv.modeIcons[mode]);
+                if (this.phone) { const small = modes.filter((mode) => mode === "day" || mode === "list"); if (small.length) modes = small; }
+                return modes.map((mode) => ({ value: mode, label: this.phone ? undefined : this.labels[mode === "list" ? "agenda" : mode], icon: this.phone ? lv.modeIcons[mode] : undefined,
+                    attrs: { "data-mode": mode } }));
+            },
+            firstDay() { const lang = this.$q && this.$q.lang && this.$q.lang.date; return lang && lang.firstDayOfWeek !== undefined ? Number(lang.firstDayOfWeek) : 0; },
+            // today and the time now in the user's zone, again each minute (nowAbs)
+            todayDay() { return moqui.listViews.today(this.timeZone, this.nowAbs || undefined).day; },
+            nowMinutes() { return moqui.listViews.today(this.timeZone, this.nowAbs || undefined).minutes; },
+            weekdayNames() {
+                const out = [];
+                const start = moqui.listViews.weekStart(this.anchor || this.todayDay, this.firstDay);
+                for (let i = 0; i < 7; i++) out.push(this.dayFormat(start + i, this.phone ? { weekday: "narrow" } : { weekday: "short" }));
+                return out;
+            },
+            monthWeeks() {
+                const lv = moqui.listViews;
+                const month = lv.ymd(this.anchor).m;
+                const byDay = this.eventsByDay;
+                return lv.monthWeeks(this.anchor, this.firstDay).map((days) => ({
+                    key: days[0],
+                    days: days.map((day) => ({ day, dayNum: lv.ymd(day).d, inMonth: lv.ymd(day).m === month, isToday: day === this.todayDay,
+                        items: byDay[day] || [], limit: this.phone ? 2 : 3 }))
+                }));
+            },
+            // the events on each day they touch, all-day first
+            eventsByDay() {
+                const out = {};
+                this.events.forEach((ev) => {
+                    const first = Math.floor(ev.start / 1440);
+                    const last = Math.floor((ev.end - 1) / 1440);
+                    for (let day = first; day <= last && day - first < 62; day++) (out[day] = out[day] || []).push(ev);
+                });
+                Object.keys(out).forEach((day) => out[day].sort((a, b) => (b.allDay ? 1 : 0) - (a.allDay ? 1 : 0) || a.start - b.start));
+                return out;
+            },
+            // the columns of the time grid: the days of the week, or the day; a day with a resource field has a column per resource
+            gridCols() {
+                const lv = moqui.listViews;
+                const resourceField = this.calendar && this.calendar.resourceField;
+                const cols = [];
+                if (this.calMode === "day" && resourceField) {
+                    const values = Object.keys(this.resourceLabels);
+                    this.events.forEach((ev) => { if (ev.resource && !values.includes(ev.resource)) values.push(ev.resource); });
+                    (values.length ? values : [""]).forEach((value) => cols.push({ key: "r" + value, day: this.anchor, resource: value, isToday: this.anchor === this.todayDay,
+                        top: this.dayFormat(this.anchor, { weekday: "short", day: "numeric" }), label: value ? (this.resourceLabels[value] || value) : lvLocalize("None") }));
+                } else {
+                    const start = this.calMode === "week" ? lv.weekStart(this.anchor, this.firstDay) : this.anchor;
+                    for (let i = 0; i < (this.calMode === "week" ? 7 : 1); i++) {
+                        const day = start + i;
+                        cols.push({ key: "d" + day, day, resource: null, isToday: day === this.todayDay, top: this.dayFormat(day, { weekday: "short" }), label: String(lv.ymd(day).d) });
+                    }
+                }
+                // each column's all-day events, and its timed ones in their lanes, cut to the day (from and to: minutes in the day)
+                return cols.map((col) => {
+                    const dayStart = col.day * 1440;
+                    const inCol = this.events.filter((ev) => (col.resource === null || lvText(ev.resource) === col.resource) && ev.start < dayStart + 1440 && ev.end > dayStart);
+                    const spans = inCol.filter((ev) => !ev.allDay).map((ev) => ({ ev, start: Math.max(ev.start, dayStart) - dayStart, end: Math.min(ev.end, dayStart + 1440) - dayStart }));
+                    const timed = lv.layoutDay(spans).map((place) => ({ ev: place.ev.ev, from: place.ev.start, to: place.ev.end, lane: place.lane, lanes: place.lanes }));
+                    return Object.assign(col, { allDay: inCol.filter((ev) => ev.allDay), timed });
+                });
+            },
+            agenda() {
+                const groups = [];
+                const byDay = {};
+                this.events.forEach((ev) => {
+                    const day = Math.floor(ev.start / 1440);
+                    if (!byDay[day]) { byDay[day] = { day, label: this.dayFormat(day, { weekday: "long", month: "long", day: "numeric", year: "numeric" }), isToday: day === this.todayDay, items: [] }; groups.push(byDay[day]); }
+                    byDay[day].items.push(ev);
+                });
+                return groups;
+            },
+            rangeTitle() {
+                const lv = moqui.listViews;
+                if (this.calMode === "month") return this.dayFormat(this.anchor, { month: "long", year: "numeric" });
+                if (this.calMode === "day") return this.dayFormat(this.anchor, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+                if (this.calMode === "week") {
+                    const start = lv.weekStart(this.anchor, this.firstDay);
+                    return this.dayFormat(start, { month: "short", day: "numeric" }) + " – " + this.dayFormat(start + 6, { month: "short", day: "numeric", year: "numeric" });
+                }
+                return this.labels.agenda;
+            },
+            rowsKey() { try { return JSON.stringify(this.rows || []); } catch (err) { return String(Math.random()); } },
+            popRow() {
+                if (this.pop.index === null) return {};
+                const item = this.calItems.find((entry) => entry.index === this.pop.index) || this.items.find((entry) => entry.index === this.pop.index);
+                return item ? item.row : {};
+            },
+            selectionText() { return this.selection ? this.clock(this.selection.start) + " – " + this.clock(this.selection.end) : ""; },
+            startName() { return this.calendar ? this.calendar.startParameter || this.calendar.startField : ""; },
+            endName() { return this.calendar ? this.calendar.endParameter || this.calendar.endField : ""; }
+        },
+        watch: {
+            current() { this.afterViewChange(); },
+            calMode() { this.saveCalendar(); this.$nextTick(this.scrollToMorning); this.loadRange(false); },
+            anchor() { this.saveCalendar(); this.loadRange(false); },
+            // other rows (another page, a reload): the moves are in them now. The server-merged rows are a literal of the screen's template,
+            // a new array whenever the screen draws again, so their text tells a change
+            rowsKey() { this.moved = {}; this.loadInfo(); this.loadRange(true); }
+        },
+        created() {
+            const lv = moqui.listViews;
+            const views = this.viewList;
+            const params = (this.mScreen && this.mScreen.parameters) || (this.$root && this.$root.currentParameters) || {};
+            const pref = ((qvt.config || moqui.config || {}).preferences || {})[this.prefKey];
+            let stored = null;
+            try { stored = root.sessionStorage.getItem("moqui." + this.prefKey); } catch (err) { stored = null; }
+            this.current = [params.view, this.view, stored, pref].find((name) => name && views.includes(name)) || views[0];
+            // the calendar's mode and day, kept for the tab while it is open; else the first mode, and today unless the rows are elsewhere
+            let saved = null;
+            try { saved = JSON.parse(root.sessionStorage.getItem("moqui." + this.prefKey + "_cal") || "null"); } catch (err) { saved = null; }
+            const modes = this.modeOptions.map((option) => option.value);
+            this.calMode = saved && modes.includes(saved.mode) ? saved.mode : modes[0] || "month";
+            if (saved && typeof saved.anchor === "number") this.anchor = saved.anchor;
+            else {
+                const today = lv.today(this.timeZone).day;
+                const days = this.events.map((ev) => Math.floor(ev.start / 1440));
+                const month = lv.monthStart(today);
+                this.anchor = !days.length || days.some((day) => lv.monthStart(day) === month) ? today : days[0];
+            }
+            this.loadInfo();
+        },
+        mounted() {
+            this.nowTimer = setInterval(() => { this.nowAbs = Date.now(); }, 60000);
+            this.afterViewChange();
+        },
+        updated() { if (this.current === "board") this.bindSortables(); },
+        beforeUnmount() {
+            clearInterval(this.nowTimer);
+            this.unbindSortables();
+            this.endPointer();
+        },
+        methods: {
+            setView(name) {
+                if (!name || name === this.current) return;
+                // back to the list after a card or event moved: the list again from the server, so it has what changed
+                const reloadList = name === "list" && this.dirty;
+                this.current = name;
+                try { root.sessionStorage.setItem("moqui." + this.prefKey, name); } catch (err) { /* no storage */ }
+                const config = qvt.config || moqui.config;
+                if (config) config.preferences = Object.assign({}, config.preferences, { [this.prefKey]: name });
+                if (this.$root && this.$root.setPreference && this.$root.userId) this.$root.setPreference(this.prefKey, name);
+                if (reloadList) this.reloadRows();
+            },
+            afterViewChange() {
+                this.pop.open = false;
+                if (this.current === "board") this.$nextTick(this.bindSortables);
+                else this.unbindSortables();
+                if (this.current === "calendar") { this.$nextTick(this.scrollToMorning); this.loadRange(false); }
+            },
+            // range-find: the rows of the dates shown, asked of the screen's form request (the list's find with the start and end field range
+            // added, no paging, with the list's other parameters) when other dates show or the list changed; the last answer asked for wins,
+            // and until one comes (or when it fails) the list's page shows
+            loadRange(force) {
+                if (!this.rangeOn || this.current !== "calendar") return;
+                const lv = moqui.listViews;
+                const cal = this.calendar;
+                const shown = (this.mScreen && this.mScreen.parameters) || (this.$root && this.$root.currentParameters) || {};
+                const base = {};
+                const paging = ["pageIndex", "pageSize", "pageNoLimit", "moquiFormName", "moquiSessionToken", "lastStandalone", "renderMode", "view"];
+                Object.keys(shown).forEach((name) => { if (!paging.includes(name) && shown[name] !== null && shown[name] !== undefined) base[name] = shown[name]; });
+                const finds = lv.rangeFinds(cal, lv.visibleDays(this.calMode, this.anchor, this.firstDay), this.timeZone).map((find) => Object.assign({}, base, find));
+                const key = JSON.stringify([cal.rangeUrl, finds]);
+                if (!force && key === this.range.key) return;
+                const seq = this.range.seq + 1;
+                this.range = Object.assign({}, this.range, { key, seq });
+                const prefix = this.$root && this.$root.appRootPath ? this.$root.appRootPath : "";
+                const ask = (params) => moqui.request(prefix + cal.rangeUrl, { params }).then((result) => {
+                    const json = result.json && moqui.isPlainObject(result.json) ? result.json : {};
+                    const list = cal.listName && Array.isArray(json[cal.listName]) ? json[cal.listName] : Object.values(json).find(Array.isArray);
+                    return Array.isArray(list) ? list : [];
+                });
+                Promise.all(finds.map(ask)).then((lists) => {
+                    if (seq === this.range.seq) this.range = Object.assign({}, this.range, { rows: lv.rangeItems(this.items, lists, cal.keyFields) });
+                }, (err) => {
+                    if (seq === this.range.seq) this.range = Object.assign({}, this.range, { key: "" });
+                    moqui.handleAjaxError(err);
+                });
+            },
+            reloadRows() {
+                this.dirty = false;
+                if (this.reload) { this.reload(); return; }
+                const screen = this.mScreen;
+                if (screen && screen.containerId && this.$root.reloadContainer) this.$root.reloadContainer(screen.containerId);
+                else if (this.$root && this.$root.reloadSubscreens) this.$root.reloadSubscreens();
+            },
+            // the columns of a status board and the colors of a status calendar (or the labels of column-order values), asked once for the
+            // values the rows have when the server did not write them in (a server-static screen)
+            loadInfo() {
+                const board = this.board;
+                const cal = this.calendar;
+                const lv = moqui.listViews;
+                const wantBoard = board && !board.columns && (board.statusTypeId || lv.isStatusField(board.groupField) || lv.list(board.columnOrder).length);
+                const wantColors = cal && cal.colorField && !cal.colors && lv.isStatusField(cal.colorField);
+                if (!wantBoard && !wantColors) return;
+                const values = new Set(lv.list(board && board.columnOrder));
+                this.items.forEach((item) => {
+                    if (wantBoard) values.add(lvText(item.row[board.groupField]));
+                    if (wantColors) values.add(lvText(item.row[cal.colorField]));
+                });
+                values.delete("");
+                const params = { values: Array.from(values).join(","), statusTypeId: (board && board.statusTypeId) || "", statusFlowId: (board && board.statusFlowId) || "",
+                    status: wantBoard ? (lv.isStatusField(board.groupField) || board.statusTypeId ? "true" : "false") : "true" };
+                const key = JSON.stringify(params);
+                if (key === this.infoKey) return;
+                this.infoKey = key;
+                const base = this.$root && this.$root.appRootPath ? this.$root.appRootPath : "";
+                moqui.request(base + this.infoUrl, { params }).then((result) => { this.info = result.json || null; }, moqui.handleAjaxError);
+            },
+            // POST a transition with parameters; true when the answer has no errors (its messages shown), false after showing what was wrong
+            post(action, params) {
+                const token = this.$root ? this.$root.moquiSessionToken : "";
+                const body = Object.assign({}, params, { moquiSessionToken: token });
+                const base = this.$root && this.$root.appRootPath ? this.$root.appRootPath : "";
+                return moqui.request(base + action, { method: "POST", params: body, headers: token ? { "X-CSRF-Token": token } : {} }).then((result) => {
+                    const json = result.json;
+                    if (json && moqui.responseHasErrors(json)) { moqui.notifyMessages(json.messageInfos, json.errors, json.validationErrors); return false; }
+                    if (json) moqui.notifyMessages(json.messageInfos);
+                    this.dirty = true;
+                    return true;
+                }, (err) => { moqui.handleAjaxError(err); return false; });
+            },
+            cardTitle(row) { const field = (this.board && this.board.titleField) || (this.calendar && this.calendar.titleField); return moqui.listViews.text(row, field); },
+            sumText(sum) {
+                try { return moqui.l10n && moqui.l10n.format ? moqui.l10n.format(sum, (this.board && this.board.sumFormat) || "#,##0.##") : String(sum); } catch (err) { return String(sum); }
+            },
+            // ---- board ----
+            dragAllowed(value) {
+                if (!this.dragging) return false;
+                const flow = this.flow;
+                if (!flow || !moqui.listViews.isStatusField(this.board.groupField)) return true;
+                return (flow[this.dragging.from] || []).includes(value);
+            },
+            // a click on a card opens it: the link of its title (the first link of the card), unless the click was on a control of the
+            // card (a link, a button, a field, an in-place edit: moqui.listViews.onControl) or ended a drag
+            openCard(event) {
+                if (Date.now() - this.dragEnded < 350) return;
+                const target = event.target;
+                if (moqui.listViews.onControl(target, event.currentTarget)) return;
+                const card = event.currentTarget;
+                const link = card && card.querySelector ? card.querySelector(".m-card-title a[href], a[href]") : null;
+                if (link) link.click();
+            },
+            bindSortables() {
+                const board = this.$refs.board;
+                if (!board || !this.board || !this.board.transition) return;
+                const lists = Array.from(board.querySelectorAll(".m-board-cards"));
+                this.sortables = (this.sortables || []).filter((sortable) => lists.includes(sortable.el) || (sortable.destroy(), false));
+                const bind = () => {
+                    lists.forEach((el) => {
+                        if (this.sortables.some((sortable) => sortable.el === el)) return;
+                        this.sortables.push(root.Sortable.create(el, {
+                            group: this.uid, sort: false, draggable: ".m-board-card", forceFallback: true, fallbackTolerance: 4, delay: 150, delayOnTouchOnly: true,
+                            animation: 120, ghostClass: "m-board-card--ghost", chosenClass: "m-board-card--chosen", dragClass: "m-board-card--drag",
+                            onStart: (evt) => { this.dragging = { from: evt.from.dataset.value, index: Number(evt.item.dataset.index) }; },
+                            onEnd: (evt) => {
+                                const from = evt.from.dataset.value;
+                                const to = evt.to.dataset.value;
+                                const index = Number(evt.item.dataset.index);
+                                // the card back where the page has it; the model moves it
+                                if (evt.from !== evt.to && evt.item.parentNode === evt.to) {
+                                    evt.to.removeChild(evt.item);
+                                    evt.from.insertBefore(evt.item, evt.from.children[evt.oldIndex] || null);
+                                }
+                                this.dragging = null;
+                                this.dragEnded = Date.now();
+                                if (from !== to) this.moveCard(index, to);
+                            }
+                        }));
+                    });
+                };
+                if (root.Sortable) bind();
+                else moqui.loadScript("/libs/sortablejs/Sortable.min.js", null, () => !!root.Sortable).then(() => { if (this.current === "board") bind(); }, (err) => console.warn("SortableJS did not load", err));
+            },
+            unbindSortables() {
+                (this.sortables || []).forEach((sortable) => { try { sortable.destroy(); } catch (err) { /* gone with its element */ } });
+                this.sortables = [];
+            },
+            moveCard(index, to) {
+                const item = this.items.find((entry) => entry.index === index);
+                if (!item || !this.board.transition) return;
+                const before = this.moved[index];
+                this.moved = Object.assign({}, this.moved, { [index]: Object.assign({}, before, { group: to }) });
+                const params = Object.assign({}, this.board.parameters || {}, moqui.listViews.keyParams(item.row, this.board.keyFields));
+                params[this.board.parameterName || this.board.groupField] = to;
+                this.post(this.board.transition, params).then((ok) => {
+                    if (ok) return;
+                    const moved = Object.assign({}, this.moved);
+                    if (before) moved[index] = before; else delete moved[index];
+                    this.moved = moved;
+                });
+            },
+            // ---- calendar ----
+            setMode(mode) { if (mode) { this.calMode = mode; this.pop.open = false; } },
+            saveCalendar() { try { root.sessionStorage.setItem("moqui." + this.prefKey + "_cal", JSON.stringify({ mode: this.calMode, anchor: this.anchor })); } catch (err) { /* no storage */ } },
+            shift(by) { this.anchor = moqui.listViews.shift(this.anchor, this.calMode, by); },
+            goToday() { this.anchor = this.todayDay; },
+            goDay(day) { this.anchor = day; if (this.modeOptions.some((option) => option.value === "day")) this.calMode = "day"; },
+            scrollToMorning() {
+                const el = this.$refs.calScroll;
+                // the time grid starts at seven in the morning, once for each grid shown
+                if (el && el !== this.scrolledEl) { el.scrollTop = 7 * this.hourPx - 10; this.scrolledEl = el; }
+            },
+            dayFormat(day, options) {
+                try { return new Intl.DateTimeFormat(this.locale, Object.assign({ timeZone: "UTC" }, options)).format(new Date(day * LV_DAY_MS)); } catch (err) { return moqui.listViews.dayKey(day); }
+            },
+            clock(minutes) {
+                const m = ((minutes % 1440) + 1440) % 1440;
+                try { return new Intl.DateTimeFormat(this.locale, { timeZone: "UTC", hour: "numeric", minute: "2-digit" }).format(new Date(m * 60000)); } catch (err) { return String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0"); }
+            },
+            hourLabel(hour) {
+                try { return new Intl.DateTimeFormat(this.locale, { timeZone: "UTC", hour: "numeric" }).format(new Date(hour * 3600000)); } catch (err) { return String(hour); }
+            },
+            timeRange(ev) {
+                const startDay = Math.floor(ev.start / 1440);
+                const endDay = Math.floor((ev.end - 1) / 1440);
+                if (ev.allDay) return startDay === endDay ? this.labels.allDay : this.dayFormat(startDay, { month: "short", day: "numeric" }) + " – " + this.dayFormat(endDay, { month: "short", day: "numeric" });
+                const from = this.clock(ev.start);
+                const to = this.clock(ev.end);
+                return startDay === Math.floor(ev.end / 1440) || ev.end % 1440 === 0 ? from + " – " + to : from + " – " + this.dayFormat(Math.floor(ev.end / 1440), { month: "short", day: "numeric" }) + " " + to;
+            },
+            chipClass(ev) { return ev.allDay ? ["m-cal-chip--filled", "bg-" + ev.color, moqui.listViews.lightColor(ev.color) ? "text-dark" : "text-white"] : []; },
+            eventClass(ev) { return ["bg-" + ev.color, moqui.listViews.lightColor(ev.color) ? "text-dark" : "text-white", { "m-cal-event--moving": this.preview && this.preview.index === ev.index }]; },
+            eventStyle(place) {
+                const width = 100 / place.lanes;
+                return { top: (place.from / 60 * this.hourPx) + "px", height: Math.max((place.to - place.from) / 60 * this.hourPx - 2, 16) + "px",
+                    left: "calc(" + (place.lane * width) + "% + 1px)", width: "calc(" + width + "% - 3px)" };
+            },
+            spanStyle(start, end, day) {
+                const from = start - day * 1440;
+                return { top: (from / 60 * this.hourPx) + "px", height: Math.max((end - start) / 60 * this.hourPx - 2, 14) + "px" };
+            },
+            // the zone under the pointer: {zone, day, resource, minutes} for a time column (minutes from its top), day and resource for the others
+            zoneAt(event) {
+                const el = root.document.elementFromPoint ? root.document.elementFromPoint(event.clientX, event.clientY) : null;
+                const zoneEl = el && el.closest ? el.closest("[data-zone]") : null;
+                if (!zoneEl || !this.$el.contains(zoneEl)) return null;
+                const out = { zone: zoneEl.dataset.zone, day: Number(zoneEl.dataset.day), resource: zoneEl.dataset.res === undefined ? null : zoneEl.dataset.res };
+                if (out.zone === "time") {
+                    const rect = zoneEl.getBoundingClientRect();
+                    out.minutes = Math.max(0, Math.min(1440, (event.clientY - rect.top) / this.hourPx * 60));
+                }
+                return out;
+            },
+            onEventDown(event, ev, kind) {
+                if (event.button !== undefined && event.button !== 0) return;
+                const at = this.zoneAt(event);
+                this.drag = { kind, ev, x: event.clientX, y: event.clientY, moved: false, target: event.currentTarget,
+                    grab: at && at.zone === "time" ? at.day * 1440 + at.minutes - ev.start : 0, grabDay: at ? at.day : Math.floor(ev.start / 1440) };
+                this.startPointer();
+            },
+            onCellDown(event, day, zone, resource) {
+                if (event.button !== undefined && event.button !== 0) return;
+                if (!this.calendar || !(this.calendar.createTransition || this.calendar.createScreen)) return;
+                const at = this.zoneAt(event);
+                const start = zone === "time" && at ? day * 1440 + Math.floor((at.minutes || 0) / 30) * 30 : day * 1440;
+                this.drag = { kind: "create", zone, day, resource, x: event.clientX, y: event.clientY, moved: false, start, target: event.currentTarget };
+                this.selection = { zone, day, col: (resource !== null && resource !== undefined ? "r" + resource : "d" + day), start, end: zone === "time" ? start + 60 : start + 1440 };
+                this.startPointer();
+            },
+            startPointer() {
+                if (!this.pointerMove) {
+                    this.pointerMove = (event) => this.onPointerMove(event);
+                    this.pointerUp = (event) => this.onPointerUp(event);
+                    // the browser took the pointer (a touch that scrolls the page): nothing is moved or made
+                    this.pointerCancel = () => { this.endPointer(); this.drag = null; this.preview = null; this.selection = null; };
+                }
+                root.addEventListener("pointermove", this.pointerMove);
+                root.addEventListener("pointerup", this.pointerUp);
+                root.addEventListener("pointercancel", this.pointerCancel);
+            },
+            endPointer() {
+                if (!this.pointerMove) return;
+                root.removeEventListener("pointermove", this.pointerMove);
+                root.removeEventListener("pointerup", this.pointerUp);
+                root.removeEventListener("pointercancel", this.pointerCancel);
+            },
+            onPointerMove(event) {
+                const drag = this.drag;
+                if (!drag) return;
+                if (!drag.moved && Math.abs(event.clientX - drag.x) + Math.abs(event.clientY - drag.y) < 5) return;
+                if (drag.kind !== "create" && !this.canMove) return;
+                drag.moved = true;
+                if (event.preventDefault) event.preventDefault();
+                const at = this.zoneAt(event);
+                if (!at) return;
+                const lv = moqui.listViews;
+                if (drag.kind === "create") {
+                    if (drag.zone !== "time" || at.zone !== "time" || at.day !== drag.day) return;
+                    const minutes = at.day * 1440 + lv.snap(at.minutes, 30);
+                    this.selection = Object.assign({}, this.selection, { start: Math.min(drag.start, minutes), end: Math.max(drag.start + 30, minutes) });
+                    return;
+                }
+                const ev = drag.ev;
+                const length = ev.end - ev.start;
+                if (drag.kind === "resize") {
+                    if (at.zone !== "time") return;
+                    const end = Math.max(ev.start + 15, at.day * 1440 + lv.snap(at.minutes, 15));
+                    this.preview = { index: ev.index, start: ev.start, end };
+                } else if (at.zone === "time" && !ev.allDay) {
+                    const start = Math.max(at.day * 1440, Math.min(at.day * 1440 + 1440 - 15, at.day * 1440 + lv.snap(at.minutes - drag.grab, 15)));
+                    this.preview = { index: ev.index, start, end: start + length, resource: at.resource };
+                } else if ((at.zone === "month" || (at.zone === "allday" && ev.allDay)) && !isNaN(at.day)) {
+                    const shift = (at.day - drag.grabDay) * 1440;
+                    this.preview = { index: ev.index, start: ev.start + shift, end: ev.end + shift, resource: at.zone === "allday" ? at.resource : undefined };
+                }
+            },
+            onPointerUp(event) {
+                this.endPointer();
+                const drag = this.drag;
+                this.drag = null;
+                if (!drag) return;
+                if (drag.kind === "create") {
+                    const selection = this.selection;
+                    if (selection) this.openCreate(selection, drag.resource);
+                    return;
+                }
+                const preview = this.preview;
+                if (!drag.moved || !preview) {
+                    this.preview = null;
+                    if (drag.kind !== "resize") this.openEvent(event, drag.ev, drag.target);
+                    return;
+                }
+                this.preview = null;
+                const ev = drag.ev;
+                if (preview.start === ev.start && preview.end === ev.end && (preview.resource === undefined || preview.resource === ev.resource)) return;
+                this.moveEvent(ev, preview);
+            },
+            moveEvent(ev, change) {
+                const before = this.moved[ev.index];
+                const move = { start: change.start, end: change.end };
+                if (change.resource !== undefined && change.resource !== null) move.resource = change.resource;
+                this.moved = Object.assign({}, this.moved, { [ev.index]: move });
+                const params = moqui.listViews.moveParams(ev, this.calendar, this.timeZone, change);
+                this.post(this.calendar.transition, params).then((ok) => {
+                    if (ok) return;
+                    const moved = Object.assign({}, this.moved);
+                    if (before) moved[ev.index] = before; else delete moved[ev.index];
+                    this.moved = moved;
+                });
+            },
+            openEvent(event, ev, target) {
+                const el = target || (event && event.currentTarget) || null;
+                const rect = el && el.getBoundingClientRect ? el.getBoundingClientRect() : { left: event.clientX || 0, top: event.clientY || 0, width: 0, height: 0 };
+                this.anchorRect = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+                this.pop = { open: false, index: ev.index, when: ev.timeText + (ev.allDay ? "" : ", " + this.dayFormat(Math.floor(ev.start / 1440), { weekday: "short", month: "short", day: "numeric" })) };
+                this.$nextTick(() => { this.pop.open = true; });
+            },
+            // the quick create: the create-screen in the dialog with the start and end (and resource) as parameters, else the form that posts the
+            // create-transition with the title, start and end
+            openCreate(selection, resource) {
+                const cal = this.calendar;
+                const lv = moqui.listViews;
+                // a day without a time: all day with an all-day field (its first and last day), else nine to ten
+                const allDay = selection.zone !== "time";
+                const dateOnly = allDay && !!cal.allDayField;
+                let start = selection.start;
+                let end = selection.end;
+                if (allDay && !dateOnly) { start += 9 * 60; end = start + 60; }
+                const values = {};
+                values[this.startName] = lv.timeText(start, dateOnly);
+                if (cal.endField) values[this.endName] = lv.timeText(dateOnly ? end - 1440 : end, dateOnly);
+                if (cal.allDayField) values[cal.allDayParameter || cal.allDayField] = allDay ? "Y" : "N";
+                if (cal.resourceField && resource !== null && resource !== undefined && resource !== "") values[cal.resourceParameter || cal.resourceField] = resource;
+                const fixed = Object.assign({}, cal.createParameters || {});
+                this.selection = null;
+                if (cal.createScreen) {
+                    const search = moqui.objToSearch(Object.assign({}, fixed, values));
+                    this.create = { open: true, initial: {}, url: cal.createScreen + (search ? (cal.createScreen.indexOf("?") >= 0 ? "&" : "?") + search : ""), dateType: "date-time" };
+                    return;
+                }
+                const initial = Object.assign({}, fixed, values);
+                if (cal.titleField) initial[cal.titleField] = "";
+                this.create = { open: true, initial, url: "", dateType: dateOnly ? "date" : "date-time" };
+            },
+            afterCreate() {
+                this.create = Object.assign({}, this.create, { open: false });
+                if (this.reload) this.reload();
+                this.loadRange(true);
+            }
+        }
+    });
+
+    /* ========== markdown ========== */
+
+    // Markdown text as HTML (m-markdown, the markdown-view element): GitHub flavored markdown by Marked (libs/marked), cleaned by DOMPurify
+    // (libs/dompurify), both loaded on first use. Each heading gets an id from its text (headingPrefix, md- by default, then the words, made
+    // unique), and the outline is emitted; a link goes through the resolver (the resolveLink prop: (href, info) => a new href, an object
+    // {href, external, className, title, missing}, or nothing for the default), else a relative link is resolved from basePath; a link that
+    // leaves the application (another scheme or host) opens in a new tab with noopener noreferrer, an application path goes through the shell
+    // (setUrl, or a new tab with Ctrl or Cmd), #id scrolls to the heading. wikiLinks expands [[path]] and [[path|text]] to wiki:path links first,
+    // outside code, as index#WikiPageLinks reads them, so a resolver sees wiki:path. A table is wrapped in a scrolling q-table container and
+    // code blocks and tables take their tint from the text color, so both read in dark mode. The helpers are pure (node tests in
+    // WebrootVue.qvt.markdown.test.js).
+    const mdAttr = (value) => String(value === null || value === undefined ? "" : value).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const mdDecode = (text) => String(text || "").replace(/<[^>]*>/g, "").replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp|#39);/gi, (whole, code) => {
+        const named = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", "#39": "'" };
+        const key = code.toLowerCase();
+        if (named[key] !== undefined) return named[key];
+        const number = key.charAt(1) === "x" ? parseInt(key.slice(2), 16) : parseInt(key.slice(1), 10);
+        return isNaN(number) ? whole : String.fromCodePoint(number);
+    });
+    const MD_WIKI_LINK = /\[\[([^\]|\n]+)(?:\|([^\]\n]+))?\]\]/g;
+    moqui.markdown = {
+        // [[path]] and [[path|text]] as markdown links to wiki:path, outside fenced code and code spans
+        expandWikiLinks(text) {
+            const out = [];
+            let fence = null;
+            String(text || "").split("\n").forEach((line) => {
+                const open = line.match(/^ {0,3}(`{3,}|~{3,})/);
+                if (fence) {
+                    if (open && open[1].charAt(0) === fence.charAt(0) && open[1].length >= fence.length) fence = null;
+                    out.push(line);
+                    return;
+                }
+                if (open) { fence = open[1]; out.push(line); return; }
+                out.push(line.split(/(`[^`\n]*`)/).map((piece, index) => (index % 2 ? piece : piece.replace(MD_WIKI_LINK, (all, path, label) =>
+                    "[" + String(label || path).replace(/[[\]]/g, "").trim() + "](wiki:" + String(path).trim().split("/").map((part) => encodeURIComponent(part.trim())).join("/") + ")"))).join(""));
+            });
+            return out.join("\n");
+        },
+        // the words of a heading as an id: letters and digits, the rest one dash, at most 60 characters
+        slug(text) {
+            return mdDecode(text).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").substring(0, 60) || "section";
+        },
+        // what a link is: anchor (#id), mail (mailto:, tel:), wiki (wiki:), external (another scheme or host), path (/...), relative, or none
+        linkKind(href) {
+            const text = String(href || "").trim();
+            if (!text) return "none";
+            if (text.charAt(0) === "#") return "anchor";
+            if (/^(mailto|tel):/i.test(text)) return "mail";
+            if (/^wiki:/i.test(text)) return "wiki";
+            if (/^\/\//.test(text) || /^[a-z][a-z0-9+.-]*:/i.test(text)) return moqui.isExternalLink(text) ? "external" : "path";
+            if (text.charAt(0) === "/") return "path";
+            return "relative";
+        },
+        // a relative link from a base path, a directory ("a/b" from "/x/y" is "/x/y/a/b"; ".." its parent), its query and anchor kept
+        resolvePath(href, basePath) {
+            const text = String(href || "").trim();
+            const cut = text.search(/[?#]/);
+            const path = cut < 0 ? text : text.slice(0, cut);
+            const parts = String(basePath || "").split("/").filter((part) => part);
+            path.split("/").forEach((part) => {
+                if (part === "" || part === ".") return;
+                if (part === "..") parts.pop();
+                else parts.push(part);
+            });
+            return "/" + parts.join("/") + (cut < 0 ? "" : text.slice(cut));
+        },
+        // a link of the text as the page shows it: {href, kind, external, className, title}; the resolver first, then the base path
+        resolve(href, options, info) {
+            const md = moqui.markdown;
+            const opts = options || {};
+            let out = { href: String(href || ""), kind: md.linkKind(href), className: "", title: "" };
+            if (typeof opts.resolveLink === "function") {
+                let given = null;
+                try { given = opts.resolveLink(out.href, Object.assign({ kind: out.kind }, info)); } catch (err) { console.warn("m-markdown: the link resolver failed for " + out.href, err); }
+                if (typeof given === "string") out = { href: given, kind: md.linkKind(given), className: "", title: "" };
+                else if (given && typeof given === "object" && given.href !== undefined) {
+                    out = { href: String(given.href), kind: md.linkKind(given.href), className: given.className || (given.missing ? "text-negative" : ""), title: given.title || "" };
+                    if (given.external !== undefined) out.kind = given.external ? "external" : (out.kind === "external" ? "path" : out.kind);
+                }
+            }
+            if (out.kind === "relative" && opts.basePath) out = Object.assign(out, { href: md.resolvePath(out.href, opts.basePath), kind: "path" });
+            out.external = out.kind === "external";
+            return out;
+        },
+        // {html, outline}: the markdown with heading ids and resolved links, tables in their containers; not cleaned yet (sanitize)
+        render(marked, text, options) {
+            const md = moqui.markdown;
+            const opts = options || {};
+            const prefix = opts.headingPrefix === undefined || opts.headingPrefix === null ? "md-" : String(opts.headingPrefix);
+            const used = new Set();
+            const outline = [];
+            const instance = new marked.Marked({ gfm: true });
+            instance.use({
+                renderer: {
+                    heading(token) {
+                        const inner = this.parser.parseInline(token.tokens);
+                        const plain = mdDecode(this.parser.parseInline(token.tokens, this.parser.textRenderer)).trim();
+                        let id = prefix + md.slug(plain);
+                        while (used.has(id)) id += "-1";
+                        used.add(id);
+                        outline.push({ id, level: token.depth, text: plain });
+                        return "<h" + token.depth + ' id="' + mdAttr(id) + '">' + inner + "</h" + token.depth + ">\n";
+                    },
+                    link(token) {
+                        const inner = this.parser.parseInline(token.tokens);
+                        const link = md.resolve(token.href, opts, { text: mdDecode(inner) });
+                        let attrs = ' href="' + mdAttr(link.href) + '"';
+                        if (token.title || link.title) attrs += ' title="' + mdAttr(link.title || token.title) + '"';
+                        if (link.className) attrs += ' class="' + mdAttr(link.className) + '"';
+                        if (link.kind === "external") attrs += ' target="_blank" rel="noopener noreferrer"';
+                        else if (link.kind === "anchor") attrs += ' data-md-anchor="' + mdAttr(prefix + md.slug(decodeURIComponent(link.href.slice(1)))) + '"';
+                        else if (link.kind === "path") attrs += " data-md-link";
+                        return "<a" + attrs + ">" + inner + "</a>";
+                    },
+                    image(token) {
+                        const link = md.resolve(token.href, opts, { image: true });
+                        return '<img src="' + mdAttr(link.href) + '" alt="' + mdAttr(token.text) + '"' + (token.title ? ' title="' + mdAttr(token.title) + '"' : "") + ">";
+                    }
+                }
+            });
+            let html;
+            try {
+                const tokens = instance.lexer(opts.wikiLinks ? md.expandWikiLinks(text) : String(text || ""));
+                // a first heading that is the title the page shows already
+                const lead = tokens.findIndex((token) => token.type !== "space");
+                if (opts.stripTitle && lead >= 0 && tokens[lead].type === "heading" && tokens[lead].depth === 1 &&
+                    mdDecode(tokens[lead].text).replace(/[*_`~]/g, "").trim() === String(opts.stripTitle).trim()) tokens.splice(lead, 1);
+                html = instance.parser(tokens).replace(/<table>/g, '<div class="m-md-table q-table__container q-table--flat q-table--bordered q-table--dense"><table class="q-table">')
+                    .replace(/<\/table>/g, "</table></div>");
+            } catch (err) { console.warn("m-markdown: the text did not render", err); html = "<pre>" + mdAttr(text) + "</pre>"; }
+            return { html, outline };
+        },
+        // the HTML cleaned: no script, style, form or frame, no event attribute; a link's target and rel, heading ids and the data
+        // attributes of the links stay
+        sanitize(purify, html) {
+            return purify.sanitize(html, { ADD_ATTR: ["target"], FORBID_TAGS: ["style", "form", "input", "button", "textarea", "select"], FORBID_ATTR: ["style"] });
+        }
+    };
+
+    let markdownLoad = null;
+    const loadMarkdown = () => markdownLoad || (markdownLoad = Promise.all([
+        moqui.loadScript("/libs/marked/marked.umd.min.js", null, () => !!root.marked),
+        moqui.loadScript("/libs/dompurify/purify.min.js", null, () => !!root.DOMPurify)
+    ]).catch((err) => { markdownLoad = null; throw err; }));
+    component("m-markdown", {
+        name: "mMarkdown",
+        props: { id: String, text: String, basePath: String, resolveLink: Function, headingPrefix: { type: String, default: "md-" }, stripTitle: String, wikiLinks: Boolean },
+        // outline: the headings [{id, level, text}] once rendered; rendered: the root element; link: {href, event, anchor, preventDefault()}
+        // before an application link is followed through the shell (preventDefault: the host follows it)
+        emits: ["outline", "rendered", "link"],
+        data() { return { html: "", failed: false, loaded: false }; },
+        template:
+            '<div class="m-markdown" :id="id" @click="onClick">' +
+                '<div v-if="failed" class="m-markdown-plain">{{text}}</div>' +
+                '<div v-else class="m-markdown-body" v-html="html"></div>' +
+            '</div>',
+        computed: { renderKey() { return [this.text || "", this.basePath || "", this.headingPrefix, this.stripTitle || "", this.wikiLinks ? "w" : "", this.resolveLink ? "r" : ""].join("\u0000"); } },
+        watch: { renderKey() { this.render(); } },
+        mounted() { this.render(); },
+        methods: {
+            render() {
+                const text = this.text;
+                loadMarkdown().then(() => {
+                    if (text !== this.text) return;
+                    const md = moqui.markdown;
+                    const out = md.render(root.marked, text, { basePath: this.basePath, resolveLink: this.resolveLink, headingPrefix: this.headingPrefix, stripTitle: this.stripTitle, wikiLinks: this.wikiLinks });
+                    this.failed = false;
+                    this.html = md.sanitize(root.DOMPurify, out.html);
+                    this.$emit("outline", out.outline);
+                    this.$nextTick(() => this.$emit("rendered", this.$el));
+                }, (err) => { console.warn("m-markdown: Marked or DOMPurify did not load", err); this.failed = true; });
+            },
+            scrollTo(id) {
+                const el = this.$el && this.$el.querySelector ? this.$el.querySelector('[id="' + String(id).replace(/["\\]/g, "") + '"]') : null;
+                if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" });
+            },
+            onClick(event) {
+                const anchor = event.target && event.target.closest ? event.target.closest("a[href]") : null;
+                if (!anchor || !this.$el.contains(anchor)) return;
+                if (anchor.hasAttribute("data-md-anchor")) { event.preventDefault(); this.scrollTo(anchor.getAttribute("data-md-anchor")); return; }
+                if (!anchor.hasAttribute("data-md-link") || event.ctrlKey || event.metaKey || event.shiftKey || event.button) return;
+                event.preventDefault();
+                const href = anchor.getAttribute("href");
+                // a host that opens the link itself (a wiki page in place) calls preventDefault on what link gives it
+                const link = { href, event, anchor, prevented: false, preventDefault() { this.prevented = true; } };
+                this.$emit("link", link);
+                if (link.prevented) return;
+                if (this.$root && this.$root.setUrl) this.$root.setUrl(href);
+                else root.location.href = href;
+            }
+        }
     });
 
     /* ========== dashboards ========== */
@@ -3598,7 +5054,8 @@
     component("m-record-files", recordPanel("recordFiles", "mRecordFiles"));
 
     // An avatar (design §19): the face image, else the initials of the name on a color of the name, else a person icon. The
-    // presence dot is drawn only with presence (online, away, dnd, offline; the presence of Comms chat, M10).
+    // presence dot is drawn with presence (online, away, dnd, offline), or for user-id with the presence the chat store has
+    // (moqui.chat, WebrootChat.js), which it asks for.
     moqui.avatar = {
         // the first letters of the first and the last word ("Ada Lovelace" AL, "ada.lovelace@example.com" AL), one for one word
         initials(name) {
@@ -3622,20 +5079,23 @@
     component("m-avatar", {
         name: "mAvatar",
         props: { name: String, image: String, size: { type: String, default: "32px" }, color: String, textColor: { type: String, default: "white" },
-            presence: String, square: Boolean, rounded: Boolean, tooltip: Boolean },
+            presence: String, userId: String, square: Boolean, rounded: Boolean, tooltip: Boolean },
         data() { return { failedImage: "" }; },
         computed: {
+            shownPresence() { return this.presence || (this.userId && moqui.chat ? moqui.chat.presenceOf(this.userId) : ""); },
             showImage() { return !!this.image && this.failedImage !== this.image; },
             initials() { return moqui.avatar.initials(this.name); },
             background() { return this.showImage ? undefined : this.color || moqui.avatar.color(this.name); }
         },
+        watch: { userId(id) { if (id && moqui.chat) moqui.chat.watchUsers([id]); } },
+        mounted() { if (this.userId && !this.presence && moqui.chat) moqui.chat.watchUsers([this.userId]); },
         template:
             '<q-avatar class="m-avatar" :size="size" :color="background" :text-color="showImage ? undefined : textColor" :square="square" :rounded="rounded"' +
                     ' :aria-label="name || undefined">' +
                 '<img v-if="showImage" :src="image" :alt="name || \'\'" @error="failedImage = image">' +
                 '<span v-else-if="initials" class="m-avatar-initials">{{initials}}</span>' +
                 '<q-icon v-else name="sym_o_person"></q-icon>' +
-                '<span v-if="presence" class="m-avatar-presence" :class="\'m-presence-\' + presence" :title="presence"></span>' +
+                '<span v-if="shownPresence" class="m-avatar-presence" :class="\'m-presence-\' + shownPresence" :title="shownPresence"></span>' +
                 '<q-tooltip v-if="tooltip && name">{{name}}</q-tooltip>' +
             '</q-avatar>'
     });
@@ -4630,9 +6090,11 @@
                     if (body && top) body.scrollTop = top;
                 });
             },
+            // a tab's screen refreshes itself when it can (m-dynamic-container.shellRefresh), else it is loaded again
             reload(key) {
                 const container = this.containers[key];
-                if (container && container.reload) container.reload();
+                if (container && container.shellRefresh) container.shellRefresh();
+                else if (container && container.reload) container.reload();
             }
         },
         watch: {
@@ -4769,6 +6231,7 @@
         "        <q-btn v-for=\"counter in headerCounters\" :key=\"counter.key\" flat round dense :id=\"'m-counter-' + counter.key\" :icon=\"counter.icon\"\n" +
         "                :class=\"{'text-primary': counter.tray && trayOpen && (counter.any || trayTab === counter.key)}\" @click=\"counter.tray ? toggleTray(counter.any ? null : counter.key) : setUrl(counter.url)\">\n" +
         "            <q-badge v-if=\"counterCount(counter)\" floating rounded color=\"negative\">{{counterText(counter)}}</q-badge>\n" +
+        "            <span v-if=\"counter.key === 'chat' && myPresence\" class=\"m-avatar-presence m-shell-presence\" :class=\"'m-presence-' + myPresence\"></span>\n" +
         "            <q-tooltip>{{counter.label}}</q-tooltip>\n" +
         "        </q-btn>\n" +
         "\n" +
@@ -4798,13 +6261,18 @@
         "        </q-btn>\n" +
         "\n" +
         // (the screen history is the palette's Recent group)
-        "        <q-btn flat round dense icon=\"account_circle\" id=\"m-account\">\n" +
+        "        <q-btn flat round dense id=\"m-account\">\n" +
+        // the user's avatar with their presence dot (the chat store's, design §1.2)
+        "            <m-avatar :name=\"userFullName || username\" :user-id=\"userId\" size=\"28px\"></m-avatar>\n" +
         "            <q-tooltip>{{userFullName || labels.account}}</q-tooltip>\n" +
         "            <q-menu><q-list style=\"min-width:240px;\">\n" +
         "                <q-item v-if=\"userFullName || username\"><q-item-section>\n" +
         "                    <q-item-label class=\"text-weight-medium\">{{userFullName || username}}</q-item-label><q-item-label v-if=\"userFullName\" caption>{{username}}</q-item-label>\n" +
         "                </q-item-section></q-item>\n" +
         "                <q-separator v-if=\"userFullName || username\"></q-separator>\n" +
+        // the status: online, away, do not disturb, invisible, a status message (WebrootChat.js)
+        "                <m-user-status-menu v-if=\"chatStatus\"></m-user-status-menu>\n" +
+        "                <q-separator v-if=\"chatStatus\"></q-separator>\n" +
         // the account-menu-item providers of the apps (IronStone: Preferences and Account)
         "                <q-item v-for=\"item in accountMenuItems\" :key=\"item.url\" clickable v-close-popup @click=\"setUrl(item.url)\">\n" +
         "                    <q-item-section avatar><m-menu-icon :name=\"item.icon || 'sym_o_chevron_right'\"></m-menu-icon></q-item-section>\n" +
@@ -4871,7 +6339,8 @@
         // the palette, the quick-create dialog and the ? overlay of the keys
         "<m-shell-palette></m-shell-palette>\n" +
         "<m-shell-quick-create></m-shell-quick-create>\n" +
-        "<m-shell-keys></m-shell-keys>\n"
+        "<m-shell-keys></m-shell-keys>\n" +
+        "<m-user-status-dialog v-if=\"chatStatus\"></m-user-status-dialog>\n"
     });
 
     // The text of the suite shell when the page's labels (qapps.xml, localized there) do not have it.
@@ -4901,6 +6370,12 @@
                 quickCreateShow: false, quickCreateUrl: "", quickCreateTitle: "", keysHelpShow: false,
                 shell: Object.assign({ logoUrl: "", title: "", logoutUrl: "/Login/logout", footerHtml: "" }, config.shell), labels: Object.assign({}, qvt.shellLabels, config.labels)
             };
+        },
+        // the page's screen for inject: ["mScreen"] (moqui.urlScreen; a container provides its own): the current path and parameters
+        provide() {
+            const vm = this;
+            return { mScreen: { get url() { const search = vm.currentSearch; return vm.currentPath + (search ? "?" + search : ""); },
+                get path() { return vm.currentPath; }, get parameters() { return vm.currentParameters; }, containerId: null } };
         },
         methods: {
             setUrl(url, bodyParameters, onComplete, pushState = true) {
@@ -5044,7 +6519,8 @@
                 if (this.trayOpen) this.reloadTrayTab(this.trayTab);
             },
             // A message of the notification socket: shellCounts sets the badges and reloads the open tab; todayItems, a chatRoom:
-            // topic, notifications and the apps' notification-topic providers reload their tab.
+            // topic, notifications and the apps' notification-topic providers reload their tab. A chat signal (typing, read) does
+            // not, nor a chat event while a screen listens to the chat store (moqui.chat.trayReloads).
             onShellNotification(jsonObj) {
                 const topic = jsonObj && jsonObj.topic ? String(jsonObj.topic) : "";
                 if (!topic) return;
@@ -5054,7 +6530,7 @@
                     if (moqui.isPlainObject(counts)) this.shellCounts = counts;
                     if (this.trayOpen) this.reloadTrayTab(this.trayTab);
                 } else if (topic === "todayItems") this.reloadTrayTab("today");
-                else if (topic.indexOf("chatRoom:") === 0) this.reloadTrayTab("chat");
+                else if (topic.indexOf("chatRoom:") === 0) { if (!moqui.chat || moqui.chat.trayReloads(jsonObj)) this.reloadTrayTab("chat"); }
                 else if (topic === "notifications" || this.shellNotificationTopics.indexOf(topic) >= 0) this.reloadTrayTab("notifications");
             },
             // a count of shellCounts: a number, or a map's total or count
@@ -5471,6 +6947,9 @@
                 return out;
             },
             paletteKeyHint() { return keymap.isMac ? "⌘K" : "Ctrl K"; },
+            // the chat store (WebrootChat.js), for a signed in user: the status in the account menu and the user's own dot
+            chatStatus() { return !!(moqui.chat && this.userId); },
+            myPresence() { return moqui.chat && this.userId ? moqui.chat.myPresence() : ""; },
             paletteSources() {
                 const out = [];
                 this.shellApps.forEach((app) => ((app.providers && app.providers.paletteSources) || []).forEach((source) => {
@@ -5544,6 +7023,8 @@
                 this.notificationClient.registerListener("ALL");
                 this.notificationClient.registerListener("ALL", this.onShellNotification);
             }
+            // the chat store: presence, status, heartbeat, the chat pushes (WebrootChat.js)
+            if (moqui.chat) moqui.chat.start(this);
             // the suite shell: its data once, its keys, and the counts every 5 minutes while the socket is down
             this.loadShellData();
             this.shellKeysOff = keymap.registerScope("global", this.shellKeyBindings());
@@ -5592,6 +7073,14 @@
         replace(location) { moqui.webrootVue.setUrl(location, null); return Promise.resolve(location); },
         push(location) { moqui.webrootVue.setUrl(location, null); return Promise.resolve(location); }
     });
+
+    // The Quasar plugins of the qapps shell and of the public shell: Notify (moqui.notifyMessages, $q.notify), LoadingBar (the root's
+    // loading count) and Dialog, so a screen can confirm with this.$q.dialog({title, message, cancel: true}).onOk(...).
+    qvt.quasarPlugins = (quasar) => {
+        const plugins = {};
+        ["Notify", "LoadingBar", "Dialog"].forEach((name) => { if (quasar && quasar[name]) plugins[name] = quasar[name]; });
+        return plugins;
+    };
 
     // Start the application: the language pack, the formatter, the components, and the mount on the shell.
     // The render functions of the components, precompiled from their templates into WebrootVue.qvt.render.js (moqui.qvtRenders), which loads
@@ -5647,7 +7136,7 @@
         else options.template = shell.template;
         const app = root.Vue.createApp(options);
         const quasarOptions = { config: Object.assign({ brand: { info: "#1e7b8e" }, notify: { progress: true, closeBtn: "X", position: "top-right" }, loadingBar: { color: "primary", size: "3px", position: "top" } }, config.quasar),
-            plugins: { Notify: root.Quasar.Notify, LoadingBar: root.Quasar.LoadingBar } };
+            plugins: qvt.quasarPlugins(root.Quasar) };
         const langKey = String(config.quasarLang || "enUS").replace(/-([a-zA-Z])/g, (m, ch) => ch.toUpperCase()).replace("-", "");
         if (root.Quasar.Lang && root.Quasar.Lang[langKey]) quasarOptions.lang = root.Quasar.Lang[langKey];
         // Quasar's own icons (select arrows, pagination, expansion) as Material Symbols, outlined (the sym_o_* names; qapps.xml loads the set)

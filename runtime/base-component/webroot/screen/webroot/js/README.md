@@ -39,7 +39,8 @@ browser is the Chromium smoke of Gate 3 (`crates/moqui-host/tests/gate3_browser.
 | `input` | `data-default` | text-line `default-transition`: fills the value from the transition |
 | `span[data-dynamic="fieldId"]` | `data-hidden` | display with `dynamic-transition`: sets `fieldId_display` and the hidden input |
 | `.tree` | `data-url`, `data-params` | fetches nodes (POST, `treeNodeId`, `treeNodeName`), draws a nested list, opens children on click |
-| `.editable` | `data-url`, `data-params`, `data-name`, `data-widget`, `data-load-url`, `data-load-params` | click to edit, save by POST |
+| `.editable` | `data-url`, `data-params`, `data-name`, `data-widget`, `data-load-url`, `data-load-params`, `data-options`, `data-value`, `data-empty` | click to edit, save by POST; `data-widget` `select` (the options, or those `data-load-url` answers), `date` and `date-time` (a date input) |
+| `.status-bar` | `form.status-form` | the `status-bar` element: the stage chips (`data-state`, `data-color`) and a form per transition; nothing to bind beyond `data-confirm` |
 | `ul` | `data-sortable-tree="inputId"` | form-list column picker with SortableJS; the hierarchy goes to the input as JSON |
 | any | `data-btn`, `data-size`, `data-type`, `data-align`, `data-wide`, `data-submit` | style only |
 | `meta[name=moquiSessionToken]` | | the CSRF token, sent as the `X-CSRF-Token` header and `moquiSessionToken` parameter on every request |
@@ -62,12 +63,14 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 | `MoquiL10n.js` | `moqui.l10n`: `format`, `formatCurrency`, `formatCurrencyNoSymbol` and `localize`. A copy of `crates/moqui-lib` `format.rs` and `datefmt.rs`: Java `DecimalFormat` and date pattern subset, HALF_EVEN on decimal text. `MoquiL10n.test.js` runs `crates/moqui-lib/testdata/format-vectors.json`. |
 | `WebrootVue.qvt.js` | the `m-*` components and the application. `moqui.qvt.components` holds the definitions. |
 | `WebrootPublic.qvt.js` | the public shell of the anonymous token routes (`/s/<token>`; `docs/Revision-Management.md`, Token routes): on the page `webroot/PublicShell.xml` makes, with its own settings block `moqui-public-config` (`route {name, basePath, title, renderModes}`, `context`, the locale and the theme's Quasar configuration), it mounts the route's screen (loaded as `basePath.qvt`, `.qvue` or `.qjs`) with the `m-*` components of `WebrootVue.qvt.js`, which loads before it and starts nothing there. The root offers the parts of `m-qapps-root` the components call; a link under the route stays on the page, any other leaves it. |
+| `WebrootChat.js` | `moqui.chat`: the chat store and presence of the shell (below, Chat store and presence), and the account menu's status components, in `moqui.qvtComponents`, which `WebrootVue.qvt.js` registers. Loads before it. Runs under Node. |
 | `MoquiQzComponent.js` | QZ Tray 2.3 printing, loaded after `/libs/qz-tray/qz-tray.js` and only when the user preference `qz.print.enabled` is `true`. |
 | `../css/WebrootVue.qvt.css` | the styles of the shell, the div tables and the widgets |
 
 The tests are `MoquiLib.test.js`, `MoquiL10n.test.js`, `WebrootVue.qvt.test.js`, `WebrootVue.qvt.shell.test.js` (the palette, the key map, the
 screen context's forms and the root's shell data), `WebrootVue.qvt.records.test.js` (the HTML of the rich-text editor, the record panel URL,
-avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer), `WebrootVue.qvt.htmlview.test.js` (m-html-view's cleaning), `WebrootPublic.qvt.test.js` (the public shell's screen load and links) and `WebrootVue.qvt.static.test.js` (the script and package
+avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer), `WebrootVue.qvt.htmlview.test.js` (m-html-view's cleaning), `WebrootVue.qvt.views.test.js` (the board's columns, the calendar's times, events and lanes, and what a move posts), `WebrootVue.qvt.markdown.test.js` (m-markdown on the vendored Marked: heading ids, links, wiki links, tables), `WebrootPublic.qvt.test.js` (the public shell's screen load and links), `WebrootChat.test.js` (the chat store: presence,
+typing, read markers, unread counts, a pushed event merged into a timeline, do not disturb, the status components) and `WebrootVue.qvt.static.test.js` (the script and package
 the server answers for `crates/moqui-core` `testdata/Static/Items` run on the real Vue runtime over a fake DOM; every component template compiles with the vendored
 Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
 browser (mounting, Quasar menus and popups, dialogs, posts, the lazy libraries, static lists) is the Chromium smoke of Gate 3
@@ -77,7 +80,7 @@ browser (mounting, Quasar menus and popups, dialogs, posts, the lazy libraries, 
 
 `/qapps/**` is one HTML page, `includes/WebrootVue.qvt.html.fancy`, made by the pre-actions of `qapps.xml`. The libraries load at the end
 of the body in this order: `vue/vue.global.prod.js`, `quasar/quasar.umd.prod.js`, `quasar/lang/<pack>.umd.prod.js`, `MoquiLib.js`,
-`MoquiL10n.js`, `WebrootVue.qvt.js`. Compiling templates in the browser needs `unsafe-eval` in a content security policy; the page has no
+`MoquiL10n.js`, `WebrootChat.js`, `WebrootVue.qvt.render.js`, `WebrootVue.qvt.js`. Compiling templates in the browser needs `unsafe-eval` in a content security policy; the page has no
 inline script and no inline event handler, and the settings are a data block:
 
 ```html
@@ -118,6 +121,21 @@ screen) with the extra path and query, and gives `callback` a component. It retu
 - A response with `Cache-Control: max-age` is kept by screen path in `moqui.componentCache` (50 entries). A merged response says
   `private, no-store` and is never kept. For a static template the cache holds the means to make a component, and each use makes its own, since
   each use fetches its own data.
+- **The best client mode.** A URL with no extension and no `renderModes` (what `m-dynamic-container` and `m-dynamic-dialog` load: a tray tab,
+  the quick-create dialog, a record panel, a screen's own container) is asked for as `.qvt` with `X-Moqui-Client-Modes: qvue,qjs`; the server
+  renders the first of those the target screen names in its `render-modes` instead, and says which in `X-Moqui-Qvt` (`qvue`, `qjs`), as the
+  router picks `.qvue` from the menu data. So a screen with `render-modes="qvue"` loads as qvue wherever it is loaded, and its theme value or
+  provider names it without `.qvue`; a screen whose modes are `all` or name neither stays qvt; a request without the header gets the mode of its
+  extension (a `.qvt` of a qvue-only screen is not found).
+- **A level is its own screen.** A qvt screen writes `m-subscreens-active` for what is under it and the shell loads each level as its own request,
+  so the server checks the render modes of the screen it renders: a parent whose default subscreens end at a `.qvue`-only screen (an app root
+  whose default is a `.qvue` inbox) renders in qvt, its menu and container, with no `qvt` on the leaf. A request that names the leaf in qvt, or a
+  `lastStandalone` render that starts at it, is checked against the leaf (not found); html renders the levels inline, so there the leaf needs html.
+- **A screen's own path and query: `inject: ["mScreen"]`.** Each `m-dynamic-container` and `m-dynamic-dialog` provides `mScreen` for the screen
+  it loaded, `{url, path, parameters, containerId}` (`path` without the query and the `.qvt`/`.qvue`/`.qjs`, `parameters` the query as an
+  object; `moqui.urlScreen`), and the root provides the page's (`currentPath`, `currentParameters`), as the public shell does for its route. A
+  `.qvue` screen reads its query and builds its transitions' URLs from it wherever it is (`mScreen.path + '/saveTask'`); the members are getters,
+  so a template or a watch on them follows a new load. `$root.currentParameters` stays the page's. The gallery's `QuickTask.qvue` uses it.
 
 ## The components the macros write
 
@@ -165,28 +183,31 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-form-list` | a list drawn by the client from rows it fetches, with sort, pages, selection (the `m-sel` column) and sub rows (see below); the page buttons are written again under a list of more than one page, after the table |
 | `m-form-paginate`, `m-form-go-page`, `m-form-column-config` | page buttons, jump to a page, the column picker |
 | `m-scope`, `m-static-form-list` | written by `ScreenQvtStatic.js` only: a scope over a form-single's map, and the form-list of a server-static screen (see Server-static screens) |
-| `m-text-line`, `m-text-area` | text input. `m-text-area` with `editor-type` `html` is `QEditor`, `md` is a text area with a Marked preview, and `rich` and `rich-light` are `m-rich-text` (with `mention-url` and `mention-parameters`, from the text-area's `mention-transition`) |
+| `m-text-line`, `m-text-area` | text input. `m-text-line` takes `autocomplete` (`off` by default; the `password` widget writes its `autocomplete` attribute, `new-password` unless it says `current-password`, so the browser does not fill the user's sign-in password into an app password or another user's new one). `m-text-area` with `editor-type` `html` is `QEditor`, `md` is a text area with a Marked preview, and `rich` and `rich-light` are `m-rich-text` (with `mention-url` and `mention-parameters`, from the text-area's `mention-transition`) |
 | `m-rich-text` | the Tiptap editor (see Rich text below): the `m-*` model contract (`v-model` or `model-value`, `name`, the change tint and field errors in an `m-form`, a hidden input), `light`, `placeholder`, `rows`, `enter` (`newline`, or `submit`: Enter submits the form and emits `submit`, Shift+Enter is a line break; Ctrl+Enter always submits), `mention-url`, `mention-parameters`, `plain` (`v-model:plain`, the plain-text toggle), `plain-toggle`, `autofocus`, `disable`, `readonly`; emits `mention` with the `{id, label}` picked |
 | `m-drop-down` | `options`, `options-url`, `options-parameters`, `depends-on`, `server-search`, `multiple`, `allow-empty`, `combo`, `submit-on-select`, `options-load-init` |
 | `m-date-time`, `m-date-period` | `QDate` and `QTime` in a popup; period and from-thru. In period mode the field is the base date (`_pdate`) and the period and offset selects (`_period`, `_poffset`) are in the menu of the `event_repeat` button in its append slot, which reads the choice ("Last Month") once made; the `date_range` button switches to from-thru (`_from`, `_thru`) |
 | `m-display` | text or a read-only field (`label-wrapper`), `display`, `value-url` |
 | `m-check`, `m-radio`, `m-file`, `m-field`, `m-text-find`, `m-range-find` | the other widgets |
-| `m-editable` | click to edit, `QPopupEdit`, `url`, `url-parameters`, `parameter-name`, `widget-type`, `load-url` |
+| `m-editable` | click to edit, `QPopupEdit`, `url`, `url-parameters`, `parameter-name`, `widget-type` (`textarea`, `text-line`, `select`, `date`, `date-time`), `load-url`, `options` (a select's `{value, label}` list, from the `option`, `list-options` and `entity-options` of the element; else what `load-url` answers: a list, or a map of key to label with `selected`, `moqui.editableOptions`), `value` (a select's current key; by default the option whose label is the text), `placeholder` (an empty text with `display-if-empty` shows it, so there is something to click). A select shows the chosen option's label after a save; a date edits in `QDate` (and `QTime`) as `yyyy-MM-dd` (`yyyy-MM-dd HH:mm`) |
 | `m-link` | a screen link: `href`, `load-id`, `confirmation`; an external `href` (another scheme or host, `moqui.isExternalLink`) is a plain anchor the browser follows. A `data-confirm` attribute on any button or link is asked first |
 | `m-container-box`, `m-box-body`, `m-container-dialog`, `m-dialog` | boxes and dialogs. `m-container-dialog` (`container-dialog`) registers with the root by its `id` while mounted (`addContainer`, taken back with `removeContainer` when unmounted), so a form's `background-hide-id` (`submit-hide-id`) and `$root.hideContainer(id)` close it; its `reload` and `load` do nothing (the content is the page's). `tooltip` (the `container-dialog` attribute) is a `q-tooltip` on its button, the slot button of a list cell too |
-| `m-dynamic-container`, `m-dynamic-dialog` | a screen loaded into a container, or a dialog, with `load`, `reload` and `hide`; the dialog's button takes `button-text`, `button-class`, `color` and `button-icon` (default `open_in_new`), as `m-container-dialog` does |
+| `m-dynamic-container`, `m-dynamic-dialog` | a screen loaded into a container, or a dialog, with `load`, `reload` and `hide`, in the screen's best client mode (Loading a screen); each provides `mScreen` (the loaded screen's `url`, `path` and `parameters`) to the screen; the container's `shellRefresh()` calls the screen's own `shellRefresh()` when it has one, else reloads; the dialog's button takes `button-text`, `button-class`, `color` and `button-icon` (default `open_in_new`), as `m-container-dialog` does |
 | `m-tree-top`, `m-tree-item` | tree: `items` is the node list or its URL (`<screen>/actions/<tree>`, posted `treeNodeId`, `treeNodeName`, `treeOpenPath`). A node's `children` is a list when it came inline (on `open-path`), `true` to load from the URL when the node is opened, `false` for a leaf |
 | `m-subscreens-tabs` (also `m-subscreens-menu`), `m-subscreens-active`, `m-subscreens-panel` | the subscreen menu and the place of the active subscreen |
-| `m-subscreens-wizard` | `subscreens-panel type="wizard"`: a header-only `q-stepper` with a step per subscreen of the menu data (titles, menu order; a done step's header goes back to it), the `m-subscreens-active` below it, and Back and Next (`finish-text` on the last step); `id`, `finish-text`, `next-text`, `back-text`. It provides `mWizard` to the step's forms (see Layout panels below) |
+| `m-subscreens-wizard` | `subscreens-panel type="wizard"`: a header-only `q-stepper` with a step per subscreen of the menu data (titles, menu order; a done step's header goes back to it), the `m-subscreens-active` below it, and Back and Next (`finish-text` on the last step); `id`, `finish-text`, `next-text`, `back-text`. It provides `mWizard` to the step's forms; while the step form posts a spinner covers the step (see Layout panels below) |
 | `m-subscreens-stack` | `subscreens-panel type="stack"`: the first subscreen in menu order under the others, with a `q-breadcrumbs` back to it when another is active; no tabs |
-| `m-container-split` | `container-split`: a `q-splitter` of the `side` and `main` slots; `id`, `side-width` (320), `min-main` (480), `side-position` (`left`, `right`), `select-parameter`, `back-text`, `height` (see Layout panels below) |
+| `m-container-split` | `container-split`: a `q-splitter` of the `side` and `main` slots; `id`, `side-width` (320), `min-main` (480), `side-position` (`left`, `right`), `select-parameter`, `back-text`, `height` (by default the viewport below the split, so each pane scrolls in itself; see Layout panels below) |
 | `m-menu-nav-item`, `m-menu-subscreen-item`, `m-menu-item-content`, `m-menu-icon` | the navigation of the shell; `m-menu-icon` is a menu image of type icon (`name`, `size`) |
 | `m-screen-context` | the `context` element: while mounted it registers `recordEntity`, `recordId`, `title` and `selectionForm` with the root (`setScreenContext`), again when one changes, and takes them back when unmounted (see Shell data and providers) |
+| `m-status-bar` | the `status-bar` element (style-guide §3.3, §5.2): `bar` (what `org.moqui.impl.StatusServices.get#StatusBar` answers: `current`, `stages` with `state` done, current or todo and `color`, `transitions` with `isNext` and `isDanger`), else `status-id`, `status-type-id`, `status-flow-id`, `stages` and `allowed-status-ids` (lists or comma text) and `read-only`, which it asks of `bar-url` (`/statusBar`, the root screen's transition) and again when one changes, as a server-static screen does; `action` (the transition), `parameters`, `parameter-name` (`statusId`), `title`, `confirm` (true). A stage is a `q-chip dense square`: the current one filled in its color, a done one `m-tonal` with a check, one to come outlined; a transition is a button in an `m-form` of its own posting `action` with the new status: the next stage filled primary, the others tonal (negative for those that end badly), each asking "Label: title?" (`moqui.statusBarView`) |
 | `m-number-card` | the `number-card` element: a `q-card flat bordered` with the `title` as `text-overline`, the `value` (`text-h5`; `size` `sm` is `text-h6`, `lg` `text-h4`), the `delta` with an arrow, green or red by its sign against `delta-good` (`up`, the default, or `down`; no sign is muted: `moqui.numberCardDelta`), and the `icon`; with `href` the whole card is an `m-link` (`external`: a plain anchor). The `dashboard` element around cards is no component: a `div.m-dashboard` CSS grid, columns of at least its `min-width` (`--m-dashboard-min`, 200 px), each child in a `div.m-dashboard-item` (an empty one hidden, a `section-iterate`'s rows each a cell) |
 | `m-chatter`, `m-record-files` | the `chatter` and `record-files` elements: `record-entity`, `record-id`, `default-tab`, `hide`, `id` (of the `m-dynamic-container` the panel loads into, for `submit-reload-id`). See Record panels below |
-| `m-avatar` | a `q-avatar`: `image` (a face image URL; initials when it does not load), else the initials of `name` on a color of the name (`moqui.avatar`), else a person icon; `size` (32px), `color`, `text-color`, `square`, `rounded`, `tooltip` (the name); `presence` (`online`, `away`, `dnd`, `offline`) draws a dot, nothing without it |
+| `m-avatar` | a `q-avatar`: `image` (a face image URL; initials when it does not load), else the initials of `name` on a color of the name (`moqui.avatar`), else a person icon; `size` (32px), `color`, `text-color`, `square`, `rounded`, `tooltip` (the name); `presence` (`online`, `away`, `dnd`, `offline`) draws a dot, and `user-id` the dot of that user's presence from the chat store (asked for once mounted), nothing without either |
 | `m-record-card` | a compact card of a record: `record-entity`, `record-id`, and `card-url` (asked once per page for each record, GET with `recordEntity` and `recordId` and `card-parameters`) or `card` (the JSON itself); `dense`. See Record cards below |
 | `m-html-view` | an email or other untrusted HTML body in a frame sandboxed without scripts: `html` (or `text`, a text/plain body), `allow-remote` (a trusted sender: remote images at once), `cid-map` (`{contentId: url}` of the inline images), `collapse-quotes` (true), `images-bar` (true: the "Show images" bar), `dark` (`auto`, `on`, `off`), `title`; emits `remote-images` (how many were hidden), `show-images` (the bar's button was pressed), `loaded` (`{height, blocked}`). In XML the `html-view` element. See Email bodies below |
+| `m-list-views` | the views of a form-list (`views`, `view-board`, `view-calendar`): the list in the default slot and its board or calendar over the same rows. `rows` (the page's rows: the fields the views read as plain values, with `{field}_display` text), `board` and `calendar` (the settings below), `views`, `view`, `form-location` (the key of the `LIST_VIEW_` preference), `reload` (an m-static-form-list's fetch), `info-url` (`/listViewColumns`); a card is the `card_{index}` slot, else the `card` slot with `{index, row}`. See List views below |
+| `m-markdown` | markdown text as HTML: Marked (GitHub flavored) and DOMPurify, loaded on first use; `text`, `base-path` (a relative link is resolved from it), `resolve-link` (a function `(href, {kind, text, image})` that answers a new href, `{href, missing, title, className, external}`, or nothing for the default), `heading-prefix` (`md-`: each heading's id is the prefix and its words, made unique), `strip-title` (a first h1 with this text is left out), `wiki-links` (`[[path]]` and `[[path\|text]]` are `wiki:path` links, for the resolver); emits `outline` (`[{id, level, text}]`), `rendered` (the element) and `link` (`{href, event, anchor, preventDefault()}`, before an application link is followed; `preventDefault()` leaves it to the host, as a wiki opens a page in place). A link to another site opens in a new tab with `noopener noreferrer`, an application path goes through `setUrl` (Ctrl or Cmd: a new tab), `#id` scrolls to the heading; tables are in a `q-table` container as wide as the table (at most the text, where a wider one scrolls) and tables and code blocks take their tint from the text color, so both read in dark mode. In XML the `markdown-view` element (html and the text modes: the text as it is). The pure part is `moqui.markdown` (`render(marked, text, options)`, `sanitize`, `expandWikiLinks`, `slug`, `resolve`) |
 | `m-chart`, `m-mermaid` | Chart.js 4 and Mermaid 11, loaded on first use. `m-chart` takes `config`; `m-mermaid` takes the diagram in its `text` attribute (the compiler condenses the line breaks of slot content), `height` and `config` |
 | `m-script`, `m-stylesheet` | `<script>` and `<link>` of a screen's text |
 
@@ -200,7 +221,14 @@ The shell is a `q-layout` with a `q-header` (menu button, the launcher, the curr
 the `+` menu, the Today, Chat, Inbox and Notifications buttons, the documentation, the notify history when there is no Notifications tab, and
 the account menu: see Shell data and providers), a `q-drawer` with the screen menu (`QUASAR_LEFT_OPEN`; an overlay below 1024px), the page, and a `q-footer` with the
 theme's footer items. The `LoadingBar` plugin runs while the root's `loading` count is above zero. `config.quasar` (brand, notify, loadingBar) is the
-JSON of the theme's `STRT_QUASAR_CONFIG` resource, merged over the defaults.
+JSON of the theme's `STRT_QUASAR_CONFIG` resource, merged over the defaults. Quasar's `Notify`, `LoadingBar` and `Dialog` plugins are installed in
+the `/qapps` shell and in the public shell (`qvt.quasarPlugins`), so a `.qvue` screen confirms with
+`this.$q.dialog({title, message, cancel: true, persistent: true}).onOk(() => ...)` rather than `window.confirm` (`data-confirm` on a button stays
+the synchronous confirm).
+
+**Menus anchored to hidden elements.** A `q-menu` (or `q-popup-proxy`) whose target is an element with `visibility: hidden` does not open in
+Chrome: an anchor revealed on hover (a row's actions) is hidden with `opacity: 0` (and `pointer-events: none` until shown), not `visibility`.
+No `m-*` component anchors a menu that way.
 The shell gives Quasar a stand-in for `vue-router` (`$router.resolve`, `push`, `replace`, and `$route`), so `q-btn to="..."` and `q-item to="..."` navigate with `setUrl`.
 `moqui.webrootVue` is the root: `setUrl(url, bodyParameters)`, `setParameters(obj)`, `reloadContainer(id)`, `loadContainer(id, url)`,
 `hideContainer(id)`, `addNotify`, `getLinkPath`, the screen context: `setScreenContext(key, value)`, `removeScreenContext(key)`,
@@ -300,6 +328,13 @@ entity filters, so it shows only what the user may see. `example.ExampleServices
 two seconds: requests inside that window fold into one send at its end. Inside a transaction the request waits for the commit, and the
 sends are made on a server thread, so the caller never waits for the counts. The EECAs and SECAs on the records the counts read call it.
 
+**The `emailSyncProgress` topic.** While `org.moqui.impl.EmailClientServices.sync#EmailAccount` fetches mail it sends the account's owner
+and members a NotificationMessage on the topic `emailSyncProgress` (not persisted, `showAlert` false), at most one a second and one when
+it ends, whose `message` is `{emailAccountId, done, folderCount, foldersDone, folderName, folderPath, folderKept, folderFetched,
+folderToFetch, folderPending, fetched, toFetch, pending}`, with `outcome`, `message` and `newCount` when `done`. A screen listens with
+`moqui.webrootVue.notificationClient.registerListener('emailSyncProgress', fn)` and shows, for a first sync, "Syncing {folderKept +
+folderFetched} of {folderKept + folderPending}". A sync with nothing to fetch sends nothing.
+
 **`GET /shellCounts`** (read-only, 401 without a user): `{counts}`, what `get#ShellCounts` answers for the current user (null without a counts
 service). The shell asks it every five minutes while the notification socket is down.
 
@@ -362,7 +397,8 @@ latest counts). The header, left to right (IronStone style-guide §2.2, design �
   title gives way to the launcher, so a phone header holds menu, launcher, Search, `+`, the tray, Mail, the theme plugins and the account. Badges are `shellCounts.today`, `chat`,
   `email`, `messages` and `notifications` (a number, or a map's `total`); `updates` has no badge. Without a Notifications tab the
   notify-history menu stays. The screen history is the palette's Recent.
-- **Account menu**: the `accountMenuItems` of every app after the user's name. The right `q-drawer` slot stays free for Assist (R1).
+- **Account menu**: the user's avatar with their presence dot as its button; in the menu, the status (`m-user-status-menu`, below) after the user's
+  name, then the `accountMenuItems` of every app. The Chat button has the user's own dot too. The right `q-drawer` slot stays free for Assist (R1).
 
 **Tray** (`m-shell-tray`, id `m-tray`): a `q-page-sticky` at the right of the canvas, inside the `q-page-container`, 400 px from 600 px and the
 full width below, over the screen. A tab per tray screen of the theme; each is an `m-dynamic-container` of its link (as `/apps/...`) mounted on
@@ -370,7 +406,10 @@ its first opening and then kept, so its state lasts across navigation. The root 
 `sessionStorage`, for a reload). Esc and the close button close it. On the notification socket, `shellCounts` sets the badges and reloads the
 open tab; `todayItems` reloads Today, a `chatRoom:` topic Chat, and `notifications` or an app's `notification-topic` Notifications. A reload keeps
 the tab's content until the new one is there (`m-dynamic-container.reload`). While the socket is down the counts are fetched every five
-minutes (`/shellCounts`) and the open tab reloaded.
+minutes (`/shellCounts`) and the open tab reloaded. **A tab's screen that refreshes itself**: when the component the tab loaded has a
+`shellRefresh()` method, the tray calls it instead of mounting the screen again (`m-dynamic-container.shellRefresh`), so what it shows stays (an
+open chat room, a half-typed text); a `.qvue` tray screen that listens to the chat store refreshes its lists there. A tab's screen loads in its
+best client mode, so a `STRT_TRAY_*` value names a `.qvue` screen without the extension.
 
 **Palette** (`m-shell-palette`, id `m-palette`): a `q-dialog` at the top, Ctrl+K or Cmd+K anywhere but in a rich-text editor (which keeps
 Ctrl+K). Groups (`moqui.shellPalette.groups`): Recent (the screens of this page before the current one) before any text; then Screens (the
@@ -503,6 +542,41 @@ template text, so nothing in a message is compiled; a server-static screen binds
 HTML on the server (`StringUtilities.cleanHtml`, the safe set without styles) into a frame sandboxed without scripts that loads
 no image but `data:`; the text and print modes write the text (or the HTML's text).
 
+## List views: board and calendar
+
+style-guide §3.6, §3.7 and §8.2: `<form-list views="board,list,calendar">` with a `view-board` and a `view-calendar` (xml-form-3.xsd)
+is an `m-list-views` around the list. The views are a client switch over the rows of the list's page (a calendar with `range-find` asks for the rows of its dates, below), so a filter of Find Options or the
+head, a sort, a saved find, another page or page size change what each shows; the list's nav row (and a head with find fields) stays
+above the board and calendar, its rows are hidden. The switch (`q-btn-toggle`, list, board and calendar icons) is above the list; the view
+is the URL's `view` parameter, else the one chosen for the form in this tab, else the user's `LIST_VIEW_{screen path}#{form}` preference
+(set through `$root.setPreference` on a switch), else the first of `views`. Back to the list after a move, the screen is loaded again
+(`reloadContainer` of the screen's container, else `reloadSubscreens`; an m-static-form-list fetches its rows), so the list has what changed.
+
+| `board` | |
+|---|---|
+| `groupField`, `titleField`, `sumField`, `sumFormat` | the column of a row, its card's title for the default card, and the sum in each column's head (`#,##0.##`) |
+| `columns`, `flow` | the known columns in order (`{value, label, color}`) and where a status may go (`{statusId: [toStatusId]}`); the server-merged macros write them from `org.moqui.impl.StatusServices.get#ListViewColumns` (every status of the type in sequence order, with the status color map's colors, then the other values with the description of the status or enumeration they are), a server-static list asks the root screen's `listViewColumns` transition for them with the values its rows have |
+| `columnOrder`, `statusTypeId`, `statusFlowId` | the columns given (each shown even with no card; a value of a row outside them is a column after them, labelled as the server sent it, a status by its description), the status type when the rows may not have every status, and the status flow of the drag hints (`status-flow-id`, Default when not given; the transition still checks the record's own flow) |
+| `transition`, `parameters`, `keyFields`, `parameterName` | a card dropped in another column posts `transition` with `parameters` (the transition's and the list's `hidden-parameters`), the row's key fields and the new value as `parameterName` (else `groupField`); a refusal (errors in the answer, or a failed request) puts it back and shows the message. While a card is dragged the columns its status may go to (`flow`) are outlined and the others dimmed |
+
+The cards move with SortableJS (`libs/sortablejs`, loaded when the board is first shown) in its fallback mode, so a mouse, a pen and a
+touch (after a short press) drag the same way and the page keeps its vertical scroll; within a column the order is the list's. A click on a
+card follows the first link of its title (the title field's cell, as the list writes it), unless it was on a control of the card (a link, a button, a field, an in-place edit `m-editable`, a clickable chip, anything with a button-like role or `data-card-control`: `moqui.listViews.onControl`). Columns scroll
+sideways, 82% of the width each on a phone.
+
+| `calendar` | |
+|---|---|
+| `startField`, `endField`, `allDayField`, `titleField`, `colorField`, `colors`, `resourceField`, `resources` | an event from a row: a time stamp (epoch millis, as the server sends one) in the user's time zone, a date (`yyyy-MM-dd`) as a whole day, `Y` in the all-day field as whole days (a time stamp end at midnight is the day after the last); no end is an hour. `colors` is `color-map` (and the status colors of a status field), else a brand color by the value's hash (`moqui.listViews.colorOf`). `resources` (`{value, label}`) adds to the rows' |
+| `modes` | `month`, `week`, `day`, `list` (agenda), the first shown first; on a phone day and list. The mode and day are kept for the form in this tab |
+| `transition`, `parameters`, `keyFields` | a drag moves an event (15 minutes in the week and day grid, by days in the month and the all-day row), its lower edge resizes it; the transition is posted with the key fields, the new start and end (epoch millis, or a date for a date-only value; a date-only end is the last day) and, in the day mode with a resource field, the new resource. A refusal puts it back |
+| `createTransition`, `createParameters`, `createScreen` | a click or drag on empty time (a day in the month) opens the quick create: `createScreen` in the dialog with the start and end (`yyyy-MM-dd HH:mm`, the user's zone) and resource as parameters, else a form posting `createTransition` with the title, start, end, all day and resource |
+| `rangeFind`, `rangeUrl`, `listName` | `range-find="true"`: the calendar shows the rows of the dates it shows, not the list's page, so a calendar list needs no large page size. As its dates change (and when the list changes) it asks `rangeUrl`, the screen's form request (`{screen}/actions/{form}`), for the list's find with the range added and no paging (`moqui.listViews.rangeFinds`: with an end field, what overlaps the dates, `{start}_thru` and `{end}_from`, and what starts in them, for an event with no end; a day wider on each side; epoch millis; `pageNoLimit=true`), with the screen's other parameters (the list's filters), and takes the rows of `listName` from each answer, each once (`rangeItems`: a row on the list's page keeps its `card_{index}` slot, another shows the `card` slot or its title). The last answer asked for wins; until it comes, or when it fails, the page's rows show. The list and the board keep the list's page |
+
+A click on an event opens its card (the same `card_{index}` slot) in a menu by it. The day mode with a resource field has a column for
+each resource. Times are wall clock in the user's zone (`moqui.listViews.wall` and `millis` over `Intl.DateTimeFormat`), as UTC day
+numbers and minutes, so the browser's own zone never counts. The pure part is `moqui.listViews` (`views`, `boardColumns`, `events`,
+`layoutDay`, `monthWeeks`, `moveParams`, `parseTime`, `timeOut`, `onControl`, `visibleDays`, `rangeFinds`, `rangeItems`).
+
 ## Layout panels: split, wizard and stack
 
 **`m-container-split`** (style-guide §3.8). From 1024 px (`$q.screen.gt.sm`) a `q-splitter` with `unit="px"`: the side at
@@ -513,7 +587,10 @@ container feeds). A dragged width is kept in `sessionStorage` (`moqui.SPLIT_WIDT
 splitter is stacked by the style sheet (`m-split-stacked`), so the panes keep their content: with a `select-parameter`, a value of
 that parameter in `$root.currentParameters` shows the main pane with a back button (it goes to the screen without the parameter)
 and none shows the side; without one both panes show, the side first. The selection is read in the browser, so a server-static
-screen uses it as it is. `data-stacked` on the element says which layout is shown.
+screen uses it as it is. `data-stacked` on the element says which layout is shown. Side by side, the splitter is as high as the
+`height` attribute, else the viewport below the split's top (less 16 px, at least 360 px; `moqui.splitHeight`, measured on mount,
+on a resize of the window and of the container), so a long side list scrolls in its own pane and the page does not; stacked, the
+page scrolls.
 
 **`m-subscreens-wizard`** and the step protocol (style-guide §3.10). The steps are the subscreens of the wizard's screen in
 the menu data (`navMenuList[pathIndex].subscreens`, the index read before its `m-subscreens-active` registers), so the current
@@ -532,11 +609,110 @@ transition, and normally has no submit button of its own (one it has does the sa
    is followed when it names a screen and stays when it does not. A step form's answer adds no "Submit successful" toast.
 3. Back, and the header of a done step, go to that step without submitting; a step shows what it saved before, so a wizard that
    can be abandoned keeps a draft (a record, or the session as the gallery's does).
+4. While the step form posts (by Next, by Enter or by a submit button of its own: the form tells the wizard, `stepSubmitting`) a
+   `q-inner-loading` spinner covers the step and Back and Next wait; it stays until the answer says to stay, or the screen it goes
+   to (the next step, or the last step's own result) is there (`setUrl`'s completion), so a long last step (an import, a run)
+   shows that it is working.
 
 **`m-subscreens-stack`**: the first subscreen in menu order is the bottom of the stack; any other active one shows a breadcrumb
 back to it. The html mode writes the wizard's steps as a numbered list of links with Back and Next links, and the stack's
 breadcrumb (`moqui-html.css` `.wizard`, `.stack-crumbs`); a split is two columns (`.split`) stacked below 1024 px with
 `data-selected` and a back link.
+
+## Chat store and presence
+
+IronStone impl-drawers-commons M10 (design-drawers-commons §1.8, §13): `WebrootChat.js` is `moqui.chat`, the page's store over the
+notification socket, started by the shell root once mounted for a signed-in user. The server side is `org.moqui.impl.ChatServices`
+(`framework/service/org/moqui/impl/ChatServices.xml`, which describes the rooms, the access rules and the pushes); BOSS's Chat screens use
+the store for the live parts and their own transitions over those services for the rest.
+
+**The pushes** are NotificationMessages that are not persisted and show no alert, routed by the socket to their users only:
+
+```
+chatRoom:<chatRoomId>  {kind: 'event', chatRoomId, eventSeq, event}           // to the room's members: a new event, as get#Timeline lists one
+                       {kind: 'typing', chatRoomId, userId, typing}            // to the other members (signal#Typing; nothing stored)
+                       {kind: 'read', chatRoomId, userId, lastReadEventSeq}    // a member's read marker (read receipts)
+chatUser:<userId>      {kind: 'room', action: 'joined'|'left'|'changed'|'role'|'settings', chatRoomId}
+                       {kind: 'read', chatRoomId, lastReadEventSeq} | {kind: 'read', all: true}   // read in another tab
+userStatus             {userId, presence, statusText, emoji, clearAtDate, inCall}   // to the user's room members; self and status to the user
+```
+
+`presence` is `online`, `away`, `dnd` or `offline` (an invisible user is offline to others). The shell's own `shellCounts` topic carries the
+header's Chat badge (`counts.chat`, the app's counts service adding `get#UnreadCounts`).
+
+**The store** (`moqui.chat`; its `state` is a Vue reactive object):
+
+| | |
+|---|---|
+| `state` | `me` (the user's status: `status` as chosen, `presence`, `statusText`, `emoji`, `clearAtDate`, `autoAwayMinutes`), `presence` (userId to `{presence, statusText, emoji, clearAtDate, inCall}`), `unread` (chatRoomId to `{unread, mentions}`), `typing` (chatRoomId to userId to the time it ends), `reads` (chatRoomId to userId to lastReadEventSeq), `openRooms` |
+| `on(kind, fn)` | a listener of `event`, `typing`, `read`, `room` or `presence`; returns the function that removes it. While a screen listens to `event` or `room`, a chat push no longer reloads the tray's Chat tab (`trayReloads`); a typing or read signal never does |
+| `openRoom(id)`, `closeRoom(id)` | a room shown now: its events do not count as unread, and the socket is told of its topic |
+| `typing(id, false?)` | tell the room the user is typing, at most every 3 seconds, and once when it stops; `typingIn(id)` the users typing there |
+| `presenceOf(userId)`, `statusOf(userId)` | the dot (`""` while not known) and the status; `watchUsers(ids)` asks for them, the asks of the moment in one request, each user once in five minutes |
+| `myPresence()`, `quiet()` | the user's own dot (invisible is grey) and do not disturb: while it is on the page's toasts are off (`notificationClient.disableDisplay()`) and a screen plays no chat sound; the notifications are still recorded and counted |
+| `setStatus({status, statusText, emoji, clearAt, clearStatus})` | `clearAt` is minutes, `today` or `week` (the end of today or of Sunday, in the browser's zone) |
+| `applyEvent(list, event, me, threadRoot)` | merge a pushed event into a timeline list as `get#Timeline` answers it: a message added in its place once (a thread reply counts on its root unless the list is that thread), an edit, a reaction, a redaction (of a message or a reaction) and a pin applied |
+| `reduce(state, jsonObj, me, now)` | the socket message on a state (pure; the store's listener) |
+
+**Auto-away.** The store notes the user's input (keys, pointer, wheel, touch, focus, the tab coming back) and posts a heartbeat every minute
+with the seconds since the last input; the server sets away after the user's `CHAT_AUTO_AWAY_MINUTES` preference (10 by default) and
+offline 3 minutes after the last heartbeat (`expire#UserStatuses`, each minute, publishes those changes and clears a status at its clear-at
+time). Input after an idle beat past the auto-away minutes beats at once, so the others see the user back.
+
+**The webroot transitions** of the store, each as the current user (401 without one): `GET /userStatus` `{myStatus}`, `POST /setUserStatus`
+(`status`, `statusText`, `emoji`, `clearAtDate` in epoch millis, `clearAfterMinutes`, `clearStatus`), `POST /userStatusHeartbeat`
+(`idleSeconds`), `GET /userStatuses?userIds=a,b` `{statusMap}`, `POST /chatTyping` (`chatRoomId`, `typing`) and `GET /chatUnread`
+`{total, unread, mentions, roomCounts}`.
+
+**The account menu's status**: `m-user-status-menu` (the current status and its message, the four statuses, "Set a status message", "Clear status
+message") and `m-user-status-dialog` (emoji, text up to 100 characters, clear after: don't clear, 30 minutes, 1 hour, 4 hours, today, this
+week), outside the menu so it outlives it. The dialog lists the user's status presets above the fields (`moqui.chat.statusPresets`): the
+preference `CHAT_STATUS_PRESETS` (a JSON list of `{emoji, text, clearAfter}`, `clearAfter` minutes, `today`, `week` or `0` for never; a chat
+settings screen keeps it, BOSS's ChatSettings does) from `config.preferences`, else five defaults (`moqui.chat.defaultPresets`, localized); a
+preset fills the fields and Save sets it.
+
+**Chat preferences the server reads** (`ChatServices.xml`): `CHAT_NOTIFY_DEFAULT` (`all`, `mentions` or `none`) is the notification level a
+membership starts at, in `create#Room` and `add#Member` (not in a direct room, whose messages always count); `CHAT_NOTIFY_PREVIEW` `N` leaves
+the message text out of the user's `ChatMention` notifications (no `summary`, and the title is who mentioned them where).
+
+## Notification listeners
+
+The shell root's `notificationClient` (`moqui.NotificationClient` of `MoquiLib.js`; null when no notification endpoint is
+configured) is the page's one notification WebSocket. A screen listens to a topic and stops when it unmounts:
+
+```js
+mounted() {
+    const client = this.$root.notificationClient;
+    this.stopListening = client ? client.registerListener("emailSyncProgress", (message) => this.onProgress(message)) : null;
+},
+unmounted() { if (this.stopListening) this.stopListening(); },
+```
+
+| Method | |
+|---|---|
+| `registerListener(topic, callback)` | `callback(message, client)` for each message of the topic (`ALL`: every message); no callback is the alert display. The first listener of a topic subscribes the socket to it (and opens the socket). Returns a function that unregisters this listener |
+| `unregisterListener(topic, callback)` | Removes that listener (the same function; none is the alert display): true when it was there. With the topic's last listener gone the socket sends `unsubscribe:<topic>`, and a reconnect no longer asks for it |
+| `disableDisplay()`, `enableDisplay()` | Alerts off and on (do not disturb); the listeners still get every message |
+
+A listener may unregister itself, or another, while it is called: the other listeners of that message still get it.
+
+## Mail sign-in popup
+
+`moqui.oauthPopup(start, status, options)` (`MoquiLib.js`; `docs/Mail-OAuth.md`) runs a mail account's sign-in with Google or Microsoft in a
+popup. Call it in the click handler, so the window opens before any request and no popup blocker stops it; `start()` is the app's request
+to `EmailClientServices.start#OAuthSignIn` (a promise of `{authUrl, signInId}`), `status(signInId)` its request to `get#OAuthStatus`. The
+callback page (`/emailOAuth/callback`) posts `{type: 'moqui-email-oauth', signInId, status, errorCode, message, emailAccountId, emailAddress,
+expectedAddress}` to its opener on this page's own origin and on the BroadcastChannel `moqui-email-oauth` (a provider page may cut
+`window.opener`); the helper takes it only from that origin and that window (or the channel) and for its own `signInId`. While the sign-in
+runs `status` is asked every `statusPollMs` (2 seconds), and at once when the window closes; the first answer that is not `pending` ends
+the wait, so a message that never comes does not leave the page waiting. A window cut off from the page (Google's sets
+Cross-Origin-Opener-Policy, so it reads as closed at once) is waited for `cutOffWaitMs` at most (3 minutes; `maxWaitMs` is the older name),
+then the result is `cancelled` with `errorCode` `timedOut` and the window is closed. It resolves with `status` `success`, `error`
+(`errorCode` as `complete#OAuthSignIn`, and `popupBlocked`, `startFailed`) or `cancelled` (`cancelled`, `closed`, `timedOut`); no token
+reaches the page. The promise it returns has `cancel()`, which closes the window and resolves it `cancelled`, as an aborted `signal` does
+(a promise made from it by `then` has no `cancel`). On `addressMismatch` the app asks the user, then starts again with `allowAddressChange`.
+Options: `width`, `height`, `pollMs` (the check of the window), `statusPollMs`, `closedWaitMs`, `cutOffMs`, `cutOffWaitMs`, `signal` (an
+AbortSignal that cancels).
 
 ## Server-static screens
 
@@ -559,7 +735,16 @@ screen package, `private, no-store`) and shows the render function over it.
   date or time from the pattern for a string; epoch millis text is a time stamp with any date pattern, and with no pattern, as `ec.l10n.format`
   on the server), `merge`, `url` / `qs` (path and query from a parameter map), `link` (the url a `${}` expression of a link or number-card gave:
   a relative path resolved against the screen's own path, as the server render resolves a link's url; an absolute path or an external URL as
-  it is), `shown` (`visible-when`).
+  it is), `shown` (`visible-when`), `btnKind` and `btnText` (the color and classes of a link or menu button whose `btn-type` is an expression, as
+  `ScreenQvt.js` writes them), `cols` (the classes of a `row-col` whose sizes are expressions).
+- **Mobile columns.** The template is the same for every request, so a form-list with `columns type="mobile"` holds a list for each column set,
+  `<template v-if="_uiType === 'mobile'">` and the default under `v-else`: the client shows the one of the `_uiType` its request carries
+  (`moqui.loadComponent` sends `mobile` below 600 px, and the screen package has the parameter), as the merged render picks it on the server.
+- **An editable select's lookups.** The options of an `editable` select's `list-options` and `entity-options` are in the package by its id
+  (`mqOpt_editable_{id}`; a form-single's in its `mqExtra_{form}`), and the template adds them to its `option` elements. It needs a plain id, and
+  not in a form-list row (the report notes `editable-options` there).
+- **`m-static-form-list`** takes `views`, `board`, `calendar` and `views-location` as m-list-views does, and a `card` slot over the row's scope, and puts
+  its table in an m-list-views over the rows it fetched (its fetch is the views' reload).
 - **`m-static-form-list`** fetches `<path>/actions/<name>` with the request's parameters and the page and sort it has changed (`setPageIndex`, `sortBy`,
   `orderBy`), draws `m-form-paginate` and `m-form-go-page`, the `header` slot (`sortBy`, `orderBy`, `action`, `orderByField`) and the `row` slot once for each row with
   the row on the scope of the screen (`rowIndex` is a name of it). The rows of each answer are new components (an `m-form` copies its

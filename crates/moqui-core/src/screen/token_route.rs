@@ -26,6 +26,9 @@
 //!   mounts the named screen.
 //! - `/<name>/<token>.qvt` (or `.qvue`, `.qjs`): the named screen itself in that render mode, which the shell loads.
 //! - `/<name>/<token>/<path>`: a transition, subscreen or file below the named screen.
+//! - A `POST` to `/<name>/<token>` itself, when the route has a `post-transition`: that transition of the named screen,
+//!   as a `POST` to `/<name>/<token>/<transition>` would run it (an RFC 8058 one-click unsubscribe posts to the
+//!   `List-Unsubscribe` URL, which is the page's). Without it a `POST` there is the shell page, as a `GET` is.
 //!
 //! The token service runs first, before anything else of the request: it gets `token` and `routeName` and answers
 //! `valid` and `routeContext` (a map). A token it does not accept gets a short "link expired or not found" page (404),
@@ -52,6 +55,8 @@ pub struct TokenRoute {
     pub screen_location: String,
     pub token_service: String,
     pub title: Option<String>,
+    /// The transition of the named screen a `POST` to `/<name>/<token>` runs, after the token check.
+    pub post_transition: Option<String>,
 }
 
 /// What a path under a route asks for.
@@ -107,12 +112,21 @@ fn routes(factory: &ExecutionContextFactory) -> Arc<Routes> {
                     tracing::error!(route = %name, "token-route name is a framework path; left out");
                     continue;
                 }
+                let post_transition = text("post-transition");
+                if post_transition
+                    .as_deref()
+                    .is_some_and(|transition| transition.contains('/') || transition.contains('.'))
+                {
+                    tracing::error!(route = %name, "token-route post-transition is a transition name, not a path; left out");
+                    continue;
+                }
                 found.retain(|route: &TokenRoute| route.name != name);
                 found.push(TokenRoute {
                     name,
                     screen_location,
                     token_service,
                     title: text("title"),
+                    post_transition,
                 });
             }
         }
@@ -247,7 +261,14 @@ pub(super) fn dispatch(
     route.insert("context".to_string(), context);
     let mut parameters = parameters.clone();
     parameters.insert("token".to_string(), Value::string(&found.token));
-    let (root, path) = match &found.target {
+    // a POST to the page's URL itself (an RFC 8058 one-click) runs the route's post-transition
+    let target = match (&found.target, &found.route.post_transition) {
+        (RouteTarget::Shell, Some(transition)) if request.method.eq_ignore_ascii_case("post") => {
+            RouteTarget::Below(format!("/{transition}"))
+        }
+        (target, _) => target.clone(),
+    };
+    let (root, path) = match &target {
         RouteTarget::Shell => {
             // the named screen's render modes, so the shell asks for its .qvue or .qjs when it has one
             let modes = super::ScreenFacade::of(factory)
@@ -286,6 +307,7 @@ mod tests {
             screen_location: format!("component://test/{name}.xml"),
             token_service: "test.check#Token".to_string(),
             title: None,
+            post_transition: None,
         }
     }
 

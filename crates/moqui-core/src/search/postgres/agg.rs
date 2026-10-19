@@ -753,11 +753,15 @@ mod tests {
             "SELECT ((date_trunc('week', (\"f_placedDate\" AT TIME ZONE 'UTC') - interval '-86400000 milliseconds') + interval '-86400000 milliseconds') AT TIME ZONE 'UTC') AS k0, count(*) AS dc, "
         ), "{level}");
         assert!(
-            level.contains("count(*) FILTER (WHERE COALESCE(\"f_itemTypeEnumId\" = ?, FALSE)) AS c0"),
+            level.contains(
+                "count(*) FILTER (WHERE COALESCE(COALESCE(\"f_itemTypeEnumId\" = ?, (body -> 'itemTypeEnumId') @> jsonb_build_array(?::text)), FALSE)) AS c0"
+            ),
             "{level}"
         );
         assert!(
-            level.contains("COALESCE(sum(s1.v) FILTER (WHERE COALESCE(\"f_itemTypeEnumId\" = ?, FALSE)), 0) AS c1"),
+            level.contains(
+                "COALESCE(sum(s1.v) FILTER (WHERE COALESCE(COALESCE(\"f_itemTypeEnumId\" = ?, (body -> 'itemTypeEnumId') @> jsonb_build_array(?::text)), FALSE)), 0) AS c1"
+            ),
             "{level}"
         );
         assert!(level.contains("count(DISTINCT \"f_orderId\") AS c2"), "{level}");

@@ -666,13 +666,64 @@ pub(crate) fn send_json_error(status: u16, message: &str) {
 
 /// `text/plain` with status 200.
 pub(crate) fn send_text_response(text: &str) {
-    send_bytes(200, "text/plain", text.as_bytes().to_vec());
+    send_text_response_with(text, None, None);
 }
 
-/// `ec.web.sendResourceResponse(location, inline)`: the file at a resource location with the type of its file name,
-/// shown inline or as an attachment; a large one streams, and a `Range` or `If-None-Match` of the request is answered.
-/// Nothing at the location, or a directory, is 404.
-pub(crate) fn send_resource_response(location: &str, inline: bool) {
+/// `ec.web.sendTextResponse(text, contentType, filename)`, as Java: the text in UTF-8 with the content type (`text/plain`
+/// when none is given; `;charset=UTF-8` is added unless it names one), and with a file name an attachment of that name.
+pub(crate) fn send_text_response_with(text: &str, content_type: Option<&str>, file_name: Option<&str>) {
+    let content_type = content_type
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("text/plain");
+    let content_type = if content_type.to_ascii_lowercase().contains("charset=") {
+        content_type.to_string()
+    } else {
+        format!("{content_type};charset=UTF-8")
+    };
+    let mut headers = vec![("Content-Type".to_string(), content_type)];
+    if let Some(name) = file_name.map(str::trim).filter(|value| !value.is_empty()) {
+        headers.push(("Content-Disposition".to_string(), attachment_disposition(name)));
+    }
+    send_bytes_with_headers(200, headers, text.as_bytes().to_vec());
+}
+
+/// `attachment; filename="..."; filename*=utf-8''...`: the name with the characters a quoted header value cannot hold
+/// replaced, and its percent-encoded UTF-8 form.
+fn attachment_disposition(file_name: &str) -> String {
+    let safe: String = file_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_graphic() && !matches!(ch, '"' | '\\' | ';') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let encoded: String = file_name
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect();
+    format!("attachment; filename=\"{safe}\"; filename*=utf-8''{encoded}")
+}
+
+/// `ec.web.sendResourceResponse(location, inline, fileName)`: the file at a resource location (a `#versionName` suffix
+/// sends that version, on storage that keeps versions), with the type of its file name, shown inline or as an
+/// attachment named `file_name` (the location's last segment when none is given, so a zip or a copy kept under a random
+/// name downloads under its own name); a large one streams, and a `Range` or `If-None-Match` of the request is
+/// answered. Nothing at the location, a directory, or a version that is not there is 404.
+///
+/// Only an application's own files (`component://`, `classpath://`) shown inline may be kept by a shared cache, as Java
+/// sends every inline resource; anything else (a drive's or a record's file, a temporary zip) is `private, no-store`, so
+/// a proxy or a shared browser keeps no copy of what a user was allowed to read.
+pub(crate) fn send_resource_response(location: &str, inline: bool, file_name: Option<&str>) {
     let opened = ExecutionContext::with_current(|ec| ec.factory().resource().open(location)).transpose();
     let opened = match opened {
         Ok(Some(Some(opened))) => opened,
@@ -691,43 +742,29 @@ pub(crate) fn send_resource_response(location: &str, inline: bool) {
             return;
         }
     };
-    let file_name = location.trim_end_matches('/').rsplit('/').next().unwrap_or(location);
-    let mut headers = Vec::new();
-    if let Some(content_type) = moqui_lib::resource::content_type_for_name(file_name) {
-        headers.push(("Content-Type".to_string(), content_type.to_string()));
-    }
+    let base = location.split_once('#').map_or(location, |(base, _)| base);
+    let last = base.trim_end_matches('/').rsplit('/').next().unwrap_or(base);
+    let file_name = file_name.map(str::trim).filter(|name| !name.is_empty()).unwrap_or(last);
+    // a type the name does not tell is bytes to save, never sniffed as a page
+    let content_type = moqui_lib::resource::content_type_for_name(file_name)
+        .or_else(|| moqui_lib::resource::content_type_for_name(last))
+        .unwrap_or("application/octet-stream");
+    let mut headers = vec![("Content-Type".to_string(), content_type.to_string())];
+    let application_file = matches!(
+        base.split_once("://").map(|(scheme, _)| scheme),
+        Some("component" | "classpath")
+    );
     if inline {
         headers.push(("Content-Disposition".to_string(), "inline".to_string()));
-        headers.push((
-            "Cache-Control".to_string(),
-            "max-age=86400, must-revalidate, public".to_string(),
-        ));
     } else {
-        let safe: String = file_name
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_graphic() && !matches!(ch, '"' | '\\' | ';') {
-                    ch
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        let encoded: String = file_name
-            .bytes()
-            .map(|byte| {
-                if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-                    char::from(byte).to_string()
-                } else {
-                    format!("%{byte:02X}")
-                }
-            })
-            .collect();
-        headers.push((
-            "Content-Disposition".to_string(),
-            format!("attachment; filename=\"{safe}\"; filename*=utf-8''{encoded}"),
-        ));
+        headers.push(("Content-Disposition".to_string(), attachment_disposition(file_name)));
     }
+    let cache = if inline && application_file {
+        "max-age=86400, must-revalidate, public"
+    } else {
+        "private, no-store"
+    };
+    headers.push(("Cache-Control".to_string(), cache.to_string()));
     let conditional = WEB.with(|slot| slot.borrow().as_ref().map(|web| web.conditional.clone())).unwrap_or_default();
     if let Err(err) = crate::screen::static_files::respond_opened(&conditional, headers, &opened) {
         tracing::warn!("Sending error response, resource at {location} cannot be read: {}", err.message());
@@ -1512,15 +1549,17 @@ pub(crate) fn is_production() -> bool {
 
 /// The text a client gets for `err` sent with `status`. In production a 500's detail, which can hold SQL, file paths,
 /// or script source, goes to the log under an error id, and the client gets only the id. Other statuses and other
-/// instances get the message; a 500 is logged there too, as Java's `MoquiServlet` logs every internal error.
+/// instances get the message; a 500 is logged there too, as Java's `MoquiServlet` logs every internal error. The
+/// message is its text only ([`crate::context::client_text`]): a script's stack and the Rust source location are in the
+/// log, not the answer.
 pub(crate) fn error_text(status: u16, err: &Error) -> String {
     if status != 500 {
-        err.message().to_string()
+        crate::context::client_text(err.message())
     } else if is_production() {
         format!("internal error, id {}", log_error_id(&err.diagnostic()))
     } else {
         tracing::error!("Internal error processing request: {}", err.diagnostic());
-        err.message().to_string()
+        crate::context::client_text(err.message())
     }
 }
 

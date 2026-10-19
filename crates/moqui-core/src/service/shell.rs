@@ -154,7 +154,7 @@ fn get_shell_counts(
 }
 
 /// The user ids of `userIdList`: a list, or a comma separated text; without blanks and repeats.
-fn user_ids(value: Option<&Value>) -> Vec<String> {
+pub(crate) fn user_ids(value: Option<&Value>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut add = |id: String| {
         let id = id.trim().to_string();
@@ -181,12 +181,25 @@ fn publish_shell_counts(
     facade: &EntityFacade,
 ) -> Result<BTreeMap<String, Value>, LibError> {
     let users = user_ids(parameters.get("userIdList"));
-    let Some(factory) = ExecutionContext::with_current(|ec| Arc::downgrade(ec.factory())) else {
+    let Some(current) = ExecutionContext::with_current(|ec| Arc::clone(ec.factory())) else {
         return Ok(BTreeMap::new());
     };
     if users.is_empty() {
         return Ok(BTreeMap::new());
     }
+    if !would_deliver(
+        current.is_shutting_down(),
+        crate::notify::has_listeners(crate::notify::NOTIFICATION_MESSAGE),
+        crate::cluster::is_linked(facade),
+    ) {
+        tracing::debug!(
+            users = users.len(),
+            "no notification socket or peer to send shell counts to, or shutting down"
+        );
+        return Ok(BTreeMap::new());
+    }
+    let factory = Arc::downgrade(&current);
+    drop(current);
     let requester = |factory: Weak<ExecutionContextFactory>, users: Vec<String>| {
         move || {
             if let Some(factory) = factory.upgrade() {
@@ -204,6 +217,13 @@ fn publish_shell_counts(
         _ => requester(factory, users)(),
     }
     Ok(BTreeMap::new())
+}
+
+/// Whether the counts would reach anyone: not while the factory shuts down (its database is closing), and only with a
+/// notification socket in this process or cluster peers to post to. A command such as `moqui load` has neither, so the
+/// EECAs of the records it loads send nothing (and nothing runs after its database closes).
+pub(crate) fn would_deliver(shutting_down: bool, listening: bool, linked: bool) -> bool {
+    !shutting_down && (listening || linked)
 }
 
 // ---- coalescing ----
@@ -368,7 +388,7 @@ fn run_sends(publisher: &Publisher) {
                     .0;
             }
         };
-        let Some(factory) = factory.upgrade() else {
+        let Some(factory) = factory.upgrade().filter(|factory| !factory.is_shutting_down()) else {
             let mut state = lock(&publisher.state);
             state.coalescer = Coalescer::default();
             state.running = false;
@@ -442,10 +462,20 @@ fn use_user_locale(user_id: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Coalescer, Decision};
+    use super::{would_deliver, Coalescer, Decision};
     use std::time::{Duration, Instant};
 
     const WINDOW: Duration = Duration::from_secs(2);
+
+    /// The counts go to a socket of this process or to cluster peers, and never while the factory shuts down: a command
+    /// such as `moqui load` (no socket, no peers) sends nothing for the records it loads.
+    #[test]
+    fn counts_are_sent_only_where_a_socket_or_a_peer_can_take_them() {
+        assert!(would_deliver(false, true, false));
+        assert!(would_deliver(false, false, true));
+        assert!(!would_deliver(false, false, false), "a command: no socket, no peers");
+        assert!(!would_deliver(true, true, true), "shutting down");
+    }
 
     #[test]
     fn a_user_gets_one_send_per_window_and_a_later_request_is_folded_into_one_at_its_end() {

@@ -32,7 +32,7 @@ const SERVICES: &str = "org.moqui.impl.EmailClientServices";
 const MESSAGE: &str = "moqui.basic.email.EmailMessage";
 const FOLDER: &str = "moqui.basic.email.EmailFolder";
 
-fn setup() -> (ExecutionContext, EntityFacade) {
+pub(super) fn setup() -> (ExecutionContext, EntityFacade) {
     let ctx = ExecutionContextFactory::test_context_in(
         "",
         crate::service::ServicePools::idle(),
@@ -45,7 +45,7 @@ fn setup() -> (ExecutionContext, EntityFacade) {
     (ctx, facade)
 }
 
-fn install() {
+pub(super) fn install() {
     let framework = crate::context::framework_dir().join("service/org/moqui");
     let paths = vec![
         framework.join("EmailServices.xml"),
@@ -57,11 +57,11 @@ fn install() {
     assert!(failures.is_empty(), "{failures:?}");
 }
 
-fn text(value: &str) -> Value {
+pub(super) fn text(value: &str) -> Value {
     Value::string(value)
 }
 
-fn map(pairs: &[(&str, &str)]) -> Value {
+pub(super) fn map(pairs: &[(&str, &str)]) -> Value {
     Value::Map(
         pairs
             .iter()
@@ -70,15 +70,15 @@ fn map(pairs: &[(&str, &str)]) -> Value {
     )
 }
 
-fn stamp(millis: i64) -> Value {
+pub(super) fn stamp(millis: i64) -> Value {
     basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
 }
 
-fn now() -> i64 {
+pub(super) fn now() -> i64 {
     jiff::Timestamp::now().as_millisecond()
 }
 
-fn row(facade: &EntityFacade, entity: &str, fields: &[(&str, Value)]) {
+pub(super) fn row(facade: &EntityFacade, entity: &str, fields: &[(&str, Value)]) {
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
     let mut row = facade.make_value(entity).unwrap();
     for (field, value) in fields {
@@ -87,7 +87,7 @@ fn row(facade: &EntityFacade, entity: &str, fields: &[(&str, Value)]) {
     row.create(facade).unwrap();
 }
 
-fn update(facade: &EntityFacade, entity: &str, key: (&str, &str), fields: &[(&str, Value)]) {
+pub(super) fn update(facade: &EntityFacade, entity: &str, key: (&str, &str), fields: &[(&str, Value)]) {
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
     let mut row = facade.make_value(entity).unwrap();
     row.set(key.0, text(key.1));
@@ -97,7 +97,7 @@ fn update(facade: &EntityFacade, entity: &str, key: (&str, &str), fields: &[(&st
     row.update(facade).unwrap();
 }
 
-fn user(facade: &EntityFacade, user_id: &str) {
+pub(super) fn user(facade: &EntityFacade, user_id: &str) {
     row(
         facade,
         "moqui.security.UserAccount",
@@ -109,12 +109,12 @@ fn user(facade: &EntityFacade, user_id: &str) {
     );
 }
 
-fn login(user_id: &str) {
+pub(super) fn login(user_id: &str) {
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
     crate::user::internal_login_user(user_id).unwrap();
 }
 
-fn call(name: &str, parameters: &[(&str, Value)]) -> BTreeMap<String, Value> {
+pub(super) fn call(name: &str, parameters: &[(&str, Value)]) -> BTreeMap<String, Value> {
     let parameters: BTreeMap<String, Value> = parameters
         .iter()
         .map(|(key, value)| ((*key).to_string(), value.clone()))
@@ -122,7 +122,7 @@ fn call(name: &str, parameters: &[(&str, Value)]) -> BTreeMap<String, Value> {
     crate::service::sync(&format!("{SERVICES}.{name}"), &parameters).unwrap_or_else(|err| panic!("{name}: {err}"))
 }
 
-fn errors() -> String {
+pub(super) fn errors() -> String {
     ExecutionContext::with_current(|ec| {
         let text = ec.message().errors().join("\n");
         ec.message().clear_errors();
@@ -131,29 +131,29 @@ fn errors() -> String {
     .unwrap_or_default()
 }
 
-fn ok(name: &str, parameters: &[(&str, Value)]) -> BTreeMap<String, Value> {
+pub(super) fn ok(name: &str, parameters: &[(&str, Value)]) -> BTreeMap<String, Value> {
     let out = call(name, parameters);
     let errors = errors();
     assert!(errors.is_empty(), "{name}: {errors}");
     out
 }
 
-fn out_text(out: &BTreeMap<String, Value>, key: &str) -> String {
+pub(super) fn out_text(out: &BTreeMap<String, Value>, key: &str) -> String {
     out.get(key).map(to_plain_string).unwrap_or_default()
 }
 
-fn out_number(out: &BTreeMap<String, Value>, key: &str) -> i64 {
+pub(super) fn out_number(out: &BTreeMap<String, Value>, key: &str) -> i64 {
     out.get(key)
         .map(to_plain_string)
         .and_then(|text| text.parse().ok())
         .unwrap_or(-1)
 }
 
-fn field(row: &EntityValue, name: &str) -> String {
+pub(super) fn field(row: &EntityValue, name: &str) -> String {
     row.get(name).map(to_plain_string).unwrap_or_default()
 }
 
-fn rows(facade: &EntityFacade, entity: &str, conditions: &[(&str, &str)]) -> Vec<EntityValue> {
+pub(super) fn rows(facade: &EntityFacade, entity: &str, conditions: &[(&str, &str)]) -> Vec<EntityValue> {
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
     let mut find = facade.find(entity).unwrap();
     for (name, value) in conditions {
@@ -162,14 +162,14 @@ fn rows(facade: &EntityFacade, entity: &str, conditions: &[(&str, &str)]) -> Vec
     find.list().unwrap().values().to_vec()
 }
 
-fn one(facade: &EntityFacade, entity: &str, key: &str, id: &str) -> EntityValue {
+pub(super) fn one(facade: &EntityFacade, entity: &str, key: &str, id: &str) -> EntityValue {
     rows(facade, entity, &[(key, id)])
         .into_iter()
         .next()
         .unwrap_or_else(|| panic!("no {entity} {id}"))
 }
 
-fn folder_id(facade: &EntityFacade, account: &str, kind: &str) -> String {
+pub(super) fn folder_id(facade: &EntityFacade, account: &str, kind: &str) -> String {
     let folders = rows(
         facade,
         FOLDER,
@@ -178,14 +178,14 @@ fn folder_id(facade: &EntityFacade, account: &str, kind: &str) -> String {
     field(&folders[0], "emailFolderId")
 }
 
-fn folder_by_name(facade: &EntityFacade, account: &str, name: &str) -> Option<EntityValue> {
+pub(super) fn folder_by_name(facade: &EntityFacade, account: &str, name: &str) -> Option<EntityValue> {
     rows(facade, FOLDER, &[("emailAccountId", account)])
         .into_iter()
         .find(|folder| field(folder, "folderName") == name)
 }
 
 /// The message of an account with this Message-ID.
-fn by_message_id(facade: &EntityFacade, account: &str, message_id: &str) -> Option<EntityValue> {
+pub(super) fn by_message_id(facade: &EntityFacade, account: &str, message_id: &str) -> Option<EntityValue> {
     rows(
         facade,
         MESSAGE,
@@ -218,7 +218,7 @@ fn label_names(facade: &EntityFacade, email_message_id: &str) -> Vec<String> {
     names
 }
 
-fn mail(message_id: &str, from: &str, to: &str, subject: &str, headers: &str, body: &str) -> String {
+pub(super) fn mail(message_id: &str, from: &str, to: &str, subject: &str, headers: &str, body: &str) -> String {
     format!(
         "Message-ID: {message_id}\nFrom: {from}\nTo: {to}\nSubject: {subject}\nDate: Mon, 19 Oct 2026 10:00:00 +0000\n{headers}MIME-Version: 1.0\nContent-Type: text/plain; charset=utf-8\n\n{body}\n"
     )
@@ -257,7 +257,7 @@ JVBERi0xLjQK
 ";
 
 /// An account of alice's on the fake IMAP server.
-fn imap_account(port: u16, password: &str) -> String {
+pub(super) fn imap_account(port: u16, password: &str) -> String {
     out_text(
         &ok(
             "create#EmailAccount",
@@ -278,14 +278,14 @@ fn imap_account(port: u16, password: &str) -> String {
     )
 }
 
-fn sync(account: &str) -> BTreeMap<String, Value> {
+pub(super) fn sync(account: &str) -> BTreeMap<String, Value> {
     let out = ok("sync#EmailAccount", &[("emailAccountId", text(account))]);
     assert_eq!(out_text(&out, "outcome"), "synced", "{out:?}");
     out
 }
 
 /// A session with alice signed in.
-fn alice(facade: &EntityFacade) {
+pub(super) fn alice(facade: &EntityFacade) {
     user(facade, "alice");
     login("alice");
 }
@@ -1178,6 +1178,55 @@ fn sent_mail_is_appended_to_sent_unless_the_server_kept_a_copy() {
     assert_eq!(imap.messages("Sent Mail").len(), 2);
 }
 
+/// A sync that stops at email_sync_batch with mail left is due again at the job's next run, before its interval, until
+/// the backlog is in; then the interval holds again.
+#[test]
+fn the_job_goes_on_with_a_backlog_at_its_next_run() {
+    let _lock = crate::user::session::cookie_property_lock();
+    struct Batch;
+    impl Drop for Batch {
+        fn drop(&mut self) {
+            moqui_lib::env::clear_property("email_sync_batch");
+        }
+    }
+    let _batch = Batch;
+    moqui_lib::env::set_property("email_sync_batch", "1");
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    alice(&facade);
+    let imap = FakeImap::start(&["UIDPLUS"]);
+    for (id, subject) in [("<b1@example.com>", "One"), ("<b2@example.com>", "Two")] {
+        imap.add(
+            "INBOX",
+            &mail(id, "x@example.com", "alice@example.com", subject, "", "b"),
+            &[],
+        );
+    }
+    let account = imap_account(imap.port, "app-password");
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let first = ok("sync#DueEmailAccounts", &[]);
+    assert_eq!(out_number(&first, "syncedCount"), 1, "{first:?}");
+    let in_first = [
+        by_message_id(&facade, &account, "<b1@example.com>").is_some(),
+        by_message_id(&facade, &account, "<b2@example.com>").is_some(),
+    ];
+    assert_eq!(
+        in_first.iter().filter(|found| **found).count(),
+        1,
+        "one message a session"
+    );
+    // the interval has not passed, but the account has a backlog
+    let second = ok("sync#DueEmailAccounts", &[]);
+    assert_eq!(out_number(&second, "syncedCount"), 1, "{second:?}");
+    assert!(by_message_id(&facade, &account, "<b1@example.com>").is_some());
+    assert!(by_message_id(&facade, &account, "<b2@example.com>").is_some());
+    // all in: a sync that fetched everything leaves no backlog, so the interval holds (a capped session is the one
+    // that found more than the batch; the second found one, so it is not)
+    let third = ok("sync#DueEmailAccounts", &[]);
+    assert_eq!(out_number(&third, "syncedCount"), 0, "{third:?}");
+}
+
 /// The job syncs what is due and leaves a paused account; a sync holding the lock makes another one busy.
 #[test]
 fn the_job_syncs_due_accounts_and_the_lock_keeps_one_at_a_time() {
@@ -2026,4 +2075,128 @@ fn new_mail_at_a_sync_wakes_its_thread_and_gets_the_automatic_reply() {
     let reply = by_message_id(&facade, &account, "<reply@x.example.org>").expect("the reply");
     assert_eq!(field(&reply, "rootEmailMessageId"), root_id);
     assert_eq!(sink.sent().len(), 1, "once per sender");
+}
+
+/// The email-ECA rules (`*.emecas.xml`, as Mantle's List-Unsubscribe mailto rule) run once on each new message a sync
+/// brings into the Inbox, IMAP and POP3, with `emailAccountId` and `emailMessageId` of its row: not on the first sync
+/// (the mailbox's history), not on mail that arrived long before the last sync (a backlog), not again at the next
+/// sync, and not on a copy of a message the account has; a rule that fails is logged on its own and the others run.
+#[test]
+fn email_eca_rules_run_once_on_each_new_message_a_sync_brings_in() {
+    const DAY: i64 = 86_400_000;
+    let _lock = crate::user::session::cookie_property_lock();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    alice(&facade);
+    crate::service::eca_rules::install(
+        ctx.factory(),
+        crate::service::eca_rules::from_xml(
+            "",
+            r#"<emecas>
+            <emeca rule-name="Fails"><condition><expression>true</expression></condition>
+                <actions><script>throw new Error('rule boom')</script></actions></emeca>
+            <emeca rule-name="ListUnsubscribeMailto">
+                <condition><expression>/^unsubscribe /i.test(String((fields &amp;&amp; fields.subject) || ''))</expression></condition>
+                <actions><script>ec.message.addMessage('eca ' + fields.subject + ' ' + emailMessageId + ' ' + emailAccountId + ' ' + headers['message-id'] + ' ' + emailServerId)</script></actions>
+            </emeca>
+        </emecas>"#,
+        ),
+    );
+    let ran = || -> Vec<String> {
+        ExecutionContext::with_current(|ec| ec.message().messages().to_vec())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|text| text.starts_with("eca "))
+            .collect()
+    };
+    let dated = |message_id: &str, subject: &str, millis: i64| {
+        let date = jiff::Timestamp::from_millisecond(millis)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .strftime("%a, %d %b %Y %H:%M:%S +0000")
+            .to_string();
+        format!(
+            "Message-ID: {message_id}\nFrom: x@example.com\nTo: alice@example.com\nSubject: {subject}\nDate: {date}\n\nbody\n"
+        )
+    };
+
+    // IMAP: the first sync is history
+    let imap = FakeImap::start(&[]);
+    imap.add_folder("Lists", "\\HasNoChildren", true);
+    imap.add("INBOX", &dated("<old@example.com>", "unsubscribe OLD", now()), &[]);
+    let account = imap_account(imap.port, "app-password");
+    let server = field(
+        &one(&facade, "moqui.basic.email.EmailAccount", "emailAccountId", &account),
+        "emailServerId",
+    );
+    sync(&account);
+    assert!(ran().is_empty(), "{:?}", ran());
+    // new mail: once on each new Inbox message, with its row; a failing rule does not stop the other or the sync
+    imap.add("INBOX", &dated("<new1@example.com>", "unsubscribe TOKEN1", now()), &[]);
+    imap.add("INBOX", &dated("<plain@example.com>", "Hello", now()), &[]);
+    imap.add_dated(
+        "INBOX",
+        &dated("<late@example.com>", "unsubscribe LATE", now() - 10 * DAY),
+        &[],
+        now() - 10 * DAY,
+    );
+    imap.add(
+        "Lists",
+        &dated("<listed@example.com>", "unsubscribe LISTED", now()),
+        &[],
+    );
+    let out = sync(&account);
+    assert_eq!(out_number(&out, "newCount"), 4, "{out:?}");
+    let new1 = by_message_id(&facade, &account, "<new1@example.com>").unwrap();
+    assert_eq!(
+        ran(),
+        [format!(
+            "eca unsubscribe TOKEN1 {} {account} <new1@example.com> {server}",
+            field(&new1, "emailMessageId")
+        )]
+    );
+    // the next sync, and a copy into the Inbox of a message the account has: nothing runs again
+    sync(&account);
+    imap.add(
+        "INBOX",
+        &dated("<listed@example.com>", "unsubscribe LISTED", now()),
+        &[],
+    );
+    sync(&account);
+    assert_eq!(ran().len(), 1, "{:?}", ran());
+
+    // POP3: the same, the newest first and by the Date header
+    let pop = FakePop::start();
+    pop.add("p-old", &dated("<pop-old@example.com>", "unsubscribe POPOLD", now()));
+    let pop_account = out_text(
+        &ok(
+            "create#EmailAccount",
+            &[
+                ("emailAddress", text("alice@example.com")),
+                ("storeHost", text("127.0.0.1")),
+                ("storePort", text(&pop.port.to_string())),
+                ("storeProtocol", text("pop3")),
+                ("mailUsername", text("alice")),
+                ("mailPassword", text("pop-password")),
+            ],
+        ),
+        "emailAccountId",
+    );
+    sync(&pop_account);
+    assert_eq!(ran().len(), 1);
+    pop.add("p-new", &dated("<pop-new@example.com>", "unsubscribe POPNEW", now()));
+    pop.add(
+        "p-late",
+        &dated("<pop-late@example.com>", "unsubscribe POPLATE", now() - 10 * DAY),
+    );
+    let out = sync(&pop_account);
+    assert_eq!(out_number(&out, "newCount"), 2, "{out:?}");
+    sync(&pop_account);
+    let lines = ran();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[1].starts_with("eca unsubscribe POPNEW ") && lines[1].contains(&pop_account),
+        "{lines:?}"
+    );
 }

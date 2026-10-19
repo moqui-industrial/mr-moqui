@@ -606,8 +606,14 @@ impl EntityFacade {
         let mut history = EntityValue::make(self, DB_HISTORY)?;
         history.set("resourceId", Value::string(resource_id));
         history.set("previousVersionName", previous.map_or(Value::Null, Value::string));
-        history.set("versionDate", crate::user::now_effective_value());
-        let user_id = crate::user::current_user_id().ok().flatten();
+        // a version copied with its history names its own author and date (crate::context::with_version_author)
+        let author = crate::context::version_author().unwrap_or_default();
+        let date = author
+            .date
+            .and_then(|millis| jiff::Timestamp::from_millisecond(millis).ok())
+            .map_or_else(crate::user::now_effective_value, Value::Timestamp);
+        history.set("versionDate", date);
+        let user_id = author.user_id.or_else(|| crate::user::current_user_id().ok().flatten());
         history.set("userId", user_id.map_or(Value::Null, Value::string));
         history.set("isDiff", Value::string("N"));
         Ok(history)

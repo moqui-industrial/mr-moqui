@@ -126,8 +126,9 @@ impl FormInstance {
 
 /// The fields a form-list's `entity-find` selects, as Java's `FormListRenderInfo`: the fields of the
 /// columns (the `form-list-column` or `columns` field refs, otherwise each field whose widget is not
-/// hidden), then the hidden fields that have a `default-field`. Java takes the columns from the
-/// user's saved column selection when there is one; here the definition's columns are a superset of it.
+/// hidden), then the hidden fields that have a `default-field`, then the fields the `view-board` and
+/// `view-calendar` name (not in Java). Java takes the columns from the user's saved column selection when
+/// there is one; here the definition's columns are a superset of it.
 fn form_select_fields(form: &MNode) -> Vec<String> {
     let fields = form.children_named("field");
     let mut names: Vec<String> = Vec::new();
@@ -155,6 +156,41 @@ fn form_select_fields(form: &MNode) -> Vec<String> {
     for field in &fields {
         if list_field_hidden_widget(field) && field.first_named("default-field").is_some() {
             push(field.attribute("name").unwrap_or_default());
+        }
+    }
+    // the fields the board and calendar views read (a start, an all-day flag, a sum), which need not be columns
+    for (view, attributes) in [
+        (
+            "view-board",
+            &[
+                "group-field",
+                "card-title-field",
+                "badge-field",
+                "sum-field",
+                "card-fields",
+                "key-fields",
+            ][..],
+        ),
+        (
+            "view-calendar",
+            &[
+                "start-field",
+                "end-field",
+                "title-field",
+                "color-field",
+                "all-day-field",
+                "resource-field",
+                "card-fields",
+                "key-fields",
+            ][..],
+        ),
+    ] {
+        if let Some(node) = form.first_named(view) {
+            for attribute in attributes {
+                for name in node.attribute(attribute).unwrap_or_default().split(',') {
+                    push(name.trim().to_string());
+                }
+            }
         }
     }
     names
@@ -653,6 +689,13 @@ fn merge_form_nodes(base: &MNode, over: &MNode, deep_copy: bool, copy_fields: bo
         let kind = columns.attribute("type");
         base.remove_where(|child| child.name() == "columns" && child.attribute("type") == kind);
         base.append_node(columns.deep_copy());
+    }
+    // the views of a form-list: the extending form's view element takes the place of the one it extends
+    for view in ["view-board", "view-calendar"] {
+        if let Some(found) = over.first_named(view) {
+            base.remove_where(|child| child.name() == view);
+            base.append_node(found.deep_copy());
+        }
     }
 }
 
@@ -1570,5 +1613,20 @@ mod tests {
         field("04", "enumTypeId", &[]);
         let shape = super::entity_shape("DataDocument.FormDoc").unwrap();
         assert!(shape.fields.iter().any(|(name, _, _)| name == "enumTypeId"));
+    }
+
+    /// A `display-entity` of a status or an enumeration shows its `description`: the first non-key field ending in
+    /// `Name` would come first (StatusItem once gained a `colorName`, and every status in a form showed empty).
+    #[test]
+    fn a_status_and_an_enumeration_are_described_by_their_description() {
+        let framework = crate::testing::framework_dir();
+        let conf_text = std::fs::read_to_string(framework.join("conf/MoquiDefaultConf.xml")).unwrap();
+        let conf = parse(&conf_text);
+        let model = EntityModel::load_directory(&conf.first_named("database-list").unwrap(), &framework.join("entity"))
+            .unwrap();
+        for entity_name in ["moqui.basic.StatusItem", "moqui.basic.Enumeration"] {
+            let shape = read_entity_shape(&model, entity_name).unwrap();
+            assert_eq!(shape.description_field, "description", "{entity_name}");
+        }
     }
 }

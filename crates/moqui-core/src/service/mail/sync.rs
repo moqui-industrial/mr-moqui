@@ -33,9 +33,14 @@
 //!    record refers to it).
 //! 5. The account's rules run on the new Inbox mail (`run#EmailRules`), then the changes queued meanwhile go out.
 //!
+//! The email-ECA rules (`*.emecas.xml`, as poll#EmailServer runs them) run once on each new message as it is stored in
+//! the Inbox, IMAP or POP3, in a transaction of their own, a failing rule logged ([`eca_due`] says which messages are new
+//! mail; [`super::inbound::run_stored_ecas`] is what any other fetch path calls).
+//!
 //! Failure tolerant per account, folder and message: a message that does not parse is logged by account, folder and
 //! UID and skipped; a folder that fails is logged and the others go on; a sign-in the server refuses marks the account
-//! EasAuthFailed with `lastSyncError` and ends only that account's sync. A POP3 account is fetch-only into the Inbox,
+//! EasAuthFailed with `lastSyncError` and ends only that account's sync, as does an OAuth sign-in whose refresh token
+//! the provider refuses ([`super::oauth`]; such an account signs in with XOAUTH2). A POP3 account is fetch-only into the Inbox,
 //! by UIDL, deleting from the server only when its EmailServer says so (`storeDelete`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -47,7 +52,8 @@ use moqui_lib::object::{to_plain_string, Value};
 
 use super::implementation::{find_one, force_new, note_error, note_message, parse_port, require_host};
 use super::inbound::{
-    connect_tcp, folder_kind, name_attribute, stamp_millis, use_tls, wrap_tls, Net, Pop3, StoreSettings,
+    connect_tcp, folder_kind, name_attribute, run_stored_ecas, stamp_millis, use_tls, wrap_tls, Net, Pop3,
+    StoreSettings, StoredMessage,
 };
 use super::store::{self, parse_message, update_fields, Placement, MESSAGE};
 use crate::context::ExecutionContext;
@@ -68,8 +74,19 @@ const HEADER_CHUNK: usize = 100;
 
 // ---- the account ----
 
+/// An access token, whose `Debug` does not show it.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct AccessToken(pub(super) String);
+
+impl std::fmt::Debug for AccessToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AccessToken(<redacted>)")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct ServerInfo {
+    pub(super) server_id: String,
     pub(super) host: String,
     pub(super) port: u16,
     pub(super) protocol: String,
@@ -77,9 +94,15 @@ pub(super) struct ServerInfo {
     pub(super) password: String,
     pub(super) auth_type: String,
     pub(super) store_delete: bool,
+    /// For an EatOAuth2 server, the access token [`connect_imap`] signs in with (XOAUTH2).
+    pub(super) access_token: Option<AccessToken>,
 }
 
 impl ServerInfo {
+    pub(super) fn is_oauth(&self) -> bool {
+        self.auth_type == super::oauth::OAUTH
+    }
+
     pub(super) fn is_pop(&self) -> bool {
         matches!(self.protocol.as_str(), "pop3" | "pop3s")
     }
@@ -154,6 +177,7 @@ fn server_info(row: &EntityValue) -> Option<ServerInfo> {
     };
     let port = parse_port(&field_text(row, "storePort"), default_port).unwrap_or(default_port);
     Some(ServerInfo {
+        server_id: field_text(row, "emailServerId"),
         host,
         port,
         protocol,
@@ -161,6 +185,7 @@ fn server_info(row: &EntityValue) -> Option<ServerInfo> {
         password: field_text(row, "mailPassword"),
         auth_type: field_text(row, "authTypeEnumId"),
         store_delete: field_text(row, "storeDelete") == "Y",
+        access_token: None,
     })
 }
 
@@ -211,6 +236,8 @@ pub(super) struct FolderInfo {
     pub(super) subscribed: bool,
     pub(super) removed: bool,
     pub(super) sequence: i64,
+    /// A user chose the kind (`update#EmailFolder`): no server folder takes it by its special use or name.
+    pub(super) kind_by_user: bool,
 }
 
 fn as_u32(value: Option<&Value>) -> Option<u32> {
@@ -241,6 +268,7 @@ fn folder_info(row: &EntityValue) -> FolderInfo {
         subscribed: field_text(row, "subscribed") != "N",
         removed: row.get("remoteRemovedDate").is_some_and(|value| !value.is_null()),
         sequence: value_number(row.get("sequenceNum")).unwrap_or(999_999),
+        kind_by_user: field_text(row, "kindByUser") == "Y",
     }
 }
 
@@ -275,6 +303,9 @@ fn kind_rank(kind: &str) -> u8 {
 pub(super) enum SyncFailure {
     /// The server refused the sign-in: the account is EasAuthFailed until its settings change.
     Auth(String),
+    /// The OAuth sign-in has ended (the provider refused the refresh token, or there is none): the account is
+    /// EasAuthFailed until the user signs in again. The token store marked and logged it already.
+    SignIn(String),
     /// The server could not be reached or the connection broke: EasError, tried again later.
     Connect(String),
 }
@@ -282,7 +313,16 @@ pub(super) enum SyncFailure {
 impl std::fmt::Display for SyncFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Auth(text) | Self::Connect(text) => f.write_str(text),
+            Self::Auth(text) | Self::SignIn(text) | Self::Connect(text) => f.write_str(text),
+        }
+    }
+}
+
+impl From<super::oauth::TokenError> for SyncFailure {
+    fn from(err: super::oauth::TokenError) -> Self {
+        match err {
+            super::oauth::TokenError::SignIn(text) => Self::SignIn(text),
+            super::oauth::TokenError::Unavailable(text) => Self::Connect(text),
         }
     }
 }
@@ -451,16 +491,52 @@ pub(super) fn open_imap(server: &ServerInfo) -> Result<ImapConn, SyncFailure> {
     })
 }
 
-/// Sign in as the server's authentication type says. Password now; XOAUTH2 with the OAuth client (M5e) goes here.
+/// Sign in as the server's authentication type says: LOGIN with the password, or for EatOAuth2 `AUTHENTICATE XOAUTH2`
+/// with the access token [`connect_imap`] put on the server.
 fn sign_in(client: imap::Client<Net>, server: &ServerInfo) -> Result<imap::Session<Net>, SyncFailure> {
-    if server.auth_type == "EatOAuth2" {
-        return Err(SyncFailure::Auth(
-            "OAuth 2.0 sign-in (XOAUTH2) is not available yet; use a password or an app password".to_string(),
-        ));
+    if server.is_oauth() {
+        let Some(token) = &server.access_token else {
+            return Err(SyncFailure::Connect(format!(
+                "IMAP {}: no access token to sign in with",
+                server.host
+            )));
+        };
+        let authenticator = super::oauth::XOauth2 {
+            response: super::oauth::xoauth2(&server.user, &token.0),
+        };
+        return client
+            .authenticate("XOAUTH2", &authenticator)
+            .map_err(|(err, _)| classify_login(&err, &server.host));
     }
     client
         .login(&server.user, &server.password)
         .map_err(|(err, _)| classify_login(&err, &server.host))
+}
+
+/// [`open_imap`], first getting an access token for an EatOAuth2 server; a token the server refuses is replaced by a
+/// new one once (it may have been revoked or have ended early).
+pub(super) fn connect_imap(facade: &EntityFacade, server: &ServerInfo) -> Result<ImapConn, SyncFailure> {
+    if !server.is_oauth() {
+        return open_imap(server);
+    }
+    let mut signed = server.clone();
+    let token = super::oauth::access_token(facade, &server.server_id, None)?;
+    signed.access_token = Some(AccessToken(token.clone()));
+    match open_imap(&signed) {
+        Err(SyncFailure::Auth(text)) => {
+            tracing::debug!(
+                "IMAP {} refused the access token, trying a new one: {text}",
+                server.host
+            );
+            let fresh = super::oauth::access_token(facade, &server.server_id, Some(&token))?;
+            if fresh == token {
+                return Err(SyncFailure::Auth(text));
+            }
+            signed.access_token = Some(AccessToken(fresh));
+            open_imap(&signed)
+        }
+        other => other,
+    }
 }
 
 fn classify_login(err: &imap::Error, host: &str) -> SyncFailure {
@@ -718,6 +794,9 @@ pub(super) struct SyncReport {
     pub(super) folder_count: usize,
     pub(super) skipped_messages: usize,
     pub(super) folder_errors: Vec<String>,
+    /// A folder had more new mail than `email_sync_batch`: the job syncs the account again at its next run, whatever
+    /// its interval, until the backlog is in (a first sync of a large mailbox).
+    pub(super) capped: bool,
 }
 
 impl SyncReport {
@@ -806,11 +885,19 @@ fn instance_name() -> String {
 }
 
 /// Take the account's sync lock for [`LEASE_MILLIS`], or renew the one this server holds. False when another sync has it.
+///
+/// The row is read `FOR UPDATE`, here and in [`release_lease`]: an update of a row read writes back each field read, so
+/// without the row lock two syncs could both read the lock free and both take it, and a lock taken or released could
+/// write back the status a sync running at the same time had just recorded (a failed sync's EasError read as EasActive
+/// again). With it a second claim waits for the first, then reads the row it wrote: taken, so busy.
 fn claim_lease(facade: &EntityFacade, account_id: &str, renew: bool) -> Result<bool, LibError> {
     let now = now_millis();
     let me = instance_name();
     force_new(facade, || {
-        let mut find = facade.find(ACCOUNT)?.eq("emailAccountId", Value::string(account_id));
+        let mut find = facade
+            .find(ACCOUNT)?
+            .eq("emailAccountId", Value::string(account_id))
+            .for_update(true);
         let free = Condition::or(vec![
             Condition::is_null("syncLockedUntil"),
             Condition::less("syncLockedUntil", stamp_millis(now)),
@@ -836,6 +923,7 @@ fn release_lease(facade: &EntityFacade, account_id: &str) {
         facade
             .find(ACCOUNT)?
             .eq("emailAccountId", Value::string(account_id))
+            .for_update(true)
             .update_all([
                 ("syncLockedUntil".to_string(), Value::Null),
                 ("syncLockedBy".to_string(), Value::Null),
@@ -884,15 +972,16 @@ pub(super) fn run_sync(facade: &EntityFacade, account_id: &str, options: &SyncOp
         ..SyncReport::default()
     };
     let started = std::time::Instant::now();
+    let mut progress = Progress::new(facade, account_id);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if server.is_pop() {
             if options.push_only {
                 Ok(())
             } else {
-                pop_sync(facade, &account, &server, &mut report)
+                pop_sync(facade, &account, &server, &mut report, &mut progress)
             }
         } else {
-            imap_sync(facade, &account, &server, options, &mut report)
+            imap_sync(facade, &account, &server, options, &mut report, &mut progress)
         }
     }))
     .unwrap_or_else(|payload| {
@@ -902,7 +991,9 @@ pub(super) fn run_sync(facade: &EntityFacade, account_id: &str, options: &SyncOp
         )))
     });
     record_outcome(facade, &account, &result, &mut report, options);
+    set_backlog(account_id, report.capped && report.outcome == "synced");
     release_lease(facade, account_id);
+    progress.finish(&report);
     tracing::info!(
         account = %account_id,
         outcome = report.outcome,
@@ -960,6 +1051,13 @@ fn record_outcome(
             fields.push(("statusId", Value::string("EasAuthFailed")));
             fields.push(("lastSyncError", Value::string(clip(text, 4000))));
         }
+        // the token store marked the account and logged it
+        Err(SyncFailure::SignIn(text)) => {
+            report.outcome = "authFailed";
+            report.message = text.clone();
+            fields.push(("statusId", Value::string("EasAuthFailed")));
+            fields.push(("lastSyncError", Value::string(clip(text, 4000))));
+        }
         Err(SyncFailure::Connect(text)) => {
             tracing::error!(account = %account.id, "Email account {} sync failed: {text}", account.id);
             report.outcome = "failed";
@@ -994,8 +1092,209 @@ pub(super) fn clip(text: &str, max: usize) -> String {
     }
 }
 
+/// The topic of a sync's live progress (`NotificationMessage`, not persisted, no alert).
+pub(super) const PROGRESS_TOPIC: &str = "emailSyncProgress";
+/// At most one progress message of a sync in this time (and one when it ends).
+const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A sync's live progress for a screen ("Syncing 1,204 of 8,000"), sent on [`PROGRESS_TOPIC`] to the account's users
+/// (its owner and current members, as `publish#AccountCounts` finds them): `{emailAccountId, done, folderCount,
+/// foldersDone, folderName, folderPath, folderKept, folderFetched, folderToFetch, folderPending, fetched, toFetch,
+/// pending}`, and when it ends also `outcome`, `message` and `newCount`. A session fetches at most `email_sync_batch`
+/// messages a folder (`folderToFetch`); `folderPending` is all the new mail of the folder in the sync window, the rest
+/// coming in later sessions, and `folderKept` what was kept of it before, so a first sync shows "{folderKept +
+/// folderFetched} of {folderKept + folderPending}" across its sessions. `toFetch` and `pending` add up the folders read
+/// so far, so they grow folder by folder. Throttled to one a second; nothing is sent until a folder has mail to
+/// fetch, so a sync with nothing new sends nothing, and the last message (done) only after one was sent. Only while a
+/// notification socket or a cluster peer can take it, as the shell counts.
+pub(super) struct Progress {
+    account_id: String,
+    on: bool,
+    users: Option<Vec<String>>,
+    last: Option<std::time::Instant>,
+    sent_any: bool,
+    folder_count: usize,
+    folders_done: usize,
+    folder_name: String,
+    folder_path: String,
+    folder_kept: usize,
+    folder_fetched: usize,
+    folder_to_fetch: usize,
+    folder_pending: usize,
+    fetched: usize,
+    to_fetch: usize,
+    pending: usize,
+}
+
+impl Progress {
+    pub(super) fn new(facade: &EntityFacade, account_id: &str) -> Self {
+        let shutting_down = ExecutionContext::with_current(|ec| ec.factory().is_shutting_down()).unwrap_or(true);
+        let on = crate::service::shell::would_deliver(
+            shutting_down,
+            crate::notify::has_listeners(crate::notify::NOTIFICATION_MESSAGE),
+            crate::cluster::is_linked(facade),
+        );
+        Self {
+            account_id: account_id.to_string(),
+            on,
+            users: None,
+            last: None,
+            sent_any: false,
+            folder_count: 0,
+            folders_done: 0,
+            folder_name: String::new(),
+            folder_path: String::new(),
+            folder_kept: 0,
+            folder_fetched: 0,
+            folder_to_fetch: 0,
+            folder_pending: 0,
+            fetched: 0,
+            to_fetch: 0,
+            pending: 0,
+        }
+    }
+
+    pub(super) fn folders(&mut self, count: usize) {
+        self.folder_count = count;
+    }
+
+    pub(super) fn start_folder(&mut self, name: &str, path: &str) {
+        self.folder_name = name.to_string();
+        self.folder_path = path.to_string();
+        self.folder_kept = 0;
+        self.folder_fetched = 0;
+        self.folder_to_fetch = 0;
+        self.folder_pending = 0;
+    }
+
+    /// The new mail the current folder brings: `count` in this session, `pending` in all (the sessions after this one
+    /// bring the rest), with `kept` messages of it kept before.
+    pub(super) fn new_mail(&mut self, count: usize, pending: usize, kept: usize) {
+        self.folder_to_fetch = count;
+        self.folder_pending = pending.max(count);
+        self.folder_kept = kept;
+        self.to_fetch += count;
+        self.pending += pending.max(count);
+        self.send(false, None);
+    }
+
+    pub(super) fn fetched_one(&mut self) {
+        self.folder_fetched += 1;
+        self.fetched += 1;
+        self.send(false, None);
+    }
+
+    pub(super) fn end_folder(&mut self) {
+        self.folders_done += 1;
+        self.send(false, None);
+    }
+
+    pub(super) fn finish(&mut self, report: &SyncReport) {
+        if self.sent_any {
+            self.send(true, Some(report));
+        }
+    }
+
+    fn message(&self, report: Option<&SyncReport>) -> indexmap::IndexMap<String, Value> {
+        let count = |number: usize| Value::I64(i64::try_from(number).unwrap_or(i64::MAX));
+        let mut map = indexmap::IndexMap::new();
+        map.insert("emailAccountId".to_string(), Value::string(&self.account_id));
+        map.insert("done".to_string(), Value::Bool(report.is_some()));
+        map.insert("folderCount".to_string(), count(self.folder_count));
+        map.insert("foldersDone".to_string(), count(self.folders_done));
+        map.insert("folderName".to_string(), Value::string(&self.folder_name));
+        map.insert("folderPath".to_string(), Value::string(&self.folder_path));
+        map.insert("folderKept".to_string(), count(self.folder_kept));
+        map.insert("folderFetched".to_string(), count(self.folder_fetched));
+        map.insert("folderToFetch".to_string(), count(self.folder_to_fetch));
+        map.insert("folderPending".to_string(), count(self.folder_pending));
+        map.insert("fetched".to_string(), count(self.fetched));
+        map.insert("toFetch".to_string(), count(self.to_fetch.max(self.fetched)));
+        map.insert("pending".to_string(), count(self.pending.max(self.fetched)));
+        if let Some(report) = report {
+            map.insert("outcome".to_string(), Value::string(report.outcome));
+            map.insert("message".to_string(), Value::string(&report.message));
+            map.insert("newCount".to_string(), count(report.new_count));
+        }
+        map
+    }
+
+    /// The account's owner and current members, once.
+    fn users(&mut self) -> &[String] {
+        if self.users.is_none() {
+            let found = account_users(&self.account_id).unwrap_or_else(|err| {
+                tracing::warn!("Could not read the users of email account {}: {err}", self.account_id);
+                Vec::new()
+            });
+            self.users = Some(found);
+        }
+        self.users.as_deref().unwrap_or_default()
+    }
+
+    fn send(&mut self, last: bool, report: Option<&SyncReport>) {
+        if !self.on || (!last && self.to_fetch == 0) {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if !last && self.last.is_some_and(|at| now.duration_since(at) < PROGRESS_EVERY) {
+            return;
+        }
+        let message = self.message(report);
+        let users = self.users().to_vec();
+        if users.is_empty() {
+            return;
+        }
+        self.last = Some(now);
+        self.sent_any = true;
+        let sent = crate::notify::NotificationMessage::new()
+            .topic(PROGRESS_TOPIC)
+            .user_ids(users)
+            .message_map(message)
+            .persist(false)
+            .show_alert(false)
+            .send();
+        if let Err(err) = sent {
+            tracing::warn!(
+                "Could not send the sync progress of email account {}: {err}",
+                self.account_id
+            );
+        }
+    }
+}
+
+/// The users of an account: its owner and its current members.
+fn account_users(account_id: &str) -> Result<Vec<String>, LibError> {
+    let Some(facade) = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() else {
+        return Ok(Vec::new());
+    };
+    let mut users: Vec<String> = Vec::new();
+    if let Some(account) = find_one(&facade, ACCOUNT, "emailAccountId", account_id)? {
+        let owner = field_text(&account, "ownerUserId");
+        if !owner.is_empty() {
+            users.push(owner);
+        }
+    }
+    let now = stamp_millis(now_millis());
+    for row in facade
+        .find("moqui.basic.email.EmailAccountUser")?
+        .eq("emailAccountId", Value::string(account_id))
+        .condition(Condition::or(vec![
+            Condition::is_null("thruDate"),
+            Condition::greater("thruDate", now.clone()),
+        ]))
+        .list()?
+        .values()
+    {
+        let user = field_text(row, "userId");
+        if !user.is_empty() && !users.contains(&user) {
+            users.push(user);
+        }
+    }
+    Ok(users)
+}
+
 /// The unread counts of the account's users changed.
-fn publish_counts(account_id: &str) {
+pub(super) fn publish_counts(account_id: &str) {
     let mut parameters = BTreeMap::new();
     parameters.insert(
         "emailAccountIdList".to_string(),
@@ -1176,8 +1475,9 @@ fn imap_sync(
     server: &ServerInfo,
     options: &SyncOptions,
     report: &mut SyncReport,
+    progress: &mut Progress,
 ) -> Result<(), SyncFailure> {
-    let mut conn = open_imap(server)?;
+    let mut conn = connect_imap(facade, server)?;
     if conn.caps.has("QRESYNC") && conn.caps.has("ENABLE") {
         if conn.session.run_command_and_check_ok("ENABLE QRESYNC").is_ok() {
             conn.qresync = true;
@@ -1225,6 +1525,7 @@ fn imap_sync(
             .then(left.sequence.cmp(&right.sequence))
             .then(left.path.cmp(&right.path))
     });
+    progress.folders(folders.len());
     for (index, folder) in folders.iter().enumerate() {
         if options.inbox_only && index > 0 && folder.kind != "EfkInbox" && session.vanished.is_empty() {
             break;
@@ -1232,7 +1533,10 @@ fn imap_sync(
         if index > 0 && claim_lease(facade, &account.id, true).is_err() {
             tracing::warn!("Could not renew the sync lock of email account {}", account.id);
         }
-        match sync_folder(&mut conn, &mut session, folder, report) {
+        progress.start_folder(&folder.name, &folder.path);
+        let synced = sync_folder(&mut conn, &mut session, folder, report, progress);
+        progress.end_folder();
+        match synced {
             Ok(()) => report.folder_count += 1,
             Err(FolderError::Lost(text)) => return Err(SyncFailure::Connect(text)),
             Err(FolderError::Folder(text)) => {
@@ -1409,10 +1713,11 @@ fn map_folders(
             }
             continue;
         }
+        // a kind is taken by a folder mapped to the server, or by the folder a user chose for it, wherever it is
         let taken_kind = |locals: &[FolderInfo]| {
             locals
                 .iter()
-                .any(|local| local.kind == kind && !local.path.is_empty() && !local.removed)
+                .any(|local| local.kind == kind && (local.kind_by_user || (!local.path.is_empty() && !local.removed)))
         };
         if kind != "EfkOther" && !taken_kind(&locals) {
             if let Some(local) = locals
@@ -1644,6 +1949,7 @@ fn sync_folder(
     session: &mut Session<'_>,
     folder: &FolderInfo,
     report: &mut SyncReport,
+    progress: &mut Progress,
 ) -> Result<(), FolderError> {
     let items = if conn.condstore {
         "(MESSAGES UIDNEXT UIDVALIDITY UNSEEN HIGHESTMODSEQ)"
@@ -1798,7 +2104,10 @@ fn sync_folder(
     }
     // the new messages
     let capped = wanted.len() > session.batch;
+    report.capped |= capped;
+    let pending = wanted.len();
     wanted.truncate(session.batch);
+    progress.new_mail(wanted.len(), pending, locals.len());
     let mut failed_from: Option<u32> = None;
     for chunk in wanted.chunks(HEADER_CHUNK) {
         let heads = conn.session.uid_fetch(
@@ -1868,7 +2177,28 @@ fn sync_folder(
                 match store_new(session, folder, *uid, &raw, flags, *internal, *size, keywords) {
                     Ok(id) => {
                         report.new_count += 1;
+                        progress.fetched_one();
                         if folder.kind == "EfkInbox" {
+                            // a Message-ID new to the account (a copy or a move is not new mail)
+                            if eca_due(session.account, *internal) {
+                                run_stored_ecas(
+                                    session.facade,
+                                    &StoredMessage {
+                                        raw: &raw,
+                                        server_id: session
+                                            .account
+                                            .server
+                                            .as_ref()
+                                            .map_or("", |server| &server.server_id),
+                                        account_id: &session.account.id,
+                                        email_message_id: &id,
+                                        received_millis: *internal,
+                                        seen: flags.seen,
+                                        answered: flags.answered,
+                                        flagged: flags.flagged,
+                                    },
+                                );
+                            }
                             session.new_inbox_ids.push(id);
                         }
                     }
@@ -2228,8 +2558,23 @@ fn remove_vanished(session: &mut Session<'_>, report: &mut SyncReport) {
     session.vanished.clear();
 }
 
+/// How long before the account's last sync a message may have arrived and still be new mail for the email-ECA rules.
+const ECA_MARGIN_MILLIS: i64 = 24 * 60 * 60 * 1000;
+
+/// Whether the email-ECA rules run on a message just stored in the Inbox ([`run_stored_ecas`]), which happens once, as
+/// it is stored: only a message stored new (a Message-ID the account did not have: a copy or a move, and a folder read
+/// again after a UIDVALIDITY change, are not new mail), only once the account has synced before (its first sync is
+/// the mailbox's history), and only one that arrived (`arrived`: IMAP INTERNALDATE, POP3 the Date header) no earlier
+/// than a day before that sync, so the rest of a large first sync's backlog is history too.
+fn eca_due(account: &AccountInfo, arrived: Option<i64>) -> bool {
+    let Some(last) = account.last_sync_millis else {
+        return false;
+    };
+    arrived.is_none_or(|millis| millis >= last.saturating_sub(ECA_MARGIN_MILLIS))
+}
+
 /// The account's rules on its new Inbox mail; a rule that fails is the rules' to log.
-fn run_rules(account_id: &str, ids: &[String]) {
+pub(super) fn run_rules(account_id: &str, ids: &[String]) {
     if ids.is_empty() {
         return;
     }
@@ -2250,7 +2595,7 @@ fn run_rules(account_id: &str, ids: &[String]) {
 /// What new Inbox mail brings once the rules ran, each part on its own (a part that fails is logged and the other
 /// runs): a snoozed thread with new mail is back in the Inbox (`wake#SnoozedThreads`, as Gmail does), and the account's
 /// automatic reply goes to the senders it is for (`send#OutOfOfficeReplies`).
-fn after_new_mail(account_id: &str, ids: &[String]) {
+pub(super) fn after_new_mail(account_id: &str, ids: &[String]) {
     if ids.is_empty() {
         return;
     }
@@ -2277,6 +2622,7 @@ fn pop_sync(
     account: &AccountInfo,
     server: &ServerInfo,
     report: &mut SyncReport,
+    progress: &mut Progress,
 ) -> Result<(), SyncFailure> {
     require_host(&server.host).map_err(|err| SyncFailure::Connect(err.to_string()))?;
     let lost = |err: LibError| SyncFailure::Connect(err.to_string());
@@ -2298,14 +2644,10 @@ fn pop_sync(
         mark_seen: false,
         delete: server.store_delete,
     };
-    let mut pop = Pop3::open(&settings).map_err(|err| {
-        let text = err.message().to_string();
-        if text.starts_with("mail server rejected the command") {
-            SyncFailure::Auth(format!("POP3 {} refused the sign-in: {text}", server.host))
-        } else {
-            SyncFailure::Connect(format!("POP3 {}: {text}", server.host))
-        }
-    })?;
+    let mut pop = open_pop(facade, server, &settings)?;
+    let total_folders = 1;
+    progress.folders(total_folders);
+    progress.start_folder(&inbox.name, "INBOX");
     let listing = pop
         .uidl()
         .map_err(|err| SyncFailure::Connect(format!("POP3 UIDL on {}: {}", server.host, err.message())))?;
@@ -2325,7 +2667,9 @@ fn pop_sync(
     // the newest first, a batch at a time
     let mut unknown: Vec<(u32, String)> = listing.into_iter().filter(|(_, uidl)| !known.contains(uidl)).collect();
     unknown.sort_by_key(|item| std::cmp::Reverse(item.0));
+    let pending = unknown.len();
     unknown.truncate(usize::try_from(property_number("email_sync_batch", 500)).unwrap_or(500));
+    progress.new_mail(unknown.len(), pending, known.len());
     let mut new_ids = Vec::new();
     for (number, uidl) in unknown {
         let raw = match pop.retrieve(number) {
@@ -2367,6 +2711,23 @@ fn pop_sync(
         match force_new(facade, || store::store_message(facade, &parsed, &place)) {
             Ok(id) => {
                 report.new_count += 1;
+                progress.fetched_one();
+                // POP3 has no server date: when it was sent (the newest first, so a backlog is older mail)
+                if eca_due(account, parsed.sent_millis) {
+                    run_stored_ecas(
+                        facade,
+                        &StoredMessage {
+                            raw: &raw,
+                            server_id: &server.server_id,
+                            account_id: &account.id,
+                            email_message_id: &id,
+                            received_millis: None,
+                            seen: false,
+                            answered: false,
+                            flagged: false,
+                        },
+                    );
+                }
                 new_ids.push(id);
                 if server.store_delete {
                     if let Err(err) = pop.delete_number(number) {
@@ -2383,17 +2744,79 @@ fn pop_sync(
     if let Err(err) = pop.quit() {
         tracing::warn!("POP3 QUIT on {}: {err}", server.host);
     }
-    report.folder_count = 1;
+    report.folder_count = total_folders;
+    progress.end_folder();
     run_rules(&account.id, &new_ids);
     after_new_mail(&account.id, &new_ids);
     Ok(())
 }
 
+/// Connect to a POP3 server and sign in: `USER` and `PASS`, or for an EatOAuth2 server `AUTH XOAUTH2` with an access
+/// token, replaced by a new one once when the server refuses it (it may have been revoked or have ended early). A
+/// refused sign-in is [`SyncFailure::Auth`].
+pub(super) fn open_pop(
+    facade: &EntityFacade,
+    server: &ServerInfo,
+    settings: &StoreSettings,
+) -> Result<Pop3, SyncFailure> {
+    let classify = |err: crate::context::Error| {
+        let text = err.message().to_string();
+        if text.starts_with("mail server rejected the command") {
+            SyncFailure::Auth(format!("POP3 {} refused the sign-in: {text}", server.host))
+        } else {
+            SyncFailure::Connect(format!("POP3 {}: {text}", server.host))
+        }
+    };
+    if !server.is_oauth() {
+        return Pop3::open(settings).map_err(classify);
+    }
+    let token = super::oauth::access_token(facade, &server.server_id, None)?;
+    match Pop3::open_xoauth2(settings, &token).map_err(classify) {
+        Err(SyncFailure::Auth(text)) => {
+            tracing::debug!(
+                "POP3 {} refused the access token, trying a new one: {text}",
+                server.host
+            );
+            let fresh = super::oauth::access_token(facade, &server.server_id, Some(&token))?;
+            if fresh == token {
+                return Err(SyncFailure::Auth(text));
+            }
+            Pop3::open_xoauth2(settings, &fresh).map_err(classify)
+        }
+        other => other,
+    }
+}
+
 // ---- the job ----
+
+/// The accounts of this server whose last sync stopped at `email_sync_batch` with new mail left on the server.
+#[derive(Default)]
+struct Backlog(std::sync::Mutex<HashSet<String>>);
+
+fn backlog() -> Option<std::sync::Arc<Backlog>> {
+    ExecutionContext::with_current(|ec| ec.factory().extension(|_| Backlog::default()))
+}
+
+fn set_backlog(account_id: &str, capped: bool) {
+    if let Some(backlog) = backlog() {
+        let mut ids = moqui_lib::sync::lock(&backlog.0);
+        if capped {
+            ids.insert(account_id.to_string());
+        } else {
+            ids.remove(account_id);
+        }
+    }
+}
+
+fn has_backlog(account_id: &str) -> bool {
+    backlog().is_some_and(|backlog| moqui_lib::sync::lock(&backlog.0).contains(account_id))
+}
 
 /// `sync#DueEmailAccounts`, the job `sync_EmailAccounts_frequent`: each account with an incoming server whose last
 /// sync is older than its interval (`syncIntervalMinutes`, else `email_sync_interval`, 5 minutes; three times that
-/// after an error), each on its own. A paused account, one whose sign-in failed and one syncing now are left.
+/// after an error), or whose last sync stopped at `email_sync_batch` with mail left (at every run of the job, so a
+/// large first sync goes on a batch a minute), each on its own. A paused account, one whose sign-in failed and one
+/// syncing now are left.
 pub(super) fn sync_due_accounts(
     _parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
@@ -2433,9 +2856,10 @@ pub(super) fn sync_due_accounts(
             interval *= 3;
         }
         // a few seconds' slack, so a job every minute syncs an account every interval, not every interval and a minute
-        if account
-            .last_sync_millis
-            .is_some_and(|last| now - last + 5_000 < interval)
+        if !has_backlog(&account.id)
+            && account
+                .last_sync_millis
+                .is_some_and(|last| now - last + 5_000 < interval)
         {
             continue;
         }

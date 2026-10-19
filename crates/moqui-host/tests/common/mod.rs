@@ -85,6 +85,8 @@ const WIDGETS: &str = r#"<screen require-authentication="false">
     </actions>
     <widgets>
         <label text="Gate widgets" type="h4"/>
+        <container-box id="GateClosedBox" initial="closed"><box-header title="Gate closed box"/>
+            <box-body><label text="Shown once opened" type="p"/></box-body></container-box>
         <editable id="GateEditable" text="Edit me" transition="saveValue" widget-type="text"/>
         <form-single name="NoteForm" transition="saveNote" background-submit="true" background-message="Note sent">
             <field name="note"><default-field title="Note"><text-line/></default-field></field>
@@ -118,7 +120,8 @@ const STATIC_LIST: &str = r#"<screen require-authentication="false" server-stati
     </actions>
     <widgets>
         <label text="Enumerations of ${ec.user.username}" type="h4"/>
-        <form-list name="EnumList" list="enumList" header-dialog="true" saved-finds="true" show-csv-button="true" select-columns="true">
+        <form-list name="EnumList" list="enumList" header-dialog="true" saved-finds="true" show-csv-button="true" select-columns="true" views="list,board">
+            <view-board group-field="enumTypeId" card-fields="description"/>
             <row-selection id-field="enumId"><action><dialog button-text="Pick"/>
                 <form-single name="PickForm" transition="pickEnums"><field name="go"><default-field title="Pick Them"><submit/></default-field></field></form-single>
             </action></row-selection>
@@ -165,13 +168,13 @@ pub fn start(label: &str) -> Gate {
 
 /// [`start`] with one more `entity-facade-xml` document loaded after the grants, for the rows a test needs.
 pub fn start_with_data(label: &str, data: &str) -> Gate {
-    start_seeded(label, false, Some(data), "", &[])
+    start_seeded(label, false, Some(data), "", &[], &[])
 }
 
 /// Load the seed (the framework files and each component's `data` directory), the demo users, and the grants of the fixture, then serve on an
 /// ephemeral port. With `static_fixture` a `screen-extend` marks the fixture server-static for qvt.
 pub fn start_with(label: &str, static_fixture: bool) -> Gate {
-    start_seeded(label, static_fixture, None, "", &[])
+    start_seeded(label, static_fixture, None, "", &[], &[])
 }
 
 /// The token of the token-route gate's public link, and of a revoked one ([`start_token_route`]).
@@ -201,14 +204,16 @@ pub fn start_token_route(label: &str) -> Gate {
         hash(REVOKED_TOKEN)
     );
     let conf = r#"<webapp-list><webapp name="webroot"><token-route name="tk" screen-location="component://example/screen/PublicLink.xml"
-        token-service="org.moqui.impl.FileServices.check#PublicShareToken" title="Shared with you"/></webapp></webapp-list>"#;
-    start_seeded(label, false, Some(&data), conf, &[])
+        token-service="org.moqui.impl.FileServices.check#PublicShareToken" title="Shared with you"/>
+        <token-route name="tkp" screen-location="component://example/screen/PublicLink.xml"
+        token-service="org.moqui.impl.FileServices.check#PublicShareToken" post-transition="files"/></webapp></webapp-list>"#;
+    start_seeded(label, false, Some(&data), conf, &[], &[])
 }
 
 /// [`start`] with more conf in the runtime's `MoquiDevConf.xml`, such as a response header of this server only, and process properties
 /// that hold while the gate does. They are set once the gate has the one-server lock, and cleared when it drops.
 pub fn start_with_conf(label: &str, extra_conf: &str, properties: &[(&str, &str)]) -> Gate {
-    let mut gate = start_seeded(label, false, None, extra_conf, &[]);
+    let mut gate = start_seeded(label, false, None, extra_conf, &[], &[]);
     for (name, value) in properties {
         moqui_lib::env::set_property(name, (*value).to_string());
     }
@@ -220,7 +225,13 @@ pub fn start_with_conf(label: &str, extra_conf: &str, properties: &[(&str, &str)
 /// gate has the one-server lock, before the load, and cleared when the gate drops. Setting them before the lock would change
 /// the properties of a server another test still runs.
 pub fn start_with_properties(label: &str, data: Option<&str>, properties: &[(&str, &str)]) -> Gate {
-    start_seeded(label, false, data, "", properties)
+    start_seeded(label, false, data, "", properties, &[])
+}
+
+/// [`start_with_properties`] with files written into the runtime directory before the server starts, by path relative
+/// to it, such as a component of the test's own (`component/<name>/component.xml` and its `service` files).
+pub fn start_with_files(label: &str, data: Option<&str>, properties: &[(&str, &str)], files: &[(&str, &str)]) -> Gate {
+    start_seeded(label, false, data, "", properties, files)
 }
 
 /// Clears the properties a gate set, before the gate gives up the lock.
@@ -465,6 +476,7 @@ fn start_seeded(
     data: Option<&str>,
     extra_conf: &str,
     properties: &[(&str, &str)],
+    files: &[(&str, &str)],
 ) -> Gate {
     let serial = serial();
     let reset = PropertyReset::of(&properties.iter().map(|(name, _)| *name).collect::<Vec<_>>());
@@ -486,6 +498,11 @@ fn start_seeded(
         std::fs::create_dir_all(&extend).unwrap();
         std::fs::write(component.join("component.xml"), r#"<component name="gate-static"/>"#).unwrap();
         std::fs::write(extend.join("ArtifactGroupDetail.xml"), STATIC_EXTEND).unwrap();
+    }
+    for (path, text) in files {
+        let path = runtime.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
     }
     let framework = repo_root().join("runtime/base-component/framework");
     if let Some(data) = data {

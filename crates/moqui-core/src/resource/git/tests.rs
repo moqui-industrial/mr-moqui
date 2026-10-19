@@ -552,6 +552,7 @@ fn gc_deletes_what_no_ref_reaches_and_repacks_the_rest() {
         name: "Test".into(),
         email: "test@example.com".into(),
         user_id: None,
+        seconds: None,
     };
     let main = store.read_ref("refs/heads/main").unwrap().unwrap();
     store

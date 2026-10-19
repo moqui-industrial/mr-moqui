@@ -46,6 +46,6 @@
             <field name="note"><default-field><text-area editor-type="md" rows="5"/></default-field></field>
         </form-single>
         <section-iterate name="Rows" list="entries" entry="entry" paginate="true"><widgets><label text="entry ${entry.n}"/></widgets></section-iterate>
-        <container-box><box-header title="Closed"/><box-body><label text="inside"/></box-body></container-box>
+        <container-box initial="closed"><box-header title="Closed"/><box-body><label text="inside"/></box-body></container-box>
     </widgets>
 </screen>

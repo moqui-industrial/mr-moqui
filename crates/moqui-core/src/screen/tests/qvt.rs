@@ -182,7 +182,7 @@ fn a_dashboard_lays_out_number_cards() {
             "html",
             vec![
                 r#"<div id="Counters" class="dashboard counters" style="--dashboard-min:160px"><div class="dashboard-item">"#,
-                r#"<a href="/Orders?statusId=Open" class="number-card"><span class="number-card-title">Open orders</span><strong class="number-card-value">42</strong><span class="number-card-delta" data-tone="good">+3</span></a>"#,
+                r#"<a href="/Orders?statusId=Open" class="number-card"><span class="material-symbols-outlined icon" aria-hidden="true">receipt_long</span> <span class="number-card-title">Open orders</span><strong class="number-card-value">42</strong><span class="number-card-delta" data-tone="good">+3</span></a>"#,
                 r#"<span class="number-card-delta" data-tone="bad">+1</span>"#,
                 r#"<div id="Revenue" class="number-card wide" data-size="sm"><i class="fa fa-dollar"></i> <span class="number-card-title">Revenue {{x}} &amp; more</span>"#,
                 r#"<span class="number-card-delta" data-tone="bad">-5%</span>"#,
@@ -500,6 +500,11 @@ fn row_selection_multi_forms_find_dialogs_and_the_options_of_a_drop_down() {
         out.contains("'title_0':'One'") && out.contains("'title_1':'Two'"),
         "{out}"
     );
+    // a box that starts closed binds the Boolean prop: the text "false" would be truthy and leave it open
+    assert!(
+        out.contains(r#"<m-container-box type="default" title="Closed" :initial-open="false">"#),
+        "{out}"
+    );
 }
 
 /// A qvt render error is logged and written in place of what failed, as the html render does: a section's error replaces
@@ -590,7 +595,11 @@ fn client_components_are_precompiled() {
     let compiler = read("libs/vue/compiler-dom.cjs.js");
     let made = crate::screen::vue_check::precompiled_components(
         &compiler,
-        &[&read("js/MoquiLib.js"), &read("js/WebrootVue.qvt.js")],
+        &[
+            &read("js/MoquiLib.js"),
+            &read("js/WebrootChat.js"),
+            &read("js/WebrootVue.qvt.js"),
+        ],
     )
     .unwrap();
     let path = js.join("js/WebrootVue.qvt.render.js");
@@ -607,5 +616,501 @@ fn client_components_are_precompiled() {
     // no with, no eval: the build without the compiler and a CSP without unsafe-eval can load it
     for banned in ["with (", "with(", "new Function", "eval("] {
         assert!(!made.contains(banned), "{banned}");
+    }
+}
+
+/// A section in a form-list cell is a unit of its own: it starts from the list's state (its links are in-cell links with the
+/// row's ids, a dialog's button is the flat in-cell one) and gives the state back, so the cells after it in the row and the
+/// rows after it are still in the list. A link's btn-type is expanded in each row and entry, an editable is a select, a date
+/// picker or the placeholder of an empty text with display-if-empty, and a container-row takes the row-col elements of a
+/// section-iterate, their sizes expanded.
+#[test]
+fn a_section_in_a_list_cell_keeps_the_list_and_link_styles_are_expanded() {
+    let out = check("cells", &[]);
+    for expected in [
+        // the container-dialog in the section has the row's id and is the in-cell flat button, its form's fields the row's ids
+        r#"<m-container-dialog id="RefuseDialog_0" color="negative" button-text="Refuse" title="Refuse"><template v-slot:button><q-btn dense flat no-caps class="m-link" label="Refuse"></q-btn></template>"#,
+        r#"id="RefuseForm_reason_0""#,
+        // the link after the section, in this row and the next: a text link of the list with the row's id
+        r#"<a href="/open" id="Cells_open_0_open" class="m-link-text">Open A1</a>"#,
+        r#"<a href="/open" id="Cells_open_1_open" class="m-link-text">Open A2</a>"#,
+        r#"<a href="/open" id="Cells_chip_1_open">"#,
+        // btn-type from an expression: primary in the first row, danger (negative) in the second
+        r#"<q-btn dense unelevated no-caps color="primary" class="m-link">Chip</q-btn>"#,
+        r#"<q-btn dense unelevated no-caps class="m-btn-tonal text-negative m-link">Chip</q-btn>"#,
+        // and in a section-iterate
+        r#"<q-btn dense unelevated no-caps color="primary" class="m-link">All</q-btn>"#,
+        r#"<q-btn dense unelevated no-caps class="m-btn-tonal text-primary m-link">Mine</q-btn>"#,
+        // editable: the empty note of the second row with its placeholder, a select with options and the current key,
+        // a select from editable-load, a date and an empty date-time
+        r#"id="NoteEdit_1" label-type="span" label-value="""#,
+        r#"widget-type="select""#,
+        r#"value="B" :options="[{'value':'A','label':'First'},{'value':'B','label':'Second'}]""#,
+        r#"load-url="/kindOptions""#,
+        r#"widget-type="date""#,
+        r#"widget-type="date-time""#,
+        r#"placeholder="Click to edit""#,
+        // container-row: the expanded sizes, and a column per entry of the section-iterate
+        r#"<div class="q-px-xs col-lg-8 col-md-8 col-sm-12 col-xs-12">"#,
+        r#"<div class="q-px-xs col-md-2 col-sm-12 col-xs-12"><span class="text-inline">col All</span>"#,
+        r#"<div class="q-px-xs col-md-2 col-sm-12 col-xs-12"><span class="text-inline">col Mine</span>"#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    // the open link of each row is in the list, never the tonal button of a link outside a list
+    assert!(
+        !out.contains(r#"class="m-btn-tonal text-primary m-link">Open"#),
+        "{out}"
+    );
+    // an empty editable without display-if-empty writes nothing
+    assert!(!out.contains(r#"id="Hidden""#), "{out}");
+}
+
+/// `columns type="mobile"` are the columns of a request with `_uiType=mobile` (the client sends it below 600 px), as Java;
+/// the untyped columns otherwise.
+#[test]
+fn mobile_columns_are_chosen_by_the_ui_type() {
+    let desktop = render_path("mobile", "", &[]);
+    let mobile = render_path("mobile", "", &[("_uiType", "mobile")]);
+    assert_compiles(
+        &["mobile".to_string(), "mobile ui".to_string()],
+        &[desktop.clone(), mobile.clone()],
+    );
+    // desktop: a column per field; mobile: the title and caption in one cell, the action in the other
+    let count = |text: &str, needle: &str| text.matches(needle).count();
+    assert_eq!(count(&desktop, "Widget"), 1, "{desktop}");
+    assert!(
+        count(&desktop, "class=\"th") > count(&mobile, "class=\"th"),
+        "fewer header cells on a phone:\n{desktop}\n{mobile}"
+    );
+    assert!(mobile.contains("note A"), "{mobile}");
+}
+
+/// A test context with the framework's services and a database holding the EntitySync statuses and their Default flow.
+fn status_context() -> crate::context::ExecutionContext {
+    let context = ExecutionContextFactory::test_context_in(
+        "",
+        crate::service::ServicePools::idle(),
+        crate::context::framework_dir(),
+    );
+    let facade = crate::testing::open();
+    facade.assume_db_tables();
+    context.factory().set_entity(facade.clone());
+    {
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        crate::service::load_definitions().unwrap();
+        let row = |entity: &str, fields: &[(&str, &str)]| {
+            let mut value = facade.make_value(entity).unwrap();
+            for (name, field) in fields {
+                value.set(*name, Value::string(*field));
+            }
+            value.create(&facade).unwrap();
+        };
+        row(
+            "moqui.basic.StatusType",
+            &[("statusTypeId", "EntitySync"), ("description", "Entity Sync")],
+        );
+        for (id, sequence, description) in [
+            ("EsNotStarted", "1", "Not Started"),
+            ("EsRunning", "2", "Running"),
+            ("EsComplete", "4", "Complete"),
+            ("EsOtherError", "98", "Other Error"),
+        ] {
+            row(
+                "moqui.basic.StatusItem",
+                &[
+                    ("statusId", id),
+                    ("statusTypeId", "EntitySync"),
+                    ("sequenceNum", sequence),
+                    ("description", description),
+                ],
+            );
+        }
+        row(
+            "moqui.basic.StatusFlow",
+            &[("statusFlowId", "Default"), ("description", "Default")],
+        );
+        for (from, to, name) in [
+            ("EsNotStarted", "EsRunning", "Running"),
+            ("EsRunning", "EsComplete", "Complete"),
+            ("EsRunning", "EsOtherError", "Error"),
+            ("EsRunning", "EsNotStarted", "Reset Not Started"),
+            ("EsComplete", "EsRunning", "Running"),
+            ("EsOtherError", "EsRunning", "Running"),
+        ] {
+            row(
+                "moqui.basic.StatusFlowTransition",
+                &[
+                    ("statusFlowId", "Default"),
+                    ("statusId", from),
+                    ("toStatusId", to),
+                    ("transitionName", name),
+                ],
+            );
+        }
+        // a flow of its own, which a board names with status-flow-id
+        row(
+            "moqui.basic.StatusFlow",
+            &[("statusFlowId", "FastSync"), ("description", "Fast")],
+        );
+        row(
+            "moqui.basic.StatusFlowTransition",
+            &[
+                ("statusFlowId", "FastSync"),
+                ("statusId", "EsNotStarted"),
+                ("toStatusId", "EsComplete"),
+                ("transitionName", "Done at once"),
+            ],
+        );
+    }
+    context
+}
+
+/// The status-bar element (style-guide §8.2): the stages of the status type in sequence order with the current one filled
+/// and the ones before it done, the statuses that wait or end badly off the row unless current, the colors by the status
+/// color map, and the transitions from the current status as buttons that post the transition with the new status, the
+/// next stage the primary one; read-only, allowed statuses, given stages and the html and text fallbacks.
+#[test]
+fn a_status_bar_shows_the_stages_and_the_transitions_of_the_flow() {
+    let context = status_context();
+    let _entered = context.enter();
+    let render = |mode: &str, parameters: &[(&str, &str)]| -> String {
+        let map: BTreeMap<String, Value> = parameters
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), Value::string(*value)))
+            .collect();
+        make_render(context.factory())
+            .root_screen(render_dir().join("status.xml").to_string_lossy().into_owned())
+            .screen_path("")
+            .render_mode(mode)
+            .parameters(map)
+            .render()
+            .unwrap_or_else(|err| panic!("status {mode}: {err}"))
+            .body_text()
+    };
+    let out = render("qvt", &[]);
+    let path = render_dir().join("status.qvt");
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::write(&path, &out).unwrap();
+    } else {
+        let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing {}", path.display()));
+        assert_eq!(out, expected, "status differs from {}", path.display());
+    }
+    assert_compiles(&["status".to_string()], std::slice::from_ref(&out));
+
+    let bar = |id: &str| -> serde_json::Value {
+        let start = out
+            .find(&format!("<m-status-bar id=\"{id}\""))
+            .unwrap_or_else(|| panic!("{id} in {out}"));
+        let rest = &out[start..];
+        let at = rest.find(":bar=\"").unwrap() + 6;
+        let text = &rest[at..at + rest[at..].find('"').unwrap()];
+        // a JavaScript object literal with single quotes (no label here has one)
+        serde_json::from_str(&text.replace('\'', "\"").replace("&amp;", "&")).unwrap()
+    };
+    let states = |value: &serde_json::Value| -> Vec<String> {
+        value["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|stage| {
+                format!(
+                    "{}:{}:{}",
+                    stage["statusId"].as_str().unwrap(),
+                    stage["state"].as_str().unwrap(),
+                    stage["color"].as_str().unwrap()
+                )
+            })
+            .collect()
+    };
+    let buttons = |value: &serde_json::Value| -> Vec<String> {
+        value["transitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tr| {
+                let next = if tr["isNext"] == true { "next" } else { "" };
+                let danger = if tr["isDanger"] == true { "danger" } else { "" };
+                format!("{}:{next}{danger}", tr["toStatusId"].as_str().unwrap())
+            })
+            .collect()
+    };
+    let running = bar("SyncStatus");
+    assert_eq!(
+        states(&running),
+        [
+            "EsNotStarted:done:grey-7",
+            "EsRunning:current:primary",
+            "EsComplete:todo:positive"
+        ],
+        "the error status waits off the row"
+    );
+    assert_eq!(
+        buttons(&running),
+        ["EsComplete:next", "EsNotStarted:", "EsOtherError:danger"]
+    );
+    assert!(
+        out.contains(r#"action="/setStatus" :parameters="{'entitySyncId':'S1'}" title="Sync S1""#),
+        "{out}"
+    );
+    let read_only = bar("ReadOnly");
+    assert_eq!(states(&read_only).len(), 3);
+    assert!(buttons(&read_only).is_empty());
+    let read_only_tag = out[out.find("id=\"ReadOnly\"").unwrap()..]
+        .split("</m-status-bar>")
+        .next()
+        .unwrap();
+    assert!(!read_only_tag.contains("action="), "{out}");
+    let staged = bar("Staged");
+    assert_eq!(
+        states(&staged),
+        [
+            "EsNotStarted:todo:grey-7",
+            "EsRunning:todo:primary",
+            "EsComplete:todo:positive",
+            "EsOtherError:current:negative"
+        ],
+        "ended badly: last, nothing done"
+    );
+    assert_eq!(
+        buttons(&staged),
+        ["EsRunning:next"],
+        "back to the earliest stage it leads to"
+    );
+    assert!(out.contains(r#":confirm="false""#), "{out}");
+    assert_eq!(buttons(&bar("Allowed")), ["EsComplete:next"]);
+    assert!(out.contains(r#"parameter-name="toStatusId""#), "{out}");
+    assert!(!out.contains(r#"id="None""#), "no status, no bar: {out}");
+
+    // the status from the request
+    let complete = render("qvt", &[("statusId", "EsComplete")]);
+    assert!(
+        complete.contains("{'statusId':'EsComplete','label':'Complete','color':'positive','state':'current'}"),
+        "{complete}"
+    );
+
+    // html: chips and a form per transition, the next one primary, each confirming
+    let html = render("html", &[]);
+    for expected in [
+        r#"<div id="SyncStatus" class="status-bar" data-status="EsRunning">"#,
+        r#"<span class="status-chip" data-state="done" data-color="grey-7" data-stage="EsNotStarted">&check; Not Started</span>"#,
+        r#"data-state="current" data-color="primary" data-stage="EsRunning" aria-current="step">Running</span>"#,
+        r#"<input type="hidden" name="entitySyncId" value="S1"><input type="hidden" name="statusId" value="EsComplete"><button type="submit" data-btn="primary" data-to-status="EsComplete" data-confirm="Complete: Sync S1?">Complete</button>"#,
+        r#"data-btn="danger" data-to-status="EsOtherError""#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    // text: the current status's description
+    let text = render("text", &[]);
+    assert!(text.contains("Status: Running"), "{text}");
+}
+
+/// A level of the shell in qvt is the screen the server renders, which writes `m-subscreens-active` for the levels below:
+/// a parent whose default subscreens end at a `.qvue`-only screen renders in qvt (the client asks for that leaf on its own),
+/// a request that renders the leaf in qvt is still not found, and `X-Moqui-Client-Modes` (ScreenTest's `client_modes`) gets
+/// the leaf in qvue, with `X-Moqui-Qvt` saying so.
+#[test]
+fn a_parent_renders_in_qvt_over_a_qvue_only_default_leaf() {
+    let dir = std::env::temp_dir().join(format!("moqui-qvt-default-leaf-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("App/Inbox")).unwrap();
+    let write = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
+    write(
+        "App.xml",
+        r#"<screen require-authentication="false" default-menu-title="App"><subscreens default-item="Inbox"/>
+            <widgets><label text="App menu"/><subscreens-active/></widgets></screen>"#,
+    );
+    write(
+        "App/Inbox.xml",
+        r#"<screen require-authentication="false" default-menu-title="Inbox"><subscreens default-item="Mail"/>
+            <widgets><label text="Inbox frame"/><subscreens-active/></widgets></screen>"#,
+    );
+    write(
+        "App/Inbox/Mail.xml",
+        r#"<screen require-authentication="false" default-menu-title="Mail" render-modes="vue,qvue">
+            <widgets><render-mode><text type="qvue" template="false"><![CDATA[<template><p>Mail</p></template>
+<script>module.exports = { data() { return {} } }</script>]]></text></render-mode></widgets></screen>"#,
+    );
+    let context = ExecutionContextFactory::test_context();
+    let root = dir.join("App.xml").to_string_lossy().into_owned();
+    let test = crate::screen::ScreenTest::new(context.factory()).root_screen(root.clone());
+    let qvt = test.clone().render_mode("qvt");
+
+    // the app root and the Inbox level, each in qvt with the placeholder of the level below
+    for (path, parameters, text) in [("", vec![], "App menu"), ("Inbox.qvt", vec![], "Inbox frame")] {
+        let tester = if path.contains('.') { &test } else { &qvt };
+        let rendered = tester.test_render(path, parameters.into_iter().collect(), None);
+        assert!(
+            rendered.error_messages.is_empty(),
+            "{path}: {:?}",
+            rendered.error_messages
+        );
+        let out = rendered.text();
+        assert!(
+            out.contains(text) && out.contains("<m-subscreens-active>"),
+            "{path}: {out}"
+        );
+        assert!(!out.contains("<p>Mail</p>"), "{path}: {out}");
+    }
+    let inbox = qvt.test_render("Inbox", BTreeMap::new(), None);
+    assert!(inbox.error_messages.is_empty(), "{:?}", inbox.error_messages);
+    assert!(inbox.text().contains("App menu"), "{}", inbox.text());
+
+    // the leaf itself in qvt: named, or the screen a lastStandalone render starts at
+    let named = test.test_render("Inbox/Mail.qvt", BTreeMap::new(), None);
+    assert!(
+        named
+            .error_messages
+            .iter()
+            .any(|error| error.contains("render mode qvt is not supported")),
+        "{:?}",
+        named.error_messages
+    );
+    let standalone = qvt.test_render(
+        "Inbox",
+        [("lastStandalone".to_string(), Value::string("-2"))]
+            .into_iter()
+            .collect(),
+        None,
+    );
+    assert!(
+        standalone
+            .error_messages
+            .iter()
+            .any(|error| error.contains("render mode qvt is not supported")),
+        "{:?}",
+        standalone.error_messages
+    );
+    // html renders the levels inline, so the leaf must take html
+    let html = test.clone().render_mode("html").test_render("", BTreeMap::new(), None);
+    assert!(
+        html.error_messages
+            .iter()
+            .any(|error| error.contains("render mode html is not supported")),
+        "{:?}",
+        html.error_messages
+    );
+
+    // the best client mode: the leaf in qvue, X-Moqui-Qvt says so; a parent with no qvue of its own stays qvt
+    let modes = test.clone().client_modes("qvue,qjs");
+    let leaf = modes.test_render("Inbox/Mail.qvt", BTreeMap::new(), None);
+    assert!(leaf.error_messages.is_empty(), "{:?}", leaf.error_messages);
+    assert_eq!(
+        leaf.output.as_ref().and_then(|out| out.header("X-Moqui-Qvt")),
+        Some("qvue")
+    );
+    assert!(leaf.text().contains("<p>Mail</p>"), "{}", leaf.text());
+    let parent = modes.test_render("Inbox.qvt", BTreeMap::new(), None);
+    assert_eq!(
+        parent.output.as_ref().and_then(|out| out.header("X-Moqui-Qvt")),
+        Some("merged-fragment")
+    );
+    let headed =
+        test.clone()
+            .header("X-Moqui-Client-Modes", "qvue")
+            .test_render("Inbox/Mail.qvt", BTreeMap::new(), None);
+    assert_eq!(
+        headed.output.as_ref().and_then(|out| out.header("X-Moqui-Qvt")),
+        Some("qvue")
+    );
+
+    // the same from a script: ec.screen.makeTest().clientModes(...), and the response headers on the result
+    let _entered = context.enter();
+    let script = format!(
+        "(() => {{ const t = ec.screen.makeTest().rootScreen({}).clientModes(['qvue', 'qjs']); \
+         const leaf = t.render('Inbox/Mail.qvt', {{}}, null); \
+         const plain = ec.screen.makeTest().rootScreen({0}).header('X-Moqui-Client-Modes', 'qjs').render('Inbox/Mail.qvt', {{}}, null); \
+         return [leaf.status, leaf.header('x-moqui-qvt'), leaf.output.includes('<p>Mail</p>'), plain.errorMessages.length > 0].join(' ') }})()",
+        serde_json::to_string(&root).unwrap()
+    );
+    let answered = crate::script::eval_value(&script).unwrap();
+    assert_eq!(moqui_lib::object::to_plain_string(&answered), "200 qvue true true");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The views of a form-list (style-guide §8.2: `views`, `view-board`, `view-calendar`): an m-list-views around the list with the
+/// fields the views read as plain values and their display text, the board's and calendar's settings (the transitions with
+/// their parameters and the list's hidden-parameters, the key fields, the colors of color-map), and a card_{index} slot per row
+/// written as the list writes the cells, outside the row's form; markdown-view is an m-markdown with its text as an attribute
+/// value. html shows the list and the markdown as text.
+#[test]
+fn form_list_views_and_the_markdown_view() {
+    let out = check("views", &[]);
+    for expected in [
+        r##"<m-markdown id="Notes" text="# Notes {{x}}"##,
+        r#"base-path="/apps/wiki" strip-title="Notes" :wiki-links="true" class="q-mt-sm"></m-markdown>"#,
+        r#"<m-list-views id="Tasks_views" form-name="Tasks""#,
+        r#":views="['board','list','calendar']""#,
+        "'groupField':'stage','titleField':'name','sumField':'points'",
+        "'keyFields':['taskId']",
+        "'transition':'/moveTask','parameters':{'projectId':'P9'}",
+        r#"form-location="/#Tasks""#,
+        "'colors':{'todo':'info','doing':'warning'}",
+        "'createTransition':'/newTask'",
+        "'modes':['week','month','day','list']",
+        // range-find: the calendar asks the screen's form request for the rows of the dates it shows
+        "'rangeFind':true,'rangeUrl':'/actions/Tasks','listName':'taskList'",
+        "<template v-slot:card_0><div class=\"m-card-head row no-wrap\"><div class=\"m-card-title\">",
+        "<span class=\"m-card-label m-muted\">Owner</span>",
+        "</m-list-views>",
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    // the rows: plain values with the display text where it differs (a status label, the formatted number), no request text compiled
+    assert!(out.contains("'stage':'todo','stage_display':'To do'"), "{out}");
+    assert!(out.contains("'points':3,'points_display':'3.0'"), "{out}");
+    assert!(
+        out.contains("class=\"m-link-text\">Write &#123;&#123;spec}}</a>"),
+        "{out}"
+    );
+    // a list without a transition: no moves, its key the title field; a card per row, outside any row form
+    assert!(
+        out.contains(r#"<m-list-views id="Plain_views" form-name="Plain""#),
+        "{out}"
+    );
+    assert_eq!(out.matches("<template v-slot:card_").count(), 6, "{out}");
+    let html = render_mode("views", "", "html", &[]);
+    assert!(
+        !html.contains("m-list-views") && html.contains("Write {{spec}}"),
+        "{html}"
+    );
+    assert!(
+        html.contains(r##"<div id="Notes" class="markdown-view q-mt-sm" style="white-space:pre-wrap"># Notes {{x}}"##),
+        "{html}"
+    );
+    let text = render_mode("views", "", "text", &[]);
+    assert!(text.contains("See [the spec](spec/One)"), "{text}");
+}
+
+/// A board by status writes the columns get#ListViewColumns answers: every status of the type of the rows' statuses in sequence
+/// order with its label and color, then a value that is no status, and the flow's transitions between them; a calendar colored
+/// by a status gets the status colors; column-order with a status asks for its labels too.
+#[test]
+fn a_status_board_has_the_columns_and_flow_of_the_status_type() {
+    let context = status_context();
+    let _entered = context.enter();
+    let out = make_render(context.factory())
+        .root_screen(render_dir().join("views-status.xml").to_string_lossy().into_owned())
+        .screen_path("")
+        .render_mode("qvt")
+        .render()
+        .unwrap_or_else(|err| panic!("views-status: {err}"))
+        .body_text();
+    assert_compiles(&["views-status".to_string()], std::slice::from_ref(&out));
+    for expected in [
+        "'columns':[{'value':'EsNotStarted','label':'Not Started','color':'grey-7'},{'value':'EsRunning','label':'Running','color':'primary'},\
+         {'value':'EsComplete','label':'Complete','color':'positive'},{'value':'EsOtherError','label':'Other Error','color':'negative'},\
+         {'value':'ZZ_UNKNOWN','label':'ZZ_UNKNOWN','color':''}]",
+        "'flow':{'EsComplete':['EsRunning'],'EsNotStarted':['EsRunning'],'EsOtherError':['EsRunning'],'EsRunning':['EsComplete','EsNotStarted','EsOtherError']}",
+        "'keyFields':['syncId']",
+        "'colors':{'EsNotStarted':'grey-7','EsRunning':'primary','EsComplete':'positive','EsOtherError':'negative'}",
+        "'columnOrder':['EsComplete','EsRunning']",
+        "'statusId':'EsRunning','statusId_display':'Running'",
+        // status-flow-id: that flow's transitions are the drag hints, not Default's
+        "'statusFlowId':'FastSync'",
+        "'flow':{'EsNotStarted':['EsComplete']}",
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
     }
 }

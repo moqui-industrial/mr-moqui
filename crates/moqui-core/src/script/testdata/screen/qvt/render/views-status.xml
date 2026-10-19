@@ -1,0 +1,23 @@
+<screen require-authentication="false">
+    <transition name="setStatus"><default-response type="none"/></transition>
+    <actions>
+        <set field="syncList" from="[{syncId: 'S1', statusId: 'EsRunning', start: '1792519200000'}, {syncId: 'S2', statusId: 'EsComplete', start: '1792594800000'},
+            {syncId: 'S3', statusId: 'ZZ_UNKNOWN', start: null}]"/>
+    </actions>
+    <widgets>
+        <form-list name="Syncs" list="syncList" skip-form="true" paginate="false">
+            <view-board group-field="statusId" transition="setStatus" key-fields="syncId"/>
+            <view-calendar start-field="start" color-field="statusId"/>
+            <field name="syncId"><default-field><display/></default-field></field>
+            <field name="statusId"><default-field><display-entity entity-name="moqui.basic.StatusItem"/></default-field></field>
+        </form-list>
+        <form-list name="Ordered" list="syncList" skip-form="true" paginate="false">
+            <view-board group-field="statusId" column-order="EsComplete,EsRunning"/>
+            <field name="syncId"><default-field><display/></default-field></field>
+        </form-list>
+        <form-list name="Fast" list="syncList" skip-form="true" paginate="false">
+            <view-board group-field="statusId" status-flow-id="FastSync" transition="setStatus" key-fields="syncId"/>
+            <field name="syncId"><default-field><display/></default-field></field>
+        </form-list>
+    </widgets>
+</screen>

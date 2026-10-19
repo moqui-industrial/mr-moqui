@@ -18,6 +18,9 @@
 pub(crate) mod rust_services;
 mod backup;
 pub(crate) mod call;
+mod chat;
+#[cfg(test)]
+mod chat_tests;
 mod content;
 pub mod coverage;
 pub(crate) mod define;
@@ -27,6 +30,8 @@ mod elfinder;
 mod email_eca;
 #[cfg(all(test, feature = "git"))]
 mod files_tests;
+#[cfg(all(test, feature = "git"))]
+mod wiki_tests;
 #[cfg(feature = "git")]
 mod git;
 #[cfg(feature = "image")]
@@ -67,11 +72,13 @@ pub use define::load_definitions;
 pub use define::{check, configured_service_files, lint};
 pub(crate) use define::{input_hints, input_js_rules, merge_param, VALIDATE_NUMBER, VALIDATE_NUMBER_INT};
 pub use eca::{run_data_file_service, run_matched_eca, schedule_feed_receive, search_not_up};
-pub use email_eca::run_email_rules;
-#[cfg(test)]
+pub use email_eca::{email_rule_count, run_email_rule, run_email_rules};
 #[cfg(test)]
 pub(crate) use jobs::send_job_error_notification;
 pub use jobs::{run_job_now, PassReport};
+/// Mail the host's SMTP listener (moqui-host `inbound-smtp`) received: the recipient lookup and the delivery.
+#[cfg(feature = "imap")]
+pub use mail::delivery as mail_inbound;
 #[cfg(all(test, feature = "smtp"))]
 pub(crate) use mail::{SharedSinkGuard, SinkGuard};
 pub use pool::{start_pools, PoolStatus, RunnerStats, ServicePools};

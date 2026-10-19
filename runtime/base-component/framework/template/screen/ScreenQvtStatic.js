@@ -32,7 +32,8 @@
 //    holds: name_display, and mqOpt_{form}_{field}_{sub}_{widget} for the options of a widget;
 //  - a link that the user may not use is still written (the server refuses the request), and no icon comes from the theme;
 //  - include-screen is written inline. A form-list writes the find dialog, saved finds, the exports, a multi form, the column picker,
-//    row-selection, the first/second/last rows and aggregated sub-rows; their data comes with the form request.
+//    row-selection, the first/second/last rows, aggregated sub-rows and the board and calendar views (a card slot over the row's scope);
+//    their data comes with the form request.
 (function (T, S) {
     "use strict";
 
@@ -280,12 +281,30 @@
         const st = {};
         const saved = [];
         const reset = () => {
-            Object.assign(st, { formName: "", fieldForm: "", owner: "", inForm: false, inRow: false, inList: false, listName: "", multi: false, accordion: "", accIndex: 0, accActive: "", selectedForm: false });
+            Object.assign(st, { formName: "", fieldForm: "", owner: "", inForm: false, inRow: false, inCard: false, inList: false, listName: "", multi: false, accordion: "", accIndex: 0, accActive: "", selectedForm: false });
             saved.length = 0;
         };
         reset();
         const push = () => { saved.push(Object.assign({}, st)); };
         const pop = () => { const old = saved.pop(); if (old) Object.assign(st, old); };
+
+        // A unit inside another (a section in a form-list cell, an included screen) starts from the state of the one around it, so
+        // its links are the list's in-cell links with the row's ids, and gives that state back when it ends, so the rows after it
+        // render as before. The outermost unit ($depth 0) starts afresh.
+        const units = [];
+        const enter = (depth) => {
+            if (!depth) { units.length = 0; reset(); return; }
+            units.push({ st: Object.assign({}, st), saved: saved.slice() });
+        };
+        const leave = (depth) => {
+            if (!depth) return;
+            const outer = units.pop();
+            if (!outer) return;
+            Object.keys(st).forEach((key) => { delete st[key]; });
+            Object.assign(st, outer.st);
+            saved.length = 0;
+            outer.saved.forEach((item) => saved.push(item));
+        };
 
         const fieldOf = (n) => n.parent.parent;
         const fname = (n) => at(fieldOf(n), "name");
@@ -549,6 +568,8 @@
             const check = validate(n.parent);
             const field = fieldOf(n);
             const out = Object.assign({ type: "password", name: nameOf(n), size: at(n, "size") || "25", maxlength: at(n, "maxlength") || null, required: check.required || null, form: owner() }, idAttrs(n));
+            if (at(n, "autocomplete")) plainAttr(out, "autocomplete", at(n, "autocomplete"), n);
+            else out.autocomplete = "new-password";
             labelAttr(n, out);
             tipOf(n, out);
             Object.assign(out, bindOnly(n, field, "''"));
@@ -577,6 +598,22 @@
         const btnKind = (btnType, ...extra) => (btnType === "primary" ?
             { color: "primary", class: cls(...extra) } :
             { class: tonal(quasarColor(btnType || "primary") || null, ...extra) });
+        // The same for the btn-type of an element, which may be a ${} expression: then the browser picks the kind ($mq.btnKind) in
+        // each row or entry, as the server render does.
+        const btnKindOf = (n, ...extra) => {
+            const btnType = at(n, "btn-type") || "";
+            if (!isDynamic(btnType)) return btnKind(btnType, ...extra);
+            return { "v-bind": "$mq.btnKind(" + exp(btnType, n, "btn-type", false) + "," + sq(cls(...extra) || "") + ")" };
+        };
+        // The text color class of a flat button (hidden-form-link) by its btn-type, bound when that is an expression.
+        const btnTextOf = (n, ...extra) => {
+            const btnType = at(n, "btn-type") || "";
+            if (!isDynamic(btnType)) {
+                const color = quasarColor(btnType || "primary") || null;
+                return { class: cls(...extra.slice(0, 2), color ? "text-" + color : null, ...extra.slice(2)) };
+            }
+            return { class: cls(...extra), ":class": "$mq.btnText(" + exp(btnType, n, "btn-type", false) + ")" };
+        };
 
         const reset_ = (n) => {
             const out = Object.assign({ dense: true, flat: true, "no-caps": true, type: "reset", name: nameOf(n), form: owner() }, idAttrs(n));
@@ -762,7 +799,7 @@
             } else {
                 w("<m-display" + A(out) + '><span v-text="' + e(text) + '"></span></m-display>');
             }
-            if ((!at(n, "also-hidden") || at(n, "also-hidden") === "true") && !dyn) {
+            if ((!at(n, "also-hidden") || at(n, "also-hidden") === "true") && !dyn && !st.inCard) {
                 w("<input" + A({ type: "hidden", name, ":value": "$mq.str(" + baseValue(field, "") + ")", form: owner() }) + ">");
             }
         };
@@ -788,7 +825,7 @@
                 out[":display"] = text;
                 w("<m-display" + A(out) + "></m-display>");
             } else w("<m-display" + A(out) + '><span v-text="' + e(text) + '"></span></m-display>');
-            if (!at(n, "also-hidden") || at(n, "also-hidden") === "true") {
+            if ((!at(n, "also-hidden") || at(n, "also-hidden") === "true") && !st.inCard) {
                 w("<input" + A({ type: "hidden", name, ":value": "$mq.str(" + baseValue(field, "") + ")", form: owner() }) + ">");
             }
         };
@@ -846,8 +883,6 @@
             const anchor = linkType === "anchor" || linkType === "anchor-button" ||
                 ((!linkType || linkType === "auto") && ((urlType && urlType !== "transition") || (found ? found.readOnly : true)));
             const style = at(n, "style") || null;
-            const btnType = at(n, "btn-type");
-            const color = quasarColor(btnType || "primary") || null;
             const iconClass = at(n, "icon");
             let label = "";
             if (at(n, "entity-name")) label = "$mq.str(" + scopeRef(fieldName(n) + "_display") + ")";
@@ -878,7 +913,7 @@
                 const textLink = linkType === "anchor" || (st.inList && linkType !== "anchor-button");
                 const attrs = Object.assign({ ":href": href, target: at(n, "target-window") || null, "load-id": at(n, "dynamic-load-id") || null, class: textLink ? cls("m-link-text", style) : null }, confirmAttr);
                 plainAttr(attrs, "id", at(n, "id"), n);
-                out = "<" + tag + A(attrs) + ">" + (textLink ? tooltip + body : "<q-btn" + A(Object.assign({ dense: true, unelevated: true, "no-caps": true }, btnKind(btnType, "m-link", style))) + ">" + tooltip + body + "</q-btn>") + "</" + tag + ">";
+                out = "<" + tag + A(attrs) + ">" + (textLink ? tooltip + body : "<q-btn" + A(Object.assign({ dense: true, unelevated: true, "no-caps": true }, btnKindOf(n, "m-link", style))) + ">" + tooltip + body + "</q-btn>") + "</" + tag + ">";
             } else {
                 const fieldsInitial = allParams(n, query.extra, found && !noParam ? found.parameters : null);
                 const isForm = found ? !found.isScreen : true;
@@ -887,7 +922,7 @@
                 const button = img ?
                     "<input" + A({ type: "image", ":src": exp(at(img, "url"), img, "url", false), ":alt": exp(at(img, "alt") || "image", img, "alt", true) }) + ">" :
                     "<q-btn" + A(Object.assign({ dense: true, "no-caps": true, type: "submit", flat: hiddenLink ? true : null, unelevated: hiddenLink ? null : true },
-                        hiddenLink ? { class: cls("m-link", "m-link-left", color ? "text-" + color : null, style) } : btnKind(btnType, "m-link", style), confirmAttr)) + ">" + tooltip + body + "</q-btn>";
+                        hiddenLink ? btnTextOf(n, "m-link", "m-link-left", style) : btnKindOf(n, "m-link", style), confirmAttr)) + ">" + tooltip + body + "</q-btn>";
                 const attrs = { action: found && !dynamic ? found.path : at(n, "url"), ":fields-initial": fieldsInitial, "v-slot:default": "formProps", "read-only": isForm && found && found.readOnly ? true : null, target: at(n, "target-window") || null };
                 if (dynamic) {
                     delete attrs.action;
@@ -908,14 +943,36 @@
         };
         const fieldName = (n) => (n.parent && n.parent.parent ? at(n.parent.parent, "name") : "");
 
+        // As ScreenQvt.js: an empty text is not written unless display-if-empty (then the placeholder shows); a select takes the
+        // option elements it holds and the options of its list-options and entity-options, which the package holds by its id
+        // (mqOpt_editable_{id}: the screen's, or a form-single's extras; not in a form-list row), date and date-time the date picker.
         const editable = (n) => {
             const found = sri.staticUrl(at(n, "transition"), "transition");
             const load = first(n, "editable-load");
+            const widgetType = at(n, "widget-type") || "textarea";
+            const labelValue = exp(at(n, "text"), n, "text", true);
             const out = Object.assign({
-                "label-type": at(n, "type") || "span", ":label-value": exp(at(n, "text"), n, "text", true), url: found.path, ":url-parameters": allParams(n),
-                "parameter-name": at(n, "parameter-name") || "value", "widget-type": at(n, "widget-type") || "textarea", ":indicator": "ec.l10n.localize('Saving')",
+                "label-type": at(n, "type") || "span", ":label-value": labelValue, url: found.path, ":url-parameters": allParams(n),
+                "parameter-name": at(n, "parameter-name") || "value", "widget-type": widgetType, ":indicator": "ec.l10n.localize('Saving')",
                 ":tooltip": "ec.l10n.localize('Click to edit')", ":cancel": "ec.l10n.localize('Cancel')", ":submit": "ec.l10n.localize('Save')"
             });
+            if (at(n, "display-if-empty") === "true") out[":placeholder"] = "ec.l10n.localize('Click to edit')";
+            else out["v-if"] = "$mq.str(" + labelValue + ").trim()";
+            if (n.attrs && n.attrs.value !== undefined) plainAttr(out, "value", at(n, "value"), n);
+            if (widgetType === "select") {
+                const fixed = kids(n, "option").map((o) => {
+                    const key = at(o, "key");
+                    const label = o.attrs && o.attrs.text !== undefined ? exp(at(o, "text"), o, "text", true) : "ec.l10n.localize(" + (isDynamic(key) ? exp(key, o, "key", false) : sq(key)) + ")";
+                    return "{value:" + (isDynamic(key) ? exp(key, o, "key", false) : sq(key)) + ",label:" + label + "}";
+                });
+                const id = at(n, "id");
+                const looked = kids(n, "list-options").length || kids(n, "entity-options").length;
+                if (looked && (st.inList || !id || isDynamic(id))) {
+                    note("editable-options", n, "an editable select takes its list-options and entity-options by a plain id, outside a form-list row; else its option elements or editable-load");
+                }
+                if (looked && id && !isDynamic(id) && !st.inList) out[":options"] = "[" + fixed.join(",") + "].concat($scope[" + sq("mqOpt_editable_" + id) + "]||[])";
+                else if (fixed.length) out[":options"] = "[" + fixed.join(",") + "]";
+            }
             plainAttr(out, "id", at(n, "id"), n);
             if (load) {
                 const loadUrl = sri.staticUrl(at(load, "transition"), "transition");
@@ -1069,6 +1126,12 @@
         };
         const rowOpen = (kind, style) => w("<div" + A({ class: cls(kind, style || null) }) + ">");
         const colOpen = (n, plain) => {
+            // a size that is an expression (lg="${wide}") is bound: $mq.cols makes the classes in the browser
+            if (["lg", "md", "sm", "xs"].some((key) => isDynamic(at(n, key)))) {
+                const size = (key) => (!at(n, key) ? "''" : isDynamic(at(n, key)) ? exp(at(n, key), n, key, false) : sq(at(n, key)));
+                w("<div" + A({ class: at(n, "style") || null, ":class": "$mq.cols(" + ["lg", "md", "sm", "xs"].map(size).join(",") + "," + !!plain + ")" }) + ">");
+                return;
+            }
             const hasLg = !!at(n, "lg");
             const hasMd = !!at(n, "md");
             const hasSm = !!at(n, "sm");
@@ -1168,8 +1231,11 @@
                 attrs["form-location"] = name;
                 attrs["find-action"] = sri.staticUrl("formSaveFind", "transition").path;
             }
+            // the board and calendar views over the rows the list fetches
+            const views = viewsOf(n);
+            if (views) Object.assign(attrs, views.attrs);
             w("<m-static-form-list" + A(attrs) + ">");
-            return { found };
+            return { found, views };
         };
 
         const rowFormOpen = (n, cfg, fields, opened) => {
@@ -1234,7 +1300,7 @@
             if (!text && !img && !icon) return "";
             if (at(n, "encode") === "false") note("encode-false", n, "button-menu with encode=false writes text as html");
             let out = (at(n, "condition") ? '<template v-if="' + e(X(at(n, "condition"), n, "condition")) + '">' : "") +
-                "<q-btn-dropdown" + A(Object.assign({ dense: true, unelevated: true, "no-caps": true }, btnKind(at(n, "btn-type"), at(n, "style") || null))) + "><template v-slot:label>";
+                "<q-btn-dropdown" + A(Object.assign({ dense: true, unelevated: true, "no-caps": true }, btnKindOf(n, at(n, "style") || null))) + "><template v-slot:label>";
             if (at(n, "tooltip")) out += '<q-tooltip><span v-text="' + e(exp(at(n, "tooltip"), n, "tooltip", true)) + '"></span></q-tooltip>';
             if (icon) out += iconTag(icon, !!text);
             out += img ? imageTag(img) : '<span v-text="' + e(textOf(n)) + '"></span>';
@@ -1639,6 +1705,109 @@
             w("</template>");
         };
 
+        // ---- form-list views ----
+
+        // The views of a form-list, as ScreenQvt.js writes them, for m-static-form-list: the board's and calendar's settings (the
+        // transitions as paths of this screen, the key fields, color-map), and a card slot over the row's scope with the title, badge and
+        // card fields written as the row slot writes their cells. The rows are the ones the list fetches; the columns of a status board and
+        // the colors of a status calendar are asked of the root screen's listViewColumns transition by the browser. null without a view
+        // element.
+        const viewsOf = (n) => {
+            const board = first(n, "view-board");
+            const calendar = first(n, "view-calendar");
+            if (!board && !calendar) return null;
+            const of = (el, name) => (el ? at(el, name) : "");
+            const names = (text) => String(text || "").split(",").map((name) => name.trim()).filter((name) => name);
+            const literal = (el, name) => {
+                const text = of(el, name);
+                if (text && isDynamic(text)) { note("view-expression", el, name + " of " + el.name + " is an expression, which a server-static list does not expand"); return ""; }
+                return text;
+            };
+            const fields = kids(n, "field");
+            const byName = {};
+            fields.forEach((field) => { byName[at(field, "name")] = field; });
+            // a field that has only a hidden widget is no column (ScreenSupport listFieldHiddenWidget)
+            const hiddenOnly = (field) => {
+                const dflt = first(field, "default-field");
+                if (dflt && !first(dflt, "hidden") && !first(dflt, "ignored")) return false;
+                return !kids(field, "conditional-field").some((sub) => !first(sub, "hidden") && !first(sub, "ignored"));
+            };
+            const firstShown = fields.find((field) => !hiddenOnly(field));
+            const titleName = of(board, "card-title-field") || of(calendar, "title-field") || (firstShown ? at(firstShown, "name") : "");
+            const cardNames = names(of(board, "card-fields")).length ? names(of(board, "card-fields")) : names(of(calendar, "card-fields"));
+            const hiddenKeys = fields.filter((field) => { const dflt = first(field, "default-field"); return dflt && first(dflt, "hidden"); }).map((field) => at(field, "name"));
+            const selection = first(n, "row-selection");
+            const keyFields = (el) => {
+                const given = names(of(el, "key-fields"));
+                if (given.length) return given;
+                if (hiddenKeys.length) return hiddenKeys;
+                if (selection && at(selection, "id-field")) return [at(selection, "id-field")];
+                return titleName ? [titleName] : [];
+            };
+            const path = (name) => (name ? sri.staticUrl(name, "transition").path : null);
+            const colors = {};
+            names(of(calendar, "color-map")).forEach((pair) => {
+                const cut = pair.lastIndexOf(":");
+                if (cut > 0) colors[pair.slice(0, cut).trim()] = pair.slice(cut + 1).trim();
+            });
+            const boardCfg = board ? {
+                groupField: at(board, "group-field"), titleField: titleName, sumField: of(board, "sum-field") || null, sumFormat: of(board, "sum-format") || null,
+                parameterName: of(board, "parameter-name") || null, keyFields: keyFields(board), columnOrder: names(literal(board, "column-order")),
+                statusTypeId: literal(board, "status-type-id") || null, statusFlowId: literal(board, "status-flow-id") || null,
+                transition: path(of(board, "transition")), parameters: {}
+            } : null;
+            const calendarCfg = calendar ? {
+                startField: at(calendar, "start-field"), endField: of(calendar, "end-field") || null, titleField: of(calendar, "title-field") || titleName,
+                colorField: of(calendar, "color-field") || null, allDayField: of(calendar, "all-day-field") || null, resourceField: of(calendar, "resource-field") || null,
+                keyFields: keyFields(calendar), modes: names(of(calendar, "modes")), transition: path(of(calendar, "transition")), parameters: {},
+                createTransition: path(of(calendar, "create-transition")), createParameters: {}, createScreen: path(of(calendar, "create-screen")),
+                colors: Object.keys(colors).length ? colors : null
+            } : null;
+            if (((board && of(board, "transition")) || (calendar && (of(calendar, "transition") || of(calendar, "create-transition")))) && first(n, "hidden-parameters")) {
+                note("view-hidden-parameters", n, "the hidden-parameters of form-list " + at(n, "name") + " are not posted by its board or calendar in a server-static screen");
+            }
+            const base = sri.staticUrl(".", "transition").path || "";
+            // range-find: the rows of the dates shown, from the screen's form request with the range added (no paging)
+            if (calendarCfg && of(calendar, "range-find") === "true" && base && base !== "#") {
+                Object.assign(calendarCfg, { rangeFind: true, rangeUrl: base.replace(/\/$/, "") + "/actions/" + encodeURIComponent(at(n, "name")), listName: at(n, "list") || null });
+            }
+            return {
+                attrs: { ":views": js_(names(of(n, "views"))), ":board": boardCfg ? js_(boardCfg) : null, ":calendar": calendarCfg ? js_(calendarCfg) : null,
+                    "views-location": String(base === "#" ? "" : base).replace(/^\/(apps|qapps)(?=\/|$)/, "") + "#" + at(n, "name") },
+                titleName, badgeName: of(board, "badge-field"), cardNames: cardNames.filter((name) => byName[name]), byName
+            };
+        };
+        // the card slot: each part the field's cell (as the row slot writes it, outside a form), else its value
+        const cardSlot = (n, v) => {
+            w('<template v-slot:card="_ctx">');
+            push();
+            Object.assign(st, { inRow: true, inForm: false, inCard: true, fieldForm: at(n, "name") + "_card", owner: "" });
+            const cell = (name) => {
+                const field = v.byName[name];
+                if (!field) { if (name) w('<span v-text="' + e("$mq.str(" + scopeRef(name + "_display") + " || " + scopeRef(name) + ")") + '"></span>'); return; }
+                cellBody(field, (sub) => {
+                    if (kids(sub, "ignored").length || kids(sub, "hidden").length) return;
+                    w("<div" + A({ class: cellStyle(at(sub, "container-style"), at(field, "align")) }) + ">");
+                    subWidgets(sub);
+                    w("</div>");
+                });
+            };
+            w('<div class="m-card-head row no-wrap"><div class="m-card-title">');
+            cell(v.titleName);
+            w("</div>");
+            if (v.badgeName) { w('<div class="m-card-badge">'); cell(v.badgeName); w("</div>"); }
+            w("</div>");
+            v.cardNames.forEach((name) => {
+                const field = v.byName[name];
+                const sub = first(field, "header-field") || first(field, "default-field") || kids(field, "conditional-field")[0];
+                w('<div class="m-card-field"><span class="m-card-label m-muted" v-text="' + e(sub ? titleExpr(sub) : sq(name)) + '"></span><span class="m-card-value">');
+                cell(name);
+                w("</span></div>");
+            });
+            pop();
+            w("</template>");
+        };
+
         const formList = (n, columnFieldLists, allFields) => {
             const cfg = {};
             const name = at(n, "name");
@@ -1669,6 +1838,7 @@
             if (flags.columns) {
                 columnSlots(n, cols, headerFields, flags, cfg);
                 if (cfg.selection) selectionSlot(cfg.selection);
+                if (opened.views) cardSlot(n, opened.views);
                 w("</m-static-form-list>\n");
                 pop();
                 return;
@@ -1730,6 +1900,7 @@
             });
             if (subLists.length) subSlots(subLists);
             if (cfg.selection) selectionSlot(cfg.selection);
+            if (opened.views) cardSlot(n, opened.views);
             w("</m-static-form-list>\n");
             pop();
         };
@@ -1741,7 +1912,7 @@
             w("<" + (at(n, "type") || "div") + A(out) + ">");
         };
         const boxOpen = (n, header) => {
-            const out = { type: at(n, "type") || "default", "initial-open": at(n, "initial") === "closed" ? "false" : null };
+            const out = { type: at(n, "type") || "default", ":initial-open": at(n, "initial") === "closed" ? "false" : null };
             plainAttr(out, "id", at(n, "id"), n);
             if (header && at(header, "title")) out[":title"] = exp(at(header, "title"), header, "title", true);
             w("<m-container-box" + A(out) + ">");
@@ -1798,6 +1969,19 @@
             w(withCondition(n, "<m-html-view" + A(out) + "></m-html-view>\n"));
         };
 
+        // A markdown-view as ScreenQvt.js writes it, the text and base path bound over the scope.
+        const markdownView = (n) => {
+            const out = {};
+            plainAttr(out, "id", at(n, "id"), n);
+            plainAttr(out, "text", at(n, "text"), n);
+            plainAttr(out, "base-path", at(n, "base-path"), n);
+            if (at(n, "heading-prefix") && at(n, "heading-prefix") !== "md-") plainAttr(out, "heading-prefix", at(n, "heading-prefix"), n);
+            if (at(n, "strip-title")) textAttr(out, "strip-title", at(n, "strip-title"), n, true);
+            if (at(n, "wiki-links") === "true") out[":wiki-links"] = "true";
+            plainAttr(out, "class", at(n, "style"), n);
+            w(withCondition(n, "<m-markdown" + A(out) + "></m-markdown>\n"));
+        };
+
         // ---- dashboards ----
 
         // A number-card as ScreenQvt.js writes it, its attributes bound over the scope as a label's text is: the title localized,
@@ -1826,6 +2010,40 @@
             plainAttr(out, "class", at(n, "style"), n);
             w(withCondition(n, "<m-number-card" + A(out) + "></m-number-card>\n"));
         };
+        // status-bar as ScreenQvt.js writes it, the attributes bound over the scope; the browser asks the root screen's statusBar
+        // transition for the flow of the status (m-status-bar barUrl), as the data is not in the template.
+        const statusBar = (n) => {
+            const out = {};
+            plainAttr(out, "id", at(n, "id"), n);
+            plainAttr(out, "status-id", at(n, "status-id"), n);
+            plainAttr(out, "status-type-id", at(n, "status-type-id"), n);
+            plainAttr(out, "status-flow-id", at(n, "status-flow-id"), n);
+            // a comma list, or one ${} expression of a list
+            const listAttr = (key) => {
+                const text = at(n, key);
+                if (!text) return;
+                const whole = /^\s*\$\{([\s\S]*)\}\s*$/.exec(text);
+                if (whole) out[":" + key] = X(whole[1], n, key);
+                else plainAttr(out, key, text, n);
+            };
+            listAttr("stages");
+            listAttr("allowed-status-ids");
+            const readOnly = at(n, "read-only");
+            if (readOnly && isDynamic(readOnly)) out[":read-only"] = "String(" + exp(readOnly, n, "read-only", false) + ")==='true'";
+            else if (readOnly === "true") out["read-only"] = true;
+            if (at(n, "transition")) {
+                const found = sri.staticUrl(at(n, "transition"), "transition");
+                if (found && found.path && found.path !== "#") {
+                    out.action = found.path;
+                    out[":parameters"] = allParams(n);
+                }
+            }
+            if (at(n, "parameter-name") && at(n, "parameter-name") !== "statusId") out["parameter-name"] = at(n, "parameter-name");
+            if (at(n, "title")) textAttr(out, "title", at(n, "title"), n, true);
+            if (at(n, "confirm") === "false") out[":confirm"] = "false";
+            plainAttr(out, "class", at(n, "style"), n);
+            w(withCondition(n, "<m-status-bar" + A(out) + "></m-status-bar>\n"));
+        };
         // container-split as ScreenQvt.js writes it; the selection is read from the URL in the browser, so nothing here is data.
         const splitOpen = (n) => {
             const out = {};
@@ -1850,17 +2068,19 @@
 
         const h = {
             containerOpen, boxOpen, formListWith, paramsOf, allParams,
-            reset, push, pop, e, A, cls, at, X, exp, st, sq, w, note, vIf, vFor, withCondition, urlOf, textOf,
+            reset, enter, leave, push, pop, e, A, cls, at, X, exp, st, sq, w, note, vIf, vFor, withCondition, urlOf, textOf,
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
             split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose, screenContext,
-            numberCard, dashboardOpen, chatter, recordFiles, splitOpen, htmlView
+            numberCard, dashboardOpen, chatter, recordFiles, splitOpen, htmlView, markdownView, statusBar
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
 
     const runtime = "(" + runtimeFunction.toString() + ")();";
-    const prelude = "const $s = globalThis.$mqQvtS;\n$s.reset();\n";
+    // a unit keeps the render state of the unit around it and gives it back when it ends, as ScreenQvt.js
+    const prelude = "const $s = globalThis.$mqQvtS;\n$s.enter($depth);\ntry {\n";
+    const epilogue = "} finally {\n$s.leave($depth);\n}\n";
 
     // ---- macros ----
 
@@ -1925,8 +2145,10 @@
         node.children.map((kid) => write(`<div class="m-dashboard-item${kid.name === "section-iterate" ? " m-dashboard-each" : ""}">`) +
             (kid.source || "") + write("</div>")).join("") + write("</div>\n"));
 
-    const containerRowMacro = stmt((node) => `$s.rowOpen("row", ${lit(attr(node, "style"))});\n` +
-        childrenNamed(node, "row-col").map((col) => `$s.colOpen(${wlit(col, false)}, false);\n${col.source || ""}sri.write("</div>");\n`).join("") + `sri.write("</div>\\n");\n`);
+    // A container-row writes its children in order: each row-col its column, and a section-iterate the row-col elements of its
+    // widgets (a column per entry), as ScreenQvt.js.
+    const containerRowMacro = stmt((node, children) => `$s.rowOpen("row", ${lit(attr(node, "style"))});\n${children}sri.write("</div>\\n");\n`);
+    const rowColMacro = stmt((node, children) => `$s.colOpen(${wlit(node, false)}, false);\n${children}sri.write("</div>");\n`);
 
     const containerSplitMacro = stmt((node) => {
         const part = (name) => { const kid = child(node, name); return kid ? kid.source || "" : ""; };
@@ -1962,9 +2184,19 @@
     const formSingleMacro = stmt((node) => `$s.formSingle(${wlit(node, true)});\n`);
 
     const formListMacro = stmt((node) => {
-        const columns = S.formListColumns(node);
         // The columns are lists of field names, and the runtime finds the fields in the form it is given.
-        return `$s.formListWith(${wlit(node, true)}, ${JSON.stringify(columns.map((column) => column.map((field) => attr(field, "name"))))});\n`;
+        const call = (type) => `$s.formListWith(${wlit(node, true)}, ${JSON.stringify(S.formListColumns(node, type).map((column) => column.map((field) => attr(field, "name"))))});\n`;
+        const types = [];
+        childrenNamed(node, "columns").forEach((columns) => { const type = attr(columns, "type"); if (type && !types.includes(type)) types.push(type); });
+        if (!types.length) return call(null);
+        // columns type="mobile": the template is the same for every request, so it holds the list of each type and the client shows the one
+        // of the _uiType it asks with (moqui.loadComponent sends mobile below 600 px; the screen package has the parameter), as the merged
+        // render picks it on the server
+        let code = "";
+        types.forEach((type, index) => {
+            code += `sri.write(${lit(`<template v-${index ? "else-if" : "if"}="_uiType === ${JSON.stringify(type).replace(/"/g, "'")}">`)});\n${call(type)}sri.write("</template>");\n`;
+        });
+        return code + `sri.write("<template v-else>");\n${call(null)}sri.write("</template>");\n`;
     });
 
     const typeMatches = (type) => !type || type === "any" || type.split(",").map((name) => name.trim()).includes(MODE);
@@ -2019,7 +2251,7 @@
         "box-body": widgetsMacro,
         "box-body-nopad": widgetsMacro,
         "container-row": containerRowMacro,
-        "row-col": widgetsMacro,
+        "row-col": rowColMacro,
         "container-panel": containerPanelMacro,
         "container-split": containerSplitMacro,
         "split-side": widgetsMacro,
@@ -2042,9 +2274,11 @@
         "context": widget("screenContext", false),
         "dashboard": dashboardMacro,
         "number-card": widget("numberCard", false),
+        "status-bar": widget("statusBar", true),
         "chatter": widget("chatter", false),
         "record-files": widget("recordFiles", false),
         "html-view": widget("htmlView", false),
+        "markdown-view": widget("markdownView", false),
         "form-single": formSingleMacro,
         "form-list": formListMacro
     });
@@ -2055,5 +2289,5 @@
         .filter((name) => !["section", "section-iterate", "section-include", "button-menu", "row-selection", "action"].includes(name))
         .concat(["condition", "actions", "form-single", "form-list", "link", "image", "label", "editable", "dynamic-container", "dynamic-dialog", "row-selection"]);
 
-    return { macros, opaque, prelude, runtime };
+    return { macros, opaque, prelude, epilogue, runtime };
 })

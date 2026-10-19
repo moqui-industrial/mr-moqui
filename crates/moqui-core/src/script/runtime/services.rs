@@ -286,7 +286,9 @@ impl HostService {
                 Ok(results) => host_to_js(&ctx, Value::Map(results.into_iter().collect())),
                 Err(err) if err.kind() == ErrorKind::Unauthorized => Err(throw_context(&ctx, &err)),
                 Err(err) => {
-                    let message = err.diagnostic();
+                    // the client sees the message; the server log has where it came from
+                    tracing::error!("Service {} failed: {}", call.name, err.diagnostic());
+                    let message = crate::context::client_text(&err.to_string());
                     with_ec(&ctx, |ec| ec.message().add_error(message))?;
                     Null.into_js(&ctx)
                 }

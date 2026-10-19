@@ -386,8 +386,11 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
             getDirectoryEntries: () => host.resourceEntries(ref.location).map((child) => wrap("Resource", child)),
             // null for a file that is not there, as Java's (the stream is null)
             getInputStream: () => ref.openStream(),
+            // a reference of `location#versionName` reads that version, as getLocationText does
             getText: function (versionName) {
                 if (versionName) return host.resourceVersionText(ref.location, String(versionName));
+                if (ref.versionName && host.resourceSupportsVersion(ref.location))
+                    return host.resourceVersionText(ref.location, String(ref.versionName));
                 const info = host.resourceInfo(ref.location);
                 return info != null && info.exists && info.file ? host.resourceText(ref.location) : null;
             },
@@ -406,8 +409,11 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
                 else if (typeof stream.write === "function") stream.write(ref.location);
                 else host.resourcePutBytes(ref.location, stream);
             },
-            // `openStream()` and `getInputStream()`: the file's bytes as a stream; null for a file that is not there
+            // `openStream()` and `getInputStream()`: the file's bytes as a stream; null for a file that is not there. A
+            // reference of `location#versionName` streams that version (null when it is not there)
             openStream: function () {
+                if (ref.versionName && host.resourceSupportsVersion(ref.location))
+                    return host.resourceVersionStream(ref.location, String(ref.versionName));
                 const info = host.resourceInfo(ref.location);
                 return info != null && info.exists && info.file ? host.resourceStream(ref.location) : null;
             },
@@ -552,12 +558,21 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
         for (const childRef of matchingDirRef.getDirectoryEntries())
             walkFileTree(childRef, childPath, allChildFileFlatList, curChildResourceList);
     };
-    const makeRef = (location) => wrap("Resource", host.resourceInfo(location));
+    // `location#versionName` (a past version, as get#ResourceInfo of FileServices gives it): the reference of the file,
+    // with versionName, which getText() and openStream() read
+    const makeRef = (location) => {
+        const info = host.resourceInfo(location);
+        const hash = location.indexOf('#');
+        if (info != null && hash > 0 && hash + 1 < location.length) info.versionName = location.substring(hash + 1);
+        return wrap("Resource", info);
+    };
     // `ResourceReference.isTextFilename(filename)` (static): the file name's content type is text
     ec.resource.isTextFilename = (filename) => host.isTextFilename(filename == null ? "" : String(filename));
     globalThis.ResourceReference = { isTextFilename: ec.resource.isTextFilename };
     ec.resource.getLocationReference = (location) => makeRef(String(location));
-    ec.resource.getLocationText = (location) => host.resourceText(String(location));
+    // a second argument that is a charset name (a Rust-port extension; Java's is the cache flag) decodes the bytes in it
+    ec.resource.getLocationText = (location, cacheOrCharset) => typeof cacheOrCharset === "string" && cacheOrCharset.trim()
+        ? host.resourceTextIn(String(location), cacheOrCharset) : host.resourceText(String(location));
     // the registry token of a Docker image (InstanceImage.authTokenCmd): the command's first output line, no shell
     ec.resource.runTokenCommand = (command) => host.runTokenCommand(String(command));
 
@@ -1688,9 +1703,38 @@ fn resource_text(ctx: Ctx<'_>, location: String) -> rquickjs::Result<String> {
     })
 }
 
+/// The text at a location decoded from its bytes in a charset (`ec.resource.getLocationText(location, charset)`).
+fn resource_text_in(ctx: Ctx<'_>, location: String, charset: String) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        let bytes = resource_ref(&ctx, &location)?
+            .read_bytes()
+            .map_err(|err| throw_context(&ctx, &err))?;
+        super::upload::decode_text(&bytes, Some(&charset)).map_err(|err| throw_context(&ctx, &err))
+    })
+}
+
 /// `putText`: a `dbresource://` row, or a file for the file-backed schemes.
 fn resource_put_text(ctx: Ctx<'_>, location: String, text: String) -> rquickjs::Result<()> {
     put_resource_bytes(&ctx, &location, text.as_bytes())
+}
+
+/// The bytes of one version as a stream (`openStream` of a `location#versionName` reference), or null when that version
+/// is not there.
+fn resource_version_stream<'js>(
+    ctx: Ctx<'js>,
+    location: String,
+    version_name: String,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let bytes = with_resources(&ctx, |resources| resources.read_version(&location, &version_name))?;
+        match bytes {
+            Some(bytes) => {
+                let source = Arc::new(crate::resource::source::MemorySource::new(bytes));
+                Class::instance(ctx.clone(), super::upload::HostStream::new(source)).and_then(|class| class.into_js(&ctx))
+            }
+            None => Null.into_js(&ctx),
+        }
+    })
 }
 
 /// The file as a stream (`openStream`, `getInputStream`), read when the script reads or writes it.
@@ -2499,6 +2543,7 @@ pub(super) fn install<'js>(
     method!("isRestrictedGenericEntity", is_restricted_generic_entity);
     method!("getAvailableTimeZones", get_available_time_zones);
     method!("resourceInfo", resource_info);
+    method!("resourceVersionStream", resource_version_stream);
     method!("restRootResources", rest_root_resources);
     method!("resolveRestService", resolve_rest_service);
     method!("transitionInfo", transition_info);
@@ -2521,6 +2566,7 @@ pub(super) fn install<'js>(
     method!("periodRange", period_range);
     method!("messageInfos", message_infos);
     method!("resourceText", resource_text);
+    method!("resourceTextIn", resource_text_in);
     method!("resourcePutText", resource_put_text);
     method!("resourceStream", resource_stream);
     method!("isTextFilename", is_text_filename);

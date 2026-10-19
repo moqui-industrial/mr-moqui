@@ -741,10 +741,39 @@ fn string_base64_url_encode(ctx: Ctx<'_>, text: Opt<String>) -> rquickjs::Result
     })
 }
 
-/// Standard base64 with padding of the text's UTF-8 bytes, as `Base64.getEncoder().encodeToString(text.getBytes())`.
-fn string_base64_encode(text: Opt<String>) -> String {
+/// Standard base64 with padding: of a text's UTF-8 bytes, as `Base64.getEncoder().encodeToString(text.getBytes())`, or of
+/// the bytes of a `Uint8Array` or `ArrayBuffer` as they are (a file, a MIME part). Null or undefined is empty.
+fn string_base64_encode<'js>(ctx: Ctx<'js>, value: Opt<JsValue<'js>>) -> rquickjs::Result<String> {
     use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(text.0.unwrap_or_default().as_bytes())
+    host_guard(&ctx, || {
+        let bytes = match value.0 {
+            None => Vec::new(),
+            Some(value) if value.is_null() || value.is_undefined() => Vec::new(),
+            Some(value) => match value.as_object().and_then(js_bytes) {
+                Some(bytes) => bytes,
+                None => to_plain_string(&js_to_host(&ctx, &value)?).into_bytes(),
+            },
+        };
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    })
+}
+
+/// The bytes of standard base64 text, as a `Uint8Array`: white space (the line breaks of a MIME part) is skipped and the
+/// padding may be left out. Text that is not base64 throws.
+fn string_base64_decode<'js>(ctx: Ctx<'js>, text: Opt<String>) -> rquickjs::Result<JsValue<'js>> {
+    use base64::Engine;
+    host_guard(&ctx, || {
+        let compact: String = text
+            .0
+            .unwrap_or_default()
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect();
+        let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+            .decode(compact.trim_end_matches('='))
+            .map_err(|err| Exception::throw_message(&ctx, &format!("not base64 text: {err}")))?;
+        host_to_js(&ctx, Value::Bytes(bytes))
+    })
 }
 
 /// The text as it is when it is safe in a URL path, else URL encoded.
@@ -930,6 +959,7 @@ pub(super) fn fill_helpers<'js>(
     method!(string_utilities, "base64UrlEncode", string_base64_url_encode);
     method!(string_utilities, "base64UrlDecode", string_base64_url_decode);
     method!(string_utilities, "base64Encode", string_base64_encode);
+    method!(string_utilities, "base64Decode", string_base64_decode);
     method!(string_utilities, "cleanHtml", string_clean_html);
     method!(string_utilities, "urlEncodeIfNeeded", string_url_encode_if_needed);
     method!(
@@ -1099,6 +1129,20 @@ mod tests {
             r#"StringUtilities.base64UrlDecode(StringUtilities.base64UrlEncode("hello/world?>")) === "hello/world?>""#,
         );
         holds(r#"StringUtilities.base64UrlEncode("??>>") === "Pz8-Pg""#);
+        // base64 of text (its UTF-8) and of bytes as they are, and back to bytes: byte-safe for a file or a MIME part
+        holds(r#"StringUtilities.base64Encode("é") === "w6k=" && StringUtilities.base64Encode(null) === """#);
+        holds(r#"StringUtilities.base64Encode(new Uint8Array([0, 255, 128, 10])) === "AP+ACg==""#);
+        holds(r#"StringUtilities.base64Encode(new Uint8Array([1, 2, 3]).buffer) === "AQID""#);
+        holds(
+            r#"(function () {
+                const bytes = StringUtilities.base64Decode("AP+A\r\nCg");
+                return bytes instanceof Uint8Array && bytes.length === 4 && bytes[0] === 0 && bytes[1] === 255 && bytes[2] === 128 && bytes[3] === 10;
+            })()"#,
+        );
+        holds(r#"StringUtilities.base64Decode(StringUtilities.base64Encode("AP+ACg==")).length === 8"#);
+        holds(
+            r#"(function () { try { StringUtilities.base64Decode("not base64!"); return false; } catch (err) { return /not base64/.test(String(err)); } })()"#,
+        );
         holds(r#"CollectionUtilities.getMapArrayListValues([{a: 1}, {a: null}, {b: 2}], "a", true).length === 1"#);
         holds(r#"CollectionUtilities.getMapArrayListValues([{a: 1}, {a: null}, {b: 2}], "a", false).length === 3"#);
         holds(
@@ -1120,6 +1164,8 @@ mod tests {
         holds(r#"ec.resource.expand("Hi ${who}") === "Hi Ada""#);
         holds(r#"ec.resource.expand("Hi ${who} ${other}", "", {other: "Bob", who: "Eve"}) === "Hi Eve Bob""#);
         holds(r#"ec.resource.expand("Hi ${who}") === "Hi Ada""#);
+        // a text too long to be a LocalizedMessage key comes back as it is
+        holds(r#"ec.l10n.localize("a".repeat(300)) === "a".repeat(300)"#);
         holds(
             r#"ec.resource.expandNoL10n("${shared}", "", {shared: "inner"}) === "inner" && ec.resource.expandNoL10n("${shared}") === "outer""#,
         );

@@ -8,7 +8,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN screen[@location=" + sri.get
         let $icon = "";
         if (!$icon && $text) $icon = sri.getThemeIconClass($text) || "";
         const $badge = ec.resource.expand("", "");
-        sri.write("<q-btn-dropdown" + $v.A(Object.assign({dense: true, unelevated: true, "no-caps": true}, $v.btnKind("", null))) + "><template v-slot:label>" +
+        sri.write("<q-btn-dropdown" + $v.A(Object.assign({dense: true, unelevated: true, "no-caps": true}, $v.btnKind(null, null))) + "><template v-slot:label>" +
             ($icon ? $v.iconTag($icon, !!$text) : ""));
         // as Java: the image child in the place of the text
         sri.write($text);

@@ -154,9 +154,65 @@ pub(super) fn poll_server(
 /// Runs the email ECA rules for one message in a new transaction. A rule that fails, or an error a rule leaves in the
 /// message facade, rolls it back; the errors are taken out of the facade and returned.
 fn receive(facade: &EntityFacade, message: &Inbound, server_id: &str) -> Result<(), Error> {
+    let fields = eca_fields(message, server_id);
+    in_eca_transaction(facade, || crate::service::run_email_rules(&fields))
+}
+
+/// A message the mail client's sync stored ([`run_stored_ecas`]).
+pub(super) struct StoredMessage<'a> {
+    /// The message as it came from the server.
+    pub(super) raw: &'a [u8],
+    pub(super) server_id: &'a str,
+    pub(super) account_id: &'a str,
+    /// The `EmailMessage` row it was stored as.
+    pub(super) email_message_id: &'a str,
+    /// When the server received it (IMAP INTERNALDATE); none for POP3.
+    pub(super) received_millis: Option<i64>,
+    pub(super) seen: bool,
+    pub(super) answered: bool,
+    pub(super) flagged: bool,
+}
+
+/// The email-ECA rules (`*.emecas.xml`) on a message the mail client's sync brought in (`sync#EmailAccount`, IMAP or
+/// POP3; any later fetch path calls this the same way), as poll#EmailServer runs them on a polled message: the same
+/// `fields`, `headers`, `bodyPartList`, `flags` and `message` from its text, with `emailAccountId` and `emailMessageId`
+/// of the row it was stored as. The message is kept either way, so each rule runs in a transaction of its own: one that
+/// fails is rolled back and logged with the account and the message, and the other rules and the sync go on. Nothing
+/// runs when no rule is installed.
+pub(super) fn run_stored_ecas(facade: &EntityFacade, stored: &StoredMessage<'_>) {
+    let count = crate::service::email_rule_count();
+    if count == 0 {
+        return;
+    }
+    let mut message = parse_rfc822(stored.raw);
+    message.seen = stored.seen;
+    message.flags.answered = stored.answered;
+    message.flags.flagged = stored.flagged;
+    if let Some(millis) = stored.received_millis {
+        message.received = stamp_millis(millis);
+    }
+    let mut fields = eca_fields(&message, stored.server_id);
+    fields.insert("emailAccountId".into(), Value::string(stored.account_id));
+    fields.insert("emailMessageId".into(), Value::string(stored.email_message_id));
+    for index in 0..count {
+        if let Err(err) = in_eca_transaction(facade, || crate::service::run_email_rule(index, &fields)) {
+            tracing::error!(
+                account = %stored.account_id,
+                "Email ECA rule {} failed for email message {} of account {}, skipped: {err}",
+                index + 1,
+                stored.email_message_id,
+                stored.account_id
+            );
+        }
+    }
+}
+
+/// `run` (email ECA rules) in a new transaction. A rule that fails, or an error a rule leaves in the message facade,
+/// rolls it back; the errors are taken out of the facade and returned.
+fn in_eca_transaction(facade: &EntityFacade, run: impl FnOnce() -> Result<(), Error>) -> Result<(), Error> {
     let mark = ExecutionContext::with_current(|ctx| ctx.message().error_mark()).unwrap_or_default();
     force_new(facade, || {
-        let ran = crate::service::run_email_rules(&eca_fields(message, server_id));
+        let ran = run();
         let mut errors =
             ExecutionContext::with_current(|ctx| ctx.message().take_errors_since(mark)).unwrap_or_default();
         if let Err(err) = ran {
@@ -174,11 +230,13 @@ fn receive(facade: &EntityFacade, message: &Inbound, server_id: &str) -> Result<
 }
 
 pub(super) fn store_steps(
+    facade: &EntityFacade,
     server: &EntityValue,
     steps: &mut Vec<(&'static str, bool, String)>,
     folders: &mut Vec<Value>,
 ) {
     let host = field_text(server, "storeHost");
+    let oauth = field_text(server, "authTypeEnumId") == super::oauth::OAUTH;
     let protocol = {
         let given = field_text(server, "storeProtocol");
         if given.is_empty() {
@@ -211,10 +269,35 @@ pub(super) fn store_steps(
         mark_seen: false,
         delete: false,
     };
+    // the connection the sync makes: TLS from the start on imaps or port 993, else STARTTLS when the server offers it
+    let info = super::sync::ServerInfo {
+        server_id: field_text(server, "emailServerId"),
+        host: host.clone(),
+        port,
+        protocol: protocol.clone(),
+        user: settings.user.clone(),
+        password: settings.password.clone(),
+        auth_type: field_text(server, "authTypeEnumId"),
+        store_delete: false,
+        access_token: None,
+    };
     if pop {
-        match Pop3::open(&settings).and_then(|mut pop3| pop3.close()) {
-            Ok(()) => steps.push(("storeLogin", true, format!("Signed in to POP3 {place}"))),
-            Err(err) => steps.push(("storeLogin", false, format!("POP3 {place}: {err}"))),
+        // as the sync signs in: USER and PASS, or AUTH XOAUTH2 for a provider sign-in
+        let how = if oauth { " with XOAUTH2" } else { "" };
+        match super::sync::open_pop(facade, &info, &settings).and_then(|mut pop3| {
+            pop3.close()
+                .map_err(|err| super::sync::SyncFailure::Connect(err.to_string()))
+        }) {
+            Ok(()) => steps.push(("storeLogin", true, format!("Signed in to POP3 {place}{how}"))),
+            Err(err) => {
+                let text = err.to_string();
+                let text = if text.starts_with("POP3 ") {
+                    text
+                } else {
+                    format!("POP3 {place}: {text}")
+                };
+                steps.push(("storeLogin", false, text));
+            }
         }
         return;
     }
@@ -226,17 +309,7 @@ pub(super) fn store_steps(
         ));
         return;
     }
-    // the connection the sync makes: TLS from the start on imaps or port 993, else STARTTLS when the server offers it
-    let info = super::sync::ServerInfo {
-        host: host.clone(),
-        port,
-        protocol: protocol.clone(),
-        user: settings.user.clone(),
-        password: settings.password.clone(),
-        auth_type: field_text(server, "authTypeEnumId"),
-        store_delete: false,
-    };
-    let mut session = match super::sync::open_imap(&info) {
+    let mut session = match super::sync::connect_imap(facade, &info) {
         Ok(conn) => {
             steps.push(("storeLogin", true, format!("Signed in to IMAP {place}")));
             conn.session
@@ -660,14 +733,29 @@ impl Pop3 {
         Mailbox::close(self)
     }
 
+    /// Connect and sign in with `USER` and `PASS`.
     pub(super) fn open(settings: &StoreSettings) -> Result<Self, Error> {
+        Self::open_as(settings, None)
+    }
+
+    /// Connect and sign in with SASL XOAUTH2 and an access token (`AUTH XOAUTH2`, RFC 5034), as Microsoft 365,
+    /// Outlook.com and Gmail take it for POP3.
+    pub(super) fn open_xoauth2(settings: &StoreSettings, token: &str) -> Result<Self, Error> {
+        Self::open_as(settings, Some(token))
+    }
+
+    fn open_as(settings: &StoreSettings, token: Option<&str>) -> Result<Self, Error> {
         if settings.folder != "INBOX" {
             return Err(Error::new(format!("No {} folder found", settings.folder)));
         }
-        // They go into the USER and PASS lines as they are.
-        if [&settings.user, &settings.password]
-            .iter()
-            .any(|text| text.contains(['\r', '\n']))
+        // They go into the USER and PASS lines (or the XOAUTH2 response) as they are.
+        if [
+            settings.user.as_str(),
+            settings.password.as_str(),
+            token.unwrap_or_default(),
+        ]
+        .iter()
+        .any(|text| text.contains(['\r', '\n']))
         {
             return Err(Error::new("the POP3 username or password has a line break"));
         }
@@ -680,20 +768,58 @@ impl Pop3 {
         let greeting = read_line(&mut reader)?;
         expect_ok(&greeting)?;
         let mut client = Self { reader, closed: false };
-        client.command(&format!("USER {}", settings.user))?;
-        client.command(&format!("PASS {}", settings.password))?;
+        match token {
+            Some(token) => client.authenticate_xoauth2(&settings.user, token)?,
+            None => {
+                client.command(&format!("USER {}", settings.user))?;
+                client.command(&format!("PASS {}", settings.password))?;
+            }
+        }
         Ok(client)
     }
 
+    /// `AUTH XOAUTH2`, then the response after the server's `+` continuation: never as an initial response on the AUTH
+    /// line, which RFC 5034 keeps to 255 octets (an access token is longer). A refused token comes back as a `+`
+    /// challenge (the provider's error, base64 JSON), which an empty line answers, and then `-ERR`. A refusal is "mail
+    /// server rejected the command", as a refused PASS.
+    fn authenticate_xoauth2(&mut self, user: &str, token: &str) -> Result<(), Error> {
+        use base64::Engine;
+        let rejected = |line: &str| Error::new(format!("mail server rejected the command: AUTH XOAUTH2: {line}"));
+        let continuation = self.exchange("AUTH XOAUTH2")?;
+        if !continuation.starts_with('+') || continuation.starts_with("+OK") {
+            return Err(rejected(&continuation));
+        }
+        let response = base64::engine::general_purpose::STANDARD.encode(super::oauth::xoauth2(user, token));
+        let answer = self.exchange(&response)?;
+        if answer.starts_with("+OK") {
+            return Ok(());
+        }
+        if let Some(challenge) = answer.strip_prefix('+') {
+            let detail = base64::engine::general_purpose::STANDARD
+                .decode(challenge.trim())
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .unwrap_or_default();
+            let end = self.exchange("")?;
+            return Err(rejected(format!("{end} {detail}").trim()));
+        }
+        Err(rejected(&answer))
+    }
+
     fn command(&mut self, line: &str) -> Result<String, Error> {
+        let response = self.exchange(line)?;
+        expect_ok(&response)?;
+        Ok(response)
+    }
+
+    /// A line to the server and its answer, whatever it is.
+    fn exchange(&mut self, line: &str) -> Result<String, Error> {
         write!(self.reader.get_mut(), "{line}\r\n").map_err(|err| Error::new(err.to_string()))?;
         self.reader
             .get_mut()
             .flush()
             .map_err(|err| Error::new(err.to_string()))?;
-        let response = read_line(&mut self.reader)?;
-        expect_ok(&response)?;
-        Ok(response)
+        read_line(&mut self.reader)
     }
 
     /// A multi-line answer up to the line with only a dot, as bytes: 8-bit mail is not text in any one charset.

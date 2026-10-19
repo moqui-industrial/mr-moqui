@@ -426,6 +426,8 @@ interface MoquiChangeSet {
     delete(path: string): MoquiChangeSet;
     move(from: string, to: string): MoquiChangeSet;
     mkdir(path: string): MoquiChangeSet;
+    /** The versions written are by userId at date (a timestamp or milliseconds); the committer stays the current user. */
+    author(userId: string | null, date?: unknown): MoquiChangeSet;
     size(): number;
     commit(message?: string | null): { versionName: string | null; applied: string[]; failures: { path: string; error: string }[] };
 }
@@ -503,7 +505,8 @@ interface MoquiUploadedFile {
     readonly fieldName: string;
     readonly contentType: string;
     readonly size: number;
-    getString(): string;
+    /** The bytes as text in the charset (Java names: UTF-8, ISO-8859-1, windows-1252, UTF-16), UTF-8 by default. */
+    getString(charset?: string): string;
     /** `dbresource://` only. */
     write(location: string): void;
     isInMemory(): boolean;
@@ -526,7 +529,8 @@ interface MoquiWebFacade {
     readonly errorParameters: MoquiMap | null;
     sendJsonResponse(value: unknown): void;
     sendJsonError(status: number, message: string, error?: unknown): void;
-    sendTextResponse(text: string): void;
+    /** text/plain by default; a file name sends the text as an attachment of that name. */
+    sendTextResponse(text: string | null, contentType?: string | null, filename?: string | null): void;
     /** The bytes at a resource location, inline or (the default) as an attachment. 404 when nothing is there. */
     sendResourceResponse(location: string, inline?: boolean): void;
     saveScreenLastInfo(path?: string | null, parameters?: MoquiMap | null): void;
@@ -880,6 +884,10 @@ interface MoquiStringUtilities {
     encodeForXmlAttribute(text: unknown, addZeroWidthSpaces?: boolean): string;
     base64UrlEncode(text: string): string;
     base64UrlDecode(text: string): string;
+    /** Standard base64 of a text's UTF-8 bytes, or of a `Uint8Array` or `ArrayBuffer` as it is. */
+    base64Encode(value: string | Uint8Array | ArrayBuffer | null): string;
+    /** The bytes of standard base64 text; white space is skipped and the padding may be left out. Throws on other text. */
+    base64Decode(text: string): Uint8Array;
 }
 
 interface MoquiWebUtilities {

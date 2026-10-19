@@ -31,6 +31,7 @@ package features `lite`, `enterprise` and `maximal`.
 | `ssh` | host | The SFTP client, the built-in SSH server (SFTP, admin shell, git over SSH), the SSH cluster channel | | yes | yes |
 | `sso` | host | OIDC and OAuth 2 logins (`org.moqui.sso.AuthServices`) | | yes | yes |
 | `print` | host | Network printing over IPP (`moqui-cups`) | | yes | yes |
+| `inbound-smtp` | host | The SMTP listener for hosted and shared mail accounts behind the edge gateway ([Mail-Inbound](Mail-Inbound.md); includes `imap`); it starts only when `smtp_listen_port` is set | | yes | yes |
 | `smtp` | core | Outbound mail: `send#EmailMessage`, `send#EmailTemplate`, password reset and notification mail | yes | yes | yes |
 | `imap` | core | Inbound mail: `poll#EmailServer`, the mail client's sync, IDLE, rules and import (includes `smtp`) | | yes | yes |
 | `git` | core | `git://` locations, git drives, `org.moqui.impl.GitServices`, the git server over HTTP and SSH, LFS | | yes | yes |

@@ -1,0 +1,5 @@
+<m-status-bar id="SyncStatus" :status-id="ec.resource.expandNoL10n('${statusId}',{'statusId':()=&gt;(statusId)})" action="/setStatus" :parameters="$mq.merge(({entitySyncId: syncId}),{})" :title="ec.resource.expand('Sync ${syncId}',{'syncId':()=&gt;(syncId)})"></m-status-bar>
+<m-status-bar id="ReadOnly" status-id="EsRunning" :read-only="String(ec.resource.expandNoL10n('${!canUpdate}',{'!canUpdate':()=&gt;(!canUpdate)}))==='true'" action="/setStatus" :parameters="$mq.merge(null,{})"></m-status-bar>
+<m-status-bar id="Staged" status-id="EsOtherError" stages="EsNotStarted,EsRunning,EsComplete" action="/setStatus" :parameters="$mq.merge(null,{})" :confirm="false"></m-status-bar>
+<m-status-bar id="Allowed" status-id="EsRunning" :allowed-status-ids="(['EsComplete'])" action="/setStatus" :parameters="$mq.merge(null,{})" parameter-name="toStatusId"></m-status-bar>
+<m-status-bar id="None" :status-id="ec.resource.expandNoL10n('${nothing}',{'nothing':()=&gt;(nothing)})" action="/setStatus" :parameters="$mq.merge(null,{})"></m-status-bar>

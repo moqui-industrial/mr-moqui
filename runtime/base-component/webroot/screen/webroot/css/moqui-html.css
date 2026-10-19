@@ -148,6 +148,22 @@ section.box > header h5 { margin: 0; font-size: 1rem; }
 section.box > header .toolbar { margin-left: auto; }
 section.box > .body { padding: 8px 10px; }
 section.box > .body-nopad > table { margin: 0; }
+/* status-bar: the stage chips (done checked, the current one filled in its color, the ones to come outlined) and the
+   transition buttons, each in its own form */
+.status-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 4px 0; }
+.status-stages, .status-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.status-sep { color: var(--muted); }
+.status-chip { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: .85em; border: 1px solid var(--line); color: var(--muted); }
+.status-chip[data-state="done"] { background: var(--stripe); color: var(--fg); }
+.status-chip[data-state="current"] { color: #fff; border-color: transparent; background: var(--default); font-weight: 500; }
+.status-chip[data-state="current"][data-color="primary"] { background: var(--primary); }
+.status-chip[data-state="current"][data-color="positive"] { background: var(--success); }
+.status-chip[data-state="current"][data-color="negative"] { background: var(--danger); }
+.status-chip[data-state="current"][data-color="warning"] { background: var(--warning); }
+.status-chip[data-state="current"][data-color="info"] { background: var(--info); }
+.status-form { display: inline; margin: 0; }
+.status-form button { margin: 0; }
+
 /* dashboard and number-card: a grid of columns at least --dashboard-min wide; an empty cell takes no room */
 .dashboard { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--dashboard-min, 200px), 100%), 1fr)); gap: 12px; margin: 8px 0; }
 .dashboard-item:empty { display: none; } .dashboard-item.dashboard-each { display: contents; }
@@ -312,7 +328,10 @@ ul.pagination li.current > a { font-weight: 600; background: var(--stripe); }
 .tree li.open > .toggle::before { content: "\25BE"; } .tree li:not(.open) > .toggle::before { content: "\25B8"; } .tree li.leaf > .toggle::before { content: ""; }
 .tree a.current { font-weight: 600; }
 .editable { cursor: text; border-bottom: 1px dashed var(--muted); }
-.editable-form input, .editable-form textarea { width: min(30em, 100%); }
+.editable-form input, .editable-form textarea, .editable-form select { width: min(30em, 100%); }
+.editable-empty .muted { font-style: italic; }
+/* a Quasar icon name (sym_o_add, edit) in the Material Symbols font, the size of the text beside it */
+.material-symbols-outlined.icon { font-size: 1.2em; line-height: 1; vertical-align: -0.22em; }
 
 /* ---------- Tom Select follows the page theme ---------- */
 

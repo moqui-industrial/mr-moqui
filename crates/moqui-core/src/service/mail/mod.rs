@@ -15,23 +15,28 @@
 //! Outbound SMTP and inbound IMAP/POP3 for the email services. The send path lives in [`implementation`] (the `smtp`
 //! feature), the receive path in [`inbound`] (the `imap` feature, which needs `smtp`), with the mail client's sync
 //! engine beside it: [`sync`] (`sync#EmailAccount` and the job), [`remote`] (local changes onto the server), [`idle`]
-//! (IMAP IDLE workers), [`store`] (a received message as a row), [`discover`] (autodiscover) and [`import`] (.eml and
-//! .mbox). The functions below are the registry entries. In a build without a feature its services still load, and a
-//! call reports that the feature is not built in (`rust_services::missing_feature`).
+//! (IMAP IDLE workers), [`store`] (a received message as a row), [`discover`] (autodiscover), [`import`] (.eml and
+//! .mbox), [`export`] (a stored message as .eml), [`oauth`] (sign-in with Google or Microsoft, the token store and
+//! XOAUTH2) and [`delivery`] (mail the host's SMTP listener received for hosted and shared accounts), all of them
+//! `imap`; [`contacts`] (the app's contacts hook) is always built. The functions below are the registry entries. In a
+//! build without a feature its services still load, and a call reports that the feature is not built in
+//! (`rust_services::missing_feature`).
 
 use std::collections::BTreeMap;
 
-#[cfg(feature = "smtp")]
 use moqui_lib::error::Error as LibError;
-#[cfg(feature = "smtp")]
 use moqui_lib::object::Value;
 
-#[cfg(feature = "smtp")]
 use crate::entity::EntityFacade;
 use crate::service::rust_services::RustServiceFn;
 
+mod contacts;
+#[cfg(feature = "imap")]
+pub mod delivery;
 #[cfg(feature = "imap")]
 mod discover;
+#[cfg(feature = "imap")]
+mod export;
 #[cfg(feature = "imap")]
 mod idle;
 #[cfg(feature = "smtp")]
@@ -40,6 +45,8 @@ mod implementation;
 mod import;
 #[cfg(feature = "imap")]
 mod inbound;
+#[cfg(feature = "imap")]
+mod oauth;
 #[cfg(feature = "imap")]
 mod remote;
 #[cfg(feature = "imap")]
@@ -55,9 +62,14 @@ mod client_tests;
 #[cfg(all(test, feature = "imap"))]
 mod fake_servers;
 #[cfg(all(test, feature = "imap"))]
+mod delivery_tests;
+#[cfg(all(test, feature = "imap"))]
+mod oauth_tests;
+#[cfg(all(test, feature = "imap"))]
+mod settings_tests;
+#[cfg(all(test, feature = "imap"))]
 mod sync_tests;
 
-#[cfg_attr(not(feature = "smtp"), allow(unused_variables))]
 pub(in crate::service) fn register(map: &mut BTreeMap<&'static str, RustServiceFn>) -> Result<(), String> {
     #[cfg(feature = "smtp")]
     {
@@ -73,8 +85,26 @@ pub(in crate::service) fn register(map: &mut BTreeMap<&'static str, RustServiceF
         rust_service!(map, sync_due_accounts)?;
         rust_service!(map, discover_server)?;
         rust_service!(map, import_messages)?;
+        rust_service!(map, export_message)?;
+        rust_service!(map, start_oauth_sign_in)?;
+        rust_service!(map, complete_oauth_sign_in)?;
+        rust_service!(map, get_oauth_status)?;
+        rust_service!(map, get_oauth_providers)?;
+        rust_service!(map, find_oauth_provider)?;
+        rust_service!(map, revoke_oauth_sign_in)?;
+        rust_service!(map, revoke_oauth_token)?;
     }
+    rust_service!(map, filter_contact_addresses)?;
     Ok(())
+}
+
+/// `filter#ContactAddresses`, with or without mail built in: the app's hook says which senders are a user's contacts
+/// ([`contacts`]).
+fn filter_contact_addresses(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    contacts::filter_contact_addresses(parameters, facade)
 }
 
 /// Start the IMAP IDLE workers on the scheduler's tick (`email_idle_enabled`). The host calls it once after boot.
@@ -128,6 +158,14 @@ fn push_remote_changes(
 }
 mail_service!("imap", discover_server, discover::discover_server);
 mail_service!("imap", import_messages, import::import_messages);
+mail_service!("imap", export_message, export::export_message);
+mail_service!("imap", start_oauth_sign_in, oauth::start_sign_in);
+mail_service!("imap", complete_oauth_sign_in, oauth::complete_sign_in);
+mail_service!("imap", get_oauth_status, oauth::sign_in_status);
+mail_service!("imap", get_oauth_providers, oauth::providers_service);
+mail_service!("imap", find_oauth_provider, oauth::find_provider_service);
+mail_service!("imap", revoke_oauth_sign_in, oauth::sign_out_service);
+mail_service!("imap", revoke_oauth_token, oauth::revoke_token_service);
 
 #[cfg(all(test, feature = "imap"))]
 mod tests {
@@ -149,6 +187,36 @@ mod tests {
             ),
             (std::any::type_name_of_val(&super::discover_server), "discover_server"),
             (std::any::type_name_of_val(&super::import_messages), "import_messages"),
+            (std::any::type_name_of_val(&super::export_message), "export_message"),
+            (
+                std::any::type_name_of_val(&super::start_oauth_sign_in),
+                "start_oauth_sign_in",
+            ),
+            (
+                std::any::type_name_of_val(&super::complete_oauth_sign_in),
+                "complete_oauth_sign_in",
+            ),
+            (std::any::type_name_of_val(&super::get_oauth_status), "get_oauth_status"),
+            (
+                std::any::type_name_of_val(&super::get_oauth_providers),
+                "get_oauth_providers",
+            ),
+            (
+                std::any::type_name_of_val(&super::find_oauth_provider),
+                "find_oauth_provider",
+            ),
+            (
+                std::any::type_name_of_val(&super::revoke_oauth_sign_in),
+                "revoke_oauth_sign_in",
+            ),
+            (
+                std::any::type_name_of_val(&super::revoke_oauth_token),
+                "revoke_oauth_token",
+            ),
+            (
+                std::any::type_name_of_val(&super::filter_contact_addresses),
+                "filter_contact_addresses",
+            ),
         ] {
             assert_eq!(function, format!("moqui_core::service::mail::{path}"));
         }

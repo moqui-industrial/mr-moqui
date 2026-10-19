@@ -22,6 +22,10 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="ccAddresses"><description>Comma separated list of CC email addresses</description></parameter>
             <parameter name="bccAddresses"><description>Comma separated list of BCC email addresses</description></parameter>
             <parameter name="bodyParameters" type="Map"/>
+            <parameter name="extraHeaders" type="Map"><description>Header fields to add, name to value: a list email's
+                List-Unsubscribe and List-Unsubscribe-Post (RFC 2369, RFC 8058). A name the message's own fields write
+                (From, To, Subject, Message-ID, Content-Type and the like) or a value with a line break is left out. They are
+                kept in the EmailMessage's headersString, so a send again keeps the List- headers.</description></parameter>
             <parameter name="createEmailMessage" type="Boolean" default="true"/>
             <parameter name="emailTypeEnumId"/>
             <parameter name="fromUserId"/><parameter name="toUserId"/>

@@ -114,6 +114,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Selectable] 
             }
         }]
     ], {
+    "views": null,
     "hasFirst": true,
     "hasSecond": false,
     "hasLast": true,
@@ -231,6 +232,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Everyone] --
             }
         }]
     ], {
+    "views": null,
     "hasFirst": false,
     "hasSecond": false,
     "hasLast": false,
@@ -332,7 +334,7 @@ sri.renderSection("Rows");
 {
     const $type = "default" || "default";
     sri.write("<m-container-box" + $v.A({id: null, type: $type, title: ec.resource.expand("Closed", ""),
-        "initial-open": "" === "closed" ? "false" : null}) + ">");
+        ":initial-open": "" === "closed" ? "false" : null}) + ">");
 }
 sri.write("<template v-slot:header>");
 sri.write("</template>");

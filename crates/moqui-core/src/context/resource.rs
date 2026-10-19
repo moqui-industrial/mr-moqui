@@ -29,8 +29,11 @@ mod changes;
 use changes::db_file_size;
 #[cfg(feature = "git")]
 pub(crate) use changes::millis_of;
+pub(crate) use changes::version_author;
 pub(crate) use changes::{apply_changes_each, last_change_by_stat, tree_size_by_walk};
-pub use changes::{ChangeLogEntry, ChangeSetOutcome, ResourceChange, ResourceChangeInfo};
+pub use changes::{
+    with_version_author, ChangeLogEntry, ChangeSetOutcome, ResourceChange, ResourceChangeInfo, VersionAuthor,
+};
 
 /// One version of a file, as Java's `ResourceReference.Version`: a `dbresource` history row, or a commit of a `git`
 /// file. `version_date` is a Timestamp value. `note` is what was written with the version: the commit message (without
@@ -521,8 +524,21 @@ impl ResourceFacade {
 
     /// The file at a location to read a window at a time, for a response, with what it is: `None` when no file is
     /// there. A file on disk is read as it is sent; other storage on the first read, or a window at a time where it
-    /// can (a content blob).
+    /// can (a content blob). A `#versionName` suffix opens that version on storage that keeps versions, as
+    /// [`Self::location_bytes`] reads it.
     pub fn open(&self, location: &str) -> Result<Option<Opened>, Error> {
+        if let Some((path, version_name)) = split_version(location) {
+            if self.supports_version(path) {
+                return Ok(self.read_version(path, version_name)?.map(|bytes| Opened {
+                    stat: ResourceStat {
+                        is_file: true,
+                        size: bytes.len() as u64,
+                        last_modified: None,
+                    },
+                    source: Arc::new(crate::resource::source::MemorySource::new(bytes)),
+                }));
+            }
+        }
         if let Some(provider) = self.provider(location) {
             return Ok(provider
                 .open(location)?
@@ -872,6 +888,22 @@ impl ResourceFacade {
             }
         }
         self.get(location)?.read_text()
+    }
+
+    /// The bytes of the file at a location, where a `#versionName` suffix reads that version on storage that keeps
+    /// versions (as [`Self::location_text`]; elsewhere the suffix is ignored). `None` when no file is there, or that
+    /// version is not: `openStream()` of such a reference and `ec.web.sendResourceResponse` read this.
+    pub fn location_bytes(&self, location: &str) -> Result<Option<Vec<u8>>, Error> {
+        if let Some((path, version_name)) = split_version(location) {
+            if self.supports_version(path) {
+                return self.read_version(path, version_name);
+            }
+        }
+        let resource = self.get(location)?;
+        if !resource.exists() || resource.is_directory() {
+            return Ok(None);
+        }
+        resource.read_bytes().map(Some)
     }
 
     /// The line diff from version `lhs` to version `rhs` of a file; an empty name is the current text. A version that

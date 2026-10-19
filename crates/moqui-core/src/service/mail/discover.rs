@@ -25,6 +25,12 @@
 //!    resolver library, so this is a small query of its own.
 //! 3. Guesses: `imap.<domain>` on 993 and `smtp.<domain>` on 587 with STARTTLS, for the wizard's test step to try.
 //!
+//! It also says which OAuth provider (`EmailOAuthProvider`, [`super::oauth`]) the mail is at, and whether this server
+//! is set up to sign in with it: by the address's domain (gmail.com, outlook.com and the like), by the servers found
+//! (imap.gmail.com, outlook.office365.com), else by the domain's MX hosts (a company domain at Google Workspace or
+//! Microsoft 365: `*.google.com`, `*.protection.outlook.com`), asked with the SRV records. For such a domain the
+//! provider's servers replace the guesses.
+//!
 //! The domain's own URLs are fetched only to public addresses (an address cannot point the server at its own network).
 
 use std::collections::BTreeMap;
@@ -35,7 +41,7 @@ use std::time::{Duration, Instant};
 use indexmap::IndexMap;
 use moqui_lib::error::Error as LibError;
 use moqui_lib::node::MNode;
-use moqui_lib::object::Value;
+use moqui_lib::object::{to_plain_string, Value};
 
 use super::implementation::note_error;
 use crate::entity::EntityFacade;
@@ -116,17 +122,65 @@ pub(super) fn discover_server(
         note_error(format!("{address} is not an email address"));
         return Ok(out);
     }
+    let providers = {
+        let _authz = crate::context::ExecutionContext::with_current(crate::context::ExecutionContext::disable_authz);
+        super::oauth::load_providers(facade).unwrap_or_else(|err| {
+            tracing::error!("discover#EmailServer: the OAuth providers could not be read: {err}");
+            Vec::new()
+        })
+    };
+    let by_domain = super::oauth::detect(&providers, &domain, &[], &[]);
     let mut suggestion = if facade.sim_active() {
         None
     } else {
         autoconfig(&address, local, &domain)
     };
+    let mut mx = Vec::new();
+    let want_mx = by_domain.is_none() && !providers.is_empty();
+    let mut asked_mx = false;
     if suggestion.is_none() {
-        suggestion = srv_lookup(&domain, &address);
+        let (found, hosts) = dns_lookup(&domain, &address, true, want_mx);
+        suggestion = found;
+        mx = hosts;
+        asked_mx = want_mx;
     }
     let mut suggestion = suggestion.unwrap_or_else(|| guess(&domain, &address));
+    let hosts: Vec<String> = suggestion
+        .incoming
+        .iter()
+        .chain(&suggestion.outgoing)
+        .map(|choice| choice.host.clone())
+        .collect();
+    let mut provider = by_domain.or_else(|| super::oauth::detect(&providers, &domain, &hosts, &[]));
+    if provider.is_none() && want_mx && !asked_mx {
+        // a company domain with servers of its own name may still be at Google or Microsoft
+        mx = mx_lookup(&domain);
+    }
+    if provider.is_none() && !mx.is_empty() {
+        provider = super::oauth::detect(&providers, &domain, &[], &mx);
+    }
+    if let Some(found) = provider.as_ref().filter(|found| !found.store_host.is_empty()) {
+        // a company domain at the provider has no servers of its own: the provider's, not guesses
+        if suggestion.source == "guess" {
+            suggestion = provider_suggestion(found, &address);
+        }
+    }
     suggestion.incoming.sort_by_key(Choice::rank);
     suggestion.outgoing.sort_by_key(Choice::rank);
+    out.insert(
+        "oauthProviderEnumId".into(),
+        provider.as_ref().map_or(Value::Null, |found| Value::string(&found.id)),
+    );
+    out.insert(
+        "oauthProviderName".into(),
+        provider
+            .as_ref()
+            .map_or(Value::Null, |found| Value::string(&found.name)),
+    );
+    out.insert(
+        "oauthConfigured".into(),
+        Value::Bool(provider.as_ref().is_some_and(super::oauth::Provider::configured)),
+    );
     out.insert("source".into(), Value::string(&suggestion.source));
     out.insert("displayName".into(), Value::string(&suggestion.display_name));
     if let Some(incoming) = suggestion.incoming.first() {
@@ -161,8 +215,15 @@ pub(super) fn discover_server(
             "smtpStartTls".into(),
             Value::string(if outgoing.socket == "STARTTLS" { "Y" } else { "N" }),
         );
-        if !out.contains_key("mailUsername") {
-            out.insert("mailUsername".into(), Value::string(&outgoing.username));
+        match out.get("mailUsername").map(to_plain_string) {
+            None => {
+                out.insert("mailUsername".into(), Value::string(&outgoing.username));
+            }
+            // an outgoing server that signs in as another user: its own SMTP sign-in
+            Some(incoming) if !outgoing.username.is_empty() && !outgoing.username.eq_ignore_ascii_case(&incoming) => {
+                out.insert("smtpUsername".into(), Value::string(&outgoing.username));
+            }
+            Some(_) => {}
         }
     }
     out.insert(
@@ -419,6 +480,11 @@ fn nameserver() -> Option<String> {
 
 /// A DNS query for one SRV name.
 pub(super) fn srv_query(id: u16, name: &str) -> Vec<u8> {
+    dns_query(id, name, 33)
+}
+
+/// A DNS query for one name and record type (33 SRV, 15 MX).
+pub(super) fn dns_query(id: u16, name: &str, kind: u16) -> Vec<u8> {
     let mut packet = Vec::with_capacity(64);
     packet.extend_from_slice(&id.to_be_bytes());
     packet.extend_from_slice(&[0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
@@ -428,7 +494,8 @@ pub(super) fn srv_query(id: u16, name: &str) -> Vec<u8> {
         packet.extend_from_slice(&bytes[..bytes.len().min(63)]);
     }
     packet.push(0);
-    packet.extend_from_slice(&[0x00, 0x21, 0x00, 0x01]);
+    packet.extend_from_slice(&kind.to_be_bytes());
+    packet.extend_from_slice(&[0x00, 0x01]);
     packet
 }
 
@@ -499,27 +566,90 @@ pub(super) fn srv_answers(packet: &[u8]) -> Option<(u16, Vec<SrvRecord>)> {
     Some((id, out))
 }
 
-fn srv_lookup(domain: &str, address: &str) -> Option<Suggestion> {
-    let server = nameserver()?;
-    let socket = UdpSocket::bind(if server.starts_with('[') { "[::]:0" } else { "0.0.0.0:0" }).ok()?;
-    socket.connect(&server).ok()?;
+/// The MX hosts of an answer to an MX query, by preference.
+pub(super) fn mx_answers(packet: &[u8]) -> Option<(u16, Vec<String>)> {
+    if packet.len() < 12 {
+        return None;
+    }
+    let id = u16::from_be_bytes([packet[0], packet[1]]);
+    let questions = u16::from_be_bytes([packet[4], packet[5]]);
+    let answers = u16::from_be_bytes([packet[6], packet[7]]);
+    let mut offset = 12;
+    for _ in 0..questions {
+        let (_, next) = read_name(packet, offset)?;
+        offset = next + 4;
+    }
+    let mut out = Vec::new();
+    for _ in 0..answers {
+        let (_, next) = read_name(packet, offset)?;
+        let header = packet.get(next..next + 10)?;
+        let kind = u16::from_be_bytes([header[0], header[1]]);
+        let length = usize::from(u16::from_be_bytes([header[8], header[9]]));
+        let data = next + 10;
+        if kind == 15 && length >= 3 {
+            let preference = packet.get(data..data + 2)?;
+            let (host, _) = read_name(packet, data + 2)?;
+            out.push((u16::from_be_bytes([preference[0], preference[1]]), host));
+        }
+        offset = data + length;
+    }
+    out.sort();
+    Some((id, out.into_iter().map(|(_, host)| host).collect()))
+}
+
+/// The domain's MX hosts alone, for a domain whose servers came from autoconfig. Empty when DNS does not answer.
+fn mx_lookup(domain: &str) -> Vec<String> {
+    dns_lookup(domain, "", false, true).1
+}
+
+/// The MX hosts of a domain, for `find#OAuthProvider` with `lookupMx`. Empty when DNS does not answer.
+pub(super) fn mx_hosts(domain: &str) -> Vec<String> {
+    mx_lookup(domain)
+}
+
+/// A domain worth a DNS query: a name with a dot, not an address literal.
+pub(super) fn lookup_domain(domain: &str) -> bool {
+    valid_domain(domain)
+}
+
+/// The SRV records (RFC 6186) of a domain as a suggestion, and with `with_mx` its MX hosts, asked at once.
+fn dns_lookup(domain: &str, address: &str, with_srv: bool, with_mx: bool) -> (Option<Suggestion>, Vec<String>) {
+    let mut mx = Vec::new();
+    let Some(server) = nameserver() else {
+        return (None, mx);
+    };
+    let Ok(socket) = UdpSocket::bind(if server.starts_with('[') { "[::]:0" } else { "0.0.0.0:0" }) else {
+        return (None, mx);
+    };
+    if socket.connect(&server).is_err() {
+        return (None, mx);
+    }
     let mut base = [0u8; 2];
-    getrandom::fill(&mut base).ok()?;
+    if getrandom::fill(&mut base).is_err() {
+        return (None, mx);
+    }
     let base = u16::from_be_bytes(base) & 0xFFF0;
-    for (index, (prefix, _, _)) in SRV_QUERIES.iter().enumerate() {
-        let id = base + u16::try_from(index).unwrap_or(0);
-        if socket.send(&srv_query(id, &format!("{prefix}.{domain}"))).is_err() {
-            return None;
+    let mx_id = base + u16::try_from(SRV_QUERIES.len()).unwrap_or(0);
+    let mut answered = vec![!with_srv; SRV_QUERIES.len()];
+    let mut mx_answered = !with_mx;
+    if with_srv {
+        for (index, (prefix, _, _)) in SRV_QUERIES.iter().enumerate() {
+            let id = base + u16::try_from(index).unwrap_or(0);
+            if socket.send(&srv_query(id, &format!("{prefix}.{domain}"))).is_err() {
+                return (None, mx);
+            }
         }
     }
+    if with_mx && socket.send(&dns_query(mx_id, domain, 15)).is_err() {
+        mx_answered = true;
+    }
     let deadline = Instant::now() + DNS_BUDGET;
-    let mut answered = vec![false; SRV_QUERIES.len()];
     let mut suggestion = Suggestion {
         source: "srv".to_string(),
         ..Suggestion::default()
     };
     let mut buffer = [0u8; 4096];
-    while answered.iter().any(|done| !done) {
+    while answered.iter().any(|done| !done) || !mx_answered {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() || socket.set_read_timeout(Some(left)).is_err() {
             break;
@@ -527,7 +657,15 @@ fn srv_lookup(domain: &str, address: &str) -> Option<Suggestion> {
         let Ok(read) = socket.recv(&mut buffer) else {
             break;
         };
-        let Some((id, records)) = srv_answers(&buffer[..read]) else {
+        let packet = &buffer[..read];
+        if packet.len() >= 2 && u16::from_be_bytes([packet[0], packet[1]]) == mx_id {
+            if let Some((_, hosts)) = mx_answers(packet) {
+                mx = hosts;
+                mx_answered = true;
+            }
+            continue;
+        }
+        let Some((id, records)) = srv_answers(packet) else {
             continue;
         };
         let Some(index) = id
@@ -560,7 +698,46 @@ fn srv_lookup(domain: &str, address: &str) -> Option<Suggestion> {
             }
         }
     }
-    (!suggestion.incoming.is_empty()).then_some(suggestion)
+    ((!suggestion.incoming.is_empty()).then_some(suggestion), mx)
+}
+
+/// The servers of an OAuth provider (`EmailOAuthProvider`), for an address whose domain is at it.
+fn provider_suggestion(provider: &super::oauth::Provider, address: &str) -> Suggestion {
+    let choice = |kind: &str, host: &str, port: &str, default_port: u16, socket: &str| Choice {
+        kind: kind.to_string(),
+        host: host.to_string(),
+        port: port.trim().parse().unwrap_or(default_port),
+        socket: socket.to_string(),
+        username: address.to_string(),
+        auth: "password".to_string(),
+    };
+    let smtp_socket = if provider.smtp_ssl == "Y" {
+        "SSL"
+    } else if provider.smtp_start_tls == "N" {
+        "plain"
+    } else {
+        "STARTTLS"
+    };
+    Suggestion {
+        source: "provider".to_string(),
+        display_name: provider.name.clone(),
+        incoming: vec![if provider.store_protocol == "imap" {
+            choice("imap", &provider.store_host, &provider.store_port, 143, "STARTTLS")
+        } else {
+            choice("imap", &provider.store_host, &provider.store_port, 993, "SSL")
+        }],
+        outgoing: if provider.smtp_host.is_empty() {
+            Vec::new()
+        } else {
+            vec![choice(
+                "smtp",
+                &provider.smtp_host,
+                &provider.smtp_port,
+                if smtp_socket == "SSL" { 465 } else { 587 },
+                smtp_socket,
+            )]
+        },
+    }
 }
 
 fn guess(domain: &str, address: &str) -> Suggestion {

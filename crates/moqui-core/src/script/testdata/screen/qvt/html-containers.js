@@ -5,7 +5,7 @@ sri.write("</section>\n");
 {
     const $type = "info" || "default";
     sri.write("<m-container-box" + $v.A({id: null, type: $type, title: ec.resource.expand("Boxed ${name}", ""),
-        "initial-open": "" === "closed" ? "false" : null}) + ">");
+        ":initial-open": "" === "closed" ? "false" : null}) + ">");
 }
 sri.write("<template v-slot:header>");
 sri.write("</template>");

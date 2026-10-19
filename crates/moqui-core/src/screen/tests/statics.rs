@@ -298,11 +298,32 @@ fn the_qvt_fixture_screens_become_templates_that_compile() {
         "records",
         "split",
         "panels",
+        "cells",
+        "status",
+        "mobile",
+        "views",
     ] {
         let (html, report) = static_fixture(name);
         golden(&format!("render/{name}.html"), &html);
         eprintln!("{}", report.render());
     }
+}
+
+/// `columns type="mobile"` in a server-static screen: the template is cached for every request, so it holds the list of each column
+/// set and the client shows the one of the `_uiType` the request carries (the screen package has it), as the merged render picks it.
+#[test]
+fn mobile_columns_of_a_static_template_are_chosen_by_the_ui_type_in_the_client() {
+    let (html, _) = static_fixture("mobile");
+    let mobile_at = html
+        .find(r#"<template v-if="_uiType === 'mobile'">"#)
+        .unwrap_or_else(|| panic!("{html}"));
+    let default_at = html.find(r#"<template v-else>"#).unwrap_or_else(|| panic!("{html}"));
+    assert!(mobile_at < default_at, "{html}");
+    assert_eq!(html.matches("<m-static-form-list").count(), 2, "{html}");
+    // the phone's list puts the title and the caption in one cell: fewer header cells than the default's column per field
+    let (phone, desktop) = html.split_at(default_at);
+    let cells = |text: &str| text.matches("class=\"th").count();
+    assert!(cells(phone) < cells(desktop), "{html}");
 }
 
 /// A number-card of a server-static screen is bound over the scope as a label is: the value and delta expressions are
@@ -756,6 +777,74 @@ fn the_template_has_a_validator_and_answers_304_and_head() {
     assert!(actions.header("ETag").is_none());
 }
 
+/// An editable select of a server-static screen takes the options of its list-options (and entity-options) too: the package has them by
+/// the editable's id, and the template adds them to its option elements, for the page and in a form-single.
+#[test]
+fn an_editable_select_takes_its_list_options_from_the_package() {
+    let context = ExecutionContextFactory::test_context();
+    let factory = context.factory();
+    let dir = std::env::temp_dir().join(format!("moqui-static-editable-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("Root")).unwrap();
+    std::fs::write(
+        dir.join("Root.xml"),
+        "<screen require-authentication=\"false\"><widgets><subscreens-active/></widgets><subscreens default-item=\"Kinds\"/></screen>",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Root/Kinds.xml"),
+        r#"<screen require-authentication="false" server-static="qvt">
+            <transition name="saveKind"><default-response type="none"/></transition>
+            <actions><set field="kindList" from="[{code: 'X', name: 'Ex'}, {code: 'Y', name: 'Why'}]"/></actions>
+            <widgets>
+                <editable id="KindPick" text="Why" value="Y" transition="saveKind" widget-type="select">
+                    <option key="Z" text="Zed"/><list-options list="kindList" key="${code}" text="${name}"/></editable>
+                <form-single name="KindForm" transition="saveKind">
+                    <field name="kind"><default-field><editable id="FormKind" text="Ex" transition="saveKind" widget-type="select">
+                        <list-options list="kindList" key="${code}" text="${name}"/></editable></default-field></field>
+                </form-single>
+            </widgets>
+        </screen>"#,
+    )
+    .unwrap();
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let template = make_render(factory)
+        .root_screen(root.clone())
+        .screen_path("/Kinds.qvt")
+        .render()
+        .unwrap();
+    assert_eq!(
+        header(&template, "X-Moqui-Qvt"),
+        "static-template",
+        "{}",
+        template.body_text()
+    );
+    let script = template.body_text();
+    assert!(
+        script.contains("mqOpt_editable_KindPick") && script.contains("mqOpt_editable_FormKind"),
+        "{script}"
+    );
+    // the option element is in the template, the looked-up ones are not
+    assert!(script.contains("Zed") && !script.contains("kindList"), "{script}");
+    let package = json_of(
+        &make_render(factory)
+            .root_screen(root)
+            .screen_path("/Kinds/actions")
+            .render()
+            .unwrap(),
+    );
+    assert_eq!(
+        package["mqOpt_editable_KindPick"],
+        serde_json::json!([{"value": "X", "label": "Ex"}, {"value": "Y", "label": "Why"}]),
+        "{package}"
+    );
+    assert_eq!(
+        package["mqExtra_KindForm"]["mqOpt_editable_FormKind"],
+        serde_json::json!([{"value": "X", "label": "Ex"}, {"value": "Y", "label": "Why"}]),
+        "{package}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn include_screen_and_section_include_are_written_inline_with_their_actions_in_the_package() {
     let context = ExecutionContextFactory::test_context();
@@ -924,4 +1013,59 @@ fn the_parity_fixture_is_a_template_with_its_data_in_the_packages() {
     assert!(html.contains(":parent-checkbox-set=\"mqSelSet\""), "{html}");
     let picks = json_of(&render(context.factory(), "/Parity/actions/PickList", &[]));
     golden("Parity.PickList.json", &serde_json::to_string(&picks).unwrap());
+}
+
+/// A status-bar of a server-static screen is bound over the scope (the status, the title, a read-only or list expression)
+/// and asks the root screen's statusBar transition for the flow in the browser; a btn-type and row-col sizes that are
+/// expressions are bound through `$mq.btnKind` and `$mq.cols`, and an empty editable is hidden unless display-if-empty.
+#[test]
+fn a_status_bar_and_expression_styles_are_bound_in_a_static_template() {
+    let (status, _) = static_fixture("status");
+    for expected in [
+        r#"<m-status-bar id="SyncStatus" :status-id="ec.resource.expandNoL10n('${statusId}',{'statusId':()=&gt;(statusId)})" action="/setStatus" :parameters="$mq.merge(({entitySyncId: syncId}),{})""#,
+        r#":read-only="String(ec.resource.expandNoL10n('${!canUpdate}',{'!canUpdate':()=&gt;(!canUpdate)}))==='true'""#,
+        r#"stages="EsNotStarted,EsRunning,EsComplete""#,
+        r#":allowed-status-ids="(['EsComplete'])""#,
+        r#"parameter-name="toStatusId""#,
+    ] {
+        assert!(status.contains(expected), "{expected} in {status}");
+    }
+    assert!(!status.contains(":bar="), "the flow is not in the template: {status}");
+    let (cells, _) = static_fixture("cells");
+    for expected in [
+        r#"v-bind="$mq.btnKind(ec.resource.expandNoL10n('${chip.on ? \'primary\' : \'\'}'"#,
+        r#":class="$mq.cols(ec.resource.expandNoL10n('${wide}',{'wide':()=&gt;(wide)}),ec.resource.expandNoL10n('${wide}',{'wide':()=&gt;(wide)}),'','',false)""#,
+        r#"value="B" :options="[{value:'A',label:ec.l10n.localize('First')},{value:'B',label:ec.l10n.localize('Second')}]""#,
+        r#":placeholder="ec.l10n.localize('Click to edit')""#,
+    ] {
+        assert!(cells.contains(expected), "{expected} in {cells}");
+    }
+}
+
+/// The views of a form-list in a server-static screen: m-static-form-list gets the board's and calendar's settings (the transitions as
+/// paths of the screen, the key fields, color-map) and a card slot over the row's scope with the title, badge and card fields as the
+/// row slot writes them (no hidden input for a display); the rows are the ones it fetches. markdown-view is bound over the scope.
+#[test]
+fn form_list_views_and_the_markdown_view_in_a_static_template() {
+    let (html, report) = static_fixture("views");
+    for expected in [
+        r#":views="['board','list','calendar']""#,
+        "'groupField':'stage','titleField':'name','sumField':'points'",
+        "'keyFields':['taskId'],'columnOrder':[]",
+        "'transition':'/moveTask'",
+        "'createTransition':'/newTask'",
+        "'colors':{'todo':'info','doing':'warning'}",
+        r#"views-location="/#Tasks""#,
+        r#"<template v-slot:card="_ctx"><div class="m-card-head row no-wrap"><div class="m-card-title">"#,
+        r#"<span class="m-card-label m-muted" v-text="ec.l10n.localize('Owner')"></span>"#,
+        r#"<m-markdown id="Notes""#,
+        r#":wiki-links="true""#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    let card = &html[html.find(r#"<template v-slot:card="_ctx">"#).unwrap()..];
+    let card = &card[..card.find("</template>").unwrap()];
+    assert!(!card.contains(r#"type="hidden""#), "no hidden input in a card: {card}");
+    assert!(card.contains("Tasks_card_"), "a card's ids are its own: {card}");
+    eprintln!("{}", report.render());
 }

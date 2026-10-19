@@ -1062,6 +1062,7 @@ fn commit_files(store: &MemoryStore, files: &[(&str, &str)], message: &str) -> g
         name: "Test".into(),
         email: "test@example.com".into(),
         user_id: None,
+        seconds: None,
     };
     ops::commit(store, "main", &author, |_| Ok(Some((edits.clone(), message.into()))))
         .unwrap()

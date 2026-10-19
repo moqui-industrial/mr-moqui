@@ -20,7 +20,7 @@
 //!
 //! The tool: `isEnabled()`, `enable()`, `disable()` (this factory, until `reset()`, which goes back to the conf
 //! property), `getMessages()` (oldest first, each `{subject, fromAddress, fromName, toList, ccList, bccList,
-//! replyToList, body, bodyText, messageId, inReplyTo, references, attachmentNames, capturedDate}`), `count()`,
+//! replyToList, body, bodyText, messageId, inReplyTo, references, attachmentNames, headers, capturedDate}`), `count()`,
 //! `last()` and `clear()`.
 
 use std::sync::{Arc, Mutex};
@@ -55,6 +55,8 @@ pub struct CapturedMail {
     pub in_reply_to: String,
     pub references: String,
     pub attachment_names: Vec<String>,
+    /// The headers the send added beside its own fields (a list email's List-Unsubscribe), in order.
+    pub headers: Vec<(String, String)>,
 }
 
 /// The capture of a factory: whether a script turned it on or off, and the messages.
@@ -145,6 +147,15 @@ fn mail_value(at: i64, mail: &CapturedMail) -> Value {
         ("inReplyTo", Value::string(&mail.in_reply_to)),
         ("references", Value::string(&mail.references)),
         ("attachmentNames", list(&mail.attachment_names)),
+        (
+            "headers",
+            Value::Map(
+                mail.headers
+                    .iter()
+                    .map(|(name, value)| (name.clone(), Value::string(value)))
+                    .collect(),
+            ),
+        ),
         ("capturedDate", Value::I64(at)),
     ] {
         out.insert(key.to_string(), value);
@@ -174,7 +185,8 @@ impl ToolFactory for MailCaptureToolFactory {
             "{ isEnabled(): boolean; enable(): void; disable(): void; reset(): void; \
              getMessages(): { subject: string; fromAddress: string; fromName: string; toList: string[]; ccList: string[]; \
              bccList: string[]; replyToList: string[]; body: string; bodyText: string; messageId: string; inReplyTo: string; \
-             references: string; attachmentNames: string[]; capturedDate: number }[]; count(): number; \
+             references: string; attachmentNames: string[]; headers: Record<string, string>; capturedDate: number }[]; \
+             count(): number; \
              last(): Record<string, unknown> | null; clear(): void }",
         )
     }

@@ -1,0 +1,37 @@
+<screen require-authentication="false">
+    <transition name="open"><default-response type="none"/></transition>
+    <transition name="moveTask"><default-response type="none"/></transition>
+    <transition name="planTask"><default-response type="none"/></transition>
+    <transition name="newTask"><default-response type="none"/></transition>
+    <actions>
+        <set field="taskList" from="[
+            {taskId: 'T1', name: 'Write {{spec}}', stage: 'todo', stageLabel: 'To do', points: 3, owner: 'Ada', start: '1760882400000', thru: '1760886000000', room: 'R1'},
+            {taskId: 'T2', name: 'Review', stage: 'doing', stageLabel: 'Doing', points: 5.5, owner: 'Bo', start: '1760968800000', thru: null, room: 'R2'},
+            {taskId: 'T3', name: 'Ship', stage: 'todo', stageLabel: 'To do', points: null, owner: null, start: '2026-10-21', thru: '2026-10-22', room: 'R1'}]"/>
+        <set field="taskListCount" from="3"/>
+        <set field="taskListPageIndex" from="0"/>
+        <set field="taskListPageMaxIndex" from="0"/>
+        <set field="taskListPageRangeLow" from="1"/>
+        <set field="taskListPageRangeHigh" from="3"/>
+    </actions>
+    <widgets>
+        <markdown-view id="Notes" text="# Notes {{x}}&#10;&#10;See [the spec](spec/One) and [site](https://example.com)." base-path="/apps/wiki" strip-title="Notes" wiki-links="true" style="q-mt-sm"/>
+        <markdown-view text="" condition="false"/>
+        <form-list name="Tasks" list="taskList" views="board,list,calendar" transition="open">
+            <view-board group-field="stage" card-title-field="name" card-fields="owner,points" badge-field="points" sum-field="points"
+                    transition="moveTask"/>
+            <view-calendar start-field="start" end-field="thru" title-field="name" color-field="stage" color-map="todo:info,doing:warning"
+                    resource-field="room" transition="planTask" create-transition="newTask" modes="week,month,day,list" range-find="true"/>
+            <hidden-parameters><parameter name="projectId" value="P9"/></hidden-parameters>
+            <field name="taskId"><default-field><hidden/></default-field></field>
+            <field name="name"><default-field title="Task"><link url="open" text="${name}" parameter-map="{taskId: taskId}"/></default-field></field>
+            <field name="stage"><default-field><display text="${stageLabel}"/></default-field></field>
+            <field name="owner"><default-field><display/></default-field></field>
+            <field name="points" align="right"><default-field><display format="0.0"/></default-field></field>
+        </form-list>
+        <form-list name="Plain" list="taskList" skip-form="true" paginate="false">
+            <view-board group-field="owner"/>
+            <field name="name"><default-field><display/></default-field></field>
+        </form-list>
+    </widgets>
+</screen>

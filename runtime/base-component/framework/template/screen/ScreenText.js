@@ -247,7 +247,7 @@ const $formList = (name, cols) => {
         "box-header": stmt((node, children) => children),
         "box-body": stmt((node, children) => children),
         "box-body-nopad": stmt((node, children) => children),
-        "container-row": stmt((node) => childrenNamed(node, "row-col").map((kid) => kid.source).join("")),
+        "container-row": stmt((node, children) => children),
         "row-col": stmt((node, children) => children),
         "container-panel": stmt((node) => ["panel-header", "panel-left", "panel-center", "panel-right", "panel-footer"]
             .map((name) => { const kid = child(node, name); return kid ? kid.source : ""; }).join("")),
@@ -274,9 +274,22 @@ const $formList = (name, cols) => {
             return condition ? `if (${condition}) {\n${line}}\n` : line;
         }),
         "dashboard": stmt((node, children) => children),
+        // a status-bar as "Status: In Progress", the current status's description
+        "status-bar": stmt((node) => {
+            const line = `{ const $v = ${S.statusTextExpr(node)}; if ($v) {\n${pad('ec.l10n.localize("Status") + ": " + $v')}sri.write("\\n");\n} }\n`;
+            const condition = attr(node, "condition");
+            return condition ? `if (${condition}) {\n${line}}\n` : line;
+        }),
         // an html-view as its text: the text body, else the HTML's text
         "html-view": stmt((node) => {
             const line = `{ const $v = ${S.htmlViewTextExpr(node)}; if ($v) sri.write($v + "\\n"); }\n`;
+            const condition = attr(node, "condition");
+            return condition ? `if (${condition}) {\n${line}}\n` : line;
+        }),
+
+        // a markdown-view as its markdown
+        "markdown-view": stmt((node) => {
+            const line = `{ const $v = ${S.markdownTextExpr(node)}; if ($v) sri.write($v + "\\n"); }\n`;
             const condition = attr(node, "condition");
             return condition ? `if (${condition}) {\n${line}}\n` : line;
         }),

@@ -39,6 +39,35 @@ pub(super) fn email_rule_from(node: &MNode) -> EmailRule {
     }
 }
 
+/// How many email ECA rules are installed, for a caller that runs each on its own ([`run_email_rule`]).
+pub fn email_rule_count() -> usize {
+    eca_rules::current().map_or(0, |rules| rules.email.len())
+}
+
+/// Run the email ECA rule at `index` (in load order) when its condition passes. An index past the rules (they were
+/// reloaded meanwhile) runs nothing.
+///
+/// # Errors
+///
+/// What the rule's condition or actions fail with.
+pub fn run_email_rule(index: usize, fields: &BTreeMap<String, Value>) -> Result<(), Error> {
+    let Some(rules) = eca_rules::current() else {
+        return Ok(());
+    };
+    match rules.email.get(index) {
+        Some(rule) => run_rule(rule, fields),
+        None => Ok(()),
+    }
+}
+
+fn run_rule(rule: &EmailRule, fields: &BTreeMap<String, Value>) -> Result<(), Error> {
+    let _frame = super::rule_actions::publish_names(fields)?;
+    if super::rule_actions::condition_allows(&rule.condition)? {
+        super::rule_actions::run_stored_actions(&rule.actions)?;
+    }
+    Ok(())
+}
+
 /// Run email ECA actions whose condition passes. `fields` are placed on the script context. A rule that fails is
 /// logged and the others still run; the first failure is returned, so the poll leaves that message on the server.
 pub fn run_email_rules(fields: &BTreeMap<String, Value>) -> Result<(), Error> {
@@ -47,14 +76,7 @@ pub fn run_email_rules(fields: &BTreeMap<String, Value>) -> Result<(), Error> {
     };
     let mut first = None;
     for rule in &rules.email {
-        let ran = (|| -> Result<(), Error> {
-            let _frame = super::rule_actions::publish_names(fields)?;
-            if super::rule_actions::condition_allows(&rule.condition)? {
-                super::rule_actions::run_stored_actions(&rule.actions)?;
-            }
-            Ok(())
-        })();
-        if let Err(err) = ran {
+        if let Err(err) = run_rule(rule, fields) {
             tracing::error!("email ECA rule failed: {err}");
             first.get_or_insert(err);
         }

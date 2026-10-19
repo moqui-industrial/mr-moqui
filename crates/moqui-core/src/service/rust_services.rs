@@ -61,6 +61,8 @@ const FEATURE_LOCATIONS: &[(&str, &str, bool)] = &[
     ),
     ("moqui_core::service::mail::test_server", "smtp", cfg!(feature = "smtp")),
     ("moqui_core::service::mail::push_remote_changes", "smtp", cfg!(feature = "smtp")),
+    // the app's contacts hook, with or without mail built in
+    ("moqui_core::service::mail::filter_contact_addresses", "", true),
     ("moqui_core::service::mail::", "imap", cfg!(feature = "imap")),
 ];
 
@@ -98,6 +100,7 @@ fn build() -> BTreeMap<&'static str, RustServiceFn> {
         super::spreadsheet::register(&mut map),
         super::shell::register(&mut map),
         super::user_keys::register(&mut map),
+        super::chat::register(&mut map),
         #[cfg(feature = "git")]
         super::git::register(&mut map),
     ] {
@@ -118,6 +121,8 @@ mod tests {
         keys.sort_unstable();
         let mut expected = vec![
             "moqui_core::service::backup::backup_embedded_database",
+            "moqui_core::service::chat::check_record_visible",
+            "moqui_core::service::chat::push_signal",
             "moqui_core::service::content::gc_content_blobs",
             "moqui_core::service::content::migrate_db_resource_blobs",
             "moqui_core::service::elfinder::run_command",
@@ -127,12 +132,21 @@ mod tests {
             "moqui_core::service::images::image_writer_file_suffixes",
             "moqui_core::service::images::image_writer_mime_types",
             "moqui_core::service::images::write_image_service",
+            "moqui_core::service::mail::complete_oauth_sign_in",
             "moqui_core::service::mail::discover_server",
+            "moqui_core::service::mail::export_message",
+            "moqui_core::service::mail::filter_contact_addresses",
+            "moqui_core::service::mail::find_oauth_provider",
+            "moqui_core::service::mail::get_oauth_providers",
+            "moqui_core::service::mail::get_oauth_status",
             "moqui_core::service::mail::import_messages",
             "moqui_core::service::mail::poll_server",
             "moqui_core::service::mail::push_remote_changes",
+            "moqui_core::service::mail::revoke_oauth_sign_in",
+            "moqui_core::service::mail::revoke_oauth_token",
             "moqui_core::service::mail::send_message",
             "moqui_core::service::mail::send_template",
+            "moqui_core::service::mail::start_oauth_sign_in",
             "moqui_core::service::mail::sync_account",
             "moqui_core::service::mail::sync_due_accounts",
             "moqui_core::service::mail::test_server",

@@ -14,14 +14,15 @@
 
 //! In-process notifications. The host WebSocket subscribes; cluster fan-out is [`crate::cluster::publish`].
 
+pub mod capture;
 mod message;
 mod topic;
 
 pub(crate) use message::service_job_error;
 pub use message::{mark_sent, mark_viewed, NotificationMessage, ROUTE_USER_IDS};
 pub use topic::{
-    install, origin_id, publish, subscribe, Listener, Subscription, TopicMessage, ENTITY_CACHE_INVALIDATE,
-    NOTIFICATION_MESSAGE,
+    has_listeners, install, origin_id, publish, subscribe, Listener, Subscription, TopicMessage,
+    ENTITY_CACHE_INVALIDATE, NOTIFICATION_MESSAGE,
 };
 
 #[cfg(test)]

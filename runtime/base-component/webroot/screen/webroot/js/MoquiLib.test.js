@@ -217,3 +217,242 @@ test("loadScript: a failed load rejects every waiter and a later call tries agai
         console.error = savedError;
     }
 });
+
+// A browser window for oauthPopup: open() gives a popup whose location and closed state a test drives, window
+// messages go to the listeners added, and a BroadcastChannel stand-in delivers what a test posts on it.
+function oauthWindow({ blocked } = {}) {
+    const saved = {};
+    const names = ["open", "location", "addEventListener", "removeEventListener", "BroadcastChannel"];
+    names.forEach((name) => { saved[name] = Object.getOwnPropertyDescriptor(globalThis, name); });
+    const listeners = new Set();
+    const channels = new Set();
+    const popup = { closed: false, location: { href: "" }, close() { this.closed = true; } };
+    const win = {
+        popup, listeners, channels,
+        message: (data, origin, source) => listeners.forEach((listener) => listener({ data, origin, source })),
+        broadcast: (data) => channels.forEach((channel) => channel.onmessage && channel.onmessage({ data })),
+        restore: () => names.forEach((name) => {
+            if (saved[name]) Object.defineProperty(globalThis, name, saved[name]);
+            else delete globalThis[name];
+        }),
+    };
+    globalThis.open = () => (blocked ? null : popup);
+    globalThis.location = { origin: "https://erp.example.com" };
+    globalThis.addEventListener = (type, listener) => { if (type === "message") listeners.add(listener); };
+    globalThis.removeEventListener = (type, listener) => { listeners.delete(listener); };
+    globalThis.BroadcastChannel = class {
+        constructor(name) { this.name = name; channels.add(this); }
+        postMessage() {}
+        close() { channels.delete(this); }
+    };
+    return win;
+}
+
+const waitFor = async (check) => {
+    for (let i = 0; i < 200 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+};
+
+test("oauthPopup takes the outcome only from its own origin and window, with no extra fields", async () => {
+    const win = oauthWindow();
+    try {
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://accounts.example.com/auth?x=1", signInId: "S1" }),
+            async () => ({ status: "pending" }), { pollMs: 5 });
+        await waitFor(() => win.popup.location.href);
+        assert.equal(win.popup.location.href, "https://accounts.example.com/auth?x=1");
+        const outcome = { type: "moqui-email-oauth", signInId: "S1", status: "success", emailAccountId: "A1",
+            emailAddress: "ann@example.com", accessToken: "never" };
+        win.message(outcome, "https://evil.example.com", win.popup);
+        win.message(outcome, "https://erp.example.com", {});
+        win.message({ ...outcome, signInId: "OTHER" }, "https://erp.example.com", win.popup);
+        win.message(outcome, "https://erp.example.com", win.popup);
+        const result = await started;
+        assert.equal(result.status, "success");
+        assert.equal(result.emailAccountId, "A1");
+        assert.equal(result.accessToken, undefined);
+        assert.equal(win.listeners.size, 0);
+        assert.equal(win.channels.size, 0);
+    } finally {
+        win.restore();
+    }
+});
+
+test("oauthPopup hears a window cut off from the page on the channel, and asks the status once it is closed", async () => {
+    let win = oauthWindow();
+    try {
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://login.example.com/a", signInId: "S2" }),
+            async () => ({ status: "pending" }), { pollMs: 5 });
+        await waitFor(() => win.popup.location.href);
+        win.broadcast({ type: "moqui-email-oauth", signInId: "S2", status: "error", errorCode: "addressMismatch", expectedAddress: "a@x.com" });
+        const result = await started;
+        assert.equal(result.errorCode, "addressMismatch");
+        assert.equal(result.expectedAddress, "a@x.com");
+    } finally {
+        win.restore();
+    }
+    // the window closed with no message: the status says how it ended, or after a short wait that it was closed
+    win = oauthWindow();
+    try {
+        let asked = 0;
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://login.example.com/a", signInId: "S3" }),
+            async (id) => { asked++; assert.equal(id, "S3"); return { status: "success", emailAccountId: "A3" }; },
+            { pollMs: 5, cutOffMs: 0 });
+        await waitFor(() => win.popup.location.href);
+        win.popup.closed = true;
+        const result = await started;
+        assert.equal(result.status, "success");
+        assert.equal(result.emailAccountId, "A3");
+        assert.ok(asked >= 1);
+    } finally {
+        win.restore();
+    }
+    win = oauthWindow();
+    try {
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://login.example.com/a", signInId: "S4" }),
+            async () => ({ status: "pending" }), { pollMs: 5, cutOffMs: 0, closedWaitMs: 20 });
+        await waitFor(() => win.popup.location.href);
+        win.popup.closed = true;
+        const result = await started;
+        assert.equal(result.status, "cancelled");
+        assert.equal(result.errorCode, "closed");
+    } finally {
+        win.restore();
+    }
+});
+
+test("oauthPopup asks the status while a window cut off from the page is open, gives up after cutOffWaitMs, and cancels", async () => {
+    // Google's page cuts the window off (it reads as closed at once): the first status that is not pending ends the wait
+    let win = oauthWindow();
+    try {
+        let asked = 0;
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://accounts.example.com/a", signInId: "S5" }),
+            async () => (++asked < 3 ? { status: "pending" } : { status: "success", emailAccountId: "A5" }), { pollMs: 5, statusPollMs: 5 });
+        await waitFor(() => win.popup.location.href);
+        win.popup.closed = true;
+        const result = await started;
+        assert.equal(result.status, "success");
+        assert.equal(result.emailAccountId, "A5");
+        assert.equal(asked, 3);
+    } finally {
+        win.restore();
+    }
+    // the status is asked while the window is open too, so a lost message does not leave it waiting
+    win = oauthWindow();
+    try {
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://accounts.example.com/a", signInId: "S6" }),
+            async () => ({ status: "error", errorCode: "expired", message: "The sign-in took too long." }), { pollMs: 5, statusPollMs: 5 });
+        const result = await started;
+        assert.equal(result.errorCode, "expired");
+        assert.equal(win.popup.closed, false);
+    } finally {
+        win.restore();
+    }
+    // cut off and never answered: timedOut after cutOffWaitMs, the window closed
+    win = oauthWindow();
+    try {
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://accounts.example.com/a", signInId: "S7" }),
+            async () => ({ status: "pending" }), { pollMs: 5, statusPollMs: 5, cutOffWaitMs: 40 });
+        await waitFor(() => win.popup.location.href);
+        win.popup.closed = true;
+        const result = await started;
+        assert.equal(result.status, "cancelled");
+        assert.equal(result.errorCode, "timedOut");
+        assert.equal(win.listeners.size, 0);
+    } finally {
+        win.restore();
+    }
+    // the handle's cancel(): cancelled, the window closed, nothing left listening
+    win = oauthWindow();
+    try {
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://accounts.example.com/a", signInId: "S8" }),
+            async () => ({ status: "pending" }), { pollMs: 5 });
+        assert.equal(typeof started.cancel, "function");
+        await waitFor(() => win.popup.location.href);
+        started.cancel();
+        const result = await started;
+        assert.equal(result.status, "cancelled");
+        assert.equal(result.errorCode, "cancelled");
+        assert.equal(result.signInId, "S8");
+        assert.ok(win.popup.closed);
+        assert.equal(win.listeners.size, 0);
+        assert.equal(win.channels.size, 0);
+    } finally {
+        win.restore();
+    }
+});
+
+test("oauthPopup reports a blocked window, a start that failed, and a URL that is not http", async () => {
+    let win = oauthWindow({ blocked: true });
+    try {
+        const result = await moqui.oauthPopup(async () => ({ authUrl: "https://x.example.com", signInId: "S" }), async () => ({}));
+        assert.equal(result.errorCode, "popupBlocked");
+    } finally {
+        win.restore();
+    }
+    win = oauthWindow();
+    try {
+        const result = await moqui.oauthPopup(async () => { throw new Error("Sign-in with Google is not set up"); }, async () => ({}));
+        assert.equal(result.errorCode, "startFailed");
+        assert.match(result.message, /not set up/);
+        assert.ok(win.popup.closed);
+    } finally {
+        win.restore();
+    }
+    win = oauthWindow();
+    try {
+        const result = await moqui.oauthPopup(async () => ({ authUrl: "javascript:alert(1)", signInId: "S" }), async () => ({}));
+        assert.equal(result.errorCode, "startFailed");
+        assert.equal(win.popup.location.href, "");
+    } finally {
+        win.restore();
+    }
+});
+
+test("a notification listener unregisters by its handle or by topic and function, and the last one unsubscribes", () => {
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+    const sockets = [];
+    function FakeSocket(url) { this.url = url; this.readyState = 0; this.sent = []; sockets.push(this); }
+    FakeSocket.prototype.send = function (text) { this.sent.push(text); };
+    Object.assign(FakeSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+    Object.defineProperty(globalThis, "WebSocket", { value: FakeSocket, configurable: true, writable: true });
+    try {
+        const client = new moqui.NotificationClient("ws://erp.example.com/notws");
+        const seen = [];
+        const first = (message) => seen.push("first " + message.title);
+        const second = (message) => seen.push("second " + message.title);
+        const unregisterFirst = client.registerListener("orders", first);
+        client.registerListener("orders", second);
+        assert.equal(typeof unregisterFirst, "function");
+        const socket = sockets[0];
+        socket.readyState = 1;
+        socket.onopen();
+        assert.deepEqual(socket.sent, ["subscribe:orders"]);
+        const deliver = (title) => socket.onmessage({ data: JSON.stringify({ topic: "orders", title }) });
+        deliver("one");
+        assert.deepEqual(seen, ["first one", "second one"]);
+        // by the handle; a second call finds nothing
+        assert.equal(unregisterFirst(), true);
+        assert.equal(unregisterFirst(), false);
+        deliver("two");
+        assert.deepEqual(seen.slice(2), ["second two"]);
+        assert.deepEqual(socket.sent, ["subscribe:orders"], "the topic still has a listener");
+        // by topic and function: the last one gone, the socket stops asking for the topic
+        assert.equal(client.unregisterListener("orders", second), true);
+        assert.deepEqual(socket.sent, ["subscribe:orders", "unsubscribe:orders"]);
+        assert.equal(client.topicListeners.orders, undefined);
+        deliver("three");
+        assert.equal(seen.length, 3);
+        // a listener that unregisters itself while called: the others of the message still get it
+        const once = client.registerListener("ALL", (message) => { seen.push("once " + message.title); once(); });
+        client.registerListener("ALL", (message) => seen.push("all " + message.title));
+        deliver("four");
+        deliver("five");
+        assert.deepEqual(seen.slice(3), ["once four", "all four", "all five"]);
+        // the display listener (no callback) too
+        client.registerListener("alerts");
+        assert.equal(client.unregisterListener("alerts"), true);
+        assert.equal(client.unregisterListener("nothing", first), false);
+    } finally {
+        if (saved) Object.defineProperty(globalThis, "WebSocket", saved);
+        else delete globalThis.WebSocket;
+    }
+});

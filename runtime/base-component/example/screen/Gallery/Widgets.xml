@@ -14,7 +14,9 @@ along with this software (see the LICENSE.md file). If not, see
 -->
 <!-- Gallery: the section 4 widget guide as a fixture. Every field widget in one form-single, every button role, the
     label types and text classes, a small form-list with header find, sort, paging, row selection and row actions,
-    and the containers: box types, a dialog, a dynamic container, a lazy tree, an editable value and an image. -->
+    and the containers: box types, a dialog, a dynamic container, a lazy tree, an editable value and an image; a list whose cells
+    hold a section (the cells after it stay in the list), chips whose btn-type is an expression, and a container-row of a
+    section-iterate's columns. -->
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         default-menu-title="Widgets" default-menu-index="14">
 
@@ -63,8 +65,18 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="loadPart"><default-response url="."/></transition>
     <transition name="openDetail"><default-response url="../Detail"/></transition>
 
+    <!-- the chips of a filter: the chosen one is the filled primary button (btn-type from an expression) -->
+    <parameter name="chip"/>
+
     <actions>
         <set field="editableText" from="'Click this text to edit it in place'"/>
+        <set field="markdownText" value="## Markdown view&#10;&#10;Text from **markdown**, rendered by Marked and cleaned by DOMPurify: the heading has an id, [the List archetype](List) is a link of this app (from the base path), [moqui.org](https://moqui.org) opens in a new tab.&#10;&#10;| Element | Renders as |&#10;|---|---|&#10;| markdown-view | m-markdown |&#10;| html-view | m-html-view |&#10;&#10;```xml&#10;&lt;markdown-view text=&quot;pageText&quot; base-path=&quot;/qapps/wiki&quot;/&gt;&#10;```&#10;&#10;&gt; A quote, and `inline code` that keeps its tint in dark mode."/>
+        <set field="editableKind" value="b"/>
+        <set field="editableDue" value="2026-10-19"/>
+        <set field="chip" from="chip || 'all'"/>
+        <set field="chipList" from="[{key: 'all', label: 'All'}, {key: 'mine', label: 'Mine'}, {key: 'late', label: 'Late'}].map((item) => Object.assign(item, {on: item.key === chip}))"/>
+        <set field="approvalList" from="[{requestId: 'R1', title: 'Laptop for Ada', canDecide: true, note: 'Needs it by Friday'},
+            {requestId: 'R2', title: 'Conference trip', canDecide: false, note: ''}, {requestId: 'R3', title: 'Second monitor', canDecide: true, note: ''}]"/>
         <set field="fieldValues" from="{textMasked: '8015551234', textNumber: 42, textArea: 'Plain text area.', textMd: '**Markdown** text area with a preview',
             ddEntity: 'ScreenThemeType', ddMulti: ['UserGroup', 'UserAccount'], dtDate: '2026-10-18', dtTime: '09:30', dtDateTime: '2026-10-18 09:30',
             checkSingle: 'Y', checkMulti: ['email'], radioKind: 'task', displayWrapped: 'A read-only value with a label', displayEntity: 'ScreenThemeType', hid: 'hidden-value'}"/>
@@ -221,6 +233,11 @@ along with this software (see the LICENSE.md file). If not, see
             </row-col></container-row>
         </box-body></container-box>
 
+        <!-- markdown -->
+        <container-box><box-header title="Markdown (markdown-view, m-markdown)"/><box-body>
+            <markdown-view id="WidgetMarkdown" text="${markdownText}" base-path="/qapps/gallery"/>
+        </box-body></container-box>
+
         <!-- 4. list -->
         <container-box><box-header title="List (4.4): header find, sort, paging, row selection, row actions"/><box-body-nopad>
             <form-list name="EnumList" list="enumList" skip-form="true" paginate="true" show-page-size="true" select-columns="true">
@@ -253,6 +270,42 @@ along with this software (see the LICENSE.md file). If not, see
                 <field name="sizeWord"><default-field title="Row action value"><display text="${sizeWord} (${descriptionLength})"/></default-field></field>
             </form-list>
         </box-body-nopad></container-box>
+
+        <!-- 4b. a list whose cells hold a section, and chips by btn-type -->
+        <container-box><box-header title="List cells (4.4): a section in a cell, chips by btn-type"/><box-toolbar>
+            <section-iterate name="ChipRow" list="chipList" entry="chipItem"><widgets>
+                <link url="." text="${chipItem.label}" btn-type="${chipItem.on ? 'primary' : ''}" link-type="anchor-button" style="q-mr-xs"
+                        parameter-map="{chip: chipItem.key}"/>
+            </widgets></section-iterate>
+        </box-toolbar><box-body-nopad>
+            <form-list name="ApprovalList" list="approvalList" skip-form="true" paginate="false">
+                <field name="title"><default-field title="Request"><display/></default-field></field>
+                <field name="decide"><default-field title="">
+                    <container style="row no-wrap items-center q-gutter-xs">
+                        <!-- a section is its own unit: its links and dialog are the row's, and the cells after it stay in the list -->
+                        <section name="DecideSection" condition="canDecide"><widgets>
+                            <link url="noop" text="Approve" link-type="hidden-form-link" btn-type="success" icon="sym_o_check"/>
+                            <container-dialog id="RefuseDialog" button-text="Refuse" icon="sym_o_block" type="danger" width="420" title="Refuse ${title}">
+                                <form-single name="RefuseForm" transition="noop">
+                                    <field name="reason"><default-field title="Reason"><text-area rows="3"/></default-field></field>
+                                    <field name="refuseButton"><default-field title="Refuse"><submit type="danger"/></default-field></field>
+                                </form-single>
+                            </container-dialog>
+                        </widgets><fail-widgets><label text="Waiting on finance" style="m-muted"/></fail-widgets></section>
+                    </container>
+                </default-field></field>
+                <field name="open"><default-field title=""><link url="openDetail" text="Open ${requestId}"/></default-field></field>
+                <field name="note"><default-field title="Note (click to edit)">
+                    <editable id="ApprovalNote" text="${note}" transition="editValue" widget-type="text-line" display-if-empty="true"/></default-field></field>
+            </form-list>
+        </box-body-nopad></container-box>
+        <label type="p" text="A container-row of a section-iterate's columns, their sizes from an expression:" style="text-caption"/>
+        <container-row>
+            <section-iterate name="ChipCols" list="chipList" entry="colItem"><widgets>
+                <row-col md="${colItem.on ? 6 : 3}"><container-box type="${colItem.on ? 'primary' : 'default'}"><box-header title="${colItem.label}"/><box-body>
+                    <label type="p" text="${colItem.on ? 'The chosen chip: six columns of twelve' : 'Three columns'}"/></box-body></container-box></row-col>
+            </widgets></section-iterate>
+        </container-row>
 
         <!-- 5. containers -->
         <label type="h6" text="Containers (4.1, 4.2): box types, dialog, dynamic container, tree, editable, image"/>
@@ -307,6 +360,14 @@ along with this software (see the LICENSE.md file). If not, see
                 <container-box><box-header title="editable and image"/><box-body>
                     <label type="p" text="editable (click the text; saves to the editValue transition):" style="text-caption"/>
                     <editable id="WidgetEditable" text="${editableText}" transition="editValue" parameter-name="value" type="p"/>
+                    <label type="p" text="editable select (options as a drop-down's), date and date-time pickers, and an empty value with its placeholder:" style="text-caption q-mt-sm"/>
+                    <container style="column q-gutter-xs">
+                        <editable id="WidgetEditableKind" text="Kind B" value="${editableKind}" transition="editValue" widget-type="select">
+                            <option key="a" text="Kind A"/><option key="b" text="Kind B"/><option key="c" text="Kind C"/></editable>
+                        <editable id="WidgetEditableDue" text="${editableDue}" transition="editValue" widget-type="date"/>
+                        <editable id="WidgetEditableAt" text="" transition="editValue" widget-type="date-time" display-if-empty="true"/>
+                        <editable id="WidgetEditableEmpty" text="" transition="editValue" display-if-empty="true"/>
+                    </container>
                     <label type="p" text="image with the invertible class for dark mode:" style="text-caption q-mt-sm"/>
                     <image url="/images/MoquiLogoSmall.png" url-type="plain" alt="Moqui logo" height="40" style="invertible"/>
                 </box-body></container-box>

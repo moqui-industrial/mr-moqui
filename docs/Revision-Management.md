@@ -129,11 +129,14 @@ an error in the message facade, as for any service.
 
 ### Wiki spaces on git
 
-Create a space with its root under a repository, for example
-`create#WikiSpace(wikiSpaceId: "DOCS", rootPageDirectory: "git://docs")`, or point an existing `WikiSpace.rootPageLocation`
-at `git://<repositoryId>/<SPACE>.md`. Each page save is then a commit, and the page history, compare, publish and
-`#version` views work on commits. The gallery's Editor screen makes such a space (`EXGIT`, in the `db` repository
-`example-wiki`) with its "Create the git space" action.
+Create a space with its own repository, `create#WikiSpace(wikiSpaceId: "DOCS", repositoryKind: "db")` (or `local` on
+disk; `remote` with a `remoteUrl` is a read-only mirror, for administrators), which makes the `GitRepository`
+`WIKI_DOCS` and roots the space at `git://WIKI_DOCS/DOCS.md`; or put it under an existing repository,
+`create#WikiSpace(wikiSpaceId: "DOCS", rootPageDirectory: "git://docs")`, or point an existing
+`WikiSpace.rootPageLocation` at `git://<repositoryId>/<SPACE>.md`. Each page save is then a commit (its `versionNote`
+the message), and the page history, compare, publish and `#version` views work on commits. The gallery's Editor screen
+makes such a space (`EXGIT`, in the `db` repository `example-wiki`) with its "Create the git space" action. The wiki
+services are below, "Wiki pages".
 
 ### Limits
 
@@ -163,6 +166,8 @@ cannot be.
 | `ec.resource.putContent(location, content, note)` | The same for text, a `Uint8Array`, an uploaded file or a stream |
 | `ec.resource.restoreVersion(location, versionName, note)` | That version written back as the newest (on `git://` one commit that puts the entry of that commit back, so a directory deleted later comes back whole); the new version's name |
 | `ec.resource.getVersionBytes(location, versionName)` | A version's bytes as a `Uint8Array`, or null |
+| `ec.resource.getLocationReference("location#versionName")` | The file's reference, whose `openStream()`, `getInputStream()` and `getText()` read that version (null when it is not there) |
+| `ec.web.sendResourceResponse("location#versionName", inline, fileName)` | That version as the response (404 when it is not there) |
 
 In Rust: `ResourceFacade::write_bytes_noted`, `restore_version`, and `ResourceProvider::write_bytes_noted` (a provider
 that keeps no notes need not implement it).
@@ -180,6 +185,12 @@ const result = ec.resource.makeChangeSet('git://docs/')
         .mkdir('empty')
         .commit('Reorganize the specs')           // {versionName, applied: [paths], failures: [{path, error}]}
 ```
+
+`.author(userId, date)` before `commit` writes the versions as that user at that date (a timestamp or milliseconds), for
+a version copied from other storage with its history: on `git://` the commit's author (name, email, date) and its
+`Moqui-User-Id`, with the current user, now, as committer; on `dbresource://` the history row's `userId` and
+`versionDate`. A git version's date is its author date, as `git log` shows it. In Rust,
+`crate::context::with_version_author` around the writes.
 
 On a `git://` root it is one commit, each change applied to the tree the changes before it made, with the message (or a
 summary of the changes). Elsewhere each change applies in order: on `dbresource://` in the caller's transaction, with the
@@ -218,12 +229,15 @@ root location with an owner, members and a quota:
 reaches a drive they own or are a current `ResourceDriveMember` of (a user or a user group) with `RdpView`, `RdpEdit` or
 `RdpManage`; a `ResourceShare` to the user, one of their groups or their party grants its permission on its path and
 below (`RspView`, `RspEdit`, or `RspUpload`: files may only be added). A mirror and an archived drive are read only. What
-the user cannot reach is "not found". `get#DriveAccess` answers the level.
+the user cannot reach is "not found". `get#DriveAccess` answers the level, and every service asks it, so a records drive's
+rule (below) holds for every caller.
 
 **Services.** Drives: `create#Drive`, `update#Drive`, `archive#Drive`, `add#DriveMember`, `remove#DriveMember`,
-`get#DriveMembers`, `get#UserDrives` (with the bytes used), `export#Drive` (a `db` repository as a bare repository on
-disk, a folder drive as a zip). Files: `list#Folder` (size, modified and modified by from the last change, version and
-note, shared, favorite, tags, content and file type), `get#ResourceInfo`, `find#Resources` (through the `MoquiDriveFile`
+`get#DriveMembers`, `get#UserDrives` (the bytes used only with `includeUsage`, and a records drive's only with
+`includeRecordsUsage` too, as sizing reads every file under a drive), `get#DriveUsage` (the bytes of one drive or a list,
+for a quota bar shown when it is needed; a records drive's for its managers), `export#Drive` (a `db` repository as a bare
+repository on disk, a folder drive as a zip). Files: `list#Folder` (size, modified and modified by from the last change,
+version and note, shared, favorite, tags, content and file type), `get#ResourceInfo`, `find#Resources` (through the `MoquiDriveFile`
 search document when search is available, else a walk), `find#Recent`, `upload#Resource` (one change set, a version note,
 conflicts replace, keepBoth or skip, the quota), `save#Text`, `create#Folder`, `rename#Resource`, `move#Resource` and
 `copy#Resource` (within a drive one change set; a move across drives is a copy and a trash), `download#Zip`,
@@ -235,23 +249,100 @@ commit and `ResourceTrash.versionName` is the version before), `list#Trash`, `re
 `share#Resource` (people or a link; a link's random token is returned once and only its hash kept, as the password),
 `revoke#Share`, `accept#Share`, `decline#Share`, `get#Shares` (outgoing, links, incoming), `set#Favorite`,
 `get#Favorites`, `set#Tags`, `get#Tags`. A move or rename carries the path's shares, favorites, tags and recent rows.
+`upload#Resource` takes uploaded files or streams (`ref.openStream()`, named by `relativePathList`); a stream passed to a
+service, or kept in the context, stays the stream, and anything else that is not a file (an object, a list) fails that
+item: no write stores a value as its text.
+
+**Downloads.** `get#ResourceInfo` gives a location (`location#versionName` for a past version), `download#Zip` a zip under
+`runtime://tmp/drive-zip` with its name. Send either with `ec.web.sendResourceResponse(location, inline, fileName)`: a
+version suffix sends that version, `fileName` names the attachment (`Content-Disposition`, so a zip or a copy under a
+random name downloads under its own name), a type the name does not tell is `application/octet-stream`, and the response
+is `Cache-Control: private, no-store` (only an application's own `component://` or `classpath://` file shown inline may be
+kept by a shared cache). `clean#DriveTempFiles` (the `clean_DriveTempFiles_hourly` job) removes what is older than a day
+under `runtime://tmp/drive-*` (zips, exports, any copies an application keeps there) and `runtime://tmp/preview`.
 
 **Public links.** `check#PublicShareToken` (the token route's check), `open#PublicShare` (the token, then the password:
 a grant for an hour, an HMAC of the share and its expiry keyed by the share's secrets; counts the opening),
 `list#PublicShare`, `download#PublicShare` (a file, or a folder as a zip) and `upload#PublicShare` (a file drop with the
 uploader's name in the version note; names never replace). Each is anonymous and checks the token before it reads
-anything else, and never answers about a path outside the share.
+anything else, and never answers about a path outside the share. A public page's visitor has no user, and a file on the
+database tree is entity rows that visitor may not read, so the page does not send the location itself:
+`download#PublicShare` with `sendResponse: true` (and `inline: true` for a picture or a PDF to show in the page) writes the
+response after its token and grant checks, under its own anonymous-all authorization, named by the file (a folder as
+`<name>.zip`), and sends nothing after an error, so the transition answers then:
+
+```xml
+<transition name="download" method="get" read-only="true">
+    <actions><script><![CDATA[
+        ec.service.sync().name('org.moqui.impl.FileServices.download#PublicShare').parameters({token: token || '',
+            grant: grant || null, path: path || null, sendResponse: true, inline: String(inline) === 'true'}).call()
+        if (ec.message.hasError()) ec.web.sendJsonResponse({})
+    ]]></script></actions>
+    <default-response type="none"/>
+</transition>
+```
 
 **Records drive.** Its `ResourceDriveRecordFolder` rows map a top folder (or a pattern such as `asset/*/maintenance`) to
 the record entity and id field of the folders below it; the application that writes those folders seeds them.
 `list#Folder` shows the mapped folders at the top with their labels, and gives each record folder `recordEntityName`,
 `idField` and `recordId`.
 
+Its access is the records' own. A member below the manage level (its users may well all be members, through an
+`ALL_USERS` row) reaches only the paths in the map whose records they may see, as the record visibility hook answers:
+`check#RecordPaths` maps a path to the records it is in (`party/P1/...` is in Party `P1`; `asset/A1/maintenance/M7/...`
+in Asset `A1` and AssetMaintenance `M7`, both checked) and asks `ChatServices.check#RecordVisible`, the service the
+user's theme names in `STRT_RECORD_VISIBLE_SERVICE`, called as the user with `checkOnly` (IronStone names Mantle's
+`get#RecordLinkInfo`); each record is asked once per request (the execution context's `sharedMap`). With no such theme
+value no record folder is reached (logged once), only the map. A path outside the map, the trash folder included, is
+"not found"; so is a record the user may not see, through a share too, for reads and writes alike. Managers (the owner,
+`RdpManage`) and internal work reach every path. `get#DriveAccess` and `get#ResourceInfo` give `recordList`, the records
+of the path, innermost first.
+
+The lists follow it: `list#Folder` lists the record folders of a mapped folder that the user may see, asking the newest
+`recordLimit` (200) and counting the rest in `moreRecordCount` (a folder of thousands of records is not a hook call for
+each; open a record's folder by its path, or search); `find#Resources` (the index's hits, or a walk that does not go into
+the others), `find#Recent`, `get#Favorites`, `list#Trash`, `get#Activity`, `download#Zip` and `copy#Resource` leave out
+what is in records the user may not see.
+
 **Search.** `MoquiDriveFile` (index `moqui_drive`) has no row behind it: `index#DriveFiles` builds the documents (drive,
 path, name, folder, content and file type, size, modified date and user, tags) on each upload, write, rename, move, copy,
 tag change, restore and trash (which removes them), and `index#MirrorDrives` brings a mirror's documents to its head
-after a fetch (the `Files.secas.xml` rules). `find#Resources` filters by the drives the user may open. Extracted text is
-later.
+after a fetch (the `Files.secas.xml` rules). `find#Resources` filters by the drives the user may open, and by `tagId`
+through the `tagIds` list: on Postgres a field `eq` or `in` on a root keyword field also matches an element of a list
+held there, as an Elastic term query does. Extracted text is later.
+
+## Wiki pages
+
+`org.moqui.impl.WikiServices` (`runtime/base-component/framework/service/org/moqui/impl/WikiServices.xml`) keeps
+knowledge spaces and each user's notes (`ensure#UserNotesSpace`, a private space on database files) over this API.
+`WikiSpace` and `WikiPage` are `moqui.*` entities, which entity filters never apply to, so the services check the wiki's
+own rules: `get#WikiPageAccess` (view, update, admin, and the storage of a space or page; a space with `restrictView`
+through a `WikiSpaceUser` row with `allowView` or `allowAdmin`, a page with it through a `WikiPageUser` row;
+`restrictUpdate` likewise through `allowUpdate`, and a space's administrators update what they may view; the ADMIN group
+sees and updates all; a mirror takes no writes; internal work with no user and authorization disabled does everything
+else) and `get#WikiViewScope` (the spaces a user may view and the restricted pages hidden from them, for the services that
+read many pages). Every service that reads or writes a page asks it: `get#WikiPageInfo` (and through it the history,
+compare, restore and review requests), `get#PublishedWikiPageText` and `get#WikiPageAttachment` view; `update#WikiPage`,
+`delete#WikiPage`, `set#PublishedVersion` and the attachment upload and delete update.
+
+A page's file is the one at its exact path (`get#WikiPageFile`): under the directory named as the root page without its
+extension, the directories of the parent path, then the file named as the page. Not `findChildFile`, which searches the
+space's tree for a file of that name: a new top-level page `Travel` would be written over `Policies/Travel`. A path with a
+`.` or `..` segment is no page.
+
+| Service | |
+|---|---|
+| `update#WikiPage(wikiSpaceId, pagePath or wikiPageId, pageName, parentPath or parentWikiPageId, pageText, versionNote)` | A new version with its note and a `WikiPageHistory` row; a new name or parent is a `move#WikiPage`. A path that is only the alias of a moved page is a new page there |
+| `create#WikiSpace(..., repositoryKind, memberList)`, `clone#WikiSpace(baseWikiSpaceId, ..., repositoryKind, copyHistory)` | Above, "Wiki spaces on git"; the creator administers the space. A clone with history replays every version (below); without, each page once |
+| `move#WikiPage(wikiPageId, toWikiSpaceId, toParentPath or toParentWikiPageId, toPageName, versionNote)` | The page with its child pages and attachments. On the same storage the files move (the database tree keeps the history rows; on git one commit, which the history follows); into other storage `copy#WikiPageFiles` replays each file's versions oldest first, one change set each by the version's own author at its own date (`.author`, above) with a note naming where it came from, then the old files go. The rows keep their ids (history, categories, users, comments and reviews stay); a replay renames their version names; a `WikiPageHistory` row records the move with `oldWikiSpaceId` and `oldPagePath`, and a `WikiPageAlias` at the old path keeps links to it working |
+| `delete#WikiPage(wikiPageId, or wikiSpaceId and pagePath, deleteAttachments)` | The page's file and directory and its rows: aliases, categories, history, users, its links (other pages' links to it stay, to a page not there), reviews, and a child record's parent; a record without a file goes too. Not a root page, a page with child pages or Wiki Blog references, or one with attachments without `deleteAttachments`. Another component's joins go through its SECA (Mantle's comment, task and request joins and followers) |
+| `set#PublishedVersion(wikiPageId, publishedVersionName)` | The version `get#PublishedWikiPageText` reads, one of the page's versions (a unique commit prefix is kept in full); empty unpublishes. An approved review publishes its own version |
+| `get#WikiPageAttachment`, `upload#WikiPageAttachment`, `delete#WikiPageAttachment` (wikiPageId, or wikiSpaceId and pagePath; filename) | A file of the page's `_attachments` folder; a file name, never a path |
+| `get#WikiPageHistory`, `get#WikiPageVersionDiff(fromVersionName, toVersionName)`, `restore#WikiPageVersion(versionName, versionNote)` | The History tab: versions with their notes and who wrote them, the server's line diff, and a restore as a new version |
+| `get#WikiPageBacklinks`, `get#WikiPageLinks` | `WikiPageLink` rows, indexed from each save's text (markdown links, reference definitions, `[[path]]`, `wiki:SPACE/path`; relative paths from the page's parent; not in code); a page made at a path takes the links written to it, a moved page keeps its backlinks through its alias, a deleted one leaves links to a page not there. A text that cannot be read for links is logged and the save stands |
+| `request#WikiPageReview(versionName, reviewerUserIdList, dueDate, note, link)`, `decide#WikiPageReview(decision approve or changes, decisionNote, publish, link)`, `cancel#WikiPageReview`, `find#WikiPageReviews(filter toDo, requested or all, wikiSpaceId, statusId)` | `WikiPageReview` rows (`WprRequested`, then `WprApproved`, which publishes the version, `WprChangesRequested` or `WprCancelled`); the reviewer is told on topic `WikiPageReview`, an approval the tray decides (`approve#WikiPageReview`, `refuse#WikiPageReview` with the reason), the requester on `WikiPageReviewDecision`, whose notification opens the request's link unless the decision gives another |
+| `search#WikiPages(text, wikiSpaceId)` | Through any search document on `WikiPage` (its content, title and last change from `get#WikiPageManualDocumentData`) when search is available, else the page paths; never a page the user may not view |
+| `get#WikiSpacePages(includeDetail)` | The tree, without the restricted pages a user may not view; with the detail each page's title, snippet, last change, categories and pinned (the category `Pinned`), for a notes list |
 
 ## Token routes and the public shell
 
@@ -273,3 +364,19 @@ under `/<name>/<token>/`. The screen's context has `token` and `tokenRoute` (`{n
 context}`); a request parameter of either name is replaced. A route named as a framework path (`apps`, `qapps`, `rest`,
 ...) is left out, and a component's route of the same name replaces an earlier one. The services a public screen calls
 check the token again. `runtime/base-component/example/screen/PublicLink.xml` is a minimal route screen.
+
+A `POST` to `/<name>/<token>` itself is the shell page, as a `GET` is, unless the route has a `post-transition`: then,
+after the token check, it runs that transition of the route's screen, as a `POST` to `/<name>/<token>/<transition>`
+would, and answers what the transition answers. That is what an RFC 8058 one-click unsubscribe needs: the mail provider
+posts `List-Unsubscribe=One-Click` to the `List-Unsubscribe` URL, which is the page a person opens to choose. The poster
+has no session, so the transition needs `require-session-token="false"` (the token in the path is its authority):
+
+```xml
+<token-route name="u" screen-location="component://my-app/screen/Unsubscribe.xml"
+        token-service="my.app.ConsentServices.check#UnsubscribeToken" post-transition="oneClick"/>
+<!-- in Unsubscribe.xml -->
+<transition name="oneClick" require-session-token="false">
+    <service-call name="my.app.ConsentServices.unsubscribe#ByToken" in-map="[token: token]"/>
+    <default-response type="none"/>
+</transition>
+```

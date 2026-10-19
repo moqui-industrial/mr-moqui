@@ -322,7 +322,16 @@ fn the_personal_drive_is_made_on_first_use_and_listed_first() {
     assert_eq!(field(&drives[0], "driveId"), personal);
     assert_eq!(field(&drives[0], "rootLocation"), "dbresource://drive/personal/alice");
     assert_eq!(field(&drives[0], "driveKindEnumId"), "RdkPersonal");
-    assert_eq!(number(drives[0].get("usedBytes")), 0);
+    assert_eq!(
+        drives[0].get("usedBytes"),
+        Some(&Value::Null),
+        "a drive is sized only when asked"
+    );
+    let sized = maps(
+        &ok("get#UserDrives", &[("includeUsage", Value::Bool(true))]),
+        "driveList",
+    );
+    assert_eq!(number(sized[0].get("usedBytes")), 0);
     let again = ok("ensure#PersonalDrive", &[]);
     assert_eq!(out_text(&again, "driveId"), personal);
     assert_eq!(again.get("created"), Some(&Value::Bool(false)));
@@ -336,11 +345,18 @@ fn the_personal_drive_is_made_on_first_use_and_listed_first() {
         "upload#Resource",
         &[("driveId", text(&personal)), ("file", upload("a.txt", b"12345"))],
     );
-    let used = maps(&ok("get#UserDrives", &[]), "driveList");
+    let used = maps(
+        &ok("get#UserDrives", &[("includeUsage", Value::Bool(true))]),
+        "driveList",
+    );
     assert_eq!(number(used[0].get("usedBytes")), 5);
+    let usage = maps(&ok("get#DriveUsage", &[("driveId", text(&personal))]), "usageList");
+    assert_eq!(number(usage[0].get("usedBytes")), 5);
+    assert_eq!(usage[0].get("usedPercent"), Some(&Value::Null), "no quota");
     login("bob");
     assert_ne!(out_text(&ok("ensure#PersonalDrive", &[]), "driveId"), personal);
     refused("ensure#PersonalDrive", &[("userId", text("alice"))], "not yours");
+    refused("get#DriveUsage", &[("driveId", text(&personal))], "Drive not found");
 }
 
 #[test]
@@ -1236,6 +1252,137 @@ fn shares_and_public_links_with_password_expiry_revoke_and_a_file_drop() {
     assert!(actions.contains(&"version".to_string()), "{actions:?}");
 }
 
+/// The drive's hidden trash folder is not reached by its path: a public link to the whole drive (no share path) lists,
+/// downloads and uploads nothing under `.trash`, a member or a share reads it only through list#Trash, nothing is uploaded
+/// into it or shared from it, and its owner still opens it.
+#[test]
+fn the_trash_is_not_reached_through_a_link_to_the_whole_drive_or_by_its_path() {
+    let (context, facade) = setup();
+    let _entered = context.enter();
+    install();
+    users(&facade);
+    login("alice");
+    let bin = drive("folder", "Bin", &[]);
+    ok(
+        "upload#Resource",
+        &[
+            ("driveId", text(&bin)),
+            ("fileList", files(&[("a.txt", "A"), ("secret.txt", "S")])),
+        ],
+    );
+    let trashed = ok(
+        "trash#Resource",
+        &[("driveId", text(&bin)), ("path", text("secret.txt"))],
+    );
+    let trash_id = field(&maps(&trashed, "trashList")[0], "trashId");
+    let in_trash = format!(".trash/{trash_id}/secret.txt");
+    assert_eq!(
+        read(&format!("dbresource://drive/shared/{bin}/{in_trash}")),
+        "S",
+        "the trash copy is where the paths below look"
+    );
+    ok("add#DriveMember", &[("driveId", text(&bin)), ("userId", text("bob"))]);
+    let link = ok(
+        "share#Resource",
+        &[
+            ("driveId", text(&bin)),
+            ("isLink", text("Y")),
+            ("permissionEnumId", text("RspEdit")),
+        ],
+    );
+    let token = out_text(&link, "linkToken");
+    refused(
+        "share#Resource",
+        &[
+            ("driveId", text(&bin)),
+            ("path", text(&in_trash)),
+            ("isLink", text("Y")),
+        ],
+        "File not found",
+    );
+    refused(
+        "upload#Resource",
+        &[
+            ("driveId", text(&bin)),
+            ("path", text(".trash")),
+            ("file", upload("x.txt", b"x")),
+        ],
+        "Folder not found",
+    );
+    // the owner opens the trash folder by its path
+    assert_eq!(
+        names(&ok("list#Folder", &[("driveId", text(&bin)), ("path", text(".trash"))])),
+        [trash_id.as_str()]
+    );
+
+    logout();
+    assert_eq!(names(&ok("list#PublicShare", &[("token", text(&token))])), ["a.txt"]);
+    for path in [
+        ".trash",
+        ".trash/",
+        &format!(".trash/{trash_id}"),
+        &format!("./.trash/{trash_id}"),
+    ] {
+        refused(
+            "list#PublicShare",
+            &[("token", text(&token)), ("path", text(path))],
+            "Not found",
+        );
+    }
+    refused(
+        "download#PublicShare",
+        &[("token", text(&token)), ("path", text(&in_trash))],
+        "Not found",
+    );
+    refused(
+        "download#PublicShare",
+        &[("token", text(&token)), ("path", text(".trash"))],
+        "Not found",
+    );
+    refused(
+        "upload#PublicShare",
+        &[
+            ("token", text(&token)),
+            ("path", text(".trash")),
+            ("file", upload("drop.txt", b"d")),
+        ],
+        "Not found",
+    );
+    let file = ok(
+        "download#PublicShare",
+        &[("token", text(&token)), ("path", text("a.txt"))],
+    );
+    assert_eq!(read(&out_text(&file, "location")), "A");
+
+    // a member sees the trash through list#Trash, not by its path
+    login("bob");
+    assert_eq!(
+        maps(&ok("list#Trash", &[("driveId", text(&bin))]), "trashList").len(),
+        1
+    );
+    refused(
+        "list#Folder",
+        &[("driveId", text(&bin)), ("path", text(".trash"))],
+        "Folder not found",
+    );
+    refused(
+        "get#ResourceInfo",
+        &[("driveId", text(&bin)), ("path", text(&in_trash))],
+        "File not found",
+    );
+    let found = ok(
+        "find#Resources",
+        &[
+            ("driveId", text(&bin)),
+            ("path", text(".trash")),
+            ("text", text("secret")),
+        ],
+    );
+    assert!(maps(&found, "resultList").is_empty(), "{found:?}");
+    let everywhere = ok("find#Resources", &[("text", text("secret"))]);
+    assert!(maps(&everywhere, "resultList").is_empty(), "{everywhere:?}");
+}
+
 #[test]
 fn an_upload_past_the_quota_is_refused_whole() {
     let (context, facade) = setup();
@@ -1274,11 +1421,46 @@ fn an_upload_past_the_quota_is_refused_whole() {
     );
 }
 
+/// The stub of the record visibility hook (a record whose id starts with OPEN is visible), counting its calls in the
+/// execution context's shared map so a test sees that each record is asked once per request.
+const RECORD_HOOK: &str = r#"<services>
+    <service verb="check" noun="Visible">
+        <in-parameters><parameter name="recordEntityName"/><parameter name="recordId"/><parameter name="checkOnly" type="Boolean"/></in-parameters>
+        <out-parameters><parameter name="recordVisible" type="Boolean"/></out-parameters>
+        <actions><script><![CDATA[
+            ec.context.sharedMap['test.hookCalls'] = Number(ec.context.sharedMap['test.hookCalls'] || 0) + 1
+            recordVisible = checkOnly === true && String(recordId).startsWith('OPEN')
+        ]]></script></actions>
+    </service>
+</services>"#;
+
+/// The framework's file services with the chat services (the record visibility hook) and the stub hook.
+fn install_with_record_hook() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("moqui-files-records-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("service/test")).unwrap();
+    std::fs::write(dir.join("service/test/DriveStub.xml"), RECORD_HOOK).unwrap();
+    let framework = crate::context::framework_dir().join("service/org/moqui");
+    let paths = vec![
+        framework.join("impl/FileServices.xml"),
+        framework.join("impl/GitServices.xml"),
+        framework.join("impl/ChatServices.xml"),
+        dir.join("service/test/DriveStub.xml"),
+    ];
+    let failures = crate::service::lint(&paths).unwrap();
+    assert!(failures.is_empty(), "{failures:?}");
+    dir
+}
+
+fn hook_calls(context: &ExecutionContext) -> i64 {
+    number(context.shared_map().get("test.hookCalls")).max(0)
+}
+
 #[test]
-fn a_records_drive_shows_its_folder_map_and_the_record_folders_below() {
+fn a_records_drive_shows_its_folder_map_and_only_the_records_a_user_may_see() {
     let (context, facade) = setup();
     let _entered = context.enter();
-    install();
+    let dir = install_with_record_hook();
     users(&facade);
     let records = {
         let _authz = context.disable_authz();
@@ -1292,10 +1474,13 @@ fn a_records_drive_shows_its_folder_map_and_the_record_folders_below() {
                     ("rootLocation", text("dbresource://mantle/content")),
                     (
                         "memberList",
-                        Value::List(vec![Value::Map(IndexMap::from([(
-                            "userGroupId".to_string(),
-                            text("ALL_USERS"),
-                        )]))]),
+                        Value::List(vec![
+                            Value::Map(IndexMap::from([("userGroupId".to_string(), text("ALL_USERS"))])),
+                            Value::Map(IndexMap::from([
+                                ("userId".to_string(), text("eve")),
+                                ("permissionEnumId".to_string(), text("RdpEdit")),
+                            ])),
+                        ]),
                     ),
                 ],
             ),
@@ -1311,12 +1496,13 @@ fn a_records_drive_shows_its_folder_map_and_the_record_folders_below() {
             "Messages",
             2,
         ),
+        ("asset", "mantle.product.asset.Asset", "assetId", "Assets", 3),
         (
             "asset/*/maintenance",
             "mantle.product.asset.AssetMaintenance",
             "assetMaintenanceId",
             "Asset maintenance",
-            3,
+            4,
         ),
     ] {
         row(
@@ -1333,62 +1519,220 @@ fn a_records_drive_shows_its_folder_map_and_the_record_folders_below() {
         );
     }
     let resources = context.factory().resource();
-    resources
-        .write_bytes("dbresource://mantle/content/party/P100/content_1/contract.pdf", b"%PDF")
-        .unwrap();
-    resources
-        .write_bytes(
-            "dbresource://mantle/content/asset/A1/maintenance/M7/content_2/photo.png",
-            b"png",
+    for (path, body) in [
+        ("party/OPEN1/content_1/contract.pdf", "%PDF open"),
+        ("party/SECRET1/content_2/secret.pdf", "%PDF secret"),
+        ("asset/OPENA/maintenance/OPENM/content_3/photo.png", "png"),
+        ("asset/OPENA/maintenance/SECRETM/content_4/hidden.png", "png"),
+        ("asset/SECRETA/maintenance/OPENM2/content_5/inside.png", "png"),
+        ("stray/unmapped.txt", "not in the map"),
+    ] {
+        resources
+            .write_bytes(&format!("dbresource://mantle/content/{path}"), body.as_bytes())
+            .unwrap();
+    }
+    let list = |path: &str| names(&ok("list#Folder", &[("driveId", text(&records)), ("path", text(path))]));
+    let info = |path: &str| ok("get#ResourceInfo", &[("driveId", text(&records)), ("path", text(path))]);
+    let not_found = |path: &str| {
+        refused(
+            "get#ResourceInfo",
+            &[("driveId", text(&records)), ("path", text(path))],
+            "File not found",
         )
-        .unwrap();
-    login("bob");
-    let top = ok("list#Folder", &[("driveId", text(&records))]);
-    let labels: Vec<(String, String, bool)> = maps(&top, "fileList")
-        .iter()
-        .map(|row| (field(row, "name"), field(row, "recordEntityName"), flag(row, "exists")))
-        .collect();
+    };
+
+    // no hook in the theme: a member reaches no record folder (only the map itself), a manager every path
+    login("carol");
     assert_eq!(
-        labels,
-        [
-            ("Parties".to_string(), "mantle.party.Party".to_string(), true),
-            (
-                "Messages".to_string(),
-                "mantle.party.communication.CommunicationEvent".to_string(),
-                false
-            ),
-        ],
+        list(""),
+        ["Parties", "Messages", "Assets"],
         "a pattern folder is not at the top"
     );
-    let parties = maps(
-        &ok("list#Folder", &[("driveId", text(&records)), ("path", text("party"))]),
-        "fileList",
-    );
-    assert_eq!(field(&parties[0], "recordId"), "P100");
-    assert_eq!(field(&parties[0], "idField"), "partyId");
-    let maintenance = maps(
-        &ok(
-            "list#Folder",
-            &[("driveId", text(&records)), ("path", text("asset/A1/maintenance"))],
-        ),
-        "fileList",
-    );
-    assert_eq!(field(&maintenance[0], "recordId"), "M7");
-    assert_eq!(
-        field(&maintenance[0], "recordEntityName"),
-        "mantle.product.asset.AssetMaintenance"
-    );
-    let inside = ok(
+    assert!(list("party").is_empty());
+    not_found("party/OPEN1/content_1/contract.pdf");
+    login("alice");
+    assert_eq!(list("party"), ["OPEN1", "SECRET1"]);
+    // a manager's list of a mapped folder is limited to the newest recordLimit record folders too, the rest counted
+    let managed = ok(
         "list#Folder",
-        &[("driveId", text(&records)), ("path", text("party/P100/content_1"))],
+        &[
+            ("driveId", text(&records)),
+            ("path", text("party")),
+            ("recordLimit", Value::I64(1)),
+        ],
     );
-    assert_eq!(names(&inside), ["contract.pdf"]);
+    assert_eq!(number(managed.get("moreRecordCount")), 1, "{managed:?}");
+    assert_eq!(maps(&managed, "fileList").len(), 1, "{managed:?}");
+    assert_eq!(list("stray"), ["unmapped.txt"]);
+    let secret = info("party/SECRET1/content_2/secret.pdf");
+    let records_of = |out: &BTreeMap<String, Value>| -> Vec<String> {
+        match out.get("resource") {
+            Some(Value::Map(resource)) => match resource.get("recordList") {
+                Some(Value::List(items)) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Map(map) => format!("{} {}", field(map, "recordEntityName"), field(map, "recordId")),
+                        _ => String::new(),
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    };
+    assert_eq!(records_of(&secret), ["mantle.party.Party SECRET1"]);
+
+    // the theme names the hook: a member sees the records it answers for, each record asked once per request
+    row(
+        &facade,
+        "moqui.screen.ScreenThemeResource",
+        &[
+            ("screenThemeId", text("DEFAULT_QUASAR")),
+            ("sequenceNum", Value::I64(990)),
+            ("resourceTypeEnumId", text("STRT_RECORD_VISIBLE_SERVICE")),
+            ("resourceValue", text("test.DriveStub.check#Visible")),
+        ],
+    );
+    login("bob");
+    let before = hook_calls(&context);
+    let parties = ok("list#Folder", &[("driveId", text(&records)), ("path", text("party"))]);
+    assert_eq!(names(&parties), ["OPEN1"]);
+    assert_eq!(field(&maps(&parties, "fileList")[0], "recordId"), "OPEN1");
+    assert_eq!(hook_calls(&context) - before, 2, "OPEN1 and SECRET1 asked");
+    let contract = info("party/OPEN1/content_1/contract.pdf");
+    assert_eq!(records_of(&contract), ["mantle.party.Party OPEN1"]);
+    assert_eq!(
+        hook_calls(&context) - before,
+        2,
+        "a record already asked in this request is not asked again"
+    );
+    not_found("party/SECRET1/content_2/secret.pdf");
+    refused(
+        "list#Folder",
+        &[("driveId", text(&records)), ("path", text("party/SECRET1"))],
+        "Folder not found",
+    );
+    refused(
+        "list#Folder",
+        &[("driveId", text(&records)), ("path", text("stray"))],
+        "Folder not found",
+    );
+    not_found("stray/unmapped.txt");
+    assert_eq!(
+        number(ok("get#DriveAccess", &[("driveId", text(&records))]).get("level")),
+        1
+    );
+    assert_eq!(level(&records, Some("party/SECRET1")), 0);
+    assert_eq!(level(&records, Some("party/OPEN1")), 1);
+    // a record inside another: both must be visible
+    assert_eq!(list("asset/OPENA/maintenance"), ["OPENM"]);
+    not_found("asset/OPENA/maintenance/SECRETM/content_4/hidden.png");
+    not_found("asset/SECRETA/maintenance/OPENM2/content_5/inside.png");
+    let nested = info("asset/OPENA/maintenance/OPENM/content_3/photo.png");
+    assert_eq!(
+        records_of(&nested),
+        [
+            "mantle.product.asset.AssetMaintenance OPENM",
+            "mantle.product.asset.Asset OPENA"
+        ],
+        "innermost first"
+    );
+    // a mapped folder's record folders: the newest recordLimit are asked, the rest counted
+    let limited = ok(
+        "list#Folder",
+        &[
+            ("driveId", text(&records)),
+            ("path", text("party")),
+            ("recordLimit", Value::I64(1)),
+        ],
+    );
+    assert_eq!(number(limited.get("moreRecordCount")), 1);
+    assert!(maps(&limited, "fileList").len() <= 1);
+    // search (a walk here), the zip, the trash, favorites
+    let found = ok("find#Resources", &[("text", text("pdf"))]);
+    let paths: Vec<String> = maps(&found, "resultList")
+        .iter()
+        .map(|row| field(row, "path"))
+        .collect();
+    assert_eq!(paths, ["party/OPEN1/content_1/contract.pdf"]);
+    let zip = ok("download#Zip", &[("driveId", text(&records)), ("path", text("asset"))]);
+    assert_eq!(number(zip.get("fileCount")), 1, "only OPENA's OPENM photo");
+    refused(
+        "download#Zip",
+        &[("driveId", text(&records)), ("path", text("party/SECRET1"))],
+        "File not found",
+    );
+    row(
+        &facade,
+        "moqui.resource.ResourceFavorite",
+        &[
+            ("userId", text("bob")),
+            ("driveId", text(&records)),
+            ("path", text("party/SECRET1/content_2/secret.pdf")),
+        ],
+    );
+    ok(
+        "set#Favorite",
+        &[
+            ("driveId", text(&records)),
+            ("path", text("party/OPEN1/content_1/contract.pdf")),
+        ],
+    );
+    let favorites: Vec<String> = maps(&ok("get#Favorites", &[]), "favoriteList")
+        .iter()
+        .map(|row| field(row, "path"))
+        .collect();
+    assert_eq!(favorites, ["party/OPEN1/content_1/contract.pdf"]);
+    login("alice");
+    // a share does not pass the gate
+    ok(
+        "share#Resource",
+        &[
+            ("driveId", text(&records)),
+            ("path", text("party/SECRET1")),
+            ("sharedWithUserId", text("bob")),
+        ],
+    );
+    ok(
+        "trash#Resource",
+        &[
+            ("driveId", text(&records)),
+            ("path", text("party/SECRET1/content_2/secret.pdf")),
+        ],
+    );
+    assert_eq!(
+        maps(&ok("list#Trash", &[("driveId", text(&records))]), "trashList").len(),
+        1
+    );
+    login("bob");
+    not_found("party/SECRET1");
+    assert!(maps(&ok("list#Trash", &[("driveId", text(&records))]), "trashList").is_empty());
+    // writes keep their rules, and reach only what the user may see
+    login("eve");
+    refused(
+        "upload#Resource",
+        &[
+            ("driveId", text(&records)),
+            ("path", text("party/SECRET1/content_2")),
+            ("file", upload("more.pdf", b"%PDF")),
+        ],
+        "Folder not found",
+    );
+    ok(
+        "upload#Resource",
+        &[
+            ("driveId", text(&records)),
+            ("path", text("party/OPEN1/content_1")),
+            ("file", upload("more.pdf", b"%PDF")),
+        ],
+    );
     login("carol");
     refused(
         "create#Drive",
         &[("driveName", text("Mine")), ("driveKindEnumId", text("RdkRecords"))],
         "Only an administrator",
     );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[cfg(feature = "image")]
@@ -1829,4 +2173,259 @@ fn drive_files_are_search_documents_kept_on_write_rename_and_trash() {
     let before = indexed_ids().len();
     ok("index#MirrorDrives", &[("repositoryId", text(&repository))]);
     assert_eq!(indexed_ids().len(), before, "nothing new since");
+}
+
+/// What `send` wrote to the response: status, headers and body; the response is cleared for the next one.
+fn sent(send: impl FnOnce()) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    crate::web::clear_output();
+    send();
+    let (status, headers, body, _) = crate::web::take_output();
+    crate::web::clear_output();
+    (status, headers, body)
+}
+
+fn header<'a>(headers: &'a [(String, String)], name: &str) -> &'a str {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map_or("", |(_, value)| value.as_str())
+}
+
+#[test]
+fn a_past_version_and_a_zip_are_sent_by_their_names_privately_and_a_link_sends_its_file_itself() {
+    let (context, facade) = setup();
+    let _entered = context.enter();
+    install();
+    users(&facade);
+    let _web = crate::web::install(BTreeMap::new());
+    login("alice");
+    let team = drive("folder", "Team", &[]);
+    for body in ["one\n", "two\n"] {
+        ok(
+            "upload#Resource",
+            &[
+                ("driveId", text(&team)),
+                ("path", text("docs")),
+                ("file", upload("notes.txt", body.as_bytes())),
+            ],
+        );
+    }
+    let versions = maps(
+        &ok(
+            "get#Versions",
+            &[("driveId", text(&team)), ("path", text("docs/notes.txt"))],
+        ),
+        "versionList",
+    );
+    let first = field(versions.last().unwrap(), "versionName");
+    let info = ok(
+        "get#ResourceInfo",
+        &[
+            ("driveId", text(&team)),
+            ("path", text("docs/notes.txt")),
+            ("versionName", text(&first)),
+        ],
+    );
+    let location = match info.get("resource") {
+        Some(Value::Map(resource)) => field(resource, "location"),
+        other => panic!("no resource: {other:?}"),
+    };
+    assert!(location.ends_with(&format!("#{first}")), "{location}");
+
+    // the version, by reference and in a response, named as asked and kept by no shared cache
+    let script = |source: &str| crate::script::run_script(source).unwrap();
+    script(&format!(
+        "ec.context.sharedMap.streamed = ec.resource.getLocationReference('{location}').openStream().getText()"
+    ));
+    assert_eq!(context.shared_map().get("streamed"), Some(&text("one\n")));
+    let (status, headers, body) = sent(|| {
+        script(&format!(
+            "ec.web.sendResourceResponse('{location}', false, 'notes v1.txt')"
+        ))
+    });
+    assert_eq!((status, body.as_slice()), (200, b"one\n".as_slice()));
+    let disposition = header(&headers, "Content-Disposition");
+    assert!(
+        disposition.starts_with("attachment; filename=\"notes_v1.txt\"") && disposition.contains("notes%20v1.txt"),
+        "{disposition}"
+    );
+    assert_eq!(header(&headers, "Cache-Control"), "private, no-store");
+    assert!(
+        header(&headers, "Content-Type").starts_with("text/plain"),
+        "{headers:?}"
+    );
+    let missing = location.replace(&format!("#{first}"), "#99");
+    let (status, _, _) = sent(|| script(&format!("ec.web.sendResourceResponse('{missing}', false)")));
+    assert_eq!(status, 404, "a version that is not there");
+    let current = location.split('#').next().unwrap().to_string();
+    let (_, headers, body) = sent(|| script(&format!("ec.web.sendResourceResponse('{current}', true)")));
+    assert_eq!(body, b"two\n");
+    assert_eq!(header(&headers, "Content-Disposition"), "inline");
+    assert_eq!(
+        header(&headers, "Cache-Control"),
+        "private, no-store",
+        "a drive's file shown inline"
+    );
+
+    // a zip made under a random name goes out under its own
+    let zip = ok("download#Zip", &[("driveId", text(&team)), ("path", text("docs"))]);
+    let (zip_location, zip_name) = (out_text(&zip, "zipLocation"), out_text(&zip, "zipFilename"));
+    assert_eq!(zip_name, "docs.zip");
+    let (_, headers, body) = sent(|| {
+        script(&format!(
+            "ec.web.sendResourceResponse('{zip_location}', false, '{zip_name}')"
+        ))
+    });
+    assert!(body.starts_with(b"PK"));
+    assert!(
+        header(&headers, "Content-Disposition").contains("filename=\"docs.zip\""),
+        "{headers:?}"
+    );
+    assert_eq!(header(&headers, "Content-Type"), "application/zip");
+
+    // a public link's file: the service sends it itself, after the token check, to a visitor with no user
+    let link = ok(
+        "share#Resource",
+        &[("driveId", text(&team)), ("path", text("docs")), ("isLink", text("Y"))],
+    );
+    let token = out_text(&link, "linkToken");
+    logout();
+    let (status, headers, body) = sent(|| {
+        let out = ok(
+            "download#PublicShare",
+            &[
+                ("token", text(&token)),
+                ("path", text("notes.txt")),
+                ("sendResponse", Value::Bool(true)),
+                ("inline", Value::Bool(true)),
+            ],
+        );
+        assert_eq!(out_text(&out, "fileName"), "notes.txt");
+    });
+    assert_eq!((status, body.as_slice()), (200, b"two\n".as_slice()));
+    assert!(
+        header(&headers, "Content-Disposition").starts_with("attachment; filename=\"notes.txt\""),
+        "a text file is never shown in the page: {headers:?}"
+    );
+    assert_eq!(header(&headers, "Cache-Control"), "private, no-store");
+    let (_, headers, body) = sent(|| {
+        ok(
+            "download#PublicShare",
+            &[("token", text(&token)), ("sendResponse", Value::Bool(true))],
+        );
+    });
+    assert!(body.starts_with(b"PK"), "the folder as a zip");
+    assert!(
+        header(&headers, "Content-Disposition").contains("filename=\"docs.zip\""),
+        "{headers:?}"
+    );
+    let (status, _, body) = sent(|| {
+        refused(
+            "download#PublicShare",
+            &[
+                ("token", text("NoSuchTokenAtAll0000")),
+                ("sendResponse", Value::Bool(true)),
+            ],
+            "expired or was not found",
+        );
+    });
+    assert!(status == 200 && body.is_empty(), "nothing is sent for a bad token");
+}
+
+#[test]
+fn a_stream_passed_to_a_service_stays_its_bytes_and_anything_else_is_never_written_as_text() {
+    let (context, facade) = setup();
+    let _entered = context.enter();
+    install();
+    users(&facade);
+    login("alice");
+    let team = drive("folder", "Team", &[]);
+    ok(
+        "upload#Resource",
+        &[
+            ("driveId", text(&team)),
+            ("file", upload("source.bin", &[0, 1, 2, 250, 251])),
+        ],
+    );
+    let root = format!("dbresource://drive/shared/{team}");
+    crate::script::run_script(&format!(
+        r#"const out = ec.service.sync().name('org.moqui.impl.FileServices.upload#Resource').parameters({{driveId: '{team}',
+            fileList: [ec.resource.getLocationReference('{root}/source.bin').openStream(), {{}}],
+            relativePathList: ['copy.bin', 'object.bin']}}).call()
+        ec.context.sharedMap.outcomes = out.uploadedList.map((row) => row.outcome + ':' + (row.error || ''))"#
+    ))
+    .unwrap();
+    assert_eq!(
+        context.shared_map().get("outcomes"),
+        Some(&Value::List(vec![
+            text("created:"),
+            text("failed:not a file or a stream")
+        ]))
+    );
+    let copied = context.factory().resource().get(&format!("{root}/copy.bin")).unwrap();
+    assert_eq!(copied.read_bytes().unwrap(), [0, 1, 2, 250, 251]);
+    let exists = |location: String| context.factory().resource().stat(&location).unwrap().is_some();
+    assert!(!exists(format!("{root}/object.bin")));
+    // a stream kept in the context and read back is still the stream
+    crate::script::run_script(&format!(
+        "ec.context.sharedMap.kept = ec.resource.getLocationReference('{root}/source.bin').openStream()"
+    ))
+    .unwrap();
+    crate::script::run_script(&format!(
+        "ec.resource.putContent('{root}/kept.bin', ec.context.sharedMap.kept, 'from the context')"
+    ))
+    .unwrap();
+    assert_eq!(
+        context
+            .factory()
+            .resource()
+            .get(&format!("{root}/kept.bin"))
+            .unwrap()
+            .read_bytes()
+            .unwrap(),
+        [0, 1, 2, 250, 251]
+    );
+    for source in [
+        format!("ec.resource.putContent('{root}/bad.bin', {{}}, null)"),
+        format!("ec.resource.makeChangeSet('{root}').write('bad.bin', [1, 2]).commit(null)"),
+    ] {
+        let err = crate::script::run_script(&source).unwrap_err();
+        assert!(
+            err.message().contains("text, bytes, an uploaded file or a stream"),
+            "{err}"
+        );
+    }
+    assert!(!exists(format!("{root}/bad.bin")));
+}
+
+#[test]
+fn the_drive_temporary_files_older_than_a_day_are_removed() {
+    let (context, _facade) = setup();
+    let _entered = context.enter();
+    install();
+    let folder = format!("drive-cleaning-{}", std::process::id());
+    let tmp = context.factory().runtime_dir().join("tmp").join(&folder);
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("a1b2")).unwrap();
+    std::fs::write(tmp.join("old.zip"), b"old").unwrap();
+    std::fs::write(tmp.join("a1b2/named copy.pdf"), b"old").unwrap();
+    std::fs::write(tmp.join("new.zip"), b"new").unwrap();
+    let two_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86_400);
+    for old in ["old.zip", "a1b2/named copy.pdf"] {
+        std::fs::File::options()
+            .write(true)
+            .open(tmp.join(old))
+            .unwrap()
+            .set_modified(two_days_ago)
+            .unwrap();
+    }
+    let out = {
+        let _authz = context.disable_authz();
+        ok("clean#DriveTempFiles", &[])
+    };
+    assert!(number(out.get("removedCount")) >= 2);
+    assert!(!tmp.join("old.zip").exists());
+    assert!(!tmp.join("a1b2").exists(), "the folder its last file left");
+    assert!(tmp.join("new.zip").exists(), "a file of today stays");
+    let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Chat and presence (framework/entity/ChatEntities.xml, org.moqui.impl.ChatServices): the search document of chat
+    messages and the jobs. -->
+<entity-facade-xml type="seed-initial">
+    <!-- A chat message in the search index: its room, its sender and its current text. ChatServices indexes it on
+        send#Message and edit#Message and deletes it on redact#Message (no DataFeed); search#ChatEvents searches it with
+        a filter of the rooms the user may read: the user's rooms and the public ones (roomVisibilityEnumId CrvUsers). -->
+    <moqui.entity.document.DataDocument dataDocumentId="MoquiChatEvent" indexName="moqui" documentName="Chat Message"
+            primaryEntityName="moqui.chat.ChatEvent" documentTitle="${bodyText}">
+        <fields fieldSeqId="01" fieldPath="chatRoomId"/>
+        <fields fieldSeqId="02" fieldPath="eventSeq"/>
+        <fields fieldSeqId="03" fieldPath="eventTypeEnumId"/>
+        <fields fieldSeqId="04" fieldPath="senderUserId"/>
+        <fields fieldSeqId="05" fieldPath="sender:userFullName" fieldNameAlias="senderName" searchRole="subtitle"/>
+        <fields fieldSeqId="06" fieldPath="sender:username" fieldNameAlias="senderUsername"/>
+        <fields fieldSeqId="07" fieldPath="threadRootEventSeq"/>
+        <fields fieldSeqId="08" fieldPath="bodyText" searchRole="title" searchWeight="A"/>
+        <fields fieldSeqId="09" fieldPath="sentDate" sortable="Y"/>
+        <fields fieldSeqId="10" fieldPath="room:roomName" fieldNameAlias="roomName" searchWeight="B"/>
+        <fields fieldSeqId="11" fieldPath="room:roomTypeEnumId" fieldNameAlias="roomTypeEnumId" searchRole="category"/>
+        <fields fieldSeqId="12" fieldPath="room:visibilityEnumId" fieldNameAlias="roomVisibilityEnumId"/>
+        <fields fieldSeqId="13" fieldPath="room:recordEntityName" fieldNameAlias="recordEntityName"/>
+        <fields fieldSeqId="14" fieldPath="room:recordId" fieldNameAlias="recordId"/>
+        <conditions conditionSeqId="01" fieldNameAlias="eventTypeEnumId" fieldValue="CetMessage"/>
+    </moqui.entity.document.DataDocument>
+
+    <!-- Presence: a clear-at time that has come, a user whose client stopped sending its heartbeat (offline) or who went
+        idle (away) is published on the userStatus topic to the user's room members. Each user is on their own. -->
+    <moqui.service.job.ServiceJob jobName="expire_UserStatuses_frequent" description="Clear expired user statuses and publish presence changes"
+            serviceName="org.moqui.impl.ChatServices.expire#UserStatuses" cronExpression="0 * * * * ?" paused="N"/>
+    <!-- Chat files uploaded and never sent with a message, after a day -->
+    <moqui.service.job.ServiceJob jobName="clean_ChatAttachments_daily" description="Remove chat files never sent"
+            serviceName="org.moqui.impl.ChatServices.clean#PendingAttachments" cronExpression="0 30 3 * * ?" paused="N"/>
+</entity-facade-xml>

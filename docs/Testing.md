@@ -146,7 +146,7 @@ function, is refused when the file loads rather than run with conditions that ca
 | `call(name, params)` | A service call. It throws, naming the service and its `ec.message` errors, where `ec.service.sync()` would return null |
 | `checkData(xml)` | `ec.entity.makeDataLoader().xmlText(xml).check()`: the messages of what did not match, each logged |
 | `login(username, password = "moqui")`, `logout()` | `login` throws when the login fails |
-| `screenTest(baseScreenPath)` | `ec.screen.makeTest().baseScreenPath(...)`. `render(path, params, method)` gives `output`, `errorMessages`, `status`, `renderTime` and `assertContains(text)`; `renderMode("html-print")` and the other builder methods set the mode and root screen |
+| `screenTest(baseScreenPath)` | `ec.screen.makeTest().baseScreenPath(...)`. `render(path, params, method)` gives `output`, `errorMessages`, `status`, `renderTime`, `headers` (the response's, and `header(name)` by name in any case) and `assertContains(text)`; `renderMode("html-print")` and the other builder methods set the mode and root screen, `header(name, value)` a request header of every render, and `clientModes("qvue,qjs")` the `X-Moqui-Client-Modes` header `moqui.loadComponent` sends, so a spec checks the best client mode (`render("Gallery/QuickTask.qvt").header("X-Moqui-Qvt") == "qvue"`) |
 | `parallel(n, fn, args, opts)` | Run `fn(threadNum, args)` on `n` threads, each with its own `ec`, and return the results. `opts`: `transaction` (default true), `timeout` (default 120 s) |
 | `uploadedFile(fileName, text, contentType = "text/plain")` | The `FileItem` that services taking an upload expect |
 | `assert(condition, message)` | A condition outside the top level of a block |
@@ -178,12 +178,36 @@ capture.last().toList            // ["customer@example.com"]
 
 | Method | |
 |---|---|
-| `getMessages()` | The captured messages, oldest first, each `{subject, fromAddress, fromName, toList, ccList, bccList, replyToList, body, bodyText, messageId, inReplyTo, references, attachmentNames, capturedDate}` (the 500 most recent) |
+| `getMessages()` | The captured messages, oldest first, each `{subject, fromAddress, fromName, toList, ccList, bccList, replyToList, body, bodyText, messageId, inReplyTo, references, attachmentNames, headers, capturedDate}` (the 500 most recent; `headers` the added header fields, such as a list email's List-Unsubscribe, name to value) |
 | `last()`, `count()`, `clear()` | The newest one (or null), how many, and forget them |
 | `enable()`, `disable()`, `reset()` | Capture on or off for this server whatever the property says, and back to the property; reset it when the spec ends, as the switch outlives the spec |
 | `isEnabled()` | Whether a send now is captured |
 
 The capture is a tool of the framework (`moqui_core::service::mail_capture`, in `MoquiDefaultConf.xml`).
+
+## Notifications
+
+A `moqui test` run has no notification socket, and what is sent only to someone listening (the shell counts of
+`org.moqui.impl.ShellServices.publish#ShellCounts`) is not sent at all. A spec that checks those notifications turns on
+the notification capture, which listens on the notification topic as the server's socket does and keeps each message in
+memory:
+
+```js
+const capture = ec.factory.getTool("NotificationCapture")
+capture.enable()
+try {
+    // ... what publishes, then (the shell counts go after the commit, on a thread of the server) wait for them
+    capture.getMessages("shellCounts").filter((row) => row.userIds.includes(userId)).length
+} finally { capture.disable(); capture.clear() }
+```
+
+| Method | |
+|---|---|
+| `getMessages(topic?)` | The captured messages, oldest first, all or of one topic, each `{topic, subTopic, userIds, title, link, message, capturedDate}` (the 500 most recent) |
+| `last(topic?)`, `count(topic?)`, `clear()` | The newest one (or null), how many, and forget them |
+| `enable()`, `disable()`, `isEnabled()` | Listen or stop; disable it when the spec ends, as the listener outlives the spec |
+
+The capture is a tool of the framework (`moqui_core::notify::capture`, in `MoquiDefaultConf.xml`).
 
 ## Pitfalls
 

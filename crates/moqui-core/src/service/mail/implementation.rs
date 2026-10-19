@@ -163,7 +163,7 @@ pub(super) fn send_template(
         in_reply_to: String::new(),
         references: String::new(),
         date: None,
-        extra_headers: Vec::new(),
+        extra_headers: template_extra_headers(parameters),
     };
     if !filter_recipients(&mut letter, &field_text(&server, "allowedToDomains"), &email_message_id) {
         return Ok(ids(&email_message_id, ""));
@@ -172,7 +172,7 @@ pub(super) fn send_template(
         Ok(attachments) => attachments,
         Err(err) => return Ok(send_error(&err, &email_message_id, &template_id)),
     };
-    if let Err(err) = deliver(&letter, &server) {
+    if let Err(err) = deliver(facade, &letter, &server) {
         note_message(format!("Error sending email: {err}"));
         return Ok(ids(&email_message_id, ""));
     }
@@ -288,7 +288,8 @@ pub(super) fn send_message(
     let extra_headers = if client {
         client_headers(&field_text(&message, "headersString"))
     } else {
-        Vec::new()
+        // a template message (a list email) sent again keeps the list headers it was made with
+        stored_headers(&field_text(&message, "headersString"), &LIST_HEADERS)
     };
     let mut letter = Letter {
         subject: field_text(&message, "subject"),
@@ -320,7 +321,7 @@ pub(super) fn send_message(
     if let Err(err) = stored_attachments(facade, &email_message_id, &mut letter) {
         return Ok(send_failed(&email_message_id, &err));
     }
-    if let Err(err) = deliver(&letter, &server) {
+    if let Err(err) = deliver(facade, &letter, &server) {
         return Ok(send_failed(&email_message_id, &err));
     }
     if status == "ES_READY" || status == "ES_BOUNCED" {
@@ -608,6 +609,10 @@ fn insert_draft(
         set_text(&mut row, "emailServerId", &server_id);
         set_text(&mut row, "fromUserId", &from_user);
         set_text(&mut row, "toUserId", &to_user);
+        let extra = template_extra_headers(parameters);
+        if !extra.is_empty() {
+            set_text(&mut row, "headersString", &header_block(&extra));
+        }
         row.create(facade)?;
         Ok(id)
     })
@@ -1075,14 +1080,79 @@ pub(super) struct Letter {
 /// and list conventions), so the mail it answers is not answered back. Any other header there is the received mail's.
 pub(super) const CLIENT_HEADERS: [&str; 3] = ["Auto-Submitted", "X-Auto-Response-Suppress", "Precedence"];
 
+/// The headers of a template message's `headersString` that go out again when it is sent again: a list email's
+/// (RFC 2369, RFC 8058).
+pub(super) const LIST_HEADERS: [&str; 3] = ["List-Unsubscribe", "List-Unsubscribe-Post", "List-Id"];
+
+/// Headers the letter's own fields write, which `extraHeaders` cannot set (lower case).
+const LETTER_HEADERS: [&str; 16] = [
+    "from",
+    "sender",
+    "to",
+    "cc",
+    "bcc",
+    "reply-to",
+    "subject",
+    "date",
+    "message-id",
+    "in-reply-to",
+    "references",
+    "return-path",
+    "mime-version",
+    "content-type",
+    "content-transfer-encoding",
+    "content-disposition",
+];
+
+/// The `extraHeaders` map of `send#EmailTemplate` (a list email's List-Unsubscribe and List-Unsubscribe-Post): each name a
+/// header field name (letters, digits and `-`) that is not one the letter writes itself, each value one line of under
+/// 998 characters with no line breaks (so a value cannot add a header). Anything else is logged and left out.
+pub(super) fn template_extra_headers(parameters: &BTreeMap<String, Value>) -> Vec<(String, String)> {
+    let Some(Value::Map(map)) = parameters.get("extraHeaders") else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (name, value) in map {
+        let name = name.trim();
+        let value = to_plain_string(value).trim().to_string();
+        let name_ok = !name.is_empty()
+            && name.len() <= 76
+            && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            && !LETTER_HEADERS.contains(&name.to_ascii_lowercase().as_str());
+        let value_ok = !value.is_empty() && value.len() < 998 && !value.contains(['\r', '\n']);
+        if !name_ok || !value_ok {
+            tracing::warn!(header = %name, "extraHeaders: {name} is not a header this send may add, left out");
+            continue;
+        }
+        if out.iter().any(|(kept, _)| kept.eq_ignore_ascii_case(name)) {
+            continue;
+        }
+        out.push((name.to_string(), value));
+    }
+    out
+}
+
+/// A header block of `headers` for `EmailMessage.headersString`, a line each.
+fn header_block(headers: &[(String, String)]) -> String {
+    headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect()
+}
+
 /// The [`CLIENT_HEADERS`] of a stored header block, in order, each once.
 pub(super) fn client_headers(headers: &str) -> Vec<(String, String)> {
+    stored_headers(headers, &CLIENT_HEADERS)
+}
+
+/// The `names` of a stored header block that are sent, in order, each once.
+pub(super) fn stored_headers(headers: &str, names: &[&str]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
-    for name in CLIENT_HEADERS {
+    for name in names {
         let value = header_value(headers, name);
         let value = value.trim();
         // a header value is one line of printable text
-        if !value.is_empty() && !value.contains(['\r', '\n']) && value.len() < 200 {
+        if !value.is_empty() && !value.contains(['\r', '\n']) && value.len() < 998 {
             out.push((name.to_string(), value.to_string()));
         }
     }
@@ -1111,7 +1181,7 @@ pub(super) fn header_value(headers: &str, name: &str) -> String {
     found.unwrap_or_default()
 }
 
-fn deliver(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
+fn deliver(facade: &EntityFacade, letter: &Letter, server: &EntityValue) -> Result<(), Error> {
     #[cfg(test)]
     if push_sink(letter) {
         return Ok(());
@@ -1132,29 +1202,105 @@ fn deliver(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
             in_reply_to: letter.in_reply_to.clone(),
             references: letter.references.clone(),
             attachment_names: letter.attachments.iter().map(|part| part.filename.clone()).collect(),
+            headers: letter.extra_headers.clone(),
         });
         return Ok(());
     }
-    lettre_send(letter, server)
+    lettre_send(facade, letter, server)
 }
 
-fn lettre_send(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
+fn lettre_send(facade: &EntityFacade, letter: &Letter, server: &EntityValue) -> Result<(), Error> {
     let message = build_lettre(letter)?;
-    let transport = smtp_transport(server, None)?;
-    lettre::Transport::send(&transport, &message)
-        .map(|_| ())
-        .map_err(|err| Error::new(err.to_string()))
+    let auth = smtp_auth(facade, server, None)?;
+    let transport = smtp_transport(server, &auth, None)?;
+    match lettre::Transport::send(&transport, &message) {
+        Ok(_) => Ok(()),
+        // an access token the server refused (revoked, or ended early): once more with a new one, which is safe
+        // before the server took the message
+        Err(err) if matches!(auth, SmtpAuth::OAuth(..)) && smtp_auth_refused(&err) => {
+            let SmtpAuth::OAuth(_, rejected) = &auth else {
+                return Err(Error::new(err.to_string()));
+            };
+            let fresh = smtp_auth(facade, server, Some(rejected))?;
+            if matches!(&fresh, SmtpAuth::OAuth(_, token) if token == rejected) {
+                return Err(Error::new(err.to_string()));
+            }
+            let transport = smtp_transport(server, &fresh, None)?;
+            lettre::Transport::send(&transport, &message)
+                .map(|_| ())
+                .map_err(|err| Error::new(err.to_string()))
+        }
+        Err(err) => Err(Error::new(err.to_string())),
+    }
 }
 
-/// The SMTP transport of a server row, signing in when it has a `mailUsername`. `timeout` replaces lettre's default
-/// of a minute.
-fn smtp_transport(server: &EntityValue, timeout: Option<Duration>) -> Result<lettre::SmtpTransport, Error> {
+/// How SMTP signs in: not at all (no `mailUsername`), with the password, or for an EatOAuth2 server with XOAUTH2 and
+/// an access token (user and token).
+enum SmtpAuth {
+    None,
+    Password(String, String),
+    #[cfg_attr(not(feature = "imap"), allow(dead_code))]
+    OAuth(String, String),
+}
+
+/// The user SMTP signs in as: `smtpUsername` when the server has its own SMTP sign-in, else `mailUsername`.
+pub(super) fn smtp_user(server: &EntityValue) -> String {
+    let own = field_text(server, "smtpUsername");
+    if own.trim().is_empty() {
+        field_text(server, "mailUsername")
+    } else {
+        own
+    }
+}
+
+/// The SMTP password: with an SMTP user of its own `smtpPassword` (else `mailPassword`), else `mailPassword`.
+fn smtp_password(server: &EntityValue) -> String {
+    let own = field_text(server, "smtpPassword");
+    if field_text(server, "smtpUsername").trim().is_empty() || own.is_empty() {
+        field_text(server, "mailPassword")
+    } else {
+        own
+    }
+}
+
+/// The SMTP sign-in of a server row ([`smtp_user`]); for EatOAuth2 a current access token (`rejected` is one the
+/// server just refused). The provider sign-in is part of `imap`; a build without it refuses an EatOAuth2 server.
+#[cfg_attr(not(feature = "imap"), allow(unused_variables))]
+fn smtp_auth(facade: &EntityFacade, server: &EntityValue, rejected: Option<&str>) -> Result<SmtpAuth, Error> {
+    let user = smtp_user(server);
+    if field_text(server, "authTypeEnumId") == "EatOAuth2" {
+        #[cfg(feature = "imap")]
+        {
+            let token = super::oauth::access_token(facade, &field_text(server, "emailServerId"), rejected)
+                .map_err(|err| Error::new(err.to_string()))?;
+            return Ok(SmtpAuth::OAuth(user, token));
+        }
+        #[cfg(not(feature = "imap"))]
+        return Err(Error::new("the OAuth sign-in of mail accounts (imap) is not built into this host"));
+    }
+    if user.is_empty() {
+        return Ok(SmtpAuth::None);
+    }
+    Ok(SmtpAuth::Password(user, smtp_password(server)))
+}
+
+/// A refusal of the sign-in: 530, 534, 535 or 454, or Gmail's XOAUTH2 error challenge, which lettre cannot answer.
+fn smtp_auth_refused(err: &lettre::transport::smtp::Error) -> bool {
+    let code = err.status().map(u16::from);
+    matches!(code, Some(454 | 530 | 534 | 535)) || (code.is_none() && err.to_string().contains("challenge"))
+}
+
+/// The SMTP transport of a server row, signing in as `auth` says. `timeout` replaces lettre's default of a minute.
+fn smtp_transport(
+    server: &EntityValue,
+    auth: &SmtpAuth,
+    timeout: Option<Duration>,
+) -> Result<lettre::SmtpTransport, Error> {
     let host = field_text(server, "smtpHost");
     let port = parse_port(&field_text(server, "smtpPort"), 25)?;
-    let user = field_text(server, "mailUsername");
-    let password = field_text(server, "mailPassword");
     // smtpSsl is TLS from the start. smtpStartTls upgrades when the server offers it, as Java's setStartTLSEnabled
     // (not required), so a server without STARTTLS still takes the mail. Both trust `email_tls_ca_file` too.
+    use lettre::transport::smtp::authentication::{Credentials, Mechanism};
     use lettre::transport::smtp::client::Tls;
     let mut builder = lettre::SmtpTransport::builder_dangerous(&host).port(port);
     if field_text(server, "smtpSsl") == "Y" {
@@ -1165,22 +1311,14 @@ fn smtp_transport(server: &EntityValue, timeout: Option<Duration>) -> Result<let
     if timeout.is_some() {
         builder = builder.timeout(timeout);
     }
-    Ok(creds(builder, &user, &password).build())
-}
-
-fn creds(
-    builder: lettre::transport::smtp::SmtpTransportBuilder,
-    user: &str,
-    password: &str,
-) -> lettre::transport::smtp::SmtpTransportBuilder {
-    if user.is_empty() {
-        builder
-    } else {
-        builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
-            user.to_string(),
-            password.to_string(),
-        ))
-    }
+    builder = match auth {
+        SmtpAuth::None => builder,
+        SmtpAuth::Password(user, password) => builder.credentials(Credentials::new(user.clone(), password.clone())),
+        SmtpAuth::OAuth(user, token) => builder
+            .credentials(Credentials::new(user.clone(), token.clone()))
+            .authentication(vec![Mechanism::Xoauth2]),
+    };
+    Ok(builder.build())
 }
 
 pub(super) fn build_lettre(letter: &Letter) -> Result<lettre::Message, Error> {
@@ -1484,9 +1622,17 @@ pub(super) fn test_server(
         return fail("Email server test is disabled in LLM sim session");
     }
     let server_id = param_text(parameters, "emailServerId");
-    let Some(server) = find_one(facade, SERVER, "emailServerId", &server_id)? else {
+    let Some(mut server) = find_one(facade, SERVER, "emailServerId", &server_id)? else {
         return fail(format!("No EmailServer found for ID [{server_id}]"));
     };
+    // an SMTP sign-in to try before it is stored: smtpUsername as given (empty for the store's), smtpPassword when given
+    if let Some(user) = parameters.get("smtpUsername").filter(|value| !value.is_null()) {
+        server.set("smtpUsername", Value::string(to_plain_string(user).trim()));
+    }
+    let password = param_text(parameters, "smtpPassword");
+    if !password.is_empty() {
+        server.set("smtpPassword", Value::string(password));
+    }
     let wanted = |name: &str| match parameters.get(name) {
         Some(Value::Bool(flag)) => *flag,
         Some(value) if !is_empty(value) => {
@@ -1498,11 +1644,11 @@ pub(super) fn test_server(
     #[cfg_attr(not(feature = "imap"), allow(unused_mut))]
     let mut folders = Vec::new();
     if wanted("testSmtp") {
-        steps.push(smtp_step(&server));
+        steps.push(smtp_step(facade, &server));
     }
     if wanted("testStore") && !field_text(&server, "storeHost").is_empty() {
         #[cfg(feature = "imap")]
-        super::inbound::store_steps(&server, &mut steps, &mut folders);
+        super::inbound::store_steps(facade, &server, &mut steps, &mut folders);
         #[cfg(not(feature = "imap"))]
         steps.push(("store", false, "imap is not built into this host".to_string()));
     }
@@ -1530,7 +1676,7 @@ pub(super) fn test_server(
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-fn smtp_step(server: &EntityValue) -> (&'static str, bool, String) {
+fn smtp_step(facade: &EntityFacade, server: &EntityValue) -> (&'static str, bool, String) {
     let host = field_text(server, "smtpHost");
     if host.is_empty() {
         return ("smtp", false, "The server has no SMTP host".to_string());
@@ -1541,12 +1687,20 @@ fn smtp_step(server: &EntityValue) -> (&'static str, bool, String) {
     } else {
         format!("{host}:{port}")
     };
+    let connect = |auth: &SmtpAuth| {
+        smtp_transport(server, auth, Some(TEST_TIMEOUT))
+            .and_then(|transport| transport.test_connection().map_err(|err| Error::new(err.to_string())))
+    };
     let checked = require_host(&host)
-        .and_then(|()| smtp_transport(server, Some(TEST_TIMEOUT)))
-        .and_then(|transport| transport.test_connection().map_err(|err| Error::new(err.to_string())));
-    let signs_in = !field_text(server, "mailUsername").is_empty();
+        .and_then(|()| smtp_auth(facade, server, None))
+        .and_then(|auth| match (connect(&auth), &auth) {
+            // an access token refused: once more with a new one, as a send does
+            (Err(_), SmtpAuth::OAuth(_, rejected)) => connect(&smtp_auth(facade, server, Some(rejected))?),
+            (result, _) => result,
+        });
+    let user = smtp_user(server);
     match checked {
-        Ok(true) if signs_in => ("smtp", true, format!("Connected to {place} and signed in")),
+        Ok(true) if !user.is_empty() => ("smtp", true, format!("Connected to {place} and signed in as {user}")),
         Ok(true) => ("smtp", true, format!("Connected to {place}")),
         Ok(false) => ("smtp", false, format!("{place} closed the connection")),
         Err(err) => ("smtp", false, format!("SMTP {place}: {err}")),
@@ -1691,7 +1845,7 @@ mod tests {
 
     use indexmap::IndexMap;
 
-    use super::{host_allowed, SinkGuard};
+    use super::{field_text, host_allowed, stored_headers, SinkGuard, LIST_HEADERS, MESSAGE};
     use crate::context::ExecutionContextFactory;
     use crate::entity::EntityFacade;
     use crate::screen::PDF_UNAVAILABLE;
@@ -1835,6 +1989,71 @@ mod tests {
         assert_eq!(sent.len(), 1, "{errors}");
         assert_eq!(sent[0].subject, "Hello there");
         assert!(out.contains_key("emailMessageId"));
+    }
+
+    /// A list email's extra headers go out and stay on the message for a send again; one the letter writes itself, or a
+    /// value with a line break (an injected header), is left out.
+    #[test]
+    fn a_template_send_adds_the_list_headers_and_keeps_them() {
+        let _lock = lock_tests();
+        let (facade, context) = entered();
+        let _entered = context.enter();
+        crate::service::load_definitions().unwrap();
+        seed(
+            &facade,
+            &context,
+            "moqui.basic.email.EmailServer",
+            &[("emailServerId", "TEST_LIST"), ("smtpHost", "smtp.example.com")],
+        );
+        seed(
+            &facade,
+            &context,
+            "moqui.basic.email.EmailTemplate",
+            &[
+                ("emailTemplateId", "LIST"),
+                ("emailServerId", "TEST_LIST"),
+                ("fromAddress", "news@example.com"),
+                ("subject", "News"),
+            ],
+        );
+        let sink = SinkGuard::install();
+        let mut extra = indexmap::IndexMap::new();
+        extra.insert(
+            "List-Unsubscribe".into(),
+            Value::string("<https://example.com/u/TOKEN/oneClick>, <mailto:leave@example.com?subject=unsubscribe>"),
+        );
+        extra.insert(
+            "List-Unsubscribe-Post".into(),
+            Value::string("List-Unsubscribe=One-Click"),
+        );
+        extra.insert("Subject".into(), Value::string("Not this one"));
+        extra.insert("X-Note".into(), Value::string("a\r\nBcc: someone@example.net"));
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("emailTemplateId".into(), Value::string("LIST"));
+        params.insert("toAddresses".into(), Value::string("member@example.com"));
+        params.insert("body".into(), Value::string("<p>News</p>"));
+        params.insert("extraHeaders".into(), Value::Map(extra));
+        let out = crate::service::sync("org.moqui.impl.EmailServices.send#EmailTemplate", &params).expect("send");
+        let errors = context.message().errors().join("\n");
+        assert!(errors.is_empty(), "{errors}");
+        let sent = sink.messages();
+        assert_eq!(sent.len(), 1);
+        let names: Vec<&str> = sent[0].extra_headers.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["List-Unsubscribe", "List-Unsubscribe-Post"]);
+        assert_eq!(sent[0].subject, "News");
+        assert!(sent[0].bcc.is_empty());
+        // kept on the message, and what a send again of it takes
+        let id = moqui_lib::object::to_plain_string(out.get("emailMessageId").expect("id"));
+        let row = facade
+            .find(MESSAGE)
+            .unwrap()
+            .eq("emailMessageId", Value::string(&id))
+            .one()
+            .unwrap()
+            .unwrap();
+        let stored = field_text(&row, "headersString");
+        let again = stored_headers(&stored, &LIST_HEADERS);
+        assert_eq!(again, sent[0].extra_headers);
     }
 
     #[test]

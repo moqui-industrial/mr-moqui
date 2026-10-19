@@ -79,7 +79,21 @@
         opened: !!(node.state && node.state.opened), children: Array.isArray(node.children) ? treeNodes(node.children) : node.children ? true : false
     }));
 
-    const pure = { normalizeDateTime, parseJson, queryString, optionList, dependsParams, orderByValue, treeNodes };
+    // The options of an editable select from its editable-load answer: a list of {value, label} (key and text, or plain
+    // values), or a map of key to label with the current key under "selected" (Java's jEditable).
+    const editableOptions = (answer) => {
+        const one = (item) => (item && typeof item === "object" ?
+            { value: String(item.value ?? item.key ?? ""), label: String(item.label ?? item.text ?? item.value ?? item.key ?? "") } :
+            { value: String(item), label: String(item) });
+        if (Array.isArray(answer)) return { options: answer.map(one) };
+        if (answer && typeof answer === "object") {
+            if (Array.isArray(answer.options)) return { options: answer.options.map(one), selected: answer.selected };
+            return { options: Object.keys(answer).filter((key) => key !== "selected").map((key) => ({ value: key, label: String(answer[key]) })), selected: answer.selected };
+        }
+        return { options: [] };
+    };
+
+    const pure = { normalizeDateTime, parseJson, queryString, optionList, dependsParams, orderByValue, treeNodes, editableOptions };
 
     // ---------- the browser client ----------
 
@@ -401,27 +415,49 @@
     const initEditable = (node) => {
         node.addEventListener("click", () => {
             if (node.querySelector("form")) return;
-            const original = node.textContent;
-            const render = (value) => {
+            const originalHtml = node.innerHTML;
+            const original = node.dataset.empty === "true" ? "" : node.textContent;
+            const widget = node.dataset.widget;
+            const restore = () => { node.innerHTML = originalHtml; };
+            const render = (value, options) => {
                 const form = el("form", { class: "editable-form" });
-                const input = node.dataset.widget === "text" ? el("input", { type: "text" }) : el("textarea", { rows: "3" });
+                let input;
+                if (widget === "select") {
+                    input = el("select");
+                    (options || []).forEach((option) => input.append(el("option", { value: option.value }, option.label)));
+                } else if (widget === "date" || widget === "date-time") {
+                    input = el("input", { type: widget === "date" ? "date" : "datetime-local" });
+                    value = widget === "date-time" ? String(value || "").replace(" ", "T") : value;
+                } else input = widget === "text" || widget === "text-line" ? el("input", { type: "text" }) : el("textarea", { rows: "3" });
                 input.value = value;
                 form.append(input, el("button", { type: "submit", "data-btn": "primary" }, "Save"), el("button", { type: "button" }, "Cancel"));
                 node.replaceChildren(form);
                 input.focus();
-                form.lastChild.addEventListener("click", (event) => { event.stopPropagation(); node.textContent = original; });
+                form.lastChild.addEventListener("click", (event) => { event.stopPropagation(); restore(); });
                 form.addEventListener("submit", (event) => {
                     event.preventDefault();
                     const params = Object.assign({}, parseJson(node.dataset.params, {}), { parameterName: node.dataset.name });
-                    params[node.dataset.name] = input.value;
+                    const sent = widget === "date-time" ? input.value.replace("T", " ") : input.value;
+                    params[node.dataset.name] = sent;
+                    const shown = widget === "select" && input.selectedIndex >= 0 ? input.options[input.selectedIndex].text : sent;
                     node.textContent = "...";
                     post(node.dataset.url, params).then((response) => {
                         if (!response.ok) throw new Error(response.status + " " + response.statusText);
-                        node.textContent = input.value;
-                    }).catch((err) => { node.textContent = original; notify(String(err.message || err), "danger"); });
+                        node.textContent = shown;
+                        node.dataset.value = sent;
+                        delete node.dataset.empty;
+                    }).catch((err) => { restore(); notify(String(err.message || err), "danger"); });
                 });
             };
-            if (node.dataset.loadUrl) post(node.dataset.loadUrl, Object.assign({}, parseJson(node.dataset.loadParams, {}), { currentValue: original })).then((r) => r.text()).then(render);
+            if (widget === "select") {
+                const given = parseJson(node.dataset.options, []);
+                const current = node.dataset.value !== undefined ? node.dataset.value : ((given.find((option) => option.label === original) || {}).value ?? original);
+                if (node.dataset.loadUrl) {
+                    post(node.dataset.loadUrl, Object.assign({}, parseJson(node.dataset.loadParams, {}), { currentValue: current })).then((r) => r.json())
+                        .then((answer) => { const loaded = editableOptions(answer); render(loaded.selected !== undefined ? String(loaded.selected) : current, loaded.options); })
+                        .catch((err) => notify(String(err.message || err), "danger"));
+                } else render(current, given);
+            } else if (node.dataset.loadUrl) post(node.dataset.loadUrl, Object.assign({}, parseJson(node.dataset.loadParams, {}), { currentValue: original })).then((r) => r.text()).then((text) => render(text));
             else render(original);
         });
     };

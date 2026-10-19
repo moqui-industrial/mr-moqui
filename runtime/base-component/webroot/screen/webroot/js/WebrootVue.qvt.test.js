@@ -41,6 +41,47 @@ test("the components the macros write are all defined", () => {
     used.forEach((name) => assert.ok(qvt.components[name], name + " is written by ScreenQvt.js but not defined"));
 });
 
+// A Boolean prop given as text is the text: "false" is truthy, so container-box initial="closed" stayed open. The macros bind a
+// Boolean prop (":initial-open") or write it with no value; this reads every m-* tag of the render goldens.
+test("no golden writes a Boolean prop of an m-* component as text", () => {
+    const hyphen = (name) => name.replace(/[A-Z]/g, (ch) => "-" + ch.toLowerCase());
+    const isBoolean = (prop) => prop === Boolean || (Array.isArray(prop) && prop.includes(Boolean)) ||
+        (prop && (prop.type === Boolean || (Array.isArray(prop.type) && prop.type.includes(Boolean))));
+    const booleans = {};
+    Object.keys(qvt.components).forEach((name) => {
+        const props = qvt.components[name].props;
+        if (!props || Array.isArray(props)) return;
+        Object.keys(props).forEach((key) => { if (isBoolean(props[key])) (booleans[name] = booleans[name] || new Set()).add(hyphen(key)); });
+    });
+    assert.ok(booleans["m-container-box"].has("initial-open"));
+    const src = path.join(__dirname, "../../../../../../crates/moqui-core/src");
+    const dirs = ["script/testdata/screen/qvt/render", "screen/testdata/Static/golden/render", "screen/testdata/Static/golden"];
+    const found = [];
+    let tags = 0;
+    dirs.forEach((dir) => fs.readdirSync(path.join(src, dir)).filter((file) => /\.(qvt|html)$/.test(file)).forEach((file) => {
+        const text = fs.readFileSync(path.join(src, dir, file), "utf8");
+        for (const tag of text.matchAll(/<(m-[a-z-]+)((?:\s+[^\s=>]+(?:="[^"]*")?)*)\s*\/?>/g)) {
+            const names = booleans[tag[1]];
+            if (!names) continue;
+            tags++;
+            for (const at of tag[2].matchAll(/\s+([^\s=>]+)(?:="([^"]*)")?/g)) {
+                if (names.has(at[1]) && at[2] !== undefined && at[2] !== "" && at[2] !== at[1]) found.push(dir + "/" + file + ": " + tag[1] + " " + at[1] + '="' + at[2] + '"');
+            }
+        }
+    }));
+    assert.ok(tags > 50, "tags read: " + tags);
+    assert.deepEqual(found, []);
+});
+
+test("both shells install Quasar's Notify, LoadingBar and Dialog plugins", () => {
+    const quasar = { Notify: { n: 1 }, LoadingBar: { l: 1 }, Dialog: { d: 1 }, Loading: { x: 1 } };
+    assert.deepEqual(qvt.quasarPlugins(quasar), { Notify: quasar.Notify, LoadingBar: quasar.LoadingBar, Dialog: quasar.Dialog });
+    assert.deepEqual(qvt.quasarPlugins({ Notify: quasar.Notify }), { Notify: quasar.Notify });
+    for (const file of ["WebrootVue.qvt.js", "WebrootPublic.qvt.js"]) {
+        assert.match(fs.readFileSync(path.join(__dirname, file), "utf8"), /plugins: (qvt && qvt\.quasarPlugins \? )?qvt\.quasarPlugins\(root\.Quasar\)/, file);
+    }
+});
+
 test("the shell mounts: links, dark mode, and the page address", () => {
     const options = qvt.rootOptions({ basePath: "/apps", linkBasePath: "/qapps", appRootPath: "" });
     const link = options.methods.getLinkPath;
@@ -313,6 +354,91 @@ test("an m-screen-context registers with the root, follows its props and leaves 
     assert.deepEqual(root.screenContexts, []);
     // the canvas the reach list names is in the shell
     assert.match(qvt.components["m-qapps-root"].template, /<q-page-container id="m-canvas">/);
+});
+
+test("loadComponent asks for the best client mode of a screen whose render modes it does not know", async () => {
+    const requests = [];
+    const original = moqui.request;
+    moqui.request = (url, options) => {
+        requests.push({ url, modes: options && options.headers ? options.headers["X-Moqui-Client-Modes"] : undefined });
+        if (url.indexOf("/apps/QvueOnly.qvt") === 0) {
+            return answer("<template><i>{{n}}</i></template><script>module.exports = { data() { return { n: 3 }; } }</script>", { "X-Moqui-Qvt": "qvue" });
+        }
+        if (url.indexOf("/apps/JsOnly.qvt") === 0) return answer("{ data: function () { return { n: 4 }; }, template: '<u/>' }", { "X-Moqui-Qvt": "qjs" });
+        if (url.indexOf("/apps/Js.qvt") === 0) return answer("<p>template of qjs</p>", { "X-Moqui-Qvt": "merged-fragment" });
+        if (url.indexOf("/apps/Js.qjs") === 0) return answer("{ data: function () { return { n: 5 }; } }");
+        return answer("<p>merged</p>", { "X-Moqui-Qvt": "merged-fragment" });
+    };
+    const load = (info) => new Promise((resolve) => moqui.loadComponent(info, resolve, "id2"));
+    try {
+        // a container's string URL: .qvt with the client modes, and the answer is the mode the server says
+        const sfc = await load("/apps/QvueOnly?recordId=R1");
+        assert.deepEqual(requests[0], { url: "/apps/QvueOnly.qvt?recordId=R1", modes: "qvue,qjs" });
+        assert.equal(sfc.template, "<i>{{n}}</i>");
+        assert.equal(sfc.data().n, 3);
+        const js = await load("/apps/JsOnly");
+        assert.equal(js.template, "<u/>");
+        assert.equal(js.data().n, 4);
+        // a screen that stays qvt
+        const merged = await load("/apps/Plain");
+        assert.equal(merged.template, '<div id="id2"><p>merged</p></div>');
+        assert.equal(requests[2].modes, "qvue,qjs");
+        // the router knows the modes: no header; an explicit extension is kept as it is
+        await load({ path: "/apps/Known", renderModes: ["qvt", "html"] });
+        assert.deepEqual(requests[3], { url: "/apps/Known.qvt", modes: undefined });
+        await load("/apps/Explicit.qvt?x=1");
+        assert.deepEqual(requests[4], { url: "/apps/Explicit.qvt?x=1", modes: undefined });
+        // a qjs without a template takes the qvt of the same screen
+        const companion = await load("/apps/Js.qjs");
+        assert.equal(requests[6].url, "/apps/Js.qvt");
+        assert.equal(companion.template, "<p>template of qjs</p>");
+    } finally {
+        moqui.request = original;
+    }
+});
+
+test("a container provides the screen it loaded as mScreen, and the root the page's", () => {
+    const vm = { id: "Dyn1", curUrl: "/apps/gallery/QuickTask.qvue?recordEntity=moqui.basic.Enumeration&recordId=A%20B&tag=x&tag=y" };
+    const screen = qvt.components["m-dynamic-container"].provide.call(vm).mScreen;
+    assert.equal(screen.path, "/apps/gallery/QuickTask");
+    assert.deepEqual(screen.parameters, { recordEntity: "moqui.basic.Enumeration", recordId: "A B", tag: ["x", "y"] });
+    assert.equal(screen.url, vm.curUrl);
+    assert.equal(screen.containerId, "Dyn1");
+    // the members follow the next load
+    vm.curUrl = "/apps/Other";
+    assert.equal(screen.path, "/apps/Other");
+    assert.deepEqual(screen.parameters, {});
+    // a dialog gives the URL it loaded, with its dynamic parameters
+    const dialog = { id: "Dlg", loadedUrl: "/apps/Edit?id=7" };
+    const dialogScreen = qvt.components["m-dynamic-dialog"].provide.call(dialog).mScreen;
+    assert.deepEqual([dialogScreen.path, dialogScreen.parameters.id], ["/apps/Edit", "7"]);
+    // the root: the current path and parameters of the page
+    const page = { currentPath: "/apps/gallery/Detail", currentSearch: "enumId=E1", currentParameters: { enumId: "E1" } };
+    const pageScreen = qvt.rootOptions({ basePath: "/apps", linkBasePath: "/qapps" }).provide.call(page).mScreen;
+    assert.deepEqual([pageScreen.url, pageScreen.path, pageScreen.parameters, pageScreen.containerId], ["/apps/gallery/Detail?enumId=E1", "/apps/gallery/Detail", { enumId: "E1" }, null]);
+    page.currentParameters = { enumId: "E2" };
+    assert.equal(pageScreen.parameters.enumId, "E2");
+});
+
+test("the tray refreshes a tab's screen in place when it has shellRefresh, and loads it again otherwise", () => {
+    const container = qvt.components["m-dynamic-container"];
+    assert.match(container.template, /<component :is="curComponent" ref="screen">/);
+    const calls = [];
+    const withHook = { id: "m-tray-chat", $refs: { screen: { shellRefresh: () => calls.push("in place") } }, reload: () => calls.push("reload") };
+    container.methods.shellRefresh.call(withHook);
+    container.methods.shellRefresh.call({ id: "m-tray-today", $refs: { screen: {} }, reload: () => calls.push("reload") });
+    container.methods.shellRefresh.call({ id: "m-tray-empty", $refs: {}, reload: () => calls.push("reload") });
+    assert.deepEqual(calls, ["in place", "reload", "reload"]);
+    // a failing hook is logged, and the tab is left as it is
+    const error = console.error;
+    console.error = () => calls.push("logged");
+    try { container.methods.shellRefresh.call({ id: "m-tray-bad", $refs: { screen: { shellRefresh() { throw new Error("no"); } } }, reload: () => calls.push("reload") }); }
+    finally { console.error = error; }
+    assert.deepEqual(calls.slice(3), ["logged"]);
+    // the tray's reload of a tab goes through it
+    const tray = qvt.components["m-shell-tray"].methods;
+    tray.reload.call({ containers: { chat: { shellRefresh: () => calls.push("tray"), reload: () => calls.push("tray reload") } } }, "chat");
+    assert.equal(calls[4], "tray");
 });
 
 test("a number card's delta has the tone of its sign against delta-good, and the card is a link only with an href", () => {
