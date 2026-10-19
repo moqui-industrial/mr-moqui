@@ -66,7 +66,7 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 
 The tests are `MoquiLib.test.js`, `MoquiL10n.test.js`, `WebrootVue.qvt.test.js`, `WebrootVue.qvt.shell.test.js` (the palette, the key map, the
 screen context's forms and the root's shell data), `WebrootVue.qvt.records.test.js` (the HTML of the rich-text editor, the record panel URL,
-avatars and record cards) and `WebrootVue.qvt.static.test.js` (the script and package
+avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer) and `WebrootVue.qvt.static.test.js` (the script and package
 the server answers for `crates/moqui-core` `testdata/Static/Items` run on the real Vue runtime over a fake DOM; every component template compiles with the vendored
 Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
 browser (mounting, Quasar menus and popups, dialogs, posts, the lazy libraries, static lists) is the Chromium smoke of Gate 3
@@ -172,6 +172,9 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-dynamic-container`, `m-dynamic-dialog` | a screen loaded into a container, or a dialog, with `load`, `reload` and `hide`; the dialog's button takes `button-text`, `button-class`, `color` and `button-icon` (default `open_in_new`), as `m-container-dialog` does |
 | `m-tree-top`, `m-tree-item` | tree: `items` is the node list or its URL (`<screen>/actions/<tree>`, posted `treeNodeId`, `treeNodeName`, `treeOpenPath`). A node's `children` is a list when it came inline (on `open-path`), `true` to load from the URL when the node is opened, `false` for a leaf |
 | `m-subscreens-tabs` (also `m-subscreens-menu`), `m-subscreens-active`, `m-subscreens-panel` | the subscreen menu and the place of the active subscreen |
+| `m-subscreens-wizard` | `subscreens-panel type="wizard"`: a header-only `q-stepper` with a step per subscreen of the menu data (titles, menu order; a done step's header goes back to it), the `m-subscreens-active` below it, and Back and Next (`finish-text` on the last step); `id`, `finish-text`, `next-text`, `back-text`. It provides `mWizard` to the step's forms (see Layout panels below) |
+| `m-subscreens-stack` | `subscreens-panel type="stack"`: the first subscreen in menu order under the others, with a `q-breadcrumbs` back to it when another is active; no tabs |
+| `m-container-split` | `container-split`: a `q-splitter` of the `side` and `main` slots; `id`, `side-width` (320), `min-main` (480), `side-position` (`left`, `right`), `select-parameter`, `back-text`, `height` (see Layout panels below) |
 | `m-menu-nav-item`, `m-menu-subscreen-item`, `m-menu-item-content`, `m-menu-icon` | the navigation of the shell; `m-menu-icon` is a menu image of type icon (`name`, `size`) |
 | `m-screen-context` | the `context` element: while mounted it registers `recordEntity`, `recordId`, `title` and `selectionForm` with the root (`setScreenContext`), again when one changes, and takes them back when unmounted (see Shell data and providers) |
 | `m-number-card` | the `number-card` element: a `q-card flat bordered` with the `title` as `text-overline`, the `value` (`text-h5`; `size` `sm` is `text-h6`, `lg` `text-h4`), the `delta` with an arrow, green or red by its sign against `delta-good` (`up`, the default, or `down`; no sign is muted: `moqui.numberCardDelta`), and the `icon`; with `href` the whole card is an `m-link` (`external`: a plain anchor). The `dashboard` element around cards is no component: a `div.m-dashboard` CSS grid, columns of at least its `min-width` (`--m-dashboard-min`, 200 px), each child in a `div.m-dashboard-item` (an empty one hidden, a `section-iterate`'s rows each a cell) |
@@ -424,6 +427,41 @@ library does not load, the field is `m-text-area` with `editor-type="html"`. The
 
 or that object under `card`. A failure or an answer that is not a map shows the entity and id (logged with `console.info`).
 `moqui.recordCard.normalize` reads it.
+
+## Layout panels: split, wizard and stack
+
+**`m-container-split`** (style-guide §3.8). From 1024 px (`$q.screen.gt.sm`) a `q-splitter` with `unit="px"`: the side at
+`side-width`, draggable from 200 px to the container's width less `min-main` (`moqui.splitLayout`, which a `ResizeObserver` on the
+container feeds). A dragged width is kept in `sessionStorage` (`moqui.SPLIT_WIDTH_<id>`) at once and in the user preference
+`SPLIT_WIDTH_<id>` once the dragging stops; a new page reads the session value, then the preference snapshot of the page
+(`config.preferences`), then the attribute. Below 1024 px, or in a container narrower than 200 px plus `min-main`, the same
+splitter is stacked by the style sheet (`m-split-stacked`), so the panes keep their content: with a `select-parameter`, a value of
+that parameter in `$root.currentParameters` shows the main pane with a back button (it goes to the screen without the parameter)
+and none shows the side; without one both panes show, the side first. The selection is read in the browser, so a server-static
+screen uses it as it is. `data-stacked` on the element says which layout is shown.
+
+**`m-subscreens-wizard`** and the step protocol (style-guide §3.10). The steps are the subscreens of the wizard's screen in
+the menu data (`navMenuList[pathIndex].subscreens`, the index read before its `m-subscreens-active` registers), so the current
+step is the subscreen in the URL. Each `m-form` registers with the `mWizard` it injects; the **step form** is the first of them in
+document order that is inside the step and not in a table, a form-list or a dialog. A step screen's form posts to its own
+transition, and normally has no submit button of its own (one it has does the same as Next).
+
+1. Next with a step form submits it (`submitForm`: the Quasar rules first; a refused validation or a failed request leaves the
+   wizard where it is). A step without a form goes to the next step at once.
+2. The answer of the step form goes to the wizard instead of `m-form`'s own `screenUrl` handling (`moqui.wizardAfterAnswer`):
+   errors or validation errors stay (the field errors show on their fields); `redirectUrl` is followed; a `screenPathList` that is
+   not the current step (the transition's `default-response` named another screen, such as `../Review` to skip a step or the
+   record the wizard made) is followed with `screenUrl`; otherwise, on a step before the last, the wizard goes to the next step
+   with the current parameters, the step's own and the answer's `screenParameters` (`moqui.wizardStepUrl`), so a transition passes
+   the draft record's id with `<default-response url="."><parameter name="importId"/></default-response>`. The last step's answer
+   is followed when it names a screen and stays when it does not. A step form's answer adds no "Submit successful" toast.
+3. Back, and the header of a done step, go to that step without submitting; a step shows what it saved before, so a wizard that
+   can be abandoned keeps a draft (a record, or the session as the gallery's does).
+
+**`m-subscreens-stack`**: the first subscreen in menu order is the bottom of the stack; any other active one shows a breadcrumb
+back to it. The html mode writes the wizard's steps as a numbered list of links with Back and Next links, and the stack's
+breadcrumb (`moqui-html.css` `.wizard`, `.stack-crumbs`); a split is two columns (`.split`) stacked below 1024 px with
+`data-selected` and a back link.
 
 ## Server-static screens
 

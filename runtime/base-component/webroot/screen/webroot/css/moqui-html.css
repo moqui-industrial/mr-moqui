@@ -168,6 +168,27 @@ section.box[data-type="danger"] > header { background: var(--danger); color: #ff
 .panel-layout .panel-middle > main { flex: 1; min-width: 0; }
 .panel-layout .panel-middle > aside { flex: none; max-width: 40%; }
 @media (max-width: 767px) { .panel-layout .panel-middle { flex-direction: column; } .panel-layout .panel-middle > aside { width: auto !important; max-width: 100%; } }
+/* container-split: two columns from 1024 px; stacked below, one pane when a selection is in the URL (data-selected), with a back link */
+.split { display: grid; grid-template-columns: var(--split-side, 320px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.split.split-right { grid-template-columns: minmax(0, 1fr) var(--split-side, 320px); }
+.split.split-right > .split-side { order: 2; }
+.split > .split-side, .split > .split-main { min-width: 0; }
+.split .split-back { display: none; }
+@media (max-width: 1023px) {
+    .split, .split.split-right { grid-template-columns: minmax(0, 1fr); }
+    .split.split-right > .split-side { order: 0; }
+    .split[data-selected] > .split-side { display: none; }
+    .split[data-select]:not([data-selected]) > .split-main { display: none; }
+    .split .split-back { display: inline-block; margin-bottom: 8px; }
+}
+/* subscreens-panel type wizard: the steps as a numbered sequence of links, Back and Next below the step; type stack: a breadcrumb */
+.wizard ol { display: flex; flex-wrap: wrap; gap: 4px 18px; list-style: none; margin: 0 0 var(--gap); padding: 0 0 8px; border-bottom: 1px solid var(--line); counter-reset: step; }
+.wizard li { counter-increment: step; color: var(--muted); }
+.wizard li::before { content: counter(step) ". "; }
+.wizard li.active { color: var(--fg); font-weight: 600; }
+.wizard li.done > a::after { content: " \2713"; }
+.wizard-nav { display: flex; justify-content: space-between; gap: var(--gap); margin-top: var(--gap); padding-top: 8px; border-top: 1px solid var(--line); }
+.stack-crumbs { margin: 0 0 var(--gap); }
 
 .tabs ul { display: flex; flex-wrap: wrap; gap: 2px; list-style: none; margin: 0 0 var(--gap); padding: 0; border-bottom: 1px solid var(--line); }
 .tabs li > a, .tabs li > span { display: block; padding: 6px 14px; border: 1px solid transparent; border-radius: var(--radius) var(--radius) 0 0; color: var(--link); }

@@ -1381,8 +1381,9 @@
     component("m-form", {
         name: "mForm",
         mixins: [checkboxSetMixin],
-        // a dialog that closes when a form in it submits without errors and has no submit-hide-id (the shell's quick create)
-        inject: { mSubmitHide: { default: null } },
+        // a dialog that closes when a form in it submits without errors and has no submit-hide-id (the shell's quick create), and
+        // the wizard whose step this form may be (m-subscreens-wizard: its answer moves the wizard on)
+        inject: { mSubmitHide: { default: null }, mWizard: { default: null } },
         props: { fieldsInitial: Object, action: { type: String, required: true }, method: { type: String, default: "POST" }, readOnly: { type: Boolean, default: false },
             submitMessage: String, submitReloadId: String, submitHideId: String, focusField: String, noValidate: Boolean, excludeEmptyFields: Boolean,
             parentCheckboxSet: Object, checkboxOptional: Boolean, bodyParameterNames: Array, validationErrorsInitial: Array },
@@ -1415,7 +1416,10 @@
         methods: {
             submitForm() {
                 if (this.noValidate) this.submitGo();
-                else this.$refs.qForm.validate().then((success) => { if (success) this.submitGo(); });
+                else this.$refs.qForm.validate().then((success) => {
+                    if (success) this.submitGo();
+                    else if (this.mWizard) this.mWizard.stepRefused(this);
+                });
             },
             resetForm() { this.fields = Object.assign({}, this.fieldsOriginal); },
             blurSubmitForm() {
@@ -1502,14 +1506,18 @@
                     if (!arrived) root_.loading--;
                     if (err && err.json) err = Object.assign({}, err, { json: moqui.placeFieldErrors(this, err.json) });
                     moqui.handleLoadError(err && err.status !== undefined ? err : { status: 0, error: err, text: "" });
+                    if (this.mWizard) this.mWizard.stepRefused(this);
                 });
             },
             handleResponse(resp) {
                 let notified = false;
+                // the step form of a wizard: the wizard goes where the answer says (js/README.md, Wizard and stack panels)
+                const wizard = this.mWizard && this.mWizard.isStepForm(this) ? this.mWizard : null;
                 if (resp && moqui.isPlainObject(resp)) {
                     const rest = moqui.placeFieldErrors(this, resp);
                     notified = moqui.notifyMessages(rest.messageInfos, rest.errors, rest.validationErrors);
-                    if (resp.screenUrl && resp.screenUrl.length > 0) this.$root.setUrl(resp.screenUrl);
+                    if (wizard) notified = true;
+                    else if (resp.screenUrl && resp.screenUrl.length > 0) this.$root.setUrl(resp.screenUrl);
                     else if (resp.redirectUrl && resp.redirectUrl.length > 0) root.location.href = resp.redirectUrl;
                 } else console.warn("m-form no response or non-JSON response");
                 if (this.submitHideId && this.submitHideId.length > 0) this.$root.hideContainer(this.submitHideId);
@@ -1519,9 +1527,11 @@
                     notify(Object.assign({}, moqui.notifyOpts, { message: this.submitMessage }));
                     addNotify(this.submitMessage, "success");
                 } else if (!notified) notify(Object.assign({}, moqui.notifyOpts, { message: "Submit successful" }));
+                if (wizard) wizard.stepAnswered(this, resp);
             }
         },
         mounted() {
+            if (this.mWizard) this.mWizard.addForm(this);
             const el = this.$refs.qForm.$el;
             if (this.focusField && this.focusField.length) {
                 const target = el.querySelector('[name^="' + this.focusField + '"]');
@@ -1533,7 +1543,10 @@
             });
             moqui.registerScreenForm(this);
         },
-        beforeUnmount() { moqui.unregisterScreenForm(this); }
+        beforeUnmount() {
+            if (this.mWizard) this.mWizard.removeForm(this);
+            moqui.unregisterScreenForm(this);
+        }
     });
 
     // A form that goes to a screen: its fields become the query of the URL.
@@ -3019,6 +3032,248 @@
     component("m-subscreens-panel", {
         name: "mSubscreensPanel",
         template: '<div><m-subscreens-tabs></m-subscreens-tabs><m-subscreens-active></m-subscreens-active></div>'
+    });
+
+    /* ========== wizard and stack panels, and the split container ========== */
+
+    const localized = (text) => (moqui.l10n && moqui.l10n.localize ? moqui.l10n.localize(text) : text);
+
+    // The URL of a step: its path with the current parameters, then its own, then those the step's answer gave (screenParameters),
+    // without the session token and the form name. Pure, for the node tests.
+    moqui.wizardStepUrl = (pathWithParams, current, answer) => {
+        const text = String(pathWithParams || "");
+        const at = text.indexOf("?");
+        const path = at >= 0 ? text.substring(0, at) : text;
+        const own = at >= 0 ? moqui.searchToObj(text.substring(at + 1)) : {};
+        const merged = Object.assign({}, current || {}, own, answer || {});
+        ["moquiSessionToken", "moquiFormName", "lastStandalone"].forEach((name) => delete merged[name]);
+        Object.keys(merged).forEach((name) => { if (merged[name] === null || merged[name] === undefined || merged[name] === "") delete merged[name]; });
+        const search = moqui.objToSearch(merged);
+        return search ? path + "?" + search : path;
+    };
+    // Where a wizard goes when its step form's answer comes, from the answer, the current path, the steps and the active one:
+    // {kind: "stay"} (errors, or a last step that names no screen), {kind: "redirect", url} (a URL off the screens), {kind: "url", url}
+    // (a screen other than this step: the transition chose where to go), or {kind: "step", index, parameters} (the next step).
+    moqui.wizardAfterAnswer = (answer, currentPathList, stepCount, activeIndex) => {
+        if (moqui.responseHasErrors(answer)) return { kind: "stay" };
+        const resp = answer && moqui.isPlainObject(answer) ? answer : {};
+        if (resp.redirectUrl) return { kind: "redirect", url: resp.redirectUrl };
+        const answerPath = Array.isArray(resp.screenPathList) ? resp.screenPathList : null;
+        const current = currentPathList || [];
+        const sameStep = !answerPath || (answerPath.length >= current.length &&
+            current.every((name, index) => answerPath[answerPath.length - current.length + index] === name));
+        if (!sameStep && resp.screenUrl) return { kind: "url", url: resp.screenUrl };
+        if (activeIndex >= stepCount - 1) return resp.screenUrl ? { kind: "url", url: resp.screenUrl } : { kind: "stay" };
+        return { kind: "step", index: activeIndex + 1, parameters: resp.screenParameters || {} };
+    };
+
+    // subscreens-panel type="wizard": a q-stepper with a step per subscreen (the menu titles, in menu order), the active subscreen
+    // below it, and Back and Next. The current step is the subscreen in the URL. Next submits the step form, the first m-form of the
+    // step that is not in a list or a dialog (the forms register through inject mWizard), and moves on when the answer has no errors
+    // (moqui.wizardAfterAnswer); a step without a form moves on at once. The last step's button is finishText and only shows with a form.
+    component("m-subscreens-wizard", {
+        name: "mSubscreensWizard",
+        props: { id: String, finishText: String, nextText: String, backText: String },
+        data() { return { pathIndex: -1, forms: [], submitting: false, hasForm: false }; },
+        provide() { return { mWizard: this }; },
+        template:
+            '<div class="m-wizard" :id="id" :data-step="activeName" :data-step-form="hasForm ? \'true\' : \'false\'" :data-forms="forms.length">' +
+                '<q-stepper v-if="steps.length" :model-value="activeName" flat bordered header-nav class="m-wizard-stepper" active-color="primary" done-color="primary"' +
+                        ' :contracted="$q.screen.lt.sm" @update:model-value="headerTo">' +
+                    '<q-step v-for="(step, index) in steps" :key="step.name" :name="step.name" :title="step.title" :done="index < activeIndex"' +
+                        ' :header-nav="index < activeIndex" :prefix="step.imageType === \'icon\' && step.image ? undefined : String(index + 1)"' +
+                        ' :icon="step.imageType === \'icon\' && step.image ? step.image : undefined" :data-step="step.name"></q-step>' +
+                '</q-stepper>' +
+                '<div ref="body" class="m-wizard-body"><m-subscreens-active></m-subscreens-active></div>' +
+                '<div v-if="steps.length" class="m-wizard-nav row items-center q-gutter-sm">' +
+                    '<q-btn v-if="activeIndex > 0" unelevated no-caps class="m-btn-tonal m-wizard-back" icon="arrow_back" :label="backLabel" @click="back"></q-btn>' +
+                    '<q-space></q-space>' +
+                    '<q-btn v-if="!isLast || hasForm" unelevated no-caps color="primary" class="m-wizard-next" :icon-right="isLast ? \'check\' : \'arrow_forward\'"' +
+                        ' :label="isLast ? finishLabel : nextLabel" :loading="submitting" @click="next"></q-btn>' +
+                '</div>' +
+            '</div>',
+        computed: {
+            steps() {
+                if (this.pathIndex < 0) return [];
+                const navMenu = this.$root.navMenuList[this.pathIndex];
+                return navMenu && navMenu.subscreens ? navMenu.subscreens.filter((step) => !step.disableLink) : [];
+            },
+            activeIndex() { return Math.max(0, this.steps.findIndex((step) => step.active)); },
+            activeName() { const step = this.steps[this.activeIndex]; return step ? step.name : null; },
+            isLast() { return this.activeIndex >= this.steps.length - 1; },
+            nextLabel() { return this.nextText || localized("Next"); },
+            backLabel() { return this.backText || localized("Back"); },
+            finishLabel() { return this.finishText || localized("Finish"); }
+        },
+        methods: {
+            addForm(form) { if (this.forms.indexOf(form) < 0) this.forms.push(form); this.formsChanged(); },
+            removeForm(form) { const at = this.forms.indexOf(form); if (at >= 0) this.forms.splice(at, 1); this.formsChanged(); },
+            // whether the step has a form, once the DOM of a step that came or went is in place (the step form is found in the DOM)
+            formsChanged() { this.$nextTick(() => { this.hasForm = !!this.stepForm(); }); },
+            // the first form of the step in document order that is not a list row form and not in a dialog (a dialog is teleported)
+            stepForm() {
+                const body = this.$refs.body;
+                if (!body) return null;
+                const forms = this.forms.filter((form) => form.$el && body.contains(form.$el) && !form.$el.closest("table, .q-table, .m-form-list, .q-dialog"));
+                forms.sort((a, b) => (a.$el.compareDocumentPosition(b.$el) & 4 ? -1 : 1));
+                return forms[0] || null;
+            },
+            isStepForm(form) { return this.stepForm() === form; },
+            goTo(index, answerParameters) {
+                const step = this.steps[index];
+                if (!step) return;
+                this.$root.setUrl(this.$root.getLinkPath(moqui.wizardStepUrl(step.pathWithParams, this.$root.currentParameters, answerParameters)));
+            },
+            next() {
+                if (this.submitting) return;
+                const form = this.stepForm();
+                if (!form) { this.goTo(this.activeIndex + 1, null); return; }
+                this.submitting = true;
+                form.submitForm();
+            },
+            back() { this.goTo(this.activeIndex - 1, null); },
+            headerTo(name) {
+                const index = this.steps.findIndex((step) => step.name === name);
+                if (index >= 0 && index < this.activeIndex) this.goTo(index, null);
+            },
+            stepRefused() { this.submitting = false; },
+            stepAnswered(form, resp) {
+                this.submitting = false;
+                const way = moqui.wizardAfterAnswer(resp, this.$root.currentPathList, this.steps.length, this.activeIndex);
+                if (way.kind === "redirect") root.location.href = way.url;
+                else if (way.kind === "url") this.$root.setUrl(way.url);
+                else if (way.kind === "step") this.goTo(way.index, way.parameters);
+            }
+        },
+        // before the m-subscreens-active inside registers, as m-subscreens-tabs is mounted before its sibling
+        beforeMount() { this.pathIndex = this.$root.activeSubscreens.length; }
+    });
+
+    // subscreens-panel type="stack": the first subscreen in menu order is the bottom of the stack and the others open over it, with a
+    // breadcrumb back to it; no tabs.
+    component("m-subscreens-stack", {
+        name: "mSubscreensStack",
+        props: { id: String },
+        data() { return { pathIndex: -1 }; },
+        template:
+            '<div class="m-stack" :id="id">' +
+                '<q-breadcrumbs v-if="stacked" class="m-stack-crumbs q-mb-sm" active-color="grey-8">' +
+                    '<q-breadcrumbs-el icon="arrow_back" :label="base.title" class="cursor-pointer text-primary" @click="goTo(base)"></q-breadcrumbs-el>' +
+                    '<q-breadcrumbs-el :label="active.title" class="text-weight-medium"></q-breadcrumbs-el>' +
+                '</q-breadcrumbs>' +
+                '<m-subscreens-active></m-subscreens-active>' +
+            '</div>',
+        computed: {
+            subscreens() {
+                if (this.pathIndex < 0) return [];
+                const navMenu = this.$root.navMenuList[this.pathIndex];
+                return navMenu && navMenu.subscreens ? navMenu.subscreens : [];
+            },
+            base() { return this.subscreens[0] || null; },
+            active() { return this.subscreens.find((item) => item.active) || null; },
+            stacked() { return !!(this.base && this.active && this.active.name !== this.base.name); }
+        },
+        methods: { goTo(item) { this.$root.setUrl(this.$root.getLinkPath(item.pathWithParams)); } },
+        beforeMount() { this.pathIndex = this.$root.activeSubscreens.length; }
+    });
+
+    // The layout of a container-split from the viewport, its width and the attributes: stacked below 1024 px (wide is false) or when
+    // the side and the main pane's minimum do not fit; the side width kept within [min, max]. Pure, for the node tests.
+    moqui.splitLayout = (options) => {
+        const sideWidth = Number(options.sideWidth) > 0 ? Number(options.sideWidth) : 320;
+        const minMain = Number(options.minMain) > 0 ? Number(options.minMain) : 480;
+        const width = Number(options.width) || 0;
+        const min = Math.min(200, sideWidth);
+        const max = width > 0 ? Math.max(min, width - minMain) : Number.MAX_SAFE_INTEGER;
+        const stacked = !options.wide || (width > 0 && width < min + minMain);
+        const saved = Number(options.saved);
+        const side = Math.round(Math.min(Math.max(saved > 0 ? saved : sideWidth, min), max));
+        return { stacked, side, min, max: width > 0 ? max : Math.max(sideWidth, min) * 3 };
+    };
+
+    // container-split (style-guide §3.8): a q-splitter with the side at side-width px from 1024 px, draggable between 200 px and what
+    // leaves min-main to the main pane, its width kept per id in the session and the user's preferences (SPLIT_WIDTH_<id>); stacked
+    // below that, where a selection in the URL (select-parameter) shows the main pane with a back button that clears it, and none
+    // shows the side. The panes keep their content across the change, so a form in them keeps its values.
+    component("m-container-split", {
+        name: "mContainerSplit",
+        props: { id: String, sideWidth: { type: [Number, String], default: 320 }, minMain: { type: [Number, String], default: 480 },
+            sidePosition: { type: String, default: "left" }, selectParameter: String, backText: String, height: String },
+        data() { return { width: 0, side: null, observer: null, saveTimer: null }; },
+        template:
+            '<div ref="root" class="m-container-split" :id="id" :data-stacked="layout.stacked ? \'true\' : \'false\'"' +
+                    ' :class="{\'m-split-stacked\': layout.stacked, \'m-split-right\': right, \'m-split-selected\': selected}">' +
+                '<q-splitter :model-value="layout.side" @update:model-value="drag" unit="px" :limits="[layout.min, layout.max]" :reverse="right"' +
+                        ' :disable="layout.stacked" :style="height && !layout.stacked ? {height: height} : undefined" separator-class="m-split-separator">' +
+                    '<template v-slot:before>' +
+                        '<div v-if="right" v-show="showMain" class="m-split-main">' +
+                            '<q-btn v-if="backShown" flat dense no-caps icon="arrow_back" :label="backLabel" class="m-split-back" @click="back"></q-btn>' +
+                            '<slot name="main"></slot></div>' +
+                        '<div v-else v-show="showSide" class="m-split-side"><slot name="side"></slot></div>' +
+                    '</template>' +
+                    '<template v-slot:after>' +
+                        '<div v-if="right" v-show="showSide" class="m-split-side"><slot name="side"></slot></div>' +
+                        '<div v-else v-show="showMain" class="m-split-main">' +
+                            '<q-btn v-if="backShown" flat dense no-caps icon="arrow_back" :label="backLabel" class="m-split-back" @click="back"></q-btn>' +
+                            '<slot name="main"></slot></div>' +
+                    '</template>' +
+                '</q-splitter>' +
+            '</div>',
+        computed: {
+            right() { return this.sidePosition === "right"; },
+            storageKey() { return this.id ? "SPLIT_WIDTH_" + this.id : null; },
+            layout() {
+                return moqui.splitLayout({ wide: !!(this.$q && this.$q.screen && this.$q.screen.gt.sm), width: this.width, sideWidth: this.sideWidth,
+                    minMain: this.minMain, saved: this.side });
+            },
+            selected() {
+                if (!this.selectParameter) return false;
+                const value = (this.$root.currentParameters || {})[this.selectParameter];
+                return value !== undefined && value !== null && String(value) !== "";
+            },
+            showSide() { return !this.layout.stacked || !this.selectParameter || !this.selected; },
+            showMain() { return !this.layout.stacked || !this.selectParameter || this.selected; },
+            backShown() { return this.layout.stacked && !!this.selectParameter && this.selected; },
+            backLabel() { return this.backText || localized("Back"); }
+        },
+        methods: {
+            drag(value) {
+                this.side = Math.round(value);
+                if (!this.storageKey) return;
+                try { root.sessionStorage.setItem("moqui." + this.storageKey, String(this.side)); } catch (err) { /* no storage */ }
+                // the preference once the dragging stops
+                if (this.saveTimer) clearTimeout(this.saveTimer);
+                this.saveTimer = setTimeout(() => {
+                    this.saveTimer = null;
+                    if (this.$root.setPreference && this.$root.userId) this.$root.setPreference(this.storageKey, String(this.side));
+                }, 800);
+            },
+            back() {
+                const current = Object.assign({}, this.$root.currentParameters || {});
+                delete current[this.selectParameter];
+                const search = moqui.objToSearch(current);
+                this.$root.setUrl(this.$root.currentLinkPath + (search ? "?" + search : ""));
+            }
+        },
+        created() {
+            if (!this.storageKey) return;
+            let saved = null;
+            try { saved = root.sessionStorage.getItem("moqui." + this.storageKey); } catch (err) { saved = null; }
+            if (!saved && qvt.config && qvt.config.preferences) saved = qvt.config.preferences[this.storageKey] || null;
+            if (Number(saved) > 0) this.side = Number(saved);
+        },
+        mounted() {
+            const el = this.$refs.root;
+            this.width = el.clientWidth;
+            if (root.ResizeObserver) {
+                this.observer = new root.ResizeObserver(() => { this.width = el.clientWidth; });
+                this.observer.observe(el);
+            }
+        },
+        beforeUnmount() {
+            if (this.observer) this.observer.disconnect();
+            if (this.saveTimer) clearTimeout(this.saveTimer);
+        }
     });
 
     component("m-menu-nav-item", {

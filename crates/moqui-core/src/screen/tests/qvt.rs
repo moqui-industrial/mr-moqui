@@ -290,6 +290,113 @@ fn an_alias_transition_link_points_at_the_screen() {
     );
 }
 
+/// A render of a fixture screen in another mode, at a subscreen path.
+fn render_mode(name: &str, path: &str, mode: &str, parameters: &[(&str, &str)]) -> String {
+    let context = ExecutionContextFactory::test_context();
+    let map: BTreeMap<String, Value> = parameters
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), Value::string(*value)))
+        .collect();
+    make_render(context.factory())
+        .root_screen(render_dir().join(format!("{name}.xml")).to_string_lossy().into_owned())
+        .screen_path(path)
+        .render_mode(mode)
+        .parameters(map)
+        .render()
+        .unwrap_or_else(|err| panic!("{name} {mode}: {err}"))
+        .body_text()
+}
+
+/// `container-split` is an m-container-split with its attributes (the style expanded, back-text localized) and its panes as
+/// the side and main slots; the selection is read from the URL in the browser. html is two columns with the selection and a
+/// back link without it, and the text modes write the side and then the main pane.
+#[test]
+fn a_split_is_a_splitter_with_a_side_and_a_main_pane() {
+    let out = check("split", &[("partyId", "P7")]);
+    for expected in [
+        r#"<m-container-split id="ContactSplit" side-width="300" min-main="520" select-parameter="partyId" back-text="All contacts" class="contacts-split"><template v-slot:side><p class="text-inline">the side list</p>"#,
+        r#"</template><template v-slot:main><p class="text-inline">the selected P7</p>"#,
+        r#"<m-container-split side-position="right" height="calc(100vh - 160px)"><template v-slot:side><span class="text-inline">right side</span>"#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    assert_eq!(out.matches("</template></m-container-split>").count(), 2, "{out}");
+    let html = render_mode("split", "", "html", &[("partyId", "P7")]);
+    for expected in [
+        r#"<div id="ContactSplit" class="split contacts-split" style="--split-side:300px" data-select="partyId" data-selected><div class="split-side">"#,
+        r#"<div class="split-main"><a class="split-back" href="/">&larr; All contacts</a>"#,
+        r#"<div class="split split-right" style="--split-side:320px"><div class="split-side">"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    let unselected = render_mode("split", "", "html", &[]);
+    assert!(
+        !unselected.contains("data-selected") && !unselected.contains("split-back"),
+        "{unselected}"
+    );
+    for mode in ["text", "csv", "xml"] {
+        let text = render_mode("split", "", mode, &[("partyId", "P7")]);
+        if mode == "text" {
+            let side = text.find("the side list").unwrap_or_else(|| panic!("{text}"));
+            let main = text.find("the selected P7").unwrap_or_else(|| panic!("{text}"));
+            assert!(
+                side < main && text.contains("right side") && text.contains("left main"),
+                "{text}"
+            );
+        }
+        assert!(
+            !text.contains("split-side") && !text.contains("m-container-split"),
+            "{mode}: {text}"
+        );
+    }
+}
+
+/// `subscreens-panel type="wizard"` is an m-subscreens-wizard and `type="stack"` an m-subscreens-stack, which read the steps
+/// from the menu data; html writes the steps as a numbered sequence of links with Back and Next, and a stack's breadcrumb.
+#[test]
+fn wizard_and_stack_panels() {
+    let out = check_path("Wizard", "", "wizard", &[]);
+    assert!(
+        out.contains(r#"<m-subscreens-wizard id="ImportWizard" finish-text="Import"></m-subscreens-wizard>"#),
+        "{out}"
+    );
+    let out = check_path("Stack", "", "stack", &[]);
+    assert!(
+        out.contains(r#"<m-subscreens-stack id="Pages"></m-subscreens-stack>"#),
+        "{out}"
+    );
+    let html = render_mode("Wizard", "/Mapping", "html", &[]);
+    for expected in [
+        r#"<nav id="ImportWizard" class="wizard"><ol><li class="done"><a href="/Source">Source</a></li><li class="active"><span>Mapping</span></li><li><a href="/Review">Review</a></li></ol></nav>"#,
+        r#"<div class="wizard-step">"#,
+        "the mapping step",
+        r#"<nav class="wizard-nav"><a data-btn="default" href="/Source">Back</a><a data-btn="primary" href="/Review">Next</a></nav>"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    let first = render_mode("Wizard", "", "html", &[]);
+    assert!(
+        first.contains(r#"<li class="active"><span>Source</span></li>"#) && first.contains("the source step"),
+        "{first}"
+    );
+    assert!(
+        first.contains(r#"<nav class="wizard-nav"><span></span><a data-btn="primary" href="/Mapping">Next</a></nav>"#),
+        "{first}"
+    );
+    let stack = render_mode("Stack", "/Page", "html", &[]);
+    assert!(
+        stack.contains(
+            r#"<nav id="Pages" class="stack-crumbs"><a href="/List">All pages</a> &rsaquo; <span>One page</span></nav>"#
+        ) && stack.contains("a page over it"),
+        "{stack}"
+    );
+    let bottom = render_mode("Stack", "", "html", &[]);
+    assert!(
+        !bottom.contains("stack-crumbs") && bottom.contains("the bottom of the stack"),
+        "{bottom}"
+    );
+}
+
 #[test]
 fn subscreen_menus_tabs_and_panels() {
     check_path("Menu", "", "menu-one", &[]);

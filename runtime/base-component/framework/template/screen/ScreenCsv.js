@@ -133,6 +133,10 @@ const $sep = () => { if ($hasPrev) sri.write(","); else $hasPrev = true; };
             .map((name) => { const kid = child(node, name); return kid ? kid.source : ""; }).join("")),
         "panel-header": stmt((node, children) => children),
         "panel-left": stmt((node, children) => children),
+        "container-split": stmt((node) => ["split-side", "split-main"]
+            .map((name) => { const kid = child(node, name); return kid ? kid.source : ""; }).join("")),
+        "split-side": stmt((node, children) => children),
+        "split-main": stmt((node, children) => children),
         "panel-center": stmt((node, children) => children),
         "panel-right": stmt((node, children) => children),
         "panel-footer": stmt((node, children) => children),

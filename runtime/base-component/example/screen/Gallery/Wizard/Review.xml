@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Step 3 of the gallery wizard: the review with one primary. The wizard's Create customer submits createCustomer, which
+    clears the draft and answers with the first step again (url="../Customer"), a screen other than this step, so the
+    wizard goes there. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Review" default-menu-index="3">
+
+    <transition name="createCustomer"><actions><script><![CDATA[
+        const draft = JSON.parse(ec.web.sessionAttributes.get('galleryWizard') || '{}')
+        if (!draft.customerName) { ec.message.addError('Start with the customer'); return }
+        ec.web.sessionAttributes.remove('galleryWizard')
+        ec.message.addMessage(`Customer ${draft.customerName} created (gallery demo: nothing is written)`, 'success')
+    ]]></script></actions><default-response url="../Customer"/></transition>
+
+    <actions>
+        <set field="wizard" from="JSON.parse(ec.web.sessionAttributes.get('galleryWizard') || '{}')"/>
+    </actions>
+    <widgets>
+        <container-box><box-header title="Review"/><box-body>
+            <label text="Check the entries, then create the customer. Back keeps what the steps saved." type="p" style="m-muted"/>
+            <form-single name="WizardReview" transition="createCustomer" map="wizard">
+                <field name="customerName"><default-field title="Customer name"><display/></default-field></field>
+                <field name="contactName"><default-field title="Contact"><display/></default-field></field>
+                <field name="emailAddress"><default-field title="Email"><display/></default-field></field>
+                <field name="phone"><default-field title="Phone"><display/></default-field></field>
+                <field name="countryGeoId"><default-field title="Country"><display-entity entity-name="moqui.basic.Geo" text="${geoName}"/></default-field></field>
+                <field name="currencyUomId"><default-field title="Currency"><display-entity entity-name="moqui.basic.Uom" text="${description} (${abbreviation})"/></default-field></field>
+                <field name="newsletter"><default-field title="Newsletter"><display text="${newsletter == 'Y' ? 'Yes, monthly' : 'No'}"/></default-field></field>
+                <field-layout>
+                    <field-row><field-ref name="customerName"/><field-ref name="contactName"/></field-row>
+                    <field-row><field-ref name="emailAddress"/><field-ref name="phone"/></field-row>
+                    <field-row><field-ref name="countryGeoId"/><field-ref name="currencyUomId"/></field-row>
+                    <field-ref name="newsletter"/>
+                </field-layout>
+            </form-single>
+        </box-body></container-box>
+    </widgets>
+</screen>

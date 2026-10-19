@@ -307,6 +307,96 @@
               ]))
             }
         } },
+        "m-container-split": { hash: "cf30438c", make: function (Vue) {
+            const { resolveComponent: _resolveComponent, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, renderSlot: _renderSlot, vShow: _vShow, withDirectives: _withDirectives, createElementBlock: _createElementBlock, normalizeStyle: _normalizeStyle, withCtx: _withCtx, createVNode: _createVNode, normalizeClass: _normalizeClass } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_btn = _resolveComponent("q-btn")
+              const _component_q_splitter = _resolveComponent("q-splitter")
+
+              return (_openBlock(), _createElementBlock("div", {
+                ref: "root",
+                class: _normalizeClass(["m-container-split", {'m-split-stacked': _ctx.layout.stacked, 'm-split-right': _ctx.right, 'm-split-selected': _ctx.selected}]),
+                id: _ctx.id,
+                "data-stacked": _ctx.layout.stacked ? 'true' : 'false'
+              }, [
+                _createVNode(_component_q_splitter, {
+                  "model-value": _ctx.layout.side,
+                  "onUpdate:modelValue": _ctx.drag,
+                  unit: "px",
+                  limits: [_ctx.layout.min, _ctx.layout.max],
+                  reverse: _ctx.right,
+                  disable: _ctx.layout.stacked,
+                  style: _normalizeStyle(_ctx.height && !_ctx.layout.stacked ? {height: _ctx.height} : undefined),
+                  "separator-class": "m-split-separator"
+                }, {
+                  before: _withCtx(() => [
+                    (_ctx.right)
+                      ? _withDirectives((_openBlock(), _createElementBlock("div", {
+                          key: 0,
+                          class: "m-split-main"
+                        }, [
+                          (_ctx.backShown)
+                            ? (_openBlock(), _createBlock(_component_q_btn, {
+                                key: 0,
+                                flat: "",
+                                dense: "",
+                                "no-caps": "",
+                                icon: "arrow_back",
+                                label: _ctx.backLabel,
+                                class: "m-split-back",
+                                onClick: _ctx.back
+                              }, null, 8, ["label", "onClick"]))
+                            : _createCommentVNode("", true),
+                          _renderSlot(_ctx.$slots, "main")
+                        ], 512)), [
+                          [_vShow, _ctx.showMain]
+                        ])
+                      : _withDirectives((_openBlock(), _createElementBlock("div", {
+                          key: 1,
+                          class: "m-split-side"
+                        }, [
+                          _renderSlot(_ctx.$slots, "side")
+                        ], 512)), [
+                          [_vShow, _ctx.showSide]
+                        ])
+                  ]),
+                  after: _withCtx(() => [
+                    (_ctx.right)
+                      ? _withDirectives((_openBlock(), _createElementBlock("div", {
+                          key: 0,
+                          class: "m-split-side"
+                        }, [
+                          _renderSlot(_ctx.$slots, "side")
+                        ], 512)), [
+                          [_vShow, _ctx.showSide]
+                        ])
+                      : _withDirectives((_openBlock(), _createElementBlock("div", {
+                          key: 1,
+                          class: "m-split-main"
+                        }, [
+                          (_ctx.backShown)
+                            ? (_openBlock(), _createBlock(_component_q_btn, {
+                                key: 0,
+                                flat: "",
+                                dense: "",
+                                "no-caps": "",
+                                icon: "arrow_back",
+                                label: _ctx.backLabel,
+                                class: "m-split-back",
+                                onClick: _ctx.back
+                              }, null, 8, ["label", "onClick"]))
+                            : _createCommentVNode("", true),
+                          _renderSlot(_ctx.$slots, "main")
+                        ], 512)), [
+                          [_vShow, _ctx.showMain]
+                        ])
+                  ]),
+                  _: 3
+                }, 8, ["model-value", "onUpdate:modelValue", "limits", "reverse", "disable", "style"])
+              ], 10, ["id", "data-stacked"]))
+            }
+        } },
         "m-date-period": { hash: "9a3df286", make: function (Vue) {
             const { resolveComponent: _resolveComponent, createVNode: _createVNode, createTextVNode: _createTextVNode, withCtx: _withCtx, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createBlock: _createBlock, createElementVNode: _createElementVNode } = Vue
 
@@ -3780,6 +3870,131 @@
                 _createVNode(_component_m_subscreens_tabs),
                 _createVNode(_component_m_subscreens_active)
               ]))
+            }
+        } },
+        "m-subscreens-stack": { hash: "88266d7b", make: function (Vue) {
+            const { resolveComponent: _resolveComponent, createVNode: _createVNode, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, createElementBlock: _createElementBlock } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_breadcrumbs_el = _resolveComponent("q-breadcrumbs-el")
+              const _component_q_breadcrumbs = _resolveComponent("q-breadcrumbs")
+              const _component_m_subscreens_active = _resolveComponent("m-subscreens-active")
+
+              return (_openBlock(), _createElementBlock("div", {
+                class: "m-stack",
+                id: _ctx.id
+              }, [
+                (_ctx.stacked)
+                  ? (_openBlock(), _createBlock(_component_q_breadcrumbs, {
+                      key: 0,
+                      class: "m-stack-crumbs q-mb-sm",
+                      "active-color": "grey-8"
+                    }, {
+                      default: _withCtx(() => [
+                        _createVNode(_component_q_breadcrumbs_el, {
+                          icon: "arrow_back",
+                          label: _ctx.base.title,
+                          class: "cursor-pointer text-primary",
+                          onClick: $event => (_ctx.goTo(_ctx.base))
+                        }, null, 8, ["label", "onClick"]),
+                        _createVNode(_component_q_breadcrumbs_el, {
+                          label: _ctx.active.title,
+                          class: "text-weight-medium"
+                        }, null, 8, ["label"])
+                      ]),
+                      _: 1
+                    }))
+                  : _createCommentVNode("", true),
+                _createVNode(_component_m_subscreens_active)
+              ], 8, ["id"]))
+            }
+        } },
+        "m-subscreens-wizard": { hash: "9b1a865a", make: function (Vue) {
+            const { renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, resolveComponent: _resolveComponent, createBlock: _createBlock, withCtx: _withCtx, createCommentVNode: _createCommentVNode, createVNode: _createVNode, createElementVNode: _createElementVNode } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_step = _resolveComponent("q-step")
+              const _component_q_stepper = _resolveComponent("q-stepper")
+              const _component_m_subscreens_active = _resolveComponent("m-subscreens-active")
+              const _component_q_btn = _resolveComponent("q-btn")
+              const _component_q_space = _resolveComponent("q-space")
+
+              return (_openBlock(), _createElementBlock("div", {
+                class: "m-wizard",
+                id: _ctx.id,
+                "data-step": _ctx.activeName,
+                "data-step-form": _ctx.hasForm ? 'true' : 'false',
+                "data-forms": _ctx.forms.length
+              }, [
+                (_ctx.steps.length)
+                  ? (_openBlock(), _createBlock(_component_q_stepper, {
+                      key: 0,
+                      "model-value": _ctx.activeName,
+                      flat: "",
+                      bordered: "",
+                      "header-nav": "",
+                      class: "m-wizard-stepper",
+                      "active-color": "primary",
+                      "done-color": "primary",
+                      contracted: _ctx.$q.screen.lt.sm,
+                      "onUpdate:modelValue": _ctx.headerTo
+                    }, {
+                      default: _withCtx(() => [
+                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.steps, (step, index) => {
+                          return (_openBlock(), _createBlock(_component_q_step, {
+                            key: step.name,
+                            name: step.name,
+                            title: step.title,
+                            done: index < _ctx.activeIndex,
+                            "header-nav": index < _ctx.activeIndex,
+                            prefix: step.imageType === 'icon' && step.image ? undefined : String(index + 1),
+                            icon: step.imageType === 'icon' && step.image ? step.image : undefined,
+                            "data-step": step.name
+                          }, null, 8, ["name", "title", "done", "header-nav", "prefix", "icon", "data-step"]))
+                        }), 128))
+                      ]),
+                      _: 1
+                    }, 8, ["model-value", "contracted", "onUpdate:modelValue"]))
+                  : _createCommentVNode("", true),
+                _createElementVNode("div", {
+                  ref: "body",
+                  class: "m-wizard-body"
+                }, [
+                  _createVNode(_component_m_subscreens_active)
+                ], 512),
+                (_ctx.steps.length)
+                  ? (_openBlock(), _createElementBlock("div", {
+                      key: 1,
+                      class: "m-wizard-nav row items-center q-gutter-sm"
+                    }, [
+                      (_ctx.activeIndex > 0)
+                        ? (_openBlock(), _createBlock(_component_q_btn, {
+                            key: 0,
+                            unelevated: "",
+                            "no-caps": "",
+                            class: "m-btn-tonal m-wizard-back",
+                            icon: "arrow_back",
+                            label: _ctx.backLabel,
+                            onClick: _ctx.back
+                          }, null, 8, ["label", "onClick"]))
+                        : _createCommentVNode("", true),
+                      _createVNode(_component_q_space),
+                      (!_ctx.isLast || _ctx.hasForm)
+                        ? (_openBlock(), _createBlock(_component_q_btn, {
+                            key: 1,
+                            unelevated: "",
+                            "no-caps": "",
+                            color: "primary",
+                            class: "m-wizard-next",
+                            "icon-right": _ctx.isLast ? 'check' : 'arrow_forward',
+                            label: _ctx.isLast ? _ctx.finishLabel : _ctx.nextLabel,
+                            loading: _ctx.submitting,
+                            onClick: _ctx.next
+                          }, null, 8, ["icon-right", "label", "loading", "onClick"]))
+                        : _createCommentVNode("", true)
+                    ]))
+                  : _createCommentVNode("", true)
+              ], 8, ["id", "data-step", "data-step-form", "data-forms"]))
             }
         } },
         "m-text-area": { hash: "c00bcdbf", make: function (Vue) {

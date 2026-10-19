@@ -127,6 +127,49 @@ feature("the gallery's Chatter panel has the rich-text note form, its card and m
     },
 })
 
+// The Split archetype is a container-split whose selection is the geoId of the URL, and the side list keeps its find.
+feature("the Split is a container-split with the country in the URL", {
+    expect() {
+        const test = ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt")
+        const str = test.render("Split", { lastStandalone: "-2", geoId: "CAN", geoName: "C", geoName_op: "begins" }, null)
+        str.status == 200
+        str.errorMessages.length == 0
+        str.output.includes('<m-container-split id="CountrySplit" side-width="320" min-main="480" select-parameter="geoId" back-text="Countries">')
+        str.output.includes("<template v-slot:side>")
+        str.output.includes("<template v-slot:main>")
+        str.output.includes("Canada")
+        // the find narrows the side list, the selection does not
+        str.output.includes("Cameroon")
+        !str.output.includes("Albania")
+    },
+})
+
+// The Wizard archetype: subscreens-panel type="wizard" over three step screens, each of whose forms posts to its own
+// transition. A step's answer with errors keeps the wizard on it; the draft the steps keep reaches the review, and the review's
+// answer names the first step again.
+feature("the Wizard's steps check their entries, keep a draft and end on the first step", {
+    expect() {
+        const wizard = (path, parameters, method) => ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt")
+            .render("Wizard" + (path ? "/" + path : ""), Object.assign({ lastStandalone: "-2" }, parameters || {}), method || null)
+        const panel = ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt").render("Wizard", { lastStandalone: "-1" }, null)
+        const empty = wizard("Customer/saveCustomer", { customerName: "" }, "post")
+        const saved = wizard("Customer/saveCustomer", { customerName: "Spec Customer", emailAddress: "spec@example.com" }, "post")
+        const options = wizard("Options/saveOptions", { countryGeoId: "CAN", currencyUomId: "CAD", newsletter: "Y" }, "post")
+        const review = wizard("Review", {}, null)
+        const created = wizard("Review/createCustomer", {}, "post")
+        const after = wizard("Review", {}, null)
+        panel.status == 200
+        panel.output.includes('<m-subscreens-wizard id="CustomerWizard" finish-text="Create customer"></m-subscreens-wizard>')
+        empty.errorMessages.join(" ").includes("Enter the customer name")
+        saved.errorMessages.length == 0
+        options.errorMessages.length == 0
+        review.output.includes("Spec Customer")
+        review.output.includes("Canada")
+        created.errorMessages.length == 0
+        !after.output.includes("Spec Customer")
+    },
+})
+
 // The Editor archetype writes into its demo wiki spaces: a save makes a version, compare renders the server diff,
 // an old version renders by location#version, and a restore makes the old text the newest version. Each storage:
 // EXAMPLE (dbresource history) and EXGIT (a git repository in the database, made by the screen's createGitSpace).

@@ -1,0 +1,8 @@
+<screen require-authentication="false">
+    <!-- the panels of a screen whose subscreens come from the menu data (none here, so this screen is the target) -->
+    <widgets>
+        <label text="Import contacts" type="h5"/>
+        <subscreens-panel id="ImportWizard" type="wizard" finish-text="Import"/>
+        <subscreens-panel id="Pages" type="stack"/>
+    </widgets>
+</screen>

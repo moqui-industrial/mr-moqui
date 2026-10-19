@@ -1,0 +1,3 @@
+<screen require-authentication="false" default-menu-title="One page" default-menu-index="2">
+    <widgets><label text="a page over it"/></widgets>
+</screen>

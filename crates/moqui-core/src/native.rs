@@ -222,6 +222,8 @@ impl NativeRegistry {
 
     pub(crate) fn discover(components: &[ComponentInfo], conf: &MNode) -> Result<Self, Error> {
         let mut registry = Self::default();
+        // the framework's own tool factories (VCard, ICalendar), which MoquiDefaultConf.xml selects
+        crate::pim::register(&mut registry)?;
         for component in components {
             let mut entries = inventory::iter::<NativeComponent>
                 .into_iter()

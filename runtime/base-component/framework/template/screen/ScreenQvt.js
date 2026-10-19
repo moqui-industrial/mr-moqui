@@ -954,11 +954,26 @@
             w("<m-subscreens-tabs></m-subscreens-tabs>");
         };
 
+        // A wizard is an m-subscreens-wizard (a step per subscreen, js/README.md) and a stack an m-subscreens-stack; both read the
+        // subscreens from the menu data in the browser, so the render holds only the labels.
         const subscreensPanel = (n) => {
             const type = at(n, "type");
             if (type === "popup") { w("<m-subscreens-active></m-subscreens-active>"); return; }
-            if (type === "stack" || type === "wizard") { w("<h1>LATER " + e(type) + " type subscreens-panel not yet supported.</h1>"); return; }
+            if (type === "wizard") {
+                w("<m-subscreens-wizard" + A({ id: at(n, "id") || null, "finish-text": at(n, "finish-text") ? x(at(n, "finish-text")) : null }) + "></m-subscreens-wizard>");
+                return;
+            }
+            if (type === "stack") { w("<m-subscreens-stack" + A({ id: at(n, "id") || null }) + "></m-subscreens-stack>"); return; }
             w("<div" + A({ id: at(n, "id") ? at(n, "id") + "-tabpanel" : null }) + ">" + (ctx("hideNav") === "true" ? "" : "<m-subscreens-tabs></m-subscreens-tabs>") + "<m-subscreens-active></m-subscreens-active></div>");
+        };
+
+        // container-split (style-guide §3.8): an m-container-split, its panes as the side and main slots.
+        const splitOpen = (n) => {
+            w("<m-container-split" + A({
+                id: nodeId(n) || null, "side-width": at(n, "side-width") || null, "min-main": at(n, "min-main") || null,
+                "side-position": at(n, "side-position") === "right" ? "right" : null, "select-parameter": at(n, "select-parameter") || null,
+                "back-text": at(n, "back-text") ? x(at(n, "back-text")) : null, height: at(n, "height") || null, class: xn(at(n, "style")) || null
+            }) + ">");
         };
 
         // ---- forms ----
@@ -1654,7 +1669,7 @@
             formList, rowCellOpen, rowCellClose, valueText, sectionPaginate, headerCell,
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
-            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard, chatter, recordFiles
+            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard, chatter, recordFiles, splitOpen
         };
         Object.defineProperty(globalThis, "$mqQvt", { value: h, configurable: true });
     };
@@ -2052,6 +2067,18 @@
         `;
     });
 
+    const containerSplitMacro = stmt((node) => {
+        const part = (name) => { const kid = child(node, name); return kid ? kid.source || "" : ""; };
+        return js`
+            $v.splitOpen(${bareLit(node)});
+            sri.write("<template v-slot:side>");
+            ${part("split-side")}
+            sri.write("</template><template v-slot:main>");
+            ${part("split-main")}
+            sri.write("</template></m-container-split>\\n");
+        `;
+    });
+
     const containerPanelMacro = stmt((node) => {
         const part = (name) => { const kid = child(node, name); return kid ? kid.source : ""; };
         const id = attr(node, "id");
@@ -2155,6 +2182,9 @@
         "container-row": containerRowMacro,
         "row-col": stmt((node, children) => children),
         "container-panel": containerPanelMacro,
+        "container-split": containerSplitMacro,
+        "split-side": stmt((node, children) => children),
+        "split-main": stmt((node, children) => children),
         "panel-header": stmt((node, children) => children),
         "panel-left": stmt((node, children) => children),
         "panel-center": stmt((node, children) => children),

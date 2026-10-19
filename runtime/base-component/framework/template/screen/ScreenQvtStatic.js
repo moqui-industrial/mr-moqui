@@ -959,7 +959,20 @@
         const subscreensPanel = (n) => {
             const type = at(n, "type");
             if (type === "popup") { w("<m-subscreens-active></m-subscreens-active>"); return; }
-            if (type === "stack" || type === "wizard") { w("<h1>LATER " + e(type) + " type subscreens-panel not yet supported.</h1>"); return; }
+            // as ScreenQvt.js writes them: the steps or the stack come from the menu data in the browser
+            if (type === "wizard") {
+                const out = {};
+                plainAttr(out, "id", at(n, "id"), n);
+                textAttr(out, "finish-text", at(n, "finish-text"), n, true);
+                w("<m-subscreens-wizard" + A(out) + "></m-subscreens-wizard>");
+                return;
+            }
+            if (type === "stack") {
+                const out = {};
+                plainAttr(out, "id", at(n, "id"), n);
+                w("<m-subscreens-stack" + A(out) + "></m-subscreens-stack>");
+                return;
+            }
             w("<div" + A({ id: at(n, "id") ? at(n, "id") + "-tabpanel" : null }) + "><m-subscreens-tabs></m-subscreens-tabs><m-subscreens-active></m-subscreens-active></div>");
         };
         const subscreensTabs = (n) => {
@@ -1769,6 +1782,16 @@
             plainAttr(out, "class", at(n, "style"), n);
             w(withCondition(n, "<m-number-card" + A(out) + "></m-number-card>\n"));
         };
+        // container-split as ScreenQvt.js writes it; the selection is read from the URL in the browser, so nothing here is data.
+        const splitOpen = (n) => {
+            const out = {};
+            plainAttr(out, "id", at(n, "id"), n);
+            ["side-width", "min-main", "select-parameter", "height"].forEach((name) => { if (at(n, name)) out[name] = at(n, name); });
+            if (at(n, "side-position") === "right") out["side-position"] = "right";
+            textAttr(out, "back-text", at(n, "back-text"), n, true);
+            plainAttr(out, "class", at(n, "style"), n);
+            w("<m-container-split" + A(out) + ">");
+        };
         // The grid of a dashboard, as ScreenQvt.js writes it.
         const dashboardOpen = (n) => {
             const out = {};
@@ -1787,7 +1810,7 @@
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
             split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose, screenContext,
-            numberCard, dashboardOpen, chatter, recordFiles
+            numberCard, dashboardOpen, chatter, recordFiles, splitOpen
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -1860,6 +1883,12 @@
 
     const containerRowMacro = stmt((node) => `$s.rowOpen("row", ${lit(attr(node, "style"))});\n` +
         childrenNamed(node, "row-col").map((col) => `$s.colOpen(${wlit(col, false)}, false);\n${col.source || ""}sri.write("</div>");\n`).join("") + `sri.write("</div>\\n");\n`);
+
+    const containerSplitMacro = stmt((node) => {
+        const part = (name) => { const kid = child(node, name); return kid ? kid.source || "" : ""; };
+        return `$s.splitOpen(${wlit(node, false)});\n` + write("<template v-slot:side>") + part("split-side") +
+            write("</template><template v-slot:main>") + part("split-main") + write("</template></m-container-split>\n");
+    });
 
     const containerPanelMacro = stmt((node) => {
         const part = (name) => { const kid = child(node, name); return kid ? kid.source || "" : ""; };
@@ -1948,6 +1977,9 @@
         "container-row": containerRowMacro,
         "row-col": widgetsMacro,
         "container-panel": containerPanelMacro,
+        "container-split": containerSplitMacro,
+        "split-side": widgetsMacro,
+        "split-main": widgetsMacro,
         "panel-header": widgetsMacro,
         "panel-left": widgetsMacro,
         "panel-center": widgetsMacro,

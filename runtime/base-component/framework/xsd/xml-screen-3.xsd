@@ -712,18 +712,40 @@ along with this software (see the LICENSE.md file). If not, see
     <xs:element name="subscreens-active" substitutionGroup="AllWidgets"><xs:complexType>
         <xs:attribute name="id" type="xs:string" use="optional"/>
     </xs:complexType></xs:element>
-    <xs:element name="subscreens-panel" substitutionGroup="AllWidgets"><xs:complexType>
+    <xs:element name="subscreens-panel" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        The subscreen menu and the active subscreen together.
+    </xs:documentation></xs:annotation><xs:complexType>
         <xs:attribute name="type" default="tab">
+            <xs:annotation><xs:documentation>
+                tab: tabs over the active subscreen. popup: the menu in the header menus.
+
+                wizard (IronStone style-guide §3.10): a stepper with one step per subscreen, in menu order, titled by the menu
+                titles; the active subscreen is the current step, so the URL holds the step. Next submits the step form (the
+                first form-single of the step screen that is not in a list or a dialog) to its transition and, when the
+                answer has no errors, goes to the next step with the current parameters and those the answer gives (the
+                transition's default-response parameters); an answer that names another screen goes there instead, so a step
+                may skip steps or leave the wizard. A step without a form goes on at once. Back goes to the step before
+                without submitting, and a done step's header goes back to it, so a step keeps what it saved. The last step's
+                button (finish-text) submits its form and follows the answer; it only shows when the step has a form. The
+                step form's own submit button does the same as Next. In qvt an m-subscreens-wizard, which reads the steps
+                from the menu data in the browser (server-static too); in html the steps as a numbered sequence of links with
+                Back and Next links.
+
+                stack: the first subscreen in menu order is the bottom of the stack and the others open over it with a
+                breadcrumb back to it; no tabs (qvt m-subscreens-stack; html a breadcrumb).
+            </xs:documentation></xs:annotation>
             <xs:simpleType><xs:restriction base="xs:token">
                 <xs:enumeration value="tab"/>
                 <xs:enumeration value="popup"/>
-                <!-- TABLED, not to be part of 1.0: <xs:enumeration value="stack"/> -->
-                <!-- TABLED, not to be part of 1.0: <xs:enumeration value="wizard"/> -->
+                <xs:enumeration value="stack"/>
+                <xs:enumeration value="wizard"/>
             </xs:restriction></xs:simpleType>
         </xs:attribute>
         <xs:attribute name="id" type="xs:string" use="required"/>
         <xs:attribute name="title" type="xs:string"/>
         <xs:attribute name="header-menus-id" type="xs:string" default="header-menus"/>
+        <xs:attribute name="finish-text" type="xs:string"><xs:annotation><xs:documentation>For type wizard: the label of
+            the last step's button, Finish by default (localized). Next and Back are localized too.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>
 
     <!-- ================ Sections ================ -->
@@ -896,6 +918,46 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:group ref="widget-elements" minOccurs="0" maxOccurs="unbounded"/>
         <xs:attributeGroup ref="attlist.panel.header-footer"/>
     </xs:complexType></xs:element>
+
+    <xs:element name="container-split" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        A master list beside a detail pane (IronStone style-guide §3.8, §8.2): the split-side (a list, usually a form-list
+        narrowed by a header find) and the split-main (the selected record, often a dynamic-container or a reused record
+        screen). From 1024 px wide the side is side-width px beside the main pane, and its width can be dragged from 200 px
+        to what leaves min-main px to the main pane; the width is kept per id for the session and in the user's
+        preferences (SPLIT_WIDTH_{id}). Below 1024 px, or when the container is narrower than the side and min-main, the
+        panes stack: with a select-parameter the main pane shows (with a back button that clears it) when the URL has a
+        value for it and the side shows when it has none, and without one both show, the side first. The selection is read
+        from the URL in the browser, so a server-static screen can use it. In qvt an m-container-split (a q-splitter); in
+        html two columns (moqui-html.css .split) stacked below 1024 px with a back link; the text modes write the side and
+        then the main pane.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:sequence>
+            <xs:element ref="split-side"/>
+            <xs:element ref="split-main"/>
+        </xs:sequence>
+        <xs:attribute name="id" type="xs:string"><xs:annotation><xs:documentation>Needed for the side width to be
+            kept.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="side-width" type="xs:positiveInteger" default="320"><xs:annotation><xs:documentation>The width of
+            the side pane in px.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="min-main" type="xs:positiveInteger" default="480"><xs:annotation><xs:documentation>The narrowest
+            the main pane may be made by dragging, in px; a container narrower than the side and this stacks.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="side-position" default="left"><xs:simpleType><xs:restriction base="xs:token">
+            <xs:enumeration value="left"/><xs:enumeration value="right"/>
+        </xs:restriction></xs:simpleType></xs:attribute>
+        <xs:attribute name="select-parameter" type="xs:string"><xs:annotation><xs:documentation>The URL parameter that holds
+            the selected record (partyId). The side list's search-form-inputs should name it in skip-fields so the selection
+            does not filter the list.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="back-text" type="xs:string"><xs:annotation><xs:documentation>The label of the stacked layout's
+            back button, Back by default (localized).</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="height" type="xs:string"><xs:annotation><xs:documentation>A CSS height for the side-by-side
+            layout (calc(100vh - 180px)), so each pane scrolls on its own; by default the panes are as tall as their content
+            and scroll with the page.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="style" type="xs:string"/>
+    </xs:complexType></xs:element>
+    <xs:element name="split-side"><xs:complexType>
+        <xs:group ref="widget-elements" minOccurs="0" maxOccurs="unbounded"/></xs:complexType></xs:element>
+    <xs:element name="split-main"><xs:complexType>
+        <xs:group ref="widget-elements" minOccurs="0" maxOccurs="unbounded"/></xs:complexType></xs:element>
 
     <xs:element name="container-dialog" substitutionGroup="AllWidgets"><xs:annotation>
         <xs:documentation>The contents start out hidden with only a button with the button-text on it.

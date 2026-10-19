@@ -296,6 +296,8 @@ fn the_qvt_fixture_screens_become_templates_that_compile() {
         "shell",
         "Dashboard",
         "records",
+        "split",
+        "panels",
     ] {
         let (html, report) = static_fixture(name);
         golden(&format!("render/{name}.html"), &html);
@@ -349,6 +351,31 @@ fn the_record_panels_are_bound_over_the_scope_in_a_static_template() {
         assert!(html.contains(expected), "{expected} in {html}");
     }
     assert!(!html.contains("T100"), "{html}");
+}
+
+/// A split of a server-static screen is the same m-container-split, its panes the side and main slots, the selection read from
+/// the URL in the browser: nothing in it is request data. A wizard or stack panel reads its steps from the menu data.
+#[test]
+fn splits_wizards_and_stacks_hold_no_request_data_in_a_static_template() {
+    let (html, _) = static_fixture("split");
+    for expected in [
+        r#"<m-container-split id="ContactSplit" side-width="300" min-main="520" select-parameter="partyId" :back-text="ec.l10n.localize('All contacts')" :class="ec.resource.expandNoL10n('${paneStyle}',{'paneStyle':()=&gt;(paneStyle)})"><template v-slot:side>"#,
+        r#"</template><template v-slot:main>"#,
+        r#"<m-container-split height="calc(100vh - 160px)" side-position="right"><template v-slot:side>"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    let (panels, _) = static_fixture("panels");
+    assert!(
+        panels.contains(
+            r#"<m-subscreens-wizard id="ImportWizard" :finish-text="ec.l10n.localize('Import')"></m-subscreens-wizard>"#
+        ),
+        "{panels}"
+    );
+    assert!(
+        panels.contains(r#"<m-subscreens-stack id="Pages"></m-subscreens-stack>"#),
+        "{panels}"
+    );
 }
 
 #[test]

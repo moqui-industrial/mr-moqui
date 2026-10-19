@@ -759,6 +759,178 @@ fn the_record_panels_and_the_rich_text_editor_work_in_chromium() {
     );
 }
 
+/// The gallery Split: a container-split side by side at 1280 px (the side at its width, both panes shown), stacked at 390 px with the
+/// list alone, a country chosen showing it with the back button, and back to the list. The gallery Wizard: Next with an empty
+/// customer name stays with the error by the field, Next with a name goes to Options with the step in the URL, Back keeps the
+/// draft, and Create customer on the review goes back to the first step.
+#[test]
+fn the_split_stacks_and_the_wizard_steps_in_chromium() {
+    let gate = start("browser-layout");
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    let metrics = |browser: &mut Browser, width: i64, height: i64| {
+        browser.call(
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 600}),
+        );
+    };
+    let shown = |selector: &str| {
+        format!(
+            "(() => {{ const el = document.querySelector({selector:?}); return !!el && el.offsetParent !== null; }})()"
+        )
+    };
+
+    metrics(&mut browser, 1280, 900);
+    browser.navigate(&format!("{base}/qapps/gallery/Split"));
+    browser.wait_for(
+        "the split side by side",
+        "!!document.querySelector('#CountrySplit .q-splitter') && document.getElementById('CountrySplit').dataset.stacked === 'false' \
+         && document.querySelector('#CountrySplit .m-split-main').innerText.indexOf('States and regions') >= 0",
+        WAIT,
+    );
+    let side = browser
+        .eval("Math.round(document.querySelector('#CountrySplit .q-splitter__before').getBoundingClientRect().width)");
+    assert_eq!(side, 320, "the side at its width");
+    assert_eq!(browser.eval(&shown("#CountrySplit .m-split-side")), true);
+    assert_eq!(
+        browser.eval("!!document.querySelector('#CountrySplit .m-split-back')"),
+        false
+    );
+    assert_clean(&mut browser, "the split side by side");
+
+    metrics(&mut browser, 390, 844);
+    browser.navigate(&format!("{base}/qapps/gallery/Split"));
+    browser.wait_for(
+        "the split stacked with the list alone",
+        "!!document.getElementById('CountrySplit') && document.getElementById('CountrySplit').dataset.stacked === 'true' \
+         && document.querySelector('#CountrySplit .m-split-side').offsetParent !== null \
+         && document.querySelector('#CountrySplit .m-split-main').offsetParent === null",
+        WAIT,
+    );
+    assert!(
+        browser
+            .eval("document.documentElement.scrollWidth <= window.innerWidth + 1")
+            .as_bool()
+            .unwrap(),
+        "no horizontal scroll of the page at 390 px"
+    );
+    browser.click(
+        "a country",
+        &by_text(
+            "#CountrySplit .m-split-side a, #CountrySplit .m-split-side button",
+            "Albania",
+        ),
+    );
+    browser.wait_for(
+        "the country alone with the back button",
+        "location.search.indexOf('geoId=ALB') >= 0 && document.querySelector('#CountrySplit .m-split-side').offsetParent === null \
+         && document.querySelector('#CountrySplit .m-split-main').offsetParent !== null \
+         && document.querySelector('#CountrySplit .m-split-main').innerText.indexOf('Albania') >= 0 && !!document.querySelector('#CountrySplit .m-split-back')",
+        WAIT,
+    );
+    browser.click("back", "document.querySelector('#CountrySplit .m-split-back')");
+    browser.wait_for(
+        "the list again",
+        "location.search.indexOf('geoId=') < 0 && document.querySelector('#CountrySplit .m-split-side').offsetParent !== null",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the split stacked");
+    browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
+
+    browser.navigate(&format!("{base}/qapps/gallery/Wizard"));
+    browser.eval(FETCH_SPY);
+    browser.wait_for(
+        "the wizard on its first step",
+        "!!document.querySelector('#CustomerWizard .q-stepper') && document.querySelectorAll('#CustomerWizard .q-stepper__tab').length === 3 \
+         && !!document.querySelector('#CustomerWizard [name=customerName]')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("Array.from(document.querySelectorAll('#CustomerWizard .q-stepper__tab')).map((el) => el.innerText.trim().split('\\n').pop()).join(',')"),
+        "Customer,Options,Review"
+    );
+    assert_eq!(
+        browser.eval("!!document.querySelector('#CustomerWizard .m-wizard-back')"),
+        false
+    );
+    // an empty name: the error by the field, and the wizard stays
+    browser.eval(
+        "(() => { const input = document.querySelector('#CustomerWizard [name=customerName]'); input.focus(); input.select(); return true; })()",
+    );
+    browser.press("Delete");
+    browser.eval(
+        "(() => { const input = document.querySelector('#CustomerWizard [name=customerName]'); input.value = ''; input.dispatchEvent(new Event('input', {bubbles: true})); return true; })()",
+    );
+    browser.click("Next", "document.querySelector('#CustomerWizard .m-wizard-next')");
+    browser.wait_for(
+        "the error by the name",
+        "(document.querySelector('#CustomerWizard .q-field--error') || {innerText: ''}).innerText.indexOf('Enter the customer name') >= 0",
+        WAIT,
+    );
+    let answer = fetched(&mut browser, "the step post", "/saveCustomer");
+    assert_eq!(answer["status"], 500, "{answer}");
+    assert_eq!(
+        browser.eval("/\\/gallery\\/Wizard(\\/Customer)?$/.test(location.pathname)"),
+        true,
+        "still on the first step"
+    );
+    let problems = browser.take_problems();
+    assert!(
+        problems.iter().all(|problem| format!("{problem:?}").contains("500")),
+        "only the 500 of the answer: {problems:#?}"
+    );
+    // a name: Next goes to Options, the step in the URL
+    browser.click(
+        "the name",
+        "document.querySelector('#CustomerWizard [name=customerName]')",
+    );
+    browser.type_text("Gate Customer");
+    browser.click("Next", "document.querySelector('#CustomerWizard .m-wizard-next')");
+    browser.wait_for(
+        "the second step",
+        "location.pathname.endsWith('/gallery/Wizard/Options') && !!document.querySelector('#CustomerWizard [name=countryGeoId]') \
+         && !!document.querySelector('#CustomerWizard .m-wizard-back')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("document.querySelectorAll('#CustomerWizard .q-stepper__tab--done').length"),
+        1,
+        "the first step is done"
+    );
+    // Back keeps what the step saved
+    browser.click("Back", "document.querySelector('#CustomerWizard .m-wizard-back')");
+    browser.wait_for(
+        "the first step with its draft",
+        "location.pathname.endsWith('/gallery/Wizard/Customer') && (document.querySelector('#CustomerWizard [name=customerName]') || {value: ''}).value === 'Gate Customer'",
+        WAIT,
+    );
+    browser.click("Next", "document.querySelector('#CustomerWizard .m-wizard-next')");
+    browser.wait_for("Options again", "location.pathname.endsWith('/gallery/Wizard/Options') && !!document.querySelector('#CustomerWizard [name=countryGeoId]')", WAIT);
+    browser.click("Next", "document.querySelector('#CustomerWizard .m-wizard-next')");
+    browser.wait_for(
+        "the review",
+        "location.pathname.endsWith('/gallery/Wizard/Review') && document.querySelector('#CustomerWizard .m-wizard-body').innerText.indexOf('Gate Customer') >= 0",
+        WAIT,
+    );
+    let options = fetched(&mut browser, "the options post", "/saveOptions");
+    assert_eq!(options["status"], 200, "{options}");
+    assert_eq!(
+        browser.eval("document.querySelector('#CustomerWizard .m-wizard-next .block').innerText.trim()"),
+        "Create customer"
+    );
+    browser.click(
+        "Create customer",
+        "document.querySelector('#CustomerWizard .m-wizard-next')",
+    );
+    browser.wait_for(
+        "back on the first step with the message",
+        "location.pathname.endsWith('/gallery/Wizard/Customer') && Array.from(document.querySelectorAll('.q-notification')).some((el) => el.innerText.indexOf('Gate Customer created') >= 0)",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the wizard");
+}
+
 /// The Detail screen's Chatter column with the @ list of the note editor open, and the rich editors of the Widgets screen, light
 /// and dark, 1280 and 390 px wide, as PNGs in `dir`.
 fn record_shots(browser: &mut Browser, base: &str, dir: &std::path::Path) {

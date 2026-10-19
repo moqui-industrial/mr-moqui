@@ -13,10 +13,10 @@ along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
 <!-- Gallery screen for the 3.8 Split archetype of the style guide: a master list of countries beside the selected
-    country's detail and its states, over moqui.basic.Geo and GeoAssoc. The selected geoId is in the URL. The split is
-    a container-row of two row-cols (container-split of §8 does not exist): container-panel was tried first, but its
-    fixed-width table-cell layout does not stack at phone width. The side list is find-driven and limited to 30 rows
-    because the paging row of a form-list does not fit in a 320 px pane. -->
+    country's detail and its states, over moqui.basic.Geo and GeoAssoc, in a container-split (style-guide §8.2). The
+    selected geoId is in the URL (select-parameter), so below 1024 px the list shows alone until a country is chosen, and
+    the detail shows with a back button to the list. The side list is find-driven and limited to 30 rows because the
+    paging row of a form-list does not fit in a 320 px pane. -->
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         default-menu-title="Split" default-menu-index="8">
 
@@ -35,33 +35,34 @@ along with this software (see the LICENSE.md file). If not, see
             <search-form-inputs paginate="false" skip-fields="geoId"/>
             <econdition field-name="geoTypeEnumId" value="GEOT_COUNTRY"/>
         </entity-find-count>
-        <if condition="!geoId &amp;&amp; countryList.length"><set field="geoId" from="countryList[0].geoId"/></if>
-        <entity-find-one entity-name="moqui.basic.Geo" value-field="country"><field-map field-name="geoId"/></entity-find-one>
+        <!-- side by side the first country fills the main pane; stacked, no selection shows the list alone -->
+        <set field="shownGeoId" from="geoId || (countryList.length ? countryList[0].geoId : null)"/>
+        <entity-find-one entity-name="moqui.basic.Geo" value-field="country"><field-map field-name="geoId" from="shownGeoId"/></entity-find-one>
         <entity-find entity-name="moqui.basic.GeoAssocAndToDetail" list="stateList">
-            <econdition field-name="geoId"/>
+            <econdition field-name="geoId" from="shownGeoId"/>
             <order-by field-name="geoName"/>
         </entity-find>
     </actions>
     <widgets>
         <container-box type="info"><box-header title="Archetype 3.8 Split"/><box-body>
-            <label text="A master list beside a detail pane: countries on the side with a header find, the selected country in the main pane with its details in a box and its states as a list. The selected geoId is in the URL so the detail is bookmarkable; the side list keeps its find while the detail changes; the panes stack below 1024 px." type="p"/>
-            <label text="Fallback: container-split (§8) does not exist, so this is a container-row of two row-cols (4 and 8 columns from md, 3 and 9 from lg). The side list is limited to 30 rows and narrowed by the find instead of paged, because a form-list's paging row does not fit in a 320 px pane." type="p"/>
+            <label text="A master list beside a detail pane: countries on the side with a header find, the selected country in the main pane with its details in a box and its states as a list. The selected geoId is in the URL so the detail is bookmarkable; the side list keeps its find while the detail changes." type="p"/>
+            <label text="container-split (§8.2): a splitter from 1024 px whose side can be dragged from 200 px to what leaves 480 px to the main pane, its width kept for the session; below 1024 px the panes stack, the list alone until a country is chosen, then the country with a back button. The side list is limited to 30 rows and narrowed by the find instead of paged, because a form-list's paging row does not fit in a 320 px pane." type="p"/>
         </box-body></container-box>
 
-        <container-row>
-            <row-col lg="3" md="4">
+        <container-split id="CountrySplit" side-width="320" min-main="480" select-parameter="geoId" back-text="Countries">
+            <split-side>
                 <form-list name="CountryList" list="countryList" skip-form="true" paginate="false">
                     <field name="geoName">
                         <header-field title="Country" show-order-by="true"><text-find size="12" default-operator="begins"/></header-field>
-                        <default-field><link url="." text="${geoName}" style="${geoId == country?.geoId ? 'text-weight-bold' : ''}">
+                        <default-field><link url="." text="${geoName}" style="${geoId == shownGeoId ? 'text-weight-bold' : ''}">
                             <parameter name="geoId"/></link></default-field>
                     </field>
                     <field name="geoCodeAlpha2"><default-field title="Code"><display style="text-mono"/></default-field></field>
                 </form-list>
                 <label text="${countryList.length} of ${countryCount} countries; narrow the list with the find." type="p" style="text-caption text-grey-7 q-px-sm"
                         condition="countryCount > countryList.length"/>
-            </row-col>
-            <row-col lg="9" md="8">
+            </split-side>
+            <split-main>
                 <section name="CountrySection" condition="country"><widgets>
                     <container-box><box-header title="${country.geoName}"/><box-toolbar>
                         <link url="editCountry" text="Edit" icon="edit" parameter-map="{geoId: country.geoId}"/>
@@ -96,7 +97,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <label text="No country matches ${geoId}. Pick one from the list." type="p"/>
                     </box-body></container-box>
                 </widgets></section>
-            </row-col>
-        </container-row>
+            </split-main>
+        </container-split>
     </widgets>
 </screen>

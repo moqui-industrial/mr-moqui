@@ -1,0 +1,2 @@
+<h5 class="text-inline">Import contacts</h5>
+<m-subscreens-wizard id="ImportWizard" finish-text="Import"></m-subscreens-wizard>

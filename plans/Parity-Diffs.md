@@ -204,3 +204,13 @@ IronStone impl-drawers-commons M3: what the safe HTML cleaning keeps for the qvt
 | Area | Difference | Rationale / where documented |
 |---|---|---|
 | `allow-html="safe"` | The cleaning keeps `data-mention-id` on a `span`, beside ammonia's default allow-list (Java's Jsoup safelist drops every `data-` attribute) | The mention of the qvt rich-text editor, `<span data-mention-id="id">@Label</span>`, so a cleaned note still says whom it mentions; the value is escaped text. Doc comment at `safe_html` in `service/validate.rs`, test `the_rich_text_editor_output_survives_the_safe_cleaning` |
+
+## Layout panels and the calendar and contact tools (2026-10-19)
+
+IronStone impl-drawers-commons M4 and M7 (framework). `container-split` and the `VCard` and `ICalendar` tools are new
+(js/README.md, "Layout panels: split, wizard and stack"; module doc of `moqui-core/src/pim/mod.rs`).
+
+| Area | Difference | Rationale / where documented |
+|---|---|---|
+| `subscreens-panel` | `type="wizard"` (a stepper whose Next submits the step's form and follows its answer) and `type="stack"` (a breadcrumb back to the first subscreen) render; Java's XSD had them TABLED and its macros wrote a "LATER ... not yet supported" heading | The wizard archetype of the IronStone style guide (§3.10); XSD documentation of `subscreens-panel`, `m-subscreens-wizard` in `WebrootVue.qvt.js` |
+| screen menu data | A screen with a wizard or stack panel reports `hasTabMenu` true, as a tab panel does, so the shell's breadcrumb does not add a menu of its steps | The stepper and the breadcrumb are the panel's own menu; `screen/definition.rs` |

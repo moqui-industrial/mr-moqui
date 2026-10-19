@@ -1,0 +1,3 @@
+<screen require-authentication="false" default-menu-title="All pages" default-menu-index="1">
+    <widgets><label text="the bottom of the stack"/></widgets>
+</screen>

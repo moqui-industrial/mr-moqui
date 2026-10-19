@@ -736,8 +736,30 @@
                 sri.renderSubscreen();
                 return;
             }
-            if (type === "stack" || type === "wizard") {
-                w("<p>" + e(type) + " type subscreens-panel is not supported.</p>");
+            // the html fallback of a wizard: its steps as a numbered sequence of links, the active step, and Back and Next links (the
+            // step's own form posts to its transition); of a stack: a breadcrumb back to its first subscreen
+            if (type === "wizard" || type === "stack") {
+                const items = sri.getMenuItems().filter((item) => !item.disabled);
+                const active = Math.max(0, items.findIndex((item) => item.inPath));
+                const title = (item) => e(ec.resource.expand(item.title, ""));
+                if (type === "wizard") {
+                    w("<nav" + A({ id: at(n, "id") || null, class: "wizard" }) + "><ol>");
+                    items.forEach((item, index) => {
+                        const state = index < active ? "done" : index === active ? "active" : null;
+                        w("<li" + A({ class: state }) + ">" + (index === active ? "<span>" + title(item) + "</span>" : '<a href="' + e(item.url) + '">' + title(item) + "</a>") + "</li>");
+                    });
+                    w("</ol></nav>\n");
+                } else if (items.length && active > 0) {
+                    w("<nav" + A({ id: at(n, "id") || null, class: "stack-crumbs" }) + '><a href="' + e(items[0].url) + '">' + title(items[0]) + "</a> &rsaquo; <span>" +
+                        title(items[active]) + "</span></nav>\n");
+                }
+                w('<div class="' + (type === "wizard" ? "wizard-step" : "stack-active") + '">');
+                sri.renderSubscreen();
+                w("</div>\n");
+                if (type === "wizard" && items.length) {
+                    w('<nav class="wizard-nav">' + (active > 0 ? '<a data-btn="default" href="' + e(items[active - 1].url) + '">' + e(L("Back")) + "</a>" : "<span></span>") +
+                        (active < items.length - 1 ? '<a data-btn="primary" href="' + e(items[active + 1].url) + '">' + e(L("Next")) + "</a>" : "") + "</nav>\n");
+                }
                 return;
             }
             const items = sri.getMenuItems();
@@ -1322,6 +1344,25 @@
                 "</" + tag + ">\n");
         };
 
+        // ---- container-split ----
+
+        // Two columns from 1024 px and stacked below (moqui-html.css .split); a selection in the URL (select-parameter) shows only the
+        // main pane on a narrow screen, with a link back to the list without it.
+        const splitSelected = (n) => !!at(n, "select-parameter") && param(at(n, "select-parameter")) !== "";
+        const splitOpen = (n) => {
+            const width = parseInt(at(n, "side-width") || "320", 10) || 320;
+            w("<div" + A({
+                id: nodeId(n) || null, class: cls("split", at(n, "side-position") === "right" ? "split-right" : null, xn(at(n, "style")) || null),
+                style: "--split-side:" + width + "px", "data-select": at(n, "select-parameter") || null, "data-selected": splitSelected(n) ? true : null
+            }) + '><div class="split-side">');
+        };
+        const splitMain = (n) => {
+            w('</div><div class="split-main">');
+            if (!splitSelected(n)) return;
+            const back = sri.getScreenUrlInstance().cloneUrlInstance().removeParameter(at(n, "select-parameter")).removeParameter("moquiSessionToken");
+            w('<a class="split-back" href="' + e(back.getUrlWithParams()) + '">&larr; ' + e(at(n, "back-text") ? x(at(n, "back-text")) : L("Back")) + "</a>");
+        };
+
         // ---- record panels ----
 
         // chatter and record-files (IronStone R5): an html page has no shell to load the theme's panel into, so the element is a
@@ -1361,7 +1402,7 @@
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
             labelCols: (value) => { st.labelCols = value || ""; },
-            numberCard, chatter, recordFiles
+            numberCard, chatter, recordFiles, splitOpen, splitMain
         };
         Object.defineProperty(globalThis, "$mqHtml", { value: h, configurable: true });
     };
@@ -1724,6 +1765,17 @@
         `;
     });
 
+    const containerSplitMacro = stmt((node) => {
+        const part = (name) => { const kid = child(node, name); return kid ? kid.source || "" : ""; };
+        return js`
+            $h.splitOpen(${bareLit(node)});
+            ${part("split-side")}
+            $h.splitMain(${bareLit(node)});
+            ${part("split-main")}
+            sri.write("</div></div>\\n");
+        `;
+    });
+
     const containerPanelMacro = stmt((node) => {
         const part = (name) => { const kid = child(node, name); return kid ? kid.source : ""; };
         const sized = (name) => {
@@ -1804,6 +1856,9 @@
         "container-row": containerRowMacro,
         "row-col": stmt((node, children) => children),
         "container-panel": containerPanelMacro,
+        "container-split": containerSplitMacro,
+        "split-side": stmt((node, children) => children),
+        "split-main": stmt((node, children) => children),
         "panel-header": stmt((node, children) => children),
         "panel-left": stmt((node, children) => children),
         "panel-center": stmt((node, children) => children),

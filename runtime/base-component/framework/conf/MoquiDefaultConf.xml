@@ -205,6 +205,9 @@
             on-start-load-types="${entity_on_start_load_types}" on-start-load-components="${entity_on_start_load_components}">
         <!-- Native components select linked ToolFactory implementations here.
              The cache facade is built in; Java H2/JCR/SMTP factories do not run in MR. -->
+        <!-- The framework's own: vCard parse and write, iCalendar parse, write and RRULE expansion (moqui_core::pim) -->
+        <tool-factory class="moqui_core::pim::VCardToolFactory" init-priority="5"/>
+        <tool-factory class="moqui_core::pim::ICalendarToolFactory" init-priority="5"/>
     </tools>
 
     <cache-list warm-on-start="true" local-factory="MCache" distributed-factory="MCache">

@@ -1,0 +1,14 @@
+<screen require-authentication="false">
+    <parameter name="partyId"/>
+    <actions><set field="paneStyle" value="contacts-split"/></actions>
+    <widgets>
+        <container-split id="ContactSplit" side-width="300" min-main="520" select-parameter="partyId" back-text="All contacts" style="${paneStyle}">
+            <split-side><label text="the side list" type="p"/><link url="." text="Jane" parameter-map="{partyId: 'P1'}"/></split-side>
+            <split-main><label text="the selected ${partyId || 'nobody'}" type="p"/></split-main>
+        </container-split>
+        <container-split side-position="right" height="calc(100vh - 160px)">
+            <split-side><label text="right side"/></split-side>
+            <split-main><label text="left main"/></split-main>
+        </container-split>
+    </widgets>
+</screen>
