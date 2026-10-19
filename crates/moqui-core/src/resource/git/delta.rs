@@ -88,7 +88,10 @@ pub(crate) fn apply(base: &[u8], delta: &[u8], expected: Option<u64>) -> Result<
     let base_size = read_size(delta, &mut at)?;
     let result_size = read_size(delta, &mut at)?;
     if base_size != base.len() as u64 {
-        return Err(bad(&format!("it is for a base of {base_size} bytes, not {}", base.len())));
+        return Err(bad(&format!(
+            "it is for a base of {base_size} bytes, not {}",
+            base.len()
+        )));
     }
     if expected.is_some_and(|expected| expected != result_size) {
         return Err(bad(&format!(
@@ -131,9 +134,7 @@ pub(crate) fn apply(base: &[u8], delta: &[u8], expected: Option<u64>) -> Result<
             out.extend_from_slice(&base[offset..end]);
         } else if op != 0 {
             let size = usize::from(op);
-            let bytes = delta
-                .get(at..at + size)
-                .ok_or_else(|| bad("an insert is cut short"))?;
+            let bytes = delta.get(at..at + size).ok_or_else(|| bad("an insert is cut short"))?;
             at += size;
             if out.len() + size > result_size {
                 return Err(bad("it makes more than its header says"));
@@ -144,16 +145,19 @@ pub(crate) fn apply(base: &[u8], delta: &[u8], expected: Option<u64>) -> Result<
         }
     }
     if out.len() != result_size {
-        return Err(bad(&format!("it makes {} bytes, not the {result_size} its header says", out.len())));
+        return Err(bad(&format!(
+            "it makes {} bytes, not the {result_size} its header says",
+            out.len()
+        )));
     }
     Ok(out)
 }
 
 /// The hash of a block of [`BLOCK`] bytes.
 fn block_hash(block: &[u8]) -> u32 {
-    block
-        .iter()
-        .fold(0u32, |hash, byte| hash.wrapping_mul(PRIME).wrapping_add(u32::from(*byte)))
+    block.iter().fold(0u32, |hash, byte| {
+        hash.wrapping_mul(PRIME).wrapping_add(u32::from(*byte))
+    })
 }
 
 /// The base's blocks by hash: chains of offsets through `next`, from the bucket `heads` (0: empty, else an index + 1).
@@ -258,7 +262,10 @@ pub(crate) fn encode(base: &[u8], target: &[u8], max_size: usize) -> Option<Vec<
                 continue;
             }
             let mut length = BLOCK;
-            while offset + length < base.len() && at + length < target.len() && base[offset + length] == target[at + length] {
+            while offset + length < base.len()
+                && at + length < target.len()
+                && base[offset + length] == target[at + length]
+            {
                 length += 1;
             }
             // back into the bytes not yet written
@@ -331,7 +338,9 @@ mod tests {
 
     #[test]
     fn edits_of_text_make_small_deltas() {
-        let base: String = (0..2000).map(|line| format!("line {line} of a file that changes a little\n")).collect();
+        let base: String = (0..2000)
+            .map(|line| format!("line {line} of a file that changes a little\n"))
+            .collect();
         let mut target = base.replace("line 1000 ", "line one thousand ");
         target.insert_str(0, "a new first line\n");
         target.push_str("and a new last line\n");
@@ -396,7 +405,11 @@ mod tests {
         let started = std::time::Instant::now();
         let size = round_trip(&base, &target);
         assert!(size < 2048, "{size}");
-        assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -405,7 +418,10 @@ mod tests {
         let base = rng.bytes(4096);
         let other = rng.bytes(4096);
         assert!(encode(&base, &other, 3072).is_none());
-        assert!(encode(b"short", b"short target", 100).is_none(), "a base too short to index");
+        assert!(
+            encode(b"short", b"short target", 100).is_none(),
+            "a base too short to index"
+        );
     }
 
     #[test]

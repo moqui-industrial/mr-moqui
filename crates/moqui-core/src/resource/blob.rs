@@ -142,7 +142,9 @@ impl BlobStore {
             id: text(row.get("blobId"))?,
             size: u64::try_from(long(row.get("blobSize"))?).ok()?,
             storage_key: text(row.get("storageKey"))?,
-            chunk_size: u64::try_from(long(row.get("chunkSize")).unwrap_or(1)).unwrap_or(1).max(1),
+            chunk_size: u64::try_from(long(row.get("chunkSize")).unwrap_or(1))
+                .unwrap_or(1)
+                .max(1),
         })
     }
 
@@ -287,8 +289,12 @@ impl BlobStore {
             let to = last.min(seq + 7);
             for (index, chunk) in self.chunks(info, seq, to)?.into_iter().enumerate() {
                 let chunk_start = (seq + index as u64) * info.chunk_size;
-                let from = usize::try_from(offset.saturating_sub(chunk_start)).unwrap_or(0).min(chunk.len());
-                let until = usize::try_from(end - chunk_start).unwrap_or(usize::MAX).min(chunk.len());
+                let from = usize::try_from(offset.saturating_sub(chunk_start))
+                    .unwrap_or(0)
+                    .min(chunk.len());
+                let until = usize::try_from(end - chunk_start)
+                    .unwrap_or(usize::MAX)
+                    .min(chunk.len());
                 out.extend_from_slice(&chunk[from..until.max(from)]);
             }
             seq = to + 1;
@@ -312,9 +318,9 @@ impl BlobStore {
     fn delete_chunks(&self, key: &str) -> Result<(), Error> {
         let _guard = guard();
         let condition = Condition::equals("storageKey", Value::string(key));
-        let statement = self
-            .entity
-            .with_entity(CONTENT_BLOB_CHUNK, |definition, dialect, _| moqui_db::sql::delete(definition, dialect, Some(&condition)))?;
+        let statement = self.entity.with_entity(CONTENT_BLOB_CHUNK, |definition, dialect, _| {
+            moqui_db::sql::delete(definition, dialect, Some(&condition))
+        })?;
         let tx = self.entity.transactions_for(CONTENT_BLOB_CHUNK)?;
         self.own_tx(|| {
             crate::entity::exec::execute_tx(&tx, &statement.sql, &statement.params)?;
@@ -423,7 +429,10 @@ impl BlobStore {
         let abandoned = self
             .entity
             .find(CONTENT_BLOB_UPLOAD)?
-            .condition(Condition::less("lastActivityDate", stamp(now_millis() - ABANDONED_MILLIS)))
+            .condition(Condition::less(
+                "lastActivityDate",
+                stamp(now_millis() - ABANDONED_MILLIS),
+            ))
             .list()?;
         for row in abandoned.iter() {
             let Some(key) = text(row.get("storageKey")) else {
@@ -476,7 +485,10 @@ impl BlobWriter {
     pub fn write(&mut self, mut bytes: &[u8]) -> Result<(), Error> {
         self.received += bytes.len() as u64;
         if self.received > self.max {
-            return Err(Error::new(format!("the content is over the limit of {} bytes", self.max)));
+            return Err(Error::new(format!(
+                "the content is over the limit of {} bytes",
+                self.max
+            )));
         }
         self.hasher.update(bytes);
         while !bytes.is_empty() {
@@ -508,7 +520,11 @@ impl BlobWriter {
             chunk.create(entity)?;
             // now and then, so a collection sees the upload is alive
             if seq % 16 == 15 {
-                if let Some(mut upload) = entity.find(CONTENT_BLOB_UPLOAD)?.eq("storageKey", Value::string(key)).one()? {
+                if let Some(mut upload) = entity
+                    .find(CONTENT_BLOB_UPLOAD)?
+                    .eq("storageKey", Value::string(key))
+                    .one()?
+                {
                     upload.set("lastActivityDate", stamp(now_millis()));
                     upload.set("receivedSize", i64_of((seq + 1) * chunk_size));
                     upload.update(entity)?;
@@ -526,7 +542,10 @@ impl BlobWriter {
         self.flush()?;
         let id = hex(&std::mem::take(&mut self.hasher).finalize());
         if let Some(size) = expected.size.filter(|size| *size != self.received) {
-            return Err(Error::new(format!("the content is {} bytes, not {size}", self.received)));
+            return Err(Error::new(format!(
+                "the content is {} bytes, not {size}",
+                self.received
+            )));
         }
         if let Some(want) = expected.id.as_deref().filter(|want| !want.eq_ignore_ascii_case(&id)) {
             return Err(Error::new(format!("the content's SHA-256 is {id}, not {want}")));
@@ -652,11 +671,26 @@ mod tests {
         assert_eq!(info.id, blob_id(&data));
         assert_eq!(info.size, 20_000);
         assert_eq!(rows(&store, CONTENT_BLOB_CHUNK), 5, "4096-byte chunks");
-        assert_eq!(rows(&store, CONTENT_BLOB_UPLOAD), 0, "the upload is forgotten once published");
+        assert_eq!(
+            rows(&store, CONTENT_BLOB_UPLOAD),
+            0,
+            "the upload is forgotten once published"
+        );
         assert_eq!(store.read(&info.id).unwrap().unwrap(), data);
-        for (offset, max) in [(0, 10), (4090, 20), (8192, 4096), (19_990, 100), (3, 19_000), (20_000, 5)] {
+        for (offset, max) in [
+            (0, 10),
+            (4090, 20),
+            (8192, 4096),
+            (19_990, 100),
+            (3, 19_000),
+            (20_000, 5),
+        ] {
             let end = (offset + max).min(data.len());
-            assert_eq!(store.read_range(&info, offset as u64, max).unwrap(), data[offset.min(end)..end], "{offset}+{max}");
+            assert_eq!(
+                store.read_range(&info, offset as u64, max).unwrap(),
+                data[offset.min(end)..end],
+                "{offset}+{max}"
+            );
         }
         let source = store.source(&info);
         assert_eq!(source.tag(), Some(format!("sha256-{}", info.id)));
@@ -683,7 +717,10 @@ mod tests {
             size: Some(3),
         };
         assert!(store.put(&mut &b"content"[..], &short, u64::MAX).is_err());
-        assert!(store.put(&mut &data[..], &Expected::default(), 1000).is_err(), "over the limit");
+        assert!(
+            store.put(&mut &data[..], &Expected::default(), 1000).is_err(),
+            "over the limit"
+        );
         assert_eq!(rows(&store, CONTENT_BLOB), 3, "a failed upload publishes nothing");
         assert_eq!(rows(&store, CONTENT_BLOB_CHUNK), 5 + 2, "and leaves no chunks");
         assert_eq!(rows(&store, CONTENT_BLOB_UPLOAD), 0);
@@ -706,7 +743,14 @@ mod tests {
         drop(abandoned);
         {
             let _guard = guard();
-            let mut row = store.entity.find(CONTENT_BLOB_UPLOAD).unwrap().eq("storageKey", Value::string(&key)).one().unwrap().unwrap();
+            let mut row = store
+                .entity
+                .find(CONTENT_BLOB_UPLOAD)
+                .unwrap()
+                .eq("storageKey", Value::string(&key))
+                .one()
+                .unwrap()
+                .unwrap();
             row.set("lastActivityDate", stamp(now_millis() - 2 * ABANDONED_MILLIS));
             row.update(&store.entity).unwrap();
         }

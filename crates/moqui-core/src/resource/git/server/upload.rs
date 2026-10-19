@@ -23,7 +23,7 @@ use std::io::{Read, Write};
 
 use gix::ObjectId;
 
-use super::pktline::{self, Packet, PackWriter, MAX_BAND_64K, MAX_BAND_SMALL};
+use super::pktline::{self, PackWriter, Packet, MAX_BAND_64K, MAX_BAND_SMALL};
 use super::plan::{self, Deepen};
 use super::{io_error, Advertised};
 use crate::context::Error;
@@ -117,7 +117,8 @@ impl Request {
         if let Some(rest) = line.strip_prefix("want ") {
             let mut parts = rest.split(' ');
             self.wants.push(parse_id(parts.next().unwrap_or_default())?);
-            self.caps.extend(parts.filter(|part| !part.is_empty()).map(str::to_string));
+            self.caps
+                .extend(parts.filter(|part| !part.is_empty()).map(str::to_string));
         } else if let Some(rest) = line.strip_prefix("shallow ") {
             self.deepen.client_shallow.push(parse_id(rest)?);
         } else if let Some(rest) = line.strip_prefix("deepen ") {
@@ -393,7 +394,9 @@ pub(crate) fn upload_v0(
             Some(packet) => {
                 let line = packet.text().unwrap_or_default();
                 if !request.argument(&line)? {
-                    return Err(Error::new(format!("git upload-pack: protocol error, expected a want, got '{line}'")));
+                    return Err(Error::new(format!(
+                        "git upload-pack: protocol error, expected a want, got '{line}'"
+                    )));
                 }
             }
         }
@@ -493,21 +496,12 @@ pub(crate) fn upload_v0(
                     }
                     break;
                 } else {
-                    return Err(Error::new(format!(
-                        "git upload-pack: expected SHA1 list, got '{line}'"
-                    )));
+                    return Err(Error::new(format!("git upload-pack: expected SHA1 list, got '{line}'")));
                 }
             }
         }
     }
-    sender.pack(
-        &request,
-        &negotiation.haves,
-        &info,
-        &grafts,
-        out,
-        band_of(&request),
-    )
+    sender.pack(&request, &negotiation.haves, &info, &grafts, out, band_of(&request))
 }
 
 /// One v2 command request: the command, its capabilities, its arguments. `None` at the end of the input or a lone
@@ -578,8 +572,9 @@ fn ls_refs(advertised: &Advertised, arguments: &[String], out: &mut dyn Write) -
         };
         match &advertised.head {
             Some(head) => pktline::text(out, &format!("{head} HEAD{target}")).map_err(io_error)?,
-            None if unborn => pktline::text(out, &format!("unborn HEAD symref-target:{}", advertised.branch_ref))
-                .map_err(io_error)?,
+            None if unborn => {
+                pktline::text(out, &format!("unborn HEAD symref-target:{}", advertised.branch_ref)).map_err(io_error)?
+            }
             None => {}
         }
     }

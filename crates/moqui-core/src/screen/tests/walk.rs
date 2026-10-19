@@ -335,7 +335,10 @@ fn a_screen_path_alias_rewrites_the_request_and_a_link() {
     let newer = walk(context.factory(), "/pick").unwrap();
     assert_eq!(newer.full_path[0], "Sub");
     assert_eq!(walk(context.factory(), "/old").unwrap_err().kind(), ErrorKind::NotFound);
-    assert_eq!(walk(context.factory(), "/later").unwrap_err().kind(), ErrorKind::NotFound);
+    assert_eq!(
+        walk(context.factory(), "/later").unwrap_err().kind(),
+        ErrorKind::NotFound
+    );
 
     let linked = crate::screen::resolve_screen_path(context.factory(), &fixture_root(), &["Sub".into()], "go").unwrap();
     assert_eq!(linked.names, ["Home"]);
@@ -344,7 +347,10 @@ fn a_screen_path_alias_rewrites_the_request_and_a_link() {
 #[test]
 fn without_an_entity_facade_an_alias_path_is_unchanged() {
     let context = ExecutionContextFactory::test_context();
-    assert_eq!(walk(context.factory(), "/pcontact").unwrap_err().kind(), ErrorKind::NotFound);
+    assert_eq!(
+        walk(context.factory(), "/pcontact").unwrap_err().kind(),
+        ErrorKind::NotFound
+    );
 }
 
 #[test]
@@ -362,7 +368,10 @@ fn a_double_slash_finds_a_screen_by_name() {
         walk(context.factory(), "//NoSuchName").unwrap_err().kind(),
         ErrorKind::NotFound
     );
-    assert_eq!(walk(context.factory(), "///foo").unwrap_err().kind(), ErrorKind::NotFound);
+    assert_eq!(
+        walk(context.factory(), "///foo").unwrap_err().kind(),
+        ErrorKind::NotFound
+    );
     // The miss is cached. A second lookup is still not found.
     assert_eq!(
         walk(context.factory(), "//NoSuchName").unwrap_err().kind(),
@@ -460,7 +469,10 @@ fn a_file_under_a_screen_ends_the_walk() {
     let wrapped = ScreenUrlInfo::parse(context.factory(), &host, "/note.txt", 0).unwrap();
     assert_eq!(wrapped.full_path, ["Wrap", "note.txt"]);
     assert!(
-        wrapped.file_resource.as_deref().is_some_and(|path| path.ends_with("note.txt")),
+        wrapped
+            .file_resource
+            .as_deref()
+            .is_some_and(|path| path.ends_with("note.txt")),
         "{:?}",
         wrapped.file_resource
     );
@@ -526,8 +538,7 @@ fn the_host_header_selects_the_root_screen() {
     let shop_location =
         crate::screen::info::root_screen_for_host(context.factory(), "shop.example:8080", "webroot").unwrap();
     assert_eq!(shop_location, shop);
-    let fallback =
-        crate::screen::info::root_screen_for_host(context.factory(), "other.example", "webroot").unwrap();
+    let fallback = crate::screen::info::root_screen_for_host(context.factory(), "other.example", "webroot").unwrap();
     assert_eq!(fallback, other);
 
     let mut request = super::request("GET", "/");
@@ -538,7 +549,11 @@ fn the_host_header_selects_the_root_screen() {
     let mut request = super::request("GET", "/");
     request.set_header("Host", "other.example");
     let response = crate::screen::serve(context.factory(), request);
-    assert!(response.body_text().contains("other screen"), "{}", response.body_text());
+    assert!(
+        response.body_text().contains("other screen"),
+        "{}",
+        response.body_text()
+    );
 
     let _entered = context.enter();
     let rendered = crate::script::eval_value(

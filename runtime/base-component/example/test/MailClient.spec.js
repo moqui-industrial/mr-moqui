@@ -46,6 +46,7 @@ spec({
 // sign-in with a provider (docs/Mail-OAuth.md): the seeded providers, not set up without a client, and the webroot
 // callback page refusing a state its session did not start; the flow itself is oauth_tests.rs against a fake provider
 feature("sign-in with a provider: the seeded providers and the callback page", {
+    requires: ["imap"],
     when() {
         user("mailClientOwner")
         ec.user.internalLoginUser("mailClientOwner")

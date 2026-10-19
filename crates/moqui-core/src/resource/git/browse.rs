@@ -214,7 +214,12 @@ impl GitProvider {
     }
 
     /// The bytes of the file at `path` in the commit `revision` names.
-    pub(crate) fn blob_at(&self, repository_id: &str, revision: &str, path: &[String]) -> Result<Option<Vec<u8>>, Error> {
+    pub(crate) fn blob_at(
+        &self,
+        repository_id: &str,
+        revision: &str,
+        path: &[String],
+    ) -> Result<Option<Vec<u8>>, Error> {
         let repo = self.repo(repository_id)?;
         match self.resolve_commit(repository_id, revision)? {
             Some(id) => ops::read_at(repo.store.as_ref(), &id, path),
@@ -238,11 +243,19 @@ impl GitProvider {
         Self::writable(&repo, &format!("git://{repository_id}/"))?;
         let mut edits = Vec::new();
         for (path, bytes) in puts {
-            if path.is_empty() || path.iter().any(|segment| segment == "." || segment == ".." || segment == ".git") {
+            if path.is_empty()
+                || path
+                    .iter()
+                    .any(|segment| segment == "." || segment == ".." || segment == ".git")
+            {
                 return Err(Error::new(format!("bad path {}", path.join("/"))));
             }
             let blob = self.store_file(&repo, path, super::lfs_files::FileContent::Bytes(bytes))?;
-            edits.push(super::ops::Edit::Put(path.clone(), gix::objs::tree::EntryKind::Blob, blob));
+            edits.push(super::ops::Edit::Put(
+                path.clone(),
+                gix::objs::tree::EntryKind::Blob,
+                blob,
+            ));
         }
         edits.extend(removes.iter().cloned().map(super::ops::Edit::Remove));
         if edits.is_empty() {

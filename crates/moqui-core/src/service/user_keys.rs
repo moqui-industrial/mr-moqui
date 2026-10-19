@@ -76,7 +76,10 @@ fn out(entries: impl IntoIterator<Item = (&'static str, Value)>) -> BTreeMap<Str
 }
 
 fn current_user() -> Option<String> {
-    let user = crate::user::current_user_id().ok().flatten().filter(|id| !id.is_empty());
+    let user = crate::user::current_user_id()
+        .ok()
+        .flatten()
+        .filter(|id| !id.is_empty());
     if user.is_none() {
         add_error("log in to manage your keys");
     }
@@ -91,7 +94,9 @@ pub(crate) fn ssh_key_fingerprint(line: &str) -> Result<(String, String, String)
         return Err("an SSH public key is a line like: ssh-ed25519 AAAA... comment".into());
     };
     if !KEY_TYPES.contains(&kind) {
-        return Err(format!("SSH key type {kind} is not taken; use ssh-ed25519 (ssh-keygen -t ed25519)"));
+        return Err(format!(
+            "SSH key type {kind} is not taken; use ssh-ed25519 (ssh-keygen -t ed25519)"
+        ));
     }
     let blob = base64::engine::general_purpose::STANDARD
         .decode(encoded)
@@ -114,7 +119,10 @@ pub(crate) fn ssh_key_fingerprint(line: &str) -> Result<(String, String, String)
 }
 
 /// `create#UserSshKey`: add an SSH public key for the current user. Out: `sshKeyId`, `fingerprint`.
-fn create_ssh_key(parameters: &BTreeMap<String, Value>, facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+fn create_ssh_key(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let Some(user_id) = current_user() else {
         return Ok(BTreeMap::new());
     };
@@ -137,8 +145,10 @@ fn create_ssh_key(parameters: &BTreeMap<String, Value>, facade: &EntityFacade) -
         .list()?
         .iter()
         .any(|row| {
-            row.get("thruDate")
-                .is_none_or(|thru| matches!(thru, Value::Null) || moqui_lib::object::compare_obj(thru, &now).is_ok_and(|order| order.is_gt()))
+            row.get("thruDate").is_none_or(|thru| {
+                matches!(thru, Value::Null)
+                    || moqui_lib::object::compare_obj(thru, &now).is_ok_and(|order| order.is_gt())
+            })
         });
     if taken {
         add_error(format!("SSH key {fingerprint} is already in use"));
@@ -162,7 +172,10 @@ fn create_ssh_key(parameters: &BTreeMap<String, Value>, facade: &EntityFacade) -
 }
 
 /// `delete#UserSshKey`: end one of the current user's SSH keys (its `thruDate` is now).
-fn delete_ssh_key(parameters: &BTreeMap<String, Value>, facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+fn delete_ssh_key(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let Some(user_id) = current_user() else {
         return Ok(BTreeMap::new());
     };
@@ -202,7 +215,10 @@ fn create_access_token(
         .find(USER_LOGIN_KEY)?
         .eq("loginKey", Value::string(&hashed))
         .one()?;
-    let thru = row.as_ref().and_then(|row| row.get("thruDate").cloned()).unwrap_or(Value::Null);
+    let thru = row
+        .as_ref()
+        .and_then(|row| row.get("thruDate").cloned())
+        .unwrap_or(Value::Null);
     // a description marks the key as an access token (the user's other login keys are sessions')
     let description = text(parameters, "description").unwrap_or_else(|| "Access token".to_string());
     facade
@@ -263,7 +279,11 @@ mod tests {
             return;
         }
         let line = std::fs::read_to_string(dir.join("id.pub")).unwrap();
-        let listed = std::process::Command::new("ssh-keygen").arg("-lf").arg(dir.join("id.pub")).output().unwrap();
+        let listed = std::process::Command::new("ssh-keygen")
+            .arg("-lf")
+            .arg(dir.join("id.pub"))
+            .output()
+            .unwrap();
         let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
         let (kind, fingerprint, bare) = ssh_key_fingerprint(&line).unwrap();
         assert_eq!(kind, "ssh-ed25519");

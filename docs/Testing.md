@@ -109,6 +109,10 @@ A statement at the top level of the file; features run in the order they are wri
 - `ignore: "reason"`, `timeout`, `allowMessageErrors`.
 - `requires: ["git"]`: build features the feature needs, as on `spec()`; in a binary without one it is reported as
   skipped. A `where` row may have its own `requires`, for a row that needs a feature the others do not.
+- A case that does not say `requires`, and fails only because the binary reports that a tool is not built in
+  (`git is not built into this host`, `scheme git is not supported`, and the same messages for the other tools), is
+  skipped the same way. A stepwise file that is entirely about that tool says so on `spec()`, so its later features
+  are not started without their setup.
 - A feature with `then` and no `when`, or a block name that is not one of these, is an error when the file loads.
 
 ## Conditions

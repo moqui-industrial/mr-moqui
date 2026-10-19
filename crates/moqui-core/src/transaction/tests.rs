@@ -1066,7 +1066,8 @@ fn a_panicking_after_commit_hook_does_not_skip_the_rest() {
         counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     })
     .expect("hook");
-    mgr.commit().expect("the commit succeeded, whatever a hook after it does");
+    mgr.commit()
+        .expect("the commit succeeded, whatever a hook after it does");
     assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(!mgr.in_transaction());
     assert_eq!(driver.event_count("commit:"), 1);

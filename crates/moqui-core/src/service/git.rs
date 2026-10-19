@@ -163,7 +163,10 @@ fn init_repository(
 
 /// `setup#GitLfs`: keep files matching `patterns` (images, video, audio, PDFs and archives when empty) in Git LFS,
 /// by a commit of the repository's `.gitattributes`. Out: `commitId` (empty when it had them all).
-fn setup_lfs(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+fn setup_lfs(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let Some((provider, id)) = provider_and_id(parameters, true) else {
         return Ok(BTreeMap::new());
     };
@@ -172,7 +175,11 @@ fn setup_lfs(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Re
         return Ok(BTreeMap::new());
     }
     let given: Vec<String> = match parameters.get("patterns") {
-        Some(Value::List(patterns)) => patterns.iter().map(to_plain_string).filter(|text| !text.trim().is_empty()).collect(),
+        Some(Value::List(patterns)) => patterns
+            .iter()
+            .map(to_plain_string)
+            .filter(|text| !text.trim().is_empty())
+            .collect(),
         Some(value) if !is_empty(value) => to_plain_string(value)
             .split([',', ' ', '\n'])
             .filter(|pattern| !pattern.trim().is_empty())
@@ -186,7 +193,10 @@ fn setup_lfs(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Re
         given.iter().map(String::as_str).collect()
     };
     match provider.setup_lfs(&id, &patterns) {
-        Ok(made) => Ok(out([("commitId", made.map_or(Value::Null, |id| Value::string(id.to_string())))])),
+        Ok(made) => Ok(out([(
+            "commitId",
+            made.map_or(Value::Null, |id| Value::string(id.to_string())),
+        )])),
         Err(err) => {
             add_error(err.message());
             Ok(BTreeMap::new())
@@ -266,10 +276,22 @@ fn ref_value(info: &RefInfo, branch: &str) -> Value {
         ("objectId", Value::string(info.target.to_string())),
         ("isDefault", Value::Bool(info.name == format!("refs/heads/{branch}"))),
         ("annotated", Value::Bool(info.tag.is_some())),
-        ("commitId", commit.map_or(Value::Null, |commit| Value::string(commit.id.to_string()))),
-        ("summary", commit.map_or(Value::Null, |commit| Value::string(commit.summary()))),
-        ("commitDate", commit.map_or(Value::Null, |commit| timestamp(commit.committer.seconds))),
-        ("authorName", commit.map_or(Value::Null, |commit| opt_text(&commit.author.name))),
+        (
+            "commitId",
+            commit.map_or(Value::Null, |commit| Value::string(commit.id.to_string())),
+        ),
+        (
+            "summary",
+            commit.map_or(Value::Null, |commit| Value::string(commit.summary())),
+        ),
+        (
+            "commitDate",
+            commit.map_or(Value::Null, |commit| timestamp(commit.committer.seconds)),
+        ),
+        (
+            "authorName",
+            commit.map_or(Value::Null, |commit| opt_text(&commit.author.name)),
+        ),
         ("tag", info.tag.as_ref().map_or(Value::Null, tag_value)),
     ])
 }
@@ -278,8 +300,14 @@ fn change_value(change: &FileChange, diff: Option<&FileDiff>) -> Value {
     let mut entries = vec![
         ("path", Value::string(&change.path)),
         ("changeType", Value::string(change.kind.name())),
-        ("oldObjectId", change.old.map_or(Value::Null, |(_, id)| Value::string(id.to_string()))),
-        ("newObjectId", change.new.map_or(Value::Null, |(_, id)| Value::string(id.to_string()))),
+        (
+            "oldObjectId",
+            change.old.map_or(Value::Null, |(_, id)| Value::string(id.to_string())),
+        ),
+        (
+            "newObjectId",
+            change.new.map_or(Value::Null, |(_, id)| Value::string(id.to_string())),
+        ),
     ];
     if let Some(diff) = diff {
         let stats = diff.diff.as_ref().map(|diff| diff.stats);
@@ -324,7 +352,10 @@ fn get_refs(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Res
     match provider.refs(&id, prefix) {
         Ok(refs) => Ok(out([
             ("defaultBranch", Value::string(&refs.branch)),
-            ("headCommitId", refs.head.map_or(Value::Null, |head| Value::string(head.to_string()))),
+            (
+                "headCommitId",
+                refs.head.map_or(Value::Null, |head| Value::string(head.to_string())),
+            ),
             (
                 "refList",
                 Value::List(refs.refs.iter().map(|info| ref_value(info, &refs.branch)).collect()),
@@ -346,9 +377,18 @@ fn get_log(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Resu
     let revision = text(parameters, "revision").unwrap_or_default();
     let after = text(parameters, "afterCommitId");
     let limit = number(parameters, "limit", 50);
-    match provider.log(&id, &revision, &path_segments(parameters, "path"), after.as_deref(), limit) {
+    match provider.log(
+        &id,
+        &revision,
+        &path_segments(parameters, "path"),
+        after.as_deref(),
+        limit,
+    ) {
         Ok(page) => Ok(out([
-            ("commitList", Value::List(page.commits.iter().map(commit_value).collect())),
+            (
+                "commitList",
+                Value::List(page.commits.iter().map(commit_value).collect()),
+            ),
             ("hasMore", Value::Bool(page.more)),
         ])),
         Err(err) => {
@@ -360,7 +400,10 @@ fn get_log(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Resu
 
 /// `get#GitCommit`: a commit and the files it changed against its first parent, with line counts. Out: `commit`,
 /// `fileList`, `insertions`, `deletions`; no `commit` when the revision names no commit.
-fn get_commit(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+fn get_commit(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let Some((provider, id)) = viewable(parameters) else {
         return Ok(BTreeMap::new());
     };
@@ -371,7 +414,9 @@ fn get_commit(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> R
             return Ok(None);
         };
         let diffs = if with_stats {
-            provider.commit_diffs(&id, &commit.id.to_string(), None)?.unwrap_or_default()
+            provider
+                .commit_diffs(&id, &commit.id.to_string(), None)?
+                .unwrap_or_default()
         } else {
             changes.into_iter().map(|change| (change, empty_diff())).collect()
         };
@@ -496,10 +541,14 @@ fn get_clone_urls(
         .filter(|port| !port.is_empty())
         .unwrap_or_else(|| property("ssh_port"));
     let ssh = (!ssh_port.is_empty() && ssh_port != "0").then(|| {
-        let host = [property("ssh_public_host"), property("webapp_http_host"), property("ssh_host")]
-            .into_iter()
-            .find(|host| !host.is_empty() && host != "0.0.0.0")
-            .unwrap_or_else(|| "localhost".to_string());
+        let host = [
+            property("ssh_public_host"),
+            property("webapp_http_host"),
+            property("ssh_host"),
+        ]
+        .into_iter()
+        .find(|host| !host.is_empty() && host != "0.0.0.0")
+        .unwrap_or_else(|| "localhost".to_string());
         let user = crate::user::current_username()
             .ok()
             .flatten()
@@ -519,7 +568,10 @@ fn get_clone_urls(
 // ---- gitECA events ----
 
 /// `process#GitUpdate`: run the post events of a pending update. Out: `ecaStatus`.
-fn process_update(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+fn process_update(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let Some((provider, _)) = provider_and_id(parameters, false) else {
         return Ok(BTreeMap::new());
     };
@@ -558,7 +610,10 @@ fn process_pending_updates(
 
 /// `commit#GitFiles`: commit files on the default branch in one commit with a message. Out: `commitId` (empty when
 /// nothing changed).
-fn commit_files(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+fn commit_files(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let Some((provider, id)) = provider_and_id(parameters, true) else {
         return Ok(BTreeMap::new());
     };
@@ -591,7 +646,10 @@ fn commit_files(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) ->
         _ => Vec::new(),
     };
     match provider.commit_files(&id, &message, &puts, &removes) {
-        Ok(made) => Ok(out([("commitId", made.map_or(Value::Null, |id| Value::string(id.to_string())))])),
+        Ok(made) => Ok(out([(
+            "commitId",
+            made.map_or(Value::Null, |id| Value::string(id.to_string())),
+        )])),
         Err(err) => {
             add_error(err.message());
             Ok(BTreeMap::new())
@@ -605,7 +663,10 @@ fn flag(parameters: &BTreeMap<String, Value>, key: &str) -> bool {
 
 /// `gc#GitRepositories`: delete the unreachable objects of db repositories and repack them. Out: `results`, a Map
 /// per repository.
-fn gc_repositories(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+fn gc_repositories(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let Some((provider, id)) = provider_and_id(parameters, false) else {
         return Ok(BTreeMap::new());
     };
@@ -652,16 +713,23 @@ fn gc_repositories(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade)
 
 /// `fsck#GitRepository`: decode every object of a db repository and check it against its id. Out: `checkedCount`,
 /// `errors`.
-fn fsck_repository(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+fn fsck_repository(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let Some((provider, id)) = provider_and_id(parameters, true) else {
         return Ok(BTreeMap::new());
     };
     let minutes = number(parameters, "timeoutMinutes", 60).max(1);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(u64::try_from(minutes).unwrap_or(60) * 60);
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(u64::try_from(minutes).unwrap_or(60) * 60);
     match provider.fsck(&id, deadline) {
         Ok(report) => {
             if report.errors.is_empty() {
-                add_message(format!("Checked {} objects of git repository {id}: no errors", report.checked));
+                add_message(format!(
+                    "Checked {} objects of git repository {id}: no errors",
+                    report.checked
+                ));
             } else {
                 add_error(format!(
                     "git repository {id} has {} damaged objects or refs: {}",
@@ -674,7 +742,10 @@ fn fsck_repository(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade)
             }
             Ok(out([
                 ("checkedCount", count(report.checked)),
-                ("errors", Value::List(report.errors.into_iter().map(Value::string).collect())),
+                (
+                    "errors",
+                    Value::List(report.errors.into_iter().map(Value::string).collect()),
+                ),
             ]))
         }
         Err(err) => {

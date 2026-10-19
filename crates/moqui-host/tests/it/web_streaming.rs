@@ -67,7 +67,9 @@ fn large_files_stream_with_ranges_and_validators() {
             state as u8
         })
         .collect();
-    let text: String = (0..20_000).map(|line| format!("line {line} of a long text file\n")).collect();
+    let text: String = (0..20_000)
+        .map(|line| format!("line {line} of a long text file\n"))
+        .collect();
     {
         let factory = Arc::clone(gate.server.factory());
         let context = factory.new_context();
@@ -76,7 +78,9 @@ fn large_files_stream_with_ranges_and_validators() {
         moqui_core::user::internal_login_user("john.doe").unwrap();
         let resources = factory.resource();
         resources.write_bytes(&format!("{ROOT}/media/clip.mp4"), &clip).unwrap();
-        resources.write_bytes(&format!("{ROOT}/docs/big.txt"), text.as_bytes()).unwrap();
+        resources
+            .write_bytes(&format!("{ROOT}/docs/big.txt"), text.as_bytes())
+            .unwrap();
         moqui_core::user::logout().unwrap();
     }
     let get = |path: &str, extra: &[(&str, &str)]| {
@@ -100,7 +104,10 @@ fn large_files_stream_with_ranges_and_validators() {
     // one range of it, the last bytes, past the end
     let (status, headers, body) = get(&clip_url, &[("Range", "bytes=5000000-5000099")]);
     assert_eq!(status, 206);
-    assert_eq!(header(&headers, "content-range").as_deref(), Some("bytes 5000000-5000099/9437184"));
+    assert_eq!(
+        header(&headers, "content-range").as_deref(),
+        Some("bytes 5000000-5000099/9437184")
+    );
     assert_eq!(body, clip[5_000_000..5_000_100]);
     let (status, _, body) = get(&clip_url, &[("Range", "bytes=-10")]);
     assert_eq!(status, 206);
@@ -127,7 +134,10 @@ fn large_files_stream_with_ranges_and_validators() {
     assert_eq!(header(&headers, "content-encoding").as_deref(), Some("gzip"));
     let (status, headers, body) = get(&file_url("docs/big.txt"), &[]);
     assert_eq!(status, 200);
-    assert!(header(&headers, "etag").is_some_and(|tag| tag.starts_with("\"git-")), "{headers:?}");
+    assert!(
+        header(&headers, "etag").is_some_and(|tag| tag.starts_with("\"git-")),
+        "{headers:?}"
+    );
     assert_eq!(String::from_utf8(body).unwrap(), text);
 
     // downloads the clients do not read leave the request workers free
@@ -145,7 +155,10 @@ fn large_files_stream_with_ranges_and_validators() {
         "/System/Resource/ElFinder/command?resourceRoot={}&cmd=open&init=1",
         encode(ROOT)
     );
-    let (status, _, body) = exchange(address, &http_request("GET", &opened, &[("Authorization", john.as_str())], ""));
+    let (status, _, body) = exchange(
+        address,
+        &http_request("GET", &opened, &[("Authorization", john.as_str())], ""),
+    );
     assert_eq!(status, 200, "{body}");
     assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
     drop(slow);
@@ -163,7 +176,10 @@ fn large_files_stream_with_ranges_and_validators() {
     );
     body.extend_from_slice(&upload);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-    let media = format!("db_{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("media"));
+    let media = format!(
+        "db_{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("media")
+    );
     let path = format!(
         "/System/Resource/ElFinder/command?resourceRoot={}&cmd=upload&target={media}",
         encode(ROOT)

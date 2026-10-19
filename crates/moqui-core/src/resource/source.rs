@@ -92,8 +92,8 @@ pub struct FileSource {
 impl FileSource {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, Error> {
         let path = path.into();
-        let metadata = std::fs::metadata(&path)
-            .map_err(|err| Error::new(format!("cannot read {}: {err}", path.display())))?;
+        let metadata =
+            std::fs::metadata(&path).map_err(|err| Error::new(format!("cannot read {}: {err}", path.display())))?;
         Ok(Self {
             path,
             len: metadata.len(),
@@ -146,7 +146,11 @@ pub struct LazySource {
 
 impl LazySource {
     /// `len` bytes that `load` reads; `needs_context` when it reads the database.
-    pub fn new(len: u64, needs_context: bool, load: impl Fn() -> Result<Vec<u8>, Error> + Send + Sync + 'static) -> Self {
+    pub fn new(
+        len: u64,
+        needs_context: bool,
+        load: impl Fn() -> Result<Vec<u8>, Error> + Send + Sync + 'static,
+    ) -> Self {
         Self {
             len,
             tag: None,

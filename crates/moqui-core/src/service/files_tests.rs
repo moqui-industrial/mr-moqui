@@ -779,7 +779,10 @@ fn version_notes_are_kept_on_both_storages_and_read_back_from_the_script_api() {
         })()"#,
     )
     .unwrap();
-    assert_eq!(to_plain_string(&out), "A note|A note|Git note|2|40|Two files|2|bee:Copied");
+    assert_eq!(
+        to_plain_string(&out),
+        "A note|A note|Git note|2|40|Two files|2|bee:Copied"
+    );
 }
 
 #[test]

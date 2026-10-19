@@ -118,8 +118,9 @@ impl UploadedFile {
     pub fn read_bytes(&self) -> Result<Vec<u8>, moqui_lib::error::Error> {
         match &self.content {
             Content::Memory(bytes) => Ok(bytes.as_ref().clone()),
-            Content::Spooled(file) => std::fs::read(&file.0)
-                .map_err(|err| moqui_lib::error::Error::new(format!("cannot read the upload {}: {err}", self.file_name))),
+            Content::Spooled(file) => std::fs::read(&file.0).map_err(|err| {
+                moqui_lib::error::Error::new(format!("cannot read the upload {}: {err}", self.file_name))
+            }),
         }
     }
 
@@ -147,8 +148,9 @@ impl UploadedFile {
         Ok(match &self.content {
             Content::Memory(bytes) => Box::new(std::io::Cursor::new(Arc::clone(bytes).as_ref().clone())),
             Content::Spooled(file) => Box::new(SpooledReader {
-                file: std::fs::File::open(&file.0)
-                    .map_err(|err| moqui_lib::error::Error::new(format!("cannot read the upload {}: {err}", self.file_name)))?,
+                file: std::fs::File::open(&file.0).map_err(|err| {
+                    moqui_lib::error::Error::new(format!("cannot read the upload {}: {err}", self.file_name))
+                })?,
                 _keep: Arc::clone(file),
             }),
         })
@@ -296,7 +298,9 @@ enum State {
     /// The headers of a part; the buffer starts at the boundary line's own line break.
     Headers,
     /// The data of a part; `skip` bytes at the start of the buffer are the headers' last line break.
-    Data { skip: usize },
+    Data {
+        skip: usize,
+    },
     Done,
 }
 
@@ -419,7 +423,11 @@ impl MultipartReader {
                     }
                     return Ok(false);
                 };
-                let headers = if end < 2 { Vec::new() } else { self.buffer[2..end].to_vec() };
+                let headers = if end < 2 {
+                    Vec::new()
+                } else {
+                    self.buffer[2..end].to_vec()
+                };
                 if headers.len() > MAX_PART_HEADERS {
                     return Err(MultipartError::Malformed("part headers are too large".into()));
                 }
@@ -452,7 +460,9 @@ impl MultipartReader {
                     let data = self.buffer[skip.min(until)..until].to_vec();
                     self.write_data(&data)?;
                     self.buffer.drain(..until);
-                    self.state = State::Data { skip: skip.saturating_sub(until) };
+                    self.state = State::Data {
+                        skip: skip.saturating_sub(until),
+                    };
                     Ok(false)
                 }
             },
@@ -505,7 +515,10 @@ impl MultipartReader {
         }
         part.size += data.len() as u64;
         if part.file.is_none() {
-            if spool.as_ref().is_some_and(|spool| part.memory.len() + data.len() > spool.field_limit) {
+            if spool
+                .as_ref()
+                .is_some_and(|spool| part.memory.len() + data.len() > spool.field_limit)
+            {
                 return Err(MultipartError::FieldTooLarge(part.name.clone()));
             }
             part.memory.extend_from_slice(data);
@@ -558,7 +571,12 @@ impl MultipartReader {
             // a file input left empty posts a part with an empty file name
             Some((file_name, _)) if file_name.is_empty() && part.size == 0 => {}
             Some((file_name, content_type)) => {
-                let sha256: String = part.hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
+                let sha256: String = part
+                    .hasher
+                    .finalize()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
                 let content = match part.spooled {
                     Some((mut file, path)) => {
                         // the file is removed with the last reference, from here on
@@ -767,7 +785,10 @@ mod tests {
             ("Content-Disposition: form-data; name=\"a\"", b"first"),
             ("Content-Disposition: form-data; name=\"f\"; filename=\"f.bin\"", &file),
             ("Content-Disposition: form-data; name=\"empty\"", b""),
-            ("Content-Disposition: form-data; name=\"t\"", b"line\r\n--Xy not a boundary\r\nx--XyZ- no\r\nend"),
+            (
+                "Content-Disposition: form-data; name=\"t\"",
+                b"line\r\n--Xy not a boundary\r\nx--XyZ- no\r\nend",
+            ),
         ]);
         let whole = parse(TYPE, &data).unwrap();
         for size in [1, 2, 3, 5, 7, 13, 64, 1000, data.len()] {
@@ -789,8 +810,14 @@ mod tests {
         };
         let large: Vec<u8> = (0..50_000u32).map(|n| (n * 31 % 253) as u8).collect();
         let data = body(&[
-            ("Content-Disposition: form-data; name=\"small\"; filename=\"s.txt\"", b"small file"),
-            ("Content-Disposition: form-data; name=\"large\"; filename=\"l.bin\"", &large),
+            (
+                "Content-Disposition: form-data; name=\"small\"; filename=\"s.txt\"",
+                b"small file",
+            ),
+            (
+                "Content-Disposition: form-data; name=\"large\"; filename=\"l.bin\"",
+                &large,
+            ),
         ]);
         let parsed = fed(&data, 777, Some(spool.clone())).unwrap();
         let (small, big) = (&parsed.files[0], &parsed.files[1]);
@@ -807,7 +834,11 @@ mod tests {
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         drop(source);
         drop(parsed);
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "the spool file goes with the upload");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "the spool file goes with the upload"
+        );
 
         // a field over its limit, and a body cut short in a spooled part, leave nothing
         let field = body(&[("Content-Disposition: form-data; name=\"x\"", &[b'x'; 200])]);

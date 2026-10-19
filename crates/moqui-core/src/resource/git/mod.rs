@@ -393,7 +393,10 @@ impl GitProvider {
             self.remember_head(&repo.definition.id, Some(id), None);
             if let Some(prior) = prior {
                 let name = ops::branch_ref(&repo.definition.branch);
-                let old = prior.iter().find(|(candidate, _)| *candidate == name).map(|(_, id)| *id);
+                let old = prior
+                    .iter()
+                    .find(|(candidate, _)| *candidate == name)
+                    .map(|(_, id)| *id);
                 let origin = events::UpdateOrigin {
                     source: "write",
                     transport: "internal",
@@ -688,7 +691,13 @@ impl GitProvider {
         let outcome = {
             let lock = self.lock_of(repository_id);
             let _turn = moqui_lib::sync::lock(&lock);
-            fs::fetch(&definition.path, &url, &definition.branch, &definition.credentials, true)
+            fs::fetch(
+                &definition.path,
+                &url,
+                &definition.branch,
+                &definition.credentials,
+                true,
+            )
         };
         self.refresh(repository_id);
         match outcome {
@@ -823,7 +832,13 @@ impl GitProvider {
             return Ok((path, 0));
         };
         let haves: Vec<ObjectId> = target.list_refs("refs/")?.into_iter().map(|(_, id)| id).collect();
-        let count = server::copy_objects(repo.store.as_ref(), &target, head.id, &haves, &self.scratch("export", repository_id))?;
+        let count = server::copy_objects(
+            repo.store.as_ref(),
+            &target,
+            head.id,
+            &haves,
+            &self.scratch("export", repository_id),
+        )?;
         let name = ops::branch_ref(&definition.branch);
         let current = target.read_ref(&name)?;
         if !target.compare_and_set_ref(&name, current, head.id)? {
@@ -915,7 +930,13 @@ impl GitProvider {
         let lock = self.lock_of(repository_id);
         let _turn = moqui_lib::sync::lock(&lock);
         let haves: Vec<ObjectId> = repo.store.list_refs("refs/")?.into_iter().map(|(_, id)| id).collect();
-        let count = server::copy_objects(from, repo.store.as_ref(), head, &haves, &self.scratch("import", repository_id))?;
+        let count = server::copy_objects(
+            from,
+            repo.store.as_ref(),
+            head,
+            &haves,
+            &self.scratch("import", repository_id),
+        )?;
         let name = ops::branch_ref(branch);
         let prior = repo.store.list_refs("refs/")?;
         let current = repo.store.read_ref(&name)?;
@@ -1050,7 +1071,9 @@ impl crate::native::ResourceProvider for GitProvider {
         // or two saves within a second, still change what caches over git:// locations go by
         let joined = path.join("/");
         let changed = self.indexed(&repo, &head, |index| {
-            index.last_change(&joined).map(|commit| (commit.info.id, commit.info.seconds))
+            index
+                .last_change(&joined)
+                .map(|commit| (commit.info.id, commit.info.seconds))
         })?;
         let head_millis = head.seconds.saturating_mul(1000);
         let last_modified = Some(match changed {

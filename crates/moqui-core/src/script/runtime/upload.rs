@@ -52,7 +52,9 @@ impl HostUpload {
 
     #[qjs(get, rename = "size")]
     fn size_property<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        host_guard(&ctx, || i64_to_js(&ctx, i64::try_from(self.inner.size()).unwrap_or(i64::MAX)))
+        host_guard(&ctx, || {
+            i64_to_js(&ctx, i64::try_from(self.inner.size()).unwrap_or(i64::MAX))
+        })
     }
 
     fn get_name(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
@@ -68,7 +70,9 @@ impl HostUpload {
     }
 
     fn get_size<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        host_guard(&ctx, || i64_to_js(&ctx, i64::try_from(self.inner.size()).unwrap_or(i64::MAX)))
+        host_guard(&ctx, || {
+            i64_to_js(&ctx, i64::try_from(self.inner.size()).unwrap_or(i64::MAX))
+        })
     }
 
     fn is_in_memory(&self) -> bool {
@@ -148,7 +152,9 @@ impl HostStream {
     }
 
     fn bytes(&self, ctx: &Ctx<'_>) -> rquickjs::Result<Vec<u8>> {
-        self.inner.bytes().map_err(|err| Exception::throw_message(ctx, err.message()))
+        self.inner
+            .bytes()
+            .map_err(|err| Exception::throw_message(ctx, err.message()))
     }
 
     fn size(&self) -> u64 {
@@ -159,8 +165,10 @@ impl HostStream {
     fn put(&self, ctx: &Ctx<'_>, location: &str) -> rquickjs::Result<()> {
         let mut reader = crate::resource::source::SourceReader::new(Arc::clone(&self.inner.source));
         let size = self.size();
-        with_ec(ctx, |ec| ec.factory().resource().write_from(location, &mut reader, Some(size)))?
-            .map_err(|err| Exception::throw_message(ctx, err.message()))
+        with_ec(ctx, |ec| {
+            ec.factory().resource().write_from(location, &mut reader, Some(size))
+        })?
+        .map_err(|err| Exception::throw_message(ctx, err.message()))
     }
 }
 

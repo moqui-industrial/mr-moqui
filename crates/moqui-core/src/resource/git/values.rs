@@ -71,11 +71,25 @@ pub(crate) fn commit_value(commit: &CommitDetails) -> Value {
         ("treeId", Value::string(commit.tree.to_string())),
         (
             "parentIds",
-            Value::List(commit.parents.iter().map(|parent| Value::string(parent.to_string())).collect()),
+            Value::List(
+                commit
+                    .parents
+                    .iter()
+                    .map(|parent| Value::string(parent.to_string()))
+                    .collect(),
+            ),
         ),
     ];
-    signature_into(&mut entries, ["authorName", "authorEmail", "authorDate"], &commit.author);
-    signature_into(&mut entries, ["committerName", "committerEmail", "committerDate"], &commit.committer);
+    signature_into(
+        &mut entries,
+        ["authorName", "authorEmail", "authorDate"],
+        &commit.author,
+    );
+    signature_into(
+        &mut entries,
+        ["committerName", "committerEmail", "committerDate"],
+        &commit.committer,
+    );
     entries.extend([
         ("summary", Value::string(summary)),
         ("body", opt_text(&body)),

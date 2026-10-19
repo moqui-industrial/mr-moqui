@@ -187,10 +187,7 @@ impl EntityFacade {
 
     /// The file at a `dbresource://` location to read a window at a time: a content blob's chunks, or the row's
     /// bytes. `None` when no file is there.
-    pub fn open_db_resource(
-        &self,
-        location: &str,
-    ) -> Result<Option<OpenedDbFile>, Error> {
+    pub fn open_db_resource(&self, location: &str) -> Result<Option<OpenedDbFile>, Error> {
         let Some(stat) = self.stat_db_resource(location)?.filter(|stat| stat.is_file) else {
             return Ok(None);
         };
@@ -484,7 +481,11 @@ impl EntityFacade {
             Some(blob_id) => crate::resource::blob::BlobStore::new(self.clone())
                 .read(&blob_id)?
                 .map(Some)
-                .ok_or_else(|| Error::new(format!("the content blob {blob_id} of DbResource {resource_id} is missing"))),
+                .ok_or_else(|| {
+                    Error::new(format!(
+                        "the content blob {blob_id} of DbResource {resource_id} is missing"
+                    ))
+                }),
             None => blob_bytes(row.get("fileData"), resource_id),
         }
     }
@@ -1275,8 +1276,14 @@ mod tests {
             .write_db_resource_from(location, &mut input, Some(second.len() as u64))
             .unwrap();
         assert_eq!(facade.read_db_resource_bytes(location).unwrap().unwrap(), second);
-        assert_eq!(facade.read_db_resource_version(location, "01").unwrap(), Some(first.clone()));
-        let past: Vec<_> = history_rows(&facade).into_iter().filter(|(name, ..)| name == "01").collect();
+        assert_eq!(
+            facade.read_db_resource_version(location, "01").unwrap(),
+            Some(first.clone())
+        );
+        let past: Vec<_> = history_rows(&facade)
+            .into_iter()
+            .filter(|(name, ..)| name == "01")
+            .collect();
         assert_eq!(past.len(), 1);
         assert!(past[0].2.is_none(), "the past row holds no bytes of its own");
         let (stat, source) = facade.open_db_resource(location).unwrap().unwrap();
@@ -1288,7 +1295,9 @@ mod tests {
         assert_eq!(blobs.len(), 2);
 
         // a row written before content blobs moves into one
-        facade.write_db_resource("dbresource://media/old.bin", b"small").unwrap();
+        facade
+            .write_db_resource("dbresource://media/old.bin", b"small")
+            .unwrap();
         let (_, mut old) = facade.file_row("dbresource://media/old.bin").unwrap().unwrap();
         old.set("fileData", moqui_lib::object::Value::Bytes(second.clone()));
         old.set("fileSize", moqui_lib::object::Value::Null);
@@ -1298,9 +1307,25 @@ mod tests {
             .unwrap();
         assert_eq!(moved, 1);
         let (_, old) = facade.file_row("dbresource://media/old.bin").unwrap().unwrap();
-        assert_eq!(super::text_of(old.get("blobId")), Some(crate::resource::blob::blob_id(&second)));
-        assert_eq!(facade.read_db_resource_bytes("dbresource://media/old.bin").unwrap().unwrap(), second);
-        assert_eq!(facade.stat_db_resource("dbresource://media/old.bin").unwrap().unwrap().size, 200_000);
+        assert_eq!(
+            super::text_of(old.get("blobId")),
+            Some(crate::resource::blob::blob_id(&second))
+        );
+        assert_eq!(
+            facade
+                .read_db_resource_bytes("dbresource://media/old.bin")
+                .unwrap()
+                .unwrap(),
+            second
+        );
+        assert_eq!(
+            facade
+                .stat_db_resource("dbresource://media/old.bin")
+                .unwrap()
+                .unwrap()
+                .size,
+            200_000
+        );
     }
 
     /// `ResourceRef::size` of a `dbresource://` file is its data length, for the file and for one found among a

@@ -62,7 +62,10 @@ fn user(entity: &EntityFacade, username: &str) {
     row.set("username", Value::string(username));
     row.set("userFullName", Value::string(format!("Test {username}")));
     row.set("emailAddress", Value::string(format!("{username}@example.com")));
-    row.set("currentPassword", Value::string(crate::user::hash_password(PASSWORD).unwrap()));
+    row.set(
+        "currentPassword",
+        Value::string(crate::user::hash_password(PASSWORD).unwrap()),
+    );
     row.create(entity).unwrap();
 }
 
@@ -85,7 +88,11 @@ fn fixture(name: &str) -> Fixture {
         let _authz = context.disable_authz();
         user(&entity, WRITER);
         user(&entity, READER);
-        create(&entity, "moqui.security.ArtifactGroup", &[("artifactGroupId", "GIT_ALL")]);
+        create(
+            &entity,
+            "moqui.security.ArtifactGroup",
+            &[("artifactGroupId", "GIT_ALL")],
+        );
         create(
             &entity,
             "moqui.security.ArtifactGroupMember",
@@ -97,7 +104,10 @@ fn fixture(name: &str) -> Fixture {
                 ("inheritAuthz", "N"),
             ],
         );
-        for (group, member, action) in [("GIT_WRITERS", WRITER, "AUTHZA_ALL"), ("GIT_READERS", READER, "AUTHZA_VIEW")] {
+        for (group, member, action) in [
+            ("GIT_WRITERS", WRITER, "AUTHZA_ALL"),
+            ("GIT_READERS", READER, "AUTHZA_VIEW"),
+        ] {
             create(&entity, "moqui.security.UserGroup", &[("userGroupId", group)]);
             let mut row = EntityValue::make(&entity, "moqui.security.UserGroupMember").unwrap();
             row.set("userId", Value::string(member));
@@ -130,7 +140,10 @@ fn define(fixture: &Fixture, id: &str, kind: &str) {
     row.set("repositoryId", Value::string(id));
     row.set("repositoryKind", Value::string(kind));
     if kind != "db" {
-        row.set("localPath", Value::string(fixture.dir.join(format!("{id}.git")).to_string_lossy()));
+        row.set(
+            "localPath",
+            Value::string(fixture.dir.join(format!("{id}.git")).to_string_lossy()),
+        );
     }
     row.create(&fixture.entity).unwrap();
 }
@@ -202,7 +215,10 @@ fn handle(factory: &Arc<ExecutionContextFactory>, stream: TcpStream) {
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
     let mut parts = line.split_whitespace();
-    let (method, target) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
+    let (method, target) = (
+        parts.next().unwrap_or("").to_string(),
+        parts.next().unwrap_or("").to_string(),
+    );
     let mut headers = HashMap::new();
     loop {
         let mut header = String::new();
@@ -219,7 +235,9 @@ fn handle(factory: &Arc<ExecutionContextFactory>, stream: TcpStream) {
     let rest = path.strip_prefix("/git/").unwrap_or("");
     let (repository, tail) = rest.split_once('/').unwrap_or((rest, ""));
     if let Some(lfs_path) = tail.strip_prefix("info/lfs/") {
-        let content_length = headers.get("content-length").and_then(|value| value.parse::<u64>().ok());
+        let content_length = headers
+            .get("content-length")
+            .and_then(|value| value.parse::<u64>().ok());
         let request = super::lfs::LfsHttpRequest {
             repository: super::repository_of(repository).unwrap_or_default(),
             method: method.clone(),
@@ -274,7 +292,10 @@ fn handle(factory: &Arc<ExecutionContextFactory>, stream: TcpStream) {
             done: false,
         })
     } else {
-        let length: u64 = headers.get("content-length").and_then(|value| value.parse().ok()).unwrap_or(0);
+        let length: u64 = headers
+            .get("content-length")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
         Box::new(reader.take(length))
     };
     super::serve_http(&request, &mut body, &mut responder);
@@ -339,14 +360,24 @@ fn daemon(factory: &Arc<ExecutionContextFactory>, username: &str) -> String {
 // ---- the git command line ----
 
 fn git_available() -> bool {
-    Command::new("git").arg("--version").output().is_ok_and(|output| output.status.success())
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 /// Run git in `dir` (with a home of its own, so no user config is read). Its output, and whether it succeeded.
 fn git_in(dir: &Path, home: &Path, args: &[&str]) -> (bool, String) {
     let mut command = Command::new("git");
     command
-        .args(["-c", "user.name=Test Pusher", "-c", "user.email=pusher@example.com", "-c", "init.defaultBranch=main"])
+        .args([
+            "-c",
+            "user.name=Test Pusher",
+            "-c",
+            "user.email=pusher@example.com",
+            "-c",
+            "init.defaultBranch=main",
+        ])
         .args(["-c", "credential.helper="])
         .args(args)
         .current_dir(dir)
@@ -395,7 +426,13 @@ fn write_file(dir: &Path, name: &str, text: &str) {
 fn head_of(fixture: &Fixture, id: &str, name: &str) -> Option<String> {
     let _entered = fixture.context.enter();
     let provider = fixture.context.factory().resource().git().unwrap().clone();
-    provider.repo(id).unwrap().store.read_ref(name).unwrap().map(|id| id.to_string())
+    provider
+        .repo(id)
+        .unwrap()
+        .store
+        .read_ref(name)
+        .unwrap()
+        .map(|id| id.to_string())
 }
 
 /// Clone, commit, push, fetch into another clone, and read the pushed file through `git://`, at a protocol version.
@@ -410,7 +447,11 @@ fn round_trip(fixture: &Fixture, kind: &str, version: &str) {
 
     // an empty repository clones, then takes a first push that names its default branch
     let first = fixture.dir.join(format!("first-{id}"));
-    let out = git_ok(&fixture.dir, &home, &["-c", &protocol, "clone", &url, &first.to_string_lossy()]);
+    let out = git_ok(
+        &fixture.dir,
+        &home,
+        &["-c", &protocol, "clone", &url, &first.to_string_lossy()],
+    );
     assert!(out.contains("empty repository"), "{out}");
     write_file(&first, "README.md", "# Round trip\n");
     write_file(&first, "src/lib.rs", "pub fn one() -> u32 {\n    1\n}\n");
@@ -418,19 +459,33 @@ fn round_trip(fixture: &Fixture, kind: &str, version: &str) {
     git_ok(&first, &home, &["commit", "-m", "First commit\n\nTask: RT-100001"]);
     git_ok(&first, &home, &["-c", &protocol, "push", "origin", "main"]);
     let pushed = git_ok(&first, &home, &["rev-parse", "HEAD"]).trim().to_string();
-    assert_eq!(head_of(fixture, &id, "refs/heads/main").as_deref(), Some(pushed.as_str()));
+    assert_eq!(
+        head_of(fixture, &id, "refs/heads/main").as_deref(),
+        Some(pushed.as_str())
+    );
 
     // a second clone sees it; a commit there is fetched into the first
     let second = fixture.dir.join(format!("second-{id}"));
-    git_ok(&fixture.dir, &home, &["-c", &protocol, "clone", &url, &second.to_string_lossy()]);
-    assert_eq!(std::fs::read_to_string(second.join("README.md")).unwrap(), "# Round trip\n");
+    git_ok(
+        &fixture.dir,
+        &home,
+        &["-c", &protocol, "clone", &url, &second.to_string_lossy()],
+    );
+    assert_eq!(
+        std::fs::read_to_string(second.join("README.md")).unwrap(),
+        "# Round trip\n"
+    );
     for round in 0..3 {
         write_file(&second, &format!("notes/{round}.md"), &format!("note {round}\n"));
         git_ok(&second, &home, &["add", "."]);
         git_ok(&second, &home, &["commit", "-m", &format!("Note {round}")]);
     }
     git_ok(&second, &home, &["tag", "-a", "v1.0", "-m", "Release 1.0"]);
-    git_ok(&second, &home, &["-c", &protocol, "push", "--follow-tags", "origin", "main"]);
+    git_ok(
+        &second,
+        &home,
+        &["-c", &protocol, "push", "--follow-tags", "origin", "main"],
+    );
     git_ok(&first, &home, &["-c", &protocol, "pull", "--ff-only", "origin", "main"]);
     git_ok(&first, &home, &["-c", &protocol, "fetch", "--tags", "origin"]);
     assert_eq!(std::fs::read_to_string(first.join("notes/2.md")).unwrap(), "note 2\n");
@@ -444,13 +499,22 @@ fn round_trip(fixture: &Fixture, kind: &str, version: &str) {
         let _entered = fixture.context.enter();
         let resources = fixture.context.factory().resource();
         assert_eq!(
-            resources.get(&format!("git://{id}/notes/1.md")).unwrap().read_text().unwrap(),
+            resources
+                .get(&format!("git://{id}/notes/1.md"))
+                .unwrap()
+                .read_text()
+                .unwrap(),
             "note 1\n"
         );
-        resources.write_bytes(&format!("git://{id}/notes/web.md"), b"from the web\n").unwrap();
+        resources
+            .write_bytes(&format!("git://{id}/notes/web.md"), b"from the web\n")
+            .unwrap();
     }
     git_ok(&first, &home, &["-c", &protocol, "pull", "--ff-only", "origin", "main"]);
-    assert_eq!(std::fs::read_to_string(first.join("notes/web.md")).unwrap(), "from the web\n");
+    assert_eq!(
+        std::fs::read_to_string(first.join("notes/web.md")).unwrap(),
+        "from the web\n"
+    );
 
     // a branch, a force push, a delete
     git_ok(&first, &home, &["checkout", "-b", "feature"]);
@@ -461,11 +525,22 @@ fn round_trip(fixture: &Fixture, kind: &str, version: &str) {
     git_ok(&first, &home, &["commit", "--amend", "-m", "Feature, amended"]);
     let (ok, out) = git_in(&first, &home, &["-c", &protocol, "push", "origin", "feature"]);
     assert!(!ok && out.contains("rejected"), "{out}");
-    git_ok(&first, &home, &["-c", &protocol, "push", "--force", "origin", "feature"]);
-    git_ok(&first, &home, &["-c", &protocol, "push", "origin", "--delete", "feature"]);
+    git_ok(
+        &first,
+        &home,
+        &["-c", &protocol, "push", "--force", "origin", "feature"],
+    );
+    git_ok(
+        &first,
+        &home,
+        &["-c", &protocol, "push", "origin", "--delete", "feature"],
+    );
     assert_eq!(head_of(fixture, &id, "refs/heads/feature"), None);
     let (ok, out) = git_in(&first, &home, &["-c", &protocol, "push", "origin", "--delete", "main"]);
-    assert!(!ok && out.contains("deletion of the current branch prohibited"), "{out}");
+    assert!(
+        !ok && out.contains("deletion of the current branch prohibited"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -508,7 +583,11 @@ fn object_rows(fixture: &Fixture, id: &str) -> HashMap<String, (String, String, 
         .unwrap();
     rows.iter()
         .map(|row| {
-            let text = |name: &str| row.get(name).map(moqui_lib::object::to_plain_string).unwrap_or_default();
+            let text = |name: &str| {
+                row.get(name)
+                    .map(moqui_lib::object::to_plain_string)
+                    .unwrap_or_default()
+            };
             let size = text("objectSize").parse().unwrap_or(0);
             (text("objectId"), (text("storage"), text("objectType"), size))
         })
@@ -541,7 +620,9 @@ fn a_db_repository_keeps_pushed_deltas_and_sends_them_back() {
     let rows = object_rows(&fixture, id);
     let deltas = rows.values().filter(|(storage, _, _)| storage == "delta").count();
     assert!(deltas >= 5, "{deltas} delta rows of {}", rows.len());
-    assert!(rows.values().all(|(storage, _, _)| storage == "zlib" || storage == "delta"));
+    assert!(rows
+        .values()
+        .all(|(storage, _, _)| storage == "zlib" || storage == "delta"));
     assert!(rows
         .values()
         .filter(|(_, kind, _)| kind == "commit")
@@ -569,7 +650,11 @@ fn a_db_repository_keeps_pushed_deltas_and_sends_them_back() {
         let protocol = format!("protocol.version={version}");
         // kept as a pack, small as it is
         let keep = ["-c", "transfer.unpackLimit=1", "-c", &protocol];
-        git_ok(&fixture.dir, &home, &[&keep[..], &["clone", &url, &clone.to_string_lossy()]].concat());
+        git_ok(
+            &fixture.dir,
+            &home,
+            &[&keep[..], &["clone", &url, &clone.to_string_lossy()]].concat(),
+        );
         assert_eq!(std::fs::read_to_string(clone.join("big.txt")).unwrap(), big_text(11));
         let fsck = git_ok(&clone, &home, &["fsck", "--strict", "--full"]);
         assert!(!fsck.contains("error"), "{fsck}");
@@ -581,7 +666,10 @@ fn a_db_repository_keeps_pushed_deltas_and_sends_them_back() {
             .find(|path| path.extension().is_some_and(|ext| ext == "idx"))
             .unwrap();
         let verified = git_ok(&clone, &home, &["verify-pack", "-v", &index.to_string_lossy()]);
-        assert!(verified.contains("chain length"), "the clone's pack has no deltas:\n{verified}");
+        assert!(
+            verified.contains("chain length"),
+            "the clone's pack has no deltas:\n{verified}"
+        );
     }
 
     // a fetch of one more edit is a thin pack: the delta against the version the client has
@@ -664,7 +752,9 @@ fn large_objects_are_content_blobs_streamed_in_and_out() {
             state as u8
         })
         .collect();
-    let text: String = (0..300_000).map(|line| format!("line {line} of a large text file\n")).collect();
+    let text: String = (0..300_000)
+        .map(|line| format!("line {line} of a large text file\n"))
+        .collect();
     std::fs::write(source.join("big.bin"), &binary).unwrap();
     write_file(&source, "big.txt", &text);
     write_file(&source, "small.txt", "small\n");
@@ -677,14 +767,37 @@ fn large_objects_are_content_blobs_streamed_in_and_out() {
     {
         let _entered = fixture.context.enter();
         let _authz = fixture.context.disable_authz();
-        let blobs = fixture.entity.find("moqui.resource.ContentBlob").unwrap().list().unwrap();
+        let blobs = fixture
+            .entity
+            .find("moqui.resource.ContentBlob")
+            .unwrap()
+            .list()
+            .unwrap();
         assert_eq!(blobs.len(), 2);
         let resources = fixture.context.factory().resource();
-        assert_eq!(resources.get(&format!("git://{id}/big.bin")).unwrap().read_bytes().unwrap(), binary);
-        assert_eq!(resources.get(&format!("git://{id}/big.txt")).unwrap().read_text().unwrap(), text);
+        assert_eq!(
+            resources
+                .get(&format!("git://{id}/big.bin"))
+                .unwrap()
+                .read_bytes()
+                .unwrap(),
+            binary
+        );
+        assert_eq!(
+            resources
+                .get(&format!("git://{id}/big.txt"))
+                .unwrap()
+                .read_text()
+                .unwrap(),
+            text
+        );
     }
     let clone = fixture.dir.join("clone");
-    git_ok(&fixture.dir, &home, &["-c", "protocol.version=2", "clone", &url, &clone.to_string_lossy()]);
+    git_ok(
+        &fixture.dir,
+        &home,
+        &["-c", "protocol.version=2", "clone", &url, &clone.to_string_lossy()],
+    );
     assert_eq!(std::fs::read(clone.join("big.bin")).unwrap(), binary);
     assert_eq!(std::fs::read_to_string(clone.join("big.txt")).unwrap(), text);
     let fsck = git_ok(&clone, &home, &["fsck", "--strict", "--full"]);
@@ -720,9 +833,20 @@ fn large_objects_are_content_blobs_streamed_in_and_out() {
         let blobs = crate::resource::blob::BlobStore::new(fixture.entity.clone());
         let tomorrow = jiff::Timestamp::now().as_millisecond() + 24 * 60 * 60 * 1000;
         let (deleted, bytes, _) = blobs.collect(tomorrow, false).unwrap();
-        assert_eq!((deleted, bytes), (1, binary.len() as u64), "the binary's blob; the text's is referenced");
+        assert_eq!(
+            (deleted, bytes),
+            (1, binary.len() as u64),
+            "the binary's blob; the text's is referenced"
+        );
         let resources = fixture.context.factory().resource();
-        assert_eq!(resources.get(&format!("git://{id}/big.txt")).unwrap().read_text().unwrap(), text);
+        assert_eq!(
+            resources
+                .get(&format!("git://{id}/big.txt"))
+                .unwrap()
+                .read_text()
+                .unwrap(),
+            text
+        );
     }
     let again = fixture.dir.join("again");
     git_ok(&fixture.dir, &home, &["clone", &url, &again.to_string_lossy()]);
@@ -740,7 +864,10 @@ fn http(
 ) -> (u16, HashMap<String, String>, Vec<u8>) {
     let address = base.trim_start_matches("http://");
     let mut stream = TcpStream::connect(address).unwrap();
-    let mut head = format!("{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\n", body.len());
+    let mut head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\n",
+        body.len()
+    );
     for (name, value) in headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
@@ -752,7 +879,14 @@ fn http(
     let split = response.windows(4).position(|window| window == b"\r\n\r\n").unwrap();
     let text = String::from_utf8_lossy(&response[..split]).into_owned();
     let mut lines = text.split("\r\n");
-    let status = lines.next().unwrap().split_whitespace().nth(1).unwrap().parse().unwrap();
+    let status = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
     let headers = lines
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
@@ -788,7 +922,11 @@ fn lfs_objects_are_uploaded_downloaded_and_locked_over_the_batch_api() {
             &base,
             "POST",
             &format!("/git/{repo}.git/info/lfs/objects/batch"),
-            &[("Authorization", auth), ("Accept", lfs_json), ("Content-Type", lfs_json)],
+            &[
+                ("Authorization", auth),
+                ("Accept", lfs_json),
+                ("Content-Type", lfs_json),
+            ],
             body.to_string().as_bytes(),
         )
     };
@@ -805,16 +943,31 @@ fn lfs_objects_are_uploaded_downloaded_and_locked_over_the_batch_api() {
     let reply = json_of(&body);
     let actions = &reply["objects"][0]["actions"];
     let upload = actions["upload"]["href"].as_str().unwrap().to_string();
-    let token = actions["upload"]["header"]["Authorization"].as_str().unwrap().to_string();
+    let token = actions["upload"]["header"]["Authorization"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert!(token.starts_with("MoquiLfs v1."));
     let verify = actions["verify"]["href"].as_str().unwrap().to_string();
     // content that is not the oid's is refused
-    let (status, _, _) = http(&base, "PUT", &path_of(&upload), &[("Authorization", &token)], b"other bytes");
+    let (status, _, _) = http(
+        &base,
+        "PUT",
+        &path_of(&upload),
+        &[("Authorization", &token)],
+        b"other bytes",
+    );
     assert_eq!(status, 422);
     let (status, _, body) = http(&base, "PUT", &path_of(&upload), &[("Authorization", &token)], &content);
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
     let verify_body = serde_json::json!({ "oid": oid, "size": content.len() }).to_string();
-    let (status, _, _) = http(&base, "POST", &path_of(&verify), &[("Authorization", &token)], verify_body.as_bytes());
+    let (status, _, _) = http(
+        &base,
+        "POST",
+        &path_of(&verify),
+        &[("Authorization", &token)],
+        verify_body.as_bytes(),
+    );
     assert_eq!(status, 200);
     // there now: no actions
     let (_, _, body) = batch("art", &writer, "upload");
@@ -858,7 +1011,13 @@ fn lfs_objects_are_uploaded_downloaded_and_locked_over_the_batch_api() {
         b"",
     );
     assert_eq!(status, 404);
-    let (status, _, _) = http(&base, "GET", &path_of(&href).replace("/art.git/", "/other.git/"), &[("Authorization", &token)], b"");
+    let (status, _, _) = http(
+        &base,
+        "GET",
+        &path_of(&href).replace("/art.git/", "/other.git/"),
+        &[("Authorization", &token)],
+        b"",
+    );
     assert_eq!(status, 401, "a token is for its repository");
     let (_, _, body) = batch("other", &writer, "upload");
     let upload = json_of(&body)["objects"][0]["actions"]["upload"].clone();
@@ -873,30 +1032,76 @@ fn lfs_objects_are_uploaded_downloaded_and_locked_over_the_batch_api() {
     {
         let _entered = fixture.context.enter();
         let _authz = fixture.context.disable_authz();
-        let blobs = fixture.entity.find("moqui.resource.ContentBlob").unwrap().list().unwrap();
+        let blobs = fixture
+            .entity
+            .find("moqui.resource.ContentBlob")
+            .unwrap()
+            .list()
+            .unwrap();
         assert_eq!(blobs.len(), 1);
-        let objects = fixture.entity.find("moqui.resource.GitLfsObject").unwrap().list().unwrap();
+        let objects = fixture
+            .entity
+            .find("moqui.resource.GitLfsObject")
+            .unwrap()
+            .list()
+            .unwrap();
         assert_eq!(objects.len(), 2);
     }
 
     // locks
     let locks = "/git/art.git/info/lfs/locks";
     let lock_body = serde_json::json!({ "path": "images/logo.psd", "ref": { "name": "refs/heads/main" } }).to_string();
-    let (status, _, body) = http(&base, "POST", locks, &[("Authorization", &writer)], lock_body.as_bytes());
+    let (status, _, body) = http(
+        &base,
+        "POST",
+        locks,
+        &[("Authorization", &writer)],
+        lock_body.as_bytes(),
+    );
     assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
     let lock = json_of(&body)["lock"].clone();
     assert_eq!(lock["owner"]["name"], WRITER);
-    let (status, _, _) = http(&base, "POST", locks, &[("Authorization", &writer)], lock_body.as_bytes());
+    let (status, _, _) = http(
+        &base,
+        "POST",
+        locks,
+        &[("Authorization", &writer)],
+        lock_body.as_bytes(),
+    );
     assert_eq!(status, 409);
-    let (status, _, _) = http(&base, "POST", locks, &[("Authorization", &reader)], lock_body.as_bytes());
+    let (status, _, _) = http(
+        &base,
+        "POST",
+        locks,
+        &[("Authorization", &reader)],
+        lock_body.as_bytes(),
+    );
     assert_eq!(status, 403);
-    let (status, _, body) = http(&base, "GET", &format!("{locks}?path=images/logo.psd"), &[("Authorization", &reader)], b"");
+    let (status, _, body) = http(
+        &base,
+        "GET",
+        &format!("{locks}?path=images/logo.psd"),
+        &[("Authorization", &reader)],
+        b"",
+    );
     assert_eq!(status, 200);
     assert_eq!(json_of(&body)["locks"].as_array().unwrap().len(), 1);
-    let (_, _, body) = http(&base, "POST", &format!("{locks}/verify"), &[("Authorization", &writer)], b"{}");
+    let (_, _, body) = http(
+        &base,
+        "POST",
+        &format!("{locks}/verify"),
+        &[("Authorization", &writer)],
+        b"{}",
+    );
     assert_eq!(json_of(&body)["ours"].as_array().unwrap().len(), 1);
     let id = lock["id"].as_str().unwrap();
-    let (status, _, _) = http(&base, "POST", &format!("{locks}/{id}/unlock"), &[("Authorization", &writer)], b"{}");
+    let (status, _, _) = http(
+        &base,
+        "POST",
+        &format!("{locks}/{id}/unlock"),
+        &[("Authorization", &writer)],
+        b"{}",
+    );
     assert_eq!(status, 200);
     let (_, _, body) = http(&base, "GET", locks, &[("Authorization", &writer)], b"");
     assert!(json_of(&body)["locks"].as_array().unwrap().is_empty());
@@ -907,15 +1112,39 @@ fn lfs_objects_are_uploaded_downloaded_and_locked_over_the_batch_api() {
         let context = factory.new_context();
         let _entered = context.enter();
         let (mut output, mut errors) = (Vec::new(), Vec::new());
-        let status = super::serve_ssh(WRITER, "git-lfs-authenticate 'art.git' upload", None, &mut &b""[..], &mut output, &mut errors);
+        let status = super::serve_ssh(
+            WRITER,
+            "git-lfs-authenticate 'art.git' upload",
+            None,
+            &mut &b""[..],
+            &mut output,
+            &mut errors,
+        );
         assert_eq!(status, 0, "{}", String::from_utf8_lossy(&errors));
         let answer = json_of(&output);
         assert!(answer["href"].as_str().unwrap().ends_with("/git/art.git/info/lfs"));
-        assert!(answer["header"]["Authorization"].as_str().unwrap().starts_with("MoquiLfs "));
+        assert!(answer["header"]["Authorization"]
+            .as_str()
+            .unwrap()
+            .starts_with("MoquiLfs "));
         let mut errors = Vec::new();
-        let status = super::serve_ssh(READER, "git-lfs-authenticate 'art.git' upload", None, &mut &b""[..], &mut Vec::new(), &mut errors);
+        let status = super::serve_ssh(
+            READER,
+            "git-lfs-authenticate 'art.git' upload",
+            None,
+            &mut &b""[..],
+            &mut Vec::new(),
+            &mut errors,
+        );
         assert_ne!(status, 0, "the reader may not push");
-        let status = super::serve_ssh(WRITER, "git-lfs-transfer 'art.git' upload", None, &mut &b""[..], &mut Vec::new(), &mut Vec::new());
+        let status = super::serve_ssh(
+            WRITER,
+            "git-lfs-transfer 'art.git' upload",
+            None,
+            &mut &b""[..],
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
         assert_ne!(status, 0);
     }
     moqui_lib::env::clear_property("git_lfs_token_key");
@@ -948,7 +1177,15 @@ fn shallow_fetches_deepen_and_unshallow() {
         git_ok(
             &fixture.dir,
             &home,
-            &["-c", &protocol, "clone", "--depth", "1", &url, &shallow.to_string_lossy()],
+            &[
+                "-c",
+                &protocol,
+                "clone",
+                "--depth",
+                "1",
+                &url,
+                &shallow.to_string_lossy(),
+            ],
         );
         let count = |dir: &Path| git_ok(dir, &home, &["rev-list", "--count", "HEAD"]).trim().to_string();
         assert_eq!(count(&shallow), "1");
@@ -986,7 +1223,13 @@ fn stateful_conversations_over_a_daemon_connection() {
         git_ok(
             &fixture.dir,
             &home,
-            &["-c", &format!("protocol.version={version}"), "clone", &url, &copy.to_string_lossy()],
+            &[
+                "-c",
+                &format!("protocol.version={version}"),
+                "clone",
+                &url,
+                &copy.to_string_lossy(),
+            ],
         );
         assert_eq!(std::fs::read_to_string(copy.join("a.txt")).unwrap(), "a\n");
     }
@@ -1005,7 +1248,11 @@ fn credentials_and_rights_are_checked() {
     let home = fixture.dir.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let work = fixture.dir.join("work");
-    git_ok(&fixture.dir, &home, &["clone", &url_with(&base, WRITER, "guarded"), &work.to_string_lossy()]);
+    git_ok(
+        &fixture.dir,
+        &home,
+        &["clone", &url_with(&base, WRITER, "guarded"), &work.to_string_lossy()],
+    );
     write_file(&work, "a.txt", "a\n");
     git_ok(&work, &home, &["add", "."]);
     git_ok(&work, &home, &["commit", "-m", "A"]);
@@ -1013,7 +1260,11 @@ fn credentials_and_rights_are_checked() {
 
     // the reader may clone and not push
     let read = fixture.dir.join("read");
-    git_ok(&fixture.dir, &home, &["clone", &url_with(&base, READER, "guarded"), &read.to_string_lossy()]);
+    git_ok(
+        &fixture.dir,
+        &home,
+        &["clone", &url_with(&base, READER, "guarded"), &read.to_string_lossy()],
+    );
     write_file(&read, "b.txt", "b\n");
     git_ok(&read, &home, &["add", "."]);
     git_ok(&read, &home, &["commit", "-m", "B"]);
@@ -1023,7 +1274,10 @@ fn credentials_and_rights_are_checked() {
     // a wrong password, no credentials, an unknown repository, a mirror
     let wrong = base.replacen("http://", &format!("http://{WRITER}:wrong@"), 1) + "/git/guarded.git";
     let (ok, out) = git_in(&fixture.dir, &home, &["ls-remote", &wrong]);
-    assert!(!ok && (out.contains("401") || out.contains("Authentication failed")), "{out}");
+    assert!(
+        !ok && (out.contains("401") || out.contains("Authentication failed")),
+        "{out}"
+    );
     let (ok, out) = git_in(&fixture.dir, &home, &["ls-remote", &format!("{base}/git/guarded.git")]);
     assert!(!ok, "{out}");
     let (ok, out) = git_in(&fixture.dir, &home, &["ls-remote", &url_with(&base, WRITER, "nosuch")]);
@@ -1189,7 +1443,15 @@ fn test_rows(fixture: &Fixture) -> HashMap<String, EntityValue> {
         .list()
         .unwrap()
         .iter()
-        .map(|row| (row.get("testId").and_then(Value::as_str).unwrap_or_default().to_string(), row.clone()))
+        .map(|row| {
+            (
+                row.get("testId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                row.clone(),
+            )
+        })
         .collect()
 }
 
@@ -1214,11 +1476,18 @@ fn git_eca_rules_check_pushes_and_see_their_commits_and_tags() {
     git_ok(&work, &home, &["add", "."]);
     git_ok(&work, &home, &["commit", "-m", "WIP first try"]);
     let (ok, out) = git_in(&work, &home, &["push", "origin", "main"]);
-    assert!(!ok && out.contains("WIP commits are not accepted") && out.contains("Hello from moqui"), "{out}");
+    assert!(
+        !ok && out.contains("WIP commits are not accepted") && out.contains("Hello from moqui"),
+        "{out}"
+    );
     assert_eq!(head_of(&fixture, "eca", "refs/heads/main"), None);
 
     // accepted: the commit rule sees each commit, its ref and its trailers
-    git_ok(&work, &home, &["commit", "--amend", "-m", "First commit\n\nTask: ECA-100001"]);
+    git_ok(
+        &work,
+        &home,
+        &["commit", "--amend", "-m", "First commit\n\nTask: ECA-100001"],
+    );
     write_file(&work, "b.txt", "b\n");
     git_ok(&work, &home, &["add", "."]);
     git_ok(&work, &home, &["commit", "-m", "Second commit"]);
@@ -1230,13 +1499,23 @@ fn git_eca_rules_check_pushes_and_see_their_commits_and_tags() {
     let updates = settled(&fixture);
     let rows = test_rows(&fixture);
     let first = git_ok(&work, &home, &["rev-parse", "HEAD~1"]);
-    let first = rows.get(&format!("C{}", &first.trim()[..10])).expect("the first commit's row");
+    let first = rows
+        .get(&format!("C{}", &first.trim()[..10]))
+        .expect("the first commit's row");
     assert_eq!(first.get("testMedium").and_then(Value::as_str), Some("First commit"));
     assert_eq!(first.get("value").and_then(Value::as_str), Some("refs/heads/main"));
     assert_eq!(first.get("testLong").and_then(Value::as_str), Some("ECA-100001"));
-    assert_eq!(rows.keys().filter(|id| id.starts_with('C')).count(), 2, "{:?}", rows.keys());
+    assert_eq!(
+        rows.keys().filter(|id| id.starts_with('C')).count(),
+        2,
+        "{:?}",
+        rows.keys()
+    );
     assert_eq!(rows["Tv1"].get("value").and_then(Value::as_str), Some("annotated"));
-    assert_eq!(rows["Tv1"].get("testMedium").and_then(Value::as_str), Some("Version one"));
+    assert_eq!(
+        rows["Tv1"].get("testMedium").and_then(Value::as_str),
+        Some("Version one")
+    );
     assert_eq!(rows["Tlight"].get("value").and_then(Value::as_str), Some("light"));
 
     // the push log: the refused push, the branch push and the tag push; the failing rule is recorded and the others ran
@@ -1292,8 +1571,14 @@ fn mirror_fetches_and_opted_in_writes_raise_events() {
         let mut row = EntityValue::make(&fixture.entity, crate::resource::git::GIT_REPOSITORY).unwrap();
         row.set("repositoryId", Value::string("mirror"));
         row.set("repositoryKind", Value::string("remote"));
-        row.set("localPath", Value::string(fixture.dir.join("mirror.git").to_string_lossy()));
-        row.set("remoteUrl", Value::string(format!("file://{}", fixture.dir.join("src.git").display())));
+        row.set(
+            "localPath",
+            Value::string(fixture.dir.join("mirror.git").to_string_lossy()),
+        );
+        row.set(
+            "remoteUrl",
+            Value::string(format!("file://{}", fixture.dir.join("src.git").display())),
+        );
         row.create(&fixture.entity).unwrap();
     }
     {
@@ -1309,15 +1594,34 @@ fn mirror_fetches_and_opted_in_writes_raise_events() {
     {
         let _entered = fixture.context.enter();
         crate::user::internal_login_user(WRITER).unwrap();
-        fixture.context.factory().resource().git().unwrap().fetch("mirror").unwrap();
+        fixture
+            .context
+            .factory()
+            .resource()
+            .git()
+            .unwrap()
+            .fetch("mirror")
+            .unwrap();
         crate::user::logout().unwrap();
     }
     settled(&fixture);
     let rows = test_rows(&fixture);
-    let writes: Vec<&EntityValue> = rows.iter().filter(|(id, _)| id.starts_with('W')).map(|(_, row)| row).collect();
+    let writes: Vec<&EntityValue> = rows
+        .iter()
+        .filter(|(id, _)| id.starts_with('W'))
+        .map(|(_, row)| row)
+        .collect();
     assert_eq!(writes.len(), 2, "{:?}", rows.keys());
-    assert!(writes.iter().all(|row| row.get("value").and_then(Value::as_str) == Some(WRITER)));
-    let fetched: Vec<&EntityValue> = rows.iter().filter(|(id, _)| id.starts_with('F')).map(|(_, row)| row).collect();
+    assert!(writes
+        .iter()
+        .all(|row| row.get("value").and_then(Value::as_str) == Some(WRITER)));
+    let fetched: Vec<&EntityValue> = rows
+        .iter()
+        .filter(|(id, _)| id.starts_with('F'))
+        .map(|(_, row)| row)
+        .collect();
     assert_eq!(fetched.len(), 2, "{:?}", rows.keys());
-    assert!(fetched.iter().all(|row| row.get("value").and_then(Value::as_str) == Some("fetch")));
+    assert!(fetched
+        .iter()
+        .all(|row| row.get("value").and_then(Value::as_str) == Some("fetch")));
 }

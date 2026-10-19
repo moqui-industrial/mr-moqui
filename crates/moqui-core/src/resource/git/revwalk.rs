@@ -51,9 +51,7 @@ struct Queued {
 
 impl Ord for Queued {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.seconds
-            .cmp(&other.seconds)
-            .then_with(|| other.seq.cmp(&self.seq))
+        self.seconds.cmp(&other.seconds).then_with(|| other.seq.cmp(&self.seq))
     }
 }
 
@@ -225,10 +223,7 @@ impl<'a> Walk<'a> {
         let Some(queued) = self.queue.pop() else {
             return Ok(None);
         };
-        let node = self
-            .nodes
-            .get_mut(&queued.id)
-            .expect("a queued commit has its node");
+        let node = self.nodes.get_mut(&queued.id).expect("a queued commit has its node");
         node.queued = false;
         let hidden = node.hidden;
         if !hidden {
@@ -352,13 +347,7 @@ mod tests {
     fn names(store: &MemoryStore, commits: &[CommitInfo]) -> Vec<String> {
         commits
             .iter()
-            .map(|commit| {
-                ops::read_commit(store, &commit.id)
-                    .unwrap()
-                    .message
-                    .trim()
-                    .to_string()
-            })
+            .map(|commit| ops::read_commit(store, &commit.id).unwrap().message.trim().to_string())
             .collect()
     }
 

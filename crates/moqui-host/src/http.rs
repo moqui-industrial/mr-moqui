@@ -245,7 +245,15 @@ pub(crate) async fn listen(
         Some((listener, _, acceptor)) => {
             tokio::join!(
                 plain,
-                serve(listener, Some(acceptor), app, limits, guard, permits, stopped(shutdown_rx))
+                serve(
+                    listener,
+                    Some(acceptor),
+                    app,
+                    limits,
+                    guard,
+                    permits,
+                    stopped(shutdown_rx)
+                )
             );
         }
         None => plain.await,
@@ -416,9 +424,9 @@ where
             .get(axum::http::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.trim_start().to_ascii_lowercase().starts_with("multipart/"));
-        let deadline = limits.request.filter(|_| {
-            request.uri().path() != "/notws" && !request.uri().path().starts_with("/git/") && !upload
-        });
+        let deadline = limits
+            .request
+            .filter(|_| request.uri().path() != "/notws" && !request.uri().path().starts_with("/git/") && !upload);
         let call = refused.is_none().then(|| router.clone().oneshot(request));
         async move {
             let Some(call) = call else {
@@ -540,7 +548,10 @@ async fn dispatch_screen(
     let started = std::time::Instant::now();
     let started_millis = crate::logging::now_millis();
     let over_tls = request.extensions().get::<TlsConnection>().is_some();
-    let client = request.extensions().get::<ClientAddr>().map_or(peer.ip(), |client| client.0);
+    let client = request
+        .extensions()
+        .get::<ClientAddr>()
+        .map_or(peer.ip(), |client| client.0);
     let (parts, body) = request.into_parts();
     let mut web = WebRequest::new(parts.method.as_str(), parts.uri.path());
     web.https = over_tls || forwarded_https(&parts.headers, peer.ip(), state.guard.conf.addressing());
@@ -1226,7 +1237,11 @@ mod tests {
     async fn guarded(
         guard: Arc<Guard>,
         limits: ListenLimits,
-    ) -> (std::net::SocketAddr, tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+    ) -> (
+        std::net::SocketAddr,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let app = Router::new().fallback(|| async { "ok" });
@@ -1307,7 +1322,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         // closed without an answer: an end of stream, or a reset when the request was still unread
         let mut refused = TcpStream::connect(address).await.unwrap();
-        let _ = refused.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").await;
+        let _ = refused
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .await;
         let mut buf = Vec::new();
         let read = tokio::time::timeout(Duration::from_secs(5), refused.read_to_end(&mut buf))
             .await

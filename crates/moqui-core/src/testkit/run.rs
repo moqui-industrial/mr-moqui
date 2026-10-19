@@ -63,7 +63,8 @@ pub enum Outcome {
     Failed(Failure),
     /// `ignore: "reason"` on the feature.
     Ignored(String),
-    /// Not run: a stepwise spec after a failure, or a failed `setupSpec`.
+    /// Not run: a stepwise spec after a failure, a failed `setupSpec`, a `requires` this binary lacks, or a case
+    /// whose failure only reports that a tool is not built in.
     Skipped(String),
 }
 
@@ -176,9 +177,18 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
         "setupSpec",
     );
     clear_messages();
-    let mut skip_rest = setup.as_ref().err().map(|_| "setupSpec failed".to_string());
-    if let Err(failure) = setup {
-        result.setup_failure = Some(*failure);
+    // A setupSpec that only reports a missing tool does not fail the spec. The cases are skipped with that reason
+    // and cleanupSpec still runs. A skip is not an earlier failure, so a stepwise spec keeps going after one.
+    let mut skip_rest = None;
+    match setup {
+        Ok(()) => {}
+        Err(failure) => match missing_tool_of(&failure) {
+            Some(feature) => skip_rest = Some(requires_skip_reason(feature)),
+            None => {
+                result.setup_failure = Some(*failure);
+                skip_rest = Some("setupSpec failed".to_string());
+            }
+        },
     }
     for (index, case) in plan.cases.iter().enumerate() {
         if let Some(filter) = &options.feature_filter {
@@ -193,13 +203,10 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
             .map(String::as_str)
             .filter(|feature| !crate::build_info::has_feature(feature))
             .collect();
-        let outcome = if let Some(reason) = &skip_rest {
+        let mut outcome = if let Some(reason) = &skip_rest {
             Outcome::Skipped(reason.clone())
         } else if !missing.is_empty() {
-            Outcome::Skipped(format!(
-                "requires {}, not built into this binary (moqui version)",
-                missing.join(", ")
-            ))
+            Outcome::Skipped(requires_skip_reason(&missing.join(", ")))
         } else if let Some(reason) = &case.ignore {
             Outcome::Ignored(reason.clone())
         } else {
@@ -223,6 +230,15 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
                 }
             }
         };
+        // A case that ran and failed only because a tool is absent is skipped, the same as `requires`. Checked
+        // before the stepwise rule, so the later features of a stepwise spec still run.
+        let tool = match &outcome {
+            Outcome::Failed(failure) => missing_tool_of(failure),
+            _ => None,
+        };
+        if let Some(feature) = tool {
+            outcome = Outcome::Skipped(requires_skip_reason(feature));
+        }
         if plan.spec.stepwise && matches!(outcome, Outcome::Failed(_)) {
             skip_rest = Some("an earlier feature of this stepwise spec failed".to_string());
         }
@@ -240,7 +256,17 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
         plan.spec.timeout,
         "cleanupSpec",
     ) {
-        result.cleanup_failure = Some(*failure);
+        if let Some(feature) = missing_tool_of(&failure) {
+            let case_result = CaseResult {
+                name: "cleanupSpec".to_string(),
+                outcome: Outcome::Skipped(requires_skip_reason(feature)),
+                duration: Duration::ZERO,
+            };
+            on_case(&case_result);
+            result.cases.push(case_result);
+        } else {
+            result.cleanup_failure = Some(*failure);
+        }
     }
     reset_context();
     result.duration = started.elapsed();
@@ -259,6 +285,99 @@ pub fn spec_missing_features(source: &str) -> Vec<String> {
         .into_iter()
         .filter(|feature| !crate::build_info::has_feature(feature))
         .collect()
+}
+
+fn requires_skip_reason(features: &str) -> String {
+    format!("requires {features}, not built into this binary (moqui version)")
+}
+
+/// Feature names a missing-tool message may name. A token that is not one of these, such as the last part of a URL,
+/// is not treated as a feature.
+const TOOL_FEATURES: &[&str] = &[
+    "axum",
+    "cluster-tls",
+    "embedded-postgres",
+    "git",
+    "http",
+    "image",
+    "imap",
+    "inbound-smtp",
+    "mail",
+    "mysql",
+    "pdf",
+    "postgres",
+    "print",
+    "smtp",
+    "ssh",
+    "sso",
+    "xlsx",
+];
+
+/// The feature a failure reports as absent, from the service message, a `git://` scheme error, or the print client's
+/// message. `None` when the text is an ordinary assertion.
+fn missing_tool(text: &str) -> Option<&'static str> {
+    if text.contains("scheme git is not supported") || text.contains("git resources are not installed") {
+        return Some("git");
+    }
+    if text.contains("Network printing support not installed") {
+        return Some("print");
+    }
+    named_not_built(text).or_else(|| http_not_built(text).then_some("http"))
+}
+
+fn missing_tool_of(failure: &Failure) -> Option<&'static str> {
+    missing_tool(&failure.message)
+        .or_else(|| missing_tool(&failure.stack))
+        .or_else(|| failure.details.iter().find_map(|detail| missing_tool(detail)))
+}
+
+/// `{name} is not built into this host`, or `({name}) is not built into this host`. An HTTP line is left for
+/// [`http_not_built`]: its URL's last token is not a feature name.
+fn named_not_built(text: &str) -> Option<&'static str> {
+    let marker = " is not built into this host";
+    let mut rest = text;
+    while let Some(at) = rest.find(marker) {
+        let before = &rest[..at];
+        let line_start = before.rfind('\n').map_or(0, |index| index + 1);
+        if !http_head(before[line_start..].trim_start()) {
+            let trimmed = before.trim_end_matches(')');
+            let start = trimmed
+                .char_indices()
+                .rev()
+                .find(|(_, ch)| !is_feature_char(*ch))
+                .map_or(0, |(index, ch)| index + ch.len_utf8());
+            let name = &trimmed[start..];
+            if let Some(feature) = TOOL_FEATURES.iter().copied().find(|feature| *feature == name) {
+                return Some(feature);
+            }
+        }
+        rest = &rest[at + marker.len()..];
+    }
+    None
+}
+
+/// `HTTP {method} {url} is not built into this host` (outbound.rs).
+fn http_not_built(text: &str) -> bool {
+    let marker = " is not built into this host";
+    let mut rest = text;
+    while let Some(at) = rest.find(marker) {
+        let before = &rest[..at];
+        let line_start = before.rfind('\n').map_or(0, |index| index + 1);
+        if http_head(before[line_start..].trim_start()) {
+            return true;
+        }
+        rest = &rest[at + marker.len()..];
+    }
+    false
+}
+
+fn http_head(head: &str) -> bool {
+    let mut parts = head.split_whitespace();
+    parts.next() == Some("HTTP") && parts.next().is_some() && parts.next().is_some()
+}
+
+fn is_feature_char(ch: char) -> bool {
+    ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_'
 }
 
 fn registration(message: impl Into<String>) -> Box<Failure> {
@@ -502,4 +621,59 @@ fn run_thread(
         tracing::debug!("logout after a parallel thread: {err}");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::missing_tool;
+
+    #[test]
+    fn a_missing_tool_message_names_its_feature() {
+        assert_eq!(
+            missing_tool("service org.moqui.impl.GitServices.init#GitRepository: git is not built into this host"),
+            Some("git")
+        );
+        assert_eq!(
+            missing_tool("the OAuth sign-in of mail accounts (imap) is not built into this host"),
+            Some("imap")
+        );
+        assert_eq!(missing_tool("xlsx is not built into this host"), Some("xlsx"));
+        assert_eq!(
+            missing_tool("cluster peer ssh://peer is reached over SSH and ssh is not built into this host"),
+            Some("ssh")
+        );
+        assert_eq!(
+            missing_tool("HTTP GET https://example.com/git is not built into this host"),
+            Some("http")
+        );
+        assert_eq!(
+            missing_tool("scheme git is not supported for location git://example-wiki/page.md"),
+            Some("git")
+        );
+        assert_eq!(
+            missing_tool("git resources are not installed (resource-reference scheme=\"git\" in the conf)"),
+            Some("git")
+        );
+        assert_eq!(
+            missing_tool("Network printing support not installed (no print client in this build)"),
+            Some("print")
+        );
+    }
+
+    #[test]
+    fn an_ordinary_failure_is_not_a_missing_tool() {
+        let dump = "spaceList == [\"BOSSKB\"]\n|\n| false\n[\"BOSSKB\"]";
+        assert_eq!(missing_tool(dump), None);
+        assert_eq!(missing_tool("render mode html is not supported"), None);
+        assert_eq!(missing_tool("the entity facade is not installed"), None);
+        assert_eq!(missing_tool("SSO is not available in this build"), None);
+    }
+
+    #[test]
+    fn a_dump_that_quotes_the_tool_message_names_that_tool() {
+        let dump = "imported.errors == \"\"\n|\n| \"service import: imap is not built into this host\"\nfalse";
+        assert_eq!(missing_tool(dump), Some("imap"));
+        let both = "HTTP GET https://example.com/git is not built into this host\ngit is not built into this host";
+        assert_eq!(missing_tool(both), Some("git"));
+    }
 }

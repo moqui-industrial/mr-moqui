@@ -104,9 +104,7 @@ pub(crate) fn read_request(input: &mut dyn Read) -> Result<Option<PushRequest>, 
                 };
                 if let Some(caps) = caps {
                     let caps = String::from_utf8_lossy(caps);
-                    request
-                        .caps
-                        .extend(caps.split_whitespace().map(str::to_string));
+                    request.caps.extend(caps.split_whitespace().map(str::to_string));
                 }
                 let line = String::from_utf8_lossy(line.strip_suffix(b"\n").unwrap_or(line)).into_owned();
                 if let Some(rest) = line.strip_prefix("shallow ") {
@@ -118,7 +116,9 @@ pub(crate) fn read_request(input: &mut dyn Read) -> Result<Option<PushRequest>, 
                 }
                 let mut parts = line.splitn(3, ' ');
                 let (Some(old), Some(new), Some(name)) = (parts.next(), parts.next(), parts.next()) else {
-                    return Err(Error::new(format!("protocol error: expected old/new/ref, got '{line}'")));
+                    return Err(Error::new(format!(
+                        "protocol error: expected old/new/ref, got '{line}'"
+                    )));
                 };
                 request.commands.push(Command {
                     old: id_or_none(old)?,

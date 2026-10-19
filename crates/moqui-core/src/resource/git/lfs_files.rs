@@ -70,7 +70,8 @@ impl GitProvider {
             )?,
         };
         self.link_lfs(&repo.definition.id, &info)?;
-        repo.store.write(Kind::Blob, pointer_text(&info.id, info.size).as_bytes())
+        repo.store
+            .write(Kind::Blob, pointer_text(&info.id, info.size).as_bytes())
     }
 
     /// Make the content `info` an LFS object of the repository, when it is not one yet.

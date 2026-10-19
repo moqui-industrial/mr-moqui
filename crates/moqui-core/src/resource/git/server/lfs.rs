@@ -33,7 +33,9 @@ use moqui_lib::object::{basic_convert, Value};
 use serde_json::{json, Value as Json};
 use sha2::Sha256;
 
-use super::{authenticate_with, may_push, open, property, provider, public_base_url, GitService, HttpResponder, Refusal};
+use super::{
+    authenticate_with, may_push, open, property, provider, public_base_url, GitService, HttpResponder, Refusal,
+};
 use crate::context::Error;
 use crate::entity::EntityValue;
 use crate::resource::blob::{is_blob_id, BlobStore, Expected};
@@ -113,8 +115,8 @@ fn key(name: &str) -> Option<String> {
 }
 
 fn tag(key: &str, payload: &str) -> Result<Vec<u8>, Error> {
-    let mut mac =
-        Hmac::<Sha256>::new_from_slice(key.as_bytes()).map_err(|err| Error::new(format!("the LFS token key: {err}")))?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes())
+        .map_err(|err| Error::new(format!("the LFS token key: {err}")))?;
     mac.update(payload.as_bytes());
     Ok(mac.finalize().into_bytes().to_vec())
 }
@@ -125,7 +127,13 @@ fn issue(username: &str, repository: &str, operation: Operation, seconds: i64) -
     issue_with(&key, username, repository, operation, seconds)
 }
 
-fn issue_with(key: &str, username: &str, repository: &str, operation: Operation, seconds: i64) -> Result<String, Error> {
+fn issue_with(
+    key: &str,
+    username: &str,
+    repository: &str,
+    operation: Operation,
+    seconds: i64,
+) -> Result<String, Error> {
     let mut nonce = [0u8; 9];
     getrandom::fill(&mut nonce).map_err(|err| Error::new(format!("could not read random bytes: {err}")))?;
     let payload = json!({
@@ -153,7 +161,11 @@ fn read_token(header: &str) -> Option<Result<Token, Refusal>> {
 
 fn read_token_with(keys: &[String], header: &str) -> Option<Result<Token, Refusal>> {
     let token = header.trim().strip_prefix("MoquiLfs ")?.trim();
-    let refused = |why: &str| Some(Err(Refusal::Unauthenticated(format!("the LFS token is not valid: {why}"))));
+    let refused = |why: &str| {
+        Some(Err(Refusal::Unauthenticated(format!(
+            "the LFS token is not valid: {why}"
+        ))))
+    };
     let Some(rest) = token.strip_prefix("v1.") else {
         return refused("not a version 1 token");
     };
@@ -164,11 +176,11 @@ fn read_token_with(keys: &[String], header: &str) -> Option<Result<Token, Refusa
         return refused("the signature is not base64");
     };
     let signed = keys.iter().any(|key| {
-            Hmac::<Sha256>::new_from_slice(key.as_bytes()).is_ok_and(|mut mac| {
-                mac.update(encoded.as_bytes());
-                mac.verify_slice(&signature).is_ok()
-            })
-        });
+        Hmac::<Sha256>::new_from_slice(key.as_bytes()).is_ok_and(|mut mac| {
+            mac.update(encoded.as_bytes());
+            mac.verify_slice(&signature).is_ok()
+        })
+    });
     if !signed {
         return refused("the signature does not match");
     }
@@ -264,13 +276,17 @@ pub fn serve_lfs(request: &LfsHttpRequest, body: &mut dyn Read, out: &mut dyn Ht
         let _provider = provider()?;
         let has_credentials = request.authorization.is_some() || request.api_key.is_some();
         if has_credentials && !request.secure {
-            return Err(Refusal::Forbidden("credentials over plain HTTP are refused; use HTTPS".into()));
+            return Err(Refusal::Forbidden(
+                "credentials over plain HTTP are refused; use HTTPS".into(),
+            ));
         }
         match request.authorization.as_deref().and_then(read_token) {
             Some(token) => {
                 let token = token?;
                 if token.repository != request.repository {
-                    return Err(Refusal::Unauthenticated("the LFS token is for another repository".into()));
+                    return Err(Refusal::Unauthenticated(
+                        "the LFS token is for another repository".into(),
+                    ));
                 }
                 crate::user::internal_login_user(&token.username)
                     .map_err(|err| Refusal::Unauthenticated(err.message().to_string()))?;
@@ -352,7 +368,10 @@ impl Lfs {
             return Err(message(403, "the repository is a read-only mirror"));
         }
         if !may_push(&self.repository) {
-            return Err(message(403, &format!("you may not push to repository {}", self.repository)));
+            return Err(message(
+                403,
+                &format!("you may not push to repository {}", self.repository),
+            ));
         }
         Ok(())
     }
@@ -378,10 +397,12 @@ impl Lfs {
                     .one()
             })
             .map_err(|err| message(500, err.message()))?;
-        Ok(row.map(|row| match basic_convert(row.get("objectSize").unwrap_or(&Value::Null), "Long").value {
-            Value::I64(size) => u64::try_from(size).unwrap_or(0),
-            _ => 0,
-        }))
+        Ok(row.map(
+            |row| match basic_convert(row.get("objectSize").unwrap_or(&Value::Null), "Long").value {
+                Value::I64(size) => u64::try_from(size).unwrap_or(0),
+                _ => 0,
+            },
+        ))
     }
 
     fn batch(&self, body: &mut dyn Read) -> Reply {
@@ -431,7 +452,10 @@ impl Lfs {
                         "verify": action(format!("{base}/verify")) } }),
             });
         }
-        Ok((200, json!({ "transfer": "basic", "objects": answered, "hash_algo": "sha256" })))
+        Ok((
+            200,
+            json!({ "transfer": "basic", "objects": answered, "hash_algo": "sha256" }),
+        ))
     }
 
     /// `GET objects/<oid>`: the content, or one byte range of it, streamed.
@@ -611,9 +635,16 @@ impl Lfs {
     }
 
     /// A page of `locks` from `cursor` (an offset), and the next cursor.
-    fn page<'a>(locks: &'a [EntityValue], cursor: Option<&str>, limit: Option<u64>) -> (Vec<&'a EntityValue>, Option<String>) {
+    fn page<'a>(
+        locks: &'a [EntityValue],
+        cursor: Option<&str>,
+        limit: Option<u64>,
+    ) -> (Vec<&'a EntityValue>, Option<String>) {
         let start = cursor.and_then(|cursor| cursor.parse::<usize>().ok()).unwrap_or(0);
-        let limit = limit.and_then(|limit| usize::try_from(limit).ok()).filter(|limit| *limit > 0).unwrap_or(100);
+        let limit = limit
+            .and_then(|limit| usize::try_from(limit).ok())
+            .filter(|limit| *limit > 0)
+            .unwrap_or(100);
         let page: Vec<&EntityValue> = locks.iter().skip(start).take(limit).collect();
         let next = (start + page.len() < locks.len()).then(|| (start + page.len()).to_string());
         (page, next)
@@ -621,7 +652,12 @@ impl Lfs {
 
     fn list_locks(&self, query: &str) -> Reply {
         let pairs = crate::web::form_pairs(query);
-        let param = |name: &str| pairs.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
+        let param = |name: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.as_str())
+        };
         let mut locks = self.locks()?;
         if let Some(path) = param("path") {
             locks.retain(|row| text(row.get("lockPath")).as_deref() == Some(path));
@@ -629,7 +665,11 @@ impl Lfs {
         if let Some(id) = param("id") {
             locks.retain(|row| text(row.get("lockId")).as_deref() == Some(id));
         }
-        let (page, next) = Self::page(&locks, param("cursor"), param("limit").and_then(|limit| limit.parse().ok()));
+        let (page, next) = Self::page(
+            &locks,
+            param("cursor"),
+            param("limit").and_then(|limit| limit.parse().ok()),
+        );
         let mut reply = json!({ "locks": page.iter().map(|row| self.lock_json(row)).collect::<Vec<_>>() });
         if let Some(next) = next {
             reply["next_cursor"] = json!(next);
@@ -656,7 +696,8 @@ impl Lfs {
         let entity = self.entity()?;
         let _rows = crate::resource::git::rows_guard();
         let mut row = EntityValue::make(&entity, GIT_LFS_LOCK).map_err(|err| message(500, err.message()))?;
-        row.set_sequenced_id_primary(&entity).map_err(|err| message(500, err.message()))?;
+        row.set_sequenced_id_primary(&entity)
+            .map_err(|err| message(500, err.message()))?;
         row.set("repositoryId", Value::string(&self.repository));
         row.set("lockPath", Value::string(&path));
         if let Some(name) = request["ref"]["name"].as_str() {
@@ -682,8 +723,9 @@ impl Lfs {
         let me = crate::user::current_user_id().ok().flatten().unwrap_or_default();
         let locks = self.locks()?;
         let (page, next) = Self::page(&locks, request["cursor"].as_str(), request["limit"].as_u64());
-        let (ours, theirs): (Vec<&&EntityValue>, Vec<&&EntityValue>) =
-            page.iter().partition(|row| text(row.get("ownerUserId")).as_deref() == Some(me.as_str()));
+        let (ours, theirs): (Vec<&&EntityValue>, Vec<&&EntityValue>) = page
+            .iter()
+            .partition(|row| text(row.get("ownerUserId")).as_deref() == Some(me.as_str()));
         let mut reply = json!({
             "ours": ours.iter().map(|row| self.lock_json(row)).collect::<Vec<_>>(),
             "theirs": theirs.iter().map(|row| self.lock_json(row)).collect::<Vec<_>>(),
@@ -705,10 +747,16 @@ impl Lfs {
         let me = crate::user::current_user_id().ok().flatten().unwrap_or_default();
         if text(row.get("ownerUserId")).as_deref() != Some(me.as_str()) {
             if !request["force"].as_bool().unwrap_or(false) {
-                return Err(message(403, "the lock is another user's; force unlocking it needs the delete permission"));
+                return Err(message(
+                    403,
+                    "the lock is another user's; force unlocking it needs the delete permission",
+                ));
             }
             if crate::user::authorize(GIT_ARTIFACT_TYPE, &self.repository, "delete").is_err() {
-                return Err(message(403, "force unlocking another user's lock needs the delete permission"));
+                return Err(message(
+                    403,
+                    "force unlocking another user's lock needs the delete permission",
+                ));
             }
         }
         let lock = self.lock_json(row);

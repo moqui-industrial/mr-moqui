@@ -50,7 +50,9 @@ fn parse(text: &str) -> Vec<Rule> {
             continue;
         }
         let mut words = line.split_whitespace();
-        let Some(pattern) = words.next().and_then(|word| gix::glob::Pattern::from_bytes_without_negation(word.as_bytes()))
+        let Some(pattern) = words
+            .next()
+            .and_then(|word| gix::glob::Pattern::from_bytes_without_negation(word.as_bytes()))
         else {
             continue;
         };
@@ -70,7 +72,12 @@ fn parse(text: &str) -> Vec<Rule> {
 }
 
 /// Whether the file at `path` (its segments) in `tree` is an LFS file.
-pub(crate) fn is_lfs(store: &dyn GitStore, cache: &RulesCache, tree: &ObjectId, path: &[String]) -> Result<bool, Error> {
+pub(crate) fn is_lfs(
+    store: &dyn GitStore,
+    cache: &RulesCache,
+    tree: &ObjectId,
+    path: &[String],
+) -> Result<bool, Error> {
     let Some((name, dirs)) = path.split_last() else {
         return Ok(false);
     };
@@ -177,7 +184,10 @@ mod tests {
         let tree = commit(
             &store,
             &[
-                (".gitattributes", "# media\n*.png filter=lfs diff=lfs merge=lfs -text\n/top.bin filter=lfs\ndocs/** -filter\n"),
+                (
+                    ".gitattributes",
+                    "# media\n*.png filter=lfs diff=lfs merge=lfs -text\n/top.bin filter=lfs\ndocs/** -filter\n",
+                ),
                 ("docs/.gitattributes", "keep.png filter=lfs\n"),
                 ("raw/.gitattributes", "*.png !filter\n"),
             ],
@@ -201,7 +211,10 @@ mod tests {
     #[test]
     fn patterns_are_added_once() {
         let first = with_lfs_patterns("", &["*.png", "*.pdf"]);
-        assert_eq!(first, "*.png filter=lfs diff=lfs merge=lfs -text\n*.pdf filter=lfs diff=lfs merge=lfs -text\n");
+        assert_eq!(
+            first,
+            "*.png filter=lfs diff=lfs merge=lfs -text\n*.pdf filter=lfs diff=lfs merge=lfs -text\n"
+        );
         assert_eq!(with_lfs_patterns(&first, &["*.png", "*.mp4"]).lines().count(), 3);
     }
 }

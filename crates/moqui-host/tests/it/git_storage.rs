@@ -77,14 +77,23 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .env("GIT_ASKPASS", "false")
         .output()
         .expect("git runs");
-    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 /// The size of the pack git writes of every object of `branch`, with its default delta settings.
 fn git_pack_size(dir: &Path, branch: &str) -> u64 {
     let script = format!("git rev-list --objects {branch} | git pack-objects --stdout -q | wc -c");
-    let output = Command::new("sh").arg("-c").arg(script).current_dir(dir).output().unwrap();
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .current_dir(dir)
+        .output()
+        .unwrap();
     String::from_utf8_lossy(&output.stdout).trim().parse().unwrap()
 }
 
@@ -146,13 +155,28 @@ fn storage_of_imported_histories() {
         let started = Instant::now();
         sync(
             "org.moqui.impl.GitServices.import#GitRepository",
-            &[("repositoryId", Value::string(id)), ("source", Value::string(source.to_string_lossy()))],
+            &[
+                ("repositoryId", Value::string(id)),
+                ("source", Value::string(source.to_string_lossy())),
+            ],
         );
         let imported = started.elapsed();
         let params = [Value::string(id)];
-        let rows = number(&facade, "SELECT COUNT(*) FROM git_object WHERE repository_id = ?", &params);
-        let content = number(&facade, "SELECT SUM(object_size) FROM git_object WHERE repository_id = ?", &params);
-        let stored = number(&facade, "SELECT SUM(stored_bytes) FROM git_object WHERE repository_id = ?", &params);
+        let rows = number(
+            &facade,
+            "SELECT COUNT(*) FROM git_object WHERE repository_id = ?",
+            &params,
+        );
+        let content = number(
+            &facade,
+            "SELECT SUM(object_size) FROM git_object WHERE repository_id = ?",
+            &params,
+        );
+        let stored = number(
+            &facade,
+            "SELECT SUM(stored_bytes) FROM git_object WHERE repository_id = ?",
+            &params,
+        );
         let deltas = number(
             &facade,
             "SELECT COUNT(*) FROM git_object WHERE repository_id = ? AND storage = 'delta'",
@@ -167,9 +191,16 @@ fn storage_of_imported_histories() {
             stored as f64 / git_size as f64
         );
         let started = Instant::now();
-        let gc = sync("org.moqui.impl.GitServices.gc#GitRepositories", &[("repositoryId", Value::string(id))]);
+        let gc = sync(
+            "org.moqui.impl.GitServices.gc#GitRepositories",
+            &[("repositoryId", Value::string(id))],
+        );
         let collected = started.elapsed();
-        let stored = number(&facade, "SELECT SUM(stored_bytes) FROM git_object WHERE repository_id = ?", &params);
+        let stored = number(
+            &facade,
+            "SELECT SUM(stored_bytes) FROM git_object WHERE repository_id = ?",
+            &params,
+        );
         let deltas = number(
             &facade,
             "SELECT COUNT(*) FROM git_object WHERE repository_id = ? AND storage = 'delta'",
@@ -184,7 +215,18 @@ fn storage_of_imported_histories() {
         let clone = work.join(format!("{id}-clone"));
         let url = format!("http://john.doe:moqui@127.0.0.1:{}/git/{id}.git", http.port());
         let started = Instant::now();
-        git(&work, &["-c", "credential.helper=", "clone", "--bare", "-q", &url, &clone.to_string_lossy()]);
+        git(
+            &work,
+            &[
+                "-c",
+                "credential.helper=",
+                "clone",
+                "--bare",
+                "-q",
+                &url,
+                &clone.to_string_lossy(),
+            ],
+        );
         let cloned = started.elapsed();
         let pack: u64 = std::fs::read_dir(clone.join("objects/pack"))
             .unwrap()
@@ -193,10 +235,20 @@ fn storage_of_imported_histories() {
             .map(|entry| entry.metadata().unwrap().len())
             .sum();
         git(&clone, &["fsck", "--strict"]);
-        eprintln!("{id}: clone in {cloned:.1?}, pack {}", mib(i64::try_from(pack).unwrap()));
+        eprintln!(
+            "{id}: clone in {cloned:.1?}, pack {}",
+            mib(i64::try_from(pack).unwrap())
+        );
         let started = Instant::now();
-        let fsck = sync("org.moqui.impl.GitServices.fsck#GitRepository", &[("repositoryId", Value::string(id))]);
-        eprintln!("{id}: fsck in {:.1?}: {:?}", started.elapsed(), fsck.get("checkedCount"));
+        let fsck = sync(
+            "org.moqui.impl.GitServices.fsck#GitRepository",
+            &[("repositoryId", Value::string(id))],
+        );
+        eprintln!(
+            "{id}: fsck in {:.1?}: {:?}",
+            started.elapsed(),
+            fsck.get("checkedCount")
+        );
     }
     let table = number(&facade, "SELECT pg_total_relation_size('git_object')", &[]);
     eprintln!("git_object table with its indexes and TOAST: {}", mib(table));
@@ -205,18 +257,37 @@ fn storage_of_imported_histories() {
     let resources = factory.resource();
     let page = |edit: usize| -> String {
         (0..1000)
-            .map(|line| if line == edit % 1000 { format!("line {line} edited {edit}\n") } else { format!("line {line} of a wiki page of about fifty KB\n") })
+            .map(|line| {
+                if line == edit % 1000 {
+                    format!("line {line} edited {edit}\n")
+                } else {
+                    format!("line {line} of a wiki page of about fifty KB\n")
+                }
+            })
             .collect()
     };
     let started = Instant::now();
     for edit in 0..1000 {
-        resources.write_bytes("git://bench-edits/page.md", page(edit).as_bytes()).unwrap();
+        resources
+            .write_bytes("git://bench-edits/page.md", page(edit).as_bytes())
+            .unwrap();
     }
     let written = started.elapsed();
     let params = [Value::string("bench-edits")];
-    let stored = number(&facade, "SELECT SUM(stored_bytes) FROM git_object WHERE repository_id = ?", &params);
-    sync("org.moqui.impl.GitServices.gc#GitRepositories", &[("repositoryId", Value::string("bench-edits"))]);
-    let repacked = number(&facade, "SELECT SUM(stored_bytes) FROM git_object WHERE repository_id = ?", &params);
+    let stored = number(
+        &facade,
+        "SELECT SUM(stored_bytes) FROM git_object WHERE repository_id = ?",
+        &params,
+    );
+    sync(
+        "org.moqui.impl.GitServices.gc#GitRepositories",
+        &[("repositoryId", Value::string("bench-edits"))],
+    );
+    let repacked = number(
+        &facade,
+        "SELECT SUM(stored_bytes) FROM git_object WHERE repository_id = ?",
+        &params,
+    );
     let started = Instant::now();
     let history = resources.version_history("git://bench-edits/page.md").unwrap();
     let oldest = resources
@@ -238,7 +309,10 @@ fn storage_of_imported_histories() {
     resources
         .write_from(
             "git://bench-media/video.mp4",
-            &mut Pattern { left: size, state: 0x9e37_79b9_7f4a_7c15 },
+            &mut Pattern {
+                left: size,
+                state: 0x9e37_79b9_7f4a_7c15,
+            },
             Some(size),
         )
         .unwrap();

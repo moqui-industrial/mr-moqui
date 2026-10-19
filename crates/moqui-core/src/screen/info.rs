@@ -50,11 +50,7 @@ pub fn all_root_screen_locations(factory: &ExecutionContextFactory) -> Vec<Strin
 /// # Errors
 ///
 /// Returns an error when the webapp is missing, no pattern matches, or a host regex is invalid.
-pub fn root_screen_for_host(
-    factory: &ExecutionContextFactory,
-    host: &str,
-    webapp_name: &str,
-) -> Result<String, Error> {
+pub fn root_screen_for_host(factory: &ExecutionContextFactory, host: &str, webapp_name: &str) -> Result<String, Error> {
     let host = crate::web::host_without_port(host);
     let conf = MNode::parse_text("moqui-conf", factory.conf_text())?;
     let Some(list) = conf.first_named("webapp-list") else {

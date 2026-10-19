@@ -17,7 +17,13 @@
 //! SSH server with a `UserSshKey`, by the git command line (skipped when git, or for SSH ssh, is not installed). The
 //! protocol itself, over each storage, is `moqui-core/src/resource/git/server/tests.rs`.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "git", feature = "ssh"))]
+#![cfg(all(
+    unix,
+    feature = "embedded-postgres",
+    feature = "axum",
+    feature = "git",
+    feature = "ssh"
+))]
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -57,7 +63,14 @@ fn git_available(program: &str) -> bool {
 fn git(dir: &Path, home: &Path, ssh: Option<&str>, args: &[&str]) -> (bool, String) {
     let mut command = Command::new("git");
     command
-        .args(["-c", "user.name=Test Pusher", "-c", "user.email=pusher@example.com", "-c", "init.defaultBranch=main"])
+        .args([
+            "-c",
+            "user.name=Test Pusher",
+            "-c",
+            "user.email=pusher@example.com",
+            "-c",
+            "init.defaultBranch=main",
+        ])
         .args(["-c", "credential.helper="])
         .args(args)
         .current_dir(dir)
@@ -131,10 +144,17 @@ fn repositories_are_cloned_and_pushed_over_http_and_ssh() {
         commit(&first, &home, "README.md", "# Hosted\n");
         git_ok(&first, &home, None, &["push", "origin", "main"]);
         let second = work.join(format!("{id}-second"));
-        git_ok(&work, &home, None, &["-c", "protocol.version=2", "clone", &url, &second.to_string_lossy()]);
+        git_ok(
+            &work,
+            &home,
+            None,
+            &["-c", "protocol.version=2", "clone", &url, &second.to_string_lossy()],
+        );
         assert_eq!(std::fs::read_to_string(second.join("README.md")).unwrap(), "# Hosted\n");
         // a push big enough that git sends it in chunks (over http.postBuffer, 1 MiB)
-        let big: String = (0..40_000).map(|line| format!("line {line} of a large file\n")).collect();
+        let big: String = (0..40_000)
+            .map(|line| format!("line {line} of a large file\n"))
+            .collect();
         commit(&second, &home, "large.txt", &big);
         git_ok(&second, &home, None, &["push", "origin", "main"]);
         git_ok(&first, &home, None, &["pull", "--ff-only", "origin", "main"]);
@@ -181,7 +201,10 @@ fn repositories_are_cloned_and_pushed_over_http_and_ssh() {
             "org.moqui.impl.GitServices.get#GitCloneUrls",
             &[("repositoryId", Value::string("hosted"))],
         );
-        assert!(urls.get("httpsUrl").and_then(Value::as_str).is_some_and(|url| url.ends_with("/git/hosted.git")));
+        assert!(urls
+            .get("httpsUrl")
+            .and_then(Value::as_str)
+            .is_some_and(|url| url.ends_with("/git/hosted.git")));
 
         // a collection of the database repository (nothing is old enough to delete; the rows are repacked), then
         // every row decodes, and it still clones
@@ -202,7 +225,10 @@ fn repositories_are_cloned_and_pushed_over_http_and_ssh() {
             &[("repositoryId", Value::string("hosted-db"))],
         );
         assert!(errors.is_empty(), "{errors}");
-        assert!(matches!(fsck.get("checkedCount"), Some(Value::I64(count)) if *count > 5), "{fsck:?}");
+        assert!(
+            matches!(fsck.get("checkedCount"), Some(Value::I64(count)) if *count > 5),
+            "{fsck:?}"
+        );
         moqui_core::user::logout().unwrap();
     }
     // Git LFS: a batch, an upload with the token it gives, and the download
@@ -210,7 +236,10 @@ fn repositories_are_cloned_and_pushed_over_http_and_ssh() {
         let content: Vec<u8> = (0..300_000u32).map(|n| (n % 241) as u8).collect();
         let oid: String = {
             use sha2::Digest as _;
-            sha2::Sha256::digest(&content).iter().map(|byte| format!("{byte:02x}")).collect()
+            sha2::Sha256::digest(&content)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
         };
         let basic = format!(
             "Basic {}",
@@ -252,7 +281,12 @@ fn repositories_are_cloned_and_pushed_over_http_and_ssh() {
         assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200"));
         let (status, _, downloaded) = crate::common::exchange_bytes(
             http,
-            &crate::common::http_request("GET", &format!("/git/hosted-db.git/info/lfs/objects/{oid}"), &[("Authorization", &basic)], ""),
+            &crate::common::http_request(
+                "GET",
+                &format!("/git/hosted-db.git/info/lfs/objects/{oid}"),
+                &[("Authorization", &basic)],
+                "",
+            ),
         );
         assert_eq!(status, 200);
         assert!(downloaded == content);
@@ -272,8 +306,11 @@ fn repositories_are_cloned_and_pushed_over_http_and_ssh() {
     let ssh_port = gate.server.ssh_address().expect("the SSH server listens").port();
     let key_file = work.join("id_ed25519");
     std::fs::write(&key_file, user_key.to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
-    std::fs::set_permissions(&key_file, <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600))
-        .unwrap();
+    std::fs::set_permissions(
+        &key_file,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .unwrap();
     let ssh = format!(
         "ssh -i {} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
          -o LogLevel=ERROR -F /dev/null",
@@ -286,7 +323,13 @@ fn repositories_are_cloned_and_pushed_over_http_and_ssh() {
             &work,
             &home,
             Some(&ssh),
-            &["-c", &format!("protocol.version={version}"), "clone", &url, &clone.to_string_lossy()],
+            &[
+                "-c",
+                &format!("protocol.version={version}"),
+                "clone",
+                &url,
+                &clone.to_string_lossy(),
+            ],
         );
         assert_eq!(std::fs::read_to_string(clone.join("README.md")).unwrap(), "# Hosted\n");
         commit(&clone, &home, &format!("ssh-{version}.txt"), "over ssh\n");
@@ -297,14 +340,28 @@ fn repositories_are_cloned_and_pushed_over_http_and_ssh() {
     let ssh_args: Vec<String> = ssh.split_whitespace().skip(1).map(str::to_string).collect();
     let output = Command::new("ssh")
         .args(&ssh_args)
-        .args(["-p", &ssh_port.to_string(), "john.doe@127.0.0.1", "git-lfs-authenticate", "hosted-db.git", "download"])
+        .args([
+            "-p",
+            &ssh_port.to_string(),
+            "john.doe@127.0.0.1",
+            "git-lfs-authenticate",
+            "hosted-db.git",
+            "download",
+        ])
         .env("HOME", &home)
         .env_remove("SSH_AUTH_SOCK")
         .output()
         .unwrap();
     let answer = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{answer} {}", String::from_utf8_lossy(&output.stderr));
-    assert!(answer.contains("/git/hosted-db.git/info/lfs") && answer.contains("MoquiLfs"), "{answer}");
+    assert!(
+        output.status.success(),
+        "{answer} {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        answer.contains("/git/hosted-db.git/info/lfs") && answer.contains("MoquiLfs"),
+        "{answer}"
+    );
     let check = work.join("ssh-check");
     git_ok(&work, &home, Some(&ssh), &["clone", &url, &check.to_string_lossy()]);
     assert!(check.join("ssh-0.txt").is_file() && check.join("ssh-2.txt").is_file());
@@ -312,7 +369,11 @@ fn repositories_are_cloned_and_pushed_over_http_and_ssh() {
         &work,
         &home,
         Some(&ssh),
-        &["clone", &format!("ssh://john.doe@127.0.0.1:{ssh_port}/nosuch.git"), "nosuch"],
+        &[
+            "clone",
+            &format!("ssh://john.doe@127.0.0.1:{ssh_port}/nosuch.git"),
+            "nosuch",
+        ],
     );
     assert!(!ok && out.contains("not found"), "{out}");
 }

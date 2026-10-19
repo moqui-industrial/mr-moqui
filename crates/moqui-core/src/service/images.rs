@@ -325,7 +325,10 @@ fn image_slot() -> Slot {
         .unwrap_or(2);
     let mut used = moqui_lib::sync::lock(&SLOTS.used);
     while *used >= most {
-        used = SLOTS.freed.wait(used).unwrap_or_else(std::sync::PoisonError::into_inner);
+        used = SLOTS
+            .freed
+            .wait(used)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
     *used += 1;
     Slot(&SLOTS)
@@ -537,13 +540,22 @@ mod tests {
         let versions: Vec<String> = ["Original", "Small", "Thumbnail"]
             .iter()
             .map(|suffix| {
-                let history = resources.version_history(&format!("git://media/logo_{suffix}.png")).unwrap();
+                let history = resources
+                    .version_history(&format!("git://media/logo_{suffix}.png"))
+                    .unwrap();
                 assert_eq!(history.len(), 1);
                 history[0].version_name.clone()
             })
             .collect();
         assert!(versions.iter().all(|version| *version == versions[0]), "{versions:?}");
-        let (small, _) = decode(&resources.get("git://media/logo_Small.png").unwrap().read_bytes().unwrap()).unwrap();
+        let (small, _) = decode(
+            &resources
+                .get("git://media/logo_Small.png")
+                .unwrap()
+                .read_bytes()
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(small.width(), 360);
         let lfs = facade.find("moqui.resource.GitLfsObject").unwrap().list().unwrap();
         assert_eq!(lfs.len(), 3, "the PNGs are LFS files");

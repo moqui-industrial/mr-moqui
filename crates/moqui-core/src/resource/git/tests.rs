@@ -306,7 +306,14 @@ fn a_remote_repository_is_a_read_only_mirror_kept_by_fetch() {
     );
     assert_eq!(
         source_store
-            .update_refs(&[super::store::RefEdit { name: "refs/heads/feature".into(), expected: Some(head_id), new: None }], true)
+            .update_refs(
+                &[super::store::RefEdit {
+                    name: "refs/heads/feature".into(),
+                    expected: Some(head_id),
+                    new: None
+                }],
+                true
+            )
             .unwrap(),
         [RefOutcome::Updated]
     );
@@ -333,7 +340,9 @@ fn refs_logs_commits_and_diffs_read_any_revision() {
     let provider = resources.git().expect("git provider").clone();
     resources.write_bytes("git://code/src/a.rs", b"fn a() {}\n").unwrap();
     resources.write_bytes("git://code/README.md", b"# Code\n").unwrap();
-    resources.write_bytes("git://code/src/a.rs", b"fn a() {\n    b();\n}\n").unwrap();
+    resources
+        .write_bytes("git://code/src/a.rs", b"fn a() {\n    b();\n}\n")
+        .unwrap();
     let head = provider.resolve_commit("code", "").unwrap().expect("a head");
     let store = super::db::DbStore::new(fixture.entity.clone(), "code", super::db::object_cache());
     assert!(store.compare_and_set_ref("refs/tags/v1", None, head).unwrap());
@@ -341,10 +350,14 @@ fn refs_logs_commits_and_diffs_read_any_revision() {
     let refs = provider.refs("code", "refs/").unwrap();
     assert_eq!(refs.branch, "main");
     assert_eq!(refs.head, Some(head));
-    let names: Vec<(&str, super::browse::RefKind)> = refs.refs.iter().map(|info| (info.name.as_str(), info.kind)).collect();
+    let names: Vec<(&str, super::browse::RefKind)> =
+        refs.refs.iter().map(|info| (info.name.as_str(), info.kind)).collect();
     assert_eq!(
         names,
-        [("refs/heads/main", super::browse::RefKind::Branch), ("refs/tags/v1", super::browse::RefKind::Tag)]
+        [
+            ("refs/heads/main", super::browse::RefKind::Branch),
+            ("refs/tags/v1", super::browse::RefKind::Tag)
+        ]
     );
     assert_eq!(refs.refs[1].commit.as_ref().map(|commit| commit.id), Some(head));
 
@@ -426,7 +439,11 @@ fn store_scenario(store: &dyn GitStore) {
     let all = |prefix: &str| store.list_refs(prefix).unwrap();
     assert_eq!(all("refs/"), [(main.to_string(), a), (tag.to_string(), b)]);
     assert_eq!(all("refs/tags/"), [(tag.to_string(), b)]);
-    assert_eq!(all("refs/tags/v1_"), [(tag.to_string(), b)], "an underscore is not a wildcard");
+    assert_eq!(
+        all("refs/tags/v1_"),
+        [(tag.to_string(), b)],
+        "an underscore is not a wildcard"
+    );
     assert!(all("refs/tags/v1x").is_empty());
 
     // one stale edit in an atomic update: nothing changes
@@ -439,7 +456,9 @@ fn store_scenario(store: &dyn GitStore) {
     // a create of a ref that is there, a delete of one that is not
     assert_eq!(store.update_refs(&[edit(main, None, Some(a))], true).unwrap(), [Stale]);
     assert_eq!(
-        store.update_refs(&[edit("refs/heads/gone", Some(a), None)], true).unwrap(),
+        store
+            .update_refs(&[edit("refs/heads/gone", Some(a), None)], true)
+            .unwrap(),
         [Stale]
     );
     assert_eq!(store.update_refs(&[edit(tag, Some(b), None)], true).unwrap(), [Updated]);
@@ -460,7 +479,11 @@ fn store_scenario(store: &dyn GitStore) {
         Ok((Kind::Blob, b"new 1".to_vec())),
     ]
     .into_iter();
-    assert_eq!(store.write_batch(&mut objects).unwrap(), 2, "two new objects, one repeated");
+    assert_eq!(
+        store.write_batch(&mut objects).unwrap(),
+        2,
+        "two new objects, one repeated"
+    );
     let new = super::store::object_id(Kind::Blob, b"new 2").unwrap();
     assert_eq!(store.find(&new).unwrap().map(|(_, data)| data), Some(b"new 2".to_vec()));
 }
@@ -473,7 +496,11 @@ fn ref_updates_and_batches_are_the_same_on_each_store() {
     let path = fixture.dir.join("store.git");
     let fs_store = fs::FsStore::init(&path, "main").unwrap();
     store_scenario(&fs_store);
-    store_scenario(&super::db::DbStore::new(fixture.entity.clone(), "stores", super::db::object_cache()));
+    store_scenario(&super::db::DbStore::new(
+        fixture.entity.clone(),
+        "stores",
+        super::db::object_cache(),
+    ));
 
     // a delete of a packed ref (git pack-refs moves loose refs into packed-refs)
     let packed = fixture.dir.join("packed.git");
@@ -483,13 +510,21 @@ fn ref_updates_and_batches_are_the_same_on_each_store() {
     if git(&["--git-dir", &packed.to_string_lossy(), "pack-refs", "--all"]).is_some() {
         assert!(!packed.join("refs/tags/old").exists(), "packed");
         let store = fs::FsStore::open(&packed).unwrap();
-        assert_eq!(store.list_refs("refs/tags/").unwrap(), [("refs/tags/old".to_string(), a)]);
         assert_eq!(
-            store.update_refs(&[edit("refs/tags/old", Some(a), None)], true).unwrap(),
+            store.list_refs("refs/tags/").unwrap(),
+            [("refs/tags/old".to_string(), a)]
+        );
+        assert_eq!(
+            store
+                .update_refs(&[edit("refs/tags/old", Some(a), None)], true)
+                .unwrap(),
             [RefOutcome::Updated]
         );
         assert!(store.list_refs("refs/").unwrap().is_empty());
-        assert_eq!(fs::FsStore::open(&packed).unwrap().read_ref("refs/tags/old").unwrap(), None);
+        assert_eq!(
+            fs::FsStore::open(&packed).unwrap().read_ref("refs/tags/old").unwrap(),
+            None
+        );
     }
 }
 
@@ -518,7 +553,11 @@ fn rows_of(entity: &EntityFacade, id: &str) -> std::collections::HashMap<String,
         .unwrap()
         .iter()
         .map(|row| {
-            let text = |name: &str| row.get(name).map(moqui_lib::object::to_plain_string).unwrap_or_default();
+            let text = |name: &str| {
+                row.get(name)
+                    .map(moqui_lib::object::to_plain_string)
+                    .unwrap_or_default()
+            };
             (text("objectId"), (text("storage"), text("objectType")))
         })
         .collect()
@@ -540,11 +579,19 @@ fn gc_deletes_what_no_ref_reaches_and_repacks_the_rest() {
     // ten versions of a file, as a wiki page's saves are: whole rows
     let text = |version: usize| -> String {
         (0..400)
-            .map(|line| if line == version * 7 { format!("line {line}, version {version}\n") } else { format!("line {line} of a page\n") })
+            .map(|line| {
+                if line == version * 7 {
+                    format!("line {line}, version {version}\n")
+                } else {
+                    format!("line {line} of a page\n")
+                }
+            })
             .collect()
     };
     for version in 0..10 {
-        resources.write_bytes("git://gc/page.md", text(version).as_bytes()).unwrap();
+        resources
+            .write_bytes("git://gc/page.md", text(version).as_bytes())
+            .unwrap();
     }
     let store = super::db::DbStore::new(fixture.entity.clone(), "gc", super::db::object_cache());
     // a branch with a file of its own, then the branch deleted: unreachable
@@ -568,7 +615,11 @@ fn gc_deletes_what_no_ref_reaches_and_repacks_the_rest() {
     let lost = store.write(Kind::Blob, b"only on the feature branch\n").unwrap();
     ops::commit(&store, "feature", &author, |_| {
         Ok(Some((
-            vec![ops::Edit::Put(vec!["feature.txt".into()], gix::objs::tree::EntryKind::Blob, lost)],
+            vec![ops::Edit::Put(
+                vec!["feature.txt".into()],
+                gix::objs::tree::EntryKind::Blob,
+                lost,
+            )],
             "Feature".into(),
         )))
     })
@@ -596,7 +647,10 @@ fn gc_deletes_what_no_ref_reaches_and_repacks_the_rest() {
     // a dry run counts and changes nothing
     let dry = provider.gc(Some("gc"), &gc_options(true)).unwrap();
     let report = dry[0].1.as_ref().unwrap();
-    assert_eq!(report.deleted, 3, "the blob, tree and commit of the feature: {report:?}");
+    assert_eq!(
+        report.deleted, 3,
+        "the blob, tree and commit of the feature: {report:?}"
+    );
     assert_eq!(rows_of(&fixture.entity, "gc").len(), before.len());
 
     let outcome = provider.gc(Some("gc"), &gc_options(false)).unwrap();
@@ -608,14 +662,20 @@ fn gc_deletes_what_no_ref_reaches_and_repacks_the_rest() {
     assert!(!after.contains_key(&lost.to_string()));
     assert!(!after.contains_key(&feature.to_string()));
     assert!(after.contains_key(&kept.to_string()));
-    let deltas = after.values().filter(|(storage, kind)| storage == "delta" && kind == "blob").count();
+    let deltas = after
+        .values()
+        .filter(|(storage, kind)| storage == "delta" && kind == "blob")
+        .count();
     assert!(deltas >= 8, "{deltas} blob deltas");
     // every version still reads, through a cache of its own
     let fresh = super::db::DbStore::new(fixture.entity.clone(), "gc", super::db::object_cache());
     let history = resources.version_history("git://gc/page.md").unwrap();
     assert_eq!(history.len(), 10);
     for version in &history {
-        let read = resources.read_version("git://gc/page.md", &version.version_name).unwrap().unwrap();
+        let read = resources
+            .read_version("git://gc/page.md", &version.version_name)
+            .unwrap()
+            .unwrap();
         assert!(String::from_utf8(read).unwrap().starts_with("line 0"));
     }
     assert_eq!(resources.get("git://gc/page.md").unwrap().read_text().unwrap(), text(9));
@@ -623,7 +683,9 @@ fn gc_deletes_what_no_ref_reaches_and_repacks_the_rest() {
         let id = gix::ObjectId::from_hex(id.as_bytes()).unwrap();
         assert!(fresh.find(&id).unwrap().is_some(), "{id} reads");
     }
-    let fsck = provider.fsck("gc", std::time::Instant::now() + std::time::Duration::from_secs(60)).unwrap();
+    let fsck = provider
+        .fsck("gc", std::time::Instant::now() + std::time::Duration::from_secs(60))
+        .unwrap();
     assert!(fsck.errors.is_empty(), "{:?}", fsck.errors);
     assert_eq!(fsck.checked, after.len());
     {
@@ -640,7 +702,11 @@ fn gc_deletes_what_no_ref_reaches_and_repacks_the_rest() {
             row.get("objectCount").map(moqui_lib::object::to_plain_string),
             Some(after.len().to_string())
         );
-        assert!(row.get("lastGcResult").map(moqui_lib::object::to_plain_string).unwrap_or_default().contains("deleted 3"));
+        assert!(row
+            .get("lastGcResult")
+            .map(moqui_lib::object::to_plain_string)
+            .unwrap_or_default()
+            .contains("deleted 3"));
         assert_eq!(row.get("gcLeaseOwner"), Some(&Value::Null));
     }
 
@@ -677,7 +743,10 @@ fn lfs_files_through_git_locations_are_content_blobs_behind_pointers() {
     let provider = resources.git().unwrap().clone();
     let patterns = super::attributes::DEFAULT_LFS_PATTERNS;
     let before = provider.setup_lfs("site", &patterns).unwrap().unwrap();
-    assert!(provider.setup_lfs("site", &patterns).unwrap().is_none(), "the patterns are there");
+    assert!(
+        provider.setup_lfs("site", &patterns).unwrap().is_none(),
+        "the patterns are there"
+    );
     let image: Vec<u8> = (0..300_000u32).map(|n| (n * 17 % 253) as u8).collect();
     resources.write_bytes("git://site/images/logo.png", &image).unwrap();
     resources.write_bytes("git://site/readme.md", b"# Site\n").unwrap();
@@ -690,13 +759,26 @@ fn lfs_files_through_git_locations_are_content_blobs_behind_pointers() {
     let (_, pointer_blob) = ops::resolve(&store, &tree, &path("images/logo.png")).unwrap().unwrap();
     let pointer = ops::object(&store, &pointer_blob, Kind::Blob).unwrap();
     let oid = crate::resource::blob::blob_id(&image);
-    assert_eq!(super::server::lfs::pointer(&pointer), Some((oid.clone(), image.len() as u64)));
+    assert_eq!(
+        super::server::lfs::pointer(&pointer),
+        Some((oid.clone(), image.len() as u64))
+    );
     let (_, readme) = ops::resolve(&store, &tree, &path("readme.md")).unwrap().unwrap();
     assert_eq!(ops::object(&store, &readme, Kind::Blob).unwrap(), b"# Site\n");
 
     // read, stat and open give the content
-    assert_eq!(resources.get("git://site/images/logo.png").unwrap().read_bytes().unwrap(), image);
-    assert_eq!(resources.stat("git://site/images/logo.png").unwrap().unwrap().size, image.len() as u64);
+    assert_eq!(
+        resources
+            .get("git://site/images/logo.png")
+            .unwrap()
+            .read_bytes()
+            .unwrap(),
+        image
+    );
+    assert_eq!(
+        resources.stat("git://site/images/logo.png").unwrap().unwrap().size,
+        image.len() as u64
+    );
     let opened = resources.open("git://site/images/logo.png").unwrap().unwrap();
     assert_eq!(opened.source.read_at(299_990, 100).unwrap(), image[299_990..]);
     assert_eq!(opened.source.tag(), Some(format!("sha256-{oid}")));
@@ -746,6 +828,8 @@ fn lfs_files_through_git_locations_are_content_blobs_behind_pointers() {
     let report = outcome[0].1.as_ref().unwrap();
     assert_eq!(report.lfs_deleted, 1, "{report:?}");
     let blobs = crate::resource::blob::BlobStore::new(fixture.entity.clone());
-    let (deleted, bytes, _) = blobs.collect(jiff::Timestamp::now().as_millisecond() + 1000, false).unwrap();
+    let (deleted, bytes, _) = blobs
+        .collect(jiff::Timestamp::now().as_millisecond() + 1000, false)
+        .unwrap();
     assert_eq!((deleted, bytes), (1, image.len() as u64));
 }

@@ -66,7 +66,10 @@ fn number(value: u64) -> Value {
 
 /// `gc#ContentBlobs`: delete the blobs no row refers to, not written or referenced in the last `blob_gc_prune_days`
 /// days, and the chunks of abandoned uploads. Out: `deletedCount`, `deletedBytes`, `abandonedCount`.
-fn gc_content_blobs(parameters: &BTreeMap<String, Value>, facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+fn gc_content_blobs(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
     let dry_run = parameters
         .get("dryRun")
         .filter(|value| !is_empty(value))

@@ -65,11 +65,7 @@ struct StoreFind<'a> {
 }
 
 impl gix::objs::Find for StoreFind<'_> {
-    fn try_find<'a>(
-        &self,
-        id: &gix::hash::oid,
-        buffer: &'a mut Vec<u8>,
-    ) -> gix::Result<Option<gix::objs::Data<'a>>> {
+    fn try_find<'a>(&self, id: &gix::hash::oid, buffer: &'a mut Vec<u8>) -> gix::Result<Option<gix::objs::Data<'a>>> {
         match self.store.find(&id.to_owned()) {
             Ok(Some((kind, data))) => {
                 *buffer = data;
@@ -165,9 +161,8 @@ pub(crate) fn receive<'a>(
         let _ = std::fs::remove_file(keep);
     }
     if let (Some(data), Some(index)) = (written.data_path.clone(), written.index_path.clone()) {
-        quarantine.bundle = Some(
-            Bundle::at(&index, gix::hash::Kind::Sha1).map_err(|err| pack_error("opening the pushed pack", err))?,
-        );
+        quarantine.bundle =
+            Some(Bundle::at(&index, gix::hash::Kind::Sha1).map_err(|err| pack_error("opening the pushed pack", err))?);
         quarantine.files = Some((data, index));
     }
     Ok(quarantine)
@@ -317,7 +312,11 @@ impl Quarantine<'_> {
             return Ok(());
         };
         let (max_depth, max_size) = delta_limits();
-        let mut entries: Vec<(u64, ObjectId)> = bundle.index.iter().map(|entry| (entry.pack_offset, entry.oid)).collect();
+        let mut entries: Vec<(u64, ObjectId)> = bundle
+            .index
+            .iter()
+            .map(|entry| (entry.pack_offset, entry.oid))
+            .collect();
         entries.sort_unstable_by_key(|(offset, _)| *offset);
         let by_offset: HashMap<u64, ObjectId> = entries.iter().map(|(offset, id)| (*offset, *id)).collect();
         let ids: Vec<ObjectId> = entries.iter().map(|(_, id)| *id).collect();

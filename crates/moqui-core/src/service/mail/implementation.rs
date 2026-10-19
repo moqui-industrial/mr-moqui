@@ -1276,7 +1276,9 @@ fn smtp_auth(facade: &EntityFacade, server: &EntityValue, rejected: Option<&str>
             return Ok(SmtpAuth::OAuth(user, token));
         }
         #[cfg(not(feature = "imap"))]
-        return Err(Error::new("the OAuth sign-in of mail accounts (imap) is not built into this host"));
+        return Err(Error::new(
+            "the OAuth sign-in of mail accounts (imap) is not built into this host",
+        ));
     }
     if user.is_empty() {
         return Ok(SmtpAuth::None);

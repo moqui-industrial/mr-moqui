@@ -60,7 +60,11 @@ const FEATURE_LOCATIONS: &[(&str, &str, bool)] = &[
         cfg!(feature = "smtp"),
     ),
     ("moqui_core::service::mail::test_server", "smtp", cfg!(feature = "smtp")),
-    ("moqui_core::service::mail::push_remote_changes", "smtp", cfg!(feature = "smtp")),
+    (
+        "moqui_core::service::mail::push_remote_changes",
+        "smtp",
+        cfg!(feature = "smtp"),
+    ),
     // the app's contacts hook, with or without mail built in
     ("moqui_core::service::mail::filter_contact_addresses", "", true),
     ("moqui_core::service::mail::", "imap", cfg!(feature = "imap")),

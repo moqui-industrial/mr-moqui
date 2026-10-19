@@ -465,7 +465,9 @@ pub(crate) fn resolve_revision(store: &dyn GitStore, branch: &str, revision: &st
     match found.as_slice() {
         [] => Ok(None),
         [id] => Ok(Some(*id)),
-        _ => Err(Error::new(format!("{revision} names more than one object; give more digits"))),
+        _ => Err(Error::new(format!(
+            "{revision} names more than one object; give more digits"
+        ))),
     }
 }
 

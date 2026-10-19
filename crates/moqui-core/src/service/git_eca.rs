@@ -213,9 +213,14 @@ pub(crate) fn listening(event: GitEvent, source: &str) -> bool {
 
 /// Whether any rule runs on a post event (ref-update, commit, tag, post-receive) from `source`.
 pub(crate) fn listening_after(source: &str) -> bool {
-    [GitEvent::RefUpdate, GitEvent::Commit, GitEvent::Tag, GitEvent::PostReceive]
-        .into_iter()
-        .any(|event| listening(event, source))
+    [
+        GitEvent::RefUpdate,
+        GitEvent::Commit,
+        GitEvent::Tag,
+        GitEvent::PostReceive,
+    ]
+    .into_iter()
+    .any(|event| listening(event, source))
 }
 
 /// What the rules of one event said: the errors (which refuse a pre event) and the other messages.

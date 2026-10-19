@@ -474,7 +474,10 @@ mod tests {
         )
         .unwrap();
         super::merge_conf(&base, &over);
-        let webapp = base.first_named("webapp-list").and_then(|list| list.first_named("webapp")).unwrap();
+        let webapp = base
+            .first_named("webapp-list")
+            .and_then(|list| list.first_named("webapp"))
+            .unwrap();
         assert!(webapp.first_named("web-protection").is_some());
     }
 }

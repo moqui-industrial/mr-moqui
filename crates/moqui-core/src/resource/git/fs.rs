@@ -270,10 +270,7 @@ pub(crate) fn fetch(
     let before = mirrored_refs(&store)?;
     let repo = store.local();
     let specs: Vec<String> = if mirror {
-        MIRRORED
-            .iter()
-            .map(|prefix| format!("+{prefix}*:{prefix}*"))
-            .collect()
+        MIRRORED.iter().map(|prefix| format!("+{prefix}*:{prefix}*")).collect()
     } else {
         vec![format!("+refs/heads/{branch}:refs/heads/{branch}")]
     };

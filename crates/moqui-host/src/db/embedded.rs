@@ -427,16 +427,23 @@ mod cluster {
         if let Err(err) = std::fs::rename(&unpack, install_dir) {
             let _ = std::fs::remove_dir_all(&unpack);
             if !install_dir.join("bin").is_dir() {
-                return Err(Error::new(format!("could not move the Postgres install to {}", install_dir.display()))
-                    .with_source(err));
+                return Err(Error::new(format!(
+                    "could not move the Postgres install to {}",
+                    install_dir.display()
+                ))
+                .with_source(err));
             }
         }
-        tracing::info!("Unpacked embedded Postgres {SHIPPED_VERSION} into {}", install_dir.display());
+        tracing::info!(
+            "Unpacked embedded Postgres {SHIPPED_VERSION} into {}",
+            install_dir.display()
+        );
         Ok(())
     }
 
     fn unpack_archive(dir: &Path) -> Result<(), Error> {
-        let failed = |err: std::io::Error| Error::new("could not unpack the embedded Postgres archive").with_source(err);
+        let failed =
+            |err: std::io::Error| Error::new("could not unpack the embedded Postgres archive").with_source(err);
         let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(ARCHIVE));
         for entry in archive.entries().map_err(failed)? {
             let mut entry = entry.map_err(failed)?;
@@ -445,7 +452,10 @@ mod cluster {
             if inner.as_os_str().is_empty() {
                 continue;
             }
-            if !inner.components().all(|part| matches!(part, std::path::Component::Normal(_))) {
+            if !inner
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)))
+            {
                 return Err(Error::new(format!(
                     "the embedded Postgres archive has an entry outside its directory: {}",
                     inner.display()
@@ -785,12 +795,24 @@ mod cluster {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                assert_ne!(postgres.metadata().unwrap().permissions().mode() & 0o111, 0, "postgres is executable");
+                assert_ne!(
+                    postgres.metadata().unwrap().permissions().mode() & 0o111,
+                    0,
+                    "postgres is executable"
+                );
             }
             assert!(!install_dir.join("bin/psql").exists(), "psql is not shipped");
             install(&install_dir).unwrap();
-            let left: Vec<_> = std::fs::read_dir(dir.join("install")).unwrap().flatten().map(|e| e.file_name()).collect();
-            assert_eq!(left, vec![std::ffi::OsString::from(SHIPPED_VERSION)], "no unpack directory is left");
+            let left: Vec<_> = std::fs::read_dir(dir.join("install"))
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name())
+                .collect();
+            assert_eq!(
+                left,
+                vec![std::ffi::OsString::from(SHIPPED_VERSION)],
+                "no unpack directory is left"
+            );
         }
 
         #[test]

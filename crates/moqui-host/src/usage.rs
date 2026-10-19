@@ -307,8 +307,19 @@ pub fn is_server_invocation(args: &[String]) -> bool {
 fn is_known_command(name: &str) -> bool {
     matches!(
         name,
-        "help" | "--help" | "-h" | "-?" | "version" | "--version" | "load" | "save-db" | "load-save" | "lint" | "convert"
-            | "types" | "test"
+        "help"
+            | "--help"
+            | "-h"
+            | "-?"
+            | "version"
+            | "--version"
+            | "load"
+            | "save-db"
+            | "load-save"
+            | "lint"
+            | "convert"
+            | "types"
+            | "test"
     )
 }
 

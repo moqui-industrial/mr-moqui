@@ -16,9 +16,9 @@
 //! in `ops` over [`GitStore`]; a bare repository on disk ([`super::fs::FsStore`]) and rows in `GitObject` and `GitRef`
 //! ([`super::db::DbStore`]) are the two kinds of storage.
 
-use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::collections::BTreeMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 use std::sync::Mutex;
 
@@ -46,8 +46,10 @@ pub(crate) struct RefChange {
 
 /// The refs that differ between two listings of [`GitStore::list_refs`], by name.
 pub(crate) fn ref_changes(before: &[(String, ObjectId)], after: &[(String, ObjectId)]) -> Vec<RefChange> {
-    let before: std::collections::BTreeMap<&str, ObjectId> = before.iter().map(|(name, id)| (name.as_str(), *id)).collect();
-    let after: std::collections::BTreeMap<&str, ObjectId> = after.iter().map(|(name, id)| (name.as_str(), *id)).collect();
+    let before: std::collections::BTreeMap<&str, ObjectId> =
+        before.iter().map(|(name, id)| (name.as_str(), *id)).collect();
+    let after: std::collections::BTreeMap<&str, ObjectId> =
+        after.iter().map(|(name, id)| (name.as_str(), *id)).collect();
     let mut names: Vec<&str> = before.keys().chain(after.keys()).copied().collect();
     names.sort_unstable();
     names.dedup();
@@ -223,7 +225,8 @@ pub(crate) fn inflate(data: &[u8], size: u64) -> Result<Vec<u8>, Error> {
 pub(crate) fn deflate(data: &[u8]) -> Vec<u8> {
     use std::io::Write;
     let level = if data.len() > 1024 * 1024 { 1 } else { 6 };
-    let mut encoder = flate2::write::ZlibEncoder::new(Vec::with_capacity(data.len() / 2 + 64), flate2::Compression::new(level));
+    let mut encoder =
+        flate2::write::ZlibEncoder::new(Vec::with_capacity(data.len() / 2 + 64), flate2::Compression::new(level));
     // writing to a Vec cannot fail
     let _ = encoder.write_all(data);
     encoder.finish().unwrap_or_default()
@@ -289,7 +292,11 @@ pub(crate) trait GitStore: Send + Sync + std::fmt::Debug {
     }
 
     /// Each of `ids` as stored, for a pack, in no set order; one the store does not have is an error.
-    fn packed_many(&self, ids: &[ObjectId], each: &mut dyn FnMut(ObjectId, Packed) -> Result<(), Error>) -> Result<(), Error> {
+    fn packed_many(
+        &self,
+        ids: &[ObjectId],
+        each: &mut dyn FnMut(ObjectId, Packed) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         for id in ids {
             let (kind, data) = self
                 .find(id)?
@@ -311,7 +318,10 @@ pub(crate) trait GitStore: Send + Sync + std::fmt::Debug {
 
     /// The content of an object to read a window at a time, when the store keeps it apart from its rows (a large
     /// object's content blob); `None` otherwise, and the caller reads it with [`GitStore::find`].
-    fn content_source(&self, _id: &ObjectId) -> Result<Option<std::sync::Arc<dyn crate::resource::source::ByteSource>>, Error> {
+    fn content_source(
+        &self,
+        _id: &ObjectId,
+    ) -> Result<Option<std::sync::Arc<dyn crate::resource::source::ByteSource>>, Error> {
         Ok(None)
     }
 
@@ -358,7 +368,7 @@ pub(crate) trait GitStore: Send + Sync + std::fmt::Debug {
             &mut <&mut dyn std::io::Read as std::io::Read>::take(input, size.saturating_add(1)),
             &mut data,
         )
-            .map_err(|err| Error::new(format!("reading a git object: {err}")))?;
+        .map_err(|err| Error::new(format!("reading a git object: {err}")))?;
         if data.len() as u64 != size {
             return Err(Error::new(format!("a git object of {} bytes, not {size}", data.len())));
         }

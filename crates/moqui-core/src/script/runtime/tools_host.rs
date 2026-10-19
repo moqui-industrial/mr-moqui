@@ -1730,7 +1730,8 @@ fn resource_version_stream<'js>(
         match bytes {
             Some(bytes) => {
                 let source = Arc::new(crate::resource::source::MemorySource::new(bytes));
-                Class::instance(ctx.clone(), super::upload::HostStream::new(source)).and_then(|class| class.into_js(&ctx))
+                Class::instance(ctx.clone(), super::upload::HostStream::new(source))
+                    .and_then(|class| class.into_js(&ctx))
             }
             None => Null.into_js(&ctx),
         }
@@ -1743,7 +1744,8 @@ fn resource_stream<'js>(ctx: Ctx<'js>, location: String) -> rquickjs::Result<JsV
         let opened = with_ec(&ctx, |ec| ec.factory().resource().open(&location))?
             .map_err(|err| Exception::throw_message(&ctx, err.message()))?
             .ok_or_else(|| Exception::throw_message(&ctx, &format!("no file at {location}")))?;
-        Class::instance(ctx.clone(), super::upload::HostStream::new(opened.source)).and_then(|class| class.into_js(&ctx))
+        Class::instance(ctx.clone(), super::upload::HostStream::new(opened.source))
+            .and_then(|class| class.into_js(&ctx))
     })
 }
 

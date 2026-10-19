@@ -102,8 +102,8 @@ fn write_from_packs(
     for written in writer.by_ref() {
         written.map_err(|err| pack_error("writing the pack", err))?;
     }
-    let stats = gix::parallel::Finalize::finalize(writer.input.inner)
-        .map_err(|err| pack_error("writing the pack", err))?;
+    let stats =
+        gix::parallel::Finalize::finalize(writer.input.inner).map_err(|err| pack_error("writing the pack", err))?;
     if stats.missing_objects > 0 {
         return Err(Error::new(format!(
             "{} objects were missing while the pack was written",
@@ -152,7 +152,9 @@ impl PackOut<'_> {
         while offset < size {
             let window = source.read_at(offset, READ_WINDOW)?;
             if window.is_empty() {
-                return Err(Error::new(format!("git object {id} ended at {offset} of its {size} bytes")));
+                return Err(Error::new(format!(
+                    "git object {id} ended at {offset} of its {size} bytes"
+                )));
             }
             encoder.write_all(&window).map_err(io)?;
             offset += window.len() as u64;
@@ -342,7 +344,12 @@ pub(crate) fn read_back(pack: &[u8]) -> Vec<(ObjectId, Kind)> {
     let mut found = Vec::new();
     for entry in bundle.index.iter() {
         let (data, _) = bundle
-            .find(&entry.oid, &mut buf, &mut gix::zlib::Inflate::default(), &mut gix::odb::pack::cache::Never)
+            .find(
+                &entry.oid,
+                &mut buf,
+                &mut gix::zlib::Inflate::default(),
+                &mut gix::odb::pack::cache::Never,
+            )
             .unwrap()
             .unwrap();
         found.push((entry.oid, data.kind));

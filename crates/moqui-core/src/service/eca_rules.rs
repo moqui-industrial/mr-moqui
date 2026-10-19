@@ -65,7 +65,11 @@ fn git_rules<'a>(nodes: impl Iterator<Item = &'a MNode>, skipped: &mut usize) ->
         match git_rule_from(node) {
             Ok(rule) => {
                 let rule = Arc::new(rule);
-                match rule.id.clone().and_then(|id| rules.iter().position(|old| old.id.as_deref() == Some(&id))) {
+                match rule
+                    .id
+                    .clone()
+                    .and_then(|id| rules.iter().position(|old| old.id.as_deref() == Some(&id)))
+                {
                     Some(at) => rules[at] = rule,
                     None => rules.push(rule),
                 }

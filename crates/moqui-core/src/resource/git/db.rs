@@ -177,7 +177,11 @@ fn i64_of(value: u64) -> Value {
 fn in_values(ids: &[ObjectId]) -> Vec<Value> {
     let mut values: Vec<Value> = ids.iter().map(|id| Value::string(id.to_string())).collect();
     if let Some(last) = values.last().cloned() {
-        let size = IN_SIZES.iter().copied().find(|size| *size >= values.len()).unwrap_or(values.len());
+        let size = IN_SIZES
+            .iter()
+            .copied()
+            .find(|size| *size >= values.len())
+            .unwrap_or(values.len());
         values.resize(size, last);
     }
     values
@@ -400,12 +404,7 @@ impl DbStore {
     }
 
     /// Apply the deltas from `id` down to an object in `done`, innermost first.
-    fn apply_chain(
-        &self,
-        id: ObjectId,
-        deltas: &mut HashMap<ObjectId, Row>,
-        done: &mut Decoded,
-    ) -> Result<(), Error> {
+    fn apply_chain(&self, id: ObjectId, deltas: &mut HashMap<ObjectId, Row>, done: &mut Decoded) -> Result<(), Error> {
         let mut chain = vec![id];
         let mut current = id;
         while !done.contains_key(&current) {
@@ -427,7 +426,9 @@ impl DbStore {
             }
             current = base;
             if chain.len() > MAX_HOPS {
-                return Err(Error::new(format!("the delta chain of git object {id} is longer than {MAX_HOPS}")));
+                return Err(Error::new(format!(
+                    "the delta chain of git object {id} is longer than {MAX_HOPS}"
+                )));
             }
         }
         while let Some(link) = chain.pop() {
@@ -491,7 +492,12 @@ impl DbStore {
     /// Edits in one transaction: the rows are read for update (in name order, so two updates lock in the same order)
     /// and compared before anything is written, so a stale atomic update writes nothing and needs no rollback, which
     /// matters when the scope joins a caller's transaction.
-    fn update_in_scope(&self, edits: &[(usize, &RefEdit)], atomic: bool, outcomes: &mut [RefOutcome]) -> Result<(), Error> {
+    fn update_in_scope(
+        &self,
+        edits: &[(usize, &RefEdit)],
+        atomic: bool,
+        outcomes: &mut [RefOutcome],
+    ) -> Result<(), Error> {
         let scope = self.entity.transactions_for(GIT_REF)?.scope(None)?;
         let mut rows = Vec::with_capacity(edits.len());
         for (index, edit) in edits {
@@ -622,9 +628,9 @@ impl DbStore {
                 Condition::is_in("objectId", in_values(chunk)),
                 Condition::less("lastUpdatedStamp", stamp_value(cutoff)),
             ]);
-            let statement = self
-                .entity
-                .with_entity(GIT_OBJECT, |definition, dialect, _| moqui_db::sql::delete(definition, dialect, Some(&condition)))?;
+            let statement = self.entity.with_entity(GIT_OBJECT, |definition, dialect, _| {
+                moqui_db::sql::delete(definition, dialect, Some(&condition))
+            })?;
             deleted += crate::entity::exec::execute_tx(&tx, &statement.sql, &statement.params)?;
         }
         scope.commit()?;
@@ -648,10 +654,17 @@ impl DbStore {
             Condition::equals("repositoryId", Value::string(self.repository_id.as_ref())),
             Condition::equals("objectId", Value::string(id.to_string())),
         ]);
-        let columns = ["storage", "deltaBaseId", "deltaDepth", "deltaSize", "storedBytes", "objectData"];
-        let statement = self
-            .entity
-            .with_entity(GIT_OBJECT, |definition, dialect, _| moqui_db::sql::update(definition, dialect, &columns, Some(&condition)))?;
+        let columns = [
+            "storage",
+            "deltaBaseId",
+            "deltaDepth",
+            "deltaSize",
+            "storedBytes",
+            "objectData",
+        ];
+        let statement = self.entity.with_entity(GIT_OBJECT, |definition, dialect, _| {
+            moqui_db::sql::update(definition, dialect, &columns, Some(&condition))
+        })?;
         let mut params = vec![
             storage.name().map_or(Value::Null, Value::string),
             base.map_or(Value::Null, |base| Value::string(base.to_string())),
@@ -664,7 +677,10 @@ impl DbStore {
         let tx = self.entity.transactions_for(GIT_OBJECT)?;
         let updated = crate::entity::exec::execute_tx(&tx, &statement.sql, &params)?;
         if updated == 0 {
-            return Err(Error::new(format!("GitObject {id} of {} is not there to rewrite", self.repository_id)));
+            return Err(Error::new(format!(
+                "GitObject {id} of {} is not there to rewrite",
+                self.repository_id
+            )));
         }
         Ok(())
     }
@@ -678,9 +694,9 @@ impl DbStore {
                 Condition::equals("repositoryId", Value::string(self.repository_id.as_ref())),
                 Condition::is_in("objectId", in_values(chunk)),
             ]);
-            let statement = self
-                .entity
-                .with_entity(GIT_OBJECT, |definition, dialect, _| moqui_db::sql::update(definition, dialect, &["deltaDepth"], Some(&condition)))?;
+            let statement = self.entity.with_entity(GIT_OBJECT, |definition, dialect, _| {
+                moqui_db::sql::update(definition, dialect, &["deltaDepth"], Some(&condition))
+            })?;
             let mut params = vec![Value::I64(i64::from(depth))];
             params.extend(statement.params);
             crate::entity::exec::execute_tx(&tx, &statement.sql, &params)?;
@@ -827,41 +843,49 @@ struct Statements {
 
 impl DbStore {
     fn statements(&self) -> Result<Statements, Error> {
-        self.entity.with_entity(GIT_OBJECT, |definition, dialect, _| {
-            let mut columns = vec![
-                "repositoryId",
-                "objectId",
-                "objectType",
-                "objectSize",
-                "storage",
-                "deltaBaseId",
-                "deltaDepth",
-                "deltaSize",
-                "storedBytes",
-                "objectData",
-                "blobId",
-            ];
-            if definition.field("lastUpdatedStamp").is_some() {
-                columns.push("lastUpdatedStamp");
-            }
-            let mut insert = moqui_db::sql::insert(definition, dialect, &columns)?;
-            // another writer may store the same object at the same time: the row is the same, so the second insert
-            // does nothing (and only a duplicate key is passed over, never a missing delta base)
-            let key = |name: &str| {
-                moqui_db::sql::quote_column(
-                    dialect,
-                    &definition.field(name).map(|field| field.column_name.clone()).unwrap_or_default(),
-                )
-            };
-            if moqui_db::sql::is_mysql(dialect) {
-                let column = key("repositoryId");
-                insert.push_str(&format!(" ON DUPLICATE KEY UPDATE {column} = {column}"));
-            } else if dialect.name.starts_with("postgres") {
-                insert.push_str(&format!(" ON CONFLICT ({}, {}) DO NOTHING", key("repositoryId"), key("objectId")));
-            }
-            Ok(Statements { insert, columns })
-        })
-        .map_err(Error::from)
+        self.entity
+            .with_entity(GIT_OBJECT, |definition, dialect, _| {
+                let mut columns = vec![
+                    "repositoryId",
+                    "objectId",
+                    "objectType",
+                    "objectSize",
+                    "storage",
+                    "deltaBaseId",
+                    "deltaDepth",
+                    "deltaSize",
+                    "storedBytes",
+                    "objectData",
+                    "blobId",
+                ];
+                if definition.field("lastUpdatedStamp").is_some() {
+                    columns.push("lastUpdatedStamp");
+                }
+                let mut insert = moqui_db::sql::insert(definition, dialect, &columns)?;
+                // another writer may store the same object at the same time: the row is the same, so the second insert
+                // does nothing (and only a duplicate key is passed over, never a missing delta base)
+                let key = |name: &str| {
+                    moqui_db::sql::quote_column(
+                        dialect,
+                        &definition
+                            .field(name)
+                            .map(|field| field.column_name.clone())
+                            .unwrap_or_default(),
+                    )
+                };
+                if moqui_db::sql::is_mysql(dialect) {
+                    let column = key("repositoryId");
+                    insert.push_str(&format!(" ON DUPLICATE KEY UPDATE {column} = {column}"));
+                } else if dialect.name.starts_with("postgres") {
+                    insert.push_str(&format!(
+                        " ON CONFLICT ({}, {}) DO NOTHING",
+                        key("repositoryId"),
+                        key("objectId")
+                    ));
+                }
+                Ok(Statements { insert, columns })
+            })
+            .map_err(Error::from)
     }
 
     fn insert_params(&self, row: &NewRow, columns: &[&str], stamp: &Value) -> Vec<Value> {
@@ -922,8 +946,11 @@ impl DbStore {
         }
         let ids: Vec<ObjectId> = chunk.iter().map(|row| row.id).collect();
         let now = now_millis();
-        let mut present: HashMap<ObjectId, Option<i64>> =
-            self.rows(&ids, false)?.into_iter().map(|row| (row.id, row.stamp)).collect();
+        let mut present: HashMap<ObjectId, Option<i64>> = self
+            .rows(&ids, false)?
+            .into_iter()
+            .map(|row| (row.id, row.stamp))
+            .collect();
         let stale: Vec<ObjectId> = present
             .iter()
             .filter(|(_, stamp)| stamp.is_none_or(|stamp| stamp < now - FRESHEN_AFTER_MILLIS))
@@ -982,7 +1009,10 @@ impl GitStore for DbStore {
 
     fn object_size(&self, id: &ObjectId) -> Result<Option<u64>, Error> {
         let _rows = super::rows_guard();
-        Ok(self.rows(std::slice::from_ref(id), false)?.first().map(|row| row.meta.size))
+        Ok(self
+            .rows(std::slice::from_ref(id), false)?
+            .first()
+            .map(|row| row.meta.size))
     }
 
     fn contains_many(&self, ids: &[ObjectId]) -> Result<HashSet<ObjectId>, Error> {
@@ -1007,10 +1037,18 @@ impl GitStore for DbStore {
 
     fn meta_many(&self, ids: &[ObjectId]) -> Result<HashMap<ObjectId, ObjectMeta>, Error> {
         let _rows = super::rows_guard();
-        Ok(self.rows(ids, false)?.into_iter().map(|row| (row.id, row.meta)).collect())
+        Ok(self
+            .rows(ids, false)?
+            .into_iter()
+            .map(|row| (row.id, row.meta))
+            .collect())
     }
 
-    fn packed_many(&self, ids: &[ObjectId], each: &mut dyn FnMut(ObjectId, Packed) -> Result<(), Error>) -> Result<(), Error> {
+    fn packed_many(
+        &self,
+        ids: &[ObjectId],
+        each: &mut dyn FnMut(ObjectId, Packed) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         let _rows = super::rows_guard();
         let mut found = 0;
         for chunk in ids.chunks(BATCH) {
@@ -1091,7 +1129,7 @@ impl GitStore for DbStore {
                 &mut <&mut dyn std::io::Read as std::io::Read>::take(input, size.saturating_add(1)),
                 &mut data,
             )
-                .map_err(|err| Error::new(format!("reading a git object: {err}")))?;
+            .map_err(|err| Error::new(format!("reading a git object: {err}")))?;
             if data.len() as u64 != size {
                 return Err(Error::new(format!("a git object of {} bytes, not {size}", data.len())));
             }
@@ -1259,7 +1297,9 @@ impl GitStore for DbStore {
             }
             match ObjectId::from_hex(hex.as_bytes()) {
                 Ok(id) => refs.push((name, id)),
-                Err(err) => tracing::error!(repository = %self.repository_id, "GitRef {name} is not an object id: {err}"),
+                Err(err) => {
+                    tracing::error!(repository = %self.repository_id, "GitRef {name} is not an object id: {err}")
+                }
             }
         }
         Ok(refs)
@@ -1282,14 +1322,23 @@ impl GitStore for DbStore {
             if let Err(err) = self.update_in_scope(group, atomic, &mut outcomes) {
                 // A duplicate key on create means another writer made the ref first: a lost race, not an error.
                 let raced = group.iter().any(|(_, edit)| {
-                    edit.expected.is_none() && self.read_ref(&edit.name).ok().flatten().is_some_and(|id| Some(id) != edit.new)
+                    edit.expected.is_none()
+                        && self
+                            .read_ref(&edit.name)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|id| Some(id) != edit.new)
                 });
                 if !raced {
                     return Err(err);
                 }
                 for (index, edit) in group {
                     let now = self.read_ref(&edit.name)?;
-                    outcomes[*index] = if now != edit.expected { RefOutcome::Stale } else { RefOutcome::Aborted };
+                    outcomes[*index] = if now != edit.expected {
+                        RefOutcome::Stale
+                    } else {
+                        RefOutcome::Aborted
+                    };
                 }
             }
         }

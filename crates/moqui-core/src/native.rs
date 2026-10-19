@@ -135,10 +135,7 @@ pub trait ResourceProvider: Send + Sync + std::fmt::Debug {
     fn stat(&self, location: &str) -> Result<Option<ResourceStat>, Error>;
     /// The file at `location` to read a window at a time, for a response: `None` when no file is there. By default
     /// [`ResourceProvider::read_bytes`] on the first read, of the size `stat` gave.
-    fn open(
-        self: Arc<Self>,
-        location: &str,
-    ) -> Result<OpenedFile, Error>
+    fn open(self: Arc<Self>, location: &str) -> Result<OpenedFile, Error>
     where
         Self: 'static,
     {

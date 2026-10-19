@@ -30,10 +30,9 @@ mod elfinder;
 mod email_eca;
 #[cfg(all(test, feature = "git"))]
 mod files_tests;
-#[cfg(all(test, feature = "git"))]
-mod wiki_tests;
 #[cfg(feature = "git")]
 mod git;
+pub(crate) mod git_eca;
 #[cfg(feature = "image")]
 mod images;
 pub mod info;
@@ -46,9 +45,7 @@ mod pool;
 mod remote;
 mod request_pool;
 mod rest;
-pub(crate) mod git_eca;
 pub(crate) mod rule_actions;
-mod user_keys;
 mod schedule;
 #[cfg(test)]
 mod script_ports_tests;
@@ -61,8 +58,11 @@ mod spreadsheet;
 mod sso;
 mod system_sync;
 mod tools;
+mod user_keys;
 pub(crate) mod util;
 mod validate;
+#[cfg(all(test, feature = "git"))]
+mod wiki_tests;
 
 pub use call::{
     async_call, call, call_future, register_callback, register_on_end, start_future, sync, ServiceCallback,

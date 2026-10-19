@@ -108,7 +108,10 @@ pub(crate) fn advertised(store: &dyn GitStore, branch: &str) -> Result<Advertise
         });
     }
     Ok(Advertised {
-        head: refs.iter().find(|reference| reference.name == branch_ref).map(|reference| reference.id),
+        head: refs
+            .iter()
+            .find(|reference| reference.name == branch_ref)
+            .map(|reference| reference.id),
         branch_ref,
         refs,
     })
@@ -268,7 +271,8 @@ pub(crate) fn copy_objects(
     if planned.objects.is_empty() {
         return Ok(0);
     }
-    std::fs::create_dir_all(scratch).map_err(|err| Error::new(format!("cannot create {}: {err}", scratch.display())))?;
+    std::fs::create_dir_all(scratch)
+        .map_err(|err| Error::new(format!("cannot create {}: {err}", scratch.display())))?;
     let result = (|| {
         let pack_path = scratch.join("copy.pack");
         let mut file = std::io::BufWriter::new(
@@ -281,7 +285,8 @@ pub(crate) fn copy_objects(
             .map_err(|err| Error::new(format!("writing {}: {err}", pack_path.display())))?;
         drop(file);
         let mut input = std::io::BufReader::new(
-            std::fs::File::open(&pack_path).map_err(|err| Error::new(format!("cannot open {}: {err}", pack_path.display())))?,
+            std::fs::File::open(&pack_path)
+                .map_err(|err| Error::new(format!("cannot open {}: {err}", pack_path.display())))?,
         );
         let quarantine = match to.disk_path() {
             // on the repository's own filesystem, so accepting is a rename
@@ -372,7 +377,10 @@ fn provider() -> Result<GitProvider, Refusal> {
 }
 
 fn current_user() -> Option<String> {
-    crate::user::current_user_id().ok().flatten().filter(|id| !id.is_empty())
+    crate::user::current_user_id()
+        .ok()
+        .flatten()
+        .filter(|id| !id.is_empty())
 }
 
 /// Log the user of an HTTP request in. False when it carries no credentials.
@@ -385,7 +393,10 @@ fn authenticate(request: &GitHttpRequest) -> Result<bool, Refusal> {
 fn authenticate_with(authorization: Option<&str>, api_key: Option<&str>) -> Result<bool, Refusal> {
     let refused = |err: Error| Refusal::Unauthenticated(err.message().to_string());
     if let Some(header) = authorization.map(str::trim) {
-        if let Some(token) = header.strip_prefix("Bearer ").or_else(|| header.strip_prefix("bearer ")) {
+        if let Some(token) = header
+            .strip_prefix("Bearer ")
+            .or_else(|| header.strip_prefix("bearer "))
+        {
             crate::user::login_user_key(token.trim()).map_err(refused)?;
             return Ok(true);
         }
@@ -625,13 +636,27 @@ pub fn serve_ssh(
                 upload::advertise_v2(output)?;
                 output.flush().map_err(io_error)?;
                 let advertised = session.advertised()?;
-                upload::serve_v2(repo.store.as_ref(), &advertised, &mut input, output, false, pack_threads())
+                upload::serve_v2(
+                    repo.store.as_ref(),
+                    &advertised,
+                    &mut input,
+                    output,
+                    false,
+                    pack_threads(),
+                )
             }
             GitService::UploadPack => {
                 let advertised = session.advertised()?;
                 upload::advertise_v0(output, &advertised)?;
                 output.flush().map_err(io_error)?;
-                upload::upload_v0(repo.store.as_ref(), &advertised, &mut input, output, false, pack_threads())
+                upload::upload_v0(
+                    repo.store.as_ref(),
+                    &advertised,
+                    &mut input,
+                    output,
+                    false,
+                    pack_threads(),
+                )
             }
             GitService::ReceivePack => {
                 receive::advertise(output, &session.advertised()?)?;
@@ -721,13 +746,11 @@ impl Session<'_> {
                 }
                 match old {
                     None => "create",
-                    Some(old) if name.starts_with("refs/heads/") => {
-                        match revwalk::is_ancestor(view, &old, &new) {
-                            Ok(true) => "update",
-                            Ok(false) => "delete",
-                            Err(err) => return Err(err.message().to_string()),
-                        }
-                    }
+                    Some(old) if name.starts_with("refs/heads/") => match revwalk::is_ancestor(view, &old, &new) {
+                        Ok(true) => "update",
+                        Ok(false) => "delete",
+                        Err(err) => return Err(err.message().to_string()),
+                    },
                     // moving a tag is a forced change
                     Some(_) => "delete",
                 }
@@ -817,7 +840,8 @@ impl Session<'_> {
             // gitECA pre-receive and pre-ref-update rules, on the refs the push may still make
             let candidates: Vec<usize> = (0..results.len()).filter(|index| results[*index].is_ok()).collect();
             if !candidates.is_empty() {
-                let decided = events::pre_receive(view, &definition.id, &definition.branch, &origin, &refs, &candidates);
+                let decided =
+                    events::pre_receive(view, &definition.id, &definition.branch, &origin, &refs, &candidates);
                 for message in &decided.messages {
                     receive::message(out, &request, message)?;
                 }
@@ -855,7 +879,9 @@ impl Session<'_> {
                 )
             })
             .collect();
-        let update_id = self.provider.begin_update(&definition.id, &origin, &refs_before, &recorded);
+        let update_id = self
+            .provider
+            .begin_update(&definition.id, &origin, &refs_before, &recorded);
         if !accepted.is_empty() {
             let lock = self.provider.lock_of(&definition.id);
             let _turn = moqui_lib::sync::lock(&lock);
@@ -932,7 +958,12 @@ impl Session<'_> {
 
     /// After a push changed refs: the head on the repository's row, the default branch of an empty repository, and
     /// a fresh open of a repository on disk (gix sizes its pack slots when it opens).
-    fn updated(&self, request: &receive::PushRequest, results: &[Result<(), String>], refs_before: &[(String, ObjectId)]) {
+    fn updated(
+        &self,
+        request: &receive::PushRequest,
+        results: &[Result<(), String>],
+        refs_before: &[(String, ObjectId)],
+    ) {
         let definition = &self.repo.definition;
         let made: Vec<&receive::Command> = request
             .commands

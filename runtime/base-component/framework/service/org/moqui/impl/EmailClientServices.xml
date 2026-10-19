@@ -474,9 +474,21 @@ along with this software (see the LICENSE.md file). If not, see
             const now = ec.user.nowTimestamp
             const account = ec.entity.find('moqui.basic.email.EmailAccount').condition('emailAccountId', emailAccountId).one()
             const ownedServer = account.ownsEmailServer === 'Y' && account.emailServerId ? account.emailServerId : null
-            // a provider sign-in is revoked there (after the commit, best effort) and deleted here
-            if (ownedServer) ec.service.sync().name('org.moqui.impl.EmailClientServices.revoke#OAuthToken')
-                    .parameter('emailServerId', ownedServer).disableAuthz().call()
+            // a provider sign-in is revoked there (best effort, its own transaction) and deleted here. A host without
+            // the mail client has nothing to revoke, and the account is still removed here.
+            if (ownedServer) {
+                ec.service.sync().name('org.moqui.impl.EmailClientServices.revoke#OAuthToken')
+                        .parameter('emailServerId', ownedServer).disableAuthz().requireNewTransaction(true).call()
+                if (ec.message.hasError()) {
+                    const errors = ec.message.getErrorsString()
+                    if (String(errors).includes('is not built into this host')) {
+                        ec.logger.warn(`The provider sign-in of email account ${emailAccountId} is left in place: ${errors}`)
+                        ec.message.clearErrors()
+                    } else {
+                        return
+                    }
+                }
+            }
             if (!deleteLocalCopies) {
                 account.set('statusId', 'EasRemoved')
                 account.update()

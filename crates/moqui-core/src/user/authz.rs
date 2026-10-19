@@ -1229,9 +1229,13 @@ mod tests {
             let _guard = world.context.disable_authz();
             super::user_checks(&world.facade).unwrap()
         };
-        assert!(std::sync::Arc::ptr_eq(&original, &retained), "seed writes must not reload the user's checks");
+        assert!(
+            std::sync::Arc::ptr_eq(&original, &retained),
+            "seed writes must not reload the user's checks"
+        );
         session::set_user("other", "other");
-        let err = world.context
+        let err = world
+            .context
             .push_checked("AT_SERVICE", "test.Cached#Row", "all", true, false, None)
             .expect_err("a new user loads and enforces the deny");
         assert!(err.to_string().contains("deny record"), "{err}");
@@ -1244,7 +1248,10 @@ mod tests {
         session::set_user("nobody", "nobody");
         assert!(world.facade.find(ENTITY).unwrap().list().is_err());
         grant(&world, "LATE_TEST", "AT_ENTITY", ENTITY, "AUTHZT_ALLOW", "N");
-        assert!(world.facade.find(ENTITY).unwrap().list().is_err(), "the current user's checks stay cached");
+        assert!(
+            world.facade.find(ENTITY).unwrap().list().is_err(),
+            "the current user's checks stay cached"
+        );
         session::set_user("nobody", "nobody");
         world
             .facade

@@ -67,14 +67,20 @@ pub(crate) fn read(input: &mut dyn Read) -> io::Result<Option<Packet>> {
     while got < 4 {
         match input.read(&mut length[got..]) {
             Ok(0) if got == 0 => return Ok(None),
-            Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the input ended inside a pkt-line")),
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "the input ended inside a pkt-line",
+                ))
+            }
             Ok(n) => got += n,
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(err) => return Err(err),
         }
     }
     let text = std::str::from_utf8(&length).map_err(|_| bad("a pkt-line length that is not hex"))?;
-    let size = usize::from_str_radix(text, 16).map_err(|_| bad(format!("a pkt-line length that is not hex: {text}")))?;
+    let size =
+        usize::from_str_radix(text, 16).map_err(|_| bad(format!("a pkt-line length that is not hex: {text}")))?;
     match size {
         0 => Ok(Some(Packet::Flush)),
         1 => Ok(Some(Packet::Delim)),

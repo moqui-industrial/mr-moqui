@@ -737,8 +737,15 @@ pub(crate) fn send_resource_response(location: &str, inline: bool, file_name: Op
             return;
         }
         Err(err) => {
-            tracing::warn!("Sending error response, resource at {location} cannot be read: {}", err.message());
-            send_bytes(500, "text/plain", format!("Resource at {location} cannot be read").into_bytes());
+            tracing::warn!(
+                "Sending error response, resource at {location} cannot be read: {}",
+                err.message()
+            );
+            send_bytes(
+                500,
+                "text/plain",
+                format!("Resource at {location} cannot be read").into_bytes(),
+            );
             return;
         }
     };
@@ -765,10 +772,19 @@ pub(crate) fn send_resource_response(location: &str, inline: bool, file_name: Op
         "private, no-store"
     };
     headers.push(("Cache-Control".to_string(), cache.to_string()));
-    let conditional = WEB.with(|slot| slot.borrow().as_ref().map(|web| web.conditional.clone())).unwrap_or_default();
+    let conditional = WEB
+        .with(|slot| slot.borrow().as_ref().map(|web| web.conditional.clone()))
+        .unwrap_or_default();
     if let Err(err) = crate::screen::static_files::respond_opened(&conditional, headers, &opened) {
-        tracing::warn!("Sending error response, resource at {location} cannot be read: {}", err.message());
-        send_bytes(500, "text/plain", format!("Resource at {location} cannot be read").into_bytes());
+        tracing::warn!(
+            "Sending error response, resource at {location} cannot be read: {}",
+            err.message()
+        );
+        send_bytes(
+            500,
+            "text/plain",
+            format!("Resource at {location} cannot be read").into_bytes(),
+        );
     }
 }
 
@@ -1014,8 +1030,13 @@ pub fn body_limit(request: &WebRequest) -> usize {
 /// [`body_limit`] by the conf of `factory`.
 pub fn body_limit_for(factory: Option<&crate::context::ExecutionContextFactory>, request: &WebRequest) -> usize {
     if is_multipart(request) {
-        parse_size(&protection_setting(factory, "requests", "max-upload", "webapp_max_upload"))
-            .unwrap_or(DEFAULT_MAX_UPLOAD)
+        parse_size(&protection_setting(
+            factory,
+            "requests",
+            "max-upload",
+            "webapp_max_upload",
+        ))
+        .unwrap_or(DEFAULT_MAX_UPLOAD)
     } else {
         parse_size(&protection_setting(factory, "requests", "max-body", "webapp_max_body")).unwrap_or(DEFAULT_MAX_BODY)
     }

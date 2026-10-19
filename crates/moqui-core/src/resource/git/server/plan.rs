@@ -125,11 +125,7 @@ fn by_rev_list(
 
 /// The shallow lines for a fetch of `wants` with `deepen`, as git's `deepen()`, `send_shallow()` and
 /// `send_unshallow()`. Wants of the parents of each unshallowed commit are added to `wants`.
-pub(crate) fn shallow(
-    store: &dyn GitStore,
-    wants: &mut Vec<ObjectId>,
-    deepen: &Deepen,
-) -> Result<ShallowInfo, Error> {
+pub(crate) fn shallow(store: &dyn GitStore, wants: &mut Vec<ObjectId>, deepen: &Deepen) -> Result<ShallowInfo, Error> {
     let client: Vec<ObjectId> = deepen
         .client_shallow
         .iter()

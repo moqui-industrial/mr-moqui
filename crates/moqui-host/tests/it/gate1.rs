@@ -15,10 +15,7 @@
 //! Framework data-file load against a fresh embedded cluster, plus a MySQL metadata smoke.
 
 // Each test needs embedded Postgres or MySQL; without those features the shared imports and helpers are unused.
-#![cfg_attr(
-    not(all(unix, feature = "embedded-postgres")),
-    allow(dead_code, unused_imports)
-)]
+#![cfg_attr(not(all(unix, feature = "embedded-postgres")), allow(dead_code, unused_imports))]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

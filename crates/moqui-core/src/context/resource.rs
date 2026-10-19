@@ -540,9 +540,7 @@ impl ResourceFacade {
             }
         }
         if let Some(provider) = self.provider(location) {
-            return Ok(provider
-                .open(location)?
-                .map(|(stat, source)| Opened { stat, source }));
+            return Ok(provider.open(location)?.map(|(stat, source)| Opened { stat, source }));
         }
         if scheme_of(location) == "dbresource" {
             return Ok(self

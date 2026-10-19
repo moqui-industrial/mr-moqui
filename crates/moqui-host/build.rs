@@ -72,7 +72,10 @@ fn gpl_entry(bytes: &[u8]) -> Option<String> {
         .unwrap_or_else(|err| panic!("the Postgres archive is not a tar.gz: {err}"));
     for entry in entries {
         let mut entry = entry.unwrap_or_else(|err| panic!("the Postgres archive is not a tar.gz: {err}"));
-        let path = entry.path().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default();
+        let path = entry
+            .path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let name = path.rsplit('/').next().unwrap_or_default();
         if path.ends_with("bin/psql")
             || path.ends_with("bin/psql.exe")

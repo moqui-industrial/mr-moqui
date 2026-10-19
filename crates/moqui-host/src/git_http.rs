@@ -58,7 +58,9 @@ impl hyper::body::Body for ChannelBody {
     type Error = std::io::Error;
 
     fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
-        self.0.poll_recv(cx).map(|chunk| chunk.map(|chunk| chunk.map(Frame::data)))
+        self.0
+            .poll_recv(cx)
+            .map(|chunk| chunk.map(|chunk| chunk.map(Frame::data)))
     }
 }
 
@@ -96,7 +98,10 @@ async fn feed(mut body: axum::body::Body, tx: mpsc::Sender<Chunk>, limit: u64, i
     loop {
         let frame = tokio::time::timeout(idle, std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))).await;
         let chunk = match frame {
-            Err(_) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the git request body stalled")),
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the git request body stalled",
+            )),
             Ok(None) => return,
             Ok(Some(Err(err))) => Err(std::io::Error::other(format!("reading the git request: {err}"))),
             Ok(Some(Ok(frame))) => match frame.into_data() {
@@ -126,7 +131,10 @@ pub(crate) async fn handle(
     request: Request,
 ) -> Response {
     let over_tls = request.extensions().get::<TlsConnection>().is_some();
-    let client = request.extensions().get::<ClientAddr>().map_or(peer.ip(), |client| client.0);
+    let client = request
+        .extensions()
+        .get::<ClientAddr>()
+        .map_or(peer.ip(), |client| client.0);
     let (parts, body) = request.into_parts();
     let path = parts.uri.path().strip_prefix("/git/").unwrap_or("");
     let (repository, tail) = match path.find(".git/") {

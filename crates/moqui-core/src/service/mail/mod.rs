@@ -60,9 +60,9 @@ pub(crate) use implementation::{SharedSinkGuard, SinkGuard};
 #[cfg(all(test, feature = "imap"))]
 mod client_tests;
 #[cfg(all(test, feature = "imap"))]
-mod fake_servers;
-#[cfg(all(test, feature = "imap"))]
 mod delivery_tests;
+#[cfg(all(test, feature = "imap"))]
+mod fake_servers;
 #[cfg(all(test, feature = "imap"))]
 mod oauth_tests;
 #[cfg(all(test, feature = "imap"))]

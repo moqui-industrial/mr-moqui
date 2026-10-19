@@ -257,7 +257,10 @@ impl GitProvider {
             })
             .collect();
         let join = origin.source == "write";
-        if self.write_update(repository_id, origin, prior, &refs, "pending", join).is_none() {
+        if self
+            .write_update(repository_id, origin, prior, &refs, "pending", join)
+            .is_none()
+        {
             return;
         }
         // a write's commit is in the caller's transaction: its events run once that commits
@@ -479,7 +482,14 @@ impl GitProvider {
                 continue;
             }
             let made = repo.store.read_ref(&name)? == parse_id(row.get("newObjectId"));
-            results.push((name, if made { "ok".into() } else { "not made: the push was cut short".into() }));
+            results.push((
+                name,
+                if made {
+                    "ok".into()
+                } else {
+                    "not made: the push was cut short".into()
+                },
+            ));
         }
         drop(_rows);
         self.finish_update(&repository_id, &update_id, &results);
@@ -517,8 +527,14 @@ impl GitProvider {
             "transport".to_string(),
             text(update.get("transport")).map_or(Value::Null, Value::string),
         );
-        base.insert("userId".to_string(), text(update.get("userId")).map_or(Value::Null, Value::string));
-        base.insert("updateId".to_string(), text(update.get("updateId")).map_or(Value::Null, Value::string));
+        base.insert(
+            "userId".to_string(),
+            text(update.get("userId")).map_or(Value::Null, Value::string),
+        );
+        base.insert(
+            "updateId".to_string(),
+            text(update.get("updateId")).map_or(Value::Null, Value::string),
+        );
         base.insert(
             "pushOptions".to_string(),
             Value::List(
@@ -543,7 +559,10 @@ impl GitProvider {
                 has_errors: !errors.is_empty(),
                 ..key
             };
-            let RuleOutcome { errors: failed, messages } = git_eca::run_git_rules(&key, &fields, Some(&transactions));
+            let RuleOutcome {
+                errors: failed,
+                messages,
+            } = git_eca::run_git_rules(&key, &fields, Some(&transactions));
             for message in messages {
                 tracing::info!(repository = %repository_id, event = key.event.name(), "{message}");
             }
@@ -592,7 +611,13 @@ impl GitProvider {
                 for commit in commits {
                     let details = ops::commit_details(store, &commit.id)?;
                     run(
-                        event_key(GitEvent::Commit, source, &repository_id, Some(&reference.name), &branch_ref),
+                        event_key(
+                            GitEvent::Commit,
+                            source,
+                            &repository_id,
+                            Some(&reference.name),
+                            &branch_ref,
+                        ),
                         vec![
                             ("commit", commit_value(&details)),
                             ("refName", Value::string(&reference.name)),
@@ -610,7 +635,13 @@ impl GitProvider {
             {
                 let Some(new) = reference.new else { continue };
                 run(
-                    event_key(GitEvent::Tag, source, &repository_id, Some(&reference.name), &branch_ref),
+                    event_key(
+                        GitEvent::Tag,
+                        source,
+                        &repository_id,
+                        Some(&reference.name),
+                        &branch_ref,
+                    ),
                     vec![
                         ("tag", tag_event_value(store, &reference.name, &new)?),
                         ("refName", Value::string(&reference.name)),
@@ -624,10 +655,24 @@ impl GitProvider {
             for reference in &made {
                 let mut fields = ref_fields(reference, &branch_ref);
                 fields.push(("newCommitIds", new_commit_ids(store, reference)));
-                run(event_key(GitEvent::RefUpdate, source, &repository_id, Some(&reference.name), &branch_ref), fields, &mut errors);
+                run(
+                    event_key(
+                        GitEvent::RefUpdate,
+                        source,
+                        &repository_id,
+                        Some(&reference.name),
+                        &branch_ref,
+                    ),
+                    fields,
+                    &mut errors,
+                );
             }
         }
-        run(event_key(GitEvent::PostReceive, source, &repository_id, None, &branch_ref), Vec::new(), &mut errors);
+        run(
+            event_key(GitEvent::PostReceive, source, &repository_id, None, &branch_ref),
+            Vec::new(),
+            &mut errors,
+        );
         Ok(errors)
     }
 }
@@ -776,7 +821,10 @@ pub(crate) fn pre_receive(
     base.insert("repositoryId".to_string(), Value::string(repository_id));
     base.insert("source".to_string(), Value::string("push"));
     base.insert("transport".to_string(), Value::string(origin.transport));
-    base.insert("userId".to_string(), origin.user_id.clone().map_or(Value::Null, Value::string));
+    base.insert(
+        "userId".to_string(),
+        origin.user_id.clone().map_or(Value::Null, Value::string),
+    );
     base.insert(
         "pushOptions".to_string(),
         Value::List(origin.push_options.iter().map(Value::string).collect()),
@@ -807,7 +855,11 @@ pub(crate) fn pre_receive(
             .map(|details| commit_value(&details))
             .collect();
         fields.insert("newCommits".to_string(), Value::List(new_commits));
-        let outcome = git_eca::run_git_rules(&event_key(GitEvent::PreReceive, "push", repository_id, None, &branch_ref), &fields, None);
+        let outcome = git_eca::run_git_rules(
+            &event_key(GitEvent::PreReceive, "push", repository_id, None, &branch_ref),
+            &fields,
+            None,
+        );
         decided.messages.extend(outcome.messages);
         if !outcome.errors.is_empty() {
             decided.refused = Some(outcome.errors.join("; "));
@@ -822,7 +874,17 @@ pub(crate) fn pre_receive(
                 fields.insert(name.to_string(), value);
             }
             fields.insert("newCommitIds".to_string(), new_commit_ids(view, reference));
-            let outcome = git_eca::run_git_rules(&event_key(GitEvent::PreRefUpdate, "push", repository_id, Some(&reference.name), &branch_ref), &fields, None);
+            let outcome = git_eca::run_git_rules(
+                &event_key(
+                    GitEvent::PreRefUpdate,
+                    "push",
+                    repository_id,
+                    Some(&reference.name),
+                    &branch_ref,
+                ),
+                &fields,
+                None,
+            );
             decided.messages.extend(outcome.messages);
             if !outcome.errors.is_empty() {
                 decided.refused_refs.insert(*index, outcome.errors.join("; "));

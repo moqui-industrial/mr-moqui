@@ -28,7 +28,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use moqui_core::testkit::{
-    run_spec, spec_depends_on, spec_missing_features, suite_order, CaseResult, Outcome, RunOptions, SpecFile, SpecResult,
+    run_spec, spec_depends_on, spec_missing_features, suite_order, CaseResult, Outcome, RunOptions, SpecFile,
+    SpecResult,
 };
 use moqui_lib::error::Error;
 

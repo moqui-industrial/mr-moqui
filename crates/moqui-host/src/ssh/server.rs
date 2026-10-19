@@ -377,11 +377,7 @@ impl Connection {
             );
             return Auth::reject();
         }
-        if !sftp
-            && !shell
-            && by_password
-            && moqui_lib::env::get_prop_or_env("ssh_git_password_auth").trim() != "true"
-        {
+        if !sftp && !shell && by_password && moqui_lib::env::get_prop_or_env("ssh_git_password_auth").trim() != "true" {
             tracing::warn!(
                 "SSH password login of {username} from {} refused: git over SSH takes a key (ssh_git_password_auth)",
                 self.peer

@@ -80,7 +80,11 @@ pub(super) async fn serve_channel(
             match reader.read(&mut buf).await {
                 Ok(0) | Err(_) => return,
                 Ok(count) => {
-                    if in_tx.send(Ok(bytes::Bytes::copy_from_slice(&buf[..count]))).await.is_err() {
+                    if in_tx
+                        .send(Ok(bytes::Bytes::copy_from_slice(&buf[..count])))
+                        .await
+                        .is_err()
+                    {
                         return;
                     }
                 }

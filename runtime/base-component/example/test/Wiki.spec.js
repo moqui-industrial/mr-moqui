@@ -27,13 +27,21 @@ const approvalFor = (reviewId) => call(`${NOTIFY}.get#UserNotifications`, { appr
     .find((row) => row.recordId === reviewId)
 
 spec({
+    setupSpec() {
+        ec.artifactExecution.disableAuthz()
+        try {
+            for (const id of ["wikiAuthor", "wikiReviewer", "wikiOutsider"]) user(id)
+        } finally {
+            ec.artifactExecution.enableAuthz()
+        }
+    },
     setup() { ec.artifactExecution.disableAuthz() },
     cleanup() { ec.artifactExecution.enableAuthz() },
 })
 
 feature("a note moves into a git space with its history replayed", {
+    requires: ["git"],
     when() {
-        for (const id of ["wikiAuthor", "wikiReviewer", "wikiOutsider"]) user(id)
         ec.user.internalLoginUser("wikiAuthor")
         const notes = wiki("ensure#UserNotesSpace").wikiSpaceId
         const pageId = save(notes, "Groceries", "# Groceries\n\n- milk\n", "First list")
@@ -138,6 +146,8 @@ feature("a review is approved and refused from the tray", {
 feature("search leaves out another user's notes", {
     when() {
         ec.user.internalLoginUser("wikiAuthor")
+        // the notes space is database files; the git feature that also makes one is skipped when git is not built in
+        wiki("ensure#UserNotesSpace")
         const pageId = save("NOTES_wikiAuthor", `Secret recipe ${RUN}`, "# Secret recipe\n")
         // the search documents on WikiPage have the page now rather than when the feed indexes it after the commit (a
         // runtime with Mantle has MantleWikiPage, so the search uses the index and not the page paths)

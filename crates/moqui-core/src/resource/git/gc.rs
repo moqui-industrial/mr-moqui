@@ -256,11 +256,20 @@ impl GitProvider {
                     Err(err) => (format!("failed: {}", err.message()), None),
                 };
                 self.write_row(&id, |row| {
-                    row.set("lastGcDate", basic_convert(&Value::I64(now_millis()), "java.sql.Timestamp").value);
+                    row.set(
+                        "lastGcDate",
+                        basic_convert(&Value::I64(now_millis()), "java.sql.Timestamp").value,
+                    );
                     row.set("lastGcResult", Value::string(result));
                     if let Some(report) = report {
-                        row.set("objectCount", Value::I64(i64::try_from(report.objects).unwrap_or(i64::MAX)));
-                        row.set("storedBytes", Value::I64(i64::try_from(report.stored_bytes).unwrap_or(i64::MAX)));
+                        row.set(
+                            "objectCount",
+                            Value::I64(i64::try_from(report.objects).unwrap_or(i64::MAX)),
+                        );
+                        row.set(
+                            "storedBytes",
+                            Value::I64(i64::try_from(report.stored_bytes).unwrap_or(i64::MAX)),
+                        );
                     }
                 });
             }
@@ -272,15 +281,26 @@ impl GitProvider {
     fn gc_one(&self, entity: &EntityFacade, repository_id: &str, options: &GcOptions) -> Result<GcReport, Error> {
         let definition = self.definition(repository_id)?;
         if definition.kind != RepositoryKind::Db {
-            return Err(Error::new(format!("git repository {repository_id} is not a db repository")));
+            return Err(Error::new(format!(
+                "git repository {repository_id} is not a db repository"
+            )));
         }
-        let store = DbStore::new(entity.clone(), repository_id, std::sync::Arc::clone(&self.inner.objects));
+        let store = DbStore::new(
+            entity.clone(),
+            repository_id,
+            std::sync::Arc::clone(&self.inner.objects),
+        );
         if options.dry_run {
             return collect(&store, &self.gc_roots(entity, &store, options)?, options);
         }
         let owner = format!("{}-{}", std::process::id(), now_millis());
         let lease = options.deadline.saturating_duration_since(Instant::now()) + Duration::from_secs(600);
-        if !lease_repository(entity, repository_id, Some(&owner), now_millis() + i64::try_from(lease.as_millis()).unwrap_or(i64::MAX))? {
+        if !lease_repository(
+            entity,
+            repository_id,
+            Some(&owner),
+            now_millis() + i64::try_from(lease.as_millis()).unwrap_or(i64::MAX),
+        )? {
             return Err(Error::new(format!(
                 "git repository {repository_id} is being collected by another run"
             )));
@@ -314,7 +334,10 @@ impl GitProvider {
             .condition(Condition::or(vec![
                 Condition::is_in(
                     "ecaStatus",
-                    ["recording", "pending", "running"].into_iter().map(Value::string).collect(),
+                    ["recording", "pending", "running"]
+                        .into_iter()
+                        .map(Value::string)
+                        .collect(),
                 ),
                 Condition::greater_equal("updateDate", since),
             ]))
@@ -354,7 +377,12 @@ fn now_millis() -> i64 {
 
 /// Take the repository's lease for `owner` until `until` (when no other run holds one that has not expired), or with
 /// `None` give it back. Whether it was taken.
-fn lease_repository(entity: &EntityFacade, repository_id: &str, owner: Option<&str>, until: i64) -> Result<bool, Error> {
+fn lease_repository(
+    entity: &EntityFacade,
+    repository_id: &str,
+    owner: Option<&str>,
+    until: i64,
+) -> Result<bool, Error> {
     let stamp = |millis: i64| basic_convert(&Value::I64(millis), "java.sql.Timestamp").value;
     let condition = match owner {
         Some(owner) => Condition::and(vec![
@@ -442,7 +470,11 @@ fn collect(store: &DbStore, roots: &Roots, options: &GcOptions) -> Result<GcRepo
     keep_bases(&table, &mut kept);
 
     // what was stamped since the scan began is kept too, with what it reaches
-    let touched: Vec<ObjectId> = store.touched_since(began - 1000)?.into_iter().map(|row| row.id).collect();
+    let touched: Vec<ObjectId> = store
+        .touched_since(began - 1000)?
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
     if !touched.is_empty() {
         mark_from(store, &mut table, &touched, false)?;
         for id in &touched {
@@ -590,7 +622,10 @@ fn mark_from(store: &DbStore, table: &mut Table, roots: &[ObjectId], strict: boo
     };
     let mut commits: Vec<ObjectId> = Vec::new();
     let mut trees: Vec<(ObjectId, Mark, String)> = Vec::new();
-    let unranked = Mark { rank: u32::MAX, path: 0 };
+    let unranked = Mark {
+        rank: u32::MAX,
+        path: 0,
+    };
     for root in roots {
         let mut current = *root;
         loop {
@@ -756,7 +791,11 @@ fn repack(
     }
     groups.sort_by_key(|group| std::cmp::Reverse(group.iter().map(|at| table.objs[*at].stored).sum::<u64>()));
     let heights = heights(table);
-    let mut depths: Vec<u32> = table.depths().into_iter().map(|depth| depth.unwrap_or(u32::MAX)).collect();
+    let mut depths: Vec<u32> = table
+        .depths()
+        .into_iter()
+        .map(|depth| depth.unwrap_or(u32::MAX))
+        .collect();
     let (mut repacked, mut saved) = (0usize, 0i64);
     'groups: for group in groups {
         for (position, at) in group.iter().enumerate() {
@@ -776,7 +815,9 @@ fn repack(
             let fine_delta = storage == Storage::Delta && base_kept && depths[*at] <= options.max_depth;
             if position == 0 || size > options.max_delta_size || fine_delta || size < 64 {
                 // the newest stays (or becomes) whole; a fine delta stays; an uncompressed row is compressed
-                if storage == Storage::Raw || (position == 0 && storage == Storage::Delta && size <= options.max_delta_size) {
+                if storage == Storage::Raw
+                    || (position == 0 && storage == Storage::Delta && size <= options.max_delta_size)
+                {
                     let saved_now = rewrite_whole(store, table, *at)?;
                     depths[*at] = 0;
                     repacked += 1;
@@ -883,7 +924,10 @@ fn chain_contains(table: &Table, from: ObjectId, id: ObjectId) -> bool {
         if hops > 1000 {
             return true;
         }
-        current = table.get(&at).filter(|obj| obj.storage == Storage::Delta).and_then(|obj| obj.base);
+        current = table
+            .get(&at)
+            .filter(|obj| obj.storage == Storage::Delta)
+            .and_then(|obj| obj.base);
     }
     false
 }
@@ -1005,9 +1049,15 @@ impl GitProvider {
         let _rows = super::rows_guard();
         let definition = self.definition(repository_id)?;
         if definition.kind != RepositoryKind::Db {
-            return Err(Error::new(format!("git repository {repository_id} is not a db repository")));
+            return Err(Error::new(format!(
+                "git repository {repository_id} is not a db repository"
+            )));
         }
-        let store = DbStore::new(self.entity()?, repository_id, std::sync::Arc::clone(&self.inner.objects));
+        let store = DbStore::new(
+            self.entity()?,
+            repository_id,
+            std::sync::Arc::clone(&self.inner.objects),
+        );
         let mut ids = Vec::new();
         store.scan(&mut |row| {
             ids.push(row.id);
@@ -1026,7 +1076,9 @@ impl GitProvider {
         }
         for (name, id) in store.list_refs("refs/")? {
             if store.object_size(&id)?.is_none() {
-                report.errors.push(format!("ref {name} points to {id}, which is missing"));
+                report
+                    .errors
+                    .push(format!("ref {name} points to {id}, which is missing"));
             }
         }
         Ok(report)
