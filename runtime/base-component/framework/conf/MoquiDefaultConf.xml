@@ -133,6 +133,32 @@
     <default-property name="ssh_sftp_max_file" value="268435456"/>
     <default-property name="ssh_max_sessions" value="8"/>
 
+    <!--
+        The inbound SMTP listener for hosted and shared mail accounts, behind the edge gateway (a host built with the
+        inbound-smtp feature; docs/Mail-Inbound.md). Off while smtp_listen_port is empty; 0 binds an ephemeral port.
+        smtp_allowed_addresses: the gateway's IPs and CIDRs, comma-separated (127.0.0.1 for a gateway on this host); every
+        other address is refused at connect, and an empty list does not start the listener. smtp_proxy_protocol: each
+        connection starts with a PROXY v1 or v2 header, and the address it names must be in the list too.
+        smtp_hostname: the name in the greeting and the Received field; empty for webapp_http_host.
+        smtp_authserv_id: the authserv-id of the gateway's Authentication-Results; only those are kept (the verdict is
+        trusted, not verified again). smtp_spam_headers: the gateway's spam verdict fields; mail one of them says yes to
+        goes to Junk. smtp_plus_separator: the plus-addressing characters (sales+news@ is sales@); none turns it off.
+        smtp_max_message_size is bytes; the timeouts are seconds (each command or data chunk, and a whole session).
+    -->
+    <default-property name="smtp_listen_port" value=""/>
+    <default-property name="smtp_listen_host" value="127.0.0.1"/>
+    <default-property name="smtp_allowed_addresses" value=""/>
+    <default-property name="smtp_proxy_protocol" value="false"/>
+    <default-property name="smtp_hostname" value=""/>
+    <default-property name="smtp_authserv_id" value=""/>
+    <default-property name="smtp_spam_headers" value="X-Spam-Flag,X-Spam-Status,X-Spam"/>
+    <default-property name="smtp_plus_separator" value="+"/>
+    <default-property name="smtp_max_message_size" value="26214400"/>
+    <default-property name="smtp_max_recipients" value="100"/>
+    <default-property name="smtp_max_connections" value="20"/>
+    <default-property name="smtp_command_timeout" value="300"/>
+    <default-property name="smtp_session_timeout" value="1800"/>
+
     <!-- Properties for the primary (transactional group) datasource -->
     <default-property name="entity_ds_db_conf" value="h2"/>
     <default-property name="entity_ds_host" value="127.0.0.1"/>

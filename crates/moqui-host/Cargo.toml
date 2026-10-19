@@ -20,7 +20,8 @@ pdf = ["dep:tokio-tungstenite", "dep:futures-util"]
 pdf-servo = ["dep:servo"]
 # No crate. OpenSearch is a separate process, reached through the core HTTP client.
 opensearch = []
-# No crate. Inbound SMTP is not chosen.
+# No crate: the SMTP listener for hosted and shared mail accounts behind the edge gateway (src/smtp.rs, Tokio only).
+# Off by default; it starts when smtp_listen_port is set. docs/Mail-Inbound.md.
 inbound-smtp = []
 
 [dependencies]

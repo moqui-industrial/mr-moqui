@@ -15,9 +15,10 @@
 //! Outbound SMTP and inbound IMAP/POP3 for the email services. The bodies live in [`implementation`] when the `mail`
 //! feature is on, with the mail client's sync engine beside it: [`sync`] (`sync#EmailAccount` and the job), [`remote`]
 //! (local changes onto the server), [`idle`] (IMAP IDLE workers), [`store`] (a received message as a row),
-//! [`discover`] (autodiscover), [`import`] (.eml and .mbox) and [`oauth`] (sign-in with Google or Microsoft, the token
-//! store and XOAUTH2). These functions are the registry entries either way, so
-//! a host built without mail still resolves the locations and reports that mail is not built in.
+//! [`discover`] (autodiscover), [`import`] (.eml and .mbox), [`oauth`] (sign-in with Google or Microsoft, the token
+//! store and XOAUTH2) and [`inbound`] (mail the host's SMTP listener received for hosted and shared accounts). These
+//! functions are the registry entries either way, so a host built without mail still resolves the locations and reports
+//! that mail is not built in.
 
 use std::collections::BTreeMap;
 
@@ -39,6 +40,8 @@ mod implementation;
 #[cfg(feature = "mail")]
 mod import;
 #[cfg(feature = "mail")]
+pub mod inbound;
+#[cfg(feature = "mail")]
 mod oauth;
 #[cfg(feature = "mail")]
 mod remote;
@@ -54,6 +57,8 @@ pub(crate) use implementation::{SharedSinkGuard, SinkGuard};
 mod client_tests;
 #[cfg(all(test, feature = "mail"))]
 mod fake_servers;
+#[cfg(all(test, feature = "mail"))]
+mod inbound_tests;
 #[cfg(all(test, feature = "mail"))]
 mod oauth_tests;
 #[cfg(all(test, feature = "mail"))]

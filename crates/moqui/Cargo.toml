@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The SMTP listener for hosted and shared mail accounts (docs/Mail-Inbound.md): `./moq build -- --features inbound-smtp`.
+inbound-smtp = ["moqui-host/inbound-smtp"]
+
 [dependencies]
 moqui-host = { workspace = true }
 # Component crates kept in runtime/base-component; each adds nothing unless its component loads.

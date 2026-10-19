@@ -46,6 +46,7 @@ mod search;
 mod search_opensearch;
 mod search_replica;
 mod search_semantic;
+mod smtp;
 mod ssh;
 mod sso;
 mod system_sync;
