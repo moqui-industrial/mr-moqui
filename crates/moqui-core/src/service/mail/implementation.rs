@@ -165,7 +165,7 @@ pub(super) fn send_template(
         in_reply_to: String::new(),
         references: String::new(),
         date: None,
-        extra_headers: Vec::new(),
+        extra_headers: template_extra_headers(parameters),
     };
     if !filter_recipients(&mut letter, &field_text(&server, "allowedToDomains"), &email_message_id) {
         return Ok(ids(&email_message_id, ""));
@@ -290,7 +290,8 @@ pub(super) fn send_message(
     let extra_headers = if client {
         client_headers(&field_text(&message, "headersString"))
     } else {
-        Vec::new()
+        // a template message (a list email) sent again keeps the list headers it was made with
+        stored_headers(&field_text(&message, "headersString"), &LIST_HEADERS)
     };
     let mut letter = Letter {
         subject: field_text(&message, "subject"),
@@ -610,6 +611,10 @@ fn insert_draft(
         set_text(&mut row, "emailServerId", &server_id);
         set_text(&mut row, "fromUserId", &from_user);
         set_text(&mut row, "toUserId", &to_user);
+        let extra = template_extra_headers(parameters);
+        if !extra.is_empty() {
+            set_text(&mut row, "headersString", &header_block(&extra));
+        }
         row.create(facade)?;
         Ok(id)
     })
@@ -1077,14 +1082,79 @@ pub(super) struct Letter {
 /// and list conventions), so the mail it answers is not answered back. Any other header there is the received mail's.
 pub(super) const CLIENT_HEADERS: [&str; 3] = ["Auto-Submitted", "X-Auto-Response-Suppress", "Precedence"];
 
+/// The headers of a template message's `headersString` that go out again when it is sent again: a list email's
+/// (RFC 2369, RFC 8058).
+pub(super) const LIST_HEADERS: [&str; 3] = ["List-Unsubscribe", "List-Unsubscribe-Post", "List-Id"];
+
+/// Headers the letter's own fields write, which `extraHeaders` cannot set (lower case).
+const LETTER_HEADERS: [&str; 16] = [
+    "from",
+    "sender",
+    "to",
+    "cc",
+    "bcc",
+    "reply-to",
+    "subject",
+    "date",
+    "message-id",
+    "in-reply-to",
+    "references",
+    "return-path",
+    "mime-version",
+    "content-type",
+    "content-transfer-encoding",
+    "content-disposition",
+];
+
+/// The `extraHeaders` map of `send#EmailTemplate` (a list email's List-Unsubscribe and List-Unsubscribe-Post): each name a
+/// header field name (letters, digits and `-`) that is not one the letter writes itself, each value one line of under
+/// 998 characters with no line breaks (so a value cannot add a header). Anything else is logged and left out.
+pub(super) fn template_extra_headers(parameters: &BTreeMap<String, Value>) -> Vec<(String, String)> {
+    let Some(Value::Map(map)) = parameters.get("extraHeaders") else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (name, value) in map {
+        let name = name.trim();
+        let value = to_plain_string(value).trim().to_string();
+        let name_ok = !name.is_empty()
+            && name.len() <= 76
+            && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            && !LETTER_HEADERS.contains(&name.to_ascii_lowercase().as_str());
+        let value_ok = !value.is_empty() && value.len() < 998 && !value.contains(['\r', '\n']);
+        if !name_ok || !value_ok {
+            tracing::warn!(header = %name, "extraHeaders: {name} is not a header this send may add, left out");
+            continue;
+        }
+        if out.iter().any(|(kept, _)| kept.eq_ignore_ascii_case(name)) {
+            continue;
+        }
+        out.push((name.to_string(), value));
+    }
+    out
+}
+
+/// A header block of `headers` for `EmailMessage.headersString`, a line each.
+fn header_block(headers: &[(String, String)]) -> String {
+    headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect()
+}
+
 /// The [`CLIENT_HEADERS`] of a stored header block, in order, each once.
 pub(super) fn client_headers(headers: &str) -> Vec<(String, String)> {
+    stored_headers(headers, &CLIENT_HEADERS)
+}
+
+/// The `names` of a stored header block that are sent, in order, each once.
+pub(super) fn stored_headers(headers: &str, names: &[&str]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
-    for name in CLIENT_HEADERS {
+    for name in names {
         let value = super::store::header_value(headers, name);
         let value = value.trim();
         // a header value is one line of printable text
-        if !value.is_empty() && !value.contains(['\r', '\n']) && value.len() < 200 {
+        if !value.is_empty() && !value.contains(['\r', '\n']) && value.len() < 998 {
             out.push((name.to_string(), value.to_string()));
         }
     }
@@ -1112,6 +1182,7 @@ fn deliver(facade: &EntityFacade, letter: &Letter, server: &EntityValue) -> Resu
             in_reply_to: letter.in_reply_to.clone(),
             references: letter.references.clone(),
             attachment_names: letter.attachments.iter().map(|part| part.filename.clone()).collect(),
+            headers: letter.extra_headers.clone(),
         });
         return Ok(());
     }
@@ -2803,7 +2874,10 @@ mod tests {
 
     use indexmap::IndexMap;
 
-    use super::{header_one, host_allowed, parse_rfc822, read_line_bytes, FakeGuard, Inbound, SinkGuard, FAKE_DELETED};
+    use super::{
+        field_text, header_one, host_allowed, parse_rfc822, read_line_bytes, stored_headers, FakeGuard, Inbound,
+        SinkGuard, FAKE_DELETED, LIST_HEADERS, MESSAGE,
+    };
     use crate::context::ExecutionContextFactory;
     use crate::entity::EntityFacade;
     use crate::screen::PDF_UNAVAILABLE;
@@ -2944,6 +3018,71 @@ mod tests {
         assert_eq!(sent.len(), 1, "{errors}");
         assert_eq!(sent[0].subject, "Hello there");
         assert!(out.contains_key("emailMessageId"));
+    }
+
+    /// A list email's extra headers go out and stay on the message for a send again; one the letter writes itself, or a
+    /// value with a line break (an injected header), is left out.
+    #[test]
+    fn a_template_send_adds_the_list_headers_and_keeps_them() {
+        let _lock = lock_tests();
+        let (facade, context) = entered();
+        let _entered = context.enter();
+        crate::service::load_definitions().unwrap();
+        seed(
+            &facade,
+            &context,
+            "moqui.basic.email.EmailServer",
+            &[("emailServerId", "TEST_LIST"), ("smtpHost", "smtp.example.com")],
+        );
+        seed(
+            &facade,
+            &context,
+            "moqui.basic.email.EmailTemplate",
+            &[
+                ("emailTemplateId", "LIST"),
+                ("emailServerId", "TEST_LIST"),
+                ("fromAddress", "news@example.com"),
+                ("subject", "News"),
+            ],
+        );
+        let sink = SinkGuard::install();
+        let mut extra = indexmap::IndexMap::new();
+        extra.insert(
+            "List-Unsubscribe".into(),
+            Value::string("<https://example.com/u/TOKEN/oneClick>, <mailto:leave@example.com?subject=unsubscribe>"),
+        );
+        extra.insert(
+            "List-Unsubscribe-Post".into(),
+            Value::string("List-Unsubscribe=One-Click"),
+        );
+        extra.insert("Subject".into(), Value::string("Not this one"));
+        extra.insert("X-Note".into(), Value::string("a\r\nBcc: someone@example.net"));
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("emailTemplateId".into(), Value::string("LIST"));
+        params.insert("toAddresses".into(), Value::string("member@example.com"));
+        params.insert("body".into(), Value::string("<p>News</p>"));
+        params.insert("extraHeaders".into(), Value::Map(extra));
+        let out = crate::service::sync("org.moqui.impl.EmailServices.send#EmailTemplate", &params).expect("send");
+        let errors = context.message().errors().join("\n");
+        assert!(errors.is_empty(), "{errors}");
+        let sent = sink.messages();
+        assert_eq!(sent.len(), 1);
+        let names: Vec<&str> = sent[0].extra_headers.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["List-Unsubscribe", "List-Unsubscribe-Post"]);
+        assert_eq!(sent[0].subject, "News");
+        assert!(sent[0].bcc.is_empty());
+        // kept on the message, and what a send again of it takes
+        let id = moqui_lib::object::to_plain_string(out.get("emailMessageId").expect("id"));
+        let row = facade
+            .find(MESSAGE)
+            .unwrap()
+            .eq("emailMessageId", Value::string(&id))
+            .one()
+            .unwrap()
+            .unwrap();
+        let stored = field_text(&row, "headersString");
+        let again = stored_headers(&stored, &LIST_HEADERS);
+        assert_eq!(again, sent[0].extra_headers);
     }
 
     #[test]
