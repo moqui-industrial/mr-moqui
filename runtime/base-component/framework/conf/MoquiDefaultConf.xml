@@ -144,6 +144,8 @@
         refers to is kept (gc#ContentBlobs). -->
     <default-property name="blob_chunk_size" value="1048576"/>
     <default-property name="blob_gc_prune_days" value="14"/>
+    <!-- A dbresource file over this many bytes is a content blob (stored once, streamed), not fileData. -->
+    <default-property name="dbresource_blob_threshold" value="65536"/>
 
     <!-- Properties for the primary (transactional group) datasource -->
     <default-property name="entity_ds_db_conf" value="h2"/>

@@ -87,6 +87,7 @@ mod tests {
         let mut expected = vec![
             "moqui_core::service::backup::backup_embedded_database",
             "moqui_core::service::content::gc_content_blobs",
+            "moqui_core::service::content::migrate_db_resource_blobs",
             "moqui_core::service::elfinder::run_command",
             "moqui_core::service::images::convert_image",
             "moqui_core::service::images::image_reader_file_suffixes",

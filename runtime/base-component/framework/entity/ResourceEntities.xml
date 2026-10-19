@@ -35,7 +35,11 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="versionName" type="text-short"/>
         <field name="rootVersionName" type="text-short"/>
         <field name="fileData" type="binary-very-long"/>
+        <field name="blobId" type="id-long"><description>The content blob of content over
+            dbresource_blob_threshold bytes, in place of fileData</description></field>
+        <field name="fileSize" type="number-integer"/>
         <relationship type="one" related="moqui.resource.DbResource" short-alias="dbResource"/>
+        <relationship type="one" related="moqui.resource.ContentBlob" short-alias="blob"/>
         <relationship type="many" related="moqui.resource.DbResourceFileHistory" short-alias="histories">
             <key-map field-name="resourceId"/></relationship>
     </entity>
@@ -47,7 +51,9 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="userId" type="id"/>
         <field name="isDiff" type="text-indicator"/>
         <field name="fileData" type="binary-very-long"/>
+        <field name="blobId" type="id-long"><description>The content blob of a past version kept as one</description></field>
         <relationship type="one" related="moqui.resource.DbResourceFile"/>
+        <relationship type="one" related="moqui.resource.ContentBlob" short-alias="blob"/>
         <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
     </entity>
 

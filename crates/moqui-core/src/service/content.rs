@@ -28,7 +28,36 @@ pub(in crate::service) fn register(
     map: &mut BTreeMap<&'static str, crate::service::rust_services::RustServiceFn>,
 ) -> Result<(), String> {
     rust_service!(map, gc_content_blobs)?;
+    rust_service!(map, migrate_db_resource_blobs)?;
     Ok(())
+}
+
+/// `migrate#DbResourceBlobs`: move `dbresource` files over the blob threshold into content blobs. Out: `movedCount`,
+/// `sizedCount`.
+fn migrate_db_resource_blobs(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    let minutes = parameters
+        .get("timeoutMinutes")
+        .map(to_plain_string)
+        .and_then(|text| text.trim().parse::<u64>().ok())
+        .unwrap_or(60)
+        .max(1);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(minutes * 60);
+    match facade.migrate_db_resource_blobs(deadline) {
+        Ok((moved, sized)) => Ok([
+            ("movedCount".to_string(), number(moved)),
+            ("sizedCount".to_string(), number(sized)),
+        ]
+        .into_iter()
+        .collect()),
+        Err(err) => {
+            let text = err.message().to_string();
+            ExecutionContext::with_current(|ctx| ctx.message().add_error(text));
+            Ok(BTreeMap::new())
+        }
+    }
 }
 
 fn number(value: u64) -> Value {

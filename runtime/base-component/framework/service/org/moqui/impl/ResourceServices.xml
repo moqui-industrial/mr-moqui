@@ -28,4 +28,15 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="abandonedCount" type="Integer"/>
         </out-parameters>
     </service>
+    <service verb="migrate" noun="DbResourceBlobs" type="rust" location="moqui_core::service::content::migrate_db_resource_blobs"
+            transaction="ignore">
+        <description>Move the dbresource files, and their past versions, written before content blobs and over
+            dbresource_blob_threshold bytes into content blobs, and record the size of the others. Run once after an
+            upgrade; it can be run again, and goes on from where a timeout stopped it.</description>
+        <in-parameters><parameter name="timeoutMinutes" type="Integer" default-value="60"/></in-parameters>
+        <out-parameters>
+            <parameter name="movedCount" type="Integer"/>
+            <parameter name="sizedCount" type="Integer"/>
+        </out-parameters>
+    </service>
 </services>

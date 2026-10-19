@@ -90,12 +90,52 @@ fn http_get(url: &str, sim: bool) -> Result<String, String> {
     }
 }
 
-#[derive(Clone, Debug)]
+/// A `dbresource` node as found. A file's bytes are read when they are first asked for.
+#[derive(Clone)]
 struct DbSnap {
     exists: bool,
     is_file: bool,
-    bytes: Vec<u8>,
+    bytes: Arc<OnceLock<Result<Vec<u8>, String>>>,
+    facade: Option<EntityFacade>,
     children: Vec<DbSnapChild>,
+}
+
+impl std::fmt::Debug for DbSnap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DbSnap")
+            .field("exists", &self.exists)
+            .field("is_file", &self.is_file)
+            .field("children", &self.children)
+            .finish()
+    }
+}
+
+impl DbSnap {
+    /// A file under a directory read before, whose bytes are read when wanted.
+    fn file(facade: Option<EntityFacade>, exists: bool) -> Self {
+        Self {
+            exists,
+            is_file: exists,
+            bytes: Arc::new(OnceLock::new()),
+            facade,
+            children: Vec::new(),
+        }
+    }
+
+    fn bytes(&self, location: &str) -> Result<Vec<u8>, Error> {
+        self.bytes
+            .get_or_init(|| {
+                let Some(facade) = &self.facade else {
+                    return Ok(Vec::new());
+                };
+                facade
+                    .read_db_resource_bytes(location)
+                    .map(Option::unwrap_or_default)
+                    .map_err(|err| err.message().to_string())
+            })
+            .clone()
+            .map_err(Error::new)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -181,7 +221,7 @@ impl ResourceRef {
                 if !snap.exists || !snap.is_file {
                     return Err(Error::new(format!("not a file: {}", self.location)));
                 }
-                String::from_utf8(snap.bytes.clone())
+                String::from_utf8(snap.bytes(&self.location)?)
                     .map_err(|_| Error::new(format!("dbresource is not utf-8: {}", self.location)))
             }
         }
@@ -201,7 +241,7 @@ impl ResourceRef {
                 if !snap.exists || !snap.is_file {
                     return Err(Error::new(format!("not a file: {}", self.location)));
                 }
-                Ok(snap.bytes.clone())
+                snap.bytes(&self.location)
             }
         }
     }
@@ -255,12 +295,7 @@ impl ResourceRef {
                 .filter(|child| child.is_file)
                 .map(|child| Self {
                     location: child.location.clone(),
-                    stored: Stored::Db(DbSnap {
-                        exists: true,
-                        is_file: true,
-                        bytes: Vec::new(),
-                        children: Vec::new(),
-                    }),
+                    stored: Stored::Db(DbSnap::file(snap.facade.clone(), true)),
                 })
                 .collect()),
         }
@@ -300,22 +335,12 @@ impl ResourceRef {
                 {
                     return Self {
                         location: child.location.clone(),
-                        stored: Stored::Db(DbSnap {
-                            exists: true,
-                            is_file: true,
-                            bytes: Vec::new(),
-                            children: Vec::new(),
-                        }),
+                        stored: Stored::Db(DbSnap::file(snap.facade.clone(), true)),
                     };
                 }
                 Self {
                     location: join_location(&self.location, relative),
-                    stored: Stored::Db(DbSnap {
-                        exists: false,
-                        is_file: false,
-                        bytes: Vec::new(),
-                        children: Vec::new(),
-                    }),
+                    stored: Stored::Db(DbSnap::file(snap.facade.clone(), false)),
                 }
             }
         }
@@ -490,6 +515,20 @@ impl ResourceFacade {
                 .open(location)?
                 .map(|(stat, source)| Opened { stat, source }));
         }
+        if scheme_of(location) == "dbresource" {
+            return Ok(self
+                .db_facade()?
+                .open_db_resource(location)
+                .map_err(Error::from)?
+                .map(|(stat, source)| Opened {
+                    stat: ResourceStat {
+                        is_file: true,
+                        size: stat.size,
+                        last_modified: stat.last_updated,
+                    },
+                    source,
+                }));
+        }
         let resource = self.get(location)?;
         if !resource.exists() || !resource.is_file() {
             return Ok(None);
@@ -525,9 +564,10 @@ impl ResourceFacade {
             return provider.write_from(location, input, size);
         }
         if scheme_of(location) == "dbresource" {
-            let mut bytes = Vec::new();
-            input.read_to_end(&mut bytes).map_err(|err| io_error(location, &err))?;
-            return self.write_bytes(location, &bytes);
+            return self
+                .db_facade()?
+                .write_db_resource_from(location, input, size)
+                .map_err(Error::from);
         }
         let path = self.writable_path(location)?;
         if let Some(parent) = path.parent() {
@@ -835,13 +875,13 @@ impl ResourceFacade {
         let Some(facade) = self.installed() else {
             return Err(Error::new("database resource is not available"));
         };
-        let info = facade.read_db_resource(location).map_err(Error::from)?;
+        let info = facade.db_resource_entry(location).map_err(Error::from)?;
         if !info.exists {
             return Err(Error::new(format!("resource not found: {location}")));
         }
         Ok(ResourceRef {
             location: location.to_string(),
-            stored: Stored::Db(db_snap(location, &info)),
+            stored: Stored::Db(db_snap(location, &info, facade.clone())),
         })
     }
 
@@ -894,11 +934,12 @@ impl ResourceFacade {
     }
 }
 
-fn db_snap(location: &str, info: &DbResourceInfo) -> DbSnap {
+fn db_snap(location: &str, info: &DbResourceInfo, facade: EntityFacade) -> DbSnap {
     DbSnap {
         exists: info.exists,
         is_file: info.is_file,
-        bytes: info.bytes.clone(),
+        bytes: Arc::new(OnceLock::new()),
+        facade: Some(facade),
         children: info
             .children
             .iter()
