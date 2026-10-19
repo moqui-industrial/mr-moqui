@@ -8,7 +8,7 @@ let screens
 const galleryScreens = [
     ["Landing", "qvt"], ["List", "qvt"], ["Detail", "qvt"], ["Record360", "qvt"], ["Task", "qvt"],
     ["Board", "qvue"], ["Calendar", "qvue"], ["Split", "qvt"], ["Settings", "qvt"], ["Wizard", "qvt"],
-    ["Dialog", "qvt"], ["Report", "qvt"], ["Panel", "qvt"], ["Widgets", "qvt"], ["Editor", "qvt"],
+    ["Dialog", "qvt"], ["Report", "qvt"], ["Panel", "qvt"], ["Widgets", "qvt"], ["Editor", "qvt"], ["QuickNote", "qvt"],
 ]
 
 spec({
@@ -45,6 +45,36 @@ feature("gallery screen #name renders in #mode without errors", {
         str.output.length > 200
         !str.output.includes("is not written yet")
         !/Error rendering|Exception in render/.test(str.output)
+    },
+})
+
+// The gallery's shell-providers (Gallery.xml) as the shell gets them from the shellData transition of the root screen, and its
+// palette source run by shellSearch; the Detail screen's context is an m-screen-context with the record.
+feature("the shell data has the gallery's providers, and its palette source finds enumerations", {
+    expect() {
+        const webroot = ec.screen.makeTest().rootScreen("component://webroot/screen/webroot.xml")
+        const data = webroot.render("shellData", {}, null)
+        const apps = JSON.parse(data.output).apps
+        log.info(`Shell data: ${apps.length} apps (${apps.map((app) => app.name).join(", ")}) in ${data.renderTime}ms`)
+        const gallery = apps.find((app) => app.name === "gallery")
+        const search = webroot.render("shellSearch", { text: "Quasar", groups: "GalleryEnumerations" }, null)
+        const groups = JSON.parse(search.output).groups
+        const detail = ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt")
+            .render("Detail", { lastStandalone: "-2", enumId: "STT_INTERNAL_QUASAR" }, null)
+        data.status == 200
+        data.errorMessages.length == 0
+        gallery.providers.quickCreate[0].url == "/qapps/gallery/QuickNote"
+        gallery.providers.paletteActions[0].url == "/qapps/gallery/Widgets"
+        gallery.providers.paletteSources[0].group == "GalleryEnumerations"
+        gallery.providers.paletteSources[0].service === undefined
+        gallery.providers.keymaps[0].keys[0].url == "/qapps/gallery/Widgets"
+        gallery.menu.some((item) => item.path == "/qapps/gallery/Widgets" && item.depth == 1)
+        search.status == 200
+        groups.length == 1
+        groups[0].rows.length > 0
+        groups[0].rows[0].url.startsWith("/qapps/gallery/Detail?enumId=")
+        groups[0].moreUrl == "/qapps/gallery/List?description=Quasar"
+        detail.output.includes('<m-screen-context record-entity="moqui.basic.Enumeration" record-id="STT_INTERNAL_QUASAR"')
     },
 })
 

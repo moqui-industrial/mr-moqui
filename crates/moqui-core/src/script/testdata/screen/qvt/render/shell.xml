@@ -1,0 +1,17 @@
+<screen require-authentication="false">
+    <shell-providers>
+        <quick-create kind="note" label="Note" icon="sym_o_note_add" screen="App/QuickNote"><parameter name="from" value="shell"/></quick-create>
+        <palette-action label="Open the list" screen="App/List"/>
+        <palette-source group="Records" service="test.Shell.search#Records"/>
+        <keymap scope="app"><key keys="g l" label="Go to the list" screen="App/List"/></keymap>
+    </shell-providers>
+    <actions>
+        <set field="orderId" value="SO10023"/>
+        <set field="orderName" value="Order {{x}} &amp; more"/>
+    </actions>
+    <widgets>
+        <context record-entity="mantle.order.OrderHeader" record-id="${orderId}" title="${orderName}" selection-form="ItemList"/>
+        <context record-entity="mantle.order.OrderHeader" record-id="${missingId}"/>
+        <label text="the context renders nothing visible"/>
+    </widgets>
+</screen>

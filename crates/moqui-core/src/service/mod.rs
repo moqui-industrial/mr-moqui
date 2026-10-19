@@ -43,6 +43,7 @@ mod script_ports_tests;
 mod seca;
 mod security_checks;
 pub(crate) mod semaphore;
+pub(crate) mod shell;
 mod spreadsheet;
 mod sso;
 mod system_sync;

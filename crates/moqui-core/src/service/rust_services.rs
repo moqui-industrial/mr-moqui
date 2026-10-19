@@ -63,6 +63,7 @@ fn build() -> BTreeMap<&'static str, RustServiceFn> {
         super::tools::register(&mut map),
         super::images::register(&mut map),
         super::spreadsheet::register(&mut map),
+        super::shell::register(&mut map),
         #[cfg(feature = "git")]
         super::git::register(&mut map),
     ] {
@@ -93,6 +94,8 @@ mod tests {
             "moqui_core::service::mail::poll_server",
             "moqui_core::service::mail::send_message",
             "moqui_core::service::mail::send_template",
+            "moqui_core::service::shell::get_shell_counts",
+            "moqui_core::service::shell::publish_shell_counts",
             "moqui_core::service::spreadsheet::load_spreadsheet_entity",
             "moqui_core::service::spreadsheet::read_spreadsheet",
             "moqui_core::service::sso::handle_callback",

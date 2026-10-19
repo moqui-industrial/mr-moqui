@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use super::active_def;
 use crate::context::{Error, ExecutionContext};
-use crate::screen::definition::ScreenDef;
+use crate::screen::definition::{ScreenDef, SubscreensItem};
 use crate::screen::render::RenderState;
 use crate::screen::url::ScreenUrlInfo;
 use crate::{script, user};
@@ -38,11 +38,12 @@ pub struct MenuEntry {
 }
 
 /// `getMenuSubscreensItems` of the active screen with what the macros ask of each item's URL: the
-/// subscreens that appear in the menu, in menu order, that the user may view.
+/// subscreens that appear in the menu, in menu order, that the user may view. An item whose entry fails is logged and
+/// left out ([`crate::screen::menu::leave_out`]).
 ///
 /// # Errors
 ///
-/// Returns an error when a path cannot be resolved or a `disable-when` expression fails.
+/// Returns an error when the path of another screen cannot be resolved.
 pub fn menu_items(state: &RenderState, screen_path: Option<&str>) -> Result<Vec<MenuEntry>, Error> {
     let root = state
         .url_info
@@ -68,43 +69,56 @@ pub fn menu_items(state: &RenderState, screen_path: Option<&str>) -> Result<Vec<
         .into_iter()
         .filter(|item| item.menu_include && item.is_valid_in_current_context())
     {
-        let url = match &prefix {
-            Some(names) => {
-                let mut full = names.clone();
-                full.push(item.name.clone());
-                crate::screen::urls::build_url_names(state, full)?
-            }
-            None => crate::screen::urls::build_url(state, &item.name)?,
-        };
-        if !url.exists {
-            continue;
+        match menu_entry(state, &root, prefix.as_deref(), item) {
+            Ok(Some(entry)) => out.push(entry),
+            Ok(None) => {}
+            Err(err) => crate::screen::menu::leave_out(&def.location, item, &err),
         }
-        let Ok(target) = state.facade.screen_def(&state.factory, &item.location) else {
-            continue;
-        };
-        if !screen_permitted(&target) {
-            continue;
-        }
-        let disabled = match &item.disable_when {
-            Some(expression) => script::eval_condition(expression)?,
-            None => false,
-        };
-        let image = ScreenUrlInfo::resolve(&state.factory, &root, &url.names, 0)
-            .ok()
-            .and_then(|info| info.menu_image.clone())
-            .unwrap_or_default();
-        out.push(MenuEntry {
-            name: item.name.clone(),
-            has_parameters: !target.parameters.is_empty(),
-            title: item.menu_title.clone(),
-            url: url.minimal_path_url_with_params(),
-            disabled,
-            in_path: state.url_info.full_path.starts_with(&url.minimal_names),
-            image: image.0,
-            image_type: image.1,
-        });
     }
     Ok(out)
+}
+
+/// The entry of `item`, or None when its screen does not exist or the user may not view it. `prefix` is the path of
+/// another screen whose items these are.
+fn menu_entry(
+    state: &RenderState,
+    root: &str,
+    prefix: Option<&[String]>,
+    item: &SubscreensItem,
+) -> Result<Option<MenuEntry>, Error> {
+    let url = match prefix {
+        Some(names) => {
+            let mut full = names.to_vec();
+            full.push(item.name.clone());
+            crate::screen::urls::build_url_names(state, full)?
+        }
+        None => crate::screen::urls::build_url(state, &item.name)?,
+    };
+    if !url.exists {
+        return Ok(None);
+    }
+    let target = state.facade.screen_def(&state.factory, &item.location)?;
+    if !screen_permitted(&target) {
+        return Ok(None);
+    }
+    let disabled = match &item.disable_when {
+        Some(expression) => script::eval_condition(expression)?,
+        None => false,
+    };
+    let image = ScreenUrlInfo::resolve(&state.factory, root, &url.names, 0)
+        .ok()
+        .and_then(|info| info.menu_image.clone())
+        .unwrap_or_default();
+    Ok(Some(MenuEntry {
+        name: item.name.clone(),
+        has_parameters: !target.parameters.is_empty(),
+        title: item.menu_title.clone(),
+        url: url.minimal_path_url_with_params(),
+        disabled,
+        in_path: state.url_info.full_path.starts_with(&url.minimal_names),
+        image: image.0,
+        image_type: image.1,
+    }))
 }
 
 /// Whether the user may view a screen: a screen that requires authentication needs a user and

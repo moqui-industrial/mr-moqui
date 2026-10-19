@@ -287,11 +287,23 @@ fn static_fixture(name: &str) -> (String, crate::screen::statics::StaticReport) 
 
 #[test]
 fn the_qvt_fixture_screens_become_templates_that_compile() {
-    for name in ["containers", "fields", "lists", "extras", "braces"] {
+    for name in ["containers", "fields", "lists", "extras", "braces", "shell"] {
         let (html, report) = static_fixture(name);
         golden(&format!("render/{name}.html"), &html);
         eprintln!("{}", report.render());
     }
+}
+
+/// The screen context of a server-static screen is bound in the browser over the screen's data (R18): each `${}` of the
+/// record id and title is an expression of the scope, the title localized, and nothing is expanded on the server.
+#[test]
+fn the_screen_context_is_bound_over_the_scope_in_a_static_template() {
+    let (html, _) = static_fixture("shell");
+    assert!(
+        html.contains(r#"<m-screen-context record-entity="mantle.order.OrderHeader" :record-id="ec.resource.expandNoL10n('${orderId}',{'orderId':()=&gt;(orderId)})" :title="ec.resource.expand('${orderName}',{'orderName':()=&gt;(orderName)})" selection-form="ItemList"></m-screen-context>"#),
+        "{html}"
+    );
+    assert!(!html.contains("SO10023") && !html.contains("quick-create"), "{html}");
 }
 
 #[test]

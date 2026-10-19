@@ -457,6 +457,15 @@ pub(crate) fn write_output(text: &str) {
     });
 }
 
+/// Drop what was written to the body after its first `len` bytes ([`output_body_len`]).
+pub(crate) fn truncate_output(len: usize) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.body.truncate(len);
+        }
+    });
+}
+
 pub(crate) fn add_header(name: impl Into<String>, value: impl Into<String>) {
     WEB.with(|slot| {
         if let Some(web) = slot.borrow_mut().as_mut() {
@@ -1303,11 +1312,14 @@ pub(crate) fn is_production() -> bool {
 
 /// The text a client gets for `err` sent with `status`. In production a 500's detail, which can hold SQL, file paths,
 /// or script source, goes to the log under an error id, and the client gets only the id. Other statuses and other
-/// instances get the message.
+/// instances get the message; a 500 is logged there too, as Java's `MoquiServlet` logs every internal error.
 pub(crate) fn error_text(status: u16, err: &Error) -> String {
-    if status == 500 && is_production() {
+    if status != 500 {
+        err.message().to_string()
+    } else if is_production() {
         format!("internal error, id {}", log_error_id(&err.diagnostic()))
     } else {
+        tracing::error!("Internal error processing request: {}", err.diagnostic());
         err.message().to_string()
     }
 }

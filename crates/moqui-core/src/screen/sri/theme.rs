@@ -41,20 +41,41 @@ fn find_theme_id(state: &RenderState) -> String {
     if theme_type.is_empty() {
         theme_type = "STT_INTERNAL".to_string();
     }
-    let Some(facade) = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() else {
-        return String::new();
-    };
+    let groups: Vec<String> = user::current_user_groups()
+        .map(|groups| groups.iter().cloned().collect())
+        .unwrap_or_default();
+    theme_for(user::current_user_id().ok().flatten().as_deref(), groups, &theme_type).unwrap_or_default()
+}
+
+/// The screen theme type of the `/qapps` shell (`qapps.xml`), and the theme it falls back to.
+pub const QUASAR_THEME_TYPE: &str = "STT_INTERNAL_QUASAR";
+pub const DEFAULT_QUASAR_THEME: &str = "DEFAULT_QUASAR";
+
+/// The theme of `user_id` for `theme_type` outside a render, found as a render finds the current user's
+/// ([`find_theme_id`]), with the user's own groups; `fallback` when none is found. For the shell's theme values read
+/// by a service, such as the counts service of `ShellServices` (BOSS seeds them on `DEFAULT_QUASAR`).
+pub fn user_theme_id(user_id: Option<&str>, theme_type: &str, fallback: &str) -> String {
+    let groups = crate::user::user_group_ids(user_id)
+        .map(|groups| groups.into_iter().collect())
+        .unwrap_or_else(|_| vec!["ALL_USERS".to_string()]);
+    theme_for(user_id, groups, theme_type).unwrap_or_else(|| fallback.to_string())
+}
+
+/// The user's theme for the type, else one of the groups', else the type's `enumCode`, else a theme of the type with
+/// `DEFAULT` in its id.
+fn theme_for(user_id: Option<&str>, mut groups: Vec<String>, theme_type: &str) -> Option<String> {
+    let facade = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten()?;
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
     let text_of = |row: Option<crate::entity::EntityValue>, field: &str| {
         row.and_then(|row| row.get(field).map(to_plain_string))
             .filter(|text| !text.is_empty())
     };
     let mut theme = None;
-    if let Some(user_id) = user::current_user_id().ok().flatten() {
+    if let Some(user_id) = user_id.filter(|id| !id.is_empty()) {
         theme = text_of(
             facade.find("moqui.security.UserScreenTheme").ok().and_then(|find| {
                 find.eq("userId", Value::string(user_id))
-                    .eq("screenThemeTypeEnumId", Value::string(&theme_type))
+                    .eq("screenThemeTypeEnumId", Value::string(theme_type))
                     .one()
                     .ok()
                     .flatten()
@@ -64,9 +85,6 @@ fn find_theme_id(state: &RenderState) -> String {
     }
     if theme.is_none() {
         // Reverse id order, so ALL_USERS comes after the named groups at the same sequence.
-        let mut groups: Vec<String> = user::current_user_groups()
-            .map(|groups| groups.iter().cloned().collect())
-            .unwrap_or_default();
         groups.sort_unstable_by(|left, right| right.cmp(left));
         let rows = facade
             .find("moqui.security.UserGroupScreenTheme")
@@ -76,7 +94,7 @@ fn find_theme_id(state: &RenderState) -> String {
                     "userGroupId",
                     groups.into_iter().map(Value::String).collect(),
                 ))
-                .eq("screenThemeTypeEnumId", Value::string(&theme_type))
+                .eq("screenThemeTypeEnumId", Value::string(theme_type))
                 .order_by("sequenceNum", false)
                 .order_by("userGroupId", true)
                 .list()
@@ -89,13 +107,13 @@ fn find_theme_id(state: &RenderState) -> String {
             facade
                 .find("moqui.basic.Enumeration")
                 .ok()
-                .and_then(|find| find.eq("enumId", Value::string(&theme_type)).one().ok().flatten()),
+                .and_then(|find| find.eq("enumId", Value::string(theme_type)).one().ok().flatten()),
             "enumCode",
         );
     }
     if theme.is_none() {
         let rows = facade.find("moqui.screen.ScreenTheme").ok().and_then(|find| {
-            find.eq("screenThemeTypeEnumId", Value::string(&theme_type))
+            find.eq("screenThemeTypeEnumId", Value::string(theme_type))
                 .condition(moqui_db::sql::Condition::like(
                     "screenThemeId",
                     Value::string("%DEFAULT%"),
@@ -105,7 +123,31 @@ fn find_theme_id(state: &RenderState) -> String {
         });
         theme = text_of(rows.and_then(|rows| rows.values().first().cloned()), "screenThemeId");
     }
-    theme.unwrap_or_default()
+    theme
+}
+
+/// The `ScreenThemeResource` values of `theme_id` for `resource_type`, in sequence, read outside a render. Empty
+/// without an entity facade.
+///
+/// # Errors
+///
+/// Returns an error when the entity cannot be read.
+pub fn theme_resource_values(theme_id: &str, resource_type: &str) -> Result<Vec<String>, Error> {
+    let Some(facade) = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() else {
+        return Ok(Vec::new());
+    };
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let list = facade
+        .find("moqui.screen.ScreenThemeResource")?
+        .eq("screenThemeId", Value::string(theme_id))
+        .eq("resourceTypeEnumId", Value::string(resource_type))
+        .order_by("sequenceNum", false)
+        .list()?;
+    Ok(list
+        .iter()
+        .filter_map(|row| row.get("resourceValue").map(to_plain_string))
+        .filter(|text| !text.is_empty())
+        .collect())
 }
 
 /// `sri.getThemeValues(type, themeId)`: the `ScreenThemeResource` values in sequence, kept for the render for the current theme.
@@ -125,21 +167,7 @@ pub fn get_theme_values(state: &RenderState, resource_type: &str, theme_id: &str
     } else {
         theme_id.to_string()
     };
-    let Some(facade) = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() else {
-        return Ok(Vec::new());
-    };
-    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
-    let list = facade
-        .find("moqui.screen.ScreenThemeResource")?
-        .eq("screenThemeId", Value::string(theme))
-        .eq("resourceTypeEnumId", Value::string(resource_type))
-        .order_by("sequenceNum", false)
-        .list()?;
-    let values: Vec<String> = list
-        .iter()
-        .filter_map(|row| row.get("resourceValue").map(to_plain_string))
-        .filter(|text| !text.is_empty())
-        .collect();
+    let values = theme_resource_values(&theme, resource_type)?;
     if current {
         state
             .theme_values

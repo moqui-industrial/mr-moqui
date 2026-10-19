@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The gallery's quick-create kind (shell-providers in Gallery.xml): a dialog screen the shell's + menu opens with the screen
+    context as parameters, as BOSS's Commons/QuickCreate does. Saving is a no-op. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Gallery note" default-menu-include="false">
+
+    <parameter name="recordEntity"/>
+    <parameter name="recordId"/>
+
+    <transition name="saveNote">
+        <actions><message type="success">Gallery: the note would be saved${recordId ? ' on ' + recordEntity + ' ' + recordId : ''}; nothing is written.</message></actions>
+        <default-response type="none"/>
+    </transition>
+
+    <widgets>
+        <label type="p" text="A note from the shell's quick create. With a record in the screen context it is linked to it." style="m-muted"/>
+        <label type="p" text="On ${recordEntity} ${recordId}" condition="recordId"/>
+        <form-single name="GalleryNote" transition="saveNote" focus-field="noteText">
+            <field name="recordEntity"><default-field><hidden/></default-field></field>
+            <field name="recordId"><default-field><hidden/></default-field></field>
+            <field name="noteText"><default-field title="Note"><text-area rows="3" cols="50"/></default-field></field>
+            <field name="saveButton"><default-field title="Save"><submit/></default-field></field>
+        </form-single>
+    </widgets>
+</screen>

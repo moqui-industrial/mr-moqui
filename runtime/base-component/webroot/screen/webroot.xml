@@ -44,6 +44,27 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- NOTE DEJ 20200806 use save-parameters="true" to re-save parameters otherwise lost from the menuData request under qapps -->
         <default-response type="none" save-parameters="true"/>
     </transition>
+    <!-- The suite shell of /qapps, fetched once per page load: the apps the user may open with their menus to depth two and
+        their shell-providers, the shell's theme values and the first counts. menuData stays per path. The JSON is described in
+        webroot/js/README.md, "Shell data and providers" (crates/moqui-core/src/screen/shell.rs). 401 without a user. -->
+    <transition name="shellData" read-only="true" begin-transaction="false">
+        <actions><script><![CDATA[
+            const shellData = sri.getShellData()
+            if (shellData != null) ec.web.sendJsonResponse(shellData)
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
+    <!-- The palette's provider groups: the palette-source services of the apps the user may open, never a service the request
+        names. text, groups (a comma list of group names), limit (rows per group, 5 by default). -->
+    <transition name="shellSearch" read-only="true" begin-transaction="false">
+        <parameter name="text"/><parameter name="groups"/><parameter name="limit"/>
+        <actions><script><![CDATA[
+            const params = ec.web.parameters
+            const found = sri.getShellSearch(params.text, params.groups, params.limit)
+            if (found != null) ec.web.sendJsonResponse(found)
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
     <transition name="email"><path-parameter name="emailMessageId"/><actions><script>ec.web.viewEmailMessage()</script></actions>
         <default-response type="none"/></transition>
 
@@ -51,7 +72,7 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- TODO: get fancier with this, crawl screen tree looking for screens that don't require authc, maybe some sort of setting to allow robots or not -->
         <!-- TODO: also generate sitemap XML with paths we want crawled, based on ? -->
         <actions><script><![CDATA[
-            const disallowList = ['apps', 'qapps', 'rest', 'rpc', 'status', 'menuData', 'llm']
+            const disallowList = ['apps', 'qapps', 'rest', 'rpc', 'status', 'menuData', 'shellData', 'shellSearch', 'llm']
             let robotsText = "user-agent: *\n"
             for (const disPath of disallowList) robotsText += `disallow: /${disPath}\n`
             ec.web.sendTextResponse(robotsText)

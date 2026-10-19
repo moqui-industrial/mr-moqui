@@ -149,8 +149,9 @@ along with this software (see the LICENSE.md file). If not, see
                     <link url="dangerNoop" text="Cancel" link-type="hidden-form-link" btn-type="danger" confirmation="Cancel the example record?"/>
                 </button-menu>
             </container>
-            <label type="p" text="Flat (tertiary): icon-only links with link-type=hidden-form-link. The first uses a Material name (icon=edit), the second a Font Awesome class (icon=fa fa-pencil); the macro writes the icon attribute as a CSS class." style="text-caption q-mt-sm q-mb-xs"/>
+            <label type="p" text="Flat (tertiary): icon-only links with link-type=hidden-form-link. The first uses a Material Symbols outlined name (icon=sym_o_edit_note, the style guide's icons), the second a Material Icons name (icon=edit), the third a Font Awesome class (icon=fa fa-pencil); a name is written as a q-icon and a class as an i element." style="text-caption q-mt-sm q-mb-xs"/>
             <container style="row items-center q-gutter-sm">
+                <link url="noop" link-type="hidden-form-link" icon="sym_o_edit_note" text="" tooltip="Edit (Material Symbols name)"/>
                 <link url="noop" link-type="hidden-form-link" icon="edit" text="" tooltip="Edit (Material name)"/>
                 <link url="noop" link-type="hidden-form-link" icon="fa fa-pencil" text="" tooltip="Edit (Font Awesome class)"/>
                 <link url="noop" link-type="hidden-form-link" icon="fa fa-refresh" text="Flat with text" tooltip="Flat with text"/>

@@ -1587,6 +1587,18 @@
             return sri.getFieldValueString(n);
         };
 
+        // ---- the shell ----
+
+        // The screen context of the suite shell (the context element): m-screen-context registers it with the root while the
+        // screen is shown. The title is localized; an expression that comes to nothing (or null) leaves its attribute out.
+        const screenContext = (n) => {
+            const value = (text) => (text && text !== "null" ? text : null);
+            w("<m-screen-context" + A({
+                "record-entity": value(xn(at(n, "record-entity"))), "record-id": value(xn(at(n, "record-id"))),
+                title: value(at(n, "title") ? x(at(n, "title")) : ""), "selection-form": value(xn(at(n, "selection-form")))
+            }) + "></m-screen-context>\n");
+        };
+
         const h = {
             reset, push, pop, e, t, A, cls, at, x, xn, nodeId, cond, fid, fnm, fieldRef, st,
             textLine, textArea, password, file, hidden, reset_, submit, dateTime, dateFind, datePeriod, rangeFind, textFind,
@@ -1596,7 +1608,7 @@
             formList, rowCellOpen, rowCellClose, valueText, sectionPaginate, headerCell,
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
-            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_
+            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext
         };
         Object.defineProperty(globalThis, "$mqQvt", { value: h, configurable: true });
     };
@@ -2094,6 +2106,7 @@
         "image": widget("image", true),
         "label": widget("label", false),
         "editable": widget("editable"),
+        "context": widget("screenContext", false),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

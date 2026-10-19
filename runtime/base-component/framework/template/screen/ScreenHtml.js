@@ -1746,6 +1746,8 @@
         "image": widget("image", true),
         "label": widget("label", false),
         "editable": widget("editable"),
+        // the shell's screen context (m-screen-context in qvt): the html pages have no shell, so nothing
+        "context": stmt(() => ""),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

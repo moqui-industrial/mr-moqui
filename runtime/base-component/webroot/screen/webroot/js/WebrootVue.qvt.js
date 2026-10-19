@@ -33,6 +33,9 @@
         const quasar = moqui.getQuasarColor(color);
         return ["m-btn-tonal", quasar && quasar !== "default" ? "text-" + quasar : "", extra || ""].filter((part) => part).join(" ");
     };
+    // A menu image of type icon (menu-image-type="icon") is CSS classes when it has a space or starts with fa- (the baseline's
+    // "fa fa-home"), else a Quasar icon name (sym_o_hub, or a Material Icons name), which m-menu-icon shows with q-icon.
+    moqui.isIconClass = (image) => /\s/.test(image || "") || String(image || "").startsWith("fa-");
 
     const rootVm = () => moqui.webrootVue;
     const notify = (options) => {
@@ -2442,10 +2445,39 @@
         props: { menuItem: Object, active: Boolean },
         template:
             '<q-item-section v-if="menuItem.image" avatar>' +
-                '<i v-if="menuItem.imageType === \'icon\'" :class="menuItem.image"></i>' +
+                '<m-menu-icon v-if="menuItem.imageType === \'icon\'" :name="menuItem.image" size="xs"></m-menu-icon>' +
                 '<img v-else :src="menuItem.image" :alt="menuItem.title" height="14" class="invertible">' +
             '</q-item-section>' +
             '<q-item-section :class="{\'text-primary text-weight-medium\':active}">{{menuItem.title}}</q-item-section>'
+    });
+
+    // The image of a menu entry whose imageType is icon, in the drawer, the breadcrumbs and the screen history: q-icon for a Quasar
+    // icon name, an i element with the classes for CSS classes (moqui.isIconClass).
+    component("m-menu-icon", {
+        name: "mMenuIcon",
+        props: { name: String, size: String },
+        template: '<i v-if="isClass" :class="name"></i><q-icon v-else :name="name" :size="size"></q-icon>',
+        computed: { isClass() { return moqui.isIconClass(this.name); } }
+    });
+
+    // The screen context of the suite shell (the context element of a screen): while mounted it registers recordEntity, recordId,
+    // title and selectionForm with the root, again when one changes, and takes them back when unmounted. The root's screenContext
+    // is the latest registration of the screens shown (a dialog's over the page's).
+    let screenContextCount = 0;
+    component("m-screen-context", {
+        name: "mScreenContext",
+        props: { recordEntity: String, recordId: [String, Number], title: String, selectionForm: String },
+        template: '<span style="display:none;"></span>',
+        data() { screenContextCount += 1; return { contextKey: "screenContext" + screenContextCount }; },
+        computed: {
+            value() {
+                const text = (value) => (value === null || value === undefined || value === "null" ? "" : String(value));
+                return { recordEntity: text(this.recordEntity), recordId: text(this.recordId), title: text(this.title), selectionForm: text(this.selectionForm) };
+            }
+        },
+        watch: { value(newValue) { if (this.$root.setScreenContext) this.$root.setScreenContext(this.contextKey, newValue); } },
+        mounted() { if (this.$root.setScreenContext) this.$root.setScreenContext(this.contextKey, this.value); },
+        unmounted() { if (this.$root.removeScreenContext) this.$root.removeScreenContext(this.contextKey); }
     });
 
     /* ========== the application ========== */
@@ -2470,7 +2502,7 @@
         "                    <q-menu anchor=\"bottom left\" self=\"top left\"><q-list dense style=\"min-width:200px;\">\n" +
         "                        <q-item v-for=\"subscreen in navMenuItem.subscreens\" :key=\"subscreen.name\" clickable v-close-popup :active=\"subscreen.active\" active-class=\"text-primary text-weight-medium\" :to=\"subscreen.pathWithParams\">\n" +
         "                            <q-item-section avatar>\n" +
-        "                                <i v-if=\"subscreen.image && subscreen.imageType === 'icon'\" :class=\"subscreen.image\"></i>\n" +
+        "                                <m-menu-icon v-if=\"subscreen.image && subscreen.imageType === 'icon'\" :name=\"subscreen.image\" size=\"xs\"></m-menu-icon>\n" +
         "                                <img v-else-if=\"subscreen.image\" :src=\"subscreen.image\" :alt=\"subscreen.title\" width=\"18\" class=\"invertible\">\n" +
         "                                <q-icon v-else name=\"chevron_right\" size=\"xs\"></q-icon>\n" +
         "                            </q-item-section>\n" +
@@ -2513,7 +2545,7 @@
         "            <q-menu><q-list dense style=\"min-width:300px;\">\n" +
         "                <q-item v-for=\"histItem in navHistoryList\" :key=\"histItem.pathWithParams\" clickable v-close-popup :to=\"histItem.pathWithParams\">\n" +
         "                    <q-item-section avatar>\n" +
-        "                        <i v-if=\"histItem.image && histItem.imageType === 'icon'\" :class=\"histItem.image\"></i>\n" +
+        "                        <m-menu-icon v-if=\"histItem.image && histItem.imageType === 'icon'\" :name=\"histItem.image\" size=\"xs\"></m-menu-icon>\n" +
         "                        <img v-else-if=\"histItem.image\" :src=\"histItem.image\" :alt=\"histItem.title\" width=\"18\" class=\"invertible\">\n" +
         "                        <q-icon v-else name=\"chevron_right\" size=\"xs\"></q-icon>\n" +
         "                    </q-item-section>\n" +
@@ -2552,7 +2584,7 @@
         "        <q-scroll-area class=\"fit\"><q-list dense padding><m-menu-nav-item :menu-index=\"0\"></m-menu-nav-item></q-list></q-scroll-area>\n" +
         "    </q-drawer>\n" +
         "\n" +
-        "    <q-page-container>\n" +
+        "    <q-page-container id=\"m-canvas\">\n" +
         "        <q-page class=\"q-pa-sm\"><m-subscreens-active></m-subscreens-active></q-page>\n" +
         "    </q-page-container>\n" +
         "\n" +
@@ -2594,6 +2626,8 @@
                 username: config.username || "", locale: config.locale || "en", userFullName: config.userFullName || "",
                 reLoginShow: false, reLoginPassword: null, reLoginMfaData: null, reLoginOtp: null,
                 notificationClient: null, sessionTokenBc: null, qzVue: null, leftOpen: !!config.leftOpen,
+                // the m-screen-context registrations, oldest first, and the ids of the elements Assist may reach (the canvas)
+                screenContexts: [], assistReach: ["m-canvas"],
                 shell: Object.assign({ logoUrl: "", title: "", logoutUrl: "/Login/logout", footerHtml: "" }, config.shell), labels: Object.assign({}, config.labels)
             };
         },
@@ -2694,6 +2728,17 @@
             reloadContainer(contId) { const comp = this.activeContainers[contId]; if (comp) comp.reload(); else console.error("Container with ID " + contId + " not found, not reloading"); },
             loadContainer(contId, url) { const comp = this.activeContainers[contId]; if (comp) comp.load(url); else console.error("Container with ID " + contId + " not found, not loading url " + url); },
             hideContainer(contId) { const comp = this.activeContainers[contId]; if (comp && comp.hide) comp.hide(); else console.error("Container with ID " + contId + " not found, not hiding"); },
+
+            // The context of a screen, from its m-screen-context: a new key is the latest registration, a known one keeps its place.
+            setScreenContext(key, value) {
+                const entry = { key, value: Object.assign({}, value) };
+                const index = this.screenContexts.findIndex((item) => item.key === key);
+                if (index >= 0) this.screenContexts.splice(index, 1, entry); else this.screenContexts.push(entry);
+            },
+            removeScreenContext(key) {
+                const index = this.screenContexts.findIndex((item) => item.key === key);
+                if (index >= 0) this.screenContexts.splice(index, 1);
+            },
 
             addPlugin(list, url) { moqui.loadComponent(this.appRootPath + url, (comp) => { list.push(comp); }); },
             addPluginsWait(list, urlList, urlIndex) {
@@ -2879,6 +2924,16 @@
             currentLinkUrl() { const search = this.currentSearch; return this.currentLinkPath + (search.length > 0 ? "?" + search : ""); },
             basePathSize() { return this.basePath.split("/").length - this.appRootPath.split("/").length; },
             ScreenTitle() { return this.navMenuList.length > 0 ? this.navMenuList[this.navMenuList.length - 1].title : ""; },
+            // What the shell and Assist know of the screen shown: its path and parameters, the record and selection of the latest
+            // m-screen-context (a record needs an entity and an id), and the filters and forms, which are not gathered yet.
+            screenContext() {
+                const list = this.screenContexts;
+                const latest = list.length ? list[list.length - 1].value : null;
+                const record = latest && latest.recordEntity && latest.recordId ?
+                    { entity: latest.recordEntity, id: latest.recordId, title: latest.title || "" } : null;
+                return { path: this.currentPath, parameters: Object.assign({}, this.currentParameters), record,
+                    selection: latest && latest.selectionForm ? { form: latest.selectionForm } : null, filters: null, forms: [] };
+            },
             documentMenuList() {
                 const docList = [];
                 this.navMenuList.forEach((item) => { if (item.screenDocList && item.screenDocList.length) item.screenDocList.forEach((doc) => docList.push(doc)); });
@@ -3004,6 +3059,8 @@
             plugins: { Notify: root.Quasar.Notify, LoadingBar: root.Quasar.LoadingBar } };
         const langKey = String(config.quasarLang || "enUS").replace(/-([a-zA-Z])/g, (m, ch) => ch.toUpperCase()).replace("-", "");
         if (root.Quasar.Lang && root.Quasar.Lang[langKey]) quasarOptions.lang = root.Quasar.Lang[langKey];
+        // Quasar's own icons (select arrows, pagination, expansion) as Material Symbols, outlined (the sym_o_* names; qapps.xml loads the set)
+        if (root.Quasar.IconSet && root.Quasar.IconSet.materialSymbolsOutlined) quasarOptions.iconSet = root.Quasar.IconSet.materialSymbolsOutlined;
         app.use(root.Quasar, quasarOptions);
         Object.keys(qvt.components).forEach((name) => app.component(name, qvt.components[name]));
         app.config.globalProperties.moqui = moqui;

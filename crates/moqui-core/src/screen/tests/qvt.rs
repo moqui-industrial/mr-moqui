@@ -114,6 +114,42 @@ fn form_single_with_every_field_type() {
     }
 }
 
+/// `context` is an m-screen-context with the request's values (a title localized and encoded, an expression that comes to
+/// nothing left out), and `shell-providers`, a child of the screen, renders nothing in any mode.
+#[test]
+fn the_screen_context_and_the_shell_providers() {
+    let out = check("shell", &[]);
+    assert!(
+        out.contains(r#"<m-screen-context record-entity="mantle.order.OrderHeader" record-id="SO10023" title="Order {{x}} &amp; more" selection-form="ItemList"></m-screen-context>"#),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"<m-screen-context record-entity="mantle.order.OrderHeader"></m-screen-context>"#),
+        "{out}"
+    );
+    for provider in ["quick-create", "QuickNote", "palette", "Records", "g l"] {
+        assert!(!out.contains(provider), "{provider} in {out}");
+    }
+    for mode in ["html", "text", "csv", "xml"] {
+        let context = ExecutionContextFactory::test_context();
+        let output = make_render(context.factory())
+            .root_screen(render_dir().join("shell.xml").to_string_lossy().into_owned())
+            .screen_path("")
+            .render_mode(mode)
+            .render()
+            .unwrap_or_else(|err| panic!("{mode}: {err}"));
+        let text = output.body_text();
+        // csv and xml write only forms
+        assert!(
+            matches!(mode, "csv" | "xml") || text.contains("the context renders nothing visible"),
+            "{mode}: {text}"
+        );
+        for written in ["SO10023", "screen-context", "QuickNote", "Records"] {
+            assert!(!text.contains(written), "{written} in {mode}: {text}");
+        }
+    }
+}
+
 #[test]
 fn form_lists() {
     let out = check("lists", &[]);
@@ -130,7 +166,9 @@ fn an_alias_transition_link_points_at_the_screen() {
     assert_compiles(&["alias".to_string()], std::slice::from_ref(&out));
     assert!(out.contains("href=\"/Detail?id=I1&amp;fromResponse=yes\""), "{out}");
     assert!(
-        out.contains("<m-link href=\"/Detail?id=I1&amp;fromResponse=yes\" id=\"Rows_id_0_detail\" class=\"m-link-text\">"),
+        out.contains(
+            "<m-link href=\"/Detail?id=I1&amp;fromResponse=yes\" id=\"Rows_id_0_detail\" class=\"m-link-text\">"
+        ),
         "{out}"
     );
     assert!(out.contains("href=\"/List/detail?id=I1\""), "{out}");
@@ -139,12 +177,18 @@ fn an_alias_transition_link_points_at_the_screen() {
     assert!(out.contains("action=\"/Detail\""), "{out}");
     assert!(out.contains("action=\"/List/detail\""), "{out}");
     // The extra path of an alias is the path-parameter, outside the row so the row's id is not the source.
-    assert!(out.contains("href=\"/Detail?id=I1\" class=\"m-link-text\">By path"), "{out}");
+    assert!(
+        out.contains("href=\"/Detail?id=I1\" class=\"m-link-text\">By path"),
+        "{out}"
+    );
     // type=none is not a screen URL, so the anchor is <a>. The alias above stays m-link. In a list cell a screen link is text.
     assert!(out.contains("<a href=\"/List/gone\" class=\"m-link-text\">"), "{out}");
     assert!(!out.contains("<m-link href=\"/List/gone\">"), "{out}");
     // An http(s) value with url-type screen is that string, not a screen walk.
-    assert!(out.contains("<a href=\"https://example.com/x\" class=\"m-link-text\">"), "{out}");
+    assert!(
+        out.contains("<a href=\"https://example.com/x\" class=\"m-link-text\">"),
+        "{out}"
+    );
     // A screen that does not exist is `#`.
     assert!(out.contains(">#</span>"), "{out}");
 }
@@ -197,6 +241,84 @@ fn row_selection_multi_forms_find_dialogs_and_the_options_of_a_drop_down() {
         out.contains("'title_0':'One'") && out.contains("'title_1':'Two'"),
         "{out}"
     );
+}
+
+/// A qvt render error is logged and written in place of what failed, as the html render does: a section's error replaces
+/// the section and the screen goes on, and an error in the screen itself replaces the screen, which `.qvt` renders alone.
+/// What the failed part wrote is dropped so the template still compiles, and a brace in the message is not an
+/// interpolation.
+#[test]
+fn a_qvt_render_error_is_logged_and_written_in_its_place() {
+    let dir = std::env::temp_dir().join(format!("moqui-qvt-error-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Root")).unwrap();
+    let write = |path: &str, text: &str| std::fs::write(dir.join(path), text).unwrap();
+    write(
+        "Root.xml",
+        r#"<screen require-authentication="false"><subscreens default-item="Section"/>
+            <widgets><subscreens-active/></widgets></screen>"#,
+    );
+    write(
+        "Root/Section.xml",
+        r#"<screen require-authentication="false"><widgets>
+            <label text="before"/>
+            <section name="Broken"><widgets><container><label text="inside"/>
+                <render-mode><text type="qvt"><![CDATA[<b>${nope.bad()}</b>]]></text></render-mode>
+            </container></widgets></section>
+            <label text="after"/>
+        </widgets></screen>"#,
+    );
+    write(
+        "Root/Whole.xml",
+        r#"<screen require-authentication="false"><widgets><container><label text="first"/>
+            <render-mode><text type="qvt"><![CDATA[${(() => { throw new Error('a {{ brace }}') })()}]]></text></render-mode>
+        </container></widgets></screen>"#,
+    );
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let context = ExecutionContextFactory::test_context();
+    let render = |path: &str| {
+        make_render(context.factory())
+            .root_screen(root.clone())
+            .screen_path(path)
+            .render_mode("qvt")
+            .render()
+            .unwrap_or_else(|err| panic!("{path}: {err}"))
+            .body_text()
+    };
+    let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (section, whole) =
+        tracing::subscriber::with_default(crate::testing::LogSubscriber(std::sync::Arc::clone(&lines)), || {
+            (render("/Section.qvt"), render("/Whole.qvt"))
+        });
+    let section_location = dir.join("Root/Section.xml").to_string_lossy().into_owned();
+    let whole_location = dir.join("Root/Whole.xml").to_string_lossy().into_owned();
+    assert!(section.contains(">before<") && section.contains(">after<"), "{section}");
+    assert!(
+        section.contains(&format!(
+            "Error rendering section [Broken] in screen [{section_location}]"
+        )),
+        "{section}"
+    );
+    assert!(!section.contains("inside"), "{section}");
+    assert!(
+        whole.contains(&format!("Error rendering screen [{whole_location}]")),
+        "{whole}"
+    );
+    assert!(!whole.contains("first") && !whole.contains("{{"), "{whole}");
+    assert!(whole.contains("a &#123;&#123; brace }}"), "{whole}");
+    assert_compiles(&["section".to_string(), "whole".to_string()], &[section, whole]);
+    let logged = lines.lock().unwrap().join("\n");
+    assert!(
+        logged.contains(&format!(
+            "Error rendering section [Broken] in screen [{section_location}]"
+        )),
+        "{logged}"
+    );
+    assert!(
+        logged.contains(&format!("Error rendering screen [{whole_location}]")),
+        "{logged}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `WebrootVue.qvt.render.js` is the render functions of the client components as their templates are now: the file

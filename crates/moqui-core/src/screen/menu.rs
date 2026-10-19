@@ -22,6 +22,7 @@
 use indexmap::IndexMap;
 use moqui_lib::object::Value;
 
+use super::definition::SubscreensItem;
 use super::render::{Frames, RenderState};
 use super::sri::screen_permitted;
 use super::url::ScreenUrlInfo;
@@ -37,7 +38,7 @@ fn text(value: &str) -> Value {
 
 /// Whether the user may view `target` below `parents`, which are on the artifact stack as they are when the screen renders:
 /// a grant on a screen reaches the screens below it.
-fn permitted_under(
+pub(super) fn permitted_under(
     parents: &[std::sync::Arc<super::definition::ScreenDef>],
     target: &super::definition::ScreenDef,
 ) -> bool {
@@ -72,12 +73,80 @@ fn path_with_params(url: &UrlInstance) -> String {
     }
 }
 
+/// Leave a subscreen out of a menu when its entry cannot be made: its screen does not load or parse, or an expression of
+/// its item fails. The error is logged with the screen's location and its siblings still show (AGENTS.md failure
+/// tolerance). A security error leaves it out quietly, as a screen the user may not view is.
+pub(crate) fn leave_out(parent: &str, item: &SubscreensItem, err: &Error) {
+    if !super::sri::is_security(err) {
+        tracing::error!(
+            "Leaving subscreen {} [{}] of screen [{parent}] out of the menu: {err}",
+            item.name,
+            item.location
+        );
+    }
+}
+
+/// The menu entry of `item`, a subscreen of the screen at `parent_names` and `parent_path`, or None when the user may not
+/// view it or a required parameter is missing. `parents` are the screens from the root down to its parent, for the
+/// authorization. `next_item` is the subscreen on the path. The shell data (`shell.rs`) makes its entries here too.
+pub(super) fn subscreen_entry(
+    state: &RenderState,
+    parents: &[std::sync::Arc<super::definition::ScreenDef>],
+    parent_names: &[String],
+    parent_path: &str,
+    item: &SubscreensItem,
+    next_item: &str,
+) -> Result<Option<Value>, Error> {
+    let screen_path = format!("{parent_path}/{}", moqui_lib::string::url_encode_if_needed(&item.name));
+    let mut names = parent_names.to_vec();
+    names.push(item.name.clone());
+    let url = urls::resolve_names_at(state, names, 0, true)?;
+    let Some(sui) = url.info.as_ref() else {
+        return Ok(None);
+    };
+    let target = state.facade.screen_def(&state.factory, &item.location)?;
+    if !permitted_under(parents, &target) {
+        return Ok(None);
+    }
+    let missing = sui
+        .parameter_items
+        .values()
+        .any(|parameter| parameter.required && url.parameters.get(&parameter.name).is_none_or(String::is_empty));
+    if missing {
+        return Ok(None);
+    }
+    let (image, image_type) = menu_image(state, sui.menu_image.as_ref());
+    let disabled = match &item.disable_when {
+        Some(expression) => script::eval_condition(expression)?,
+        None => false,
+    };
+    let mut entry = Item::new();
+    entry.insert("name".into(), text(&item.name));
+    entry.insert("title".into(), text(&script::expand(&item.menu_title)?));
+    entry.insert("path".into(), text(&screen_path));
+    entry.insert("pathWithParams".into(), text(&path_with_params(&url)));
+    entry.insert("image".into(), image);
+    entry.insert("imageType".into(), image_type);
+    if item.menu_include {
+        entry.insert("menuInclude".into(), Value::Bool(true));
+    }
+    if item.name == next_item {
+        entry.insert("active".into(), Value::Bool(true));
+    }
+    if disabled {
+        entry.insert("disableLink".into(), Value::Bool(true));
+    }
+    Ok(Some(Value::Map(entry)))
+}
+
 /// The menu data for `path_names`, or None when a JSON error was sent instead: 401 without a user, 404
 /// for a path that names no screen, 403 for a screen the user may not view.
 ///
+/// A subscreen beside the path whose entry fails is logged and left out ([`leave_out`]).
+///
 /// # Errors
 ///
-/// Returns an error when a screen on the path does not load or a `disable-when` expression fails.
+/// Returns an error when a screen on the path does not load.
 pub fn menu_data(state: &RenderState, path_names: &[String]) -> Result<Option<Value>, Error> {
     if user::current_username()?.is_none() {
         web::send_json_error(401, "Authentication required");
@@ -152,47 +221,12 @@ pub fn menu_data(state: &RenderState, path_names: &[String]) -> Result<Option<Va
             if (!item.menu_include && &item.name != next_item) || !item.is_valid_in_current_context() {
                 continue;
             }
-            let screen_path = format!("{current_path}/{}", moqui_lib::string::url_encode_if_needed(&item.name));
-            let mut names = full_path[..=index].to_vec();
-            names.push(item.name.clone());
-            let url = urls::resolve_names_at(state, names, 0, true)?;
-            let Some(sui) = url.info.as_ref() else {
-                continue;
-            };
-            let Ok(target) = state.facade.screen_def(&state.factory, &item.location) else {
-                continue;
-            };
-            if !permitted_under(&info.path_defs[..(index + 2).min(info.path_defs.len())], &target) {
-                continue;
+            let parents = &info.path_defs[..(index + 2).min(info.path_defs.len())];
+            match subscreen_entry(state, parents, &full_path[..=index], &current_path, item, next_item) {
+                Ok(Some(entry)) => subscreens.push(entry),
+                Ok(None) => {}
+                Err(err) => leave_out(&cur_screen.location, item, &err),
             }
-            let missing = sui.parameter_items.values().any(|parameter| {
-                parameter.required && url.parameters.get(&parameter.name).is_none_or(String::is_empty)
-            });
-            if missing {
-                continue;
-            }
-            let (image, image_type) = menu_image(state, sui.menu_image.as_ref());
-            let disabled = match &item.disable_when {
-                Some(expression) => script::eval_condition(expression)?,
-                None => false,
-            };
-            let mut entry = Item::new();
-            entry.insert("name".into(), text(&item.name));
-            entry.insert("title".into(), text(&script::expand(&item.menu_title)?));
-            entry.insert("path".into(), text(&screen_path));
-            entry.insert("pathWithParams".into(), text(&path_with_params(&url)));
-            entry.insert("image".into(), image);
-            entry.insert("imageType".into(), image_type);
-            if item.menu_include {
-                entry.insert("menuInclude".into(), Value::Bool(true));
-            }
-            if &item.name == next_item {
-                entry.insert("active".into(), Value::Bool(true));
-            }
-            if disabled {
-                entry.insert("disableLink".into(), Value::Bool(true));
-            }
-            subscreens.push(Value::Map(entry));
         }
 
         let cur_url = urls::resolve_names_at(state, full_path[..=index].to_vec(), 0, true)?;

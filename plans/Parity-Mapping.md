@@ -79,6 +79,7 @@ Other Native modules are marked in their own sections.
 | `moqui-core/src/service/util.rs` | Shared helpers. Java scatters the same bits. |
 | `moqui-core/src/service/coverage.rs` | `moqui test --coverage`. No Java equivalent. |
 | `moqui-core/src/service/rust_services.rs` | `type="rust"` function registry. New with the port. |
+| `moqui-core/src/service/shell.rs` | `org.moqui.impl.ShellServices` (`get#ShellCounts`, `publish#ShellCounts`): the `/qapps` shell's badge counts from the service a theme value names, sent on the `shellCounts` topic coalesced per user. New with IronStone M1. |
 | `service/inline_tests.rs`, `service/script_ports_tests.rs`, every `tests.rs` | Tests. Evidence only. |
 
 ## moqui-lib
@@ -308,6 +309,7 @@ Framework service XML with no Rust body (`BasicServices`, `UserServices`, `Serve
 | `screen/screen_test.rs` | `ScreenTestImpl`, `ScreenTest`. | Port |
 | `screen/saved_finds.rs` | `ScreenForm` saved-find statics and the `ScreenRenderImpl` / `ScreenDefinition` uses (`formSaveFind`, `formSelectColumns`, `screenDoc`). | Port |
 | `screen/menu.rs` | `sri.getMenuData` on the root `menuData` transition. | Port |
+| `screen/shell.rs` | No Java basis: `<shell-providers>`, `sri.getShellData` (the root `shellData` transition) and `sri.getShellSearch` (`shellSearch`) of the IronStone suite shell. | Native |
 | `screen/sri/mod.rs` | `sri` object `ScreenRenderImpl` exposes to macros. `WebUtilities.encodeHtml`. | Port |
 | `screen/sri/fields.rs` | Field values, `parameter` and `set`, validation hints. | Port |
 | `screen/sri/forms.rs` | Dynamic forms, user columns, saved finds, form-list rows. | Port |

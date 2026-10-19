@@ -19,6 +19,9 @@ along with this software (see the LICENSE.md file). If not, see
          the html macros write. The libs paths are what browser-libs vendoring fills (see webroot/README.md). -->
     <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT" sequenceNum="1" resourceTypeEnumId="STRT_STYLESHEET"
             resourceValue="/libs/fontawesome/css/font-awesome.min.css"/>
+    <!-- Material Symbols (outlined) for an app's sym_o_* menu image in the app list; the font loads only when a page uses it -->
+    <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT" sequenceNum="2" resourceTypeEnumId="STRT_STYLESHEET"
+            resourceValue="/libs/material-symbols/outlined.css"/>
     <!-- Add external theme(s) here  -->
     <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT" sequenceNum="10" resourceTypeEnumId="STRT_STYLESHEET" resourceValue=""/>
     <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT" sequenceNum="20" resourceTypeEnumId="STRT_STYLESHEET"

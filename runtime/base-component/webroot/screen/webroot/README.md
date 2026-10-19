@@ -33,8 +33,9 @@ is in `libs/`. To upgrade, change the version in `refresh.mjs`, run with `--writ
 | Vue (full, with the template compiler) | 3.5.44 | `vue/vue.global.prod.js`, global `Vue` | `qvt` pages with server-merged output or a merged fragment (needs `unsafe-eval`) |
 | Vue (runtime only) | 3.5.44 | `vue/vue.runtime.global.prod.js`, global `Vue` | `qvt` pages whose output is entirely server-static (render functions compiled on the server, no `unsafe-eval`) |
 | `@vue/compiler-dom` Node build, one bundle for QuickJS | 3.5.44 | `vue/compiler-dom.cjs.js`, global `VueCompilerDOM`, `VERSION` beside it | Server only (read by the host, never linked from a page) |
-| Quasar | 2.35.1 | `quasar/quasar.umd.prod.js`, `quasar/quasar.prod.css`, `quasar/lang/{en-US,de,es,fr,it,pt-BR,ja,zh-CN,ru,nl}.umd.prod.js`, global `Quasar` | `qvt` pages. The language pack is chosen from the user locale. |
-| Material Icons | 1.13.14 | `material-icons/material-icons.css` and `.woff2`, `.woff` beside it | `qvt` pages (Quasar default icon set) |
+| Quasar | 2.35.1 | `quasar/quasar.umd.prod.js`, `quasar/quasar.prod.css`, `quasar/lang/{en-US,de,es,fr,it,pt-BR,ja,zh-CN,ru,nl}.umd.prod.js`, `quasar/icon-set/material-symbols-outlined.umd.prod.js`, global `Quasar` | `qvt` pages. The language pack is chosen from the user locale; the icon set is Quasar's own icons as Material Symbols. |
+| Material Icons | 1.13.14 | `material-icons/material-icons.css` and `.woff2`, `.woff` beside it | `qvt` pages (icon names without a prefix: `menu`, `add`) |
+| Material Symbols Outlined | 0.47.6 (npm `@material-symbols/font-400`) | `material-symbols/outlined.css`, `material-symbols/material-symbols-outlined.woff2` (weight 400, 0.5 MB) | `qvt` pages (the `sym_o_*` names and Quasar's icon set) |
 | Chart.js | 4.5.1 | `chartjs/chart.umd.min.js`, global `Chart` | Lazy, Assist and chart widgets |
 | Mermaid | 11.17.2 | `mermaid/mermaid.min.js`, global `mermaid` | Lazy, Assist. `mermaid.init` no longer exists in 11, call `mermaid.run`. |
 | Marked | 18.1.1 | `marked/marked.umd.min.js`, global `marked` | Assist panel, markdown textarea |
@@ -47,8 +48,9 @@ SortableJS adds its paths to `footer_scripts` and `footer_stylesheets`, which `F
 a page loads later has no footer, so the client loads the library itself the first time it needs it.
 
 The `/qapps` shell loads `vue/vue.global.prod.js` (the compiler build, because server-merged `qvt` is compiled in the browser), `quasar/quasar.umd.prod.js`, the
-language pack that matches the user locale, `MoquiLib.js`, `MoquiL10n.js` and `WebrootVue.qvt.js`, in that order, with the Font Awesome, Material Icons,
-Quasar and `WebrootVue.qvt.css` style sheets of the `DEFAULT_QUASAR` theme (`data/WebrootQuasarThemeData.xml`). Chart.js, Mermaid, Marked, DOMPurify and
+language pack that matches the user locale, the Material Symbols icon set, `MoquiLib.js`, `MoquiL10n.js` and `WebrootVue.qvt.js`, in that order, with the Font
+Awesome, Material Symbols, Material Icons, Quasar and `WebrootVue.qvt.css` style sheets of the `DEFAULT_QUASAR` theme (`data/WebrootQuasarThemeData.xml`; the
+icon fonts come before Quasar, whose icon rules set their size). Chart.js, Mermaid, Marked, DOMPurify and
 QZ Tray are loaded by the component that needs them, from the paths in the table. The Assist panel is not ported yet.
 
 A screen marked `server-static` for `qvt` is sent as a script (`X-Moqui-Qvt: static-template`) that registers a compiled render function in
