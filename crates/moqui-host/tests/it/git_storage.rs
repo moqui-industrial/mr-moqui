@@ -30,7 +30,42 @@ use moqui_lib::object::{to_plain_string, Value};
 const DATA: &str = r#"<entity-facade-xml type="seed">
     <moqui.resource.GitRepository repositoryId="bench-usl" repositoryKind="db" branch="master" description="mr-mantle-usl"/>
     <moqui.resource.GitRepository repositoryId="bench-moqui" repositoryKind="db" branch="master" description="mr-moqui"/>
+    <moqui.resource.GitRepository repositoryId="bench-edits" repositoryKind="db" description="Edits of a page"/>
+    <moqui.resource.GitRepository repositoryId="bench-media" repositoryKind="db" description="A large file"/>
 </entity-facade-xml>"#;
+
+/// Bytes of a pattern that does not compress, made as they are read.
+struct Pattern {
+    left: u64,
+    state: u64,
+}
+
+impl std::io::Read for Pattern {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let count = buf.len().min(usize::try_from(self.left).unwrap_or(usize::MAX));
+        for byte in &mut buf[..count] {
+            self.state ^= self.state << 13;
+            self.state ^= self.state >> 7;
+            self.state ^= self.state << 17;
+            *byte = self.state as u8;
+        }
+        self.left -= count as u64;
+        Ok(count)
+    }
+}
+
+/// The peak resident memory of this process so far, in MiB.
+fn peak_rss_mib() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find(|line| line.starts_with("VmHWM:"))
+                .and_then(|line| line.split_whitespace().nth(1).and_then(|kb| kb.parse::<u64>().ok()))
+        })
+        .map_or(0, |kb| kb / 1024)
+}
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -165,4 +200,95 @@ fn storage_of_imported_histories() {
     }
     let table = number(&facade, "SELECT pg_total_relation_size('git_object')", &[]);
     eprintln!("git_object table with its indexes and TOAST: {}", mib(table));
+
+    // 1000 saves of a 50 KB page through git://, as a wiki's are: whole rows, then deltas after a collection
+    let resources = factory.resource();
+    let page = |edit: usize| -> String {
+        (0..1000)
+            .map(|line| if line == edit % 1000 { format!("line {line} edited {edit}\n") } else { format!("line {line} of a wiki page of about fifty KB\n") })
+            .collect()
+    };
+    let started = Instant::now();
+    for edit in 0..1000 {
+        resources.write_bytes("git://bench-edits/page.md", page(edit).as_bytes()).unwrap();
+    }
+    let written = started.elapsed();
+    let params = [Value::string("bench-edits")];
+    let stored = number(&facade, "SELECT SUM(stored_bytes) FROM git_object WHERE repository_id = ?", &params);
+    sync("org.moqui.impl.GitServices.gc#GitRepositories", &[("repositoryId", Value::string("bench-edits"))]);
+    let repacked = number(&facade, "SELECT SUM(stored_bytes) FROM git_object WHERE repository_id = ?", &params);
+    let started = Instant::now();
+    let history = resources.version_history("git://bench-edits/page.md").unwrap();
+    let oldest = resources
+        .read_version("git://bench-edits/page.md", &history.last().unwrap().version_name)
+        .unwrap()
+        .unwrap();
+    assert_eq!(String::from_utf8(oldest).unwrap(), page(0));
+    eprintln!(
+        "bench-edits: 1000 saves of a 50 KB page in {written:.1?}: stored {}, {} after gc; history and the oldest version read in {:.1?}",
+        mib(stored),
+        mib(repacked),
+        started.elapsed()
+    );
+
+    // a 1 GiB file written as it is read, then sent and read in ranges over HTTP
+    let size: u64 = 1024 * 1024 * 1024;
+    let before = peak_rss_mib();
+    let started = Instant::now();
+    resources
+        .write_from(
+            "git://bench-media/video.mp4",
+            &mut Pattern { left: size, state: 0x9e37_79b9_7f4a_7c15 },
+            Some(size),
+        )
+        .unwrap();
+    let stored = started.elapsed();
+    let hash = format!(
+        "db_{}",
+        base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, "video.mp4")
+    );
+    let url = format!(
+        "/System/Resource/ElFinder/command?resourceRoot=git%3A%2F%2Fbench-media&cmd=file&target={hash}&download=1"
+    );
+    let auth = crate::common::basic("john.doe", "moqui");
+    let started = Instant::now();
+    let mut stream = std::net::TcpStream::connect(http).unwrap();
+    std::io::Write::write_all(
+        &mut stream,
+        crate::common::http_request("GET", &url, &[("Authorization", auth.as_str())], "").as_bytes(),
+    )
+    .unwrap();
+    let mut received = 0u64;
+    let mut buf = vec![0u8; 1024 * 1024];
+    loop {
+        let count = std::io::Read::read(&mut stream, &mut buf).unwrap();
+        if count == 0 {
+            break;
+        }
+        received += count as u64;
+    }
+    let sent = started.elapsed();
+    assert!(received > size, "{received}");
+    let mut latencies = Vec::new();
+    for at in 0..200u64 {
+        let offset = (at * 7_919_993) % (size - 65_536);
+        let range = format!("bytes={offset}-{}", offset + 65_535);
+        let started = Instant::now();
+        let (status, _, body) = crate::common::exchange_bytes(
+            http,
+            &crate::common::http_request("GET", &url, &[("Authorization", auth.as_str()), ("Range", &range)], ""),
+        );
+        latencies.push(started.elapsed());
+        assert_eq!((status, body.len()), (206, 65_536));
+    }
+    latencies.sort();
+    eprintln!(
+        "bench-media: 1 GiB stored in {stored:.1?} ({:.0} MiB/s), sent in {sent:.1?} ({:.0} MiB/s); peak RSS {} MiB before, {} after; 64 KiB ranges p50 {:.1?} p99 {:.1?}",
+        1024.0 / stored.as_secs_f64(),
+        1024.0 / sent.as_secs_f64(),
+        before,
+        peak_rss_mib(),
+        latencies[latencies.len() / 2],
+        latencies[latencies.len() * 99 / 100]
+    );
 }
