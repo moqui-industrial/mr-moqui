@@ -393,6 +393,7 @@ fn a_send_takes_cups4j_defaults_and_fails_with_no_document_and_a_hold_needs_a_se
     crate::print::clear_print_client();
 }
 
+#[cfg(feature = "xlsx")]
 #[test]
 fn a_spreadsheet_loads_into_an_entity_through_the_auto_service() {
     let (facade, context) = setup();

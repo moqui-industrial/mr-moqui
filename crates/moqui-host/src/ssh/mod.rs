@@ -17,6 +17,7 @@
 
 pub mod client;
 pub mod cluster;
+#[cfg(feature = "git")]
 mod git;
 pub mod server;
 mod sftp_fs;

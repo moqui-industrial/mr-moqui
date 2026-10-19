@@ -93,7 +93,8 @@ impl<K: Hash + Eq + Clone, V: Clone> BoundedMap<K, V> {
         );
     }
 
-    /// Drop one entry.
+    /// Drop one entry. Only the git attributes cache drops one.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(crate) fn remove<Q>(&mut self, key: &Q)
     where
         K: Borrow<Q>,

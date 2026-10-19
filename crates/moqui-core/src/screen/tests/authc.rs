@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-#[cfg(feature = "mail")]
+#[cfg(feature = "smtp")]
 use std::time::Duration;
 
 use moqui_lib::object::Value;
@@ -27,11 +27,11 @@ use crate::context::ExecutionContextFactory;
 use crate::entity::EntityFacade;
 use crate::screen::serve_at;
 use crate::service::ServicePools;
-#[cfg(feature = "mail")]
+#[cfg(feature = "smtp")]
 use crate::service::SharedSinkGuard;
 use crate::web::WebResponse;
 
-#[cfg(feature = "mail")]
+#[cfg(feature = "smtp")]
 const MAIL_WAIT: Duration = Duration::from_secs(10);
 
 /// A factory with the framework services, two service workers for the async mail, an SMTP server
@@ -173,7 +173,7 @@ fn json(response: &WebResponse) -> serde_json::Value {
 }
 
 /// The text after `marker` in a mail body, up to the next tag or space.
-#[cfg(feature = "mail")]
+#[cfg(feature = "smtp")]
 fn after(body: &str, marker: &str) -> String {
     let start = body.find(marker).unwrap_or_else(|| panic!("no {marker:?} in {body}")) + marker.len();
     body[start..]
@@ -263,7 +263,7 @@ fn rest_login_with_totp_needs_the_code_and_verify_otp_finishes_it() {
 }
 
 #[test]
-#[cfg(feature = "mail")]
+#[cfg(feature = "smtp")]
 fn rest_login_with_an_email_code_sends_it_and_verify_otp_takes_it_once() {
     let flow = Flow::open();
     flow.user("bob", "bob-otp@example.com");
@@ -317,7 +317,7 @@ fn rest_login_with_an_email_code_sends_it_and_verify_otp_takes_it_once() {
 }
 
 #[test]
-#[cfg(feature = "mail")]
+#[cfg(feature = "smtp")]
 fn password_reset_mails_a_reset_password_that_changes_the_password() {
     let flow = Flow::open();
     flow.user("cy", "cy-reset@example.com");

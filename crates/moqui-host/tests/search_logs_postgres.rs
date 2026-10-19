@@ -17,7 +17,7 @@
 //! shipped to `moqui_http_log`, and the `/elastic` proxy staying closed. This binary sets process
 //! state through the logger, so it has one test.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
 mod common;
 

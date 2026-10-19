@@ -58,11 +58,34 @@ pub(crate) fn install_sender(factory: &Arc<ExecutionContextFactory>, entity_is_p
         notify: entity_is_postgres.then(|| NotifySender {
             factory: Arc::downgrade(factory),
         }),
-        ssh: crate::ssh::cluster::sender(factory)?,
+        ssh: ssh_sender(factory)?,
         https: crate::cluster_edge::https_sender()?,
     };
     moqui_core::cluster::install_sender(factory, Arc::new(sender));
     Ok(())
+}
+
+#[cfg(feature = "ssh")]
+fn ssh_sender(factory: &Arc<ExecutionContextFactory>) -> Result<Arc<dyn Sender>, Error> {
+    crate::ssh::cluster::sender(factory)
+}
+
+#[cfg(not(feature = "ssh"))]
+fn ssh_sender(_factory: &Arc<ExecutionContextFactory>) -> Result<Arc<dyn Sender>, Error> {
+    Ok(Arc::new(NoSsh))
+}
+
+/// A peer that advertises `ssh://` in a build without the `ssh` feature.
+#[cfg(not(feature = "ssh"))]
+struct NoSsh;
+
+#[cfg(not(feature = "ssh"))]
+impl Sender for NoSsh {
+    fn post(&self, base_url: &str, _topic: &str, _payload: &[u8]) -> Result<(), CoreError> {
+        Err(CoreError::new(format!(
+            "cluster peer {base_url} is reached over SSH and ssh is not built into this host"
+        )))
+    }
 }
 
 fn check_transport(notify: bool, entity_is_postgres: bool) -> Result<(), Error> {

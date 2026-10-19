@@ -16,7 +16,7 @@
 //! in the database) read a window at a time as the client takes it, one byte range of it, its `ETag` and a 304, no
 //! compression of video, and downloads that a client does not read do not hold the request workers.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "git"))]
 
 use std::io::Write;
 use std::net::TcpStream;

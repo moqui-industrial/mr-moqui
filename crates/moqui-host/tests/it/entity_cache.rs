@@ -14,7 +14,7 @@
 
 //! Host checks for the entity one-cache, the transaction hold, and the sim overlay.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#![cfg(all(unix, feature = "embedded-postgres"))]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -17,7 +17,7 @@
 //! SSH server with a `UserSshKey`, by the git command line (skipped when git, or for SSH ssh, is not installed). The
 //! protocol itself, over each storage, is `moqui-core/src/resource/git/server/tests.rs`.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "git", feature = "ssh"))]
 
 use std::collections::BTreeMap;
 use std::path::Path;

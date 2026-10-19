@@ -507,6 +507,7 @@ mod tests {
     }
 
     /// The variants of an image go into a git repository in one commit, its PNGs in LFS.
+    #[cfg(feature = "git")]
     #[test]
     fn the_variants_of_an_image_are_one_commit() {
         let ctx = crate::context::ExecutionContextFactory::test_context();

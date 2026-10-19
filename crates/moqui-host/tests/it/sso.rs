@@ -18,7 +18,7 @@
 //! maps fields and roles to groups, replaces the session id, and returns to a same-origin `returnTo`. A tampered state is
 //! refused, an off-site `returnTo` is dropped, and logout goes to the provider's end-session URL.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "sso"))]
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

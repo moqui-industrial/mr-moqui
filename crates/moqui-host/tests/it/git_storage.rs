@@ -17,7 +17,7 @@
 //! after `gc#GitRepositories` repacks them, and a clone. `cargo test -p moqui-host --test it -- --ignored
 //! git_storage --nocapture` prints the numbers (docs/Git-Hosting.md, Storage).
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "git"))]
 
 use std::collections::BTreeMap;
 use std::path::Path;

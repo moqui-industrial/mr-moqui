@@ -1,7 +1,7 @@
 # License gate for the static graph. The accepted set is plans/archive/License-Review.md.
 # `cargo deny check` is the default feature graph on x86_64-unknown-linux-gnu.
-# `pdf-servo` is off here. MPL-2.0 is not in the allow list, so that feature
-# fails this check until it has its own review.
+# Servo (an in-process PDF alternate once planned as `pdf-servo`) is not linked.
+# MPL-2.0 is not in the allow list, so it would fail this check until it has its own review.
 
 [graph]
 targets = ["x86_64-unknown-linux-gnu"]
@@ -68,7 +68,7 @@ deny = [
     { crate = "libz-sys", reason = "flate2 stays on the pure Rust backend" },
     { crate = "libssh2-sys", reason = "SSH is russh" },
     { crate = "ssh2", reason = "SSH is russh" },
-    { crate = "servo", reason = "MPL-2.0. pdf-servo stays off until a separate deny report" },
+    { crate = "servo", reason = "MPL-2.0. Not linked until a separate deny report" },
 ]
 
 # oxc_parser is named in the workspace and linked in phase 6.

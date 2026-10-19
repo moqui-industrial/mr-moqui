@@ -14,7 +14,7 @@
 
 //! Plain HTTP gate. Seed, demo user, entity and service REST, login cookie, restart.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};

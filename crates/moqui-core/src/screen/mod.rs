@@ -41,6 +41,10 @@ pub(crate) mod tree;
 mod url;
 pub(crate) mod urls;
 pub mod vue_check;
+#[cfg(feature = "xlsx")]
+pub(crate) mod xlsx;
+#[cfg(not(feature = "xlsx"))]
+#[path = "xlsx_off.rs"]
 pub(crate) mod xlsx;
 
 use std::collections::BTreeMap;

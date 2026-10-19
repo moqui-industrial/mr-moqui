@@ -16,7 +16,7 @@
 
 // Each test needs embedded Postgres or MySQL; without those features the shared imports and helpers are unused.
 #![cfg_attr(
-    not(all(unix, feature = "embedded-postgres", feature = "postgres")),
+    not(all(unix, feature = "embedded-postgres")),
     allow(dead_code, unused_imports)
 )]
 
@@ -30,7 +30,7 @@ use moqui_host::db::entity_facade::open_entity_facade;
 use moqui_host::{load_data, LoadFlags};
 use moqui_lib::object::Value;
 
-#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(unix, feature = "embedded-postgres"))]
 #[test]
 fn framework_seed_and_fixture_load() {
     let _shared = crate::common::shared();
@@ -127,14 +127,14 @@ fn framework_seed_and_fixture_load() {
     println!("read back enumeration {enumeration} user group permission {permissions} fixture rows E1 A1 B");
 }
 
-#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(unix, feature = "embedded-postgres"))]
 struct Extra {
     sealed_grant: i64,
     initial_uom: i64,
     fts_indexes: usize,
 }
 
-#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(unix, feature = "embedded-postgres"))]
 fn read_extra(framework: &Path, cluster_dir: &Path) -> Extra {
     use moqui_host::db::embedded::EmbeddedCluster;
 
@@ -174,7 +174,7 @@ fn read_extra(framework: &Path, cluster_dir: &Path) -> Extra {
 
 /// `types` picks the data files, and `timeout` is accepted by a load that finishes inside it. The disable flags (audit, feed, foreign
 /// keys) are independent of the entity ECAs: they still run. One load covers both, as each flag has its own effect.
-#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(unix, feature = "embedded-postgres"))]
 #[test]
 fn load_flag_types_selects_data_files() {
     let _shared = crate::common::shared();
@@ -196,7 +196,7 @@ fn load_flag_types_selects_data_files() {
 }
 
 /// `raw` turns off entity ECAs, so no security check runs, and the rows still land.
-#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(unix, feature = "embedded-postgres"))]
 #[test]
 fn load_flag_raw_skips_entity_ecas() {
     let _shared = crate::common::shared();
@@ -214,7 +214,7 @@ fn load_flag_raw_skips_entity_ecas() {
 
 /// The SQL the in-memory driver cannot prove: aggregates with GROUP BY and HAVING, DISTINCT, a
 /// locking read, UPPER() comparisons, and a search form.
-#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(unix, feature = "embedded-postgres"))]
 #[test]
 fn sql_features_run_on_postgres() {
     let _shared = crate::common::shared();
@@ -388,7 +388,7 @@ fn sql_features_run_on_postgres() {
     drop(cluster);
 }
 
-#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(unix, feature = "embedded-postgres"))]
 fn fresh_dirs(prefix: &str) -> (PathBuf, PathBuf, (DirGuard, DirGuard)) {
     let runtime = temp_dir(&format!("moqui-rt-{prefix}"));
     let cluster = temp_dir(&format!("moqui-pg-{prefix}"));
@@ -402,7 +402,7 @@ fn framework_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework")
 }
 
-#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(unix, feature = "embedded-postgres"))]
 fn read_back(framework: &Path, cluster_dir: &Path) -> (i64, i64, Option<String>, Option<String>, Option<String>) {
     use moqui_host::db::embedded::EmbeddedCluster;
 
@@ -423,7 +423,7 @@ fn read_back(framework: &Path, cluster_dir: &Path) -> (i64, i64, Option<String>,
     (enumeration, permissions, medium_a, medium_b, medium_e)
 }
 
-#[cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(unix, feature = "embedded-postgres"))]
 fn medium(facade: &moqui_core::entity::EntityFacade, test_id: &str) -> Option<String> {
     facade
         .find("moqui.test.TestEntity")

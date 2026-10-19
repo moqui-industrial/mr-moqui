@@ -1033,6 +1033,8 @@ fn load_service(prefix: &str, node: &MNode, failures: &mut Vec<String>) -> Optio
         }
         match super::rust_services::get(&location) {
             Some(run) => Some(run),
+            // Loads; a call says the feature is not built in (call.rs).
+            None if super::rust_services::missing_feature(&location).is_some() => None,
             None => {
                 failures.push(format!("service {name} rust location {location} is not registered"));
                 return None;
@@ -1043,7 +1045,7 @@ fn load_service(prefix: &str, node: &MNode, failures: &mut Vec<String>) -> Optio
     };
     let kind = if native_fn.is_some() {
         ServiceKind::Native
-    } else if rust_fn.is_some() {
+    } else if rust_fn.is_some() || type_name == "rust" {
         ServiceKind::Rust
     } else {
         kind_of(&type_name, &location)

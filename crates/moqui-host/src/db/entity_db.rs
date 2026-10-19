@@ -31,6 +31,7 @@ pub const SUPERUSER_SLOTS: u32 = 3;
 /// The cluster `LISTEN` connection, which is outside the pool.
 pub const LISTEN_SLOTS: u32 = 1;
 const POSTGRES_PORT: u16 = 5432;
+#[cfg(feature = "mysql")]
 const MYSQL_PORT: u16 = 3306;
 
 /// The open entity database. Drop the facade before this, and this before nothing else: the
@@ -41,7 +42,7 @@ pub struct EntityDb {
     /// The same server as a Postgres driver, for a connection outside the pool (the cluster `LISTEN`).
     #[cfg(feature = "postgres")]
     pub postgres: Option<super::postgres::PostgresDriver>,
-    #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+    #[cfg(feature = "embedded-postgres")]
     cluster: Option<super::embedded::EmbeddedCluster>,
 }
 
@@ -59,7 +60,7 @@ impl EntityDb {
     }
 
     /// `pg_dump` / `pg_basebackup` coordinates when this process runs the postmaster.
-    #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+    #[cfg(feature = "embedded-postgres")]
     #[must_use]
     pub fn tool_target(&self) -> Option<super::embedded::ToolTarget> {
         self.cluster.as_ref().map(|cluster| cluster.tool_connect("moqui"))
@@ -70,7 +71,7 @@ impl Drop for EntityDb {
     fn drop(&mut self) {
         // The driver's clients go before the postmaster stops.
         self.driver = Arc::new(Closed);
-        #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+        #[cfg(feature = "embedded-postgres")]
         self.cluster.take();
     }
 }
@@ -136,14 +137,14 @@ pub fn open(conf: DatasourceConf, cluster_dir: &Path, install_dir: &Path, pool_m
                 driver,
                 #[cfg(feature = "postgres")]
                 postgres: None,
-                #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+                #[cfg(feature = "embedded-postgres")]
                 cluster: None,
             })
         }
     }
 }
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(feature = "embedded-postgres")]
 fn open_embedded(
     conf: DatasourceConf,
     cluster_dir: &Path,
@@ -166,7 +167,7 @@ fn open_embedded(
     })
 }
 
-#[cfg(not(all(feature = "embedded-postgres", feature = "postgres")))]
+#[cfg(not(feature = "embedded-postgres"))]
 fn open_embedded(
     _conf: DatasourceConf,
     _cluster_dir: &Path,

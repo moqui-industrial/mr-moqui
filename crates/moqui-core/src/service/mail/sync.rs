@@ -45,9 +45,9 @@ use std::net::TcpStream;
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{to_plain_string, Value};
 
-use super::implementation::{
-    connect_tcp, find_one, folder_kind, force_new, name_attribute, note_error, note_message, parse_port, require_host,
-    stamp_millis, use_tls, wrap_tls, Net, Pop3, StoreSettings,
+use super::implementation::{find_one, force_new, note_error, note_message, parse_port, require_host};
+use super::inbound::{
+    connect_tcp, folder_kind, name_attribute, stamp_millis, use_tls, wrap_tls, Net, Pop3, StoreSettings,
 };
 use super::store::{self, parse_message, update_fields, Placement, MESSAGE};
 use crate::context::ExecutionContext;

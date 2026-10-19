@@ -17,7 +17,7 @@
 //! `/rest/sm`, and is consumed; an entity sync push and a pull each run against `/rest/s1/moqui/entity/syncs/data` and
 //! leave a history row. The tools screens for both then render with that data.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};

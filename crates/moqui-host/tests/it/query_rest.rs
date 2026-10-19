@@ -14,7 +14,7 @@
 
 //! Dynamic view, entity data writer, and `EntityFacade.rest` against embedded Postgres.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#![cfg(all(unix, feature = "embedded-postgres"))]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

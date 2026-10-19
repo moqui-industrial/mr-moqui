@@ -14,7 +14,7 @@
 
 //! Embedded Postgres lifecycle. Per-query traffic is [`super::postgres`].
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(feature = "embedded-postgres")]
 mod cluster {
     use std::path::{Path, PathBuf};
 
@@ -26,9 +26,12 @@ mod cluster {
 
     const DATABASE: &str = "moqui";
     const PORT: u16 = 5432;
-    /// `.cargo/config.toml` forces `POSTGRESQL_VERSION` to this exact theseus build.
-    const SHIPPED_VERSION: &str = "18.6.0";
+    /// `.cargo/config.toml` forces `POSTGRESQL_VERSION` to this exact theseus build; build.rs passes it on.
+    const SHIPPED_VERSION: &str = env!("MOQUI_PG_VERSION");
     const SHIPPED_MAJOR: u32 = 18;
+    /// The theseus archive of [`SHIPPED_VERSION`] that build.rs staged, psql and readline taken out. [`install`]
+    /// unpacks it.
+    static ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/postgresql.tar.gz"));
     const CLI_MAX_CONNECTIONS: u32 = 20;
 
     /// One theseus postmaster. The install and data directory stay under the caller's path.
@@ -348,8 +351,9 @@ mod cluster {
         adopt_port: Option<u16>,
     ) -> Result<(EmbeddedCluster, PostgresDriver), Error> {
         let settings = settings(dir, data_dir, options, adopt_port);
+        install(&settings.installation_dir)?;
         let mut server = PostgreSQL::new(settings);
-        provide_libxml2(dir, server.settings())?;
+        provide_libxml2(server.settings())?;
         server
             .setup()
             .map_err(|err| embedded("setup embedded postgres", data_dir, err))?;
@@ -381,24 +385,67 @@ mod cluster {
     }
 
     /// `postgres` needs `libxml2.so.2`. When the host lacks it, [`crate::xmlshim`] puts a shim in the install's
-    /// `lib`. `setup` runs initdb, which runs `postgres`, right after it unpacks, so a missing install is unpacked
-    /// first on its own: `setup` skips initdb for a data directory that already holds a `postgresql.conf`.
-    fn provide_libxml2(dir: &Path, settings: &Settings) -> Result<(), Error> {
+    /// `lib`, which [`install`] has unpacked before `setup` runs initdb.
+    fn provide_libxml2(settings: &Settings) -> Result<(), Error> {
         let Some(host) = crate::xmlshim::needed() else {
             return Ok(());
         };
-        if !settings.installation_dir.exists() {
-            let probe = dir.join("unpack");
-            std::fs::create_dir_all(&probe)
-                .and_then(|()| std::fs::write(probe.join("postgresql.conf"), ""))
-                .map_err(|err| Error::new("prepare the theseus unpack").with_source(err))?;
-            let mut unpack = settings.clone();
-            unpack.data_dir.clone_from(&probe);
-            let unpacked = PostgreSQL::new(unpack).setup();
-            let _ = std::fs::remove_dir_all(&probe);
-            unpacked.map_err(|err| embedded("unpack embedded postgres", &probe, err))?;
-        }
         crate::xmlshim::provide(&settings.installation_dir.join("lib"), &host)
+    }
+
+    /// Unpack [`ARCHIVE`] into `install_dir` (`<install>/<version>`) when it is not there yet. The archive's top
+    /// directory is dropped, as theseus did. It is unpacked beside `install_dir` and renamed into place, so a process
+    /// that stops part way leaves no half install, and two processes that unpack at once both end with one.
+    fn install(install_dir: &Path) -> Result<(), Error> {
+        if install_dir.join("bin").is_dir() {
+            return Ok(());
+        }
+        let parent = install_dir
+            .parent()
+            .ok_or_else(|| Error::new(format!("{} has no parent directory", install_dir.display())))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|err| Error::new(format!("could not create {}", parent.display())).with_source(err))?;
+        let unpack = parent.join(format!(".unpack-{SHIPPED_VERSION}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&unpack);
+        let unpacked = unpack_archive(&unpack);
+        if let Err(err) = unpacked {
+            let _ = std::fs::remove_dir_all(&unpack);
+            return Err(err);
+        }
+        if let Err(err) = std::fs::rename(&unpack, install_dir) {
+            let _ = std::fs::remove_dir_all(&unpack);
+            if !install_dir.join("bin").is_dir() {
+                return Err(Error::new(format!("could not move the Postgres install to {}", install_dir.display()))
+                    .with_source(err));
+            }
+        }
+        tracing::info!("Unpacked embedded Postgres {SHIPPED_VERSION} into {}", install_dir.display());
+        Ok(())
+    }
+
+    fn unpack_archive(dir: &Path) -> Result<(), Error> {
+        let failed = |err: std::io::Error| Error::new("could not unpack the embedded Postgres archive").with_source(err);
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(ARCHIVE));
+        for entry in archive.entries().map_err(failed)? {
+            let mut entry = entry.map_err(failed)?;
+            // theseus archives hold one top directory, postgresql-<version>-<target>/, which is dropped.
+            let inner: PathBuf = entry.path().map_err(failed)?.components().skip(1).collect();
+            if inner.as_os_str().is_empty() {
+                continue;
+            }
+            if !inner.components().all(|part| matches!(part, std::path::Component::Normal(_))) {
+                return Err(Error::new(format!(
+                    "the embedded Postgres archive has an entry outside its directory: {}",
+                    inner.display()
+                )));
+            }
+            let target = dir.join(&inner);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(failed)?;
+            }
+            entry.unpack(&target).map_err(failed)?;
+        }
+        Ok(())
     }
 
     fn driver_for(server: &PostgreSQL, password: &str) -> PostgresDriver {
@@ -424,7 +471,13 @@ mod cluster {
             ref install_dir,
         } = *options;
         let mut settings = Settings::new();
-        settings.installation_dir = install_dir.clone().unwrap_or_else(|| dir.join("install"));
+        // The unpacked install of this build's version (`install`), trusted as it is: nothing is looked up or
+        // downloaded.
+        settings.installation_dir = install_dir
+            .clone()
+            .unwrap_or_else(|| dir.join("install"))
+            .join(SHIPPED_VERSION);
+        settings.trust_installation_dir = true;
         settings.password_file = dir.join("pgpass");
         settings.data_dir = data_dir.to_path_buf();
         settings.temporary = false;
@@ -587,8 +640,8 @@ mod cluster {
     }
 
     fn old_install_present(cluster_dir: &Path, install_root: &Path) -> bool {
-        // `PostgreSQL::new` appends the exact version, so this build's binaries live in
-        // `<install>/18.6.0`. Anything inside that tree is this theseus install.
+        // This build's binaries live in `<install>/<version>` (`settings`). Anything inside that tree is this theseus
+        // install.
         let shipped = install_root.join(SHIPPED_VERSION);
         other_server(cluster_dir, &shipped, install_root) || other_server(install_root, &shipped, install_root)
     }
@@ -707,6 +760,30 @@ mod cluster {
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
+        }
+
+        #[test]
+        fn the_archive_unpacks_once_without_its_top_directory() {
+            let dir = temp_cluster_dir();
+            let _guard = DirGuard(dir.clone());
+            let install_dir = dir.join("install").join(SHIPPED_VERSION);
+            install(&install_dir).unwrap();
+            let postgres = install_dir.join("bin/postgres");
+            assert!(postgres.is_file(), "{} is unpacked", postgres.display());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_ne!(postgres.metadata().unwrap().permissions().mode() & 0o111, 0, "postgres is executable");
+            }
+            assert!(!install_dir.join("bin/psql").exists(), "psql is not shipped");
+            install(&install_dir).unwrap();
+            let left: Vec<_> = std::fs::read_dir(dir.join("install")).unwrap().flatten().map(|e| e.file_name()).collect();
+            assert_eq!(left, vec![std::ffi::OsString::from(SHIPPED_VERSION)], "no unpack directory is left");
+        }
+
+        #[test]
+        fn the_shipped_version_is_of_the_shipped_major() {
+            assert!(SHIPPED_VERSION.starts_with(&format!("{SHIPPED_MAJOR}.")));
         }
 
         #[test]
@@ -1340,17 +1417,24 @@ mod cluster {
     }
 }
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(feature = "embedded-postgres")]
 pub use cluster::{load_save, save_db, shared_install_dir, ClusterRole, EmbeddedCluster, StartOptions, ToolTarget};
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(feature = "embedded-postgres")]
 pub(crate) use cluster::{pg_ctl_path, postmaster_live, process_live};
 
-#[cfg(not(all(feature = "embedded-postgres", feature = "postgres")))]
+/// Without embedded Postgres there is no install: the path is passed along and never used.
+#[cfg(not(feature = "embedded-postgres"))]
+#[must_use]
+pub fn shared_install_dir(db_dir: &std::path::Path, _cluster_dir: &std::path::Path) -> std::path::PathBuf {
+    db_dir.join("install")
+}
+
+#[cfg(not(feature = "embedded-postgres"))]
 pub fn save_db(_dir: &std::path::Path, _dump: &std::path::Path) -> Result<(), moqui_lib::error::Error> {
     Err(moqui_lib::error::Error::new("embedded postgres is not in this build"))
 }
 
-#[cfg(not(all(feature = "embedded-postgres", feature = "postgres")))]
+#[cfg(not(feature = "embedded-postgres"))]
 pub fn load_save(_dir: &std::path::Path, _dump: &std::path::Path) -> Result<(), moqui_lib::error::Error> {
     Err(moqui_lib::error::Error::new("embedded postgres is not in this build"))
 }

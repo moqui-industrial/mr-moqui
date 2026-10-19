@@ -17,7 +17,7 @@
 //! repository to disk, and the git command line, when installed, reads the export. The provider over each storage is
 //! `moqui-core/src/resource/git/tests.rs`.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "git"))]
 
 use std::net::SocketAddr;
 

@@ -38,7 +38,7 @@ use moqui_lib::error::Error;
 /// after the factory.
 #[derive(Default)]
 pub struct SearchStore {
-    #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+    #[cfg(feature = "embedded-postgres")]
     cluster: Option<crate::db::embedded::EmbeddedCluster>,
     opensearch: Option<OpenSearchProcess>,
 }
@@ -50,7 +50,7 @@ impl SearchStore {
     }
 
     /// `pg_dump` / `pg_basebackup` coordinates when this store runs its own postmaster.
-    #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+    #[cfg(feature = "embedded-postgres")]
     #[must_use]
     pub fn tool_target(&self) -> Option<crate::db::embedded::ToolTarget> {
         self.cluster.as_ref().map(|cluster| cluster.tool_connect("search"))
@@ -58,11 +58,11 @@ impl SearchStore {
 
     /// True when this store started its own embedded postmaster.
     pub fn has_own_cluster(&self) -> bool {
-        #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+        #[cfg(feature = "embedded-postgres")]
         {
             self.cluster.is_some()
         }
-        #[cfg(not(all(feature = "embedded-postgres", feature = "postgres")))]
+        #[cfg(not(feature = "embedded-postgres"))]
         {
             false
         }
@@ -175,7 +175,7 @@ fn external_tx(_url: &str, _user: Option<&str>, _password: Option<&str>) -> Resu
     Err(Error::new("the postgres driver is not in this build"))
 }
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(feature = "embedded-postgres")]
 fn embedded_tx(runtime_dir: &Path, store: &mut SearchStore) -> Result<TransactionManager, Error> {
     use crate::db::embedded::{shared_install_dir, ClusterRole, EmbeddedCluster, StartOptions};
 
@@ -191,7 +191,7 @@ fn embedded_tx(runtime_dir: &Path, store: &mut SearchStore) -> Result<Transactio
     TransactionManager::new(Arc::new(driver), search_pool())
 }
 
-#[cfg(not(all(feature = "embedded-postgres", feature = "postgres")))]
+#[cfg(not(feature = "embedded-postgres"))]
 fn embedded_tx(_runtime_dir: &Path, _store: &mut SearchStore) -> Result<TransactionManager, Error> {
     Err(Error::new(
         "embedded postgres is not in this build; configure a search-facade postgres url or the opensearch backend",
@@ -401,7 +401,7 @@ mod tests {
         assert!(!local_host("http://[2001:db8::1]:9200"));
     }
 
-    #[cfg(all(target_os = "linux", feature = "embedded-postgres", feature = "postgres"))]
+    #[cfg(all(target_os = "linux", feature = "embedded-postgres"))]
     #[test]
     fn a_stop_reaches_the_whole_process_group() {
         let dir = std::env::temp_dir().join(format!("moqui-stop-group-{}", std::process::id()));

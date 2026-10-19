@@ -19,7 +19,7 @@
 //! gets a `fromDate` key of now and a secondary sequenced id; a row may name itself in a foreign key; and
 //! number text may have grouping commas.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#![cfg(all(unix, feature = "embedded-postgres"))]
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};

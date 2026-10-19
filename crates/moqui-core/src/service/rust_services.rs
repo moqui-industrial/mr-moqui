@@ -42,6 +42,36 @@ macro_rules! rust_service {
 
 static REGISTRY: OnceLock<BTreeMap<&'static str, RustServiceFn>> = OnceLock::new();
 
+/// The Rust service locations of the features a build may leave out (docs/Packaging.md), by path prefix; the first
+/// prefix that matches decides. A service at one of these locations still loads in a build without the feature, and a
+/// call reports that the feature is not built into this host.
+const FEATURE_LOCATIONS: &[(&str, &str, bool)] = &[
+    ("moqui_core::service::git::", "git", cfg!(feature = "git")),
+    ("moqui_core::service::images::", "image", cfg!(feature = "image")),
+    ("moqui_core::service::spreadsheet::", "xlsx", cfg!(feature = "xlsx")),
+    (
+        "moqui_core::service::mail::send_template",
+        "smtp",
+        cfg!(feature = "smtp"),
+    ),
+    (
+        "moqui_core::service::mail::send_message",
+        "smtp",
+        cfg!(feature = "smtp"),
+    ),
+    ("moqui_core::service::mail::test_server", "smtp", cfg!(feature = "smtp")),
+    ("moqui_core::service::mail::push_remote_changes", "smtp", cfg!(feature = "smtp")),
+    ("moqui_core::service::mail::", "imap", cfg!(feature = "imap")),
+];
+
+/// The feature `location` belongs to when this build leaves that feature out.
+pub(crate) fn missing_feature(location: &str) -> Option<&'static str> {
+    FEATURE_LOCATIONS
+        .iter()
+        .find(|(prefix, _, _)| location.starts_with(prefix))
+        .and_then(|(_, feature, built)| (!built).then_some(*feature))
+}
+
 /// The function registered at `location`, once every module has registered.
 pub(crate) fn get(location: &str) -> Option<RustServiceFn> {
     registry().get(location).copied()
@@ -62,7 +92,9 @@ fn build() -> BTreeMap<&'static str, RustServiceFn> {
         super::elfinder::register(&mut map),
         super::sso::register(&mut map),
         super::tools::register(&mut map),
+        #[cfg(feature = "image")]
         super::images::register(&mut map),
+        #[cfg(feature = "xlsx")]
         super::spreadsheet::register(&mut map),
         super::shell::register(&mut map),
         super::user_keys::register(&mut map),
@@ -157,6 +189,8 @@ mod tests {
             ]);
             expected.sort_unstable();
         }
+        // A feature this build leaves out registers nothing; its locations resolve through missing_feature.
+        expected.retain(|location| super::missing_feature(location).is_none());
         assert_eq!(keys, expected);
     }
 }

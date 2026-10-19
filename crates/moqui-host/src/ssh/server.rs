@@ -338,11 +338,14 @@ struct Connection {
     cluster: bool,
     can_sftp: bool,
     can_shell: bool,
-    /// `git-upload-pack` and `git-receive-pack` (`SSH_GIT`); each repository is still checked.
+    /// `git-upload-pack` and `git-receive-pack` (`SSH_GIT`); each repository is still checked. Unread without the `git`
+    /// feature, where git commands are not served.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     can_git: bool,
     channels: HashMap<ChannelId, Channel<Msg>>,
     ptys: HashSet<ChannelId>,
     /// `GIT_PROTOCOL` of each channel's `env` request.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     git_protocol: HashMap<ChannelId, String>,
 }
 
@@ -547,6 +550,7 @@ impl russh::server::Handler for Connection {
             return Ok(());
         }
         let line = String::from_utf8_lossy(data).into_owned();
+        #[cfg(feature = "git")]
         if moqui_core::resource::git::server::parse_ssh_command(&line).is_some()
             || moqui_core::resource::git::server::lfs::parse_ssh_command(&line).is_some()
         {

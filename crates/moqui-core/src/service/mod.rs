@@ -29,6 +29,7 @@ mod email_eca;
 mod files_tests;
 #[cfg(feature = "git")]
 mod git;
+#[cfg(feature = "image")]
 mod images;
 pub mod info;
 #[cfg(test)]
@@ -50,6 +51,7 @@ mod seca;
 mod security_checks;
 pub(crate) mod semaphore;
 pub(crate) mod shell;
+#[cfg(feature = "xlsx")]
 mod spreadsheet;
 mod sso;
 mod system_sync;
@@ -70,7 +72,7 @@ pub use email_eca::run_email_rules;
 #[cfg(test)]
 pub(crate) use jobs::send_job_error_notification;
 pub use jobs::{run_job_now, PassReport};
-#[cfg(all(test, feature = "mail"))]
+#[cfg(all(test, feature = "smtp"))]
 pub(crate) use mail::{SharedSinkGuard, SinkGuard};
 pub use pool::{start_pools, PoolStatus, RunnerStats, ServicePools};
 #[cfg(feature = "http")]

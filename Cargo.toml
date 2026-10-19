@@ -48,7 +48,8 @@ moqui-lib = { path = "crates/moqui-lib" }
 moqui-db = { path = "crates/moqui-db" }
 # default-features off so moqui-browser can leave out mail, http, and cluster-tls; moqui-host names them.
 moqui-core = { path = "crates/moqui-core", default-features = false }
-moqui-host = { path = "crates/moqui-host" }
+# default-features off so the binary crate picks the package (crates/moqui, docs/Packaging.md).
+moqui-host = { path = "crates/moqui-host", default-features = false }
 # Component crates kept in runtime/base-component, linked by crates/moqui.
 example = { path = "runtime/base-component/example" }
 
@@ -185,13 +186,12 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 # --- moqui-host ---
 # rt-multi-thread is for axum. postgres::Client builds its own current_thread runtime.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "io-util"] }
-# Defaults are tls-native-tls and theseus. bundled embeds the archive; see .cargo/config.toml.
-postgresql_embedded = { version = "0.21", default-features = false, features = [
-    "bundled",
-    "blocking",
-    "theseus",
-    "tls-rustls-aws-lc-rs",
-] }
+# Defaults are tls-native-tls and theseus. No feature downloads or bundles the archive: crates/moqui-host/build.rs
+# stages it and db/embedded.rs unpacks it, so the crate's build script links no TLS stack.
+postgresql_embedded = { version = "0.21", default-features = false, features = ["blocking"] }
+# Unpacking the staged Postgres archive (crates/moqui-host/build.rs, db/embedded.rs). Already in the graph under
+# postgresql_embedded. xattr stays off.
+tar = { version = "0.4", default-features = false }
 postgres = { version = "0.19", default-features = false, features = ["with-jiff-0_2"] }
 # Defaults are empty. ring stays off.
 tokio-postgres-rustls = { version = "0.14", default-features = false, features = [
@@ -223,8 +223,6 @@ hyper-util = { version = "0.1", default-features = false, features = ["tokio", "
 # chromiumoxide was the plan; its untagged-enum message parsing fails under serde_json arbitrary_precision.
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-# MPL-2.0 hold. Off unless moqui-host is built with pdf-servo.
-servo = "0.7"
 # SSH client and server. ring, des, and dsa stay off. aws-lc-rs matches the other TLS crates.
 russh = { version = "0.64", default-features = false, features = ["aws-lc-rs", "flate2", "rsa"] }
 # SFTP v3 subsystem. No dependency on russh; the host feeds it the channel bytes.
@@ -245,5 +243,5 @@ ipp = { version = "7", default-features = false }
 # --- moqui-browser ---
 # The browser's local database (plans/archive/Wasm.md). bundled compiles the SQLite amalgamation with the
 # target C compiler, which is emcc for wasm32-unknown-emscripten. SQLite is public domain.
-# 0.38, not 0.40: servo-net (pdf-servo) pins it, and two libsqlite3-sys cannot link sqlite3 in one graph.
+# 0.38: held there while servo-net (the dropped pdf-servo plan) pinned it. Moving to 0.40 is a change of its own.
 rusqlite = { version = "0.38", features = ["bundled"] }

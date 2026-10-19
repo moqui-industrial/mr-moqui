@@ -90,6 +90,8 @@ feature("call the REST API (#requestMethod, #screenPath)", {
 Once per file:
 
 - `dependsOn`: the specs that run first when this one is picked with `--spec`.
+- `requires`: build features the spec needs, such as `["git"]` (`moqui version` lists a binary's; see
+  `docs/Packaging.md`). In a binary without one of them the spec is reported as skipped, not run.
 - `stepwise`: after a failed feature, skip the rest (Spock's `@Stepwise`). Off by default.
 - `tempSequences: { start, banks }`: sequenced ids from `start`, with the bank size for each entity, set before
   `setupSpec` and reset after `cleanupSpec`.
@@ -105,6 +107,8 @@ A statement at the top level of the file; features run in the order they are wri
 - `where`: an array of row objects, or a function that returns one. Each row is its own case, and `#field` in the name is
   the row's value.
 - `ignore: "reason"`, `timeout`, `allowMessageErrors`.
+- `requires: ["git"]`: build features the feature needs, as on `spec()`; in a binary without one it is reported as
+  skipped. A `where` row may have its own `requires`, for a row that needs a feature the others do not.
 - A feature with `then` and no `when`, or a block name that is not one of these, is an error when the file loads.
 
 ## Conditions

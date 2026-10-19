@@ -18,7 +18,7 @@
 //! as the install in `runtime/opensearch` (`bin/opensearch -d -p pid`). This binary sets process
 //! properties, so it has one test.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
 use std::time::{Duration, Instant};
 

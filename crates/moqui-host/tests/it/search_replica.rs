@@ -17,7 +17,7 @@
 //! to the standby and can be behind; a read-your-writes search waits for replay, or runs on the
 //! primary when replay does not catch up by its deadline.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#![cfg(all(unix, feature = "embedded-postgres"))]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -459,7 +459,7 @@ fn job_error_notification_failure_does_not_panic() {
 /// `emailNotifications` Y: the notification goes out by email with the `NotificationEmail.xml` body in html
 /// and text, and the saved `EmailMessage` id is stored on the recipient's `NotificationMessageUser` row.
 #[test]
-#[cfg(feature = "mail")]
+#[cfg(feature = "smtp")]
 fn email_notification_sends_the_screen_body_and_stores_the_email_message_id() {
     let _lock = crate::user::session::cookie_property_lock();
     let ctx = ExecutionContextFactory::test_context_in(

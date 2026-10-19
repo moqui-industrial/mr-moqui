@@ -121,6 +121,9 @@ struct SpecPlan {
 struct CasePlan {
     name: String,
     ignore: Option<String>,
+    /// Build features the feature needs (`requires: ["git"]`); a case missing one is skipped.
+    #[serde(default)]
+    requires: Vec<String>,
     timeout: Option<f64>,
     allow_message_errors: bool,
 }
@@ -184,8 +187,19 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
             }
         }
         let case_started = Instant::now();
+        let missing: Vec<&str> = case
+            .requires
+            .iter()
+            .map(String::as_str)
+            .filter(|feature| !crate::build_info::has_feature(feature))
+            .collect();
         let outcome = if let Some(reason) = &skip_rest {
             Outcome::Skipped(reason.clone())
+        } else if !missing.is_empty() {
+            Outcome::Skipped(format!(
+                "requires {}, not built into this binary (moqui version)",
+                missing.join(", ")
+            ))
         } else if let Some(reason) = &case.ignore {
             Outcome::Ignored(reason.clone())
         } else {
@@ -236,6 +250,15 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
 /// The `dependsOn` names of a spec, read from its `spec({ dependsOn: [...] })` call without running it.
 pub fn spec_depends_on(source: &str) -> Vec<String> {
     super::rewrite::spec_depends_on(source)
+}
+
+/// The features a spec `requires` (`spec({ requires: ['git'] })`) that this build leaves out
+/// ([`crate::build_info::has_feature`]). A spec with any is skipped, not run.
+pub fn spec_missing_features(source: &str) -> Vec<String> {
+    super::rewrite::spec_requires(source)
+        .into_iter()
+        .filter(|feature| !crate::build_info::has_feature(feature))
+        .collect()
 }
 
 fn registration(message: impl Into<String>) -> Box<Failure> {

@@ -25,7 +25,6 @@ use std::sync::{Arc, RwLock};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use image::ImageFormat;
 use moqui_lib::sync::{read, write};
 
 use crate::context::{Error, ExecutionContext};
@@ -251,16 +250,23 @@ fn data_url(location: &str) -> Option<String> {
     Some(format!("data:{mime};base64,{}", STANDARD.encode(&bytes)))
 }
 
-/// The media type of an image Chromium shows, from its bytes.
+/// The media type of an image Chromium shows, from its leading bytes: png, jpeg, gif, webp or bmp, else svg text.
+/// No image decoder is needed for this, so PDF does not depend on the `image` feature.
 fn image_type(bytes: &[u8]) -> Option<&'static str> {
-    match image::guess_format(bytes) {
-        Ok(
-            format @ (ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP | ImageFormat::Bmp),
-        ) => Some(format.to_mime_type()),
-        Ok(_) => None,
-        Err(_) => String::from_utf8_lossy(&bytes[..bytes.len().min(1024)])
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if bytes.starts_with(b"BM") {
+        Some("image/bmp")
+    } else {
+        String::from_utf8_lossy(&bytes[..bytes.len().min(1024)])
             .contains("<svg")
-            .then_some("image/svg+xml"),
+            .then_some("image/svg+xml")
     }
 }
 

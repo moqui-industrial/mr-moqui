@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# The theseus Postgres archive that postgresql_embedded bundles (plans/archive/License-Review.md, plans/archive/EmbeddedPostgres.md).
-#   scripts/pg-payload.sh strip [target]    repack the cached archive without bin/psql (the original stays as .orig), then
-#                                           make cargo bundle it again
+# The theseus Postgres archive that the embedded-postgres feature embeds (plans/archive/License-Review.md,
+# plans/archive/EmbeddedPostgres.md, docs/Packaging.md).
+#   scripts/pg-payload.sh strip [target]    download the archive into ~/.theseus/postgresql when it is not there (sha256
+#                                           checked), and repack it without bin/psql (the original stays as .orig)
 #   scripts/pg-payload.sh check [archive...] fail on bin/psql, a readline library, or an ELF that NEEDs readline
-# The bundled build reads ~/.theseus/postgresql/postgresql-<version>-<target>.tar.gz when it exists and downloads it
-# otherwise, so strip runs before the build that should embed the stripped archive. check with no arguments reads that
-# cached archive and every archive staged under target/. Run both on every POSTGRESQL_VERSION bump.
+#   scripts/pg-payload.sh path [target]     print where the archive is kept
+# crates/moqui-host/build.rs embeds ~/.theseus/postgresql/postgresql-<version>-<target>.tar.gz (or MOQUI_PG_ARCHIVE) and
+# downloads nothing; it refuses an archive that still holds psql or readline, so strip runs before the first build
+# (./moq build runs it when the archive is missing). check with no arguments reads that archive and every archive
+# staged under target/. Run both on every POSTGRESQL_VERSION bump.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 version=$(sed -n 's/^POSTGRESQL_VERSION = { value = "=\([0-9.]*\)".*/\1/p' "$root/.cargo/config.toml")
@@ -50,8 +53,6 @@ strip_archive() {
         mv "$work/stripped.tar.gz" "$archive"
         echo "wrote $archive ($(du -h "$archive" | cut -f1))"
     fi
-    # The build script keeps an archive it already staged, in each profile; this makes them stage the cached one again.
-    (cd "$root" && cargo clean -p postgresql_embedded && cargo clean -p postgresql_embedded --release)
     check_archive "$archive"
 }
 
@@ -95,7 +96,7 @@ case "${1:-}" in
             [ -f "$(cached_archive "$host_target")" ] && archives+=("$(cached_archive "$host_target")")
             while IFS= read -r -d '' staged; do
                 archives+=("$staged")
-            done < <(find "${CARGO_TARGET_DIR:-$root/target}" -path '*/build/postgresql_embedded-*/out/postgresql.tar.gz' -print0 2>/dev/null)
+            done < <(find "${CARGO_TARGET_DIR:-$root/target}" -path '*/build/moqui-host-*/out/postgresql.tar.gz' -print0 2>/dev/null)
         fi
         [ "${#archives[@]}" -gt 0 ] || { echo "no archive to check" >&2; exit 1; }
         failed=0
@@ -104,8 +105,11 @@ case "${1:-}" in
         done
         exit "$failed"
         ;;
+    path)
+        cached_archive "${2:-$host_target}"
+        ;;
     *)
-        sed -n '2,8p' "$0" | sed 's/^# //'
+        sed -n '2,11p' "$0" | sed 's/^# //'
         exit 2
         ;;
 esac

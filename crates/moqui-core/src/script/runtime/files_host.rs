@@ -375,6 +375,7 @@ fn files_thumbnail<'js>(
 }
 
 /// The image in `bytes` scaled to fit `max` by `max` (never up), as PNG: `(width, height, png)`.
+#[cfg(feature = "image")]
 pub(crate) fn thumbnail_png(bytes: &[u8], max: u32) -> Option<(u32, u32, Vec<u8>)> {
     let image = ::image::load_from_memory(bytes).ok()?;
     let small = if image.width() > max || image.height() > max {
@@ -385,6 +386,12 @@ pub(crate) fn thumbnail_png(bytes: &[u8], max: u32) -> Option<(u32, u32, Vec<u8>
     let mut out = Cursor::new(Vec::new());
     small.write_to(&mut out, ::image::ImageFormat::Png).ok()?;
     Some((small.width(), small.height(), out.into_inner()))
+}
+
+/// No image decoder in this build (the `image` feature): no thumbnail.
+#[cfg(not(feature = "image"))]
+pub(crate) fn thumbnail_png(_bytes: &[u8], _max: u32) -> Option<(u32, u32, Vec<u8>)> {
+    None
 }
 
 /// A zip of the files at the entries' locations, each under its `path`, written to `target`. An entry that cannot be
@@ -548,6 +555,7 @@ mod tests {
         assert!(!check_grant("secret", "share:1", "nonsense"));
     }
 
+    #[cfg(feature = "image")]
     #[test]
     fn a_thumbnail_fits_the_box_and_keeps_the_aspect() {
         let image = ::image::RgbImage::from_pixel(400, 200, ::image::Rgb([10, 120, 200]));

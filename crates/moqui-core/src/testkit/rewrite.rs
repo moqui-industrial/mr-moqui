@@ -112,6 +112,16 @@ pub fn rewrite_spec(source: &str) -> Result<Rewritten, Error> {
 /// The `dependsOn` names of a spec file, from the string literals of `dependsOn` in its top-level `spec({ ... })`
 /// call, read without running the file. A file that does not parse has none.
 pub fn spec_depends_on(source: &str) -> Vec<String> {
+    spec_strings(source, "dependsOn")
+}
+
+/// The build features a spec file `requires` (`spec({ requires: ['git'] })`), read without running the file.
+pub fn spec_requires(source: &str) -> Vec<String> {
+    spec_strings(source, "requires")
+}
+
+/// The string literals of the array `key` in the top-level `spec({ ... })` call. A file that does not parse has none.
+fn spec_strings(source: &str, key: &str) -> Vec<String> {
     let allocator = std::default::Default::default();
     let parsed = Parser::new(&allocator, source, SourceType::script()).parse();
     let mut names = Vec::new();
@@ -136,7 +146,7 @@ pub fn spec_depends_on(source: &str) -> Vec<String> {
             let ObjectPropertyKind::ObjectProperty(property) = property else {
                 continue;
             };
-            if property.key.static_name().as_deref() != Some("dependsOn") {
+            if property.key.static_name().as_deref() != Some(key) {
                 continue;
             }
             if let Expression::ArrayExpression(array) = &property.value {
@@ -519,6 +529,10 @@ mod tests {
             "const t = Date.now()\nspec({ dependsOn: ['A', \"B\"], stepwise: true })\nfeature('f', { expect() { 1 } })";
         assert_eq!(spec_depends_on(source), vec!["A".to_string(), "B".to_string()]);
         assert!(spec_depends_on("spec({})").is_empty());
+        assert_eq!(
+            spec_requires("spec({ requires: ['git'], dependsOn: ['A'] })"),
+            vec!["git".to_string()]
+        );
     }
 
     #[test]

@@ -29,7 +29,7 @@
 //! The other candidates either keep their forms in dialogs, which the text modes do not show, or
 //! call services, search or the file system.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
 mod common;
 

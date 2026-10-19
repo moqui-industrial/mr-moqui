@@ -4,8 +4,9 @@ Put your add-on component directories in this directory to load them when Moqui 
 
 A component can have a Rust crate, as a Java Moqui component could have a `build.gradle`: a `Cargo.toml` and `src/`
 beside its `component.xml`. `./moq build` finds each one here and links it into the moqui binary with the framework,
-through a crate it generates in `target/moqui-app`. The binary is still `target/release/moqui`, or `target/debug/moqui`
-with `--debug`. Run `./moq build` again after adding or removing a crate.
+through a crate it generates in `target/moqui-app`. The binary is the package's as before (`target/lite/moqui`, or
+another with `--debug`, `--release` or `--enterprise`; `docs/Packaging.md`). Run `./moq build` again after adding or
+removing a crate.
 
 The crate depends on the framework by path (`moqui-core = { path = "../../../crates/moqui-core", default-features =
 false }` and `moqui-lib = { path = "../../../crates/moqui-lib" }`) and submits its implementations under the

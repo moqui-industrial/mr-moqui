@@ -1391,6 +1391,7 @@ fn a_records_drive_shows_its_folder_map_and_the_record_folders_below() {
     );
 }
 
+#[cfg(feature = "image")]
 #[test]
 fn an_image_preview_is_a_thumbnail_made_once() {
     let (context, facade) = setup();

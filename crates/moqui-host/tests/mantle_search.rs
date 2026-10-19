@@ -20,7 +20,7 @@
 //! The test needs `runtime/component/mantle-udm` and `mantle-usl`, which are not part of this repository, and it
 //! skips without them. The load takes about half a minute.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#![cfg(all(unix, feature = "embedded-postgres"))]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

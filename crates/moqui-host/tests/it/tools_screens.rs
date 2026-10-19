@@ -18,7 +18,7 @@
 //! a later phase or are not ported show their message: the Groovy shell, and the log viewer on the Postgres search
 //! backend.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "git"))]
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

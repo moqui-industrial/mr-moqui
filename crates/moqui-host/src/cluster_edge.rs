@@ -97,6 +97,7 @@ pub(crate) fn https_sender() -> Result<Arc<dyn Sender>, HostError> {
 }
 
 /// The shared cluster key `cluster_tls_key`, as DER, for the SSH channel's derived login key.
+#[cfg(feature = "ssh")]
 pub(crate) fn cluster_key_der() -> Result<Vec<u8>, HostError> {
     let material = load_material()?;
     Ok(material.key)

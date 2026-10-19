@@ -41,6 +41,7 @@ Test
 
 Help
   help             [command]                                This list, or the detail for one command
+  version                                                   The version, package and features of this binary
 
 Server options
   -p, --port N       HTTP port (webapp_http_port, default 8080). Also: port=N, -port=N, --port=N.
@@ -230,6 +231,15 @@ moqui help, moqui --help, moqui -h, and moqui -? print the command list.
 moqui help <command> and moqui <command> --help (or -h) print that command.
 ";
 
+const VERSION: &str = "\
+moqui version
+    The version, the package this binary was built as (lite, enterprise, maximal, or custom), and every
+    feature built in. See docs/Packaging.md.
+
+  moqui version
+  moqui --version
+";
+
 /// The command list: groups, one line per command, and the environment variables that select the runtime.
 #[must_use]
 pub fn overview() -> &'static str {
@@ -248,6 +258,7 @@ pub fn command_help(name: &str) -> Option<&'static str> {
         "types" => Some(TYPES),
         "test" => Some(TEST),
         "help" => Some(HELP),
+        "version" => Some(VERSION),
         _ => None,
     }
 }
@@ -291,7 +302,8 @@ pub fn is_server_invocation(args: &[String]) -> bool {
 fn is_known_command(name: &str) -> bool {
     matches!(
         name,
-        "help" | "--help" | "-h" | "-?" | "load" | "save-db" | "load-save" | "lint" | "convert" | "types" | "test"
+        "help" | "--help" | "-h" | "-?" | "version" | "--version" | "load" | "save-db" | "load-save" | "lint" | "convert"
+            | "types" | "test"
     )
 }
 
@@ -470,6 +482,7 @@ pub fn command_usage(command: &str) -> Error {
         "types" => "moqui types [--out dir]",
         "test" => "moqui test [component ...] [options]",
         "help" => "moqui help [command]",
+        "version" => "moqui version",
         _ => "moqui [command] [args...]",
     };
     let help = if command_help(command).is_some() {

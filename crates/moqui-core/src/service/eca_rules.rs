@@ -32,7 +32,9 @@ pub(super) struct EcaRules {
     /// `seca` by `when` and service.
     pub(super) seca_index: SecaIndex,
     pub(super) email: Vec<Arc<EmailRule>>,
-    /// gitECA rules in priority order, a later rule with the same id having replaced an earlier one.
+    /// gitECA rules in priority order, a later rule with the same id having replaced an earlier one. Read only by the
+    /// git events, so unread without the `git` feature.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub(super) git: Vec<Arc<GitRule>>,
 }
 

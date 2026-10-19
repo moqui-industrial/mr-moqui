@@ -17,7 +17,7 @@
 //! a SystemMessage and poll it back, the host key is trusted on first use and a changed key is refused, and the admin
 //! shell runs for a user with `SSH_SHELL`, refuses one without, and checks artifact authorization for the user.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "ssh"))]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

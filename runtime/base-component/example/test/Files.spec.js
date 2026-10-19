@@ -18,6 +18,7 @@ const user = (userId) => {
 const names = (out) => out.fileList.map((row) => row.name)
 
 spec({
+    requires: ["git"],
     setup() { ec.artifactExecution.disableAuthz() },
     cleanup() { ec.artifactExecution.enableAuthz() },
 })

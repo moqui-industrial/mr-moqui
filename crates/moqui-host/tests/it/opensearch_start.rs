@@ -18,7 +18,7 @@
 //! file, which marks a node managed outside this process). This binary sets process properties, so
 //! it has one test.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#![cfg(all(unix, feature = "embedded-postgres"))]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

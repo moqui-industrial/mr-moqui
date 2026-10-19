@@ -14,7 +14,7 @@
 
 //! The embedded backup service and its SFTP mirror, on a seeded server with the built-in SSH server.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "ssh"))]
 
 use std::collections::BTreeMap;
 use std::path::Path;

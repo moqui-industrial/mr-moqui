@@ -33,9 +33,10 @@ use moqui_lib::object::{to_plain_string, Value};
 use moqui_lib::sync::lock;
 
 use super::implementation::{
-    build_lettre, client_headers, find_one, force_new, new_message_id, note_error, split_addresses, stamp_millis,
-    stored_attachments, Letter,
+    build_lettre, client_headers, find_one, force_new, new_message_id, note_error, split_addresses, stored_attachments,
+    Letter,
 };
+use super::inbound::stamp_millis;
 use super::store::{update_fields, MESSAGE};
 use super::sync::{
     connection_lost, encode_mutf7, label_keyword, load_account, load_folders, quoted, run_sync, search_message_id,

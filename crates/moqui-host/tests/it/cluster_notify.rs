@@ -16,7 +16,7 @@
 //! skip each other's messages, so the peer is played over raw connections to the same database: its NOTIFYs arrive and
 //! are applied, and this member's fan-out is read by a LISTEN of the test's own.
 
-#![cfg(all(unix, feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#![cfg(all(unix, feature = "axum", feature = "embedded-postgres"))]
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

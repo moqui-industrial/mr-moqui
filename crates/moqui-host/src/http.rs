@@ -151,7 +151,8 @@ pub(crate) async fn listen(
         .map(|secure| format!(", HTTPS on {secure}"))
         .unwrap_or_default();
     tracing::info!(
-        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, /notws, /elastic, /kibana, /git and the screen dispatcher"
+        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, /notws, /elastic, /kibana, {}the screen dispatcher",
+        if cfg!(feature = "git") { "/git and " } else { "" }
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let limits = ListenLimits::from_properties();
@@ -165,8 +166,10 @@ pub(crate) async fn listen(
         .route("/elastic/{*rest}", any(search_proxy::elastic))
         .route("/kibana", any(search_proxy::kibana))
         .route("/kibana/", any(search_proxy::kibana))
-        .route("/kibana/{*rest}", any(search_proxy::kibana))
-        .route("/git/{*rest}", any(crate::git_http::handle))
+        .route("/kibana/{*rest}", any(search_proxy::kibana));
+    #[cfg(feature = "git")]
+    let app = app.route("/git/{*rest}", any(crate::git_http::handle));
+    let app = app
         .fallback(dispatch_screen)
         .layer(tower_http::compression::CompressionLayer::new().compress_when(Compressible))
         .with_state(Arc::new(HttpState {
