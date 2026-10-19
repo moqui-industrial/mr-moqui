@@ -537,7 +537,8 @@ impl Column {
     }
 
     /// A text value converted to the column's date, time, or number type; anything else as given. Scripts carry
-    /// dates as epoch millis text, so that form is read as a moment.
+    /// dates as epoch millis text, so that form is read as a moment. Timestamp text without an offset is in the
+    /// session time zone ([`moqui_lib::object::text_time_zone`]), as a parameter or a data file reads it.
     fn typed(&self, value: Value) -> Value {
         let (Some(java_type), Value::String(text)) = (self.java_type.as_deref(), &value) else {
             return value;
@@ -555,7 +556,7 @@ impl Column {
             Ok(millis) if temporal => moqui_lib::object::basic_convert(&Value::I64(millis), "java.sql.Timestamp").value,
             _ => value.clone(),
         };
-        match moqui_lib::object::basic_convert(&source, java_type).value {
+        match moqui_lib::object::basic_convert_text(&source, java_type).value {
             Value::String(_) => value,
             converted => converted,
         }

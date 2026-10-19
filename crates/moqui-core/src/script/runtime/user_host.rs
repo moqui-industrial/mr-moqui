@@ -349,7 +349,7 @@ fn user_timestamp_millis<'js>(ctx: Ctx<'js>, value: JsValue<'js>) -> rquickjs::R
         if moqui_lib::object::is_empty(&host) {
             return Null.into_js(&ctx);
         }
-        match moqui_lib::object::basic_convert(&host, "java.sql.Timestamp").value {
+        match crate::l10n::basic_convert(&host, "java.sql.Timestamp").value {
             #[allow(clippy::cast_precision_loss)] // Milliseconds of real dates fit a double exactly.
             Value::Timestamp(stamp) => (stamp.as_millisecond() as f64).into_js(&ctx),
             _ => Null.into_js(&ctx),

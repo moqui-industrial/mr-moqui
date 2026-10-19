@@ -15,12 +15,21 @@
 //! `ec.l10n`: localized messages and formatting in the session locale and time zone.
 //!
 //! The formatters are in `moqui_lib::format`. The locale is the session locale, else `en_US`.
-//! The time zone is the session time zone, else UTC.
+//! The time zone is the session time zone (the user's `UserAccount.timeZone`), else the server's: the zone
+//! `default_time_zone` names at start (MoquiDefaultConf's `UTC`), as Java's `TimeZone.setDefault` makes it the JVM
+//! default that `ec.user.getTimeZone()` falls back to.
+//!
+//! Timestamp text without an offset is read in the session time zone wherever text becomes a timestamp, as Java's
+//! `ec.l10n.parseTimestamp` does for a parameter, a field set from text, a data file and a data check:
+//! [`basic_convert`] and [`convert_checked`] are `moqui_lib`'s conversions in that zone. Only text a database driver
+//! gives back is read in UTC (`moqui_lib::object::basic_convert`). Dates and times are civil values with no zone.
+
+use std::sync::RwLock;
 
 use jiff::tz::TimeZone;
 use moqui_lib::format;
 use moqui_lib::format::Decimal;
-use moqui_lib::object::{to_plain_string, Value};
+use moqui_lib::object::{to_plain_string, Converted, Value};
 
 use crate::context::{Error, ExecutionContext};
 
@@ -40,13 +49,103 @@ pub fn locale() -> String {
         .unwrap_or_else(|| DEFAULT_LOCALE.to_string())
 }
 
-/// The session time zone, else the server's (Java's default zone), else UTC.
+/// The session time zone, else the server's ([`server_time_zone`]): Java's `ec.user.getTimeZone()`.
 pub fn time_zone() -> TimeZone {
     crate::user::time_zone()
         .ok()
         .flatten()
-        .and_then(|name| TimeZone::get(&name).ok())
-        .unwrap_or_else(|| TimeZone::try_system().unwrap_or(TimeZone::UTC))
+        .filter(|name| !name.trim().is_empty())
+        .and_then(|name| TimeZone::get(name.trim()).ok())
+        .unwrap_or_else(server_time_zone)
+}
+
+/// The server's zone once [`init_server_time_zone`] has read it.
+static SERVER_TIME_ZONE: RwLock<Option<TimeZone>> = RwLock::new(None);
+
+/// Java's start, which sets the JVM default zone (`TimeZone.setDefault`) to the one the `default_time_zone` property
+/// or environment variable names, `UTC` from MoquiDefaultConf unless the runtime names another. An unknown name is
+/// logged and leaves the zone as it was. Also registers [`time_zone`] as the zone `moqui_lib` reads timestamp text in
+/// where it converts a person's or a script's text (a condition value against a timestamp column).
+pub fn init_server_time_zone() {
+    moqui_lib::object::set_text_time_zone(time_zone);
+    let name = moqui_lib::env::get_prop_or_env("default_time_zone");
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    match TimeZone::get(name) {
+        Ok(zone) => {
+            *SERVER_TIME_ZONE
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(zone);
+            tracing::info!("Default time zone {name}");
+        }
+        Err(err) => tracing::error!("Error setting default time zone to {name}: {err}"),
+    }
+}
+
+/// The zone a session with no user zone is in: what `default_time_zone` named at start, else the machine's (the JVM
+/// default with no property), else UTC. A unit test with no start has UTC, MoquiDefaultConf's default, so it reads the
+/// same on any machine.
+pub fn server_time_zone() -> TimeZone {
+    let named = SERVER_TIME_ZONE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    named.unwrap_or_else(|| {
+        if cfg!(test) {
+            TimeZone::UTC
+        } else {
+            TimeZone::try_system().unwrap_or(TimeZone::UTC)
+        }
+    })
+}
+
+/// The server zone's name for `ec.user.timeZone` with no user zone: the IANA name, else `UTC`.
+pub fn server_time_zone_name() -> String {
+    server_time_zone().iana_name().unwrap_or("UTC").to_string()
+}
+
+/// `moqui_lib::object::basic_convert` with timestamp text that has no offset read in the session time zone, as Java's
+/// `EntityValue.setString`, `setFields` and `ParameterInfo.convertType` read it through `ec.l10n.parseTimestamp`. The
+/// zone is looked up only for timestamp text.
+pub fn basic_convert(value: &Value, java_type: &str) -> Converted {
+    if is_timestamp_text(value, java_type) {
+        moqui_lib::object::basic_convert_in(value, java_type, &time_zone())
+    } else {
+        moqui_lib::object::basic_convert(value, java_type)
+    }
+}
+
+/// `moqui_lib::object::convert_checked` in the session time zone, as [`basic_convert`].
+pub fn convert_checked(value: &Value, java_type: &str) -> Option<Value> {
+    if is_timestamp_text(value, java_type) {
+        moqui_lib::object::convert_checked_in(value, java_type, &time_zone())
+    } else {
+        moqui_lib::object::convert_checked(value, java_type)
+    }
+}
+
+/// `moqui_lib::object::compare` (`if-compare` with a `type`) in the session time zone, as [`basic_convert`].
+///
+/// # Errors
+///
+/// Returns an error for values an ordered operator cannot order, or a bad `matches` pattern.
+pub fn compare(
+    field: &Value,
+    operator: &str,
+    to_field: &Value,
+    java_type: &str,
+) -> Result<bool, moqui_lib::error::Error> {
+    if is_timestamp_text(field, java_type) || is_timestamp_text(to_field, java_type) {
+        moqui_lib::object::compare_in(field, operator, to_field, java_type, &time_zone())
+    } else {
+        moqui_lib::object::compare(field, operator, to_field, java_type)
+    }
+}
+
+fn is_timestamp_text(value: &Value, java_type: &str) -> bool {
+    matches!(value, Value::String(_)) && java_type.rsplit('.').next() == Some("Timestamp")
 }
 
 /// The text of `original` in the session locale. A message longer than 255 characters is an
@@ -404,7 +503,12 @@ pub fn round_currency_with(
 mod tests {
     use moqui_lib::object::Value;
 
-    use super::{format_currency, format_value, localize, localize_in};
+    use jiff::tz::TimeZone;
+
+    use super::{
+        basic_convert, compare, convert_checked, format_currency, format_value, localize, localize_in, parse_timestamp,
+        server_time_zone, server_time_zone_name, time_zone,
+    };
     use crate::context::ExecutionContextFactory;
 
     fn entity_context() -> crate::context::ExecutionContext {
@@ -529,5 +633,42 @@ mod tests {
         crate::user::session::set_locale(Some("de"));
         assert_eq!(super::locale(), "de");
         crate::user::session::set_locale(None);
+    }
+
+    /// Timestamp text without an offset is read in the session time zone, Java's `ec.user.getTimeZone()`: the user's, else
+    /// the server's, which a test with no start has as UTC (MoquiDefaultConf's `default_time_zone`). A zone the session
+    /// names that is not known is the server's too. Offsets, millis and dates are the same in any zone.
+    #[test]
+    fn timestamp_text_converts_in_the_session_zone_else_the_servers() {
+        let context = ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        let stamp = |text: &str| Value::Timestamp(text.parse::<jiff::Timestamp>().unwrap());
+        let text = Value::string("2016-11-01 08:30");
+        assert_eq!(time_zone(), server_time_zone());
+        assert_eq!(server_time_zone(), TimeZone::UTC);
+        assert_eq!(server_time_zone_name(), "UTC");
+        assert_eq!(
+            basic_convert(&text, "java.sql.Timestamp").value,
+            stamp("2016-11-01T08:30:00Z")
+        );
+        crate::user::session::set_time_zone(Some("America/Chicago"));
+        assert_eq!(
+            basic_convert(&text, "java.sql.Timestamp").value,
+            stamp("2016-11-01T13:30:00Z")
+        );
+        assert_eq!(convert_checked(&text, "Timestamp"), Some(stamp("2016-11-01T13:30:00Z")));
+        assert!(compare(&text, "equals", &stamp("2016-11-01T13:30:00Z"), "Timestamp").unwrap());
+        assert_eq!(parse_timestamp("2016-11-01"), Some(stamp("2016-11-01T05:00:00Z")));
+        assert_eq!(
+            basic_convert(&Value::string("2016-11-01T08:30:00Z"), "Timestamp").value,
+            stamp("2016-11-01T08:30:00Z")
+        );
+        assert_eq!(
+            basic_convert(&Value::string("2016-11-01"), "java.sql.Date").value,
+            Value::Date(jiff::civil::date(2016, 11, 1))
+        );
+        crate::user::session::set_time_zone(Some("Not/AZone"));
+        assert_eq!(time_zone(), server_time_zone());
+        crate::user::session::set_time_zone(None);
     }
 }

@@ -45,6 +45,7 @@
             </field>
         </form-list>
         <link text="By path" url="detailId/I1" link-type="anchor"/>
+        <link text="With query" url="detail?id=Q2" link-type="anchor"/>
         <link text="None" url="gone" link-type="anchor"/>
         <link text="Ext" url="https://example.com/x" url-type="screen" link-type="anchor"/>
         <label text="${missingPath}" type="span"/>

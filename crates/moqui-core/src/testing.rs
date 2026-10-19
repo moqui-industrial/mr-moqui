@@ -656,10 +656,17 @@ fn count_slots(pred: &Pred) -> usize {
 
 fn eval_pred(pred: &Pred, row: &Row, params: &[Value], idx: &mut usize) -> Result<bool, Error> {
     match pred {
-        Pred::Cmp { field, op } => {
+        Pred::Cmp { field, op, upper } => {
             let param = take_param(params, idx)?;
-            let left = row.get(field).cloned().unwrap_or(Value::Null);
-            Ok(compare(&left, *op, param))
+            let left = match row.get(field).cloned().unwrap_or(Value::Null) {
+                Value::String(text) if *upper => Value::String(text.to_uppercase()),
+                left => left,
+            };
+            let right = match param {
+                Value::String(text) if *upper => Value::String(text.to_uppercase()),
+                right => right.clone(),
+            };
+            Ok(compare(&left, *op, &right))
         }
         Pred::In { field, slots, negated } => {
             let left = row.get(field).cloned().unwrap_or(Value::Null);
@@ -821,9 +828,12 @@ struct SelectQuery {
 }
 
 enum Pred {
+    /// `upper` for an ignore-case comparison, `UPPER("field") LIKE UPPER(?)`: the field's text is upper-cased (the
+    /// condition upper-cases the value itself).
     Cmp {
         field: String,
         op: Op,
+        upper: bool,
     },
     /// `IN (?, ...)` with `slots` placeholders, or `NOT IN` when `negated`. An empty list is false.
     /// A null never matches either, as in SQL.
@@ -1141,18 +1151,35 @@ fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
         cur.expect_symbol(b')')?;
         return Ok(pred);
     }
+    let upper = cur.eat_keyword("UPPER");
+    if upper {
+        cur.expect_symbol(b'(')?;
+    }
     let field = cur.quoted()?;
-    if cur.eat_keyword("IS") {
+    if upper {
+        cur.expect_symbol(b')')?;
+    }
+    // `UPPER(?)` or `?`
+    let placeholder = |cur: &mut Cur| -> Result<(), Error> {
+        if upper && cur.eat_keyword("UPPER") {
+            cur.expect_symbol(b'(')?;
+            cur.expect_symbol(b'?')?;
+            return cur.expect_symbol(b')');
+        }
+        cur.expect_symbol(b'?')
+    };
+    if !upper && cur.eat_keyword("IS") {
         let negated = cur.eat_keyword("NOT");
         cur.expect_keyword("NULL")?;
         return Ok(Pred::IsNull { field, negated });
     }
     let negated = cur.eat_keyword("NOT");
     if cur.eat_keyword("LIKE") {
-        cur.expect_symbol(b'?')?;
+        placeholder(cur)?;
         return Ok(Pred::Cmp {
             field,
             op: if negated { Op::NotLike } else { Op::Like },
+            upper,
         });
     }
     if cur.eat_keyword("IN") {
@@ -1171,8 +1198,8 @@ fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
     let Some(op) = cur.eat_op() else {
         return Err(cur.fail("expected comparison"));
     };
-    cur.expect_symbol(b'?')?;
-    Ok(Pred::Cmp { field, op })
+    placeholder(cur)?;
+    Ok(Pred::Cmp { field, op, upper })
 }
 
 fn fold(mut parts: Vec<Pred>, and: bool) -> Pred {

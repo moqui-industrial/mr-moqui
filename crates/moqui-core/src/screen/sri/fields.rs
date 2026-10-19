@@ -354,7 +354,7 @@ pub fn set_in_context(set: &NodeLit) -> Result<(), Error> {
         value = Value::String(script::expand_localized(set.attr("default-value"))?);
     }
     if !set.attr("type").is_empty() {
-        value = moqui_lib::object::basic_convert(&value, set.attr("type")).value;
+        value = l10n::basic_convert(&value, set.attr("type")).value;
     }
     script::set_context_name(field, value)
 }

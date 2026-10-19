@@ -953,10 +953,11 @@ impl EntityFacade {
                     continue;
                 }
                 let java = java_of(model, field).unwrap_or_default();
+                // Text is a script's or a caller's, so a timestamp without an offset is in the session time zone.
                 let converted = if java.is_empty() {
                     value.clone()
                 } else {
-                    basic_convert(value, &java).value
+                    crate::l10n::basic_convert(value, &java).value
                 };
                 normalized.insert(field.name.clone(), converted);
             }

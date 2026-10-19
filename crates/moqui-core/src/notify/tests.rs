@@ -543,3 +543,115 @@ fn email_notification_sends_the_screen_body_and_stores_the_email_message_id() {
     assert_eq!(text(&row, "emailMessageId"), email_message_id);
     assert!(row.get("sentDate").is_some_and(|value| !value.is_null()));
 }
+
+/// The IronStone fields: a reason by its short name or id, the record, the actor and the app are stored on the
+/// `NotificationMessage` row and sent in the wrapped message, beside the topic's inbox; the actor is the user who sent
+/// it unless set.
+#[test]
+fn reason_record_actor_and_app_are_stored_and_sent() {
+    let (ctx, facade) = open();
+    let _entered = ctx.enter();
+    let sender = unique("sender");
+    account(&facade, &sender, None, None);
+    let recipient = unique("recipient");
+    account(&facade, &recipient, None, None);
+    {
+        let _authz = ctx.disable_authz();
+        crate::user::internal_login_user(&sender).unwrap();
+    }
+    let topic = unique("Fields");
+    topic_row(
+        &facade,
+        &topic,
+        &[("description", "Fields"), ("inboxEnumId", "NinUpdates")],
+    );
+    let title = unique("Assigned");
+    let send = |persist: bool| {
+        let mut note = NotificationMessage::new();
+        note.topic(&topic)
+            .user_id(&recipient)
+            .title(&title)
+            .reason("assignment")
+            .record("mantle.work.effort.WorkEffort", "TASK1")
+            .app_name("Commons")
+            .persist(persist)
+            .send()
+            .unwrap();
+        note
+    };
+    let note = send(true);
+    assert_eq!(note.reason_enum_id(), Some("NrAssignment"));
+    let id = note.notification_message_id().unwrap().to_string();
+    let _authz = ctx.disable_authz();
+    let row = facade
+        .find(MESSAGE)
+        .unwrap()
+        .eq("notificationMessageId", Value::string(&id))
+        .one()
+        .unwrap()
+        .unwrap();
+    for (field, expected) in [
+        ("reasonEnumId", "NrAssignment"),
+        ("recordEntityName", "mantle.work.effort.WorkEffort"),
+        ("recordId", "TASK1"),
+        ("actorUserId", sender.as_str()),
+        ("appName", "Commons"),
+    ] {
+        assert_eq!(text(&row, field), expected, "{field}");
+    }
+    // (a persisted message is published under its sequenced id, which the in-memory databases of the tests repeat)
+    let (sub, seen) = kept(&title);
+    send(false);
+    let got = lock(&seen);
+    assert_eq!(got.len(), 1);
+    let body = &got[0].body;
+    assert_eq!(
+        body.get("reasonEnumId").and_then(|value| value.as_str()),
+        Some("NrAssignment")
+    );
+    assert_eq!(body.get("recordId").and_then(|value| value.as_str()), Some("TASK1"));
+    assert_eq!(
+        body.get("actorUserId").and_then(|value| value.as_str()),
+        Some(sender.as_str())
+    );
+    assert_eq!(body.get("appName").and_then(|value| value.as_str()), Some("Commons"));
+    assert_eq!(
+        body.get("inboxEnumId").and_then(|value| value.as_str()),
+        Some("NinUpdates")
+    );
+    // the fields Java sends are still there
+    assert_eq!(body.get("title").and_then(|value| value.as_str()), Some(title.as_str()));
+    assert_eq!(body.get("topic").and_then(|value| value.as_str()), Some(topic.as_str()));
+    drop(got);
+    drop(sub);
+
+    // an actor set wins over the sender, an enumId is kept as it is, and a topic without a record is in Notifications
+    let title = unique("Mentioned");
+    let (sub, seen) = kept(&title);
+    let mut note = NotificationMessage::new();
+    note.topic(unique("NoRow"))
+        .user_id(&recipient)
+        .title(&title)
+        .reason("NrMention")
+        .actor_user_id("someone")
+        .persist(false)
+        .send()
+        .unwrap();
+    let got = lock(&seen);
+    let body = &got[0].body;
+    assert_eq!(
+        body.get("reasonEnumId").and_then(|value| value.as_str()),
+        Some("NrMention")
+    );
+    assert_eq!(
+        body.get("actorUserId").and_then(|value| value.as_str()),
+        Some("someone")
+    );
+    assert_eq!(
+        body.get("inboxEnumId").and_then(|value| value.as_str()),
+        Some("NinNotifications")
+    );
+    assert!(body.get("recordEntityName").is_some_and(serde_json::Value::is_null));
+    drop(got);
+    drop(sub);
+}

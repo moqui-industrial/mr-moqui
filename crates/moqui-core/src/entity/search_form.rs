@@ -324,9 +324,10 @@ fn like(name: &str, pattern: Value, not: bool) -> Condition {
 }
 
 /// Text from a form becomes the field's type. Text that does not convert is kept, and the database
-/// reports it, as a lone bad value in a search is the user's to see.
+/// reports it, as a lone bad value in a search is the user's to see. A time stamp without an offset is in the session
+/// time zone, as Java's `ec.l10n.parseTimestamp` reads it and as the form showed it.
 fn convert(text: &str, java_type: &str) -> Value {
-    let converted = moqui_lib::object::convert_checked(&Value::string(text), java_type);
+    let converted = crate::l10n::convert_checked(&Value::string(text), java_type);
     converted.unwrap_or_else(|| Value::string(text))
 }
 
@@ -342,8 +343,8 @@ fn bound(raw: Option<&Value>, field: &SearchField, day_end: &str) -> Option<Valu
     };
     let stamp = field.java_type.ends_with("Timestamp");
     if stamp && text.len() < 12 {
-        let widened = basic_convert(&Value::string(format!("{text}{day_end}")), "java.sql.Timestamp");
-        return Some(widened.value);
+        let widened = Value::string(format!("{text}{day_end}"));
+        return Some(crate::l10n::basic_convert(&widened, "java.sql.Timestamp").value);
     }
     Some(convert(text, &field.java_type))
 }
@@ -531,6 +532,24 @@ mod tests {
         };
         // From the start of 10-01 to the last millisecond of 10-02, both whole days.
         assert_eq!(thru.as_millisecond() - from.as_millisecond(), 2 * 86_400_000 - 1);
+
+        // The days are the session time zone's, as the form shows them, and so is a time without an offset.
+        let context = crate::context::ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        crate::user::session::set_time_zone(Some("America/Chicago"));
+        let range = search(&[
+            ("testDateTime_from", "2026-10-01"),
+            ("testDateTime_thru", "2026-10-01 18:00"),
+        ]);
+        let found = conditions(&range);
+        let stamp = |text: &str| Value::Timestamp(text.parse::<jiff::Timestamp>().unwrap());
+        assert_eq!(
+            found,
+            [
+                Condition::greater_equal("testDateTime", stamp("2026-10-01T05:00:00Z")),
+                Condition::less_equal("testDateTime", stamp("2026-10-01T23:00:00Z")),
+            ]
+        );
     }
 
     #[test]

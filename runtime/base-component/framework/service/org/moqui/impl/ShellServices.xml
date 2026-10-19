@@ -25,8 +25,10 @@ along with this software (see the LICENSE.md file). If not, see
             when the theme has no such value, and when the service is missing, fails or answers no map, which is logged once
             per service name. Another user's counts only with authorization disabled (internal work).
 
-            The counts service takes userId and answers counts, a map the shell reads by key (IronStone: today, chat, mail,
-            notifications and their parts); the framework sends it as it is.</description>
+            The counts service takes userId and answers counts, a map the shell reads by key: today, chat, email (external
+            mail unread), messages (internal messages and the mailbox posts delivered to the Inbox), notifications (unviewed
+            in the NinNotifications inbox and approvals waiting), approvals and updates (unviewed in NinUpdates, which no
+            header badge shows), each a number or a map with a total; the framework sends it as it is.</description>
         <in-parameters><parameter name="userId"><description>Default the current user</description></parameter></in-parameters>
         <out-parameters><parameter name="counts" type="Map"/></out-parameters>
     </service>

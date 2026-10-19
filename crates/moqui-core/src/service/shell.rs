@@ -89,6 +89,11 @@ fn first_failure(service: &str) -> bool {
 /// The counts of `user_id`: the `counts` map of the service the user's qapps theme names in `STRT_SHELL_COUNTS_SERVICE`
 /// (the theme as a render finds it, else `DEFAULT_QUASAR`), called with `userId`. None when the theme names no service,
 /// and when the service is missing, fails or answers no map, which is logged once per service name.
+///
+/// The service is called with authorization disabled: the theme data that names it is trusted, it reads only that user's
+/// rows, and no app's authorization covers it (the webroot transitions are not under an app root). So this is only for
+/// the current user's counts, or for internal work; `get#ShellCounts` refuses another user's to a caller with
+/// authorization on.
 pub(crate) fn shell_counts(user_id: &str) -> Option<IndexMap<String, Value>> {
     let theme = user_theme_id(Some(user_id), QUASAR_THEME_TYPE, DEFAULT_QUASAR_THEME);
     let service = match theme_resource_values(&theme, COUNTS_SERVICE) {
@@ -105,6 +110,7 @@ pub(crate) fn shell_counts(user_id: &str) -> Option<IndexMap<String, Value>> {
         None
     };
     let parameters = BTreeMap::from([("userId".to_string(), Value::string(user_id))]);
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
     match call_tolerant(&service, &parameters) {
         Ok(out) => match out.get("counts") {
             Some(Value::Map(counts)) => Some(counts.clone()),
@@ -382,6 +388,7 @@ fn send_counts(factory: &Arc<ExecutionContextFactory>, user_id: &str) {
         let ctx = factory.new_context();
         let _entered = ctx.enter();
         let _authz = ctx.disable_authz();
+        use_user_locale(user_id);
         let Some(counts) = shell_counts(user_id) else {
             return Ok(());
         };
@@ -401,6 +408,36 @@ fn send_counts(factory: &Arc<ExecutionContextFactory>, user_id: &str) {
             super::pool::panic_text(payload.as_ref())
         ),
     }
+}
+
+/// The time zone and locale of `user_id`'s `UserAccount` for the current context, as a login sets them, so the day
+/// boundaries of the counts (`ec.user.nowTimestamp`, "today") and their formatting are the user's, not the server's.
+/// The sender's context has no session of its own; a user without them keeps the server's, as after a login.
+fn use_user_locale(user_id: &str) {
+    let account = ExecutionContext::with_current(|ec| ec.factory().entity())
+        .flatten()
+        .map(|facade| {
+            facade
+                .find("moqui.security.UserAccount")?
+                .eq("userId", Value::string(user_id))
+                .one()
+        });
+    let account = match account {
+        Some(Ok(Some(account))) => account,
+        Some(Err(err)) => {
+            tracing::warn!("Could not read the time zone of user {user_id} for the shell counts: {err}");
+            return;
+        }
+        _ => return,
+    };
+    let field = |name: &str| {
+        account
+            .get(name)
+            .map(to_plain_string)
+            .filter(|text| !text.trim().is_empty())
+    };
+    crate::user::session::set_locale(field("locale").as_deref());
+    crate::user::session::set_time_zone(field("timeZone").as_deref());
 }
 
 #[cfg(test)]

@@ -52,6 +52,7 @@ fn postgres_backend_sales_and_party_parity() {
 
     sales_parity(&backend);
     party_parity(&backend);
+    child_dates_as_text_parity(&backend);
     phrase_parity(&backend);
     extensions_parity(&backend);
     universal_parity(&backend);
@@ -87,6 +88,7 @@ fn opensearch_backend_sales_and_party_parity() {
     let backend = moqui_core::search::opensearch::OpenSearchBackend::new(&conf);
     sales_parity(&backend);
     party_parity(&backend);
+    child_dates_as_text_parity(&backend);
     phrase_parity(&backend);
     extensions_parity(&backend);
     universal_parity(&backend);
@@ -715,6 +717,101 @@ fn party_parity(backend: &dyn SearchBackend) {
     assert_eq!(page.total, 4);
 
     backend.drop_index(&product).unwrap();
+    backend.drop_index(&mapping).unwrap();
+}
+
+/// Child-list dates as `index#DataDocuments` in JavaScript sends them: epoch-millis text (a script sees a timestamp as
+/// its millis). A range and an exists test inside the child list compare them as times; on Postgres the text once went
+/// into the body as it was and the `timestamptz` cast of a query failed ("date/time field value out of range").
+fn child_dates_as_text_parity(backend: &dyn SearchBackend) {
+    let mut mapping = party_mapping();
+    mapping.document_id = "TestChildDates".into();
+    mapping.physical_name = "test_child_dates".into();
+    backend.ensure_index(&mapping).unwrap();
+    let millis = |text: &str| text.parse::<jiff::Timestamp>().unwrap().as_millisecond().to_string();
+    let class = |id: &str, from: &str, thru: Option<&str>| {
+        let mut body = doc(vec![
+            ("partyClassificationId", Value::string(id)),
+            ("classFromDate", Value::string(millis(from))),
+        ]);
+        if let Some(thru) = thru {
+            body.insert("classThruDate".into(), Value::string(millis(thru)));
+        }
+        body
+    };
+    let party = |id: &str, classes: Vec<Document>| {
+        (
+            id.to_string(),
+            doc(vec![("partyId", Value::string(id)), ("classifications", list(classes))]),
+        )
+    };
+    backend
+        .index_documents(
+            &mapping,
+            &[
+                party("C1", vec![class("CustVip", "2025-01-01T00:00:00Z", None)]),
+                party(
+                    "C2",
+                    vec![class("CustVip", "2025-01-01T00:00:00Z", Some("2025-06-01T00:00:00Z"))],
+                ),
+                party("C3", vec![class("CustRetail", "2026-03-01T00:00:00Z", None)]),
+            ],
+        )
+        .unwrap();
+    let mappings = vec![Arc::new(mapping.clone())];
+    let ids = |query: Query| -> Vec<String> {
+        let page = backend.search(&mappings, &SearchRequest::new(query)).unwrap();
+        let mut ids: Vec<String> = page.hits.iter().map(|hit| hit.id.clone()).collect();
+        ids.sort();
+        ids
+    };
+    let text = |text: &str| parse_query_string(text).unwrap();
+    let nested = |json: &str| {
+        Query::child(
+            "classifications",
+            moqui_core::search::es_json::from_es(&Value::string(json)).unwrap(),
+        )
+    };
+    let name = backend.name();
+    // A range inside the child list, by a date and by epoch millis.
+    assert_eq!(
+        ids(text("classifications.classFromDate:[2024-12-31 TO 2025-01-02]")),
+        vec!["C1", "C2"],
+        "{name}"
+    );
+    let june = millis("2025-06-01T00:00:00Z");
+    assert_eq!(
+        ids(nested(&format!(
+            r#"{{"range":{{"classifications.classThruDate":{{"lte":{june}}}}}}}"#
+        ))),
+        vec!["C2"],
+        "{name}"
+    );
+    // Exists and not exists of a child date.
+    assert_eq!(
+        ids(text("_exists_:classifications.classThruDate")),
+        vec!["C2"],
+        "{name}"
+    );
+    assert_eq!(
+        ids(nested(
+            r#"{"bool":{"must_not":[{"exists":{"field":"classifications.classThruDate"}}]}}"#
+        )),
+        vec!["C1", "C3"],
+        "{name}"
+    );
+    // The current classification of one element: from on or before now, thru after now or none.
+    let now = jiff::Timestamp::now().as_millisecond();
+    assert_eq!(
+        ids(nested(&format!(
+            r#"{{"bool":{{"filter":[{{"range":{{"classifications.classFromDate":{{"lte":{now}}}}}}}],"should":[
+                {{"range":{{"classifications.classThruDate":{{"gte":{now}}}}}}},
+                {{"bool":{{"must_not":[{{"exists":{{"field":"classifications.classThruDate"}}}}]}}}}
+            ],"minimum_should_match":1}}}}"#
+        ))),
+        vec!["C1", "C3"],
+        "{name}"
+    );
     backend.drop_index(&mapping).unwrap();
 }
 

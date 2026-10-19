@@ -34,16 +34,20 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.basic.email.EmailTemplate emailTemplateId="NOTIFICATION" description="Default Notification" emailServerId="SYSTEM"
             emailTypeEnumId="EMT_NOTIFICATION" bodyScreenLocation="classpath://screen/NotificationEmail.xml" webappName="webroot"
             fromAddress="" fromName="" ccAddresses="" bccAddresses="" subject="${title}" sendPartial="Y"/>
+    <!-- EmailTemplate for the daily notification digest (org.moqui.impl.NotificationServices.send#NotificationDigests) -->
+    <moqui.basic.email.EmailTemplate emailTemplateId="NOTIFICATION_DIGEST" description="Notification Digest" emailServerId="SYSTEM"
+            emailTypeEnumId="EMT_NOTIFICATION_DIGEST" bodyScreenLocation="classpath://screen/NotificationDigestEmail.xml" webappName="webroot"
+            fromAddress="" fromName="" ccAddresses="" bccAddresses="" subject="Your notifications (${notificationCount})" sendPartial="Y"/>
     <!-- EmailTemplate for rendered screens (reports, etc) -->
     <moqui.basic.email.EmailTemplate emailTemplateId="SCREEN_RENDER" description="Default Screen Render" emailServerId="SYSTEM"
             emailTypeEnumId="EMT_SCREEN_RENDER" bodyScreenLocation="classpath://screen/ScreenRenderEmail.xml" webappName="webroot"
             fromAddress="" fromName="" ccAddresses="" bccAddresses="" subject="${title}" sendPartial="Y"/>
 
     <!-- Web Servlet Errors NotificationTopic -->
-    <moqui.security.user.NotificationTopic topic="WebServletError" description="Web Servlet Error"
+    <moqui.security.user.NotificationTopic topic="WebServletError" inboxEnumId="NinUpdates" description="Web Servlet Error"
             typeString="danger" showAlert="Y" persistOnSend="Y" receiveNotifications="N" isPrivate="Y" emailTemplateId="NOTIFICATION"
             titleTemplate="Web Error ${errorCode || ''} (${username || 'no user'}) ${path || ''} ${message || 'N/A'}"/>
-    <moqui.security.user.NotificationTopic topic="ServiceJobError" description="Service Job Error"
+    <moqui.security.user.NotificationTopic topic="ServiceJobError" inboxEnumId="NinUpdates" description="Service Job Error"
             typeString="danger" showAlert="Y" persistOnSend="Y" receiveNotifications="N" isPrivate="Y" emailTemplateId="NOTIFICATION"
             titleTemplate="Job Error ${serviceCallRun.jobName || ''} [${serviceCallRun.jobRunId || ''}] ${serviceCallRun.errors || 'N/A'}"
             linkTemplate="/qapps/System/ServiceJob/JobRuns/JobRunDetail?jobRunId=${serviceCallRun.jobRunId}"/>
@@ -104,12 +108,19 @@ along with this software (see the LICENSE.md file). If not, see
         <parameters parameterName="emailServerId" parameterValue="SYSTEM"/>
     </moqui.service.job.ServiceJob>
 
+    <!-- The daily notification digest: one email per user of the unviewed notifications on the topics they get as a digest
+         (NotificationTopicUser.digest, NotificationTopic.digestDefault); with no such topic or user it sends nothing -->
+    <moqui.service.job.ServiceJob jobName="send_NotificationDigests_daily" description="Send the daily notification digests"
+            serviceName="org.moqui.impl.NotificationServices.send#NotificationDigests" cronExpression="0 0 6 * * ?" paused="N">
+        <parameters parameterName="hours" parameterValue="24"/>
+    </moqui.service.job.ServiceJob>
+
     <!-- Render ScheduledScreens -->
     <moqui.service.job.ServiceJob jobName="render_ScheduledScreens_frequent" description="Render Scheduled Screens"
             serviceName="org.moqui.impl.ScreenServices.render#ScheduledScreens" cronExpression="0 0/15 * * * ?" paused="N"/>
 
     <!-- Service Job: Index DataFeed Documents -->
-    <moqui.security.user.NotificationTopic topic="IndexDataFeedDocuments" description="Index DataFeed Documents Completed"
+    <moqui.security.user.NotificationTopic topic="IndexDataFeedDocuments" inboxEnumId="NinUpdates" description="Index DataFeed Documents Completed"
             typeString="success" showAlert="Y" persistOnSend="Y" receiveNotifications="Y"
             titleTemplate="Index Documents Completed for DataFeed ${parameters.dataFeedId}, indexed ${results.documentsIndexed} documents"
             errorTitleTemplate="Error in Index Documents for DataFeed ${parameters.dataFeedId}"
@@ -123,7 +134,7 @@ along with this software (see the LICENSE.md file). If not, see
             transactionTimeout="3600"/>
 
     <!-- Service Job: Export and Import Entity Data Snapshot -->
-    <moqui.security.user.NotificationTopic topic="ExportEntityDataSnapshot" description="Export Entity Data Snapshot Completed"
+    <moqui.security.user.NotificationTopic topic="ExportEntityDataSnapshot" inboxEnumId="NinUpdates" description="Export Entity Data Snapshot Completed"
             typeString="success" showAlert="Y" persistOnSend="Y" receiveNotifications="Y" isPrivate="Y" emailTemplateId="NOTIFICATION"
             titleTemplate="Exported ${results.recordsWritten} records to Entity Data Snapshot ${parameters.baseFilename}"
             errorTitleTemplate="Error in export of entity data snapshot ${parameters.baseFilename}"
@@ -131,7 +142,7 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.service.job.ServiceJob jobName="ExportEntityDataSnapshot" description="Export Entity Data Snapshot"
             serviceName="org.moqui.impl.EntityServices.export#EntityDataSnapshot" topic="ExportEntityDataSnapshot"
             transactionTimeout="3600"/>
-    <moqui.security.user.NotificationTopic topic="ImportEntityDataSnapshot" description="Import Entity Data Snapshot Completed"
+    <moqui.security.user.NotificationTopic topic="ImportEntityDataSnapshot" inboxEnumId="NinUpdates" description="Import Entity Data Snapshot Completed"
             typeString="success" showAlert="Y" persistOnSend="Y" receiveNotifications="Y" isPrivate="Y" emailTemplateId="NOTIFICATION"
             titleTemplate="Imported ${results.recordsLoaded} records from Entity Data Snapshot ${parameters.zipFilename}"
             errorTitleTemplate="Error in import of entity data snapshot ${parameters.zipFilename}"

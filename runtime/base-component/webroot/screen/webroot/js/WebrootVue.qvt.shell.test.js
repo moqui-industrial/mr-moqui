@@ -277,10 +277,16 @@ test("the root's shell: the current app and its title, the + menu, the account m
     assert.deepEqual(vm.trayTabs, []);
     assert.deepEqual(vm.headerCounters, []);
     vm.shellData = { apps, shell: { trayToday: "/qapps/Commons/Panel/Today", trayChat: null, trayNotifications: "/qapps/Commons/Panel/Notifications",
-        inboxScreen: "/qapps/Comms/Inbox", quickCreate: "/qapps/Commons/QuickCreate" }, counts: { today: 3, mail: { total: 120 }, notifications: 0 } };
+        mailScreen: "/qapps/Comms/Inbox", messagesScreen: "/qapps/Comms/Messages", quickCreate: "/qapps/Commons/QuickCreate" },
+        counts: { today: 3, email: { total: 120 }, messages: 2, notifications: 0, updates: 7 } };
     vm.shellCounts = vm.shellData.counts;
     assert.equal(vm.currentApp.name, "gallery");
     assert.equal(vm.headerTitle, "Gallery");
+    // the breadcrumbs start below the app root, whose title the header shows; outside an app, below the apps root
+    assert.equal(vm.breadcrumbStart, 2);
+    vm.currentPathList = ["AppList"];
+    assert.equal(vm.breadcrumbStart, 1);
+    vm.currentPathList = ["gallery", "Detail"];
     // the current app's kinds first; a kind that needs a record only with one in context
     assert.deepEqual(vm.quickCreateItems.map((item) => item.label), ["Gallery note", "Task"]);
     assert.deepEqual(vm.currentAppQuickCreate.map((item) => item.label), ["Gallery note"]);
@@ -291,11 +297,24 @@ test("the root's shell: the current app and its title, the + menu, the account m
     assert.deepEqual(vm.paletteActions.map((action) => action.title), ["Open the widget gallery", "New event"]);
     // the tray: a tab for each screen the theme names, loaded from /apps; the counters in the header's order
     assert.deepEqual(vm.trayTabs.map((tab) => [tab.key, tab.loadUrl]), [["today", "/apps/Commons/Panel/Today"], ["notifications", "/apps/Commons/Panel/Notifications"]]);
-    assert.deepEqual(vm.headerCounters.map((counter) => [counter.key, counter.tray]), [["today", true], ["mail", false], ["notifications", true]]);
+    assert.deepEqual(vm.headerCounters.map((counter) => [counter.key, counter.tray, counter.url || null]), [["today", true, null],
+        ["email", false, "/qapps/Comms/Inbox"], ["messages", false, "/qapps/Comms/Messages"], ["notifications", true, null]]);
     assert.equal(vm.countOf("today"), 3);
-    assert.equal(vm.countText("mail"), "99+");
+    assert.equal(vm.countText("email"), "99+");
+    assert.deepEqual(vm.headerCounters.map((counter) => vm.counterText(counter)), ["3", "99+", "2", "0"]);
     assert.equal(vm.countOf("notifications"), 0);
     assert.equal(vm.countOf("chat"), 0);
+    // below 600 px Mail and Messages are one button to the mail screen with the counts summed; the updates have no button
+    vm.$q = { screen: { lt: { sm: true } } };
+    vm.shellCounts = { email: 3, messages: 2 };
+    assert.deepEqual(vm.headerCounters.map((counter) => counter.key), ["today", "mail", "notifications"]);
+    assert.equal(vm.counterText(vm.headerCounters[1]), "5");
+    assert.equal(vm.headerCounters[1].url, "/qapps/Comms/Inbox");
+    vm.shellData.shell.mailScreen = null;
+    assert.deepEqual(vm.headerCounters.map((counter) => counter.key), ["today", "messages", "notifications"], "Messages alone stays");
+    vm.shellData.shell.mailScreen = "/qapps/Comms/Inbox";
+    delete vm.$q;
+    vm.shellCounts = vm.shellData.counts;
     // the tray opens on a tab it has, keeps it loaded, and closes; Esc closes it when no dialog or menu is open
     vm.openTray("chat");
     assert.equal(vm.trayOpen, false);

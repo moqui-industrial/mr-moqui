@@ -148,6 +148,16 @@ section.box > header h5 { margin: 0; font-size: 1rem; }
 section.box > header .toolbar { margin-left: auto; }
 section.box > .body { padding: 8px 10px; }
 section.box > .body-nopad > table { margin: 0; }
+/* dashboard and number-card: a grid of columns at least --dashboard-min wide; an empty cell takes no room */
+.dashboard { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--dashboard-min, 200px), 100%), 1fr)); gap: 12px; margin: 8px 0; }
+.dashboard-item:empty { display: none; } .dashboard-item.dashboard-each { display: contents; }
+.number-card { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); color: inherit; text-decoration: none; }
+a.number-card:hover, a.number-card:focus-visible { border-color: var(--primary); }
+.number-card-title { font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.number-card-value { font-size: 1.5rem; font-weight: 500; }
+.number-card[data-size="sm"] .number-card-value { font-size: 1.25rem; } .number-card[data-size="lg"] .number-card-value { font-size: 2rem; }
+.number-card-delta { font-size: .8rem; color: var(--muted); }
+.number-card-delta[data-tone="good"] { color: var(--success); } .number-card-delta[data-tone="bad"] { color: var(--danger); }
 section.box[data-type="primary"] > header { background: var(--primary); color: #fff; }
 section.box[data-type="info"] > header { background: var(--info); color: #fff; }
 section.box[data-type="success"] > header { background: var(--success); color: #fff; }

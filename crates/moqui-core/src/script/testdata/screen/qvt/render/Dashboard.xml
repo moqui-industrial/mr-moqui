@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen require-authentication="false">
+    <actions>
+        <set field="openCount" from="42"/>
+        <set field="lateCount" from="3"/>
+        <set field="showHidden" from="false"/>
+    </actions>
+    <widgets>
+        <dashboard id="Counters" min-width="160" style="counters">
+            <number-card title="Open orders" value="${openCount}" delta="+3" icon="sym_o_receipt_long" link="Orders?statusId=Open"/>
+            <number-card title="Late shipments" value="${lateCount}" delta="+1" delta-good="down" size="lg" link="https://example.com/late"/>
+            <number-card title="Hidden" value="0" condition="showHidden"/>
+            <number-card id="Revenue" title="Revenue {{x}} &amp; more" value="$1,200" delta="-5%" icon="fa fa-dollar" size="sm" style="wide"/>
+            <label text="not a card"/>
+        </dashboard>
+        <dashboard><number-card title="Plain" value="7"/></dashboard>
+        <link url="Orders?statusId=Open&amp;sort=-date" text="All open" link-type="anchor"/>
+    </widgets>
+</screen>

@@ -262,3 +262,19 @@ span.hover-image-container img.hover-image { position: absolute; display: none; 
 span.hover-image-container:hover img.hover-image { display: initial; margin: 10px 0 0 5px; }
 .editable-label { border-bottom: 1px dashed currentColor; }
 .markdown-preview { border: 1px solid rgba(0,0,0,0.12); margin-top: 4px; }
+
+/* dashboard and number-card (style-guide §3.1, §8.2): a grid of columns at least --m-dashboard-min wide, as many as fit; a
+   cell whose widget wrote nothing takes no room. Two cards a row on a phone with min-width 150. */
+.m-dashboard { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(var(--m-dashboard-min, 200px), 100%), 1fr)); gap:12px; margin:8px 0; }
+.m-dashboard-item { min-width:0; }
+.m-dashboard-item:empty { display:none; }
+.m-dashboard-item.m-dashboard-each { display:contents; }
+.m-number-card-wrap { display:block; height:100%; color:inherit; text-decoration:none; }
+.m-number-card { height:100%; }
+.m-number-card-body { min-width:0; }
+.m-number-card-title { line-height:1.4; opacity:0.75; }
+.m-number-card-value { line-height:1.25; font-weight:500; overflow-wrap:anywhere; }
+.m-number-card-icon { opacity:0.6; margin-left:8px; }
+.m-number-card-link .m-number-card { transition:border-color .2s; }
+.m-number-card-link:hover .m-number-card, .m-number-card-link:focus-visible .m-number-card { border-color:var(--q-primary); }
+.m-number-card-link:focus-visible { outline:none; }

@@ -116,6 +116,10 @@ table.panel { border: 1px solid black; }
 .page-break-after { break-after: page; page-break-after: always; }
 .no-break { break-inside: avoid; page-break-inside: avoid; }
 a { color: blue; }
+.dashboard { margin: 4pt 0; }
+.number-card { display: inline-block; vertical-align: top; min-width: 90pt; margin: 0 6pt 6pt 0; padding: 4pt 6pt; border: thin solid #999999; break-inside: avoid; }
+.number-card-title { font-size: 7pt; text-transform: uppercase; letter-spacing: 0.5pt; }
+.number-card-value { font-size: 14pt; font-weight: bold; }
 `;
 
     const widgetsMacro = stmt((node, children) => {
@@ -154,6 +158,24 @@ a { color: blue; }
             sri.write("<div>");
             ${anchor}
             sri.write("</div>\\n");
+        `;
+        return condition ? js`
+            if (${raw(condition)}) {
+                ${body}
+            }
+        ` : body;
+    });
+
+    // A number-card printed as its title, value and delta in a small bordered box; the boxes of a dashboard flow in rows.
+    const numberCardMacro = stmt((node) => {
+        const condition = attr(node, "condition");
+        const body = js`
+            {
+                const $delta = String(${S.expandNoL10nExpr(attr(node, "delta") || "")}).trim();
+                sri.write("<div class=\\"number-card\\"><div class=\\"number-card-title\\">" + $e(${expandExpr(attr(node, "title") || "")}) +
+                    "</div><div class=\\"number-card-value\\">" + $e(${S.expandNoL10nExpr(attr(node, "value") || "")}) + "</div>" +
+                    ($delta ? "<div>" + $e($delta) + "</div>" : "") + "</div>\\n");
+            }
         `;
         return condition ? js`
             if (${raw(condition)}) {
@@ -360,6 +382,8 @@ a { color: blue; }
         "link": linkMacro,
         "image": imageMacro,
         "label": labelMacro,
+        "number-card": numberCardMacro,
+        "dashboard": stmt((node, children) => `sri.write("<div class=\\"dashboard\\">");\n${children}sri.write("</div>\\n");\n`),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

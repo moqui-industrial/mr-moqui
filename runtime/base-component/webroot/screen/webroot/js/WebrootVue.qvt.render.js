@@ -1754,7 +1754,67 @@
               ], 4))
             }
         } },
-        "m-qapps-root": { hash: "dee98cb2", make: function (Vue) {
+        "m-number-card": { hash: "6622601f", make: function (Vue) {
+            const { toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, normalizeClass: _normalizeClass, resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createBlock: _createBlock, withCtx: _withCtx, resolveDynamicComponent: _resolveDynamicComponent } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_icon = _resolveComponent("q-icon")
+              const _component_m_menu_icon = _resolveComponent("m-menu-icon")
+              const _component_q_card_section = _resolveComponent("q-card-section")
+              const _component_q_card = _resolveComponent("q-card")
+
+              return (_openBlock(), _createBlock(_resolveDynamicComponent(_ctx.wrapper), {
+                href: _ctx.href || undefined,
+                class: _normalizeClass(["m-number-card-wrap", {'m-number-card-link': !!_ctx.href}])
+              }, {
+                default: _withCtx(() => [
+                  _createVNode(_component_q_card, {
+                    flat: "",
+                    bordered: "",
+                    class: _normalizeClass(["m-number-card", 'm-number-card-' + _ctx.size])
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_q_card_section, { class: "row no-wrap items-start q-pa-md" }, {
+                        default: _withCtx(() => [
+                          _createElementVNode("div", { class: "col m-number-card-body" }, [
+                            _createElementVNode("div", { class: "text-overline m-number-card-title ellipsis" }, _toDisplayString(_ctx.title), 1),
+                            _createElementVNode("div", {
+                              class: _normalizeClass(["m-number-card-value", _ctx.valueClass])
+                            }, _toDisplayString(_ctx.shownValue), 3),
+                            (_ctx.deltaInfo)
+                              ? (_openBlock(), _createElementBlock("div", {
+                                  key: 0,
+                                  class: _normalizeClass(["text-caption row no-wrap items-center m-number-card-delta", _ctx.deltaClass])
+                                }, [
+                                  _createVNode(_component_q_icon, {
+                                    name: _ctx.deltaInfo.icon,
+                                    size: "xs",
+                                    class: "q-mr-xs"
+                                  }, null, 8, ["name"]),
+                                  _createElementVNode("span", null, _toDisplayString(_ctx.delta), 1)
+                                ], 2))
+                              : _createCommentVNode("", true)
+                          ]),
+                          (_ctx.icon)
+                            ? (_openBlock(), _createBlock(_component_m_menu_icon, {
+                                key: 0,
+                                name: _ctx.icon,
+                                size: "sm",
+                                class: "m-number-card-icon"
+                              }, null, 8, ["name"]))
+                            : _createCommentVNode("", true)
+                        ]),
+                        _: 1
+                      })
+                    ]),
+                    _: 1
+                  }, 8, ["class"])
+                ]),
+                _: 1
+              }, 8, ["href", "class"]))
+            }
+        } },
+        "m-qapps-root": { hash: "dd0727b3", make: function (Vue) {
             const { resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, renderList: _renderList, Fragment: _Fragment, createElementVNode: _createElementVNode, normalizeClass: _normalizeClass, resolveDirective: _resolveDirective, withDirectives: _withDirectives, resolveDynamicComponent: _resolveDynamicComponent, withModifiers: _withModifiers } = Vue
 
             return function render(_ctx, _cache) {
@@ -1915,6 +1975,7 @@
                                 }))
                               : _createCommentVNode("", true),
                             _createVNode(_component_q_breadcrumbs, {
+                              id: "m-breadcrumbs",
                               class: "gt-xs",
                               gutter: "xs",
                               "separator-color": "grey-5",
@@ -1925,92 +1986,96 @@
                                   return (_openBlock(), _createElementBlock(_Fragment, {
                                     key: navMenuItem.path || menuIndex
                                   }, [
-                                    (menuIndex === _ctx.navMenuList.length - 1)
-                                      ? (_openBlock(), _createBlock(_component_q_breadcrumbs_el, {
-                                          key: 0,
-                                          label: navMenuItem.title,
-                                          class: "text-weight-medium"
-                                        }, null, 8, ["label"]))
-                                      : (navMenuItem.subscreens && navMenuItem.subscreens.length && !navMenuItem.hasTabMenu)
-                                        ? (_openBlock(), _createBlock(_component_q_breadcrumbs_el, {
-                                            key: 1,
-                                            class: "cursor-pointer"
-                                          }, {
-                                            default: _withCtx(() => [
-                                              _createTextVNode(_toDisplayString(navMenuItem.title), 1),
-                                              _createVNode(_component_q_icon, {
-                                                name: "arrow_drop_down",
-                                                size: "xs"
-                                              }),
-                                              _createVNode(_component_q_menu, {
-                                                anchor: "bottom left",
-                                                self: "top left"
-                                              }, {
-                                                default: _withCtx(() => [
-                                                  _createVNode(_component_q_list, {
-                                                    dense: "",
-                                                    style: {"min-width":"200px"}
-                                                  }, {
-                                                    default: _withCtx(() => [
-                                                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(navMenuItem.subscreens, (subscreen) => {
-                                                        return _withDirectives((_openBlock(), _createBlock(_component_q_item, {
-                                                          key: subscreen.name,
-                                                          clickable: "",
-                                                          active: subscreen.active,
-                                                          "active-class": "text-primary text-weight-medium",
-                                                          to: subscreen.pathWithParams
+                                    (menuIndex >= _ctx.breadcrumbStart)
+                                      ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                                          (menuIndex === _ctx.navMenuList.length - 1)
+                                            ? (_openBlock(), _createBlock(_component_q_breadcrumbs_el, {
+                                                key: 0,
+                                                label: navMenuItem.title,
+                                                class: "text-weight-medium"
+                                              }, null, 8, ["label"]))
+                                            : (navMenuItem.subscreens && navMenuItem.subscreens.length && !navMenuItem.hasTabMenu)
+                                              ? (_openBlock(), _createBlock(_component_q_breadcrumbs_el, {
+                                                  key: 1,
+                                                  class: "cursor-pointer"
+                                                }, {
+                                                  default: _withCtx(() => [
+                                                    _createTextVNode(_toDisplayString(navMenuItem.title), 1),
+                                                    _createVNode(_component_q_icon, {
+                                                      name: "arrow_drop_down",
+                                                      size: "xs"
+                                                    }),
+                                                    _createVNode(_component_q_menu, {
+                                                      anchor: "bottom left",
+                                                      self: "top left"
+                                                    }, {
+                                                      default: _withCtx(() => [
+                                                        _createVNode(_component_q_list, {
+                                                          dense: "",
+                                                          style: {"min-width":"200px"}
                                                         }, {
                                                           default: _withCtx(() => [
-                                                            _createVNode(_component_q_item_section, { avatar: "" }, {
-                                                              default: _withCtx(() => [
-                                                                (subscreen.image && subscreen.imageType === 'icon')
-                                                                  ? (_openBlock(), _createBlock(_component_m_menu_icon, {
-                                                                      key: 0,
-                                                                      name: subscreen.image,
-                                                                      size: "xs"
-                                                                    }, null, 8, ["name"]))
-                                                                  : (subscreen.image)
-                                                                    ? (_openBlock(), _createElementBlock("img", {
-                                                                        key: 1,
-                                                                        src: subscreen.image,
-                                                                        alt: subscreen.title,
-                                                                        width: "18",
-                                                                        class: "invertible"
-                                                                      }, null, 8, ["src", "alt"]))
-                                                                    : (_openBlock(), _createBlock(_component_q_icon, {
-                                                                        key: 2,
-                                                                        name: "chevron_right",
-                                                                        size: "xs"
-                                                                      }))
-                                                              ]),
-                                                              _: 2
-                                                            }, 1024),
-                                                            _createVNode(_component_q_item_section, null, {
-                                                              default: _withCtx(() => [
-                                                                _createTextVNode(_toDisplayString(subscreen.title), 1)
-                                                              ]),
-                                                              _: 2
-                                                            }, 1024)
+                                                            (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(navMenuItem.subscreens, (subscreen) => {
+                                                              return _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                                                                key: subscreen.name,
+                                                                clickable: "",
+                                                                active: subscreen.active,
+                                                                "active-class": "text-primary text-weight-medium",
+                                                                to: subscreen.pathWithParams
+                                                              }, {
+                                                                default: _withCtx(() => [
+                                                                  _createVNode(_component_q_item_section, { avatar: "" }, {
+                                                                    default: _withCtx(() => [
+                                                                      (subscreen.image && subscreen.imageType === 'icon')
+                                                                        ? (_openBlock(), _createBlock(_component_m_menu_icon, {
+                                                                            key: 0,
+                                                                            name: subscreen.image,
+                                                                            size: "xs"
+                                                                          }, null, 8, ["name"]))
+                                                                        : (subscreen.image)
+                                                                          ? (_openBlock(), _createElementBlock("img", {
+                                                                              key: 1,
+                                                                              src: subscreen.image,
+                                                                              alt: subscreen.title,
+                                                                              width: "18",
+                                                                              class: "invertible"
+                                                                            }, null, 8, ["src", "alt"]))
+                                                                          : (_openBlock(), _createBlock(_component_q_icon, {
+                                                                              key: 2,
+                                                                              name: "chevron_right",
+                                                                              size: "xs"
+                                                                            }))
+                                                                    ]),
+                                                                    _: 2
+                                                                  }, 1024),
+                                                                  _createVNode(_component_q_item_section, null, {
+                                                                    default: _withCtx(() => [
+                                                                      _createTextVNode(_toDisplayString(subscreen.title), 1)
+                                                                    ]),
+                                                                    _: 2
+                                                                  }, 1024)
+                                                                ]),
+                                                                _: 2
+                                                              }, 1032, ["active", "to"])), [
+                                                                [_directive_close_popup]
+                                                              ])
+                                                            }), 128))
                                                           ]),
                                                           _: 2
-                                                        }, 1032, ["active", "to"])), [
-                                                          [_directive_close_popup]
-                                                        ])
-                                                      }), 128))
-                                                    ]),
-                                                    _: 2
-                                                  }, 1024)
-                                                ]),
-                                                _: 2
-                                              }, 1024)
-                                            ]),
-                                            _: 2
-                                          }, 1024))
-                                        : (_openBlock(), _createBlock(_component_q_breadcrumbs_el, {
-                                            key: 2,
-                                            label: navMenuItem.title,
-                                            to: _ctx.getNavHref(menuIndex)
-                                          }, null, 8, ["label", "to"]))
+                                                        }, 1024)
+                                                      ]),
+                                                      _: 2
+                                                    }, 1024)
+                                                  ]),
+                                                  _: 2
+                                                }, 1024))
+                                              : (_openBlock(), _createBlock(_component_q_breadcrumbs_el, {
+                                                  key: 2,
+                                                  label: navMenuItem.title,
+                                                  to: _ctx.getNavHref(menuIndex)
+                                                }, null, 8, ["label", "to"]))
+                                        ], 64))
+                                      : _createCommentVNode("", true)
                                   ], 64))
                                 }), 128))
                               ]),
@@ -2119,7 +2184,7 @@
                                 onClick: $event => (counter.tray ? _ctx.toggleTray(counter.key) : _ctx.setUrl(counter.url))
                               }, {
                                 default: _withCtx(() => [
-                                  (_ctx.countOf(counter.key))
+                                  (_ctx.counterCount(counter))
                                     ? (_openBlock(), _createBlock(_component_q_badge, {
                                         key: 0,
                                         floating: "",
@@ -2127,7 +2192,7 @@
                                         color: "negative"
                                       }, {
                                         default: _withCtx(() => [
-                                          _createTextVNode(_toDisplayString(_ctx.countText(counter.key)), 1)
+                                          _createTextVNode(_toDisplayString(_ctx.counterText(counter)), 1)
                                         ]),
                                         _: 2
                                       }, 1024))

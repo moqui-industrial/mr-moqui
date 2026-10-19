@@ -21,7 +21,8 @@
 
 use indexmap::IndexMap;
 
-use crate::entity::document::{DocumentInfo, FieldNode};
+use crate::entity::document::{Document, DocumentInfo, FieldNode};
+use moqui_lib::object::Value;
 
 /// How a field is stored and matched.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -137,6 +138,64 @@ impl DisplayFields {
 
     /// The roles a field may have.
     pub const ROLES: [&'static str; 5] = ["title", "subtitle", "code", "category", "quality"];
+}
+
+impl ObjectMapping {
+    /// The date fields of a document as times, at the root and in each element of a child array: a number or digits are
+    /// epoch millis (how a script sees a timestamp, so `index#DataDocuments` in JavaScript sends them), and other text is
+    /// ISO-8601 or the Moqui `yyyy-MM-dd HH:mm:ss.SSS` form, read as UTC. Postgres stores a child element's date only in
+    /// the JSON body, where it must be text that casts to `timestamptz`; OpenSearch reads ISO-8601 as well. A
+    /// `yyyy-MM-dd` date and text that does not parse are left as they are.
+    pub fn type_dates(&self, body: &mut Document) {
+        for (name, field) in &self.fields {
+            if field.kind != FieldKind::Date {
+                continue;
+            }
+            if let Some(value) = body.get_mut(name) {
+                if let Some(at) = date_value(value) {
+                    *value = Value::Timestamp(at);
+                }
+            }
+        }
+        for (name, child) in &self.children {
+            match body.get_mut(name) {
+                Some(Value::List(items)) => {
+                    for item in items {
+                        if let Value::Map(element) = item {
+                            child.type_dates(element);
+                        }
+                    }
+                }
+                Some(Value::Map(element)) => child.type_dates(element),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn date_value(value: &Value) -> Option<jiff::Timestamp> {
+    let millis = |text: &str| {
+        text.parse::<i64>()
+            .ok()
+            .and_then(|millis| jiff::Timestamp::from_millisecond(millis).ok())
+    };
+    match value {
+        Value::I32(_) | Value::I64(_) | Value::F64(_) | Value::Decimal(_) => {
+            millis(moqui_lib::object::to_plain_string(value).split('.').next()?)
+        }
+        Value::String(text) => {
+            let text = text.trim();
+            let digits = text.strip_prefix('-').unwrap_or(text);
+            if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                millis(text)
+            } else if text.len() == 10 {
+                None
+            } else {
+                moqui_lib::object::parse_timestamp(text, &jiff::tz::TimeZone::UTC)
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Where a field name in a query lands.

@@ -282,3 +282,32 @@ test("an m-screen-context registers with the root, follows its props and leaves 
     // the canvas the reach list names is in the shell
     assert.match(qvt.components["m-qapps-root"].template, /<q-page-container id="m-canvas">/);
 });
+
+test("a number card's delta has the tone of its sign against delta-good, and the card is a link only with an href", () => {
+    const tone = (delta, good) => { const info = moqui.numberCardDelta(delta, good); return info ? [info.sign, info.tone, info.icon] : null; };
+    assert.deepEqual(tone("+3"), [1, "good", "sym_o_trending_up"]);
+    assert.deepEqual(tone("-12%"), [-1, "bad", "sym_o_trending_down"]);
+    assert.deepEqual(tone("−4"), [-1, "bad", "sym_o_trending_down"], "a minus sign");
+    assert.deepEqual(tone("7", "up"), [1, "good", "sym_o_trending_up"], "a number's own sign");
+    assert.deepEqual(tone("+3", "down"), [1, "bad", "sym_o_trending_up"], "more late shipments are bad");
+    assert.deepEqual(tone("-2 days", "down"), [-1, "good", "sym_o_trending_down"]);
+    assert.deepEqual(tone("0"), [0, "neutral", "sym_o_trending_flat"]);
+    assert.deepEqual(tone("steady"), [0, "neutral", "sym_o_trending_flat"]);
+    assert.equal(tone(""), null);
+    assert.equal(tone(null), null);
+    const card = qvt.components["m-number-card"];
+    const computed = (props) => {
+        const self = Object.assign({ deltaGood: "up", size: "md", external: false }, props);
+        Object.keys(card.computed).forEach((name) => Object.defineProperty(self, name, { get: () => card.computed[name].call(self) }));
+        return self;
+    };
+    assert.equal(computed({}).wrapper, "div");
+    assert.equal(computed({ href: "/apps/gallery/List" }).wrapper, "m-link");
+    assert.equal(computed({ href: "https://example.com", external: true }).wrapper, "a");
+    assert.equal(computed({ value: "" }).shownValue, "–");
+    assert.equal(computed({ value: 42 }).shownValue, "42");
+    assert.equal(computed({ size: "lg" }).valueClass, "text-h4");
+    assert.equal(computed({ delta: "+3", deltaGood: "down" }).deltaClass, "text-negative");
+    assert.equal(computed({ delta: "+3" }).deltaClass, "text-positive");
+    assert.equal(computed({ delta: "0" }).deltaClass, "m-muted");
+});

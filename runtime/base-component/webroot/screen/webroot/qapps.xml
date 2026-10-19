@@ -84,7 +84,7 @@ along with this software (see the LICENSE.md file). If not, see
                 // the suite shell: launcher, search and palette, quick create, the tray and its counts, the keys (js/README.md)
                 applications: ec.l10n.localize('Applications'), allApplications: ec.l10n.localize('All applications'), search: ec.l10n.localize('Search'),
                 quickCreate: ec.l10n.localize('Create'), quickCreateFirst: ec.l10n.localize('Create in this app'), today: ec.l10n.localize('Today'),
-                chat: ec.l10n.localize('Chat'), inbox: ec.l10n.localize('Inbox'), notifications: ec.l10n.localize('Notifications'), close: ec.l10n.localize('Close'),
+                chat: ec.l10n.localize('Chat'), mail: ec.l10n.localize('Mail'), messages: ec.l10n.localize('Messages'), notifications: ec.l10n.localize('Notifications'), close: ec.l10n.localize('Close'),
                 closeTopmost: ec.l10n.localize('Close the dialog, menu or panel'), keyboardShortcuts: ec.l10n.localize('Keyboard shortcuts'),
                 keysEverywhere: ec.l10n.localize('Everywhere'), recent: ec.l10n.localize('Recent'), screens: ec.l10n.localize('Screens'),
                 savedFinds: ec.l10n.localize('Saved finds'), actions: ec.l10n.localize('Actions'), more: ec.l10n.localize('More'),

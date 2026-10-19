@@ -48,6 +48,23 @@ feature("gallery screen #name renders in #mode without errors", {
     },
 })
 
+// The Landing counters are number cards in a dashboard, each a link into the List with its type filter.
+feature("the Landing counters are number cards in a dashboard that link to the filtered list", {
+    expect() {
+        const test = ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt")
+        const str = test.render("Landing", { lastStandalone: "-2" }, null)
+        const cards = str.output.match(/<m-number-card /g) || []
+        const linked = /<m-number-card title="[^"]+" value="[0-9,]+" href="\/[^"]*List\?enumTypeId=[A-Za-z]+"/.test(str.output)
+        str.status == 200
+        str.output.includes('<div class="m-dashboard" style="--m-dashboard-min:150px">')
+        str.output.includes('m-dashboard-each')
+        str.output.includes('<m-number-card title="All enumerations"')
+        cards.length == 6
+        linked
+        !str.output.includes("text-overline text-grey-6")
+    },
+})
+
 // The gallery's shell-providers (Gallery.xml) as the shell gets them from the shellData transition of the root screen, and its
 // palette source run by shellSearch; the Detail screen's context is an m-screen-context with the record.
 feature("the shell data has the gallery's providers, and its palette source finds enumerations", {

@@ -57,12 +57,9 @@ pub fn period_range(period: &str, offset: &str, basis: &str) -> Result<(Value, V
     Ok((stamp(from, &zone)?, stamp(thru, &zone)?))
 }
 
+/// The session time zone, else the server's, as Java's `ec.user.getCalendarSafe()`.
 fn zone() -> TimeZone {
-    super::session::time_zone()
-        .ok()
-        .flatten()
-        .and_then(|name| TimeZone::get(&name).ok())
-        .unwrap_or_else(TimeZone::system)
+    crate::l10n::time_zone()
 }
 
 fn stamp(date: Date, zone: &TimeZone) -> Result<Value, Error> {

@@ -635,12 +635,17 @@ fn insert_sql(table: &str, columns: &[InsertColumn<'_>], rows: usize, if_newer: 
 
 /// The parameters of one document's row, in the order of [`insert_sql`].
 fn push_insert_params(
+    mapping: &DocumentMapping,
     columns: &[InsertColumn<'_>],
     id: &str,
     at: Timestamp,
     body: &Document,
     out: &mut Vec<Value>,
 ) -> Result<(), Error> {
+    // A date in a child element is stored only in the body, which the queries cast to timestamptz.
+    let mut body = body.clone();
+    mapping.root.type_dates(&mut body);
+    let body = &body;
     let json = serde_json::to_string(&body_json_map(body))
         .map_err(|err| Error::new(format!("document {id} is not JSON: {err}")))?;
     out.extend([Value::string(id), Value::Timestamp(at), Value::String(json)]);
@@ -934,7 +939,7 @@ impl SearchBackend for PostgresBackend {
         for chunk in rows.chunks(chunk_rows) {
             let mut params = Vec::with_capacity(chunk.len() * per_row);
             for (id, body) in chunk {
-                push_insert_params(&columns, id, now, body, &mut params)?;
+                push_insert_params(mapping, &columns, id, now, body, &mut params)?;
             }
             statements.push((insert_sql(&table, &columns, chunk.len(), read_at.is_some()), params));
         }
@@ -1438,7 +1443,7 @@ mod tests {
         body.insert("partyCount".into(), Value::string("3.0"));
         body.insert("active".into(), Value::Null);
         let mut params = Vec::new();
-        push_insert_params(&columns, "P1", at, &body, &mut params).unwrap();
+        push_insert_params(&mapping, &columns, "P1", at, &body, &mut params).unwrap();
         assert_eq!(
             params,
             [
@@ -1450,6 +1455,50 @@ mod tests {
                 Value::Null,
             ]
         );
+    }
+
+    /// A date a script indexes is epoch-millis text (`index#DataDocuments` in JavaScript); in a child element it is stored
+    /// as ISO-8601 text, which casts to timestamptz, and the root column takes the same time. A `yyyy-MM-dd` date and
+    /// text that is not a time stay as they were.
+    #[test]
+    fn dates_given_as_text_are_stored_as_times_at_the_root_and_in_child_elements() {
+        let date = FieldMapping {
+            kind: FieldKind::Date,
+            sortable: false,
+        };
+        let mut mapping = (*mapping("MantleParty", "mantle_party")).clone();
+        mapping.root.fields.insert("createdDate".into(), date);
+        let mut classes = ObjectMapping::default();
+        classes.fields.insert("classFromDate".into(), date);
+        classes.fields.insert("classThruDate".into(), date);
+        mapping.root.children.insert("classifications".into(), classes);
+        let columns = insert_columns(&mapping);
+        let element = |from: &str, thru: &str| {
+            let mut element = Document::new();
+            element.insert("classFromDate".into(), Value::string(from));
+            element.insert("classThruDate".into(), Value::string(thru));
+            Value::Map(element)
+        };
+        let mut body = Document::new();
+        body.insert("createdDate".into(), Value::string("1767607200000"));
+        body.insert(
+            "classifications".into(),
+            Value::List(vec![
+                element("1767607200000", "2026-02-01"),
+                element("2026-01-05 10:00:00.000", "soon"),
+            ]),
+        );
+        let at: Timestamp = "2026-01-05T10:00:00Z".parse().unwrap();
+        let mut params = Vec::new();
+        push_insert_params(&mapping, &columns, "P1", at, &body, &mut params).unwrap();
+        assert_eq!(
+            params[2],
+            Value::string(
+                r#"{"classifications":[{"classFromDate":"2026-01-05T10:00:00Z","classThruDate":"2026-02-01"},{"classFromDate":"2026-01-05T10:00:00Z","classThruDate":"soon"}],"createdDate":"2026-01-05T10:00:00Z"}"#
+            )
+        );
+        let created = columns.iter().position(|column| column.name == "createdDate").unwrap();
+        assert_eq!(params[3 + created], Value::Timestamp(at));
     }
 
     #[test]

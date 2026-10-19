@@ -917,3 +917,105 @@ fn a_wiki_space_on_a_git_repository_keeps_commits_as_versions() {
     assert!(!out.contains_key("headCommitId"));
     assert!(errors(&context).contains("not a remote mirror"), "{}", errors(&context));
 }
+
+/// `ensure#UserNotesSpace` (IronStone R22): the user's private notes space on database files, made once, with its owner
+/// row and root page, then answered as it is; a quick note writes into it. Another user's only with authorization off.
+#[test]
+fn a_users_notes_space_is_made_on_first_use_and_kept() {
+    let (facade, context) = setup();
+    let _entered = context.enter();
+    install(&["EntityServices.xml", "impl/WikiServices.xml"]);
+    {
+        let _authz = context.disable_authz();
+        seed(
+            &facade,
+            "moqui.security.UserAccount",
+            &[
+                ("userId", "NOTER"),
+                ("username", "noter"),
+                ("userFullName", "Nora Noter"),
+            ],
+        );
+        seed(
+            &facade,
+            "moqui.security.UserAccount",
+            &[("userId", "OTHER"), ("username", "other")],
+        );
+        crate::user::internal_login_user("noter").unwrap();
+    }
+    let ensure = |pairs: &[(&str, &str)]| {
+        crate::service::sync("org.moqui.impl.WikiServices.ensure#UserNotesSpace", &params(pairs)).unwrap()
+    };
+    let first = ensure(&[]);
+    assert_eq!(errors(&context), "");
+    assert_eq!(text(&first, "wikiSpaceId"), "NOTES_NOTER");
+    assert_eq!(
+        text(&first, "rootPageLocation"),
+        "dbresource://WikiSpace/NOTES_NOTER.md"
+    );
+    assert_eq!(text(&first, "created"), "true");
+    let space = ("wikiSpaceId", "NOTES_NOTER");
+    for (name, expected) in [
+        ("restrictView", "Y"),
+        ("restrictUpdate", "Y"),
+        ("description", "Notes of Nora Noter"),
+    ] {
+        assert_eq!(
+            field(&facade, "moqui.resource.wiki.WikiSpace", space, name),
+            expected,
+            "{name}"
+        );
+    }
+    let owner = facade
+        .find("moqui.resource.wiki.WikiSpaceUser")
+        .unwrap()
+        .eq("wikiSpaceId", Value::string("NOTES_NOTER"))
+        .eq("userId", Value::string("NOTER"))
+        .one()
+        .unwrap()
+        .expect("the owner's row");
+    for name in ["allowAdmin", "allowView", "allowUpdate"] {
+        assert_eq!(owner.get(name).map(to_plain_string).as_deref(), Some("Y"), "{name}");
+    }
+    let root = facade
+        .read_db_resource("dbresource://WikiSpace/NOTES_NOTER.md")
+        .unwrap();
+    assert!(String::from_utf8_lossy(&root.bytes).contains("# Notes of Nora Noter"));
+
+    // again: the same space, nothing made
+    let again = ensure(&[("userId", "NOTER")]);
+    assert_eq!(text(&again, "wikiSpaceId"), "NOTES_NOTER");
+    assert_eq!(text(&again, "created"), "false");
+    assert_eq!(errors(&context), "");
+    // the owner may write in it, as QuickNote does
+    let note = crate::service::sync(
+        "org.moqui.impl.WikiServices.update#WikiPage",
+        &params(&[
+            ("wikiSpaceId", "NOTES_NOTER"),
+            ("pageName", "Groceries"),
+            ("pageText", "milk"),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(errors(&context), "");
+    assert_eq!(text(&note, "pagePath"), "Groceries");
+
+    // another user's space is not made for a caller with authorization on
+    let theirs = crate::service::sync(
+        "org.moqui.impl.WikiServices.ensure#UserNotesSpace",
+        &params(&[("userId", "OTHER")]),
+    )
+    .unwrap();
+    assert!(errors(&context).contains("Another user's notes space"), "{theirs:?}");
+    context.message().clear_errors();
+    assert!(facade
+        .find("moqui.resource.wiki.WikiSpace")
+        .unwrap()
+        .eq("wikiSpaceId", Value::string("NOTES_OTHER"))
+        .one()
+        .unwrap()
+        .is_none());
+    let _authz = context.disable_authz();
+    let made = ensure(&[("userId", "OTHER")]);
+    assert_eq!(text(&made, "created"), "true");
+}

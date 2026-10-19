@@ -13,7 +13,8 @@
  */
 
 //! `ec.makeNotificationMessage()`: Java's `NotificationMessage` builder, backed by [`crate::notify::NotificationMessage`].
-//! Each setter changes the builder and returns it.
+//! Each setter changes the builder and returns it. `reason`, `record`, `actorUserId` and `appName` are not in Java: the
+//! IronStone notification fields (`NotificationMessage.reasonEnumId`, `recordEntityName`, `recordId`, `actorUserId`, `appName`).
 
 use std::cell::RefCell;
 
@@ -251,6 +252,102 @@ impl HostNotification {
             let flag = flag.as_bool().unwrap_or(true);
             changed(this, &ctx, |message| {
                 message.email_message_save(flag);
+            })
+        })
+    }
+
+    /// `reason(name)`: a `NotificationReason` enumId (`NrMention`) or the short name of a seeded one (`mention`,
+    /// `assignment`, `approval`, `dateAlert`, `reminder`, `comment`, `system`).
+    fn reason<'js>(
+        this: This<Class<'js, HostNotification>>,
+        ctx: Ctx<'js>,
+        reason: JsValue<'js>,
+    ) -> rquickjs::Result<Class<'js, HostNotification>> {
+        host_guard(&ctx, || {
+            let reason = text_of(&ctx, &reason)?;
+            changed(this, &ctx, |message| {
+                message.reason(reason);
+            })
+        })
+    }
+
+    fn reason_enum_id<'js>(
+        this: This<Class<'js, HostNotification>>,
+        ctx: Ctx<'js>,
+        reason: JsValue<'js>,
+    ) -> rquickjs::Result<Class<'js, HostNotification>> {
+        Self::reason(this, ctx, reason)
+    }
+
+    /// `record(entityName, recordId)`: the record the notification is about.
+    fn record<'js>(
+        this: This<Class<'js, HostNotification>>,
+        ctx: Ctx<'js>,
+        entity_name: JsValue<'js>,
+        record_id: Opt<JsValue<'js>>,
+    ) -> rquickjs::Result<Class<'js, HostNotification>> {
+        host_guard(&ctx, || {
+            let entity_name = text_of(&ctx, &entity_name)?;
+            let record_id = match record_id.0.as_ref() {
+                Some(value) => text_of(&ctx, value)?,
+                None => String::new(),
+            };
+            changed(this, &ctx, |message| {
+                message.record(entity_name, record_id);
+            })
+        })
+    }
+
+    fn record_entity_name<'js>(
+        this: This<Class<'js, HostNotification>>,
+        ctx: Ctx<'js>,
+        entity_name: JsValue<'js>,
+    ) -> rquickjs::Result<Class<'js, HostNotification>> {
+        host_guard(&ctx, || {
+            let entity_name = text_of(&ctx, &entity_name)?;
+            changed(this, &ctx, |message| {
+                message.record_entity_name(entity_name);
+            })
+        })
+    }
+
+    fn record_id<'js>(
+        this: This<Class<'js, HostNotification>>,
+        ctx: Ctx<'js>,
+        record_id: JsValue<'js>,
+    ) -> rquickjs::Result<Class<'js, HostNotification>> {
+        host_guard(&ctx, || {
+            let record_id = text_of(&ctx, &record_id)?;
+            changed(this, &ctx, |message| {
+                message.record_id(record_id);
+            })
+        })
+    }
+
+    /// `actorUserId(userId)`: who did what the notification tells of; the current user when not set.
+    fn actor_user_id<'js>(
+        this: This<Class<'js, HostNotification>>,
+        ctx: Ctx<'js>,
+        user_id: JsValue<'js>,
+    ) -> rquickjs::Result<Class<'js, HostNotification>> {
+        host_guard(&ctx, || {
+            let user_id = text_of(&ctx, &user_id)?;
+            changed(this, &ctx, |message| {
+                message.actor_user_id(user_id);
+            })
+        })
+    }
+
+    /// `appName(name)`: the app root the notification comes from, as in its `/qapps` path.
+    fn app_name<'js>(
+        this: This<Class<'js, HostNotification>>,
+        ctx: Ctx<'js>,
+        app_name: JsValue<'js>,
+    ) -> rquickjs::Result<Class<'js, HostNotification>> {
+        host_guard(&ctx, || {
+            let app_name = text_of(&ctx, &app_name)?;
+            changed(this, &ctx, |message| {
+                message.app_name(app_name);
             })
         })
     }

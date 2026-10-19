@@ -73,7 +73,9 @@ along with this software (see the LICENSE.md file). If not, see
             if (!ec.user.userId) {
                 ec.web.sendJsonError(401, 'Authentication required')
             } else {
-                const out = ec.service.sync().name('org.moqui.impl.ShellServices.get#ShellCounts').call()
+                // the current user's own counts (no userId is passed): no app's authorization covers this or the counts
+                // service the theme names, so it runs without authorization, as shellData does
+                const out = ec.service.sync().name('org.moqui.impl.ShellServices.get#ShellCounts').disableAuthz().call()
                 ec.web.sendJsonResponse({counts: out.counts ?? null})
             }
             ]]></script></actions>

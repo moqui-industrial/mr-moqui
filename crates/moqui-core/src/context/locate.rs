@@ -151,6 +151,7 @@ mod tests {
             ("ADDED_EMAIL_AUTHC_FACTOR", "AddedEmailAuthcFactor.xml"),
             ("EMAIL_AUTHC_FACTOR_SENT", "EmailAuthcFActorSent.xml"),
             ("NOTIFICATION", "NotificationEmail.xml"),
+            ("NOTIFICATION_DIGEST", "NotificationDigestEmail.xml"),
             ("SCREEN_RENDER", "ScreenRenderEmail.xml"),
         ];
         assert_eq!(templates.len(), expected.len());

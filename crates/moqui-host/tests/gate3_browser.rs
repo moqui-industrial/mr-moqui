@@ -267,7 +267,7 @@ fn palette_row(browser: &mut Browser, what: &str, shown: &str) -> String {
 /// The suite shell of `/qapps` (IronStone impl-drawers-commons M1) over the gallery's shell providers, without BOSS: the
 /// launcher and the app title, Ctrl+K and the palette (a screen by title, the gallery's palette source by its `~` prefix,
 /// `:` and Enter to open), the `+` menu and the quick-create dialog with the screen context's record, closing when its form
-/// submits, and the keys (`?` and the gallery's `g w`). No tray, counters or Inbox without the theme values. The console
+/// submits, and the keys (`?` and the gallery's `g w`). No tray, counters, Mail or Messages without the theme values. The console
 /// stays clean. With `MOQUI_SHELL_SHOTS=<dir>` it saves PNGs of the header with the palette and the `+` menu open, light
 /// and dark, 1280 and 390 px wide.
 #[test]
@@ -289,10 +289,22 @@ fn the_suite_shell_palette_quick_create_and_keys_work_in_chromium() {
         WAIT,
     );
     browser.eval(FETCH_SPY);
-    // the header: the current app's title, the launcher with the apps, Search; no tray, counters or Inbox without BOSS's
+    // the header: the current app's title, the launcher with the apps, Search; no tray, counters, Mail or Messages without BOSS's
     // theme values, and the notify history stays
     let header = browser.eval("document.getElementById('top').innerText");
     assert!(header.as_str().unwrap().contains("Gallery"), "{header}");
+    // the breadcrumbs are the path from the app root: not Applications, nor the app title the header shows
+    browser.wait_for(
+        "the breadcrumbs",
+        "(document.getElementById('m-breadcrumbs') || {}).innerText !== undefined && document.getElementById('m-breadcrumbs').innerText.indexOf('Detail') >= 0",
+        WAIT,
+    );
+    let crumbs = browser.eval("document.getElementById('m-breadcrumbs').innerText");
+    let crumbs = crumbs.as_str().unwrap_or_default();
+    assert!(
+        !crumbs.contains("Applications") && !crumbs.contains("Gallery"),
+        "{crumbs}"
+    );
     assert_eq!(
         browser.eval(
             "!!document.getElementById('m-launcher') && !!document.getElementById('m-search') && !document.querySelector('[id^=m-counter-]') \
@@ -415,10 +427,11 @@ fn the_suite_shell_palette_quick_create_and_keys_work_in_chromium() {
 }
 
 /// The tray panel of the suite shell, with theme values on DEFAULT_QUASAR that name gallery screens as BOSS names its own
-/// (`gallery/Panel` for Today, `gallery/Landing` for Notifications, `gallery/List` for the Inbox): the counters appear and the
-/// notify history goes; Today opens the tray with the Panel archetype inside it, in Assist's reach; a tab is loaded once and
-/// kept, the tray stays open across navigation and Esc closes it; a `shellCounts` message sets a badge. With
-/// `MOQUI_SHELL_SHOTS=<dir>` it saves PNGs of the open tray, light and dark, 1280 and 390 px wide.
+/// (`gallery/Panel` for Today, `gallery/Landing` for Notifications, `gallery/List` for Mail, `gallery/Split` for
+/// Messages): the counters appear and the notify history goes; Today opens the tray with the Panel archetype inside it, in
+/// Assist's reach; a tab is loaded once and kept, the tray stays open across navigation and Esc closes it; a `shellCounts`
+/// message sets the badges; below 600 px Mail and Messages are one button. With `MOQUI_SHELL_SHOTS=<dir>` it saves PNGs of
+/// the open tray, light and dark, 1280 and 390 px wide.
 #[test]
 fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
     let gate = start_with_data(
@@ -426,7 +439,8 @@ fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
         r#"<entity-facade-xml type="seed">
             <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="900" resourceTypeEnumId="STRT_TRAY_TODAY" resourceValue="gallery/Panel"/>
             <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="901" resourceTypeEnumId="STRT_TRAY_NOTIFICATIONS" resourceValue="gallery/Landing"/>
-            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="902" resourceTypeEnumId="STRT_INBOX_SCREEN" resourceValue="gallery/List"/>
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="902" resourceTypeEnumId="STRT_MAIL_SCREEN" resourceValue="gallery/List"/>
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="903" resourceTypeEnumId="STRT_MESSAGES_SCREEN" resourceValue="gallery/Split"/>
         </entity-facade-xml>"#,
     );
     let base = format!("http://{}", gate.server.address());
@@ -436,7 +450,8 @@ fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
     browser.navigate(&detail);
     browser.wait_for(
         "the counters",
-        "!!document.getElementById('m-counter-today') && !!document.getElementById('m-counter-notifications') && !!document.getElementById('m-counter-mail')",
+        "!!document.getElementById('m-counter-today') && !!document.getElementById('m-counter-notifications') \
+         && !!document.getElementById('m-counter-email') && !!document.getElementById('m-counter-messages')",
         WAIT,
     );
     // no Chat tab without its theme value, and the notify history gives way to the Notifications tab
@@ -475,19 +490,20 @@ fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
         WAIT,
     );
     // a shellCounts message sets the badges
-    browser.eval("moqui.webrootVue.onShellNotification({topic: 'shellCounts', message: {today: 4, mail: 120, notifications: 0}}), true");
+    browser.eval("moqui.webrootVue.onShellNotification({topic: 'shellCounts', message: {today: 4, email: 120, messages: 2, notifications: 0, updates: 9}}), true");
     browser.wait_for(
         "the badges",
-        "(document.querySelector('#m-counter-today .q-badge') || {}).innerText === '4' && (document.querySelector('#m-counter-mail .q-badge') || {}).innerText === '99+' \
-         && !document.querySelector('#m-counter-notifications .q-badge')",
+        "(document.querySelector('#m-counter-today .q-badge') || {}).innerText === '4' && (document.querySelector('#m-counter-email .q-badge') || {}).innerText === '99+' \
+         && (document.querySelector('#m-counter-messages .q-badge') || {}).innerText === '2' && !document.querySelector('#m-counter-notifications .q-badge')",
         WAIT,
     );
-    // the tray stays open across navigation; Esc closes it; the Inbox count is a link
+    // the tray stays open across navigation; Esc closes it; the Mail and Messages counts are links
     // (a link of the canvas goes through setUrl)
     browser.eval("moqui.webrootVue.setUrl('/qapps/gallery/Landing'), true");
     browser.wait_for(
         "the Landing screen",
-        "location.pathname === '/qapps/gallery/Landing'",
+        "location.pathname === '/qapps/gallery/Landing' && moqui.webrootVue.loading === 0 \
+         && document.getElementById('m-canvas').innerText.indexOf('Archetype 3.1') >= 0",
         WAIT,
     );
     assert_eq!(
@@ -501,8 +517,49 @@ fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
         "document.getElementById('m-tray').offsetParent === null",
         WAIT,
     );
-    browser.click("the Inbox count", "document.getElementById('m-counter-mail')");
-    browser.wait_for("the Inbox screen", "location.pathname === '/qapps/gallery/List'", WAIT);
+    // each screen is shown before the next click, so no load is aborted
+    browser.click("the Messages count", "document.getElementById('m-counter-messages')");
+    browser.wait_for(
+        "the Messages screen",
+        "location.pathname === '/qapps/gallery/Split' && moqui.webrootVue.loading === 0 \
+         && document.getElementById('m-canvas').innerText.indexOf('Archetype 3.8') >= 0",
+        WAIT,
+    );
+    browser.click("the Mail count", "document.getElementById('m-counter-email')");
+    browser.wait_for(
+        "the Mail screen",
+        "location.pathname === '/qapps/gallery/List' && moqui.webrootVue.loading === 0 \
+         && document.getElementById('m-canvas').innerText.indexOf('Archetype 3.2') >= 0",
+        WAIT,
+    );
+    // below 600 px Mail and Messages are one button to the mail screen, its badge their sum
+    browser.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": true}),
+    );
+    browser
+        .eval("moqui.webrootVue.onShellNotification({topic: 'shellCounts', message: {email: 3, messages: 2}}), true");
+    browser.wait_for(
+        "one mail button",
+        "!!document.getElementById('m-counter-mail') && !document.getElementById('m-counter-email') && !document.getElementById('m-counter-messages') \
+         && (document.querySelector('#m-counter-mail .q-badge') || {}).innerText === '5'",
+        WAIT,
+    );
+    browser.eval("moqui.webrootVue.setUrl('/qapps/gallery/Landing'), true");
+    browser.wait_for(
+        "the Landing screen",
+        "location.pathname === '/qapps/gallery/Landing' && moqui.webrootVue.loading === 0 \
+         && document.getElementById('m-canvas').innerText.indexOf('Archetype 3.1') >= 0",
+        WAIT,
+    );
+    browser.click("the one mail button", "document.getElementById('m-counter-mail')");
+    browser.wait_for(
+        "the Mail screen",
+        "location.pathname === '/qapps/gallery/List' && moqui.webrootVue.loading === 0 \
+         && document.getElementById('m-canvas').innerText.indexOf('Archetype 3.2') >= 0",
+        WAIT,
+    );
+    browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
     assert_clean(&mut browser, "the tray");
 
     if let Some(dir) = std::env::var_os("MOQUI_SHELL_SHOTS") {

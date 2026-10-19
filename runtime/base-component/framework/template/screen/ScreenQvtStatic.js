@@ -258,6 +258,23 @@
             return "$mq.url(" + sq(path) + "," + paramsOf(n, extra) + "," + map + ")";
         };
 
+        // The query string of a link's url as the entries it adds (expressions by name), and the path without it, so the
+        // template's link keeps the parameters the url names, as the server render does. A url with ${} is left whole.
+        const splitQuery = (text) => {
+            const value = String(text || "");
+            const index = value.indexOf("?");
+            if (index < 0 || isDynamic(value)) return { path: value, extra: null };
+            const extra = {};
+            value.slice(index + 1).split("&").forEach((pair) => {
+                if (!pair) return;
+                const eq = pair.indexOf("=");
+                const decode = (part) => { try { return decodeURIComponent(part.replace(/\+/g, " ")); } catch (e) { return part; } };
+                const name = decode(eq < 0 ? pair : pair.slice(0, eq));
+                if (name) extra[name] = sq(eq < 0 ? "" : decode(pair.slice(eq + 1)));
+            });
+            return { path: value.slice(0, index), extra: Object.keys(extra).length ? extra : null };
+        };
+
         // ---- state of the form being written ----
 
         const st = {};
@@ -802,7 +819,8 @@
         // The way a link is written: a screen link, a plain link, or a form that posts a transition.
         const link = (n, inField) => {
             const urlType = at(n, "url-type") || "transition";
-            const found = urlType === "transition" || urlType === "screen" ? sri.staticUrl(at(n, "url"), urlType) : null;
+            const query = urlType === "transition" || urlType === "screen" ? splitQuery(at(n, "url")) : { path: at(n, "url"), extra: null };
+            const found = urlType === "transition" || urlType === "screen" ? sri.staticUrl(query.path, urlType) : null;
             const img = first(n, "image");
             const linkType = at(n, "link-type");
             const anchor = linkType === "anchor" || linkType === "anchor-button" ||
@@ -831,7 +849,7 @@
                 // A type=none or plain-response transition is not a screen URL, so the anchor is <a> and the client
                 // does not setUrl it. An unresolved ${} target stays an m-link.
                 const toScreen = !!(found && found.screenUrl);
-                const href = found ? (noParam ? sq(navPath) : urlOf(n, navPath, null, navParams)) : exp(at(n, "url"), n, "url", false);
+                const href = found ? (noParam ? sq(navPath) : urlOf(n, navPath, query.extra, navParams)) : exp(at(n, "url"), n, "url", false);
                 const tag = toScreen ? "m-link" : "a";
                 // A screen link in a form-list cell is text (as is link-type anchor anywhere); the others are tonal buttons.
                 const textLink = linkType === "anchor" || (st.inList && linkType !== "anchor-button");
@@ -839,7 +857,7 @@
                 plainAttr(attrs, "id", at(n, "id"), n);
                 out = "<" + tag + A(attrs) + ">" + (textLink ? tooltip + body : "<q-btn" + A(Object.assign({ dense: true, unelevated: true, "no-caps": true }, btnKind(btnType, "m-link", style))) + ">" + tooltip + body + "</q-btn>") + "</" + tag + ">";
             } else {
-                const fieldsInitial = allParams(n, null, found && !noParam ? found.parameters : null);
+                const fieldsInitial = allParams(n, query.extra, found && !noParam ? found.parameters : null);
                 const isForm = found ? !found.isScreen : true;
                 const tag = isForm ? "m-form" : "m-form-link";
                 const hiddenLink = linkType === "hidden-form-link";
@@ -1703,12 +1721,50 @@
             w("<m-screen-context" + A(out) + "></m-screen-context>\n");
         };
 
+        // ---- dashboards ----
+
+        // A number-card as ScreenQvt.js writes it, its attributes bound over the scope as a label's text is: the title localized,
+        // the value, delta and icon expanded, the link a screen link (a plain anchor, external, to something other than a screen).
+        const numberCard = (n) => {
+            const out = {};
+            plainAttr(out, "id", at(n, "id"), n);
+            textAttr(out, "title", at(n, "title"), n, true);
+            plainAttr(out, "value", at(n, "value"), n);
+            plainAttr(out, "delta", at(n, "delta"), n);
+            if (at(n, "delta-good")) out["delta-good"] = at(n, "delta-good");
+            plainAttr(out, "icon", at(n, "icon"), n);
+            if (at(n, "link")) {
+                const query = splitQuery(at(n, "link"));
+                const found = sri.staticUrl(query.path, "transition");
+                const toAlias = !!(found && found.screenPath);
+                const navPath = toAlias ? found.screenPath : (found ? found.path : "");
+                const navParams = toAlias ? found.screenParameters : (found ? found.parameters : null);
+                out[":href"] = found ? urlOf(n, navPath, query.extra, navParams) : exp(at(n, "link"), n, "link", false);
+                if (!(found && found.screenUrl)) out.external = true;
+            }
+            if (at(n, "size")) out.size = at(n, "size");
+            plainAttr(out, "class", at(n, "style"), n);
+            w(withCondition(n, "<m-number-card" + A(out) + "></m-number-card>\n"));
+        };
+        // The grid of a dashboard, as ScreenQvt.js writes it.
+        const dashboardOpen = (n) => {
+            const out = {};
+            plainAttr(out, "id", at(n, "id"), n);
+            const style = at(n, "style") || "";
+            if (isDynamic(style)) out[":class"] = "'m-dashboard '+" + exp(style, n, "style", false);
+            else out.class = cls("m-dashboard", style || null);
+            const minWidth = parseInt(at(n, "min-width") || "", 10);
+            if (minWidth > 0) out.style = "--m-dashboard-min:" + minWidth + "px";
+            w("<div" + A(out) + ">");
+        };
+
         const h = {
             containerOpen, boxOpen, formListWith, paramsOf, allParams,
             reset, push, pop, e, A, cls, at, X, exp, st, sq, w, note, vIf, vFor, withCondition, urlOf, textOf,
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
-            split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose, screenContext
+            split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose, screenContext,
+            numberCard, dashboardOpen
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -1773,6 +1829,11 @@
             (body ? `sri.write(${lit(`<m-box-body${attr(body, "height") ? ` height="${attr(body, "height")}"` : ""}>`)});\n${body.source || ""}sri.write("</m-box-body>");\n` : "") +
             (nopad ? nopad.source || "" : "") + `sri.write("</m-container-box>\\n");\n`;
     });
+
+    // A dashboard's children each in a cell of the grid; a cell whose child is not shown is hidden by the style sheet.
+    const dashboardMacro = stmt((node) => `$s.dashboardOpen(${wlit(node, false)});\n` +
+        node.children.map((kid) => write(`<div class="m-dashboard-item${kid.name === "section-iterate" ? " m-dashboard-each" : ""}">`) +
+            (kid.source || "") + write("</div>")).join("") + write("</div>\n"));
 
     const containerRowMacro = stmt((node) => `$s.rowOpen("row", ${lit(attr(node, "style"))});\n` +
         childrenNamed(node, "row-col").map((col) => `$s.colOpen(${wlit(col, false)}, false);\n${col.source || ""}sri.write("</div>");\n`).join("") + `sri.write("</div>\\n");\n`);
@@ -1880,6 +1941,8 @@
         "label": widget("label", false),
         "editable": widget("editable", true),
         "context": widget("screenContext", false),
+        "dashboard": dashboardMacro,
+        "number-card": widget("numberCard", false),
         "form-single": formSingleMacro,
         "form-list": formListMacro
     });

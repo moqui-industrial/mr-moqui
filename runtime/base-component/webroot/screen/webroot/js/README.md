@@ -172,6 +172,7 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-subscreens-tabs` (also `m-subscreens-menu`), `m-subscreens-active`, `m-subscreens-panel` | the subscreen menu and the place of the active subscreen |
 | `m-menu-nav-item`, `m-menu-subscreen-item`, `m-menu-item-content`, `m-menu-icon` | the navigation of the shell; `m-menu-icon` is a menu image of type icon (`name`, `size`) |
 | `m-screen-context` | the `context` element: while mounted it registers `recordEntity`, `recordId`, `title` and `selectionForm` with the root (`setScreenContext`), again when one changes, and takes them back when unmounted (see Shell data and providers) |
+| `m-number-card` | the `number-card` element: a `q-card flat bordered` with the `title` as `text-overline`, the `value` (`text-h5`; `size` `sm` is `text-h6`, `lg` `text-h4`), the `delta` with an arrow, green or red by its sign against `delta-good` (`up`, the default, or `down`; no sign is muted: `moqui.numberCardDelta`), and the `icon`; with `href` the whole card is an `m-link` (`external`: a plain anchor). The `dashboard` element around cards is no component: a `div.m-dashboard` CSS grid, columns of at least its `min-width` (`--m-dashboard-min`, 200 px), each child in a `div.m-dashboard-item` (an empty one hidden, a `section-iterate`'s rows each a cell) |
 | `m-chart`, `m-mermaid` | Chart.js 4 and Mermaid 11, loaded on first use. `m-chart` takes `config`; `m-mermaid` takes the diagram in its `text` attribute (the compiler condenses the line breaks of slot content), `height` and `config` |
 | `m-script`, `m-stylesheet` | `<script>` and `<link>` of a screen's text |
 
@@ -214,7 +215,7 @@ once per page load:
               notificationTopics: [ topic ],
               keymaps:          [ { scope, keys: [ { keys, label, url, action } ] } ],
               accountMenuItems: [ { label, icon, url, sequence } ] } } ],
-  shell: { trayToday, trayChat, trayNotifications, quickCreate, inboxScreen,       // links, or null
+  shell: { trayToday, trayChat, trayNotifications, quickCreate, mailScreen, messagesScreen,   // links, or null
            chatterScreen, recordFilesScreen },                                     // subscreen names under the current app root, or null
   counts: { ... } | null }
 ```
@@ -231,13 +232,16 @@ once per page load:
   `action` of a key is a client action of the shell (`palette`, `quickCreate`) for a key with no `url`.
 - `shell` are theme values of the user's theme for `STT_INTERNAL_QUASAR`, found as a render finds a theme (the user's `UserScreenTheme`, a
   group's, the type's `enumCode`, a `DEFAULT` theme of the type) and `DEFAULT_QUASAR` when there is none. They are sent here and not in
-  `moqui-config`. `STRT_TRAY_TODAY`, `STRT_TRAY_CHAT`, `STRT_TRAY_NOTIFICATIONS`, `STRT_QUICK_CREATE` and `STRT_INBOX_SCREEN` (the screen the
-  header's Inbox count links to) are screen paths under the apps root; `STRT_CHATTER_SCREEN` and `STRT_RECORD_FILES_SCREEN` are subscreen
+  `moqui-config`. `STRT_TRAY_TODAY`, `STRT_TRAY_CHAT`, `STRT_TRAY_NOTIFICATIONS`, `STRT_QUICK_CREATE`, `STRT_MAIL_SCREEN` and
+  `STRT_MESSAGES_SCREEN` (the screens the header's Mail and Messages counts link to) are screen paths under the apps root; `STRT_CHATTER_SCREEN` and `STRT_RECORD_FILES_SCREEN` are subscreen
   names that every app root mounts (`Chatter`, `RecordFiles`), loaded as `<current app root>/<name>?recordEntity=&recordId=` so the app's
   authorization applies (R5).
 - `counts` is what `org.moqui.impl.ShellServices.get#ShellCounts` answers for the user: the `counts` map of the service the theme names in
-  `STRT_SHELL_COUNTS_SERVICE`, called with `userId` (IronStone: `today`, `chat`, `mail`, `notifications` and their parts). Null when the theme
-  names none, or the service is missing or fails (logged once per service name).
+  `STRT_SHELL_COUNTS_SERVICE`, called with `userId`, with authorization disabled (the theme names it, it reads only that user's rows, and
+  no app's authorization covers it), in the user's time zone and locale. The keys the shell reads, each a number or a map with a `total`:
+  `today`, `chat`, `email` (external mail unread), `messages` (internal messages and the mailbox posts delivered to the Inbox),
+  `notifications` (unviewed in the Notifications inbox, approvals included), `approvals` and `updates` (unviewed in the Updates inbox,
+  which no header badge shows). Null when the theme names none, or the service is missing or fails (logged once per service name).
 
 **`GET /shellSearch?text=&groups=&limit=`** (read-only, 401 without a user): the palette's provider groups.
 
@@ -271,6 +275,18 @@ sends are made on a server thread, so the caller never waits for the counts. The
 
 **`GET /shellCounts`** (read-only, 401 without a user): `{counts}`, what `get#ShellCounts` answers for the current user (null without a counts
 service). The shell asks it every five minutes while the notification socket is down.
+
+**Notifications.** A notification on the socket (topic `notifications` of the client, the wrapped message of `NotificationMessage`) has,
+beside Java's keys (`topic`, `subTopic`, `sentDate`, `notificationMessageId`, `topicDescription`, `message`, `title`, `link`, `type`,
+`persistOnSend`, `showAlert`, `alertNoAutoHide`), `reasonEnumId` (`NotificationReason`: `NrMention`, `NrAssignment`, `NrApproval`,
+`NrDateAlert`, `NrReminder`, `NrComment`, `NrSystem`), `recordEntityName`, `recordId`, `actorUserId` (the sender unless set), `appName` and
+`inboxEnumId` (the topic's `NotificationInbox`: `NinNotifications`, the default, or `NinUpdates`). A sender sets them with
+`ec.makeNotificationMessage().reason('mention').record(entityName, id).actorUserId(id).appName(name)`. The screens read the current user's
+notifications only through `org.moqui.impl.NotificationServices`: `get#UserNotifications` (by inbox, reason, app, topic, read state, dates,
+text, approvals waiting; paged; with the unread of each inbox and the approvals waiting), `mark#NotificationsViewed` (ids, or all of an
+inbox), and `approve#NotificationMessage` and `refuse#NotificationMessage`, which call the services the topic names
+(`approveServiceName`, `refuseServiceName`) with `recordEntityName`, `recordId`, `message` (the messageJson map) and, for a refuse,
+`reason` (required when the topic has `refuseReasonRequired`).
 
 **Screen context.** The `context` element (`<context record-entity record-id title selection-form/>`) writes an `m-screen-context`; in a
 server-static screen its attributes are bound over the screen's actions data. The root keeps the registrations of the mounted ones in
@@ -307,9 +323,11 @@ latest counts). The header, left to right (IronStone style-guide ยง2.2, design ย
   `recordEntity`, `recordId` and `recordTitle` from the screen context. An `m-form` in it with no `submit-hide-id` closes it when the answer has
   no errors (it injects `mSubmitHide`); going to another screen closes it too. A quick-create screen answers its form with JSON (messages in
   `messageInfos`) and no `screenUrl` to stay on the page (example `Gallery/QuickNote.xml`), or with a `screenUrl` to open the new record.
-- **Today, Chat, Inbox, Notifications**: each only when its theme value is set (R27). Today, Chat and Notifications open the tray on their tab;
-  the Inbox count is a link to `shell.inboxScreen`. Badges are `shellCounts.today`, `chat`, `mail` and `notifications` (a number, or a map's
-  `total`). Without a Notifications tab the notify-history menu stays. The screen history is the palette's Recent.
+- **Today, Chat, Mail, Messages, Notifications**: each only when its theme value is set (R27). Today, Chat and Notifications open the tray on
+  their tab; Mail (`m-counter-email`) links to `shell.mailScreen` and Messages (`m-counter-messages`) to `shell.messagesScreen`. Below 600 px
+  Mail and Messages are one button (`m-counter-mail`) to the mail screen whose badge is their sum. Badges are `shellCounts.today`, `chat`,
+  `email`, `messages` and `notifications` (a number, or a map's `total`); `updates` has no badge. Without a Notifications tab the
+  notify-history menu stays. The screen history is the palette's Recent.
 - **Account menu**: the `accountMenuItems` of every app after the user's name. The right `q-drawer` slot stays free for Assist (R1).
 
 **Tray** (`m-shell-tray`, id `m-tray`): a `q-page-sticky` at the right of the canvas, inside the `q-page-container`, 400 px from 600 px and the

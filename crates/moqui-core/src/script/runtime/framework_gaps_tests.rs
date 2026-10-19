@@ -377,6 +377,18 @@ fn notification_message_builder() {
             return nm.getTopic() === "NoSuchTopic" && nm.getNotificationTopic() === null && nm.getNotifyUserIds().length === 0;
         })()"#,
     );
+    // the IronStone fields: reason, record, actor and app, stored on the row
+    holds(
+        r#"(function () {
+            const nm = ec.makeNotificationMessage().topic("ScriptFields").userId("u1").title("Commented")
+                .reason("comment").record("moqui.basic.Enumeration", "E1").appName("Tools").actorUserId("a1")
+                .persistOnSend(true).send();
+            const row = ec.entity.find("moqui.security.user.NotificationMessage")
+                .condition("notificationMessageId", nm.getNotificationMessageId()).disableAuthz().one();
+            return row.reasonEnumId === "NrComment" && row.recordEntityName === "moqui.basic.Enumeration" && row.recordId === "E1"
+                && row.appName === "Tools" && row.actorUserId === "a1";
+        })()"#,
+    );
 }
 
 #[test]
@@ -460,10 +472,11 @@ fn like_ignore_case_and_where_conditions_reach_the_sql() {
         .factory()
         .set_entity(crate::testing::open_with_tape(std::sync::Arc::clone(&tape)));
     let _entered = context.enter();
-    // the in-memory database cannot run these two, so the finds fail after the statement is written
+    // the in-memory database cannot run the where text, so that find fails after the statement is written; the two
+    // ignore-case finds have their own patterns, so the second is not the first's cached count
     for expression in [
         r#"ec.entity.find("moqui.basic.Enumeration").condition(ec.entity.conditionFactory.makeCondition("description", "like", "FIR%").ignoreCase()).count()"#,
-        r#"ec.entity.find("moqui.basic.Enumeration").condition(ec.entity.conditionFactory.makeCondition("description", "like", "FIR%", false, true)).count()"#,
+        r#"ec.entity.find("moqui.basic.Enumeration").condition(ec.entity.conditionFactory.makeCondition("description", "like", "SEC%", false, true)).count()"#,
         r#"ec.entity.find("moqui.basic.Enumeration").condition(ec.entity.conditionFactory.makeConditionWhere("ENUM_ID = 'E3'")).count()"#,
     ] {
         let _ = eval_condition(expression);
@@ -511,6 +524,41 @@ fn actions_scoping_iterate_over_objects_and_unset_names() {
     holds(
         r#"(function () { const r = ec.resource.getLocationReference("dbresource://nothing/here.txt"); return r.isText() === true && r.exists === false; })()"#,
     );
+}
+
+/// A condition a `<script>` makes stays a condition in the context, so a later `<entity-find>` applies it through
+/// `<econdition-object>` as Java does; it came back as an empty map and the find was not filtered. A condition kept in a
+/// map or list, and one read back in a later script, is the same condition.
+#[test]
+fn a_condition_object_made_in_a_script_filters_a_later_find() {
+    let context = database();
+    let _entered = context.enter();
+    seed();
+    crate::script::actions::run_actions(
+        r#"<actions>
+            <script>
+                const cf = ec.entity.conditionFactory
+                cond = cf.makeCondition([cf.makeCondition("enumTypeId", "equals", "T1"),
+                        cf.makeCondition("enumId", "not-equals", "E1")], "and")
+                holder = {cond: cf.makeCondition("enumId", "in", ["E1", "E3"])}
+            </script>
+            <entity-find entity-name="moqui.basic.Enumeration" list="byObject">
+                <econdition-object field="cond"/><order-by field-name="enumId"/></entity-find>
+            <entity-find entity-name="moqui.basic.Enumeration" list="byNested">
+                <econditions combine="or"><econdition-object field="holder.cond"/><econdition field-name="enumId" value="E2"/></econditions>
+                <order-by field-name="enumId"/></entity-find>
+            <script>
+                again = ec.entity.find("moqui.basic.Enumeration").condition(cond).count()
+                keptList = [cond]
+            </script>
+            <entity-find-count entity-name="moqui.basic.Enumeration" count-field="fromList">
+                <econdition-object field="keptList[0]"/></entity-find-count>
+        </actions>"#,
+    )
+    .unwrap();
+    holds(r#"byObject.length === 2 && byObject[0].enumId === "E2" && byObject[1].enumId === "E3""#);
+    holds(r#"byNested.length === 3"#);
+    holds(r#"again === 2 && fromList === 2"#);
 }
 
 #[test]

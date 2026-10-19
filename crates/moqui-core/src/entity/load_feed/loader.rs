@@ -651,7 +651,9 @@ pub(super) fn convert_fields(
     Ok(())
 }
 
-/// One value as `java_type`, or `None` when it is not of that type.
+/// One value as `java_type`, or `None` when it is not of that type. A timestamp without an offset is in the session
+/// time zone, as Java's `convertFromString` reads it through `ec.l10n.parseTimestamp`: the loading user's, else the
+/// server's (a load at start or `moqui load` has no user).
 fn convert_text(value: &Value, java_type: &str) -> Option<Value> {
     if let Value::String(text) = value {
         // `convertFromString` reads the text `null` as null, for any type.
@@ -663,7 +665,7 @@ fn convert_text(value: &Value, java_type: &str) -> Option<Value> {
             return Some(Value::Bool(text.eq_ignore_ascii_case("true")));
         }
     }
-    if let Some(converted) = convert_checked(value, java_type) {
+    if let Some(converted) = crate::l10n::convert_checked(value, java_type) {
         return Some(converted);
     }
     // Java parses number text with the locale (`L10nFacade.parseNumber`) to a BigDecimal and takes the type's value

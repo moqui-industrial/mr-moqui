@@ -999,6 +999,52 @@ along with this software (see the LICENSE.md file). If not, see
             rows are the selection.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>
 
+    <!-- ================ Dashboards ================ -->
+    <xs:element name="dashboard" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        Lays out number cards and other widgets in a responsive grid: as many columns as fit, each at least min-width
+        pixels wide (CSS grid auto-fill), so a row of cards wraps on a narrow screen. Each child is a cell; a child that
+        renders nothing (a false condition) leaves no gap. The landings and 360s of the IronStone style guide (§3.1) put
+        their counters in one. There is no arrangement by the user yet. In qvt a div.m-dashboard, in html a div.dashboard;
+        the text and print modes write the children one after another.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:group ref="widget-elements" minOccurs="0" maxOccurs="unbounded"/>
+        <xs:attribute name="id" type="xs:string"/>
+        <xs:attribute name="min-width" type="xs:positiveInteger"><xs:annotation><xs:documentation>The narrowest a
+            column may be, in pixels. Defaults to 200 (in the style sheets).</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="style" type="xs:string"><xs:annotation><xs:documentation>CSS classes for the grid.</xs:documentation></xs:annotation></xs:attribute>
+    </xs:complexType></xs:element>
+    <xs:element name="number-card" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        A counter: a label over a large number, with an optional change and icon, the whole card a link into the list it
+        counts (IronStone style-guide §8.2). In qvt an m-number-card, a q-card flat bordered with the title as text-overline
+        and the value as text-h5; in a server-static screen the attributes are bound over the screen's actions data, as a
+        label's text is. In html a plain card (the link an anchor); in text "Title: value (delta)". The attributes may
+        hold ${} expressions.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="id" type="xs:string"/>
+        <xs:attribute name="title" type="xs:string" use="required"><xs:annotation><xs:documentation>The label, localized
+            (Open orders).</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="value" type="xs:string" use="required"><xs:annotation><xs:documentation>The number as shown,
+            such as ${openOrderCount} or ${ec.l10n.formatCurrency(total, currencyUomId)}.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="delta" type="xs:string"><xs:annotation><xs:documentation>The change, as shown (+3, -12%). Its
+            sign, a leading + or - or the number's, with delta-good chooses its color and arrow; no sign is neutral.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="delta-good" default="up"><xs:annotation><xs:documentation>Which way is good: up (a rise is
+            positive, green) or down (a fall is, as for late shipments).</xs:documentation></xs:annotation>
+            <xs:simpleType><xs:restriction base="xs:token"><xs:enumeration value="up"/><xs:enumeration value="down"/></xs:restriction></xs:simpleType>
+        </xs:attribute>
+        <xs:attribute name="icon" type="xs:string"><xs:annotation><xs:documentation>A Quasar icon name, Material Symbols
+            outlined (sym_o_receipt_long) or Material Icons, or CSS classes when it has a space.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="link" type="xs:string"><xs:annotation><xs:documentation>Where the card goes: a screen path or
+            transition of this screen, as the url of a link with url-type transition, with a query string for the filter
+            (../Tasks?dueToday=true); a link to something other than a screen is a plain anchor.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="size" default="md"><xs:annotation><xs:documentation>The size of the value: sm (text-h6), md
+            (text-h5) or lg (text-h4).</xs:documentation></xs:annotation>
+            <xs:simpleType><xs:restriction base="xs:token"><xs:enumeration value="sm"/><xs:enumeration value="md"/><xs:enumeration value="lg"/></xs:restriction></xs:simpleType>
+        </xs:attribute>
+        <xs:attribute name="condition" type="xs:string"><xs:annotation><xs:documentation>If specified and evaluates to
+            false the card is not rendered.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="style" type="xs:string"><xs:annotation><xs:documentation>CSS classes for the card.</xs:documentation></xs:annotation></xs:attribute>
+    </xs:complexType></xs:element>
+
     <!-- ================ Includes ================ -->
     <!-- possible good idea, but not implementing in 1.0; should use render-mode.text instead
     <xs:element name="include-content" substitutionGroup="AllWidgets">

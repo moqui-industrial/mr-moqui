@@ -59,6 +59,12 @@ const SERVICES: &str = r#"<services>
         <out-parameters><parameter name="counts" type="Map"/></out-parameters>
         <actions><script>counts = {other: true}</script></actions>
     </service>
+    <service verb="get" noun="ZonedCounts">
+        <description>authenticate and authorization as a Mantle service has them: no app's authorization covers it</description>
+        <in-parameters><parameter name="userId"/></in-parameters>
+        <out-parameters><parameter name="counts" type="Map"/></out-parameters>
+        <actions><script>counts = {zone: ec.user.timeZone, locale: ec.user.locale, user: userId}</script></actions>
+    </service>
     <service verb="get" noun="BadCounts" authenticate="false">
         <in-parameters><parameter name="userId"/></in-parameters>
         <out-parameters><parameter name="counts" type="Map"/></out-parameters>
@@ -260,7 +266,20 @@ fn theme_value(world: &World, theme: &str, sequence: i64, kind: &str, value: &st
 /// The users (plain; admin in ADMIN; other with a theme of its own; grouped in a group with a theme), the screen
 /// grants, the themes and the services of [`tree`].
 fn world(dir: &std::path::Path) -> World {
-    let world = World::open(screen_authz_conf());
+    world_with(dir, screen_authz_conf())
+}
+
+/// [`world`] with authorization enabled for screens and services, as the default configuration has it.
+fn service_authz_world(dir: &std::path::Path) -> World {
+    world_with(
+        dir,
+        "<moqui-conf><artifact-execution-facade><artifact-execution type=\"AT_XML_SCREEN\" authz-enabled=\"true\"/>\
+         <artifact-execution type=\"AT_SERVICE\" authz-enabled=\"true\"/></artifact-execution-facade></moqui-conf>",
+    )
+}
+
+fn world_with(dir: &std::path::Path, conf: &str) -> World {
+    let world = World::open(conf);
     world.user("plain", None);
     world.user("admin", Some("ADMIN"));
     world.user("other", None);
@@ -302,6 +321,13 @@ fn world(dir: &std::path::Path) -> World {
         1,
         "STRT_SHELL_COUNTS_SERVICE",
         "test.Shell.get#BadCounts",
+    );
+    theme_value(
+        &world,
+        "ZONED_QUASAR",
+        1,
+        "STRT_SHELL_COUNTS_SERVICE",
+        "test.Shell.get#ZonedCounts",
     );
     theme_value(
         &world,
@@ -468,7 +494,7 @@ fn shell_data_lists_the_apps_the_user_may_open_with_their_menus_providers_theme_
     assert_eq!(
         data["shell"],
         json!({"trayToday": "/qapps/open/List", "trayChat": null, "trayNotifications": null, "quickCreate": "/qapps/open/QuickCreate",
-            "inboxScreen": null, "chatterScreen": "Chatter", "recordFilesScreen": null})
+            "mailScreen": null, "messagesScreen": null, "chatterScreen": "Chatter", "recordFilesScreen": null})
     );
     assert_eq!(data["counts"], json!({"today": 3, "chat": 1, "user": "plain"}));
     let text = logged(&lines);
@@ -721,6 +747,72 @@ fn the_shell_counts_transition_answers_the_counts_of_the_current_user() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A user whose qapps theme names `test.Shell.get#ZonedCounts`, with a time zone and a locale of their own.
+fn zoned_user(world: &World, user: &str) {
+    world.user(user, None);
+    let ctx = world.factory.new_context();
+    let _entered = ctx.enter();
+    let _authz = ctx.disable_authz();
+    let mut account = world.facade.make_value("moqui.security.UserAccount").unwrap();
+    account.set("userId", Value::string(user));
+    account.set("timeZone", Value::string("America/Chicago"));
+    account.set("locale", Value::string("de"));
+    account.update(&world.facade).unwrap();
+    row(
+        world,
+        "moqui.security.UserScreenTheme",
+        &[
+            ("userId", Value::string(user)),
+            ("screenThemeTypeEnumId", Value::string("STT_INTERNAL_QUASAR")),
+            ("screenThemeId", Value::string("ZONED_QUASAR")),
+        ],
+    );
+}
+
+/// The counts service a theme names is trusted data and reads only that user's rows, and no app's authorization covers
+/// it (a Mantle service under the webroot transitions): it runs for the current user without service authorization, in
+/// shellData and the shellCounts transition, and the user's own time zone and locale apply. Another user's counts stay
+/// refused to a caller with authorization on.
+#[test]
+fn the_counts_service_runs_for_the_current_user_without_service_authorization_in_the_users_zone() {
+    let dir = tree("counts-authz");
+    let webroot = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/webroot/screen/webroot.xml"),
+    )
+    .unwrap();
+    let start = webroot.find("<transition name=\"shellCounts\"").unwrap();
+    let end = start + webroot[start..].find("</transition>").unwrap() + "</transition>".len();
+    let root_text = ROOT.replacen(
+        "<subscreens default-item",
+        &format!("{}\n    <subscreens default-item", &webroot[start..end]),
+        1,
+    );
+    std::fs::write(dir.join("Root.xml"), root_text).unwrap();
+    let world = service_authz_world(&dir);
+    zoned_user(&world, "zoned");
+    let root = root_of(&dir);
+    let expected = json!({"zone": "America/Chicago", "locale": "de", "user": "zoned"});
+    let (status, answer) = get(&world, &root, Some("zoned"), "/shellCounts", &[]);
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(answer, json!({"counts": expected}));
+    let (status, data) = get(&world, &root, Some("zoned"), "/shellData", &[]);
+    assert_eq!(status, 200, "{data}");
+    assert_eq!(data["counts"], expected, "{data}");
+
+    // the service itself is refused to the user outside the shell, and get#ShellCounts still refuses another user's counts
+    let ctx = world.factory.new_context();
+    let _entered = ctx.enter();
+    crate::user::internal_login_user("zoned").unwrap();
+    let direct = BTreeMap::from([("userId".to_string(), Value::string("zoned"))]);
+    let err = crate::service::sync("test.Shell.get#ZonedCounts", &direct).unwrap_err();
+    assert!(err.to_string().contains("not authorized"), "{err}");
+    let theirs = BTreeMap::from([("userId".to_string(), Value::string("plain"))]);
+    let err = crate::service::sync("org.moqui.impl.ShellServices.get#ShellCounts", &theirs).unwrap_err();
+    assert!(err.to_string().contains("not authorized"), "{err}");
+    ctx.message().clear_errors();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The shellCounts messages for `user` the topic carried so far.
 fn sent_counts(seen: &Arc<Mutex<Vec<serde_json::Value>>>, user: &str) -> Vec<serde_json::Value> {
     seen.lock()
@@ -807,5 +899,16 @@ fn publish_sends_the_counts_on_the_shell_counts_topic_once_per_window_and_after_
     publish();
     tx.commit().unwrap();
     assert_eq!(wait_for(&seen, &user, 3, Duration::from_secs(5)), 3);
+
+    // the sender has no session: the user's time zone and locale are set from the account, so "today" is the user's day
+    let zoned = format!("zoned{}", std::process::id());
+    zoned_user(&world, &zoned);
+    let parameters = BTreeMap::from([("userIdList".to_string(), Value::string(&zoned))]);
+    crate::service::sync("org.moqui.impl.ShellServices.publish#ShellCounts", &parameters).unwrap();
+    assert_eq!(wait_for(&seen, &zoned, 1, Duration::from_secs(5)), 1);
+    assert_eq!(
+        sent_counts(&seen, &zoned)[0]["message"],
+        json!({"zone": "America/Chicago", "locale": "de", "user": zoned})
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

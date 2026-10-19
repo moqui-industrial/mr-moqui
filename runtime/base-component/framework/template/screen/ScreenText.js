@@ -261,6 +261,15 @@ const $formList = (name, cols) => {
         "link": linkMacro,
         "image": stmt((node) => pad(jsString(attr(node, "alt")))),
         "label": stmt((node) => pad(expandExpr(attr(node, "text")))),
+        // a number-card as "Title: value (delta)", a dashboard as its children one after another
+        "number-card": stmt((node) => {
+            const delta = S.expandNoL10nExpr(attr(node, "delta") || "");
+            const line = pad(`${expandExpr(attr(node, "title") || "")} + ": " + ${S.expandNoL10nExpr(attr(node, "value") || "")} + ` +
+                `(String(${delta}).trim() ? " (" + ${delta} + ")" : "")`) + `sri.write("\\n");\n`;
+            const condition = attr(node, "condition");
+            return condition ? `if (${condition}) {\n${line}}\n` : line;
+        }),
+        "dashboard": stmt((node, children) => children),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

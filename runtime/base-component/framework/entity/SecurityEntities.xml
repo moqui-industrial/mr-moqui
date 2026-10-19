@@ -516,7 +516,29 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="emailNotifications" type="text-indicator"><description>For each User if there is no NotificationTopicUser.emailNotifications value then use this as the default, this defaults to N.</description></field>
         <field name="emailTemplateId" type="id"><description>If is specified use this template to send a notification email to each user with emailNotifications=Y</description></field>
         <field name="emailMessageSave" type="text-indicator"/>
+        <field name="approveServiceName" type="text-medium"><description>A notification on this topic asks its recipients for a
+            decision: org.moqui.impl.NotificationServices.approve#NotificationMessage calls this service with recordEntityName,
+            recordId, message (the messageJson as a Map) and notificationMessageId. An unviewed message of such a topic is an
+            approval waiting.</description></field>
+        <field name="refuseServiceName" type="text-medium"><description>As approveServiceName, for refuse#NotificationMessage;
+            it also receives reason.</description></field>
+        <field name="refuseReasonRequired" type="text-indicator"><description>If Y a refuse must give a reason (the screens
+            ask for one and refuse#NotificationMessage rejects a refuse without it); otherwise the refuse service decides.</description></field>
+        <field name="digestDefault" type="text-indicator"><description>For each User if there is no NotificationTopicUser.digest
+            value then use this as the default, this defaults to N. A topic that must reach its users at once (a mention) leaves
+            it N.</description></field>
+        <field name="inboxEnumId" type="id"><description>The inbox its notifications go to (NotificationInbox):
+            NinNotifications, the actionable ones the header badge counts (the default, also for a topic with no
+            NotificationTopic record), or NinUpdates, the automatic ones (record updates, system messages, job reports)
+            that are listed but not in the badge. Approvals stay in NinNotifications.</description></field>
         <relationship type="one" related="moqui.basic.email.EmailTemplate"/>
+        <relationship type="one" title="NotificationInbox" related="moqui.basic.Enumeration" short-alias="inbox">
+            <key-map field-name="inboxEnumId"/></relationship>
+        <seed-data>
+            <moqui.basic.EnumerationType enumTypeId="NotificationInbox" description="Notification Inbox"/>
+            <moqui.basic.Enumeration enumTypeId="NotificationInbox" enumId="NinNotifications" enumCode="notifications" sequenceNum="1" description="Notifications"/>
+            <moqui.basic.Enumeration enumTypeId="NotificationInbox" enumId="NinUpdates" enumCode="updates" sequenceNum="2" description="Updates"/>
+        </seed-data>
     </entity>
     <entity entity-name="NotificationTopicUser" package="moqui.security.user" use="configuration" cache="true">
         <field name="topic" type="text-medium" is-pk="true"/>
@@ -524,6 +546,8 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="receiveNotifications" type="text-indicator"><description>If notification sent to user only actually notify if this is Y</description></field>
         <field name="allNotifications" type="text-indicator"><description>If Y user receives all notifications on topic even if not sent directly</description></field>
         <field name="emailNotifications" type="text-indicator"><description>If Y sends an email to user using UserAccount.emailAddress</description></field>
+        <field name="digest" type="text-indicator"><description>If Y the user's unviewed notifications on this topic go out in one
+            daily email (send#NotificationDigests); if empty the topic's digestDefault applies</description></field>
         <relationship type="one-nofk" related="moqui.security.user.NotificationTopic" short-alias="notificationTopic"/>
         <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
     </entity>
@@ -539,10 +563,35 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="linkText" type="text-long"/>
         <field name="typeString" type="text-short"/>
         <field name="showAlert" type="text-indicator"/>
+        <field name="reasonEnumId" type="id"><description>Why the recipients get it (NotificationReason): the filter chips and
+            the icon of the notification lists</description></field>
+        <field name="recordEntityName" type="text-medium"><description>The record the notification is about, with recordId:
+            the link of the lists, and what an approve or refuse service decides on</description></field>
+        <field name="recordId" type="text-medium"><description>The record's id; the pk values joined by '::' for a record
+            with more than one pk field</description></field>
+        <field name="actorUserId" type="id"><description>Who did what the notification tells of; the user who sent it when
+            not set</description></field>
+        <field name="appName" type="text-medium"><description>The app the notification comes from (an app root's name, as
+            in the /qapps path): the app filter of the lists</description></field>
         <relationship type="one-nofk" related="moqui.security.user.NotificationTopic" short-alias="notificationTopic"/>
         <relationship type="one" related="moqui.security.UserGroup" short-alias="userGroup"/>
+        <relationship type="one-nofk" title="NotificationReason" related="moqui.basic.Enumeration" short-alias="reason">
+            <description>No FK so a notification with a reason a deployment has not seeded is still stored.</description>
+            <key-map field-name="reasonEnumId"/></relationship>
+        <relationship type="one-nofk" title="Actor" related="moqui.security.UserAccount" short-alias="actor">
+            <key-map field-name="actorUserId" related="userId"/></relationship>
         <relationship type="many" related="moqui.security.user.NotificationMessageUser" short-alias="users">
             <key-map field-name="notificationMessageId"/></relationship>
+        <seed-data>
+            <moqui.basic.EnumerationType enumTypeId="NotificationReason" description="Notification Reason"/>
+            <moqui.basic.Enumeration enumTypeId="NotificationReason" enumId="NrMention" enumCode="mention" sequenceNum="1" description="Mention"/>
+            <moqui.basic.Enumeration enumTypeId="NotificationReason" enumId="NrAssignment" enumCode="assignment" sequenceNum="2" description="Assignment"/>
+            <moqui.basic.Enumeration enumTypeId="NotificationReason" enumId="NrApproval" enumCode="approval" sequenceNum="3" description="Approval"/>
+            <moqui.basic.Enumeration enumTypeId="NotificationReason" enumId="NrDateAlert" enumCode="dateAlert" sequenceNum="4" description="Date Alert"/>
+            <moqui.basic.Enumeration enumTypeId="NotificationReason" enumId="NrReminder" enumCode="reminder" sequenceNum="5" description="Reminder"/>
+            <moqui.basic.Enumeration enumTypeId="NotificationReason" enumId="NrComment" enumCode="comment" sequenceNum="6" description="Comment"/>
+            <moqui.basic.Enumeration enumTypeId="NotificationReason" enumId="NrSystem" enumCode="system" sequenceNum="7" description="System"/>
+        </seed-data>
     </entity>
     <entity entity-name="NotificationMessageUser" package="moqui.security.user" use="nontransactional" cache="never">
         <field name="notificationMessageId" type="id" is-pk="true"/>
@@ -550,6 +599,8 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="sentDate" type="date-time"/>
         <field name="viewedDate" type="date-time"/>
         <field name="emailMessageId" type="id"/>
+        <field name="digestDate" type="date-time"><description>When the notification went out in the user's daily digest
+            email (send#NotificationDigests); a notification goes in one digest at most</description></field>
         <relationship type="one" related="moqui.security.user.NotificationMessage" short-alias="notification"/>
         <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
         <relationship type="one" related="moqui.basic.email.EmailMessage" short-alias="emailMessage"/>
@@ -562,6 +613,8 @@ along with this software (see the LICENSE.md file). If not, see
         <alias entity-alias="NMU" name="userId"/>
         <alias entity-alias="NMU" name="userSentDate" field="sentDate"/>
         <alias entity-alias="NMU" name="viewedDate"/>
+        <alias entity-alias="NMU" name="emailMessageId"/>
+        <alias entity-alias="NMU" name="digestDate"/>
     </view-entity>
     <!-- ========== SSO (the moqui-sso component, in the framework; plans/archive/Sso.md) ========== -->
     <!-- OIDC and OAuth 2 flows run; a SAML flow reports that SAML is not available. -->

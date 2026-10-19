@@ -56,13 +56,16 @@ The gallery (`runtime/base-component/example/screen/Gallery/`, [style-guide §10
 
 ## Found during the IronStone build (2026-10-19)
 
-Found while building the suite shell and the Mantle services of ironstone-boss `plan/impl-drawers-commons.md`; not fixed yet.
+Found while building the suite shell, the notifications and the Mantle services of ironstone-boss `plan/impl-drawers-commons.md`.
+The child-list dates of the Postgres search, condition objects in a script's context and the shell breadcrumbs were fixed on
+2026-10-19 (M2 framework). Open:
 
 | Area | Item | Source |
 |---|---|---|
-| Search | The Postgres backend cannot compare a date inside a child list: `index#DataDocuments` (a JavaScript service) gets timestamps as epoch-millis text (`script/runtime/convert.rs` `temporal_text`), and `search/postgres/compile.rs` (`element_value` → `ts_expr`) casts that text to `timestamptz` for range and exists, which fails with "date/time field value out of range". Root date fields are typed columns and work. Fix by converting child-list values to the mapped type when indexing, or by reading all-digit text as epoch millis in `ts_expr`; then `search#Universal` can limit to current party rows (its TODO, `parties.partyThruDate`) | mr-mantle-usl `UniversalSearch.spec.js` |
-| Scripts | A condition object from `ec.entity.conditionFactory` made in a `<script>` and given to a later `<entity-find>` through `<econdition-object field>` is not applied (the find returns unfiltered rows): the context does not keep a condition object (`script/runtime/convert.rs` has no case for it) | mr-mantle-usl `ContactListServices.xml` (worked around with an id list) |
-| Shell | The breadcrumbs under `/qapps` still start with "Applications" and repeat the app title the header shows (style-guide §2.2: the path from the app root) | ironstone-boss impl M1 |
+| Search | Dates in child lists are now stored as ISO-8601 text when indexed (`ObjectMapping::type_dates`); a document indexed before keeps its epoch-millis text, so a child-date filter on it still fails on Postgres until its DataFeed is indexed again (`index#DataFeedDocuments`). mr-mantle-usl `search#Universal` can now limit to current party rows (its TODO, `parties.partyThruDate`) | M2 framework |
+| Notifications | `approve#` and `refuse#NotificationMessage` mark only the deciding user's `NotificationMessageUser` row viewed; the other recipients of the same approval keep it waiting until they open it (their approve service call answers with the record's state) | M2 framework |
+| Notifications | The daily digest is one list per user, newest last; no grouping by topic or app yet, and no per-user hour (the job runs at 06:00 server time) | M2 framework |
+| Screens | In a server-static screen a link url with `${}` is bound as text (`exp`), so a relative path in it is not resolved against the screen; a plain url and its query are | M2 framework (number-card links) |
 
 ## Parity gap review
 

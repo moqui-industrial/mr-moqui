@@ -1121,6 +1121,96 @@ fn test_entity_row(facade: &EntityFacade, test_id: &str) -> Option<super::Entity
         .unwrap()
 }
 
+/// Java reads timestamp text without an offset in the session time zone wherever text becomes a timestamp: a field set
+/// from text (`setString`; here a value set from text and created), a data file, a condition value and the data check
+/// that compares them, so each reads the same text as the same moment. A date stays a civil date, and text with an
+/// offset is the moment it names.
+#[test]
+fn timestamp_text_is_read_in_the_session_time_zone_when_set_loaded_found_and_checked() {
+    use super::load_feed::{check_entity_xml_text, load_entity_xml_text, LoadOptions};
+    use super::Condition;
+
+    let facade = crate::testing::open();
+    let context = crate::context::ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    let stamp = |text: &str| Value::Timestamp(text.parse::<jiff::Timestamp>().unwrap());
+    let options = LoadOptions::default();
+    for (index, (zone, midnight, noon)) in [
+        ("America/Chicago", "2016-11-01T05:00:00Z", "2016-11-10T18:00:00Z"),
+        ("UTC", "2016-11-01T00:00:00Z", "2016-11-10T12:00:00Z"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        crate::user::session::set_time_zone(Some(zone));
+        let (set_id, load_id, offset_id) = (
+            format!("TZ_SET_{index}"),
+            format!("TZ_LOAD_{index}"),
+            format!("TZ_Z_{index}"),
+        );
+        let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+        row.set("testId", Value::string(&set_id));
+        row.set("testDateTime", Value::string("2016-11-01"));
+        row.set("testDate", Value::string("2016-11-01"));
+        row.create(&facade).unwrap();
+        let read = test_entity_row(&facade, &set_id).unwrap();
+        assert_eq!(read.get("testDateTime"), Some(&stamp(midnight)), "{zone}");
+        assert_eq!(
+            read.get("testDate"),
+            Some(&Value::Date(jiff::civil::date(2016, 11, 1))),
+            "{zone}"
+        );
+
+        let document = format!(
+            r#"<entity-facade-xml>
+                <moqui.test.TestEntity testId="{load_id}" testDateTime="2016-11-10 12:00:00.0"/>
+                <moqui.test.TestEntity testId="{offset_id}" testDateTime="2016-11-10T12:00:00Z"/>
+            </entity-facade-xml>"#
+        );
+        load_entity_xml_text(&facade, "zone", &document, &options).unwrap();
+        let loaded = test_entity_row(&facade, &load_id).unwrap();
+        assert_eq!(loaded.get("testDateTime"), Some(&stamp(noon)), "{zone}");
+        let exact = test_entity_row(&facade, &offset_id).unwrap();
+        assert_eq!(
+            exact.get("testDateTime"),
+            Some(&stamp("2016-11-10T12:00:00Z")),
+            "{zone}"
+        );
+
+        let found = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .condition(Condition::equals("testDateTime", Value::string("2016-11-10 12:00")))
+            .list()
+            .unwrap();
+        let ids: Vec<_> = found
+            .values()
+            .iter()
+            .filter_map(|row| row.get("testId").and_then(Value::as_str))
+            .collect();
+        assert!(ids.contains(&load_id.as_str()), "{zone}: {ids:?}");
+
+        let check = format!(
+            r#"<entity-facade-xml>
+                <moqui.test.TestEntity testId="{set_id}" testDateTime="2016-11-01 00:00:00.0" testDate="2016-11-01"/>
+                <moqui.test.TestEntity testId="{load_id}" testDateTime="2016-11-10 12:00"/>
+                <moqui.test.TestEntity testId="{offset_id}" testDateTime="{}"/>
+            </entity-facade-xml>"#,
+            "2016-11-10T12:00:00Z"
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+                .as_millisecond()
+        );
+        let checked = check_entity_xml_text(&facade, "zone-check", &check, &options).unwrap();
+        assert!(checked.messages.is_empty(), "{zone}: {:?}", checked.messages);
+        let off = format!(
+            r#"<entity-facade-xml><moqui.test.TestEntity testId="{load_id}" testDateTime="2016-11-10 13:00"/></entity-facade-xml>"#
+        );
+        let mismatched = check_entity_xml_text(&facade, "zone-check", &off, &options).unwrap();
+        assert_eq!(mismatched.messages.len(), 1, "{zone}: {:?}", mismatched.messages);
+    }
+}
+
 #[test]
 fn xml_cdata_text_with_a_section_end_loads_back_unchanged() {
     let facade = crate::testing::open();

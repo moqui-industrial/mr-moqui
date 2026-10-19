@@ -199,6 +199,7 @@ impl ExecutionContextFactory {
         let native = crate::native::NativeRegistry::discover(&components, &conf_node)?;
         let env_path = runtime_dir.join(".env");
         let (property_names, mut set_by_boot) = apply_default_properties(&conf_node, &env_path)?;
+        crate::l10n::init_server_time_zone();
         let entity = Arc::new(RwLock::new(None));
         let resource = ResourceFacade::new(runtime_dir.clone(), component_roots(&components), Arc::clone(&entity));
         tracing::info!("Resource Facade initialized");
@@ -1260,6 +1261,8 @@ impl ExecutionContextFactory {
         framework_dir: PathBuf,
         components: Vec<ComponentInfo>,
     ) -> ExecutionContext {
+        // Text a condition binds against a timestamp column is in the session zone, as after a boot.
+        moqui_lib::object::set_text_time_zone(crate::l10n::time_zone);
         // The conf's cache-list, when the test gives one, makes the named caches.
         let conf = MNode::parse_text("test", conf_text)
             .ok()

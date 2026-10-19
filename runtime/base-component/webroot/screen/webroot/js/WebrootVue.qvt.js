@@ -2586,6 +2586,54 @@
         computed: { isClass() { return moqui.isIconClass(this.name); } }
     });
 
+    /* ========== dashboards ========== */
+
+    // The delta of a number-card: its sign (a leading + or -, else the number's; 0 or no number is none) and, against
+    // deltaGood (up, the default: a rise is good; down: a fall is), its tone and arrow. ScreenHtml.js reads it the same way.
+    moqui.numberCardDelta = (delta, deltaGood) => {
+        const text = String(delta === null || delta === undefined ? "" : delta).trim();
+        if (!text || text === "null") return null;
+        const number = parseFloat(text.replace(/[^0-9.\-+]/g, ""));
+        const sign = /^[-\u2212]/.test(text) ? -1 : /^\+/.test(text) ? 1 : (isNaN(number) ? 0 : Math.sign(number));
+        const good = deltaGood === "down" ? sign < 0 : sign > 0;
+        return { sign, tone: sign === 0 ? "neutral" : good ? "good" : "bad",
+            icon: sign > 0 ? "sym_o_trending_up" : sign < 0 ? "sym_o_trending_down" : "sym_o_trending_flat" };
+    };
+
+    // The number-card element (style-guide §8.2): a q-card flat bordered with the title as text-overline, the value (text-h5 for
+    // size md, h6 for sm, h4 for lg), the delta in the tone of numberCardDelta and the icon; with href the whole card is a link,
+    // m-link for a screen (the shell's setUrl) and a plain anchor when external.
+    component("m-number-card", {
+        name: "mNumberCard",
+        props: { title: String, value: [String, Number], delta: [String, Number], deltaGood: { type: String, default: "up" },
+            icon: String, href: String, external: Boolean, size: { type: String, default: "md" } },
+        computed: {
+            deltaInfo() { return moqui.numberCardDelta(this.delta, this.deltaGood); },
+            deltaClass() {
+                const tone = this.deltaInfo ? this.deltaInfo.tone : "neutral";
+                return tone === "good" ? "text-positive" : tone === "bad" ? "text-negative" : "m-muted";
+            },
+            valueClass() { return this.size === "sm" ? "text-h6" : this.size === "lg" ? "text-h4" : "text-h5"; },
+            shownValue() { return this.value === null || this.value === undefined || this.value === "" || this.value === "null" ? "\u2013" : String(this.value); },
+            wrapper() { return this.href ? (this.external ? "a" : "m-link") : "div"; }
+        },
+        template:
+            '<component :is="wrapper" :href="href || undefined" class="m-number-card-wrap" :class="{\'m-number-card-link\': !!href}">' +
+                '<q-card flat bordered class="m-number-card" :class="\'m-number-card-\' + size">' +
+                    '<q-card-section class="row no-wrap items-start q-pa-md">' +
+                        '<div class="col m-number-card-body">' +
+                            '<div class="text-overline m-number-card-title ellipsis">{{title}}</div>' +
+                            '<div class="m-number-card-value" :class="valueClass">{{shownValue}}</div>' +
+                            '<div v-if="deltaInfo" class="text-caption row no-wrap items-center m-number-card-delta" :class="deltaClass">' +
+                                '<q-icon :name="deltaInfo.icon" size="xs" class="q-mr-xs"></q-icon><span>{{delta}}</span>' +
+                            '</div>' +
+                        '</div>' +
+                        '<m-menu-icon v-if="icon" :name="icon" size="sm" class="m-number-card-icon"></m-menu-icon>' +
+                    '</q-card-section>' +
+                '</q-card>' +
+            '</component>'
+    });
+
     // The screen context of the suite shell (the context element of a screen): while mounted it registers recordEntity, recordId,
     // title and selectionForm with the root, again when one changes, and takes them back when unmounted. The root's screenContext
     // is the latest registration of the screens shown (a dialog's over the page's).
@@ -3148,8 +3196,9 @@
         "        </q-btn>\n" +
         // the current app's title; the theme's title outside an app (the AppList)
         "        <q-toolbar-title v-if=\"headerTitle\" shrink class=\"text-subtitle1 text-weight-medium q-pr-sm\">{{headerTitle}}</q-toolbar-title>\n" +
-        "        <q-breadcrumbs class=\"gt-xs\" gutter=\"xs\" separator-color=\"grey-5\" active-color=\"grey-8\">\n" +
-        "            <template v-for=\"(navMenuItem, menuIndex) in navMenuList\" :key=\"navMenuItem.path || menuIndex\">\n" +
+        // the screen path from the app root: not the apps root, nor the app root whose title the header shows (style-guide §2.2)
+        "        <q-breadcrumbs id=\"m-breadcrumbs\" class=\"gt-xs\" gutter=\"xs\" separator-color=\"grey-5\" active-color=\"grey-8\">\n" +
+        "            <template v-for=\"(navMenuItem, menuIndex) in navMenuList\" :key=\"navMenuItem.path || menuIndex\"><template v-if=\"menuIndex >= breadcrumbStart\">\n" +
         "                <q-breadcrumbs-el v-if=\"menuIndex === navMenuList.length - 1\" :label=\"navMenuItem.title\" class=\"text-weight-medium\"></q-breadcrumbs-el>\n" +
         "                <q-breadcrumbs-el v-else-if=\"navMenuItem.subscreens && navMenuItem.subscreens.length && !navMenuItem.hasTabMenu\" class=\"cursor-pointer\">\n" +
         "                    {{navMenuItem.title}}<q-icon name=\"arrow_drop_down\" size=\"xs\"></q-icon>\n" +
@@ -3165,7 +3214,7 @@
         "                    </q-list></q-menu>\n" +
         "                </q-breadcrumbs-el>\n" +
         "                <q-breadcrumbs-el v-else :label=\"navMenuItem.title\" :to=\"getNavHref(menuIndex)\"></q-breadcrumbs-el>\n" +
-        "            </template>\n" +
+        "            </template></template>\n" +
         "        </q-breadcrumbs>\n" +
         "\n" +
         "        <q-space></q-space>\n" +
@@ -3185,10 +3234,10 @@
         "                </q-item>\n" +
         "            </q-list></q-menu>\n" +
         "        </q-btn>\n" +
-        // Today, Chat, the Inbox count and Notifications, each only when the theme names its screen; the tray ones open the tray on their tab
+        // Today, Chat, Mail, Messages and Notifications, each only when the theme names its screen; the tray ones open the tray on their tab
         "        <q-btn v-for=\"counter in headerCounters\" :key=\"counter.key\" flat round dense :id=\"'m-counter-' + counter.key\" :icon=\"counter.icon\"\n" +
         "                :class=\"{'text-primary': counter.tray && trayOpen && trayTab === counter.key}\" @click=\"counter.tray ? toggleTray(counter.key) : setUrl(counter.url)\">\n" +
-        "            <q-badge v-if=\"countOf(counter.key)\" floating rounded color=\"negative\">{{countText(counter.key)}}</q-badge>\n" +
+        "            <q-badge v-if=\"counterCount(counter)\" floating rounded color=\"negative\">{{counterText(counter)}}</q-badge>\n" +
         "            <q-tooltip>{{counter.label}}</q-tooltip>\n" +
         "        </q-btn>\n" +
         "\n" +
@@ -3296,7 +3345,7 @@
 
     // The text of the suite shell when the page's labels (qapps.xml, localized there) do not have it.
     qvt.shellLabels = { applications: "Applications", allApplications: "All applications", search: "Search", quickCreate: "Create",
-        quickCreateFirst: "Create in this app", today: "Today", chat: "Chat", inbox: "Inbox", notifications: "Notifications", close: "Close",
+        quickCreateFirst: "Create in this app", today: "Today", chat: "Chat", mail: "Mail", messages: "Messages", notifications: "Notifications", close: "Close",
         closeTopmost: "Close the dialog, menu or panel", keyboardShortcuts: "Keyboard shortcuts", keysEverywhere: "Everywhere", recent: "Recent",
         screens: "Screens", savedFinds: "Saved finds", actions: "Actions", more: "More", noResults: "Nothing found",
         paletteHint: "Search screens, records and actions", paletteEmpty: "Type to search screens, records, people and actions",
@@ -3482,6 +3531,9 @@
                 return Number(value) || 0;
             },
             countText(key) { const count = this.countOf(key); return count > 99 ? "99+" : String(count); },
+            // a header button's badge: the sum of its counts
+            counterCount(counter) { return (counter.counts || [counter.key]).reduce((sum, key) => sum + this.countOf(key), 0); },
+            counterText(counter) { const count = this.counterCount(counter); return count > 99 ? "99+" : String(count); },
             // a /qapps link of the shell data as a path to load a screen from (/apps)
             shellLoadPath(url) {
                 const text = String(url || "");
@@ -3768,6 +3820,9 @@
             },
             currentLinkUrl() { const search = this.currentSearch; return this.currentLinkPath + (search.length > 0 ? "?" + search : ""); },
             basePathSize() { return this.basePath.split("/").length - this.appRootPath.split("/").length; },
+            // the first menu entry the breadcrumbs show: past the apps root, and past the current app's root, whose title is in the
+            // header (outside an app, as on the AppList, the trail starts below the apps root)
+            breadcrumbStart() { return this.basePathSize + (this.currentApp ? 1 : 0); },
             ScreenTitle() { return this.navMenuList.length > 0 ? this.navMenuList[this.navMenuList.length - 1].title : ""; },
             // The record of the latest m-screen-context (a record needs an entity and an id), apart from the rest of the screen
             // context so the + menu does not follow every field of every form.
@@ -3845,14 +3900,25 @@
                     { key: "notifications", icon: "sym_o_notifications", label: labels.notifications, url: values.trayNotifications }]
                     .filter((tab) => tab.url).map((tab) => Object.assign(tab, { loadUrl: this.shellLoadPath(tab.url) }));
             },
-            // the header's count buttons in their order: Today, Chat, the Inbox (a link) and Notifications, each when it is set
+            // the header's count buttons in their order: Today, Chat, Mail and Messages (links), Notifications, each when its theme
+            // value is set; `counts` are the shellCounts keys of its badge. Below 600 px Mail and Messages are one button to the mail
+            // screen with the two counts summed. The updates count has no button: the Notifications tab shows it.
             headerCounters() {
                 const tray = (key) => this.trayTabs.find((tab) => tab.key === key);
+                const values = this.shellValues;
                 const out = [];
-                ["today", "chat"].forEach((key) => { const tab = tray(key); if (tab) out.push({ key, icon: tab.icon, label: tab.label, tray: true }); });
-                if (this.shellValues.inboxScreen) out.push({ key: "mail", icon: "sym_o_mail", label: this.labels.inbox, url: this.shellValues.inboxScreen, tray: false });
+                ["today", "chat"].forEach((key) => { const tab = tray(key); if (tab) out.push({ key, icon: tab.icon, label: tab.label, tray: true, counts: [key] }); });
+                const mail = values.mailScreen ? { key: "email", icon: "sym_o_mail", label: this.labels.mail, url: values.mailScreen, tray: false, counts: ["email"] } : null;
+                const messages = values.messagesScreen ? { key: "messages", icon: "sym_o_forum", label: this.labels.messages, url: values.messagesScreen, tray: false, counts: ["messages"] } : null;
+                const narrow = !!(this.$q && this.$q.screen && this.$q.screen.lt.sm);
+                if (mail && messages && narrow) {
+                    out.push({ key: "mail", icon: "sym_o_mail", label: this.labels.mail, url: mail.url, tray: false, counts: ["email", "messages"] });
+                } else {
+                    if (mail) out.push(mail);
+                    if (messages) out.push(messages);
+                }
                 const notifications = tray("notifications");
-                if (notifications) out.push({ key: "notifications", icon: notifications.icon, label: notifications.label, tray: true });
+                if (notifications) out.push({ key: "notifications", icon: notifications.icon, label: notifications.label, tray: true, counts: ["notifications"] });
                 return out;
             },
             paletteKeyHint() { return keymap.isMac ? "⌘K" : "Ctrl K"; },

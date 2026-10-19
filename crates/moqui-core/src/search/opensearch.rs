@@ -818,7 +818,10 @@ impl SearchBackend for OpenSearchBackend {
             };
             text.push_str(&action.to_string());
             text.push('\n');
-            let mut source = body_json_map(body);
+            // Dates as ISO-8601, which the date format reads, wherever the script or the caller gave them as text.
+            let mut typed = body.clone();
+            mapping.root.type_dates(&mut typed);
+            let mut source = body_json_map(&typed);
             if let Json::Object(map) = &mut source {
                 map.insert(INDEXED_AT.into(), Json::from(now));
             }
