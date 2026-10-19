@@ -91,6 +91,8 @@ pub(super) struct Provider {
     user_info_url: String,
     scope: String,
     mail_scope: String,
+    /// Asked for too, and to be granted, for an account that reads its mail over POP3.
+    pop_scope: String,
     auth_params: String,
     refresh_params: String,
     issuer: String,
@@ -173,6 +175,7 @@ impl Provider {
             user_info_url: fill("userInfoUrl"),
             scope: field_text(row, "scope"),
             mail_scope: field_text(row, "mailScope"),
+            pop_scope: field_text(row, "popScope"),
             auth_params: field_text(row, "authParams"),
             refresh_params: field_text(row, "refreshParams"),
             issuer: fill("issuer"),
@@ -211,6 +214,34 @@ impl Provider {
     fn has_revocation(&self) -> bool {
         !self.revoke_url.is_empty()
     }
+
+    /// The scopes asked for: with `pop` (the account reads its mail over POP3) the POP scopes too.
+    fn scope_for(&self, pop: bool) -> String {
+        join_scopes(&self.scope, pop.then_some(self.pop_scope.as_str()))
+    }
+
+    /// The scopes that must be granted for mail.
+    fn mail_scope_for(&self, pop: bool) -> String {
+        join_scopes(&self.mail_scope, pop.then_some(self.pop_scope.as_str()))
+    }
+}
+
+fn join_scopes(base: &str, more: Option<&str>) -> String {
+    let mut scopes: Vec<&str> = base.split_whitespace().collect();
+    for scope in more.unwrap_or_default().split_whitespace() {
+        if !scopes.contains(&scope) {
+            scopes.push(scope);
+        }
+    }
+    scopes.join(" ")
+}
+
+/// Whether a server row reads its mail over POP3.
+fn pop_server(server: &EntityValue) -> bool {
+    matches!(
+        field_text(server, "storeProtocol").to_ascii_lowercase().as_str(),
+        "pop3" | "pop3s"
+    )
 }
 
 fn enum_description(facade: &EntityFacade, id: &str) -> String {
@@ -538,7 +569,10 @@ pub(super) fn access_token(
         ("client_id".to_string(), provider.client_id.clone()),
         ("client_secret".to_string(), provider.client_secret.clone()),
     ];
-    pairs.extend(extra_pairs(&provider.refresh_params, &provider.scope));
+    pairs.extend(extra_pairs(
+        &provider.refresh_params,
+        &provider.scope_for(pop_server(&server)),
+    ));
     let answer = post_form(&provider.token_url, &pairs).map_err(|err| {
         TokenError::Unavailable(format!(
             "Could not refresh the {} sign-in of email server {server_id}: {err}",
@@ -706,6 +740,9 @@ struct Pending {
     display_name: String,
     #[serde(default)]
     account_kind: String,
+    /// The account reads its mail over POP3: the provider's POP scopes are asked for and must be granted.
+    #[serde(default)]
+    pop: bool,
     created: i64,
     expires: i64,
     #[serde(default)]
@@ -834,6 +871,7 @@ pub(super) fn start_sign_in(
         account_name: param_text(parameters, "accountName"),
         display_name: param_text(parameters, "displayName"),
         account_kind: String::new(),
+        pop: false,
         created: now_millis(),
         expires: now_millis() + SIGN_IN_MILLIS,
         used: false,
@@ -891,10 +929,11 @@ pub(super) fn start_sign_in(
             return Ok(out);
         }
         let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
-        if provider_id.is_empty() && !server_id.is_empty() {
-            if let Some(server) = find_one(facade, SERVER, "emailServerId", &server_id)? {
+        if let Some(server) = find_one(facade, SERVER, "emailServerId", &server_id)? {
+            if provider_id.is_empty() {
                 provider_id = field_text(&server, "oauthProviderEnumId");
             }
+            pending.pop = pop_server(&server);
         }
         pending.address = account.get("emailAddress").map(to_plain_string).unwrap_or_default();
         if provider_id.is_empty() {
@@ -925,11 +964,12 @@ pub(super) fn start_sign_in(
         return Ok(out);
     }
     pending.provider = provider.id.clone();
+    let scope = provider.scope_for(pending.pop);
     let mut query = vec![
         ("response_type".to_string(), "code".to_string()),
         ("client_id".to_string(), provider.client_id.clone()),
         ("redirect_uri".to_string(), redirect_uri()),
-        ("scope".to_string(), provider.scope.clone()),
+        ("scope".to_string(), scope.clone()),
         ("state".to_string(), pending.state.clone()),
         ("code_challenge".to_string(), challenge(&pending.verifier)),
         ("code_challenge_method".to_string(), "S256".to_string()),
@@ -938,7 +978,7 @@ pub(super) fn start_sign_in(
     if !pending.address.is_empty() {
         query.push(("login_hint".to_string(), pending.address.clone()));
     }
-    query.extend(extra_pairs(&provider.auth_params, &provider.scope));
+    query.extend(extra_pairs(&provider.auth_params, &scope));
     let separator = if provider.authorize_url.contains('?') { '&' } else { '?' };
     let auth_url = format!("{}{separator}{}", provider.authorize_url, form(&query));
     let sign_in_id = moqui_lib::codec::hex_encode(&random_bytes(16)?);
@@ -1096,7 +1136,7 @@ fn finish_pending(parameters: &BTreeMap<String, Value>, facade: &EntityFacade, p
         }
         Err(err) => return failed("failed", format!("The provider could not be read: {err}")),
     };
-    let tokens = match exchange(&provider, &code, &pending.verifier) {
+    let tokens = match exchange(&provider, &code, &pending.verifier, pending.pop) {
         Ok(tokens) => tokens,
         Err(outcome) => return *outcome,
     };
@@ -1153,7 +1193,7 @@ struct Tokens {
     id_token: String,
 }
 
-fn exchange(provider: &Provider, code: &str, verifier: &str) -> Result<Tokens, Refused> {
+fn exchange(provider: &Provider, code: &str, verifier: &str, pop: bool) -> Result<Tokens, Refused> {
     let pairs = vec![
         ("grant_type".to_string(), "authorization_code".to_string()),
         ("code".to_string(), code.to_string()),
@@ -1206,8 +1246,8 @@ fn exchange(provider: &Provider, code: &str, verifier: &str) -> Result<Tokens, R
         ));
     }
     if let Some(Json::String(granted)) = answer.json.get("scope") {
-        let missing: Vec<&str> = provider
-            .mail_scope
+        let wanted_scopes = provider.mail_scope_for(pop);
+        let missing: Vec<&str> = wanted_scopes
             .split_whitespace()
             .filter(|wanted| !scope_granted(granted, wanted))
             .collect();

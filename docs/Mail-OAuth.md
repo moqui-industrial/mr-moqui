@@ -3,7 +3,7 @@
 A mail account of the mail client (`org.moqui.impl.EmailClientServices`) can sign in to Gmail, Google Workspace, Microsoft 365
 or Outlook.com with the provider's own sign-in instead of a password: OAuth 2.0 authorization code with PKCE in a popup, the
 refresh token stored encrypted on the account's `EmailServer`, and XOAUTH2 for IMAP (the sync, the IDLE workers, the server
-test) and SMTP (sending). The code is `crates/moqui-core/src/service/mail/oauth.rs`; the providers are
+test), POP3 (the sync and the server test, `AUTH XOAUTH2`) and SMTP (sending). The code is `crates/moqui-core/src/service/mail/oauth.rs`; the providers are
 `moqui.basic.email.EmailOAuthProvider` rows (Google and Microsoft are seeded). This page is what a deployment sets up. As of
 Oct 19, 2026.
 
@@ -56,8 +56,10 @@ What Google requires (checked Oct 19, 2026 against Google's documentation):
 2. **Authentication**: a **Web** platform with the redirect URI above.
 3. **Certificates & secrets**: a client secret (it expires, at most after 24 months: rotate it before then).
 4. **API permissions**: the delegated permissions `IMAP.AccessAsUser.All`, `SMTP.Send`, `offline_access`, `openid`, `email` and
-   `profile`. The sign-in asks for them as `https://outlook.office.com/IMAP.AccessAsUser.All` and
-   `https://outlook.office.com/SMTP.Send`, with `offline_access` for the refresh token.
+   `profile`, and `POP.AccessAsUser.All` when accounts read their mail over POP3. The sign-in asks for them as
+   `https://outlook.office.com/IMAP.AccessAsUser.All` and `https://outlook.office.com/SMTP.Send`, with `offline_access` for the
+   refresh token; an account whose server is POP3 also asks for `https://outlook.office.com/POP.AccessAsUser.All` (the provider's
+   `popScope`), which must be granted, and its refreshes ask for it too.
 5. Set `email_oauth_microsoft_client_id` and `email_oauth_microsoft_client_secret`.
 
 What Microsoft requires (from Microsoft's "Authenticate an IMAP, POP or SMTP connection using OAuth"; the dates below to
@@ -73,6 +75,16 @@ verify against the Message Center when deploying):
   account needs this sign-in. To verify.
 - Microsoft has no endpoint that revokes a single refresh token: removing an account deletes the token here only (a user removes
   the app at account.microsoft.com, or an administrator in Entra). It rotates refresh tokens; the new one is stored at each refresh.
+
+## POP3
+
+An account whose incoming server is POP3 (`storeProtocol` pop3 or pop3s) signs in with SASL XOAUTH2 (`AUTH XOAUTH2`, RFC 5034):
+the response goes after the server's `+` continuation, never on the AUTH line (RFC 5034 keeps that to 255 octets, and an access
+token is longer); a refused token is the provider's `+` error challenge, answered with an empty line, then `-ERR`, and is tried
+once more with a new token. The sign-in asks for the provider's `popScope` too (Microsoft: `POP.AccessAsUser.All`; Google's
+`https://mail.google.com/` covers POP, and POP must be on in the Gmail settings). A provider sign-in makes an IMAP account; a POP
+account is one whose server was set to POP3 (update#EmailAccount), whose next sign-in then asks for the POP scope. An account
+switched to POP3 after its sign-in fails its first POP sign-in at Microsoft (no POP scope granted) and waits for a new sign-in.
 
 ## The flow
 
@@ -101,5 +113,5 @@ verify against the Message Center when deploying):
 
 ## Not done
 
-POP3 with OAuth (accounts sign in over IMAP); Microsoft Graph or Gmail API access; calendar and contact sync over the same client
+Microsoft Graph or Gmail API access; calendar and contact sync over the same client
 (design §21 keeps those for later); a check of the ID token's signature (not needed for a token from the token endpoint).

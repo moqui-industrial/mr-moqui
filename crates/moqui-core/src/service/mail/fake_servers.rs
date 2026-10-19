@@ -1010,22 +1010,32 @@ pub(super) struct FakePop {
     pub(super) port: u16,
     pub(super) messages: PopMessages,
     pub(super) log: Arc<Mutex<Vec<String>>>,
+    /// The user and the access tokens `AUTH XOAUTH2` takes.
+    pub(super) oauth: PopOAuth,
 }
+
+type PopOAuth = Arc<Mutex<(String, Vec<String>)>>;
 
 impl FakePop {
     pub(super) fn start() -> Self {
         let messages: PopMessages = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::new(Mutex::new(Vec::new()));
+        let oauth: PopOAuth = Arc::new(Mutex::new((String::new(), Vec::new())));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let (shared, shared_log) = (Arc::clone(&messages), Arc::clone(&log));
+        let (shared, shared_log, shared_oauth) = (Arc::clone(&messages), Arc::clone(&log), Arc::clone(&oauth));
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
-                let _ = serve_pop(stream, &shared, &shared_log);
+                let _ = serve_pop(stream, &shared, &shared_log, &shared_oauth);
             }
         });
-        Self { port, messages, log }
+        Self {
+            port,
+            messages,
+            log,
+            oauth,
+        }
     }
 
     pub(super) fn add(&self, uidl: &str, raw: &str) {
@@ -1045,6 +1055,7 @@ fn serve_pop(
     stream: TcpStream,
     messages: &Mutex<Vec<(String, Vec<u8>, bool)>>,
     log: &Mutex<Vec<String>>,
+    oauth: &Mutex<(String, Vec<String>)>,
 ) -> std::io::Result<()> {
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
@@ -1061,6 +1072,26 @@ fn serve_pop(
         let command = words.next().unwrap_or("").to_ascii_uppercase();
         let argument: usize = words.next().and_then(|word| word.parse().ok()).unwrap_or(0);
         match command.as_str() {
+            // SASL XOAUTH2 after the continuation (RFC 5034); a refused token gets the error challenge, then -ERR
+            "AUTH" if text.eq_ignore_ascii_case("AUTH XOAUTH2") => {
+                write(&mut writer, "+ \r\n")?;
+                let mut answer = String::new();
+                reader.read_line(&mut answer)?;
+                let accepted = super::oauth::parse_xoauth2(answer.trim()).is_some_and(|(user, token)| {
+                    let oauth = lock(oauth);
+                    user == oauth.0 && oauth.1.contains(&token)
+                });
+                lock(log).push(format!("XOAUTH2 {}", if accepted { "ok" } else { "refused" }));
+                if accepted {
+                    write(&mut writer, "+OK signed in\r\n")?;
+                } else {
+                    // {"status":"401","schemes":"bearer"}
+                    write(&mut writer, "+ eyJzdGF0dXMiOiI0MDEiLCJzY2hlbWVzIjoiYmVhcmVyIn0=\r\n")?;
+                    let mut empty = String::new();
+                    reader.read_line(&mut empty)?;
+                    write(&mut writer, "-ERR [AUTH] invalid credentials\r\n")?;
+                }
+            }
             "USER" => write(&mut writer, "+OK\r\n")?,
             "PASS" => {
                 if text.ends_with(" pop-password") {
@@ -1255,8 +1286,10 @@ pub(super) struct FakeSmtpState {
     pub(super) user: String,
     /// The access tokens `AUTH XOAUTH2` takes for `user`.
     pub(super) tokens: Vec<String>,
-    /// Each AUTH: mechanism and whether it was accepted, such as `XOAUTH2 ok` (never the token).
+    /// Each AUTH: mechanism and whether it was accepted, such as `XOAUTH2 ok` or `PLAIN bob ok` (never the token).
     pub(super) auths: Vec<String>,
+    /// The users and passwords `AUTH PLAIN` takes.
+    pub(super) passwords: Vec<(String, String)>,
     /// Each message: the envelope sender, the recipients and the data.
     pub(super) messages: Vec<(String, Vec<String>, String)>,
 }
@@ -1307,8 +1340,40 @@ fn serve_smtp(stream: TcpStream, state: &Mutex<FakeSmtpState>) -> std::io::Resul
         if upper.starts_with("EHLO") || upper.starts_with("HELO") {
             write(
                 &mut writer,
-                "250-fake.example.com\r\n250-AUTH XOAUTH2\r\n250 8BITMIME\r\n",
+                "250-fake.example.com\r\n250-AUTH XOAUTH2 PLAIN\r\n250 8BITMIME\r\n",
             )?;
+        } else if upper.starts_with("AUTH PLAIN") {
+            use base64::Engine;
+            let response = match text.split_whitespace().nth(2) {
+                Some(initial) => initial.to_string(),
+                None => {
+                    write(&mut writer, "334 \r\n")?;
+                    let mut answer = String::new();
+                    reader.read_line(&mut answer)?;
+                    answer.trim().to_string()
+                }
+            };
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(response.trim())
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .unwrap_or_default();
+            let mut parts = decoded.split('\0').skip(1);
+            let user = parts.next().unwrap_or_default().to_string();
+            let password = parts.next().unwrap_or_default().to_string();
+            let accepted = lock(state)
+                .passwords
+                .iter()
+                .any(|(known, secret)| *known == user && *secret == password);
+            lock(state)
+                .auths
+                .push(format!("PLAIN {user} {}", if accepted { "ok" } else { "refused" }));
+            if accepted {
+                signed_in = true;
+                write(&mut writer, "235 2.7.0 Accepted\r\n")?;
+            } else {
+                write(&mut writer, "535 5.7.8 Username and Password not accepted\r\n")?;
+            }
         } else if upper.starts_with("AUTH XOAUTH2") {
             let response = match text.split_whitespace().nth(2) {
                 Some(initial) => initial.to_string(),

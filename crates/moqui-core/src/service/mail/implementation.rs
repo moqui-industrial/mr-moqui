@@ -1151,9 +1151,30 @@ enum SmtpAuth {
     OAuth(String, String),
 }
 
-/// The SMTP sign-in of a server row; for EatOAuth2 a current access token (`rejected` is one the server just refused).
+/// The user SMTP signs in as: `smtpUsername` when the server has its own SMTP sign-in, else `mailUsername`.
+pub(super) fn smtp_user(server: &EntityValue) -> String {
+    let own = field_text(server, "smtpUsername");
+    if own.trim().is_empty() {
+        field_text(server, "mailUsername")
+    } else {
+        own
+    }
+}
+
+/// The SMTP password: with an SMTP user of its own `smtpPassword` (else `mailPassword`), else `mailPassword`.
+fn smtp_password(server: &EntityValue) -> String {
+    let own = field_text(server, "smtpPassword");
+    if field_text(server, "smtpUsername").trim().is_empty() || own.is_empty() {
+        field_text(server, "mailPassword")
+    } else {
+        own
+    }
+}
+
+/// The SMTP sign-in of a server row ([`smtp_user`]); for EatOAuth2 a current access token (`rejected` is one the
+/// server just refused).
 fn smtp_auth(facade: &EntityFacade, server: &EntityValue, rejected: Option<&str>) -> Result<SmtpAuth, Error> {
-    let user = field_text(server, "mailUsername");
+    let user = smtp_user(server);
     if field_text(server, "authTypeEnumId") == super::oauth::OAUTH {
         let token = super::oauth::access_token(facade, &field_text(server, "emailServerId"), rejected)
             .map_err(|err| Error::new(err.to_string()))?;
@@ -1162,7 +1183,7 @@ fn smtp_auth(facade: &EntityFacade, server: &EntityValue, rejected: Option<&str>
     if user.is_empty() {
         return Ok(SmtpAuth::None);
     }
-    Ok(SmtpAuth::Password(user, field_text(server, "mailPassword")))
+    Ok(SmtpAuth::Password(user, smtp_password(server)))
 }
 
 /// A refusal of the sign-in: 530, 534, 535 or 454, or Gmail's XOAUTH2 error challenge, which lettre cannot answer.
@@ -1638,9 +1659,17 @@ pub(super) fn test_server(
         return fail("Email server test is disabled in LLM sim session");
     }
     let server_id = param_text(parameters, "emailServerId");
-    let Some(server) = find_one(facade, SERVER, "emailServerId", &server_id)? else {
+    let Some(mut server) = find_one(facade, SERVER, "emailServerId", &server_id)? else {
         return fail(format!("No EmailServer found for ID [{server_id}]"));
     };
+    // an SMTP sign-in to try before it is stored: smtpUsername as given (empty for the store's), smtpPassword when given
+    if let Some(user) = parameters.get("smtpUsername").filter(|value| !value.is_null()) {
+        server.set("smtpUsername", Value::string(to_plain_string(user).trim()));
+    }
+    let password = param_text(parameters, "smtpPassword");
+    if !password.is_empty() {
+        server.set("smtpPassword", Value::string(password));
+    }
     let wanted = |name: &str| match parameters.get(name) {
         Some(Value::Bool(flag)) => *flag,
         Some(value) if !is_empty(value) => {
@@ -1702,9 +1731,9 @@ fn smtp_step(facade: &EntityFacade, server: &EntityValue) -> (&'static str, bool
             (Err(_), SmtpAuth::OAuth(_, rejected)) => connect(&smtp_auth(facade, server, Some(rejected))?),
             (result, _) => result,
         });
-    let signs_in = !field_text(server, "mailUsername").is_empty();
+    let user = smtp_user(server);
     match checked {
-        Ok(true) if signs_in => ("smtp", true, format!("Connected to {place} and signed in")),
+        Ok(true) if !user.is_empty() => ("smtp", true, format!("Connected to {place} and signed in as {user}")),
         Ok(true) => ("smtp", true, format!("Connected to {place}")),
         Ok(false) => ("smtp", false, format!("{place} closed the connection")),
         Err(err) => ("smtp", false, format!("SMTP {place}: {err}")),
@@ -1751,29 +1780,6 @@ fn store_steps(
         mark_seen: false,
         delete: false,
     };
-    if pop && oauth {
-        steps.push((
-            "storeLogin",
-            false,
-            "A provider sign-in (OAuth) syncs over IMAP, not POP3".to_string(),
-        ));
-        return;
-    }
-    if pop {
-        match Pop3::open(&settings).and_then(|mut pop3| pop3.close()) {
-            Ok(()) => steps.push(("storeLogin", true, format!("Signed in to POP3 {place}"))),
-            Err(err) => steps.push(("storeLogin", false, format!("POP3 {place}: {err}"))),
-        }
-        return;
-    }
-    if !matches!(protocol.as_str(), "imap" | "imaps") {
-        steps.push((
-            "storeLogin",
-            false,
-            format!("storeProtocol {protocol} is not supported"),
-        ));
-        return;
-    }
     // the connection the sync makes: TLS from the start on imaps or port 993, else STARTTLS when the server offers it
     let info = super::sync::ServerInfo {
         server_id: field_text(server, "emailServerId"),
@@ -1786,6 +1792,34 @@ fn store_steps(
         store_delete: false,
         access_token: None,
     };
+    if pop {
+        // as the sync signs in: USER and PASS, or AUTH XOAUTH2 for a provider sign-in
+        let how = if oauth { " with XOAUTH2" } else { "" };
+        match super::sync::open_pop(facade, &info, &settings).and_then(|mut pop3| {
+            pop3.close()
+                .map_err(|err| super::sync::SyncFailure::Connect(err.to_string()))
+        }) {
+            Ok(()) => steps.push(("storeLogin", true, format!("Signed in to POP3 {place}{how}"))),
+            Err(err) => {
+                let text = err.to_string();
+                let text = if text.starts_with("POP3 ") {
+                    text
+                } else {
+                    format!("POP3 {place}: {text}")
+                };
+                steps.push(("storeLogin", false, text));
+            }
+        }
+        return;
+    }
+    if !matches!(protocol.as_str(), "imap" | "imaps") {
+        steps.push((
+            "storeLogin",
+            false,
+            format!("storeProtocol {protocol} is not supported"),
+        ));
+        return;
+    }
     let mut session = match super::sync::connect_imap(facade, &info) {
         Ok(conn) => {
             steps.push(("storeLogin", true, format!("Signed in to IMAP {place}")));
@@ -2210,14 +2244,29 @@ impl Pop3 {
         Mailbox::close(self)
     }
 
+    /// Connect and sign in with `USER` and `PASS`.
     pub(super) fn open(settings: &StoreSettings) -> Result<Self, Error> {
+        Self::open_as(settings, None)
+    }
+
+    /// Connect and sign in with SASL XOAUTH2 and an access token (`AUTH XOAUTH2`, RFC 5034), as Microsoft 365,
+    /// Outlook.com and Gmail take it for POP3.
+    pub(super) fn open_xoauth2(settings: &StoreSettings, token: &str) -> Result<Self, Error> {
+        Self::open_as(settings, Some(token))
+    }
+
+    fn open_as(settings: &StoreSettings, token: Option<&str>) -> Result<Self, Error> {
         if settings.folder != "INBOX" {
             return Err(Error::new(format!("No {} folder found", settings.folder)));
         }
-        // They go into the USER and PASS lines as they are.
-        if [&settings.user, &settings.password]
-            .iter()
-            .any(|text| text.contains(['\r', '\n']))
+        // They go into the USER and PASS lines (or the XOAUTH2 response) as they are.
+        if [
+            settings.user.as_str(),
+            settings.password.as_str(),
+            token.unwrap_or_default(),
+        ]
+        .iter()
+        .any(|text| text.contains(['\r', '\n']))
         {
             return Err(Error::new("the POP3 username or password has a line break"));
         }
@@ -2230,20 +2279,58 @@ impl Pop3 {
         let greeting = read_line(&mut reader)?;
         expect_ok(&greeting)?;
         let mut client = Self { reader, closed: false };
-        client.command(&format!("USER {}", settings.user))?;
-        client.command(&format!("PASS {}", settings.password))?;
+        match token {
+            Some(token) => client.authenticate_xoauth2(&settings.user, token)?,
+            None => {
+                client.command(&format!("USER {}", settings.user))?;
+                client.command(&format!("PASS {}", settings.password))?;
+            }
+        }
         Ok(client)
     }
 
+    /// `AUTH XOAUTH2`, then the response after the server's `+` continuation: never as an initial response on the AUTH
+    /// line, which RFC 5034 keeps to 255 octets (an access token is longer). A refused token comes back as a `+`
+    /// challenge (the provider's error, base64 JSON), which an empty line answers, and then `-ERR`. A refusal is "mail
+    /// server rejected the command", as a refused PASS.
+    fn authenticate_xoauth2(&mut self, user: &str, token: &str) -> Result<(), Error> {
+        use base64::Engine;
+        let rejected = |line: &str| Error::new(format!("mail server rejected the command: AUTH XOAUTH2: {line}"));
+        let continuation = self.exchange("AUTH XOAUTH2")?;
+        if !continuation.starts_with('+') || continuation.starts_with("+OK") {
+            return Err(rejected(&continuation));
+        }
+        let response = base64::engine::general_purpose::STANDARD.encode(super::oauth::xoauth2(user, token));
+        let answer = self.exchange(&response)?;
+        if answer.starts_with("+OK") {
+            return Ok(());
+        }
+        if let Some(challenge) = answer.strip_prefix('+') {
+            let detail = base64::engine::general_purpose::STANDARD
+                .decode(challenge.trim())
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .unwrap_or_default();
+            let end = self.exchange("")?;
+            return Err(rejected(format!("{end} {detail}").trim()));
+        }
+        Err(rejected(&answer))
+    }
+
     fn command(&mut self, line: &str) -> Result<String, Error> {
+        let response = self.exchange(line)?;
+        expect_ok(&response)?;
+        Ok(response)
+    }
+
+    /// A line to the server and its answer, whatever it is.
+    fn exchange(&mut self, line: &str) -> Result<String, Error> {
         write!(self.reader.get_mut(), "{line}\r\n").map_err(|err| Error::new(err.to_string()))?;
         self.reader
             .get_mut()
             .flush()
             .map_err(|err| Error::new(err.to_string()))?;
-        let response = read_line(&mut self.reader)?;
-        expect_ok(&response)?;
-        Ok(response)
+        read_line(&mut self.reader)
     }
 
     /// A multi-line answer up to the line with only a dot, as bytes: 8-bit mail is not text in any one charset.

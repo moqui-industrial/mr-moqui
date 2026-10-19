@@ -58,11 +58,15 @@ along with this software (see the LICENSE.md file). If not, see
             lists its folders. Each step is {step (smtp, storeLogin, storeList), ok, message}. folderList has each IMAP
             folder's {folderPath, delimiter, attributeList, folderKindEnumId}: INBOX, else its special-use attribute
             (\Sent, \Drafts, \Trash, \Junk, \Archive), else EfkOther. Use org.moqui.impl.EmailClientServices.test#EmailAccount,
-            which checks the user may manage the account.</description>
+            which checks the user may manage the account. SMTP signs in as smtpUsername when the server has one, else as
+            mailUsername; smtpUsername and smtpPassword given here are tried instead of the stored ones (nothing is
+            stored), so a wizard can test a separate SMTP sign-in before saving it.</description>
         <in-parameters>
             <parameter name="emailServerId" required="true"/>
             <parameter name="testSmtp" type="Boolean" default="true"/>
             <parameter name="testStore" type="Boolean" default="true"/>
+            <parameter name="smtpUsername"><description>Given (even empty: the store's sign-in), the SMTP user to try</description></parameter>
+            <parameter name="smtpPassword" allow-html="any"><description>Given, the SMTP password to try</description></parameter>
         </in-parameters>
         <out-parameters>
             <parameter name="success" type="Boolean"/>

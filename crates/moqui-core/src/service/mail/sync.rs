@@ -231,6 +231,8 @@ pub(super) struct FolderInfo {
     pub(super) subscribed: bool,
     pub(super) removed: bool,
     pub(super) sequence: i64,
+    /// A user chose the kind (`update#EmailFolder`): no server folder takes it by its special use or name.
+    pub(super) kind_by_user: bool,
 }
 
 fn as_u32(value: Option<&Value>) -> Option<u32> {
@@ -261,6 +263,7 @@ fn folder_info(row: &EntityValue) -> FolderInfo {
         subscribed: field_text(row, "subscribed") != "N",
         removed: row.get("remoteRemovedDate").is_some_and(|value| !value.is_null()),
         sequence: value_number(row.get("sequenceNum")).unwrap_or(999_999),
+        kind_by_user: field_text(row, "kindByUser") == "Y",
     }
 }
 
@@ -934,12 +937,6 @@ pub(super) fn run_sync(facade: &EntityFacade, account_id: &str, options: &SyncOp
     if !server.is_imap() && !server.is_pop() {
         return SyncReport::with("failed", format!("storeProtocol {} is not supported", server.protocol));
     }
-    if server.is_pop() && server.is_oauth() {
-        return SyncReport::with(
-            "failed",
-            format!("Email account {account_id}: a provider sign-in (OAuth) syncs over IMAP, not POP3"),
-        );
-    }
     match account.status.as_str() {
         "EasRemoved" => return SyncReport::with("skipped", format!("Email account {account_id} is removed")),
         "EasPaused" => return SyncReport::with("paused", format!("Email account {account_id} is paused")),
@@ -958,15 +955,16 @@ pub(super) fn run_sync(facade: &EntityFacade, account_id: &str, options: &SyncOp
         ..SyncReport::default()
     };
     let started = std::time::Instant::now();
+    let mut progress = Progress::new(facade, account_id);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if server.is_pop() {
             if options.push_only {
                 Ok(())
             } else {
-                pop_sync(facade, &account, &server, &mut report)
+                pop_sync(facade, &account, &server, &mut report, &mut progress)
             }
         } else {
-            imap_sync(facade, &account, &server, options, &mut report)
+            imap_sync(facade, &account, &server, options, &mut report, &mut progress)
         }
     }))
     .unwrap_or_else(|payload| {
@@ -977,6 +975,7 @@ pub(super) fn run_sync(facade: &EntityFacade, account_id: &str, options: &SyncOp
     });
     record_outcome(facade, &account, &result, &mut report, options);
     release_lease(facade, account_id);
+    progress.finish(&report);
     tracing::info!(
         account = %account_id,
         outcome = report.outcome,
@@ -1073,6 +1072,207 @@ pub(super) fn clip(text: &str, max: usize) -> String {
     } else {
         text.chars().take(max).collect()
     }
+}
+
+/// The topic of a sync's live progress (`NotificationMessage`, not persisted, no alert).
+pub(super) const PROGRESS_TOPIC: &str = "emailSyncProgress";
+/// At most one progress message of a sync in this time (and one when it ends).
+const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A sync's live progress for a screen ("Syncing 1,204 of 8,000"), sent on [`PROGRESS_TOPIC`] to the account's users
+/// (its owner and current members, as `publish#AccountCounts` finds them): `{emailAccountId, done, folderCount,
+/// foldersDone, folderName, folderPath, folderKept, folderFetched, folderToFetch, folderPending, fetched, toFetch,
+/// pending}`, and when it ends also `outcome`, `message` and `newCount`. A session fetches at most `email_sync_batch`
+/// messages a folder (`folderToFetch`); `folderPending` is all the new mail of the folder in the sync window, the rest
+/// coming in later sessions, and `folderKept` what was kept of it before, so a first sync shows "{folderKept +
+/// folderFetched} of {folderKept + folderPending}" across its sessions. `toFetch` and `pending` add up the folders read
+/// so far, so they grow folder by folder. Throttled to one a second; nothing is sent until a folder has mail to
+/// fetch, so a sync with nothing new sends nothing, and the last message (done) only after one was sent. Only while a
+/// notification socket or a cluster peer can take it, as the shell counts.
+pub(super) struct Progress {
+    account_id: String,
+    on: bool,
+    users: Option<Vec<String>>,
+    last: Option<std::time::Instant>,
+    sent_any: bool,
+    folder_count: usize,
+    folders_done: usize,
+    folder_name: String,
+    folder_path: String,
+    folder_kept: usize,
+    folder_fetched: usize,
+    folder_to_fetch: usize,
+    folder_pending: usize,
+    fetched: usize,
+    to_fetch: usize,
+    pending: usize,
+}
+
+impl Progress {
+    pub(super) fn new(facade: &EntityFacade, account_id: &str) -> Self {
+        let shutting_down = ExecutionContext::with_current(|ec| ec.factory().is_shutting_down()).unwrap_or(true);
+        let on = crate::service::shell::would_deliver(
+            shutting_down,
+            crate::notify::has_listeners(crate::notify::NOTIFICATION_MESSAGE),
+            crate::cluster::is_linked(facade),
+        );
+        Self {
+            account_id: account_id.to_string(),
+            on,
+            users: None,
+            last: None,
+            sent_any: false,
+            folder_count: 0,
+            folders_done: 0,
+            folder_name: String::new(),
+            folder_path: String::new(),
+            folder_kept: 0,
+            folder_fetched: 0,
+            folder_to_fetch: 0,
+            folder_pending: 0,
+            fetched: 0,
+            to_fetch: 0,
+            pending: 0,
+        }
+    }
+
+    pub(super) fn folders(&mut self, count: usize) {
+        self.folder_count = count;
+    }
+
+    pub(super) fn start_folder(&mut self, name: &str, path: &str) {
+        self.folder_name = name.to_string();
+        self.folder_path = path.to_string();
+        self.folder_kept = 0;
+        self.folder_fetched = 0;
+        self.folder_to_fetch = 0;
+        self.folder_pending = 0;
+    }
+
+    /// The new mail the current folder brings: `count` in this session, `pending` in all (the sessions after this one
+    /// bring the rest), with `kept` messages of it kept before.
+    pub(super) fn new_mail(&mut self, count: usize, pending: usize, kept: usize) {
+        self.folder_to_fetch = count;
+        self.folder_pending = pending.max(count);
+        self.folder_kept = kept;
+        self.to_fetch += count;
+        self.pending += pending.max(count);
+        self.send(false, None);
+    }
+
+    pub(super) fn fetched_one(&mut self) {
+        self.folder_fetched += 1;
+        self.fetched += 1;
+        self.send(false, None);
+    }
+
+    pub(super) fn end_folder(&mut self) {
+        self.folders_done += 1;
+        self.send(false, None);
+    }
+
+    pub(super) fn finish(&mut self, report: &SyncReport) {
+        if self.sent_any {
+            self.send(true, Some(report));
+        }
+    }
+
+    fn message(&self, report: Option<&SyncReport>) -> indexmap::IndexMap<String, Value> {
+        let count = |number: usize| Value::I64(i64::try_from(number).unwrap_or(i64::MAX));
+        let mut map = indexmap::IndexMap::new();
+        map.insert("emailAccountId".to_string(), Value::string(&self.account_id));
+        map.insert("done".to_string(), Value::Bool(report.is_some()));
+        map.insert("folderCount".to_string(), count(self.folder_count));
+        map.insert("foldersDone".to_string(), count(self.folders_done));
+        map.insert("folderName".to_string(), Value::string(&self.folder_name));
+        map.insert("folderPath".to_string(), Value::string(&self.folder_path));
+        map.insert("folderKept".to_string(), count(self.folder_kept));
+        map.insert("folderFetched".to_string(), count(self.folder_fetched));
+        map.insert("folderToFetch".to_string(), count(self.folder_to_fetch));
+        map.insert("folderPending".to_string(), count(self.folder_pending));
+        map.insert("fetched".to_string(), count(self.fetched));
+        map.insert("toFetch".to_string(), count(self.to_fetch.max(self.fetched)));
+        map.insert("pending".to_string(), count(self.pending.max(self.fetched)));
+        if let Some(report) = report {
+            map.insert("outcome".to_string(), Value::string(report.outcome));
+            map.insert("message".to_string(), Value::string(&report.message));
+            map.insert("newCount".to_string(), count(report.new_count));
+        }
+        map
+    }
+
+    /// The account's owner and current members, once.
+    fn users(&mut self) -> &[String] {
+        if self.users.is_none() {
+            let found = account_users(&self.account_id).unwrap_or_else(|err| {
+                tracing::warn!("Could not read the users of email account {}: {err}", self.account_id);
+                Vec::new()
+            });
+            self.users = Some(found);
+        }
+        self.users.as_deref().unwrap_or_default()
+    }
+
+    fn send(&mut self, last: bool, report: Option<&SyncReport>) {
+        if !self.on || (!last && self.to_fetch == 0) {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if !last && self.last.is_some_and(|at| now.duration_since(at) < PROGRESS_EVERY) {
+            return;
+        }
+        let message = self.message(report);
+        let users = self.users().to_vec();
+        if users.is_empty() {
+            return;
+        }
+        self.last = Some(now);
+        self.sent_any = true;
+        let sent = crate::notify::NotificationMessage::new()
+            .topic(PROGRESS_TOPIC)
+            .user_ids(users)
+            .message_map(message)
+            .persist(false)
+            .show_alert(false)
+            .send();
+        if let Err(err) = sent {
+            tracing::warn!(
+                "Could not send the sync progress of email account {}: {err}",
+                self.account_id
+            );
+        }
+    }
+}
+
+/// The users of an account: its owner and its current members.
+fn account_users(account_id: &str) -> Result<Vec<String>, LibError> {
+    let Some(facade) = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten() else {
+        return Ok(Vec::new());
+    };
+    let mut users: Vec<String> = Vec::new();
+    if let Some(account) = find_one(&facade, ACCOUNT, "emailAccountId", account_id)? {
+        let owner = field_text(&account, "ownerUserId");
+        if !owner.is_empty() {
+            users.push(owner);
+        }
+    }
+    let now = stamp_millis(now_millis());
+    for row in facade
+        .find("moqui.basic.email.EmailAccountUser")?
+        .eq("emailAccountId", Value::string(account_id))
+        .condition(Condition::or(vec![
+            Condition::is_null("thruDate"),
+            Condition::greater("thruDate", now.clone()),
+        ]))
+        .list()?
+        .values()
+    {
+        let user = field_text(row, "userId");
+        if !user.is_empty() && !users.contains(&user) {
+            users.push(user);
+        }
+    }
+    Ok(users)
 }
 
 /// The unread counts of the account's users changed.
@@ -1257,6 +1457,7 @@ fn imap_sync(
     server: &ServerInfo,
     options: &SyncOptions,
     report: &mut SyncReport,
+    progress: &mut Progress,
 ) -> Result<(), SyncFailure> {
     let mut conn = connect_imap(facade, server)?;
     if conn.caps.has("QRESYNC") && conn.caps.has("ENABLE") {
@@ -1306,6 +1507,7 @@ fn imap_sync(
             .then(left.sequence.cmp(&right.sequence))
             .then(left.path.cmp(&right.path))
     });
+    progress.folders(folders.len());
     for (index, folder) in folders.iter().enumerate() {
         if options.inbox_only && index > 0 && folder.kind != "EfkInbox" && session.vanished.is_empty() {
             break;
@@ -1313,7 +1515,10 @@ fn imap_sync(
         if index > 0 && claim_lease(facade, &account.id, true).is_err() {
             tracing::warn!("Could not renew the sync lock of email account {}", account.id);
         }
-        match sync_folder(&mut conn, &mut session, folder, report) {
+        progress.start_folder(&folder.name, &folder.path);
+        let synced = sync_folder(&mut conn, &mut session, folder, report, progress);
+        progress.end_folder();
+        match synced {
             Ok(()) => report.folder_count += 1,
             Err(FolderError::Lost(text)) => return Err(SyncFailure::Connect(text)),
             Err(FolderError::Folder(text)) => {
@@ -1490,10 +1695,11 @@ fn map_folders(
             }
             continue;
         }
+        // a kind is taken by a folder mapped to the server, or by the folder a user chose for it, wherever it is
         let taken_kind = |locals: &[FolderInfo]| {
             locals
                 .iter()
-                .any(|local| local.kind == kind && !local.path.is_empty() && !local.removed)
+                .any(|local| local.kind == kind && (local.kind_by_user || (!local.path.is_empty() && !local.removed)))
         };
         if kind != "EfkOther" && !taken_kind(&locals) {
             if let Some(local) = locals
@@ -1725,6 +1931,7 @@ fn sync_folder(
     session: &mut Session<'_>,
     folder: &FolderInfo,
     report: &mut SyncReport,
+    progress: &mut Progress,
 ) -> Result<(), FolderError> {
     let items = if conn.condstore {
         "(MESSAGES UIDNEXT UIDVALIDITY UNSEEN HIGHESTMODSEQ)"
@@ -1879,7 +2086,9 @@ fn sync_folder(
     }
     // the new messages
     let capped = wanted.len() > session.batch;
+    let pending = wanted.len();
     wanted.truncate(session.batch);
+    progress.new_mail(wanted.len(), pending, locals.len());
     let mut failed_from: Option<u32> = None;
     for chunk in wanted.chunks(HEADER_CHUNK) {
         let heads = conn.session.uid_fetch(
@@ -1949,6 +2158,7 @@ fn sync_folder(
                 match store_new(session, folder, *uid, &raw, flags, *internal, *size, keywords) {
                     Ok(id) => {
                         report.new_count += 1;
+                        progress.fetched_one();
                         if folder.kind == "EfkInbox" {
                             session.new_inbox_ids.push(id);
                         }
@@ -2358,6 +2568,7 @@ fn pop_sync(
     account: &AccountInfo,
     server: &ServerInfo,
     report: &mut SyncReport,
+    progress: &mut Progress,
 ) -> Result<(), SyncFailure> {
     require_host(&server.host).map_err(|err| SyncFailure::Connect(err.to_string()))?;
     let lost = |err: LibError| SyncFailure::Connect(err.to_string());
@@ -2379,14 +2590,10 @@ fn pop_sync(
         mark_seen: false,
         delete: server.store_delete,
     };
-    let mut pop = Pop3::open(&settings).map_err(|err| {
-        let text = err.message().to_string();
-        if text.starts_with("mail server rejected the command") {
-            SyncFailure::Auth(format!("POP3 {} refused the sign-in: {text}", server.host))
-        } else {
-            SyncFailure::Connect(format!("POP3 {}: {text}", server.host))
-        }
-    })?;
+    let mut pop = open_pop(facade, server, &settings)?;
+    let total_folders = 1;
+    progress.folders(total_folders);
+    progress.start_folder(&inbox.name, "INBOX");
     let listing = pop
         .uidl()
         .map_err(|err| SyncFailure::Connect(format!("POP3 UIDL on {}: {}", server.host, err.message())))?;
@@ -2406,7 +2613,9 @@ fn pop_sync(
     // the newest first, a batch at a time
     let mut unknown: Vec<(u32, String)> = listing.into_iter().filter(|(_, uidl)| !known.contains(uidl)).collect();
     unknown.sort_by_key(|item| std::cmp::Reverse(item.0));
+    let pending = unknown.len();
     unknown.truncate(usize::try_from(property_number("email_sync_batch", 500)).unwrap_or(500));
+    progress.new_mail(unknown.len(), pending, known.len());
     let mut new_ids = Vec::new();
     for (number, uidl) in unknown {
         let raw = match pop.retrieve(number) {
@@ -2448,6 +2657,7 @@ fn pop_sync(
         match force_new(facade, || store::store_message(facade, &parsed, &place)) {
             Ok(id) => {
                 report.new_count += 1;
+                progress.fetched_one();
                 new_ids.push(id);
                 if server.store_delete {
                     if let Err(err) = pop.delete_number(number) {
@@ -2464,10 +2674,47 @@ fn pop_sync(
     if let Err(err) = pop.quit() {
         tracing::warn!("POP3 QUIT on {}: {err}", server.host);
     }
-    report.folder_count = 1;
+    report.folder_count = total_folders;
+    progress.end_folder();
     run_rules(&account.id, &new_ids);
     after_new_mail(&account.id, &new_ids);
     Ok(())
+}
+
+/// Connect to a POP3 server and sign in: `USER` and `PASS`, or for an EatOAuth2 server `AUTH XOAUTH2` with an access
+/// token, replaced by a new one once when the server refuses it (it may have been revoked or have ended early). A
+/// refused sign-in is [`SyncFailure::Auth`].
+pub(super) fn open_pop(
+    facade: &EntityFacade,
+    server: &ServerInfo,
+    settings: &StoreSettings,
+) -> Result<Pop3, SyncFailure> {
+    let classify = |err: crate::context::Error| {
+        let text = err.message().to_string();
+        if text.starts_with("mail server rejected the command") {
+            SyncFailure::Auth(format!("POP3 {} refused the sign-in: {text}", server.host))
+        } else {
+            SyncFailure::Connect(format!("POP3 {}: {text}", server.host))
+        }
+    };
+    if !server.is_oauth() {
+        return Pop3::open(settings).map_err(classify);
+    }
+    let token = super::oauth::access_token(facade, &server.server_id, None)?;
+    match Pop3::open_xoauth2(settings, &token).map_err(classify) {
+        Err(SyncFailure::Auth(text)) => {
+            tracing::debug!(
+                "POP3 {} refused the access token, trying a new one: {text}",
+                server.host
+            );
+            let fresh = super::oauth::access_token(facade, &server.server_id, Some(&token))?;
+            if fresh == token {
+                return Err(SyncFailure::Auth(text));
+            }
+            Pop3::open_xoauth2(settings, &fresh).map_err(classify)
+        }
+        other => other,
+    }
 }
 
 // ---- the job ----

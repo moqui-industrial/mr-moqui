@@ -694,6 +694,11 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="storeSkipSeen" type="text-indicator"/>
         <field name="mailUsername" type="text-medium" enable-audit-log="update"/>
         <field name="mailPassword" type="text-medium" encrypt="true" enable-audit-log="update"/>
+        <field name="smtpUsername" type="text-medium" enable-audit-log="update"><description>When set, SMTP signs in as this
+            user (with smtpPassword, else mailPassword) instead of mailUsername, for a provider whose outgoing server has its
+            own sign-in; empty for the same sign-in as the store</description></field>
+        <field name="smtpPassword" type="text-medium" encrypt="true" enable-audit-log="update"><description>The password
+            of smtpUsername, encrypted; empty for mailPassword. Not used without smtpUsername.</description></field>
         <field name="allowedToDomains" type="text-long" enable-audit-log="update">
             <description>Comma separated list of domain names to allow (like: moqui.org, dejc.com), matched by ends with; if no value specified all domains allowed</description></field>
         <field name="authTypeEnumId" type="id"><description>How SMTP and the store sign in: EatPassword (mailUsername and
@@ -760,6 +765,8 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="userInfoUrl" type="text-medium"><description>Read with the access token for the address when the token
             response has no ID token</description></field>
         <field name="scope" type="text-long"><description>The scopes asked for, space separated</description></field>
+        <field name="popScope" type="text-long"><description>The scopes asked for too, and to be granted, when the account
+            reads its mail over POP3 (Microsoft: POP.AccessAsUser.All; Google's mail scope covers POP), space separated</description></field>
         <field name="mailScope" type="text-long"><description>The scopes that must be granted for mail; a sign-in where the
             user left one out is refused</description></field>
         <field name="authParams" type="text-medium"><description>More query parameters of the authorization request, such
@@ -799,6 +806,7 @@ along with this software (see the LICENSE.md file). If not, see
                     tokenUrl="https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
                     scope="openid email profile offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send"
                     mailScope="https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send"
+                    popScope="https://outlook.office.com/POP.AccessAsUser.All"
                     authParams="response_mode=query&amp;prompt=select_account" refreshParams="scope={scope}"
                     issuer="https://login.microsoftonline.com/{tenantid}/v2.0" addressClaims="email,preferred_username"
                     addressDomains="outlook.com,hotmail.com,live.com,msn.com,passport.com,windowslive.com,outlook.co.uk,hotmail.co.uk,live.co.uk,outlook.fr,hotmail.fr,live.fr,outlook.de,hotmail.de,live.de,outlook.it,hotmail.it,live.it,outlook.es,hotmail.es,live.ca,hotmail.ca,outlook.com.au,live.com.au,hotmail.com.au,outlook.jp,hotmail.co.jp,live.jp,outlook.com.br,hotmail.com.br,live.nl,hotmail.nl,outlook.be,hotmail.be,live.be,outlook.at,live.at,outlook.ie,live.ie,outlook.in,live.in,outlook.dk,live.dk,hotmail.dk,outlook.se,live.se,hotmail.se,outlook.cl,outlook.com.ar,live.com.ar,outlook.kr,outlook.sg,outlook.my,outlook.ph,outlook.co.id,outlook.co.th,outlook.com.vn,outlook.com.tr,outlook.sa,outlook.co.il,outlook.cz,outlook.sk,outlook.pt,outlook.com.gr,outlook.hu,outlook.lv,live.ru,live.cn,live.no,live.com.mx,hotmail.com.mx,live.com.pt,live.co.za"
@@ -955,7 +963,11 @@ along with this software (see the LICENSE.md file). If not, see
             it on is new</description></field>
         <field name="unreadCount" type="number-integer"/>
         <field name="totalCount" type="number-integer"/>
-        <field name="subscribed" type="text-indicator"><description>Y when the sync reads the folder</description></field>
+        <field name="subscribed" type="text-indicator"><description>Y when the sync reads the folder; N leaves it as it is
+            here (EmailClientServices.update#EmailFolder; the Inbox is always read)</description></field>
+        <field name="kindByUser" type="text-indicator"><description>Y when a user chose the folder's kind
+            (update#EmailFolder): the sync keeps it, and maps no other server folder to that kind by its special use or
+            name</description></field>
         <field name="delimiter" type="text-short"><description>The server's hierarchy delimiter in folderPath</description></field>
         <field name="lastFlagScanDate" type="date-time"><description>When the sync last read the flags of each message,
             on a server without CONDSTORE</description></field>
@@ -1068,7 +1080,9 @@ along with this software (see the LICENSE.md file). If not, see
     </entity>
     <entity entity-name="EmailOutOfOffice" package="moqui.basic.email" use="transactional" cache="never">
         <description>An account's automatic reply: sent by the receiver while enabled and between the dates, once per sender
-            in replyOncePerDays; internalBodyHtml, when set, to senders of the user's own organization.</description>
+            in replyOncePerDays; internalBodyHtml, when set, to senders of the user's own organization. replyAudienceEnumId
+            says who gets it: everyone (EraEveryone, the default), internal senders and the owner's contacts (EraContacts),
+            or internal senders only (EraInternal).</description>
         <field name="emailAccountId" type="id" is-pk="true"/>
         <field name="enabled" type="text-indicator"/>
         <field name="fromDate" type="date-time"/>
@@ -1077,7 +1091,18 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="bodyHtml" type="text-very-long"/>
         <field name="internalBodyHtml" type="text-very-long"/>
         <field name="replyOncePerDays" type="number-integer"/>
+        <field name="replyAudienceEnumId" type="id"><description>Who gets the reply; empty for everyone. A contact is a
+            sender the hook service names (EmailClientServices.filter#ContactAddresses: the email_contact_service property,
+            else the owner's theme value STRT_EMAIL_CONTACT_SERVICE); with no hook every sender is one.</description></field>
         <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
+        <relationship type="one" title="EmailReplyAudience" related="moqui.basic.Enumeration" short-alias="replyAudience">
+            <key-map field-name="replyAudienceEnumId"/></relationship>
+        <seed-data>
+            <moqui.basic.EnumerationType description="Email Reply Audience" enumTypeId="EmailReplyAudience"/>
+            <moqui.basic.Enumeration description="Everyone" enumId="EraEveryone" enumTypeId="EmailReplyAudience" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="My contacts" enumId="EraContacts" enumTypeId="EmailReplyAudience" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Internal only" enumId="EraInternal" enumTypeId="EmailReplyAudience" sequenceNum="3"/>
+        </seed-data>
     </entity>
     <entity entity-name="EmailOutOfOfficeSent" package="moqui.basic.email" use="transactional" cache="never">
         <description>When an account's automatic reply last went to a sender (the address in lower case), so it goes once
