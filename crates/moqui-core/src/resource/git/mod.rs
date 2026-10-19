@@ -61,6 +61,9 @@ pub(crate) const GIT_REPOSITORY: &str = "moqui.resource.GitRepository";
 /// resource scheme is not checked against it.
 pub const GIT_ARTIFACT_TYPE: &str = "AT_GIT_REPOSITORY";
 
+/// A file to commit: its path in the repository and its content.
+type FilePut = (Vec<String>, Vec<u8>);
+
 /// The `resource-reference` class that names this provider in `MoquiDefaultConf.xml`.
 pub const GIT_CLASS: &str = crate::native::GIT_RESOURCE_CLASS;
 
@@ -894,6 +897,27 @@ impl crate::native::ResourceProvider for GitProvider {
         }
         let blob = self.store_file(&repo, &path, lfs_files::FileContent::Bytes(bytes))?;
         self.put_file(&repo, location, path, blob)
+    }
+
+    /// The files of each repository in one commit, as an image and its resized variants are one change.
+    fn write_many(&self, files: &[(String, Vec<u8>)]) -> Result<(), Error> {
+        let mut by_repository: indexmap::IndexMap<String, Vec<FilePut>> = indexmap::IndexMap::new();
+        for (location, bytes) in files {
+            let (repository_id, path) = parse_location(location)?;
+            if path.is_empty() {
+                return Err(Error::new(format!("cannot write the root of a repository: {location}")));
+            }
+            by_repository.entry(repository_id).or_default().push((path, bytes.clone()));
+        }
+        for (repository_id, puts) in by_repository {
+            let names: Vec<String> = puts.iter().map(|(path, _)| path.join("/")).collect();
+            let message = match names.as_slice() {
+                [one] => format!("Write {one}"),
+                many => format!("Write {} files: {}", many.len(), many.join(", ")),
+            };
+            self.commit_files(&repository_id, &message, &puts, &[])?;
+        }
+        Ok(())
     }
 
     /// A large file is stored as it is read (a content blob of a `db` repository), never all in memory.

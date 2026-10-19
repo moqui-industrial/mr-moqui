@@ -557,6 +557,28 @@ impl ResourceFacade {
         }))
     }
 
+    /// Write several files together: one change where the storage keeps changes (one commit for the files of a
+    /// `git://` repository), else each as [`ResourceFacade::write_bytes`] does.
+    pub fn write_many(&self, files: &[(String, Vec<u8>)]) -> Result<(), Error> {
+        let mut by_scheme: indexmap::IndexMap<String, Vec<(String, Vec<u8>)>> = indexmap::IndexMap::new();
+        for (location, bytes) in files {
+            if self.provider(location).is_some() {
+                by_scheme
+                    .entry(scheme_of(location).to_string())
+                    .or_default()
+                    .push((location.clone(), bytes.clone()));
+            } else {
+                self.write_bytes(location, bytes)?;
+            }
+        }
+        for (_, group) in by_scheme {
+            if let Some(provider) = group.first().and_then(|(location, _)| self.provider(location)) {
+                provider.write_many(&group)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Write a file from `input` (of `size` bytes, when known), creating its parent directories: an upload streamed
     /// to storage, never all in memory where the storage can take it as it is read (a file, a `git://` content blob).
     pub fn write_from(&self, location: &str, input: &mut dyn std::io::Read, size: Option<u64>) -> Result<(), Error> {

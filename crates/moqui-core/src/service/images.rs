@@ -265,11 +265,22 @@ fn write_image(
     input_format: &str,
     retry: bool,
 ) -> Result<String, LibError> {
+    let (written, bytes) = encode_image(image, location, format_name, input_format, retry)?;
+    put_bytes(&written, &bytes)?;
+    Ok(written)
+}
+
+/// The bytes of `image` as `format_name`, for `location`; when that format refuses it and `retry` holds, in the input
+/// format, for the same name with that extension. The location and the bytes.
+fn encode_image(
+    image: &DynamicImage,
+    location: &str,
+    format_name: &str,
+    input_format: &str,
+    retry: bool,
+) -> Result<(String, Vec<u8>), LibError> {
     match encode(image, format_name) {
-        Ok(bytes) => {
-            put_bytes(location, &bytes)?;
-            Ok(location.to_string())
-        }
+        Ok(bytes) => Ok((location.to_string(), bytes)),
         Err(err) => {
             let stem = location.rsplit_once('.').map_or(location, |(stem, _)| stem);
             let retry_location = format!("{stem}.{input_format}");
@@ -280,11 +291,44 @@ fn write_image(
                 "Retrying to write image from format {format_name} to {input_format} with a destination to {retry_location} instead of {location}: {}",
                 err.message()
             );
-            let bytes = encode(image, input_format)?;
-            put_bytes(&retry_location, &bytes)?;
-            Ok(retry_location)
+            Ok((retry_location, encode(image, input_format)?))
         }
     }
+}
+
+/// Image conversions that may run at once (`image_max_concurrent`, 2): a decoded image may take hundreds of MB.
+struct Slots {
+    used: std::sync::Mutex<usize>,
+    freed: std::sync::Condvar,
+}
+
+/// A conversion's slot, given back when dropped.
+struct Slot(&'static Slots);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        *moqui_lib::sync::lock(&self.0.used) -= 1;
+        self.0.freed.notify_one();
+    }
+}
+
+fn image_slot() -> Slot {
+    static SLOTS: Slots = Slots {
+        used: std::sync::Mutex::new(0),
+        freed: std::sync::Condvar::new(),
+    };
+    let most = moqui_lib::env::get_prop_or_env("image_max_concurrent")
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|most| *most > 0)
+        .unwrap_or(2);
+    let mut used = moqui_lib::sync::lock(&SLOTS.used);
+    while *used >= most {
+        used = SLOTS.freed.wait(used).unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+    *used += 1;
+    Slot(&SLOTS)
 }
 
 fn convert_image(
@@ -312,23 +356,33 @@ fn convert_image(
     }
     let started = std::time::Instant::now();
     let bytes = input_bytes(parameters, "inputImageStream", "inputLocation")?;
-    let (image, input_format) = decode(&bytes)?;
-    for (suffix, width, location) in targets {
-        let written = match width {
-            // the original is written as outputImageFormat, as its caller names the file, when that format can be
-            // written, and in the input's format otherwise
-            None => {
-                let format = if format_of(&output_format).is_some() {
-                    output_format.as_str()
-                } else {
-                    input_format.as_str()
-                };
-                write_image(&image, &location, format, &input_format, true)?
-            }
-            Some(width) => write_image(&resized(&image, width)?, &location, &output_format, &input_format, true)?,
-        };
-        out.insert(format!("contentLocation{suffix}"), Value::String(written));
-    }
+    // every variant made first, then written together: one commit of a git:// repository
+    let files = {
+        let _slot = image_slot();
+        let (image, input_format) = decode(&bytes)?;
+        let mut files = Vec::with_capacity(targets.len());
+        for (suffix, width, location) in targets {
+            let encoded = match width {
+                // the original is written as outputImageFormat, as its caller names the file, when that format can be
+                // written, and in the input's format otherwise
+                None => {
+                    let format = if format_of(&output_format).is_some() {
+                        output_format.as_str()
+                    } else {
+                        input_format.as_str()
+                    };
+                    encode_image(&image, &location, format, &input_format, true)?
+                }
+                Some(width) => encode_image(&resized(&image, width)?, &location, &output_format, &input_format, true)?,
+            };
+            out.insert(format!("contentLocation{suffix}"), Value::String(encoded.0.clone()));
+            files.push(encoded);
+        }
+        files
+    };
+    ExecutionContext::with_current(|ctx| ctx.factory().resource().write_many(&files))
+        .ok_or_else(|| LibError::new("no execution context is entered"))?
+        .map_err(|err| LibError::new(format!("Could not save the images: {}", err.message())))?;
     tracing::info!(
         "Finished ImageServices.convert took milliseconds {}",
         started.elapsed().as_millis()
@@ -450,6 +504,48 @@ mod tests {
         assert_eq!(convert("jpg", "a_Original.jpg"), ImageFormat::Jpeg);
         assert_eq!(convert("wbmp", "b_Original.wbmp"), ImageFormat::Png, "no wbmp writer");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The variants of an image go into a git repository in one commit, its PNGs in LFS.
+    #[test]
+    fn the_variants_of_an_image_are_one_commit() {
+        let ctx = crate::context::ExecutionContextFactory::test_context();
+        let facade = crate::testing::open();
+        ctx.factory().set_entity(facade.clone());
+        ctx.factory().resource().install_git().unwrap();
+        let _entered = ctx.enter();
+        let mut repository = facade.make_value("moqui.resource.GitRepository").unwrap();
+        repository.set("repositoryId", Value::string("media"));
+        repository.set("repositoryKind", Value::string("db"));
+        repository.create(&facade).unwrap();
+        let resources = ctx.factory().resource();
+        let provider = resources.git().unwrap().clone();
+        provider
+            .setup_lfs("media", &crate::resource::git::attributes::DEFAULT_LFS_PATTERNS)
+            .unwrap();
+        let mut parameters = BTreeMap::new();
+        parameters.insert("inputImageStream".to_string(), Value::Bytes(png_with_alpha()));
+        parameters.insert("outputImageFormat".to_string(), Value::string("png"));
+        for suffix in ["Original", "Small", "Thumbnail"] {
+            parameters.insert(
+                format!("outputResourceReference{suffix}"),
+                Value::string(format!("git://media/logo_{suffix}.png")),
+            );
+        }
+        convert_image(&parameters, &facade).unwrap();
+        let versions: Vec<String> = ["Original", "Small", "Thumbnail"]
+            .iter()
+            .map(|suffix| {
+                let history = resources.version_history(&format!("git://media/logo_{suffix}.png")).unwrap();
+                assert_eq!(history.len(), 1);
+                history[0].version_name.clone()
+            })
+            .collect();
+        assert!(versions.iter().all(|version| *version == versions[0]), "{versions:?}");
+        let (small, _) = decode(&resources.get("git://media/logo_Small.png").unwrap().read_bytes().unwrap()).unwrap();
+        assert_eq!(small.width(), 360);
+        let lfs = facade.find("moqui.resource.GitLfsObject").unwrap().list().unwrap();
+        assert_eq!(lfs.len(), 3, "the PNGs are LFS files");
     }
 
     #[test]

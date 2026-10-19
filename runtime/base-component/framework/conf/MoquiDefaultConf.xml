@@ -152,6 +152,8 @@
     <default-property name="blob_gc_prune_days" value="14"/>
     <!-- A dbresource file over this many bytes is a content blob (stored once, streamed), not fileData. -->
     <default-property name="dbresource_blob_threshold" value="65536"/>
+    <!-- Image conversions (convert#Image) that may run at once; a decoded image may take hundreds of MB. -->
+    <default-property name="image_max_concurrent" value="2"/>
 
     <!-- Properties for the primary (transactional group) datasource -->
     <default-property name="entity_ds_db_conf" value="h2"/>

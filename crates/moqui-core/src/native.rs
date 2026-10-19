@@ -154,6 +154,14 @@ pub trait ResourceProvider: Send + Sync + std::fmt::Debug {
     fn write_bytes(&self, location: &str, _bytes: &[u8]) -> Result<(), Error> {
         Err(Error::new(format!("writing is not supported: {location}")))
     }
+    /// Write several files together, as one change where the storage keeps changes (one commit of a `git://`
+    /// repository): by default each with [`ResourceProvider::write_bytes`].
+    fn write_many(&self, files: &[(String, Vec<u8>)]) -> Result<(), Error> {
+        for (location, bytes) in files {
+            self.write_bytes(location, bytes)?;
+        }
+        Ok(())
+    }
     /// Write the file at `location` from `input` (of `size` bytes, when known), as an upload streams: by default read
     /// into memory and [`ResourceProvider::write_bytes`].
     fn write_from(&self, location: &str, input: &mut dyn std::io::Read, _size: Option<u64>) -> Result<(), Error> {
