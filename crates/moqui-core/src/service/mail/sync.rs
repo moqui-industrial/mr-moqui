@@ -1293,7 +1293,7 @@ fn account_users(account_id: &str) -> Result<Vec<String>, LibError> {
 }
 
 /// The unread counts of the account's users changed.
-fn publish_counts(account_id: &str) {
+pub(super) fn publish_counts(account_id: &str) {
     let mut parameters = BTreeMap::new();
     parameters.insert(
         "emailAccountIdList".to_string(),
@@ -2573,7 +2573,7 @@ fn eca_due(account: &AccountInfo, arrived: Option<i64>) -> bool {
 }
 
 /// The account's rules on its new Inbox mail; a rule that fails is the rules' to log.
-fn run_rules(account_id: &str, ids: &[String]) {
+pub(super) fn run_rules(account_id: &str, ids: &[String]) {
     if ids.is_empty() {
         return;
     }
@@ -2594,7 +2594,7 @@ fn run_rules(account_id: &str, ids: &[String]) {
 /// What new Inbox mail brings once the rules ran, each part on its own (a part that fails is logged and the other
 /// runs): a snoozed thread with new mail is back in the Inbox (`wake#SnoozedThreads`, as Gmail does), and the account's
 /// automatic reply goes to the senders it is for (`send#OutOfOfficeReplies`).
-fn after_new_mail(account_id: &str, ids: &[String]) {
+pub(super) fn after_new_mail(account_id: &str, ids: &[String]) {
     if ids.is_empty() {
         return;
     }

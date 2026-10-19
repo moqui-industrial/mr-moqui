@@ -32,6 +32,8 @@ pub mod logging;
 pub mod pdf;
 pub mod qvt_report;
 pub mod search;
+#[cfg(feature = "inbound-smtp")]
+pub mod smtp;
 pub mod ssh;
 pub mod sso;
 #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
@@ -101,6 +103,20 @@ impl Server {
     pub fn ssh_address(&self) -> Option<std::net::SocketAddr> {
         let factory = self.factory.as_ref()?;
         *lock(&factory.extension(|_| ssh::server::SshAddress::default()).0)
+    }
+
+    /// The inbound SMTP listener's address, when this build has the `inbound-smtp` feature and `smtp_listen_port` is set.
+    #[must_use]
+    pub fn smtp_address(&self) -> Option<std::net::SocketAddr> {
+        #[cfg(feature = "inbound-smtp")]
+        {
+            let factory = self.factory.as_ref()?;
+            *lock(&factory.extension(|_| smtp::SmtpAddress::default()).0)
+        }
+        #[cfg(not(feature = "inbound-smtp"))]
+        {
+            None
+        }
     }
 
     /// The public HTTPS listener, when one is running (`webapp_https_listen_port`, certificates in `runtime/cert`).
@@ -1072,6 +1088,8 @@ fn boot_server_factory(
     sso::install();
     ipp::install();
     tracing::info!("SSH client, SSO and IPP integrations installed");
+    // last, so mail is taken only once everything it runs is up
+    let smtpd = start_smtp(&factory);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -1083,6 +1101,7 @@ fn boot_server_factory(
     Ok(ServeProcess {
         runtime: Some(runtime),
         pdf: Some(pdf),
+        smtpd: Some(smtpd),
         sshd,
         cluster_edge: Some(cluster_edge),
         notify_listener,
@@ -1098,7 +1117,7 @@ fn boot_server_factory(
 #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
 const RUNTIME_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Drop order is the axum runtime, the PDF browser, the SSH server, the cluster listeners (while the request pool is still up),
+/// Drop order is the axum runtime, the PDF browser, the SMTP listener, the SSH server, the cluster listeners (while the request pool is still up),
 /// the factory, the search store, the facade, the sim overlay, then the entity database (its driver, then its cluster). The search store
 /// outlives the factory so a dedicated postmaster stops after the facade's clients, and the overlay outlives the facade
 /// for its sim pool.
@@ -1107,6 +1126,7 @@ struct ServeProcess {
     /// Stopped with [`RUNTIME_SHUTDOWN`] as its limit.
     runtime: Option<tokio::runtime::Runtime>,
     pdf: Option<PdfSlot>,
+    smtpd: Option<SmtpSlot>,
     sshd: Option<ssh::server::SshServer>,
     cluster_edge: Option<crate::cluster_edge::ClusterEdge>,
     notify_listener: Option<crate::cluster_notify::NotifyListener>,
@@ -1129,6 +1149,7 @@ impl Drop for ServeProcess {
             factory.shutdown();
         }
         self.pdf.take();
+        self.smtpd.take();
         self.sshd.take();
         self.cluster_edge.take();
         self.notify_listener.take();
@@ -1138,6 +1159,43 @@ impl Drop for ServeProcess {
         self.sim.take();
         self.db.take();
     }
+}
+
+#[cfg(feature = "inbound-smtp")]
+type SmtpSlot = Option<smtp::SmtpServer>;
+#[cfg(not(feature = "inbound-smtp"))]
+type SmtpSlot = NoSmtp;
+
+/// No SMTP listener in this build.
+#[cfg(not(feature = "inbound-smtp"))]
+struct NoSmtp;
+
+/// The inbound SMTP listener when `smtp_listen_port` is set. A listener that cannot start is logged and the server
+/// starts without it; an empty or bad `smtp_allowed_addresses` never starts one.
+#[cfg(feature = "inbound-smtp")]
+fn start_smtp(factory: &std::sync::Arc<moqui_core::context::ExecutionContextFactory>) -> SmtpSlot {
+    match smtp::start(factory) {
+        Ok(Some(server)) => {
+            tracing::info!("SMTP listener started on {}", server.address());
+            Some(server)
+        }
+        Ok(None) => {
+            tracing::info!("Not starting the SMTP listener, smtp_listen_port is not set");
+            None
+        }
+        Err(err) => {
+            tracing::error!("The SMTP listener did not start, the server starts without it: {err}");
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "inbound-smtp"))]
+fn start_smtp(_factory: &std::sync::Arc<moqui_core::context::ExecutionContextFactory>) -> SmtpSlot {
+    if !moqui_lib::env::get_prop_or_env("smtp_listen_port").trim().is_empty() {
+        tracing::error!("smtp_listen_port is set but this build has no SMTP listener (the inbound-smtp feature)");
+    }
+    NoSmtp
 }
 
 #[cfg(feature = "pdf")]

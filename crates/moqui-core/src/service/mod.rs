@@ -72,6 +72,9 @@ pub use email_eca::{email_rule_count, run_email_rule, run_email_rules};
 #[cfg(test)]
 pub(crate) use jobs::send_job_error_notification;
 pub use jobs::{run_job_now, PassReport};
+/// Mail the host's SMTP listener (moqui-host `inbound-smtp`) received: the recipient lookup and the delivery.
+#[cfg(feature = "mail")]
+pub use mail::inbound as mail_inbound;
 #[cfg(all(test, feature = "mail"))]
 pub(crate) use mail::{SharedSinkGuard, SinkGuard};
 pub use pool::{start_pools, PoolStatus, RunnerStats, ServicePools};
