@@ -76,6 +76,7 @@ pub(in crate::service) fn register(map: &mut BTreeMap<&'static str, RustServiceF
     rust_service!(map, complete_oauth_sign_in)?;
     rust_service!(map, get_oauth_status)?;
     rust_service!(map, get_oauth_providers)?;
+    rust_service!(map, find_oauth_provider)?;
     rust_service!(map, revoke_oauth_sign_in)?;
     rust_service!(map, revoke_oauth_token)?;
     rust_service!(map, filter_contact_addresses)?;
@@ -201,6 +202,11 @@ mail_service!(
     oauth::providers_service
 );
 mail_service!(
+    find_oauth_provider,
+    "org.moqui.impl.EmailClientServices.find#OAuthProvider",
+    oauth::find_provider_service
+);
+mail_service!(
     revoke_oauth_sign_in,
     "org.moqui.impl.EmailClientServices.revoke#OAuthSignIn",
     oauth::sign_out_service
@@ -251,6 +257,10 @@ mod tests {
             (
                 std::any::type_name_of_val(&super::get_oauth_providers),
                 "get_oauth_providers",
+            ),
+            (
+                std::any::type_name_of_val(&super::find_oauth_provider),
+                "find_oauth_provider",
             ),
             (
                 std::any::type_name_of_val(&super::revoke_oauth_sign_in),

@@ -85,6 +85,8 @@ pub struct ScreenRender {
     session: BTreeMap<String, Value>,
     base_url: String,
     render_mode: Option<String>,
+    /// Request headers the render sees, such as `X-Moqui-Client-Modes`.
+    headers: Vec<(String, String)>,
 }
 
 /// A render that needs no socket. Set the root screen and path, then call [`ScreenRender::render`].
@@ -98,6 +100,7 @@ pub fn make_render(factory: &Arc<ExecutionContextFactory>) -> ScreenRender {
         session: BTreeMap::new(),
         base_url: String::new(),
         render_mode: None,
+        headers: Vec::new(),
     }
 }
 
@@ -151,6 +154,14 @@ impl ScreenRender {
         self
     }
 
+    /// A request header, such as `X-Moqui-Client-Modes: qvue,qjs` (the best client mode of a `.qvt` request). A header
+    /// set twice keeps the last value.
+    #[must_use]
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push((name.into(), value.into()));
+        self
+    }
+
     /// Run the render in this thread's execution context, or in a new one when none is entered.
     ///
     /// # Errors
@@ -163,7 +174,10 @@ impl ScreenRender {
         for (name, value) in &self.session {
             user::session::set_session_attribute(name, Some(&moqui_lib::object::to_plain_string(value)));
         }
-        let request = WebRequest::new(self.method.clone(), self.path.clone());
+        let mut request = WebRequest::new(self.method.clone(), self.path.clone());
+        for (name, value) in &self.headers {
+            request.set_header(name.clone(), value.clone());
+        }
         let job = Job {
             request: &request,
             root: &self.root,
@@ -411,14 +425,14 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     }
 
     let picked = pick_render_mode(&facade, job, &info)?;
-    let client = client_mode(job.request, &info.target_screen, &picked);
+    let client = client_mode(job.request, &mode_screen(&info, &picked), &picked);
     let negotiated = client.is_some();
     let mode = client.unwrap_or(picked);
-    let target = Arc::clone(&info.target_screen);
-    if !target.allows_render_mode(&mode) {
+    let rendered = mode_screen(&info, &mode);
+    if !rendered.allows_render_mode(&mode) {
         return Err(Error::of_kind(
             ErrorKind::NotFound,
-            format!("render mode {mode} is not supported by {}", target.location),
+            format!("render mode {mode} is not supported by {}", rendered.location),
         ));
     }
     let (content_type, encoding) = output_type(&facade, &info, &mode);
@@ -438,6 +452,22 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     add_server_static_header(&state);
     record_history(job, &state);
     Ok(())
+}
+
+/// The screen whose `render-modes` must name `mode`: the target, except in qvt for a target that a default subscreen item
+/// chose below the screen the server renders. A qvt screen writes `m-subscreens-active` for what is under it, and the
+/// client asks for each level below as its own request (the shell, `moqui.loadComponent`), so a parent's own render (its
+/// menu and container) does not depend on the modes of a default subscreen levels down: then it is the deepest screen the
+/// path names, or the first one that renders when the render starts below it (a `lastStandalone` render of the leaf).
+/// A request that names the leaf, or renders it, is checked against the leaf.
+fn mode_screen(info: &ScreenUrlInfo, mode: &str) -> Arc<ScreenDef> {
+    let defaults = info.full_path.len().saturating_sub(info.minimal_path.len());
+    let count = info.path_defs.len();
+    if mode != "qvt" || defaults == 0 || count == 0 || defaults >= count {
+        return Arc::clone(&info.target_screen);
+    }
+    let named = count - defaults - 1;
+    Arc::clone(&info.path_defs[named.max(info.render_path_difference).min(count - 1)])
 }
 
 /// The `AT_XML_SCREEN_CONTENT` hit of a file sent from under a screen, by its content type.

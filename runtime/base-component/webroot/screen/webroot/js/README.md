@@ -127,6 +127,10 @@ screen) with the extra path and query, and gives `callback` a component. It retu
   router picks `.qvue` from the menu data. So a screen with `render-modes="qvue"` loads as qvue wherever it is loaded, and its theme value or
   provider names it without `.qvue`; a screen whose modes are `all` or name neither stays qvt; a request without the header gets the mode of its
   extension (a `.qvt` of a qvue-only screen is not found).
+- **A level is its own screen.** A qvt screen writes `m-subscreens-active` for what is under it and the shell loads each level as its own request,
+  so the server checks the render modes of the screen it renders: a parent whose default subscreens end at a `.qvue`-only screen (an app root
+  whose default is a `.qvue` inbox) renders in qvt, its menu and container, with no `qvt` on the leaf. A request that names the leaf in qvt, or a
+  `lastStandalone` render that starts at it, is checked against the leaf (not found); html renders the levels inline, so there the leaf needs html.
 - **A screen's own path and query: `inject: ["mScreen"]`.** Each `m-dynamic-container` and `m-dynamic-dialog` provides `mScreen` for the screen
   it loaded, `{url, path, parameters, containerId}` (`path` without the query and the `.qvt`/`.qvue`/`.qjs`, `parameters` the query as an
   object; `moqui.urlScreen`), and the root provides the page's (`currentPath`, `currentParameters`), as the public shell does for its route. A
@@ -641,10 +645,15 @@ popup. Call it in the click handler, so the window opens before any request and 
 to `EmailClientServices.start#OAuthSignIn` (a promise of `{authUrl, signInId}`), `status(signInId)` its request to `get#OAuthStatus`. The
 callback page (`/emailOAuth/callback`) posts `{type: 'moqui-email-oauth', signInId, status, errorCode, message, emailAccountId, emailAddress,
 expectedAddress}` to its opener on this page's own origin and on the BroadcastChannel `moqui-email-oauth` (a provider page may cut
-`window.opener`); the helper takes it only from that origin and that window (or the channel) and for its own `signInId`. A window closed
-with no message is asked about once by `status`. It resolves with `status` `success`, `error` (`errorCode` as `complete#OAuthSignIn`, and
-`popupBlocked`, `startFailed`) or `cancelled`; no token reaches the page. On `addressMismatch` the app asks the user, then starts again with
-`allowAddressChange`. Options: `width`, `height`, `pollMs`, `closedWaitMs`, `maxWaitMs` (a window cut off from the page), `signal` (an
+`window.opener`); the helper takes it only from that origin and that window (or the channel) and for its own `signInId`. While the sign-in
+runs `status` is asked every `statusPollMs` (2 seconds), and at once when the window closes; the first answer that is not `pending` ends
+the wait, so a message that never comes does not leave the page waiting. A window cut off from the page (Google's sets
+Cross-Origin-Opener-Policy, so it reads as closed at once) is waited for `cutOffWaitMs` at most (3 minutes; `maxWaitMs` is the older name),
+then the result is `cancelled` with `errorCode` `timedOut` and the window is closed. It resolves with `status` `success`, `error`
+(`errorCode` as `complete#OAuthSignIn`, and `popupBlocked`, `startFailed`) or `cancelled` (`cancelled`, `closed`, `timedOut`); no token
+reaches the page. The promise it returns has `cancel()`, which closes the window and resolves it `cancelled`, as an aborted `signal` does
+(a promise made from it by `then` has no `cancel`). On `addressMismatch` the app asks the user, then starts again with `allowAddressChange`.
+Options: `width`, `height`, `pollMs` (the check of the window), `statusPollMs`, `closedWaitMs`, `cutOffMs`, `cutOffWaitMs`, `signal` (an
 AbortSignal that cancels).
 
 ## Server-static screens

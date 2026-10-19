@@ -602,6 +602,16 @@ fn mx_lookup(domain: &str) -> Vec<String> {
     dns_lookup(domain, "", false, true).1
 }
 
+/// The MX hosts of a domain, for `find#OAuthProvider` with `lookupMx`. Empty when DNS does not answer.
+pub(super) fn mx_hosts(domain: &str) -> Vec<String> {
+    mx_lookup(domain)
+}
+
+/// A domain worth a DNS query: a name with a dot, not an address literal.
+pub(super) fn lookup_domain(domain: &str) -> bool {
+    valid_domain(domain)
+}
+
 /// The SRV records (RFC 6186) of a domain as a suggestion, and with `with_mx` its MX hosts, asked at once.
 fn dns_lookup(domain: &str, address: &str, with_srv: bool, with_mx: bool) -> (Option<Suggestion>, Vec<String>) {
     let mut mx = Vec::new();

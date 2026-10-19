@@ -271,12 +271,15 @@ fn callback(parameters: &[(&str, &str)]) -> BTreeMap<String, Value> {
     ok("complete#OAuthSignIn", &parameters)
 }
 
-/// A whole sign-in for a new account (or `account`) as `email`: its outcome.
+/// A whole sign-in for a new account, active at once with the year's sync window (or `account`) as `email`: its outcome.
 fn sign_in(fake: &FakeProvider, email: &str, account: Option<&str>) -> BTreeMap<String, Value> {
     let mut parameters = vec![("oauthProviderEnumId", text("EopTest"))];
     match account {
         Some(account) => parameters.push(("emailAccountId", text(account))),
-        None => parameters.push(("emailAddress", text(email))),
+        None => {
+            parameters.push(("emailAddress", text(email)));
+            parameters.push(("statusId", text("EasActive")));
+        }
     }
     let (started, _) = begin(&parameters);
     let code = code_for(fake, &started, claims(&started, email), MAIL_SCOPE);
@@ -583,6 +586,110 @@ fn the_code_exchange_checks_state_pkce_scope_nonce_and_address() {
     let page = String::from_utf8(crate::web::take_output().2).unwrap();
     assert!(!page.contains("<script>alert(1)"), "{page}");
     assert!(page.contains("&lt;/script&gt;"), "{page}");
+}
+
+/// A new account made by a sign-in waits paused for the app to finish its setup, with the year's sync window, so the job
+/// does not bring in the whole mailbox before; active at once only with a window; an account signing in again keeps its
+/// status and window.
+#[test]
+fn a_new_account_from_a_sign_in_starts_paused_with_a_sync_window() {
+    let _serial = serial();
+    let _lock = crate::user::session::cookie_property_lock();
+    let _properties = Properties::set();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    user(&facade, "alice");
+    login("alice");
+    let fake = FakeProvider::start(CLIENT, SECRET, REDIRECT);
+    provider_row(&facade, "EopTest", &fake, (993, 465), true);
+    let finish = |parameters: &[(&str, Value)], email: &str| {
+        let (started, _) = begin(parameters);
+        let code = code_for(&fake, &started, claims(&started, email), MAIL_SCOPE);
+        let done = callback(&[("state", &started["state"]), ("code", &code)]);
+        assert_eq!(out_text(&done, "status"), "success", "{done:?}");
+        out_text(&done, "emailAccountId")
+    };
+
+    // the default: paused, a year back
+    let paused = finish(&[("emailAddress", text("alice@gmail.test"))], "alice@gmail.test");
+    let account = one(&facade, ACCOUNT, "emailAccountId", &paused);
+    assert_eq!(field(&account, "statusId"), "EasPaused");
+    assert_eq!(field(&account, "syncWindowDays"), "365");
+    // the job leaves it, and a sync asked for says it is paused
+    {
+        let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+        let job = ok("sync#DueEmailAccounts", &[]);
+        assert_eq!(out_text(&job, "syncedCount"), "0", "{job:?}");
+    }
+    let out = call("sync#EmailAccount", &[("emailAccountId", text(&paused))]);
+    assert_eq!(out_text(&out, "outcome"), "paused", "{out:?}");
+    let _ = errors();
+    // signing in again keeps it paused with its window
+    let again = sign_in(&fake, "alice@gmail.test", Some(&paused));
+    assert_eq!(out_text(&again, "status"), "success", "{again:?}");
+    let account = one(&facade, ACCOUNT, "emailAccountId", &paused);
+    assert_eq!(field(&account, "statusId"), "EasPaused");
+    assert_eq!(field(&account, "syncWindowDays"), "365");
+    // the app's setup done: active
+    ok(
+        "update#EmailAccount",
+        &[("emailAccountId", text(&paused)), ("statusId", text("EasActive"))],
+    );
+    assert_eq!(
+        field(&one(&facade, ACCOUNT, "emailAccountId", &paused), "statusId"),
+        "EasActive"
+    );
+
+    // active at once with a window; all mail only while paused
+    let active = finish(
+        &[
+            ("emailAddress", text("bob@gmail.test")),
+            ("statusId", text("EasActive")),
+            ("syncWindowDays", Value::I64(30)),
+        ],
+        "bob@gmail.test",
+    );
+    let account = one(&facade, ACCOUNT, "emailAccountId", &active);
+    assert_eq!(field(&account, "statusId"), "EasActive");
+    assert_eq!(field(&account, "syncWindowDays"), "30");
+    let all = finish(
+        &[
+            ("emailAddress", text("carol@gmail.test")),
+            ("syncWindowDays", Value::I64(0)),
+        ],
+        "carol@gmail.test",
+    );
+    let account = one(&facade, ACCOUNT, "emailAccountId", &all);
+    assert_eq!(field(&account, "statusId"), "EasPaused");
+    assert_eq!(field(&account, "syncWindowDays"), "");
+
+    // refused at the start: active with all mail, another status, a window that is not a number of days
+    for (parameters, expected) in [
+        (
+            vec![("statusId", text("EasActive")), ("syncWindowDays", Value::I64(0))],
+            "needs a sync window",
+        ),
+        (vec![("statusId", text("EasRemoved"))], "Paused or Active"),
+        (vec![("syncWindowDays", Value::I64(-1))], "number of days"),
+    ] {
+        let mut parameters = parameters;
+        parameters.push(("emailAddress", text("dee@gmail.test")));
+        let out = call("start#OAuthSignIn", &parameters);
+        assert!(out_text(&out, "authUrl").is_empty(), "{out:?}");
+        let errors = errors();
+        assert!(errors.contains(expected), "{expected}: {errors}");
+    }
+    // create#EmailAccount takes the status too
+    let made = call(
+        "create#EmailAccount",
+        &[
+            ("emailAddress", text("eve@example.test")),
+            ("statusId", text("EasRemoved")),
+        ],
+    );
+    assert!(made.get("emailAccountId").is_none_or(Value::is_null), "{made:?}");
+    assert!(errors().contains("Active or Paused"));
 }
 
 /// The refresh: once at a time for concurrent callers, again when the token is about to expire, a rotated refresh token
@@ -1122,6 +1229,50 @@ fn discover_names_the_provider_by_domain_or_mx() {
     assert_eq!(out_text(&plain, "oauthProviderEnumId"), "");
     assert_eq!(out_text(&plain, "source"), "guess");
     assert!(started.elapsed() < Duration::from_secs(15), "{:?}", started.elapsed());
+
+    // with no network: the providers' domains and suffixes, and find#OAuthProvider by domain or host (MX only when asked)
+    let providers = ok("get#OAuthProviders", &[]);
+    let list = format!("{:?}", providers.get("providerList"));
+    for expected in [
+        "addressDomainList",
+        "\"gmail.test\"",
+        "\"google.com\"",
+        "\"protection.outlook.com\"",
+    ] {
+        assert!(list.contains(expected), "{expected} in {list}");
+    }
+    assert!(!list.contains("secret"), "{list}");
+    let find = |parameters: &[(&str, Value)]| ok("find#OAuthProvider", parameters);
+    let by_domain = find(&[("emailAddress", text("Ann@Gmail.test"))]);
+    assert_eq!(out_text(&by_domain, "oauthProviderEnumId"), "EopTest", "{by_domain:?}");
+    assert_eq!(out_text(&by_domain, "matchedBy"), "domain");
+    assert_eq!(by_domain.get("configured"), Some(&Value::Bool(true)));
+    let by_host = find(&[
+        ("emailAddress", text("cy@contoso.test")),
+        ("storeHost", text("outlook.office365.test")),
+    ]);
+    assert_eq!(out_text(&by_host, "oauthProviderEnumId"), "", "{by_host:?}");
+    update(
+        &facade,
+        PROVIDER,
+        ("oauthProviderEnumId", "EopOther"),
+        &[("hostSuffixes", text("office365.test"))],
+    );
+    let by_host = find(&[
+        ("emailAddress", text("cy@contoso.test")),
+        ("storeHost", text("Outlook.Office365.test")),
+    ]);
+    assert_eq!(out_text(&by_host, "oauthProviderEnumId"), "EopOther", "{by_host:?}");
+    assert_eq!(out_text(&by_host, "matchedBy"), "host");
+    assert_eq!(by_host.get("configured"), Some(&Value::Bool(false)));
+    let no_mx = find(&[("emailAddress", text("bo@acme.test"))]);
+    assert_eq!(out_text(&no_mx, "oauthProviderEnumId"), "", "{no_mx:?}");
+    let by_mx = find(&[("emailAddress", text("bo@acme.test")), ("lookupMx", Value::Bool(true))]);
+    assert_eq!(out_text(&by_mx, "oauthProviderEnumId"), "EopTest", "{by_mx:?}");
+    assert_eq!(out_text(&by_mx, "matchedBy"), "mx");
+    let none = find(&[("emailAddress", text("dee@none.test")), ("lookupMx", Value::Bool(true))]);
+    assert_eq!(out_text(&none, "oauthProviderEnumId"), "", "{none:?}");
+    assert_eq!(none.get("configured"), Some(&Value::Bool(false)));
 
     // a provider without a client is not offered at the start
     let _ = call(

@@ -90,8 +90,15 @@ switched to POP3 after its sign-in fails its first POP sign-in at Microsoft (no 
 
 1. The wizard (or a Fix button) calls `start#OAuthSignIn` with the account (`emailAccountId`) or a new account's address
    (`emailAddress`, `accountName`, `displayName`, `accountKindEnumId`) and gets `{authUrl, signInId}`; `moqui.oauthPopup` opens the
-   popup in the click and points it there (`webroot/js/README.md`, "Mail sign-in popup").
-2. The provider sends the popup back to `/emailOAuth/callback`. `complete#OAuthSignIn` takes the state once from the user's
+   popup in the click and points it there (`webroot/js/README.md`, "Mail sign-in popup"). A new account is made paused
+   (`statusId` `EasPaused`, the default) with a sync window of `syncWindowDays` (365 by default, 0 for all mail), so the sync job
+   leaves it until the app has finished its setup and made it active (`update#EmailAccount statusId EasActive`); `statusId`
+   `EasActive` makes it sync at once, only with a window. An account signing in again keeps its status and window.
+   `find#OAuthProvider(emailAddress, storeHost)` says whose sign-in an address takes with no network (the domain, then the incoming
+   server; the MX hosts only with `lookupMx`), and `get#OAuthProviders` lists each provider's domains and suffixes.
+2. The provider sends the popup back to `/emailOAuth/callback` (the opener also asks `get#OAuthStatus` every two seconds, so a
+   page whose window Google's Cross-Origin-Opener-Policy cut off hears the outcome; it gives up after three minutes, and the
+   promise's `cancel()` stops it). `complete#OAuthSignIn` takes the state once from the user's
    session, exchanges the code with the PKCE verifier, checks the granted mail scopes and the ID token (audience, issuer, expiry,
    nonce; its signature is not checked, as it comes straight from the token endpoint over TLS), compares the signed-in address with
    the account's, stores the refresh token encrypted (the access token stays in memory), and makes the account (or makes it active

@@ -98,6 +98,7 @@ mod tests {
             "moqui_core::service::mail::discover_server",
             "moqui_core::service::mail::export_message",
             "moqui_core::service::mail::filter_contact_addresses",
+            "moqui_core::service::mail::find_oauth_provider",
             "moqui_core::service::mail::get_oauth_providers",
             "moqui_core::service::mail::get_oauth_status",
             "moqui_core::service::mail::import_messages",

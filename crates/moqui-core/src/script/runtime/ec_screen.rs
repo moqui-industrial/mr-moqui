@@ -45,6 +45,9 @@ const BUILDER: &str = r#"(function (ec) {
             baseScreenPath: (v) => { o.baseScreenPath = v; return t; },
             renderMode: (v) => { o.renderMode = v; return t; },
             baseLinkUrl: (v) => { o.baseLinkUrl = v; return t; },
+            // a request header of every render; clientModes("qvue,qjs") is X-Moqui-Client-Modes, as moqui.loadComponent sends it
+            header: (name, value) => { o.headers = Object.assign({}, o.headers, { [String(name)]: String(value) }); return t; },
+            clientModes: (modes) => t.header("X-Moqui-Client-Modes", Array.isArray(modes) ? modes.join(",") : modes),
             renderCount: 0, errorCount: 0, renderTotalChars: 0, startTime: Date.now(),
             render: (screenPath, parameters, requestMethod) => {
                 const r = ec.screen.testRender(Object.assign({}, o,
@@ -52,9 +55,15 @@ const BUILDER: &str = r#"(function (ec) {
                 t.renderCount++;
                 t.errorCount += r.errorMessages.length;
                 t.renderTotalChars += r.output ? r.output.length : 0;
+                const headers = r.headers || {};
                 const str = {
                     screenPath: String(screenPath), output: r.output, errorMessages: r.errorMessages,
-                    renderTime: r.renderTime, status: r.status,
+                    renderTime: r.renderTime, status: r.status, headers: headers,
+                    // a response header by name in any case, such as X-Moqui-Qvt (the mode a .qvt request got)
+                    header: (name) => {
+                        const key = Object.keys(headers).find((k) => k.toLowerCase() === String(name).toLowerCase());
+                        return key === undefined ? null : headers[key];
+                    },
                     assertContains: (text) => !!r.output && r.output.includes(text),
                     assertNotContains: (text) => !r.output || !r.output.includes(text),
                     assertNoErrors: () => r.errorMessages.length === 0,
@@ -205,8 +214,9 @@ pub(super) fn resource_xsl_fo_transform<'js>(
     })
 }
 
-/// `ec.screen.testRender({screenPath, parameters, method, rootScreen, baseScreenPath, renderMode, baseLinkUrl})`, the
-/// host side of `makeTest().render()`: `{output, errorMessages, renderTime, status}`. It does not throw for a failed
+/// `ec.screen.testRender({screenPath, parameters, method, rootScreen, baseScreenPath, renderMode, baseLinkUrl, headers})`,
+/// the host side of `makeTest().render()`: `{output, errorMessages, renderTime, status, headers}` (the request headers in,
+/// the response's out). It does not throw for a failed
 /// render; the failure is in `errorMessages`.
 fn screen_test_render<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
@@ -236,6 +246,11 @@ fn screen_test_render<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Re
         if !text("renderMode").is_empty() {
             test = test.render_mode(text("renderMode"));
         }
+        if let Some(Value::Map(headers)) = options.get("headers") {
+            for (name, value) in headers {
+                test = test.header(name.clone(), moqui_lib::object::to_plain_string(value));
+            }
+        }
         let method = text("method");
         let rendered = test.test_render(&text("screenPath"), parameters, Some(method.as_str()));
         let mut out = indexmap::IndexMap::new();
@@ -262,6 +277,12 @@ fn screen_test_render<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Re
                 .as_ref()
                 .map_or(Value::Null, |output| Value::I64(i64::from(output.status))),
         );
+        // the response headers, the last of a repeated name
+        let mut headers = indexmap::IndexMap::new();
+        for (name, value) in rendered.output.iter().flat_map(|output| output.headers.iter()) {
+            headers.insert(name.clone(), Value::string(value));
+        }
+        out.insert("headers".to_string(), Value::Map(headers));
         host_to_js(&ctx, Value::Map(out))
     })
 }

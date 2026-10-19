@@ -891,3 +891,126 @@ fn a_status_bar_shows_the_stages_and_the_transitions_of_the_flow() {
     let text = render("text", &[]);
     assert!(text.contains("Status: Running"), "{text}");
 }
+
+/// A level of the shell in qvt is the screen the server renders, which writes `m-subscreens-active` for the levels below:
+/// a parent whose default subscreens end at a `.qvue`-only screen renders in qvt (the client asks for that leaf on its own),
+/// a request that renders the leaf in qvt is still not found, and `X-Moqui-Client-Modes` (ScreenTest's `client_modes`) gets
+/// the leaf in qvue, with `X-Moqui-Qvt` saying so.
+#[test]
+fn a_parent_renders_in_qvt_over_a_qvue_only_default_leaf() {
+    let dir = std::env::temp_dir().join(format!("moqui-qvt-default-leaf-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("App/Inbox")).unwrap();
+    let write = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
+    write(
+        "App.xml",
+        r#"<screen require-authentication="false" default-menu-title="App"><subscreens default-item="Inbox"/>
+            <widgets><label text="App menu"/><subscreens-active/></widgets></screen>"#,
+    );
+    write(
+        "App/Inbox.xml",
+        r#"<screen require-authentication="false" default-menu-title="Inbox"><subscreens default-item="Mail"/>
+            <widgets><label text="Inbox frame"/><subscreens-active/></widgets></screen>"#,
+    );
+    write(
+        "App/Inbox/Mail.xml",
+        r#"<screen require-authentication="false" default-menu-title="Mail" render-modes="vue,qvue">
+            <widgets><render-mode><text type="qvue" template="false"><![CDATA[<template><p>Mail</p></template>
+<script>module.exports = { data() { return {} } }</script>]]></text></render-mode></widgets></screen>"#,
+    );
+    let context = ExecutionContextFactory::test_context();
+    let root = dir.join("App.xml").to_string_lossy().into_owned();
+    let test = crate::screen::ScreenTest::new(context.factory()).root_screen(root.clone());
+    let qvt = test.clone().render_mode("qvt");
+
+    // the app root and the Inbox level, each in qvt with the placeholder of the level below
+    for (path, parameters, text) in [("", vec![], "App menu"), ("Inbox.qvt", vec![], "Inbox frame")] {
+        let tester = if path.contains('.') { &test } else { &qvt };
+        let rendered = tester.test_render(path, parameters.into_iter().collect(), None);
+        assert!(
+            rendered.error_messages.is_empty(),
+            "{path}: {:?}",
+            rendered.error_messages
+        );
+        let out = rendered.text();
+        assert!(
+            out.contains(text) && out.contains("<m-subscreens-active>"),
+            "{path}: {out}"
+        );
+        assert!(!out.contains("<p>Mail</p>"), "{path}: {out}");
+    }
+    let inbox = qvt.test_render("Inbox", BTreeMap::new(), None);
+    assert!(inbox.error_messages.is_empty(), "{:?}", inbox.error_messages);
+    assert!(inbox.text().contains("App menu"), "{}", inbox.text());
+
+    // the leaf itself in qvt: named, or the screen a lastStandalone render starts at
+    let named = test.test_render("Inbox/Mail.qvt", BTreeMap::new(), None);
+    assert!(
+        named
+            .error_messages
+            .iter()
+            .any(|error| error.contains("render mode qvt is not supported")),
+        "{:?}",
+        named.error_messages
+    );
+    let standalone = qvt.test_render(
+        "Inbox",
+        [("lastStandalone".to_string(), Value::string("-2"))]
+            .into_iter()
+            .collect(),
+        None,
+    );
+    assert!(
+        standalone
+            .error_messages
+            .iter()
+            .any(|error| error.contains("render mode qvt is not supported")),
+        "{:?}",
+        standalone.error_messages
+    );
+    // html renders the levels inline, so the leaf must take html
+    let html = test.clone().render_mode("html").test_render("", BTreeMap::new(), None);
+    assert!(
+        html.error_messages
+            .iter()
+            .any(|error| error.contains("render mode html is not supported")),
+        "{:?}",
+        html.error_messages
+    );
+
+    // the best client mode: the leaf in qvue, X-Moqui-Qvt says so; a parent with no qvue of its own stays qvt
+    let modes = test.clone().client_modes("qvue,qjs");
+    let leaf = modes.test_render("Inbox/Mail.qvt", BTreeMap::new(), None);
+    assert!(leaf.error_messages.is_empty(), "{:?}", leaf.error_messages);
+    assert_eq!(
+        leaf.output.as_ref().and_then(|out| out.header("X-Moqui-Qvt")),
+        Some("qvue")
+    );
+    assert!(leaf.text().contains("<p>Mail</p>"), "{}", leaf.text());
+    let parent = modes.test_render("Inbox.qvt", BTreeMap::new(), None);
+    assert_eq!(
+        parent.output.as_ref().and_then(|out| out.header("X-Moqui-Qvt")),
+        Some("merged-fragment")
+    );
+    let headed =
+        test.clone()
+            .header("X-Moqui-Client-Modes", "qvue")
+            .test_render("Inbox/Mail.qvt", BTreeMap::new(), None);
+    assert_eq!(
+        headed.output.as_ref().and_then(|out| out.header("X-Moqui-Qvt")),
+        Some("qvue")
+    );
+
+    // the same from a script: ec.screen.makeTest().clientModes(...), and the response headers on the result
+    let _entered = context.enter();
+    let script = format!(
+        "(() => {{ const t = ec.screen.makeTest().rootScreen({}).clientModes(['qvue', 'qjs']); \
+         const leaf = t.render('Inbox/Mail.qvt', {{}}, null); \
+         const plain = ec.screen.makeTest().rootScreen({0}).header('X-Moqui-Client-Modes', 'qjs').render('Inbox/Mail.qvt', {{}}, null); \
+         return [leaf.status, leaf.header('x-moqui-qvt'), leaf.output.includes('<p>Mail</p>'), plain.errorMessages.length > 0].join(' ') }})()",
+        serde_json::to_string(&root).unwrap()
+    );
+    let answered = crate::script::eval_value(&script).unwrap();
+    assert_eq!(moqui_lib::object::to_plain_string(&answered), "200 qvue true true");
+    let _ = std::fs::remove_dir_all(&dir);
+}

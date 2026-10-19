@@ -536,10 +536,15 @@
         // blocker lets it through, then start() (the app's request to start#OAuthSignIn, a promise of {authUrl,
         // signInId}) points it at the provider. The outcome is the one the callback page sends: a message from this
         // page's own origin and from that window, or the same on the BroadcastChannel (a provider page can cut
-        // window.opener), else status(signInId) (the app's request to get#OAuthStatus) once the window is closed.
+        // window.opener), else what status(signInId) (the app's request to get#OAuthStatus) says, asked every
+        // statusPollMs while the sign-in runs and at once when the window closes: the first answer that is not
+        // pending ends the wait. A window cut off from this page (Google's page sets Cross-Origin-Opener-Policy, so it
+        // reads as closed at once) is waited for cutOffWaitMs at most (3 minutes; maxWaitMs is the older name), then
+        // the result is cancelled with errorCode timedOut and the window is closed.
         // Resolves with {status: "success" | "error" | "cancelled", errorCode, message, emailAccountId, emailAddress,
-        // expectedAddress, signInId}; no token ever reaches the page. options: width, height, pollMs, closedWaitMs,
-        // maxWaitMs, signal (an AbortSignal that cancels).
+        // expectedAddress, signInId}; no token ever reaches the page. The promise has cancel(), which closes the
+        // window and resolves it cancelled (as an aborted signal does). options: width, height, pollMs (the check of
+        // the window), statusPollMs, closedWaitMs, cutOffMs, cutOffWaitMs, signal (an AbortSignal that cancels).
         oauthPopup: (start, status, options) => {
             const opts = options || {};
             const width = opts.width || 520, height = opts.height || 680;
@@ -554,9 +559,12 @@
                 if (!["success", "error", "cancelled"].includes(out.status)) out.status = "error";
                 return out;
             };
-            return new Promise((resolve) => {
+            let cancel = () => {};
+            const promise = new Promise((resolve) => {
                 let signInId = null, done = false, timer = null, channel = null, openedAt = 0, closedAt = 0, asking = false, askedAt = 0;
                 let cutOff = false;
+                const statusPollMs = opts.statusPollMs ?? 2000;
+                const cutOffWaitMs = opts.cutOffWaitMs ?? opts.maxWaitMs ?? 180000;
                 const finish = (result, closeWindow) => {
                     if (done) return;
                     done = true;
@@ -582,8 +590,9 @@
                         channel.onmessage = (event) => accept(event.data);
                     } catch (err) { channel = null; }
                 }
-                if (opts.signal) opts.signal.addEventListener("abort", () => finish({ status: "cancelled", errorCode: "cancelled",
-                    message: null, emailAccountId: null, emailAddress: null, expectedAddress: null, signInId }, true));
+                cancel = () => finish({ status: "cancelled", errorCode: "cancelled", message: null, emailAccountId: null,
+                    emailAddress: null, expectedAddress: null, signInId }, true);
+                if (opts.signal) opts.signal.addEventListener("abort", cancel);
                 if (!popup) {
                     finish(pick({ status: "error", errorCode: "popupBlocked", message: "The browser blocked the sign-in window. Allow pop-ups for this site and try again." }), false);
                     return;
@@ -592,21 +601,31 @@
                     if (done || asking) return;
                     let closed;
                     try { closed = popup.closed; } catch (err) { closed = true; }
-                    if (!closed) return;
                     const now = Date.now();
                     // a window cut off from this page reads as closed at once; then only the status says when it ends
-                    if (!closedAt) { closedAt = now; cutOff = now - openedAt < (opts.cutOffMs ?? 2000); }
-                    if (cutOff && now - askedAt < (opts.cutOffPollMs ?? 2500)) return;
+                    if (closed && !closedAt) { closedAt = now; cutOff = now - openedAt < (opts.cutOffMs ?? 2000); }
+                    const ended = closed && !cutOff;
+                    // the status every statusPollMs while the sign-in runs, at each check once the window closed
+                    if (!ended && askedAt && now - askedAt < statusPollMs) return;
+                    if (!ended && !askedAt && now - openedAt < statusPollMs) return;
                     asking = true;
                     askedAt = now;
+                    // no answer that ends it (pending, or the request failed): the waits
+                    const waited = () => {
+                        if (done) return;
+                        if (ended && Date.now() - closedAt > (opts.closedWaitMs ?? 3000)) {
+                            finish(pick({ status: "cancelled", errorCode: "closed", message: "The sign-in window was closed.", signInId }), false);
+                        } else if (cutOff && Date.now() - openedAt > cutOffWaitMs) {
+                            finish(pick({ status: "cancelled", errorCode: "timedOut", signInId,
+                                message: "The sign-in window did not answer in time. If you finished signing in, check the account; else try again." }), true);
+                        }
+                    };
                     Promise.resolve().then(() => status(signInId)).then((answer) => {
                         asking = false;
                         if (done) return;
                         if (answer && answer.status && answer.status !== "pending") finish(pick(answer), false);
-                        else if (cutOff ? Date.now() - openedAt > (opts.maxWaitMs ?? 600000) : Date.now() - closedAt > (opts.closedWaitMs ?? 3000)) {
-                            finish(pick({ status: "cancelled", errorCode: "closed", message: "The sign-in window was closed.", signInId }), false);
-                        }
-                    }, () => { asking = false; });
+                        else waited();
+                    }, () => { asking = false; waited(); });
                 };
                 Promise.resolve().then(start).then((started) => {
                     if (done) return;
@@ -623,6 +642,8 @@
                     finish(pick({ status: "error", errorCode: "startFailed", message: (err && err.message) || String(err) }), true);
                 });
             });
+            promise.cancel = () => cancel();
+            return promise;
         },
 
         // A map that keeps the most recently used entries. The end of the list is the least recently used.

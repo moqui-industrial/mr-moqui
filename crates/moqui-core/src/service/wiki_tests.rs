@@ -619,7 +619,7 @@ fn a_note_moves_into_a_git_space_with_its_history_replayed() {
     refused(
         "move#WikiPage",
         &[("wikiPageId", text(&note)), ("toWikiSpaceId", text("KNOW"))],
-        "may not move",
+        "Page not found",
     );
 }
 
@@ -676,7 +676,7 @@ fn a_page_moves_on_the_database_tree_with_its_history_rows() {
             ("toWikiSpaceId", text("ONE")),
             ("toParentPath", text("Nowhere")),
         ],
-        "No parent page",
+        "Parent page not found",
     );
 }
 
@@ -1298,7 +1298,7 @@ fn a_page_is_written_and_read_at_its_exact_path_never_over_a_page_of_that_name_e
     refused(
         "get#WikiPageAttachment",
         &[("wikiPageId", text(&top)), ("filename", text("../Policies/Travel.md"))],
-        "Invalid attachment file name",
+        "is a name, not a path",
     );
 
     // deleting the top-level page leaves the nested one; a path out of the space is no page
@@ -1316,12 +1316,12 @@ fn a_page_is_written_and_read_at_its_exact_path_never_over_a_page_of_that_name_e
             ("pageName", text("Escape")),
             ("pageText", text("out")),
         ],
-        "Invalid wiki page path",
+        "no . or .. in it",
     );
     refused(
         "get#WikiPageInfo",
         &[("wikiSpaceId", text("EXA")), ("pagePath", text("../EXA"))],
-        "Invalid wiki page path",
+        "no . or .. in it",
     );
 }
 
@@ -1407,7 +1407,7 @@ fn wiki_writes_and_reads_follow_the_access_rule_with_its_admin_overrides() {
     refused(
         "update#WikiPage",
         &rewrite(&plan, "Plan", "bob's\n"),
-        "restricted update",
+        "You may not change this page",
     );
     refused(
         "update#WikiPage",
@@ -1416,7 +1416,7 @@ fn wiki_writes_and_reads_follow_the_access_rule_with_its_admin_overrides() {
             ("pageName", text("New")),
             ("pageText", text("new\n")),
         ],
-        "restricted update",
+        "You may not add pages to this space",
     );
     assert!(one(
         &facade,
@@ -1434,22 +1434,71 @@ fn wiki_writes_and_reads_follow_the_access_rule_with_its_admin_overrides() {
     refused(
         "delete#WikiPageAttachment",
         &plan_attachment,
-        "may not change the attachments",
+        "may not change the files of this page",
     );
     assert!(exists(&ctx, "dbresource://WikiSpace/ACC/Plan/_attachments/a.txt"));
-    // a restricted page the viewer may not view is not theirs to read or write
-    refused("get#WikiPageInfo", &[("wikiPageId", text(&hidden))], "restricted view");
-    refused(
+    // a restricted page the viewer may not view is not theirs to read or write: each refusal is "Page not found", with
+    // no path or name of the page, whatever else would refuse it (its child page here)
+    login("alice");
+    save("ACC", "Hidden/Inner", "# Inner\n", None);
+    login("bob");
+    let not_found = |name: &str, parameters: &[(&str, Value)]| {
+        let _ = call_named(&format!("{WIKI}.{name}"), parameters);
+        assert_eq!(errors(), "Page not found", "{name}");
+    };
+    let hidden_id = [("wikiPageId", text(&hidden))];
+    for name in [
+        "get#WikiPageInfo",
         "get#WikiPageHistory",
-        &[("wikiPageId", text(&hidden))],
-        "restricted view",
+        "delete#WikiPage",
+        "get#WikiPageBacklinks",
+        "get#WikiPageLinks",
+    ] {
+        not_found(name, &hidden_id);
+    }
+    not_found("update#WikiPage", &rewrite(&hidden, "Hidden", "bob's\n"));
+    not_found(
+        "move#WikiPage",
+        &[("wikiPageId", text(&hidden)), ("toPageName", text("Shown"))],
     );
-    refused("update#WikiPage", &rewrite(&hidden, "Hidden", "bob's\n"), "not found");
-    refused(
+    not_found(
+        "set#PublishedVersion",
+        &[("wikiPageId", text(&hidden)), ("publishedVersionName", text("01"))],
+    );
+    not_found(
+        "restore#WikiPageVersion",
+        &[("wikiPageId", text(&hidden)), ("versionName", text("01"))],
+    );
+    not_found(
         "get#WikiPageAttachment",
         &[("wikiPageId", text(&hidden)), ("filename", text("a.txt"))],
-        "not found",
     );
+    not_found(
+        "delete#WikiPage",
+        &[("wikiSpaceId", text("ACC")), ("pagePath", text("Hidden"))],
+    );
+    refused(
+        "update#WikiPage",
+        &[
+            ("wikiSpaceId", text("ACC")),
+            ("parentPath", text("Hidden")),
+            ("pageName", text("Under")),
+            ("pageText", text("x\n")),
+        ],
+        "Parent page not found",
+    );
+    // a user who may view it gets the reason, in plain words
+    login("alice");
+    refused(
+        "delete#WikiPage",
+        &hidden_id,
+        "This page has pages under it: move or delete them first",
+    );
+    ok(
+        "delete#WikiPage",
+        &[("wikiSpaceId", text("ACC")), ("pagePath", text("Hidden/Inner"))],
+    );
+    login("bob");
     assert_eq!(
         location_text(&ctx, "dbresource://WikiSpace/ACC/Hidden.md"),
         "# Hidden\n"
@@ -1457,7 +1506,7 @@ fn wiki_writes_and_reads_follow_the_access_rule_with_its_admin_overrides() {
 
     // not a member of the restricted space: nothing
     login("carol");
-    refused("get#WikiPageInfo", &[("wikiPageId", text(&plan))], "restricted view");
+    refused("get#WikiPageInfo", &[("wikiPageId", text(&plan))], "Page not found");
     refused("get#WikiPageAttachment", &plan_attachment, "not found");
     refused("update#WikiPage", &rewrite(&plan, "Plan", "carol's\n"), "not found");
 
@@ -1465,7 +1514,7 @@ fn wiki_writes_and_reads_follow_the_access_rule_with_its_admin_overrides() {
     login("erin");
     ok("get#WikiPageInfo", &[("wikiPageId", text(&plan))]);
     ok("update#WikiPage", &rewrite(&plan, "Plan", "# Plan\n\nBy erin.\n"));
-    refused("get#WikiPageInfo", &[("wikiPageId", text(&hidden))], "restricted view");
+    refused("get#WikiPageInfo", &[("wikiPageId", text(&hidden))], "Page not found");
 
     // the ADMIN group sees and changes everything
     login("dave");
@@ -1484,7 +1533,7 @@ fn wiki_writes_and_reads_follow_the_access_rule_with_its_admin_overrides() {
     refused(
         "set#PublishedVersion",
         &[("wikiPageId", text(&plan)), ("publishedVersionName", text("99"))],
-        "not found",
+        "This page has no version 99",
     );
     ok("delete#WikiPageAttachment", &plan_attachment);
     assert!(!exists(&ctx, "dbresource://WikiSpace/ACC/Plan/_attachments/a.txt"));
@@ -1644,6 +1693,6 @@ fn a_page_is_deleted_with_its_rows_and_a_decision_opens_the_requests_link() {
     refused(
         "delete#WikiPage",
         &[("wikiSpaceId", text("DEL")), ("pagePath", text(""))],
-        "root page",
+        "The home page of a space is not deleted",
     );
 }
