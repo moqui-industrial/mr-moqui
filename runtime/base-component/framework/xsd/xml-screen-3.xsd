@@ -150,6 +150,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:element ref="transition-include"/>
             </xs:choice>
             <xs:element ref="subscreens" minOccurs="0"/>
+            <xs:element ref="shell-providers" minOccurs="0"/>
             <xs:element ref="pre-actions" minOccurs="0"/>
             <xs:group ref="section-elements"/>
         </xs:sequence>
@@ -490,6 +491,118 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="name" type="name-package" use="required"/>
         <xs:attribute name="location" type="xs:string" use="required"/>
         <xs:attribute name="method" type="xs:string"/>
+    </xs:complexType></xs:element>
+
+    <!-- ================ Shell Providers ================ -->
+    <xs:element name="shell-providers"><xs:annotation><xs:documentation>
+        What an app root screen (a subscreen of the apps root) offers the suite shell of /qapps beyond its menu: quick-create
+        kinds for the + menu, Today panel sources, palette actions, document types and search groups, notification topics,
+        key bindings and account menu items. It renders nothing in any render mode. The shellData transition of the root
+        screen (webroot.xml) gathers the providers of the app roots the user may open, once per page load; shellSearch runs
+        their palette sources. An app root whose providers fail is logged and left out.
+
+        A screen attribute is a path under the apps root, such as Commons/QuickCreate or gallery/Widgets, optionally with a
+        query string; the client gets it as a /qapps link, and an item whose screen the user may not view is left out. Labels
+        are localized when the shell data is made. Each kind of child is in sequence order (none counts as 0, ties keep the
+        order written).
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:choice minOccurs="0" maxOccurs="unbounded">
+            <xs:element ref="quick-create"/>
+            <xs:element ref="today-source"/>
+            <xs:element ref="palette-action"/>
+            <xs:element ref="palette-type"/>
+            <xs:element ref="palette-source"/>
+            <xs:element ref="notification-topic"/>
+            <xs:element ref="keymap"/>
+            <xs:element ref="account-menu-item"/>
+        </xs:choice>
+    </xs:complexType></xs:element>
+    <xs:attributeGroup name="shell-link-attributes">
+        <xs:attribute name="label" type="xs:string" use="required"/>
+        <xs:attribute name="icon" type="xs:string"><xs:annotation><xs:documentation>A Quasar icon name, Material Symbols
+            outlined (sym_o_add_task) or Material Icons, or CSS classes when it has a space.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="sequence" type="xs:integer"/>
+    </xs:attributeGroup>
+    <xs:element name="quick-create"><xs:annotation><xs:documentation>
+        A kind of record the shell's + menu creates in a dialog (m-dynamic-dialog), with the screen context as parameters
+        (recordEntity, recordId). Without a screen it opens the theme's STRT_QUICK_CREATE screen with kind as a parameter;
+        with neither it is left out. The current app's kinds come first in the menu.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:sequence><xs:element ref="parameter" minOccurs="0" maxOccurs="unbounded"><xs:annotation><xs:documentation>
+            A query parameter added to the screen link: name and value, the value as written.</xs:documentation></xs:annotation></xs:element></xs:sequence>
+        <xs:attribute name="kind" type="xs:string" use="required"/>
+        <xs:attributeGroup ref="shell-link-attributes"/>
+        <xs:attribute name="screen" type="xs:string"/>
+        <xs:attribute name="requires-record" type="boolean" default="false"><xs:annotation><xs:documentation>Offered only
+            while a record is in the screen context (an activity on the record).</xs:documentation></xs:annotation></xs:attribute>
+    </xs:complexType></xs:element>
+    <xs:element name="today-source"><xs:annotation><xs:documentation>
+        A service the Today panel calls for the items this app adds to it (open RFQs for Sales, late shipments for
+        Warehouse). The panel screen names the parameters; the service name goes to the client.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="service" type="xs:string" use="required"/>
+        <xs:attribute name="label" type="xs:string"/>
+    </xs:complexType></xs:element>
+    <xs:element name="palette-action"><xs:annotation><xs:documentation>
+        An entry of the palette's Actions group ("Create sales order", "Receive shipment") that opens a screen.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:sequence><xs:element ref="parameter" minOccurs="0" maxOccurs="unbounded"/></xs:sequence>
+        <xs:attributeGroup ref="shell-link-attributes"/>
+        <xs:attribute name="screen" type="xs:string" use="required"/>
+    </xs:complexType></xs:element>
+    <xs:element name="palette-type"><xs:annotation><xs:documentation>
+        A search DataDocument type this app's records are found by. Every palette source gets the union of the types of the
+        apps the user may open as docTypes, so a Records source searches only what those apps show.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="doc-type" type="xs:string" use="required"/>
+    </xs:complexType></xs:element>
+    <xs:element name="palette-source"><xs:annotation><xs:documentation>
+        A palette group answered by a service on the server (shellSearch); the service name is never sent to the client,
+        and only the sources of the apps the user may open run. The service gets text, limit (rows wanted, 5 by default),
+        docTypes (a List of the palette-type document types of the apps the user may open) and, for a source with an
+        id-pattern, idMatch=true. It answers rows, a List of Maps with title, subtitle, icon and url (a /qapps link), and
+        optionally moreUrl, the link of a full search for the text. A source that fails is logged by group and service and
+        its group left out; one that answers no rows is left out too.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="group" type="xs:string" use="required"><xs:annotation><xs:documentation>The group name, which a
+            shellSearch request may name in groups to narrow the search (the client maps its prefixes to groups).</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="label" type="xs:string"><xs:annotation><xs:documentation>The group's heading; the group name
+            when empty.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="icon" type="xs:string"/>
+        <xs:attribute name="service" type="xs:string" use="required"/>
+        <xs:attribute name="prefix" type="xs:string"><xs:annotation><xs:documentation>A typed prefix that narrows the palette
+            to this group (@ people, # rooms); the palette keeps > for actions and : for screens.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="id-pattern" type="xs:string"><xs:annotation><xs:documentation>A regular expression the whole
+            text must match for this source to run, as for an id lookup.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="sequence" type="xs:integer"><xs:annotation><xs:documentation>The groups of a search are in
+            sequence order across the apps.</xs:documentation></xs:annotation></xs:attribute>
+    </xs:complexType></xs:element>
+    <xs:element name="notification-topic"><xs:annotation><xs:documentation>
+        A NotificationMessage topic this app sends to users, for the Notifications panel's filter by app.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="topic" type="xs:string" use="required"/>
+    </xs:complexType></xs:element>
+    <xs:element name="keymap"><xs:annotation><xs:documentation>
+        Key bindings of this app for the shell's keymap registry (moqui.keymap) and its ? overlay.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:sequence><xs:element name="key" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
+            <xs:attribute name="keys" type="xs:string" use="required"><xs:annotation><xs:documentation>The keys: ctrl+k, or a
+                chord such as g i.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="label" type="xs:string"/>
+            <xs:attribute name="screen" type="xs:string"><xs:annotation><xs:documentation>The screen the key opens; a key to
+                a screen the user may not view is left out.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="action" type="xs:string"><xs:annotation><xs:documentation>Instead of a screen, the name of a
+                client action of the shell (palette, quickCreate).</xs:documentation></xs:annotation></xs:attribute>
+        </xs:complexType></xs:element></xs:sequence>
+        <xs:attribute name="scope" type="xs:string"><xs:annotation><xs:documentation>The scope the keys are active in; empty
+            is global.</xs:documentation></xs:annotation></xs:attribute>
+    </xs:complexType></xs:element>
+    <xs:element name="account-menu-item"><xs:annotation><xs:documentation>
+        An entry of the shell's account menu (Preferences, Account) that opens a screen.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:sequence><xs:element ref="parameter" minOccurs="0" maxOccurs="unbounded"/></xs:sequence>
+        <xs:attributeGroup ref="shell-link-attributes"/>
+        <xs:attribute name="screen" type="xs:string" use="required"/>
     </xs:complexType></xs:element>
 
     <!-- ================ Subscreens ================ -->
@@ -868,6 +981,23 @@ along with this software (see the LICENSE.md file). If not, see
             If specified and evaluates to false link is not rendered.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>
 
+
+    <!-- ================ Shell ================ -->
+    <xs:element name="context" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        The screen context of the suite shell: what this screen shows, for quick create (the link chip and prefills),
+        Chatter, record files, the Today panel and Assist. In qvt it is an m-screen-context, which registers the values
+        with the shell's root while the screen is shown (the root's screenContext); in a server-static qvt screen the
+        expressions are bound in the browser over the screen's actions data. It renders nothing in the other modes. The
+        attributes may hold ${} expressions.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="record-entity" type="xs:string"><xs:annotation><xs:documentation>The entity of the record the
+            screen shows (mantle.order.OrderHeader).</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="record-id" type="xs:string"><xs:annotation><xs:documentation>Its id, such as ${orderId}. The
+            record is in the context only with an entity and an id.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="title" type="xs:string"><xs:annotation><xs:documentation>The record's title, localized.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="selection-form" type="xs:string"><xs:annotation><xs:documentation>The form-list whose selected
+            rows are the selection.</xs:documentation></xs:annotation></xs:attribute>
+    </xs:complexType></xs:element>
 
     <!-- ================ Includes ================ -->
     <!-- possible good idea, but not implementing in 1.0; should use render-mode.text instead

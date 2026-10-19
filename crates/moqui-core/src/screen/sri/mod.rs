@@ -62,6 +62,7 @@ pub use sections::{
 };
 pub(super) use sections::{is_security, iteration_entries, paginate_items};
 pub use theme::{get_theme_icon_class, get_theme_values};
+pub(crate) use theme::{theme_resource_values, user_theme_id, DEFAULT_QUASAR_THEME, QUASAR_THEME_TYPE};
 
 /// Generates and runs the code of a section on the script runtime that is running the render.
 pub trait Runner {

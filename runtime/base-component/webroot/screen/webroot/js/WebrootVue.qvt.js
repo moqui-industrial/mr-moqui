@@ -2460,6 +2460,26 @@
         computed: { isClass() { return moqui.isIconClass(this.name); } }
     });
 
+    // The screen context of the suite shell (the context element of a screen): while mounted it registers recordEntity, recordId,
+    // title and selectionForm with the root, again when one changes, and takes them back when unmounted. The root's screenContext
+    // is the latest registration of the screens shown (a dialog's over the page's).
+    let screenContextCount = 0;
+    component("m-screen-context", {
+        name: "mScreenContext",
+        props: { recordEntity: String, recordId: [String, Number], title: String, selectionForm: String },
+        template: '<span style="display:none;"></span>',
+        data() { screenContextCount += 1; return { contextKey: "screenContext" + screenContextCount }; },
+        computed: {
+            value() {
+                const text = (value) => (value === null || value === undefined || value === "null" ? "" : String(value));
+                return { recordEntity: text(this.recordEntity), recordId: text(this.recordId), title: text(this.title), selectionForm: text(this.selectionForm) };
+            }
+        },
+        watch: { value(newValue) { if (this.$root.setScreenContext) this.$root.setScreenContext(this.contextKey, newValue); } },
+        mounted() { if (this.$root.setScreenContext) this.$root.setScreenContext(this.contextKey, this.value); },
+        unmounted() { if (this.$root.removeScreenContext) this.$root.removeScreenContext(this.contextKey); }
+    });
+
     /* ========== the application ========== */
 
     // The application component. Its template is the markup of the page shell (WebrootVue.qvt.html.fancy), which Vue takes from
@@ -2564,7 +2584,7 @@
         "        <q-scroll-area class=\"fit\"><q-list dense padding><m-menu-nav-item :menu-index=\"0\"></m-menu-nav-item></q-list></q-scroll-area>\n" +
         "    </q-drawer>\n" +
         "\n" +
-        "    <q-page-container>\n" +
+        "    <q-page-container id=\"m-canvas\">\n" +
         "        <q-page class=\"q-pa-sm\"><m-subscreens-active></m-subscreens-active></q-page>\n" +
         "    </q-page-container>\n" +
         "\n" +
@@ -2606,6 +2626,8 @@
                 username: config.username || "", locale: config.locale || "en", userFullName: config.userFullName || "",
                 reLoginShow: false, reLoginPassword: null, reLoginMfaData: null, reLoginOtp: null,
                 notificationClient: null, sessionTokenBc: null, qzVue: null, leftOpen: !!config.leftOpen,
+                // the m-screen-context registrations, oldest first, and the ids of the elements Assist may reach (the canvas)
+                screenContexts: [], assistReach: ["m-canvas"],
                 shell: Object.assign({ logoUrl: "", title: "", logoutUrl: "/Login/logout", footerHtml: "" }, config.shell), labels: Object.assign({}, config.labels)
             };
         },
@@ -2706,6 +2728,17 @@
             reloadContainer(contId) { const comp = this.activeContainers[contId]; if (comp) comp.reload(); else console.error("Container with ID " + contId + " not found, not reloading"); },
             loadContainer(contId, url) { const comp = this.activeContainers[contId]; if (comp) comp.load(url); else console.error("Container with ID " + contId + " not found, not loading url " + url); },
             hideContainer(contId) { const comp = this.activeContainers[contId]; if (comp && comp.hide) comp.hide(); else console.error("Container with ID " + contId + " not found, not hiding"); },
+
+            // The context of a screen, from its m-screen-context: a new key is the latest registration, a known one keeps its place.
+            setScreenContext(key, value) {
+                const entry = { key, value: Object.assign({}, value) };
+                const index = this.screenContexts.findIndex((item) => item.key === key);
+                if (index >= 0) this.screenContexts.splice(index, 1, entry); else this.screenContexts.push(entry);
+            },
+            removeScreenContext(key) {
+                const index = this.screenContexts.findIndex((item) => item.key === key);
+                if (index >= 0) this.screenContexts.splice(index, 1);
+            },
 
             addPlugin(list, url) { moqui.loadComponent(this.appRootPath + url, (comp) => { list.push(comp); }); },
             addPluginsWait(list, urlList, urlIndex) {
@@ -2891,6 +2924,16 @@
             currentLinkUrl() { const search = this.currentSearch; return this.currentLinkPath + (search.length > 0 ? "?" + search : ""); },
             basePathSize() { return this.basePath.split("/").length - this.appRootPath.split("/").length; },
             ScreenTitle() { return this.navMenuList.length > 0 ? this.navMenuList[this.navMenuList.length - 1].title : ""; },
+            // What the shell and Assist know of the screen shown: its path and parameters, the record and selection of the latest
+            // m-screen-context (a record needs an entity and an id), and the filters and forms, which are not gathered yet.
+            screenContext() {
+                const list = this.screenContexts;
+                const latest = list.length ? list[list.length - 1].value : null;
+                const record = latest && latest.recordEntity && latest.recordId ?
+                    { entity: latest.recordEntity, id: latest.recordId, title: latest.title || "" } : null;
+                return { path: this.currentPath, parameters: Object.assign({}, this.currentParameters), record,
+                    selection: latest && latest.selectionForm ? { form: latest.selectionForm } : null, filters: null, forms: [] };
+            },
             documentMenuList() {
                 const docList = [];
                 this.navMenuList.forEach((item) => { if (item.screenDocList && item.screenDocList.length) item.screenDocList.forEach((doc) => docList.push(doc)); });

@@ -1690,12 +1690,25 @@
             formList(n, columnNames.map((column) => column.map((name) => byName[name]).filter((field) => field)), fields);
         };
 
+        // ---- the shell ----
+
+        // The screen context of the suite shell (the context element): an m-screen-context whose attributes are bound over the
+        // scope (R18), so the root registers the record of the data the screen loaded. The title is localized, as ScreenQvt.js does.
+        const screenContext = (n) => {
+            const out = {};
+            plainAttr(out, "record-entity", at(n, "record-entity"), n);
+            plainAttr(out, "record-id", at(n, "record-id"), n);
+            textAttr(out, "title", at(n, "title"), n, true);
+            plainAttr(out, "selection-form", at(n, "selection-form"), n);
+            w("<m-screen-context" + A(out) + "></m-screen-context>\n");
+        };
+
         const h = {
             containerOpen, boxOpen, formListWith, paramsOf, allParams,
             reset, push, pop, e, A, cls, at, X, exp, st, sq, w, note, vIf, vFor, withCondition, urlOf, textOf,
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
-            split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose
+            split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose, screenContext
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -1866,6 +1879,7 @@
         "image": widget("image", true),
         "label": widget("label", false),
         "editable": widget("editable", true),
+        "context": widget("screenContext", false),
         "form-single": formSingleMacro,
         "form-list": formListMacro
     });

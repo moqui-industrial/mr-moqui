@@ -38,7 +38,7 @@ fn text(value: &str) -> Value {
 
 /// Whether the user may view `target` below `parents`, which are on the artifact stack as they are when the screen renders:
 /// a grant on a screen reaches the screens below it.
-fn permitted_under(
+pub(super) fn permitted_under(
     parents: &[std::sync::Arc<super::definition::ScreenDef>],
     target: &super::definition::ScreenDef,
 ) -> bool {
@@ -87,10 +87,11 @@ pub(crate) fn leave_out(parent: &str, item: &SubscreensItem, err: &Error) {
 }
 
 /// The menu entry of `item`, a subscreen of the screen at `parent_names` and `parent_path`, or None when the user may not
-/// view it or a required parameter is missing. `next_item` is the subscreen on the path.
-fn subscreen_entry(
+/// view it or a required parameter is missing. `parents` are the screens from the root down to its parent, for the
+/// authorization. `next_item` is the subscreen on the path. The shell data (`shell.rs`) makes its entries here too.
+pub(super) fn subscreen_entry(
     state: &RenderState,
-    info: &ScreenUrlInfo,
+    parents: &[std::sync::Arc<super::definition::ScreenDef>],
     parent_names: &[String],
     parent_path: &str,
     item: &SubscreensItem,
@@ -104,10 +105,7 @@ fn subscreen_entry(
         return Ok(None);
     };
     let target = state.facade.screen_def(&state.factory, &item.location)?;
-    if !permitted_under(
-        &info.path_defs[..(parent_names.len() + 1).min(info.path_defs.len())],
-        &target,
-    ) {
+    if !permitted_under(parents, &target) {
         return Ok(None);
     }
     let missing = sui
@@ -223,7 +221,8 @@ pub fn menu_data(state: &RenderState, path_names: &[String]) -> Result<Option<Va
             if (!item.menu_include && &item.name != next_item) || !item.is_valid_in_current_context() {
                 continue;
             }
-            match subscreen_entry(state, &info, &full_path[..=index], &current_path, item, next_item) {
+            let parents = &info.path_defs[..(index + 2).min(info.path_defs.len())];
+            match subscreen_entry(state, parents, &full_path[..=index], &current_path, item, next_item) {
                 Ok(Some(entry)) => subscreens.push(entry),
                 Ok(None) => {}
                 Err(err) => leave_out(&cur_screen.location, item, &err),

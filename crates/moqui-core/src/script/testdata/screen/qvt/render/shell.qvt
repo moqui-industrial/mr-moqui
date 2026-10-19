@@ -1,0 +1,3 @@
+<m-screen-context record-entity="mantle.order.OrderHeader" record-id="SO10023" title="Order {{x}} &amp; more" selection-form="ItemList"></m-screen-context>
+<m-screen-context record-entity="mantle.order.OrderHeader"></m-screen-context>
+<span class="text-inline">the context renders nothing visible</span>

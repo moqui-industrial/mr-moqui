@@ -170,6 +170,7 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-tree-top`, `m-tree-item` | tree: `items` is the node list or its URL (`<screen>/actions/<tree>`, posted `treeNodeId`, `treeNodeName`, `treeOpenPath`). A node's `children` is a list when it came inline (on `open-path`), `true` to load from the URL when the node is opened, `false` for a leaf |
 | `m-subscreens-tabs` (also `m-subscreens-menu`), `m-subscreens-active`, `m-subscreens-panel` | the subscreen menu and the place of the active subscreen |
 | `m-menu-nav-item`, `m-menu-subscreen-item`, `m-menu-item-content`, `m-menu-icon` | the navigation of the shell; `m-menu-icon` is a menu image of type icon (`name`, `size`) |
+| `m-screen-context` | the `context` element: while mounted it registers `recordEntity`, `recordId`, `title` and `selectionForm` with the root (`setScreenContext`), again when one changes, and takes them back when unmounted (see Shell data and providers) |
 | `m-chart`, `m-mermaid` | Chart.js 4 and Mermaid 11, loaded on first use. `m-chart` takes `config`; `m-mermaid` takes the diagram in its `text` attribute (the compiler condenses the line breaks of slot content), `height` and `config` |
 | `m-script`, `m-stylesheet` | `<script>` and `<link>` of a screen's text |
 
@@ -185,7 +186,100 @@ theme's footer items. The `LoadingBar` plugin runs while the root's `loading` co
 JSON of the theme's `STRT_QUASAR_CONFIG` resource, merged over the defaults.
 The shell gives Quasar a stand-in for `vue-router` (`$router.resolve`, `push`, `replace`, and `$route`), so `q-btn to="..."` and `q-item to="..."` navigate with `setUrl`.
 `moqui.webrootVue` is the root: `setUrl(url, bodyParameters)`, `setParameters(obj)`, `reloadContainer(id)`, `loadContainer(id, url)`,
-`hideContainer(id)`, `addNotify`, `getLinkPath`.
+`hideContainer(id)`, `addNotify`, `getLinkPath`, and the screen context: `setScreenContext(key, value)`, `removeScreenContext(key)`,
+`screenContext` and `assistReach` (below).
+
+## Shell data and providers
+
+The suite shell (IronStone BOSS design-drawers-commons §1, impl-drawers-commons M1) reads three things from the server beyond the menu
+data of the current path. Every screen location in them is a link of the page, under `linkBasePath` (`/qapps/...`); to load one as a
+component (an `m-dynamic-container` tab or an `m-dynamic-dialog`) put `basePath` in place of `linkBasePath` (`/apps/...`). A link is
+there only when the user may view its screen, and a shell element whose value is null or whose list is empty is hidden (R27).
+
+**`GET /shellData`** (the root screen's transition, read-only, 401 without a user; `crates/moqui-core/src/screen/shell.rs`), fetched
+once per page load:
+
+```
+{ apps: [ { name, title, image, imageType, path,                       // an app root, as the app list shows it; path /qapps/<name>
+            menu: [ { title, path, image, imageType, depth } ],        // its menu, depth 1 and 2, each entry followed by its children
+            providers: {
+              quickCreate:      [ { kind, label, icon, url, requiresRecord, sequence } ],
+              todaySources:     [ { service, label } ],
+              paletteActions:   [ { label, icon, url, sequence } ],
+              paletteTypes:     [ docType ],
+              paletteSources:   [ { group, label, icon, prefix, idPattern, sequence } ],   // no service name
+              notificationTopics: [ topic ],
+              keymaps:          [ { scope, keys: [ { keys, label, url, action } ] } ],
+              accountMenuItems: [ { label, icon, url, sequence } ] } } ],
+  shell: { trayToday, trayChat, trayNotifications, quickCreate, inboxScreen,       // links, or null
+           chatterScreen, recordFilesScreen },                                     // subscreen names under the current app root, or null
+  counts: { ... } | null }
+```
+
+- `apps` are the subscreens of the apps root (`/apps`, `webroot/apps.xml`) in menu order that are in the menu, take no parameters and that
+  the user may view, each authorized as the menu data authorizes a subscreen (a grant on a screen reaches the screens below it). An app
+  root that does not load, or whose providers fail, is logged by name and location and left out; the others are answered. `menu` lists
+  what the drawer would to depth two, with the menu data's checks (`menu-include`, authorization, a required parameter left out); a
+  disabled entry is left out. The menu entries are the palette's Screens group.
+- `providers` are the app root's `<shell-providers>` (`xml-screen-3.xsd`): labels localized, each list in `sequence` order (none counts as
+  0), absent text as null. A quick-create kind with no `screen` opens the theme's `STRT_QUICK_CREATE` screen with `kind` added to its query;
+  with neither it is left out. `parameter` children are added to a link's query. A provider whose screen the user may not view is left out,
+  and one whose screen does not exist is logged and left out. `requiresRecord` kinds are offered only while `screenContext.record` is set.
+  `action` of a key is a client action of the shell (`palette`, `quickCreate`) for a key with no `url`.
+- `shell` are theme values of the user's theme for `STT_INTERNAL_QUASAR`, found as a render finds a theme (the user's `UserScreenTheme`, a
+  group's, the type's `enumCode`, a `DEFAULT` theme of the type) and `DEFAULT_QUASAR` when there is none. They are sent here and not in
+  `moqui-config`. `STRT_TRAY_TODAY`, `STRT_TRAY_CHAT`, `STRT_TRAY_NOTIFICATIONS`, `STRT_QUICK_CREATE` and `STRT_INBOX_SCREEN` (the screen the
+  header's Inbox count links to) are screen paths under the apps root; `STRT_CHATTER_SCREEN` and `STRT_RECORD_FILES_SCREEN` are subscreen
+  names that every app root mounts (`Chatter`, `RecordFiles`), loaded as `<current app root>/<name>?recordEntity=&recordId=` so the app's
+  authorization applies (R5).
+- `counts` is what `org.moqui.impl.ShellServices.get#ShellCounts` answers for the user: the `counts` map of the service the theme names in
+  `STRT_SHELL_COUNTS_SERVICE`, called with `userId` (IronStone: `today`, `chat`, `mail`, `notifications` and their parts). Null when the theme
+  names none, or the service is missing or fails (logged once per service name).
+
+**`GET /shellSearch?text=&groups=&limit=`** (read-only, 401 without a user): the palette's provider groups.
+
+```
+{ groups: [ { group, label, icon, prefix, rows: [ { title, subtitle, icon, url } ], moreUrl } ] }
+```
+
+The server runs the `palette-source` services of the apps the user may open, and only those: a request names groups (`groups`, a comma
+list of group names, to narrow the search, as the client's prefixes do), never a service. The groups are in source `sequence` order across
+the apps; the same group and service registered by two apps runs once. An empty `text` runs nothing. A source with an `id-pattern` runs only
+when the whole text matches it. A source that fails is logged by group and service and left out, and so is one that answers no rows.
+`limit` is the rows per group, 5 by default (at most 50).
+
+**A palette source service** takes:
+
+| In | Type | |
+|---|---|---|
+| `text` | String | the search text, trimmed |
+| `limit` | Integer | the rows wanted |
+| `docTypes` | List | the `palette-type` document types of the apps the user may open (for `search#Universal`) |
+| `idMatch` | Boolean | true for a source with an `id-pattern` (the text is an id); absent otherwise |
+
+and answers `rows`, a List of Maps (`title`, `subtitle`, `icon`, `url`, a `/qapps` link; text or empty), of which the first `limit` are used,
+and optionally `moreUrl`, the link of the full search for the text. The service runs as the user, with the user's authorization and
+entity filters, so it shows only what the user may see. `example.ExampleServices.search#GalleryEnumerations` is a small one.
+
+**The `shellCounts` topic.** `org.moqui.impl.ShellServices.publish#ShellCounts(userIdList)` sends each user a NotificationMessage on the topic
+`shellCounts`, not persisted and with `showAlert` false, whose `message` is the counts map (as `counts` above). A user gets at most one every
+two seconds: requests inside that window fold into one send at its end. Inside a transaction the request waits for the commit, and the
+sends are made on a server thread, so the caller never waits for the counts. The EECAs and SECAs on the records the counts read call it.
+
+**Screen context.** The `context` element (`<context record-entity record-id title selection-form/>`) writes an `m-screen-context`; in a
+server-static screen its attributes are bound over the screen's actions data. The root keeps the registrations of the mounted ones in
+`screenContexts` and exposes the latest as:
+
+```
+screenContext: { path, parameters,                         // currentPath (/apps/...) and currentParameters
+                 record: { entity, id, title } | null,     // with an entity and an id
+                 selection: { form } | null,               // the form-list whose selected rows are the selection
+                 filters: null, forms: [] }                // not gathered yet
+assistReach: ["m-canvas"]                                  // ids of the elements Assist may reach: the q-page-container
+```
+
+A dialog's screen with a context registers after the page's and is the latest until it is unmounted. Quick create passes `record.entity`
+and `record.id` as `recordEntity` and `recordId`.
 
 ## Server-static screens
 

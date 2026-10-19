@@ -1754,7 +1754,7 @@
               ], 4))
             }
         } },
-        "m-qapps-root": { hash: "f717e5fa", make: function (Vue) {
+        "m-qapps-root": { hash: "a1154160", make: function (Vue) {
             const { resolveComponent: _resolveComponent, createVNode: _createVNode, createElementVNode: _createElementVNode, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, renderList: _renderList, Fragment: _Fragment, createElementBlock: _createElementBlock, resolveDirective: _resolveDirective, withDirectives: _withDirectives, resolveDynamicComponent: _resolveDynamicComponent, normalizeClass: _normalizeClass, withModifiers: _withModifiers } = Vue
 
             return function render(_ctx, _cache) {
@@ -2327,7 +2327,7 @@
                       ]),
                       _: 1
                     }, 8, ["modelValue", "onUpdate:modelValue"]),
-                    _createVNode(_component_q_page_container, null, {
+                    _createVNode(_component_q_page_container, { id: "m-canvas" }, {
                       default: _withCtx(() => [
                         _createVNode(_component_q_page, { class: "q-pa-sm" }, {
                           default: _withCtx(() => [
@@ -2526,6 +2526,13 @@
                   "onUpdate:modelValue": $event => ((_ctx.fields[_ctx.name + '_thru']) = $event)
                 }, null, 8, ["label", "name", "id", "size", "maxlength", "form", "tooltip", "modelValue", "onUpdate:modelValue"])
               ]))
+            }
+        } },
+        "m-screen-context": { hash: "fcdf7cd5", make: function (Vue) {
+            const { openBlock: _openBlock, createElementBlock: _createElementBlock } = Vue
+
+            return function render(_ctx, _cache) {
+              return (_openBlock(), _createElementBlock("span", { style: {"display":"none"} }))
             }
         } },
         "m-script": { hash: "ddf09c45", make: function (Vue) {

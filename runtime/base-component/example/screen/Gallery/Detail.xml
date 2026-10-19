@@ -113,6 +113,8 @@ along with this software (see the LICENSE.md file). If not, see
         </widgets></section>
 
         <section name="Found" condition="enumeration"><widgets>
+            <!-- the record this screen shows, for the shell: quick create links to it, Assist reads it -->
+            <context record-entity="moqui.basic.Enumeration" record-id="${enumId}" title="${enumeration.description}"/>
             <!-- title row -->
             <container style="row items-center q-col-gutter-sm q-mx-sm q-mb-sm">
                 <container style="col-12 col-md-auto">

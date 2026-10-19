@@ -769,6 +769,39 @@ fn sri_get_menu_data<'js>(ctx: Ctx<'js>, names: Vec<String>) -> rquickjs::Result
     })
 }
 
+/// `sri.getShellData()`: the shell data of the `shellData` transition (`screen/shell.rs`), or null after an error was sent.
+fn sri_get_shell_data<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let found = with_render(&ctx, false, crate::screen::shell::shell_data)?;
+        match found {
+            Some(value) => collection_to_js(&ctx, value),
+            None => Null.into_js(&ctx),
+        }
+    })
+}
+
+/// `sri.getShellSearch(text, groups, limit)`: the palette groups of the `shellSearch` transition, or null after an error
+/// was sent. Each argument may be null.
+fn sri_get_shell_search<'js>(
+    ctx: Ctx<'js>,
+    text: Opt<JsValue<'js>>,
+    groups: Opt<JsValue<'js>>,
+    limit: Opt<JsValue<'js>>,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let text = text_or_empty(&ctx, text.0.as_ref())?;
+        let groups = text_or_empty(&ctx, groups.0.as_ref())?;
+        let limit = text_or_empty(&ctx, limit.0.as_ref())?;
+        let found = with_render(&ctx, false, |state| {
+            crate::screen::shell::shell_search(state, &text, &groups, &limit)
+        })?;
+        match found {
+            Some(value) => collection_to_js(&ctx, value),
+            None => Null.into_js(&ctx),
+        }
+    })
+}
+
 fn sri_get_after_screen_writer_text(ctx: Ctx<'_>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         with_render(&ctx, false, |state| {
@@ -997,6 +1030,8 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getFieldTransitionValue", sri_get_field_transition_value);
     method!("getMenuItems", sri_get_menu_items);
     method!("getMenuData", sri_get_menu_data);
+    method!("getShellData", sri_get_shell_data);
+    method!("getShellSearch", sri_get_shell_search);
     method!("staticUrl", sri_static_url);
     method!("staticCheck", sri_static_check);
     method!("staticNote", sri_static_note);

@@ -22,4 +22,34 @@
             <set field="count" from="tool.counter().increment()"/>
         </actions>
     </service>
+
+    <!-- A palette source of the suite shell (the shell-providers of screen/Gallery.xml), run by the shellSearch transition of
+        webroot.xml: enumerations whose id or description has the text, linked to the Detail gallery screen. The contract of a
+        palette source is in webroot/screen/webroot/js/README.md ("Shell data and providers"). -->
+    <service verb="search" noun="GalleryEnumerations">
+        <in-parameters>
+            <parameter name="text" required="true"/>
+            <parameter name="limit" type="Integer" default="5"/>
+            <parameter name="docTypes" type="List"/>
+            <parameter name="idMatch" type="Boolean"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="rows" type="List"/>
+            <parameter name="moreUrl"/>
+        </out-parameters>
+        <actions>
+            <entity-find entity-name="moqui.basic.Enumeration" list="enumList" limit="50">
+                <econditions combine="or">
+                    <econdition field-name="enumId" operator="like" value="%${text}%" ignore-case="true"/>
+                    <econdition field-name="description" operator="like" value="%${text}%" ignore-case="true"/>
+                </econditions>
+                <order-by field-name="description"/>
+            </entity-find>
+            <script><![CDATA[
+                rows = enumList.map((row) => ({ title: row.description || row.enumId, subtitle: `${row.enumTypeId} · ${row.enumId}`,
+                    icon: 'sym_o_label', url: '/qapps/gallery/Detail?enumId=' + encodeURIComponent(row.enumId) })).slice(0, limit || 5)
+                moreUrl = '/qapps/gallery/List?description=' + encodeURIComponent(text)
+            ]]></script>
+        </actions>
+    </service>
 </services>

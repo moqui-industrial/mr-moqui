@@ -150,6 +150,18 @@ along with this software (see the LICENSE.md file). If not, see
             <moqui.basic.Enumeration description="Quasar Config (JSON: brand, notify, loadingBar)" enumId="STRT_QUASAR_CONFIG" enumTypeId="ScreenThemeResourceType"/>
             <moqui.basic.Enumeration description="HTML Body CSS Class" enumId="STRT_BODY_CLASS" enumTypeId="ScreenThemeResourceType"/>
             <moqui.basic.Enumeration description="Theme Preview Screenshot" enumId="STRT_SCREENSHOT" enumTypeId="ScreenThemeResourceType"/>
+            <!-- The suite shell of /qapps (m-qapps-root): an app suite such as IronStone BOSS names its screens and its counts service
+                here, so the framework stays free of its data model; the shellData transition of webroot.xml sends them to the shell
+                (webroot/screen/webroot/js/README.md, "Shell data and providers"). A shell element whose value is not set is hidden.
+                The screen paths are under the apps root (Commons/Panel/Today), optionally with a query string. -->
+            <moqui.basic.Enumeration description="Shell Tray Today Screen (path under the apps root)" enumId="STRT_TRAY_TODAY" enumTypeId="ScreenThemeResourceType"/>
+            <moqui.basic.Enumeration description="Shell Tray Chat Screen (path under the apps root)" enumId="STRT_TRAY_CHAT" enumTypeId="ScreenThemeResourceType"/>
+            <moqui.basic.Enumeration description="Shell Tray Notifications Screen (path under the apps root)" enumId="STRT_TRAY_NOTIFICATIONS" enumTypeId="ScreenThemeResourceType"/>
+            <moqui.basic.Enumeration description="Shell Quick Create Screen (path under the apps root, gets kind)" enumId="STRT_QUICK_CREATE" enumTypeId="ScreenThemeResourceType"/>
+            <moqui.basic.Enumeration description="Shell Inbox Screen (path under the apps root the Inbox count links to)" enumId="STRT_INBOX_SCREEN" enumTypeId="ScreenThemeResourceType"/>
+            <moqui.basic.Enumeration description="Shell Chatter Screen (subscreen name under the current app root)" enumId="STRT_CHATTER_SCREEN" enumTypeId="ScreenThemeResourceType"/>
+            <moqui.basic.Enumeration description="Shell Record Files Screen (subscreen name under the current app root)" enumId="STRT_RECORD_FILES_SCREEN" enumTypeId="ScreenThemeResourceType"/>
+            <moqui.basic.Enumeration description="Shell Counts Service (service name, called with userId, answers counts)" enumId="STRT_SHELL_COUNTS_SERVICE" enumTypeId="ScreenThemeResourceType"/>
         </seed-data>
     </entity>
     <entity entity-name="ScreenThemeIcon" package="moqui.screen" use="configuration" cache="true">

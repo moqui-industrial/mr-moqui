@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The badge counts of the /qapps suite shell. No Java counterpart. The framework counts nothing itself: an app suite names
+    its counts service in the theme value STRT_SHELL_COUNTS_SERVICE of its Quasar themes (IronStone BOSS seeds
+    mantle.party.PartyServices.get#ShellCounts), so the framework stays free of its data model. The bodies are Rust:
+    crates/moqui-core/src/service/shell.rs. The shell and its topic: webroot/screen/webroot/js/README.md, "Shell data and
+    providers". -->
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+    <service verb="get" noun="ShellCounts" type="rust" location="moqui_core::service::shell::get_shell_counts" transaction="ignore">
+        <description>The shell counts of a user: the service named by STRT_SHELL_COUNTS_SERVICE in the user's theme for
+            STT_INTERNAL_QUASAR (found as a render finds it: the user's, a group's, the type's enumCode, a DEFAULT theme of
+            the type; DEFAULT_QUASAR when there is none) is called with userId and its counts map returned. counts is null
+            when the theme has no such value, and when the service is missing, fails or answers no map, which is logged once
+            per service name. Another user's counts only with authorization disabled (internal work).
+
+            The counts service takes userId and answers counts, a map the shell reads by key (IronStone: today, chat, mail,
+            notifications and their parts); the framework sends it as it is.</description>
+        <in-parameters><parameter name="userId"><description>Default the current user</description></parameter></in-parameters>
+        <out-parameters><parameter name="counts" type="Map"/></out-parameters>
+    </service>
+    <service verb="publish" noun="ShellCounts" type="rust" location="moqui_core::service::shell::publish_shell_counts"
+            authenticate="false" transaction="ignore">
+        <description>Send each user their shell counts (get#ShellCounts) as a NotificationMessage on the topic shellCounts:
+            not persisted, showAlert false, the counts as its message. Coalesced per user: at most one send every 2 seconds,
+            and the requests inside that window fold into one send at its end. Inside a transaction the request waits for the
+            commit (a rollback sends nothing), and the sends are made on a thread of the server, so the caller never waits
+            for the counts. The EECAs and SECAs on the records the counts read call this.</description>
+        <in-parameters>
+            <parameter name="userIdList" type="List" required="true"><description>A list of userId, or a comma separated
+                text</description></parameter>
+        </in-parameters>
+    </service>
+</services>

@@ -1,0 +1,3 @@
+<m-screen-context record-entity="mantle.order.OrderHeader" :record-id="ec.resource.expandNoL10n('${orderId}',{'orderId':()=&gt;(orderId)})" :title="ec.resource.expand('${orderName}',{'orderName':()=&gt;(orderName)})" selection-form="ItemList"></m-screen-context>
+<m-screen-context record-entity="mantle.order.OrderHeader" :record-id="ec.resource.expandNoL10n('${missingId}',{'missingId':()=&gt;(missingId)})"></m-screen-context>
+<span class="text-inline" v-text="ec.l10n.localize('the context renders nothing visible')"></span>

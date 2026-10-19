@@ -234,3 +234,45 @@ test("a menu image of type icon is a Quasar icon name for q-icon, or CSS classes
     assert.match(shell, /<m-menu-icon v-if="histItem.image && histItem.imageType === 'icon'" :name="histItem.image"/);
     assert.doesNotMatch(shell, /:class="(subscreen|histItem)\.image"/);
 });
+
+test("an m-screen-context registers with the root, follows its props and leaves on unmount; the latest one is the screen context", () => {
+    const options = qvt.rootOptions({ basePath: "/apps", linkBasePath: "/qapps", appRootPath: "" });
+    const data = options.data();
+    assert.deepEqual(data.screenContexts, []);
+    assert.deepEqual(data.assistReach, ["m-canvas"]);
+    const root = Object.assign(data, { currentPath: "/apps/gallery/Detail", currentParameters: { enumId: "STT_INTERNAL" } });
+    Object.keys(options.methods).forEach((name) => { root[name] = options.methods[name].bind(root); });
+    const screenContext = () => options.computed.screenContext.call(root);
+    assert.deepEqual(screenContext(), { path: "/apps/gallery/Detail", parameters: { enumId: "STT_INTERNAL" }, record: null, selection: null, filters: null, forms: [] });
+
+    // the component as Vue runs it: its data, its computed value, mounted, a prop change, unmounted
+    const comp = qvt.components["m-screen-context"];
+    const make = (props) => {
+        const self = Object.assign({ $root: root }, props, comp.data());
+        Object.defineProperty(self, "value", { get: () => comp.computed.value.call(self) });
+        return self;
+    };
+    const page = make({ recordEntity: "moqui.basic.Enumeration", recordId: "STT_INTERNAL", title: "Internal", selectionForm: undefined });
+    comp.mounted.call(page);
+    assert.deepEqual(screenContext().record, { entity: "moqui.basic.Enumeration", id: "STT_INTERNAL", title: "Internal" });
+    assert.equal(screenContext().selection, null);
+    // a dialog's screen over the page is the latest; when it goes the page's is back
+    const dialog = make({ recordEntity: "moqui.basic.EnumerationType", recordId: 42, selectionForm: "EnumList" });
+    comp.mounted.call(dialog);
+    assert.deepEqual(screenContext().record, { entity: "moqui.basic.EnumerationType", id: "42", title: "" });
+    assert.deepEqual(screenContext().selection, { form: "EnumList" });
+    // a prop change keeps the registration's place
+    page.recordId = "STT_ERROR";
+    comp.watch.value.call(page, page.value);
+    assert.equal(screenContext().record.entity, "moqui.basic.EnumerationType");
+    comp.unmounted.call(dialog);
+    assert.deepEqual(screenContext().record, { entity: "moqui.basic.Enumeration", id: "STT_ERROR", title: "Internal" });
+    // without an id (or with the text null an empty expression gives) there is no record
+    page.recordId = "null";
+    comp.watch.value.call(page, page.value);
+    assert.equal(screenContext().record, null);
+    comp.unmounted.call(page);
+    assert.deepEqual(root.screenContexts, []);
+    // the canvas the reach list names is in the shell
+    assert.match(qvt.components["m-qapps-root"].template, /<q-page-container id="m-canvas">/);
+});

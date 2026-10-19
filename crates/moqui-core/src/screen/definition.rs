@@ -642,6 +642,8 @@ pub struct ScreenDef {
     pub forms: BTreeMap<String, FormDef>,
     pub trees: BTreeMap<String, TreeDef>,
     pub has_tab_menu: bool,
+    /// The `shell-providers` of an app root, for the shell data (`shell.rs`).
+    pub shell_providers: Option<super::shell::ShellProviders>,
     /// The merged screen XML, after `screen-extend`.
     pub source: XmlFragment,
     pub sources: Vec<Source>,
@@ -999,6 +1001,7 @@ impl ScreenDef {
             forms,
             trees,
             has_tab_menu,
+            shell_providers: super::shell::ShellProviders::of(node, location),
             source: XmlFragment::of(node),
             sources,
             checked_at: std::sync::atomic::AtomicI64::new(super::cache::now_millis()),

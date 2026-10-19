@@ -114,6 +114,42 @@ fn form_single_with_every_field_type() {
     }
 }
 
+/// `context` is an m-screen-context with the request's values (a title localized and encoded, an expression that comes to
+/// nothing left out), and `shell-providers`, a child of the screen, renders nothing in any mode.
+#[test]
+fn the_screen_context_and_the_shell_providers() {
+    let out = check("shell", &[]);
+    assert!(
+        out.contains(r#"<m-screen-context record-entity="mantle.order.OrderHeader" record-id="SO10023" title="Order {{x}} &amp; more" selection-form="ItemList"></m-screen-context>"#),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"<m-screen-context record-entity="mantle.order.OrderHeader"></m-screen-context>"#),
+        "{out}"
+    );
+    for provider in ["quick-create", "QuickNote", "palette", "Records", "g l"] {
+        assert!(!out.contains(provider), "{provider} in {out}");
+    }
+    for mode in ["html", "text", "csv", "xml"] {
+        let context = ExecutionContextFactory::test_context();
+        let output = make_render(context.factory())
+            .root_screen(render_dir().join("shell.xml").to_string_lossy().into_owned())
+            .screen_path("")
+            .render_mode(mode)
+            .render()
+            .unwrap_or_else(|err| panic!("{mode}: {err}"));
+        let text = output.body_text();
+        // csv and xml write only forms
+        assert!(
+            matches!(mode, "csv" | "xml") || text.contains("the context renders nothing visible"),
+            "{mode}: {text}"
+        );
+        for written in ["SO10023", "screen-context", "QuickNote", "Records"] {
+            assert!(!text.contains(written), "{written} in {mode}: {text}");
+        }
+    }
+}
+
 #[test]
 fn form_lists() {
     let out = check("lists", &[]);
@@ -130,7 +166,9 @@ fn an_alias_transition_link_points_at_the_screen() {
     assert_compiles(&["alias".to_string()], std::slice::from_ref(&out));
     assert!(out.contains("href=\"/Detail?id=I1&amp;fromResponse=yes\""), "{out}");
     assert!(
-        out.contains("<m-link href=\"/Detail?id=I1&amp;fromResponse=yes\" id=\"Rows_id_0_detail\" class=\"m-link-text\">"),
+        out.contains(
+            "<m-link href=\"/Detail?id=I1&amp;fromResponse=yes\" id=\"Rows_id_0_detail\" class=\"m-link-text\">"
+        ),
         "{out}"
     );
     assert!(out.contains("href=\"/List/detail?id=I1\""), "{out}");
@@ -139,12 +177,18 @@ fn an_alias_transition_link_points_at_the_screen() {
     assert!(out.contains("action=\"/Detail\""), "{out}");
     assert!(out.contains("action=\"/List/detail\""), "{out}");
     // The extra path of an alias is the path-parameter, outside the row so the row's id is not the source.
-    assert!(out.contains("href=\"/Detail?id=I1\" class=\"m-link-text\">By path"), "{out}");
+    assert!(
+        out.contains("href=\"/Detail?id=I1\" class=\"m-link-text\">By path"),
+        "{out}"
+    );
     // type=none is not a screen URL, so the anchor is <a>. The alias above stays m-link. In a list cell a screen link is text.
     assert!(out.contains("<a href=\"/List/gone\" class=\"m-link-text\">"), "{out}");
     assert!(!out.contains("<m-link href=\"/List/gone\">"), "{out}");
     // An http(s) value with url-type screen is that string, not a screen walk.
-    assert!(out.contains("<a href=\"https://example.com/x\" class=\"m-link-text\">"), "{out}");
+    assert!(
+        out.contains("<a href=\"https://example.com/x\" class=\"m-link-text\">"),
+        "{out}"
+    );
     // A screen that does not exist is `#`.
     assert!(out.contains(">#</span>"), "{out}");
 }
