@@ -295,6 +295,7 @@ fn the_qvt_fixture_screens_become_templates_that_compile() {
         "braces",
         "shell",
         "Dashboard",
+        "records",
     ] {
         let (html, report) = static_fixture(name);
         golden(&format!("render/{name}.html"), &html);
@@ -331,6 +332,23 @@ fn the_screen_context_is_bound_over_the_scope_in_a_static_template() {
         "{html}"
     );
     assert!(!html.contains("SO10023") && !html.contains("quick-create"), "{html}");
+}
+
+/// The record panels of a server-static screen are bound over the scope (R18): the record id and the hints are expressions of
+/// the screen's data, a condition a v-if, and nothing is expanded on the server; a rich editor's mention transition is its path.
+#[test]
+fn the_record_panels_are_bound_over_the_scope_in_a_static_template() {
+    let (html, _) = static_fixture("records");
+    for expected in [
+        r#"<m-chatter id="TaskChatter" record-entity="mantle.work.effort.WorkEffort" :record-id="ec.resource.expandNoL10n('${taskId}',{'taskId':()=&gt;(taskId)})" :default-tab="ec.resource.expandNoL10n('${tab}',{'tab':()=&gt;(tab)})" hide="message"></m-chatter>"#,
+        r#"<template v-if="(false)"><m-chatter"#,
+        r#"<m-record-files record-entity="mantle.work.effort.WorkEffort" :record-id="ec.resource.expandNoL10n('${taskId}',{'taskId':()=&gt;(taskId)})" class="q-mt-sm"></m-record-files>"#,
+        r#"editor-type="rich-light""#,
+        r#"mention-url="/mentions""#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    assert!(!html.contains("T100"), "{html}");
 }
 
 #[test]

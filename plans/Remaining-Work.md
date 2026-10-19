@@ -66,6 +66,10 @@ The child-list dates of the Postgres search, condition objects in a script's con
 | Notifications | `approve#` and `refuse#NotificationMessage` mark only the deciding user's `NotificationMessageUser` row viewed; the other recipients of the same approval keep it waiting until they open it (their approve service call answers with the record's state) | M2 framework |
 | Notifications | The daily digest is one list per user, newest last; no grouping by topic or app yet, and no per-user hour (the job runs at 06:00 server time) | M2 framework |
 | Screens | In a server-static screen a link url with `${}` is bound as text (`exp`), so a relative path in it is not resolved against the screen; a plain url and its query are | M2 framework (number-card links) |
+| Client | `m-rich-text` inserts images by URL only (no upload, paste or drop of a file; a pasted `data:` image is dropped), has no tables, no `#` record trigger beside `@`, and its plain-text toggle turns a mention into `@Label` text and drops the formatting (back to rich gives paragraphs). In the html render mode a rich `text-area` is a plain textarea of the HTML | M3 framework |
+| Client | `moqui.loadScript`: a script whose load failed keeps `data-mq-state="loading"`, so a later call for it never settles (it waits for a `load` that will not come). `m-rich-text` shares one promise per page for Tiptap, so its editors all fall back; the other lazy libraries still have the gap | M3 framework |
+| Client | `m-avatar presence` draws the dot from the value it is given; nothing feeds it until `UserStatus` and the `userStatus` topic (M10). `m-html-view` (sanitized HTML in a sandboxed frame, for Inbox and Chatter entries) is M5 | M3 framework |
+| XSD | `xml-screen-3.xsd` does not compile in libxml2 (`xmllint --schema`): "the content model is not determinist" for the complex types at `container-dialog` and `dashboard`, so screens cannot be validated against it with xmllint (they still parse, and the server does not read the XSD) | found 2026-10-19 |
 
 ## Parity gap review
 

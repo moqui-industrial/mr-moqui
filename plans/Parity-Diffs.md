@@ -195,3 +195,12 @@ Timestamp text without an offset is read in the session time zone wherever text 
 |---|---|---|
 | entity value | A field set from text with `set` or `setFields` is converted when the value is written, a timestamp in the session time zone as `setString` and `setAll` read one; Java's `set` keeps the `String` and its JDBC driver hands it to the database, which reads it in the database's zone (Postgres refuses the `varchar` for a `timestamp` column) | One rule for every text that becomes a timestamp; comment at `normalize_values` in `entity/value.rs` |
 | entity condition | A text value compared to a date, time or number field is converted to the field's type before it is bound, timestamp text in the session time zone (`Column::typed`, `moqui-db/src/sql/condition.rs`); Java binds the `String` and the database reads it | The same text is the same moment in a condition and in the data it finds; doc comment at `typed` |
+
+## Rich text (2026-10-19)
+
+IronStone impl-drawers-commons M3: what the safe HTML cleaning keeps for the qvt rich-text editor. The `chatter` and
+`record-files` screen elements and the editor are new (js/README.md, "Record panels, rich text, avatars and record cards").
+
+| Area | Difference | Rationale / where documented |
+|---|---|---|
+| `allow-html="safe"` | The cleaning keeps `data-mention-id` on a `span`, beside ammonia's default allow-list (Java's Jsoup safelist drops every `data-` attribute) | The mention of the qvt rich-text editor, `<span data-mention-id="id">@Label</span>`, so a cleaned note still says whom it mentions; the value is escaped text. Doc comment at `safe_html` in `service/validate.rs`, test `the_rich_text_editor_output_survives_the_safe_cleaning` |

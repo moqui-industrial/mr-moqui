@@ -12,11 +12,60 @@
     "entities": "7.0.1",
     "estree-walker": "2.0.2",
     "source-map-js": "1.2.2",
-    "highlight.js": "11.12.0"
+    "highlight.js": "11.12.0",
+    "@tiptap/core": "3.31.4",
+    "@tiptap/extension-blockquote": "3.31.4",
+    "@tiptap/extension-bold": "3.31.4",
+    "@tiptap/extension-bullet-list": "3.31.4",
+    "@tiptap/extension-code": "3.31.4",
+    "@tiptap/extension-code-block": "3.31.4",
+    "@tiptap/extension-document": "3.31.4",
+    "@tiptap/extension-dropcursor": "3.31.4",
+    "@tiptap/extension-gapcursor": "3.31.4",
+    "@tiptap/extension-hard-break": "3.31.4",
+    "@tiptap/extension-heading": "3.31.4",
+    "@tiptap/extension-horizontal-rule": "3.31.4",
+    "@tiptap/extension-image": "3.31.4",
+    "@tiptap/extension-italic": "3.31.4",
+    "@tiptap/extension-link": "3.31.4",
+    "@tiptap/extension-list": "3.31.4",
+    "@tiptap/extension-list-item": "3.31.4",
+    "@tiptap/extension-list-keymap": "3.31.4",
+    "@tiptap/extension-mention": "3.31.4",
+    "@tiptap/extension-ordered-list": "3.31.4",
+    "@tiptap/extension-paragraph": "3.31.4",
+    "@tiptap/extension-placeholder": "3.31.4",
+    "@tiptap/extension-strike": "3.31.4",
+    "@tiptap/extension-text": "3.31.4",
+    "@tiptap/extension-underline": "3.31.4",
+    "@tiptap/extensions": "3.31.4",
+    "@tiptap/pm": "3.31.4",
+    "@tiptap/starter-kit": "3.31.4",
+    "@tiptap/suggestion": "3.31.4",
+    "@floating-ui/core": "1.8.0",
+    "@floating-ui/dom": "1.8.0",
+    "@floating-ui/utils": "0.2.12",
+    "linkifyjs": "4.3.3",
+    "orderedmap": "2.1.1",
+    "prosemirror-changeset": "2.4.4",
+    "prosemirror-commands": "1.7.2",
+    "prosemirror-dropcursor": "1.8.4",
+    "prosemirror-gapcursor": "1.4.1",
+    "prosemirror-history": "1.5.1",
+    "prosemirror-inputrules": "1.5.1",
+    "prosemirror-keymap": "1.2.3",
+    "prosemirror-model": "1.25.12",
+    "prosemirror-schema-list": "1.5.1",
+    "prosemirror-state": "1.4.4",
+    "prosemirror-tables": "1.8.5",
+    "prosemirror-transform": "1.12.2",
+    "prosemirror-view": "1.42.6",
+    "rope-sequence": "1.3.4",
+    "w3c-keyname": "2.2.8"
   },
   "notices": {
     "path": "NOTICES.md",
-    "sha256": "48112ae45e753718f438446c0d8220b07f3dedd7d135c11268536c391eb8bedc"
+    "sha256": "b037b2568df00d24c0cb7ecf0bf81301c27582d2f31654976f63545a751dca1d"
   },
   "libraries": [
     {
@@ -393,6 +442,25 @@
           "from": "build",
           "size": 77309,
           "sha256": "ffc9eeb1e124cfde5cc6e7220149b1e7891ba50a498f86740ea0da4c925b982e"
+        }
+      ]
+    },
+    {
+      "id": "tiptap",
+      "name": "Tiptap (with ProseMirror, bundled)",
+      "version": "3.31.4",
+      "license": "MIT",
+      "note": "Bundles @tiptap/core, starter-kit (and the extensions it includes), extension-link, extension-image, extension-mention, extension-placeholder, extensions, suggestion and pm 3.31.4, the prosemirror-* packages, @floating-ui/*, linkifyjs, orderedmap, rope-sequence and w3c-keyname: all MIT. Each license text is below once, with the packages it is the license of.",
+      "source": "https://registry.npmjs.org/@tiptap/core/-/core-3.31.4.tgz",
+      "npm": "@tiptap/core@3.31.4",
+      "tarballIntegrity": "sha512-cIVUQYBycighzsk6GbmCef8ZiEDVxoT5EuAe4xg2q9dNkDqCXVqI4YGr9aavCQEiAS4uHiRwqvcsPqJHipFDfg==",
+      "build": "esbuild --bundle --minify --format=iife --global-name=Tiptap --platform=browser --target=es2020 --legal-comments=none of an entry that exports Editor, Extension, Node, Mark, mergeAttributes, StarterKit, Link, Image, Mention and Placeholder. Exposes the global Tiptap.",
+      "files": [
+        {
+          "path": "tiptap/tiptap.min.js",
+          "from": "build",
+          "size": 425261,
+          "sha256": "46523ec95836aacd3b99c22d0869748abd63059641fb848163e6ca45226d0ce7"
         }
       ]
     },

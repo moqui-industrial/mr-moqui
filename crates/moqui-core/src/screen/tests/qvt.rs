@@ -204,6 +204,44 @@ fn a_dashboard_lays_out_number_cards() {
     }
 }
 
+/// `chatter` and `record-files` are an m-chatter and an m-record-files with the request's record and hints (an expression that
+/// comes to nothing left out, a false condition nothing): the client finds the theme's subscreen of the current app root. A
+/// text-area with editor-type rich or rich-light is an m-text-area with that editor type and the mention transition's URL,
+/// which a plain text-area leaves out. The html mode writes no link without a theme value, and the text modes nothing.
+#[test]
+fn the_record_panels_and_the_rich_text_editors() {
+    let out = check("records", &[]);
+    for expected in [
+        r#"<m-chatter id="TaskChatter" record-entity="mantle.work.effort.WorkEffort" record-id="T100" default-tab="activity" hide="message"></m-chatter>"#,
+        r#"<m-chatter record-entity="mantle.work.effort.WorkEffort"></m-chatter>"#,
+        r#"<m-record-files record-entity="mantle.work.effort.WorkEffort" record-id="T100" class="q-mt-sm"></m-record-files>"#,
+        r#"editor-type="rich-light""#,
+        r#"mention-url="/mentions""#,
+        r#"editor-type="rich" rows="6""#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    assert_eq!(out.matches("<m-chatter").count(), 2, "{out}");
+    assert_eq!(out.matches("mention-url").count(), 1, "{out}");
+    for mode in ["html", "text", "csv", "xml"] {
+        let context = ExecutionContextFactory::test_context();
+        let output = make_render(context.factory())
+            .root_screen(render_dir().join("records.xml").to_string_lossy().into_owned())
+            .screen_path("")
+            .render_mode(mode)
+            .render()
+            .unwrap_or_else(|err| panic!("{mode}: {err}"));
+        let text = output.body_text();
+        assert!(
+            matches!(mode, "csv" | "xml") || text.contains("the panels render no text of their own"),
+            "{mode}: {text}"
+        );
+        for written in ["T100", "chatter", "record-panel", "TaskChatter"] {
+            assert!(!text.contains(written), "{written} in {mode}: {text}");
+        }
+    }
+}
+
 #[test]
 fn form_lists() {
     let out = check("lists", &[]);

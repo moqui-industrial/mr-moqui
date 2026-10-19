@@ -595,6 +595,227 @@ fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
     }
 }
 
+/// The record panels and the rich-text editor (IronStone impl-drawers-commons M3), with theme values on DEFAULT_QUASAR that name
+/// the gallery's own `Chatter` and `RecordFiles` subscreens as BOSS names its `Shared/` ones: the Detail screen's `chatter` and
+/// `record-files` elements load them under the current app root with the record (the shell data says the gallery mounts them),
+/// the panel's `m-record-card` asks its card URL and the Log note form is an `m-rich-text` (light): typed text, a word made bold
+/// from the toolbar and a mention from the `@` list of the stub mention transition are posted as the editor's HTML, which the
+/// note service's `allow-html="safe"` parameter keeps, mention and all. On the Widgets screen the full editor's plain-text
+/// toggle turns its HTML into text. With the Tiptap script blocked, the editor is the html editor of `m-text-area`.
+#[test]
+fn the_record_panels_and_the_rich_text_editor_work_in_chromium() {
+    let gate = start_with_data(
+        "browser-records",
+        r#"<entity-facade-xml type="seed">
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="910" resourceTypeEnumId="STRT_CHATTER_SCREEN" resourceValue="Chatter"/>
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="911" resourceTypeEnumId="STRT_RECORD_FILES_SCREEN" resourceValue="RecordFiles"/>
+        </entity-facade-xml>"#,
+    );
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    browser.navigate(&format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR"));
+    browser.eval(FETCH_SPY);
+    // the panels of the current app root, with the record and the element's hint
+    browser.wait_for(
+        "the Chatter panel",
+        "!!document.getElementById('DetailChatter') && document.getElementById('DetailChatter').innerText.indexOf('opens on log') >= 0 \
+         && !!document.querySelector('#DetailChatter .m-rich-text[data-state=ready] .ProseMirror')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval(
+            "JSON.stringify(moqui.webrootVue.shellData.apps.find((app) => app.name === 'gallery').recordScreens)"
+        ),
+        r#"{"chatter":{"url":"/qapps/gallery/Chatter","renderModes":["all"]},"recordFiles":{"url":"/qapps/gallery/RecordFiles","renderModes":["all"]}}"#
+    );
+    let loaded = fetched(&mut browser, "the Chatter request", "/apps/gallery/Chatter.qvt");
+    let url = loaded["url"].as_str().unwrap();
+    assert!(
+        url.contains("recordEntity=moqui.basic.Enumeration")
+            && url.contains("recordId=STT_INTERNAL_QUASAR")
+            && url.contains("appRoot=gallery")
+            && url.contains("defaultTab=log"),
+        "{url}"
+    );
+    browser.wait_for(
+        "the record files panel",
+        "!!document.getElementById('DetailFiles') && document.getElementById('DetailFiles').innerText.indexOf('spec-sheet.pdf') >= 0",
+        WAIT,
+    );
+    // the record card of the panel, from its card URL
+    browser.wait_for(
+        "the record card",
+        "(document.querySelector('#DetailChatter .m-record-card') || {innerText: ''}).innerText.indexOf('Active') >= 0",
+        WAIT,
+    );
+    let card = browser.eval("document.querySelector('#DetailChatter .m-record-card').innerText");
+    assert!(card.as_str().unwrap().contains("STT_INTERNAL_QUASAR"), "{card}");
+    assert!(card.as_str().unwrap().contains("Enumeration"), "{card}");
+    assert_clean(&mut browser, "the record panels");
+
+    // the light editor: type, bold a word from the toolbar, mention a user from the @ list, submit
+    browser.click(
+        "the note editor",
+        "document.querySelector('#DetailChatter .ProseMirror')",
+    );
+    browser.type_text("Hello ");
+    browser.click(
+        "Bold",
+        "document.querySelector('#DetailChatter .m-rich-text [data-command=bold]')",
+    );
+    browser.type_text("bold");
+    browser.click(
+        "Bold again",
+        "document.querySelector('#DetailChatter .m-rich-text [data-command=bold]')",
+    );
+    browser.type_text(" team @jo");
+    browser.wait_for(
+        "the mention list",
+        &by_text(".m-rich-text-mentions .q-item", "John Doe"),
+        WAIT,
+    );
+    let searched = fetched(&mut browser, "the mention search", "/mentionSearch");
+    assert!(searched["url"].as_str().unwrap().contains("term=jo"), "{searched}");
+    browser.click("John Doe", &by_text(".m-rich-text-mentions .q-item", "John Doe"));
+    browser.wait_for(
+        "the mention in the editor",
+        "!!document.querySelector('#DetailChatter .ProseMirror [data-mention-id=EX_JOHN_DOE]') && document.querySelector('.m-rich-text-mentions').offsetParent === null",
+        WAIT,
+    );
+    let html = browser.eval("document.querySelector('#DetailChatter input[type=hidden][name=noteText]').value");
+    let html = html.as_str().unwrap().to_string();
+    assert!(
+        html.starts_with("<p>Hello <strong>bold</strong> team <span data-mention-id=\"EX_JOHN_DOE\">@John Doe</span>"),
+        "{html}"
+    );
+    browser.click("Log", &by_text("#DetailChatter button", "Log"));
+    browser.wait_for(
+        "the note's message",
+        "Array.from(document.querySelectorAll('.q-notification')).some((el) => el.innerText.indexOf('mentioning EX_JOHN_DOE') >= 0)",
+        WAIT,
+    );
+    let posted = fetched(&mut browser, "the note post", "/logNote");
+    assert_eq!(posted["status"], 200, "{posted}");
+    let sent = posted["sent"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item.as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>();
+    assert!(sent.contains(&format!("noteText={html}")), "{sent:?}");
+    assert!(sent.contains(&"recordId=STT_INTERNAL_QUASAR".to_string()), "{sent:?}");
+    // what the safe cleaning kept: the editor's HTML as it was sent
+    let answer: serde_json::Value = serde_json::from_str(posted["body"].as_str().unwrap()).unwrap();
+    assert_eq!(answer["noteText"], html.as_str(), "{answer}");
+    assert_eq!(answer["mentionIds"], serde_json::json!(["EX_JOHN_DOE"]), "{answer}");
+    assert_clean(&mut browser, "the rich-text note");
+
+    // the full editor of the Widgets screen: its toolbar, and the plain-text toggle
+    browser.navigate(&format!("{base}/qapps/gallery/Widgets"));
+    browser.wait_for(
+        "the rich editors",
+        "document.querySelectorAll('.m-rich-text[data-state=ready] .ProseMirror').length === 2",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("Array.from(document.querySelector('.m-rich-text').querySelectorAll('[data-command]')).map((el) => el.dataset.command).join(',')"),
+        "bold,italic,strike,bulletList,orderedList,link,image,code,codeBlock,blockquote,undo,redo,plain"
+    );
+    browser.click(
+        "Plain text",
+        "document.querySelector('.m-rich-text [data-command=plain]')",
+    );
+    browser.wait_for(
+        "the plain text",
+        "!!document.querySelector('.m-rich-text textarea.m-rich-text-plain') && document.querySelector('.m-rich-text textarea.m-rich-text-plain').value.indexOf('Rich text\\n\\nThe Tiptap editor: marks, lists, links (https://tiptap.dev) and code.\\n\\n- Type @ for a mention') === 0",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the full editor");
+
+    if let Some(dir) = std::env::var_os("MOQUI_SHELL_SHOTS") {
+        record_shots(&mut browser, &base, std::path::Path::new(&dir));
+    }
+
+    // with the Tiptap script blocked, the html editor stands in
+    browser.call("Network.enable", serde_json::json!({}));
+    browser.call(
+        "Network.setBlockedURLs",
+        serde_json::json!({"urls": ["*tiptap.min.js*"]}),
+    );
+    browser.navigate(&format!("{base}/qapps/gallery/Widgets"));
+    browser.wait_for(
+        "the html editor in place of the rich ones",
+        "document.querySelectorAll('.m-rich-text[data-state=failed] .q-editor').length === 2",
+        WAIT,
+    );
+    let problems = browser.take_problems();
+    assert!(
+        !problems.is_empty()
+            && problems
+                .iter()
+                .all(|problem| format!("{problem:?}").to_lowercase().contains("tiptap")),
+        "only the blocked script is reported: {problems:#?}"
+    );
+}
+
+/// The Detail screen's Chatter column with the @ list of the note editor open, and the rich editors of the Widgets screen, light
+/// and dark, 1280 and 390 px wide, as PNGs in `dir`.
+fn record_shots(browser: &mut Browser, base: &str, dir: &std::path::Path) {
+    use base64::Engine as _;
+    std::fs::create_dir_all(dir).unwrap();
+    let save = |browser: &mut Browser, name: &str| {
+        browser.pump(Duration::from_millis(500));
+        let shot = browser.call("Page.captureScreenshot", serde_json::json!({"format": "png"}));
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(shot["data"].as_str().unwrap())
+            .unwrap();
+        std::fs::write(dir.join(name), bytes).unwrap();
+    };
+    for (width, height) in [(1280, 900), (390, 844)] {
+        browser.call(
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 600}),
+        );
+        for dark in [false, true] {
+            let mode = if dark { "dark" } else { "light" };
+            browser.navigate(&format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR"));
+            browser.wait_for(
+                "the Chatter panel",
+                "!!document.querySelector('#DetailChatter .m-rich-text[data-state=ready] .ProseMirror') \
+                 && (document.querySelector('#DetailChatter .m-record-card') || {innerText: ''}).innerText.indexOf('Active') >= 0",
+                WAIT,
+            );
+            browser.eval(&format!("moqui.webrootVue.$q.dark.set({dark}), true"));
+            browser.click(
+                "the note editor",
+                "document.querySelector('#DetailChatter .ProseMirror')",
+            );
+            browser.type_text("Reviewed with @jo");
+            browser.wait_for(
+                "the mention list",
+                &by_text(".m-rich-text-mentions .q-item", "John Doe"),
+                WAIT,
+            );
+            browser.eval("document.getElementById('DetailChatter').scrollIntoView({block: 'start'}), true");
+            save(browser, &format!("chatter-{mode}-{width}.png"));
+            browser.press("Escape");
+            browser.navigate(&format!("{base}/qapps/gallery/Widgets"));
+            browser.wait_for(
+                "the rich editors",
+                "document.querySelectorAll('.m-rich-text[data-state=ready] .ProseMirror').length === 2",
+                WAIT,
+            );
+            browser.eval(&format!(
+                "moqui.webrootVue.$q.dark.set({dark}), document.querySelector('.m-rich-text').scrollIntoView({{block: 'start'}}), true"
+            ));
+            save(browser, &format!("rich-text-{mode}-{width}.png"));
+        }
+    }
+    browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
+    browser.eval("moqui.webrootVue.$q.dark.set(false), true");
+}
+
 /// The header with the palette open and with the `+` menu open, light and dark, 1280 and 390 px wide, as PNGs in `dir`.
 fn shell_shots(browser: &mut Browser, page: &str, dir: &std::path::Path) {
     use base64::Engine as _;

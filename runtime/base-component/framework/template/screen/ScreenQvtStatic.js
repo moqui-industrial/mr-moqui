@@ -532,6 +532,14 @@
             });
             labelAttr(n, out);
             if (at(n, "editor-type")) plainAttr(out, "editor-type", at(n, "editor-type"), n);
+            // the mentions of a rich editor search the mention-transition, as ScreenQvt.js writes it
+            if (at(n, "mention-transition") && (isDynamic(at(n, "editor-type") || "") || /^rich/.test(at(n, "editor-type") || ""))) {
+                const found = sri.staticUrl(at(n, "mention-transition"), "transition");
+                if (found) {
+                    out["mention-url"] = found.path;
+                    out[":mention-parameters"] = allParams(n);
+                } else note("mention-transition", n, at(n, "mention-transition"));
+            }
             tipOf(n, out);
             Object.assign(out, bindOnly(n, field, "$mq.str(" + baseValue(field, at(n, "default-value")) + ")"));
             w("<m-text-area" + A(out) + "></m-text-area>");
@@ -1721,6 +1729,21 @@
             w("<m-screen-context" + A(out) + "></m-screen-context>\n");
         };
 
+        // The record panels (IronStone R5) as ScreenQvt.js writes them, the record and the hints bound over the scope (R18), so
+        // m-chatter and m-record-files load the theme's subscreen for the record of the data the screen loaded.
+        const recordPanel = (tag, n) => {
+            const out = {};
+            plainAttr(out, "id", at(n, "id"), n);
+            plainAttr(out, "record-entity", at(n, "record-entity"), n);
+            plainAttr(out, "record-id", at(n, "record-id"), n);
+            plainAttr(out, "default-tab", at(n, "default-tab"), n);
+            plainAttr(out, "hide", at(n, "hide"), n);
+            plainAttr(out, "class", at(n, "style"), n);
+            w(withCondition(n, "<" + tag + A(out) + "></" + tag + ">\n"));
+        };
+        const chatter = (n) => recordPanel("m-chatter", n);
+        const recordFiles = (n) => recordPanel("m-record-files", n);
+
         // ---- dashboards ----
 
         // A number-card as ScreenQvt.js writes it, its attributes bound over the scope as a label's text is: the title localized,
@@ -1764,7 +1787,7 @@
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
             split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose, screenContext,
-            numberCard, dashboardOpen
+            numberCard, dashboardOpen, chatter, recordFiles
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -1943,6 +1966,8 @@
         "context": widget("screenContext", false),
         "dashboard": dashboardMacro,
         "number-card": widget("numberCard", false),
+        "chatter": widget("chatter", false),
+        "record-files": widget("recordFiles", false),
         "form-single": formSingleMacro,
         "form-list": formListMacro
     });

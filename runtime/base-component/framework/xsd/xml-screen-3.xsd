@@ -998,6 +998,43 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="selection-form" type="xs:string"><xs:annotation><xs:documentation>The form-list whose selected
             rows are the selection.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>
+    <xs:attributeGroup name="AttlistRecordPanel">
+        <xs:attribute name="id" type="xs:string"><xs:annotation><xs:documentation>The id of the panel's dynamic container,
+            for a submit-reload-id or $root.reloadContainer().</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="record-entity" type="xs:string" use="required"><xs:annotation><xs:documentation>The entity of the
+            record (mantle.work.effort.WorkEffort).</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="record-id" type="xs:string" use="required"><xs:annotation><xs:documentation>Its id, such as
+            ${workEffortId}. Without an entity and an id nothing is loaded.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="condition" type="xs:string"><xs:annotation><xs:documentation>If specified and evaluates to
+            false the panel is not rendered.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="style" type="xs:string"><xs:annotation><xs:documentation>CSS classes for the panel.</xs:documentation></xs:annotation></xs:attribute>
+    </xs:attributeGroup>
+    <xs:element name="chatter" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        The timeline of a record (IronStone design-drawers-commons §15): messages, notes, activities, followers and
+        changes, with the compose bar. The framework stays free of the data model behind it: the element loads the
+        subscreen of the current app root that the theme value STRT_CHATTER_SCREEN names (BOSS: Chatter, mounted in every
+        app root from Shared/Chatter.xml) as its own request, &lt;app root&gt;/&lt;name&gt;?recordEntity=&amp;recordId=&amp;appRoot=, so
+        the app's authorization and entity filters apply. In qvt an m-chatter, whose expressions are bound over the actions
+        data in a server-static screen; it renders nothing (logged once in the browser) when the theme value is empty, the
+        current app root does not mount that subscreen or the user may not view it. In html a plain link to that screen
+        when the html theme names one, else nothing; nothing in the other modes. The attributes may hold ${} expressions.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attributeGroup ref="AttlistRecordPanel"/>
+        <xs:attribute name="default-tab" type="xs:string"><xs:annotation><xs:documentation>The compose tab the screen
+            opens on (design §15 per-app defaults): message (send a message), log (log a note) or activity (schedule an
+            activity). Passed as the defaultTab parameter; the screen chooses when it is empty.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="hide" type="xs:string"><xs:annotation><xs:documentation>A comma list of what the screen
+            leaves out on this record (message, activity...), as the hide parameter, such as hide="message" for the notes
+            and activities only of Warehouse.</xs:documentation></xs:annotation></xs:attribute>
+    </xs:complexType></xs:element>
+    <xs:element name="record-files" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        The files of a record (IronStone design-drawers-commons §9 RecordFiles): upload, list, preview, share, as the
+        chatter element does it with the subscreen the theme value STRT_RECORD_FILES_SCREEN names (BOSS: RecordFiles,
+        from Shared/RecordFiles.xml), &lt;app root&gt;/&lt;name&gt;?recordEntity=&amp;recordId=&amp;appRoot=. In qvt an m-record-files; nothing
+        when the theme value is empty or the app root does not mount it; in html a plain link or nothing.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attributeGroup ref="AttlistRecordPanel"/>
+    </xs:complexType></xs:element>
 
     <!-- ================ Dashboards ================ -->
     <xs:element name="dashboard" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>

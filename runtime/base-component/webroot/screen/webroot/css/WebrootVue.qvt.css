@@ -278,3 +278,67 @@ span.hover-image-container:hover img.hover-image { display: initial; margin: 10p
 .m-number-card-link .m-number-card { transition:border-color .2s; }
 .m-number-card-link:hover .m-number-card, .m-number-card-link:focus-visible .m-number-card { border-color:var(--q-primary); }
 .m-number-card-link:focus-visible { outline:none; }
+
+/* m-rich-text (js/README.md, Rich text): an outlined box like the Quasar fields, the toolbar over the Tiptap content; the light
+   form for notes and chat is lower. The mention list is teleported to the body, above dialogs, and placed by Tiptap. */
+.m-rich-text { position:relative; width:100%; }
+.m-rich-text-label { margin:0 0 2px 2px; line-height:1.2; }
+.m-rich-text-box { position:relative; border:1px solid rgba(0,0,0,0.24); border-radius:4px; transition:border-color .2s, box-shadow .2s; }
+.m-rich-text-box:hover { border-color:rgba(0,0,0,0.6); }
+.body--dark .m-rich-text-box { border-color:rgba(255,255,255,0.28); }
+.body--dark .m-rich-text-box:hover { border-color:rgba(255,255,255,0.7); }
+.m-rich-text-focused .m-rich-text-box, .m-rich-text-focused .m-rich-text-box:hover { border-color:var(--q-primary); box-shadow:inset 0 0 0 1px var(--q-primary); }
+.m-rich-text-box.m-rich-text-error, .m-rich-text-box.m-rich-text-error:hover { border-color:var(--q-negative); }
+.m-rich-text-toolbar { padding:2px 4px; gap:0 1px; border-bottom:1px solid rgba(0,0,0,0.12); }
+.body--dark .m-rich-text-toolbar { border-bottom-color:rgba(255,255,255,0.14); }
+.m-rich-text-toolbar .q-separator--vertical { height:18px; align-self:center; }
+.m-rich-text-toolbar .q-btn.m-rich-text-on { background:color-mix(in srgb, var(--q-primary) 12%, transparent); }
+.m-rich-text-block { min-width:7.5em; }
+.m-rich-text-ask { border-bottom:1px solid rgba(0,0,0,0.12); }
+.m-rich-text-content { padding:6px 10px; max-height:60vh; overflow-y:auto; cursor:text; }
+.m-rich-text-light .m-rich-text-content { padding:4px 8px; max-height:40vh; }
+.m-rich-text-content .ProseMirror { outline:none; min-height:inherit; white-space:pre-wrap; word-wrap:break-word; overflow-wrap:anywhere; }
+.m-rich-text-content .ProseMirror > * + * { margin-top:0.5em; }
+.m-rich-text-content p { margin:0; }
+.m-rich-text-content h1, .m-rich-text-content h2, .m-rich-text-content h3 { margin:0.6em 0 0.2em; line-height:1.3; font-weight:500; letter-spacing:normal; }
+.m-rich-text-content h1 { font-size:1.5em; }
+.m-rich-text-content h2 { font-size:1.3em; }
+.m-rich-text-content h3 { font-size:1.12em; }
+.m-rich-text-content ul, .m-rich-text-content ol { padding-left:1.5em; margin:0.25em 0; }
+.m-rich-text-content li > p { margin:0; }
+.m-rich-text-content blockquote { margin:0.5em 0; padding-left:0.75em; border-left:3px solid rgba(0,0,0,0.2); opacity:0.85; }
+.body--dark .m-rich-text-content blockquote { border-left-color:rgba(255,255,255,0.3); }
+.m-rich-text-content code { font-size:0.9em; padding:0 0.25em; border-radius:3px; background:rgba(0,0,0,0.06); }
+.m-rich-text-content pre { margin:0.5em 0; padding:0.5em 0.75em; border-radius:4px; background:rgba(0,0,0,0.05); white-space:pre-wrap; font-family:monospace; }
+.m-rich-text-content pre code { padding:0; background:none; font-size:0.9em; }
+.body--dark .m-rich-text-content code, .body--dark .m-rich-text-content pre { background:rgba(255,255,255,0.08); }
+.body--dark .m-rich-text-content pre code { background:none; }
+.m-rich-text-content a { color:var(--q-primary); text-decoration:underline; cursor:text; }
+.m-rich-text-content img { max-width:100%; height:auto; }
+.m-rich-text-content img.ProseMirror-selectednode { outline:2px solid var(--q-primary); }
+.m-rich-text-content hr { border:none; border-top:1px solid rgba(0,0,0,0.2); margin:0.75em 0; }
+.m-rich-text-content [data-mention-id], .m-rich-text-content .suggestion { color:var(--q-primary); border-radius:3px; padding:0 2px;
+    background:color-mix(in srgb, var(--q-primary) 12%, transparent); }
+.m-rich-text-content p.is-editor-empty:first-child::before { content:attr(data-placeholder); float:left; height:0; pointer-events:none; opacity:0.5; }
+.m-rich-text-plain { display:block; width:100%; border:none; outline:none; resize:vertical; padding:6px 10px; background:transparent; color:inherit; font:inherit; }
+.m-rich-text-loading { position:absolute; right:4px; bottom:2px; }
+.m-rich-text-mentions { position:absolute; z-index:9000; min-width:180px; max-width:320px; max-height:260px; overflow-y:auto; border-radius:4px;
+    background:#fff; box-shadow:0 5px 5px -3px rgba(0,0,0,0.2), 0 8px 10px 1px rgba(0,0,0,0.14), 0 3px 14px 2px rgba(0,0,0,0.12); }
+.body--dark .m-rich-text-mentions { background:var(--q-dark); color:#fff; }
+.m-rich-text-mention-avatar { min-width:30px; padding-right:6px; }
+
+/* the record panels, avatars and record cards: an m-chatter or m-record-files fills its column; an avatar's presence dot
+   sits on its lower right (Comms chat sets it, M10); a record card is one dense line or two */
+.m-record-panel { min-width:0; }
+.m-avatar { position:relative; }
+.m-avatar-initials { font-weight:500; letter-spacing:0.02em; }
+.m-avatar-presence { position:absolute; right:0; bottom:0; width:28%; height:28%; min-width:6px; min-height:6px; border-radius:50%;
+    border:2px solid #fff; background:#9e9e9e; }
+.body--dark .m-avatar-presence { border-color:#1d1d1d; }
+.m-avatar-presence.m-presence-online { background:var(--q-positive); }
+.m-avatar-presence.m-presence-away { background:var(--q-warning); }
+.m-avatar-presence.m-presence-dnd { background:var(--q-negative); }
+.m-record-card { min-width:0; max-width:420px; }
+.m-record-card-item { min-height:0; padding:6px 10px; }
+.m-record-card-icon { min-width:32px; color:var(--q-primary); }
+.m-record-card-body { min-width:0; }

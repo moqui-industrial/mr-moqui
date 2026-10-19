@@ -30,7 +30,8 @@
 //    macro wrote an error message.
 //  - A confirmation is a data-confirm attribute the shell answers, not an inline onclick.
 //  - The background-message of a form is text. The Java client evaluated it as a JavaScript string.
-//  - An editor-type html or md text-area is an m-text-area (QEditor, or a textarea with a Marked preview).
+//  - An editor-type html or md text-area is an m-text-area (QEditor, or a textarea with a Marked preview); rich and rich-light are
+//    the Tiptap editor m-rich-text inside it, with mentions over the mention-transition.
 //  - lookup is a text line. The Java macros had it commented out.
 //  - The navigation bar sits above the table of a form-list and not in a table row.
 //  - The mask of a text-line is converted from the Inputmask patterns (9, a, *) to Quasar mask tokens.
@@ -444,12 +445,17 @@
             w("<m-text-line" + A(Object.assign(attrs, bind(name, value))) + "></m-text-line>");
         };
 
+        // A text area; editor-type rich or rich-light is the Tiptap editor of m-rich-text (inside m-text-area), whose mentions
+        // search the mention-transition (its URL and fixed parameters).
         const textArea = (n) => {
             const name = fnm(n);
+            const editorType = x(at(n, "editor-type")) || null;
+            const mention = at(n, "mention-transition") && /^rich/.test(editorType || "") ? remote(n, at(n, "mention-transition")) : null;
             w("<m-text-area" + A(Object.assign({
-                name, id: fid(n), label: label(n), "editor-type": x(at(n, "editor-type")) || null, rows: at(n, "rows") || "3",
+                name, id: fid(n), label: label(n), "editor-type": editorType, rows: at(n, "rows") || "3",
                 cols: at(n, "cols") || null, style: at(n, "cols") ? null : "width:100%;", readonly: at(n, "read-only") === "true",
-                autogrow: at(n, "autogrow") === "true", maxlength: at(n, "maxlength") || null, disable: st.disabled || null, form: owner(), tooltip: tip(n)
+                autogrow: at(n, "autogrow") === "true", maxlength: at(n, "maxlength") || null, disable: st.disabled || null, form: owner(), tooltip: tip(n),
+                "mention-url": mention ? mention.url : null, ":mention-parameters": mention && Object.keys(mention.params).length ? js_(mention.params) : null
             }, bindOnly(name, sri.getFieldValueString(n)))) + "></m-text-area>");
         };
 
@@ -1599,6 +1605,21 @@
             }) + "></m-screen-context>\n");
         };
 
+        // The record panels (IronStone R5): an m-chatter or m-record-files, which loads the subscreen of the current app root that
+        // the theme names (STRT_CHATTER_SCREEN, STRT_RECORD_FILES_SCREEN) with the record, so the client finds the app root and the
+        // name and the render holds only the record and the hints. An expression that comes to nothing leaves its attribute out;
+        // nothing for a false condition.
+        const recordPanel = (tag, n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const value = (text) => (text && text !== "null" ? text : null);
+            w("<" + tag + A({
+                id: nodeId(n) || null, "record-entity": value(xn(at(n, "record-entity"))), "record-id": value(xn(at(n, "record-id"))),
+                "default-tab": value(xn(at(n, "default-tab"))), hide: value(xn(at(n, "hide"))), class: value(xn(at(n, "style")))
+            }) + "></" + tag + ">\n");
+        };
+        const chatter = (n) => recordPanel("m-chatter", n);
+        const recordFiles = (n) => recordPanel("m-record-files", n);
+
         // ---- dashboards ----
 
         // A number-card (style-guide §8.2): an m-number-card with the title localized, the value and delta as expanded, and the
@@ -1633,7 +1654,7 @@
             formList, rowCellOpen, rowCellClose, valueText, sectionPaginate, headerCell,
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
-            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard
+            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard, chatter, recordFiles
         };
         Object.defineProperty(globalThis, "$mqQvt", { value: h, configurable: true });
     };
@@ -2152,6 +2173,8 @@
         "context": widget("screenContext", false),
         "dashboard": dashboardMacro,
         "number-card": widget("numberCard", false),
+        "chatter": widget("chatter", false),
+        "record-files": widget("recordFiles", false),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

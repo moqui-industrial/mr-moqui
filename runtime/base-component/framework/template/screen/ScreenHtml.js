@@ -1322,6 +1322,34 @@
                 "</" + tag + ">\n");
         };
 
+        // ---- record panels ----
+
+        // chatter and record-files (IronStone R5): an html page has no shell to load the theme's panel into, so the element is a
+        // plain link to that subscreen of the current app root (the first two names of the path, /apps/<app>) with the record,
+        // when this render's theme names one (STRT_CHATTER_SCREEN, STRT_RECORD_FILES_SCREEN; BOSS seeds them on the Quasar
+        // themes only) and the user may open it; nothing otherwise.
+        const recordPanel = (n, themeType, text) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const name = String(sri.getThemeValues(themeType)[0] || "").trim();
+            const value = (text) => (text && text !== "null" ? text : "");
+            const entity = value(xn(at(n, "record-entity")));
+            const id = value(xn(at(n, "record-id")));
+            const names = name && entity && id ? (sri.getScreenUrlInfo().fullPathNameList || []) : [];
+            if (names.length < 2) return;
+            let url;
+            try {
+                url = sri.buildUrl("/" + names.slice(0, 2).join("/") + "/" + name);
+            } catch (err) {
+                return;
+            }
+            if (url.getDisableLink()) return;
+            url.addParameter("recordEntity", entity).addParameter("recordId", id);
+            w("<a" + A({ id: nodeId(n) || null, href: url.getUrlWithParams(), class: cls("record-panel-link", xn(at(n, "style")) || null) }) + ">" +
+                e(L(text)) + "</a>\n");
+        };
+        const chatter = (n) => recordPanel(n, "STRT_CHATTER_SCREEN", "Chatter");
+        const recordFiles = (n) => recordPanel(n, "STRT_RECORD_FILES_SCREEN", "Files");
+
         const h = {
             reset, e, lib, fid, fnm,
             textLine, textArea, password, file, hidden, reset_, submit, dateTime, dateFind, datePeriod, rangeFind, textFind,
@@ -1333,7 +1361,7 @@
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
             labelCols: (value) => { st.labelCols = value || ""; },
-            numberCard
+            numberCard, chatter, recordFiles
         };
         Object.defineProperty(globalThis, "$mqHtml", { value: h, configurable: true });
     };
@@ -1795,6 +1823,8 @@
         "context": stmt(() => ""),
         "dashboard": dashboardMacro,
         "number-card": widget("numberCard", false),
+        "chatter": widget("chatter", false),
+        "record-files": widget("recordFiles", false),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

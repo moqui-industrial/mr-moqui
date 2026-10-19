@@ -52,4 +52,18 @@
             ]]></script>
         </actions>
     </service>
+
+    <!-- What a note service does with the HTML of the qvt rich-text editor (m-rich-text, text-area editor-type rich or
+        rich-light): the parameter is allow-html="safe", so the markup is cleaned to the safe list, which keeps the editor's
+        blocks, marks, links, images and its mentions, <span data-mention-id="id">@Label</span>; the ids of the mentions are
+        read from the cleaned text. The gallery's Chatter screen posts its Log note form here. Nothing is written. -->
+    <service verb="clean" noun="GalleryNote">
+        <in-parameters><parameter name="noteText" allow-html="safe"/></in-parameters>
+        <out-parameters><parameter name="noteText"/><parameter name="mentionIds" type="List"/></out-parameters>
+        <actions><script><![CDATA[
+            mentionIds = []
+            const found = String(noteText || '').matchAll(/<span data-mention-id="([^"]*)"/g)
+            for (const match of found) if (!mentionIds.includes(match[1])) mentionIds.push(match[1])
+        ]]></script></actions>
+    </service>
 </services>

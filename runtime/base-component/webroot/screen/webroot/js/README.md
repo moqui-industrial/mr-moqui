@@ -65,7 +65,8 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 | `../css/WebrootVue.qvt.css` | the styles of the shell, the div tables and the widgets |
 
 The tests are `MoquiLib.test.js`, `MoquiL10n.test.js`, `WebrootVue.qvt.test.js`, `WebrootVue.qvt.shell.test.js` (the palette, the key map, the
-screen context's forms and the root's shell data) and `WebrootVue.qvt.static.test.js` (the script and package
+screen context's forms and the root's shell data), `WebrootVue.qvt.records.test.js` (the HTML of the rich-text editor, the record panel URL,
+avatars and record cards) and `WebrootVue.qvt.static.test.js` (the script and package
 the server answers for `crates/moqui-core` `testdata/Static/Items` run on the real Vue runtime over a fake DOM; every component template compiles with the vendored
 Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
 browser (mounting, Quasar menus and popups, dialogs, posts, the lazy libraries, static lists) is the Chromium smoke of Gate 3
@@ -159,7 +160,8 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-form-list` | a list drawn by the client from rows it fetches, with sort, pages, selection (the `m-sel` column) and sub rows (see below); the page buttons are written again under a list of more than one page, after the table |
 | `m-form-paginate`, `m-form-go-page`, `m-form-column-config` | page buttons, jump to a page, the column picker |
 | `m-scope`, `m-static-form-list` | written by `ScreenQvtStatic.js` only: a scope over a form-single's map, and the form-list of a server-static screen (see Server-static screens) |
-| `m-text-line`, `m-text-area` | text input. `m-text-area` with `editor-type` `html` is `QEditor`, and `md` is a text area with a Marked preview |
+| `m-text-line`, `m-text-area` | text input. `m-text-area` with `editor-type` `html` is `QEditor`, `md` is a text area with a Marked preview, and `rich` and `rich-light` are `m-rich-text` (with `mention-url` and `mention-parameters`, from the text-area's `mention-transition`) |
+| `m-rich-text` | the Tiptap editor (see Rich text below): the `m-*` model contract (`v-model` or `model-value`, `name`, the change tint and field errors in an `m-form`, a hidden input), `light`, `placeholder`, `rows`, `enter` (`newline`, or `submit`: Enter submits the form and emits `submit`, Shift+Enter is a line break; Ctrl+Enter always submits), `mention-url`, `mention-parameters`, `plain` (`v-model:plain`, the plain-text toggle), `plain-toggle`, `autofocus`, `disable`, `readonly`; emits `mention` with the `{id, label}` picked |
 | `m-drop-down` | `options`, `options-url`, `options-parameters`, `depends-on`, `server-search`, `multiple`, `allow-empty`, `combo`, `submit-on-select`, `options-load-init` |
 | `m-date-time`, `m-date-period` | `QDate` and `QTime` in a popup; period and from-thru. In period mode the field is the base date (`_pdate`) and the period and offset selects (`_period`, `_poffset`) are in the menu of the `event_repeat` button in its append slot, which reads the choice ("Last Month") once made; the `date_range` button switches to from-thru (`_from`, `_thru`) |
 | `m-display` | text or a read-only field (`label-wrapper`), `display`, `value-url` |
@@ -173,6 +175,9 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-menu-nav-item`, `m-menu-subscreen-item`, `m-menu-item-content`, `m-menu-icon` | the navigation of the shell; `m-menu-icon` is a menu image of type icon (`name`, `size`) |
 | `m-screen-context` | the `context` element: while mounted it registers `recordEntity`, `recordId`, `title` and `selectionForm` with the root (`setScreenContext`), again when one changes, and takes them back when unmounted (see Shell data and providers) |
 | `m-number-card` | the `number-card` element: a `q-card flat bordered` with the `title` as `text-overline`, the `value` (`text-h5`; `size` `sm` is `text-h6`, `lg` `text-h4`), the `delta` with an arrow, green or red by its sign against `delta-good` (`up`, the default, or `down`; no sign is muted: `moqui.numberCardDelta`), and the `icon`; with `href` the whole card is an `m-link` (`external`: a plain anchor). The `dashboard` element around cards is no component: a `div.m-dashboard` CSS grid, columns of at least its `min-width` (`--m-dashboard-min`, 200 px), each child in a `div.m-dashboard-item` (an empty one hidden, a `section-iterate`'s rows each a cell) |
+| `m-chatter`, `m-record-files` | the `chatter` and `record-files` elements: `record-entity`, `record-id`, `default-tab`, `hide`, `id` (of the `m-dynamic-container` the panel loads into, for `submit-reload-id`). See Record panels below |
+| `m-avatar` | a `q-avatar`: `image` (a face image URL; initials when it does not load), else the initials of `name` on a color of the name (`moqui.avatar`), else a person icon; `size` (32px), `color`, `text-color`, `square`, `rounded`, `tooltip` (the name); `presence` (`online`, `away`, `dnd`, `offline`) draws a dot, nothing without it |
+| `m-record-card` | a compact card of a record: `record-entity`, `record-id`, and `card-url` (asked once per page for each record, GET with `recordEntity` and `recordId` and `card-parameters`) or `card` (the JSON itself); `dense`. See Record cards below |
 | `m-chart`, `m-mermaid` | Chart.js 4 and Mermaid 11, loaded on first use. `m-chart` takes `config`; `m-mermaid` takes the diagram in its `text` attribute (the compiler condenses the line breaks of slot content), `height` and `config` |
 | `m-script`, `m-stylesheet` | `<script>` and `<link>` of a screen's text |
 
@@ -214,7 +219,9 @@ once per page load:
               paletteSources:   [ { group, label, icon, prefix, idPattern, sequence } ],   // no service name
               notificationTopics: [ topic ],
               keymaps:          [ { scope, keys: [ { keys, label, url, action } ] } ],
-              accountMenuItems: [ { label, icon, url, sequence } ] } } ],
+              accountMenuItems: [ { label, icon, url, sequence } ] },
+            recordScreens: { chatter: { url, renderModes } | null,     // the theme's record panels this app root mounts (R5)
+                             recordFiles: { url, renderModes } | null } } ],
   shell: { trayToday, trayChat, trayNotifications, quickCreate, mailScreen, messagesScreen,   // links, or null
            chatterScreen, recordFilesScreen },                                     // subscreen names under the current app root, or null
   counts: { ... } | null }
@@ -236,6 +243,9 @@ once per page load:
   `STRT_MESSAGES_SCREEN` (the screens the header's Mail and Messages counts link to) are screen paths under the apps root; `STRT_CHATTER_SCREEN` and `STRT_RECORD_FILES_SCREEN` are subscreen
   names that every app root mounts (`Chatter`, `RecordFiles`), loaded as `<current app root>/<name>?recordEntity=&recordId=` so the app's
   authorization applies (R5).
+- `recordScreens` are, for `chatterScreen` and `recordFilesScreen` of the theme, that subscreen of the app root (`/qapps/<app>/<name>`)
+  with its `render-modes` as written (`["all"]` without the attribute), when the app root mounts it and the user may view it there;
+  null otherwise, which is no error (the tools have no Chatter). A subscreen that does not load is logged and null.
 - `counts` is what `org.moqui.impl.ShellServices.get#ShellCounts` answers for the user: the `counts` map of the service the theme names in
   `STRT_SHELL_COUNTS_SERVICE`, called with `userId`, with authorization disabled (the theme names it, it reads only that user's rows, and
   no app's authorization covers it), in the user's time zone and locale. The keys the shell reads, each a number or a map with a `total`:
@@ -352,6 +362,68 @@ types; while a dialog is open single keys wait. The shell's own: Mod+K the palet
 closes those), `?` the overlay of the keys on now, `c` the current app's first `+` kind. The apps' `keymap` providers: an empty or `global`
 scope everywhere, another while its app is the current one. The `KEYMAP` user preference (`config.preferences`) changes keys:
 `{"global": {"palette": "Mod+P", "g c": "g x"}}`, by scope, the binding's `action` or else its keys.
+
+## Record panels, rich text, avatars and record cards
+
+IronStone impl-drawers-commons M3: the framework pieces Chatter and record files are built from. The framework knows no data model
+behind them; BOSS supplies the screens and the transitions.
+
+**Record panels.** `<chatter record-entity record-id default-tab hide id/>` and `<record-files record-entity record-id id/>`
+(`xml-screen-3.xsd`) are an `m-chatter` and an `m-record-files`; in a server-static screen their attributes are bound over the
+actions data. Each loads, into an `m-dynamic-container`, the subscreen of the current app root (`currentAppName`, the first name of
+the path) that the theme names (`shell.chatterScreen`, `shell.recordFilesScreen`) as that app's `recordScreens` entry gives it,
+as its own request, so the app's authorization and entity filters apply (R5):
+
+```
+/apps/<app>/<name>[.qvue|.qjs]?recordEntity=<entity>&recordId=<id>&appRoot=<app>[&defaultTab=<tab>][&hide=<list>]
+```
+
+`.qvue` (or `.qjs`) when the screen's render modes name it, as the menu data's `renderModes` choose for a screen. A `.qvue` panel
+does not see the query of its own request, so it reads the same values with `inject: ['mRecordPanel']`:
+`{kind: 'chatter' | 'recordFiles', recordEntity, recordId, appRoot, defaultTab, hide, containerId}`. `defaultTab` is the
+compose tab to open on (`message`, `log`, `activity`; design §15 per-app defaults) and `hide` a comma list of what to leave out
+(`message`, `activity`), both for the panel to read. The element shows nothing, and says why once in the console (`console.info`),
+when the theme names no screen, the page is in no app, or the app does not mount it; without an entity and an id it shows nothing.
+A new record id loads the panel again (`m-dynamic-container.load`). `moqui.recordPanelUrl(shellData, appName, kind, record, basePath,
+linkBasePath)` makes the URL. In html the element is a plain link to the screen when the html theme names one (`ScreenHtml.js`),
+else nothing; the other modes write nothing.
+
+**Rich text** (`m-rich-text`). Tiptap 3 (`libs/tiptap/tiptap.min.js`, the global `Tiptap`, built by `libs/refresh.mjs`), loaded
+once for the page when the first editor mounts. The full toolbar has the paragraph style (paragraph, headings 1 to 3), bold,
+italic, strike, the two lists, link and image (an address asked in a line under the toolbar; Ctrl+K for a link), code, code block,
+quote, undo, redo and the plain-text toggle; `light` has bold, italic, link, list and code, for notes and chat. Markdown-style typing
+(`**bold**`, `- `, `> `, `` ` ``) works in both. The value is HTML, `""` for an empty document, made only of what a service
+parameter with `allow-html="safe"` keeps (`crates/moqui-core/src/service/validate.rs`, ammonia's defaults plus `data-mention-id`):
+`p`, `h1`-`h3`, `strong`, `em`, `s`, `u`, `code`, `pre`, `blockquote`, `ul`, `ol` (`start`), `li`, `br`, `hr`, `a` (`href`, `title`;
+no `target` or `class`, and the cleaning adds `rel="noopener noreferrer"`), `img` (`src` http, https or a path, `alt`, `title`; no
+`data:`) and the mention:
+
+```html
+<span data-mention-id="EX_JOHN_DOE">@John Doe</span>
+```
+
+The id is what the mention search answered, for the server to notify (`example.ExampleServices.clean#GalleryNote` reads them back);
+the label is shown. **The mention search**: typing `@` asks `mention-url` (GET) with `term` (the text after the @, maybe empty) and
+the `mention-parameters`, 150 ms after typing stops, and takes a JSON list of `{id, label}` (also `value` for id, `title` or
+`name` for label, an optional `image` for the avatar, or the list under `options`); the first ten are offered, up and down arrows
+move, Enter or Tab or a click picks. **The plain-text toggle** turns the value into plain text (`moqui.richText.toPlain`: blocks
+apart by a blank line, list items with `- ` or their number, quotes with `> `, a link as its text and address) and back into
+paragraphs (`fromPlain`); a mention becomes its `@Label` text. A host that sends mail as text reads `v-model:plain`. When the
+library does not load, the field is `m-text-area` with `editor-type="html"`. The pure parts are `moqui.richText` (`mentionHtml`,
+`mentions`, `isEmpty`, `value`, `toPlain`, `fromPlain`, `mentionItems`, `linkHref`, `toolbar`), tested in
+`WebrootVue.qvt.records.test.js`. In XML: `text-area editor-type="rich"` or `"rich-light"` with `mention-transition`.
+
+**Record cards** (`m-record-card`). The card JSON a `card-url` answers, or the `card` prop (BOSS answers it from
+`mantle.GeneralServices.lookup#ById`):
+
+```
+{ title, typeLabel, icon, id, entity, url,                  // url a /qapps link; title falls back to the id, icon to sym_o_description
+  status: { label, color } | "label",                        // a q-chip m-tonal text-<color> (primary without one)
+  fields: [ { label, value } ] }                             // the first two with a value are shown
+```
+
+or that object under `card`. A failure or an answer that is not a map shows the entity and id (logged with `console.info`).
+`moqui.recordCard.normalize` reads it.
 
 ## Server-static screens
 

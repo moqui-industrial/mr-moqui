@@ -112,7 +112,8 @@ const SERVICES: &str = r#"<services>
 
 /// [`ROOT`] and an apps root with: `open`, which everyone may view, with a menu three deep and every kind of provider;
 /// `secret`, for the ADMIN group, with a palette source; `broken`, which does not parse; `needs`, which takes a parameter;
-/// and `hidden`, out of the menu. The services are under `service/test`.
+/// and `hidden`, out of the menu. `open` mounts a `Chatter` panel (a `.qvue` one, as BOSS's apps mount `Shared/Chatter`)
+/// and no `RecordFiles`. The services are under `service/test`.
 fn tree(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("moqui-shell-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -144,6 +145,8 @@ fn tree(name: &str) -> PathBuf {
                 <subscreens-item name="Sub" menu-title="Sub" menu-index="3" location="{dir}/Apps/Open/Sub.xml"/>
                 <subscreens-item name="QuickNote" menu-include="false" location="{dir}/Apps/Open/QuickNote.xml"/>
                 <subscreens-item name="QuickCreate" menu-include="false" location="{dir}/Apps/Open/QuickCreate.xml"/>
+                <subscreens-item name="Chatter" menu-include="false" location="{dir}/Apps/Open/Chatter.xml"/>
+                <subscreens-item name="Record" menu-include="false" location="{dir}/Apps/Open/Record.xml"/>
             </subscreens>
             <shell-providers>
                 <quick-create kind="note" label="Quick note" icon="sym_o_note_add" screen="open/QuickNote" sequence="20">
@@ -180,6 +183,18 @@ fn tree(name: &str) -> PathBuf {
     write("Apps/Open/List.xml", &plain("List"));
     write("Apps/Open/QuickNote.xml", &plain("Quick note"));
     write("Apps/Open/QuickCreate.xml", &plain("Quick create"));
+    write(
+        "Apps/Open/Record.xml",
+        r#"<screen require-authentication="true" default-menu-title="Record"><parameter name="recordId"/><widgets>
+            <label text="a record"/>
+            <chatter record-entity="test.Record" record-id="${recordId}"/>
+            <record-files record-entity="test.Record" record-id="${recordId}"/>
+        </widgets></screen>"#,
+    );
+    write(
+        "Apps/Open/Chatter.xml",
+        r#"<screen require-authentication="true" default-menu-title="Chatter" render-modes="vue,qvue"><widgets/></screen>"#,
+    );
     write(
         "Apps/Open/Detail.xml",
         r#"<screen require-authentication="true" default-menu-title="Detail"><parameter name="detailId" required="true"/><widgets/></screen>"#,
@@ -478,6 +493,12 @@ fn shell_data_lists_the_apps_the_user_may_open_with_their_menus_providers_theme_
     );
     // the palette sources' services stay on the server
     assert!(!data.to_string().contains("test.Shell.search"), "{data}");
+    // the record panels the theme names, as this app mounts them: Chatter with its render modes, no RecordFiles subscreen
+    assert_eq!(
+        open["recordScreens"],
+        json!({"chatter": {"url": "/qapps/open/Chatter", "renderModes": ["vue", "qvue"]}, "recordFiles": null}),
+        "{data}"
+    );
     assert_eq!(providers["notificationTopics"], json!(["OpenAlert"]));
     assert_eq!(
         providers["keymaps"],
@@ -522,11 +543,18 @@ fn shell_data_lists_the_apps_the_user_may_open_with_their_menus_providers_theme_
     );
     assert_eq!(admin["shell"]["trayChat"], "/qapps/secret");
     assert_eq!(admin["apps"][1]["providers"]["paletteTypes"], json!(["SecretDoc"]));
+    // an app that mounts no record panel has none, and that is not an error
+    assert_eq!(
+        admin["apps"][1]["recordScreens"],
+        json!({"chatter": null, "recordFiles": null})
+    );
 
     // a user's own theme: its counts service and none of the default's values
     let (_, other) = get(&world, &root, Some("other"), "/shellData", &[]);
     assert_eq!(other["counts"], json!({"other": true}), "{other}");
     assert_eq!(other["shell"]["trayToday"], serde_json::Value::Null);
+    // and no Chatter, since that theme names none
+    assert_eq!(other["apps"][0]["recordScreens"]["chatter"], serde_json::Value::Null);
     assert_eq!(
         other["apps"][0]["providers"]["quickCreate"][0]["kind"], "note",
         "no quick create screen in this theme"
@@ -539,6 +567,47 @@ fn shell_data_lists_the_apps_the_user_may_open_with_their_menus_providers_theme_
 
     let (status, _) = get(&world, &root, None, "/shellData", &[]);
     assert_eq!(status, 401);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// In the html mode the chatter and record-files elements are a plain link to the subscreen of the current app root that the
+/// html theme names, with the record, and nothing when the theme names none (record-files here) or there is no record.
+#[test]
+fn an_html_record_panel_is_a_link_to_the_theme_screen_of_the_app() {
+    let dir = tree("html-panel");
+    let world = world(&dir);
+    row(
+        &world,
+        "moqui.security.UserScreenTheme",
+        &[
+            ("userId", Value::string("plain")),
+            ("screenThemeTypeEnumId", Value::string("STT_INTERNAL")),
+            ("screenThemeId", Value::string("PLAIN_HTML")),
+        ],
+    );
+    theme_value(&world, "PLAIN_HTML", 1, "STRT_CHATTER_SCREEN", "Chatter");
+    let root = root_of(&dir);
+    let page = |query: &[(&str, &str)]| {
+        let mut get = request("GET", "/apps/open/Record");
+        for (name, value) in query {
+            get.query.push(((*name).to_string(), (*value).to_string()));
+        }
+        get.set_header("authorization", basic("plain"));
+        let response = serve_at(&world.factory, get, &root);
+        assert_eq!(response.status, 200, "{}", response.body_text());
+        response.body_text()
+    };
+    let text = page(&[("recordId", "R 1")]);
+    assert!(
+        text.contains(r#"<a href="/apps/open/Chatter?recordEntity=test.Record&amp;recordId=R+1" class="record-panel-link">Chatter</a>"#),
+        "{text}"
+    );
+    assert!(!text.contains("RecordFiles"), "{text}");
+    let none = page(&[]);
+    assert!(
+        none.contains("a record") && !none.contains("record-panel-link"),
+        "{none}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
