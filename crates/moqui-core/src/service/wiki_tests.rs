@@ -16,7 +16,9 @@
 //! compare and restore; the links of a page's text and its backlinks across a rename, an alias and a page taking a
 //! path; a move into a git space that replays the history with each version's author and date, and one on the
 //! database tree that keeps its history rows; spaces made and cloned on a git repository; the review flow with its
-//! notifications and the tray's approve and refuse; and search and page lists that leave out what a user may not view.
+//! notifications and the tray's approve and refuse; search and page lists that leave out what a user may not view; a
+//! page written and read at its exact path, never over a page of the same name elsewhere; the writes and reads by the
+//! access rule with its admin overrides; and a delete that takes the page's rows.
 
 use std::collections::BTreeMap;
 
@@ -1165,4 +1167,483 @@ fn search_and_page_lists_leave_out_what_a_user_may_not_view() {
     assert_eq!(field(document, "updatedDate"), BASE_TIME.to_string());
     assert_eq!(field(document, "restrictView"), "N");
     assert!(field(document, "content").contains("How we work."));
+}
+
+/// A member of a space as create#WikiSpace takes one in memberList.
+fn member(user_id: &str, view: &str, update: &str, admin: &str) -> Value {
+    let mut map = IndexMap::new();
+    for (key, value) in [
+        ("userId", user_id),
+        ("allowView", view),
+        ("allowUpdate", update),
+        ("allowAdmin", admin),
+    ] {
+        map.insert(key.to_string(), text(value));
+    }
+    Value::Map(map)
+}
+
+fn set_field(facade: &EntityFacade, entity: &str, pk: (&str, &str), name: &str, value: Value) {
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let mut found = facade
+        .find(entity)
+        .unwrap()
+        .eq(pk.0, text(pk.1))
+        .one()
+        .unwrap()
+        .unwrap_or_else(|| panic!("no {entity} {pk:?}"));
+    found.set(name, value);
+    found.update(facade).unwrap();
+}
+
+fn location_text(ctx: &ExecutionContext, location: &str) -> String {
+    ctx.factory().resource().location_text(location).unwrap_or_default()
+}
+
+/// A page is written and read at its exact path (parent path and page name), as move#WikiPage finds it: a new
+/// top-level Travel does not write over Policies/Travel (findChildFile searches the tree for the name), a record at
+/// the top-level path with no file yet reads no other page's text, and its attachments and delete are its own.
+#[test]
+fn a_page_is_written_and_read_at_its_exact_path_never_over_a_page_of_that_name_elsewhere() {
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    users(&facade);
+    login("alice");
+    space("EXA", &[]);
+    save("EXA", "Policies", "# Policies\n", None);
+    let policy = save("EXA", "Policies/Travel", "# Travel policy\n", None);
+    ok(
+        "set#PublishedVersion",
+        &[("wikiPageId", text(&policy)), ("publishedVersionName", text("01"))],
+    );
+    let nested = "dbresource://WikiSpace/EXA/Policies/Travel.md";
+
+    // a new top-level page of that name is its own file; the nested page keeps its text
+    let top = save("EXA", "Travel", "# Travel at the top\n", None);
+    assert_ne!(top, policy);
+    assert_eq!(location_text(&ctx, nested), "# Travel policy\n", "not written over");
+    assert_eq!(
+        location_text(&ctx, "dbresource://WikiSpace/EXA/Travel.md"),
+        "# Travel at the top\n"
+    );
+
+    // a record at a top-level path with no file yet (get#WikiPageId makes one): no other page's text or file
+    save("EXA", "Policies/Lodging", "# Lodging policy\n", None);
+    let record = out_text(
+        &ok(
+            "get#WikiPageId",
+            &[
+                ("wikiSpaceId", text("EXA")),
+                ("pagePath", text("Lodging")),
+                ("createIfMissing", Value::Bool(true)),
+            ],
+        ),
+        "wikiPageId",
+    );
+    set_field(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        ("wikiPageId", &record),
+        "publishedVersionName",
+        text("01"),
+    );
+    let published = ok(
+        "get#PublishedWikiPageText",
+        &[("wikiSpaceId", text("EXA")), ("pagePath", text("Lodging"))],
+    );
+    assert_eq!(
+        published.get("pageText").cloned().unwrap_or(Value::Null),
+        Value::Null,
+        "not the text of Policies/Lodging"
+    );
+    let info = ok(
+        "get#WikiPageInfo",
+        &[("wikiSpaceId", text("EXA")), ("pagePath", text("Lodging"))],
+    );
+    assert_eq!(out_text(&info, "pageLocation"), "dbresource://WikiSpace/EXA/Lodging");
+    assert_eq!(
+        save("EXA", "Lodging", "# Lodging\n", None),
+        record,
+        "the page takes the record at its path"
+    );
+    assert_eq!(
+        location_text(&ctx, "dbresource://WikiSpace/EXA/Policies/Lodging.md"),
+        "# Lodging policy\n"
+    );
+    let info = ok(
+        "get#WikiPageInfo",
+        &[("wikiSpaceId", text("EXA")), ("pagePath", text("Travel"))],
+    );
+    assert_eq!(out_text(&info, "pageLocation"), "dbresource://WikiSpace/EXA/Travel.md");
+    assert_eq!(out_text(&info, "parentPath"), "");
+    let history = maps(
+        &ok("get#WikiPageHistory", &[("wikiPageId", text(&policy))]),
+        "versionList",
+    );
+    assert_eq!(history.len(), 1, "the nested page has its one version");
+
+    // the attachments of a page by its id are its own
+    let attachment = ok(
+        "get#WikiPageAttachment",
+        &[("wikiPageId", text(&top)), ("filename", text("map.png"))],
+    );
+    let Some(Value::Map(reference)) = attachment.get("attachmentReference") else {
+        panic!("no attachment reference: {attachment:?}");
+    };
+    assert_eq!(
+        field(reference, "location"),
+        "dbresource://WikiSpace/EXA/Travel/_attachments/map.png"
+    );
+    refused(
+        "get#WikiPageAttachment",
+        &[("wikiPageId", text(&top)), ("filename", text("../Policies/Travel.md"))],
+        "Invalid attachment file name",
+    );
+
+    // deleting the top-level page leaves the nested one; a path out of the space is no page
+    ok(
+        "delete#WikiPage",
+        &[("wikiSpaceId", text("EXA")), ("pagePath", text("Travel"))],
+    );
+    assert!(!exists(&ctx, "dbresource://WikiSpace/EXA/Travel.md"));
+    assert_eq!(location_text(&ctx, nested), "# Travel policy\n");
+    refused(
+        "update#WikiPage",
+        &[
+            ("wikiSpaceId", text("EXA")),
+            ("parentPath", text("..")),
+            ("pageName", text("Escape")),
+            ("pageText", text("out")),
+        ],
+        "Invalid wiki page path",
+    );
+    refused(
+        "get#WikiPageInfo",
+        &[("wikiSpaceId", text("EXA")), ("pagePath", text("../EXA"))],
+        "Invalid wiki page path",
+    );
+}
+
+/// The writes ask get#WikiPageAccess: update#WikiPage, delete#WikiPage, set#PublishedVersion and the attachment
+/// services refuse a user who may not update (a viewer, a restricted page the user may not view, a read-only mirror),
+/// and the reads (get#WikiPageInfo and through it the history) let the space's administrators and the ADMIN group see
+/// what they may; internal work with no user and authorization disabled still does everything.
+#[test]
+fn wiki_writes_and_reads_follow_the_access_rule_with_its_admin_overrides() {
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    users(&facade);
+    for id in ["dave", "erin"] {
+        row(
+            &facade,
+            "moqui.security.UserAccount",
+            &[("userId", text(id)), ("username", text(id))],
+        );
+    }
+    row(
+        &facade,
+        "moqui.security.UserGroup",
+        &[("userGroupId", text("ADMIN")), ("description", text("Administrators"))],
+    );
+    row(
+        &facade,
+        "moqui.security.UserGroupMember",
+        &[
+            ("userGroupId", text("ADMIN")),
+            ("userId", text("dave")),
+            ("fromDate", Value::I64(0)),
+        ],
+    );
+    login("alice");
+    // bob views; erin administers the space without view or update rows; carol and dave are not members
+    space(
+        "ACC",
+        &[
+            ("restrictView", text("Y")),
+            ("restrictUpdate", text("Y")),
+            (
+                "memberList",
+                Value::List(vec![member("bob", "Y", "N", "N"), member("erin", "N", "N", "Y")]),
+            ),
+        ],
+    );
+    let plan = save("ACC", "Plan", "# Plan\n", None);
+    let hidden = save("ACC", "Hidden", "# Hidden\n", None);
+    set_field(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        ("wikiPageId", &hidden),
+        "restrictView",
+        text("Y"),
+    );
+    row(
+        &facade,
+        "moqui.resource.wiki.WikiPageUser",
+        &[
+            ("wikiPageId", text(&hidden)),
+            ("userId", text("alice")),
+            ("allowView", text("Y")),
+        ],
+    );
+    ctx.factory()
+        .resource()
+        .write_bytes("dbresource://WikiSpace/ACC/Plan/_attachments/a.txt", b"attached")
+        .unwrap();
+    let rewrite = |page: &str, name: &str, body: &str| -> Vec<(&'static str, Value)> {
+        vec![
+            ("wikiSpaceId", text("ACC")),
+            ("wikiPageId", text(page)),
+            ("pageName", text(name)),
+            ("pageText", text(body)),
+        ]
+    };
+    let plan_attachment = [("wikiPageId", text(&plan)), ("filename", text("a.txt"))];
+
+    // a viewer reads, and changes nothing
+    login("bob");
+    ok("get#WikiPageInfo", &[("wikiPageId", text(&plan))]);
+    refused(
+        "update#WikiPage",
+        &rewrite(&plan, "Plan", "bob's\n"),
+        "restricted update",
+    );
+    refused(
+        "update#WikiPage",
+        &[
+            ("wikiSpaceId", text("ACC")),
+            ("pageName", text("New")),
+            ("pageText", text("new\n")),
+        ],
+        "restricted update",
+    );
+    assert!(one(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        &[("wikiSpaceId", "ACC"), ("pagePath", "New")]
+    )
+    .is_none());
+    refused(
+        "set#PublishedVersion",
+        &[("wikiPageId", text(&plan)), ("publishedVersionName", text("01"))],
+        "may not publish",
+    );
+    refused("delete#WikiPage", &[("wikiPageId", text(&plan))], "may not delete");
+    ok("get#WikiPageAttachment", &plan_attachment);
+    refused(
+        "delete#WikiPageAttachment",
+        &plan_attachment,
+        "may not change the attachments",
+    );
+    assert!(exists(&ctx, "dbresource://WikiSpace/ACC/Plan/_attachments/a.txt"));
+    // a restricted page the viewer may not view is not theirs to read or write
+    refused("get#WikiPageInfo", &[("wikiPageId", text(&hidden))], "restricted view");
+    refused(
+        "get#WikiPageHistory",
+        &[("wikiPageId", text(&hidden))],
+        "restricted view",
+    );
+    refused("update#WikiPage", &rewrite(&hidden, "Hidden", "bob's\n"), "not found");
+    refused(
+        "get#WikiPageAttachment",
+        &[("wikiPageId", text(&hidden)), ("filename", text("a.txt"))],
+        "not found",
+    );
+    assert_eq!(
+        location_text(&ctx, "dbresource://WikiSpace/ACC/Hidden.md"),
+        "# Hidden\n"
+    );
+
+    // not a member of the restricted space: nothing
+    login("carol");
+    refused("get#WikiPageInfo", &[("wikiPageId", text(&plan))], "restricted view");
+    refused("get#WikiPageAttachment", &plan_attachment, "not found");
+    refused("update#WikiPage", &rewrite(&plan, "Plan", "carol's\n"), "not found");
+
+    // the space's administrator views and updates its pages, but a restricted page only as its member
+    login("erin");
+    ok("get#WikiPageInfo", &[("wikiPageId", text(&plan))]);
+    ok("update#WikiPage", &rewrite(&plan, "Plan", "# Plan\n\nBy erin.\n"));
+    refused("get#WikiPageInfo", &[("wikiPageId", text(&hidden))], "restricted view");
+
+    // the ADMIN group sees and changes everything
+    login("dave");
+    ok("get#WikiPageInfo", &[("wikiPageId", text(&hidden))]);
+    let history = maps(
+        &ok("get#WikiPageHistory", &[("wikiPageId", text(&hidden))]),
+        "versionList",
+    );
+    assert_eq!(history.len(), 1);
+    ok("update#WikiPage", &rewrite(&hidden, "Hidden", "# Hidden\n\nBy dave.\n"));
+    let published = ok(
+        "set#PublishedVersion",
+        &[("wikiPageId", text(&plan)), ("publishedVersionName", text("02"))],
+    );
+    assert_eq!(out_text(&published, "publishedVersionName"), "02");
+    refused(
+        "set#PublishedVersion",
+        &[("wikiPageId", text(&plan)), ("publishedVersionName", text("99"))],
+        "not found",
+    );
+    ok("delete#WikiPageAttachment", &plan_attachment);
+    assert!(!exists(&ctx, "dbresource://WikiSpace/ACC/Plan/_attachments/a.txt"));
+
+    // a mirror takes no writes, whoever asks
+    row(
+        &facade,
+        "moqui.resource.GitRepository",
+        &[
+            ("repositoryId", text("WIKI_MIR")),
+            ("repositoryKind", text("remote")),
+            ("remoteUrl", text("https://example.com/mirror.git")),
+        ],
+    );
+    row(
+        &facade,
+        "moqui.resource.wiki.WikiSpace",
+        &[
+            ("wikiSpaceId", text("MIR")),
+            ("rootPageLocation", text("git://WIKI_MIR/MIR.md")),
+        ],
+    );
+    refused(
+        "update#WikiPage",
+        &[
+            ("wikiSpaceId", text("MIR")),
+            ("pageName", text("Page")),
+            ("pageText", text("x\n")),
+        ],
+        "read-only mirror",
+    );
+
+    // internal work: no user, authorization disabled
+    {
+        let _authz = ctx.disable_authz();
+        crate::user::logout().unwrap();
+        ok(
+            "update#WikiPage",
+            &rewrite(&hidden, "Hidden", "# Hidden\n\nInternal.\n"),
+        );
+        ok(
+            "set#PublishedVersion",
+            &[("wikiPageId", text(&hidden)), ("publishedVersionName", text("03"))],
+        );
+        ok("delete#WikiPage", &[("wikiPageId", text(&plan))]);
+    }
+    assert!(!exists(&ctx, "dbresource://WikiSpace/ACC/Plan.md"));
+}
+
+/// delete#WikiPage by its id takes the framework rows of the page (aliases, history, its links, reviews; the links to
+/// it stay, to a page not there), and a page record without a file goes too; a decision from the tray tells the
+/// requester with the request's link, so their notification opens the page.
+#[test]
+fn a_page_is_deleted_with_its_rows_and_a_decision_opens_the_requests_link() {
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    users(&facade);
+    seed_review_data(&facade);
+    login("alice");
+    space("DEL", &[]);
+    let alpha = save("DEL", "Alpha", "# Alpha, see [beta](Beta)\n", None);
+    let beta = save("DEL", "Beta", "# Beta, see [alpha](Alpha)\n", None);
+    ok(
+        "update#WikiPage",
+        &[
+            ("wikiSpaceId", text("DEL")),
+            ("wikiPageId", text(&alpha)),
+            ("pageName", text("First")),
+            ("pageText", text("# Alpha, see [beta](Beta)\n")),
+        ],
+    );
+    let link = "/qapps/Commons/Knowledge?wikiPageId=First&review=open";
+    let requested = ok(
+        "request#WikiPageReview",
+        &[
+            ("wikiPageId", text(&alpha)),
+            ("reviewerUserId", text("bob")),
+            ("link", text(link)),
+        ],
+    );
+    let review = out_text(&requested, "wikiPageReviewId");
+    let message_id = value_of(
+        &one(
+            &facade,
+            "moqui.resource.wiki.WikiPageReview",
+            &[("wikiPageReviewId", &review)],
+        ),
+        "notificationMessageId",
+    );
+    login("bob");
+    let approved = call_named(
+        "org.moqui.impl.NotificationServices.approve#NotificationMessage",
+        &[("notificationMessageId", text(&message_id))],
+    );
+    assert_eq!(errors(), "", "{approved:?}");
+    let told = {
+        let _authz = ctx.disable_authz();
+        facade
+            .find("moqui.security.user.NotificationMessage")
+            .unwrap()
+            .eq("topic", text("WikiPageReviewDecision"))
+            .list()
+            .unwrap()
+    };
+    assert_eq!(told.len(), 1);
+    assert_eq!(
+        told.iter()
+            .next()
+            .and_then(|row| row.get("linkText").map(to_plain_string))
+            .unwrap_or_default(),
+        link
+    );
+
+    // the page by its id, with its rows
+    login("alice");
+    ok("delete#WikiPage", &[("wikiPageId", text(&alpha))]);
+    assert!(!exists(&ctx, "dbresource://WikiSpace/DEL/First.md"));
+    for entity in [
+        "moqui.resource.wiki.WikiPage",
+        "moqui.resource.wiki.WikiPageHistory",
+        "moqui.resource.wiki.WikiPageLink",
+        "moqui.resource.wiki.WikiPageReview",
+    ] {
+        let _authz = ctx.disable_authz();
+        let rows = facade
+            .find(entity)
+            .unwrap()
+            .eq("wikiPageId", text(&alpha))
+            .list()
+            .unwrap();
+        assert!(rows.is_empty(), "{entity}");
+    }
+    assert!(one(
+        &facade,
+        "moqui.resource.wiki.WikiPageAlias",
+        &[("wikiSpaceId", "DEL"), ("aliasPath", "Alpha")]
+    )
+    .is_none());
+    let links = maps(&ok("get#WikiPageLinks", &[("wikiPageId", text(&beta))]), "linkList");
+    assert_eq!(column(&links, "found"), ["false"]);
+
+    // a page record without a file; the root page is never deleted
+    let ghost = out_text(
+        &ok(
+            "get#WikiPageId",
+            &[
+                ("wikiSpaceId", text("DEL")),
+                ("pagePath", text("Ghost")),
+                ("createIfMissing", Value::Bool(true)),
+            ],
+        ),
+        "wikiPageId",
+    );
+    ok("delete#WikiPage", &[("wikiPageId", text(&ghost))]);
+    assert!(one(&facade, "moqui.resource.wiki.WikiPage", &[("wikiPageId", &ghost)]).is_none());
+    refused(
+        "delete#WikiPage",
+        &[("wikiSpaceId", text("DEL")), ("pagePath", text(""))],
+        "root page",
+    );
 }

@@ -79,6 +79,12 @@ along with this software (see the LICENSE.md file). If not, see
             </if>
 
             <if condition="wikiPage == null"><return message="No page found at path ${pagePath} in space ${wikiSpaceId}"/></if>
+            <!-- a page found by an alias may have moved to another space: its own space is the one read and checked -->
+            <if condition="wikiPage.wikiSpaceId != wikiSpace.wikiSpaceId">
+                <entity-find-one entity-name="moqui.resource.wiki.WikiSpace" value-field="wikiSpace" cache="true">
+                    <field-map field-name="wikiSpaceId" from="wikiPage.wikiSpaceId"/></entity-find-one>
+                <if condition="wikiSpace == null"><return message="No page found at path ${pagePath} in space ${wikiSpaceId}"/></if>
+            </if>
             <!-- a page of a restricted space or a restricted page is shown only to a signed-in user who may view it
                 (get#WikiPageAccess); else as if not found -->
             <if condition="wikiPage.restrictView == 'Y' || wikiSpace.restrictView == 'Y'">
@@ -92,8 +98,13 @@ along with this software (see the LICENSE.md file). If not, see
             <!-- if no version specified and no publishedVersionName the act like the page doesn't exist -->
             <if condition="!versionName"><return message="No page version found at path ${pagePath} in space ${wikiSpaceId}"/></if>
 
-            <set field="rootPageRef" from="ec.resource.getLocationReference(wikiSpace.rootPageLocation)"/>
-            <set field="pageReference" from="rootPageRef.findChildFile(wikiPage.pagePath)"/>
+            <!-- the page's file at its exact path: never a page of the same name elsewhere in the space -->
+            <service-call name="org.moqui.impl.WikiServices.get#WikiPageFile" out-map="fileOut"
+                    in-map="{rootPageLocation:wikiSpace.rootPageLocation, pagePath:wikiPage.pagePath}"/>
+            <if condition="ec.message.hasError()"><return/></if>
+            <set field="pageReference" from="fileOut.pageReference"/>
+            <if condition="!pageReference?.exists"><set field="pageReference" from="null"/>
+                <return message="No page found at path ${pagePath} in space ${wikiSpaceId}"/></if>
             <set field="pageLocation" from="pageReference.location"/>
 
             <set field="wikiPageId" from="wikiPage.wikiPageId"/>
@@ -101,11 +112,101 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
     </service>
     <service verb="set" noun="PublishedVersion">
+        <description>Publish a version of a page (the version get#PublishedWikiPageText reads), or none with an empty
+            publishedVersionName, for a user who may update the page (get#WikiPageAccess; internal work with no user and
+            authorization disabled may). Where the page's storage keeps versions the version must be one of them, and a
+            name the storage resolves (a unique commit prefix on git) is kept in full. An approved review publishes its
+            version through decide#WikiPageReview, whose reviewer need not be able to update the page.</description>
         <in-parameters>
             <parameter name="wikiPageId" required="true"/>
             <parameter name="publishedVersionName"/>
         </in-parameters>
-        <actions><service-call name="update#moqui.resource.wiki.WikiPage" in-map="context"/></actions>
+        <out-parameters><parameter name="publishedVersionName"/></out-parameters>
+        <actions>
+            <service-call name="org.moqui.impl.WikiServices.get#WikiPageAccess" out-map="pageAccess" in-map="{wikiPageId:wikiPageId}"/>
+            <if condition="!pageAccess.canView"><return error="true" message="Wiki Page ${wikiPageId} not found"/></if>
+            <if condition="pageAccess.readOnly"><return error="true" message="Wiki Space [${pageAccess.wikiSpaceId}] is a read-only mirror"/></if>
+            <if condition="!pageAccess.canUpdate"><return error="true" message="User ${ec.user.username} [${ec.user.userId}] may not publish a version of Wiki Page ${wikiPageId}"/></if>
+            <if condition="publishedVersionName">
+                <service-call name="org.moqui.impl.WikiServices.get#WikiPageReference" out-map="refOut" in-map="{wikiPageId:wikiPageId}"/>
+                <if condition="ec.message.hasError()"><return/></if>
+                <script><![CDATA[
+                    const ref = refOut.pageReference
+                    if (ref != null && ref.exists && ref.supportsVersion()) {
+                        let version = null
+                        try { version = ref.getVersion(String(publishedVersionName)) } catch (e) { version = null }
+                        if (version == null) ec.message.addError(`Version ${publishedVersionName} of Wiki Page ${wikiPageId} not found`)
+                        else publishedVersionName = version.versionName
+                    }
+                ]]></script>
+                <if condition="ec.message.hasError()"><return/></if>
+            </if>
+            <service-call name="update#moqui.resource.wiki.WikiPage" in-map="{wikiPageId:wikiPageId, publishedVersionName:(publishedVersionName || null)}"/>
+        </actions>
+    </service>
+    <service verb="get" noun="WikiPageFile" allow-remote="false">
+        <description>The file of a page at its exact path in its space: in the directory named as the root page without its
+            extension, then the directories of the parent path, the file named as the page, with an extension or without
+            (move#WikiPage finds it the same way). Never a file of that name elsewhere in the space, as findChildFile's
+            search of the directory tree would find: a new top-level page Travel would write over Policies/Travel. When
+            no file is there, the location a new page gets (with wikiType as its extension), exists false. A path with a
+            . or .. segment is no page of the space and an error.</description>
+        <in-parameters>
+            <parameter name="rootPageLocation"><description>The space's root page; or wikiSpaceId</description></parameter>
+            <parameter name="wikiSpaceId"/>
+            <parameter name="pagePath"><description>Empty for the root page</description></parameter>
+            <parameter name="wikiType"><description>The extension of a page that is not there yet</description></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="pageReference" type="org.moqui.resource.ResourceReference"/>
+            <parameter name="pageLocation"/>
+            <parameter name="exists" type="Boolean"/>
+        </out-parameters>
+        <actions><script><![CDATA[
+            pageReference = null
+            pageLocation = null
+            exists = false
+            let root = rootPageLocation
+            if (!root && wikiSpaceId) root = ec.entity.find('moqui.resource.wiki.WikiSpace').condition('wikiSpaceId', wikiSpaceId)
+                    .useCache(true).disableAuthz().one()?.rootPageLocation
+            if (!root) { ec.message.addError(`Wiki Space ${wikiSpaceId || ''} has no root page location`); return }
+            const parts = String(pagePath || '').split('/').filter((part) => part !== '')
+            if (parts.some((part) => part === '.' || part === '..')) { ec.message.addError(`Invalid wiki page path ${pagePath}`); return }
+            const rootRef = ec.resource.getLocationReference(String(root))
+            if (!parts.length) {
+                pageReference = rootRef
+            } else {
+                // the root page's directory: its location without one extension at a time, the first that is a directory,
+                // else without them all (only the file name's; not findMatchingDirectory, which goes on into the path)
+                const rootLocation = String(root)
+                const slash = rootLocation.lastIndexOf('/')
+                let rootDir = rootLocation
+                let candidate = rootLocation
+                while (candidate.lastIndexOf('.') > slash) {
+                    candidate = candidate.substring(0, candidate.lastIndexOf('.'))
+                    rootDir = candidate
+                    const candidateRef = ec.resource.getLocationReference(candidate)
+                    if (candidateRef.exists && candidateRef.isDirectory()) break
+                }
+                const name = parts.pop()
+                const dirLocation = [rootDir.replace(/\/+$/, '')].concat(parts).join('/')
+                const dir = ec.resource.getLocationReference(dirLocation)
+                let found = null
+                // the usual names first, then the directory's files
+                for (const fileName of [name, `${name}.md`, `${name}.html`]) {
+                    const direct = ec.resource.getLocationReference(`${dirLocation}/${fileName}`)
+                    if (direct.exists && direct.isFile()) { found = direct; break }
+                }
+                if (found == null && dir.exists && dir.isDirectory()) {
+                    const files = Array.from(dir.getDirectoryEntries()).filter((entry) => entry.isFile())
+                    found = files.find((entry) => entry.fileName === name) ||
+                            files.find((entry) => entry.fileName.replace(/\.[^.]*$/, '') === name) || null
+                }
+                pageReference = found || ec.resource.getLocationReference(`${dirLocation}/${name}${wikiType ? '.' + wikiType : ''}`)
+            }
+            pageLocation = pageReference.location
+            exists = !!pageReference.exists
+        ]]></script></actions>
     </service>
 
     <service verb="get" noun="WikiPageId">
@@ -200,9 +301,12 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="spaceRootName" from="rootPageLocation.substring(rootPageLocation.lastIndexOf('/')+1)"/>
             <if condition="spaceRootName.includes('.')"><set field="spaceRootName" from="spaceRootName.substring(0, spaceRootName.lastIndexOf('.'))"/></if>
 
-            <!-- get the ResourceReferences -->
+            <!-- get the ResourceReferences: the page's file at its exact path, not a page of that name elsewhere -->
             <set field="rootPageRef" from="ec.resource.getLocationReference(wikiSpace.rootPageLocation)"/>
-            <set field="pageReference" from="rootPageRef.findChildFile(pagePath)"/>
+            <service-call name="org.moqui.impl.WikiServices.get#WikiPageFile" out-map="fileOut"
+                    in-map="{rootPageLocation:wikiSpace.rootPageLocation, pagePath:pagePath}"/>
+            <if condition="ec.message.hasError()"><return/></if>
+            <set field="pageReference" from="fileOut.pageReference"/>
         </actions>
     </service>
     <service verb="get" noun="WikiPageInfo">
@@ -230,17 +334,18 @@ along with this software (see the LICENSE.md file). If not, see
         </out-parameters>
         <actions>
             <service-call name="org.moqui.impl.WikiServices.get#WikiPageReference" in-map="context" out-map="context"/>
+            <if condition="ec.message.hasError()"><return/></if>
 
-            <!-- check restrictView for space and page -->
-            <if condition="wikiSpace.restrictView == 'Y'">
-                <entity-find entity-name="moqui.resource.wiki.WikiSpaceUser" list="wsuList">
-                    <econdition-object field="{wikiSpaceId:wikiSpaceId, userId:ec.user.userId, allowView:'Y'}"/></entity-find>
-                <if condition="!wsuList?.length"><return error="true" message="Wiki Space [${wikiSpaceId}] has restricted view and user ${ec.user.username} [${ec.user.userId}] is not allowed."/></if>
-            </if>
-            <if condition="wikiPage?.restrictView == 'Y'">
-                <entity-find entity-name="moqui.resource.wiki.WikiPageUser" list="wpuList">
-                    <econdition-object field="{wikiPageId:wikiPageId, userId:ec.user.userId, allowView:'Y'}"/></entity-find>
-                <if condition="!wpuList?.length"><return error="true" message="Wiki Page [${wikiSpaceId}/${pagePath}] has restricted view and user ${ec.user.username} [${ec.user.userId}] is not allowed."/></if>
+            <!-- the view rule of the space and page (get#WikiPageAccess: restrictView through WikiSpaceUser or WikiPageUser
+                rows, a space's administrators, the ADMIN group, internal work with no user and authorization disabled) -->
+            <set field="viewAccessIn" from="wikiPage != null ? {wikiPageId:wikiPage.wikiPageId} : {wikiSpaceId:wikiSpaceId}"/>
+            <service-call name="org.moqui.impl.WikiServices.get#WikiPageAccess" out-map="viewAccess" in-map="viewAccessIn"/>
+            <if condition="!viewAccess.canView">
+                <if condition="wikiPage?.restrictView == 'Y'"><then>
+                    <return error="true" message="Wiki Page [${wikiSpaceId}/${pagePath}] has restricted view and user ${ec.user.username} [${ec.user.userId}] is not allowed."/>
+                </then><else>
+                    <return error="true" message="Wiki Space [${wikiSpaceId}] has restricted view and user ${ec.user.username} [${ec.user.userId}] is not allowed."/>
+                </else></if>
             </if>
 
             <set field="pageLocation" from="pageReference?.location"/>
@@ -333,59 +438,95 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
     </service>
     <service verb="get" noun="WikiPageAttachment">
+        <description>A file of a page's attachments (its _attachments folder), for a user who may view the page
+            (get#WikiPageAccess). The page is wikiPageId, or wikiSpaceId and pagePath (whose first segment may be the space
+            or a wikiPageId); its file is the one at that exact path. A file name is a name, not a path.</description>
         <in-parameters>
+            <parameter name="wikiPageId"><description>The page, instead of wikiSpaceId and pagePath</description></parameter>
             <parameter name="wikiSpaceId"><description>Optional if pagePath is a wikiPageId or the first segment is a wikiSpaceId</description></parameter>
             <parameter name="pagePath"><description>Not required, is empty for the space root page. Can be a wikiPageId or the page path within the space.</description></parameter>
             <parameter name="filename"><description>If not specified last segment of pagePath will be used</description></parameter>
         </in-parameters>
-        <out-parameters><parameter name="attachmentReference" type="org.moqui.resource.ResourceReference"/></out-parameters>
+        <out-parameters>
+            <parameter name="attachmentReference" type="org.moqui.resource.ResourceReference"/>
+            <parameter name="wikiPageId"/>
+            <parameter name="wikiSpaceId"/>
+            <parameter name="pagePath"/>
+            <parameter name="filename"/>
+        </out-parameters>
         <actions>
-            <set field="pathList" from="pagePath ? pagePath.split('/') : []"/>
-            <!-- <log level="warn" message="begin wikiSpaceId ${wikiSpaceId} pagePath ${pagePath} filename ${filename} pathList ${pathList}"/> -->
-            <if condition="!filename">
-                <if condition="pathList.length"><then>
-                    <set field="filename" from="pathList.pop()"/>
-                    <set field="pagePath" from="pathList.join('/')"/>
-                </then><else>
-                    <return error="true" message="No filename specified and no path with filename"/>
-                </else></if>
-            </if>
+            <set field="wikiPage" from="null"/>
+            <if condition="wikiPageId"><then>
+                <entity-find-one entity-name="moqui.resource.wiki.WikiPage" value-field="wikiPage"/>
+                <if condition="wikiPage == null"><return error="true" message="Wiki Page ${wikiPageId} not found"/></if>
+                <set field="wikiSpaceId" from="wikiPage.wikiSpaceId"/>
+                <set field="pagePath" from="wikiPage.pagePath || ''"/>
+                <if condition="!filename"><return error="true" message="No filename specified"/></if>
+            </then><else>
+                <set field="pathList" from="pagePath ? pagePath.split('/') : []"/>
+                <if condition="!filename">
+                    <if condition="pathList.length"><then>
+                        <set field="filename" from="pathList.pop()"/>
+                        <set field="pagePath" from="pathList.join('/')"/>
+                    </then><else>
+                        <return error="true" message="No filename specified and no path with filename"/>
+                    </else></if>
+                </if>
 
-            <set field="pathFirst" from="pathList.length ? pathList[0] : null"/>
-            <!-- <log level="warn" message="middle wikiSpaceId ${wikiSpaceId} pagePath ${pagePath} filename ${filename} pathFirst ${pathFirst} pathList ${pathList}"/> -->
-            <if condition="pathFirst">
-                <!-- see if first part of pagePath is a wikiSpaceId, if so set it and remove from pathList -->
-                <entity-find-one entity-name="moqui.resource.wiki.WikiSpace" value-field="wikiSpace" cache="true">
-                    <field-map field-name="wikiSpaceId" from="pathFirst"/></entity-find-one>
-                <if condition="wikiSpace != null">
-                    <set field="wikiSpaceId" from="pathList.shift()"/>
-                    <set field="pagePath" from="pathList.join('/')"/>
-                    <set field="pathFirst" from="pathList.length ? pathList[0] : null"/>
+                <set field="pathFirst" from="pathList.length ? pathList[0] : null"/>
+                <if condition="pathFirst">
+                    <!-- see if first part of pagePath is a wikiSpaceId, if so set it and remove from pathList -->
+                    <entity-find-one entity-name="moqui.resource.wiki.WikiSpace" value-field="wikiSpace" cache="true">
+                        <field-map field-name="wikiSpaceId" from="pathFirst"/></entity-find-one>
+                    <if condition="wikiSpace != null">
+                        <set field="wikiSpaceId" from="pathList.shift()"/>
+                        <set field="pagePath" from="pathList.join('/')"/>
+                        <set field="pathFirst" from="pathList.length ? pathList[0] : null"/>
+                    </if>
                 </if>
-            </if>
-            <if condition="pathFirst">
-                <!-- see if first part of pagePath is a wikiPageId, if so use its pagePath -->
-                <entity-find-one entity-name="moqui.resource.wiki.WikiPage" value-field="wikiPage" cache="true">
-                    <field-map field-name="wikiPageId" from="pathFirst"/></entity-find-one>
-                <if condition="wikiPage != null">
-                    <set field="wikiSpaceId" from="wikiPage.wikiSpaceId"/>
-                    <set field="pagePath" from="wikiPage.pagePath"/>
+                <if condition="pathFirst">
+                    <!-- see if first part of pagePath is a wikiPageId, if so use its pagePath -->
+                    <entity-find-one entity-name="moqui.resource.wiki.WikiPage" value-field="wikiPage" cache="true">
+                        <field-map field-name="wikiPageId" from="pathFirst"/></entity-find-one>
+                    <if condition="wikiPage != null">
+                        <set field="wikiSpaceId" from="wikiPage.wikiSpaceId"/>
+                        <set field="pagePath" from="wikiPage.pagePath || ''"/>
+                    </if>
                 </if>
-            </if>
-            <!-- <log level="warn" message="after wikiSpaceId ${wikiSpaceId} pagePath ${pagePath} filename ${filename}"/> -->
+                <!-- the page record at the exact path, for its view rule -->
+                <if condition="wikiPage == null &amp;&amp; wikiSpaceId">
+                    <entity-find entity-name="moqui.resource.wiki.WikiPage" list="wikiPageList">
+                        <econdition field-name="wikiSpaceId"/><econdition field-name="pagePath" from="pagePath || null"/></entity-find>
+                    <set field="wikiPage" from="wikiPageList?.length ? wikiPageList[0] : null"/>
+                </if>
+                <set field="wikiPageId" from="wikiPage?.wikiPageId"/>
+            </else></if>
+            <!-- a name, not a path out of the page's attachments -->
+            <set field="filename" from="filename == null ? '' : String(filename)"/>
+            <if condition="!filename || /[\/\\]/.test(filename) || filename == '.' || filename == '..'">
+                <return error="true" message="Invalid attachment file name ${filename}"/></if>
 
             <entity-find-one entity-name="moqui.resource.wiki.WikiSpace" value-field="wikiSpace" cache="true"/>
             <if condition="wikiSpace == null"><return error="true" message="Wiki Space with ID ${wikiSpaceId} not found"/></if>
             <if condition="!wikiSpace.rootPageLocation"><return error="true" message="Wiki Space with ID ${wikiSpaceId} has no root page location"/></if>
+            <set field="viewAccessIn" from="wikiPageId ? {wikiPageId:wikiPageId} : {wikiSpaceId:wikiSpaceId}"/>
+            <service-call name="org.moqui.impl.WikiServices.get#WikiPageAccess" out-map="viewAccess" in-map="viewAccessIn"/>
+            <if condition="!viewAccess.canView"><return error="true" message="Wiki Page [${wikiSpaceId}/${pagePath || ''}] not found"/></if>
 
-            <set field="rootPageRef" from="ec.resource.getLocationReference(wikiSpace.rootPageLocation)"/>
-            <set field="pageReference" from="rootPageRef.findChildFile(pagePath)"/>
+            <!-- the page's file at its exact path, not a page of that name elsewhere -->
+            <service-call name="org.moqui.impl.WikiServices.get#WikiPageFile" out-map="fileOut"
+                    in-map="{rootPageLocation:wikiSpace.rootPageLocation, pagePath:pagePath}"/>
+            <if condition="ec.message.hasError()"><return/></if>
+            <set field="pageReference" from="fileOut.pageReference"/>
             <set field="pageAttachmentsDirectoryRef" from="pageReference?.getChild('_attachments')"/>
             <set field="attachmentReference" from="pageAttachmentsDirectoryRef?.getChild(filename)"/>
         </actions>
     </service>
     <service verb="upload" noun="WikiPageAttachment">
+        <description>Add a file to a page's attachments (a file of the same name is replaced), for a user who may update the
+            page (get#WikiPageAccess).</description>
         <in-parameters>
+            <parameter name="wikiPageId"><description>The page, instead of wikiSpaceId and pagePath</description></parameter>
             <parameter name="wikiSpaceId"><description>Optional if pagePath is a wikiPageId or the first segment is a wikiSpaceId</description></parameter>
             <parameter name="pagePath"><description>Not required, is empty for the space root page. Can be a wikiPageId or the page path within the space.</description></parameter>
             <parameter name="attachmentFile" type="org.apache.commons.fileupload2.core.FileItem"/>
@@ -393,8 +534,14 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters><parameter name="attachmentReference" type="org.moqui.resource.ResourceReference"/></out-parameters>
         <actions>
             <if condition="attachmentFile == null"><return message="No attachment uploaded"/></if>
-            <set field="filename" from="attachmentFile.getName()"/>
+            <!-- the file's name without a client's path -->
+            <set field="filename" from="String(attachmentFile.getName() || '').replace(/^.*[\/\\]/, '')"/>
             <service-call name="org.moqui.impl.WikiServices.get#WikiPageAttachment" in-map="context" out-map="context"/>
+            <if condition="ec.message.hasError()"><return/></if>
+            <set field="updateAccessIn" from="wikiPageId ? {wikiPageId:wikiPageId} : {wikiSpaceId:wikiSpaceId}"/>
+            <service-call name="org.moqui.impl.WikiServices.get#WikiPageAccess" out-map="updateAccess" in-map="updateAccessIn"/>
+            <if condition="updateAccess.readOnly"><return error="true" message="Wiki Space [${wikiSpaceId}] is a read-only mirror"/></if>
+            <if condition="!updateAccess.canUpdate"><return error="true" message="User ${ec.user.username} [${ec.user.userId}] may not change the attachments of Wiki Page [${wikiSpaceId}/${pagePath || ''}]"/></if>
             <script><![CDATA[
                 ec.logger.info(`Uploading file ${filename} for page path ${pagePath} in space ${wikiSpaceId}`)
                 attachmentReference.putUpload(attachmentFile)
@@ -402,13 +549,22 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
     </service>
     <service verb="delete" noun="WikiPageAttachment">
+        <description>Remove a file from a page's attachments, for a user who may update the page (get#WikiPageAccess).</description>
         <in-parameters>
+            <parameter name="wikiPageId"><description>The page, instead of wikiSpaceId and pagePath</description></parameter>
             <parameter name="wikiSpaceId"><description>Optional if pagePath is a wikiPageId or the first segment is a wikiSpaceId</description></parameter>
             <parameter name="pagePath"><description>Not required, is empty for the space root page. Can be a wikiPageId or the page path within the space.</description></parameter>
             <parameter name="filename"><description>If not specified last segment of pagePath will be used</description></parameter>
         </in-parameters>
         <actions>
             <service-call name="org.moqui.impl.WikiServices.get#WikiPageAttachment" in-map="context" out-map="context"/>
+            <if condition="ec.message.hasError()"><return/></if>
+            <set field="updateAccessIn" from="wikiPageId ? {wikiPageId:wikiPageId} : {wikiSpaceId:wikiSpaceId}"/>
+            <service-call name="org.moqui.impl.WikiServices.get#WikiPageAccess" out-map="updateAccess" in-map="updateAccessIn"/>
+            <if condition="updateAccess.readOnly"><return error="true" message="Wiki Space [${wikiSpaceId}] is a read-only mirror"/></if>
+            <if condition="!updateAccess.canUpdate"><return error="true" message="User ${ec.user.username} [${ec.user.userId}] may not change the attachments of Wiki Page [${wikiSpaceId}/${pagePath || ''}]"/></if>
+            <if condition="attachmentReference == null || !attachmentReference.exists">
+                <return error="true" message="Attachment ${filename} of Wiki Page [${wikiSpaceId}/${pagePath || ''}] not found"/></if>
             <script><![CDATA[
                 ec.logger.info(`Deleting file ${filename} for page path ${pagePath} in space ${wikiSpaceId} location ${attachmentReference.location}`)
                 attachmentReference.delete()
@@ -454,6 +610,12 @@ along with this software (see the LICENSE.md file). If not, see
             <if condition="parentPath == wikiSpaceId"><set field="parentPath" from="null"/></if>
             <set field="versionNote" from="versionNote ? String(versionNote).trim().substring(0, 255) : null"/>
 
+            <!-- a page by its id is in its own space, which is the one read, checked and written -->
+            <if condition="wikiPageId">
+                <entity-find-one entity-name="moqui.resource.wiki.WikiPage" value-field="wikiPage" cache="false"/>
+                <if condition="wikiPage == null"><return error="true" message="Wiki Page ${wikiPageId} not found"/></if>
+                <set field="wikiSpaceId" from="wikiPage.wikiSpaceId"/>
+            </if>
             <entity-find-one entity-name="moqui.resource.wiki.WikiSpace" value-field="wikiSpace" cache="true"/>
             <if condition="wikiSpace == null"><return error="true" message="Wiki Space with ID ${wikiSpaceId} not found"/></if>
             <if condition="!wikiSpace.rootPageLocation"><return error="true" message="Wiki Space with ID ${wikiSpaceId} has no root page location"/></if>
@@ -470,22 +632,26 @@ along with this software (see the LICENSE.md file). If not, see
             </if>
 
             <set field="createdRecord" from="false"/>
-            <if condition="wikiPageId"><then>
-                <entity-find-one entity-name="moqui.resource.wiki.WikiPage" value-field="wikiPage" cache="false"/>
-                <if condition="wikiPage == null"><return error="true" message="Wiki Page ${wikiPageId} not found"/></if>
-                <set field="wikiSpaceId" from="wikiPage.wikiSpaceId"/>
+            <if condition="wikiPage != null"><then>
                 <set field="pagePath" from="wikiPage.pagePath || ''"/>
                 <!-- on lookup by wikiPageId if no parentPath is specified keep it the same -->
                 <if condition="!parentPath &amp;&amp; !parentWikiPageId"><set field="parentPath" from="pagePath.includes('/') ? pagePath.substring(0, pagePath.lastIndexOf('/')) : null"/></if>
             </then><else>
                 <if condition="!pagePath"><set field="pagePath" from="(parentPath ? parentPath+'/' : '') + (pageName||'')"/></if>
+                <set field="pagePath" from="String(pagePath || '').split('/').filter((part) => part !== '').join('/')"/>
+                <if condition="pagePath.split('/').some((part) => part == '.' || part == '..')">
+                    <return error="true" message="Invalid wiki page path ${pagePath}"/></if>
                 <!-- by the exact path: a path that is only an alias of a moved page is a new page here, which takes the path -->
                 <entity-find entity-name="moqui.resource.wiki.WikiPage" list="wikiPageList">
                     <econdition field-name="wikiSpaceId"/><econdition field-name="pagePath" from="pagePath || null"/></entity-find>
                 <set field="wikiPage" from="wikiPageList?.length ? wikiPageList[0] : null"/>
                 <if condition="wikiPage == null">
-                    <entity-delete-by-condition entity-name="moqui.resource.wiki.WikiPageAlias">
-                        <econdition field-name="wikiSpaceId"/><econdition field-name="aliasPath" from="pagePath || null"/></entity-delete-by-condition>
+                    <!-- a new page: the user adds pages to the space (get#WikiPageAccess), under a parent page they may view -->
+                    <service-call name="org.moqui.impl.WikiServices.get#WikiPageAccess" out-map="spaceAccess" in-map="{wikiSpaceId:wikiSpaceId}"/>
+                    <if condition="!spaceAccess.canView"><return error="true" message="Wiki Space with ID ${wikiSpaceId} not found"/></if>
+                    <if condition="spaceAccess.readOnly"><return error="true" message="Wiki Space [${wikiSpaceId}] is a read-only mirror"/></if>
+                    <if condition="!spaceAccess.canUpdate">
+                        <return error="true" message="Wiki Space [${wikiSpaceId}] has restricted update and user ${ec.user.username} [${ec.user.userId}] is not allowed."/></if>
                     <!-- the parent page's record, when it has one -->
                     <set field="newParentPath" from="pagePath &amp;&amp; pagePath.includes('/') ? pagePath.substring(0, pagePath.lastIndexOf('/')) : (pagePath ? '' : null)"/>
                     <set field="newParentId" from="null"/>
@@ -494,6 +660,12 @@ along with this software (see the LICENSE.md file). If not, see
                             <econdition field-name="wikiSpaceId"/><econdition field-name="pagePath" from="newParentPath || null"/></entity-find>
                         <set field="newParentId" from="parentPageList?.length ? parentPageList[0].wikiPageId : null"/>
                     </if>
+                    <if condition="newParentId &amp;&amp; newParentPath">
+                        <service-call name="org.moqui.impl.WikiServices.get#WikiPageAccess" out-map="parentAccess" in-map="{wikiPageId:newParentId}"/>
+                        <if condition="!parentAccess.canView"><return error="true" message="Wiki Page [${wikiSpaceId}/${newParentPath}] not found"/></if>
+                    </if>
+                    <entity-delete-by-condition entity-name="moqui.resource.wiki.WikiPageAlias">
+                        <econdition field-name="wikiSpaceId"/><econdition field-name="aliasPath" from="pagePath || null"/></entity-delete-by-condition>
                     <service-call name="create#moqui.resource.wiki.WikiPage" out-map="createdOut"
                             in-map="{wikiSpaceId:wikiSpaceId, pagePath:(pagePath || null), parentWikiPageId:newParentId, createdByUserId:ec.user.userId}"/>
                     <entity-find-one entity-name="moqui.resource.wiki.WikiPage" value-field="wikiPage" cache="false">
@@ -505,33 +677,28 @@ along with this software (see the LICENSE.md file). If not, see
 
             <if condition="wikiPage == null"><return error="true" message="Wiki Page [${wikiSpaceId}/${pagePath}] does not exist and could not be created"/></if>
 
-            <!-- check restrictUpdate for space and page -->
-            <if condition="wikiSpace.restrictUpdate == 'Y'">
-                <entity-find entity-name="moqui.resource.wiki.WikiSpaceUser" list="wsuList">
-                    <econdition-object field="{wikiSpaceId:wikiSpaceId, userId:ec.user.userId, allowUpdate:'Y'}"/></entity-find>
-                <if condition="!wsuList?.length">
-                    <return error="true" message="Wiki Space [${wikiSpaceId}] has restricted update and user ${ec.user.username} [${ec.user.userId}] is not allowed."/></if>
-            </if>
-            <if condition="wikiPage.restrictUpdate == 'Y'">
-                <entity-find entity-name="moqui.resource.wiki.WikiPageUser" list="wpuList">
-                    <econdition-object field="{wikiPageId:wikiPageId, userId:ec.user.userId, allowUpdate:'Y'}"/>
-                </entity-find>
-                <if condition="!wpuList?.length">
-                    <return error="true" message="Wiki Page [${wikiSpaceId}/${pagePath}] has restricted update and user ${ec.user.username} [${ec.user.userId}] is not allowed."/></if>
-            </if>
+            <!-- the user may update the page (get#WikiPageAccess: view, not a mirror, restrictUpdate through WikiSpaceUser and
+                WikiPageUser rows, the space's administrators and the ADMIN group; internal work with no user and
+                authorization disabled may) -->
+            <service-call name="org.moqui.impl.WikiServices.get#WikiPageAccess" out-map="pageAccess" in-map="{wikiPageId:wikiPageId}"/>
+            <if condition="!pageAccess.canView"><return error="true" message="Wiki Page [${wikiSpaceId}/${pagePath}] not found"/></if>
+            <if condition="pageAccess.readOnly"><return error="true" message="Wiki Space [${wikiSpaceId}] is a read-only mirror"/></if>
+            <if condition="!pageAccess.canUpdate">
+                <return error="true" message="Wiki Page [${wikiSpaceId}/${pagePath}] has restricted update and user ${ec.user.username} [${ec.user.userId}] is not allowed."/></if>
 
             <if condition="sequenceNum != null &amp;&amp; sequenceNum != wikiPage.sequenceNum">
                 <service-call name="update#moqui.resource.wiki.WikiPage" in-map="{wikiPageId:wikiPageId, sequenceNum:sequenceNum}"/>
             </if>
 
-            <set field="rootPageRef" from="ec.resource.getLocationReference(wikiSpace.rootPageLocation)"/>
-            <set field="pageReference" from="rootPageRef.findChildFile(pagePath)"/>
-
-            <if condition="!pageReference.exists">
-                <set field="fullPagePath" value="${pagePath}.${wikiType}"/>
-                <set field="pageReference" from="rootPageRef.findChildFile(fullPagePath)"/>
-            </if>
-            <!-- <log message="pagePath=${pagePath}, pageReference=${pageReference}"/> -->
+            <!-- the page's file at its exact path (parent path and page name), never a page of that name elsewhere in the
+                space; a page not there yet is written there with wikiType as its extension -->
+            <service-call name="org.moqui.impl.WikiServices.get#WikiPageFile" out-map="fileOut"
+                    in-map="{rootPageLocation:rootPageLocation, pagePath:pagePath, wikiType:wikiType}"/>
+            <if condition="ec.message.hasError()"><return/></if>
+            <set field="pageReference" from="fileOut.pageReference"/>
+            <!-- an existing page keeps its type: an .html page is filtered as HTML whatever wikiType says -->
+            <if condition="pageReference.exists &amp;&amp; pageReference.fileName.includes('.')">
+                <set field="wikiType" from="pageReference.fileName.substring(pageReference.fileName.lastIndexOf('.') + 1)"/></if>
 
             <!-- unless WikiSpace.allowAnyHtml = Y filter the HTML -->
             <if condition="wikiSpace.allowAnyHtml != 'Y' &amp;&amp; wikiType == 'html'">
@@ -881,7 +1048,9 @@ along with this software (see the LICENSE.md file). If not, see
                     const made = []
                     for (const basePage of basePages) {
                         const map = versionMaps[basePage.pagePath || ''] || {}
-                        const newPath = ec.resource.getLocationReference(rootPageLocation).findChildFile(basePage.pagePath || '')
+                        // the copied file at the page's exact path, not a page of that name elsewhere
+                        const newPath = ec.service.sync().name('org.moqui.impl.WikiServices.get#WikiPageFile')
+                                .parameters({rootPageLocation: rootPageLocation, pagePath: basePage.pagePath || ''}).call()?.pageReference
                         const current = newPath?.exists && newPath.supportsVersion() ? newPath.getCurrentVersion()?.versionName : null
                         const published = basePage.publishedVersionName ? (map[basePage.publishedVersionName] ?? null) : (publishNew ? current : null)
                         const page = ec.entity.makeValue('moqui.resource.wiki.WikiPage')
@@ -1073,9 +1242,18 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
     </service>
     <service verb="delete" noun="WikiPage">
+        <description>Delete a page (not a space's root page) with the framework rows of it: its aliases, categories,
+            history, users, links (its own go; another page's links to it stay, to a page not there), reviews (a waiting
+            one leaves the reviewers' approvals) and a child page record's parent. For a user who may update the page
+            (get#WikiPageAccess; internal work with no user and authorization disabled may). A page with child pages or
+            Wiki Blog references is kept; with attachments only when deleteAttachments. Each refusal is an error, so the
+            transaction rolls back with what a pre-service SECA did. A page record without a file is deleted too.
+            Another component's rows that name the page (Mantle's comment, task and request joins) go through its SECA
+            on this service.</description>
         <in-parameters>
-            <parameter name="wikiSpaceId" required="true"/>
-            <parameter name="pagePath" required="true"/>
+            <parameter name="wikiPageId"><description>The page, instead of wikiSpaceId and pagePath</description></parameter>
+            <parameter name="wikiSpaceId"/>
+            <parameter name="pagePath"/>
             <parameter name="deleteAttachments" type="Boolean" default="false"/>
         </in-parameters>
         <out-parameters>
@@ -1083,24 +1261,42 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="pagePath"><description>Out pagePath is path of parent or empty</description></parameter>
         </out-parameters>
         <actions>
-            <service-call name="org.moqui.impl.WikiServices.get#WikiPageInfo" out-map="pageInfo"
-                    in-map="{wikiSpaceId:wikiSpaceId, pagePath:pagePath}"/>
+            <if condition="wikiPageId">
+                <entity-find-one entity-name="moqui.resource.wiki.WikiPage" value-field="byIdPage"/>
+                <if condition="byIdPage == null"><return error="true" message="Wiki Page ${wikiPageId} not found"/></if>
+                <set field="wikiSpaceId" from="byIdPage.wikiSpaceId"/>
+                <set field="pagePath" from="byIdPage.pagePath || ''"/>
+            </if>
+            <if condition="!wikiSpaceId"><return error="true" message="A wiki page to delete needs wikiPageId, or wikiSpaceId and pagePath"/></if>
+            <if condition="!pagePath"><return error="true" message="The root page of space ${wikiSpaceId} is not deleted"/></if>
+            <set field="pageInfoIn" from="wikiPageId ? {wikiPageId:wikiPageId} : {wikiSpaceId:wikiSpaceId, pagePath:pagePath}"/>
+            <service-call name="org.moqui.impl.WikiServices.get#WikiPageInfo" out-map="pageInfo" in-map="pageInfoIn"/>
+            <if condition="ec.message.hasError()"><return/></if>
             <set field="pageReference" from="pageInfo.pageReference"/>
-            <set field="matchingDirRef" from="pageReference.findMatchingDirectory()"/>
             <set field="wikiPageId" from="pageInfo.wikiPageId"/>
+            <if condition="!wikiPageId &amp;&amp; !pageReference?.exists"><return error="true" message="Wiki Page [${wikiSpaceId}/${pagePath}] not found"/></if>
+            <!-- the user may update the page (get#WikiPageAccess) -->
+            <set field="updateAccessIn" from="wikiPageId ? {wikiPageId:wikiPageId} : {wikiSpaceId:pageInfo.wikiSpaceId}"/>
+            <service-call name="org.moqui.impl.WikiServices.get#WikiPageAccess" out-map="updateAccess" in-map="updateAccessIn"/>
+            <if condition="updateAccess.readOnly"><return error="true" message="Wiki Space [${pageInfo.wikiSpaceId}] is a read-only mirror"/></if>
+            <if condition="!updateAccess.canUpdate">
+                <return error="true" message="User ${ec.user.username} [${ec.user.userId}] may not delete Wiki Page [${pageInfo.wikiSpaceId}/${pageInfo.pagePath || pagePath}]"/></if>
+            <!-- the page's own directory (its child pages and attachments): its file's location without the extension -->
+            <set field="pageDirLocation" from="pageReference.exists ? pageReference.location.replace(/\.[^/.]*$/, '') : pageReference.location"/>
+            <set field="matchingDirRef" from="ec.resource.getLocationReference(pageDirLocation)"/>
             <entity-find-one entity-name="moqui.resource.wiki.WikiPage" value-field="wikiPage" for-update="true"/>
 
             <!-- check for WikiBlog references, if any don't delete -->
             <if condition="wikiPageId">
                 <entity-find entity-name="moqui.resource.wiki.WikiBlog" list="wikiBlogList">
                     <econdition field-name="wikiPageId"/></entity-find>
-                <if condition="(wikiBlogList?.length > 0)"><return type="danger" message="Page at ${pagePath} has Wiki Blog references from ${Array.from(wikiBlogList, (blog) => blog.wikiBlogId).join(', ')}, cannot delete"/></if>
+                <if condition="(wikiBlogList?.length > 0)"><return error="true" message="Page at ${pagePath} has Wiki Blog references from ${Array.from(wikiBlogList, (blog) => blog.wikiBlogId).join(', ')}, cannot delete"/></if>
             </if>
 
             <!-- check for child pages -->
             <!-- FUTURE: option to delete child pages as well -->
-            <set field="childPageList" from="pageInfo.pageReference.getChildren()"/>
-            <if condition="childPageList?.length"><return type="danger" message="Page at ${pagePath} has child pages, cannot delete"/></if>
+            <set field="childPageList" from="matchingDirRef.exists &amp;&amp; matchingDirRef.isDirectory() ? Array.from(matchingDirRef.getDirectoryEntries()).filter((entry) => entry.isFile()) : []"/>
+            <if condition="childPageList?.length"><return error="true" message="Page at ${pagePath} has child pages, cannot delete"/></if>
 
             <!-- if has attachments delete if deleteAttachments else return -->
             <if condition="pageInfo.attachmentList?.length">
@@ -1112,12 +1308,19 @@ along with this software (see the LICENSE.md file). If not, see
                     <!-- delete attachments directory -->
                     <script>matchingDirRef.getChild('_attachments').delete()</script>
                 </then><else>
-                    <return type="danger" message="Page at ${pagePath} has attachments and delete attachments is not enabled"/>
+                    <return error="true" message="Page at ${pagePath} has attachments and delete attachments is not enabled"/>
                 </else></if>
             </if>
 
             <if condition="wikiPageId">
                 <!-- delete dependent records -->
+                <script><![CDATA[
+                    // a child page's record (one without a file) keeps no parent that is not there
+                    for (const child of Array.from(ec.entity.find('moqui.resource.wiki.WikiPage').condition('parentWikiPageId', wikiPageId).list())) {
+                        child.parentWikiPageId = null
+                        child.update()
+                    }
+                ]]></script>
                 <entity-delete-by-condition entity-name="moqui.resource.wiki.WikiPageAlias">
                     <econdition field-name="wikiPageId"/></entity-delete-by-condition>
                 <entity-delete-by-condition entity-name="moqui.resource.wiki.WikiPageCategoryMember">
@@ -1146,17 +1349,20 @@ along with this software (see the LICENSE.md file). If not, see
             </if>
 
             <!-- lastly delete the page file and related directory -->
-            <if condition="matchingDirRef.exists">
+            <if condition="matchingDirRef.exists &amp;&amp; matchingDirRef.isDirectory()">
                 <!-- NOTE: may want to do more to delete remaining directory entries, etc -->
                 <script>
                     try { matchingDirRef.delete() }
                     catch (t) { ec.message.addMessage('Could not delete matching directory ' + matchingDirRef.location + ': ' + String(t), 'danger') }
                 </script>
             </if>
-            <!-- NOTE: if main page delete fails allow exception to bubble up and rollback other changes -->
-            <script>pageReference.delete()</script>
+            <!-- NOTE: if main page delete fails allow exception to bubble up and rollback other changes; a page record
+                without a file has none to delete -->
+            <if condition="pageReference.exists"><script>pageReference.delete()</script></if>
 
             <!-- set the out page path to the parent -->
+            <set field="wikiSpaceId" from="pageInfo.wikiSpaceId || wikiSpaceId"/>
+            <set field="pagePath" from="pageInfo.pagePath || pagePath"/>
             <set field="pagePath" from="pagePath?.includes('/') ? pagePath.substring(0, pagePath.lastIndexOf('/')) : ''"/>
         </actions>
     </service>
@@ -1284,8 +1490,8 @@ along with this software (see the LICENSE.md file). If not, see
         <implements service="org.moqui.EntityServices.add#ManualDocumentData"/>
         <actions>
             <!-- primaryEntityValue is a WikiPage entity value, fields will be in the root document Map -->
-            <!-- The page text is all the search document needs, so this finds the page file the way get#WikiPageReference
-                does (findChildFile under the root page's directory) without the rest of get#WikiPageInfo. -->
+            <!-- The page text is all the search document needs, so this finds the page file at its exact path the way
+                get#WikiPageFile does (under the root page's directory) without the rest of get#WikiPageInfo. -->
             <!-- TODO: add attachments too (for indexing)? -->
             <!-- Besides content, what the Knowledge screens list a hit with: pageName, title (the first heading, else the
                 name), updatedDate (milliseconds) and updatedByUserId of the newest version, createdByUserId, and
@@ -1331,13 +1537,17 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- WikiSpace and WikiPage are moqui.* entities, which entity filters never apply to, so the services check the wiki's
         own rules (R21, R28): a space with restrictView Y is seen through a WikiSpaceUser row with allowView (or
         allowAdmin) Y, a page with restrictView Y through a WikiPageUser row with allowView Y; restrictUpdate and allowUpdate
-        likewise for writes. Internal work with authorization disabled sees and writes everything. -->
+        likewise for writes, which a space's administrators may make to what they may view. The ADMIN group sees and
+        writes everything, a mirror takes no writes, and internal work with no user and authorization disabled sees and
+        writes everything else. -->
 
     <service verb="get" noun="WikiPageAccess">
-        <description>What a user may do with a space, or a page of it, by the wiki's rules: canView, canUpdate (also view,
-            and a storage that takes writes: not a mirror), canAdmin (allowAdmin Y on the space, or the ADMIN group), and
-            the space's storage. A space or page that is not there is no access. With authorization disabled the current
-            user may do everything.</description>
+        <description>What a user may do with a space, or a page of it, by the wiki's rules: canView (restrictView through
+            the user's WikiSpaceUser row with allowView or allowAdmin, and a page's through a WikiPageUser row with
+            allowView; the ADMIN group sees all), canUpdate (also view, a storage that takes writes: not a mirror, and
+            restrictUpdate through allowUpdate rows, or canAdmin), canAdmin (allowAdmin Y on the space, or the ADMIN
+            group), and the space's storage. A space or page that is not there is no access. With no user and
+            authorization disabled (internal work) everything but writing to a mirror.</description>
         <in-parameters>
             <parameter name="wikiSpaceId"/>
             <parameter name="wikiPageId"><description>The page; its space is the page's</description></parameter>
@@ -1398,9 +1608,11 @@ along with this software (see the LICENSE.md file). If not, see
                         .condition(ec.entity.conditionFactory.makeConditionDate('fromDate', 'thruDate', null)).count() > 0)
                 canView = adminGroup || ((space.restrictView !== 'Y' || spaceUser?.allowView === 'Y' || spaceUser?.allowAdmin === 'Y') &&
                         (!page || page.restrictView !== 'Y' || pageUser?.allowView === 'Y'))
-                canUpdate = canView && !readOnly && (space.restrictUpdate !== 'Y' || spaceUser?.allowUpdate === 'Y') &&
-                        (!page || page.restrictUpdate !== 'Y' || pageUser?.allowUpdate === 'Y')
                 canAdmin = spaceUser?.allowAdmin === 'Y' || adminGroup
+                // an administrator of the space (who may give themselves update anyway) or the ADMIN group updates what
+                // they may view; others through restrictUpdate's rows
+                canUpdate = canView && !readOnly && (canAdmin || ((space.restrictUpdate !== 'Y' || spaceUser?.allowUpdate === 'Y') &&
+                        (!page || page.restrictUpdate !== 'Y' || pageUser?.allowUpdate === 'Y')))
             } finally {
                 if (!wasDisabled) ec.artifactExecution.enableAuthz()
             }
@@ -1515,6 +1727,8 @@ along with this software (see the LICENSE.md file). If not, see
                     toParentPath = parent.pagePath || ''
                 }
                 toParentPath = String(toParentPath || '').split('/').filter((part) => part).join('/')
+                // a . or .. segment would reach out of the space's tree
+                if (toParentPath.split('/').some((part) => part === '.' || part === '..')) return fail(`Invalid wiki page path ${toParentPath}`)
                 if (toParentPath === toWikiSpaceId) toParentPath = ''
                 if (!toPageName) toPageName = fromPath.slice(fromPath.lastIndexOf('/') + 1)
                 if (!/^[\w.\-,':()!? ]+$/.test(toPageName) || toPageName === '.' || toPageName === '..')
@@ -1821,8 +2035,9 @@ along with this software (see the LICENSE.md file). If not, see
                 if (page == null) return
                 const space = ec.entity.find('moqui.resource.wiki.WikiSpace').condition('wikiSpaceId', page.wikiSpaceId).useCache(true).one()
                 if (space == null || !space.rootPageLocation) return
-                const rootRef = ec.resource.getLocationReference(space.rootPageLocation)
-                const pageRef = page.pagePath ? rootRef.findChildFile(page.pagePath) : rootRef
+                // the page's file at its exact path, not a page of that name elsewhere in the space
+                const pageRef = ec.service.sync().name('org.moqui.impl.WikiServices.get#WikiPageFile')
+                        .parameters({rootPageLocation: space.rootPageLocation, pagePath: page.pagePath || ''}).call()?.pageReference
                 let text = pageText
                 if (text == null) text = pageRef?.exists ? (pageRef.getText() ?? '') : ''
                 const isHtml = /\.html?$/i.test(pageRef?.fileName || '')
@@ -2275,13 +2490,15 @@ along with this software (see the LICENSE.md file). If not, see
             publish is false) or changes (decisionNote says what to change). A review for a named reviewer is theirs
             (or a space administrator's) to decide; one for anyone, any user but the requester who may update the page.
             The reviewers' notification is marked decided, and the requester is told on topic
-            WikiPageReviewDecision.</description>
+            WikiPageReviewDecision, a notification that opens link, by default what the request's notification opened
+            (request#WikiPageReview's link), so the tray's approve and refuse lead the requester to the page too. The
+            approval publishes the version itself: a named reviewer need not be able to update the page.</description>
         <in-parameters>
             <parameter name="wikiPageReviewId" required="true"/>
             <parameter name="decision" required="true"><description>approve or changes</description></parameter>
             <parameter name="decisionNote"/>
             <parameter name="publish" type="Boolean" default="true"/>
-            <parameter name="link"><description>What the requester's notification opens</description></parameter>
+            <parameter name="link"><description>What the requester's notification opens; default the request's link</description></parameter>
         </in-parameters>
         <out-parameters>
             <parameter name="statusId"/>
@@ -2314,9 +2531,21 @@ along with this software (see the LICENSE.md file). If not, see
             review.update()
             statusId = review.statusId
             if (approve && publish && review.versionName) {
-                ec.service.sync().name('org.moqui.impl.WikiServices.set#PublishedVersion')
+                // the review's own publish: a named reviewer may decide without being able to update the page, so not
+                // set#PublishedVersion, which asks for update
+                ec.service.sync().name('update#moqui.resource.wiki.WikiPage')
                         .parameters({wikiPageId: review.wikiPageId, publishedVersionName: review.versionName}).call()
                 publishedVersionName = review.versionName
+            }
+            // the requester's notification opens what the request's did (its link), unless the caller gives one
+            let decisionLink = link || null
+            if (!decisionLink && review.notificationMessageId) {
+                try {
+                    decisionLink = ec.entity.find('moqui.security.user.NotificationMessage')
+                            .condition('notificationMessageId', review.notificationMessageId).disableAuthz().one()?.linkText || null
+                } catch (e) {
+                    ec.logger.warn(`The link of review ${wikiPageReviewId}'s request was not read: ${e}`)
+                }
             }
             // the requester is told, then the reviewers' notification is marked decided
             if (review.requestedByUserId && review.requestedByUserId !== me) {
@@ -2332,7 +2561,7 @@ along with this software (see the LICENSE.md file). If not, see
                         decision: approve ? 'approved' : 'changes', decisionText: approve ? 'approved' : 'asked for changes to',
                         decisionNote: noteText || null}).userId(review.requestedByUserId)
                         .record('moqui.resource.wiki.WikiPageReview', wikiPageReviewId).reason('approval')
-                    if (link) nm.link(link)
+                    if (decisionLink) nm.link(decisionLink)
                     nm.send()
                 } catch (e) {
                     ec.logger.error(`The decision on review ${wikiPageReviewId} was made, but its notification was not sent: ${e}`)
@@ -2344,7 +2573,8 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
     <service verb="approve" noun="WikiPageReview">
         <description>The approve service of topic WikiPageReview (R23): the tray's Approve on the reviewer's notification,
-            decide#WikiPageReview with approve (which publishes the version).</description>
+            decide#WikiPageReview with approve (which publishes the version); the requester's notification opens the
+            request's link.</description>
         <in-parameters>
             <parameter name="recordEntityName"/>
             <parameter name="recordId"/>
@@ -2362,7 +2592,8 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
     <service verb="refuse" noun="WikiPageReview">
         <description>The refuse service of topic WikiPageReview (R23): the tray's Refuse on the reviewer's notification,
-            decide#WikiPageReview with changes, the reason being what to change.</description>
+            decide#WikiPageReview with changes, the reason being what to change; the requester's notification opens the
+            request's link.</description>
         <in-parameters>
             <parameter name="recordEntityName"/>
             <parameter name="recordId"/>

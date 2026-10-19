@@ -250,18 +250,30 @@ later.
 knowledge spaces and each user's notes (`ensure#UserNotesSpace`, a private space on database files) over this API.
 `WikiSpace` and `WikiPage` are `moqui.*` entities, which entity filters never apply to, so the services check the wiki's
 own rules: `get#WikiPageAccess` (view, update, admin, and the storage of a space or page; a space with `restrictView`
-through a `WikiSpaceUser` row, a page with it through a `WikiPageUser` row; the ADMIN group sees all, and internal work
-with no user and authorization disabled does everything) and `get#WikiViewScope` (the spaces a user may view and the
-restricted pages hidden from them, for the services that read many pages).
+through a `WikiSpaceUser` row with `allowView` or `allowAdmin`, a page with it through a `WikiPageUser` row;
+`restrictUpdate` likewise through `allowUpdate`, and a space's administrators update what they may view; the ADMIN group
+sees and updates all; a mirror takes no writes; internal work with no user and authorization disabled does everything
+else) and `get#WikiViewScope` (the spaces a user may view and the restricted pages hidden from them, for the services that
+read many pages). Every service that reads or writes a page asks it: `get#WikiPageInfo` (and through it the history,
+compare, restore and review requests), `get#PublishedWikiPageText` and `get#WikiPageAttachment` view; `update#WikiPage`,
+`delete#WikiPage`, `set#PublishedVersion` and the attachment upload and delete update.
+
+A page's file is the one at its exact path (`get#WikiPageFile`): under the directory named as the root page without its
+extension, the directories of the parent path, then the file named as the page. Not `findChildFile`, which searches the
+space's tree for a file of that name: a new top-level page `Travel` would be written over `Policies/Travel`. A path with a
+`.` or `..` segment is no page.
 
 | Service | |
 |---|---|
 | `update#WikiPage(wikiSpaceId, pagePath or wikiPageId, pageName, parentPath or parentWikiPageId, pageText, versionNote)` | A new version with its note and a `WikiPageHistory` row; a new name or parent is a `move#WikiPage`. A path that is only the alias of a moved page is a new page there |
 | `create#WikiSpace(..., repositoryKind, memberList)`, `clone#WikiSpace(baseWikiSpaceId, ..., repositoryKind, copyHistory)` | Above, "Wiki spaces on git"; the creator administers the space. A clone with history replays every version (below); without, each page once |
 | `move#WikiPage(wikiPageId, toWikiSpaceId, toParentPath or toParentWikiPageId, toPageName, versionNote)` | The page with its child pages and attachments. On the same storage the files move (the database tree keeps the history rows; on git one commit, which the history follows); into other storage `copy#WikiPageFiles` replays each file's versions oldest first, one change set each by the version's own author at its own date (`.author`, above) with a note naming where it came from, then the old files go. The rows keep their ids (history, categories, users, comments and reviews stay); a replay renames their version names; a `WikiPageHistory` row records the move with `oldWikiSpaceId` and `oldPagePath`, and a `WikiPageAlias` at the old path keeps links to it working |
+| `delete#WikiPage(wikiPageId, or wikiSpaceId and pagePath, deleteAttachments)` | The page's file and directory and its rows: aliases, categories, history, users, its links (other pages' links to it stay, to a page not there), reviews, and a child record's parent; a record without a file goes too. Not a root page, a page with child pages or Wiki Blog references, or one with attachments without `deleteAttachments`. Another component's joins go through its SECA (Mantle's comment, task and request joins and followers) |
+| `set#PublishedVersion(wikiPageId, publishedVersionName)` | The version `get#PublishedWikiPageText` reads, one of the page's versions (a unique commit prefix is kept in full); empty unpublishes. An approved review publishes its own version |
+| `get#WikiPageAttachment`, `upload#WikiPageAttachment`, `delete#WikiPageAttachment` (wikiPageId, or wikiSpaceId and pagePath; filename) | A file of the page's `_attachments` folder; a file name, never a path |
 | `get#WikiPageHistory`, `get#WikiPageVersionDiff(fromVersionName, toVersionName)`, `restore#WikiPageVersion(versionName, versionNote)` | The History tab: versions with their notes and who wrote them, the server's line diff, and a restore as a new version |
 | `get#WikiPageBacklinks`, `get#WikiPageLinks` | `WikiPageLink` rows, indexed from each save's text (markdown links, reference definitions, `[[path]]`, `wiki:SPACE/path`; relative paths from the page's parent; not in code); a page made at a path takes the links written to it, a moved page keeps its backlinks through its alias, a deleted one leaves links to a page not there. A text that cannot be read for links is logged and the save stands |
-| `request#WikiPageReview(versionName, reviewerUserIdList, dueDate, note, link)`, `decide#WikiPageReview(decision approve or changes, decisionNote, publish)`, `cancel#WikiPageReview`, `find#WikiPageReviews(filter toDo, requested or all, wikiSpaceId, statusId)` | `WikiPageReview` rows (`WprRequested`, then `WprApproved`, which publishes the version, `WprChangesRequested` or `WprCancelled`); the reviewer is told on topic `WikiPageReview`, an approval the tray decides (`approve#WikiPageReview`, `refuse#WikiPageReview` with the reason), the requester on `WikiPageReviewDecision` |
+| `request#WikiPageReview(versionName, reviewerUserIdList, dueDate, note, link)`, `decide#WikiPageReview(decision approve or changes, decisionNote, publish, link)`, `cancel#WikiPageReview`, `find#WikiPageReviews(filter toDo, requested or all, wikiSpaceId, statusId)` | `WikiPageReview` rows (`WprRequested`, then `WprApproved`, which publishes the version, `WprChangesRequested` or `WprCancelled`); the reviewer is told on topic `WikiPageReview`, an approval the tray decides (`approve#WikiPageReview`, `refuse#WikiPageReview` with the reason), the requester on `WikiPageReviewDecision`, whose notification opens the request's link unless the decision gives another |
 | `search#WikiPages(text, wikiSpaceId)` | Through any search document on `WikiPage` (its content, title and last change from `get#WikiPageManualDocumentData`) when search is available, else the page paths; never a page the user may not view |
 | `get#WikiSpacePages(includeDetail)` | The tree, without the restricted pages a user may not view; with the detail each page's title, snippet, last change, categories and pinned (the category `Pinned`), for a notes list |
 
