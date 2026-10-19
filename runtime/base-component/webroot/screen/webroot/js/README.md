@@ -39,7 +39,8 @@ browser is the Chromium smoke of Gate 3 (`crates/moqui-host/tests/gate3_browser.
 | `input` | `data-default` | text-line `default-transition`: fills the value from the transition |
 | `span[data-dynamic="fieldId"]` | `data-hidden` | display with `dynamic-transition`: sets `fieldId_display` and the hidden input |
 | `.tree` | `data-url`, `data-params` | fetches nodes (POST, `treeNodeId`, `treeNodeName`), draws a nested list, opens children on click |
-| `.editable` | `data-url`, `data-params`, `data-name`, `data-widget`, `data-load-url`, `data-load-params` | click to edit, save by POST |
+| `.editable` | `data-url`, `data-params`, `data-name`, `data-widget`, `data-load-url`, `data-load-params`, `data-options`, `data-value`, `data-empty` | click to edit, save by POST; `data-widget` `select` (the options, or those `data-load-url` answers), `date` and `date-time` (a date input) |
+| `.status-bar` | `form.status-form` | the `status-bar` element: the stage chips (`data-state`, `data-color`) and a form per transition; nothing to bind beyond `data-confirm` |
 | `ul` | `data-sortable-tree="inputId"` | form-list column picker with SortableJS; the hierarchy goes to the input as JSON |
 | any | `data-btn`, `data-size`, `data-type`, `data-align`, `data-wide`, `data-submit` | style only |
 | `meta[name=moquiSessionToken]` | | the CSRF token, sent as the `X-CSRF-Token` header and `moquiSessionToken` parameter on every request |
@@ -173,17 +174,18 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-date-time`, `m-date-period` | `QDate` and `QTime` in a popup; period and from-thru. In period mode the field is the base date (`_pdate`) and the period and offset selects (`_period`, `_poffset`) are in the menu of the `event_repeat` button in its append slot, which reads the choice ("Last Month") once made; the `date_range` button switches to from-thru (`_from`, `_thru`) |
 | `m-display` | text or a read-only field (`label-wrapper`), `display`, `value-url` |
 | `m-check`, `m-radio`, `m-file`, `m-field`, `m-text-find`, `m-range-find` | the other widgets |
-| `m-editable` | click to edit, `QPopupEdit`, `url`, `url-parameters`, `parameter-name`, `widget-type`, `load-url` |
+| `m-editable` | click to edit, `QPopupEdit`, `url`, `url-parameters`, `parameter-name`, `widget-type` (`textarea`, `text-line`, `select`, `date`, `date-time`), `load-url`, `options` (a select's `{value, label}` list, from the `option`, `list-options` and `entity-options` of the element; else what `load-url` answers: a list, or a map of key to label with `selected`, `moqui.editableOptions`), `value` (a select's current key; by default the option whose label is the text), `placeholder` (an empty text with `display-if-empty` shows it, so there is something to click). A select shows the chosen option's label after a save; a date edits in `QDate` (and `QTime`) as `yyyy-MM-dd` (`yyyy-MM-dd HH:mm`) |
 | `m-link` | a screen link: `href`, `load-id`, `confirmation`; an external `href` (another scheme or host, `moqui.isExternalLink`) is a plain anchor the browser follows. A `data-confirm` attribute on any button or link is asked first |
 | `m-container-box`, `m-box-body`, `m-container-dialog`, `m-dialog` | boxes and dialogs. `m-container-dialog` (`container-dialog`) registers with the root by its `id` while mounted (`addContainer`, taken back with `removeContainer` when unmounted), so a form's `background-hide-id` (`submit-hide-id`) and `$root.hideContainer(id)` close it; its `reload` and `load` do nothing (the content is the page's). `tooltip` (the `container-dialog` attribute) is a `q-tooltip` on its button, the slot button of a list cell too |
 | `m-dynamic-container`, `m-dynamic-dialog` | a screen loaded into a container, or a dialog, with `load`, `reload` and `hide`; the dialog's button takes `button-text`, `button-class`, `color` and `button-icon` (default `open_in_new`), as `m-container-dialog` does |
 | `m-tree-top`, `m-tree-item` | tree: `items` is the node list or its URL (`<screen>/actions/<tree>`, posted `treeNodeId`, `treeNodeName`, `treeOpenPath`). A node's `children` is a list when it came inline (on `open-path`), `true` to load from the URL when the node is opened, `false` for a leaf |
 | `m-subscreens-tabs` (also `m-subscreens-menu`), `m-subscreens-active`, `m-subscreens-panel` | the subscreen menu and the place of the active subscreen |
-| `m-subscreens-wizard` | `subscreens-panel type="wizard"`: a header-only `q-stepper` with a step per subscreen of the menu data (titles, menu order; a done step's header goes back to it), the `m-subscreens-active` below it, and Back and Next (`finish-text` on the last step); `id`, `finish-text`, `next-text`, `back-text`. It provides `mWizard` to the step's forms (see Layout panels below) |
+| `m-subscreens-wizard` | `subscreens-panel type="wizard"`: a header-only `q-stepper` with a step per subscreen of the menu data (titles, menu order; a done step's header goes back to it), the `m-subscreens-active` below it, and Back and Next (`finish-text` on the last step); `id`, `finish-text`, `next-text`, `back-text`. It provides `mWizard` to the step's forms; while the step form posts a spinner covers the step (see Layout panels below) |
 | `m-subscreens-stack` | `subscreens-panel type="stack"`: the first subscreen in menu order under the others, with a `q-breadcrumbs` back to it when another is active; no tabs |
-| `m-container-split` | `container-split`: a `q-splitter` of the `side` and `main` slots; `id`, `side-width` (320), `min-main` (480), `side-position` (`left`, `right`), `select-parameter`, `back-text`, `height` (see Layout panels below) |
+| `m-container-split` | `container-split`: a `q-splitter` of the `side` and `main` slots; `id`, `side-width` (320), `min-main` (480), `side-position` (`left`, `right`), `select-parameter`, `back-text`, `height` (by default the viewport below the split, so each pane scrolls in itself; see Layout panels below) |
 | `m-menu-nav-item`, `m-menu-subscreen-item`, `m-menu-item-content`, `m-menu-icon` | the navigation of the shell; `m-menu-icon` is a menu image of type icon (`name`, `size`) |
 | `m-screen-context` | the `context` element: while mounted it registers `recordEntity`, `recordId`, `title` and `selectionForm` with the root (`setScreenContext`), again when one changes, and takes them back when unmounted (see Shell data and providers) |
+| `m-status-bar` | the `status-bar` element (style-guide §3.3, §5.2): `bar` (what `org.moqui.impl.StatusServices.get#StatusBar` answers: `current`, `stages` with `state` done, current or todo and `color`, `transitions` with `isNext` and `isDanger`), else `status-id`, `status-type-id`, `status-flow-id`, `stages` and `allowed-status-ids` (lists or comma text) and `read-only`, which it asks of `bar-url` (`/statusBar`, the root screen's transition) and again when one changes, as a server-static screen does; `action` (the transition), `parameters`, `parameter-name` (`statusId`), `title`, `confirm` (true). A stage is a `q-chip dense square`: the current one filled in its color, a done one `m-tonal` with a check, one to come outlined; a transition is a button in an `m-form` of its own posting `action` with the new status: the next stage filled primary, the others tonal (negative for those that end badly), each asking "Label: title?" (`moqui.statusBarView`) |
 | `m-number-card` | the `number-card` element: a `q-card flat bordered` with the `title` as `text-overline`, the `value` (`text-h5`; `size` `sm` is `text-h6`, `lg` `text-h4`), the `delta` with an arrow, green or red by its sign against `delta-good` (`up`, the default, or `down`; no sign is muted: `moqui.numberCardDelta`), and the `icon`; with `href` the whole card is an `m-link` (`external`: a plain anchor). The `dashboard` element around cards is no component: a `div.m-dashboard` CSS grid, columns of at least its `min-width` (`--m-dashboard-min`, 200 px), each child in a `div.m-dashboard-item` (an empty one hidden, a `section-iterate`'s rows each a cell) |
 | `m-chatter`, `m-record-files` | the `chatter` and `record-files` elements: `record-entity`, `record-id`, `default-tab`, `hide`, `id` (of the `m-dynamic-container` the panel loads into, for `submit-reload-id`). See Record panels below |
 | `m-avatar` | a `q-avatar`: `image` (a face image URL; initials when it does not load), else the initials of `name` on a color of the name (`moqui.avatar`), else a person icon; `size` (32px), `color`, `text-color`, `square`, `rounded`, `tooltip` (the name); `presence` (`online`, `away`, `dnd`, `offline`) draws a dot, and `user-id` the dot of that user's presence from the chat store (asked for once mounted), nothing without either |
@@ -516,7 +518,10 @@ container feeds). A dragged width is kept in `sessionStorage` (`moqui.SPLIT_WIDT
 splitter is stacked by the style sheet (`m-split-stacked`), so the panes keep their content: with a `select-parameter`, a value of
 that parameter in `$root.currentParameters` shows the main pane with a back button (it goes to the screen without the parameter)
 and none shows the side; without one both panes show, the side first. The selection is read in the browser, so a server-static
-screen uses it as it is. `data-stacked` on the element says which layout is shown.
+screen uses it as it is. `data-stacked` on the element says which layout is shown. Side by side, the splitter is as high as the
+`height` attribute, else the viewport below the split's top (less 16 px, at least 360 px; `moqui.splitHeight`, measured on mount,
+on a resize of the window and of the container), so a long side list scrolls in its own pane and the page does not; stacked, the
+page scrolls.
 
 **`m-subscreens-wizard`** and the step protocol (style-guide §3.10). The steps are the subscreens of the wizard's screen in
 the menu data (`navMenuList[pathIndex].subscreens`, the index read before its `m-subscreens-active` registers), so the current
@@ -535,6 +540,10 @@ transition, and normally has no submit button of its own (one it has does the sa
    is followed when it names a screen and stays when it does not. A step form's answer adds no "Submit successful" toast.
 3. Back, and the header of a done step, go to that step without submitting; a step shows what it saved before, so a wizard that
    can be abandoned keeps a draft (a record, or the session as the gallery's does).
+4. While the step form posts (by Next, by Enter or by a submit button of its own: the form tells the wizard, `stepSubmitting`) a
+   `q-inner-loading` spinner covers the step and Back and Next wait; it stays until the answer says to stay, or the screen it goes
+   to (the next step, or the last step's own result) is there (`setUrl`'s completion), so a long last step (an import, a run)
+   shows that it is working.
 
 **`m-subscreens-stack`**: the first subscreen in menu order is the bottom of the stack; any other active one shows a breadcrumb
 back to it. The html mode writes the wizard's steps as a numbered list of links with Back and Next links, and the stack's
@@ -611,7 +620,8 @@ screen package, `private, no-store`) and shows the render function over it.
   date or time from the pattern for a string; epoch millis text is a time stamp with any date pattern, and with no pattern, as `ec.l10n.format`
   on the server), `merge`, `url` / `qs` (path and query from a parameter map), `link` (the url a `${}` expression of a link or number-card gave:
   a relative path resolved against the screen's own path, as the server render resolves a link's url; an absolute path or an external URL as
-  it is), `shown` (`visible-when`).
+  it is), `shown` (`visible-when`), `btnKind` and `btnText` (the color and classes of a link or menu button whose `btn-type` is an expression, as
+  `ScreenQvt.js` writes them), `cols` (the classes of a `row-col` whose sizes are expressions).
 - **`m-static-form-list`** fetches `<path>/actions/<name>` with the request's parameters and the page and sort it has changed (`setPageIndex`, `sortBy`,
   `orderBy`), draws `m-form-paginate` and `m-form-go-page`, the `header` slot (`sortBy`, `orderBy`, `action`, `orderByField`) and the `row` slot once for each row with
   the row on the scope of the screen (`rowIndex` is a name of it). The rows of each answer are new components (an `m-form` copies its

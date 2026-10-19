@@ -1,0 +1,56 @@
+<screen require-authentication="false">
+    <transition name="open"><default-response type="none"/></transition>
+    <transition name="approve"><default-response type="none"/></transition>
+    <transition name="saveNote"><default-response type="none"/></transition>
+    <transition name="kindOptions"><default-response type="none"/></transition>
+    <actions>
+        <set field="rowList" from="[{id: 'A1', on: true, note: 'first', kind: 'B'}, {id: 'A2', on: false, note: '', kind: ''}]"/>
+        <set field="chipList" from="[{name: 'All', on: true}, {name: 'Mine', on: false}]"/>
+        <set field="wide" value="8"/>
+        <set field="due" value="2026-10-19"/>
+    </actions>
+    <widgets>
+        <!-- a section in a cell is a unit of its own: the cells after it are still in the list (text links, row ids) -->
+        <form-list name="Cells" list="rowList" skip-form="true" paginate="false">
+            <field name="id"><default-field><display/></default-field></field>
+            <field name="decide"><default-field title="">
+                <container style="row no-wrap">
+                    <section name="Maybe" condition="on"><widgets>
+                        <link url="approve" text="Approve ${id}" link-type="hidden-form-link" btn-type="success"/>
+                        <container-dialog id="RefuseDialog" button-text="Refuse" type="danger">
+                            <form-single name="RefuseForm" transition="approve">
+                                <field name="reason"><default-field><text-area rows="2"/></default-field></field>
+                                <field name="go"><default-field title="Refuse"><submit type="danger"/></default-field></field>
+                            </form-single>
+                        </container-dialog>
+                    </widgets><fail-widgets><label text="off ${id}"/></fail-widgets></section>
+                </container>
+            </default-field></field>
+            <field name="open"><default-field><link url="open" text="Open ${id}"/></default-field></field>
+            <field name="chip"><default-field><link url="open" text="Chip" link-type="anchor-button" btn-type="${on ? 'primary' : 'danger'}"/></default-field></field>
+            <field name="note"><default-field>
+                <editable id="NoteEdit" text="${note}" transition="saveNote" display-if-empty="true"><parameter name="id"/></editable></default-field></field>
+        </form-list>
+
+        <!-- btn-type, the style of a link, expanded in each row of a section-iterate -->
+        <section-iterate name="Chips" list="chipList" entry="chip"><widgets>
+            <link url="open" text="${chip.name}" btn-type="${chip.on ? 'primary' : ''}" link-type="anchor-button"/>
+        </widgets></section-iterate>
+
+        <!-- an editable select (options as a drop-down's, and from editable-load), date and date-time, and an empty one -->
+        <editable id="KindEdit" text="Second" value="B" transition="saveNote" widget-type="select">
+            <option key="A" text="First"/><option key="B" text="Second"/></editable>
+        <editable id="KindLoad" text="Second" transition="saveNote" widget-type="select"><editable-load transition="kindOptions"/></editable>
+        <editable id="DueEdit" text="${due}" transition="saveNote" widget-type="date"/>
+        <editable id="AtEdit" text="" transition="saveNote" widget-type="date-time" display-if-empty="true"/>
+        <editable id="Hidden" text="" transition="saveNote"/>
+
+        <!-- a container-row with the columns of a section-iterate, and row-col sizes from expressions -->
+        <container-row>
+            <row-col lg="${wide}" md="${wide}"><label text="main"/></row-col>
+            <section-iterate name="Cols" list="chipList" entry="col"><widgets>
+                <row-col md="2"><label text="col ${col.name}"/></row-col>
+            </widgets></section-iterate>
+        </container-row>
+    </widgets>
+</screen>

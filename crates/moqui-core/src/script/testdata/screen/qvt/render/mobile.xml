@@ -1,0 +1,18 @@
+<screen require-authentication="false">
+    <transition name="open"><default-response type="none"/></transition>
+    <actions>
+        <set field="rowList" from="[{id: 'I1', title: 'Widget', caption: 'note A'}, {id: 'I2', title: 'Gadget', caption: 'note B'}]"/>
+    </actions>
+    <widgets>
+        <form-list name="Phone" list="rowList" skip-form="true" paginate="false">
+            <field name="id"><default-field><display/></default-field></field>
+            <field name="title"><default-field><display/></default-field></field>
+            <field name="caption"><default-field><display/></default-field></field>
+            <field name="go"><default-field title=""><link url="open" text="Open"/></default-field></field>
+            <columns type="mobile">
+                <column><field-ref name="title"/><field-ref name="caption"/></column>
+                <column><field-ref name="go"/></column>
+            </columns>
+        </form-list>
+    </widgets>
+</screen>

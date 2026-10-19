@@ -164,3 +164,55 @@ test("a record card is read from the card JSON: title, type, status, two fields 
         { entity: "E", id: "7", title: "7", typeLabel: "", icon: "sym_o_description", status: { label: "Open", color: "primary" }, fields: [], url: null });
     assert.equal(moqui.recordCard.normalize("nope", "E", "7"), null);
 });
+
+test("a status bar draws the stages and the transitions get#StatusBar answers", () => {
+    const view = moqui.statusBarView({
+        current: { statusId: "WeInProgress", label: "In Progress", color: "primary" },
+        stages: [{ statusId: "WeInPlanning", label: "Planning", color: "grey-7", state: "done" },
+            { statusId: "WeInProgress", label: "In Progress", color: "primary", state: "current" },
+            { statusId: "WeComplete", label: "Complete", color: "positive", state: "todo" }, { label: "no id" }],
+        transitions: [{ toStatusId: "WeComplete", label: "Complete", isNext: true }, { toStatusId: "WeOnHold", label: "Hold" },
+            { toStatusId: "WeCancelled", label: "Cancel", isDanger: true }]
+    }, { title: "Fix the roof" });
+    assert.deepEqual(view.stages.map((stage) => stage.statusId + ":" + stage.state), ["WeInPlanning:done", "WeInProgress:current", "WeComplete:todo"]);
+    assert.deepEqual(view.stages[0].chip, { icon: "sym_o_check", class: "q-ma-none m-tonal text-grey-8 m-status-done" });
+    assert.deepEqual(view.stages[1].chip, { color: "primary", "text-color": "white", class: "q-ma-none text-weight-medium m-status-current" });
+    assert.equal(view.stages[2].chip.outline, true);
+    assert.deepEqual(view.buttons.map((item) => [item.toStatusId, item.button.color || item.button.class, item.confirm]), [
+        ["WeComplete", "primary", "Complete: Fix the roof?"], ["WeOnHold", "m-btn-tonal text-primary", "Hold: Fix the roof?"],
+        ["WeCancelled", "m-btn-tonal text-negative", "Cancel: Fix the roof?"]]);
+    assert.equal(moqui.statusBarView({ transitions: [{ toStatusId: "A", label: "Go" }] }, { confirm: false }).buttons[0].confirm, null);
+    assert.equal(moqui.statusBarView({ transitions: [{ toStatusId: "A" }] }, {}).buttons[0].confirm, "A?");
+    assert.deepEqual(moqui.statusBarView(null), { current: null, stages: [], buttons: [] });
+    const bar = moqui.qvt.components["m-status-bar"];
+    assert.deepEqual(bar.methods.fieldsOf.call({ parameters: { workEffortId: "W1" }, parameterName: "statusId" }, { toStatusId: "WeComplete" }),
+        { workEffortId: "W1", statusId: "WeComplete" });
+});
+
+test("an editable select reads its options from a list, a map with selected, or plain values", () => {
+    assert.deepEqual(moqui.editableOptions([{ value: "A", label: "First" }, { key: "B", text: "Second" }, "C"]),
+        { options: [{ value: "A", label: "First" }, { value: "B", label: "Second" }, { value: "C", label: "C" }], selected: undefined });
+    assert.deepEqual(moqui.editableOptions({ E: "Letter E", F: "Letter F", selected: "F" }),
+        { options: [{ value: "E", label: "Letter E" }, { value: "F", label: "Letter F" }], selected: "F" });
+    assert.deepEqual(moqui.editableOptions({ options: [{ value: 1, label: "One" }], selected: 1 }), { options: [{ value: "1", label: "One" }], selected: "1" });
+    assert.deepEqual(moqui.editableOptions(undefined), { options: [], selected: undefined });
+    // the current key of a select: the value given, else the option whose label is the text
+    const editable = moqui.qvt.components["m-editable"];
+    const data = (props) => editable.data.call(Object.assign({ labelValue: "", options: null, value: undefined }, props));
+    assert.equal(data({ labelValue: "Second", options: [{ value: "A", label: "First" }, { value: "B", label: "Second" }] }).current, "B");
+    assert.equal(data({ labelValue: "Second", value: "X" }).current, "X");
+    assert.equal(data({ labelValue: "a &amp; b" }).current, "a & b");
+});
+
+test("the helpers of a btn-type and row-col sizes that are expressions", () => {
+    const mq = moqui.qvt.helpers;
+    assert.deepEqual(mq.btnKind("primary", "m-link"), { color: "primary", class: "m-link" });
+    assert.deepEqual(mq.btnKind("danger", "m-link"), { class: "m-btn-tonal text-negative m-link" });
+    assert.deepEqual(mq.btnKind("", ""), { class: "m-btn-tonal text-primary" });
+    assert.deepEqual(mq.btnKind(null, "x"), { class: "m-btn-tonal text-primary x" });
+    assert.equal(mq.btnText("success"), "text-positive");
+    assert.equal(mq.btnText(""), "text-primary");
+    assert.equal(mq.cols("8", "8", "", "", false), "q-px-xs col-lg-8 col-md-8 col-sm-12 col-xs-12");
+    assert.equal(mq.cols("", "2", "", "", false), "q-px-xs col-md-2 col-sm-12 col-xs-12");
+    assert.equal(mq.cols(null, "", "", "", true), "");
+});

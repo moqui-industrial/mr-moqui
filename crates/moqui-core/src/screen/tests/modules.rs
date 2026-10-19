@@ -335,10 +335,10 @@ fn a_section_is_generated_once_per_mode_and_again_when_its_file_changes() {
 
 #[test]
 fn the_generated_code_of_the_whole_render_is_one_function_per_section() {
-    // The unit is a function expression with the mode's prelude first and statements after.
+    // The unit is a function expression of $depth with the mode's prelude first and statements after.
     let source = generate_unit_source("text", r#"<widgets><label text="a"/></widgets>"#).unwrap();
     assert!(
-        source.starts_with("(function () {\n\"use strict\";\nlet $lineChars = 132"),
+        source.starts_with("(function ($depth) {\n\"use strict\";\nlet $lineChars = 132"),
         "{source}"
     );
     assert!(

@@ -70,3 +70,9 @@ test("treeNodes reads the jstree shape the tree transitions return", () => {
     assert.equal(nodes[2].text, "");
     assert.deepEqual(u.treeNodes(null), []);
 });
+
+test("the options of an editable select from its editable-load answer", () => {
+    assert.deepEqual(u.editableOptions([{ value: "A", label: "First" }, "B"]), { options: [{ value: "A", label: "First" }, { value: "B", label: "B" }] });
+    assert.deepEqual(u.editableOptions({ E: "Letter E", selected: "E" }), { options: [{ value: "E", label: "Letter E" }], selected: "E" });
+    assert.deepEqual(u.editableOptions(null), { options: [] });
+});

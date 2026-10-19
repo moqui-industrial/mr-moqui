@@ -429,6 +429,9 @@
         }
     };
 
+    // The Quasar color of a btn-type or a dialog type, as the macros map them: success is positive, danger negative, default none.
+    qvt.quasarColor = (color) => (color === "success" ? "positive" : color === "danger" ? "negative" : color === "default" ? "" : color || "");
+
     // The helpers a template calls as $mq: the few things an expression needs that are not in the language.
     const NUMBER_TEXT = /^[-+]?\d+(\.\d+)?$/;
     qvt.helpers = {
@@ -446,6 +449,28 @@
         },
         // A value as text with a Java pattern. A decimal arrives as a string, so the pattern says what it is.
         fmt: (value, pattern, type) => qvt.formatValue(value, pattern, type),
+        // The kind of a link or menu button by a btn-type that is an expression, as the macros write it (ScreenQvt.js btnKind):
+        // primary is the filled primary button, any other value or none a tonal one in that color; btnText is the text color
+        // class of a flat button (hidden-form-link).
+        btnKind: (btnType, extra) => {
+            const type = btnType === null || btnType === undefined ? "" : String(btnType).trim();
+            if (type === "primary") return { color: "primary", class: extra || undefined };
+            const color = qvt.quasarColor(type || "primary");
+            return { class: ["m-btn-tonal", color ? "text-" + color : "", extra || ""].filter((part) => part).join(" ") };
+        },
+        btnText: (btnType) => {
+            const color = qvt.quasarColor(btnType === null || btnType === undefined ? "primary" : String(btnType).trim() || "primary");
+            return color ? "text-" + color : "";
+        },
+        // The classes of a row-col whose sizes are expressions, as the macros write them (ScreenQvt.js colOpen): each size given,
+        // and the full width below the smallest one given.
+        cols: (lg, md, sm, xs, plain) => {
+            const size = (value) => (value === null || value === undefined || value === "null" ? "" : String(value).trim());
+            const [l, m, s, x] = [size(lg), size(md), size(sm), size(xs)];
+            return [plain ? "" : "q-px-xs", l ? "col-lg-" + l : "", m ? "col-md-" + m : l && !plain ? "col-md-12" : "",
+                s ? "col-sm-" + s : (l || m) && !plain ? "col-sm-12" : "", x ? "col-xs-" + x : (l || m || s) && !plain ? "col-xs-12" : ""]
+                .filter((part) => part).join(" ");
+        },
         merge: (...maps) => {
             const out = {};
             maps.forEach((map) => { if (map && typeof map === "object") Object.keys(map).forEach((key) => { out[key] = map[key]; }); });
@@ -1264,27 +1289,85 @@
 
     /* ========== general field components ========== */
 
-    // Click to edit with the popup editor of Quasar. The text shows as the element named by label-type. The widget type
-    // is textarea or text-line; with load-url the current value is fetched when the editor opens.
+    // The options of an editable select from what its editable-load transition answered: a list of {value, label} (or key and
+    // text, or plain values), or as Java's jEditable a map of key to label with the current key under "selected". Gives
+    // {options, selected}; selected is undefined when the answer names none. Pure, for the node tests.
+    moqui.editableOptions = (answer) => {
+        const one = (item) => {
+            if (moqui.isPlainObject(item)) {
+                const value = item.value !== undefined ? item.value : item.key !== undefined ? item.key : item.id;
+                const label = item.label !== undefined ? item.label : item.text !== undefined ? item.text : item.description;
+                return { value: value === undefined || value === null ? "" : String(value), label: String(label === undefined || label === null ? value : label) };
+            }
+            return { value: String(item), label: String(item) };
+        };
+        if (Array.isArray(answer)) return { options: answer.map(one), selected: undefined };
+        if (moqui.isPlainObject(answer)) {
+            if (Array.isArray(answer.options)) return { options: answer.options.map(one), selected: answer.selected === undefined ? undefined : String(answer.selected) };
+            const options = Object.keys(answer).filter((key) => key !== "selected").map((key) => ({ value: key, label: String(answer[key]) }));
+            return { options, selected: answer.selected === undefined ? undefined : String(answer.selected) };
+        }
+        return { options: [], selected: undefined };
+    };
+
+    // Click to edit with the popup editor of Quasar. The text shows as the element named by label-type, and an empty one as the
+    // placeholder (display-if-empty), so there is something to click. The widget type is textarea or text-line; select (the
+    // options given, or loaded from load-url when the editor opens; value is the current key, else the option whose label is
+    // the text); date or date-time (QDate, with QTime, in yyyy-MM-dd and yyyy-MM-dd HH:mm). With load-url and no select the
+    // current value is fetched when the editor opens.
     component("m-editable", {
         name: "mEditable",
-        props: { id: { type: String, required: true }, labelType: { type: String, default: "span" }, labelValue: { type: String, required: true },
+        props: { id: { type: String, required: true }, labelType: { type: String, default: "span" }, labelValue: { type: String, default: "" },
             url: { type: String, required: true }, urlParameters: { type: Object, default: () => ({}) },
             parameterName: { type: String, default: "value" }, widgetType: { type: String, default: "textarea" },
             loadUrl: String, loadParameters: Object, indicator: { type: String, default: "Saving" }, tooltip: { type: String, default: "Click to edit" },
-            cancel: { type: String, default: "Cancel" }, submit: { type: String, default: "Save" } },
-        data() { return { shown: this.labelValue, editValue: "", saving: false }; },
+            cancel: { type: String, default: "Cancel" }, submit: { type: String, default: "Save" }, placeholder: String,
+            options: Array, value: String },
+        data() {
+            const text = moqui.htmlDecode(String(this.labelValue || "").replace(/<br\s*\/?>/gi, "\n"));
+            let current = this.value;
+            if (current === undefined || current === null) {
+                const match = (this.options || []).find((option) => String(option.label) === text);
+                current = match ? String(match.value) : text;
+            }
+            return { shown: this.labelValue || "", current, editValue: "", saving: false, loadedOptions: null, loadingOptions: false };
+        },
+        computed: {
+            isEmpty() { return !String(this.shown || "").replace(/<[^>]*>/g, "").trim(); },
+            isDate() { return this.widgetType === "date" || this.widgetType === "date-time"; },
+            dateMask() { return this.widgetType === "date-time" ? "YYYY-MM-DD HH:mm" : "YYYY-MM-DD"; },
+            selectOptions() { return (this.loadedOptions || this.options || []).map((option) => ({ value: String(option.value), label: String(option.label) })); }
+        },
         template:
-            '<component :is="labelType" :id="id" class="editable-label cursor-pointer" :title="tooltip">' +
-                '<span v-html="shown"></span>' +
+            '<component :is="labelType" :id="id" class="editable-label cursor-pointer" :class="{\'m-editable-empty\': isEmpty}" :title="tooltip">' +
+                '<span v-if="isEmpty" class="m-muted m-editable-placeholder" v-text="placeholder || tooltip"></span><span v-else v-html="shown"></span>' +
                 '<q-popup-edit v-model="editValue" buttons :label-set="submit" :label-cancel="cancel" @before-show="beforeShow" @save="save" v-slot="scope">' +
-                    '<q-input v-model="scope.value" dense autofocus :type="widgetType === \'textarea\' ? \'textarea\' : \'text\'" :loading="saving" @keyup.enter="widgetType === \'textarea\' ? null : scope.set()"></q-input>' +
+                    '<q-select v-if="widgetType === \'select\'" v-model="scope.value" :options="selectOptions" emit-value map-options dense outlined options-dense autofocus' +
+                        ' :loading="saving || loadingOptions" class="m-editable-select"></q-select>' +
+                    '<div v-else-if="isDate" class="row no-wrap q-gutter-sm m-editable-date">' +
+                        '<q-date v-model="scope.value" :mask="dateMask" minimal flat></q-date>' +
+                        '<q-time v-if="widgetType === \'date-time\'" v-model="scope.value" :mask="dateMask" format24h flat></q-time>' +
+                    '</div>' +
+                    '<q-input v-else v-model="scope.value" dense autofocus :type="widgetType === \'textarea\' ? \'textarea\' : \'text\'" :loading="saving" @keyup.enter="widgetType === \'textarea\' ? null : scope.set()"></q-input>' +
                 '</q-popup-edit>' +
             '</component>',
         methods: {
             beforeShow() {
+                if (this.widgetType === "select") {
+                    this.editValue = this.current;
+                    if (!this.loadUrl || !this.loadUrl.length) return;
+                    this.loadingOptions = true;
+                    const params = Object.assign({ currentValue: this.current }, this.loadParameters);
+                    moqui.request(this.loadUrl, { method: "POST", params, accept: "application/json" }).then((result) => {
+                        this.loadingOptions = false;
+                        const loaded = moqui.editableOptions(result.json);
+                        this.loadedOptions = loaded.options;
+                        if (loaded.selected !== undefined) this.editValue = loaded.selected;
+                    }, (err) => { this.loadingOptions = false; moqui.handleAjaxError(err); });
+                    return;
+                }
                 // the label may hold markup, the editor starts from the text
-                this.editValue = moqui.htmlDecode(String(this.shown).replace(/<br\s*\/?>/gi, "\n"));
+                this.editValue = this.isEmpty ? "" : moqui.htmlDecode(String(this.shown).replace(/<br\s*\/?>/gi, "\n"));
                 if (!this.loadUrl || !this.loadUrl.length) return;
                 const params = Object.assign({ currentValue: this.editValue }, this.loadParameters);
                 moqui.request(this.loadUrl, { method: "POST", params, accept: "application/json,text/plain" }).then((result) => {
@@ -1294,11 +1377,15 @@
                 }, moqui.handleAjaxError);
             },
             save(value) {
-                const params = Object.assign({ parameterName: this.parameterName }, this.urlParameters, { [this.parameterName]: value });
+                const text = value === null || value === undefined ? "" : String(value);
+                const params = Object.assign({ parameterName: this.parameterName }, this.urlParameters, { [this.parameterName]: text });
                 this.saving = true;
                 moqui.request(this.url, { method: "POST", params }).then((result) => {
                     this.saving = false;
-                    this.shown = moqui.htmlEncode(value).replace(/\n/g, "<br>");
+                    this.current = text;
+                    // a select shows the label of the option chosen
+                    const option = this.widgetType === "select" ? this.selectOptions.find((item) => item.value === text) : null;
+                    this.shown = moqui.htmlEncode(option ? option.label : text).replace(/\n/g, "<br>");
                     if (result.json) moqui.notifyMessages(result.json.messageInfos, result.json.errors);
                 }, (err) => { this.saving = false; moqui.handleAjaxError(err); });
             }
@@ -1587,6 +1674,7 @@
 
                 const root_ = this.$root;
                 root_.loading++;
+                if (this.mWizard && this.mWizard.isStepForm(this)) this.mWizard.stepSubmitting(this);
                 let arrived = false;
                 const method = this.method.toUpperCase();
                 let target = this.$root.appRootPath + this.action;
@@ -3194,6 +3282,8 @@
     // below it, and Back and Next. The current step is the subscreen in the URL. Next submits the step form, the first m-form of the
     // step that is not in a list or a dialog (the forms register through inject mWizard), and moves on when the answer has no errors
     // (moqui.wizardAfterAnswer); a step without a form moves on at once. The last step's button is finishText and only shows with a form.
+    // While the step form posts (by Next, Enter or a button of its own) the step is covered by a spinner and Back and Next wait, until
+    // the answer says to stay or the screen it goes to is there: the last step's submit (an import, a run) may take a while.
     component("m-subscreens-wizard", {
         name: "mSubscreensWizard",
         props: { id: String, finishText: String, nextText: String, backText: String },
@@ -3207,9 +3297,11 @@
                         ' :header-nav="index < activeIndex" :prefix="step.imageType === \'icon\' && step.image ? undefined : String(index + 1)"' +
                         ' :icon="step.imageType === \'icon\' && step.image ? step.image : undefined" :data-step="step.name"></q-step>' +
                 '</q-stepper>' +
-                '<div ref="body" class="m-wizard-body"><m-subscreens-active></m-subscreens-active></div>' +
+                '<div ref="body" class="m-wizard-body"><m-subscreens-active></m-subscreens-active>' +
+                    '<q-inner-loading :showing="submitting" class="m-wizard-working"><q-spinner color="primary" size="40px"></q-spinner>' +
+                        '<div class="text-caption m-muted q-mt-sm" v-text="workingLabel"></div></q-inner-loading></div>' +
                 '<div v-if="steps.length" class="m-wizard-nav row items-center q-gutter-sm">' +
-                    '<q-btn v-if="activeIndex > 0" unelevated no-caps class="m-btn-tonal m-wizard-back" icon="arrow_back" :label="backLabel" @click="back"></q-btn>' +
+                    '<q-btn v-if="activeIndex > 0" unelevated no-caps class="m-btn-tonal m-wizard-back" icon="arrow_back" :label="backLabel" :disable="submitting" @click="back"></q-btn>' +
                     '<q-space></q-space>' +
                     '<q-btn v-if="!isLast || hasForm" unelevated no-caps color="primary" class="m-wizard-next" :icon-right="isLast ? \'check\' : \'arrow_forward\'"' +
                         ' :label="isLast ? finishLabel : nextLabel" :loading="submitting" @click="next"></q-btn>' +
@@ -3226,7 +3318,8 @@
             isLast() { return this.activeIndex >= this.steps.length - 1; },
             nextLabel() { return this.nextText || localized("Next"); },
             backLabel() { return this.backText || localized("Back"); },
-            finishLabel() { return this.finishText || localized("Finish"); }
+            finishLabel() { return this.finishText || localized("Finish"); },
+            workingLabel() { return localized("Working..."); }
         },
         methods: {
             addForm(form) { if (this.forms.indexOf(form) < 0) this.forms.push(form); this.formsChanged(); },
@@ -3242,10 +3335,10 @@
                 return forms[0] || null;
             },
             isStepForm(form) { return this.stepForm() === form; },
-            goTo(index, answerParameters) {
+            goTo(index, answerParameters, onComplete) {
                 const step = this.steps[index];
-                if (!step) return;
-                this.$root.setUrl(this.$root.getLinkPath(moqui.wizardStepUrl(step.pathWithParams, this.$root.currentParameters, answerParameters)));
+                if (!step) { if (onComplete) onComplete(); return; }
+                this.$root.setUrl(this.$root.getLinkPath(moqui.wizardStepUrl(step.pathWithParams, this.$root.currentParameters, answerParameters)), null, onComplete);
             },
             next() {
                 if (this.submitting) return;
@@ -3254,18 +3347,21 @@
                 this.submitting = true;
                 form.submitForm();
             },
-            back() { this.goTo(this.activeIndex - 1, null); },
+            back() { if (!this.submitting) this.goTo(this.activeIndex - 1, null); },
+            stepSubmitting() { this.submitting = true; },
             headerTo(name) {
                 const index = this.steps.findIndex((step) => step.name === name);
                 if (index >= 0 && index < this.activeIndex) this.goTo(index, null);
             },
             stepRefused() { this.submitting = false; },
+            // the spinner stays until the screen the answer names is there (a redirect leaves the page)
             stepAnswered(form, resp) {
-                this.submitting = false;
                 const way = moqui.wizardAfterAnswer(resp, this.$root.currentPathList, this.steps.length, this.activeIndex);
+                const done = () => { this.submitting = false; };
                 if (way.kind === "redirect") root.location.href = way.url;
-                else if (way.kind === "url") this.$root.setUrl(way.url);
-                else if (way.kind === "step") this.goTo(way.index, way.parameters);
+                else if (way.kind === "url") this.$root.setUrl(way.url, null, done);
+                else if (way.kind === "step") this.goTo(way.index, way.parameters, done);
+                else done();
             }
         },
         // before the m-subscreens-active inside registers, as m-subscreens-tabs is mounted before its sibling
@@ -3314,6 +3410,18 @@
         return { stacked, side, min, max: width > 0 ? max : Math.max(sideWidth, min) * 3 };
     };
 
+    // The height of a split's panes side by side: the height attribute when given, else the viewport below the split's top (less
+    // a margin, at least 360 px), so the side list and the main pane each scroll in their own pane and the page does not; none
+    // when stacked, where the page scrolls. Pure, for the node tests.
+    moqui.splitHeight = (options) => {
+        if (options.stacked) return undefined;
+        if (options.height) return String(options.height);
+        const viewport = Number(options.viewport) || 0;
+        if (viewport <= 0) return undefined;
+        const top = Math.max(0, Number(options.top) || 0);
+        return Math.max(360, Math.round(viewport - top - (Number(options.margin) >= 0 ? Number(options.margin) : 16))) + "px";
+    };
+
     // container-split (style-guide §3.8): a q-splitter with the side at side-width px from 1024 px, draggable between 200 px and what
     // leaves min-main to the main pane, its width kept per id in the session and the user's preferences (SPLIT_WIDTH_<id>); stacked
     // below that, where a selection in the URL (select-parameter) shows the main pane with a back button that clears it, and none
@@ -3322,12 +3430,12 @@
         name: "mContainerSplit",
         props: { id: String, sideWidth: { type: [Number, String], default: 320 }, minMain: { type: [Number, String], default: 480 },
             sidePosition: { type: String, default: "left" }, selectParameter: String, backText: String, height: String },
-        data() { return { width: 0, side: null, observer: null, saveTimer: null }; },
+        data() { return { width: 0, side: null, observer: null, saveTimer: null, viewTop: 0, viewport: 0, onResize: null }; },
         template:
             '<div ref="root" class="m-container-split" :id="id" :data-stacked="layout.stacked ? \'true\' : \'false\'"' +
                     ' :class="{\'m-split-stacked\': layout.stacked, \'m-split-right\': right, \'m-split-selected\': selected}">' +
                 '<q-splitter :model-value="layout.side" @update:model-value="drag" unit="px" :limits="[layout.min, layout.max]" :reverse="right"' +
-                        ' :disable="layout.stacked" :style="height && !layout.stacked ? {height: height} : undefined" separator-class="m-split-separator">' +
+                        ' :disable="layout.stacked" :style="paneHeight ? {height: paneHeight} : undefined" separator-class="m-split-separator">' +
                     '<template v-slot:before>' +
                         '<div v-if="right" v-show="showMain" class="m-split-main">' +
                             '<q-btn v-if="backShown" flat dense no-caps icon="arrow_back" :label="backLabel" class="m-split-back" @click="back"></q-btn>' +
@@ -3354,6 +3462,7 @@
                 const value = (this.$root.currentParameters || {})[this.selectParameter];
                 return value !== undefined && value !== null && String(value) !== "";
             },
+            paneHeight() { return moqui.splitHeight({ stacked: this.layout.stacked, height: this.height, top: this.viewTop, viewport: this.viewport }); },
             showSide() { return !this.layout.stacked || !this.selectParameter || !this.selected; },
             showMain() { return !this.layout.stacked || !this.selectParameter || this.selected; },
             backShown() { return this.layout.stacked && !!this.selectParameter && this.selected; },
@@ -3370,6 +3479,13 @@
                     this.saveTimer = null;
                     if (this.$root.setPreference && this.$root.userId) this.$root.setPreference(this.storageKey, String(this.side));
                 }, 800);
+            },
+            // where the split starts in the page and the viewport's height, for the panes' height
+            measure() {
+                const el = this.$refs.root;
+                if (!el || !el.getBoundingClientRect) return;
+                this.viewTop = el.getBoundingClientRect().top + (root.scrollY || root.pageYOffset || 0);
+                this.viewport = root.innerHeight || 0;
             },
             back() {
                 const current = Object.assign({}, this.$root.currentParameters || {});
@@ -3388,14 +3504,18 @@
         mounted() {
             const el = this.$refs.root;
             this.width = el.clientWidth;
+            this.measure();
             if (root.ResizeObserver) {
-                this.observer = new root.ResizeObserver(() => { this.width = el.clientWidth; });
+                this.observer = new root.ResizeObserver(() => { this.width = el.clientWidth; this.measure(); });
                 this.observer.observe(el);
             }
+            this.onResize = () => this.measure();
+            if (root.addEventListener) root.addEventListener("resize", this.onResize);
         },
         beforeUnmount() {
             if (this.observer) this.observer.disconnect();
             if (this.saveTimer) clearTimeout(this.saveTimer);
+            if (this.onResize && root.removeEventListener) root.removeEventListener("resize", this.onResize);
         }
     });
 
@@ -3459,6 +3579,83 @@
         props: { name: String, size: String },
         template: '<i v-if="isClass" :class="name"></i><q-icon v-else :name="name" :size="size"></q-icon>',
         computed: { isClass() { return moqui.isIconClass(this.name); } }
+    });
+
+    /* ========== status ========== */
+
+    // How a status-bar draws what org.moqui.impl.StatusServices.get#StatusBar answered (style-guide §3.3, §5.2): each stage a chip,
+    // the current one filled in its color, a done one tinted with a check, one to come outlined and muted; each transition a
+    // button, the next stage the filled primary action, the others tonal (negative for those that end badly), with the
+    // confirmation "Label: title?". Pure, for the node tests; m-status-bar binds what it gives.
+    moqui.statusBarView = (bar, options) => {
+        const opts = options || {};
+        const data = bar && typeof bar === "object" ? bar : {};
+        const color = (value) => (value === null || value === undefined || value === "" ? "grey-7" : String(value));
+        const stages = (Array.isArray(data.stages) ? data.stages : []).filter((stage) => stage && stage.statusId).map((stage) => {
+            const state = stage.state === "current" || stage.state === "done" ? stage.state : "todo";
+            const chip = state === "current" ? { color: color(stage.color), "text-color": "white", class: "q-ma-none text-weight-medium m-status-current" } :
+                state === "done" ? { icon: "sym_o_check", class: "q-ma-none m-tonal text-grey-8 m-status-done" } :
+                    { outline: true, class: "q-ma-none text-grey-7 m-status-todo" };
+            return { statusId: String(stage.statusId), label: String(stage.label || stage.statusId), state, chip };
+        });
+        const title = opts.title ? String(opts.title) : "";
+        const buttons = (Array.isArray(data.transitions) ? data.transitions : []).filter((tr) => tr && tr.toStatusId).map((tr) => {
+            const label = String(tr.label || tr.toStatusId);
+            const button = tr.isNext ? { color: "primary", class: "m-status-next" } :
+                { class: "m-btn-tonal " + (tr.isDanger ? "text-negative" : "text-primary") };
+            return { toStatusId: String(tr.toStatusId), label, isNext: !!tr.isNext, isDanger: !!tr.isDanger, button,
+                confirm: opts.confirm === false ? null : label + (title ? ": " + title : "") + "?" };
+        });
+        return { current: data.current || null, stages, buttons };
+    };
+
+    // The status-bar element: the stage chips and, with an action (the transition), the buttons that post it with the new status
+    // in parameterName and the parameters, each in an m-form, so the answer (the screen again, with the new status) is followed
+    // as any form's. The server-merged macros write the bar's data in; a server-static screen gives the status and the bar is
+    // asked of the root screen's statusBar transition (barUrl), again when the status changes.
+    component("m-status-bar", {
+        name: "mStatusBar",
+        props: { id: String, bar: Object, barUrl: { type: String, default: "/statusBar" }, statusId: String, statusTypeId: String, statusFlowId: String,
+            stages: [Array, String], allowedStatusIds: [Array, String], readOnly: Boolean, action: String, parameters: Object,
+            parameterName: { type: String, default: "statusId" }, title: String, confirm: { type: Boolean, default: true } },
+        data() { return { loaded: null }; },
+        template:
+            '<div class="m-status-bar row items-center" :id="id" :data-status="view.current ? view.current.statusId : null">' +
+                '<div class="m-status-stages row items-center">' +
+                    '<template v-for="(stage, index) in view.stages" :key="stage.statusId + \':\' + index">' +
+                        '<q-icon v-if="index" name="sym_o_chevron_right" size="xs" class="m-muted m-status-sep"></q-icon>' +
+                        '<q-chip dense square :ripple="false" v-bind="stage.chip" :data-stage="stage.statusId" :data-state="stage.state">{{ stage.label }}</q-chip>' +
+                    '</template>' +
+                '</div>' +
+                '<div v-if="action && view.buttons.length" class="m-status-actions row items-center">' +
+                    '<m-form v-for="item in view.buttons" :key="item.toStatusId" :action="action" :fields-initial="fieldsOf(item)" class="m-status-form">' +
+                        '<q-btn dense no-caps unelevated type="submit" v-bind="item.button" :label="item.label" :data-confirm="item.confirm"' +
+                            ' :data-to-status="item.toStatusId"></q-btn>' +
+                    '</m-form>' +
+                '</div>' +
+            '</div>',
+        computed: {
+            view() { return moqui.statusBarView(this.bar || this.loaded, { title: this.title, confirm: this.confirm }); },
+            requestKey() {
+                if (this.bar) return null;
+                const list = (value) => (Array.isArray(value) ? value.join(",") : value || "");
+                return [this.statusId || "", this.statusTypeId || "", this.statusFlowId || "", list(this.stages), this.readOnly ? "ro" : list(this.allowedStatusIds)].join("|");
+            }
+        },
+        watch: { requestKey() { this.load(); } },
+        methods: {
+            fieldsOf(item) { return Object.assign({}, this.parameters || {}, { [this.parameterName || "statusId"]: item.toStatusId }); },
+            load() {
+                if (this.bar || !this.statusId) { this.loaded = null; return; }
+                const list = (value) => (Array.isArray(value) ? value.join(",") : value || "");
+                const params = { statusId: this.statusId, statusTypeId: this.statusTypeId || "", statusFlowId: this.statusFlowId || "", stages: list(this.stages) };
+                if (this.readOnly) params.readOnly = "true";
+                else if (this.allowedStatusIds !== undefined && this.allowedStatusIds !== null) params.allowedStatusIds = list(this.allowedStatusIds);
+                const base = this.$root && this.$root.appRootPath ? this.$root.appRootPath : "";
+                moqui.request(base + this.barUrl, { params }).then((result) => { this.loaded = result.json || null; }, moqui.handleAjaxError);
+            }
+        },
+        mounted() { this.load(); }
     });
 
     /* ========== dashboards ========== */

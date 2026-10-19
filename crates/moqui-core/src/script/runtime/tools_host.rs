@@ -557,7 +557,9 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     ec.resource.isTextFilename = (filename) => host.isTextFilename(filename == null ? "" : String(filename));
     globalThis.ResourceReference = { isTextFilename: ec.resource.isTextFilename };
     ec.resource.getLocationReference = (location) => makeRef(String(location));
-    ec.resource.getLocationText = (location) => host.resourceText(String(location));
+    // a second argument that is a charset name (a Rust-port extension; Java's is the cache flag) decodes the bytes in it
+    ec.resource.getLocationText = (location, cacheOrCharset) => typeof cacheOrCharset === "string" && cacheOrCharset.trim()
+        ? host.resourceTextIn(String(location), cacheOrCharset) : host.resourceText(String(location));
     // the registry token of a Docker image (InstanceImage.authTokenCmd): the command's first output line, no shell
     ec.resource.runTokenCommand = (command) => host.runTokenCommand(String(command));
 
@@ -1688,6 +1690,16 @@ fn resource_text(ctx: Ctx<'_>, location: String) -> rquickjs::Result<String> {
     })
 }
 
+/// The text at a location decoded from its bytes in a charset (`ec.resource.getLocationText(location, charset)`).
+fn resource_text_in(ctx: Ctx<'_>, location: String, charset: String) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        let bytes = resource_ref(&ctx, &location)?
+            .read_bytes()
+            .map_err(|err| throw_context(&ctx, &err))?;
+        super::upload::decode_text(&bytes, Some(&charset)).map_err(|err| throw_context(&ctx, &err))
+    })
+}
+
 /// `putText`: a `dbresource://` row, or a file for the file-backed schemes.
 fn resource_put_text(ctx: Ctx<'_>, location: String, text: String) -> rquickjs::Result<()> {
     put_resource_bytes(&ctx, &location, text.as_bytes())
@@ -2521,6 +2533,7 @@ pub(super) fn install<'js>(
     method!("periodRange", period_range);
     method!("messageInfos", message_infos);
     method!("resourceText", resource_text);
+    method!("resourceTextIn", resource_text_in);
     method!("resourcePutText", resource_put_text);
     method!("resourceStream", resource_stream);
     method!("isTextFilename", is_text_filename);

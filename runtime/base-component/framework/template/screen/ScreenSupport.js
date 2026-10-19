@@ -39,7 +39,7 @@
         "panel-right", "panel-footer", "container-dialog", "dynamic-container", "dynamic-dialog", "button-menu",
         "tree", "tree-node", "tree-sub-node", "label", "link", "image", "parameter", "dialog",
         "render-dynamic-form", "dynamic-form", "form-list-user-columns", "context", "dashboard", "number-card",
-        "chatter", "record-files", "container-split", "split-side", "split-main", "html-view"
+        "chatter", "record-files", "container-split", "split-side", "split-main", "html-view", "status-bar"
     ];
     const formElements = [
         "form-single", "form-list", "row-actions", "field", "header-field", "first-row-field", "second-row-field",
@@ -67,6 +67,12 @@
     // text (tags out, line breaks at blocks, the common entities read).
     const htmlViewTextFn = String.raw`((t, h) => { const v = t && t !== "null" ? String(t) : (h && h !== "null" ? String(h).replace(/<(style|script)[^>]*>[\s\S]*?<\/\1>/gi, " ").replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, "\n").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&") : ""); return v.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(); })`;
     const htmlViewTextExpr = (node) => `${htmlViewTextFn}(ec.resource.expandNoL10n(${jsString(attr(node, "text") || "")}), ec.resource.expandNoL10n(${jsString(attr(node, "html") || "")}))`;
+
+    // The description of the current status of a status-bar for the text and print modes, as an expression: the StatusItem's
+    // description, else the id; empty without a status.
+    const statusTextExpr = (node) => `((id) => { const v = String(id === null || id === undefined ? "" : id).trim(); if (!v || v === "null") return ""; ` +
+        `const item = ec.entity.find("moqui.basic.StatusItem").condition("statusId", v).useCache(true).disableAuthz().one(); ` +
+        `return item && item.description ? String(item.description) : v; })(ec.resource.expandNoL10n(${jsString(attr(node, "status-id") || "")}))`;
 
     const expandExpr = (text) => `ec.resource.expand(${jsString(text)})`;
     const expandNoL10nExpr = (text) => `ec.resource.expandNoL10n(${jsString(text)})`;
@@ -279,13 +285,15 @@
         return !childrenNamed(field, "conditional-field").some((sub) => !child(sub, "hidden") && !child(sub, "ignored"));
     };
 
-    // The columns of a form-list as arrays of field nodes: the untyped columns element, else the
-    // form-list-column elements, else one column for each field that is not hidden.
-    const formListColumns = (form) => {
+    // The columns of a form-list as arrays of field nodes: the columns element of the type (a _uiType such as mobile) when
+    // one is asked and the form has it, else the untyped columns element, else the form-list-column elements, else one
+    // column for each field that is not hidden.
+    const formListColumns = (form, type) => {
         const fields = {};
         childrenNamed(form, "field").forEach((field) => { fields[attr(field, "name")] = field; });
         let columnNodes = null;
-        const columns = childrenNamed(form, "columns").find((node) => !attr(node, "type"));
+        const columns = (type ? childrenNamed(form, "columns").find((node) => attr(node, "type") === type) : null) ||
+            childrenNamed(form, "columns").find((node) => !attr(node, "type"));
         if (columns) columnNodes = childrenNamed(columns, "column");
         if (!columnNodes) columnNodes = childrenNamed(form, "form-list-column");
         if (columnNodes.length) {
@@ -310,7 +318,7 @@
     const noops = (names) => T.noops(names);
 
     return {
-        allElements, opaqueElements, expandExpr, expandNoL10nExpr, htmlViewTextExpr, nodeLit, bareLit, write, indent, widgetsSource,
+        allElements, opaqueElements, expandExpr, expandNoL10nExpr, htmlViewTextExpr, statusTextExpr, nodeLit, bareLit, write, indent, widgetsSource,
         setCode, widgetless, fieldChain, hideGuard, titleText, localizedTitle, fieldLit, renderTextCode, anyMacros,
         displayValueExpr, linkTextExpr, dateTimeFormat, listFieldHiddenWidget, formListColumns, headerSub, noops
     };

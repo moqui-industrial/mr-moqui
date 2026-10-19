@@ -503,7 +503,8 @@ interface MoquiUploadedFile {
     readonly fieldName: string;
     readonly contentType: string;
     readonly size: number;
-    getString(): string;
+    /** The bytes as text in the charset (Java names: UTF-8, ISO-8859-1, windows-1252, UTF-16), UTF-8 by default. */
+    getString(charset?: string): string;
     /** `dbresource://` only. */
     write(location: string): void;
     isInMemory(): boolean;
@@ -526,7 +527,8 @@ interface MoquiWebFacade {
     readonly errorParameters: MoquiMap | null;
     sendJsonResponse(value: unknown): void;
     sendJsonError(status: number, message: string, error?: unknown): void;
-    sendTextResponse(text: string): void;
+    /** text/plain by default; a file name sends the text as an attachment of that name. */
+    sendTextResponse(text: string | null, contentType?: string | null, filename?: string | null): void;
     /** The bytes at a resource location, inline or (the default) as an attachment. 404 when nothing is there. */
     sendResourceResponse(location: string, inline?: boolean): void;
     saveScreenLastInfo(path?: string | null, parameters?: MoquiMap | null): void;

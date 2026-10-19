@@ -263,6 +263,16 @@ span.hover-image-container { position: relative; }
 span.hover-image-container img.hover-image { position: absolute; display: none; z-index: 10; background-color: #FFF6E8; padding: 6px; }
 span.hover-image-container:hover img.hover-image { display: initial; margin: 10px 0 0 5px; }
 .editable-label { border-bottom: 1px dashed currentColor; }
+.m-editable-placeholder { font-style: italic; }
+.m-editable-select { min-width: 200px; }
+
+/* status-bar (style-guide §3.3, §5.2): the stage chips in a row that wraps, a chevron between them, and the transition buttons;
+   each button is the only field of its m-form, which stays inline */
+.m-status-bar { gap: 6px 12px; }
+.m-status-stages { gap: 4px; }
+.m-status-actions { gap: 6px; }
+.m-status-form { display: inline-flex; }
+.m-status-sep { margin: 0 -2px; }
 .markdown-preview { border: 1px solid rgba(0,0,0,0.12); margin-top: 4px; }
 
 /* dashboard and number-card (style-guide §3.1, §8.2): a grid of columns at least --m-dashboard-min wide, as many as fit; a
@@ -380,6 +390,7 @@ span.hover-image-container:hover img.hover-image { display: initial; margin: 10p
 /* subscreens-panel type wizard and stack (style-guide §3.10): the stepper is a header only (the step is the subscreen below it),
    Back and Next under the step; the stack's breadcrumb back to its first subscreen */
 .m-wizard-stepper { margin-bottom:12px; }
+.m-wizard-body { position:relative; min-height:64px; }
 .m-wizard-stepper .q-stepper__content { display:none; }
 .m-wizard-stepper .q-stepper__header { border-bottom:none; }
 .m-wizard-nav { margin-top:12px; padding-top:8px; border-top:1px solid rgba(0,0,0,0.08); }

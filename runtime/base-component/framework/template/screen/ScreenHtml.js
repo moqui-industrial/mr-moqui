@@ -142,6 +142,20 @@
             });
         };
         reset();
+        // A unit inside another (a section in a form-list cell) starts from the state of the one around it and gives it back
+        // when it ends, as ScreenQvt.js; the outermost unit ($depth 0) starts afresh.
+        const units = [];
+        const enter = (depth) => {
+            if (!depth) { units.length = 0; reset(); return; }
+            units.push(Object.assign({}, st));
+        };
+        const leave = (depth) => {
+            if (!depth) return;
+            const outer = units.pop();
+            if (!outer) return;
+            Object.keys(st).forEach((key) => { delete st[key]; });
+            Object.assign(st, outer);
+        };
 
         const sec = () => {
             const value = ec.context.get("sectionEntryIndex");
@@ -160,7 +174,15 @@
         const fnm = (n) => fname(n) + (st.multi && st.entry !== "" && /^\d+$/.test(st.entry) ? "_" + st.entry : "");
         const owner = () => st.owner || null;
         const tip = (n) => (at(n.parent, "tooltip") ? x(at(n.parent, "tooltip")) : null);
-        const icon = (name) => (name ? '<i class="' + e(name) + '"></i> ' : "");
+        // An icon attribute or menu image: CSS classes (a space, or a Font Awesome prefix such as fa fa-plus) on an i element; a
+        // Quasar icon name, Material Symbols (sym_o_add, any sym_ style drawn outlined) or Material Icons (add, edit), as the
+        // Material Symbols font the theme loads (libs/material-symbols/outlined.css), as the qvt mode shows them.
+        const iconName = (name) => /^(sym_[ors]_)?[a-z0-9_]+$/.test(name);
+        const icon = (name) => {
+            if (!name) return "";
+            if (iconName(name)) return '<span class="material-symbols-outlined icon" aria-hidden="true">' + e(name.replace(/^sym_[ors]_/, "")) + "</span> ";
+            return '<i class="' + e(name) + '"></i> ';
+        };
 
         // The libraries a page loads for widgets that need them. footer_scripts and footer_stylesheets
         // are sets the root screen makes; a render without them leaves the client to load the library.
@@ -548,7 +570,7 @@
             return icon(iconClass) + (img ? imageTag(img) : text) + (badge ? ' <span class="badge">' + e(badge) + "</span>" : "");
         };
 
-        const btnAttr = (n) => (at(n, "link-type") === "anchor" ? null : at(n, "link-type") === "hidden-form-link" ? "plain" : at(n, "btn-type") || "primary");
+        const btnAttr = (n) => (at(n, "link-type") === "anchor" ? null : at(n, "link-type") === "hidden-form-link" ? "plain" : xn(at(n, "btn-type")) || "primary");
 
         // The element that follows the link: an anchor, or for a transition with actions a button for its form.
         const linkElement = (n, parts, formId) => {
@@ -569,7 +591,7 @@
             }
             if (!formId) return "";
             return "<button" + A({
-                type: "submit", form: formId, id: formId + "_button", "data-btn": at(n, "btn-type") || "primary", class: style,
+                type: "submit", form: formId, id: formId + "_button", "data-btn": xn(at(n, "btn-type")) || "primary", class: style,
                 "data-confirm": confirmation || null, title: tooltip
             }) + ">" + body + "</button>";
         };
@@ -622,19 +644,27 @@
             w(form + linkElement(n, parts, id) + "\n");
         };
 
+        // As ScreenQvt.js: display-if-empty shows the placeholder to click, a select has its options in data-options (or from
+        // the editable-load transition), and date and date-time edit in a date input.
         const editable = (n) => {
             const url = sri.makeUrlByType(at(n, "transition"), "transition", n, "true");
-            const text = ec.resource.expand(at(n, "text"), "");
-            if (!String(text).trim()) return;
+            let text = ec.resource.expand(at(n, "text"), "");
+            if (text === null || text === undefined || text === "null") text = "";
+            const empty = !String(text).trim();
+            if (empty && xn(at(n, "display-if-empty")) !== "true") return;
             const load = first(n, "editable-load");
             let loadUrl = null;
             if (load) loadUrl = sri.makeUrlByType(at(load, "transition"), "transition", load, "true");
             const type = at(n, "type") || "span";
+            const widget = at(n, "widget-type") || "textarea";
+            const options = [];
+            if (widget === "select") sri.getFieldOptions(n).forEach((label, key) => options.push({ value: key, label }));
             w("<" + type + A({
-                id: nodeId(n) || null, class: "editable", "data-url": url.url, "data-params": json(url.getParameterMap()), "data-name": at(n, "parameter-name") || "value",
-                "data-widget": at(n, "widget-type") || "textarea", "data-load-url": loadUrl ? loadUrl.url : null,
-                "data-load-params": loadUrl ? json(loadUrl.getParameterMap()) : null, title: L("Click to edit")
-            }) + ">" + (at(n, "encode") === "true" ? e(text).replace(/\n/g, "<br>") : text) + "</" + type + ">");
+                id: nodeId(n) || null, class: cls("editable", empty ? "editable-empty" : null), "data-url": url.url, "data-params": json(url.getParameterMap()), "data-name": at(n, "parameter-name") || "value",
+                "data-widget": widget, "data-load-url": loadUrl ? loadUrl.url : null,
+                "data-load-params": loadUrl ? json(loadUrl.getParameterMap()) : null, "data-options": options.length ? json(options) : null,
+                "data-value": n.attrs && n.attrs.value !== undefined ? xn(at(n, "value")) : null, "data-empty": empty ? "true" : null, title: L("Click to edit")
+            }) + ">" + (empty ? '<span class="muted">' + e(L("Click to edit")) + "</span>" : at(n, "encode") === "true" ? e(text).replace(/\n/g, "<br>") : text) + "</" + type + ">");
         };
 
         // ---- containers ----
@@ -697,7 +727,7 @@
             const title = ec.resource.expand(item.title, "");
             let img = '<i class="fa fa-link"></i> ';
             if (item.image) {
-                if (item.imageType === "icon") img = '<i class="' + e(item.image) + '"></i> ';
+                if (item.imageType === "icon") img = icon(item.image);
                 else if (item.imageType === "url-plain") img = '<img src="' + e(item.image) + '" alt="' + e(title) + '" width="18"> ';
                 else img = '<img src="' + e(sri.buildUrl(item.image).url) + '" alt="' + e(title) + '" height="18"> ';
             }
@@ -869,7 +899,7 @@
 
         const rowOpen = (kind, style) => w("<div" + A({ class: cls(kind, xn(style) || null) }) + ">");
         const colOpen = (n) => w("<div" + A({
-            class: cls("col", xn(at(n, "style")) || null), style: ["lg", "md", "sm", "xs"].filter((k) => at(n, k)).map((k) => "--" + k + ":" + at(n, k)).concat(at(n, "label-cols") ? ["--lc:" + at(n, "label-cols")] : []).join(";") || null
+            class: cls("col", xn(at(n, "style")) || null), style: ["lg", "md", "sm", "xs"].filter((k) => xn(at(n, k)) && xn(at(n, k)) !== "null").map((k) => "--" + k + ":" + xn(at(n, k))).concat(at(n, "label-cols") ? ["--lc:" + at(n, "label-cols")] : []).join(";") || null
         }) + ">");
 
         const fieldGroup = (n) => {
@@ -1334,8 +1364,55 @@
             if (sign === 0) return "neutral";
             return (good === "down" ? sign < 0 : sign > 0) ? "good" : "bad";
         };
-        // A number-card as plain markup: the title, the value and the delta, the whole card a link when it has one. Only an
-        // icon given as CSS classes is drawn, as the html pages have no icon font.
+        // status-bar: the stages as chips (moqui-html.css .status-bar, the color of each in data-color) and each transition the
+        // user may take as a form that posts it with the new status, the next stage the primary button, as ScreenQvt.js.
+        const idList = (text) => {
+            if (text === null || text === undefined || text === "") return null;
+            const whole = /^\s*\$\{([\s\S]*)\}\s*$/.exec(text);
+            let value = whole ? ec.resource.expression(whole[1], "") : null;
+            if (value === null || value === undefined) value = whole ? [] : xn(text);
+            if (typeof value === "string") value = value.split(",");
+            return Array.from(value || []).map((id) => (id === null || id === undefined ? "" : String(id).trim())).filter((id) => id && id !== "null");
+        };
+        const statusBar = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const statusId = xn(at(n, "status-id"));
+            if (!statusId || statusId === "null") return;
+            const readOnly = xn(at(n, "read-only")) === "true";
+            const bar = ec.service.sync().name("org.moqui.impl.StatusServices.get#StatusBar").parameters({
+                statusId, statusTypeId: xn(at(n, "status-type-id")) || null, statusFlowId: xn(at(n, "status-flow-id")) || null,
+                stageStatusIds: idList(at(n, "stages")), allowedToStatusIds: readOnly ? [] : idList(at(n, "allowed-status-ids"))
+            }).disableAuthz().call() || {};
+            let out = "<div" + A({ id: nodeId(n) || null, class: cls("status-bar", xn(at(n, "style")) || null), "data-status": statusId }) + '><span class="status-stages">';
+            Array.from(bar.stages || []).forEach((stage, index) => {
+                out += (index ? '<span class="status-sep" aria-hidden="true">&rsaquo;</span>' : "") + "<span" + A({
+                    class: "status-chip", "data-state": stage.state, "data-color": stage.color, "data-stage": stage.statusId,
+                    "aria-current": stage.state === "current" ? "step" : null
+                }) + ">" + (stage.state === "done" ? "&check; " : "") + e(stage.label) + "</span>";
+            });
+            out += "</span>";
+            const transitions = readOnly ? [] : Array.from(bar.transitions || []);
+            const url = at(n, "transition") && transitions.length ? sri.makeUrlByType(at(n, "transition"), "transition", n, "true") : null;
+            if (url && !url.getDisableLink()) {
+                const params = url.getParameterMap();
+                const name = at(n, "parameter-name") || "statusId";
+                const title = at(n, "title") ? x(at(n, "title")) : "";
+                out += '<span class="status-actions">';
+                transitions.forEach((tr) => {
+                    out += "<form" + A({ method: "post", action: url.url, class: "status-form" }) + ">" + "<input" + A({ type: "hidden", name: "moquiSessionToken", value: token() }) + ">";
+                    Object.keys(params).forEach((key) => { if (key !== name) out += "<input" + A({ type: "hidden", name: key, value: params[key] === null || params[key] === undefined ? "" : params[key] }) + ">"; });
+                    out += "<input" + A({ type: "hidden", name, value: tr.toStatusId }) + ">" + "<button" + A({
+                        type: "submit", "data-btn": tr.isNext ? "primary" : tr.isDanger ? "danger" : "default", "data-to-status": tr.toStatusId,
+                        "data-confirm": xn(at(n, "confirm")) === "false" ? null : tr.label + (title ? ": " + title : "") + "?"
+                    }) + ">" + e(tr.label) + "</button></form>";
+                });
+                out += "</span>";
+            }
+            w(out + "</div>\n");
+        };
+
+        // A number-card as plain markup: the title, the value and the delta, the whole card a link when it has one. The icon is
+        // CSS classes, or a Quasar icon name in the Material Symbols font (icon above).
         const numberCard = (n) => {
             if (at(n, "condition") && !cond(at(n, "condition"))) return;
             const value = (text) => (text && text !== "null" ? text : "");
@@ -1345,10 +1422,10 @@
                 const url = sri.makeUrlByType(at(n, "link"), "transition", n, "true");
                 if (!url.getDisableLink()) href = url.getUrlWithParams();
             }
-            const iconName = xn(at(n, "icon"));
+            const cardIcon = xn(at(n, "icon"));
             const tag = href ? "a" : "div";
             w("<" + tag + A({ id: nodeId(n) || null, href, class: cls("number-card", xn(at(n, "style")) || null), "data-size": at(n, "size") || null }) + ">" +
-                (iconName && /\s|^fa/.test(iconName) ? icon(iconName) : "") +
+                icon(cardIcon) +
                 '<span class="number-card-title">' + e(value(x(at(n, "title")))) + "</span>" +
                 '<strong class="number-card-value">' + e(value(xn(at(n, "value")))) + "</strong>" +
                 (delta ? '<span class="number-card-delta" data-tone="' + deltaTone(delta, at(n, "delta-good")) + '">' + e(delta) + "</span>" : "") +
@@ -1421,7 +1498,7 @@
         };
 
         const h = {
-            reset, e, lib, fid, fnm,
+            reset, enter, leave, e, lib, fid, fnm,
             textLine, textArea, password, file, hidden, reset_, submit, dateTime, dateFind, datePeriod, rangeFind, textFind,
             dropDown, check: (n) => checkOrRadio(n, "checkbox"), radio: (n) => checkOrRadio(n, "radio"), display, displayEntity,
             image, label, link, editable, containerDialog, dynamicDialog, dynamicContainer, tree,
@@ -1431,13 +1508,15 @@
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
             labelCols: (value) => { st.labelCols = value || ""; },
-            numberCard, chatter, recordFiles, splitOpen, splitMain, htmlView
+            numberCard, chatter, recordFiles, splitOpen, splitMain, htmlView, statusBar
         };
         Object.defineProperty(globalThis, "$mqHtml", { value: h, configurable: true });
     };
 
     const runtime = "(" + runtimeFunction.toString() + ")();";
-    const prelude = "const $h = globalThis.$mqHtml;\n$h.reset();\n";
+    // a unit keeps the render state of the unit around it and gives it back when it ends, as ScreenQvt.js
+    const prelude = "const $h = globalThis.$mqHtml;\n$h.enter($depth);\ntry {\n";
+    const epilogue = "} finally {\n$h.leave($depth);\n}\n";
 
     // ---- macros ----
 
@@ -1727,7 +1806,12 @@
                 ]
             }
         `.replace(/\n$/, "");
-        const cols = columns.map((column) => "[" + column.map(columnField).join(",\n") + "]").join(",\n");
+        // the columns of each type (columns type="mobile"), chosen by the request's _uiType as Java does; the untyped ones otherwise
+        const colsOf = (set) => set.map((column) => "[" + column.map(columnField).join(",\n") + "]").join(",\n");
+        const types = childrenNamed(node, "columns").map((kid) => attr(kid, "type")).filter((type, index, all) => type && all.indexOf(type) === index);
+        // with typed columns the list is spread from the set of the request's type: ...(_uiType is mobile ? [mobile] : [default])
+        const cols = !types.length ? colsOf(columns) : "..." + types.reduceRight((rest, type) =>
+            `(String(ec.context.get("_uiType") || "") === ${lit(type)} ? [\n${colsOf(S.formListColumns(node, type))}\n] : ${rest})`, `[\n${colsOf(columns)}\n]`);
         return js`
             if (sri.doBoundaryComments()) sri.write(${lit(`<!-- BEGIN form-list[@name=${attr(node, "name")}] -->\n`)});
             {
@@ -1772,14 +1856,17 @@
         `;
     });
 
-    const containerRowMacro = stmt((node) => js`
+    // A container-row writes its children in order: each row-col its column, and a section or section-iterate the row-col
+    // elements of its widgets (a column per entry), as ScreenQvt.js.
+    const containerRowMacro = stmt((node, children) => js`
         $h.rowOpen("row", ${lit(attr(node, "style"))});
-        ${childrenNamed(node, "row-col").map((col) => js`
-            $h.colOpen(${bareLit(col)});
-            ${col.source}
-            sri.write("</div>");
-        `).join("")}
+        ${children}
         sri.write("</div>\\n");
+    `);
+    const rowColMacro = stmt((node, children) => js`
+        $h.colOpen(${bareLit(node)});
+        ${children}
+        sri.write("</div>");
     `);
 
     // A dashboard: its children in a grid of columns at least min-width px wide (moqui-html.css), each in a cell.
@@ -1883,7 +1970,7 @@
         "box-body": stmt((node, children) => children),
         "box-body-nopad": stmt((node, children) => children),
         "container-row": containerRowMacro,
-        "row-col": stmt((node, children) => children),
+        "row-col": rowColMacro,
         "container-panel": containerPanelMacro,
         "container-split": containerSplitMacro,
         "split-side": stmt((node, children) => children),
@@ -1907,6 +1994,7 @@
         "context": stmt(() => ""),
         "dashboard": dashboardMacro,
         "number-card": widget("numberCard", false),
+        "status-bar": widget("statusBar", true),
         "chatter": widget("chatter", false),
         "record-files": widget("recordFiles", false),
         "html-view": widget("htmlView", false),
@@ -1944,5 +2032,5 @@
     // button-menu hands the macros of its items to its own macro, which writes them in list items.
     const opaque = S.opaqueElements.filter((name) => name !== "button-menu");
 
-    return { macros, opaque, prelude, runtime };
+    return { macros, opaque, prelude, epilogue, runtime };
 })

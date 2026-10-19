@@ -20,12 +20,16 @@ along with this software (see the LICENSE.md file). If not, see
         default-menu-title="Detail" default-menu-index="3">
 
     <parameter name="enumId"/>
+    <!-- the status the status-bar shows, on the framework's EntitySync flow (the gallery writes nothing, so it is in the URL) -->
+    <parameter name="syncStatusId"/>
 
     <transition name="list"><default-response url="../List"/></transition>
     <transition name="record360"><default-response url="../Record360"/></transition>
-    <transition name="advanceStatus">
-        <actions><message>Gallery: ${enumId} would move to "${toStatus}"; nothing is written.</message></actions>
-        <default-response url="."/>
+    <!-- the status-bar's transition: it gets the new status in statusId and answers this screen with it -->
+    <transition name="setStatus">
+        <parameter name="statusId"/>
+        <actions><message>Gallery: ${enumId} would move to ${statusId}; nothing is written.</message></actions>
+        <default-response url="."><parameter name="enumId"/><parameter name="syncStatusId" from="statusId"/></default-response>
     </transition>
     <transition name="holdRecord">
         <actions><message>Gallery: ${enumId} would be put on hold; nothing is written.</message></actions>
@@ -59,35 +63,9 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find-count entity-name="moqui.basic.Enumeration" count-field="siblingCount">
                 <econdition field-name="enumTypeId" from="enumeration.enumTypeId"/></entity-find-count>
 
-            <!-- the status bar fallback: the stages of one status flow as chips, the second one marked current -->
-            <entity-find entity-name="moqui.basic.StatusItem" list="statusItemAll">
-                <order-by field-name="statusTypeId,sequenceNum,statusId"/></entity-find>
+            <!-- the status-bar shows the framework's EntitySync flow: Not Started, Running, Complete, and Other Error off the row -->
+            <set field="syncStatusId" from="syncStatusId || 'EsRunning'"/>
             <script><![CDATA[
-                const byType = {}
-                for (const item of statusItemAll) (byType[item.statusTypeId] = byType[item.statusTypeId] || []).push(item)
-                const typeIds = Object.keys(byType).sort((a, b) => byType[b].length - byType[a].length || a.localeCompare(b))
-                let stages = []
-                if (byType.Order) stages = byType.Order
-                else if (byType.OrderStatus) stages = byType.OrderStatus
-                else if (typeIds.length) stages = byType[typeIds[0]]
-                if (!stages.length) stages = [{ statusId: 'Created', description: 'Created' }, { statusId: 'Approved', description: 'Approved' },
-                        { statusId: 'Shipped', description: 'Shipped' }, { statusId: 'Completed', description: 'Completed' }]
-                stages = stages.slice(0, 6).map(s => ({ statusTypeId: String(s.statusTypeId || 'sample'), description: String(s.description || s.statusId || '') }))
-                const currentIndex = Math.min(1, stages.length - 1)
-                // bare assignments go to the screen context (as EntityDetail.xml does); context.x = ... does too
-                statusTypeId = stages[0].statusTypeId
-                currentStatus = stages[currentIndex].description
-                nextStatus = currentIndex + 1 < stages.length ? stages[currentIndex + 1].description : ''
-                let html = '<div class="row items-center no-wrap scroll q-gutter-x-xs">'
-                stages.forEach((stage, i) => {
-                    const text = WebUtilities.encodeHtml(stage.description)
-                    if (i > 0) html += '<q-icon name="chevron_right" class="text-grey-6"></q-icon>'
-                    if (i < currentIndex) html += '<q-chip dense square outline color="positive" icon="check">' + text + '</q-chip>'
-                    else if (i === currentIndex) html += '<q-chip dense square color="primary" text-color="white">' + text + '</q-chip>'
-                    else html += '<q-chip dense square outline color="grey-6">' + text + '</q-chip>'
-                })
-                statusBarHtml = html + '</div>'
-
                 // the history box: an inline list, the framework keeps no change log for enumerations; a display
                 // field formats an entity timestamp but not a plain number, so the dates are formatted here
                 historyList = [
@@ -99,7 +77,7 @@ along with this software (see the LICENSE.md file). If not, see
     <widgets>
         <container-box type="info"><box-header title="Archetype 3.3 Detail"/><box-body>
             <label type="p" text="One record with its parts and actions: a title row with the identifier, the status flow, one primary action and a menu of secondary actions; the parts as boxes (three or fewer, so no tabs) and Chatter at the right from 1440 px, below it on narrower screens. Read-only values are display fields with a label. Every action is a no-op here."/>
-            <label type="p" text="Fallbacks for §8: status-bar is a row of q-chips over StatusItem rows of one type (${statusTypeId}) with the second stage marked current, until status-bar exists; the primary action is a link with the primary classes because a link outside a form is tonal. The Chatter column is the chatter and record-files elements: they load the subscreens of the current app root that the theme values STRT_CHATTER_SCREEN and STRT_RECORD_FILES_SCREEN name (here the gallery's own Chatter and RecordFiles), and show nothing when the theme names none."/>
+            <label type="p" text="The status-bar element shows the stages of the framework's EntitySync status flow (the status is the syncStatusId parameter, as the gallery writes nothing): the current stage filled, the done ones checked, and the transitions from it as buttons, the next stage the primary action and Error in the negative color; each confirms and posts setStatus with statusId. The Chatter column is the chatter and record-files elements: they load the subscreens of the current app root that the theme values STRT_CHATTER_SCREEN and STRT_RECORD_FILES_SCREEN name (here the gallery's own Chatter and RecordFiles), and show nothing when the theme names none."/>
         </box-body></container-box>
 
         <section name="NotFound" condition="!enumeration"><widgets>
@@ -119,11 +97,10 @@ along with this software (see the LICENSE.md file). If not, see
                     <label text="${enumId} · ${enumType?.description || enumeration.enumTypeId}" type="div" style="text-caption text-grey-6"/>
                 </container>
                 <container style="col-12 col-md">
-                    <render-mode><text type="qvt"><![CDATA[${statusBarHtml}]]></text></render-mode>
+                    <status-bar id="DetailStatus" status-id="${syncStatusId}" status-type-id="EntitySync" transition="setStatus"
+                            title="${enumeration.description}" parameter-map="{enumId: enumId}"/>
                 </container>
                 <container style="col-12 col-md-auto row items-center q-gutter-x-sm no-wrap">
-                    <link url="advanceStatus" text="Mark ${nextStatus}" btn-type="primary" condition="nextStatus"
-                            confirmation="Move ${enumeration.description} from ${currentStatus} to ${nextStatus}?" parameter-map="{toStatus:nextStatus}"/>
                     <button-menu text="More" icon="fa fa-ellipsis-v">
                         <link url="holdRecord" text="Hold" link-type="hidden-form-link" confirmation="Put ${enumeration.description} on hold?"/>
                         <link url="cloneRecord" text="Clone" link-type="hidden-form-link"/>

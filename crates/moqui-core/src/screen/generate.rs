@@ -383,7 +383,10 @@ fn describe(request: &UnitRequest<'_>) -> String {
 }
 
 fn make_unit(module: &ModeModule<'_>, body: String) -> Result<Unit, Error> {
-    let source = format!("(function () {{\n\"use strict\";\n{}{body}}})", module.prelude);
+    let source = format!(
+        "(function ($depth) {{\n\"use strict\";\n{}{body}{}}})",
+        module.prelude, module.epilogue
+    );
     crate::script::check_program(&source).map_err(|err| Error::new(format!("{}\n{source}", err.message())))?;
     Ok(Unit {
         id: NEXT_UNIT.fetch_add(1, Ordering::Relaxed),
@@ -426,11 +429,15 @@ fn unit_root(def: &ScreenDef, section: &str, fail: bool) -> Result<Option<MNode>
     }
 }
 
-/// A loaded mode: the macro table, the elements it treats as opaque, and its runtime prelude.
+/// A loaded mode: the macro table, the elements it treats as opaque, and its runtime prelude and epilogue (the code
+/// every unit starts and ends with). A unit is a function of `$depth`, how many units it runs inside (0 for the
+/// outermost); a mode keeps the render state of the unit around it in its prelude and gives it back in the epilogue, as
+/// a `try` and its `finally`, so a section rendered inside a form-list cell leaves the list's state as it found it.
 pub struct ModeModule<'js> {
     macros: Object<'js>,
     opaque: HashSet<String>,
     prelude: String,
+    epilogue: String,
     runtime: Arc<str>,
     runtime_id: u64,
 }
@@ -465,6 +472,7 @@ fn load_mode_source<'js>(ctx: &Ctx<'js>, source: &str, mode: &str, debug: bool) 
         .get("opaque")
         .map_err(|_| Error::new(format!("macro module for {mode} has no opaque list")))?;
     let prelude: String = module.get("prelude").unwrap_or_default();
+    let epilogue: String = module.get("epilogue").unwrap_or_default();
     let runtime: String = module.get("runtime").unwrap_or_default();
     let runtime_id = {
         use std::hash::{Hash, Hasher};
@@ -476,6 +484,7 @@ fn load_mode_source<'js>(ctx: &Ctx<'js>, source: &str, mode: &str, debug: bool) 
         macros,
         opaque: walker::names_of(&opaque)?,
         prelude,
+        epilogue,
         runtime: Arc::from(runtime),
         runtime_id,
     })

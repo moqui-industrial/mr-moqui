@@ -359,7 +359,7 @@ a { color: blue; }
         "box-header": stmt((node, children) => children),
         "box-body": stmt((node, children) => children),
         "box-body-nopad": stmt((node, children) => children),
-        "container-row": stmt((node) => childrenNamed(node, "row-col").map((kid) => kid.source).join("")),
+        "container-row": stmt((node, children) => children),
         "row-col": stmt((node, children) => children),
         "container-panel": stmt((node) => {
             const part = (name) => { const kid = child(node, name); return kid ? kid.source : ""; };
@@ -388,6 +388,12 @@ a { color: blue; }
         "image": imageMacro,
         "label": labelMacro,
         "number-card": numberCardMacro,
+        // a status-bar printed as the current status's description
+        "status-bar": stmt((node) => {
+            const line = `{ const $v = ${S.statusTextExpr(node)}; if ($v) sri.write("<div class=\\"status-bar\\">" + $e(ec.l10n.localize("Status")) + ": " + $e($v) + "</div>\\n"); }\n`;
+            const condition = attr(node, "condition");
+            return condition ? `if (${condition}) {\n${line}}\n` : line;
+        }),
         "dashboard": stmt((node, children) => `sri.write("<div class=\\"dashboard\\">");\n${children}sri.write("</div>\\n");\n`),
         // an html-view printed as its text (no remote image is fetched for a print)
         "html-view": stmt((node) => {

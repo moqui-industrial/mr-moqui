@@ -533,6 +533,8 @@ along with this software (see the LICENSE.md file). If not, see
             path = clean(path)
             const access = ec.service.sync().name('org.moqui.impl.FileServices.get#DriveAccess').parameters({driveId: driveId, path: path}).call()
             if (!access.drive || access.level < 1) { ec.message.addError(ec.l10n.localize('Folder not found')); return }
+            // the hidden trash folder by its path is the owner's only: a member or a share sees what is there through list#Trash
+            if (path.split('/')[0] === '.trash' && !access.isOwner) { ec.message.addError(ec.l10n.localize('Folder not found')); return }
             drive = access.drive
             const root = drive.rootLocation.replace(/\/+$/, '')
             const location = path ? `${root}/${path}` : root
@@ -653,6 +655,7 @@ along with this software (see the LICENSE.md file). If not, see
             path = clean(path)
             const access = ec.service.sync().name('org.moqui.impl.FileServices.get#DriveAccess').parameters({driveId: driveId, path: path}).call()
             if (!access.drive || access.level < 1 || !path) { ec.message.addError(ec.l10n.localize('File not found')); return }
+            if (path.split('/')[0] === '.trash' && !access.isOwner) { ec.message.addError(ec.l10n.localize('File not found')); return }
             const location = `${access.drive.rootLocation.replace(/\/+$/, '')}/${path}`
             const change = ec.resource.getLastChange(location)
             if (change == null) { ec.message.addError(ec.l10n.localize('File not found')); return }
@@ -700,10 +703,13 @@ along with this software (see the LICENSE.md file). If not, see
             if (!ec.user.userId) return
             if (String(path || '').split('/').includes('..')) return
             path = clean(path)
+            // a path in the trash is only searched in one drive, by its owner (below)
+            if (path.split('/')[0] === '.trash' && !driveId) return
             const drives = {}
             if (driveId) {
                 const access = ec.service.sync().name('org.moqui.impl.FileServices.get#DriveAccess').parameters({driveId: driveId, path: path}).call()
                 if (!access.drive || access.level < 1) { ec.message.addError(ec.l10n.localize('Drive not found')); return }
+                if (path.split('/')[0] === '.trash' && !access.isOwner) return
                 drives[driveId] = access.drive
             } else {
                 for (const drive of ec.service.sync().name('org.moqui.impl.FileServices.get#UserDrives').parameter('includeUsage', false).call().driveList)
@@ -865,6 +871,7 @@ along with this software (see the LICENSE.md file). If not, see
             versionName = null
             if (String(path || '').split('/').includes('..')) { ec.message.addError(ec.l10n.localize('Folder not found')); return }
             path = clean(path)
+            if (path.split('/')[0] === '.trash') { ec.message.addError(ec.l10n.localize('Folder not found')); return }
             const files = fileList ? Array.from(fileList) : (file ? [file] : [])
             if (!files.length) { ec.message.addError(ec.l10n.localize('No files to upload')); return }
             if (!['replace', 'keepBoth', 'skip'].includes(conflictPolicy)) { ec.message.addError(`Unknown conflict policy ${conflictPolicy}`); return }
@@ -1541,6 +1548,8 @@ along with this software (see the LICENSE.md file). If not, see
             shareId = null; linkToken = null; linkPath = null
             if (String(path || '').split('/').includes('..')) { ec.message.addError(ec.l10n.localize('File not found')); return }
             path = clean(path)
+            // what is in the trash is not shared
+            if (path.split('/')[0] === '.trash') { ec.message.addError(ec.l10n.localize('File not found')); return }
             const link = isLink === 'Y' || isLink === true
             if (!link && !sharedWithUserId && !sharedWithUserGroupId && !sharedWithPartyId && !sharedWithEmail) {
                 ec.message.addError(ec.l10n.localize('Share with someone, or make a link')); return
@@ -2210,6 +2219,8 @@ along with this software (see the LICENSE.md file). If not, see
             if (drive == null) { ec.message.addError(ec.l10n.localize('Not found')); return }
             const root = String(drive.rootLocation).replace(/\/+$/, '')
             const sharePath = String(row.path || '')
+            // a link to the whole drive does not reach its hidden trash folder
+            if (!sharePath && relative.split('/')[0] === '.trash') { ec.message.addError(ec.l10n.localize('Not found')); return }
             const base = sharePath ? `${root}/${sharePath}` : root
             if (row.isDirectory !== 'Y') {
                 if (relative) { ec.message.addError(ec.l10n.localize('Not found')); return }
@@ -2263,6 +2274,8 @@ along with this software (see the LICENSE.md file). If not, see
             if (drive == null) { ec.message.addError(ec.l10n.localize('Not found')); return }
             const root = String(drive.rootLocation).replace(/\/+$/, '')
             const sharePath = String(row.path || '')
+            // a link to the whole drive does not reach its hidden trash folder
+            if (!sharePath && relative.split('/')[0] === '.trash') { ec.message.addError(ec.l10n.localize('Not found')); return }
             const base = sharePath ? `${root}/${sharePath}` : root
             const target = relative ? `${base}/${relative}` : base
             const change = ec.resource.getLastChange(target)
@@ -2320,6 +2333,7 @@ along with this software (see the LICENSE.md file). If not, see
             const relative = inner.split('/').filter((part) => part && part !== '.').join('/')
             if (relative && row.permissionEnumId === 'RspUpload') { ec.message.addError(ec.l10n.localize('Not found')); return }
             const sharePath = String(row.path || '')
+            if (!sharePath && relative.split('/')[0] === '.trash') { ec.message.addError(ec.l10n.localize('Not found')); return }
             const folder = [sharePath, relative].filter((part) => part).join('/')
             const who = String(uploaderName || '').trim().slice(0, 100)
             const out = ec.service.sync().name('org.moqui.impl.FileServices.upload#Resource').parameters({driveId: row.driveId, path: folder,

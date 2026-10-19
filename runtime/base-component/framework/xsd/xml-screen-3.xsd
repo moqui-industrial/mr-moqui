@@ -850,18 +850,21 @@ along with this software (see the LICENSE.md file). If not, see
 
     <xs:element name="container-row" substitutionGroup="AllWidgets"><xs:annotation>
         <xs:documentation>A responsive 12-column grid row. For the concept and one possible
-            implementation see http://getbootstrap.com/css/#grid</xs:documentation>
+            implementation see http://getbootstrap.com/css/#grid. The columns are its row-col elements, and the row-col
+            elements of the widgets of a section, section-iterate (a column per entry) or section-include in it.</xs:documentation>
     </xs:annotation><xs:complexType>
-        <xs:sequence><xs:element ref="row-col" maxOccurs="unbounded"/></xs:sequence>
+        <xs:choice maxOccurs="unbounded"><xs:element ref="row-col"/><xs:element ref="section"/><xs:element ref="section-iterate"/>
+            <xs:element ref="section-include"/></xs:choice>
         <xs:attribute name="id" type="xs:string"/>
         <xs:attribute name="style" type="xs:string"/>
     </xs:complexType></xs:element>
     <xs:element name="row-col"><xs:complexType>
         <xs:group ref="widget-elements" minOccurs="0" maxOccurs="unbounded"/>
-        <xs:attribute name="lg" type="xs:nonNegativeInteger"/>
-        <xs:attribute name="md" type="xs:nonNegativeInteger"/>
-        <xs:attribute name="sm" type="xs:nonNegativeInteger"/>
-        <xs:attribute name="xs" type="xs:nonNegativeInteger"/>
+        <xs:attribute name="lg" type="xs:string"><xs:annotation><xs:documentation>The columns of 12 the column takes on a
+            large screen; this and md, sm and xs may be expressions (${wide ? 8 : 12}).</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="md" type="xs:string"/>
+        <xs:attribute name="sm" type="xs:string"/>
+        <xs:attribute name="xs" type="xs:string"/>
         <xs:attribute name="style" type="xs:string"/>
     </xs:complexType></xs:element>
 
@@ -1125,6 +1128,53 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:enumeration value="off"/></xs:restriction></xs:simpleType></xs:attribute>
         <xs:attribute name="condition" type="xs:string"/>
         <xs:attribute name="style" type="xs:string"/>
+    </xs:complexType></xs:element>
+
+    <!-- ================ Status ================ -->
+    <xs:element name="status-bar" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        The status of a record in its flow, for the title row of a detail screen (IronStone style-guide §3.3, §5.2, §8.2): a
+        row of stage chips (the done ones checked and tinted, the current one filled in its color, the ones to come outlined)
+        and the transitions the user may take from the current status as buttons: the next stage as the primary action, the
+        others (Hold, Cancel) as secondary ones, those that end badly in the negative color. Each button posts the transition
+        with the new status in parameter-name (statusId) and the parameters, after a confirmation. The stages and transitions
+        come from org.moqui.impl.StatusServices.get#StatusBar (the StatusItem rows of the type in sequence order and the
+        StatusFlowTransition rows of the flow); the colors from the status color map (StatusItem.colorName, else the words of
+        the status id: get#StatusColors). In qvt an m-status-bar; in a server-static screen the attributes are bound over the
+        screen's actions data and the browser asks the root screen's statusBar transition for the flow. In html chips and
+        buttons; in text and print the status description. The attributes may hold ${} expressions.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:sequence><xs:element minOccurs="0" maxOccurs="unbounded" ref="parameter"/></xs:sequence>
+        <xs:attribute name="id" type="xs:string"/>
+        <xs:attribute name="status-id" type="xs:string" use="required"><xs:annotation><xs:documentation>The current
+            status, such as ${workEffort.statusId}. Nothing is written when it is empty.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="status-type-id" type="xs:string"><xs:annotation><xs:documentation>The status type whose items
+            are the stages. Defaults to the type of the current status.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="status-flow-id" type="xs:string" default="Default"><xs:annotation><xs:documentation>The status
+            flow whose transitions are offered (a record's statusFlowId); Default by default.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="stages" type="xs:string"><xs:annotation><xs:documentation>The stages in order, a comma list of
+            status ids or an expression of a list (${['WeInPlanning', 'WeInProgress', 'WeComplete']}). By default the statuses of
+            the type in sequence order, without those that wait or end badly (On Hold, Cancelled), which show only when
+            current.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="transition" type="xs:string"><xs:annotation><xs:documentation>The transition each button posts,
+            with the new status and the parameters; it changes the record's status and answers with the screen, so the bar
+            shows the new status. Without it the bar shows the stages and no buttons.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="parameter-name" type="xs:string" default="statusId"><xs:annotation><xs:documentation>The
+            parameter that takes the new status.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="parameter-map" type="xs:string"><xs:annotation><xs:documentation>A map of parameters posted with
+            the new status, such as {workEffortId:workEffortId}, beside the parameter sub-elements.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="allowed-status-ids" type="xs:string"><xs:annotation><xs:documentation>The statuses the user may
+            move the record to, a comma list or an expression of a list; all the flow's transitions by default (those with a
+            userPermissionId only with that permission). An empty list allows none.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="read-only" type="xs:string"><xs:annotation><xs:documentation>When true (it may be an
+            expression, ${!canUpdate}) only the stages show, as for a role that may not change the record: the same layout
+            with the actions gone.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="title" type="xs:string"><xs:annotation><xs:documentation>The record's name in the confirmation
+            of a change ("Approve: SO10023?"); without it the confirmation is the transition's label.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="confirm" type="boolean" default="true"><xs:annotation><xs:documentation>Whether a change asks
+            first. Every status change confirms by the style guide.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="condition" type="xs:string"><xs:annotation><xs:documentation>If specified and evaluates to
+            false the bar is not rendered.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="style" type="xs:string"><xs:annotation><xs:documentation>CSS classes for the bar.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>
 
     <!-- ================ Dashboards ================ -->

@@ -710,9 +710,27 @@ impl HostWeb {
         })
     }
 
-    fn send_text_response(&self, ctx: Ctx<'_>, text: String) -> rquickjs::Result<()> {
+    /// `sendTextResponse(text, contentType, filename)`: a null text is empty, the content type is `text/plain` by default,
+    /// and a file name makes the text an attachment of that name.
+    fn send_text_response<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        text: Opt<JsValue<'js>>,
+        content_type: Opt<JsValue<'js>>,
+        file_name: Opt<JsValue<'js>>,
+    ) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            crate::web::send_text_response(&text);
+            let given = |value: &Opt<JsValue<'js>>| -> rquickjs::Result<Option<String>> {
+                match value.0.as_ref() {
+                    None => Ok(None),
+                    Some(value) if value.is_null() || value.is_undefined() => Ok(None),
+                    Some(value) => Ok(Some(
+                        rquickjs::convert::Coerced::<String>::from_js(&ctx, value.clone())?.0,
+                    )),
+                }
+            };
+            let text = given(&text)?.unwrap_or_default();
+            crate::web::send_text_response_with(&text, given(&content_type)?.as_deref(), given(&file_name)?.as_deref());
             Ok(())
         })
     }
