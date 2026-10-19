@@ -31,8 +31,11 @@ Built: [Revision-Management](../docs/Revision-Management.md) (dbresource reverse
 | Area | Item | Source |
 |---|---|---|
 | Git | No push to another server: gitoxide has none yet. A `db` repository is published by `export#GitRepository` and the git command line. Add `push#GitRepository` when gix supports it (pushes *to* Moqui are served: [Git-Hosting](../docs/Git-Hosting.md)) | `resource/git/fs.rs` |
-| Git hosting | `db` repositories send whole objects in a clone (gix-pack only copies deltas from packs, it does not make them); a delta search would shrink clones of long histories | `resource/git/server/pack_out.rs` |
-| Git hosting | No repack: each push to a `local` repository adds a pack, and gix's object database slots fill over many pushes; `repack#GitRepository` (gix has no repack either, so the system git or our own) | `resource/git/server/pack_in.rs` |
+| Git hosting | No repack of `local` repositories: each push adds a pack, and gix's object database slots fill over many pushes (`gc#GitRepositories` repacks `db` ones with our delta codec; a `local` one could be repacked through a pack of its own objects) | `resource/git/server/pack_in.rs` |
+| Git storage | A `db` delta chain is read a level of bases per query; on Postgres a recursive CTE could read a cold chain in one. A `git://` read of an old version of a large text is fine; GC keeps chains under `git_db_delta_depth` | `resource/git/db.rs` |
+| Git storage | Content blobs are in the database only (`ContentBlob.storageKind` `db`); a file system or S3-like backend behind the same store for the chunks | `resource/blob.rs` |
+| Git storage | A `remote` mirror does not fetch LFS objects; and LFS transfer adapters other than basic (`git-lfs-transfer` over SSH, multipart) | `resource/git/server/lfs.rs` |
+| Git storage | `GitObject` of a `local` repository written through `git://` over 8 MiB is a loose object of its size (only a `db` repository keeps large objects as content blobs); keep large files in LFS | `resource/git/fs.rs` |
 | Git hosting | Not served yet: partial clone (`filter blob:none`), `report-status-v2`, `push-cert`, the dumb HTTP protocol, anonymous read of a public repository | `resource/git/server/` |
 | Git hosting | `GitUpdate` rows (the push log, and one per `git://` write a gitECA rule listens to, such as a wiki save into a repository Mantle's rules watch) are never purged; a job that removes done ones past an age | `resource/git/events.rs` |
 | Git hosting | `SSH_GIT` is granted to ADMIN only: `has_permission` does not count ALL_USERS, so a grant for every user needs a group of its own | `framework/data/SecurityTypeData.xml` |

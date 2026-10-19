@@ -46,13 +46,21 @@ Java writes every history row whole and reads an `isDiff="Y"` row as null, so a 
 the delta versions as missing (the current text is unaffected). Rows loaded from data files with `isDiff="N"` read as
 before.
 
+A file over `dbresource_blob_threshold` bytes (64 KiB) is a content blob (`moqui.resource.ContentBlob`, by its
+SHA-256, in 1 MiB `ContentBlobChunk` rows; [Git-Hosting](Git-Hosting.md#content-blobs)) named by `DbResourceFile.blobId`,
+with `fileData` empty: the same bytes in two files are stored once, a response streams it (with `Range`), and a past
+version keeps its blob rather than a copy. `fileSize` gives its size without reading it. `migrate#DbResourceBlobs`
+(`org.moqui.impl.ResourceServices`) moves the files written before content blobs. Java reads such a file as empty.
+
 ## `git://` locations
 
 `git://<repositoryId>/<path>` is the file at `path` on the branch of a git repository. `git://<repositoryId>/` is the
 top directory. A write is a commit made at once on the branch, by the current user (`UserAccount.userFullName` and
 `emailAddress`), with a `Moqui-User-Id:` trailer the history reads back as `userId`. A move is one commit; a delete of
 a directory that still has files is refused, as for the other schemes. Git keeps no empty directories, so a new
-directory gets an empty `.gitkeep`, and a directory goes away with its last file.
+directory gets an empty `.gitkeep`, and a directory goes away with its last file. Files written together
+(`ResourceFacade::write_many`) are one commit per repository: `convert#Image` writes an image and its sizes that way. A
+large write (an upload) is stored as it is read, never all in memory.
 
 A file's versions are the commits on the branch's first-parent line whose copy of the file differs from their parent's;
 a commit that deletes the file is not one. Version names are full commit ids; a unique prefix of 7 or more digits
@@ -73,10 +81,12 @@ Each repository is a `moqui.resource.GitRepository` row, edited under System, Re
 | `fetchIntervalMinutes` | For `remote`: how often the fetch job fetches it; never when empty |
 | `lastFetchDate`, `lastFetchError`, `headCommitId` | Written by fetches and commits |
 
-- **`db`**: objects and refs are `GitObject` and `GitRef` rows (raw object content, no git header, uncompressed;
-  Postgres compresses large `bytea` values). The database backup holds the repository. Objects are byte for byte
-  git's, so an export has the same commit ids. Two servers writing the same branch are kept consistent by the ref
-  update, which locks the `GitRef` row and compares before it writes.
+- **`db`**: objects and refs are `GitObject` and `GitRef` rows, an object kept as a pack keeps it: the zlib stream of
+  its content, or of git delta instructions against another object, and an object over 8 MiB as a content blob
+  ([Git-Hosting](Git-Hosting.md#storage-of-db-repositories): about the size of git's own pack after
+  `gc#GitRepositories`). The database backup holds the repository. Objects are byte for byte git's, so an export has
+  the same commit ids. Two servers writing the same branch are kept consistent by the ref update, which locks the
+  `GitRef` row and compares before it writes.
 - **`local`**: a bare repository on disk, created on first use (or by `init#GitRepository`). Clone and push it at
   `/git/<repositoryId>.git` or over SSH ([Git-Hosting](Git-Hosting.md)); a push to its branch is seen on the next
   read.
@@ -92,7 +102,9 @@ an error in the message facade, as for any service.
 |---|---|
 | `fetch#GitRepository(repositoryId)` | Fetch a `remote` repository now |
 | `fetch#AllGitRepositories` | Fetch each `remote` repository whose `fetchIntervalMinutes` has passed; a failure is recorded on that row and logged, and the others are still fetched. The `fetch_AllGitRepositories_frequent` ServiceJob runs it every 5 minutes |
-| `init#GitRepository(repositoryId)` | Create a `local` bare repository; fetch a `remote` one; nothing for `db` |
+| `init#GitRepository(repositoryId, contentRepository)` | Create a `local` bare repository; fetch a `remote` one; nothing for `db`. With `contentRepository`, `setup#GitLfs` too |
+| `setup#GitLfs(repositoryId, patterns)` | Keep files matching `patterns` (images, video, audio, PDFs and archives when empty) in Git LFS: a commit of `.gitattributes`. A `git://` write of such a file stores it as a content blob behind an LFS pointer, and reads give the content ([Git-Hosting](Git-Hosting.md#large-files-git-lfs)) |
+| `gc#GitRepositories(repositoryId, dryRun)`, `fsck#GitRepository(repositoryId)` | Collect and repack `db` repositories; check every object ([Git-Hosting](Git-Hosting.md#storage-of-db-repositories)) |
 | `export#GitRepository(repositoryId, targetPath)` | Write a `db` repository as a bare repository on disk, with its branch and `HEAD` |
 | `import#GitRepository(repositoryId, source)` | Copy a branch with its history into a `db` repository, replacing its branch. `source` is `git://otherRepositoryId`, a repository directory (bare or not), or a URL; the row's `remoteUrl` when empty |
 
@@ -113,6 +125,7 @@ at `git://<repositoryId>/<SPACE>.md`. Each page save is then a commit, and the p
   `git-upload-pack`, and an `ssh://` URL the system `ssh`; import from a local repository directory or another
   `git://` repository needs neither, as it copies objects directly.
 - **Mirrors** fetch every branch and tag and drop the refs the remote dropped; `git://` locations read the row's branch.
-- SHA-1 repositories only. No submodules, LFS, or signed commits.
+- SHA-1 repositories only. No submodules or signed commits. Git LFS objects are fetched by git-lfs clients from this
+  server; a `remote` mirror does not fetch the LFS objects of the repository it mirrors.
 - The `git` cargo feature of `moqui-core` (on by default, off in the browser build) links gitoxide. Without it the
   `git` scheme is not installed.

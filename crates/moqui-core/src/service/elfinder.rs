@@ -558,7 +558,9 @@ impl Connector<'_> {
                 std::io::copy(&mut file.reader()?, &mut out).map_err(|err| io_error(&entry.location, &err))?;
                 Ok(())
             }
-            Store::Db => self.put_bytes(entry, &file.read_bytes()?),
+            Store::Db => self
+                .facade
+                .write_db_resource_from(&entry.location, &mut file.reader()?, Some(file.size())),
         }
     }
 

@@ -2,9 +2,10 @@
 
 MR Moqui hosts the `moqui.resource.GitRepository` repositories of [Revision-Management](Revision-Management.md) for the
 git command line and any git client: clone, fetch and push over HTTPS (smart HTTP) and over the built-in SSH server,
-shallow clones for CI, branches and tags. A push or a mirror fetch runs **gitECA rules**, the git counterpart of email
-ECA rules, and Mantle uses them to tie commits, branches and tags to projects and tasks. gitoxide has no server side;
-the protocol is ours (`crates/moqui-core/src/resource/git/server/`) over gitoxide's objects and packs.
+shallow clones for CI, branches and tags, and Git LFS. A push or a mirror fetch runs **gitECA rules**, the git
+counterpart of email ECA rules, and Mantle uses them to tie commits, branches and tags to projects and tasks. gitoxide
+has no server side; the protocol is ours (`crates/moqui-core/src/resource/git/server/`) over gitoxide's objects and
+packs.
 
 ## Clone URLs
 
@@ -18,8 +19,9 @@ properties), and `ssh_public_host` and `ssh_public_port` (else the webapp host a
 the Moqui username. The kinds of repository behave as they do for `git://` locations:
 
 - **`local`**: a bare repository on disk, the one for code. Clones reuse the deltas of its packs.
-- **`db`**: objects in `GitObject` rows, kept with the database backup. Its clones send whole objects (no deltas), so
-  a long history clones larger; fine for content and small code repositories.
+- **`db`**: objects in `GitObject` rows, kept with the database backup, compressed and as deltas of each other as a
+  pack holds them; a clone copies them into its pack as they are ([Storage](#storage-of-db-repositories)). Large files
+  are best kept in [Git LFS](#large-files-git-lfs).
 - **`remote`**: a read-only mirror; it can be cloned and fetched, a push is refused. A fetch of the mirror takes every
   branch and tag and drops the ones the remote dropped.
 
@@ -154,11 +156,100 @@ elsewhere and mirrored here links too), imports and commits made through Moqui. 
 branches and tags by hand; its summary shows them, and the project summary the repositories and tags.
 `Project/GitCommit` shows a commit: its message, people, parents, linked tasks, and each changed file's diff.
 
+## Storage of db repositories
+
+A `GitObject` row holds an object as a pack does (`storage`):
+
+| `storage` | `objectData` |
+|---|---|
+| `zlib` | the zlib stream of the content |
+| `delta` | the zlib stream of git delta instructions that make the content from `deltaBaseId`, an object of the same repository, at most `git_db_delta_depth` (50) deltas from a whole one |
+| `blob` | nothing: an object over `git_db_large_object` bytes (8 MiB) is the [content blob](#content-blobs) `blobId` |
+| empty | the content itself, as rows written before this format were; still read, and compressed by the next collection |
+
+A push keeps the deltas the client sent, and its entries' compressed bytes, as they are (a commit or tag, and a delta
+deeper than the limit, is stored whole); a large object is inflated into its content blob as the pack is read. A clone
+or fetch copies the rows into its pack: a delta as `OFS_DELTA` when its base is in the pack (or `REF_DELTA` without
+`ofs-delta`), as a delta against an object the client has in a thin pack, and applied otherwise; a content blob is
+compressed into the pack a window at a time. Reads go a batch of rows at a time, a delta chain a level of bases per
+query, and each object is checked against its id as it is decoded; `git_db_cache_bytes` (64 MiB) of decoded objects
+are kept for all repositories. `import#GitRepository` and `export#GitRepository` go through a pack as a push does.
+`git_db_write_format=raw` writes rows in the old form, for a database an older version also reads.
+
+`gc#GitRepositories` (the `gc_GitRepositories_daily` job, 03:30) collects each `db` repository, holding its lease
+(`gcLeaseOwner`) so only one run rewrites its rows:
+
+1. It marks what the refs reach, and what may still be needed: the tips of a change whose gitECA events have not run,
+   the old and new ids of the changes of the last `git_gc_reflog_days` (30) days (a force push can be undone), and every
+   row written or referenced again in the last `git_gc_prune_days` (14) days. A ref that reaches a missing object stops
+   the run: a damaged repository is never swept (`fsck#GitRepository` names what is wrong).
+2. It deletes the other rows, deepest delta first, each only while it is still that old: a push that reuses an old
+   object while the run goes refreshes its stamp, and keeps it.
+3. It repacks while its time (`timeoutMinutes`, 60) lasts: the versions of each path, newest first, the newest whole
+   and each older one a delta of a newer one when that saves a quarter of its bytes; rows of the old form compressed;
+   chains deeper than the limit made shorter. Each new delta is applied and checked against the object's id first.
+4. It lets go of the LFS objects no kept pointer names, uploaded before the cutoff, and records `objectCount`,
+   `storedBytes`, `lastGcDate` and `lastGcResult` on the repository. `dryRun` counts and changes nothing.
+
+The tools screen of a `db` repository shows its storage and runs a collection (a dry run by default) and the check.
+
+Measured on embedded Postgres (debug build, `cargo test -p moqui-host --test it -- --ignored git_storage
+--nocapture`):
+
+| | Objects | Content | git's pack | Stored, imported | After a collection | Clone |
+|---|---|---|---|---|---|---|
+| mr-mantle-usl's history | 13,435 | 195 MiB | 8.25 MiB | 8.37 MiB (1.02x) | 7.88 MiB (0.96x) | 3 to 5 s |
+| mr-moqui's history | 11,404 | 160 MiB | 10.3 MiB | 25.6 MiB | 10.4 MiB (1.01x) | 2 to 3 s |
+| 1000 `git://` saves of a 50 KB page | about 3,000 | about 49 MiB | | 2.72 MiB | 0.30 MiB | |
+
+Before this format the rows held the content (the Content column). A 1 GiB file is stored as it is read (55 MiB/s)
+and sent at about 270 MiB/s, the process's peak memory rising about 180 MiB; a 64 KiB range of it takes about 50 ms.
+
+## Content blobs
+
+Large content is a `moqui.resource.ContentBlob`, by the SHA-256 of its bytes, in `ContentBlobChunk` rows of
+`blob_chunk_size` (1 MiB) written a chunk per transaction: Git LFS objects, the large objects of `db` repositories, and
+`dbresource://` files over 64 KiB. The same bytes are stored once; two uploads of them at once, or a crash halfway
+(`ContentBlobUpload`), leave one blob and no stray chunks. A row refers to a blob by a relationship to `ContentBlob`,
+and `gc#ContentBlobs` (`org.moqui.impl.ResourceServices`, the `gc_ContentBlobs_daily` job, 04:30) deletes the blobs no
+row refers to and that were not written or referenced again in the last `blob_gc_prune_days` (14) days.
+
+File responses stream (`sendResourceResponse`, a screen's static files): a file over 256 KiB is read a window at a time
+as the client takes it, on a thread of its own (at most `webapp_transfer_workers`, 16, reading the database at once), so
+a slow download holds no request worker. One `Range` is answered from the bytes it names, with `ETag` (a git file's
+blob id, a content blob's SHA-256) and `If-Range`. Only text types are compressed. An upload is read as it arrives: a
+file part over 256 KiB goes to a file in `runtime/tmp/upload`, and from there to its storage (a content blob, a git
+object) as it is read; `webapp_max_upload` (2 GiB) bounds it and `webapp_upload_idle_timeout` (60 seconds) of silence
+ends it.
+
+## Large files (Git LFS)
+
+git-lfs clients push and fetch large files at `/git/<repositoryId>.git/info/lfs` (the Batch API with the basic
+transfer, and the locks API): `git lfs install`, `git lfs track "*.psd"`, then push and clone as usual. Over SSH,
+git-lfs runs `git-lfs-authenticate`, which gives it that HTTPS endpoint and a token for an hour (`git-lfs-transfer` is
+refused, so it does). An object is the content blob of its SHA-256, so the same file in many repositories is stored once, but a
+repository has an object (`moqui.resource.GitLfsObject`) only once it was uploaded to it: knowing an oid does not reach
+another repository's file. Uploads need the push rights of the repository, downloads view; a lock needs push rights,
+and force unlocking another user's lock `delete`. The batch's actions carry a token signed with `git_lfs_token_key`
+(generated into `runtime/.env`; `git_lfs_token_key_previous` still reads while it is changed) that says who the user
+is, for 15 minutes, and each request is authorized again. Objects are at most `git_lfs_max_object_size` (5 GiB).
+
+Moqui itself writes LFS files through `git://` locations: a file the `.gitattributes` of the branch head keep in LFS
+(`filter=lfs`) is stored as a content blob, linked to the repository, and committed as its pointer; a read gives the
+content, streamed for a response, and its size is the content's. `setup#GitLfs(repositoryId, patterns)` adds the
+patterns to `.gitattributes` (images, video, audio, PDFs and archives when empty); a content repository gets them when
+it is made (`init#GitRepository` with `contentRepository`, the tools screen's Content option, and the Content option of
+a project's new repository). A web site's images and their variants (`convert#Image` writes an image and its sizes in
+one commit) can so live in a `db` repository, with their history, in the database.
+
 ## Limits
 
 - No push from a repository to another server; publish a `db` repository with `export#GitRepository`.
 - A push made directly to a `local` repository's directory on the host runs no gitECA rules.
-- Each push to a `local` repository adds a pack; there is no repack yet (run `git repack -ad` in the directory).
+- Each push to a `local` repository adds a pack; there is no repack of those yet (run `git repack -ad` in the
+  directory). `gc#GitRepositories` is for `db` repositories.
 - `local` and `remote` repositories are on one node's disk: in a cluster send `/git` and SSH to that node, or share
-  the directory.
-- SHA-1 only; no LFS, partial clone, signed pushes (`push-cert`), `report-status-v2`, or the dumb HTTP protocol.
+  the directory. `db` repositories and content blobs are in the database, for every node.
+- A `remote` mirror does not fetch the LFS objects of the repository it mirrors.
+- SHA-1 only; no partial clone, signed pushes (`push-cert`), `report-status-v2`, the dumb HTTP protocol, or LFS
+  transfer adapters other than basic.
