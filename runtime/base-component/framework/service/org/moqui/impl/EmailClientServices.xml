@@ -42,7 +42,14 @@ along with this software (see the LICENSE.md file). If not, see
     Search: the MoquiEmailMessage document (data/MailSearchData.xml, index moqui_mail) is fed on every change of a message;
     find#Messages searches its free text there (parse#SearchText takes out the operators), else with LIKE.
 
-    Not yet (plans/Remaining-Work.md, IronStone M5e-M5f): OAuth (XOAUTH2) and the SMTP listener. -->
+    Sign-in with Google or Microsoft (M5e, Rust in moqui_core::service::mail::oauth; docs/Mail-OAuth.md): instead of a
+    password, an account's own server signs in with XOAUTH2 (authTypeEnumId EatOAuth2) for IMAP and SMTP, with access
+    tokens made from the refresh token stored encrypted on the EmailServer. start#OAuthSignIn begins the provider's
+    sign-in in a popup (PKCE, state and nonce kept in the session), the webroot transition /emailOAuth/callback runs
+    complete#OAuthSignIn, get#OAuthStatus says how a sign-in ended (and whether an account needs one), get#OAuthProviders
+    which providers this server is set up for, revoke#OAuthSignIn signs an account out. No service here answers a token.
+
+    Not yet (plans/Remaining-Work.md, IronStone M5f): the SMTP listener. -->
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
 
     <!-- ========== Access ========== -->
@@ -318,6 +325,12 @@ along with this software (see the LICENSE.md file). If not, see
                     server.setFields({smtpStartTls: 'Y', smtpSsl: 'N', storeDelete: 'N', storeMarkSeen: 'N', storeSkipSeen: 'N',
                         authTypeEnumId: 'EatPassword', mailUsername: account.emailAddress}, false, null, null)
                 }
+                // back to a password: the provider sign-in is revoked there and deleted here
+                if (!creating && server.authTypeEnumId === 'EatOAuth2' && given(authTypeEnumId) && authTypeEnumId !== 'EatOAuth2') {
+                    ec.service.sync().name('org.moqui.impl.EmailClientServices.revoke#OAuthToken')
+                            .parameter('emailServerId', emailServerId).disableAuthz().call()
+                    server.set('oauthRefreshToken', null)
+                }
                 for (const name of serverGiven) {
                     if (name === 'mailPassword' && !mailPassword) continue
                     server.set(name, blank(serverFields[name]))
@@ -342,7 +355,8 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
 
     <service verb="delete" noun="EmailAccount">
-        <description>Remove an account (manage permission; not the Internal account). By default the local copies are kept:
+        <description>Remove an account (manage permission; not the Internal account). A provider sign-in of a server it
+            owns is revoked at the provider (revoke#OAuthToken). By default the local copies are kept:
             the account is EasRemoved, which no list shows, its members' rows end, and the stored password and token of a
             server it owns are cleared, while its messages stay for the records they are filed on. deleteLocalCopies
             deletes its messages, folders, labels, identities, rules, out-of-office, members, the server it owns and the
@@ -368,6 +382,9 @@ along with this software (see the LICENSE.md file). If not, see
             const now = ec.user.nowTimestamp
             const account = ec.entity.find('moqui.basic.email.EmailAccount').condition('emailAccountId', emailAccountId).one()
             const ownedServer = account.ownsEmailServer === 'Y' && account.emailServerId ? account.emailServerId : null
+            // a provider sign-in is revoked there (after the commit, best effort) and deleted here
+            if (ownedServer) ec.service.sync().name('org.moqui.impl.EmailClientServices.revoke#OAuthToken')
+                    .parameter('emailServerId', ownedServer).disableAuthz().call()
             if (!deleteLocalCopies) {
                 account.set('statusId', 'EasRemoved')
                 account.update()
@@ -1590,10 +1607,17 @@ along with this software (see the LICENSE.md file). If not, see
             (autoconfig.domain, the domain's .well-known URL, then the ISPDB; email_autoconfig_urls replaces the list),
             then DNS SRV records (RFC 6186), else the guesses imap.domain and smtp.domain. The best of each, as the fields
             create#EmailAccount takes, and every one found in incomingList and outgoingList. oauthOnly when the provider
-            signs in only with OAuth.</description>
+            signs in only with OAuth. oauthProviderEnumId is the EmailOAuthProvider the mail is at (by the address's
+            domain, the servers found, or the domain's MX hosts: gmail.com, Google Workspace, outlook.com, hotmail.com,
+            live.com, Microsoft 365), whose servers replace the guesses (source provider); oauthConfigured says whether
+            this server is set up to sign in with it, so a wizard offers "Sign in with Google" or "Sign in with
+            Microsoft" only then.</description>
         <in-parameters><parameter name="emailAddress" required="true" allow-html="any"/></in-parameters>
         <out-parameters>
-            <parameter name="source"><description>autoconfig, ispdb, srv or guess</description></parameter>
+            <parameter name="source"><description>autoconfig, ispdb, srv, provider or guess</description></parameter>
+            <parameter name="oauthProviderEnumId"/>
+            <parameter name="oauthProviderName"/>
+            <parameter name="oauthConfigured" type="Boolean"/>
             <parameter name="displayName"/>
             <parameter name="storeHost"/><parameter name="storePort"/><parameter name="storeProtocol"/>
             <parameter name="smtpHost"/><parameter name="smtpPort"/><parameter name="smtpSsl"/><parameter name="smtpStartTls"/>
@@ -1603,6 +1627,125 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="outgoingList" type="List"><parameter name="server" type="Map"/></parameter>
         </out-parameters>
     </service>
+    <!-- ========== Sign-in with a provider (OAuth 2.0; Rust: moqui_core::service::mail::oauth, docs/Mail-OAuth.md) ========== -->
+
+    <service verb="start" noun="OAuthSignIn" type="rust" location="moqui_core::service::mail::start_oauth_sign_in"
+            transaction="ignore" allow-remote="false">
+        <description>Begin the sign-in with Google or Microsoft for a mail account, in a popup (moqui.oauthPopup). For an
+            account the user manages (emailAccountId; its own server, or one is made with the provider's servers) or for
+            a new account (emailAddress with accountName, displayName and accountKindEnumId EakExternal or EakShared),
+            which complete#OAuthSignIn makes once the user signed in. oauthProviderEnumId defaults to the account
+            server's, else the address's domain. The state, the PKCE verifier (S256) and a nonce stay in the user's
+            session for ten minutes, bound to the user and the account or address; the redirect URI is the deployment's
+            (email_oauth_redirect_uri), never the request's. The signed-in address must be the account's, unless
+            allowAddressChange (the user confirmed it), which then changes the account's address. Refused when this
+            server is not set up for the provider (get#OAuthProviders). authUrl is what the popup opens; signInId is for
+            get#OAuthStatus.</description>
+        <in-parameters>
+            <parameter name="emailAccountId"/>
+            <parameter name="emailAddress" allow-html="any"/>
+            <parameter name="accountName"/>
+            <parameter name="displayName"/>
+            <parameter name="accountKindEnumId"/>
+            <parameter name="oauthProviderEnumId"/>
+            <parameter name="allowAddressChange" type="Boolean" default="false"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="authUrl"/>
+            <parameter name="signInId"/>
+            <parameter name="oauthProviderEnumId"/>
+            <parameter name="expiresIn" type="Integer"><description>Seconds the sign-in may take</description></parameter>
+        </out-parameters>
+    </service>
+    <service verb="complete" noun="OAuthSignIn" type="rust" location="moqui_core::service::mail::complete_oauth_sign_in"
+            transaction="ignore" authenticate="anonymous-all" allow-remote="false">
+        <description>Internal: the provider's callback, run by the webroot transition /emailOAuth/callback (sendPage sends
+            the popup's page). The state is taken once from the session (unknown, used, another session's or another
+            user's, or older than ten minutes is refused), the code is exchanged with the PKCE verifier, the mail scopes
+            must be granted and the ID token (audience, issuer, expiry, nonce) names the address, which must be the
+            account's (errorCode addressMismatch, unless allowed); then the refresh token is stored encrypted on the
+            account's server (EatOAuth2), the account made or made active again. Every outcome is answered, none is an
+            error: status success or error with errorCode (invalidState, wrongUser, expired, denied, providerError,
+            notConfigured, exchangeFailed, noRefreshToken, scopeNotGranted, noAddress, addressMismatch, storeFailed) and
+            message. The page posts the same (never a token) to its opener on this server's own origin and on the
+            BroadcastChannel moqui-email-oauth.</description>
+        <in-parameters>
+            <parameter name="state"/>
+            <parameter name="code"/>
+            <parameter name="error"/>
+            <parameter name="errorDescription" allow-html="any"><description>Shown escaped</description></parameter>
+            <parameter name="sendPage" type="Boolean" default="false"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="status"/>
+            <parameter name="errorCode"/>
+            <parameter name="message"/>
+            <parameter name="signInId"/>
+            <parameter name="emailAccountId"/>
+            <parameter name="emailAddress"/>
+            <parameter name="expectedAddress"/>
+        </out-parameters>
+    </service>
+    <service verb="get" noun="OAuthStatus" type="rust" location="moqui_core::service::mail::get_oauth_status"
+            transaction="ignore" allow-remote="false">
+        <description>With signInId, how a sign-in of this session ended: status pending, success or error (errorCode and
+            message as complete#OAuthSignIn; unknown when it is gone or another session's or user's), with emailAccountId,
+            emailAddress and expectedAddress, for an opener whose popup could not post back. With emailAccountId (an
+            account the user reaches), its sign-in: authTypeEnumId, oauthProviderEnumId, signedIn, needsSignIn (an
+            EatOAuth2 account with no sign-in or whose sign-in failed: the Inbox rail's Fix), oauthConfigured and
+            signInDate. Never a token.</description>
+        <in-parameters>
+            <parameter name="signInId"/>
+            <parameter name="emailAccountId"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="status"/>
+            <parameter name="errorCode"/>
+            <parameter name="message"/>
+            <parameter name="signInId"/>
+            <parameter name="emailAccountId"/>
+            <parameter name="emailAddress"/>
+            <parameter name="expectedAddress"/>
+            <parameter name="authTypeEnumId"/>
+            <parameter name="oauthProviderEnumId"/>
+            <parameter name="signedIn" type="Boolean"/>
+            <parameter name="needsSignIn" type="Boolean"/>
+            <parameter name="oauthConfigured" type="Boolean"/>
+            <parameter name="signInDate" type="Timestamp"/>
+        </out-parameters>
+    </service>
+    <service verb="get" noun="OAuthProviders" type="rust" location="moqui_core::service::mail::get_oauth_providers"
+            transaction="ignore" allow-remote="false">
+        <description>The OAuth providers (EmailOAuthProvider) and whether this server is set up for each (a client id and
+            secret, not disabled, and a redirect URI), for the wizard's account kinds; redirectUri is the one to register
+            at the providers.</description>
+        <out-parameters>
+            <parameter name="providerList" type="List"><parameter name="provider" type="Map"/></parameter>
+            <parameter name="redirectUri"/>
+        </out-parameters>
+    </service>
+    <service verb="revoke" noun="OAuthSignIn" type="rust" location="moqui_core::service::mail::revoke_oauth_sign_in"
+            allow-remote="false">
+        <description>Sign an account (manage permission) out of its provider: the refresh token is revoked there when
+            the provider has a revocation endpoint (Google; Microsoft has none), after the commit, best effort and logged,
+            and deleted here; the account waits for a new sign-in (EasAuthFailed). revoked is false when the provider was
+            not asked.</description>
+        <in-parameters><parameter name="emailAccountId" required="true"/></in-parameters>
+        <out-parameters><parameter name="revoked" type="Boolean"/></out-parameters>
+    </service>
+    <service verb="revoke" noun="OAuthToken" type="rust" location="moqui_core::service::mail::revoke_oauth_token"
+            allow-remote="false">
+        <description>Internal (authorization disabled), for delete#EmailAccount and update#EmailAccount: revoke the
+            sign-in of a server at its provider after the commit (not while another server here signs in as the same
+            address with it, since the provider revokes the whole grant), forget its access token, and with clearToken
+            (the default) delete the refresh token. Failure tolerant: a failure is logged, never an error.</description>
+        <in-parameters>
+            <parameter name="emailServerId" required="true"/>
+            <parameter name="clearToken" type="Boolean" default="true"/>
+        </in-parameters>
+        <out-parameters><parameter name="revoked" type="Boolean"/></out-parameters>
+    </service>
+
     <service verb="import" noun="EmailMessages" type="rust" location="moqui_core::service::mail::import_messages"
             transaction="ignore" allow-remote="false">
         <description>Import .eml files (a message each) and .mbox files into a folder of an account the user may send from

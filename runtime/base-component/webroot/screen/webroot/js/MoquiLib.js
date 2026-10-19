@@ -529,6 +529,102 @@
             this.initWebSocket();
         },
 
+        // ---- OAuth sign-in popup ----
+
+        // A mail account's sign-in with Google or Microsoft in a popup (org.moqui.impl.EmailClientServices
+        // start#OAuthSignIn, docs/Mail-OAuth.md). Call it in the click handler: the window opens at once, so a popup
+        // blocker lets it through, then start() (the app's request to start#OAuthSignIn, a promise of {authUrl,
+        // signInId}) points it at the provider. The outcome is the one the callback page sends: a message from this
+        // page's own origin and from that window, or the same on the BroadcastChannel (a provider page can cut
+        // window.opener), else status(signInId) (the app's request to get#OAuthStatus) once the window is closed.
+        // Resolves with {status: "success" | "error" | "cancelled", errorCode, message, emailAccountId, emailAddress,
+        // expectedAddress, signInId}; no token ever reaches the page. options: width, height, pollMs, closedWaitMs,
+        // maxWaitMs, signal (an AbortSignal that cancels).
+        oauthPopup: (start, status, options) => {
+            const opts = options || {};
+            const width = opts.width || 520, height = opts.height || 680;
+            const left = Math.max(0, Math.round((root.screenX || 0) + ((root.outerWidth || width) - width) / 2));
+            const top = Math.max(0, Math.round((root.screenY || 0) + ((root.outerHeight || height) - height) / 2));
+            const popup = root.open("", "moquiOAuth", "popup=yes,width=" + width + ",height=" + height + ",left=" + left + ",top=" + top);
+            const origin = root.location && root.location.origin;
+            const FIELDS = ["status", "errorCode", "message", "emailAccountId", "emailAddress", "expectedAddress", "signInId"];
+            const pick = (data) => {
+                const out = {};
+                FIELDS.forEach((name) => { out[name] = data && data[name] != null && data[name] !== "" ? String(data[name]) : null; });
+                if (!["success", "error", "cancelled"].includes(out.status)) out.status = "error";
+                return out;
+            };
+            return new Promise((resolve) => {
+                let signInId = null, done = false, timer = null, channel = null, openedAt = 0, closedAt = 0, asking = false, askedAt = 0;
+                let cutOff = false;
+                const finish = (result, closeWindow) => {
+                    if (done) return;
+                    done = true;
+                    if (timer) root.clearInterval(timer);
+                    root.removeEventListener("message", onMessage);
+                    if (channel) { try { channel.close(); } catch (err) { /* closed already */ } }
+                    if (closeWindow && popup) { try { popup.close(); } catch (err) { /* gone */ } }
+                    resolve(result);
+                };
+                const accept = (data) => {
+                    if (done || !signInId || !data || data.type !== "moqui-email-oauth" || data.signInId !== signInId) return;
+                    finish(pick(data), false);
+                };
+                const onMessage = (event) => {
+                    if (!origin || event.origin !== origin) return;
+                    if (popup && event.source !== popup) return;
+                    accept(event.data);
+                };
+                root.addEventListener("message", onMessage);
+                if (typeof root.BroadcastChannel === "function") {
+                    try {
+                        channel = new root.BroadcastChannel("moqui-email-oauth");
+                        channel.onmessage = (event) => accept(event.data);
+                    } catch (err) { channel = null; }
+                }
+                if (opts.signal) opts.signal.addEventListener("abort", () => finish({ status: "cancelled", errorCode: "cancelled",
+                    message: null, emailAccountId: null, emailAddress: null, expectedAddress: null, signInId }, true));
+                if (!popup) {
+                    finish(pick({ status: "error", errorCode: "popupBlocked", message: "The browser blocked the sign-in window. Allow pop-ups for this site and try again." }), false);
+                    return;
+                }
+                const check = () => {
+                    if (done || asking) return;
+                    let closed;
+                    try { closed = popup.closed; } catch (err) { closed = true; }
+                    if (!closed) return;
+                    const now = Date.now();
+                    // a window cut off from this page reads as closed at once; then only the status says when it ends
+                    if (!closedAt) { closedAt = now; cutOff = now - openedAt < (opts.cutOffMs ?? 2000); }
+                    if (cutOff && now - askedAt < (opts.cutOffPollMs ?? 2500)) return;
+                    asking = true;
+                    askedAt = now;
+                    Promise.resolve().then(() => status(signInId)).then((answer) => {
+                        asking = false;
+                        if (done) return;
+                        if (answer && answer.status && answer.status !== "pending") finish(pick(answer), false);
+                        else if (cutOff ? Date.now() - openedAt > (opts.maxWaitMs ?? 600000) : Date.now() - closedAt > (opts.closedWaitMs ?? 3000)) {
+                            finish(pick({ status: "cancelled", errorCode: "closed", message: "The sign-in window was closed.", signInId }), false);
+                        }
+                    }, () => { asking = false; });
+                };
+                Promise.resolve().then(start).then((started) => {
+                    if (done) return;
+                    const url = started && started.authUrl ? String(started.authUrl) : "";
+                    if (!started || !started.signInId || !/^https?:\/\//i.test(url)) {
+                        finish(pick({ status: "error", errorCode: "startFailed", message: (started && (started.errors || started.message)) || "The sign-in could not start." }), true);
+                        return;
+                    }
+                    signInId = String(started.signInId);
+                    openedAt = Date.now();
+                    popup.location.href = url;
+                    timer = root.setInterval(check, opts.pollMs || 1000);
+                }, (err) => {
+                    finish(pick({ status: "error", errorCode: "startFailed", message: (err && err.message) || String(err) }), true);
+                });
+            });
+        },
+
         // A map that keeps the most recently used entries. The end of the list is the least recently used.
         LruMap: function (limit) {
             this.limit = limit;

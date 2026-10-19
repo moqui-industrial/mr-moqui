@@ -174,7 +174,7 @@ pub(super) fn send_template(
         Ok(attachments) => attachments,
         Err(err) => return Ok(send_error(&err, &email_message_id, &template_id)),
     };
-    if let Err(err) = deliver(&letter, &server) {
+    if let Err(err) = deliver(facade, &letter, &server) {
         note_message(format!("Error sending email: {err}"));
         return Ok(ids(&email_message_id, ""));
     }
@@ -322,7 +322,7 @@ pub(super) fn send_message(
     if let Err(err) = stored_attachments(facade, &email_message_id, &mut letter) {
         return Ok(send_failed(&email_message_id, &err));
     }
-    if let Err(err) = deliver(&letter, &server) {
+    if let Err(err) = deliver(facade, &letter, &server) {
         return Ok(send_failed(&email_message_id, &err));
     }
     if status == "ES_READY" || status == "ES_BOUNCED" {
@@ -1091,7 +1091,7 @@ pub(super) fn client_headers(headers: &str) -> Vec<(String, String)> {
     out
 }
 
-fn deliver(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
+fn deliver(facade: &EntityFacade, letter: &Letter, server: &EntityValue) -> Result<(), Error> {
     #[cfg(test)]
     if push_sink(letter) {
         return Ok(());
@@ -1115,26 +1115,73 @@ fn deliver(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
         });
         return Ok(());
     }
-    lettre_send(letter, server)
+    lettre_send(facade, letter, server)
 }
 
-fn lettre_send(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
+fn lettre_send(facade: &EntityFacade, letter: &Letter, server: &EntityValue) -> Result<(), Error> {
     let message = build_lettre(letter)?;
-    let transport = smtp_transport(server, None)?;
-    lettre::Transport::send(&transport, &message)
-        .map(|_| ())
-        .map_err(|err| Error::new(err.to_string()))
+    let auth = smtp_auth(facade, server, None)?;
+    let transport = smtp_transport(server, &auth, None)?;
+    match lettre::Transport::send(&transport, &message) {
+        Ok(_) => Ok(()),
+        // an access token the server refused (revoked, or ended early): once more with a new one, which is safe
+        // before the server took the message
+        Err(err) if matches!(auth, SmtpAuth::OAuth(..)) && smtp_auth_refused(&err) => {
+            let SmtpAuth::OAuth(_, rejected) = &auth else {
+                return Err(Error::new(err.to_string()));
+            };
+            let fresh = smtp_auth(facade, server, Some(rejected))?;
+            if matches!(&fresh, SmtpAuth::OAuth(_, token) if token == rejected) {
+                return Err(Error::new(err.to_string()));
+            }
+            let transport = smtp_transport(server, &fresh, None)?;
+            lettre::Transport::send(&transport, &message)
+                .map(|_| ())
+                .map_err(|err| Error::new(err.to_string()))
+        }
+        Err(err) => Err(Error::new(err.to_string())),
+    }
 }
 
-/// The SMTP transport of a server row, signing in when it has a `mailUsername`. `timeout` replaces lettre's default
-/// of a minute.
-fn smtp_transport(server: &EntityValue, timeout: Option<Duration>) -> Result<lettre::SmtpTransport, Error> {
+/// How SMTP signs in: not at all (no `mailUsername`), with the password, or for an EatOAuth2 server with XOAUTH2 and
+/// an access token (user and token).
+enum SmtpAuth {
+    None,
+    Password(String, String),
+    OAuth(String, String),
+}
+
+/// The SMTP sign-in of a server row; for EatOAuth2 a current access token (`rejected` is one the server just refused).
+fn smtp_auth(facade: &EntityFacade, server: &EntityValue, rejected: Option<&str>) -> Result<SmtpAuth, Error> {
+    let user = field_text(server, "mailUsername");
+    if field_text(server, "authTypeEnumId") == super::oauth::OAUTH {
+        let token = super::oauth::access_token(facade, &field_text(server, "emailServerId"), rejected)
+            .map_err(|err| Error::new(err.to_string()))?;
+        return Ok(SmtpAuth::OAuth(user, token));
+    }
+    if user.is_empty() {
+        return Ok(SmtpAuth::None);
+    }
+    Ok(SmtpAuth::Password(user, field_text(server, "mailPassword")))
+}
+
+/// A refusal of the sign-in: 530, 534, 535 or 454, or Gmail's XOAUTH2 error challenge, which lettre cannot answer.
+fn smtp_auth_refused(err: &lettre::transport::smtp::Error) -> bool {
+    let code = err.status().map(u16::from);
+    matches!(code, Some(454 | 530 | 534 | 535)) || (code.is_none() && err.to_string().contains("challenge"))
+}
+
+/// The SMTP transport of a server row, signing in as `auth` says. `timeout` replaces lettre's default of a minute.
+fn smtp_transport(
+    server: &EntityValue,
+    auth: &SmtpAuth,
+    timeout: Option<Duration>,
+) -> Result<lettre::SmtpTransport, Error> {
     let host = field_text(server, "smtpHost");
     let port = parse_port(&field_text(server, "smtpPort"), 25)?;
-    let user = field_text(server, "mailUsername");
-    let password = field_text(server, "mailPassword");
     // smtpSsl is TLS from the start. smtpStartTls upgrades when the server offers it, as Java's setStartTLSEnabled
     // (not required), so a server without STARTTLS still takes the mail. Both trust `email_tls_ca_file` too.
+    use lettre::transport::smtp::authentication::{Credentials, Mechanism};
     use lettre::transport::smtp::client::Tls;
     let mut builder = lettre::SmtpTransport::builder_dangerous(&host).port(port);
     if field_text(server, "smtpSsl") == "Y" {
@@ -1145,22 +1192,14 @@ fn smtp_transport(server: &EntityValue, timeout: Option<Duration>) -> Result<let
     if timeout.is_some() {
         builder = builder.timeout(timeout);
     }
-    Ok(creds(builder, &user, &password).build())
-}
-
-fn creds(
-    builder: lettre::transport::smtp::SmtpTransportBuilder,
-    user: &str,
-    password: &str,
-) -> lettre::transport::smtp::SmtpTransportBuilder {
-    if user.is_empty() {
-        builder
-    } else {
-        builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
-            user.to_string(),
-            password.to_string(),
-        ))
-    }
+    builder = match auth {
+        SmtpAuth::None => builder,
+        SmtpAuth::Password(user, password) => builder.credentials(Credentials::new(user.clone(), password.clone())),
+        SmtpAuth::OAuth(user, token) => builder
+            .credentials(Credentials::new(user.clone(), token.clone()))
+            .authentication(vec![Mechanism::Xoauth2]),
+    };
+    Ok(builder.build())
 }
 
 pub(super) fn build_lettre(letter: &Letter) -> Result<lettre::Message, Error> {
@@ -1612,10 +1651,10 @@ pub(super) fn test_server(
     let mut steps = Vec::new();
     let mut folders = Vec::new();
     if wanted("testSmtp") {
-        steps.push(smtp_step(&server));
+        steps.push(smtp_step(facade, &server));
     }
     if wanted("testStore") && !field_text(&server, "storeHost").is_empty() {
-        store_steps(&server, &mut steps, &mut folders);
+        store_steps(facade, &server, &mut steps, &mut folders);
     }
     let success = !steps.is_empty() && steps.iter().all(|step| step.1);
     let mut out = BTreeMap::new();
@@ -1641,7 +1680,7 @@ pub(super) fn test_server(
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-fn smtp_step(server: &EntityValue) -> (&'static str, bool, String) {
+fn smtp_step(facade: &EntityFacade, server: &EntityValue) -> (&'static str, bool, String) {
     let host = field_text(server, "smtpHost");
     if host.is_empty() {
         return ("smtp", false, "The server has no SMTP host".to_string());
@@ -1652,9 +1691,17 @@ fn smtp_step(server: &EntityValue) -> (&'static str, bool, String) {
     } else {
         format!("{host}:{port}")
     };
+    let connect = |auth: &SmtpAuth| {
+        smtp_transport(server, auth, Some(TEST_TIMEOUT))
+            .and_then(|transport| transport.test_connection().map_err(|err| Error::new(err.to_string())))
+    };
     let checked = require_host(&host)
-        .and_then(|()| smtp_transport(server, Some(TEST_TIMEOUT)))
-        .and_then(|transport| transport.test_connection().map_err(|err| Error::new(err.to_string())));
+        .and_then(|()| smtp_auth(facade, server, None))
+        .and_then(|auth| match (connect(&auth), &auth) {
+            // an access token refused: once more with a new one, as a send does
+            (Err(_), SmtpAuth::OAuth(_, rejected)) => connect(&smtp_auth(facade, server, Some(rejected))?),
+            (result, _) => result,
+        });
     let signs_in = !field_text(server, "mailUsername").is_empty();
     match checked {
         Ok(true) if signs_in => ("smtp", true, format!("Connected to {place} and signed in")),
@@ -1664,8 +1711,14 @@ fn smtp_step(server: &EntityValue) -> (&'static str, bool, String) {
     }
 }
 
-fn store_steps(server: &EntityValue, steps: &mut Vec<(&'static str, bool, String)>, folders: &mut Vec<Value>) {
+fn store_steps(
+    facade: &EntityFacade,
+    server: &EntityValue,
+    steps: &mut Vec<(&'static str, bool, String)>,
+    folders: &mut Vec<Value>,
+) {
     let host = field_text(server, "storeHost");
+    let oauth = field_text(server, "authTypeEnumId") == super::oauth::OAUTH;
     let protocol = {
         let given = field_text(server, "storeProtocol");
         if given.is_empty() {
@@ -1698,6 +1751,14 @@ fn store_steps(server: &EntityValue, steps: &mut Vec<(&'static str, bool, String
         mark_seen: false,
         delete: false,
     };
+    if pop && oauth {
+        steps.push((
+            "storeLogin",
+            false,
+            "A provider sign-in (OAuth) syncs over IMAP, not POP3".to_string(),
+        ));
+        return;
+    }
     if pop {
         match Pop3::open(&settings).and_then(|mut pop3| pop3.close()) {
             Ok(()) => steps.push(("storeLogin", true, format!("Signed in to POP3 {place}"))),
@@ -1715,6 +1776,7 @@ fn store_steps(server: &EntityValue, steps: &mut Vec<(&'static str, bool, String
     }
     // the connection the sync makes: TLS from the start on imaps or port 993, else STARTTLS when the server offers it
     let info = super::sync::ServerInfo {
+        server_id: field_text(server, "emailServerId"),
         host: host.clone(),
         port,
         protocol: protocol.clone(),
@@ -1722,8 +1784,9 @@ fn store_steps(server: &EntityValue, steps: &mut Vec<(&'static str, bool, String
         password: settings.password.clone(),
         auth_type: field_text(server, "authTypeEnumId"),
         store_delete: false,
+        access_token: None,
     };
-    let mut session = match super::sync::open_imap(&info) {
+    let mut session = match super::sync::connect_imap(facade, &info) {
         Ok(conn) => {
             steps.push(("storeLogin", true, format!("Signed in to IMAP {place}")));
             conn.session

@@ -43,6 +43,29 @@ spec({
     cleanup() { ec.artifactExecution.enableAuthz() },
 })
 
+// sign-in with a provider (docs/Mail-OAuth.md): the seeded providers, not set up without a client, and the webroot
+// callback page refusing a state its session did not start; the flow itself is oauth_tests.rs against a fake provider
+feature("sign-in with a provider: the seeded providers and the callback page", {
+    when() {
+        user("mailClientOwner")
+        ec.user.internalLoginUser("mailClientOwner")
+        const providers = mail("get#OAuthProviders").providerList.map((row) => `${row.oauthProviderEnumId}:${row.configured}`)
+        const google = ec.entity.find("moqui.basic.email.EmailOAuthProvider").condition("oauthProviderEnumId", "EopGoogle").one()
+        const render = screenTest("emailOAuth").render("callback", { state: "not-a-state-of-this-session", code: "x" }, "get")
+        const page = render.output || ""
+        return { providers, googleScope: google ? google.mailScope : null, status: render.status, page }
+    },
+    then({ providers, googleScope, status, page }) {
+        providers.includes("EopGoogle:false")
+        providers.includes("EopMicrosoft:false")
+        googleScope == "https://mail.google.com/"
+        status == 200
+        page.includes("The sign-in did not finish")
+        page.includes("\"errorCode\":\"invalidState\"")
+        page.includes("window.opener.postMessage(m,o)")
+    },
+})
+
 feature("an account with its folders, and the message list in threads with its cursor", {
     when() {
         for (const id of ["mailClientOwner", "mailClientStranger"]) user(id)
