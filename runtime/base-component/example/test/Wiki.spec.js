@@ -119,7 +119,15 @@ feature("a review is approved and refused from the tray", {
 feature("search leaves out another user's notes", {
     when() {
         ec.user.internalLoginUser("wikiAuthor")
-        save("NOTES_wikiAuthor", `Secret recipe ${RUN}`, "# Secret recipe\n")
+        const pageId = save("NOTES_wikiAuthor", `Secret recipe ${RUN}`, "# Secret recipe\n")
+        // the search documents on WikiPage have the page now rather than when the feed indexes it after the commit (a
+        // runtime with Mantle has MantleWikiPage, so the search uses the index and not the page paths)
+        if (ec.search.isAvailable()) {
+            for (const document of ec.entity.find("moqui.entity.document.DataDocument").condition("primaryEntityName", "moqui.resource.wiki.WikiPage").list()) {
+                ec.search.ensureIndex({ documentType: document.dataDocumentId })
+                ec.search.indexDocuments(ec.entity.getDataDocuments(document.dataDocumentId, { wikiPageId: pageId }))
+            }
+        }
         const mine = wiki("search#WikiPages", { text: `secret recipe ${RUN}` }).pageList
         ec.user.internalLoginUser("wikiOutsider")
         const theirs = wiki("search#WikiPages", { text: `secret recipe ${RUN}` }).pageList
