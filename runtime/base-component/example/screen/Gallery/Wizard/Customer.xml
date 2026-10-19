@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Step 1 of the gallery wizard: who the customer is. The form has no submit button of its own: the wizard's Next submits it
+    to saveCustomer, whose answer without errors moves the wizard to Options. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Customer" default-menu-index="1">
+
+    <transition name="saveCustomer"><actions><script><![CDATA[
+        if (!customerName || !String(customerName).trim()) ec.message.addValidationError(null, 'customerName', null, 'Enter the customer name', null)
+        if (emailAddress && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(emailAddress))) ec.message.addValidationError(null, 'emailAddress', null, 'Enter an email address', null)
+        if (ec.message.hasError()) return
+        const draft = JSON.parse(ec.web.sessionAttributes.get('galleryWizard') || '{}')
+        Object.assign(draft, {customerName: String(customerName).trim(), contactName: contactName || '', emailAddress: emailAddress || '', phone: phone || ''})
+        ec.web.sessionAttributes.put('galleryWizard', JSON.stringify(draft))
+    ]]></script></actions><default-response url="."/></transition>
+
+    <actions>
+        <set field="wizard" from="Object.assign({customerName: 'Acme Co.', contactName: 'Jane Doe', emailAddress: 'jane.doe@acme.example', phone: '+1 555 0100'},
+            JSON.parse(ec.web.sessionAttributes.get('galleryWizard') || '{}'))"/>
+    </actions>
+    <widgets>
+        <container-box><box-header title="Customer"/><box-body>
+            <label text="Who the customer is and how to reach them." type="p" style="m-muted"/>
+            <form-single name="WizardCustomer" transition="saveCustomer" map="wizard" focus-field="customerName">
+                <field name="customerName"><default-field title="Customer name"><text-line size="40"/></default-field></field>
+                <field name="contactName"><default-field title="Contact"><text-line size="30"/></default-field></field>
+                <field name="emailAddress"><default-field title="Email"><text-line size="30" input-type="email"/></default-field></field>
+                <field name="phone"><default-field title="Phone"><text-line size="20"/></default-field></field>
+                <field-layout>
+                    <field-row><field-ref name="customerName"/><field-ref name="contactName"/></field-row>
+                    <field-row><field-ref name="emailAddress"/><field-ref name="phone"/></field-row>
+                </field-layout>
+            </form-single>
+        </box-body></container-box>
+    </widgets>
+</screen>

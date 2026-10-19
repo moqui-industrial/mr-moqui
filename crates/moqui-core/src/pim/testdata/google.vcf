@@ -1,0 +1,25 @@
+BEGIN:VCARD
+VERSION:3.0
+FN:Gina Googler
+N:Googler;Gina;Marie;Dr.;PhD
+NICKNAME:Gigi
+EMAIL;TYPE=INTERNET;TYPE=HOME:gina.home@example.com
+EMAIL;TYPE=INTERNET;TYPE=WORK;TYPE=pref:gina.googler@example.com
+TEL;TYPE=CELL:+1 801-555-8142
+TEL;TYPE=WORK:(801) 555-8123
+TEL;TYPE=HOME,FAX:801 555 8199
+ADR;TYPE=HOME:;Apt 4;123 Main St\nBuilding B;Salt Lake City;UT;84101;United States
+ORG:Googler Widgets;Research
+TITLE:Chief Widget Officer
+BDAY:1985-04-12
+URL:https://gina.example.com
+NOTE:Met at the fair\, 2024\nAsk about widgets
+CATEGORIES:myContacts,Friends,Work
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Pat No-Year
+N:No-Year;Pat;;;
+BDAY:--07-04
+TEL;TYPE=CELL:555-0100
+END:VCARD

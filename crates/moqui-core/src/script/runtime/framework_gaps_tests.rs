@@ -103,6 +103,14 @@ fn finds_conditions_pages_and_update_all() {
     holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "in", ["E1", "E2"]).count() === 2"#);
     holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("sequenceNum", "greater-than", "1").count() === 2"#);
     holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("sequenceNum", "<=", "1").count() === 1"#);
+    // A number condition value against a number-integer field (the in-memory database compared I32 to I64 as equal).
+    holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("sequenceNum", ">", 1).count() === 2"#);
+    holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("sequenceNum", "<", 3).count() === 2"#);
+    holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("sequenceNum", "=", 2).count() === 1"#);
+    holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("sequenceNum", "!=", 2).count() === 2"#);
+    holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("sequenceNum", ">=", 1.5).count() === 2"#);
+    holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("sequenceNum", "in", [1, 3]).count() === 2"#);
+    holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("sequenceNum", 3).one().enumId === "E3""#);
     holds(r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "=", "E1").count() === 1"#);
     assert!(
         eval_condition(r#"ec.entity.find("moqui.basic.Enumeration").condition("enumId", "bogus", "E1").count()"#)
@@ -472,8 +480,8 @@ fn like_ignore_case_and_where_conditions_reach_the_sql() {
         .factory()
         .set_entity(crate::testing::open_with_tape(std::sync::Arc::clone(&tape)));
     let _entered = context.enter();
-    // the in-memory database cannot run the where text, so that find fails after the statement is written; the two
-    // ignore-case finds have their own patterns, so the second is not the first's cached count
+    // the in-memory database cannot run the where condition, so that find fails after the statement is written; the
+    // two patterns differ so the second count is not the first one's from the cache
     for expression in [
         r#"ec.entity.find("moqui.basic.Enumeration").condition(ec.entity.conditionFactory.makeCondition("description", "like", "FIR%").ignoreCase()).count()"#,
         r#"ec.entity.find("moqui.basic.Enumeration").condition(ec.entity.conditionFactory.makeCondition("description", "like", "SEC%", false, true)).count()"#,
@@ -1091,4 +1099,60 @@ fn resource_versions_diffs_and_location_text_of_a_version() {
     );
     let _ = std::fs::remove_dir_all(&dir);
     clear_context_stack();
+}
+
+/// `ec.cache.getCache(name)` for a name with no conf entry makes the cache on first use with the default settings,
+/// as Java's `CacheFacadeImpl.getCacheInternal`; a configured cache keeps its settings.
+#[test]
+fn a_cache_without_a_conf_entry_is_made_on_first_use() {
+    clear_context_stack();
+    let context = ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    assert!(context.factory().cache().get("spec.scratch").unwrap().is_none());
+    holds(
+        r#"ec.cache.getCache("spec.scratch").get("a") === null && !ec.cache.getCache("spec.scratch").containsKey("a")"#,
+    );
+    run_script(r#"ec.cache.getCache("spec.scratch").put("a", {x: 1, list: [2, 3]});"#).unwrap();
+    holds(
+        r#"ec.cache.getCache("spec.scratch").get("a").x === 1 && ec.cache.getCache("spec.scratch").get("a").list[1] === 3"#,
+    );
+    holds(r#"ec.cache.getCache("spec.scratch").containsKey("a")"#);
+    let made = context
+        .factory()
+        .cache()
+        .get("spec.scratch")
+        .unwrap()
+        .expect("the cache was made");
+    assert_eq!(
+        made.info().max_entries,
+        0,
+        "no size limit, as Java's default MutableConfiguration"
+    );
+    holds(r#"ec.cache.getCache("spec.scratch").remove("a") && ec.cache.getCache("spec.scratch").get("a") === null"#);
+    run_script(r#"ec.cache.getCache("spec.scratch").put("b", 2); ec.cache.getCache("spec.scratch").clear();"#).unwrap();
+    holds(r#"ec.cache.getCache("spec.scratch").get("b") === null"#);
+    clear_context_stack();
+}
+
+/// A time stamp field reaches a script as epoch millis text, so `ec.l10n.format(value.changedDate, null)` (the status
+/// history of MrSimpleScreens' StatusWidgets) formats it as Java formats the `Timestamp`, not as the text.
+#[test]
+fn a_time_stamp_field_formats_with_no_pattern() {
+    let context = database();
+    let _entered = context.enter();
+    seed();
+    run_script(
+        r#"const log = ec.entity.makeValue("moqui.entity.EntityAuditLog");
+        log.auditHistorySeqId = "A1"; log.changedEntityName = "moqui.basic.Enumeration"; log.changedFieldName = "statusId";
+        log.pkPrimaryValue = "E1"; log.newValueText = "X"; log.changedDate = 1709647629000; log.create();"#,
+    )
+    .unwrap();
+    holds(
+        r#"(function () {
+        const list = ec.entity.find("moqui.entity.EntityAuditLog").selectField("newValueText,changedDate").orderBy("-changedDate").list();
+        return String(list[0].changedDate) === "1709647629000" && ec.l10n.format(list[0].changedDate, null) === "2024-03-05 14:07"
+            && ec.l10n.format(Array.from(list)[0].changedDate, "") === "2024-03-05 14:07"
+            && ec.l10n.format(list[0].changedDate, "MMM d, h:mm a") === "Mar 5, 2:07 PM";
+    })()"#,
+    );
 }

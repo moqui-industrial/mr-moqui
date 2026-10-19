@@ -37,7 +37,12 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="fileData" type="binary-very-long"/>
         <field name="blobId" type="id-long"><description>The content blob of content over
             dbresource_blob_threshold bytes, in place of fileData</description></field>
-        <field name="fileSize" type="number-integer"/>
+        <field name="fileSize" type="number-integer"><description>The bytes of the content (fileData, or the content
+            blob), written with each write so a folder list need not read the files; a row written before this field is
+            sized from its data until its next write (or migrate#DbResourceBlobs).</description></field>
+        <field name="versionNote" type="text-medium"><description>The note written with the current version (an
+            upload's version note); its DbResourceFileHistory row keeps it too, so it stays with the version when a
+            later write replaces it.</description></field>
         <relationship type="one" related="moqui.resource.DbResource" short-alias="dbResource"/>
         <relationship type="one" related="moqui.resource.ContentBlob" short-alias="blob"/>
         <relationship type="many" related="moqui.resource.DbResourceFileHistory" short-alias="histories">
@@ -52,6 +57,7 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="isDiff" type="text-indicator"/>
         <field name="fileData" type="binary-very-long"/>
         <field name="blobId" type="id-long"><description>The content blob of a past version kept as one</description></field>
+        <field name="versionNote" type="text-medium"><description>The note written with this version</description></field>
         <relationship type="one" related="moqui.resource.DbResourceFile"/>
         <relationship type="one" related="moqui.resource.ContentBlob" short-alias="blob"/>
         <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
@@ -214,6 +220,214 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="userId" type="id"/>
         <field name="startedDate" type="date-time"/>
         <field name="lastActivityDate" type="date-time"/>
+    </entity>
+
+    <!-- ========================================================= -->
+    <!-- moqui.resource drives (org.moqui.impl.FileServices) -->
+    <!-- ========================================================= -->
+    <!-- Files over resource locations, in drives. No Java counterpart. These are moqui.* entities, which entity filters
+        never apply to: FileServices checks every access (a drive's owner, a current member by permission, or a share of
+        the path), and screens read these records only through it. The file metadata (shares, favorites, tags, trash,
+        recent) is keyed by drive and path, since a file of a git:// drive has no row of its own. Guide:
+        docs/Revision-Management.md, "Drives". -->
+
+    <entity entity-name="ResourceDrive" package="moqui.resource" use="nontransactional" short-alias="resourceDrives">
+        <description>A root location with an owner, members and a quota. The storage is the root's scheme: a personal or
+            folder drive on the database tree (dbresource://, under the moqui.drive.root preference, dbresource://drive by
+            default), a version-controlled drive or a mirror on git://repositoryId/ over the GitRepository of its kind
+            (db, local; remote for a mirror). A records drive is a view over record attachment folders, mapped by its
+            ResourceDriveRecordFolder rows.</description>
+        <field name="driveId" type="id" is-pk="true"/>
+        <field name="driveName" type="text-medium"/>
+        <field name="description" type="text-long"/>
+        <field name="driveKindEnumId" type="id"><description>RdkPersonal, RdkShared, RdkMirror or RdkRecords</description></field>
+        <field name="rootLocation" type="text-medium"><description>The drive's top folder: dbresource://drive/..., or
+            git://repositoryId/ (with an optional folder)</description></field>
+        <field name="repositoryId" type="id"><description>The GitRepository of a git:// drive</description></field>
+        <field name="ownerUserId" type="id"/>
+        <field name="quotaBytes" type="number-integer"><description>The most bytes the drive may hold; no limit when empty</description></field>
+        <field name="archivedDate" type="date-time"><description>An archived drive is read only and leaves the user's list</description></field>
+        <field name="createdDate" type="date-time"/>
+        <field name="indexedVersionName" type="text-short"><description>For a mirror: the commit its search documents
+            were last brought to (FileServices.index#MirrorDrives)</description></field>
+        <relationship type="one" title="ResourceDriveKind" related="moqui.basic.Enumeration" short-alias="kind">
+            <key-map field-name="driveKindEnumId"/></relationship>
+        <relationship type="one-nofk" related="moqui.resource.GitRepository" short-alias="repository"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="owner">
+            <key-map field-name="ownerUserId" related="userId"/></relationship>
+        <relationship type="many" related="moqui.resource.ResourceDriveMember" short-alias="members">
+            <key-map field-name="driveId"/></relationship>
+        <index name="RES_DRIVE_OWNER"><index-field name="ownerUserId"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType description="Resource Drive Kind" enumTypeId="ResourceDriveKind"/>
+            <moqui.basic.Enumeration description="Personal" enumId="RdkPersonal" enumTypeId="ResourceDriveKind" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Shared" enumId="RdkShared" enumTypeId="ResourceDriveKind" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Mirror" enumId="RdkMirror" enumTypeId="ResourceDriveKind" sequenceNum="3"/>
+            <moqui.basic.Enumeration description="Records" enumId="RdkRecords" enumTypeId="ResourceDriveKind" sequenceNum="4"/>
+
+            <moqui.basic.EnumerationType description="Resource Drive Permission" enumTypeId="ResourceDrivePermission"/>
+            <moqui.basic.Enumeration description="View" enumId="RdpView" enumTypeId="ResourceDrivePermission" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Edit" enumId="RdpEdit" enumTypeId="ResourceDrivePermission" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Manage" enumId="RdpManage" enumTypeId="ResourceDrivePermission" sequenceNum="3"/>
+
+            <moqui.basic.EnumerationType description="Resource Share Permission" enumTypeId="ResourceSharePermission"/>
+            <moqui.basic.Enumeration description="View" enumId="RspView" enumTypeId="ResourceSharePermission" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Edit" enumId="RspEdit" enumTypeId="ResourceSharePermission" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Upload only" enumId="RspUpload" enumTypeId="ResourceSharePermission" sequenceNum="3"/>
+
+            <!-- The search document of drive files: no row feeds it, FileServices indexes each write, move, rename and
+                trash with documents it builds (ec.search.indexDocuments), and the mirror fetch indexes the paths that
+                changed. Queries filter by the drives the user may open. extractedText is for later. -->
+            <moqui.entity.document.DataDocument dataDocumentId="MoquiDriveFile" indexName="moqui_drive" documentName="Drive File"
+                    primaryEntityName="moqui.resource.ResourceDrive" documentTitle="${name}"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="01" fieldPath="driveId"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="02" fieldPath="(path)"
+                    fieldNameAlias="path" fieldType="keyword"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="03" fieldPath="(name)"
+                    fieldNameAlias="name" fieldType="text" sortable="Y" searchRole="title" searchWeight="A"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="04" fieldPath="(folder)"
+                    fieldNameAlias="folder" fieldType="keyword"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="05" fieldPath="(contentType)"
+                    fieldNameAlias="contentType" fieldType="keyword"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="06" fieldPath="(fileType)"
+                    fieldNameAlias="fileType" fieldType="keyword" searchRole="category"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="07" fieldPath="(isDirectory)"
+                    fieldNameAlias="isDirectory" fieldType="keyword"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="08" fieldPath="(size)"
+                    fieldNameAlias="size" fieldType="long"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="09" fieldPath="(modifiedDate)"
+                    fieldNameAlias="modifiedDate" fieldType="date" sortable="Y"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="10" fieldPath="(modifiedByUserId)"
+                    fieldNameAlias="modifiedByUserId" fieldType="keyword"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="11" fieldPath="(tagIds)"
+                    fieldNameAlias="tagIds" fieldType="keyword"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="12" fieldPath="(tags)"
+                    fieldNameAlias="tags" fieldType="text"/>
+            <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="13" fieldPath="(extractedText)"
+                    fieldNameAlias="extractedText" fieldType="text" searchWeight="C"/>
+        </seed-data>
+    </entity>
+    <entity entity-name="ResourceDriveMember" package="moqui.resource" use="nontransactional">
+        <description>Who may open a drive besides its owner: a user or a user group, with RdpView, RdpEdit or RdpManage,
+            from fromDate until thruDate.</description>
+        <field name="driveMemberId" type="id" is-pk="true"/>
+        <field name="driveId" type="id"/>
+        <field name="userId" type="id"/>
+        <field name="userGroupId" type="id"/>
+        <field name="permissionEnumId" type="id"/>
+        <field name="fromDate" type="date-time"/>
+        <field name="thruDate" type="date-time"/>
+        <relationship type="one" related="moqui.resource.ResourceDrive" short-alias="drive"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
+        <relationship type="one-nofk" related="moqui.security.UserGroup" short-alias="userGroup"/>
+        <relationship type="one" title="ResourceDrivePermission" related="moqui.basic.Enumeration" short-alias="permission">
+            <key-map field-name="permissionEnumId"/></relationship>
+        <index name="RES_DRMEM_DRIVE"><index-field name="driveId"/></index>
+        <index name="RES_DRMEM_USER"><index-field name="userId"/></index>
+        <index name="RES_DRMEM_GROUP"><index-field name="userGroupId"/></index>
+    </entity>
+    <entity entity-name="ResourceDriveRecordFolder" package="moqui.resource" use="nontransactional">
+        <description>A records drive's map from a top folder to the record entity whose attachments it holds (each
+            folder below it named by a record id), seeded by the application that writes those folders (the framework
+            stays out of their layout): FileServices.list#Folder shows the mapped folders at the drive's top with their
+            labels, and the record folders below as records.</description>
+        <field name="driveId" type="id" is-pk="true"/>
+        <field name="folderPath" type="text-medium" is-pk="true"><description>Relative to the drive's root, for example
+            party or CommunicationEvent or asset/*/maintenance (a * segment is a record id of the entity before it)</description></field>
+        <field name="recordEntityName" type="text-medium"/>
+        <field name="idField" type="text-medium"><description>The record's id field, for a link to the record</description></field>
+        <field name="label" type="text-medium"/>
+        <field name="sequenceNum" type="number-integer"/>
+        <relationship type="one" related="moqui.resource.ResourceDrive" short-alias="drive"/>
+    </entity>
+    <entity entity-name="ResourceShare" package="moqui.resource" use="nontransactional" cache="never">
+        <description>A file or folder of a drive shared with a user, a user group, a party, or by link. A link's token is
+            random and kept only as its hash (linkTokenHash); its password only as passwordHash. A share is current until
+            its expireDate, revokedDate, or (for an incoming share) declinedDate.</description>
+        <field name="shareId" type="id" is-pk="true"/>
+        <field name="driveId" type="id"/>
+        <field name="path" type="text-medium"><description>Relative to the drive's root; empty is the whole drive</description></field>
+        <field name="isDirectory" type="text-indicator"/>
+        <field name="sharedWithUserId" type="id"/>
+        <field name="sharedWithUserGroupId" type="id"/>
+        <field name="sharedWithPartyId" type="id"/>
+        <field name="sharedWithEmail" type="text-medium"/>
+        <field name="isLink" type="text-indicator"/>
+        <field name="linkTokenHash" type="text-medium"/>
+        <field name="linkLabel" type="text-medium"/>
+        <field name="permissionEnumId" type="id"><description>RspView, RspEdit or RspUpload (a file drop)</description></field>
+        <field name="expireDate" type="date-time"/>
+        <field name="passwordHash" type="text-medium"/>
+        <field name="note" type="text-long"/>
+        <field name="createdByUserId" type="id"/>
+        <field name="createdDate" type="date-time"/>
+        <field name="openedCount" type="number-integer"/>
+        <field name="lastOpenedDate" type="date-time"/>
+        <field name="revokedDate" type="date-time"/>
+        <field name="acceptedDate" type="date-time"/>
+        <field name="declinedDate" type="date-time"/>
+        <relationship type="one" related="moqui.resource.ResourceDrive" short-alias="drive"/>
+        <relationship type="one" title="ResourceSharePermission" related="moqui.basic.Enumeration" short-alias="permission">
+            <key-map field-name="permissionEnumId"/></relationship>
+        <relationship type="one-nofk" title="Creator" related="moqui.security.UserAccount" short-alias="createdBy">
+            <key-map field-name="createdByUserId" related="userId"/></relationship>
+        <index name="RES_SHARE_DRIVE"><index-field name="driveId"/></index>
+        <index name="RES_SHARE_USER"><index-field name="sharedWithUserId"/></index>
+        <index name="RES_SHARE_TOKEN"><index-field name="linkTokenHash"/></index>
+    </entity>
+    <entity entity-name="ResourceFavorite" package="moqui.resource" use="nontransactional">
+        <field name="userId" type="id" is-pk="true"/>
+        <field name="driveId" type="id" is-pk="true"/>
+        <field name="path" type="text-medium" is-pk="true"/>
+        <field name="createdDate" type="date-time"/>
+        <relationship type="one" related="moqui.resource.ResourceDrive" short-alias="drive"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
+    </entity>
+    <entity entity-name="ResourceTag" package="moqui.resource" use="nontransactional">
+        <description>A tag for files: a user's own (ownerUserId), or one for everyone when ownerUserId is empty</description>
+        <field name="tagId" type="id" is-pk="true"/>
+        <field name="tagName" type="text-medium"/>
+        <field name="ownerUserId" type="id"/>
+        <field name="color" type="text-short"/>
+        <relationship type="many" related="moqui.resource.ResourceTagMember" short-alias="members">
+            <key-map field-name="tagId"/></relationship>
+        <index name="RES_TAG_OWNER"><index-field name="ownerUserId"/></index>
+    </entity>
+    <entity entity-name="ResourceTagMember" package="moqui.resource" use="nontransactional">
+        <field name="tagId" type="id" is-pk="true"/>
+        <field name="driveId" type="id" is-pk="true"/>
+        <field name="path" type="text-medium" is-pk="true"/>
+        <relationship type="one" related="moqui.resource.ResourceTag" short-alias="tag"/>
+        <relationship type="one" related="moqui.resource.ResourceDrive" short-alias="drive"/>
+        <index name="RES_TAGMEM_PATH"><index-field name="driveId"/><index-field name="path"/></index>
+    </entity>
+    <entity entity-name="ResourceTrash" package="moqui.resource" use="nontransactional">
+        <description>A file or folder moved to a drive's trash. On the database tree it moved, with its history, into the
+            drive's hidden trash folder (trashLocation); on a git:// drive it was deleted in one commit, and versionName is
+            the commit before it, which restore writes back from.</description>
+        <field name="trashId" type="id" is-pk="true"/>
+        <field name="driveId" type="id"/>
+        <field name="path" type="text-medium"><description>Where it was, relative to the drive's root</description></field>
+        <field name="isDirectory" type="text-indicator"/>
+        <field name="trashedDate" type="date-time"/>
+        <field name="trashedByUserId" type="id"/>
+        <field name="versionName" type="text-short"/>
+        <field name="trashLocation" type="text-medium"/>
+        <field name="size" type="number-integer"/>
+        <relationship type="one" related="moqui.resource.ResourceDrive" short-alias="drive"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="trashedBy">
+            <key-map field-name="trashedByUserId" related="userId"/></relationship>
+        <index name="RES_TRASH_DRIVE"><index-field name="driveId"/></index>
+    </entity>
+    <entity entity-name="ResourceRecent" package="moqui.resource" use="nontransactional" cache="never">
+        <description>A file a user opened or changed lately, for FileServices.find#Recent</description>
+        <field name="userId" type="id" is-pk="true"/>
+        <field name="driveId" type="id" is-pk="true"/>
+        <field name="path" type="text-medium" is-pk="true"/>
+        <field name="lastOpenedDate" type="date-time"/>
+        <field name="lastModifiedDate" type="date-time"/>
+        <relationship type="one" related="moqui.resource.ResourceDrive" short-alias="drive"/>
+        <index name="RES_RECENT_USER"><index-field name="userId"/></index>
     </entity>
 
     <!-- ========================================================= -->

@@ -382,7 +382,14 @@ pub fn logout() -> Result<(), Error> {
         Ok(())
     };
     session::clear_login();
+    forget_shell_providers();
     update.and(session::flush_after_logout())
+}
+
+/// A login or logout changes what the session's user may open: the shell providers kept for it go.
+fn forget_shell_providers() {
+    let visit = session::visit_id().ok().flatten();
+    ExecutionContext::with_current(|ec| crate::screen::shell::forget_shell_providers(ec.factory(), visit.as_deref()));
 }
 
 /// Replace the password with argon2 and push the old hash into `UserPasswordHistory`.
@@ -549,6 +556,7 @@ fn finish_login(facade: &EntityFacade, account: &EntityValue, plain: Option<&str
         update_user(facade, &user_id, &fields)?;
     }
     session::set_user(&user_id, &username);
+    forget_shell_providers();
     let locale = nonempty(text_field(account, "locale"));
     let zone = nonempty(text_field(account, "timeZone"));
     session::set_locale(locale.as_deref());

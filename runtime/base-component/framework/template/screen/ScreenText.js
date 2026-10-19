@@ -253,6 +253,10 @@ const $formList = (name, cols) => {
             .map((name) => { const kid = child(node, name); return kid ? kid.source : ""; }).join("")),
         "panel-header": stmt((node, children) => children),
         "panel-left": stmt((node, children) => children),
+        "container-split": stmt((node) => ["split-side", "split-main"]
+            .map((name) => { const kid = child(node, name); return kid ? kid.source : ""; }).join("")),
+        "split-side": stmt((node, children) => children),
+        "split-main": stmt((node, children) => children),
         "panel-center": stmt((node, children) => children),
         "panel-right": stmt((node, children) => children),
         "panel-footer": stmt((node, children) => children),
@@ -270,6 +274,12 @@ const $formList = (name, cols) => {
             return condition ? `if (${condition}) {\n${line}}\n` : line;
         }),
         "dashboard": stmt((node, children) => children),
+        // an html-view as its text: the text body, else the HTML's text
+        "html-view": stmt((node) => {
+            const line = `{ const $v = ${S.htmlViewTextExpr(node)}; if ($v) sri.write($v + "\\n"); }\n`;
+            const condition = attr(node, "condition");
+            return condition ? `if (${condition}) {\n${line}}\n` : line;
+        }),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

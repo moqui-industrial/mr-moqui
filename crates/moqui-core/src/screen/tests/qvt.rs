@@ -87,6 +87,14 @@ fn containers_links_and_labels() {
     let out = check("containers", &[]);
     // data is text and not an interpolation
     assert!(!out.contains("{{"), "{out}");
+    // a container-dialog's tooltip, expanded; a hidden-form-link is a flat button with its text at the left, and its
+    // background-* attributes are the m-form's submit-* properties, as a form-single's
+    for expected in [
+        r#"<m-container-dialog id="TipDlg" color="primary" button-text="" button-icon="sym_o_add" title="" tooltip="Add for Ada">"#,
+        r#"<m-form action="/save" read-only submit-message="Saved Ada" submit-reload-id="Dyn" submit-hide-id="Dlg"><q-btn dense no-caps type="submit" flat class="m-link m-link-left text-primary">Mark done</q-btn></m-form>"#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
 }
 
 #[test]
@@ -163,6 +171,8 @@ fn a_dashboard_lays_out_number_cards() {
         r#"<div class="m-dashboard-item"></div>"#,
         r#"<m-number-card id="Revenue" title="Revenue {{x}} &amp; more" value="$1,200" delta="-5%" icon="fa fa-dollar" size="sm" class="wide"></m-number-card>"#,
         r#"<div class="m-dashboard"><div class="m-dashboard-item"><m-number-card title="Plain" value="7"></m-number-card>"#,
+        // a ${} url is expanded and resolved against the screen on the server
+        r#"<m-number-card title="Held orders" value="1" href="/Orders?statusId=Held"></m-number-card>"#,
     ] {
         assert!(out.contains(expected), "{expected} in {out}");
     }
@@ -202,6 +212,89 @@ fn a_dashboard_lays_out_number_cards() {
         }
         assert!(!text.contains("Hidden"), "{mode}: {text}");
     }
+}
+
+/// `chatter` and `record-files` are an m-chatter and an m-record-files with the request's record and hints (an expression that
+/// comes to nothing left out, a false condition nothing): the client finds the theme's subscreen of the current app root. A
+/// text-area with editor-type rich or rich-light is an m-text-area with that editor type and the mention transition's URL,
+/// which a plain text-area leaves out. The html mode writes no link without a theme value, and the text modes nothing.
+#[test]
+fn the_record_panels_and_the_rich_text_editors() {
+    let out = check("records", &[]);
+    for expected in [
+        r#"<m-chatter id="TaskChatter" record-entity="mantle.work.effort.WorkEffort" record-id="T100" default-tab="activity" hide="message"></m-chatter>"#,
+        r#"<m-chatter record-entity="mantle.work.effort.WorkEffort"></m-chatter>"#,
+        r#"<m-record-files record-entity="mantle.work.effort.WorkEffort" record-id="T100" class="q-mt-sm"></m-record-files>"#,
+        r#"editor-type="rich-light""#,
+        r#"mention-url="/mentions""#,
+        r#"editor-type="rich" rows="6""#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    assert_eq!(out.matches("<m-chatter").count(), 2, "{out}");
+    assert_eq!(out.matches("mention-url").count(), 1, "{out}");
+    for mode in ["html", "text", "csv", "xml"] {
+        let context = ExecutionContextFactory::test_context();
+        let output = make_render(context.factory())
+            .root_screen(render_dir().join("records.xml").to_string_lossy().into_owned())
+            .screen_path("")
+            .render_mode(mode)
+            .render()
+            .unwrap_or_else(|err| panic!("{mode}: {err}"));
+        let text = output.body_text();
+        assert!(
+            matches!(mode, "csv" | "xml") || text.contains("the panels render no text of their own"),
+            "{mode}: {text}"
+        );
+        for written in ["T100", "chatter", "record-panel", "TaskChatter"] {
+            assert!(!text.contains(written), "{written} in {mode}: {text}");
+        }
+    }
+}
+
+/// `html-view` is an m-html-view with the HTML and text as attribute values (so `{{` in a message is never compiled), the
+/// allow-remote condition and the cid map bound; a false condition writes nothing. The html mode cleans the HTML on the
+/// server into a frame sandboxed without scripts whose policy loads only data: images; the text modes write its text.
+#[test]
+fn the_html_view_element() {
+    let out = check("htmlview", &[]);
+    for expected in [
+        r#"<m-html-view id="Body" html="&lt;p&gt;Hi {{ada}} &lt;b&gt;there&lt;/b&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;img src=&quot;cid:logo@x&quot;&gt;&lt;/p&gt;" :allow-remote="true" :cid-map="{'logo@x':'/apps/mail/attachment?id=7'}" class="q-mt-sm"></m-html-view>"#,
+        r#"<m-html-view text="Plain {{text}} &amp; more" :collapse-quotes="false" dark="off"></m-html-view>"#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    assert_eq!(out.matches("<m-html-view").count(), 2, "{out}");
+    let render = |mode: &str| {
+        let context = ExecutionContextFactory::test_context();
+        let output = make_render(context.factory())
+            .root_screen(render_dir().join("htmlview.xml").to_string_lossy().into_owned())
+            .screen_path("")
+            .render_mode(mode)
+            .render()
+            .unwrap_or_else(|err| panic!("{mode}: {err}"));
+        output.body_text()
+    };
+    let html = render("html");
+    assert_eq!(html.matches("<iframe").count(), 2, "{html}");
+    assert!(
+        html.contains(r#"sandbox="allow-popups allow-popups-to-escape-sandbox""#),
+        "{html}"
+    );
+    assert!(
+        !html.contains("allow-scripts") && !html.contains("allow-same-origin"),
+        "{html}"
+    );
+    assert!(html.contains("img-src data:;"), "{html}");
+    assert!(
+        !html.to_lowercase().contains("&lt;script"),
+        "the cleaned body has no script: {html}"
+    );
+    assert!(html.contains("Hi {{ada}}"), "{html}");
+    let text = render("text");
+    assert!(text.contains("Hi {{ada}} there"), "{text}");
+    assert!(text.contains("Plain {{text}} & more"), "{text}");
+    assert!(!text.contains("alert(1)") || !text.contains("<script"), "{text}");
 }
 
 #[test]
@@ -249,6 +342,113 @@ fn an_alias_transition_link_points_at_the_screen() {
     assert!(
         out.contains("href=\"/Detail?id=Q2&amp;fromResponse=yes\" class=\"m-link-text\">With query"),
         "{out}"
+    );
+}
+
+/// A render of a fixture screen in another mode, at a subscreen path.
+fn render_mode(name: &str, path: &str, mode: &str, parameters: &[(&str, &str)]) -> String {
+    let context = ExecutionContextFactory::test_context();
+    let map: BTreeMap<String, Value> = parameters
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), Value::string(*value)))
+        .collect();
+    make_render(context.factory())
+        .root_screen(render_dir().join(format!("{name}.xml")).to_string_lossy().into_owned())
+        .screen_path(path)
+        .render_mode(mode)
+        .parameters(map)
+        .render()
+        .unwrap_or_else(|err| panic!("{name} {mode}: {err}"))
+        .body_text()
+}
+
+/// `container-split` is an m-container-split with its attributes (the style expanded, back-text localized) and its panes as
+/// the side and main slots; the selection is read from the URL in the browser. html is two columns with the selection and a
+/// back link without it, and the text modes write the side and then the main pane.
+#[test]
+fn a_split_is_a_splitter_with_a_side_and_a_main_pane() {
+    let out = check("split", &[("partyId", "P7")]);
+    for expected in [
+        r#"<m-container-split id="ContactSplit" side-width="300" min-main="520" select-parameter="partyId" back-text="All contacts" class="contacts-split"><template v-slot:side><p class="text-inline">the side list</p>"#,
+        r#"</template><template v-slot:main><p class="text-inline">the selected P7</p>"#,
+        r#"<m-container-split side-position="right" height="calc(100vh - 160px)"><template v-slot:side><span class="text-inline">right side</span>"#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    assert_eq!(out.matches("</template></m-container-split>").count(), 2, "{out}");
+    let html = render_mode("split", "", "html", &[("partyId", "P7")]);
+    for expected in [
+        r#"<div id="ContactSplit" class="split contacts-split" style="--split-side:300px" data-select="partyId" data-selected><div class="split-side">"#,
+        r#"<div class="split-main"><a class="split-back" href="/">&larr; All contacts</a>"#,
+        r#"<div class="split split-right" style="--split-side:320px"><div class="split-side">"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    let unselected = render_mode("split", "", "html", &[]);
+    assert!(
+        !unselected.contains("data-selected") && !unselected.contains("split-back"),
+        "{unselected}"
+    );
+    for mode in ["text", "csv", "xml"] {
+        let text = render_mode("split", "", mode, &[("partyId", "P7")]);
+        if mode == "text" {
+            let side = text.find("the side list").unwrap_or_else(|| panic!("{text}"));
+            let main = text.find("the selected P7").unwrap_or_else(|| panic!("{text}"));
+            assert!(
+                side < main && text.contains("right side") && text.contains("left main"),
+                "{text}"
+            );
+        }
+        assert!(
+            !text.contains("split-side") && !text.contains("m-container-split"),
+            "{mode}: {text}"
+        );
+    }
+}
+
+/// `subscreens-panel type="wizard"` is an m-subscreens-wizard and `type="stack"` an m-subscreens-stack, which read the steps
+/// from the menu data; html writes the steps as a numbered sequence of links with Back and Next, and a stack's breadcrumb.
+#[test]
+fn wizard_and_stack_panels() {
+    let out = check_path("Wizard", "", "wizard", &[]);
+    assert!(
+        out.contains(r#"<m-subscreens-wizard id="ImportWizard" finish-text="Import"></m-subscreens-wizard>"#),
+        "{out}"
+    );
+    let out = check_path("Stack", "", "stack", &[]);
+    assert!(
+        out.contains(r#"<m-subscreens-stack id="Pages"></m-subscreens-stack>"#),
+        "{out}"
+    );
+    let html = render_mode("Wizard", "/Mapping", "html", &[]);
+    for expected in [
+        r#"<nav id="ImportWizard" class="wizard"><ol><li class="done"><a href="/Source">Source</a></li><li class="active"><span>Mapping</span></li><li><a href="/Review">Review</a></li></ol></nav>"#,
+        r#"<div class="wizard-step">"#,
+        "the mapping step",
+        r#"<nav class="wizard-nav"><a data-btn="default" href="/Source">Back</a><a data-btn="primary" href="/Review">Next</a></nav>"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    let first = render_mode("Wizard", "", "html", &[]);
+    assert!(
+        first.contains(r#"<li class="active"><span>Source</span></li>"#) && first.contains("the source step"),
+        "{first}"
+    );
+    assert!(
+        first.contains(r#"<nav class="wizard-nav"><span></span><a data-btn="primary" href="/Mapping">Next</a></nav>"#),
+        "{first}"
+    );
+    let stack = render_mode("Stack", "/Page", "html", &[]);
+    assert!(
+        stack.contains(
+            r#"<nav id="Pages" class="stack-crumbs"><a href="/List">All pages</a> &rsaquo; <span>One page</span></nav>"#
+        ) && stack.contains("a page over it"),
+        "{stack}"
+    );
+    let bottom = render_mode("Stack", "", "html", &[]);
+    assert!(
+        !bottom.contains("stack-crumbs") && bottom.contains("the bottom of the stack"),
+        "{bottom}"
     );
 }
 

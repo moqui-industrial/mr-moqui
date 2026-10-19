@@ -31,6 +31,7 @@ pub(crate) mod diff;
 pub(crate) mod events;
 pub(crate) mod fs;
 pub mod gc;
+pub(crate) mod index;
 pub(crate) mod lfs_files;
 pub(crate) mod ops;
 pub(crate) mod revwalk;
@@ -49,10 +50,15 @@ use gix::objs::Kind;
 use gix::ObjectId;
 use moqui_lib::object::{basic_convert, Value};
 
+use self::index::BranchIndex;
 use self::ops::{Author, Edit};
 use self::store::GitStore;
-use crate::context::{Error, ResourceEntry, ResourceStat, ResourceVersion};
+use crate::context::{
+    ChangeLogEntry, ChangeSetOutcome, Error, ResourceChange, ResourceChangeInfo, ResourceEntry, ResourceStat,
+    ResourceVersion,
+};
 use crate::entity::{EntityFacade, EntityValue};
+use crate::script::bounded::BoundedMap;
 
 pub(crate) const GIT_REPOSITORY: &str = "moqui.resource.GitRepository";
 
@@ -61,13 +67,14 @@ pub(crate) const GIT_REPOSITORY: &str = "moqui.resource.GitRepository";
 /// resource scheme is not checked against it.
 pub const GIT_ARTIFACT_TYPE: &str = "AT_GIT_REPOSITORY";
 
-/// A file to commit: its path in the repository and its content.
-type FilePut = (Vec<String>, Vec<u8>);
-
 /// The `resource-reference` class that names this provider in `MoquiDefaultConf.xml`.
 pub const GIT_CLASS: &str = crate::native::GIT_RESOURCE_CLASS;
 
 const DEFAULT_BRANCH: &str = "main";
+
+/// Path indexes kept in memory: at most this many branches, and about this many bytes.
+const INDEX_BRANCHES: usize = 32;
+const INDEX_BYTES: usize = 256 * 1024 * 1024;
 
 /// How a repository is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,6 +140,8 @@ struct Inner {
     objects: Arc<db::ObjectCache>,
     /// Parsed `.gitattributes` files, by blob.
     attributes: attributes::RulesCache,
+    /// The path index of each branch ("repositoryId\nbranch"), brought to the branch's head when it is used.
+    indexes: Mutex<BoundedMap<String, Arc<Mutex<BranchIndex>>>>,
 }
 
 impl std::fmt::Debug for GitProvider {
@@ -204,6 +213,7 @@ impl GitProvider {
                 updated: Mutex::new(HashMap::new()),
                 objects: db::object_cache(),
                 attributes: attributes::rules_cache(),
+                indexes: Mutex::new(BoundedMap::with_bytes(INDEX_BRANCHES, INDEX_BYTES)),
             }),
         }
     }
@@ -442,7 +452,7 @@ impl GitProvider {
     }
 
     /// The commit a version name names: a full id, or a prefix of at least 7 hex digits of one of the file's versions.
-    fn commit_named(repo: &Repo, path: &[String], name: &str) -> Result<Option<ObjectId>, Error> {
+    fn commit_named(&self, repo: &Repo, path: &[String], name: &str) -> Result<Option<ObjectId>, Error> {
         let name = name.trim();
         if name.len() == 40 {
             return Ok(ObjectId::from_hex(name.as_bytes()).ok());
@@ -450,11 +460,11 @@ impl GitProvider {
         if name.len() < 7 || !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Ok(None);
         }
-        let Some(head) = Self::head(repo)? else {
-            return Ok(None);
-        };
-        let versions = ops::history(repo.store.as_ref(), &head.id, path)?;
-        let mut found = versions.iter().filter(|version| version.version_name.starts_with(name));
+        let versions = self.file_versions(repo, path)?;
+        let mut found = versions
+            .iter()
+            .map(|(version, _)| version)
+            .filter(|version| version.version_name.starts_with(name));
         match (found.next(), found.next()) {
             (Some(version), None) => Ok(ObjectId::from_hex(version.version_name.as_bytes()).ok()),
             _ => Ok(None),
@@ -463,10 +473,167 @@ impl GitProvider {
 
     fn history(&self, location: &str) -> Result<Vec<ResourceVersion>, Error> {
         let (repo, path) = self.located(location)?;
-        match Self::head(&repo)? {
-            Some(head) => ops::history(repo.store.as_ref(), &head.id, &path),
-            None => Ok(Vec::new()),
+        Ok(self
+            .file_versions(&repo, &path)?
+            .into_iter()
+            .map(|(version, _)| version)
+            .collect())
+    }
+
+    /// The versions of the file at `path` from the branch's path index, newest first, each with the path and blob the
+    /// file had in it (an older version can be at the path the file was moved from).
+    fn file_versions(&self, repo: &Repo, path: &[String]) -> Result<Vec<(ResourceVersion, index::FileVersion)>, Error> {
+        let Some(head) = Self::head(repo)? else {
+            return Ok(Vec::new());
+        };
+        let joined = path.join("/");
+        self.indexed(repo, &head, |index| index.versions(&joined))
+    }
+
+    /// Run `query` on the path index of the repository's branch, brought to `head` first (built on first use, extended
+    /// when the branch moved forward, rebuilt when it was replaced).
+    fn indexed<T>(
+        &self,
+        repo: &Repo,
+        head: &ops::CommitInfo,
+        query: impl FnOnce(&BranchIndex) -> T,
+    ) -> Result<T, Error> {
+        let key = format!("{}\n{}", repo.definition.id, repo.definition.branch);
+        let cached = moqui_lib::sync::lock(&self.inner.indexes).get(&key);
+        let (index, fresh) = match cached {
+            Some(index) => (index, false),
+            None => (
+                Arc::new(Mutex::new(BranchIndex::build(repo.store.as_ref(), &head.id)?)),
+                true,
+            ),
+        };
+        let mut guard = moqui_lib::sync::lock(&index);
+        let moved = guard.head != head.id;
+        if moved {
+            guard.advance(repo.store.as_ref(), &head.id)?;
         }
+        if fresh || moved {
+            let bytes = guard.bytes;
+            moqui_lib::sync::lock(&self.inner.indexes).insert_sized(key, Arc::clone(&index), bytes);
+        }
+        Ok(query(&guard))
+    }
+
+    /// Apply a change set as one commit on the branch: each change against the tree the changes before it made, a
+    /// change that cannot apply (a move of nothing, a write onto a directory) reported and left out.
+    fn apply_change_set(
+        &self,
+        root: &str,
+        changes: &[ResourceChange],
+        message: Option<&str>,
+    ) -> Result<ChangeSetOutcome, Error> {
+        let (repo, root_path) = self.located(root)?;
+        Self::writable(&repo, root)?;
+        let store = repo.store.as_ref();
+        let full = |path: &str| -> Vec<String> {
+            root_path
+                .iter()
+                .cloned()
+                .chain(path.split('/').map(str::to_string))
+                .collect()
+        };
+        let mut blobs = Vec::with_capacity(changes.len());
+        for change in changes {
+            blobs.push(match change {
+                // a file the attributes keep in LFS is its content blob behind a pointer, as for a single write
+                ResourceChange::Write { path, bytes } => {
+                    Some(self.store_file(&repo, &full(path), lfs_files::FileContent::Bytes(bytes))?)
+                }
+                ResourceChange::MakeDirectory { .. } => Some(store.write(Kind::Blob, b"")?),
+                _ => None,
+            });
+        }
+        let message = message
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| change_set_message(&root_path, changes));
+        let mut outcome = ChangeSetOutcome::default();
+        let made = self.commit(&repo, |head| {
+            outcome = ChangeSetOutcome::default();
+            let mut tree = head.map(|head| head.tree);
+            let mut edits = Vec::new();
+            let resolve = |tree: Option<ObjectId>, path: &[String]| -> Result<Option<_>, Error> {
+                match tree {
+                    Some(tree) => ops::resolve(store, &tree, path),
+                    None => Ok(None),
+                }
+            };
+            for (change, blob) in changes.iter().zip(&blobs) {
+                let step = (|| -> Result<Vec<Edit>, Error> {
+                    match change {
+                        ResourceChange::Write { path, .. } => {
+                            let at = full(path);
+                            let blob = blob.ok_or_else(|| Error::new("no blob for a write"))?;
+                            match resolve(tree, &at)? {
+                                Some((mode, _)) if mode.is_tree() => Err(Error::new(format!("is a directory: {path}"))),
+                                Some((_, id)) if id == blob => Ok(Vec::new()),
+                                Some((mode, _)) if mode.is_executable() => {
+                                    Ok(vec![Edit::Put(at, EntryKind::BlobExecutable, blob)])
+                                }
+                                _ => Ok(vec![Edit::Put(at, EntryKind::Blob, blob)]),
+                            }
+                        }
+                        ResourceChange::Delete { path } => {
+                            let at = full(path);
+                            Ok(match resolve(tree, &at)? {
+                                Some(_) => vec![Edit::Remove(at)],
+                                None => Vec::new(),
+                            })
+                        }
+                        ResourceChange::Move { from, to } => {
+                            let (from_at, to_at) = (full(from), full(to));
+                            let Some((mode, id)) = resolve(tree, &from_at)? else {
+                                return Err(Error::new(format!("resource not found: {from}")));
+                            };
+                            if resolve(tree, &to_at)?.is_some() {
+                                return Err(Error::new(format!("already exists: {to}")));
+                            }
+                            Ok(vec![Edit::Remove(from_at), Edit::Put(to_at, mode.kind(), id)])
+                        }
+                        ResourceChange::MakeDirectory { path } => {
+                            let at = full(path);
+                            match resolve(tree, &at)? {
+                                Some((mode, _)) if mode.is_tree() => Ok(Vec::new()),
+                                Some(_) => Err(Error::new(format!("found file instead of directory: {path}"))),
+                                None => {
+                                    let blob = blob.ok_or_else(|| Error::new("no blob for a directory"))?;
+                                    let mut keep = at;
+                                    keep.push(".gitkeep".to_string());
+                                    Ok(vec![Edit::Put(keep, EntryKind::Blob, blob)])
+                                }
+                            }
+                        }
+                    }
+                })();
+                match step {
+                    Ok(step) => {
+                        if !step.is_empty() {
+                            tree = Some(ops::apply_edits(store, tree.as_ref(), &step)?);
+                            edits.extend(step);
+                        }
+                        outcome.applied.push(change.path().to_string());
+                    }
+                    Err(err) => {
+                        tracing::error!(root, path = change.path(), "change set change failed: {err}");
+                        outcome
+                            .failures
+                            .push((change.path().to_string(), err.message().to_string()));
+                    }
+                }
+            }
+            if edits.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some((edits, message.clone())))
+        })?;
+        outcome.version_name = made.map(|id| id.to_string());
+        Ok(outcome)
     }
 
     // ---- operations of org.moqui.impl.GitServices ----
@@ -749,8 +916,16 @@ impl GitProvider {
 }
 
 impl GitProvider {
-    /// Commit the stored `blob` as the file at `path`; nothing when the file is that blob already.
-    fn put_file(&self, repo: &Repo, location: &str, path: Vec<String>, blob: ObjectId) -> Result<(), Error> {
+    /// Commit the stored `blob` as the file at `path`, with `note` as the message (else `Create <path>` or `Update
+    /// <path>`); nothing when the file is that blob already.
+    fn put_file(
+        &self,
+        repo: &Repo,
+        location: &str,
+        path: Vec<String>,
+        blob: ObjectId,
+        note: Option<&str>,
+    ) -> Result<(), Error> {
         let shown = path.join("/");
         self.commit(repo, |head| {
             let existing = match head {
@@ -766,10 +941,11 @@ impl GitProvider {
                 _ => EntryKind::Blob,
             };
             let verb = if existing.is_some() { "Update" } else { "Create" };
-            Ok(Some((
-                vec![Edit::Put(path.clone(), kind, blob)],
-                format!("{verb} {shown}"),
-            )))
+            let message = note
+                .map(str::trim)
+                .filter(|note| !note.is_empty())
+                .map_or_else(|| format!("{verb} {shown}"), str::to_string);
+            Ok(Some((vec![Edit::Put(path.clone(), kind, blob)], message)))
         })?;
         Ok(())
     }
@@ -795,10 +971,7 @@ impl crate::native::ResourceProvider for GitProvider {
         let not_found = || Error::new(format!("resource not found: {location}"));
         let head = Self::head(&repo)?.ok_or_else(not_found)?;
         match ops::resolve(repo.store.as_ref(), &head.tree, &path)? {
-            Some((mode, blob)) if !mode.is_tree() => match self.lfs_content(&repo, &blob)? {
-                Some(info) => Ok(crate::resource::source::read_all(self.lfs_source(&info)?.as_ref())?),
-                None => ops::object(repo.store.as_ref(), &blob, Kind::Blob),
-            },
+            Some((mode, blob)) if !mode.is_tree() => self.file_content(&repo, &blob),
             _ => Err(not_found()),
         }
     }
@@ -844,11 +1017,19 @@ impl crate::native::ResourceProvider for GitProvider {
                 last_modified: None,
             }));
         };
+        // the file's last change; the newest is when the refs last moved here, as a push of commits dated in the past,
+        // or two saves within a second, still change what caches over git:// locations go by
+        let joined = path.join("/");
+        let changed = self.indexed(&repo, &head, |index| {
+            index.last_change(&joined).map(|commit| (commit.info.id, commit.info.seconds))
+        })?;
         let head_millis = head.seconds.saturating_mul(1000);
-        let last_modified = Some(
-            self.last_update(&repo.definition.id)
+        let last_modified = Some(match changed {
+            Some((id, seconds)) if id != head.id => seconds.saturating_mul(1000),
+            _ => self
+                .last_update(&repo.definition.id)
                 .map_or(head_millis, |updated| updated.max(head_millis)),
-        );
+        });
         Ok(match ops::resolve(repo.store.as_ref(), &head.tree, &path)? {
             Some((mode, _)) if mode.is_tree() => Some(ResourceStat {
                 is_file: false,
@@ -857,10 +1038,7 @@ impl crate::native::ResourceProvider for GitProvider {
             }),
             Some((_, blob)) => Some(ResourceStat {
                 is_file: true,
-                size: match self.lfs_content(&repo, &blob)? {
-                    Some(info) => info.size,
-                    None => repo.store.object_size(&blob)?.unwrap_or(0),
-                },
+                size: self.file_size(&repo, &blob)?,
                 last_modified,
             }),
             None => None,
@@ -890,34 +1068,18 @@ impl crate::native::ResourceProvider for GitProvider {
     }
 
     fn write_bytes(&self, location: &str, bytes: &[u8]) -> Result<(), Error> {
+        self.write_bytes_noted(location, bytes, None)
+    }
+
+    /// A write is a commit whose message is the note, else `Create <path>` or `Update <path>`.
+    fn write_bytes_noted(&self, location: &str, bytes: &[u8], note: Option<&str>) -> Result<(), Error> {
         let (repo, path) = self.located(location)?;
         Self::writable(&repo, location)?;
         if path.is_empty() {
             return Err(Error::new(format!("cannot write the root of a repository: {location}")));
         }
         let blob = self.store_file(&repo, &path, lfs_files::FileContent::Bytes(bytes))?;
-        self.put_file(&repo, location, path, blob)
-    }
-
-    /// The files of each repository in one commit, as an image and its resized variants are one change.
-    fn write_many(&self, files: &[(String, Vec<u8>)]) -> Result<(), Error> {
-        let mut by_repository: indexmap::IndexMap<String, Vec<FilePut>> = indexmap::IndexMap::new();
-        for (location, bytes) in files {
-            let (repository_id, path) = parse_location(location)?;
-            if path.is_empty() {
-                return Err(Error::new(format!("cannot write the root of a repository: {location}")));
-            }
-            by_repository.entry(repository_id).or_default().push((path, bytes.clone()));
-        }
-        for (repository_id, puts) in by_repository {
-            let names: Vec<String> = puts.iter().map(|(path, _)| path.join("/")).collect();
-            let message = match names.as_slice() {
-                [one] => format!("Write {one}"),
-                many => format!("Write {} files: {}", many.len(), many.join(", ")),
-            };
-            self.commit_files(&repository_id, &message, &puts, &[])?;
-        }
-        Ok(())
+        self.put_file(&repo, location, path, blob, note)
     }
 
     /// A large file is stored as it is read (a content blob of a `db` repository), never all in memory.
@@ -935,7 +1097,7 @@ impl crate::native::ResourceProvider for GitProvider {
             return Err(Error::new(format!("cannot write the root of a repository: {location}")));
         }
         let blob = self.store_file(&repo, &path, lfs_files::FileContent::Stream(input, size))?;
-        self.put_file(&repo, location, path, blob)
+        self.put_file(&repo, location, path, blob, None)
     }
 
     /// Git keeps no empty directories, so a new directory gets an empty `.gitkeep` file, the usual convention. A
@@ -1034,7 +1196,7 @@ impl crate::native::ResourceProvider for GitProvider {
 
     fn version(&self, location: &str, version_name: &str) -> Result<Option<ResourceVersion>, Error> {
         let (repo, path) = self.located(location)?;
-        let Some(id) = Self::commit_named(&repo, &path, version_name)? else {
+        let Some(id) = self.commit_named(&repo, &path, version_name)? else {
             return Ok(None);
         };
         let id = id.to_string();
@@ -1058,7 +1220,7 @@ impl crate::native::ResourceProvider for GitProvider {
 
     fn next_versions(&self, location: &str, version_name: &str) -> Result<Vec<ResourceVersion>, Error> {
         let (repo, path) = self.located(location)?;
-        let Some(id) = Self::commit_named(&repo, &path, version_name)? else {
+        let Some(id) = self.commit_named(&repo, &path, version_name)? else {
             return Ok(Vec::new());
         };
         let id = id.to_string();
@@ -1071,12 +1233,202 @@ impl crate::native::ResourceProvider for GitProvider {
 
     fn read_version(&self, location: &str, version_name: &str) -> Result<Option<Vec<u8>>, Error> {
         let (repo, path) = self.located(location)?;
-        let Some(id) = Self::commit_named(&repo, &path, version_name)? else {
+        let Some(id) = self.commit_named(&repo, &path, version_name)? else {
             return Ok(None);
         };
-        if repo.store.find(&id)?.is_none() {
-            return Ok(None);
+        let id = id.to_string();
+        // the blob the file had in that version, at the path it had then (before a move, its old path)
+        match self
+            .file_versions(&repo, &path)?
+            .into_iter()
+            .find(|(version, _)| version.version_name == id)
+        {
+            Some((_, version)) => self.file_content(&repo, &version.blob).map(Some),
+            None => Ok(None),
         }
-        ops::read_at(repo.store.as_ref(), &id, &path)
+    }
+
+    fn apply_changes(
+        &self,
+        root: &str,
+        changes: &[ResourceChange],
+        message: Option<&str>,
+    ) -> Result<ChangeSetOutcome, Error> {
+        self.apply_change_set(root, changes, message)
+    }
+
+    fn last_change(&self, location: &str) -> Result<Option<ResourceChangeInfo>, Error> {
+        let (repo, path) = self.located(location)?;
+        let Some(head) = Self::head(&repo)? else {
+            return Ok(path.is_empty().then(ResourceChangeInfo::default));
+        };
+        let Some((mode, id)) = ops::resolve(repo.store.as_ref(), &head.tree, &path)? else {
+            return Ok(None);
+        };
+        let joined = path.join("/");
+        let change = self.indexed(&repo, &head, |index| {
+            index.last_change(&joined).map(|commit| commit.version(None))
+        })?;
+        let size = if mode.is_tree() {
+            None
+        } else {
+            Some(self.file_size(&repo, &id)?)
+        };
+        Ok(Some(change_info(!mode.is_tree(), size, change)))
+    }
+
+    fn child_changes(&self, location: &str) -> Result<Vec<(String, ResourceChangeInfo)>, Error> {
+        let (repo, path) = self.located(location)?;
+        let Some(head) = Self::head(&repo)? else {
+            return Ok(Vec::new());
+        };
+        let tree = match ops::resolve(repo.store.as_ref(), &head.tree, &path)? {
+            Some((mode, tree)) if mode.is_tree() => tree,
+            _ => return Err(Error::new(format!("not a directory: {location}"))),
+        };
+        let entries = ops::list(repo.store.as_ref(), &tree)?;
+        let prefix = path.join("/");
+        let changes = self.indexed(&repo, &head, |index| {
+            entries
+                .iter()
+                .map(|entry| {
+                    let child = if prefix.is_empty() {
+                        entry.name.clone()
+                    } else {
+                        format!("{prefix}/{}", entry.name)
+                    };
+                    index.last_change(&child).map(|commit| commit.version(None))
+                })
+                .collect::<Vec<_>>()
+        })?;
+        let mut found = Vec::with_capacity(entries.len());
+        for (entry, change) in entries.into_iter().zip(changes) {
+            let size = if entry.is_file {
+                Some(self.file_size(&repo, &entry.id)?)
+            } else {
+                None
+            };
+            found.push((entry.name, change_info(entry.is_file, size, change)));
+        }
+        Ok(found)
+    }
+
+    fn change_log(&self, location: &str, limit: usize) -> Result<Vec<ChangeLogEntry>, Error> {
+        let (repo, path) = self.located(location)?;
+        let Some(head) = Self::head(&repo)? else {
+            return Ok(Vec::new());
+        };
+        let joined = path.join("/");
+        Ok(self
+            .indexed(&repo, &head, |index| index.log(&joined, limit))?
+            .into_iter()
+            .map(|(version, paths)| ChangeLogEntry { version, paths })
+            .collect())
+    }
+
+    fn restore_version(&self, location: &str, version_name: &str, note: Option<&str>) -> Result<Option<String>, Error> {
+        let (repo, path) = self.located(location)?;
+        Self::writable(&repo, location)?;
+        if path.is_empty() {
+            return Err(Error::new(format!(
+                "cannot restore the root of a repository: {location}"
+            )));
+        }
+        let store = repo.store.as_ref();
+        let name = version_name.trim();
+        let commit_id = if name.len() == 40 {
+            ObjectId::from_hex(name.as_bytes()).ok()
+        } else {
+            self.commit_named(&repo, &path, name)?
+        };
+        let not_found = || Error::new(format!("version {version_name} not found: {location}"));
+        let commit_id = commit_id.ok_or_else(not_found)?;
+        if store.find(&commit_id)?.is_none() {
+            return Err(not_found());
+        }
+        let commit = ops::read_commit(store, &commit_id)?;
+        // the entry at the path in that commit, else (a file moved since) the blob of that version of the file
+        let entry = match ops::resolve(store, &commit.tree, &path)? {
+            Some((mode, id)) => (mode.kind(), id),
+            None => {
+                let id = commit_id.to_string();
+                let found = self
+                    .file_versions(&repo, &path)?
+                    .into_iter()
+                    .find(|(version, _)| version.version_name == id)
+                    .ok_or_else(not_found)?;
+                (EntryKind::Blob, found.1.blob)
+            }
+        };
+        let short: String = commit_id.to_string().chars().take(10).collect();
+        let message = note
+            .map(str::trim)
+            .filter(|note| !note.is_empty())
+            .map_or_else(|| format!("Restore {} from {short}", path.join("/")), str::to_string);
+        let made = self.commit(&repo, |head| {
+            if let Some(head) = head {
+                if let Some((mode, id)) = ops::resolve(store, &head.tree, &path)? {
+                    if mode.kind() == entry.0 && id == entry.1 {
+                        return Ok(None);
+                    }
+                }
+            }
+            Ok(Some((vec![Edit::Put(path.clone(), entry.0, entry.1)], message.clone())))
+        })?;
+        Ok(match made {
+            Some(id) => Some(id.to_string()),
+            None => Self::head(&repo)?.map(|head| head.id.to_string()),
+        })
+    }
+
+    fn tree_size(&self, location: &str) -> Result<u64, Error> {
+        let (repo, path) = self.located(location)?;
+        let Some(head) = Self::head(&repo)? else {
+            return Ok(0);
+        };
+        let Some((mode, id)) = ops::resolve(repo.store.as_ref(), &head.tree, &path)? else {
+            return Ok(0);
+        };
+        if !mode.is_tree() {
+            return self.file_size(&repo, &id);
+        }
+        let mut total = 0;
+        let mut pending = vec![id];
+        while let Some(tree) = pending.pop() {
+            for entry in ops::read_tree(repo.store.as_ref(), &tree)?.entries {
+                if entry.mode.is_tree() {
+                    pending.push(entry.oid);
+                } else if !entry.mode.is_commit() {
+                    total += self.file_size(&repo, &entry.oid)?;
+                }
+            }
+        }
+        Ok(total)
+    }
+}
+
+/// A last change from the commit that made it.
+fn change_info(is_file: bool, size: Option<u64>, version: Option<ResourceVersion>) -> ResourceChangeInfo {
+    ResourceChangeInfo {
+        is_file,
+        size,
+        date: version
+            .as_ref()
+            .and_then(|version| crate::context::millis_of(&version.version_date)),
+        version_name: version.as_ref().map(|version| version.version_name.clone()),
+        user_id: version.as_ref().and_then(|version| version.user_id.clone()),
+        note: version.and_then(|version| version.note),
+    }
+}
+
+/// The message of a change set given none: the change itself for one, else how many under the root.
+fn change_set_message(root: &[String], changes: &[ResourceChange]) -> String {
+    match changes {
+        [ResourceChange::Write { path, .. }] => format!("Update {path}"),
+        [ResourceChange::Delete { path }] => format!("Delete {path}"),
+        [ResourceChange::Move { from, to }] => format!("Move {from} to {to}"),
+        [ResourceChange::MakeDirectory { path }] => format!("Create directory {path}"),
+        _ if root.is_empty() => format!("{} changes", changes.len()),
+        _ => format!("{} changes under {}", changes.len(), root.join("/")),
     }
 }

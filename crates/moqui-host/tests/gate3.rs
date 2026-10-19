@@ -1097,3 +1097,85 @@ fn the_qapps_shell_and_its_menu_data_work_for_a_signed_in_user() {
     assert_eq!(catalog["locale"], "en_US");
     assert!(catalog["messages"].is_object(), "{body}");
 }
+
+/// An anonymous token route (screen/token_route.rs): `/tk/<token>` is the public shell page with the theme and the
+/// m-* components and no session user; `/tk/<token>.qvt` the route's screen with the check's answer in its context;
+/// `/tk/<token>/files` a transition below it; a bad or revoked token gets the short page and nothing of the screen runs.
+#[test]
+fn a_token_route_renders_its_screen_in_the_public_shell_after_the_token_check() {
+    use common::{LINK_TOKEN, REVOKED_TOKEN};
+    let gate = common::start_token_route("tokenroute");
+    let address = gate.server.address();
+    let html = [("Accept", "text/html")];
+
+    // the shell page: the theme's style sheets, the libraries, the components and the public entry, its own settings block
+    let (status, _, shell) = exchange(address, &http_request("GET", &format!("/tk/{LINK_TOKEN}"), &html, ""));
+    assert_eq!(status, 200, "{shell}");
+    assert!(
+        shell.contains("<link rel=\"stylesheet\" href=\"/css/WebrootVue.qvt.css"),
+        "{shell}"
+    );
+    let mut at = 0;
+    for script in [
+        "/libs/vue/vue.global.prod.js",
+        "/libs/quasar/quasar.umd.prod.js",
+        "/js/MoquiLib.js",
+        "/js/WebrootVue.qvt.js",
+        "/js/WebrootPublic.qvt.js",
+    ] {
+        let found = shell[at..]
+            .find(&format!("<script src=\"{script}\""))
+            .unwrap_or_else(|| panic!("{script} in order in {shell}"));
+        at += found;
+    }
+    assert!(shell.contains("<div id=\"public-root\""), "{shell}");
+    assert!(
+        !shell.contains("apps-root") && !shell.contains("id=\"moqui-config\""),
+        "no /qapps shell: {shell}"
+    );
+    assert!(shell.contains("<title>Shared with you</title>"), "{shell}");
+    let marker = "<script type=\"application/json\" id=\"moqui-public-config\">";
+    let start = shell.find(marker).expect("settings block") + marker.len();
+    let end = shell[start..].find("</script>").unwrap() + start;
+    let config: serde_json::Value = serde_json::from_str(&shell[start..end]).unwrap();
+    assert_eq!(config["route"]["basePath"], format!("/tk/{LINK_TOKEN}"));
+    assert_eq!(config["context"]["note"], "For the gate");
+    assert_eq!(config["context"]["sharerName"], "John Doe");
+    assert!(
+        config["context"].get("shareId").is_none(),
+        "only what the page may show"
+    );
+
+    // the screen itself, as the shell loads it, with the check's answer in its context
+    let (status, _, screen) = exchange(
+        address,
+        &http_request("GET", &format!("/tk/{LINK_TOKEN}.qvt"), &html, ""),
+    );
+    assert_eq!(status, 200, "{screen}");
+    assert!(
+        screen.contains("For the gate") && screen.contains("Shared by John Doe"),
+        "{screen}"
+    );
+    // a transition below it: the public-share service checks the token again and lists the folder
+    let (status, _, files) = exchange(
+        address,
+        &http_request("GET", &format!("/tk/{LINK_TOKEN}/files"), &[], ""),
+    );
+    assert_eq!(status, 200, "{files}");
+    let files: serde_json::Value = serde_json::from_str(&files).unwrap();
+    assert_eq!(files["fileList"][0]["name"], "docs", "{files}");
+
+    // a bad token and a revoked one: the short page, and the transition does not run
+    for token in ["NoSuchToken000000000000", REVOKED_TOKEN] {
+        let (status, headers, page) = exchange(address, &http_request("GET", &format!("/tk/{token}"), &html, ""));
+        assert_eq!(status, 404, "{page}");
+        assert!(page.contains("This link has expired or was not found."), "{page}");
+        assert_eq!(header(&headers, "cache-control").as_deref(), Some("no-store"));
+        let (status, _, answer) = exchange(address, &http_request("GET", &format!("/tk/{token}/files"), &[], ""));
+        assert_eq!(status, 404, "{answer}");
+        assert!(!answer.contains("docs"), "{answer}");
+    }
+    // a path that is no token is not the route's
+    let (status, _, _) = exchange(address, &http_request("GET", "/tk/x", &html, ""));
+    assert_eq!(status, 404);
+}

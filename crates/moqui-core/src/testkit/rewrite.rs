@@ -44,7 +44,8 @@ pub struct Condition {
     pub line: u32,
     /// Whether the condition is a call: one that returns `undefined` passes, as a void method call in Spock.
     pub call: bool,
-    /// For each value slot, the byte offset in `text` where its value is shown, and the part's own text.
+    /// For each value slot, the column in `text` (in characters, as the diagram draws it) where its value is shown,
+    /// and the part's own text.
     pub slots: Vec<(u32, String)>,
 }
 
@@ -57,6 +58,9 @@ pub struct Rewritten {
 
 /// Rewrite a spec file. A file that does not parse is an error naming the first problem, with its line.
 pub fn rewrite_spec(source: &str) -> Result<Rewritten, Error> {
+    // Each line of a `then` is a statement, as in Spock, so a line that starts with a regex is not a division.
+    let ended = super::lines::end_condition_lines(source);
+    let source: &str = &ended;
     let allocator = std::default::Default::default();
     let parsed = Parser::new(&allocator, source, SourceType::script())
         .with_options(ParseOptions::default())
@@ -286,9 +290,11 @@ impl Rewriter<'_> {
     fn slot(&mut self, expression: &Expression<'_>, index: usize, base: u32, show_at: u32) {
         let span = expression.span();
         let part = self.text(span.start, span.end).to_string();
+        // Characters, not UTF-8 bytes: the diagram puts the bar under the character (`·` is two bytes).
+        let column = u32::try_from(self.text(base, show_at.max(base)).chars().count()).unwrap_or(u32::MAX);
         let condition = &mut self.conditions[index];
         let slot = condition.slots.len();
-        condition.slots.push((show_at.saturating_sub(base), part));
+        condition.slots.push((column, part));
         self.push(span.start, false, span.size(), format!("$pa_v({slot}, "), 0);
         self.push(span.end, true, span.size(), ")", 0);
     }
@@ -522,6 +528,39 @@ mod tests {
             vec!["A".to_string(), "B".to_string()]
         );
         assert!(suite_order("suite([A])").is_err());
+    }
+
+    #[test]
+    fn unicode_in_regex_literals_strings_and_templates() {
+        let source = "feature('f', {\n  then() {\n    /^Today · \\d+ — é$/.test(label)\n    label == `· ${n} ·`\n    x.match(/[·•]/u) != null && 'é·' == y\n  },\n})\n";
+        let rewritten = conditions_of(source);
+        assert_eq!(rewritten.conditions.len(), 3);
+        assert_eq!(rewritten.conditions[0].text, "/^Today · \\d+ — é$/.test(label)");
+        assert!(
+            rewritten
+                .source
+                .contains("$pa_v(0, /^Today · \\d+ — é$/.test($pa_v(1, label)))"),
+            "{}",
+            rewritten.source
+        );
+        assert!(
+            rewritten.source.contains("__cmp(\"==\", $pa_v(1, label), `· ${n} ·`)"),
+            "{}",
+            rewritten.source
+        );
+        assert_eq!(rewritten.conditions[2].text, "x.match(/[·•]/u) != null && 'é·' == y");
+        assert_eq!(rewritten.source.lines().count(), source.lines().count());
+    }
+
+    #[test]
+    fn a_then_line_starting_with_a_regex_is_its_own_condition() {
+        let rewritten =
+            conditions_of("feature('f', {\n  then() {\n    a == 1\n    /Today · 3/.test(label)\n  },\n})\n");
+        assert_eq!(rewritten.conditions.len(), 2);
+        assert_eq!(rewritten.conditions[1].text, "/Today · 3/.test(label)");
+        assert_eq!(rewritten.conditions[1].line, 4);
+        // the column of `test` counts `·` as one character
+        assert_eq!(rewritten.conditions[1].slots[0].0, 12);
     }
 
     #[test]

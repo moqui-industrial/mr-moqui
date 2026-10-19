@@ -1,0 +1,21 @@
+BEGIN:VCARD
+VERSION:4.0
+FN:Simon Perreault
+N:Perreault;Simon;;;ing. jr,M.Sc.
+BDAY:--0203
+GENDER:M
+LANG;PREF=1:fr
+ORG:Viagenie
+ADR;TYPE=work:;Suite D2-630;2875 Laurier;Quebec;QC;G1V 2M2;Canada
+TEL;VALUE=uri;TYPE="work,voice";PREF=1:tel:+1-418-656-9254;ext=102
+TEL;VALUE=uri;TYPE="work,cell,voice,video,text":tel:+1-418-262-6501
+EMAIL;TYPE=work:simon.perreault@viagenie.ca
+URL;TYPE=home:http://nomis80.org
+KIND:individual
+END:VCARD
+BEGIN:VCARD
+VERSION:4.0
+KIND:org
+FN:ABC Marketing
+ORG:ABC\, Inc.;North American Division;Marketing
+END:VCARD

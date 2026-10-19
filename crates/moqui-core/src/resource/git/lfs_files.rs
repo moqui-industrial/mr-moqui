@@ -120,6 +120,22 @@ impl GitProvider {
         Ok(BlobStore::new(entity).stat(&oid)?)
     }
 
+    /// The content of the file whose object is `blob`: an LFS pointer's content, when the repository has it.
+    pub(super) fn file_content(&self, repo: &Repo, blob: &ObjectId) -> Result<Vec<u8>, Error> {
+        match self.lfs_content(repo, blob)? {
+            Some(info) => Ok(crate::resource::source::read_all(self.lfs_source(&info)?.as_ref())?),
+            None => ops::object(repo.store.as_ref(), blob, Kind::Blob),
+        }
+    }
+
+    /// The size of the file whose object is `blob`: an LFS pointer's content's, when the repository has it.
+    pub(super) fn file_size(&self, repo: &Repo, blob: &ObjectId) -> Result<u64, Error> {
+        match self.lfs_content(repo, blob)? {
+            Some(info) => Ok(info.size),
+            None => Ok(repo.store.object_size(blob)?.unwrap_or(0)),
+        }
+    }
+
     /// The source of the LFS content `info`.
     pub(super) fn lfs_source(&self, info: &BlobInfo) -> Result<Arc<dyn ByteSource>, Error> {
         Ok(BlobStore::new(self.entity()?).source(info))

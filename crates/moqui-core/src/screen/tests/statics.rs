@@ -295,6 +295,9 @@ fn the_qvt_fixture_screens_become_templates_that_compile() {
         "braces",
         "shell",
         "Dashboard",
+        "records",
+        "split",
+        "panels",
     ] {
         let (html, report) = static_fixture(name);
         golden(&format!("render/{name}.html"), &html);
@@ -303,7 +306,8 @@ fn the_qvt_fixture_screens_become_templates_that_compile() {
 }
 
 /// A number-card of a server-static screen is bound over the scope as a label is: the value and delta expressions are
-/// the scope's, the title localized, the link the screen's path with its query, and a condition a v-if.
+/// the scope's, the title localized, the link the screen's path with its query, and a condition a v-if. A link url with
+/// `${}` (a card's or a link's) is bound too and resolved against the screen's path in the browser (`$mq.link`).
 #[test]
 fn a_number_card_is_bound_over_the_scope_in_a_static_template() {
     let (html, _) = static_fixture("Dashboard");
@@ -319,6 +323,14 @@ fn a_number_card_is_bound_over_the_scope_in_a_static_template() {
         assert!(html.contains(expected), "{expected} in {html}");
     }
     assert!(!html.contains(">42<") && !html.contains("value=\"42\""), "{html}");
+    // a ${} url is bound over the scope and resolved against the screen in the browser, not written as its text
+    for expected in [
+        r#":href="$mq.link(ec.resource.expandNoL10n('Orders?statusId=${orderStatus}',{'orderStatus':()=&gt;(orderStatus)}),'/')""#,
+        r#"<m-link :href="$mq.url($mq.link(ec.resource.expandNoL10n('${\'Orders\'}',{'\'Orders\'':()=&gt;('Orders')}),'/'),{'sort':"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    assert!(!html.contains("$mq.url('${"), "{html}");
 }
 
 /// The screen context of a server-static screen is bound in the browser over the screen's data (R18): each `${}` of the
@@ -331,6 +343,63 @@ fn the_screen_context_is_bound_over_the_scope_in_a_static_template() {
         "{html}"
     );
     assert!(!html.contains("SO10023") && !html.contains("quick-create"), "{html}");
+}
+
+/// The record panels of a server-static screen are bound over the scope (R18): the record id and the hints are expressions of
+/// the screen's data, a condition a v-if, and nothing is expanded on the server; a rich editor's mention transition is its path.
+#[test]
+fn the_record_panels_are_bound_over_the_scope_in_a_static_template() {
+    let (html, _) = static_fixture("records");
+    for expected in [
+        r#"<m-chatter id="TaskChatter" record-entity="mantle.work.effort.WorkEffort" :record-id="ec.resource.expandNoL10n('${taskId}',{'taskId':()=&gt;(taskId)})" :default-tab="ec.resource.expandNoL10n('${tab}',{'tab':()=&gt;(tab)})" hide="message"></m-chatter>"#,
+        r#"<template v-if="(false)"><m-chatter"#,
+        r#"<m-record-files record-entity="mantle.work.effort.WorkEffort" :record-id="ec.resource.expandNoL10n('${taskId}',{'taskId':()=&gt;(taskId)})" class="q-mt-sm"></m-record-files>"#,
+        r#"editor-type="rich-light""#,
+        r#"mention-url="/mentions""#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    assert!(!html.contains("T100"), "{html}");
+}
+
+/// An html-view of a server-static screen is bound over the scope: the html and text are expressions of the screen's data,
+/// allow-remote and cid-map expressions, the condition a v-if; no message text is in the template.
+#[test]
+fn the_html_view_is_bound_over_the_scope_in_a_static_template() {
+    let (html, _) = static_fixture("htmlview");
+    for expected in [
+        r#"<m-html-view id="Body" :html="ec.resource.expandNoL10n('${body}',{'body':()=&gt;(body)})" :allow-remote="!!(trusted)" :cid-map="(cids)" class="q-mt-sm"></m-html-view>"#,
+        r#"<m-html-view :text="ec.resource.expandNoL10n('${plain}',{'plain':()=&gt;(plain)})" :collapse-quotes="false" dark="off"></m-html-view>"#,
+        r#"<template v-if="(false)"><m-html-view"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    assert!(!html.contains("{{ada}}") && !html.contains("alert(1)"), "{html}");
+}
+
+/// A split of a server-static screen is the same m-container-split, its panes the side and main slots, the selection read from
+/// the URL in the browser: nothing in it is request data. A wizard or stack panel reads its steps from the menu data.
+#[test]
+fn splits_wizards_and_stacks_hold_no_request_data_in_a_static_template() {
+    let (html, _) = static_fixture("split");
+    for expected in [
+        r#"<m-container-split id="ContactSplit" side-width="300" min-main="520" select-parameter="partyId" :back-text="ec.l10n.localize('All contacts')" :class="ec.resource.expandNoL10n('${paneStyle}',{'paneStyle':()=&gt;(paneStyle)})"><template v-slot:side>"#,
+        r#"</template><template v-slot:main>"#,
+        r#"<m-container-split height="calc(100vh - 160px)" side-position="right"><template v-slot:side>"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    let (panels, _) = static_fixture("panels");
+    assert!(
+        panels.contains(
+            r#"<m-subscreens-wizard id="ImportWizard" :finish-text="ec.l10n.localize('Import')"></m-subscreens-wizard>"#
+        ),
+        "{panels}"
+    );
+    assert!(
+        panels.contains(r#"<m-subscreens-stack id="Pages"></m-subscreens-stack>"#),
+        "{panels}"
+    );
 }
 
 #[test]

@@ -38,6 +38,49 @@
     moqui.isIconClass = (image) => /\s/.test(image || "") || String(image || "").startsWith("fa-");
 
     const rootVm = () => moqui.webrootVue;
+
+    /* ========== user preferences ========== */
+
+    // The user's preferences in the page are config.preferences (the snapshot the server wrote). moqui.applyPreference(key, value)
+    // keeps a new value there and applies at once one the shell reads: QUASAR_DARK (dark mode), QUASAR_LEFT_OPEN (the app drawer),
+    // KEYMAP (the key overrides) and SHELL_DENSITY (comfortable or compact: the m-density-compact body class). A response to a request
+    // that set preferences carries them (the X-Moqui-Preferences header, which moqui.request reads), and they are applied the same
+    // way, so a Preferences screen that saves through its own transition needs nothing more; one that saves in the browser alone
+    // calls moqui.applyPreference itself. Another key is only kept.
+    moqui.preferenceAppliers = {
+        QUASAR_DARK: (value, vm) => { if (vm && vm.$q && vm.$q.dark) vm.$q.dark.set(value === "true"); },
+        QUASAR_LEFT_OPEN: (value, vm) => { if (vm && "leftOpen" in vm) vm.leftOpen = value === "true"; },
+        KEYMAP: (value) => { if (!moqui.keymap.setOverrides(value === undefined ? null : value)) console.info("The KEYMAP preference is not JSON of {scope: {action: keys}}, ignored"); },
+        SHELL_DENSITY: (value) => moqui.applyDensity(value)
+    };
+    moqui.applyPreference = (key, value) => {
+        if (!key) return;
+        const text = value === null || value === undefined ? null : String(value);
+        const config = qvt.config || moqui.config;
+        if (config) {
+            if (!config.preferences) config.preferences = {};
+            if (text === null || text === "") delete config.preferences[key];
+            else config.preferences[key] = text;
+            if (key === "SHELL_DENSITY") config.density = text || "comfortable";
+        }
+        const applier = moqui.preferenceAppliers[key];
+        if (applier) applier(text, rootVm());
+    };
+    moqui.applyPreferences = (map) => { if (moqui.isPlainObject(map)) Object.keys(map).forEach((key) => moqui.applyPreference(key, map[key])); };
+    moqui.onPreferences = moqui.applyPreferences;
+    // SHELL_DENSITY: compact puts m-density-compact on the body (the style sheet tightens the page, lists, fields and cards);
+    // comfortable, empty or anything else is the default.
+    moqui.applyDensity = (value) => {
+        const body = root.document && root.document.body;
+        if (body && body.classList) body.classList.toggle("m-density-compact", value === "compact");
+    };
+    // SHELL_START_APP: the /qapps address with no path opens that app (config.startApp, set by the server only for an app the user
+    // may open) in place of the app list.
+    moqui.startPath = (pathname, linkBasePath, startApp) => {
+        const base = linkBasePath || "/qapps";
+        if (!startApp || (pathname !== base && pathname !== base + "/")) return pathname;
+        return base + "/" + startApp;
+    };
     const notify = (options) => {
         const vm = rootVm();
         if (vm && vm.$q) vm.$q.notify(options);
@@ -51,6 +94,33 @@
     moqui.notifyOptsInfo = { timeout: 5000, type: "info" };
     moqui.notifyOptsError = { timeout: 15000, type: "negative" };
 
+    // Whether a link leaves the application: another scheme or host. A path, a relative link and a URL of this origin stay in the shell.
+    moqui.isExternalLink = (link) => {
+        const text = String(link || "").trim();
+        if (/^\/\//.test(text)) return true;
+        if (!/^[a-z][a-z0-9+.-]*:/i.test(text)) return false;
+        const location = root.location;
+        return !(location && location.origin && (text === location.origin || text.indexOf(location.origin + "/") === 0));
+    };
+    // Follow a link of a message or notification: an app link through the shell ($root.setUrl), an external one in a new window.
+    moqui.openLink = (link) => {
+        if (!link) return;
+        const text = String(link).trim();
+        if (moqui.isExternalLink(text)) {
+            if (root.open) root.open(text, "_blank", "noopener");
+            return;
+        }
+        const location = root.location;
+        const path = location && location.origin && text.indexOf(location.origin) === 0 ? text.slice(location.origin.length) || "/" : text;
+        if (rootVm() && rootVm().setUrl) rootVm().setUrl(path);
+        else if (location) location.href = path;
+    };
+    // The Quasar Notify action of a message with a link: a button that follows it.
+    moqui.linkNotifyAction = (link, linkText) => ({ label: linkText || (moqui.l10n ? moqui.l10n.localize("Open") : "Open"), color: "white", noCaps: true,
+        handler: () => moqui.openLink(link) });
+
+    // The messages, errors and validation errors of an answer as notifications. A message is a text or a map
+    // {message, type, link, linkText}: with a link the notification has a button (linkText, "Open" by default) that follows it.
     moqui.notifyMessages = (messages, errors, validationErrors) => {
         let notified = false;
         const show = (options, message, type) => {
@@ -62,10 +132,12 @@
             (Array.isArray(messages) ? messages : [messages]).forEach((item) => {
                 if (moqui.isPlainObject(item)) {
                     const type = moqui.getQuasarColor(item.type) || "info";
-                    notify(Object.assign({}, moqui.notifyOptsInfo, { type, message: item.message }));
-                    addNotify(item.message, type);
+                    const options = Object.assign({}, moqui.notifyOptsInfo, { type, message: item.message });
+                    if (item.link) options.actions = [moqui.linkNotifyAction(item.link, item.linkText)];
+                    notify(options);
+                    addNotify(item.message, type, item.link || undefined);
                     notified = true;
-                } else show(moqui.notifyOptsInfo, item, "info");
+                } else if (item !== null && item !== undefined && item !== "") show(moqui.notifyOptsInfo, item, "info");
             });
         }
         if (errors) (Array.isArray(errors) ? errors : [errors]).forEach((item) => show(moqui.notifyOptsError, item, "negative"));
@@ -111,7 +183,7 @@
     moqui.notifyGrowl = (jsonObj) => {
         if (!jsonObj) return;
         const options = Object.assign({}, moqui.notifyOptsInfo, { type: moqui.getQuasarColor(jsonObj.type) || "info", message: jsonObj.title });
-        if (jsonObj.link) options.actions = [{ label: "View", color: "white", handler: () => rootVm().setUrl(jsonObj.link) }];
+        if (jsonObj.link) options.actions = [moqui.linkNotifyAction(jsonObj.link, "View")];
         notify(options);
         addNotify(jsonObj.title, jsonObj.type, jsonObj.link, jsonObj.icon);
     };
@@ -401,6 +473,23 @@
             const query = qvt.helpers.qs(params, map);
             return query ? path + (path.indexOf("?") >= 0 ? "&" : "?") + query : path;
         },
+        // The url a ${} expression of a link gave, as the server render resolves one: a relative path against the screen's own path
+        // (base, a directory: "Detail" under it, ".." its parent), with its query; an absolute path, an anchor and an external
+        // URL as they are.
+        link: (text, base) => {
+            const value = text === null || text === undefined ? "" : String(text).trim();
+            if (!value) return base || "";
+            if (value.charAt(0) === "/" || value.charAt(0) === "#" || moqui.isExternalLink(value)) return value;
+            const cut = value.search(/[?#]/);
+            const path = cut < 0 ? value : value.slice(0, cut);
+            const parts = String(base || "").split("/").filter((part) => part);
+            path.split("/").forEach((part) => {
+                if (part === "" || part === ".") return;
+                if (part === "..") parts.pop();
+                else parts.push(part);
+            });
+            return "/" + parts.join("/") + (cut < 0 ? "" : value.slice(cut));
+        },
         // A text-map of a text: whether the map has the name, or with value true the entry itself.
         inMap: (map, name, value) => {
             const has = map !== null && map !== undefined && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, name);
@@ -461,8 +550,15 @@
     qvt.formatValue = (value, pattern, type) => {
         if (value === null || value === undefined || value === "") return "";
         let kind = type === "date-time" ? "timestamp" : type;
+        // No pattern: epoch millis text (a time stamp in the screen's data) is the time stamp, as l10n.rs epoch_millis_text
+        if (!kind && !pattern && typeof value === "string" && /^\d{12,13}$/.test(value.trim())) {
+            const millis = Number(value.trim());
+            if (millis >= 1e12 && millis < 4102444800000) { kind = "timestamp"; value = millis; }
+        }
         if (!kind && pattern && typeof value === "string") {
             if (NUMBER_TEXT.test(value.trim()) && /[#0]/.test(pattern) && !/[yMdHhms]/.test(pattern.replace(/'[^']*'/g, ""))) kind = "number";
+            // epoch millis text with a date pattern (h:mm a as well as yyyy-MM-dd)
+            else if (/^-?\d{9,}$/.test(value.trim()) && moqui.l10n.isDatePattern(pattern)) { kind = "timestamp"; value = Number(value.trim()); }
             else if (/^\d{4}-\d\d-\d\d/.test(value)) kind = /^\d{4}-\d\d-\d\d$/.test(value) ? "date" : "timestamp";
             else if (/^\d\d:\d\d/.test(value)) kind = "time";
         }
@@ -879,12 +975,19 @@
 
     /* ========== inline components ========== */
 
+    // A screen link: setUrl in the shell. An external href (another scheme or host, as a ${} url of a server-static screen can give)
+    // is a plain anchor the browser follows.
     component("m-link", {
         name: "mLink",
         props: { href: { type: String, required: true }, loadId: String, confirmation: String },
-        template: '<a :href="linkHref" @click.prevent="go" class="q-link"><slot></slot></a>',
+        template: '<a :href="linkHref" @click="go" class="q-link"><slot></slot></a>',
         methods: {
             go(event) {
+                if (this.external) {
+                    if (this.confirmation && this.confirmation.length && !root.confirm(this.confirmation)) event.preventDefault();
+                    return;
+                }
+                event.preventDefault();
                 if (event.button !== 0) return;
                 if (this.confirmation && this.confirmation.length && !root.confirm(this.confirmation)) return;
                 if (this.loadId && this.loadId.length > 0) this.$root.loadContainer(this.loadId, this.href);
@@ -892,7 +995,10 @@
                 else this.$root.setUrl(this.linkHref);
             }
         },
-        computed: { linkHref() { return this.$root.getLinkPath(this.href); } }
+        computed: {
+            external() { return moqui.isExternalLink(this.href); },
+            linkHref() { return this.external ? this.href : this.$root.getLinkPath(this.href); }
+        }
     });
 
     component("m-script", {
@@ -1002,17 +1108,25 @@
         }
     });
 
+    // A container-dialog is a container of the root by its id (addContainer), so a form's background-hide-id (submit-hide-id) naming
+    // it closes it; its content is the page's, so reload and load do nothing. tooltip is the button's (and the slot button's).
     component("m-container-dialog", {
         name: "mContainerDialog",
-        props: { id: String, color: String, buttonText: String, buttonClass: String, title: String, width: String, openDialog: { type: Boolean, default: false }, buttonIcon: { type: String, default: "open_in_new" } },
+        props: { id: String, color: String, buttonText: String, buttonClass: String, title: String, width: String, openDialog: { type: Boolean, default: false },
+            buttonIcon: { type: String, default: "open_in_new" }, tooltip: String },
         data() { return { isShown: false }; },
         template:
             '<span>' +
-                '<span @click="show()"><slot name="button"><q-btn dense unelevated no-caps :icon="buttonIcon" :label="buttonText" :class="moqui.tonalClass(color, buttonClass)"></q-btn></slot></span>' +
+                '<span @click="show()"><slot name="button"><q-btn dense unelevated no-caps :icon="buttonIcon" :label="buttonText" :class="moqui.tonalClass(color, buttonClass)"></q-btn></slot>' +
+                    '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip></span>' +
                 '<m-dialog v-model="isShown" :id="id" :title="title" :color="color" :width="width"><slot></slot></m-dialog>' +
             '</span>',
-        methods: { show() { this.isShown = true; }, hide() { this.isShown = false; } },
-        mounted() { if (this.openDialog) this.isShown = true; }
+        methods: { show() { this.isShown = true; }, hide() { this.isShown = false; }, reload() {}, load() {} },
+        mounted() {
+            if (this.id) this.$root.addContainer(this.id, this);
+            if (this.openDialog) this.isShown = true;
+        },
+        beforeUnmount() { if (this.id) this.$root.removeContainer(this.id, this); }
     });
 
     component("m-dynamic-container", {
@@ -1041,7 +1155,8 @@
                 moqui.loadComponent(newUrl, (comp) => { this.curComponent = comp; }, this.id);
             }
         },
-        mounted() { this.$root.addContainer(this.id, this); this.curUrl = this.url; }
+        mounted() { this.$root.addContainer(this.id, this); this.curUrl = this.url; },
+        beforeUnmount() { this.$root.removeContainer(this.id, this); }
     });
 
     component("m-dynamic-dialog", {
@@ -1082,7 +1197,8 @@
         mounted() {
             this.$root.addContainer(this.id, this);
             if (this.openDialog) this.isShown = true;
-        }
+        },
+        beforeUnmount() { this.$root.removeContainer(this.id, this); }
     });
 
     component("m-tree-top", {
@@ -1381,11 +1497,14 @@
     component("m-form", {
         name: "mForm",
         mixins: [checkboxSetMixin],
-        // a dialog that closes when a form in it submits without errors and has no submit-hide-id (the shell's quick create)
-        inject: { mSubmitHide: { default: null } },
+        // a dialog that closes when a form in it submits without errors and has no submit-hide-id (the shell's quick create), and
+        // the wizard whose step this form may be (m-subscreens-wizard: its answer moves the wizard on)
+        inject: { mSubmitHide: { default: null }, mWizard: { default: null } },
         props: { fieldsInitial: Object, action: { type: String, required: true }, method: { type: String, default: "POST" }, readOnly: { type: Boolean, default: false },
             submitMessage: String, submitReloadId: String, submitHideId: String, focusField: String, noValidate: Boolean, excludeEmptyFields: Boolean,
             parentCheckboxSet: Object, checkboxOptional: Boolean, bodyParameterNames: Array, validationErrorsInitial: Array },
+        // submitted: after a background submit whose answer has no errors, with the answer (the JSON, or the text), so a .qvue host can react
+        emits: ["submitted"],
         data() {
             return { fields: Object.assign({}, this.fieldsInitial), fieldsOriginal: Object.assign({}, this.fieldsInitial), buttonClicked: null,
                 fieldErrors: {}, fieldErrorValues: {} };
@@ -1415,7 +1534,10 @@
         methods: {
             submitForm() {
                 if (this.noValidate) this.submitGo();
-                else this.$refs.qForm.validate().then((success) => { if (success) this.submitGo(); });
+                else this.$refs.qForm.validate().then((success) => {
+                    if (success) this.submitGo();
+                    else if (this.mWizard) this.mWizard.stepRefused(this);
+                });
             },
             resetForm() { this.fields = Object.assign({}, this.fieldsOriginal); },
             blurSubmitForm() {
@@ -1502,16 +1624,21 @@
                     if (!arrived) root_.loading--;
                     if (err && err.json) err = Object.assign({}, err, { json: moqui.placeFieldErrors(this, err.json) });
                     moqui.handleLoadError(err && err.status !== undefined ? err : { status: 0, error: err, text: "" });
+                    if (this.mWizard) this.mWizard.stepRefused(this);
                 });
             },
             handleResponse(resp) {
                 let notified = false;
+                // the step form of a wizard: the wizard goes where the answer says (js/README.md, Wizard and stack panels)
+                const wizard = this.mWizard && this.mWizard.isStepForm(this) ? this.mWizard : null;
                 if (resp && moqui.isPlainObject(resp)) {
                     const rest = moqui.placeFieldErrors(this, resp);
                     notified = moqui.notifyMessages(rest.messageInfos, rest.errors, rest.validationErrors);
-                    if (resp.screenUrl && resp.screenUrl.length > 0) this.$root.setUrl(resp.screenUrl);
+                    if (wizard) notified = true;
+                    else if (resp.screenUrl && resp.screenUrl.length > 0) this.$root.setUrl(resp.screenUrl);
                     else if (resp.redirectUrl && resp.redirectUrl.length > 0) root.location.href = resp.redirectUrl;
-                } else console.warn("m-form no response or non-JSON response");
+                // an empty answer is a transition's type="none" response; other text that is not JSON is worth a warning
+                } else if (resp) console.warn("m-form non-JSON response");
                 if (this.submitHideId && this.submitHideId.length > 0) this.$root.hideContainer(this.submitHideId);
                 else if (this.mSubmitHide && !moqui.responseHasErrors(resp)) this.mSubmitHide.hide();
                 if (this.submitReloadId && this.submitReloadId.length > 0) this.$root.reloadContainer(this.submitReloadId);
@@ -1519,9 +1646,12 @@
                     notify(Object.assign({}, moqui.notifyOpts, { message: this.submitMessage }));
                     addNotify(this.submitMessage, "success");
                 } else if (!notified) notify(Object.assign({}, moqui.notifyOpts, { message: "Submit successful" }));
+                if (wizard) wizard.stepAnswered(this, resp);
+                if (!moqui.responseHasErrors(resp)) this.$emit("submitted", resp);
             }
         },
         mounted() {
+            if (this.mWizard) this.mWizard.addForm(this);
             const el = this.$refs.qForm.$el;
             if (this.focusField && this.focusField.length) {
                 const target = el.querySelector('[name^="' + this.focusField + '"]');
@@ -1533,7 +1663,10 @@
             });
             moqui.registerScreenForm(this);
         },
-        beforeUnmount() { moqui.unregisterScreenForm(this); }
+        beforeUnmount() {
+            if (this.mWizard) this.mWizard.removeForm(this);
+            moqui.unregisterScreenForm(this);
+        }
     });
 
     // A form that goes to a screen: its fields become the query of the URL.
@@ -2276,19 +2409,24 @@
     });
 
     // A text area. editor-type html is the Quasar editor (QEditor); md is a text area with a preview drawn by Marked (and
-    // sanitized by DOMPurify), both lazy. The rich editor simplifies markup it does not understand.
+    // sanitized by DOMPurify), both lazy. The html editor simplifies markup it does not understand. rich and rich-light are the
+    // Tiptap editor m-rich-text (full and light), its mentions over mention-url.
     component("m-text-area", {
         name: "mTextArea",
         mixins: [fieldMixin, localValueMixin],
         props: { modelValue: String, name: String, id: String, label: String, editorType: String, rows: { type: String, default: "3" }, cols: String,
-            readonly: Boolean, autogrow: Boolean, maxlength: String, disable: Boolean, form: String, tooltip: String },
+            readonly: Boolean, autogrow: Boolean, maxlength: String, disable: Boolean, form: String, tooltip: String, mentionUrl: String,
+            mentionParameters: Object },
         emits: ["update:modelValue"],
         data() {
             return { preview: false, previewHtml: "", toolbar: [["bold", "italic", "strike", "underline"], ["unordered", "ordered", "outdent", "indent"],
                 ["quote", "link"], ["left", "center", "right", "justify"], ["undo", "redo"], ["viewsource"]] };
         },
         template:
-            '<div v-if="editorType === \'html\'" class="m-text-area-editor">' +
+            '<m-rich-text v-if="editorType === \'rich\' || editorType === \'rich-light\'" :light="editorType === \'rich-light\'" :model-value="local"' +
+                ' @update:model-value="onInput" :name="name" :id="id" :label="label" :form="form" :disable="disable" :readonly="readonly" :tooltip="tooltip"' +
+                ' :rows="rows" :mention-url="mentionUrl" :mention-parameters="mentionParameters"></m-rich-text>' +
+            '<div v-else-if="editorType === \'html\'" class="m-text-area-editor">' +
                 '<div v-if="label" class="text-caption text-grey-7">{{label}}</div>' +
                 '<q-editor :model-value="local" @update:model-value="onInput" :toolbar="toolbar" dense min-height="12rem" :readonly="readonly" :disable="disable"></q-editor>' +
                 '<input type="hidden" :name="name" :value="local" :form="form">' +
@@ -2445,6 +2583,499 @@
         }
     });
 
+    /* ========== rich text: m-rich-text (Tiptap, lazy) ========== */
+
+    // The pure part of m-rich-text, tested under Node (WebrootVue.qvt.records.test.js): the HTML of a mention and the mentions
+    // in a text, the editor's empty value, plain text from its HTML and HTML from plain text (the plain-text toggle), and the
+    // answer of a mention search. The editor writes only what allow-html="safe" keeps (js/README.md, Rich text): p, h1-h3, strong,
+    // em, s, u, code, pre, blockquote, ul, ol (start), li, br, hr, a (href, title), img (src, alt, title) and the mention
+    // <span data-mention-id="id">@Label</span>.
+    const htmlEscape = (text) => String(text === null || text === undefined ? "" : text).replace(/[&<>"']/g,
+        (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+    const htmlEntities = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
+    const htmlDecode = (text) => String(text || "").replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (whole, code) => {
+        if (code[0] === "#") {
+            const point = code[1] === "x" || code[1] === "X" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+            return isNaN(point) ? whole : String.fromCodePoint(point);
+        }
+        const named = htmlEntities[code.toLowerCase()];
+        return named === undefined ? whole : named;
+    });
+    const tagAttr = (tag, name) => {
+        const match = new RegExp("\\s" + name + "\\s*=\\s*(\"([^\"]*)\"|'([^']*)'|([^\\s>]+))", "i").exec(tag);
+        return match ? htmlDecode(match[2] !== undefined ? match[2] : match[3] !== undefined ? match[3] : match[4]) : null;
+    };
+    moqui.richText = {
+        // a mention as the editor writes it: the id in data-mention-id, the label shown after the @
+        mentionHtml(id, label) {
+            return '<span data-mention-id="' + htmlEscape(id) + '">@' + htmlEscape(label || id) + "</span>";
+        },
+        // the mentions in an HTML text, each id once, in order: [{id, label}]
+        mentions(html) {
+            const out = [];
+            const seen = {};
+            const re = /<span\b([^>]*)>([\s\S]*?)<\/span>/gi;
+            let match;
+            while ((match = re.exec(String(html || "")))) {
+                const id = tagAttr(match[1], "data-mention-id");
+                if (id === null || id === "" || seen[id]) continue;
+                seen[id] = true;
+                out.push({ id, label: htmlDecode(match[2].replace(/<[^>]*>/g, "")).replace(/^@/, "") });
+            }
+            return out;
+        },
+        // nothing but empty paragraphs, breaks and spaces (Tiptap's empty document is <p></p>)
+        isEmpty(html) {
+            const text = String(html || "");
+            if (/<(img|hr)\b/i.test(text) || /data-mention-id/i.test(text)) return false;
+            return htmlDecode(text.replace(/<[^>]*>/g, "")).replace(/[\s\u00a0]+/g, "") === "";
+        },
+        // the value of the field for the editor's HTML: empty for an empty document, so a required check and the change tint see it
+        value(html) { return moqui.richText.isEmpty(html) ? "" : String(html); },
+        // what the editor opens a value as: HTML as it is, and text with no markup (a note written before, a plain mail part) as
+        // its paragraphs
+        toHtml(value) {
+            const text = String(value === null || value === undefined ? "" : value);
+            return /<[a-zA-Z!/]/.test(text) ? text : moqui.richText.fromPlain(text);
+        },
+        // Plain text of the editor's HTML (the plain-text toggle, a plain mail part): paragraphs and blocks apart by a blank
+        // line, list items on lines of their own with "- " or their number, a quote's lines after "> ", a link as its text and
+        // (its address) when they differ, an image as its alt text, a mention as @Label, entities decoded.
+        toPlain(html) {
+            const out = [];
+            const lists = [];
+            let quote = 0;
+            let pre = 0;
+            let breaks = 0;
+            let lineStart = true;
+            let prefix = "";
+            const links = [];
+            const owe = (count) => { if (out.length) breaks = Math.max(breaks, count); };
+            const put = (text) => {
+                if (!text) return;
+                if (breaks) { out.push("\n".repeat(breaks)); breaks = 0; lineStart = true; }
+                if (lineStart) {
+                    if (!pre) text = text.replace(/^ +/, "");
+                    if (!text) return;
+                    out.push("> ".repeat(quote) + prefix);
+                    prefix = "";
+                    lineStart = false;
+                }
+                out.push(text);
+            };
+            const tokens = String(html || "").match(/<!--[\s\S]*?-->|<\/?[a-zA-Z][^>]*>|[^<]+|</g) || [];
+            tokens.forEach((token) => {
+                if (token.startsWith("<!--")) return;
+                const tagMatch = /^<(\/?)([a-zA-Z0-9]+)/.exec(token);
+                if (!tagMatch) {
+                    let text = htmlDecode(token);
+                    if (!pre) text = text.replace(/[\s\u00a0]+/g, (space) => (space.indexOf("\u00a0") >= 0 ? "\u00a0" : " "));
+                    if (pre) {
+                        text.split("\n").forEach((line, index) => { if (index) { owe(1); breaks = Math.max(breaks, 1); } put(line); });
+                    } else put(text);
+                    return;
+                }
+                const closing = tagMatch[1] === "/";
+                const tag = tagMatch[2].toLowerCase();
+                const inList = lists.length > 0;
+                if (/^(p|div|h[1-6])$/.test(tag)) owe(inList ? 1 : 2);
+                else if (tag === "br") { if (out.length) breaks = Math.max(breaks, 1); }
+                else if (tag === "blockquote") { owe(2); quote += closing ? -1 : 1; if (quote < 0) quote = 0; }
+                else if (tag === "pre") { owe(2); pre += closing ? -1 : 1; if (pre < 0) pre = 0; }
+                else if (tag === "ul" || tag === "ol") {
+                    if (closing) lists.pop();
+                    else lists.push(tag === "ol" ? (parseInt(tagAttr(token, "start"), 10) || 1) - 1 : null);
+                    owe(lists.length ? 1 : 2);
+                } else if (tag === "li" && !closing) {
+                    owe(1);
+                    const depth = Math.max(lists.length - 1, 0);
+                    const top = lists.length - 1;
+                    let marker = "- ";
+                    if (top >= 0 && lists[top] !== null) { lists[top] += 1; marker = lists[top] + ". "; }
+                    prefix = "  ".repeat(depth) + marker;
+                    if (!out.length) lineStart = true;
+                } else if (tag === "hr" && !closing) { owe(2); put("---"); owe(2); }
+                else if (tag === "img" && !closing) put(tagAttr(token, "alt") || "");
+                else if (tag === "a") {
+                    if (!closing) links.push({ href: tagAttr(token, "href"), at: out.length });
+                    else {
+                        const link = links.pop();
+                        if (link && link.href) {
+                            const text = out.slice(link.at).join("").trim();
+                            if (text !== link.href && text !== link.href.replace(/^mailto:/, "")) put(" (" + link.href + ")");
+                        }
+                    }
+                }
+            });
+            return out.join("").replace(/[ \t]+$/gm, "").replace(/^\n+|\s+$/g, "");
+        },
+        // HTML of plain text: a paragraph for each run of lines, a <br> inside one, everything escaped; empty text is ""
+        fromPlain(text) {
+            const value = String(text || "").replace(/\r\n?/g, "\n").trim();
+            if (!value) return "";
+            return value.split(/\n[ \t]*\n+/).map((para) => "<p>" + para.split("\n").map(htmlEscape).join("<br>") + "</p>").join("");
+        },
+        // The rows of a mention search answer: a list (or a map with it in options, mentions or rows) of {id, label}, value and
+        // title or name also read, a plain string as both; at most limit (10), each id once.
+        mentionItems(answer, limit) {
+            const list = Array.isArray(answer) ? answer : moqui.isPlainObject(answer) ? (answer.options || answer.mentions || answer.rows || []) : [];
+            const out = [];
+            const seen = {};
+            list.forEach((row) => {
+                if (out.length >= (limit || 10)) return;
+                const item = moqui.isPlainObject(row) ? row : { id: row, label: row };
+                const id = item.id !== undefined && item.id !== null ? item.id : item.value;
+                if (id === undefined || id === null || id === "" || seen[id]) return;
+                seen[id] = true;
+                const label = item.label || item.title || item.name || id;
+                out.push({ id: String(id), label: String(label), image: item.image || null });
+            });
+            return out;
+        },
+        // A link a person typed: an address with a scheme as it is, an email address as mailto:, a bare host as https://
+        linkHref(text) {
+            const value = String(text || "").trim();
+            if (!value) return "";
+            if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith("/") || value.startsWith("#")) return value;
+            if (/^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(value)) return "mailto:" + value;
+            return "https://" + value;
+        },
+        // the buttons of the toolbar: light is the compact one of notes and chat
+        toolbar(light, plainToggle) {
+            const button = (key, icon, label) => ({ key, icon, label });
+            const sep = (key) => ({ key, separator: true });
+            if (light) {
+                return [button("bold", "sym_o_format_bold", "Bold"), button("italic", "sym_o_format_italic", "Italic"), button("link", "sym_o_link", "Link"),
+                    button("bulletList", "sym_o_format_list_bulleted", "Bulleted list"), button("code", "sym_o_code", "Code")];
+            }
+            const list = [button("block", "sym_o_title", "Paragraph style"), sep("s1"),
+                button("bold", "sym_o_format_bold", "Bold"), button("italic", "sym_o_format_italic", "Italic"), button("strike", "sym_o_strikethrough_s", "Strikethrough"), sep("s2"),
+                button("bulletList", "sym_o_format_list_bulleted", "Bulleted list"), button("orderedList", "sym_o_format_list_numbered", "Numbered list"), sep("s3"),
+                button("link", "sym_o_link", "Link"), button("image", "sym_o_image", "Image"), button("code", "sym_o_code", "Code"),
+                button("codeBlock", "sym_o_code_blocks", "Code block"), button("blockquote", "sym_o_format_quote", "Quote"), sep("s4"),
+                button("undo", "sym_o_undo", "Undo"), button("redo", "sym_o_redo", "Redo")];
+            if (plainToggle) list.push(sep("s5"), button("plain", "sym_o_text_fields", "Plain text"));
+            return list;
+        }
+    };
+
+    // The editor's extensions: StarterKit (paragraphs, headings 1 to 3, bold, italic, strike, underline, code, code blocks,
+    // quotes, lists, rules, breaks, history), Link (no target, class or rel of its own: the safe cleaning adds rel), Image by
+    // URL (no data: URLs), the placeholder, the mention when the editor has a mention URL, and the keys of the component.
+    const richTextExtensions = (T, vm) => {
+        const list = [
+            T.StarterKit.configure({ heading: { levels: [1, 2, 3] }, link: false, codeBlock: { HTMLAttributes: { class: null } } }),
+            T.Link.configure({ openOnClick: false, autolink: true, linkOnPaste: true, defaultProtocol: "https",
+                HTMLAttributes: { target: null, rel: null, class: null } }),
+            T.Image.configure({ inline: false, allowBase64: false }),
+            T.Placeholder.configure({ placeholder: () => vm.placeholder || "" }),
+            T.Extension.create({
+                name: "mRichTextKeys",
+                priority: 1000,
+                addKeyboardShortcuts() {
+                    return {
+                        "Mod-Enter": () => { vm.submit(); return true; },
+                        "Mod-k": () => { vm.ask("link"); return true; },
+                        Enter: () => {
+                            if (vm.enter !== "submit" || vm.mention.open) return false;
+                            vm.submit();
+                            return true;
+                        }
+                    };
+                }
+            })
+        ];
+        if (vm.mentionUrl) {
+            const Mention = T.Mention.extend({
+                // the mention in the HTML: <span data-mention-id="id">@Label</span>, and nothing the safe cleaning drops
+                addAttributes() {
+                    return {
+                        id: { default: null, parseHTML: (el) => el.getAttribute("data-mention-id"), renderHTML: (attrs) => ({ "data-mention-id": attrs.id }) },
+                        label: { default: null, parseHTML: (el) => (el.textContent || "").replace(/^@/, ""), renderHTML: () => ({}) },
+                        mentionSuggestionChar: { default: "@", parseHTML: () => "@", renderHTML: () => ({}) }
+                    };
+                },
+                parseHTML() { return [{ tag: "span[data-mention-id]" }]; },
+                renderHTML({ node }) { return ["span", { "data-mention-id": node.attrs.id }, "@" + (node.attrs.label || node.attrs.id || "")]; }
+            });
+            list.push(Mention.configure({
+                suggestion: { char: "@", debounce: 150, items: ({ query, signal }) => vm.searchMentions(query, signal), render: () => vm.mentionRenderer() }
+            }));
+        }
+        return list;
+    };
+
+    // A rich-text editor with the m-* model contract (v-model or model-value, a name, the change tint and the form's field
+    // errors inside an m-form, a hidden input for a form that reads the DOM): Tiptap from /libs/tiptap, loaded when the first
+    // editor mounts. The value is HTML ("" when empty). light is the compact toolbar; enter="submit" makes Enter submit the
+    // form (and emit submit) with Shift+Enter a line break; Ctrl+Enter always submits; mention-url is searched with term for
+    // the @ list; the plain-text toggle (v-model:plain) turns the value into plain text and back. When the library does not
+    // load, the field is the html editor of m-text-area.
+    let richTextCount = 0;
+    // one load of the library for the page, so every editor gets its answer; after a failure the next editor tries again
+    let tiptapLoad = null;
+    const loadTiptap = () => tiptapLoad || (tiptapLoad = moqui.loadScript("/libs/tiptap/tiptap.min.js", null, () => !!root.Tiptap)
+        .catch((error) => { tiptapLoad = null; throw error; }));
+    component("m-rich-text", {
+        name: "mRichText",
+        mixins: [fieldMixin, localValueMixin],
+        props: { modelValue: String, name: String, id: String, label: String, form: String, disable: Boolean, readonly: Boolean, tooltip: String,
+            light: Boolean, placeholder: String, rows: [String, Number], enter: { type: String, default: "newline" }, mentionUrl: String,
+            mentionParameters: Object, plain: Boolean, plainToggle: { type: Boolean, default: true }, autofocus: Boolean },
+        emits: ["update:modelValue", "update:plain", "submit", "mention"],
+        data() {
+            richTextCount += 1;
+            return { state: "loading", isPlain: this.plain, focused: false, active: {}, blockLabel: "Paragraph", asking: null, askValue: "",
+                mention: { open: false, items: [], index: 0, loading: false }, uid: "m-rich-text-" + richTextCount };
+        },
+        template:
+            '<div class="m-rich-text" :class="{\'m-rich-text-light\': light, \'m-rich-text-focused\': focused}" :data-state="state">' +
+                '<m-text-area v-if="state === \'failed\'" editor-type="html" :model-value="local" @update:model-value="onInput" :name="name" :id="id"' +
+                    ' :label="label" :form="form" :disable="disable" :readonly="readonly" :tooltip="tooltip"></m-text-area>' +
+                '<template v-else>' +
+                    '<div v-if="label" class="text-caption m-muted m-rich-text-label">{{label}}</div>' +
+                    '<div class="m-rich-text-box" :class="[bg ? \'bg-\' + bg : \'\', errorAttrs.error ? \'m-rich-text-error\' : \'\']">' +
+                        '<div v-if="!readonly" class="m-rich-text-toolbar row items-center">' +
+                            '<template v-for="button in buttons" :key="button.key">' +
+                                '<q-separator v-if="button.separator" vertical class="q-mx-xs"></q-separator>' +
+                                '<q-btn-dropdown v-else-if="button.key === \'block\'" flat dense no-caps size="sm" :label="t(blockLabel)" :disable="!editable || isPlain"' +
+                                        ' class="m-rich-text-block" content-class="m-rich-text-menu">' +
+                                    '<q-list dense>' +
+                                        '<q-item v-for="block in blocks" :key="block.key" clickable v-close-popup @click="run(block.key)" :active="blockLabel === block.label">' +
+                                            '<q-item-section>{{t(block.label)}}</q-item-section></q-item>' +
+                                    '</q-list>' +
+                                '</q-btn-dropdown>' +
+                                '<q-btn v-else flat dense size="sm" :icon="button.icon" :data-command="button.key" :aria-label="t(button.label)"' +
+                                        ' :color="(button.key === \'plain\' ? isPlain : active[button.key]) ? \'primary\' : undefined"' +
+                                        ' :class="{\'m-rich-text-on\': button.key === \'plain\' ? isPlain : active[button.key]}"' +
+                                        ' :disable="button.key === \'plain\' ? (disable || state !== \'ready\') : (!editable || isPlain)" @mousedown.prevent @click="run(button.key)">' +
+                                    '<q-tooltip>{{t(button.label)}}</q-tooltip></q-btn>' +
+                            '</template>' +
+                        '</div>' +
+                        '<div v-if="asking" class="m-rich-text-ask row items-center no-wrap q-px-sm q-py-xs q-gutter-x-xs">' +
+                            '<q-input ref="askInput" dense outlined hide-bottom-space class="col" v-model="askValue" :placeholder="asking === \'image\' ? \'https://\u2026/picture.png\' : \'https://\u2026\'"' +
+                                ' :aria-label="t(asking === \'image\' ? \'Image address\' : \'Link address\')" @keydown.enter.prevent="applyAsk" @keydown.esc.prevent.stop="asking = null"></q-input>' +
+                            '<q-btn dense unelevated no-caps class="m-btn-tonal" :label="t(\'Apply\')" @click="applyAsk"></q-btn>' +
+                            '<q-btn v-if="asking === \'link\' && active.link" dense flat no-caps :label="t(\'Remove\')" @click="removeLink"></q-btn>' +
+                            '<q-btn dense flat round size="sm" icon="sym_o_close" :aria-label="t(\'Close\')" @click="asking = null"></q-btn>' +
+                        '</div>' +
+                        '<textarea v-if="isPlain" :id="id ? id + \'_plain\' : null" class="m-rich-text-plain" :style="{minHeight: minHeight}" :value="local"' +
+                            ' :readonly="readonly" :disabled="disable" @input="onInput($event.target.value)" @keydown="plainKey"' +
+                            ' @focus="focused = true" @blur="focused = false"></textarea>' +
+                        '<div v-show="!isPlain" ref="content" class="m-rich-text-content" :style="{minHeight: minHeight}" @click="focusEnd"></div>' +
+                        '<div v-if="state === \'loading\'" class="m-rich-text-loading m-muted text-caption q-px-sm">{{t(\'Loading the editor\')}}</div>' +
+                    '</div>' +
+                    '<div v-if="errorAttrs.error" class="text-negative text-caption q-px-sm">{{errorAttrs.errorMessage}}</div>' +
+                    '<input type="hidden" :name="name" :value="local" :form="form">' +
+                    '<teleport to="body">' +
+                        '<div v-show="mention.open" ref="mentionMenu" class="m-rich-text-mentions" :id="uid + \'-mentions\'" role="listbox">' +
+                            '<q-list dense>' +
+                                '<q-item v-for="(item, index) in mention.items" :key="item.id" clickable :active="index === mention.index" role="option"' +
+                                        ' :aria-selected="index === mention.index" @mousedown.prevent @click="pickMention(index)">' +
+                                    '<q-item-section avatar class="m-rich-text-mention-avatar"><m-avatar :name="item.label" :image="item.image" size="22px"></m-avatar></q-item-section>' +
+                                    '<q-item-section>{{item.label}}</q-item-section>' +
+                                '</q-item>' +
+                                '<q-item v-if="!mention.items.length"><q-item-section class="m-muted">{{t(mention.loading ? \'Searching\' : \'No matches\')}}</q-item-section></q-item>' +
+                            '</q-list>' +
+                        '</div>' +
+                    '</teleport>' +
+                '</template>' +
+            '</div>',
+        computed: {
+            buttons() { return moqui.richText.toolbar(this.light, this.plainToggle && !this.light); },
+            blocks() { return [{ key: "paragraph", label: "Paragraph" }, { key: "h1", label: "Heading 1" }, { key: "h2", label: "Heading 2" }, { key: "h3", label: "Heading 3" }]; },
+            canEdit() { return !this.disable && !this.readonly; },
+            editable() { return this.state === "ready" && this.canEdit; },
+            minHeight() {
+                const rows = parseInt(this.rows, 10) || (this.light ? 2 : 6);
+                return (Math.max(rows, this.light ? 1 : 2) * 1.5 + 0.6) + "em";
+            }
+        },
+        watch: {
+            modelValue(value) {
+                const editor = this.editor;
+                if (!editor || this.isPlain) return;
+                if ((value || "") !== moqui.richText.value(editor.getHTML())) editor.commands.setContent(moqui.richText.toHtml(value), { emitUpdate: false });
+            },
+            plain(value) { if (value !== this.isPlain) this.togglePlain(); },
+            canEdit(value) { if (this.editor) this.editor.setEditable(value); }
+        },
+        methods: {
+            t(text) { return moqui.l10n && moqui.l10n.localize ? moqui.l10n.localize(text) : text; },
+            start() {
+                const T = root.Tiptap;
+                this.editor = markRaw(new T.Editor({
+                    element: this.$refs.content,
+                    extensions: richTextExtensions(T, this),
+                    content: moqui.richText.toHtml(this.local),
+                    editable: this.canEdit,
+                    autofocus: this.autofocus ? "end" : false,
+                    editorProps: { attributes: Object.assign({ class: "m-rich-text-editor", role: "textbox", "aria-multiline": "true" },
+                        this.id ? { id: this.id } : {}, this.label ? { "aria-label": this.label } : {}) },
+                    onUpdate: ({ editor }) => {
+                        if (this.isPlain) return;
+                        const html = moqui.richText.value(editor.getHTML());
+                        if (html !== (this.local || "")) this.onInput(html);
+                    },
+                    onTransaction: () => this.readActive(),
+                    onFocus: () => { this.focused = true; },
+                    onBlur: () => { this.focused = false; }
+                }));
+                this.state = "ready";
+                this.readActive();
+            },
+            readActive() {
+                const editor = this.editor;
+                if (!editor) return;
+                const active = {};
+                ["bold", "italic", "strike", "code", "link", "bulletList", "orderedList", "codeBlock", "blockquote"].forEach((name) => { active[name] = editor.isActive(name); });
+                this.active = active;
+                const level = [1, 2, 3].find((n) => editor.isActive("heading", { level: n }));
+                this.blockLabel = level ? "Heading " + level : "Paragraph";
+            },
+            run(key) {
+                const editor = this.editor;
+                if (key === "plain") { this.togglePlain(); return; }
+                if (!editor || !this.editable || this.isPlain) return;
+                if (key === "link" || key === "image") { this.ask(key); return; }
+                const chain = editor.chain().focus();
+                const commands = {
+                    bold: () => chain.toggleBold(), italic: () => chain.toggleItalic(), strike: () => chain.toggleStrike(), code: () => chain.toggleCode(),
+                    bulletList: () => chain.toggleBulletList(), orderedList: () => chain.toggleOrderedList(), codeBlock: () => chain.toggleCodeBlock(),
+                    blockquote: () => chain.toggleBlockquote(), undo: () => chain.undo(), redo: () => chain.redo(), paragraph: () => chain.setParagraph(),
+                    h1: () => chain.toggleHeading({ level: 1 }), h2: () => chain.toggleHeading({ level: 2 }), h3: () => chain.toggleHeading({ level: 3 })
+                };
+                if (commands[key]) commands[key]().run();
+            },
+            // the address of a link or an image, asked in a line under the toolbar
+            ask(kind) {
+                if (!this.editor || !this.editable) return;
+                this.asking = kind;
+                this.askValue = kind === "link" ? (this.editor.getAttributes("link").href || "") : "";
+                this.$nextTick(() => { if (this.$refs.askInput) this.$refs.askInput.focus(); });
+            },
+            applyAsk() {
+                const editor = this.editor;
+                const kind = this.asking;
+                this.asking = null;
+                if (!editor) return;
+                const value = this.askValue.trim();
+                if (kind === "image") {
+                    if (/^(https?:)?\/\//i.test(value) || value.startsWith("/")) editor.chain().focus().setImage({ src: value }).run();
+                    else if (value) moqui.notifyMessages(null, this.t("An image address starts with https:// or /"));
+                    return;
+                }
+                const href = moqui.richText.linkHref(value);
+                if (!href) { this.removeLink(); return; }
+                if (editor.state.selection.empty && !editor.isActive("link")) {
+                    editor.chain().focus().insertContent({ type: "text", text: value, marks: [{ type: "link", attrs: { href } }] }).run();
+                } else editor.chain().focus().extendMarkRange("link").setLink({ href }).run();
+            },
+            removeLink() {
+                this.asking = null;
+                if (this.editor) this.editor.chain().focus().extendMarkRange("link").unsetLink().run();
+            },
+            togglePlain() {
+                const editor = this.editor;
+                if (!this.isPlain) {
+                    this.isPlain = true;
+                    this.onInput(moqui.richText.toPlain(this.local));
+                } else {
+                    const html = moqui.richText.fromPlain(this.local);
+                    this.isPlain = false;
+                    if (editor) {
+                        editor.commands.setContent(html, { emitUpdate: false });
+                        this.onInput(moqui.richText.value(editor.getHTML()));
+                    } else this.onInput(html);
+                }
+                this.$emit("update:plain", this.isPlain);
+            },
+            plainKey(event) {
+                if (event.key !== "Enter" || event.isComposing) return;
+                if (event.ctrlKey || event.metaKey || (this.enter === "submit" && !event.shiftKey)) { event.preventDefault(); this.submit(); }
+            },
+            focusEnd(event) {
+                if (this.editor && event.target === this.$refs.content) this.editor.commands.focus("end");
+            },
+            // Enter (with enter="submit") or Ctrl+Enter: the submit event, and the form's submit inside an m-form
+            submit() {
+                this.$emit("submit", this.local);
+                if (this.mForm && this.mForm.submitForm) this.mForm.submitForm();
+            },
+            searchMentions(query, signal) {
+                if (!this.mentionUrl) return Promise.resolve([]);
+                const params = Object.assign({}, this.mentionParameters, { term: query || "" });
+                return moqui.request(this.mentionUrl, { params, signal }).then((result) => moqui.richText.mentionItems(result.json),
+                    (err) => {
+                        if (!err || !err.aborted) console.info("m-rich-text: the mention search " + this.mentionUrl + " failed, status " + (err && err.status));
+                        return [];
+                    });
+            },
+            // the renderer of the suggestion plugin: the list is this component's (teleported to the body), placed by the plugin
+            mentionRenderer() {
+                const vm = this;
+                const show = (props) => {
+                    vm.mentionProps = props;
+                    vm.mention.items = props.items || [];
+                    vm.mention.loading = !!props.loading;
+                    if (vm.mention.index >= vm.mention.items.length) vm.mention.index = 0;
+                };
+                return {
+                    onStart(props) {
+                        show(props);
+                        vm.mention.index = 0;
+                        vm.mention.open = true;
+                        vm.$nextTick(() => {
+                            if (!vm.mention.open) return;
+                            if (vm.mentionUnmount) vm.mentionUnmount();
+                            vm.mentionUnmount = vm.$refs.mentionMenu && props.mount ? props.mount(vm.$refs.mentionMenu) : null;
+                        });
+                    },
+                    onUpdate: show,
+                    onKeyDown({ event }) {
+                        if (!vm.mention.open) return false;
+                        const count = vm.mention.items.length;
+                        if (event.key === "ArrowDown" && count) { vm.mention.index = (vm.mention.index + 1) % count; return true; }
+                        if (event.key === "ArrowUp" && count) { vm.mention.index = (vm.mention.index + count - 1) % count; return true; }
+                        if ((event.key === "Enter" || event.key === "Tab") && count) { vm.pickMention(vm.mention.index); return true; }
+                        return false;
+                    },
+                    onExit() {
+                        vm.mention.open = false;
+                        vm.mentionProps = null;
+                        if (vm.mentionUnmount) { vm.mentionUnmount(); vm.mentionUnmount = null; }
+                    }
+                };
+            },
+            pickMention(index) {
+                const item = this.mention.items[index];
+                if (!item || !this.mentionProps) return;
+                this.mentionProps.command({ id: item.id, label: item.label });
+                this.$emit("mention", item);
+            }
+        },
+        mounted() {
+            loadTiptap().then(() => {
+                if (this.unmountedNow) return;
+                try {
+                    this.start();
+                } catch (err) {
+                    console.error("m-rich-text: the editor did not start, the html editor stands in: " + err);
+                    this.state = "failed";
+                }
+            }, (err) => {
+                if (this.unmountedNow) return;
+                console.error("m-rich-text: Tiptap did not load, the html editor stands in: " + err);
+                this.state = "failed";
+            });
+        },
+        beforeUnmount() {
+            this.unmountedNow = true;
+            if (this.mentionUnmount) { this.mentionUnmount(); this.mentionUnmount = null; }
+            if (this.editor) { this.editor.destroy(); this.editor = null; }
+        }
+    });
+
     /* ========== subscreens and the menu ========== */
 
     component("m-subscreens-tabs", {
@@ -2522,6 +3153,248 @@
     component("m-subscreens-panel", {
         name: "mSubscreensPanel",
         template: '<div><m-subscreens-tabs></m-subscreens-tabs><m-subscreens-active></m-subscreens-active></div>'
+    });
+
+    /* ========== wizard and stack panels, and the split container ========== */
+
+    const localized = (text) => (moqui.l10n && moqui.l10n.localize ? moqui.l10n.localize(text) : text);
+
+    // The URL of a step: its path with the current parameters, then its own, then those the step's answer gave (screenParameters),
+    // without the session token and the form name. Pure, for the node tests.
+    moqui.wizardStepUrl = (pathWithParams, current, answer) => {
+        const text = String(pathWithParams || "");
+        const at = text.indexOf("?");
+        const path = at >= 0 ? text.substring(0, at) : text;
+        const own = at >= 0 ? moqui.searchToObj(text.substring(at + 1)) : {};
+        const merged = Object.assign({}, current || {}, own, answer || {});
+        ["moquiSessionToken", "moquiFormName", "lastStandalone"].forEach((name) => delete merged[name]);
+        Object.keys(merged).forEach((name) => { if (merged[name] === null || merged[name] === undefined || merged[name] === "") delete merged[name]; });
+        const search = moqui.objToSearch(merged);
+        return search ? path + "?" + search : path;
+    };
+    // Where a wizard goes when its step form's answer comes, from the answer, the current path, the steps and the active one:
+    // {kind: "stay"} (errors, or a last step that names no screen), {kind: "redirect", url} (a URL off the screens), {kind: "url", url}
+    // (a screen other than this step: the transition chose where to go), or {kind: "step", index, parameters} (the next step).
+    moqui.wizardAfterAnswer = (answer, currentPathList, stepCount, activeIndex) => {
+        if (moqui.responseHasErrors(answer)) return { kind: "stay" };
+        const resp = answer && moqui.isPlainObject(answer) ? answer : {};
+        if (resp.redirectUrl) return { kind: "redirect", url: resp.redirectUrl };
+        const answerPath = Array.isArray(resp.screenPathList) ? resp.screenPathList : null;
+        const current = currentPathList || [];
+        const sameStep = !answerPath || (answerPath.length >= current.length &&
+            current.every((name, index) => answerPath[answerPath.length - current.length + index] === name));
+        if (!sameStep && resp.screenUrl) return { kind: "url", url: resp.screenUrl };
+        if (activeIndex >= stepCount - 1) return resp.screenUrl ? { kind: "url", url: resp.screenUrl } : { kind: "stay" };
+        return { kind: "step", index: activeIndex + 1, parameters: resp.screenParameters || {} };
+    };
+
+    // subscreens-panel type="wizard": a q-stepper with a step per subscreen (the menu titles, in menu order), the active subscreen
+    // below it, and Back and Next. The current step is the subscreen in the URL. Next submits the step form, the first m-form of the
+    // step that is not in a list or a dialog (the forms register through inject mWizard), and moves on when the answer has no errors
+    // (moqui.wizardAfterAnswer); a step without a form moves on at once. The last step's button is finishText and only shows with a form.
+    component("m-subscreens-wizard", {
+        name: "mSubscreensWizard",
+        props: { id: String, finishText: String, nextText: String, backText: String },
+        data() { return { pathIndex: -1, forms: [], submitting: false, hasForm: false }; },
+        provide() { return { mWizard: this }; },
+        template:
+            '<div class="m-wizard" :id="id" :data-step="activeName" :data-step-form="hasForm ? \'true\' : \'false\'" :data-forms="forms.length">' +
+                '<q-stepper v-if="steps.length" :model-value="activeName" flat bordered header-nav class="m-wizard-stepper" active-color="primary" done-color="primary"' +
+                        ' :contracted="$q.screen.lt.sm" @update:model-value="headerTo">' +
+                    '<q-step v-for="(step, index) in steps" :key="step.name" :name="step.name" :title="step.title" :done="index < activeIndex"' +
+                        ' :header-nav="index < activeIndex" :prefix="step.imageType === \'icon\' && step.image ? undefined : String(index + 1)"' +
+                        ' :icon="step.imageType === \'icon\' && step.image ? step.image : undefined" :data-step="step.name"></q-step>' +
+                '</q-stepper>' +
+                '<div ref="body" class="m-wizard-body"><m-subscreens-active></m-subscreens-active></div>' +
+                '<div v-if="steps.length" class="m-wizard-nav row items-center q-gutter-sm">' +
+                    '<q-btn v-if="activeIndex > 0" unelevated no-caps class="m-btn-tonal m-wizard-back" icon="arrow_back" :label="backLabel" @click="back"></q-btn>' +
+                    '<q-space></q-space>' +
+                    '<q-btn v-if="!isLast || hasForm" unelevated no-caps color="primary" class="m-wizard-next" :icon-right="isLast ? \'check\' : \'arrow_forward\'"' +
+                        ' :label="isLast ? finishLabel : nextLabel" :loading="submitting" @click="next"></q-btn>' +
+                '</div>' +
+            '</div>',
+        computed: {
+            steps() {
+                if (this.pathIndex < 0) return [];
+                const navMenu = this.$root.navMenuList[this.pathIndex];
+                return navMenu && navMenu.subscreens ? navMenu.subscreens.filter((step) => !step.disableLink) : [];
+            },
+            activeIndex() { return Math.max(0, this.steps.findIndex((step) => step.active)); },
+            activeName() { const step = this.steps[this.activeIndex]; return step ? step.name : null; },
+            isLast() { return this.activeIndex >= this.steps.length - 1; },
+            nextLabel() { return this.nextText || localized("Next"); },
+            backLabel() { return this.backText || localized("Back"); },
+            finishLabel() { return this.finishText || localized("Finish"); }
+        },
+        methods: {
+            addForm(form) { if (this.forms.indexOf(form) < 0) this.forms.push(form); this.formsChanged(); },
+            removeForm(form) { const at = this.forms.indexOf(form); if (at >= 0) this.forms.splice(at, 1); this.formsChanged(); },
+            // whether the step has a form, once the DOM of a step that came or went is in place (the step form is found in the DOM)
+            formsChanged() { this.$nextTick(() => { this.hasForm = !!this.stepForm(); }); },
+            // the first form of the step in document order that is not a list row form and not in a dialog (a dialog is teleported)
+            stepForm() {
+                const body = this.$refs.body;
+                if (!body) return null;
+                const forms = this.forms.filter((form) => form.$el && body.contains(form.$el) && !form.$el.closest("table, .q-table, .m-form-list, .q-dialog"));
+                forms.sort((a, b) => (a.$el.compareDocumentPosition(b.$el) & 4 ? -1 : 1));
+                return forms[0] || null;
+            },
+            isStepForm(form) { return this.stepForm() === form; },
+            goTo(index, answerParameters) {
+                const step = this.steps[index];
+                if (!step) return;
+                this.$root.setUrl(this.$root.getLinkPath(moqui.wizardStepUrl(step.pathWithParams, this.$root.currentParameters, answerParameters)));
+            },
+            next() {
+                if (this.submitting) return;
+                const form = this.stepForm();
+                if (!form) { this.goTo(this.activeIndex + 1, null); return; }
+                this.submitting = true;
+                form.submitForm();
+            },
+            back() { this.goTo(this.activeIndex - 1, null); },
+            headerTo(name) {
+                const index = this.steps.findIndex((step) => step.name === name);
+                if (index >= 0 && index < this.activeIndex) this.goTo(index, null);
+            },
+            stepRefused() { this.submitting = false; },
+            stepAnswered(form, resp) {
+                this.submitting = false;
+                const way = moqui.wizardAfterAnswer(resp, this.$root.currentPathList, this.steps.length, this.activeIndex);
+                if (way.kind === "redirect") root.location.href = way.url;
+                else if (way.kind === "url") this.$root.setUrl(way.url);
+                else if (way.kind === "step") this.goTo(way.index, way.parameters);
+            }
+        },
+        // before the m-subscreens-active inside registers, as m-subscreens-tabs is mounted before its sibling
+        beforeMount() { this.pathIndex = this.$root.activeSubscreens.length; }
+    });
+
+    // subscreens-panel type="stack": the first subscreen in menu order is the bottom of the stack and the others open over it, with a
+    // breadcrumb back to it; no tabs.
+    component("m-subscreens-stack", {
+        name: "mSubscreensStack",
+        props: { id: String },
+        data() { return { pathIndex: -1 }; },
+        template:
+            '<div class="m-stack" :id="id">' +
+                '<q-breadcrumbs v-if="stacked" class="m-stack-crumbs q-mb-sm" active-color="grey-8">' +
+                    '<q-breadcrumbs-el icon="arrow_back" :label="base.title" class="cursor-pointer text-primary" @click="goTo(base)"></q-breadcrumbs-el>' +
+                    '<q-breadcrumbs-el :label="active.title" class="text-weight-medium"></q-breadcrumbs-el>' +
+                '</q-breadcrumbs>' +
+                '<m-subscreens-active></m-subscreens-active>' +
+            '</div>',
+        computed: {
+            subscreens() {
+                if (this.pathIndex < 0) return [];
+                const navMenu = this.$root.navMenuList[this.pathIndex];
+                return navMenu && navMenu.subscreens ? navMenu.subscreens : [];
+            },
+            base() { return this.subscreens[0] || null; },
+            active() { return this.subscreens.find((item) => item.active) || null; },
+            stacked() { return !!(this.base && this.active && this.active.name !== this.base.name); }
+        },
+        methods: { goTo(item) { this.$root.setUrl(this.$root.getLinkPath(item.pathWithParams)); } },
+        beforeMount() { this.pathIndex = this.$root.activeSubscreens.length; }
+    });
+
+    // The layout of a container-split from the viewport, its width and the attributes: stacked below 1024 px (wide is false) or when
+    // the side and the main pane's minimum do not fit; the side width kept within [min, max]. Pure, for the node tests.
+    moqui.splitLayout = (options) => {
+        const sideWidth = Number(options.sideWidth) > 0 ? Number(options.sideWidth) : 320;
+        const minMain = Number(options.minMain) > 0 ? Number(options.minMain) : 480;
+        const width = Number(options.width) || 0;
+        const min = Math.min(200, sideWidth);
+        const max = width > 0 ? Math.max(min, width - minMain) : Number.MAX_SAFE_INTEGER;
+        const stacked = !options.wide || (width > 0 && width < min + minMain);
+        const saved = Number(options.saved);
+        const side = Math.round(Math.min(Math.max(saved > 0 ? saved : sideWidth, min), max));
+        return { stacked, side, min, max: width > 0 ? max : Math.max(sideWidth, min) * 3 };
+    };
+
+    // container-split (style-guide §3.8): a q-splitter with the side at side-width px from 1024 px, draggable between 200 px and what
+    // leaves min-main to the main pane, its width kept per id in the session and the user's preferences (SPLIT_WIDTH_<id>); stacked
+    // below that, where a selection in the URL (select-parameter) shows the main pane with a back button that clears it, and none
+    // shows the side. The panes keep their content across the change, so a form in them keeps its values.
+    component("m-container-split", {
+        name: "mContainerSplit",
+        props: { id: String, sideWidth: { type: [Number, String], default: 320 }, minMain: { type: [Number, String], default: 480 },
+            sidePosition: { type: String, default: "left" }, selectParameter: String, backText: String, height: String },
+        data() { return { width: 0, side: null, observer: null, saveTimer: null }; },
+        template:
+            '<div ref="root" class="m-container-split" :id="id" :data-stacked="layout.stacked ? \'true\' : \'false\'"' +
+                    ' :class="{\'m-split-stacked\': layout.stacked, \'m-split-right\': right, \'m-split-selected\': selected}">' +
+                '<q-splitter :model-value="layout.side" @update:model-value="drag" unit="px" :limits="[layout.min, layout.max]" :reverse="right"' +
+                        ' :disable="layout.stacked" :style="height && !layout.stacked ? {height: height} : undefined" separator-class="m-split-separator">' +
+                    '<template v-slot:before>' +
+                        '<div v-if="right" v-show="showMain" class="m-split-main">' +
+                            '<q-btn v-if="backShown" flat dense no-caps icon="arrow_back" :label="backLabel" class="m-split-back" @click="back"></q-btn>' +
+                            '<slot name="main"></slot></div>' +
+                        '<div v-else v-show="showSide" class="m-split-side"><slot name="side"></slot></div>' +
+                    '</template>' +
+                    '<template v-slot:after>' +
+                        '<div v-if="right" v-show="showSide" class="m-split-side"><slot name="side"></slot></div>' +
+                        '<div v-else v-show="showMain" class="m-split-main">' +
+                            '<q-btn v-if="backShown" flat dense no-caps icon="arrow_back" :label="backLabel" class="m-split-back" @click="back"></q-btn>' +
+                            '<slot name="main"></slot></div>' +
+                    '</template>' +
+                '</q-splitter>' +
+            '</div>',
+        computed: {
+            right() { return this.sidePosition === "right"; },
+            storageKey() { return this.id ? "SPLIT_WIDTH_" + this.id : null; },
+            layout() {
+                return moqui.splitLayout({ wide: !!(this.$q && this.$q.screen && this.$q.screen.gt.sm), width: this.width, sideWidth: this.sideWidth,
+                    minMain: this.minMain, saved: this.side });
+            },
+            selected() {
+                if (!this.selectParameter) return false;
+                const value = (this.$root.currentParameters || {})[this.selectParameter];
+                return value !== undefined && value !== null && String(value) !== "";
+            },
+            showSide() { return !this.layout.stacked || !this.selectParameter || !this.selected; },
+            showMain() { return !this.layout.stacked || !this.selectParameter || this.selected; },
+            backShown() { return this.layout.stacked && !!this.selectParameter && this.selected; },
+            backLabel() { return this.backText || localized("Back"); }
+        },
+        methods: {
+            drag(value) {
+                this.side = Math.round(value);
+                if (!this.storageKey) return;
+                try { root.sessionStorage.setItem("moqui." + this.storageKey, String(this.side)); } catch (err) { /* no storage */ }
+                // the preference once the dragging stops
+                if (this.saveTimer) clearTimeout(this.saveTimer);
+                this.saveTimer = setTimeout(() => {
+                    this.saveTimer = null;
+                    if (this.$root.setPreference && this.$root.userId) this.$root.setPreference(this.storageKey, String(this.side));
+                }, 800);
+            },
+            back() {
+                const current = Object.assign({}, this.$root.currentParameters || {});
+                delete current[this.selectParameter];
+                const search = moqui.objToSearch(current);
+                this.$root.setUrl(this.$root.currentLinkPath + (search ? "?" + search : ""));
+            }
+        },
+        created() {
+            if (!this.storageKey) return;
+            let saved = null;
+            try { saved = root.sessionStorage.getItem("moqui." + this.storageKey); } catch (err) { saved = null; }
+            if (!saved && qvt.config && qvt.config.preferences) saved = qvt.config.preferences[this.storageKey] || null;
+            if (Number(saved) > 0) this.side = Number(saved);
+        },
+        mounted() {
+            const el = this.$refs.root;
+            this.width = el.clientWidth;
+            if (root.ResizeObserver) {
+                this.observer = new root.ResizeObserver(() => { this.width = el.clientWidth; });
+                this.observer.observe(el);
+            }
+        },
+        beforeUnmount() {
+            if (this.observer) this.observer.disconnect();
+            if (this.saveTimer) clearTimeout(this.saveTimer);
+        }
     });
 
     component("m-menu-nav-item", {
@@ -2652,6 +3525,663 @@
         watch: { value(newValue) { if (this.$root.setScreenContext) this.$root.setScreenContext(this.contextKey, newValue); } },
         mounted() { if (this.$root.setScreenContext) this.$root.setScreenContext(this.contextKey, this.value); },
         unmounted() { if (this.$root.removeScreenContext) this.$root.removeScreenContext(this.contextKey); }
+    });
+
+    /* ========== records: the record panels, avatars and record cards ========== */
+
+    // Where m-chatter or m-record-files loads its panel (the chatter and record-files elements, IronStone R5), tested under Node:
+    // the subscreen the theme names (shellData.shell chatterScreen or recordFilesScreen) as the current app root mounts it
+    // (shellData.apps[].recordScreens[kind]: its link, null when that app has no such subscreen the user may open), as a
+    // /apps/... path with .qvue or .qjs when the screen renders that way, and the record and the hints as the query. Without a
+    // URL, reason says why (to log once), and wait that the shell data is not there yet.
+    moqui.recordPanelUrl = (shellData, appName, kind, record, basePath, linkBasePath) => {
+        if (!shellData) return { url: null, wait: true };
+        const themeName = (shellData.shell || {})[kind + "Screen"];
+        if (!themeName) return { url: null, reason: "the theme names no " + kind + " screen" };
+        if (!appName) return { url: null, reason: "there is no current app root" };
+        const app = (shellData.apps || []).find((item) => item.name === appName);
+        const screen = app && app.recordScreens ? app.recordScreens[kind] : null;
+        if (!screen || !screen.url) return { url: null, reason: "app " + appName + " has no " + themeName + " screen the user may open" };
+        const info = record || {};
+        if (!info.recordEntity || !info.recordId) return { url: null };
+        let path = String(screen.url);
+        if (linkBasePath && (path === linkBasePath || path.indexOf(linkBasePath + "/") === 0)) path = (basePath || "") + path.slice(linkBasePath.length);
+        const modes = screen.renderModes || [];
+        if (modes.indexOf(moqui.urlExtensions.vue) >= 0) path += "." + moqui.urlExtensions.vue;
+        else if (modes.indexOf(moqui.urlExtensions.js) >= 0) path += "." + moqui.urlExtensions.js;
+        const query = { recordEntity: info.recordEntity, recordId: info.recordId, appRoot: appName };
+        if (info.defaultTab) query.defaultTab = info.defaultTab;
+        if (info.hide) query.hide = info.hide;
+        return { url: path + "?" + moqui.objToSearch(query) };
+    };
+
+    // The chatter and record-files elements: the panel loaded into an m-dynamic-container (id, for submit-reload-id), as its own
+    // request, so the app's authorization applies to it. Nothing (logged once) when the theme names no screen, the page is in no
+    // app, or the app does not mount the screen. The panel gets the record and hints from its query, and a .qvue panel, which
+    // does not see the query of its own request, from inject: ['mRecordPanel'] ({kind, recordEntity, recordId, appRoot,
+    // defaultTab, hide, containerId}).
+    const recordPanelLogged = {};
+    let recordPanelCount = 0;
+    const recordPanel = (kind, name) => ({
+        name,
+        props: { id: String, recordEntity: [String, Number], recordId: [String, Number], defaultTab: String, hide: String },
+        data() { recordPanelCount += 1; return { containerId: this.id || "m-" + kind + "-" + recordPanelCount }; },
+        provide() { return { mRecordPanel: root.Vue ? root.Vue.computed(() => this.panel) : null }; },
+        template: '<div v-if="loadUrl" :class="\'m-record-panel m-record-panel-\' + kind"><m-dynamic-container ref="container" :id="containerId" :url="loadUrl"></m-dynamic-container></div>',
+        computed: {
+            kind() { return kind; },
+            record() {
+                const text = (value) => (value === null || value === undefined || value === "null" ? "" : String(value));
+                return { recordEntity: text(this.recordEntity), recordId: text(this.recordId), defaultTab: text(this.defaultTab), hide: text(this.hide) };
+            },
+            appName() { return this.$root.currentAppName || ""; },
+            target() { return moqui.recordPanelUrl(this.$root.shellData, this.appName, kind, this.record, this.$root.basePath, this.$root.linkBasePath); },
+            loadUrl() { return this.target.url || null; },
+            panel() { return Object.assign({ kind, appRoot: this.appName, containerId: this.containerId }, this.record); }
+        },
+        watch: {
+            target: {
+                immediate: true,
+                handler(target) {
+                    if (!target.reason || recordPanelLogged[target.reason]) return;
+                    recordPanelLogged[target.reason] = true;
+                    console.info(name + " shows nothing: " + target.reason);
+                }
+            },
+            loadUrl(url, oldUrl) {
+                const container = this.$refs.container;
+                if (url && oldUrl && container) container.load(url);
+            }
+        }
+    });
+    component("m-chatter", recordPanel("chatter", "mChatter"));
+    component("m-record-files", recordPanel("recordFiles", "mRecordFiles"));
+
+    // An avatar (design §19): the face image, else the initials of the name on a color of the name, else a person icon. The
+    // presence dot is drawn only with presence (online, away, dnd, offline; the presence of Comms chat, M10).
+    moqui.avatar = {
+        // the first letters of the first and the last word ("Ada Lovelace" AL, "ada.lovelace@example.com" AL), one for one word
+        initials(name) {
+            const text = String(name || "").trim().replace(/@.*$/, "");
+            if (!text) return "";
+            let words = text.split(/\s+/).filter((word) => word);
+            if (words.length === 1) words = words[0].split(/[._-]+/).filter((word) => word);
+            const letter = (word) => Array.from(word.replace(/^[^\p{L}\p{N}]+/u, ""))[0] || "";
+            const first = letter(words[0] || "");
+            const last = words.length > 1 ? letter(words[words.length - 1]) : "";
+            return (first + last).toUpperCase();
+        },
+        // a brand color for a name, the same each time
+        color(name) {
+            const colors = ["primary", "secondary", "accent", "positive", "info", "deep-purple", "teal", "indigo", "brown", "blue-grey"];
+            let hash = 0;
+            for (const ch of String(name || "")) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+            return colors[hash % colors.length];
+        }
+    };
+    component("m-avatar", {
+        name: "mAvatar",
+        props: { name: String, image: String, size: { type: String, default: "32px" }, color: String, textColor: { type: String, default: "white" },
+            presence: String, square: Boolean, rounded: Boolean, tooltip: Boolean },
+        data() { return { failedImage: "" }; },
+        computed: {
+            showImage() { return !!this.image && this.failedImage !== this.image; },
+            initials() { return moqui.avatar.initials(this.name); },
+            background() { return this.showImage ? undefined : this.color || moqui.avatar.color(this.name); }
+        },
+        template:
+            '<q-avatar class="m-avatar" :size="size" :color="background" :text-color="showImage ? undefined : textColor" :square="square" :rounded="rounded"' +
+                    ' :aria-label="name || undefined">' +
+                '<img v-if="showImage" :src="image" :alt="name || \'\'" @error="failedImage = image">' +
+                '<span v-else-if="initials" class="m-avatar-initials">{{initials}}</span>' +
+                '<q-icon v-else name="sym_o_person"></q-icon>' +
+                '<span v-if="presence" class="m-avatar-presence" :class="\'m-presence-\' + presence" :title="presence"></span>' +
+                '<q-tooltip v-if="tooltip && name">{{name}}</q-tooltip>' +
+            '</q-avatar>'
+    });
+
+    // A record card (design §19 Record cards): the card JSON a host's card-url answers for {recordEntity, recordId} (BOSS: a
+    // transition over mantle.GeneralServices.lookup#ById), or the card prop, as m-record-card shows it:
+    //   { title, typeLabel, icon, id, entity, url, status: {label, color} | "label", fields: [{label, value}] }
+    // or that object under card. At most two fields with a value are shown; the title falls back to the id.
+    moqui.recordCard = {
+        normalize(data, entity, id) {
+            if (!moqui.isPlainObject(data)) return null;
+            const card = moqui.isPlainObject(data.card) ? data.card : data;
+            const text = (value) => (value === null || value === undefined ? "" : String(value));
+            let status = null;
+            if (moqui.isPlainObject(card.status) && card.status.label) status = { label: text(card.status.label), color: text(card.status.color) || "primary" };
+            else if (card.status || card.statusLabel) status = { label: text(card.statusLabel || card.status), color: text(card.statusColor) || "primary" };
+            const fields = (Array.isArray(card.fields) ? card.fields : []).filter((field) => moqui.isPlainObject(field) && text(field.value) !== "")
+                .slice(0, 2).map((field) => ({ label: text(field.label), value: text(field.value) }));
+            const recordId = text(card.id || id);
+            return { entity: text(card.entity || entity), id: recordId, title: text(card.title) || recordId, typeLabel: text(card.typeLabel || card.type),
+                icon: text(card.icon) || "sym_o_description", status, fields, url: text(card.url) || null };
+        }
+    };
+    moqui.recordCardCache = new moqui.LruMap(100);
+    component("m-record-card", {
+        name: "mRecordCard",
+        props: { recordEntity: String, recordId: [String, Number], cardUrl: String, cardParameters: Object, card: Object, dense: Boolean },
+        data() { return { loaded: null, failed: false }; },
+        computed: {
+            info() {
+                if (this.card) return moqui.recordCard.normalize(this.card, this.recordEntity, this.recordId);
+                return this.loaded;
+            },
+            requestKey() {
+                return this.cardUrl && this.recordId ? this.cardUrl + "|" + (this.recordEntity || "") + "|" + this.recordId + "|" + JSON.stringify(this.cardParameters || {}) : "";
+            }
+        },
+        template:
+            '<q-card flat bordered class="m-record-card">' +
+                '<q-item v-if="info" :dense="dense" class="m-record-card-item">' +
+                    '<q-item-section avatar class="m-record-card-icon"><m-menu-icon :name="info.icon" size="sm"></m-menu-icon></q-item-section>' +
+                    '<q-item-section class="m-record-card-body">' +
+                        '<q-item-label class="ellipsis text-weight-medium">' +
+                            '<m-link v-if="info.url" :href="info.url" class="m-link-text">{{info.title}}</m-link><span v-else>{{info.title}}</span></q-item-label>' +
+                        '<q-item-label caption class="ellipsis">{{info.typeLabel}}<span v-if="info.typeLabel && info.id"> · </span>{{info.id}}</q-item-label>' +
+                        '<q-item-label v-for="field in info.fields" :key="field.label" caption class="ellipsis"><span class="m-muted">{{field.label}}</span> {{field.value}}</q-item-label>' +
+                    '</q-item-section>' +
+                    '<q-item-section v-if="info.status" side top><q-chip dense square :class="\'m-tonal text-\' + info.status.color">{{info.status.label}}</q-chip></q-item-section>' +
+                '</q-item>' +
+                '<q-item v-else-if="failed || !requestKey" :dense="dense" class="m-record-card-item"><q-item-section class="m-muted">{{recordEntity}} {{recordId}}</q-item-section></q-item>' +
+                '<q-item v-else :dense="dense" class="m-record-card-item"><q-item-section avatar><q-skeleton type="QAvatar" size="24px"></q-skeleton></q-item-section>' +
+                    '<q-item-section><q-skeleton type="text" width="60%"></q-skeleton><q-skeleton type="text" width="40%"></q-skeleton></q-item-section></q-item>' +
+            '</q-card>',
+        watch: { requestKey: { immediate: true, handler() { this.load(); } } },
+        methods: {
+            // one request per card URL and record for the page (a timeline repeats a record); a failure shows the entity and id
+            load() {
+                const key = this.requestKey;
+                if (this.card || !key) return;
+                let pending = moqui.recordCardCache.get(key);
+                if (!pending) {
+                    const params = Object.assign({}, this.cardParameters, { recordEntity: this.recordEntity || "", recordId: String(this.recordId) });
+                    pending = moqui.request(this.cardUrl, { params }).then((result) => moqui.recordCard.normalize(result.json, this.recordEntity, this.recordId));
+                    moqui.recordCardCache.put(key, pending);
+                }
+                this.failed = false;
+                pending.then((info) => {
+                    if (key !== this.requestKey) return;
+                    if (info) this.loaded = info; else this.failed = true;
+                }, (err) => {
+                    moqui.recordCardCache.remove(key);
+                    if (key !== this.requestKey) return;
+                    console.info("m-record-card: " + this.cardUrl + " answered status " + (err && err.status) + " for " + key);
+                    this.failed = true;
+                });
+            }
+        }
+    });
+
+    /* ========== m-html-view: an email or HTML body in a sandboxed frame ========== */
+
+    // The pure part of m-html-view (IronStone design-drawers-commons §12 reading pane, §19), tested under Node with a small
+    // fake DOM (WebrootVue.qvt.htmlview.test.js). The body is cleaned with DOMPurify (libs/dompurify, loaded with the first
+    // view), then walked by process: images by imageSource (data: kept, cid: through the host's map, remote ones only when
+    // allowed, a placeholder otherwise, tracking pixels dropped), links by linkHref (http, https, mailto, tel; a new window
+    // with rel noopener noreferrer), the CSS of style attributes and style blocks by css (remote url() only when allowed,
+    // no @import, no expression() or behaviors, no fixed positions), and the reply history at the end (Gmail, Outlook,
+    // Apple Mail, Thunderbird and Yahoo markers, or a last blockquote) collapsed into a <details> behind a "..." summary,
+    // which opens without a script. srcdoc makes the frame's document with its content security policy: no script, no
+    // connection, images only data: (and http and https when remote images are allowed), styles inline.
+    const hvEscape = (text) => String(text === null || text === undefined ? "" : text).replace(/[&<>"']/g,
+        (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+    const HV_QUOTE_CLASSES = ["gmail_quote", "gmail_extra", "yahoo_quoted", "moz-cite-prefix", "protonmail_quote", "zmail_extra"];
+    const HV_RUN_IDS = ["divRplyFwdMsg", "appendonsend", "mail-editor-reference-message-container"];
+    const HV_ORIGINAL = /^\s*-{2,}\s*(Original Message|Forwarded message|Ursprüngliche Nachricht|Message d'origine)\s*-{2,}/i;
+    const HV_ATTRIBUTION = /^\s*(On\s.+\swrote:|Am\s.+\sschrieb.*:|Le\s.+\sa écrit\s*:|El\s.+\sescribió:)\s*$/i;
+    moqui.htmlView = {
+        // a Content-ID as a key of the host's map: without its angle brackets, lower case
+        cidKey(id) { return String(id || "").trim().replace(/^cid:/i, "").replace(/^<|>$/g, "").toLowerCase(); },
+        // where an image may come from: {src, remote, blocked}; src null drops it (a relative path, javascript:, file:)
+        imageSource(src, options) {
+            const opts = options || {};
+            const text = String(src || "").trim();
+            if (/^data:image\/(png|gif|jpe?g|webp|bmp|svg\+xml|x-icon|avif);/i.test(text)) return { src: text, remote: false, blocked: false };
+            if (/^cid:/i.test(text)) {
+                const map = opts.cidMap || {};
+                const found = map[moqui.htmlView.cidKey(text)];
+                return found ? { src: found, remote: false, blocked: false } : { src: null, remote: false, blocked: false };
+            }
+            const absolute = text.indexOf("//") === 0 ? "https:" + text : text;
+            if (/^https?:\/\//i.test(absolute)) return opts.allowRemote ? { src: absolute, remote: true, blocked: false } : { src: null, remote: true, blocked: true };
+            return { src: null, remote: false, blocked: false };
+        },
+        // a link the frame may open: http, https, mailto and tel, and an anchor in the message; null removes the link
+        linkHref(href) {
+            const text = String(href || "").trim();
+            if (!text) return null;
+            if (text.charAt(0) === "#") return text;
+            if (/^(https?:\/\/|mailto:|tel:)/i.test(text)) return text;
+            if (text.indexOf("//") === 0) return "https:" + text;
+            return null;
+        },
+        // CSS as the frame may use it: {css, blocked} with remote url() only when allowed (counted when not), no @import,
+        // no expression(), behavior or -moz-binding, no fixed positions; backslash escapes are read first, so none hides
+        // a url()
+        css(text, allowRemote) {
+            let blocked = 0;
+            let css = String(text || "").replace(/\\([0-9a-f]{1,6})\s?|\\(.)/gi, (whole, hex, ch) => {
+                if (ch !== undefined) return ch;
+                const point = parseInt(hex, 16);
+                return point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : "";
+            });
+            css = css.replace(/@import[^;]*;?/gi, "").replace(/expression\s*\(/gi, "(").replace(/(behavior|-moz-binding)\s*:[^;}]*/gi, "");
+            css = css.replace(/position\s*:\s*fixed/gi, "position:static");
+            css = css.replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, (whole, quote, target) => {
+                const url = target.trim();
+                if (/^data:/i.test(url) && !/^data:[^,]*(script|html)/i.test(url)) return whole;
+                if (/^(https?:)?\/\//i.test(url)) {
+                    if (allowRemote) return "url(" + quote + url + quote + ")";
+                    blocked++;
+                    return "none";
+                }
+                return "none";
+            });
+            return { css, blocked };
+        },
+        // a designed message (its own colors or backgrounds) keeps a light card in dark mode; a plain one follows the theme
+        isDesigned(html) {
+            return /\bbgcolor\s*=|\sbackground\s*=|background(-color|-image)?\s*:|(^|[\s;"'{])color\s*:|<font[^>]*\scolor\s*=/i.test(String(html || ""));
+        },
+        escape: hvEscape,
+        // text already escaped, with its addresses and URLs as links that open in a new window (a URL ends before a
+        // space, a quote or an angle bracket, and its trailing punctuation stays text)
+        autolink(escaped) {
+            return String(escaped || "").replace(/\b(?:https?:\/\/|www\.)(?:(?!&(?:quot|#39|lt|gt);)[^\s<>"'])+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, (whole) => {
+                let url = whole;
+                let tail = "";
+                const trailing = /[.,;:!?)\]}]+$/.exec(url);
+                if (trailing) { tail = trailing[0]; url = url.slice(0, -tail.length); }
+                if (!url) return whole;
+                const plainUrl = url.replace(/&amp;/g, "&");
+                const href = /^www\./i.test(plainUrl) ? "https://" + plainUrl : (/^https?:\/\//i.test(plainUrl) ? plainUrl : "mailto:" + plainUrl);
+                return '<a href="' + hvEscape(href) + '" target="_blank" rel="noopener noreferrer">' + url + "</a>" + tail;
+            });
+        },
+        // the index of the first line of the reply history at the end of a text (quoted lines, an attribution or an
+        // "Original Message" line before them), or -1
+        quoteStart(lines) {
+            for (let index = 0; index < lines.length; index++) if (HV_ORIGINAL.test(lines[index])) return index;
+            let end = lines.length - 1;
+            while (end >= 0 && !lines[end].trim()) end--;
+            if (end < 0 || !/^\s*>/.test(lines[end])) return -1;
+            let start = end;
+            while (start > 0 && (/^\s*>/.test(lines[start - 1]) || !lines[start - 1].trim())) start--;
+            while (start < end && !lines[start].trim()) start++;
+            let before = start - 1;
+            while (before >= 0 && !lines[before].trim()) before--;
+            if (before >= 0 && HV_ATTRIBUTION.test(lines[before])) start = before;
+            else if (before >= 1 && HV_ATTRIBUTION.test(lines[before - 1] + " " + lines[before])) start = before - 1;
+            return start;
+        },
+        summary() { return '<summary class="m-hv-more" title="Show trimmed content" aria-label="Show trimmed content">•••</summary>'; },
+        // a text/plain body as HTML: escaped, with links, the reply history at the end collapsed
+        textToHtml(text, collapseQuotes) {
+            const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+            const start = collapseQuotes === false ? -1 : moqui.htmlView.quoteStart(lines);
+            const block = (part) => moqui.htmlView.autolink(hvEscape(part.join("\n")));
+            if (start < 0) return '<div class="m-hv-plain">' + block(lines) + "</div>";
+            const shown = lines.slice(0, start);
+            while (shown.length && !shown[shown.length - 1].trim()) shown.pop();
+            return '<div class="m-hv-plain">' + block(shown) + "</div>" + '<details class="m-hv-quote">' + moqui.htmlView.summary() +
+                '<div class="m-hv-plain">' + block(lines.slice(start)) + "</div></details>";
+        },
+        // whether a node shows nothing: no text but spaces, no image (a tracking pixel aside)
+        isEmptyContent(node) {
+            if (!node) return true;
+            if (node.nodeType === 3) return !String(node.textContent || "").trim();
+            if (node.nodeType !== 1) return true;
+            if (String(node.textContent || "").trim()) return false;
+            const stack = [node];
+            while (stack.length) {
+                const el = stack.pop();
+                if (String(el.tagName || "").toLowerCase() === "img") {
+                    const width = parseInt(el.getAttribute("width") || "", 10), height = parseInt(el.getAttribute("height") || "", 10);
+                    if (!(width <= 2 && height <= 2)) return false;
+                }
+                for (const child of Array.from(el.childNodes || [])) if (child.nodeType === 1) stack.push(child);
+            }
+            return true;
+        },
+        // whether nothing shows after a node, up to the root
+        isTrailing(node, rootNode) {
+            let current = node;
+            while (current && current !== rootNode) {
+                for (let next = current.nextSibling; next; next = next.nextSibling) if (!moqui.htmlView.isEmptyContent(next)) return false;
+                current = current.parentNode;
+            }
+            return true;
+        },
+        // what kind of reply history an element starts: "element" (it is the quote), "run" (it and what follows), or null
+        quoteKind(el) {
+            if (!el || el.nodeType !== 1) return null;
+            const tag = String(el.tagName || "").toLowerCase();
+            const classes = String(el.getAttribute("class") || "").split(/\s+/);
+            const id = String(el.getAttribute("id") || "");
+            if (HV_RUN_IDS.indexOf(id) >= 0) return "run";
+            if (tag === "hr" && el.nextSibling && el.nextSibling.nodeType === 1 && HV_RUN_IDS.indexOf(String(el.nextSibling.getAttribute("id") || "")) >= 0) return "run";
+            if (tag === "blockquote" || classes.some((name) => HV_QUOTE_CLASSES.indexOf(name) >= 0)) return "element";
+            if ((tag === "div" || tag === "p") && HV_ORIGINAL.test(String(el.textContent || "")) && String(el.textContent || "").length < 2000) return "run";
+            return null;
+        },
+        // the reply history at the end of a cleaned body, wrapped in <details>; the count of blocks collapsed
+        collapse(rootNode, doc) {
+            const found = [];
+            const walk = (node) => {
+                for (const child of Array.from(node.childNodes || [])) {
+                    if (child.nodeType !== 1) continue;
+                    const kind = moqui.htmlView.quoteKind(child);
+                    if (kind) {
+                        found.push({ node: child, kind });
+                        // a run takes the siblings after it
+                        if (kind === "run") return;
+                        continue;
+                    }
+                    walk(child);
+                }
+            };
+            walk(rootNode);
+            let count = 0;
+            for (const item of found) {
+                const parent = item.node.parentNode;
+                if (!parent) continue;
+                const nodes = [item.node];
+                if (item.kind === "run") for (let next = item.node.nextSibling; next; next = next.nextSibling) nodes.push(next);
+                if (!moqui.htmlView.isTrailing(nodes[nodes.length - 1], rootNode)) continue;
+                const details = doc.createElement("details");
+                details.setAttribute("class", "m-hv-quote");
+                const summary = doc.createElement("summary");
+                summary.setAttribute("class", "m-hv-more");
+                summary.setAttribute("title", "Show trimmed content");
+                summary.setAttribute("aria-label", "Show trimmed content");
+                summary.textContent = "•••";
+                details.appendChild(summary);
+                parent.insertBefore(details, item.node);
+                for (const node of nodes) details.appendChild(node);
+                count++;
+            }
+            return count;
+        },
+        // the cleaned body made safe for the frame: images, links, style attributes and the reply history; {blocked}
+        process(rootNode, doc, options) {
+            const opts = options || {};
+            let blocked = 0;
+            const elements = [];
+            const gather = (node) => {
+                for (const child of Array.from(node.childNodes || [])) if (child.nodeType === 1) { elements.push(child); gather(child); }
+            };
+            gather(rootNode);
+            const size = (el, name) => {
+                const value = parseInt(el.getAttribute(name) || "", 10);
+                if (!isNaN(value)) return value;
+                const style = /(?:^|;)\s*NAME\s*:\s*(\d+)px/i.source.replace("NAME", name);
+                const match = new RegExp(style, "i").exec(String(el.getAttribute("style") || ""));
+                return match ? parseInt(match[1], 10) : null;
+            };
+            for (const el of elements) {
+                const tag = String(el.tagName || "").toLowerCase();
+                if (el.getAttribute("style") !== null && el.getAttribute("style") !== undefined) {
+                    const cleaned = moqui.htmlView.css(el.getAttribute("style"), opts.allowRemote);
+                    blocked += cleaned.blocked;
+                    el.setAttribute("style", cleaned.css);
+                }
+                const background = el.getAttribute("background");
+                if (background !== null && background !== undefined) {
+                    const source = moqui.htmlView.imageSource(background, opts);
+                    if (source.blocked) blocked++;
+                    if (source.src) el.setAttribute("background", source.src); else el.removeAttribute("background");
+                }
+                if (tag === "img") {
+                    const source = moqui.htmlView.imageSource(el.getAttribute("src"), opts);
+                    const width = size(el, "width"), height = size(el, "height");
+                    const pixel = width !== null && height !== null && width <= 2 && height <= 2;
+                    if (source.src) { el.setAttribute("src", source.src); continue; }
+                    if (source.blocked && !pixel) blocked++;
+                    // a pixel, or an image with nothing to show and nothing to say, is left out
+                    if (pixel || !el.parentNode || (!source.blocked && !el.getAttribute("alt"))) { if (el.parentNode) el.parentNode.removeChild(el); continue; }
+                    const holder = doc.createElement("span");
+                    holder.setAttribute("class", "m-hv-blocked");
+                    holder.setAttribute("title", source.blocked ? "Image hidden" : "Image not available");
+                    const dims = [];
+                    if (width) dims.push("width:" + Math.min(width, 2000) + "px");
+                    if (height) dims.push("height:" + Math.min(height, 2000) + "px");
+                    if (dims.length) holder.setAttribute("style", dims.join(";"));
+                    holder.textContent = el.getAttribute("alt") || "";
+                    el.parentNode.replaceChild(holder, el);
+                    continue;
+                }
+                if (tag === "a" || tag === "area") {
+                    const href = moqui.htmlView.linkHref(el.getAttribute("href"));
+                    if (href === null) el.removeAttribute("href");
+                    else {
+                        el.setAttribute("href", href);
+                        if (href.charAt(0) !== "#") { el.setAttribute("target", "_blank"); el.setAttribute("rel", "noopener noreferrer"); }
+                    }
+                } else if (el.getAttribute("target") !== null && el.getAttribute("target") !== undefined) {
+                    el.removeAttribute("target");
+                }
+            }
+            const collapsed = opts.collapseQuotes === false ? 0 : moqui.htmlView.collapse(rootNode, doc);
+            return { blocked, collapsed };
+        },
+        // DOMPurify's options: HTML only (no SVG or MathML), no forms, frames, plugins, media, scripts or document-level
+        // elements, no srcset, poster or ping (which reach the network on their own), no data- attributes of the sender
+        purifyOptions: {
+            USE_PROFILES: { html: true }, RETURN_DOM: true, FORCE_BODY: true, ALLOW_DATA_ATTR: false,
+            FORBID_TAGS: ["style", "form", "input", "button", "select", "option", "optgroup", "textarea", "iframe", "frame", "frameset",
+                "object", "embed", "applet", "base", "link", "meta", "audio", "video", "source", "track", "script", "noscript", "template",
+                "dialog", "portal", "title"],
+            FORBID_ATTR: ["srcset", "poster", "ping", "formaction", "action", "autofocus", "srcdoc"]
+        },
+        // the style blocks of an HTML message (the head's included), as one cleaned CSS text, and the rest of it
+        splitStyles(html, allowRemote) {
+            let blocked = 0;
+            const parts = [];
+            const rest = String(html || "").replace(/<style[^>]*>([\s\S]*?)<\/style\s*>/gi, (whole, css) => {
+                const cleaned = moqui.htmlView.css(css, allowRemote);
+                blocked += cleaned.blocked;
+                parts.push(cleaned.css.replace(/<\/?style/gi, ""));
+                return "";
+            });
+            return { css: parts.join("\n"), html: rest, blocked };
+        },
+        // an HTML message cleaned for the frame (a browser, DOMPurify loaded): {content, css, blocked, designed}
+        sanitize(html, purify, options) {
+            const opts = options || {};
+            const styles = moqui.htmlView.splitStyles(html, opts.allowRemote);
+            const body = purify.sanitize(styles.html, moqui.htmlView.purifyOptions);
+            const done = moqui.htmlView.process(body, body.ownerDocument, opts);
+            return { content: body.innerHTML, css: styles.css, blocked: styles.blocked + done.blocked, designed: moqui.htmlView.isDesigned(html) };
+        },
+        // the frame's content security policy: nothing but inline styles and images (data:, and http and https when
+        // remote images are allowed), no script, connection, form, frame or base
+        csp(allowRemote) {
+            const images = allowRemote ? "data: https: http:" : "data:";
+            return "default-src 'none'; img-src " + images + "; style-src 'unsafe-inline'; font-src " + images +
+                "; base-uri 'none'; form-action 'none'; frame-src 'none'";
+        },
+        // the frame's document: its policy, no referrer, the theme (dark for a plain message in dark mode, a light card
+        // for a designed one), the message's own styles, then the content in #m-hv-root, which the host measures
+        srcdoc(parts) {
+            const p = parts || {};
+            const dark = !!p.dark && !p.designed;
+            const font = p.font || "Roboto, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif";
+            const base = [
+                ":root { color-scheme: " + (dark ? "dark" : "light") + "; }",
+                "html, body { margin: 0; padding: 0; overflow: hidden; background: " + (p.designed && p.dark ? "#ffffff" : "transparent") + "; }",
+                "body { font-family: " + font + "; font-size: " + (p.fontSize || "14px") + "; line-height: 1.5; color: " +
+                    (dark ? "#e3e3e3" : "#1f1f1f") + "; overflow-wrap: anywhere; }",
+                "#m-hv-root { display: flow-root; overflow-x: auto; padding: " + (p.designed && p.dark ? "12px" : "0") + "; }",
+                "img { max-width: 100%; }",
+                "a[href] { color: " + (dark ? "#8ab4f8" : "#1a73e8") + "; }",
+                "a:not([href]) { color: inherit; text-decoration: none; }",
+                ".m-hv-plain { white-space: pre-wrap; font-family: inherit; }",
+                "blockquote { margin: 0 0 0 .8ex; padding-left: 1ex; border-left: 2px solid " + (dark ? "#5f6368" : "#dadce0") + "; }",
+                "details.m-hv-quote { margin: 8px 0 0; }",
+                "summary.m-hv-more { display: inline-block; list-style: none; cursor: pointer; padding: 0 8px; line-height: 14px; font-size: 11px;" +
+                    " letter-spacing: 1px; border-radius: 7px; color: " + (dark ? "#e3e3e3" : "#3c4043") + "; background: " + (dark ? "#3c4043" : "#e8eaed") + "; }",
+                "summary.m-hv-more::-webkit-details-marker { display: none; }",
+                "details.m-hv-quote[open] > summary.m-hv-more { margin-bottom: 6px; }",
+                ".m-hv-blocked { display: inline-block; vertical-align: middle; max-width: 100%; min-width: 16px; min-height: 16px; overflow: hidden;" +
+                    " box-sizing: border-box; font-size: 11px; color: #80868b; background: " + (dark ? "#2d2e30" : "#f1f3f4") + "; border: 1px dashed #bdc1c6; }"
+            ].join("\n");
+            return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+                "<meta http-equiv=\"Content-Security-Policy\" content=\"" + hvEscape(moqui.htmlView.csp(!!p.allowRemote)) + "\">" +
+                "<meta name=\"referrer\" content=\"no-referrer\">" +
+                "<style>" + base + "</style>" + (p.css ? "<style>" + String(p.css).replace(/<\/?style/gi, "") + "</style>" : "") +
+                "</head><body><div id=\"m-hv-root\">" + (p.content || "") + "</div></body></html>";
+        }
+    };
+
+    // The host's cid: images as data: URLs, as the frame shows no other: a data: URL as it is, a URL of this origin
+    // fetched with the session (once per page for each, at most 5 MB), anything else left out.
+    const hvCidCache = new moqui.LruMap(50);
+    const hvCidData = (map) => {
+        const out = {};
+        const pending = [];
+        for (const key of Object.keys(map || {})) {
+            const url = String(map[key] || "");
+            const id = moqui.htmlView.cidKey(key);
+            if (!url || !id) continue;
+            if (/^data:image\//i.test(url)) { out[id] = url; continue; }
+            let absolute;
+            try { absolute = new root.URL(url, root.location.href); } catch (err) { continue; }
+            if (absolute.origin !== root.location.origin) continue;
+            let loading = hvCidCache.get(absolute.href);
+            if (!loading) {
+                loading = root.fetch(absolute.href, { credentials: "same-origin" }).then((response) => {
+                    if (!response.ok) throw new Error("status " + response.status);
+                    return response.blob();
+                }).then((blob) => new Promise((resolve, reject) => {
+                    if (blob.size > 5 * 1024 * 1024 || !/^image\//.test(blob.type)) { resolve(null); return; }
+                    const reader = new root.FileReader();
+                    reader.onload = () => resolve(String(reader.result));
+                    reader.onerror = () => reject(reader.error);
+                    reader.readAsDataURL(blob);
+                }));
+                hvCidCache.put(absolute.href, loading);
+            }
+            pending.push(loading.then((data) => { if (data) out[id] = data; }, (err) => {
+                hvCidCache.remove(absolute.href);
+                console.info("m-html-view: the inline image " + key + " did not load: " + err);
+            }));
+        }
+        return Promise.all(pending).then(() => out);
+    };
+
+    // An email or HTML body (design §12 reading pane): html (or text, a text/plain body), cleaned and shown in a frame
+    // sandboxed without scripts (allow-same-origin, so the host measures it, and allow-popups-to-escape-sandbox, so its
+    // links open in a normal window). Remote images are hidden until "Show images" (the show-images event) or allow-remote
+    // (a trusted sender); remote-images says how many were hidden. cid-map is {contentId: url} for the inline images.
+    // The reply history at the end is collapsed (collapse-quotes). dark is auto (the theme), on or off. The frame is as
+    // tall as its content.
+    component("m-html-view", {
+        name: "mHtmlView",
+        props: { html: String, text: String, allowRemote: Boolean, cidMap: Object, collapseQuotes: { type: Boolean, default: true },
+            imagesBar: { type: Boolean, default: true }, dark: { type: String, default: "auto" }, title: { type: String, default: "Message" } },
+        emits: ["remote-images", "show-images", "loaded"],
+        data() { return { showRemote: false, srcdoc: "", blocked: 0, designed: false, state: "loading", height: 0 }; },
+        computed: {
+            remoteAllowed() { return this.allowRemote || this.showRemote; },
+            isDark() {
+                if (this.dark === "on") return true;
+                if (this.dark === "off") return false;
+                return !!(this.$q && this.$q.dark && this.$q.dark.isActive);
+            },
+            source() { return [this.html || "", this.text || "", this.remoteAllowed, this.isDark, this.collapseQuotes, JSON.stringify(this.cidMap || {})]; },
+            frameStyle() {
+                return { height: (this.height || 24) + "px", colorScheme: this.isDark && !this.designed ? "dark" : "light" };
+            }
+        },
+        template:
+            '<div class="m-html-view" :data-state="state" :data-blocked="blocked">' +
+                '<div v-if="blocked && !remoteAllowed && imagesBar" class="m-html-view-images row items-center no-wrap">' +
+                    '<q-icon name="sym_o_hide_image" size="xs" class="q-mr-sm"></q-icon>' +
+                    '<span class="col m-muted">{{t("Images from this sender are hidden")}}</span>' +
+                    '<q-btn flat dense no-caps color="primary" class="m-html-view-show" :label="t(\'Show images\')" @click="showImages"></q-btn>' +
+                '</div>' +
+                '<iframe ref="frame" class="m-html-view-frame" :class="{\'m-html-view-card\': designed && isDark}" :title="title"' +
+                    ' sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"' +
+                    ' :srcdoc="srcdoc" :style="frameStyle" @load="onLoad"></iframe>' +
+            '</div>',
+        watch: { source() { this.render(); } },
+        mounted() {
+            this.renderCount = 0;
+            if (root.ResizeObserver) {
+                this.widthObserver = new root.ResizeObserver(() => this.measure());
+                this.widthObserver.observe(this.$el);
+            }
+            this.render();
+        },
+        beforeUnmount() {
+            if (this.widthObserver) this.widthObserver.disconnect();
+            if (this.contentObserver) this.contentObserver.disconnect();
+            if (this.timers) this.timers.forEach((timer) => root.clearTimeout(timer));
+        },
+        methods: {
+            t(text) { return moqui.l10n && moqui.l10n.localize ? moqui.l10n.localize(text) : text; },
+            render() {
+                const count = ++this.renderCount;
+                const hv = moqui.htmlView;
+                const host = this.$el && root.getComputedStyle ? root.getComputedStyle(this.$el) : null;
+                const look = { dark: this.isDark, allowRemote: this.remoteAllowed, font: host ? host.fontFamily : null, fontSize: host ? host.fontSize : null };
+                const finish = (built) => {
+                    if (count !== this.renderCount) return;
+                    this.designed = !!built.designed;
+                    this.blocked = built.blocked || 0;
+                    this.srcdoc = hv.srcdoc(Object.assign({}, look, built));
+                    this.$emit("remote-images", this.remoteAllowed ? 0 : this.blocked);
+                };
+                const plain = (text) => ({ content: hv.textToHtml(text, this.collapseQuotes), css: "", blocked: 0, designed: false });
+                if (!this.html) { this.state = "ready"; finish(plain(this.text || "")); return; }
+                Promise.all([moqui.loadScript("/libs/dompurify/purify.min.js", null, () => !!root.DOMPurify), hvCidData(this.cidMap)]).then(([, cids]) => {
+                    if (count !== this.renderCount) return;
+                    this.state = "ready";
+                    finish(hv.sanitize(this.html, root.DOMPurify, { allowRemote: this.remoteAllowed, cidMap: cids, collapseQuotes: this.collapseQuotes }));
+                }).catch((err) => {
+                    if (count !== this.renderCount) return;
+                    // without the cleaner the message is its text: the text body, or the HTML's text read without running it
+                    console.info("m-html-view: showing the text of the message: " + err);
+                    this.state = "failed";
+                    let text = this.text;
+                    if (!text && root.DOMParser) text = new root.DOMParser().parseFromString(String(this.html), "text/html").body.textContent;
+                    finish(plain(text || ""));
+                });
+            },
+            showImages() { this.showRemote = true; this.$emit("show-images"); },
+            // the height of the content: #m-hv-root's box, measured from here (no script runs in the frame), again when
+            // the frame's width or content changes, an image loads or a quote opens
+            measure() {
+                const frame = this.$refs.frame;
+                let doc = null;
+                try { doc = frame ? frame.contentDocument : null; } catch (err) { doc = null; }
+                const box = doc ? doc.getElementById("m-hv-root") : null;
+                if (!box) return;
+                const height = Math.max(Math.ceil(box.getBoundingClientRect().height), 16);
+                if (height !== this.height) this.height = height;
+            },
+            onLoad() {
+                const frame = this.$refs.frame;
+                let doc = null;
+                try { doc = frame ? frame.contentDocument : null; } catch (err) { doc = null; }
+                if (!doc || !doc.getElementById("m-hv-root")) return;
+                this.measure();
+                if (this.contentObserver) this.contentObserver.disconnect();
+                if (root.ResizeObserver) {
+                    this.contentObserver = new root.ResizeObserver(() => this.measure());
+                    this.contentObserver.observe(doc.getElementById("m-hv-root"));
+                }
+                const again = () => this.measure();
+                doc.addEventListener("toggle", again, true);
+                doc.addEventListener("load", again, true);
+                if (this.timers) this.timers.forEach((timer) => root.clearTimeout(timer));
+                this.timers = [100, 400, 1500].map((delay) => root.setTimeout(again, delay));
+                this.$emit("loaded", { height: this.height, blocked: this.blocked });
+            }
+        }
     });
 
     /* ========== the suite shell: palette, keys, tray and quick create ========== */
@@ -3195,7 +4725,8 @@
         "            </div></q-menu>\n" +
         "        </q-btn>\n" +
         // the current app's title; the theme's title outside an app (the AppList)
-        "        <q-toolbar-title v-if=\"headerTitle\" shrink class=\"text-subtitle1 text-weight-medium q-pr-sm\">{{headerTitle}}</q-toolbar-title>\n" +
+        // (below 600 px the launcher stands for it: the title is hidden, style-guide §2.2 and §7)
+        "        <q-toolbar-title v-if=\"headerTitle\" shrink class=\"gt-xs text-subtitle1 text-weight-medium q-pr-sm\">{{headerTitle}}</q-toolbar-title>\n" +
         // the screen path from the app root: not the apps root, nor the app root whose title the header shows (style-guide §2.2)
         "        <q-breadcrumbs id=\"m-breadcrumbs\" class=\"gt-xs\" gutter=\"xs\" separator-color=\"grey-5\" active-color=\"grey-8\">\n" +
         "            <template v-for=\"(navMenuItem, menuIndex) in navMenuList\" :key=\"navMenuItem.path || menuIndex\"><template v-if=\"menuIndex >= breadcrumbStart\">\n" +
@@ -3236,7 +4767,7 @@
         "        </q-btn>\n" +
         // Today, Chat, Mail, Messages and Notifications, each only when the theme names its screen; the tray ones open the tray on their tab
         "        <q-btn v-for=\"counter in headerCounters\" :key=\"counter.key\" flat round dense :id=\"'m-counter-' + counter.key\" :icon=\"counter.icon\"\n" +
-        "                :class=\"{'text-primary': counter.tray && trayOpen && trayTab === counter.key}\" @click=\"counter.tray ? toggleTray(counter.key) : setUrl(counter.url)\">\n" +
+        "                :class=\"{'text-primary': counter.tray && trayOpen && (counter.any || trayTab === counter.key)}\" @click=\"counter.tray ? toggleTray(counter.any ? null : counter.key) : setUrl(counter.url)\">\n" +
         "            <q-badge v-if=\"counterCount(counter)\" floating rounded color=\"negative\">{{counterText(counter)}}</q-badge>\n" +
         "            <q-tooltip>{{counter.label}}</q-tooltip>\n" +
         "        </q-btn>\n" +
@@ -3259,7 +4790,7 @@
         "            <q-tooltip>{{labels.notifyHistory}}</q-tooltip>\n" +
         "            <q-menu><q-list dense separator style=\"min-width:320px;max-width:440px;\">\n" +
         "                <q-item v-if=\"!notifyHistoryList.length\"><q-item-section class=\"text-grey-6\">{{labels.notifyHistory}}</q-item-section></q-item>\n" +
-        "                <q-item v-for=\"(histItem, histIndex) in notifyHistoryList\" :key=\"histIndex\" :clickable=\"!!histItem.link\" :to=\"histItem.link || undefined\">\n" +
+        "                <q-item v-for=\"(histItem, histIndex) in notifyHistoryList\" :key=\"histIndex\" :clickable=\"!!histItem.link\" @click=\"histItem.link && moqui.openLink(histItem.link)\">\n" +
         "                    <q-item-section avatar><q-icon :name=\"notifyIcon(histItem.type)\" :color=\"getQuasarColor(histItem.type) || 'info'\"></q-icon></q-item-section>\n" +
         "                    <q-item-section><q-item-label>{{histItem.message}}</q-item-label><q-item-label caption>{{histItem.time}}</q-item-label></q-item-section>\n" +
         "                </q-item>\n" +
@@ -3467,6 +4998,8 @@
             },
             // a container component has reload(), load(url) and hide()
             addContainer(contId, comp) { this.activeContainers[contId] = comp; },
+            // an unmounted container takes its registration back, unless another has the id since
+            removeContainer(contId, comp) { if (this.activeContainers[contId] === comp) delete this.activeContainers[contId]; },
             reloadContainer(contId) { const comp = this.activeContainers[contId]; if (comp) comp.reload(); else console.error("Container with ID " + contId + " not found, not reloading"); },
             loadContainer(contId, url) { const comp = this.activeContainers[contId]; if (comp) comp.load(url); else console.error("Container with ID " + contId + " not found, not loading url " + url); },
             hideContainer(contId) { const comp = this.activeContainers[contId]; if (comp && comp.hide) comp.hide(); else console.error("Container with ID " + contId + " not found, not hiding"); },
@@ -3552,7 +5085,15 @@
                 this.saveTray();
             },
             closeTray() { this.trayOpen = false; this.saveTray(); },
-            toggleTray(key) { if (this.trayOpen && this.trayTab === key) this.closeTray(); else this.openTray(key); },
+            // key null: the one tray button of a phone header, which closes the tray, or opens it on its last tab (else the first)
+            toggleTray(key) {
+                if (key === null || key === undefined) {
+                    if (this.trayOpen) this.closeTray();
+                    else this.openTray(this.trayTabs.some((tab) => tab.key === this.trayTab) ? this.trayTab : (this.trayTabs[0] || {}).key);
+                    return;
+                }
+                if (this.trayOpen && this.trayTab === key) this.closeTray(); else this.openTray(key);
+            },
             reloadTrayTab(key) { if (key && this.trayLoaded[key] && this.shellTray) this.shellTray.reload(key); },
             keepTrayScroll(key, top) {
                 this.trayScroll[key] = top;
@@ -3902,15 +5443,23 @@
             },
             // the header's count buttons in their order: Today, Chat, Mail and Messages (links), Notifications, each when its theme
             // value is set; `counts` are the shellCounts keys of its badge. Below 600 px Mail and Messages are one button to the mail
-            // screen with the two counts summed. The updates count has no button: the Notifications tab shows it.
+            // screen with the two counts summed, and the tray tabs (Today, Chat, Notifications) one tray button (key tray, any: it
+            // opens the tray on its last tab, whose tabs switch) with their counts summed, so a phone header does not overflow. The
+            // updates count has no button: the Notifications tab shows it.
             headerCounters() {
                 const tray = (key) => this.trayTabs.find((tab) => tab.key === key);
                 const values = this.shellValues;
+                const narrow = !!(this.$q && this.$q.screen && this.$q.screen.lt.sm);
                 const out = [];
-                ["today", "chat"].forEach((key) => { const tab = tray(key); if (tab) out.push({ key, icon: tab.icon, label: tab.label, tray: true, counts: [key] }); });
+                const trayTabs = this.trayTabs.filter((tab) => ["today", "chat", "notifications"].indexOf(tab.key) >= 0);
+                const foldTray = narrow && trayTabs.length > 1;
+                if (foldTray) {
+                    const icon = (tray("notifications") || trayTabs[0]).icon;
+                    out.push({ key: "tray", icon, label: trayTabs.map((tab) => tab.label).join(", "), tray: true, any: true, counts: trayTabs.map((tab) => tab.key) });
+                }
+                if (!foldTray) ["today", "chat"].forEach((key) => { const tab = tray(key); if (tab) out.push({ key, icon: tab.icon, label: tab.label, tray: true, counts: [key] }); });
                 const mail = values.mailScreen ? { key: "email", icon: "sym_o_mail", label: this.labels.mail, url: values.mailScreen, tray: false, counts: ["email"] } : null;
                 const messages = values.messagesScreen ? { key: "messages", icon: "sym_o_forum", label: this.labels.messages, url: values.messagesScreen, tray: false, counts: ["messages"] } : null;
-                const narrow = !!(this.$q && this.$q.screen && this.$q.screen.lt.sm);
                 if (mail && messages && narrow) {
                     out.push({ key: "mail", icon: "sym_o_mail", label: this.labels.mail, url: mail.url, tray: false, counts: ["email", "messages"] });
                 } else {
@@ -3918,7 +5467,7 @@
                     if (messages) out.push(messages);
                 }
                 const notifications = tray("notifications");
-                if (notifications) out.push({ key: "notifications", icon: notifications.icon, label: notifications.label, tray: true, counts: ["notifications"] });
+                if (notifications && !foldTray) out.push({ key: "notifications", icon: notifications.icon, label: notifications.label, tray: true, counts: ["notifications"] });
                 return out;
             },
             paletteKeyHint() { return keymap.isMac ? "⌘K" : "Ctrl K"; },
@@ -3967,6 +5516,7 @@
             moqui.appRootPath = this.appRootPath;
             moqui.onSessionToken = (token) => { if (token !== this.moquiSessionToken) this.setSessionToken(token, true); };
             this.$q.dark.set(!!config.darkMode);
+            moqui.applyDensity(config.density);
             // Open the socket only for a signed in user, and when the server names an endpoint (/notws by default).
             if (config.notificationEndpoint && config.userId) {
                 const wsScheme = root.location.protocol === "https:" ? "wss://" : "ws://";
@@ -3989,7 +5539,7 @@
         mounted() {
             // the shell is hidden until Vue has compiled it
             root.document.getElementById("apps-root").style.display = "";
-            this.setUrl(root.location.pathname + root.location.search);
+            this.setUrl(moqui.startPath(root.location.pathname, this.linkBasePath, config.startApp) + root.location.search);
             if (this.notificationClient) {
                 this.notificationClient.registerListener("ALL");
                 this.notificationClient.registerListener("ALL", this.onShellNotification);

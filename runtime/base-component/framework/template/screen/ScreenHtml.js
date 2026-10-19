@@ -578,7 +578,15 @@
         const linkForm = (n, parts, formId) => {
             if (parts.url.getDisableLink() || parts.anchor) return "";
             const params = parts.url.getParameterMap();
-            let out = "<form" + A({ method: "post", action: parts.url.url, name: formId || null, id: formId || null, target: at(n, "target-window") || null }) + ">" +
+            // the background-* attributes of a form-single; any of them posts the link in the background
+            const reload = at(n, "background-reload-id") || null;
+            const hide = at(n, "background-hide-id") || null;
+            const message = at(n, "background-message") ? x(at(n, "background-message")) : null;
+            const background = at(n, "background-submit") === "true" || !!(reload || hide || message);
+            let out = "<form" + A({
+                method: "post", action: parts.url.url, name: formId || null, id: formId || null, target: at(n, "target-window") || null,
+                "data-bg": background ? true : null, "data-reload": reload, "data-msg": message, "data-hide": hide
+            }) + ">" +
                 "<input" + A({ type: "hidden", name: "moquiSessionToken", value: token() }) + ">";
             Object.keys(params).forEach((key) => { out += "<input" + A({ type: "hidden", name: key, value: params[key] === null || params[key] === undefined ? "" : params[key] }) + ">"; });
             if (!formId) {
@@ -633,8 +641,11 @@
 
         const dialogOpen = (n, id, text, extra) => {
             const iconClass = at(n, "icon") || "fa fa-share";
+            // a container-dialog's tooltip is the button's title
+            const tooltip = at(n, "tooltip") ? x(at(n, "tooltip")) : "";
             return "<button" + A({
-                type: "button", id: id + "-button", "data-dialog": id, "data-btn": xn(at(n, "type")) || "primary", class: xn(at(n, "button-style")) || null, title: text, "aria-label": text
+                type: "button", id: id + "-button", "data-dialog": id, "data-btn": xn(at(n, "type")) || "primary", class: xn(at(n, "button-style")) || null,
+                title: tooltip || text, "aria-label": text
             }) + ">" + icon(iconClass) + e(text) + "</button>";
         };
         const dialogShell = (n, id, text, bodyAttrs, body, extra) =>
@@ -736,8 +747,30 @@
                 sri.renderSubscreen();
                 return;
             }
-            if (type === "stack" || type === "wizard") {
-                w("<p>" + e(type) + " type subscreens-panel is not supported.</p>");
+            // the html fallback of a wizard: its steps as a numbered sequence of links, the active step, and Back and Next links (the
+            // step's own form posts to its transition); of a stack: a breadcrumb back to its first subscreen
+            if (type === "wizard" || type === "stack") {
+                const items = sri.getMenuItems().filter((item) => !item.disabled);
+                const active = Math.max(0, items.findIndex((item) => item.inPath));
+                const title = (item) => e(ec.resource.expand(item.title, ""));
+                if (type === "wizard") {
+                    w("<nav" + A({ id: at(n, "id") || null, class: "wizard" }) + "><ol>");
+                    items.forEach((item, index) => {
+                        const state = index < active ? "done" : index === active ? "active" : null;
+                        w("<li" + A({ class: state }) + ">" + (index === active ? "<span>" + title(item) + "</span>" : '<a href="' + e(item.url) + '">' + title(item) + "</a>") + "</li>");
+                    });
+                    w("</ol></nav>\n");
+                } else if (items.length && active > 0) {
+                    w("<nav" + A({ id: at(n, "id") || null, class: "stack-crumbs" }) + '><a href="' + e(items[0].url) + '">' + title(items[0]) + "</a> &rsaquo; <span>" +
+                        title(items[active]) + "</span></nav>\n");
+                }
+                w('<div class="' + (type === "wizard" ? "wizard-step" : "stack-active") + '">');
+                sri.renderSubscreen();
+                w("</div>\n");
+                if (type === "wizard" && items.length) {
+                    w('<nav class="wizard-nav">' + (active > 0 ? '<a data-btn="default" href="' + e(items[active - 1].url) + '">' + e(L("Back")) + "</a>" : "<span></span>") +
+                        (active < items.length - 1 ? '<a data-btn="primary" href="' + e(items[active + 1].url) + '">' + e(L("Next")) + "</a>" : "") + "</nav>\n");
+                }
                 return;
             }
             const items = sri.getMenuItems();
@@ -1322,6 +1355,71 @@
                 "</" + tag + ">\n");
         };
 
+        // ---- container-split ----
+
+        // Two columns from 1024 px and stacked below (moqui-html.css .split); a selection in the URL (select-parameter) shows only the
+        // main pane on a narrow screen, with a link back to the list without it.
+        const splitSelected = (n) => !!at(n, "select-parameter") && param(at(n, "select-parameter")) !== "";
+        const splitOpen = (n) => {
+            const width = parseInt(at(n, "side-width") || "320", 10) || 320;
+            w("<div" + A({
+                id: nodeId(n) || null, class: cls("split", at(n, "side-position") === "right" ? "split-right" : null, xn(at(n, "style")) || null),
+                style: "--split-side:" + width + "px", "data-select": at(n, "select-parameter") || null, "data-selected": splitSelected(n) ? true : null
+            }) + '><div class="split-side">');
+        };
+        const splitMain = (n) => {
+            w('</div><div class="split-main">');
+            if (!splitSelected(n)) return;
+            const back = sri.getScreenUrlInstance().cloneUrlInstance().removeParameter(at(n, "select-parameter")).removeParameter("moquiSessionToken");
+            w('<a class="split-back" href="' + e(back.getUrlWithParams()) + '">&larr; ' + e(at(n, "back-text") ? x(at(n, "back-text")) : L("Back")) + "</a>");
+        };
+
+        // ---- record panels ----
+
+        // chatter and record-files (IronStone R5): an html page has no shell to load the theme's panel into, so the element is a
+        // plain link to that subscreen of the current app root (the first two names of the path, /apps/<app>) with the record,
+        // when this render's theme names one (STRT_CHATTER_SCREEN, STRT_RECORD_FILES_SCREEN; BOSS seeds them on the Quasar
+        // themes only) and the user may open it; nothing otherwise.
+        const recordPanel = (n, themeType, text) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const name = String(sri.getThemeValues(themeType)[0] || "").trim();
+            const value = (text) => (text && text !== "null" ? text : "");
+            const entity = value(xn(at(n, "record-entity")));
+            const id = value(xn(at(n, "record-id")));
+            const names = name && entity && id ? (sri.getScreenUrlInfo().fullPathNameList || []) : [];
+            if (names.length < 2) return;
+            let url;
+            try {
+                url = sri.buildUrl("/" + names.slice(0, 2).join("/") + "/" + name);
+            } catch (err) {
+                return;
+            }
+            if (url.getDisableLink()) return;
+            url.addParameter("recordEntity", entity).addParameter("recordId", id);
+            w("<a" + A({ id: nodeId(n) || null, href: url.getUrlWithParams(), class: cls("record-panel-link", xn(at(n, "style")) || null) }) + ">" +
+                e(L(text)) + "</a>\n");
+        };
+        const chatter = (n) => recordPanel(n, "STRT_CHATTER_SCREEN", "Chatter");
+        const recordFiles = (n) => recordPanel(n, "STRT_RECORD_FILES_SCREEN", "Files");
+
+        // html-view: the html mode has no cleaner in the page, so the HTML is cleaned here (StringUtilities.cleanHtml: the safe
+        // set, no styles) and shown in a frame sandboxed without scripts whose policy loads no image but data: (no remote
+        // image, no tracking), or the text escaped; links open in a new window. The frame is a fixed height the reader can
+        // resize (no script measures it). Nothing for a false condition.
+        const htmlView = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const html = xn(at(n, "html"));
+            const text = xn(at(n, "text"));
+            if ((!html || html === "null") && (!text || text === "null")) return;
+            const content = html && html !== "null" ? StringUtilities.cleanHtml(html) :
+                '<div style="white-space:pre-wrap">' + e(text) + "</div>";
+            const doc = '<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;; img-src data:; style-src &#39;unsafe-inline&#39;; base-uri &#39;none&#39;; form-action &#39;none&#39;">' +
+                '<meta name="referrer" content="no-referrer"><base target="_blank"><style>body{margin:0;font-family:sans-serif;font-size:14px;line-height:1.5;overflow-wrap:anywhere}img{max-width:100%}</style></head><body>' +
+                content + "</body></html>";
+            w("<iframe" + A({ id: nodeId(n) || null, class: cls("html-view", xn(at(n, "style")) || null), title: "Message",
+                sandbox: "allow-popups allow-popups-to-escape-sandbox", referrerpolicy: "no-referrer", srcdoc: doc }) + "></iframe>\n");
+        };
+
         const h = {
             reset, e, lib, fid, fnm,
             textLine, textArea, password, file, hidden, reset_, submit, dateTime, dateFind, datePeriod, rangeFind, textFind,
@@ -1333,7 +1431,7 @@
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
             labelCols: (value) => { st.labelCols = value || ""; },
-            numberCard
+            numberCard, chatter, recordFiles, splitOpen, splitMain, htmlView
         };
         Object.defineProperty(globalThis, "$mqHtml", { value: h, configurable: true });
     };
@@ -1696,6 +1794,17 @@
         `;
     });
 
+    const containerSplitMacro = stmt((node) => {
+        const part = (name) => { const kid = child(node, name); return kid ? kid.source || "" : ""; };
+        return js`
+            $h.splitOpen(${bareLit(node)});
+            ${part("split-side")}
+            $h.splitMain(${bareLit(node)});
+            ${part("split-main")}
+            sri.write("</div></div>\\n");
+        `;
+    });
+
     const containerPanelMacro = stmt((node) => {
         const part = (name) => { const kid = child(node, name); return kid ? kid.source : ""; };
         const sized = (name) => {
@@ -1776,6 +1885,9 @@
         "container-row": containerRowMacro,
         "row-col": stmt((node, children) => children),
         "container-panel": containerPanelMacro,
+        "container-split": containerSplitMacro,
+        "split-side": stmt((node, children) => children),
+        "split-main": stmt((node, children) => children),
         "panel-header": stmt((node, children) => children),
         "panel-left": stmt((node, children) => children),
         "panel-center": stmt((node, children) => children),
@@ -1795,6 +1907,9 @@
         "context": stmt(() => ""),
         "dashboard": dashboardMacro,
         "number-card": widget("numberCard", false),
+        "chatter": widget("chatter", false),
+        "record-files": widget("recordFiles", false),
+        "html-view": widget("htmlView", false),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

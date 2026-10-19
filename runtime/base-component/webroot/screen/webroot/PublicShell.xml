@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The public shell: the page of an anonymous token route (/s/token, /u/token, /call/token; the token-route elements of
+    the conf, crates/moqui-core/src/screen/token_route.rs), rendered under the webroot screen (its Header and Footer: the
+    theme's style sheets, the libraries) at /PublicShell by the route after its token check. Vue, Quasar and the m-*
+    components of WebrootVue.qvt.js, with no header, drawers or login; WebrootPublic.qvt.js mounts the route's screen,
+    which it loads as basePath.qvt (or .qvue, .qjs). tokenRoute is in the context, and its context map is what the page
+    may show; without it (a request for /PublicShell itself) the page goes to the root. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        require-authentication="false" screen-theme-type-enum-id="STT_INTERNAL_QUASAR" default-menu-title="Shared" default-menu-include="false">
+    <pre-actions><script><![CDATA[
+        if (typeof tokenRoute === 'undefined' || !tokenRoute || !tokenRoute.basePath) { sri.sendRedirectAndStopRender('/'); return }
+        const quasarLangs = ['en-US', 'de', 'es', 'fr', 'it', 'pt-BR', 'ja', 'zh-CN', 'ru', 'nl']
+        const localeTag = String(ec.user.locale || 'en_US').replace('_', '-')
+        const language = localeTag.split('-')[0]
+        const quasarLang = quasarLangs.includes(localeTag) ? localeTag : quasarLangs.find((tag) => tag.split('-')[0] === language) || 'en-US'
+        // the build with the template compiler: a public screen may be a server-merged qvt or a .qvue
+        footer_scripts.add('/libs/vue/vue.global.prod.js')
+        footer_scripts.add('/libs/quasar/quasar.umd.prod.js')
+        footer_scripts.add('/libs/quasar/lang/' + quasarLang + '.umd.prod.js')
+        if (sri.getThemeValues('STRT_STYLESHEET').some((sheet) => String(sheet).includes('/libs/material-symbols/')))
+            footer_scripts.add('/libs/quasar/icon-set/material-symbols-outlined.umd.prod.js')
+        footer_scripts.add('/js/MoquiLib.js')
+        footer_scripts.add('/js/MoquiL10n.js')
+        footer_scripts.add('/js/WebrootVue.qvt.render.js')
+        // loaded for its components: it mounts nothing on a page without the moqui-config block
+        footer_scripts.add('/js/WebrootVue.qvt.js')
+        footer_scripts.add('/js/WebrootPublic.qvt.js')
+        let quasarConfig = null
+        for (const text of sri.getThemeValues('STRT_QUASAR_CONFIG')) {
+            try { quasarConfig = Object.assign(quasarConfig || {}, JSON.parse(text)) } catch (e) { ec.logger.error('Theme STRT_QUASAR_CONFIG is not JSON: ' + e) }
+        }
+        const context = tokenRoute.context || {}
+        html_title = tokenRoute.title || context.name || ec.l10n.localize('Shared')
+        const logoList = sri.getThemeValues('STRT_HEADER_LOGO')
+        publicConfig = {
+            sessionToken: ec.web.sessionToken, appHost: ec.web.getHostName(true), appRootPath: '', locale: localeTag, timeZone: ec.user.timeZone,
+            quasarLang: quasarLang.replace(/-([a-zA-Z])/g, (m, ch) => ch.toUpperCase()), quasar: quasarConfig,
+            qvt: { build: 'compiler', handles: ['merged-fragment', 'static-template'] },
+            route: { name: tokenRoute.name, basePath: tokenRoute.basePath, title: tokenRoute.title || null,
+                renderModes: Array.from(tokenRoute.renderModes || []) },
+            context: context,
+            shell: { logoUrl: logoList.length ? sri.buildUrl(logoList[0]).url : '' },
+            labels: { loading: ec.l10n.localize('Loading'), notFound: ec.l10n.localize('This link has expired or was not found.') }
+        }
+    ]]></script></pre-actions>
+
+    <widgets>
+        <render-mode><text type="html" location="component://webroot/screen/includes/PublicShell.html.fancy"/></render-mode>
+    </widgets>
+</screen>

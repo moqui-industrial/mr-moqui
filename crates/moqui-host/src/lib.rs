@@ -1062,6 +1062,8 @@ fn boot_server_factory(
     cluster_notify::install_sender(&factory, db.is_postgres())?;
     let notify_listener = cluster_notify::listen_if_configured(&factory, &db, Arc::clone(&cluster_posts))?;
     moqui_core::cluster::start(&factory).map_err(moqui_lib::error::Error::from)?;
+    // the mail client's IMAP IDLE workers, started on the scheduler's tick (email_idle_enabled)
+    moqui_core::service::start_mail_idle(&factory);
     tracing::info!(
         "Cluster notify {}",
         if notify_listener.is_some() {

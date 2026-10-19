@@ -25,14 +25,23 @@ use super::error::Error;
 use crate::entity::{DbResourceInfo, EntityFacade};
 use crate::resource::textdiff::{self, TextDiff};
 
+mod changes;
+use changes::db_file_size;
+#[cfg(feature = "git")]
+pub(crate) use changes::millis_of;
+pub(crate) use changes::{apply_changes_each, last_change_by_stat, tree_size_by_walk};
+pub use changes::{ChangeLogEntry, ChangeSetOutcome, ResourceChange, ResourceChangeInfo};
+
 /// One version of a file, as Java's `ResourceReference.Version`: a `dbresource` history row, or a commit of a `git`
-/// file. `version_date` is a Timestamp value.
+/// file. `version_date` is a Timestamp value. `note` is what was written with the version: the commit message (without
+/// its `Moqui-User-Id` trailer) of a `git` file, the `versionNote` of a `dbresource` one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResourceVersion {
     pub version_name: String,
     pub previous_version_name: Option<String>,
     pub version_date: Value,
     pub user_id: Option<String>,
+    pub note: Option<String>,
 }
 
 /// A resolved resource with its logical location.
@@ -128,10 +137,11 @@ impl DbSnap {
                 let Some(facade) = &self.facade else {
                     return Ok(Vec::new());
                 };
+                // a file of a listing deleted since is no file now
                 facade
                     .read_db_resource_bytes(location)
-                    .map(Option::unwrap_or_default)
-                    .map_err(|err| err.message().to_string())
+                    .map_err(|err| err.message().to_string())?
+                    .ok_or_else(|| format!("not a file: {location}"))
             })
             .clone()
             .map_err(Error::new)
@@ -246,12 +256,15 @@ impl ResourceRef {
         }
     }
 
-    /// The size in bytes of a file resource. Other kinds have none.
+    /// The size in bytes of a file resource: a file, a provider's file, or a `dbresource://` file (its
+    /// `DbResourceFile.fileSize`, else the length of its data). A directory, a missing file and an `http` resource have
+    /// none.
     pub fn size(&self) -> Option<u64> {
         match &self.stored {
             Stored::Native(provider) => provider.stat(&self.location).ok().flatten().map(|stat| stat.size),
             Stored::File(file) => file.size().ok(),
-            Stored::Db(_) | Stored::Http(_) => None,
+            Stored::Db(snap) => db_file_size(&self.location, snap),
+            Stored::Http(_) => None,
         }
     }
 
@@ -557,23 +570,36 @@ impl ResourceFacade {
         }))
     }
 
-    /// Write several files together: one change where the storage keeps changes (one commit for the files of a
-    /// `git://` repository), else each as [`ResourceFacade::write_bytes`] does.
+    /// Write several files together: a change set of each repository (one commit for the files of a `git://`
+    /// repository), else each as [`ResourceFacade::write_bytes`] does. A file that is not written is an error.
     pub fn write_many(&self, files: &[(String, Vec<u8>)]) -> Result<(), Error> {
-        let mut by_scheme: indexmap::IndexMap<String, Vec<(String, Vec<u8>)>> = indexmap::IndexMap::new();
+        let mut by_root: indexmap::IndexMap<String, Vec<ResourceChange>> = indexmap::IndexMap::new();
         for (location, bytes) in files {
-            if self.provider(location).is_some() {
-                by_scheme
-                    .entry(scheme_of(location).to_string())
-                    .or_default()
-                    .push((location.clone(), bytes.clone()));
-            } else {
-                self.write_bytes(location, bytes)?;
+            let location = strip_hash(location);
+            let under = location
+                .split_once("://")
+                .and_then(|(scheme, rest)| {
+                    let (top, path) = rest.trim_start_matches('/').split_once('/')?;
+                    Some((format!("{scheme}://{top}"), path.trim_matches('/').to_string()))
+                })
+                .filter(|(_, path)| !path.is_empty());
+            match under.filter(|_| self.provider(location).is_some()) {
+                Some((root, path)) => by_root.entry(root).or_default().push(ResourceChange::Write {
+                    path,
+                    bytes: bytes.clone(),
+                }),
+                None => self.write_bytes(location, bytes)?,
             }
         }
-        for (_, group) in by_scheme {
-            if let Some(provider) = group.first().and_then(|(location, _)| self.provider(location)) {
-                provider.write_many(&group)?;
+        for (root, changes) in by_root {
+            let names: Vec<&str> = changes.iter().map(ResourceChange::path).collect();
+            let message = match names.as_slice() {
+                [one] => format!("Write {one}"),
+                many => format!("Write {} files: {}", many.len(), many.join(", ")),
+            };
+            let outcome = self.apply_change_set(&root, &changes, Some(&message))?;
+            if let Some((path, why)) = outcome.failures.first() {
+                return Err(Error::new(format!("{root}/{path} was not written: {why}")));
             }
         }
         Ok(())

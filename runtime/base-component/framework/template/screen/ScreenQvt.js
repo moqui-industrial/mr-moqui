@@ -30,7 +30,8 @@
 //    macro wrote an error message.
 //  - A confirmation is a data-confirm attribute the shell answers, not an inline onclick.
 //  - The background-message of a form is text. The Java client evaluated it as a JavaScript string.
-//  - An editor-type html or md text-area is an m-text-area (QEditor, or a textarea with a Marked preview).
+//  - An editor-type html or md text-area is an m-text-area (QEditor, or a textarea with a Marked preview); rich and rich-light are
+//    the Tiptap editor m-rich-text inside it, with mentions over the mention-transition.
 //  - lookup is a text line. The Java macros had it commented out.
 //  - The navigation bar sits above the table of a form-list and not in a table row.
 //  - The mask of a text-line is converted from the Inputmask patterns (9, a, *) to Quasar mask tokens.
@@ -444,12 +445,17 @@
             w("<m-text-line" + A(Object.assign(attrs, bind(name, value))) + "></m-text-line>");
         };
 
+        // A text area; editor-type rich or rich-light is the Tiptap editor of m-rich-text (inside m-text-area), whose mentions
+        // search the mention-transition (its URL and fixed parameters).
         const textArea = (n) => {
             const name = fnm(n);
+            const editorType = x(at(n, "editor-type")) || null;
+            const mention = at(n, "mention-transition") && /^rich/.test(editorType || "") ? remote(n, at(n, "mention-transition")) : null;
             w("<m-text-area" + A(Object.assign({
-                name, id: fid(n), label: label(n), "editor-type": x(at(n, "editor-type")) || null, rows: at(n, "rows") || "3",
+                name, id: fid(n), label: label(n), "editor-type": editorType, rows: at(n, "rows") || "3",
                 cols: at(n, "cols") || null, style: at(n, "cols") ? null : "width:100%;", readonly: at(n, "read-only") === "true",
-                autogrow: at(n, "autogrow") === "true", maxlength: at(n, "maxlength") || null, disable: st.disabled || null, form: owner(), tooltip: tip(n)
+                autogrow: at(n, "autogrow") === "true", maxlength: at(n, "maxlength") || null, disable: st.disabled || null, form: owner(), tooltip: tip(n),
+                "mention-url": mention ? mention.url : null, ":mention-parameters": mention && Object.keys(mention.params).length ? js_(mention.params) : null
             }, bindOnly(name, sri.getFieldValueString(n)))) + "></m-text-area>");
         };
 
@@ -807,10 +813,24 @@
                 }) + ">" + (textLink ? inner : "<q-btn" + A(Object.assign({ dense: true, unelevated: true, "no-caps": true }, btnKind(btnType, "m-link", style))) + ">" + inner + "</q-btn>") + "</" + tag + ">";
             }
             if (!formId) return "";
+            // hidden-form-link is the flat (minor) button in its color, its text at the left as a text link's (m-link-left)
+            if (linkType === "hidden-form-link") {
+                const color = quasarColor(btnType || "primary") || null;
+                return "<q-btn" + A({
+                    dense: true, flat: true, "no-caps": true, type: "submit", form: formId, id: formId + "_button",
+                    class: cls("m-link", "m-link-left", color ? "text-" + color : null, style), "data-confirm": confirmation || null
+                }) + ">" + linkBody(n, parts.text, parts.img) + "</q-btn>";
+            }
             return "<q-btn" + A(Object.assign({
                 dense: true, unelevated: true, "no-caps": true, type: "submit", form: formId, id: formId + "_button"
             }, btnKind(btnType, style), { "data-confirm": confirmation || null })) + ">" + linkBody(n, parts.text, parts.img) + "</q-btn>";
         };
+
+        // The background-* attributes of a link that posts through a form, as a form-single's: the m-form's submit-* properties.
+        const linkBackground = (n, isForm) => (isForm ? {
+            "submit-message": at(n, "background-message") ? x(at(n, "background-message")) : null,
+            "submit-reload-id": xn(at(n, "background-reload-id")) || null, "submit-hide-id": xn(at(n, "background-hide-id")) || null
+        } : {});
 
         const hiddenInput = (name, value, form) => "<input" + A({ type: "hidden", name, value, form: form || null }) + ">";
 
@@ -821,11 +841,11 @@
             const isForm = parts.url.isTransition();
             const tag = isForm ? "m-form" : "m-form-link";
             const params = parts.url.getParameterMap();
-            let out = "<" + tag + A({
+            let out = "<" + tag + A(Object.assign({
                 action: parts.url.path, name: formId || null, id: formId || null,
                 method: isForm && parts.url.getTransitionMethod() === "get" ? "GET" : null,
                 "read-only": isForm && parts.url.isReadOnly() ? true : null, target: at(n, "target-window") || null
-            }) + ">";
+            }, linkBackground(n, isForm))) + ">";
             Object.keys(params).forEach((key) => { out += hiddenInput(key, params[key] === null || params[key] === undefined ? "" : params[key]); });
             if (!formId) {
                 const confirmation = x(at(n, "confirmation"));
@@ -841,7 +861,7 @@
                     const flat = linkType === "hidden-form-link";
                     out += "<q-btn" + A(Object.assign({
                         dense: true, "no-caps": true, type: "submit", flat: flat ? true : null, unelevated: flat ? null : true
-                    }, flat ? { class: cls("m-link", color ? "text-" + color : null, style) } : btnKind(btnType, "m-link", style), { "data-confirm": confirmation || null })) + ">" + linkBody(n, parts.text, null) + "</q-btn>";
+                    }, flat ? { class: cls("m-link", "m-link-left", color ? "text-" + color : null, style) } : btnKind(btnType, "m-link", style), { "data-confirm": confirmation || null })) + ">" + linkBody(n, parts.text, null) + "</q-btn>";
                 }
             }
             return out + "</" + tag + ">";
@@ -897,7 +917,7 @@
             w("<m-container-dialog" + A({
                 id, color: quasarColor(xn(at(n, "type") || "primary")) || null, width: at(n, "width") || null, "button-text": buttonText,
                 "button-icon": inCell ? null : buttonIcon, "button-class": inCell ? null : buttonStyle, title: x(at(n, "title")) || buttonText,
-                "open-dialog": ctx("_openDialog") === id ? true : null
+                tooltip: x(at(n, "tooltip")) || null, "open-dialog": ctx("_openDialog") === id ? true : null
             }) + ">");
             if (inCell) w("<template v-slot:button><q-btn" + A({ dense: true, flat: true, "no-caps": true, class: cls("m-link", buttonStyle), icon: buttonIcon, label: buttonText }) + "></q-btn></template>");
             return true;
@@ -948,11 +968,26 @@
             w("<m-subscreens-tabs></m-subscreens-tabs>");
         };
 
+        // A wizard is an m-subscreens-wizard (a step per subscreen, js/README.md) and a stack an m-subscreens-stack; both read the
+        // subscreens from the menu data in the browser, so the render holds only the labels.
         const subscreensPanel = (n) => {
             const type = at(n, "type");
             if (type === "popup") { w("<m-subscreens-active></m-subscreens-active>"); return; }
-            if (type === "stack" || type === "wizard") { w("<h1>LATER " + e(type) + " type subscreens-panel not yet supported.</h1>"); return; }
+            if (type === "wizard") {
+                w("<m-subscreens-wizard" + A({ id: at(n, "id") || null, "finish-text": at(n, "finish-text") ? x(at(n, "finish-text")) : null }) + "></m-subscreens-wizard>");
+                return;
+            }
+            if (type === "stack") { w("<m-subscreens-stack" + A({ id: at(n, "id") || null }) + "></m-subscreens-stack>"); return; }
             w("<div" + A({ id: at(n, "id") ? at(n, "id") + "-tabpanel" : null }) + ">" + (ctx("hideNav") === "true" ? "" : "<m-subscreens-tabs></m-subscreens-tabs>") + "<m-subscreens-active></m-subscreens-active></div>");
+        };
+
+        // container-split (style-guide §3.8): an m-container-split, its panes as the side and main slots.
+        const splitOpen = (n) => {
+            w("<m-container-split" + A({
+                id: nodeId(n) || null, "side-width": at(n, "side-width") || null, "min-main": at(n, "min-main") || null,
+                "side-position": at(n, "side-position") === "right" ? "right" : null, "select-parameter": at(n, "select-parameter") || null,
+                "back-text": at(n, "back-text") ? x(at(n, "back-text")) : null, height: at(n, "height") || null, class: xn(at(n, "style")) || null
+            }) + ">");
         };
 
         // ---- forms ----
@@ -1599,6 +1634,39 @@
             }) + "></m-screen-context>\n");
         };
 
+        // The record panels (IronStone R5): an m-chatter or m-record-files, which loads the subscreen of the current app root that
+        // the theme names (STRT_CHATTER_SCREEN, STRT_RECORD_FILES_SCREEN) with the record, so the client finds the app root and the
+        // name and the render holds only the record and the hints. An expression that comes to nothing leaves its attribute out;
+        // nothing for a false condition.
+        const recordPanel = (tag, n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const value = (text) => (text && text !== "null" ? text : null);
+            w("<" + tag + A({
+                id: nodeId(n) || null, "record-entity": value(xn(at(n, "record-entity"))), "record-id": value(xn(at(n, "record-id"))),
+                "default-tab": value(xn(at(n, "default-tab"))), hide: value(xn(at(n, "hide"))), class: value(xn(at(n, "style")))
+            }) + "></" + tag + ">\n");
+        };
+        const chatter = (n) => recordPanel("m-chatter", n);
+        const recordFiles = (n) => recordPanel("m-record-files", n);
+
+        // An email or HTML body (html-view): an m-html-view, which cleans the HTML in the browser and shows it in a sandboxed
+        // frame. The html and text are attribute values (never template text, so nothing in them is compiled); allow-remote
+        // is a condition, cid-map an expression of a map. Nothing for a false condition.
+        const htmlView = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const value = (text) => (text && text !== "null" ? text : null);
+            const map = at(n, "cid-map") ? ec.resource.expression(at(n, "cid-map"), "") : null;
+            const cids = {};
+            if (map && typeof map === "object") for (const key of Object.keys(map)) if (map[key] !== null && map[key] !== undefined) cids[key] = String(map[key]);
+            w("<m-html-view" + A({
+                id: nodeId(n) || null, html: value(xn(at(n, "html"))), text: value(xn(at(n, "text"))),
+                ":allow-remote": at(n, "allow-remote") && cond(at(n, "allow-remote")) ? "true" : null,
+                ":cid-map": Object.keys(cids).length ? js_(cids) : null,
+                ":collapse-quotes": at(n, "collapse-quotes") === "false" ? "false" : null,
+                dark: at(n, "dark") && at(n, "dark") !== "auto" ? at(n, "dark") : null, class: value(xn(at(n, "style")))
+            }) + "></m-html-view>\n");
+        };
+
         // ---- dashboards ----
 
         // A number-card (style-guide §8.2): an m-number-card with the title localized, the value and delta as expanded, and the
@@ -1633,7 +1701,7 @@
             formList, rowCellOpen, rowCellClose, valueText, sectionPaginate, headerCell,
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
-            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard
+            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard, chatter, recordFiles, splitOpen, htmlView
         };
         Object.defineProperty(globalThis, "$mqQvt", { value: h, configurable: true });
     };
@@ -2031,6 +2099,18 @@
         `;
     });
 
+    const containerSplitMacro = stmt((node) => {
+        const part = (name) => { const kid = child(node, name); return kid ? kid.source || "" : ""; };
+        return js`
+            $v.splitOpen(${bareLit(node)});
+            sri.write("<template v-slot:side>");
+            ${part("split-side")}
+            sri.write("</template><template v-slot:main>");
+            ${part("split-main")}
+            sri.write("</template></m-container-split>\\n");
+        `;
+    });
+
     const containerPanelMacro = stmt((node) => {
         const part = (name) => { const kid = child(node, name); return kid ? kid.source : ""; };
         const id = attr(node, "id");
@@ -2134,6 +2214,9 @@
         "container-row": containerRowMacro,
         "row-col": stmt((node, children) => children),
         "container-panel": containerPanelMacro,
+        "container-split": containerSplitMacro,
+        "split-side": stmt((node, children) => children),
+        "split-main": stmt((node, children) => children),
         "panel-header": stmt((node, children) => children),
         "panel-left": stmt((node, children) => children),
         "panel-center": stmt((node, children) => children),
@@ -2152,6 +2235,9 @@
         "context": widget("screenContext", false),
         "dashboard": dashboardMacro,
         "number-card": widget("numberCard", false),
+        "chatter": widget("chatter", false),
+        "record-files": widget("recordFiles", false),
+        "html-view": widget("htmlView", false),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

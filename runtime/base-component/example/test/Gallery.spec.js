@@ -9,6 +9,7 @@ const galleryScreens = [
     ["Landing", "qvt"], ["List", "qvt"], ["Detail", "qvt"], ["Record360", "qvt"], ["Task", "qvt"],
     ["Board", "qvue"], ["Calendar", "qvue"], ["Split", "qvt"], ["Settings", "qvt"], ["Wizard", "qvt"],
     ["Dialog", "qvt"], ["Report", "qvt"], ["Panel", "qvt"], ["Widgets", "qvt"], ["Editor", "qvt"], ["QuickNote", "qvt"],
+    ["Chatter", "qvt"], ["RecordFiles", "qvt"], ["Message", "qvt"],
 ]
 
 spec({
@@ -92,6 +93,80 @@ feature("the shell data has the gallery's providers, and its palette source find
         groups[0].rows[0].url.startsWith("/qapps/gallery/Detail?enumId=")
         groups[0].moreUrl == "/qapps/gallery/List?description=Quasar"
         detail.output.includes('<m-screen-context record-entity="moqui.basic.Enumeration" record-id="STT_INTERNAL_QUASAR"')
+        detail.output.includes('<m-chatter id="DetailChatter" record-entity="moqui.basic.Enumeration" record-id="STT_INTERNAL_QUASAR" default-tab="log">')
+        detail.output.includes('<m-record-files id="DetailFiles" record-entity="moqui.basic.Enumeration" record-id="STT_INTERNAL_QUASAR"')
+        // every app root gets its record panels; the gallery mounts its own Chatter and RecordFiles under the names a theme may give
+        apps.every((app) => app.recordScreens && "chatter" in app.recordScreens && "recordFiles" in app.recordScreens)
+    },
+})
+
+// The gallery's Chatter panel, as the chatter element loads it: the record and the hints from the query, the record card's
+// transition, and the Log note form with the light rich-text editor whose @ mentions search users. Its note service cleans the
+// editor's HTML with allow-html="safe", which keeps the mention span, and reads the mentions back.
+feature("the gallery's Chatter panel has the rich-text note form, its card and mention transitions, and keeps a mention", {
+    expect() {
+        const gallery = () => ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt")
+        const record = { recordEntity: "moqui.basic.Enumeration", recordId: "STT_INTERNAL_QUASAR", appRoot: "gallery", defaultTab: "log" }
+        const panel = gallery().render("Chatter", Object.assign({ lastStandalone: "-2" }, record), null)
+        const card = JSON.parse(gallery().render("Chatter/recordCard", record, null).output)
+        const mentions = JSON.parse(gallery().render("Chatter/mentionSearch", { term: "john" }, null).output)
+        const html = '<p>Hi <span data-mention-id="EX_JOHN_DOE">@John Doe</span> <strong>now</strong><script>x()</script></p>'
+        const cleaned = ec.service.sync().name("example.ExampleServices.clean#GalleryNote").parameters({ noteText: html }).call()
+        panel.status == 200
+        panel.errorMessages.length == 0
+        panel.output.includes('editor-type="rich-light"')
+        panel.output.match(/mention-url="[^"]*\/Chatter\/mentionSearch"/) !== null
+        panel.output.includes("<m-record-card ")
+        panel.output.includes("opens on log")
+        card.title == "Internal Applications - Quasar"
+        card.status.label == "Active"
+        mentions.some((row) => row.id == "EX_JOHN_DOE" && row.label == "John Doe")
+        cleaned.noteText == '<p>Hi <span data-mention-id="EX_JOHN_DOE">@John Doe</span> <strong>now</strong></p>'
+        cleaned.mentionIds.length == 1
+        cleaned.mentionIds[0] == "EX_JOHN_DOE"
+    },
+})
+
+// The Split archetype is a container-split whose selection is the geoId of the URL, and the side list keeps its find.
+feature("the Split is a container-split with the country in the URL", {
+    expect() {
+        const test = ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt")
+        const str = test.render("Split", { lastStandalone: "-2", geoId: "CAN", geoName: "C", geoName_op: "begins" }, null)
+        str.status == 200
+        str.errorMessages.length == 0
+        str.output.includes('<m-container-split id="CountrySplit" side-width="320" min-main="480" select-parameter="geoId" back-text="Countries">')
+        str.output.includes("<template v-slot:side>")
+        str.output.includes("<template v-slot:main>")
+        str.output.includes("Canada")
+        // the find narrows the side list, the selection does not
+        str.output.includes("Cameroon")
+        !str.output.includes("Albania")
+    },
+})
+
+// The Wizard archetype: subscreens-panel type="wizard" over three step screens, each of whose forms posts to its own
+// transition. A step's answer with errors keeps the wizard on it; the draft the steps keep reaches the review, and the review's
+// answer names the first step again.
+feature("the Wizard's steps check their entries, keep a draft and end on the first step", {
+    expect() {
+        const wizard = (path, parameters, method) => ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt")
+            .render("Wizard" + (path ? "/" + path : ""), Object.assign({ lastStandalone: "-2" }, parameters || {}), method || null)
+        const panel = ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt").render("Wizard", { lastStandalone: "-1" }, null)
+        const empty = wizard("Customer/saveCustomer", { customerName: "" }, "post")
+        const saved = wizard("Customer/saveCustomer", { customerName: "Spec Customer", emailAddress: "spec@example.com" }, "post")
+        const options = wizard("Options/saveOptions", { countryGeoId: "CAN", currencyUomId: "CAD", newsletter: "Y" }, "post")
+        const review = wizard("Review", {}, null)
+        const created = wizard("Review/createCustomer", {}, "post")
+        const after = wizard("Review", {}, null)
+        panel.status == 200
+        panel.output.includes('<m-subscreens-wizard id="CustomerWizard" finish-text="Create customer"></m-subscreens-wizard>')
+        empty.errorMessages.join(" ").includes("Enter the customer name")
+        saved.errorMessages.length == 0
+        options.errorMessages.length == 0
+        review.output.includes("Spec Customer")
+        review.output.includes("Canada")
+        created.errorMessages.length == 0
+        !after.output.includes("Spec Customer")
     },
 })
 

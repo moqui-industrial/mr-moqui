@@ -170,6 +170,9 @@ struct WebSlot {
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     stream: Option<ResponseStream>,
+    /// The user preferences this request set, by key (`None` removed), which the response tells the client
+    /// (`X-Moqui-Preferences`, [`take_changed_preferences`]).
+    changed_preferences: BTreeMap<String, Option<String>>,
 }
 
 /// Puts back the thread-local web slot that was there before the install, or clears it when there was
@@ -209,6 +212,7 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             client_ip: String::new(),
             locale: None,
             base_url,
+            changed_preferences: BTreeMap::new(),
             sent: false,
             status: 200,
             headers: Vec::new(),
@@ -280,7 +284,8 @@ pub(crate) fn set_host(host: &str) {
 }
 
 /// Remember the full URL of the request and its `Referer`, Java's `getRequestUrl`, for artifact hits.
-pub(crate) fn set_request_info(request: &WebRequest) {
+/// The full URL of a request, as Java's `requestUrl`: scheme, host, path and query.
+fn full_url(request: &WebRequest) -> String {
     let host = request.header("host").unwrap_or("localhost");
     let scheme = if request.https { "https" } else { "http" };
     let mut url = format!("{scheme}://{host}{}", request.path);
@@ -293,6 +298,29 @@ pub(crate) fn set_request_info(request: &WebRequest) {
         url.push('?');
         url.push_str(&query.join("&"));
     }
+    url
+}
+
+/// What a Visit this request starts records of it (`user::session::create_visit`).
+pub(crate) fn visit_request(request: &WebRequest) -> crate::user::session::VisitRequest {
+    let locale = request
+        .header("accept-language")
+        .and_then(|header| header.split(',').next())
+        .map(|tag| tag.split(';').next().unwrap_or("").trim().replace('-', "_"))
+        .filter(|tag| !tag.is_empty() && tag != "*")
+        .unwrap_or_default();
+    crate::user::session::VisitRequest {
+        url: full_url(request),
+        referrer: request.header("referer").unwrap_or("").to_string(),
+        user_agent: request.header("user-agent").unwrap_or("").to_string(),
+        locale,
+        client_ip: client_ip(request),
+    }
+}
+
+pub(crate) fn set_request_info(request: &WebRequest) {
+    let scheme = if request.https { "https" } else { "http" };
+    let url = full_url(request);
     let referrer = request.header("referer").unwrap_or("").to_string();
     let mut details = format!(
         "Request: {} {url}\nScheme: {scheme}, Secure? {}\nRemote: {}\n",
@@ -501,6 +529,56 @@ pub(crate) fn truncate_output(len: usize) {
             web.body.truncate(len);
         }
     });
+}
+
+/// Note a user preference this request set (`ec.user.setPreference`), for the response to tell the client. Nothing
+/// outside a web request.
+pub(crate) fn note_changed_preference(key: &str, value: Option<&str>) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.changed_preferences
+                .insert(key.to_string(), value.map(str::to_string));
+        }
+    });
+}
+
+/// The user preferences this request set, taken: what the `X-Moqui-Preferences` header of the response carries.
+pub(crate) fn take_changed_preferences() -> BTreeMap<String, Option<String>> {
+    WEB.with(|slot| {
+        slot.borrow_mut()
+            .as_mut()
+            .map(|web| std::mem::take(&mut web.changed_preferences))
+            .unwrap_or_default()
+    })
+}
+
+/// The `X-Moqui-Preferences` header value of `changed`: the JSON map of key to value (null for a removed one),
+/// percent-encoded as `encodeURIComponent` encodes, so any text is a header value; the client reads it with
+/// `decodeURIComponent` and applies each (`moqui.applyPreference`).
+pub(crate) fn preferences_header(changed: &BTreeMap<String, Option<String>>) -> String {
+    let json = serde_json::Value::Object(
+        changed
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    value
+                        .as_ref()
+                        .map_or(serde_json::Value::Null, |text| serde_json::Value::String(text.clone())),
+                )
+            })
+            .collect(),
+    )
+    .to_string();
+    let mut out = String::with_capacity(json.len() * 2);
+    for byte in json.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 pub(crate) fn add_header(name: impl Into<String>, value: impl Into<String>) {

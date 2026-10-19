@@ -18,7 +18,12 @@ along with this software (see the LICENSE.md file). If not, see
 
     The inbox of a notification is its topic's NotificationTopic.inboxEnumId: NinNotifications (the default, and for a
     topic with no record), the ones the header badge counts, or NinUpdates, the automatic ones. A topic with an
-    approveServiceName is always in NinNotifications. An unviewed notification of such a topic is an approval waiting. -->
+    approveServiceName is always in NinNotifications. An unviewed notification of such a topic is an approval waiting.
+
+    An approval is decided, not read: marking all of an inbox viewed leaves it waiting (only its id marks it), and the
+    first recipient's approve or refuse decides it for every recipient of the message (each one's row is marked viewed),
+    so the others no longer see it waiting. An approval that needs each of several users to decide is one notification
+    message per user. -->
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
     <service verb="get" noun="UserNotifications">
         <description>The current user's notifications, newest first, with their topic, inbox, reason, record, actor and app,
@@ -160,7 +165,8 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="mark" noun="NotificationsViewed">
         <description>Mark the current user's notifications viewed: those of notificationMessageIdList, or, without one, all
-            of the user's unviewed, of one inbox when inboxEnumId is given. Only the user's own rows change.</description>
+            of the user's unviewed, of one inbox when inboxEnumId is given, except the approvals waiting (notifications of
+            a topic with an approve service), which are decided, not read. Only the user's own rows change.</description>
         <in-parameters>
             <parameter name="notificationMessageIdList" type="List"><parameter name="notificationMessageId"/></parameter>
             <parameter name="notificationMessageId"><description>One id, as a list of one</description></parameter>
@@ -177,16 +183,21 @@ along with this software (see the LICENSE.md file). If not, see
                     .condition('viewedDate', null).selectField('notificationMessageId').disableAuthz()
             if (ids.length) {
                 find = find.condition('notificationMessageId', 'in', ids)
-            } else if (inboxEnumId) {
+            } else {
                 const topics = Array.from(ec.entity.find('moqui.security.user.NotificationTopic').useCache(true).disableAuthz().list())
                 const updateTopics = topics.filter((row) => !row.approveServiceName && row.inboxEnumId === 'NinUpdates').map((row) => row.topic)
+                // an approval waiting is decided, not read: all of an inbox leaves it
+                const approvalTopics = topics.filter((row) => row.approveServiceName).map((row) => row.topic)
                 if (inboxEnumId === 'NinUpdates') {
                     if (!updateTopics.length) return
                     find = find.condition('topic', 'in', updateTopics)
-                } else if (updateTopics.length) {
-                    const cf = ec.entity.conditionFactory
-                    find = find.condition(cf.makeCondition([cf.makeCondition('topic', 'not-in', updateTopics),
-                            cf.makeCondition('topic', 'equals', null)], 'or'))
+                } else {
+                    const left = inboxEnumId ? updateTopics.concat(approvalTopics) : approvalTopics
+                    if (left.length) {
+                        const cf = ec.entity.conditionFactory
+                        find = find.condition(cf.makeCondition([cf.makeCondition('topic', 'not-in', left),
+                                cf.makeCondition('topic', 'equals', null)], 'or'))
+                    }
                 }
             }
             const now = ec.user.nowTimestamp
@@ -210,8 +221,9 @@ along with this software (see the LICENSE.md file). If not, see
         <description>The current user's decision on a notification that asks for one (IronStone R23): the topic's
             approveServiceName is called, as the user, with recordEntityName, recordId, message (the messageJson as a Map)
             and notificationMessageId; its results are returned. The user must be a recipient (NotificationMessageUser). On
-            success the user's row is marked viewed, so it leaves the approvals waiting; the service's errors are the
-            caller's messages and nothing is marked.</description>
+            success the decision is final for the message: every recipient's row is marked viewed, so it leaves the
+            approvals waiting of all of them (an approval each of several users decides is a message per user); the
+            service's errors are the caller's messages and nothing is marked.</description>
         <in-parameters><parameter name="notificationMessageId" required="true"/></in-parameters>
         <out-parameters><parameter name="results" type="Map"/></out-parameters>
         <actions>
@@ -280,10 +292,16 @@ along with this software (see the LICENSE.md file). If not, see
                 ec.message.addError(String(e.message || e))
             }
             if (ec.message.hasError()) return
+            // the decision is the message's: every recipient's row is marked, so no one else sees it waiting
+            const now = ec.user.nowTimestamp
             const wasDisabled = ec.artifactExecution.disableAuthz()
             try {
-                messageUser.viewedDate = ec.user.nowTimestamp
-                messageUser.update()
+                const recipients = ec.entity.find('moqui.security.user.NotificationMessageUser')
+                        .condition('notificationMessageId', notificationMessageId).condition('viewedDate', null).list()
+                for (const recipient of Array.from(recipients)) {
+                    recipient.viewedDate = now
+                    recipient.update()
+                }
             } finally {
                 if (!wasDisabled) ec.artifactExecution.enableAuthz()
             }

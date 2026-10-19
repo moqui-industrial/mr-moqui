@@ -77,6 +77,28 @@
     <default-property name="email_allowed_hosts" value=""/>
 
     <!--
+        The mail client's sync (org.moqui.impl.EmailClientServices.sync#EmailAccount).
+        email_idle_enabled: IMAP IDLE on the Inbox of each active account, so new mail shows at once; false relies on the
+        sync job only (tests, small deployments). email_idle_max: the most IDLE connections (a thread each) in a server.
+        email_sync_interval: minutes between syncs of an account by the job sync_EmailAccounts_frequent, for an account
+        with no syncIntervalMinutes. email_sync_batch: the most new messages a folder brings in one sync.
+        email_flag_scan: minutes between reading every message's flags, on a server without CONDSTORE.
+        email_sync_push_now: make a local change (read, move, delete) on the server right after it commits; false
+        waits for the next sync.
+        email_autoconfig_urls: discover#EmailServer's Thunderbird autoconfig URLs, comma-separated, with {domain} and
+        {email}; empty for autoconfig.{domain}, the domain's .well-known URL and the Thunderbird ISPDB.
+        email_dns_server: the DNS server (host:port) for its SRV lookups; empty for the first in /etc/resolv.conf.
+    -->
+    <default-property name="email_idle_enabled" value="true"/>
+    <default-property name="email_idle_max" value="8"/>
+    <default-property name="email_sync_interval" value="5"/>
+    <default-property name="email_sync_batch" value="500"/>
+    <default-property name="email_flag_scan" value="15"/>
+    <default-property name="email_sync_push_now" value="true"/>
+    <default-property name="email_autoconfig_urls" value=""/>
+    <default-property name="email_dns_server" value=""/>
+
+    <!--
         PDF (the html-print render through headless Chromium). pdf_chromium_path names the executable; empty, or a path
         that names no file, looks in runtime/chromium (from ./moq chromium-download), then for chromium, then
         chromium-browser, on the PATH. Google Chrome is used only when pdf_chromium_path names it. Startup logs each one
@@ -267,6 +289,12 @@
             on-start-load-types="${entity_on_start_load_types}" on-start-load-components="${entity_on_start_load_components}">
         <!-- Native components select linked ToolFactory implementations here.
              The cache facade is built in; Java H2/JCR/SMTP factories do not run in MR. -->
+        <!-- The framework's own: vCard parse and write, iCalendar parse, write and RRULE expansion (moqui_core::pim) -->
+        <tool-factory class="moqui_core::pim::VCardToolFactory" init-priority="5"/>
+        <tool-factory class="moqui_core::pim::ICalendarToolFactory" init-priority="5"/>
+        <!-- The mail capture for specs: with mail_capture_sends=true, or ec.factory.getTool('MailCapture').enable() in a
+             spec, send#EmailMessage keeps the message in memory instead of connecting (docs/Testing.md) -->
+        <tool-factory class="moqui_core::service::mail_capture::MailCaptureToolFactory" init-priority="5"/>
     </tools>
 
     <cache-list warm-on-start="true" local-factory="MCache" distributed-factory="MCache">
@@ -843,6 +871,7 @@
         <load-data location="component://framework/data/LlmTypeData.xml"/>
         <load-data location="component://framework/data/UnitData.xml"/>
         <load-data location="component://framework/data/MoquiSetupData.xml"/>
+        <load-data location="component://framework/data/MailSearchData.xml"/>
         <load-data location="component://framework/data/SftpDemoData.xml"/>
     </entity-facade>
     <database-list>

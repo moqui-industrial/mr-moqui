@@ -52,6 +52,7 @@ mod edi;
 mod entities;
 mod error_info;
 mod facades;
+mod files_host;
 #[cfg(test)]
 mod framework_gaps_tests;
 mod helpers;

@@ -936,8 +936,9 @@ impl ScreenDef {
                         );
                     }
                     "subscreens-panel" | "subscreens-menu" => {
+                        // a wizard's steps and a stack's breadcrumb are its own menu, as tabs are
                         let kind = item.attribute("type").unwrap_or_default();
-                        if kind.is_empty() || kind == "tab" {
+                        if kind.is_empty() || kind == "tab" || kind == "wizard" || kind == "stack" {
                             has_tab_menu = true;
                         }
                     }

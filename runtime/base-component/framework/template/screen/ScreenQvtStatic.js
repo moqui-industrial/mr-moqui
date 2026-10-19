@@ -532,6 +532,14 @@
             });
             labelAttr(n, out);
             if (at(n, "editor-type")) plainAttr(out, "editor-type", at(n, "editor-type"), n);
+            // the mentions of a rich editor search the mention-transition, as ScreenQvt.js writes it
+            if (at(n, "mention-transition") && (isDynamic(at(n, "editor-type") || "") || /^rich/.test(at(n, "editor-type") || ""))) {
+                const found = sri.staticUrl(at(n, "mention-transition"), "transition");
+                if (found) {
+                    out["mention-url"] = found.path;
+                    out[":mention-parameters"] = allParams(n);
+                } else note("mention-transition", n, at(n, "mention-transition"));
+            }
             tipOf(n, out);
             Object.assign(out, bindOnly(n, field, "$mq.str(" + baseValue(field, at(n, "default-value")) + ")"));
             w("<m-text-area" + A(out) + "></m-text-area>");
@@ -816,6 +824,18 @@
             w(withCondition(n, "<" + type + A(out) + "></" + type + ">\n"));
         };
 
+        // A url that a ${} expression makes is known only in the browser: it is bound over the scope as other expressions are, and
+        // $mq.link resolves a relative path in it against this screen's path, as the server render resolves a link's url.
+        const dynamicPath = (n, attr) => {
+            const base = sri.staticUrl(".", "transition").path;
+            return "$mq.link(" + exp(at(n, attr), n, attr, false) + "," + sq(base && base !== "#" ? base : "") + ")";
+        };
+        const urlOfPath = (n, pathExpr, extra, target) => {
+            const given = targetOf(n, target);
+            const map = given ? "$mq.merge(" + given + "," + mapOf(n) + ")" : mapOf(n);
+            return "$mq.url(" + pathExpr + "," + paramsOf(n, extra) + "," + map + ")";
+        };
+
         // The way a link is written: a screen link, a plain link, or a form that posts a transition.
         const link = (n, inField) => {
             const urlType = at(n, "url-type") || "transition";
@@ -844,12 +864,15 @@
             const toAlias = !!(found && at(n, "expand-transition-url") !== "false" && found.screenPath);
             const navPath = toAlias ? found.screenPath : (found ? found.path : "");
             const navParams = toAlias ? found.screenParameters : (found ? found.parameters : null);
+            // A ${} url: the expression over the scope, resolved in the browser (m-link follows an external one as a plain anchor).
+            const dynamic = !!found && isDynamic(at(n, "url") || "");
             let out = "";
             if (anchor) {
                 // A type=none or plain-response transition is not a screen URL, so the anchor is <a> and the client
                 // does not setUrl it. An unresolved ${} target stays an m-link.
                 const toScreen = !!(found && found.screenUrl);
-                const href = found ? (noParam ? sq(navPath) : urlOf(n, navPath, query.extra, navParams)) : exp(at(n, "url"), n, "url", false);
+                const href = dynamic ? (noParam ? dynamicPath(n, "url") : urlOfPath(n, dynamicPath(n, "url"), null, null)) :
+                    found ? (noParam ? sq(navPath) : urlOf(n, navPath, query.extra, navParams)) : exp(at(n, "url"), n, "url", false);
                 const tag = toScreen ? "m-link" : "a";
                 // A screen link in a form-list cell is text (as is link-type anchor anywhere); the others are tonal buttons.
                 const textLink = linkType === "anchor" || (st.inList && linkType !== "anchor-button");
@@ -864,9 +887,19 @@
                 const button = img ?
                     "<input" + A({ type: "image", ":src": exp(at(img, "url"), img, "url", false), ":alt": exp(at(img, "alt") || "image", img, "alt", true) }) + ">" :
                     "<q-btn" + A(Object.assign({ dense: true, "no-caps": true, type: "submit", flat: hiddenLink ? true : null, unelevated: hiddenLink ? null : true },
-                        hiddenLink ? { class: cls("m-link", color ? "text-" + color : null, style) } : btnKind(btnType, "m-link", style), confirmAttr)) + ">" + tooltip + body + "</q-btn>";
-                const attrs = { action: found ? found.path : at(n, "url"), ":fields-initial": fieldsInitial, "v-slot:default": "formProps", "read-only": isForm && found && found.readOnly ? true : null, target: at(n, "target-window") || null };
+                        hiddenLink ? { class: cls("m-link", "m-link-left", color ? "text-" + color : null, style) } : btnKind(btnType, "m-link", style), confirmAttr)) + ">" + tooltip + body + "</q-btn>";
+                const attrs = { action: found && !dynamic ? found.path : at(n, "url"), ":fields-initial": fieldsInitial, "v-slot:default": "formProps", "read-only": isForm && found && found.readOnly ? true : null, target: at(n, "target-window") || null };
+                if (dynamic) {
+                    delete attrs.action;
+                    attrs[":action"] = dynamicPath(n, "url");
+                }
                 if (isForm && found && found.method === "get") attrs.method = "GET";
+                // the background-* attributes of a form-single, as the m-form's submit-* properties (ScreenQvt.js linkBackground)
+                if (isForm) {
+                    if (at(n, "background-message")) textAttr(attrs, "submit-message", at(n, "background-message"), n, true);
+                    plainAttr(attrs, "submit-reload-id", at(n, "background-reload-id"), n);
+                    plainAttr(attrs, "submit-hide-id", at(n, "background-hide-id"), n);
+                }
                 out = "<" + tag + A(attrs) + ">" + button + "</" + tag + ">";
             }
             const wrapper = inField && linkType === "anchor" && n.parent && n.parent.parent && n.parent.parent.parent && n.parent.parent.parent.name === "form-single";
@@ -903,6 +936,7 @@
             textAttr(out, "button-text", at(n, "button-text"), n, true);
             if (at(n, "title")) textAttr(out, "title", at(n, "title"), n, true);
             else if (at(n, "button-text")) textAttr(out, "title", at(n, "button-text"), n, true);
+            if (at(n, "tooltip")) textAttr(out, "tooltip", at(n, "tooltip"), n, true);
             const open = at(n, "condition") ? '<template v-if="' + e(X(at(n, "condition"), n, "condition")) + '">' : "";
             let slot = "";
             if (inCell) {
@@ -951,7 +985,20 @@
         const subscreensPanel = (n) => {
             const type = at(n, "type");
             if (type === "popup") { w("<m-subscreens-active></m-subscreens-active>"); return; }
-            if (type === "stack" || type === "wizard") { w("<h1>LATER " + e(type) + " type subscreens-panel not yet supported.</h1>"); return; }
+            // as ScreenQvt.js writes them: the steps or the stack come from the menu data in the browser
+            if (type === "wizard") {
+                const out = {};
+                plainAttr(out, "id", at(n, "id"), n);
+                textAttr(out, "finish-text", at(n, "finish-text"), n, true);
+                w("<m-subscreens-wizard" + A(out) + "></m-subscreens-wizard>");
+                return;
+            }
+            if (type === "stack") {
+                const out = {};
+                plainAttr(out, "id", at(n, "id"), n);
+                w("<m-subscreens-stack" + A(out) + "></m-subscreens-stack>");
+                return;
+            }
             w("<div" + A({ id: at(n, "id") ? at(n, "id") + "-tabpanel" : null }) + "><m-subscreens-tabs></m-subscreens-tabs><m-subscreens-active></m-subscreens-active></div>");
         };
         const subscreensTabs = (n) => {
@@ -1721,6 +1768,36 @@
             w("<m-screen-context" + A(out) + "></m-screen-context>\n");
         };
 
+        // The record panels (IronStone R5) as ScreenQvt.js writes them, the record and the hints bound over the scope (R18), so
+        // m-chatter and m-record-files load the theme's subscreen for the record of the data the screen loaded.
+        const recordPanel = (tag, n) => {
+            const out = {};
+            plainAttr(out, "id", at(n, "id"), n);
+            plainAttr(out, "record-entity", at(n, "record-entity"), n);
+            plainAttr(out, "record-id", at(n, "record-id"), n);
+            plainAttr(out, "default-tab", at(n, "default-tab"), n);
+            plainAttr(out, "hide", at(n, "hide"), n);
+            plainAttr(out, "class", at(n, "style"), n);
+            w(withCondition(n, "<" + tag + A(out) + "></" + tag + ">\n"));
+        };
+        const chatter = (n) => recordPanel("m-chatter", n);
+        const recordFiles = (n) => recordPanel("m-record-files", n);
+
+        // html-view as ScreenQvt.js writes it, the html and text bound over the scope (the screen's data), allow-remote and
+        // cid-map expressions of it, the condition a v-if.
+        const htmlView = (n) => {
+            const out = {};
+            plainAttr(out, "id", at(n, "id"), n);
+            plainAttr(out, "html", at(n, "html"), n);
+            plainAttr(out, "text", at(n, "text"), n);
+            if (at(n, "allow-remote")) out[":allow-remote"] = "!!" + X(at(n, "allow-remote"), n, "allow-remote");
+            if (at(n, "cid-map")) out[":cid-map"] = X(at(n, "cid-map"), n, "cid-map");
+            if (at(n, "collapse-quotes") === "false") out[":collapse-quotes"] = "false";
+            if (at(n, "dark") && at(n, "dark") !== "auto") out.dark = at(n, "dark");
+            plainAttr(out, "class", at(n, "style"), n);
+            w(withCondition(n, "<m-html-view" + A(out) + "></m-html-view>\n"));
+        };
+
         // ---- dashboards ----
 
         // A number-card as ScreenQvt.js writes it, its attributes bound over the scope as a label's text is: the title localized,
@@ -1733,7 +1810,10 @@
             plainAttr(out, "delta", at(n, "delta"), n);
             if (at(n, "delta-good")) out["delta-good"] = at(n, "delta-good");
             plainAttr(out, "icon", at(n, "icon"), n);
-            if (at(n, "link")) {
+            if (at(n, "link") && isDynamic(at(n, "link"))) {
+                // known only in the browser: resolved against this screen there; m-link follows an external one as an anchor
+                out[":href"] = dynamicPath(n, "link");
+            } else if (at(n, "link")) {
                 const query = splitQuery(at(n, "link"));
                 const found = sri.staticUrl(query.path, "transition");
                 const toAlias = !!(found && found.screenPath);
@@ -1745,6 +1825,16 @@
             if (at(n, "size")) out.size = at(n, "size");
             plainAttr(out, "class", at(n, "style"), n);
             w(withCondition(n, "<m-number-card" + A(out) + "></m-number-card>\n"));
+        };
+        // container-split as ScreenQvt.js writes it; the selection is read from the URL in the browser, so nothing here is data.
+        const splitOpen = (n) => {
+            const out = {};
+            plainAttr(out, "id", at(n, "id"), n);
+            ["side-width", "min-main", "select-parameter", "height"].forEach((name) => { if (at(n, name)) out[name] = at(n, name); });
+            if (at(n, "side-position") === "right") out["side-position"] = "right";
+            textAttr(out, "back-text", at(n, "back-text"), n, true);
+            plainAttr(out, "class", at(n, "style"), n);
+            w("<m-container-split" + A(out) + ">");
         };
         // The grid of a dashboard, as ScreenQvt.js writes it.
         const dashboardOpen = (n) => {
@@ -1764,7 +1854,7 @@
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
             split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose, screenContext,
-            numberCard, dashboardOpen
+            numberCard, dashboardOpen, chatter, recordFiles, splitOpen, htmlView
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -1837,6 +1927,12 @@
 
     const containerRowMacro = stmt((node) => `$s.rowOpen("row", ${lit(attr(node, "style"))});\n` +
         childrenNamed(node, "row-col").map((col) => `$s.colOpen(${wlit(col, false)}, false);\n${col.source || ""}sri.write("</div>");\n`).join("") + `sri.write("</div>\\n");\n`);
+
+    const containerSplitMacro = stmt((node) => {
+        const part = (name) => { const kid = child(node, name); return kid ? kid.source || "" : ""; };
+        return `$s.splitOpen(${wlit(node, false)});\n` + write("<template v-slot:side>") + part("split-side") +
+            write("</template><template v-slot:main>") + part("split-main") + write("</template></m-container-split>\n");
+    });
 
     const containerPanelMacro = stmt((node) => {
         const part = (name) => { const kid = child(node, name); return kid ? kid.source || "" : ""; };
@@ -1925,6 +2021,9 @@
         "container-row": containerRowMacro,
         "row-col": widgetsMacro,
         "container-panel": containerPanelMacro,
+        "container-split": containerSplitMacro,
+        "split-side": widgetsMacro,
+        "split-main": widgetsMacro,
         "panel-header": widgetsMacro,
         "panel-left": widgetsMacro,
         "panel-center": widgetsMacro,
@@ -1943,6 +2042,9 @@
         "context": widget("screenContext", false),
         "dashboard": dashboardMacro,
         "number-card": widget("numberCard", false),
+        "chatter": widget("chatter", false),
+        "record-files": widget("recordFiles", false),
+        "html-view": widget("htmlView", false),
         "form-single": formSingleMacro,
         "form-list": formListMacro
     });

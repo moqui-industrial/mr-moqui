@@ -507,7 +507,7 @@ fn default_for(
 }
 
 /// `allow-html`. Text with a `<` is an error unless the parameter allows HTML. With `safe` the
-/// markup is cleaned instead: elements and attributes outside ammonia's default allow-list are
+/// markup is cleaned instead: elements and attributes outside the allow-list of [`safe_html`] are
 /// removed, script and style content goes with its element, and links lose unsafe URLs. Text with no
 /// `<` is returned as it came, so plain values are never reformatted.
 fn clean_html(param: &ParamDef, value: Value, failures: &mut Vec<String>) -> Value {
@@ -550,10 +550,16 @@ pub(crate) fn clean_safe_html(text: &str) -> String {
 }
 
 /// The cleaner. ammonia's defaults are a maintained, conservative allow-list, so there is no
-/// list of our own to keep up to date.
+/// list of our own to keep up to date, with one addition: `data-mention-id` on a `span`, the mention
+/// of the qvt rich-text editor (`m-rich-text`, `<span data-mention-id="john.doe">@John Doe</span>`), so
+/// a note or message keeps who it mentions. The value is only ever text: ammonia escapes it.
 fn safe_html() -> &'static ammonia::Builder<'static> {
     static CLEANER: std::sync::OnceLock<ammonia::Builder<'static>> = std::sync::OnceLock::new();
-    CLEANER.get_or_init(ammonia::Builder::default)
+    CLEANER.get_or_init(|| {
+        let mut builder = ammonia::Builder::default();
+        builder.add_tag_attributes("span", &["data-mention-id"]);
+        builder
+    })
 }
 
 /// The messages of a check that `value` fails, Java's text for each; none when it passes.
@@ -1261,5 +1267,41 @@ mod parameter_tests {
         // Arabic-Indic and fullwidth digits are digits, a superscript two is not
         assert!(apply_check(&Check::TextDigits, &Value::string("٣٤５")).is_empty());
         assert!(!apply_check(&Check::TextDigits, &Value::string("1²")).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod safe_html_tests {
+    use super::*;
+
+    /// What the qvt rich-text editor writes (`m-rich-text`, js/README.md) survives `allow-html="safe"`: its blocks, marks,
+    /// links, images and the mention span with its id; a link gains ammonia's `rel`, and what the editor never writes goes.
+    #[test]
+    fn the_rich_text_editor_output_survives_the_safe_cleaning() {
+        let editor = concat!(
+            "<h2>Heading</h2><p><strong>Bold</strong> <em>italic</em> <s>struck</s> <u>under</u> <code>code</code> ",
+            "<a href=\"https://example.com/x\">a link</a> <span data-mention-id=\"john.doe\">@John Doe</span></p>",
+            "<ul><li><p>one</p></li></ul><ol start=\"3\"><li><p>three</p></li></ol>",
+            "<blockquote><p>quoted</p></blockquote><pre><code>let x = 1;</code></pre>",
+            "<p>line<br>break</p><hr><img src=\"https://example.com/a.png\" alt=\"a picture\">"
+        );
+        let cleaned = clean_safe_html(editor);
+        assert_eq!(
+            cleaned,
+            editor.replace(
+                "<a href=\"https://example.com/x\">",
+                "<a href=\"https://example.com/x\" rel=\"noopener noreferrer\">"
+            )
+        );
+        // cleaned again it is the same: what the server keeps the editor reads back unchanged
+        assert_eq!(clean_safe_html(&cleaned), cleaned);
+        // only the mention id is kept on a span, a value is escaped, and script, handlers and javascript: links go
+        assert_eq!(
+            clean_safe_html(
+                "<p><span data-mention-id=\"a&quot;b\" data-other=\"x\" class=\"mention\" onclick=\"steal()\">@A</span>\
+                 <a href=\"javascript:steal()\">x</a><script>steal()</script></p>"
+            ),
+            "<p><span data-mention-id=\"a&quot;b\">@A</span><a rel=\"noopener noreferrer\">x</a></p>"
+        );
     }
 }

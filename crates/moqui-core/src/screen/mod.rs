@@ -36,6 +36,7 @@ pub(crate) mod sri;
 pub mod static_ast;
 pub mod static_files;
 pub mod statics;
+pub mod token_route;
 pub(crate) mod tree;
 mod url;
 pub(crate) mod urls;
@@ -144,6 +145,8 @@ fn handle(
         .map(user::verify_session_cookie)
         .transpose()?
         .flatten();
+    // a visit this request starts (at the bind, or at a login on a session that put it off) records the request
+    let _visit_request = user::session::VisitRequestGuard::set(web::visit_request(request));
     let guard = user::bind(
         factory,
         session_cookie.as_deref(),
@@ -185,13 +188,20 @@ fn handle(
         login_error.as_deref(),
         (header_authenticated, new_session),
     )?;
-    let response = attach_session(
+    let mut response = attach_session(
         response,
         &guard,
         presented.as_deref(),
         visitor_cookie.as_deref(),
         token_before,
     )?;
+    // the preferences this request set, for the page to apply at once (js/README.md, Preferences)
+    let changed = web::take_changed_preferences();
+    if !changed.is_empty() {
+        response
+            .headers
+            .push(("X-Moqui-Preferences".to_string(), web::preferences_header(&changed)));
+    }
     drop(guard);
     Ok(response)
 }
@@ -205,6 +215,25 @@ fn dispatch_request(
     login_error: Option<&str>,
     (header_authenticated, new_session): (bool, bool),
 ) -> Result<WebResponse, Error> {
+    // `/<route>/<token>`: a token route's public screen, after its token check (token_route.rs)
+    if let Some(found) = token_route::find(factory, &request.path) {
+        // not again under the route's own screen, which the dispatch below renders as the root
+        if !token_route::token_routes(factory)
+            .iter()
+            .any(|route| route.screen_location == root)
+        {
+            return token_route::dispatch(
+                factory,
+                request,
+                root,
+                parameters,
+                json_list,
+                login_error,
+                (header_authenticated, new_session),
+                found,
+            );
+        }
+    }
     // `/fop/<path>`, Java's `MoquiFopServlet`: the screen at `<path>` as `html-print`, sent as PDF. The `filename`
     // parameter (else `saveFilename`) makes it a download.
     let fop_path = fop_screen_path(&request.path);

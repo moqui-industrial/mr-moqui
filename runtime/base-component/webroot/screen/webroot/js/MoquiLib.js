@@ -214,43 +214,55 @@
         // ---- scripts and styles ----
 
         // Load a script once. The callback gets (error, script) as in the Java client, and a promise is returned too. A validate
-        // function says whether the library has set its global yet; it is retried with a growing wait.
-        loadScript: (src, callback, validate) => new Promise((resolve, reject) => {
+        // function says whether the library has set its global yet; it is retried with a growing wait, and the promise rejects
+        // when it never does. One load runs per src (moqui.scriptLoads): a call while it runs waits for it, and when it fails
+        // (the script does not load) every waiter is rejected and the failed element removed, so a later call tries again.
+        loadScript: (src, callback, validate) => {
             const doc = root.document;
-            const done = (error, script) => {
-                if (callback) callback(error, script);
-                if (error) reject(error);
-                else resolve(script);
-            };
-            const finish = (script) => {
-                if (validate) moqui.retryValidateCallback(() => done(null, script), validate);
-                else done(null, script);
-            };
-            const loaded = Array.from(doc.querySelectorAll("script[src]")).find((item) => item.getAttribute("src").indexOf(src) !== -1);
-            if (loaded) {
-                if (loaded.dataset.mqState === "loading") loaded.addEventListener("load", () => finish(loaded));
-                else finish(loaded);
-                return;
+            let load = moqui.scriptLoads.get(src);
+            if (!load) {
+                load = new Promise((resolve, reject) => {
+                    // a script the page wrote itself (not one of these loads) has run before the client starts
+                    const present = Array.from(doc.querySelectorAll("script[src]")).find((item) =>
+                        item.getAttribute("src").indexOf(src) !== -1 && !item.dataset.mqState);
+                    if (present) {
+                        resolve(present);
+                        return;
+                    }
+                    const script = doc.createElement("script");
+                    script.src = src;
+                    script.async = false;
+                    script.dataset.mqState = "loading";
+                    script.onload = () => { script.dataset.mqState = "loaded"; script.onerror = script.onload = null; resolve(script); };
+                    script.onerror = () => {
+                        script.onerror = script.onload = null;
+                        script.dataset.mqState = "failed";
+                        if (script.parentNode) script.parentNode.removeChild(script);
+                        reject(new Error("Error loading script " + src));
+                    };
+                    doc.head.appendChild(script);
+                });
+                moqui.scriptLoads.set(src, load);
+                load.catch((error) => {
+                    console.error(error);
+                    if (moqui.scriptLoads.get(src) === load) moqui.scriptLoads.delete(src);
+                });
             }
-            const script = doc.createElement("script");
-            script.src = src;
-            script.async = false;
-            script.dataset.mqState = "loading";
-            script.onload = () => { script.dataset.mqState = "loaded"; script.onerror = script.onload = null; finish(script); };
-            script.onerror = () => {
-                script.onerror = script.onload = null;
-                const error = new Error("Error loading script " + src);
-                console.error(error);
-                done(error, script);
-            };
-            doc.head.appendChild(script);
-        }),
+            const ready = validate ? load.then((script) => new Promise((resolve, reject) => moqui.retryValidateCallback(() => resolve(script), validate, 1,
+                () => reject(new Error("Script " + src + " loaded but its library is not there"))))) : load;
+            if (callback) ready.then((script) => callback(null, script), (error) => callback(error, null));
+            return ready;
+        },
+        // src -> the promise of its load, while it runs or once it loaded
+        scriptLoads: new Map(),
 
-        retryValidateCallback: (callback, validate, count) => {
+        // Call callback once validate() is true, trying again with a growing wait; after the last try (about 20 s) call onFail.
+        retryValidateCallback: (callback, validate, count, onFail) => {
             if (!validate || validate()) callback();
             else {
                 const attempt = count || 1;
-                if (attempt <= 8) setTimeout(moqui.retryValidateCallback, attempt * attempt * 100, callback, validate, attempt + 1);
+                if (attempt <= 8) setTimeout(moqui.retryValidateCallback, attempt * attempt * 100, callback, validate, attempt + 1, onFail);
+                else if (onFail) onFail();
             }
         },
 
@@ -313,6 +325,11 @@
                 const result = { ok: response.ok, status: response.status, statusText: response.statusText, headers: response.headers, text, json, response };
                 const token = response.headers.get("X-CSRF-Token");
                 if (token && moqui.onSessionToken) moqui.onSessionToken(token);
+                // the user preferences the request set (percent-encoded JSON), which the page applies (moqui.applyPreference)
+                const preferences = response.headers.get("X-Moqui-Preferences");
+                if (preferences && moqui.onPreferences) {
+                    try { moqui.onPreferences(JSON.parse(decodeURIComponent(preferences))); } catch (err) { console.info("X-Moqui-Preferences not read", err); }
+                }
                 if (!response.ok) throw result;
                 return result;
             }), (error) => {

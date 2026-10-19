@@ -554,6 +554,35 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="toUserId" type="id"/>
         <field name="emailTemplateId" type="id"><description>For outgoing messages that came from an EmailTemplate.</description></field>
         <field name="emailServerId" type="id"/>
+        <!-- The mail client (org.moqui.impl.EmailClientServices): the account and folder a message is in, its flags and
+            its place in the Inbox. A message the system sends from a template has none of these. -->
+        <field name="emailAccountId" type="id"><description>The EmailAccount the message is in, for the mail client</description></field>
+        <field name="emailFolderId" type="id"><description>The EmailFolder of its account; empty for a message in the
+            Outbox (scheduled, held for undo, or failed to send)</description></field>
+        <field name="emailIdentityId" type="id"><description>The identity a draft is sent from</description></field>
+        <field name="remoteUid" type="number-integer"><description>The IMAP UID in remoteFolderId, under that folder's
+            remoteUidValidity</description></field>
+        <field name="remoteFolderId" type="id"><description>The folder the message is in on the server, which remoteUid
+            belongs to: emailFolderId once the sync has made a local move there too (push#RemoteChanges), the folder it
+            left until then; empty for a message kept only here</description></field>
+        <field name="remoteUidl" type="text-medium"><description>The POP3 UIDL of a message fetched from a POP3 server</description></field>
+        <field name="messageDate" type="date-time"><description>The date the mail client sorts by: received for received
+            mail, sent for sent mail, the last save of a draft, the time a scheduled message goes out</description></field>
+        <field name="isRead" type="text-indicator"/>
+        <field name="isFlagged" type="text-indicator"/>
+        <field name="isAnswered" type="text-indicator"/>
+        <field name="hasAttachment" type="text-indicator"/>
+        <field name="snippet" type="text-medium"><description>The start of the body as plain text, for the message list</description></field>
+        <field name="messageSize" type="number-integer"><description>Bytes: the server's size, or the body and
+            attachments of a local message</description></field>
+        <field name="inReplyTo" type="text-medium"><description>The In-Reply-To header: the messageId of the parent</description></field>
+        <field name="referencesHeader" type="text-long"><description>The References header: message ids separated by spaces</description></field>
+        <field name="snoozedThruDate" type="date-time"><description>Hidden from the inbox until then</description></field>
+        <field name="scheduledSendDate" type="date-time"><description>When a scheduled (ES_SCHEDULED) message goes out:
+            the time chosen, or the end of the undo-send hold</description></field>
+        <field name="archivedDate" type="date-time"/>
+        <field name="sendError" type="text-long"><description>Why the last send failed; the message waits in the Outbox
+            for a retry</description></field>
 
         <relationship type="one" title="EmailMessage" related="moqui.basic.StatusItem" short-alias="status"/>
         <relationship type="one" title="EmailType" related="moqui.basic.Enumeration" short-alias="type">
@@ -570,13 +599,33 @@ along with this software (see the LICENSE.md file). If not, see
             <key-map field-name="toUserId"/></relationship>
         <relationship type="one" related="moqui.basic.email.EmailTemplate" short-alias="template"/>
         <relationship type="one" related="moqui.basic.email.EmailServer" short-alias="server"/>
+        <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
+        <relationship type="one" related="moqui.basic.email.EmailFolder" short-alias="folder"/>
+        <relationship type="one" title="Remote" related="moqui.basic.email.EmailFolder" short-alias="remoteFolder">
+            <key-map field-name="remoteFolderId" related="emailFolderId"/></relationship>
+        <relationship type="one" related="moqui.basic.email.EmailIdentity" short-alias="identity"/>
+        <relationship type="many" related="moqui.basic.email.EmailMessageLabel" short-alias="labels">
+            <key-map field-name="emailMessageId"/></relationship>
+        <relationship type="many" related="moqui.basic.email.EmailMessageAttachment" short-alias="attachments">
+            <key-map field-name="emailMessageId"/></relationship>
 
         <index name="EMAIL_MSG_ID"><index-field name="messageId"/></index>
+        <index name="EMAIL_MSG_ACCT_FLDR"><index-field name="emailAccountId"/><index-field name="emailFolderId"/>
+            <index-field name="messageDate"/></index>
+        <index name="EMAIL_MSG_ACCT_READ"><index-field name="emailAccountId"/><index-field name="isRead"/></index>
+        <index name="EMAIL_MSG_ROOT"><index-field name="rootEmailMessageId"/></index>
+        <index name="EMAIL_MSG_SCHED"><index-field name="statusId"/><index-field name="scheduledSendDate"/></index>
+        <index name="EMAIL_MSG_SNOOZE"><index-field name="snoozedThruDate"/></index>
+        <index name="EMAIL_MSG_REMOTE"><index-field name="remoteFolderId"/><index-field name="remoteUid"/></index>
+        <index name="EMAIL_MSG_REPLY"><index-field name="inReplyTo"/></index>
 
         <seed-data>
             <!-- Email Message Status -->
             <moqui.basic.StatusType description="Email Message Status" statusTypeId="EmailMessage"/>
             <moqui.basic.StatusItem description="Draft" sequenceNum="1" statusId="ES_DRAFT" statusTypeId="EmailMessage"/>
+            <!-- A mail client message waiting in the Outbox for its scheduledSendDate: a scheduled send or the undo-send
+                hold; EmailClientServices.send#DueDrafts sends it then -->
+            <moqui.basic.StatusItem description="Scheduled" sequenceNum="2" statusId="ES_SCHEDULED" statusTypeId="EmailMessage"/>
             <moqui.basic.StatusItem description="Ready" sequenceNum="2" statusId="ES_READY" statusTypeId="EmailMessage"/>
             <moqui.basic.StatusItem description="Sent" sequenceNum="3" statusId="ES_SENT" statusTypeId="EmailMessage"/>
             <moqui.basic.StatusItem description="Received" sequenceNum="4" statusId="ES_RECEIVED" statusTypeId="EmailMessage"/>
@@ -584,6 +633,10 @@ along with this software (see the LICENSE.md file). If not, see
             <moqui.basic.StatusItem description="Bounced" sequenceNum="8" statusId="ES_BOUNCED" statusTypeId="EmailMessage"/>
             <moqui.basic.StatusItem description="Cancelled" sequenceNum="9" statusId="ES_CANCELLED" statusTypeId="EmailMessage"/>
             <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="ES_DRAFT" toStatusId="ES_READY" transitionName="Ready"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="ES_DRAFT" toStatusId="ES_SCHEDULED" transitionName="Schedule"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="ES_SCHEDULED" toStatusId="ES_READY" transitionName="Ready"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="ES_SCHEDULED" toStatusId="ES_DRAFT" transitionName="Unschedule"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="ES_READY" toStatusId="ES_DRAFT" transitionName="Edit"/>
             <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="ES_READY" toStatusId="ES_SENT" transitionName="Send"/>
             <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="ES_READY" toStatusId="ES_VIEWED" transitionName="View"/>
             <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="ES_READY" toStatusId="ES_CANCELLED" transitionName="Cancel"/>
@@ -617,6 +670,8 @@ along with this software (see the LICENSE.md file). If not, see
             <detail relationship="children" use-master="default"/>
             <detail relationship="fromUser"/><detail relationship="toUser"/>
             <detail relationship="template"/><detail relationship="server"/>
+            <detail relationship="account"/><detail relationship="folder"/>
+            <detail relationship="labels"/><detail relationship="attachments"/>
         </master>
     </entity>
     <entity entity-name="EmailServer" package="moqui.basic.email" use="configuration" cache="true">
@@ -636,7 +691,22 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="mailPassword" type="text-medium" encrypt="true" enable-audit-log="update"/>
         <field name="allowedToDomains" type="text-long" enable-audit-log="update">
             <description>Comma separated list of domain names to allow (like: moqui.org, dejc.com), matched by ends with; if no value specified all domains allowed</description></field>
+        <field name="authTypeEnumId" type="id"><description>How SMTP and the store sign in: EatPassword (mailUsername and
+            mailPassword; the default) or EatOAuth2 (XOAUTH2 with an access token from oauthRefreshToken)</description></field>
+        <field name="oauthProviderEnumId" type="id"/>
+        <field name="oauthRefreshToken" type="text-long" encrypt="true"/>
+        <relationship type="one" title="EmailAuthType" related="moqui.basic.Enumeration" short-alias="authType">
+            <key-map field-name="authTypeEnumId"/></relationship>
+        <relationship type="one" title="EmailOAuthProvider" related="moqui.basic.Enumeration" short-alias="oauthProvider">
+            <key-map field-name="oauthProviderEnumId"/></relationship>
         <seed-data>
+            <moqui.basic.EnumerationType description="Email Server Authentication" enumTypeId="EmailAuthType"/>
+            <moqui.basic.Enumeration description="Password" enumId="EatPassword" enumTypeId="EmailAuthType" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="OAuth 2.0" enumId="EatOAuth2" enumTypeId="EmailAuthType" sequenceNum="2"/>
+            <moqui.basic.EnumerationType description="Email OAuth Provider" enumTypeId="EmailOAuthProvider"/>
+            <moqui.basic.Enumeration description="Google" enumId="EopGoogle" enumTypeId="EmailOAuthProvider" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Microsoft 365" enumId="EopMicrosoft" enumTypeId="EmailOAuthProvider" sequenceNum="2"/>
+
             <!-- The MOQUI_LOCAL EmailServer is used by SubEthaSmtpToolFactory for the local SMTP server to setup the server, and
                 for use by send#EmailTemplate if this emailServerId is used to send email -->
             <moqui.basic.email.EmailServer emailServerId="MOQUI_LOCAL"
@@ -660,6 +730,313 @@ along with this software (see the LICENSE.md file). If not, see
                 storeProtocol="pop3" storePort="110" (std) storePort="995" (ssl-pop)
             -->
         </seed-data>
+    </entity>
+    <!-- The mail client's model (org.moqui.impl.EmailClientServices). These are moqui.* entities, which entity filters
+        never apply to, so every read and write of a user's mail goes through those services, which check the account's
+        owner and members. -->
+    <entity entity-name="EmailAccount" package="moqui.basic.email" use="transactional" cache="never">
+        <description>A mail account of a user or an organization: the user's Internal account (EakInternal, one per user,
+            made on first use, with no server and no EmailMessage rows: internal messages live with the app, such as
+            Mantle's CommunicationEvent), an account at a hosted domain (EakHosted), an external IMAP or POP account
+            (EakExternal) or a shared account with members (EakShared). The connection is the EmailServer.</description>
+        <field name="emailAccountId" type="id" is-pk="true"/>
+        <field name="ownerUserId" type="id"><description>The user whose account it is; the owner may do everything</description></field>
+        <field name="ownerPartyId" type="id"><description>For an organization's shared account, the organization's party;
+            its users reach it through EmailAccountUser rows</description></field>
+        <field name="accountKindEnumId" type="id"/>
+        <field name="emailServerId" type="id"/>
+        <field name="ownsEmailServer" type="text-indicator"><description>Y when the server was made for this account, so the
+            account's settings change and remove it; a server shared with others (SYSTEM) is never changed through an
+            account</description></field>
+        <field name="emailAddress" type="text-medium"/>
+        <field name="accountName" type="text-medium"/>
+        <field name="color" type="text-short"/>
+        <field name="syncWindowDays" type="number-integer"><description>How far back the sync reads; empty for all mail</description></field>
+        <field name="recordFilingEnumId" type="id"><description>Whether received mail is filed on the records of the
+            parties it matches (ErfAllMatches) or only when a user links it (ErfLinkedOnly); by kind when empty: external
+            accounts file only what is linked, hosted and shared accounts every match</description></field>
+        <field name="statusId" type="id"/>
+        <field name="lastSyncDate" type="date-time"/>
+        <field name="lastSyncError" type="text-long"/>
+        <field name="syncIntervalMinutes" type="number-integer"><description>How often the sync job syncs the account;
+            empty for the email_sync_interval property (5 minutes)</description></field>
+        <field name="syncLockedUntil" type="date-time"><description>A sync of the account holds it until then
+            (sync#EmailAccount), so no two run at once, on this server or another; the lock of a server that stopped
+            ends then</description></field>
+        <field name="syncLockedBy" type="text-medium"/>
+        <field name="sequenceNum" type="number-integer"/>
+        <relationship type="one-nofk" title="Owner" related="moqui.security.UserAccount" short-alias="owner">
+            <key-map field-name="ownerUserId" related="userId"/></relationship>
+        <relationship type="one" title="EmailAccountKind" related="moqui.basic.Enumeration" short-alias="kind">
+            <key-map field-name="accountKindEnumId"/></relationship>
+        <relationship type="one" related="moqui.basic.email.EmailServer" short-alias="server"/>
+        <relationship type="one" title="EmailRecordFiling" related="moqui.basic.Enumeration" short-alias="recordFiling">
+            <key-map field-name="recordFilingEnumId"/></relationship>
+        <relationship type="one" title="EmailAccount" related="moqui.basic.StatusItem" short-alias="status"/>
+        <relationship type="many" related="moqui.basic.email.EmailAccountUser" short-alias="users">
+            <key-map field-name="emailAccountId"/></relationship>
+        <relationship type="many" related="moqui.basic.email.EmailIdentity" short-alias="identities">
+            <key-map field-name="emailAccountId"/></relationship>
+        <relationship type="many" related="moqui.basic.email.EmailFolder" short-alias="folders">
+            <key-map field-name="emailAccountId"/></relationship>
+        <relationship type="many" related="moqui.basic.email.EmailLabel" short-alias="labels">
+            <key-map field-name="emailAccountId"/></relationship>
+        <index name="EMAIL_ACCT_OWNER"><index-field name="ownerUserId"/><index-field name="accountKindEnumId"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType description="Email Account Kind" enumTypeId="EmailAccountKind"/>
+            <moqui.basic.Enumeration description="Internal" enumId="EakInternal" enumTypeId="EmailAccountKind" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Hosted" enumId="EakHosted" enumTypeId="EmailAccountKind" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="External" enumId="EakExternal" enumTypeId="EmailAccountKind" sequenceNum="3"/>
+            <moqui.basic.Enumeration description="Shared" enumId="EakShared" enumTypeId="EmailAccountKind" sequenceNum="4"/>
+
+            <moqui.basic.EnumerationType description="Email Record Filing" enumTypeId="EmailRecordFiling"/>
+            <moqui.basic.Enumeration description="File every party match" enumId="ErfAllMatches" enumTypeId="EmailRecordFiling" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="File only what is linked" enumId="ErfLinkedOnly" enumTypeId="EmailRecordFiling" sequenceNum="2"/>
+
+            <moqui.basic.StatusType description="Email Account Status" statusTypeId="EmailAccount"/>
+            <moqui.basic.StatusItem description="Active" sequenceNum="1" statusId="EasActive" statusTypeId="EmailAccount"/>
+            <moqui.basic.StatusItem description="Paused" sequenceNum="2" statusId="EasPaused" statusTypeId="EmailAccount"/>
+            <moqui.basic.StatusItem description="Sign-in Failed" sequenceNum="3" statusId="EasAuthFailed" statusTypeId="EmailAccount"/>
+            <moqui.basic.StatusItem description="Error" sequenceNum="4" statusId="EasError" statusTypeId="EmailAccount"/>
+            <moqui.basic.StatusItem description="Removed" sequenceNum="9" statusId="EasRemoved" statusTypeId="EmailAccount"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="EasActive" toStatusId="EasPaused" transitionName="Pause"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="EasActive" toStatusId="EasAuthFailed" transitionName="Sign-in Failed"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="EasActive" toStatusId="EasError" transitionName="Error"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="EasActive" toStatusId="EasRemoved" transitionName="Remove"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="EasPaused" toStatusId="EasActive" transitionName="Resume"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="EasPaused" toStatusId="EasRemoved" transitionName="Remove"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="EasAuthFailed" toStatusId="EasActive" transitionName="Reauthorize"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="EasAuthFailed" toStatusId="EasPaused" transitionName="Pause"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="EasAuthFailed" toStatusId="EasRemoved" transitionName="Remove"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="EasError" toStatusId="EasActive" transitionName="Resume"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="EasError" toStatusId="EasPaused" transitionName="Pause"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="EasError" toStatusId="EasRemoved" transitionName="Remove"/>
+        </seed-data>
+        <master>
+            <detail relationship="kind"/><detail relationship="status"/><detail relationship="recordFiling"/>
+            <detail relationship="users"/><detail relationship="identities"/><detail relationship="folders"/>
+            <detail relationship="labels"/>
+        </master>
+    </entity>
+    <entity entity-name="EmailAccountUser" package="moqui.basic.email" use="transactional" cache="never">
+        <description>A member of a shared account (or another user an account is shared with) and what they may do:
+            EapRead reads the mail and marks it read, EapSend also sends from the account and files its mail (drafts,
+            flags, folders, labels, snooze, archive, trash), EapManage also changes the account, its members, identities,
+            folders, labels and out-of-office.</description>
+        <field name="emailAccountId" type="id" is-pk="true"/>
+        <field name="userId" type="id" is-pk="true"/>
+        <field name="fromDate" type="date-time" is-pk="true"/>
+        <field name="thruDate" type="date-time"/>
+        <field name="permissionEnumId" type="id"/>
+        <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
+        <relationship type="one" title="EmailAccountPermission" related="moqui.basic.Enumeration" short-alias="permission">
+            <key-map field-name="permissionEnumId"/></relationship>
+        <index name="EMAIL_ACCT_USER"><index-field name="userId"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType description="Email Account Permission" enumTypeId="EmailAccountPermission"/>
+            <moqui.basic.Enumeration description="Read" enumId="EapRead" enumTypeId="EmailAccountPermission" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Send" enumId="EapSend" enumTypeId="EmailAccountPermission" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Manage" enumId="EapManage" enumTypeId="EmailAccountPermission" sequenceNum="3"/>
+        </seed-data>
+    </entity>
+    <entity entity-name="EmailIdentity" package="moqui.basic.email" use="transactional" cache="never">
+        <description>An address an account sends as, with its name, reply-to and signature.</description>
+        <field name="emailIdentityId" type="id" is-pk="true"/>
+        <field name="emailAccountId" type="id"/>
+        <field name="emailAddress" type="text-medium"/>
+        <field name="displayName" type="text-medium"/>
+        <field name="replyToAddress" type="text-medium"/>
+        <field name="signatureHtml" type="text-very-long"/>
+        <field name="signaturePlacementEnumId" type="id"/>
+        <field name="useForReplies" type="text-indicator"><description>The signature goes on replies and forwards too</description></field>
+        <field name="isDefault" type="text-indicator"/>
+        <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
+        <relationship type="one" title="EmailSignaturePlacement" related="moqui.basic.Enumeration" short-alias="signaturePlacement">
+            <key-map field-name="signaturePlacementEnumId"/></relationship>
+        <index name="EMAIL_IDENT_ACCT"><index-field name="emailAccountId"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType description="Email Signature Placement" enumTypeId="EmailSignaturePlacement"/>
+            <moqui.basic.Enumeration description="Below the quote" enumId="EspBelowQuote" enumTypeId="EmailSignaturePlacement" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Above the quote" enumId="EspAboveQuote" enumTypeId="EmailSignaturePlacement" sequenceNum="2"/>
+        </seed-data>
+    </entity>
+    <entity entity-name="EmailFolder" package="moqui.basic.email" use="transactional" cache="never">
+        <description>A folder of an account. Every account but the Internal one has an Inbox, Drafts, Sent, Archive, Junk and
+            Trash folder, made with it; the sync maps the server's folders onto them by kind. The remote fields are the
+            sync's IMAP state; unreadCount and totalCount are the server's counts at the last sync (the services count the
+            local messages).</description>
+        <field name="emailFolderId" type="id" is-pk="true"/>
+        <field name="emailAccountId" type="id"/>
+        <field name="folderName" type="text-medium"/>
+        <field name="folderPath" type="text-medium"><description>The server's name for the folder, such as INBOX or
+            [Gmail]/Sent Mail; empty for a folder only kept here</description></field>
+        <field name="parentFolderId" type="id"/>
+        <field name="folderKindEnumId" type="id"/>
+        <field name="remoteUidValidity" type="number-integer"/>
+        <field name="remoteHighestModSeq" type="number-integer"/>
+        <field name="remoteUidNext" type="number-integer"><description>The sync's next UID to read: every message from
+            it on is new</description></field>
+        <field name="unreadCount" type="number-integer"/>
+        <field name="totalCount" type="number-integer"/>
+        <field name="subscribed" type="text-indicator"><description>Y when the sync reads the folder</description></field>
+        <field name="delimiter" type="text-short"><description>The server's hierarchy delimiter in folderPath</description></field>
+        <field name="lastFlagScanDate" type="date-time"><description>When the sync last read the flags of each message,
+            on a server without CONDSTORE</description></field>
+        <field name="remoteRemovedDate" type="date-time"><description>When the folder was no longer on the server: its
+            local messages are kept, and it is synced again if it comes back</description></field>
+        <field name="sequenceNum" type="number-integer"/>
+        <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
+        <relationship type="one" title="Parent" related="moqui.basic.email.EmailFolder" short-alias="parent">
+            <key-map field-name="parentFolderId" related="emailFolderId"/></relationship>
+        <relationship type="one" title="EmailFolderKind" related="moqui.basic.Enumeration" short-alias="kind">
+            <key-map field-name="folderKindEnumId"/></relationship>
+        <index name="EMAIL_FLDR_ACCT"><index-field name="emailAccountId"/><index-field name="folderKindEnumId"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType description="Email Folder Kind" enumTypeId="EmailFolderKind"/>
+            <moqui.basic.Enumeration description="Inbox" enumId="EfkInbox" enumTypeId="EmailFolderKind" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Drafts" enumId="EfkDrafts" enumTypeId="EmailFolderKind" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Sent" enumId="EfkSent" enumTypeId="EmailFolderKind" sequenceNum="3"/>
+            <moqui.basic.Enumeration description="Archive" enumId="EfkArchive" enumTypeId="EmailFolderKind" sequenceNum="4"/>
+            <moqui.basic.Enumeration description="Junk" enumId="EfkJunk" enumTypeId="EmailFolderKind" sequenceNum="5"/>
+            <moqui.basic.Enumeration description="Trash" enumId="EfkTrash" enumTypeId="EmailFolderKind" sequenceNum="6"/>
+            <moqui.basic.Enumeration description="Other" enumId="EfkOther" enumTypeId="EmailFolderKind" sequenceNum="9"/>
+        </seed-data>
+    </entity>
+    <entity entity-name="EmailRemoteChange" package="moqui.basic.email" use="transactional" cache="never">
+        <description>A local change of an account's mail waiting to be made on its IMAP server (push#RemoteChanges). The
+            sync (sync#EmailAccount) applies them in the order made, at the start and the end of each session and, with
+            the email_sync_push_now property on, right after the change commits. One that cannot be made now (the server
+            cannot be reached, the message has no UID yet) waits for the next session; one that fails ten times is dropped
+            with an error logged. So a local change is not lost while the server is away.</description>
+        <field name="emailRemoteChangeId" type="id" is-pk="true"/>
+        <field name="emailAccountId" type="id"/>
+        <field name="changeType" type="text-short"><description>flags, move, labels, keywords, delete, sent (an APPEND
+            to Sent), createFolder or renameFolder</description></field>
+        <field name="emailMessageId" type="id"><description>The message; a deleted one's row is gone, so its place on the
+            server is kept here too</description></field>
+        <field name="emailFolderId" type="id"><description>The folder of a folder change</description></field>
+        <field name="remoteFolderId" type="id"><description>For a delete: the folder the message was in on the server</description></field>
+        <field name="remoteUid" type="number-integer"/>
+        <field name="remoteUidValidity" type="number-integer"/>
+        <field name="messageId" type="text-medium"><description>The Message-ID, to find a message whose UID is not known</description></field>
+        <field name="changeJson" type="text-long"><description>flags: the flags changed ({isRead, isFlagged, isAnswered});
+            keywords: {add, remove}; renameFolder: {oldName}</description></field>
+        <field name="createdDate" type="date-time"/>
+        <field name="attemptCount" type="number-integer"/>
+        <field name="lastAttemptDate" type="date-time"/>
+        <field name="lastError" type="text-long"/>
+        <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
+        <index name="EMAIL_RCHG_ACCT"><index-field name="emailAccountId"/><index-field name="createdDate"/></index>
+    </entity>
+    <entity entity-name="EmailLabel" package="moqui.basic.email" use="transactional" cache="never">
+        <field name="emailLabelId" type="id" is-pk="true"/>
+        <field name="emailAccountId" type="id"/>
+        <field name="labelName" type="text-medium"/>
+        <field name="color" type="text-short"/>
+        <field name="sequenceNum" type="number-integer"/>
+        <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
+        <index name="EMAIL_LABEL_ACCT"><index-field name="emailAccountId"/></index>
+    </entity>
+    <entity entity-name="EmailMessageLabel" package="moqui.basic.email" use="transactional" cache="never">
+        <field name="emailMessageId" type="id" is-pk="true"/>
+        <field name="emailLabelId" type="id" is-pk="true"/>
+        <relationship type="one" related="moqui.basic.email.EmailMessage" short-alias="message"/>
+        <relationship type="one" related="moqui.basic.email.EmailLabel" short-alias="label"/>
+        <index name="EMAIL_MSG_LABEL"><index-field name="emailLabelId"/></index>
+    </entity>
+    <entity entity-name="EmailMessageAttachment" package="moqui.basic.email" use="transactional" cache="never">
+        <description>A file of a message, its content at a resource location (a DbResource file for mail the client stores,
+            under dbresource://email/).</description>
+        <field name="emailMessageAttachmentId" type="id" is-pk="true"/>
+        <field name="emailMessageId" type="id"/>
+        <field name="attachmentLocation" type="text-medium"/>
+        <field name="fileName" type="text-medium"/>
+        <field name="fileSize" type="number-integer"/>
+        <field name="contentType" type="text-medium"/>
+        <field name="contentId" type="text-medium"><description>The Content-ID an inline part is referred to by (cid:)</description></field>
+        <field name="isInline" type="text-indicator"/>
+        <relationship type="one" related="moqui.basic.email.EmailMessage" short-alias="message"/>
+        <index name="EMAIL_MSG_ATTACH"><index-field name="emailMessageId"/></index>
+    </entity>
+    <entity entity-name="EmailRule" package="moqui.basic.email" use="transactional" cache="never">
+        <description>A user's rule for received mail: conditionsJson is a list of {field, operator, value} (field from, to,
+            cc, subject, body, hasAttachment, listId, size, or header with a header name; operator contains, is, matches
+            (a regular expression) or startsWith, and greater or less for the size), matched all or any by
+            matchAllEnumId; actionsJson a list of {action, value} (moveToFolder, addLabel, markRead, flag, forwardTo,
+            delete, markSpam, stopProcessing; createTask and createRequest for an app to add). Rules run in sequenceNum
+            order on the account they name, or on all of the owner's when emailAccountId is empty, when the sync stores
+            new Inbox mail and on demand (EmailClientServices.run#EmailRules); stopProcessing ends the run.</description>
+        <field name="emailRuleId" type="id" is-pk="true"/>
+        <field name="ownerUserId" type="id"/>
+        <field name="emailAccountId" type="id"><description>Empty for all of the owner's accounts</description></field>
+        <field name="ruleName" type="text-medium"/>
+        <field name="sequenceNum" type="number-integer"/>
+        <field name="enabled" type="text-indicator"/>
+        <field name="matchAllEnumId" type="id"/>
+        <field name="conditionsJson" type="text-very-long"/>
+        <field name="actionsJson" type="text-very-long"/>
+        <field name="matchedCount" type="number-integer"/>
+        <field name="stopProcessing" type="text-indicator"/>
+        <relationship type="one-nofk" title="Owner" related="moqui.security.UserAccount" short-alias="owner">
+            <key-map field-name="ownerUserId" related="userId"/></relationship>
+        <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
+        <relationship type="one" title="EmailRuleMatch" related="moqui.basic.Enumeration" short-alias="match">
+            <key-map field-name="matchAllEnumId"/></relationship>
+        <index name="EMAIL_RULE_OWNER"><index-field name="ownerUserId"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType description="Email Rule Match" enumTypeId="EmailRuleMatch"/>
+            <moqui.basic.Enumeration description="All conditions" enumId="ErmAll" enumTypeId="EmailRuleMatch" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Any condition" enumId="ErmAny" enumTypeId="EmailRuleMatch" sequenceNum="2"/>
+        </seed-data>
+    </entity>
+    <entity entity-name="EmailOutOfOffice" package="moqui.basic.email" use="transactional" cache="never">
+        <description>An account's automatic reply: sent by the receiver while enabled and between the dates, once per sender
+            in replyOncePerDays; internalBodyHtml, when set, to senders of the user's own organization.</description>
+        <field name="emailAccountId" type="id" is-pk="true"/>
+        <field name="enabled" type="text-indicator"/>
+        <field name="fromDate" type="date-time"/>
+        <field name="thruDate" type="date-time"/>
+        <field name="subject" type="text-medium"/>
+        <field name="bodyHtml" type="text-very-long"/>
+        <field name="internalBodyHtml" type="text-very-long"/>
+        <field name="replyOncePerDays" type="number-integer"/>
+        <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
+    </entity>
+    <entity entity-name="EmailOutOfOfficeSent" package="moqui.basic.email" use="transactional" cache="never">
+        <description>When an account's automatic reply last went to a sender (the address in lower case), so it goes once
+            per sender in replyOncePerDays (EmailClientServices.send#OutOfOfficeReplies). Storing the automatic reply
+            clears them, so a new one goes to everyone again.</description>
+        <field name="emailAccountId" type="id" is-pk="true"/>
+        <field name="toAddress" type="text-medium" is-pk="true"/>
+        <field name="lastSentDate" type="date-time"/>
+        <field name="emailMessageId" type="id"><description>The message the last reply answered</description></field>
+        <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
+    </entity>
+    <entity entity-name="EmailTextBlock" package="moqui.basic.email" use="transactional" cache="never">
+        <description>Canned text for the composer: a user's own, or shared with the members of userGroupId.</description>
+        <field name="emailTextBlockId" type="id" is-pk="true"/>
+        <field name="ownerUserId" type="id"/>
+        <field name="userGroupId" type="id"><description>Shared with this group's members</description></field>
+        <field name="title" type="text-medium"/>
+        <field name="shortcut" type="text-short"/>
+        <field name="bodyHtml" type="text-very-long"/>
+        <relationship type="one-nofk" title="Owner" related="moqui.security.UserAccount" short-alias="owner">
+            <key-map field-name="ownerUserId" related="userId"/></relationship>
+        <relationship type="one" related="moqui.security.UserGroup" short-alias="userGroup"/>
+        <index name="EMAIL_TBLK_OWNER"><index-field name="ownerUserId"/></index>
+        <index name="EMAIL_TBLK_GROUP"><index-field name="userGroupId"/></index>
+    </entity>
+    <entity entity-name="EmailSearch" package="moqui.basic.email" use="transactional" cache="never">
+        <description>A user's saved search, a rail entry: queryText is the search line with its operators.</description>
+        <field name="emailSearchId" type="id" is-pk="true"/>
+        <field name="ownerUserId" type="id"/>
+        <field name="searchName" type="text-medium"/>
+        <field name="queryText" type="text-long"/>
+        <field name="sequenceNum" type="number-integer"/>
+        <relationship type="one-nofk" title="Owner" related="moqui.security.UserAccount" short-alias="owner">
+            <key-map field-name="ownerUserId" related="userId"/></relationship>
+        <index name="EMAIL_SEARCH_OWNER"><index-field name="ownerUserId"/></index>
     </entity>
     <entity entity-name="EmailTemplate" package="moqui.basic.email" use="configuration" short-alias="emailTemplates" cache="true">
         <field name="emailTemplateId" type="id" is-pk="true"/>

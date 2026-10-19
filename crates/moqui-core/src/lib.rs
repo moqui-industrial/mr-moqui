@@ -24,6 +24,7 @@ pub mod l10n;
 pub mod native;
 pub mod notify;
 pub mod outbound;
+pub mod pim;
 pub mod print;
 pub mod resource;
 pub mod screen;

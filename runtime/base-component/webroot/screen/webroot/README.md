@@ -41,6 +41,7 @@ is in `libs/`. To upgrade, change the version in `refresh.mjs`, run with `--writ
 | Marked | 18.1.1 | `marked/marked.umd.min.js`, global `marked` | Assist panel, markdown textarea |
 | DOMPurify | 3.4.17 | `dompurify/purify.min.js`, global `DOMPurify` | Assist panel |
 | highlight.js | 11.12.0 | `highlightjs/highlight.min.js` (core and 15 languages), `highlightjs/styles/github-dark.min.css`, `highlightjs/styles/github.min.css`, global `hljs` | Assist panel |
+| Tiptap, with ProseMirror (one esbuild bundle of `@tiptap/core`, `starter-kit`, `extension-link`, `-image`, `-mention`, `-placeholder` and their dependencies) | 3.31.4 | `tiptap/tiptap.min.js` (415 KB, 136 KB gzipped), global `Tiptap` (`Editor`, `Extension`, `Node`, `Mark`, `mergeAttributes`, `StarterKit`, `Link`, `Image`, `Mention`, `Placeholder`) | Lazy, once a page's first `m-rich-text` mounts |
 | QZ Tray | 2.3.0 | `qz-tray/qz-tray.js` (LGPL-2.1, served unmodified) | Only when the user preference `qz.print.enabled` is `true`. The page needs the `qzSign` transition of `apps.xml`. |
 
 The `html` mode theme (`WebrootThemeData.xml`) links Font Awesome, the style sheet and `moqui-html.js`. A widget that needs Tom Select or
@@ -50,7 +51,7 @@ a page loads later has no footer, so the client loads the library itself the fir
 The `/qapps` shell loads `vue/vue.global.prod.js` (the compiler build, because server-merged `qvt` is compiled in the browser), `quasar/quasar.umd.prod.js`, the
 language pack that matches the user locale, the Material Symbols icon set, `MoquiLib.js`, `MoquiL10n.js` and `WebrootVue.qvt.js`, in that order, with the Font
 Awesome, Material Symbols, Material Icons, Quasar and `WebrootVue.qvt.css` style sheets of the `DEFAULT_QUASAR` theme (`data/WebrootQuasarThemeData.xml`; the
-icon fonts come before Quasar, whose icon rules set their size). Chart.js, Mermaid, Marked, DOMPurify and
+icon fonts come before Quasar, whose icon rules set their size). Chart.js, Mermaid, Marked, DOMPurify, Tiptap and
 QZ Tray are loaded by the component that needs them, from the paths in the table. The Assist panel is not ported yet.
 
 A screen marked `server-static` for `qvt` is sent as a script (`X-Moqui-Qvt: static-template`) that registers a compiled render function in

@@ -39,11 +39,12 @@ along with this software (see the LICENSE.md file). If not, see
     <widgets>
         <container-box type="info"><box-header title="Archetype 3.11 Dialog"/><box-body>
             <label text="Create and edit without leaving the list: New is a 600 px container-dialog with a single-column form-single whose submit confirms and posts in the background (the dialog closes and a message shows); Edit is a container-dialog per row; View is a 900 px dynamic-dialog that loads the Detail gallery screen for the row. One primary and the close button per dialog; dialogs are maximized below 600 px." type="p"/>
-            <label text="No §8 fallbacks. The form attributes for a background submit are background-submit, background-hide-id and background-reload-id (the XSD names); the style guide's submit-reload-id is the name of the m-form property they become." type="p"/>
+            <label text="No §8 fallbacks. The form attributes for a background submit are background-submit, background-hide-id and background-reload-id (the XSD names); the style guide's submit-reload-id is the name of the m-form property they become. A container-dialog is a container of the page by its id, so background-hide-id closes it; its tooltip is the New button's." type="p"/>
         </box-body></container-box>
 
         <container-box><box-header title="Comparison operators"/><box-toolbar>
-            <container-dialog id="NewEnumDialog" button-text="New" icon="add" width="600" title="New enumeration">
+            <container-dialog id="NewEnumDialog" button-text="New" icon="add" width="600" title="New enumeration"
+                    tooltip="Create a comparison operator in a dialog">
                 <form-single name="NewEnum" transition="createEnum" background-submit="true" background-hide-id="NewEnumDialog" focus-field="enumId">
                     <field name="enumTypeId"><default-field title="Type">
                         <drop-down><list-options list="enumTypeList" key="${enumTypeId}" text="${description}"/></drop-down></default-field></field>

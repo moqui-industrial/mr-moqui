@@ -30,6 +30,7 @@ use std::sync::{Arc, Mutex, TryLockError};
 
 use moqui_lib::cache::{CacheConfig, MCache};
 use moqui_lib::node::MNode;
+use moqui_lib::object::Value;
 use moqui_lib::sync::lock;
 
 use super::definition::ScreenDef;
@@ -279,7 +280,22 @@ pub struct ScreenFacade {
     check_interval_ms: AtomicI64,
     /// One lock per location being loaded, so two requests do not load the same screen.
     loading: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// `sri.getShellProviders` by session, user, locale and theme ([`super::shell::shell_providers`]).
+    shell_providers: Mutex<HashMap<String, ShellProvidersEntry>>,
 }
+
+/// The providers of the apps a user may open, and the screens they were read from: the entry is used while each of
+/// them is current, for at most [`SHELL_PROVIDERS_TTL`].
+struct ShellProvidersEntry {
+    value: Value,
+    defs: Vec<Arc<ScreenDef>>,
+    made: std::time::Instant,
+}
+
+/// How long the providers of a session are kept: a grant or an app's link target that changes shows by then.
+const SHELL_PROVIDERS_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+/// The most sessions whose providers are kept; past it the oldest go.
+const SHELL_PROVIDERS_MAX: usize = 2000;
 
 impl ScreenFacade {
     fn new(factory: &ExecutionContextFactory) -> Self {
@@ -303,7 +319,58 @@ impl ScreenFacade {
             ),
             check_interval_ms: AtomicI64::new(configured_check_interval()),
             loading: Mutex::new(HashMap::new()),
+            shell_providers: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The providers kept for `key`, while every screen they were read from is current and they are not older than
+    /// [`SHELL_PROVIDERS_TTL`].
+    pub(super) fn cached_shell_providers(&self, factory: &ExecutionContextFactory, key: &str) -> Option<Value> {
+        let (value, defs) = {
+            let mut cache = lock(&self.shell_providers);
+            let entry = cache.get(key)?;
+            if entry.made.elapsed() > SHELL_PROVIDERS_TTL {
+                cache.remove(key);
+                return None;
+            }
+            (entry.value.clone(), entry.defs.clone())
+        };
+        // checked outside the lock: a check may read the screen files
+        if defs.iter().all(|def| self.is_current(factory, def)) {
+            Some(value)
+        } else {
+            lock(&self.shell_providers).remove(key);
+            None
+        }
+    }
+
+    pub(super) fn put_shell_providers(&self, key: String, value: Value, defs: Vec<Arc<ScreenDef>>) {
+        let mut cache = lock(&self.shell_providers);
+        if cache.len() >= SHELL_PROVIDERS_MAX {
+            cache.retain(|_, entry| entry.made.elapsed() <= SHELL_PROVIDERS_TTL);
+            if cache.len() >= SHELL_PROVIDERS_MAX {
+                if let Some(oldest) = cache
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.made)
+                    .map(|(key, _)| key.clone())
+                {
+                    cache.remove(&oldest);
+                }
+            }
+        }
+        cache.insert(
+            key,
+            ShellProvidersEntry {
+                value,
+                defs,
+                made: std::time::Instant::now(),
+            },
+        );
+    }
+
+    /// Drop the providers kept for a session (its keys start with `prefix`): a login or a logout in it.
+    pub fn forget_shell_providers(&self, prefix: &str) {
+        lock(&self.shell_providers).retain(|key, _| !key.starts_with(prefix));
     }
 
     /// Check the files of a cached definition at most once per `interval`, or never for `None`.
@@ -513,6 +580,7 @@ impl ScreenFacade {
         let _ = self.definitions.clear();
         let _ = self.urls.clear();
         let _ = self.icons.clear();
+        lock(&self.shell_providers).clear();
     }
 
     /// Cache hit and miss counts, for tests and the status page.

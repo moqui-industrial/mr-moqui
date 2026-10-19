@@ -55,6 +55,16 @@ along with this software (see the LICENSE.md file). If not, see
                 preferences[key] = ec.user.getPreference(key)
             }
         }
+        // SHELL_START_APP: the app /qapps opens on with no path, when the user may open it (the apps of the kept shell providers);
+        // SHELL_DENSITY: comfortable (the default) or compact (js/README.md, Preferences)
+        let startApp = ''
+        const startPref = ec.user.userId ? ec.user.getPreference('SHELL_START_APP') : null
+        if (startPref) {
+            try {
+                if (sri.getShellProviders('notificationTopics').apps.some((app) => app.name === startPref)) startApp = startPref
+            } catch (e) { ec.logger.warn('Start app ' + startPref + ' not checked: ' + e) }
+        }
+        const density = (ec.user.userId && ec.user.getPreference('SHELL_DENSITY')) === 'compact' ? 'compact' : 'comfortable'
         const logoList = sri.getThemeValues('STRT_HEADER_LOGO')
         const titleList = sri.getThemeValues('STRT_HEADER_TITLE')
         // The Quasar configuration of the theme (brand colors, notify, loadingBar) as JSON in a STRT_QUASAR_CONFIG resource; a bad one is logged and skipped.
@@ -67,6 +77,7 @@ along with this software (see the LICENSE.md file). If not, see
             userId: ec.user.userId, username: ec.user.username, userFullName: (ec.user.userAccount && ec.user.userAccount.userFullName) || '',
             locale: localeTag, timeZone: ec.user.timeZone, quasarLang: quasarLang.replace(/-([a-zA-Z])/g, (m, ch) => ch.toUpperCase()),
             darkMode: ec.user.getPreference('QUASAR_DARK') == 'true', leftOpen: ec.user.getPreference('QUASAR_LEFT_OPEN') == 'true',
+            density: density, startApp: startApp,
             notificationEndpoint: (ec.user.userId && System.getProperty('webapp_notification_endpoint')) || '',
             navPlugins: sri.getThemeValues('STRT_HEADER_NAVBAR_COMP'), accountPlugins: sri.getThemeValues('STRT_HEADER_ACCOUNT_COMP'),
             qz: { enabled: qzEnabled },

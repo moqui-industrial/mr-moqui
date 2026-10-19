@@ -73,6 +73,8 @@ body.test.body--dark #top { background:#1b3a1b!important; }
 /* using q-btn flat for link style buttons, reduce margin/padding/height to match inline text */
 .m-link.q-btn--flat { margin:0; padding:0 4px; min-height:1.5em; }
 .m-link.q-btn--flat .q-btn__content { line-height:1.5; }
+/* hidden-form-link: a flat button whose text sits at the left, as a text link's (Quasar centers a button's content) */
+.m-link-left .q-btn__content { justify-content:flex-start; text-align:left; }
 .q-btn.m-btn-tonal { color:var(--q-primary); background:color-mix(in srgb, var(--q-primary) 12%, transparent); }
 .q-btn.m-btn-tonal.text-negative { background:color-mix(in srgb, var(--q-negative) 12%, transparent); }
 .q-btn.m-btn-tonal.text-positive { background:color-mix(in srgb, var(--q-positive) 12%, transparent); }
@@ -278,3 +280,114 @@ span.hover-image-container:hover img.hover-image { display: initial; margin: 10p
 .m-number-card-link .m-number-card { transition:border-color .2s; }
 .m-number-card-link:hover .m-number-card, .m-number-card-link:focus-visible .m-number-card { border-color:var(--q-primary); }
 .m-number-card-link:focus-visible { outline:none; }
+
+/* m-rich-text (js/README.md, Rich text): an outlined box like the Quasar fields, the toolbar over the Tiptap content; the light
+   form for notes and chat is lower. The mention list is teleported to the body, above dialogs, and placed by Tiptap. */
+.m-rich-text { position:relative; width:100%; }
+.m-rich-text-label { margin:0 0 2px 2px; line-height:1.2; }
+.m-rich-text-box { position:relative; border:1px solid rgba(0,0,0,0.24); border-radius:4px; transition:border-color .2s, box-shadow .2s; }
+.m-rich-text-box:hover { border-color:rgba(0,0,0,0.6); }
+.body--dark .m-rich-text-box { border-color:rgba(255,255,255,0.28); }
+.body--dark .m-rich-text-box:hover { border-color:rgba(255,255,255,0.7); }
+.m-rich-text-focused .m-rich-text-box, .m-rich-text-focused .m-rich-text-box:hover { border-color:var(--q-primary); box-shadow:inset 0 0 0 1px var(--q-primary); }
+.m-rich-text-box.m-rich-text-error, .m-rich-text-box.m-rich-text-error:hover { border-color:var(--q-negative); }
+.m-rich-text-toolbar { padding:2px 4px; gap:0 1px; border-bottom:1px solid rgba(0,0,0,0.12); }
+.body--dark .m-rich-text-toolbar { border-bottom-color:rgba(255,255,255,0.14); }
+.m-rich-text-toolbar .q-separator--vertical { height:18px; align-self:center; }
+.m-rich-text-toolbar .q-btn.m-rich-text-on { background:color-mix(in srgb, var(--q-primary) 12%, transparent); }
+.m-rich-text-block { min-width:7.5em; }
+.m-rich-text-ask { border-bottom:1px solid rgba(0,0,0,0.12); }
+.m-rich-text-content { padding:6px 10px; max-height:60vh; overflow-y:auto; cursor:text; }
+.m-rich-text-light .m-rich-text-content { padding:4px 8px; max-height:40vh; }
+.m-rich-text-content .ProseMirror { outline:none; min-height:inherit; white-space:pre-wrap; word-wrap:break-word; overflow-wrap:anywhere; }
+.m-rich-text-content .ProseMirror > * + * { margin-top:0.5em; }
+.m-rich-text-content p { margin:0; }
+.m-rich-text-content h1, .m-rich-text-content h2, .m-rich-text-content h3 { margin:0.6em 0 0.2em; line-height:1.3; font-weight:500; letter-spacing:normal; }
+.m-rich-text-content h1 { font-size:1.5em; }
+.m-rich-text-content h2 { font-size:1.3em; }
+.m-rich-text-content h3 { font-size:1.12em; }
+.m-rich-text-content ul, .m-rich-text-content ol { padding-left:1.5em; margin:0.25em 0; }
+.m-rich-text-content li > p { margin:0; }
+.m-rich-text-content blockquote { margin:0.5em 0; padding-left:0.75em; border-left:3px solid rgba(0,0,0,0.2); opacity:0.85; }
+.body--dark .m-rich-text-content blockquote { border-left-color:rgba(255,255,255,0.3); }
+.m-rich-text-content code { font-size:0.9em; padding:0 0.25em; border-radius:3px; background:rgba(0,0,0,0.06); }
+.m-rich-text-content pre { margin:0.5em 0; padding:0.5em 0.75em; border-radius:4px; background:rgba(0,0,0,0.05); white-space:pre-wrap; font-family:monospace; }
+.m-rich-text-content pre code { padding:0; background:none; font-size:0.9em; }
+.body--dark .m-rich-text-content code, .body--dark .m-rich-text-content pre { background:rgba(255,255,255,0.08); }
+.body--dark .m-rich-text-content pre code { background:none; }
+.m-rich-text-content a { color:var(--q-primary); text-decoration:underline; cursor:text; }
+.m-rich-text-content img { max-width:100%; height:auto; }
+.m-rich-text-content img.ProseMirror-selectednode { outline:2px solid var(--q-primary); }
+.m-rich-text-content hr { border:none; border-top:1px solid rgba(0,0,0,0.2); margin:0.75em 0; }
+.m-rich-text-content [data-mention-id], .m-rich-text-content .suggestion { color:var(--q-primary); border-radius:3px; padding:0 2px;
+    background:color-mix(in srgb, var(--q-primary) 12%, transparent); }
+.m-rich-text-content p.is-editor-empty:first-child::before { content:attr(data-placeholder); float:left; height:0; pointer-events:none; opacity:0.5; }
+.m-rich-text-plain { display:block; width:100%; border:none; outline:none; resize:vertical; padding:6px 10px; background:transparent; color:inherit; font:inherit; }
+.m-rich-text-loading { position:absolute; right:4px; bottom:2px; }
+.m-rich-text-mentions { position:absolute; z-index:9000; min-width:180px; max-width:320px; max-height:260px; overflow-y:auto; border-radius:4px;
+    background:#fff; box-shadow:0 5px 5px -3px rgba(0,0,0,0.2), 0 8px 10px 1px rgba(0,0,0,0.14), 0 3px 14px 2px rgba(0,0,0,0.12); }
+.body--dark .m-rich-text-mentions { background:var(--q-dark); color:#fff; }
+.m-rich-text-mention-avatar { min-width:30px; padding-right:6px; }
+
+/* the record panels, avatars and record cards: an m-chatter or m-record-files fills its column; an avatar's presence dot
+   sits on its lower right (Comms chat sets it, M10); a record card is one dense line or two */
+.m-record-panel { min-width:0; }
+.m-avatar { position:relative; }
+.m-avatar-initials { font-weight:500; letter-spacing:0.02em; }
+.m-avatar-presence { position:absolute; right:0; bottom:0; width:28%; height:28%; min-width:6px; min-height:6px; border-radius:50%;
+    border:2px solid #fff; background:#9e9e9e; }
+.body--dark .m-avatar-presence { border-color:#1d1d1d; }
+.m-avatar-presence.m-presence-online { background:var(--q-positive); }
+.m-avatar-presence.m-presence-away { background:var(--q-warning); }
+.m-avatar-presence.m-presence-dnd { background:var(--q-negative); }
+.m-record-card { min-width:0; max-width:420px; }
+.m-record-card-item { min-height:0; padding:6px 10px; }
+.m-record-card-icon { min-width:32px; color:var(--q-primary); }
+/* m-html-view: an email body in its sandboxed frame, as tall as its content; a designed message keeps a light card in dark mode */
+.m-html-view { width:100%; min-width:0; }
+.m-html-view-frame { display:block; width:100%; border:0; background:transparent; }
+.m-html-view-card { border-radius:8px; }
+.m-html-view-images { gap:4px; margin:0 0 8px; padding:2px 4px 2px 10px; border-radius:6px; font-size:13px; background:rgba(0,0,0,0.04); }
+.body--dark .m-html-view-images { background:rgba(255,255,255,0.06); }
+.m-record-card-body { min-width:0; }
+
+/* container-split (style-guide §3.8): a q-splitter of side and main pane from 1024 px; stacked below, one pane at a time when
+   the split has a select-parameter, the side first. The panes keep their content when the layout changes. */
+.m-container-split { width:100%; min-width:0; }
+.m-container-split > .q-splitter { min-height:0; }
+.m-split-side, .m-split-main { min-width:0; }
+.m-split-side { padding-right:8px; }
+.m-split-main { padding-left:12px; }
+.m-split-right .m-split-side { padding-right:0; padding-left:8px; }
+.m-split-right .m-split-main { padding-left:0; padding-right:12px; }
+.m-split-separator { background-color:rgba(0,0,0,0.08); }
+.body--dark .m-split-separator { background-color:rgba(255,255,255,0.14); }
+.m-split-stacked > .q-splitter { flex-direction:column !important; flex-wrap:nowrap !important; height:auto !important; }
+.m-split-stacked > .q-splitter > .q-splitter__panel { width:100% !important; height:auto !important; overflow:visible; }
+.m-split-stacked > .q-splitter > .q-splitter__separator { display:none; }
+.m-split-stacked.m-split-right > .q-splitter > .q-splitter__after { order:-1; }
+.m-split-stacked .m-split-side, .m-split-stacked .m-split-main { padding-left:0; padding-right:0; }
+.m-split-back { margin:0 0 8px -4px; }
+
+/* subscreens-panel type wizard and stack (style-guide §3.10): the stepper is a header only (the step is the subscreen below it),
+   Back and Next under the step; the stack's breadcrumb back to its first subscreen */
+.m-wizard-stepper { margin-bottom:12px; }
+.m-wizard-stepper .q-stepper__content { display:none; }
+.m-wizard-stepper .q-stepper__header { border-bottom:none; }
+.m-wizard-nav { margin-top:12px; padding-top:8px; border-top:1px solid rgba(0,0,0,0.08); }
+.body--dark .m-wizard-nav { border-top-color:rgba(255,255,255,0.14); }
+.m-stack-crumbs { font-size:0.95rem; }
+
+/* SHELL_DENSITY compact (moqui.applyDensity puts m-density-compact on the body): less space around the page, the boxes, the list
+   rows, the fields and the menu items; comfortable is the rest of this sheet as it is */
+body.m-density-compact { font-size:13px; }
+body.m-density-compact .q-page.q-pa-sm { padding:4px; }
+body.m-density-compact .m-container-box .q-card__section--vert { padding:4px 8px; }
+body.m-density-compact .q-table--dense .q-table .th, body.m-density-compact .q-table--dense .q-table .td { padding:2px 6px; }
+body.m-density-compact .q-table--dense .q-table .thead .tr, body.m-density-compact .q-table--dense .q-table .tbody .tr,
+    body.m-density-compact .q-table--dense .q-table .tbody .td { height:24px; }
+body.m-density-compact .q-field--dense .q-field__control, body.m-density-compact .q-field--dense .q-field__marginal { height:32px; min-height:32px; }
+body.m-density-compact .q-field--dense.q-field--labeled .q-field__native { padding-top:12px; }
+body.m-density-compact .q-item { min-height:32px; padding:4px 12px; }
+body.m-density-compact .q-list--dense > .q-item, body.m-density-compact .q-item--dense { min-height:28px; padding:2px 12px; }
+body.m-density-compact .q-mb-md { margin-bottom:8px; }

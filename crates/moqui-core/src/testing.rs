@@ -14,8 +14,8 @@
 
 //! An in-memory SQL database for unit tests. It understands the statements the entity layer writes
 //! for the framework entities: single-table inserts, updates, deletes, and selects with `AND`,
-//! `OR`, `IN`, `IS NULL`, ordering, and paging, view selects that join member tables on equal columns, and the
-//! sequence refill.
+//! `OR`, `IN`, `IS NULL`, `UPPER(...) LIKE UPPER(?)`, ordering, and paging, view selects that join member tables on
+//! equal columns, and the sequence refill.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -670,15 +670,15 @@ fn eval_pred(pred: &Pred, row: &Row, params: &[Value], idx: &mut usize) -> Resul
     match pred {
         Pred::Cmp { field, op, upper } => {
             let param = take_param(params, idx)?;
-            let left = match row.get(field).cloned().unwrap_or(Value::Null) {
-                Value::String(text) if *upper => Value::String(text.to_uppercase()),
-                left => left,
-            };
-            let right = match param {
-                Value::String(text) if *upper => Value::String(text.to_uppercase()),
-                right => right.clone(),
-            };
-            Ok(compare(&left, *op, &right))
+            let left = row.get(field).cloned().unwrap_or(Value::Null);
+            if *upper {
+                let fold = |value: &Value| match value {
+                    Value::String(text) => Value::String(text.to_uppercase()),
+                    other => other.clone(),
+                };
+                return Ok(compare(&fold(&left), *op, &fold(param)));
+            }
+            Ok(compare(&left, *op, param))
         }
         Pred::In { field, slots, negated } => {
             let left = row.get(field).cloned().unwrap_or(Value::Null);
@@ -716,10 +716,20 @@ fn eval_pred(pred: &Pred, row: &Row, params: &[Value], idx: &mut usize) -> Resul
 }
 
 fn compare(left: &Value, op: Op, right: &Value) -> bool {
+    // As SQL: an order comparison with a null is not true.
+    if matches!(op, Op::Lt | Op::Gt | Op::Le | Op::Ge) && (left.is_null() || right.is_null()) {
+        return false;
+    }
     let ordering = cmp_values(left, right);
+    // Numbers of two types (an `I32` condition value against an `I64` column, a decimal against an integer) are
+    // compared by value, as the database compares them.
+    let equal = match (numeric(left), numeric(right)) {
+        (Some(a), Some(b)) => a == b,
+        _ => left == right,
+    };
     match op {
-        Op::Eq => left == right,
-        Op::Ne => left != right,
+        Op::Eq => equal,
+        Op::Ne => !equal,
         Op::Lt => ordering == std::cmp::Ordering::Less,
         Op::Gt => ordering == std::cmp::Ordering::Greater,
         Op::Le => ordering != std::cmp::Ordering::Greater,
@@ -756,7 +766,22 @@ fn cmp_values(left: &Value, right: &Value) -> std::cmp::Ordering {
     if right.is_null() {
         return std::cmp::Ordering::Less;
     }
+    if let (Some(a), Some(b)) = (numeric(left), numeric(right)) {
+        return a.cmp(&b);
+    }
     compare_obj(left, right).unwrap_or(std::cmp::Ordering::Equal)
+}
+
+/// A number value as a decimal, for comparing numbers of different types; text and other values are `None`.
+fn numeric(value: &Value) -> Option<moqui_lib::format::Decimal> {
+    use moqui_lib::format::Decimal;
+    match value {
+        Value::I32(number) => Some(Decimal::from(*number)),
+        Value::I64(number) => Some(Decimal::from(*number)),
+        Value::F64(number) => number.to_string().parse().ok(),
+        Value::Decimal(number) => Some(*number),
+        _ => None,
+    }
 }
 
 /// Nulls sort last unless the key says first, in either direction, as the SQL is written.
@@ -842,8 +867,7 @@ struct SelectQuery {
 }
 
 enum Pred {
-    /// `upper` for an ignore-case comparison, `UPPER("field") LIKE UPPER(?)`: the field's text is upper-cased (the
-    /// condition upper-cases the value itself).
+    /// `"field" op ?`, or with `upper` `UPPER("field") op UPPER(?)`, a comparison that ignores case.
     Cmp {
         field: String,
         op: Op,
@@ -1186,7 +1210,7 @@ fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
         cur.expect_symbol(b')')?;
         return Ok(pred);
     }
-    let upper = cur.eat_keyword("UPPER");
+    let upper = cur.eat_keyword("UPPER") || cur.eat_keyword("LOWER");
     if upper {
         cur.expect_symbol(b'(')?;
     }
@@ -1194,23 +1218,14 @@ fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
     if upper {
         cur.expect_symbol(b')')?;
     }
-    // `UPPER(?)` or `?`
-    let placeholder = |cur: &mut Cur| -> Result<(), Error> {
-        if upper && cur.eat_keyword("UPPER") {
-            cur.expect_symbol(b'(')?;
-            cur.expect_symbol(b'?')?;
-            return cur.expect_symbol(b')');
-        }
-        cur.expect_symbol(b'?')
-    };
-    if !upper && cur.eat_keyword("IS") {
+    if cur.eat_keyword("IS") {
         let negated = cur.eat_keyword("NOT");
         cur.expect_keyword("NULL")?;
         return Ok(Pred::IsNull { field, negated });
     }
     let negated = cur.eat_keyword("NOT");
     if cur.eat_keyword("LIKE") {
-        placeholder(cur)?;
+        expect_slot(cur, upper)?;
         return Ok(Pred::Cmp {
             field,
             op: if negated { Op::NotLike } else { Op::Like },
@@ -1233,8 +1248,19 @@ fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
     let Some(op) = cur.eat_op() else {
         return Err(cur.fail("expected comparison"));
     };
-    placeholder(cur)?;
+    expect_slot(cur, upper)?;
     Ok(Pred::Cmp { field, op, upper })
+}
+
+/// The `?` of a comparison, inside `UPPER(...)` or `LOWER(...)` when the field was, or alone when the condition
+/// folded the value itself.
+fn expect_slot(cur: &mut Cur, upper: bool) -> Result<(), Error> {
+    if upper && (cur.eat_keyword("UPPER") || cur.eat_keyword("LOWER")) {
+        cur.expect_symbol(b'(')?;
+        cur.expect_symbol(b'?')?;
+        return cur.expect_symbol(b')');
+    }
+    cur.expect_symbol(b'?')
 }
 
 fn fold(mut parts: Vec<Pred>, and: bool) -> Pred {

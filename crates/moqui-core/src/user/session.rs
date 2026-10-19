@@ -479,6 +479,80 @@ pub(crate) fn rotate_on_password_login() -> Result<(), Error> {
     Ok(())
 }
 
+/// End another session of the signed-in user, by its visit: the `Visit` gets its `thruDate`, and each web session of
+/// that visit (a live one on this node, and its `HttpSession` row) is ended as a rotated-away session is, so its cookie
+/// starts over signed out. Only the user's own visit, and not the current one (a logout ends that). Returns how many
+/// sessions were ended (none when the visit's session had already expired).
+///
+/// # Errors
+///
+/// Returns an error with nobody signed in, for the current visit, and for a visit that is not the user's (or not there).
+pub fn end_user_visit(visit_id: &str) -> Result<usize, Error> {
+    let visit_id = visit_id.trim();
+    let Some(user_id) = current_user_id()?.filter(|id| !id.is_empty()) else {
+        return Err(Error::new("A session is ended only by its signed in user"));
+    };
+    if visit_id.is_empty() {
+        return Err(Error::new("No session (visit) to end"));
+    }
+    if visit_id_now().as_deref() == Some(visit_id) {
+        return Err(Error::new("This is the current session: sign out to end it"));
+    }
+    let factory = bound_factory()
+        .or_else(|| ExecutionContext::with_current(|ec| Arc::clone(ec.factory())))
+        .ok_or_else(|| Error::new("no execution context"))?;
+    let facade = factory.entity().ok_or_else(|| Error::new("no entity facade"))?;
+    let _authz = without_authz();
+    let visit = facade
+        .find(VISIT)
+        .map_err(Error::from)?
+        .eq("visitId", Value::string(visit_id))
+        .one()
+        .map_err(Error::from)?;
+    let Some(mut visit) = visit.filter(|row| row.get("userId").and_then(Value::as_str) == Some(user_id.as_str()))
+    else {
+        return Err(Error::new(format!("Session {visit_id} is not one of yours")));
+    };
+    if visit.get("thruDate").is_none_or(Value::is_null) {
+        visit.set("thruDate", super::login::now_value());
+        visit.update(&facade).map_err(Error::from)?;
+    }
+    // the sessions of the visit: those this node holds live (an eventual flush may not have written them yet) and the rows
+    let mut ids: BTreeSet<String> = lock_sessions(&factory)
+        .sessions
+        .iter()
+        .filter(|(_, live)| !live.retired && live.columns.visit_id.as_deref() == Some(visit_id))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for row in facade
+        .find(HTTP_SESSION)
+        .map_err(Error::from)?
+        .eq("visitId", Value::string(visit_id))
+        .list()
+        .map_err(Error::from)?
+        .iter()
+    {
+        if let Some(id) = row.get("sessionId").and_then(Value::as_str) {
+            ids.insert(id.to_string());
+        }
+    }
+    let bound = with_session(|session| session.bound_id.clone());
+    let mut ended = 0;
+    for id in ids.iter().filter(|id| Some(id.as_str()) != bound.as_deref()) {
+        // a flush of the session under way would write the row back after the delete
+        let _claim = FlushClaim::wait(&factory, id);
+        delete_session_row(&facade, id)?;
+        retire_old(&factory, id);
+        ended += 1;
+    }
+    Ok(ended)
+}
+
+/// The visit of this session, if it has one.
+fn visit_id_now() -> Option<String> {
+    with_session(|session| session.visit_id.clone())
+}
+
 pub(crate) fn flush_after_logout() -> Result<(), Error> {
     flush_bound_if_guarantee()
 }
@@ -1339,13 +1413,84 @@ pub(crate) fn create_visitor(facade: &EntityFacade) -> Result<String, Error> {
     Ok(visitor_id)
 }
 
-/// A new `moqui.server.Visit` for `visitor_id`, with the current user when one is logged in. Returns its id.
+/// What a new `moqui.server.Visit` records of the web request that starts it, as Java's
+/// `UserFacadeImpl.initFromHttpRequest`: the URL and referrer, the browser's user agent and locale, and the client address.
+#[derive(Clone, Debug, Default)]
+pub struct VisitRequest {
+    pub url: String,
+    pub referrer: String,
+    pub user_agent: String,
+    /// The first `Accept-Language` locale, `en_US` style; empty for the session's or the server's.
+    pub locale: String,
+    pub client_ip: String,
+}
+
+thread_local! {
+    static VISIT_REQUEST: std::cell::RefCell<Option<VisitRequest>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The request a visit started on this thread records, from [`VisitRequestGuard::set`] until the guard drops.
+#[must_use = "dropping the guard forgets the request"]
+pub struct VisitRequestGuard {
+    previous: Option<VisitRequest>,
+}
+
+impl VisitRequestGuard {
+    pub fn set(request: VisitRequest) -> Self {
+        Self {
+            previous: VISIT_REQUEST.with(|slot| slot.borrow_mut().replace(request)),
+        }
+    }
+}
+
+impl Drop for VisitRequestGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        VISIT_REQUEST.with(|slot| *slot.borrow_mut() = previous);
+    }
+}
+
+/// Text cut to `max` characters, as Java's `substring(0, 255)` of the URL and user agent.
+fn cut(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
+
+/// A new `moqui.server.Visit` for `visitor_id`, with the current user when one is logged in, the session, and, in a web
+/// request, what Java's visit records of it (`initialRequest`, `initialReferrer`, `initialUserAgent`, `initialLocale`,
+/// `webappName`, the client and server addresses). Returns its id.
 pub(crate) fn create_visit(facade: &EntityFacade, visitor_id: &str) -> Result<String, Error> {
     let mut visit = facade.make_value(VISIT).map_err(Error::from)?;
     visit.set("visitorId", Value::string(visitor_id));
     visit.set("fromDate", super::login::now_value());
     if let Some(user_id) = current_user_id()? {
         visit.set("userId", Value::string(user_id));
+    }
+    if let Some(session_id) = with_session(|session| session.bound_id.clone()) {
+        visit.set("sessionId", Value::string(session_id));
+    }
+    if let Some(request) = VISIT_REQUEST.with(|slot| slot.borrow().clone()) {
+        let locale = if request.locale.is_empty() {
+            with_session(|session| session.locale.clone()).unwrap_or_else(crate::l10n::locale)
+        } else {
+            request.locale.clone()
+        };
+        let (server_ip, server_host) = crate::context::hits::server_address();
+        for (name, value) in [
+            ("webappName", "webroot".to_string()),
+            ("initialLocale", locale),
+            ("initialRequest", cut(&request.url, 255)),
+            ("initialReferrer", request.referrer.clone()),
+            ("initialUserAgent", cut(&request.user_agent, 255)),
+            ("clientIpAddress", request.client_ip.clone()),
+            // Java's request.getRemoteHost(): the address, as no name is looked up
+            ("clientHostName", request.client_ip.clone()),
+            ("serverIpAddress", server_ip.clone()),
+            ("serverHostName", server_host.clone()),
+        ] {
+            if !value.is_empty() {
+                visit.set(name, Value::string(value));
+            }
+        }
     }
     visit.set_sequenced_id_primary(facade).map_err(Error::from)?;
     let visit_id = required_id(&visit, "visitId")?;
@@ -2203,6 +2348,114 @@ mod tests {
         let ghost = format_session_cookie(&id, false).unwrap();
         let guard = bind(&factory, Some(cookie_value(&ghost)), None, false).unwrap();
         assert_ne!(guard.session_id(), id);
+    }
+
+    /// A visit records the request that starts it, as Java's; a user ends another session of theirs by its visit (its
+    /// row goes, its live copy is retired, so its cookie starts over signed out, and the Visit gets its thruDate), but
+    /// not the current one and not another user's.
+    #[test]
+    fn a_user_ends_another_session_of_theirs_by_its_visit() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let other_browser = |user: &'static str| {
+            let factory = Arc::clone(&factory);
+            std::thread::spawn(move || {
+                let ctx = factory.new_context();
+                let _entered = ctx.enter();
+                let _request = VisitRequestGuard::set(VisitRequest {
+                    url: format!("https://erp.example.com/qapps?{}", "x".repeat(300)),
+                    referrer: "https://example.com/start".to_string(),
+                    user_agent: "Firefox/140.0".to_string(),
+                    locale: "de_DE".to_string(),
+                    client_ip: "203.0.113.9".to_string(),
+                });
+                let guard = bind(&factory, None, None, false).unwrap();
+                set_user(user, user);
+                start_deferred_visit().unwrap();
+                flush_dirty(&factory).unwrap();
+                (
+                    guard.session_cookie_header().unwrap(),
+                    guard.session_id(),
+                    visit_id().unwrap().unwrap(),
+                )
+            })
+            .join()
+            .unwrap()
+        };
+        let (b_cookie, b_id, b_visit) = other_browser("ada");
+        let (_, _, bob_visit) = other_browser("bob");
+        let visit = facade
+            .find(VISIT)
+            .unwrap()
+            .eq("visitId", Value::string(&b_visit))
+            .one()
+            .unwrap()
+            .unwrap();
+        for (field, expected) in [
+            ("userId", "ada"),
+            ("sessionId", b_id.as_str()),
+            ("webappName", "webroot"),
+            ("initialLocale", "de_DE"),
+            ("initialReferrer", "https://example.com/start"),
+            ("initialUserAgent", "Firefox/140.0"),
+            ("clientIpAddress", "203.0.113.9"),
+            ("clientHostName", "203.0.113.9"),
+        ] {
+            assert_eq!(text(&visit, field), expected, "{field}");
+        }
+        assert_eq!(
+            text(&visit, "initialRequest").chars().count(),
+            255,
+            "cut to 255 as Java"
+        );
+        assert!(!text(&visit, "serverHostName").is_empty() && !text(&visit, "serverIpAddress").is_empty());
+
+        // this browser: Ada again
+        let guard = bind(&factory, None, None, false).unwrap();
+        set_user("ada", "ada");
+        start_deferred_visit().unwrap();
+        let a_visit = visit_id().unwrap().unwrap();
+        assert!(end_user_visit(&a_visit)
+            .unwrap_err()
+            .to_string()
+            .contains("current session"));
+        assert!(end_user_visit(&bob_visit)
+            .unwrap_err()
+            .to_string()
+            .contains("not one of yours"));
+        assert!(end_user_visit("NoSuchVisit").is_err());
+        assert_eq!(end_user_visit(&b_visit).unwrap(), 1);
+        let ended = facade
+            .find(VISIT)
+            .unwrap()
+            .eq("visitId", Value::string(&b_visit))
+            .one()
+            .unwrap()
+            .unwrap();
+        assert!(ended.get("thruDate").is_some_and(|value| !value.is_null()));
+        assert!(
+            load_session_optional(&facade, &b_id).is_none(),
+            "the session row is gone"
+        );
+        assert!(lock_sessions(&factory)
+            .sessions
+            .get(&b_id)
+            .is_some_and(|live| live.retired));
+        assert_eq!(end_user_visit(&b_visit).unwrap(), 0, "nothing left to end");
+        drop(guard);
+        // the other browser's next request starts over, signed out
+        let factory_b = Arc::clone(&factory);
+        let (id_after, user_after) = std::thread::spawn(move || {
+            let ctx = factory_b.new_context();
+            let _entered = ctx.enter();
+            let guard = bind(&factory_b, Some(cookie_value(&b_cookie)), None, false).unwrap();
+            (guard.session_id(), current_user_id().unwrap())
+        })
+        .join()
+        .unwrap();
+        assert_ne!(id_after, b_id);
+        assert_eq!(user_after, None);
     }
 
     #[test]

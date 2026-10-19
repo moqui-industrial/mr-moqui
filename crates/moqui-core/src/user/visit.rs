@@ -61,6 +61,28 @@ mod tests {
         session::reset_session();
     }
 
+    /// `ec.user.visitId` and `ec.user.visit` (Java's `getVisitId` and `getVisit`), and `endVisit` refuses the current one.
+    #[test]
+    fn a_script_reads_the_visit_of_its_session() {
+        session::reset_session();
+        crate::script::clear_context_stack();
+        let ctx = ExecutionContextFactory::test_context();
+        let facade = crate::testing::open();
+        ctx.factory().set_entity(facade.clone());
+        let _guard = ctx.enter();
+        let holds = |expression: &str| assert!(crate::script::eval_condition(expression).unwrap(), "{expression}");
+        holds("ec.user.visitId === null && ec.user.visit === null && ec.user.getVisitId() === null");
+        session::set_user("ada", "ada");
+        record_visit().unwrap();
+        let visit_id = session::visit_id().unwrap().expect("visit id");
+        crate::script::set_context_name("expectedVisit", Value::string(&visit_id)).unwrap();
+        holds("ec.user.visitId === expectedVisit && ec.user.getVisitId() === expectedVisit");
+        holds("ec.user.visit.visitId === expectedVisit && ec.user.visit.userId === 'ada' && ec.user.getVisit().visitId === expectedVisit");
+        holds("(() => { try { ec.user.endVisit(expectedVisit); return false } catch (e) { return String(e.message).includes('current session') } })()");
+        crate::script::clear_context_stack();
+        session::reset_session();
+    }
+
     #[test]
     fn record_visit_without_a_facade_returns_an_error() {
         session::reset_session();

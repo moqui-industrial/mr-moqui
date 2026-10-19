@@ -51,7 +51,8 @@ const DEFAULT_LIMIT: usize = 5;
 const MAX_LIMIT: usize = 50;
 
 /// The `shell` keys and the theme value types of the user's qapps theme behind them. A screen path (true) goes to the
-/// client as a link the user may open, or null; a subscreen name (false) as it is written.
+/// client as a link the user may open, or null; a subscreen name (false) as it is written, and per app as a
+/// `recordScreens` entry ([`RECORD_SCREENS`]).
 const SHELL_VALUES: [(&str, &str, bool); 8] = [
     ("trayToday", "STRT_TRAY_TODAY", true),
     ("trayChat", "STRT_TRAY_CHAT", true),
@@ -61,6 +62,13 @@ const SHELL_VALUES: [(&str, &str, bool); 8] = [
     ("messagesScreen", "STRT_MESSAGES_SCREEN", true),
     ("chatterScreen", "STRT_CHATTER_SCREEN", false),
     ("recordFilesScreen", "STRT_RECORD_FILES_SCREEN", false),
+];
+
+/// The keys of an app's `recordScreens` and the theme value types that name the subscreen every app root mounts for
+/// them (R5): the `chatter` and `record-files` elements load it under the current app root.
+const RECORD_SCREENS: [(&str, &str); 2] = [
+    ("chatter", "STRT_CHATTER_SCREEN"),
+    ("recordFiles", "STRT_RECORD_FILES_SCREEN"),
 ];
 
 // ---- the element ----
@@ -419,9 +427,77 @@ impl<'a> Shell<'a> {
         Value::Map(out)
     }
 
-    /// The entry of an app: the menu entry of its root with its menu to depth two and its providers, or None when it is
-    /// disabled or a required parameter is missing.
-    fn app_entry(&self, app: &App, quick_create: Option<&str>) -> Result<Option<Value>, Error> {
+    /// The record screens of an app (R5): for each of [`RECORD_SCREENS`] whose theme value names a subscreen that this
+    /// app root mounts and the user may view there, its link and the render modes the client loads it in (a `.qvue`
+    /// panel is asked for as one); null otherwise. An app without the subscreen is not an error (the tools have no
+    /// Chatter); one whose screen does not load is logged and gets null.
+    fn record_screens(&self, app: &App, names: &[(&str, Option<String>)]) -> Value {
+        let mut out = Item::new();
+        for (key, name) in names {
+            let entry = name.as_deref().and_then(|name| self.record_screen(app, name));
+            out.insert((*key).to_string(), entry.unwrap_or(Value::Null));
+        }
+        Value::Map(out)
+    }
+
+    fn record_screen(&self, app: &App, name: &str) -> Option<Value> {
+        let item = app.def.subscreens.get(name)?;
+        if !item.is_valid_in_current_context() {
+            return None;
+        }
+        let def = match self.state.facade.screen_def(&self.state.factory, &item.location) {
+            Ok(def) => def,
+            Err(err) => {
+                if !sri::is_security(&err) {
+                    tracing::error!(
+                        "Leaving record screen {name} [{}] of app {} out of the shell: {err}",
+                        item.location,
+                        app.item.name
+                    );
+                }
+                return None;
+            }
+        };
+        if !menu::permitted_under(&app.defs, &def) {
+            return None;
+        }
+        let mut segments = app.names[self.apps_names.len()..].to_vec();
+        segments.push(name.to_string());
+        let mut entry = Item::new();
+        entry.insert(
+            "url".to_string(),
+            Value::String(format!("{}/{}", self.link_base, encoded_path(&segments))),
+        );
+        entry.insert(
+            "renderModes".to_string(),
+            Value::List(def.render_modes.iter().map(Value::string).collect()),
+        );
+        Some(Value::Map(entry))
+    }
+
+    /// The entry of an app: the menu entry of its root with its menu to depth two, its providers and its record screens,
+    /// or None when it is disabled or a required parameter is missing.
+    fn app_entry(
+        &self,
+        app: &App,
+        quick_create: Option<&str>,
+        record_names: &[(&str, Option<String>)],
+    ) -> Result<Option<Value>, Error> {
+        let Some(mut out) = self.app_head(app)? else {
+            return Ok(None);
+        };
+        let path = out.get("path").map(to_plain_string).unwrap_or_default();
+        let mut menu = Vec::new();
+        self.menu_level(&app.defs, &app.names, &path, 1, &mut menu);
+        out.insert("menu".to_string(), Value::List(menu));
+        out.insert("providers".to_string(), self.providers(app, quick_create)?);
+        out.insert("recordScreens".to_string(), self.record_screens(app, record_names));
+        Ok(Some(Value::Map(out)))
+    }
+
+    /// The name, title, image and path of an app as its menu entry gives them, or None when it is disabled or a required
+    /// parameter is missing.
+    fn app_head(&self, app: &App) -> Result<Option<Item>, Error> {
         let parents = &app.defs[..app.defs.len() - 1];
         let Some(Value::Map(entry)) =
             menu::subscreen_entry(self.state, parents, &self.apps_names, &self.link_base, &app.item, "")?
@@ -435,12 +511,7 @@ impl<'a> Shell<'a> {
         for key in ["name", "title", "image", "imageType", "path"] {
             out.insert(key.to_string(), entry.get(key).cloned().unwrap_or(Value::Null));
         }
-        let path = entry.get("path").map(to_plain_string).unwrap_or_default();
-        let mut menu = Vec::new();
-        self.menu_level(&app.defs, &app.names, &path, 1, &mut menu);
-        out.insert("menu".to_string(), Value::List(menu));
-        out.insert("providers".to_string(), self.providers(app, quick_create)?);
-        Ok(Some(Value::Map(out)))
+        Ok(Some(out))
     }
 
     /// The menu entries below the last of `parents`, each followed by its own to [`MENU_DEPTH`], as the menu data lists
@@ -646,9 +717,16 @@ pub fn shell_data(state: &RenderState) -> Result<Option<Value>, Error> {
     let shell = Shell::new(state)?;
     let theme = sri::user_theme_id(Some(&user_id), QUASAR_THEME_TYPE, DEFAULT_QUASAR_THEME);
     let quick_create = Shell::theme_value(&theme, "STRT_QUICK_CREATE");
+    let record_names: Vec<(&str, Option<String>)> = RECORD_SCREENS
+        .iter()
+        .map(|(key, resource_type)| {
+            let name = Shell::theme_value(&theme, resource_type).filter(|name| !name.trim().is_empty());
+            (*key, name.map(|name| name.trim().to_string()))
+        })
+        .collect();
     let mut apps = Vec::new();
     for app in shell.apps() {
-        match shell.app_entry(&app, quick_create.as_deref()) {
+        match shell.app_entry(&app, quick_create.as_deref(), &record_names) {
             Ok(Some(entry)) => apps.push(entry),
             Ok(None) => {}
             Err(err) => leave_app_out(&app.item.name, &app.item.location, &err),
@@ -662,6 +740,116 @@ pub fn shell_data(state: &RenderState) -> Result<Option<Value>, Error> {
         crate::service::shell::shell_counts(&user_id).map_or(Value::Null, Value::Map),
     );
     Ok(Some(Value::Map(out)))
+}
+
+/// The provider kinds of [`shell_providers`]: the keys of an app's `providers` in the shell data.
+pub const PROVIDER_KINDS: [&str; 8] = [
+    "quickCreate",
+    "todaySources",
+    "paletteActions",
+    "paletteTypes",
+    "paletteSources",
+    "notificationTopics",
+    "keymaps",
+    "accountMenuItems",
+];
+
+/// `sri.getShellProviders(kind)`: the providers of the apps the user may open, as `getShellData` gives them but without
+/// the menus, record screens and counts, `{apps: [{name, title, image, imageType, path, providers: {<kind>: [...]}}]}`;
+/// with a `kind` (one of [`PROVIDER_KINDS`]) only that list in each app's `providers`. A screen that reads the providers
+/// (the tray's Today and Notifications panels) asks for this on each load, so it is kept per session (visit), user,
+/// locale and theme while the screens it was read from are current (a screen file that changes in development, an app
+/// root added) for up to ten minutes, and dropped on a login or logout in the session. No user: no apps.
+///
+/// # Errors
+///
+/// Returns an error for a kind that is not a provider kind, or when the root screen of the request is not known.
+pub fn shell_providers(state: &RenderState, kind: Option<&str>) -> Result<Value, Error> {
+    let kind = kind.map(str::trim).filter(|kind| !kind.is_empty());
+    if let Some(kind) = kind {
+        if !PROVIDER_KINDS.contains(&kind) {
+            return Err(Error::new(format!(
+                "Shell provider kind {kind} is not one of {}",
+                PROVIDER_KINDS.join(", ")
+            )));
+        }
+    }
+    let empty = || {
+        let mut out = Item::new();
+        out.insert("apps".to_string(), Value::List(Vec::new()));
+        Value::Map(out)
+    };
+    let Some(user_id) = user::current_user_id()?.filter(|id| !id.is_empty()) else {
+        return Ok(empty());
+    };
+    let theme = sri::user_theme_id(Some(&user_id), QUASAR_THEME_TYPE, DEFAULT_QUASAR_THEME);
+    let key = format!(
+        "{}{user_id}\u{1}{}\u{1}{theme}",
+        shell_providers_prefix(user::session::visit_id()?.as_deref()),
+        l10n::locale()
+    );
+    let all = match state.facade.cached_shell_providers(&state.factory, &key) {
+        Some(found) => found,
+        None => {
+            let shell = Shell::new(state)?;
+            let quick_create = Shell::theme_value(&theme, "STRT_QUICK_CREATE");
+            let mut apps = Vec::new();
+            let mut defs: Vec<Arc<ScreenDef>> = Vec::new();
+            for app in shell.apps() {
+                for def in &app.defs {
+                    if !defs.iter().any(|kept| Arc::ptr_eq(kept, def)) {
+                        defs.push(Arc::clone(def));
+                    }
+                }
+                let entry = shell.app_head(&app).and_then(|head| {
+                    head.map(|mut head| {
+                        shell.providers(&app, quick_create.as_deref()).map(|providers| {
+                            head.insert("providers".to_string(), providers);
+                            head
+                        })
+                    })
+                    .transpose()
+                });
+                match entry {
+                    Ok(Some(entry)) => apps.push(Value::Map(entry)),
+                    Ok(None) => {}
+                    Err(err) => leave_app_out(&app.item.name, &app.item.location, &err),
+                }
+            }
+            let mut out = Item::new();
+            out.insert("apps".to_string(), Value::List(apps));
+            let value = Value::Map(out);
+            state.facade.put_shell_providers(key, value.clone(), defs);
+            value
+        }
+    };
+    let Some(kind) = kind else {
+        return Ok(all);
+    };
+    // only the kind asked for in each app's providers
+    let Value::Map(mut out) = all else {
+        return Ok(empty());
+    };
+    if let Some(Value::List(apps)) = out.get_mut("apps") {
+        for app in apps.iter_mut() {
+            if let Value::Map(app) = app {
+                if let Some(Value::Map(providers)) = app.get_mut("providers") {
+                    providers.retain(|name, _| name == kind);
+                }
+            }
+        }
+    }
+    Ok(Value::Map(out))
+}
+
+/// The start of the keys of [`shell_providers`] for a session (its visit; none outside a web request).
+fn shell_providers_prefix(visit_id: Option<&str>) -> String {
+    format!("{}\u{1}", visit_id.unwrap_or(""))
+}
+
+/// Drop the providers kept for the session of `visit_id`: a login or logout in it changes what the user may open.
+pub(crate) fn forget_shell_providers(factory: &crate::context::ExecutionContextFactory, visit_id: Option<&str>) {
+    super::ScreenFacade::of(factory).forget_shell_providers(&shell_providers_prefix(visit_id));
 }
 
 // ---- the palette search ----

@@ -430,8 +430,9 @@ fn the_suite_shell_palette_quick_create_and_keys_work_in_chromium() {
 /// (`gallery/Panel` for Today, `gallery/Landing` for Notifications, `gallery/List` for Mail, `gallery/Split` for
 /// Messages): the counters appear and the notify history goes; Today opens the tray with the Panel archetype inside it, in
 /// Assist's reach; a tab is loaded once and kept, the tray stays open across navigation and Esc closes it; a `shellCounts`
-/// message sets the badges; below 600 px Mail and Messages are one button. With `MOQUI_SHELL_SHOTS=<dir>` it saves PNGs of
-/// the open tray, light and dark, 1280 and 390 px wide.
+/// message sets the badges; below 600 px Mail and Messages are one button, the tray tabs one tray button, the app title gives way
+/// to the launcher and nothing overflows. With `MOQUI_SHELL_SHOTS=<dir>` it saves PNGs of the header and of the open tray, light
+/// and dark, 1280 and 390 px wide.
 #[test]
 fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
     let gate = start_with_data(
@@ -559,6 +560,43 @@ fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
          && document.getElementById('m-canvas').innerText.indexOf('Archetype 3.2') >= 0",
         WAIT,
     );
+    // at 390 px the launcher stands for the app title, Search is an icon, the tray tabs are one tray button (badge their sum)
+    // that opens the tray, and nothing in the header overflows
+    browser.eval("moqui.webrootVue.onShellNotification({topic: 'shellCounts', message: {today: 2, email: 3, messages: 2, notifications: 1}}), true");
+    browser.wait_for(
+        "one tray button",
+        "!!document.getElementById('m-counter-tray') && !document.getElementById('m-counter-today') && !document.getElementById('m-counter-notifications') \
+         && (document.querySelector('#m-counter-tray .q-badge') || {}).innerText === '3'",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("(() => { const title = document.querySelector('#top .q-toolbar__title'); return !title || title.offsetParent === null; })()"),
+        true,
+        "no app title below 600 px"
+    );
+    assert_eq!(
+        browser.eval("!document.querySelector('#m-search .q-btn__content .block')"),
+        true,
+        "Search is an icon"
+    );
+    let overflow = browser.eval(
+        "(() => { const bar = document.querySelector('#top .q-toolbar'); const right = bar.getBoundingClientRect().right; \
+         return Array.from(bar.children).filter((el) => el.offsetParent !== null && el.getBoundingClientRect().right > right + 1).map((el) => el.id || el.className).join(' | ') \
+         + (bar.scrollWidth > bar.clientWidth + 1 ? ' scroll ' + bar.scrollWidth + '>' + bar.clientWidth : ''); })()",
+    );
+    assert_eq!(overflow, "", "nothing in the header overflows at 390 px");
+    browser.click("the tray button", "document.getElementById('m-counter-tray')");
+    browser.wait_for(
+        "the tray from its button",
+        "!!document.getElementById('m-tray') && document.getElementById('m-tray').offsetParent !== null",
+        WAIT,
+    );
+    browser.click("the tray button again", "document.getElementById('m-counter-tray')");
+    browser.wait_for(
+        "the tray closed",
+        "document.getElementById('m-tray').offsetParent === null",
+        WAIT,
+    );
     browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
     assert_clean(&mut browser, "the tray");
 
@@ -572,7 +610,19 @@ fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
                 serde_json::json!({"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 600}),
             );
             browser.navigate(&detail);
-            browser.wait_for("the counters", "!!document.getElementById('m-counter-today')", WAIT);
+            browser.wait_for(
+                "the counters",
+                "!!document.getElementById('m-counter-today') || !!document.getElementById('m-counter-tray')",
+                WAIT,
+            );
+            // the header alone first (the tray covers the canvas at 390 px, and a page keeps it open from the last)
+            browser.eval("moqui.webrootVue.closeTray(), true");
+            browser.pump(Duration::from_millis(500));
+            let shot = browser.call("Page.captureScreenshot", serde_json::json!({"format": "png"}));
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(shot["data"].as_str().unwrap())
+                .unwrap();
+            std::fs::write(dir.join(format!("header-{width}.png")), bytes).unwrap();
             for dark in [false, true] {
                 let mode = if dark { "dark" } else { "light" };
                 browser.eval(&format!(
@@ -593,6 +643,453 @@ fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
         }
         browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
     }
+}
+
+/// The record panels and the rich-text editor (IronStone impl-drawers-commons M3), with theme values on DEFAULT_QUASAR that name
+/// the gallery's own `Chatter` and `RecordFiles` subscreens as BOSS names its `Shared/` ones: the Detail screen's `chatter` and
+/// `record-files` elements load them under the current app root with the record (the shell data says the gallery mounts them),
+/// the panel's `m-record-card` asks its card URL and the Log note form is an `m-rich-text` (light): typed text, a word made bold
+/// from the toolbar and a mention from the `@` list of the stub mention transition are posted as the editor's HTML, which the
+/// note service's `allow-html="safe"` parameter keeps, mention and all. On the Widgets screen the full editor's plain-text
+/// toggle turns its HTML into text. With the Tiptap script blocked, the editor is the html editor of `m-text-area`.
+#[test]
+fn the_record_panels_and_the_rich_text_editor_work_in_chromium() {
+    let gate = start_with_data(
+        "browser-records",
+        r#"<entity-facade-xml type="seed">
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="910" resourceTypeEnumId="STRT_CHATTER_SCREEN" resourceValue="Chatter"/>
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="911" resourceTypeEnumId="STRT_RECORD_FILES_SCREEN" resourceValue="RecordFiles"/>
+        </entity-facade-xml>"#,
+    );
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    browser.navigate(&format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR"));
+    browser.eval(FETCH_SPY);
+    // the panels of the current app root, with the record and the element's hint
+    browser.wait_for(
+        "the Chatter panel",
+        "!!document.getElementById('DetailChatter') && document.getElementById('DetailChatter').innerText.indexOf('opens on log') >= 0 \
+         && !!document.querySelector('#DetailChatter .m-rich-text[data-state=ready] .ProseMirror')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval(
+            "JSON.stringify(moqui.webrootVue.shellData.apps.find((app) => app.name === 'gallery').recordScreens)"
+        ),
+        r#"{"chatter":{"url":"/qapps/gallery/Chatter","renderModes":["all"]},"recordFiles":{"url":"/qapps/gallery/RecordFiles","renderModes":["all"]}}"#
+    );
+    let loaded = fetched(&mut browser, "the Chatter request", "/apps/gallery/Chatter.qvt");
+    let url = loaded["url"].as_str().unwrap();
+    assert!(
+        url.contains("recordEntity=moqui.basic.Enumeration")
+            && url.contains("recordId=STT_INTERNAL_QUASAR")
+            && url.contains("appRoot=gallery")
+            && url.contains("defaultTab=log"),
+        "{url}"
+    );
+    browser.wait_for(
+        "the record files panel",
+        "!!document.getElementById('DetailFiles') && document.getElementById('DetailFiles').innerText.indexOf('spec-sheet.pdf') >= 0",
+        WAIT,
+    );
+    // the record card of the panel, from its card URL
+    browser.wait_for(
+        "the record card",
+        "(document.querySelector('#DetailChatter .m-record-card') || {innerText: ''}).innerText.indexOf('Active') >= 0",
+        WAIT,
+    );
+    let card = browser.eval("document.querySelector('#DetailChatter .m-record-card').innerText");
+    assert!(card.as_str().unwrap().contains("STT_INTERNAL_QUASAR"), "{card}");
+    assert!(card.as_str().unwrap().contains("Enumeration"), "{card}");
+    assert_clean(&mut browser, "the record panels");
+
+    // the light editor: type, bold a word from the toolbar, mention a user from the @ list, submit
+    browser.click(
+        "the note editor",
+        "document.querySelector('#DetailChatter .ProseMirror')",
+    );
+    browser.type_text("Hello ");
+    browser.click(
+        "Bold",
+        "document.querySelector('#DetailChatter .m-rich-text [data-command=bold]')",
+    );
+    browser.type_text("bold");
+    browser.click(
+        "Bold again",
+        "document.querySelector('#DetailChatter .m-rich-text [data-command=bold]')",
+    );
+    browser.type_text(" team @jo");
+    browser.wait_for(
+        "the mention list",
+        &by_text(".m-rich-text-mentions .q-item", "John Doe"),
+        WAIT,
+    );
+    let searched = fetched(&mut browser, "the mention search", "/mentionSearch");
+    assert!(searched["url"].as_str().unwrap().contains("term=jo"), "{searched}");
+    browser.click("John Doe", &by_text(".m-rich-text-mentions .q-item", "John Doe"));
+    browser.wait_for(
+        "the mention in the editor",
+        "!!document.querySelector('#DetailChatter .ProseMirror [data-mention-id=EX_JOHN_DOE]') && document.querySelector('.m-rich-text-mentions').offsetParent === null",
+        WAIT,
+    );
+    let html = browser.eval("document.querySelector('#DetailChatter input[type=hidden][name=noteText]').value");
+    let html = html.as_str().unwrap().to_string();
+    assert!(
+        html.starts_with("<p>Hello <strong>bold</strong> team <span data-mention-id=\"EX_JOHN_DOE\">@John Doe</span>"),
+        "{html}"
+    );
+    browser.click("Log", &by_text("#DetailChatter button", "Log"));
+    browser.wait_for(
+        "the note's message",
+        "Array.from(document.querySelectorAll('.q-notification')).some((el) => el.innerText.indexOf('mentioning EX_JOHN_DOE') >= 0)",
+        WAIT,
+    );
+    let posted = fetched(&mut browser, "the note post", "/logNote");
+    assert_eq!(posted["status"], 200, "{posted}");
+    let sent = posted["sent"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item.as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>();
+    assert!(sent.contains(&format!("noteText={html}")), "{sent:?}");
+    assert!(sent.contains(&"recordId=STT_INTERNAL_QUASAR".to_string()), "{sent:?}");
+    // what the safe cleaning kept: the editor's HTML as it was sent
+    let answer: serde_json::Value = serde_json::from_str(posted["body"].as_str().unwrap()).unwrap();
+    assert_eq!(answer["noteText"], html.as_str(), "{answer}");
+    assert_eq!(answer["mentionIds"], serde_json::json!(["EX_JOHN_DOE"]), "{answer}");
+    assert_clean(&mut browser, "the rich-text note");
+
+    // the full editor of the Widgets screen: its toolbar, and the plain-text toggle
+    browser.navigate(&format!("{base}/qapps/gallery/Widgets"));
+    browser.wait_for(
+        "the rich editors",
+        "document.querySelectorAll('.m-rich-text[data-state=ready] .ProseMirror').length === 2",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("Array.from(document.querySelector('.m-rich-text').querySelectorAll('[data-command]')).map((el) => el.dataset.command).join(',')"),
+        "bold,italic,strike,bulletList,orderedList,link,image,code,codeBlock,blockquote,undo,redo,plain"
+    );
+    browser.click(
+        "Plain text",
+        "document.querySelector('.m-rich-text [data-command=plain]')",
+    );
+    browser.wait_for(
+        "the plain text",
+        "!!document.querySelector('.m-rich-text textarea.m-rich-text-plain') && document.querySelector('.m-rich-text textarea.m-rich-text-plain').value.indexOf('Rich text\\n\\nThe Tiptap editor: marks, lists, links (https://tiptap.dev) and code.\\n\\n- Type @ for a mention') === 0",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the full editor");
+
+    if let Some(dir) = std::env::var_os("MOQUI_SHELL_SHOTS") {
+        record_shots(&mut browser, &base, std::path::Path::new(&dir));
+    }
+
+    // with the Tiptap script blocked, the html editor stands in
+    browser.call("Network.enable", serde_json::json!({}));
+    browser.call(
+        "Network.setBlockedURLs",
+        serde_json::json!({"urls": ["*tiptap.min.js*"]}),
+    );
+    browser.navigate(&format!("{base}/qapps/gallery/Widgets"));
+    browser.wait_for(
+        "the html editor in place of the rich ones",
+        "document.querySelectorAll('.m-rich-text[data-state=failed] .q-editor').length === 2",
+        WAIT,
+    );
+    let problems = browser.take_problems();
+    assert!(
+        !problems.is_empty()
+            && problems
+                .iter()
+                .all(|problem| format!("{problem:?}").to_lowercase().contains("tiptap")),
+        "only the blocked script is reported: {problems:#?}"
+    );
+}
+
+/// The gallery Split: a container-split side by side at 1280 px (the side at its width, both panes shown), stacked at 390 px with the
+/// list alone, a country chosen showing it with the back button, and back to the list. The gallery Wizard: Next with an empty
+/// customer name stays with the error by the field, Next with a name goes to Options with the step in the URL, Back keeps the
+/// draft, and Create customer on the review goes back to the first step.
+#[test]
+fn the_split_stacks_and_the_wizard_steps_in_chromium() {
+    let gate = start("browser-layout");
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    let metrics = |browser: &mut Browser, width: i64, height: i64| {
+        browser.call(
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 600}),
+        );
+    };
+    let shown = |selector: &str| {
+        format!(
+            "(() => {{ const el = document.querySelector({selector:?}); return !!el && el.offsetParent !== null; }})()"
+        )
+    };
+
+    metrics(&mut browser, 1280, 900);
+    browser.navigate(&format!("{base}/qapps/gallery/Split"));
+    browser.wait_for(
+        "the split side by side",
+        "!!document.querySelector('#CountrySplit .q-splitter') && document.getElementById('CountrySplit').dataset.stacked === 'false' \
+         && document.querySelector('#CountrySplit .m-split-main').innerText.indexOf('States and regions') >= 0",
+        WAIT,
+    );
+    let side = browser
+        .eval("Math.round(document.querySelector('#CountrySplit .q-splitter__before').getBoundingClientRect().width)");
+    assert_eq!(side, 320, "the side at its width");
+    assert_eq!(browser.eval(&shown("#CountrySplit .m-split-side")), true);
+    assert_eq!(
+        browser.eval("!!document.querySelector('#CountrySplit .m-split-back')"),
+        false
+    );
+    assert_clean(&mut browser, "the split side by side");
+
+    metrics(&mut browser, 390, 844);
+    browser.navigate(&format!("{base}/qapps/gallery/Split"));
+    browser.wait_for(
+        "the split stacked with the list alone",
+        "!!document.getElementById('CountrySplit') && document.getElementById('CountrySplit').dataset.stacked === 'true' \
+         && document.querySelector('#CountrySplit .m-split-side').offsetParent !== null \
+         && document.querySelector('#CountrySplit .m-split-main').offsetParent === null",
+        WAIT,
+    );
+    assert!(
+        browser
+            .eval("document.documentElement.scrollWidth <= window.innerWidth + 1")
+            .as_bool()
+            .unwrap(),
+        "no horizontal scroll of the page at 390 px"
+    );
+    browser.click(
+        "a country",
+        &by_text(
+            "#CountrySplit .m-split-side a, #CountrySplit .m-split-side button",
+            "Albania",
+        ),
+    );
+    browser.wait_for(
+        "the country alone with the back button",
+        "location.search.indexOf('geoId=ALB') >= 0 && document.querySelector('#CountrySplit .m-split-side').offsetParent === null \
+         && document.querySelector('#CountrySplit .m-split-main').offsetParent !== null \
+         && document.querySelector('#CountrySplit .m-split-main').innerText.indexOf('Albania') >= 0 && !!document.querySelector('#CountrySplit .m-split-back')",
+        WAIT,
+    );
+    browser.click("back", "document.querySelector('#CountrySplit .m-split-back')");
+    browser.wait_for(
+        "the list again",
+        "location.search.indexOf('geoId=') < 0 && document.querySelector('#CountrySplit .m-split-side').offsetParent !== null",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the split stacked");
+    browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
+
+    browser.navigate(&format!("{base}/qapps/gallery/Wizard"));
+    browser.eval(FETCH_SPY);
+    browser.wait_for(
+        "the wizard on its first step",
+        "!!document.querySelector('#CustomerWizard .q-stepper') && document.querySelectorAll('#CustomerWizard .q-stepper__tab').length === 3 \
+         && !!document.querySelector('#CustomerWizard [name=customerName]')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("Array.from(document.querySelectorAll('#CustomerWizard .q-stepper__tab')).map((el) => el.innerText.trim().split('\\n').pop()).join(',')"),
+        "Customer,Options,Review"
+    );
+    assert_eq!(
+        browser.eval("!!document.querySelector('#CustomerWizard .m-wizard-back')"),
+        false
+    );
+    // an empty name: the error by the field, and the wizard stays
+    browser.eval(
+        "(() => { const input = document.querySelector('#CustomerWizard [name=customerName]'); input.focus(); input.select(); return true; })()",
+    );
+    browser.press("Delete");
+    browser.eval(
+        "(() => { const input = document.querySelector('#CustomerWizard [name=customerName]'); input.value = ''; input.dispatchEvent(new Event('input', {bubbles: true})); return true; })()",
+    );
+    browser.click("Next", "document.querySelector('#CustomerWizard .m-wizard-next')");
+    browser.wait_for(
+        "the error by the name",
+        "(document.querySelector('#CustomerWizard .q-field--error') || {innerText: ''}).innerText.indexOf('Enter the customer name') >= 0",
+        WAIT,
+    );
+    let answer = fetched(&mut browser, "the step post", "/saveCustomer");
+    assert_eq!(answer["status"], 500, "{answer}");
+    assert_eq!(
+        browser.eval("/\\/gallery\\/Wizard(\\/Customer)?$/.test(location.pathname)"),
+        true,
+        "still on the first step"
+    );
+    let problems = browser.take_problems();
+    assert!(
+        problems.iter().all(|problem| format!("{problem:?}").contains("500")),
+        "only the 500 of the answer: {problems:#?}"
+    );
+    // a name: Next goes to Options, the step in the URL
+    browser.click(
+        "the name",
+        "document.querySelector('#CustomerWizard [name=customerName]')",
+    );
+    browser.type_text("Gate Customer");
+    browser.click("Next", "document.querySelector('#CustomerWizard .m-wizard-next')");
+    browser.wait_for(
+        "the second step",
+        "location.pathname.endsWith('/gallery/Wizard/Options') && !!document.querySelector('#CustomerWizard [name=countryGeoId]') \
+         && !!document.querySelector('#CustomerWizard .m-wizard-back')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("document.querySelectorAll('#CustomerWizard .q-stepper__tab--done').length"),
+        1,
+        "the first step is done"
+    );
+    // Back keeps what the step saved
+    browser.click("Back", "document.querySelector('#CustomerWizard .m-wizard-back')");
+    browser.wait_for(
+        "the first step with its draft",
+        "location.pathname.endsWith('/gallery/Wizard/Customer') && (document.querySelector('#CustomerWizard [name=customerName]') || {value: ''}).value === 'Gate Customer'",
+        WAIT,
+    );
+    browser.click("Next", "document.querySelector('#CustomerWizard .m-wizard-next')");
+    browser.wait_for("Options again", "location.pathname.endsWith('/gallery/Wizard/Options') && !!document.querySelector('#CustomerWizard [name=countryGeoId]')", WAIT);
+    browser.click("Next", "document.querySelector('#CustomerWizard .m-wizard-next')");
+    browser.wait_for(
+        "the review",
+        "location.pathname.endsWith('/gallery/Wizard/Review') && document.querySelector('#CustomerWizard .m-wizard-body').innerText.indexOf('Gate Customer') >= 0",
+        WAIT,
+    );
+    let options = fetched(&mut browser, "the options post", "/saveOptions");
+    assert_eq!(options["status"], 200, "{options}");
+    assert_eq!(
+        browser.eval("document.querySelector('#CustomerWizard .m-wizard-next .block').innerText.trim()"),
+        "Create customer"
+    );
+    browser.click(
+        "Create customer",
+        "document.querySelector('#CustomerWizard .m-wizard-next')",
+    );
+    browser.wait_for(
+        "back on the first step with the message",
+        "location.pathname.endsWith('/gallery/Wizard/Customer') && Array.from(document.querySelectorAll('.q-notification')).some((el) => el.innerText.indexOf('Gate Customer created') >= 0)",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the wizard");
+}
+
+/// The gallery Dialog: the New container-dialog registers as a container of the root by its id, so the form in it, with
+/// `background-hide-id="NewEnumDialog"`, closes it once its background submit is answered; the page stays the list.
+#[test]
+fn a_background_submit_closes_the_container_dialog_it_names_in_chromium() {
+    let gate = start("browser-dialog");
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    browser.navigate(&format!("{base}/qapps/gallery/Dialog"));
+    browser.eval(FETCH_SPY);
+    browser.wait_for(
+        "the list with its New dialog registered",
+        "!!moqui.webrootVue && !!moqui.webrootVue.activeContainers.NewEnumDialog && document.body.innerText.indexOf('Comparison operators') >= 0",
+        WAIT,
+    );
+    // the submit asks first (data-confirm); the test answers yes
+    browser.eval("(() => { window.confirm = () => true; return true; })()");
+    browser.click("New", &by_text("button", "New"));
+    browser.wait_for(
+        "the dialog open",
+        "!!document.querySelector('.q-dialog [name=enumId]') && document.querySelector('.q-dialog').innerText.indexOf('New enumeration') >= 0",
+        WAIT,
+    );
+    browser.click("the id", "document.querySelector('.q-dialog [name=enumId]')");
+    browser.type_text("GATE_DLG");
+    browser.click("Create", &by_text(".q-dialog button", "Create"));
+    let answer = fetched(&mut browser, "the create post", "/createEnum");
+    assert_eq!(answer["status"], 200, "{answer}");
+    browser.wait_for(
+        "the dialog closed by its id",
+        "!document.querySelector('.q-dialog [name=enumId]') && location.pathname.endsWith('/gallery/Dialog')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("document.body.innerText.indexOf('Comparison operators') >= 0"),
+        true,
+        "the list is still the page"
+    );
+    // opened again, the root's hideContainer by its id closes it too
+    browser.click("New", &by_text("button", "New"));
+    browser.wait_for(
+        "the dialog open again",
+        "!!document.querySelector('.q-dialog [name=enumId]')",
+        WAIT,
+    );
+    browser.eval("(() => { moqui.webrootVue.hideContainer('NewEnumDialog'); return true; })()");
+    browser.wait_for(
+        "the dialog closed by hideContainer",
+        "!document.querySelector('.q-dialog [name=enumId]')",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the gallery Dialog");
+}
+
+/// The Detail screen's Chatter column with the @ list of the note editor open, and the rich editors of the Widgets screen, light
+/// and dark, 1280 and 390 px wide, as PNGs in `dir`.
+fn record_shots(browser: &mut Browser, base: &str, dir: &std::path::Path) {
+    use base64::Engine as _;
+    std::fs::create_dir_all(dir).unwrap();
+    let save = |browser: &mut Browser, name: &str| {
+        browser.pump(Duration::from_millis(500));
+        let shot = browser.call("Page.captureScreenshot", serde_json::json!({"format": "png"}));
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(shot["data"].as_str().unwrap())
+            .unwrap();
+        std::fs::write(dir.join(name), bytes).unwrap();
+    };
+    for (width, height) in [(1280, 900), (390, 844)] {
+        browser.call(
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 600}),
+        );
+        for dark in [false, true] {
+            let mode = if dark { "dark" } else { "light" };
+            browser.navigate(&format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR"));
+            browser.wait_for(
+                "the Chatter panel",
+                "!!document.querySelector('#DetailChatter .m-rich-text[data-state=ready] .ProseMirror') \
+                 && (document.querySelector('#DetailChatter .m-record-card') || {innerText: ''}).innerText.indexOf('Active') >= 0",
+                WAIT,
+            );
+            browser.eval(&format!("moqui.webrootVue.$q.dark.set({dark}), true"));
+            browser.click(
+                "the note editor",
+                "document.querySelector('#DetailChatter .ProseMirror')",
+            );
+            browser.type_text("Reviewed with @jo");
+            browser.wait_for(
+                "the mention list",
+                &by_text(".m-rich-text-mentions .q-item", "John Doe"),
+                WAIT,
+            );
+            browser.eval("document.getElementById('DetailChatter').scrollIntoView({block: 'start'}), true");
+            save(browser, &format!("chatter-{mode}-{width}.png"));
+            browser.press("Escape");
+            browser.navigate(&format!("{base}/qapps/gallery/Widgets"));
+            browser.wait_for(
+                "the rich editors",
+                "document.querySelectorAll('.m-rich-text[data-state=ready] .ProseMirror').length === 2",
+                WAIT,
+            );
+            browser.eval(&format!(
+                "moqui.webrootVue.$q.dark.set({dark}), document.querySelector('.m-rich-text').scrollIntoView({{block: 'start'}}), true"
+            ));
+            save(browser, &format!("rich-text-{mode}-{width}.png"));
+        }
+    }
+    browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
+    browser.eval("moqui.webrootVue.$q.dark.set(false), true");
 }
 
 /// The header with the palette open and with the `+` menu open, light and dark, 1280 and 390 px wide, as PNGs in `dir`.
@@ -1476,4 +1973,250 @@ fn print_and_text_modes(browser: &mut Browser, base: &str) {
     ));
     assert_eq!(parsed, 2, "the xml mode parses as XML");
     assert_clean(browser, "the text modes");
+}
+
+/// m-html-view on the gallery Message screen (IronStone design-drawers-commons §12 reading pane): the designed message is
+/// cleaned into a frame sandboxed without scripts, so its script, its onerror handler and its javascript: link do not run and
+/// its form is gone; its remote image and tracking pixel are not fetched (no request at all) until Show images, and its cid:
+/// image is the host's file as a data: URL; its links open in a new window without the opener; the reply history opens from
+/// its "..." with a real click in the frame; and the frame is as tall as its content before and after. The plain message is
+/// escaped, with its links and its quoted reply collapsed, and follows dark mode while the designed one stays a light card.
+#[test]
+fn the_html_view_cleans_sandboxes_and_sizes_a_message_in_chromium() {
+    let gate = start("browser-htmlview");
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    browser.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({"width": 1280, "height": 900, "deviceScaleFactor": 1, "mobile": false}),
+    );
+    browser.navigate(&format!("{base}/qapps/gallery/Message"));
+    let frame = |id: &str| format!("document.querySelector('#{id} iframe')");
+    let doc = |id: &str| format!("{}.contentDocument", frame(id));
+    let fits = |id: &str| {
+        format!(
+            "(() => {{ const f = {}; const d = f && f.contentDocument; const r = d && d.getElementById('m-hv-root'); \
+             return !!r && f.offsetHeight > 30 && Math.abs(f.offsetHeight - Math.max(Math.ceil(r.getBoundingClientRect().height), 16)) <= 1; }})()",
+            frame(id)
+        )
+    };
+    browser.wait_for(
+        "the designed message in its frame",
+        &format!(
+            "document.querySelector('#DesignedMessage').dataset.state === 'ready' && !!{d} && !!{d}.querySelector('.m-hv-blocked') && {fits}",
+            d = doc("DesignedMessage"),
+            fits = fits("DesignedMessage")
+        ),
+        WAIT,
+    );
+    browser.wait_for("the plain message in its frame", &fits("PlainMessage"), WAIT);
+    // nothing of the message ran or reached the network
+    browser.pump(Duration::from_millis(1500));
+    assert_eq!(browser.eval("window.__htmlViewRan === undefined"), true);
+    assert_eq!(
+        browser.eval(&format!("{}.getAttribute('sandbox')", frame("DesignedMessage"))),
+        "allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+    );
+    let cleaned = browser.eval(&format!(
+        "(() => {{ const d = {}; return {{ scripts: d.querySelectorAll('script').length, handlers: d.querySelectorAll('[onerror]').length, \
+         forms: d.querySelectorAll('form, input, button').length, remote: d.querySelectorAll('img[src^=\"http\"]').length, \
+         blocked: d.querySelectorAll('.m-hv-blocked[title=\"Image hidden\"]').length, cid: d.querySelectorAll('img[src^=\"data:image/png\"]').length, \
+         bad: d.querySelectorAll('a[href^=\"javascript\"]').length, good: (d.querySelector('a[href=\"https://moqui.org/\"]') || {{}}).rel, \
+         target: (d.querySelector('a[href=\"https://moqui.org/\"]') || {{}}).target, fixed: d.querySelectorAll('[style*=\"fixed\"]').length, \
+         quote: !!d.querySelector('details.m-hv-quote:not([open]) > summary.m-hv-more'), \
+         policy: d.querySelector('meta[http-equiv=\"Content-Security-Policy\"]').content, \
+         fetched: {}.contentWindow.performance.getEntriesByType('resource').map((entry) => entry.name).filter((name) => name.indexOf('MoquiLogo') >= 0) }}; }})()",
+        doc("DesignedMessage"),
+        frame("DesignedMessage")
+    ));
+    assert_eq!(cleaned["scripts"], 0, "{cleaned}");
+    assert_eq!(cleaned["handlers"], 0, "{cleaned}");
+    assert_eq!(cleaned["forms"], 0, "{cleaned}");
+    assert_eq!(cleaned["remote"], 0, "{cleaned}");
+    assert_eq!(
+        cleaned["blocked"], 1,
+        "the remote picture is a placeholder, the pixel is gone: {cleaned}"
+    );
+    assert_eq!(cleaned["cid"], 1, "the cid: image from the host's file: {cleaned}");
+    assert_eq!(cleaned["bad"], 0, "{cleaned}");
+    assert_eq!(cleaned["good"], "noopener noreferrer", "{cleaned}");
+    assert_eq!(cleaned["target"], "_blank", "{cleaned}");
+    assert_eq!(cleaned["fixed"], 0, "{cleaned}");
+    assert_eq!(cleaned["quote"], true, "{cleaned}");
+    assert!(
+        cleaned["policy"].as_str().unwrap().contains("img-src data:;"),
+        "{cleaned}"
+    );
+    assert_eq!(
+        cleaned["fetched"],
+        serde_json::json!([]),
+        "no remote image was requested: {cleaned}"
+    );
+    assert_eq!(
+        browser.eval("document.querySelector('#DesignedMessage').dataset.blocked"),
+        "2",
+        "the picture and the banner's background"
+    );
+    assert_clean(&mut browser, "the designed message");
+
+    // the reply history opens with a click in the frame, and the frame grows to it
+    let closed = browser
+        .eval(&format!("{}.offsetHeight", frame("DesignedMessage")))
+        .as_f64()
+        .unwrap();
+    let point = browser.eval(&format!(
+        "(() => {{ const f = {}; f.scrollIntoView({{block: 'center'}}); const s = f.contentDocument.querySelector('summary.m-hv-more'); \
+         const a = f.getBoundingClientRect(), b = s.getBoundingClientRect(); return [a.left + b.left + b.width / 2, a.top + b.top + b.height / 2]; }})()",
+        frame("DesignedMessage")
+    ));
+    let (x, y) = (point[0].as_f64().unwrap(), point[1].as_f64().unwrap());
+    for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
+        browser.call(
+            "Input.dispatchMouseEvent",
+            serde_json::json!({"type": kind, "x": x, "y": y, "button": "left", "buttons": if kind == "mousePressed" { 1 } else { 0 }, "clickCount": 1}),
+        );
+    }
+    let height = format!("{}.offsetHeight", frame("DesignedMessage"));
+    browser.wait_for(
+        "the reply history open and the frame grown to it",
+        &format!(
+            "!!{}.querySelector('details.m-hv-quote[open]') && {height} > {closed} + 20 && {}",
+            doc("DesignedMessage"),
+            fits("DesignedMessage")
+        ),
+        WAIT,
+    );
+    assert_eq!(browser.eval("window.__htmlViewRan === undefined"), true);
+
+    // Show images: the remote picture loads, the bar is gone, the pixel and the banner's background too
+    browser.click(
+        "Show images",
+        "document.querySelector('#DesignedMessage .m-html-view-show')",
+    );
+    browser.wait_for(
+        "the remote picture loaded",
+        &format!(
+            "(() => {{ const img = {}.getElementById('remotePicture'); return !!img && img.complete && img.naturalWidth > 0; }})() \
+             && !document.querySelector('#DesignedMessage .m-html-view-images') && {}",
+            doc("DesignedMessage"),
+            fits("DesignedMessage")
+        ),
+        WAIT,
+    );
+    assert!(browser
+        .eval(&format!(
+            "{}.querySelector('meta[http-equiv=\"Content-Security-Policy\"]').content",
+            doc("DesignedMessage")
+        ))
+        .as_str()
+        .unwrap()
+        .contains("img-src data: https: http:"));
+    assert_eq!(browser.eval("window.__htmlViewRan === undefined"), true);
+    assert_clean(&mut browser, "the images shown");
+
+    // the plain message: escaped, its links, its quote collapsed
+    let plain = browser.eval(&format!(
+        "(() => {{ const d = {}; return {{ bold: d.querySelectorAll('b').length, text: d.querySelector('.m-hv-plain').textContent, \
+         links: Array.from(d.querySelectorAll('a')).map((a) => a.href), quote: !!d.querySelector('details.m-hv-quote > summary') }}; }})()",
+        doc("PlainMessage")
+    ));
+    assert_eq!(plain["bold"], 0, "{plain}");
+    assert!(
+        plain["text"].as_str().unwrap().contains("Use <b>plain</b> words"),
+        "{plain}"
+    );
+    assert_eq!(
+        plain["links"],
+        serde_json::json!([
+            "https://moqui.org/docs",
+            "mailto:ada@example.com",
+            "mailto:bob@example.com"
+        ]),
+        "{plain}"
+    );
+    assert_eq!(plain["quote"], true, "{plain}");
+
+    // dark mode: the plain message follows it, the designed one stays a light card
+    browser.eval("moqui.webrootVue.$q.dark.set(true), true");
+    browser.wait_for(
+        "the plain message in dark mode",
+        &format!(
+            "(() => {{ const d = {}; return !!d && !!d.body && getComputedStyle(d.body).color === 'rgb(227, 227, 227)'; }})() && {}",
+            doc("PlainMessage"),
+            fits("PlainMessage")
+        ),
+        WAIT,
+    );
+    browser.wait_for(
+        "the designed message a light card",
+        &format!(
+            "{}.classList.contains('m-html-view-card') && (() => {{ const d = {}; return !!d && !!d.documentElement && \
+             getComputedStyle(d.documentElement).backgroundColor === 'rgb(255, 255, 255)'; }})()",
+            frame("DesignedMessage"),
+            doc("DesignedMessage")
+        ),
+        WAIT,
+    );
+    assert_clean(&mut browser, "dark mode");
+
+    if let Some(dir) = std::env::var_os("MOQUI_SHELL_SHOTS") {
+        use base64::Engine as _;
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        for (width, height) in [(1280, 900), (390, 844)] {
+            browser.call(
+                "Emulation.setDeviceMetricsOverride",
+                serde_json::json!({"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 600}),
+            );
+            for dark in [false, true] {
+                browser.eval(&format!(
+                    "moqui.webrootVue.$q.dark.set({dark}), window.scrollTo(0, 0), true"
+                ));
+                browser.wait_for("the frames sized", &fits("DesignedMessage"), WAIT);
+                browser.pump(Duration::from_millis(800));
+                let shot = browser.call(
+                    "Page.captureScreenshot",
+                    serde_json::json!({"format": "png", "captureBeyondViewport": true}),
+                );
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(shot["data"].as_str().unwrap())
+                    .unwrap();
+                let mode = if dark { "dark" } else { "light" };
+                std::fs::write(dir.join(format!("html-view-{mode}-{width}.png")), bytes).unwrap();
+            }
+        }
+    }
+}
+
+/// The public shell of a token route in Chromium: the page mounts the route's screen with the m-* components, with no
+/// session user, no /qapps header or drawers, and a clean console.
+#[test]
+fn a_token_route_page_mounts_its_screen_in_the_public_shell() {
+    let gate = common::start_token_route("browser-token");
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    browser.navigate(&format!("{base}/tk/{}", common::LINK_TOKEN));
+    browser.wait_for(
+        "the shared screen in the public shell",
+        "(() => { const root = document.getElementById('public-root'); \
+         return !!root && root.style.display !== 'none' && root.innerText.includes('For the gate') \
+         && root.innerText.includes('Shared by John Doe'); })()",
+        WAIT,
+    );
+    let shell: serde_json::Value = browser.eval(
+        "(() => ({ header: !!document.querySelector('.q-header'), drawer: !!document.querySelector('.q-drawer'), \
+         apps: !!document.getElementById('apps-root'), box: !!document.querySelector('#public-root .q-card, #public-root .q-expansion-item, #public-root [class*=\"m-container-box\"], #public-root .q-item') }))()",
+    );
+    assert_eq!(shell["header"], false, "{shell}");
+    assert_eq!(shell["drawer"], false, "{shell}");
+    assert_eq!(shell["apps"], false, "{shell}");
+    assert_clean(&mut browser, "/tk");
+    // a bad token: the short page, no shell
+    browser.navigate(&format!("{base}/tk/NoSuchToken0000000000"));
+    browser.wait_for(
+        "the expired page",
+        "document.body && document.body.innerText.includes('This link has expired or was not found.')",
+        WAIT,
+    );
 }

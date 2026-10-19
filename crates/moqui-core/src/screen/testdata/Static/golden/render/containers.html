@@ -21,4 +21,6 @@
 <a :href="'http://example.com/x'" class="m-link-text"><span v-text="ec.l10n.localize('Out')"></span></a>
 <template v-if="(name)"><p class="text-inline muted" :title="ec.l10n.localize('tip')" v-text="ec.resource.expand('Line ${name}',{'name':()=&gt;(name)})"></p>
 </template><span class="text-inline" v-text="ec.l10n.localize('a &lt; b\nnext')"></span>
-<img :src="'/img.png'" :alt="ec.l10n.localize('Logo')" width="20" height="20" class="logo">
+<img :src="'/img.png'" :alt="ec.l10n.localize('Logo')" width="20" height="20" class="logo"><m-container-dialog color="primary" button-icon="sym_o_add" id="TipDlg" :tooltip="ec.resource.expand('Add for ${name}',{'name':()=&gt;(name)})"><span class="text-inline" v-text="ec.l10n.localize('tip body')"></span>
+</m-container-dialog>
+<m-form action="/save" :fields-initial="$mq.merge(null,{})" v-slot:default="formProps" read-only :submit-message="ec.resource.expand('Saved ${name}',{'name':()=&gt;(name)})" submit-reload-id="Dyn" submit-hide-id="Dlg"><q-btn dense no-caps type="submit" flat class="m-link m-link-left text-primary"><span v-text="ec.l10n.localize('Mark done')"></span></q-btn></m-form>

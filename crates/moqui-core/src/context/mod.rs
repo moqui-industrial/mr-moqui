@@ -38,8 +38,14 @@ pub use factory::{
 pub(crate) use hits::{secret_parameter, Hit};
 pub use locate::{framework_dir, locate};
 pub use message::{ErrorMark, MessageFacade, ValidationError};
+#[cfg(feature = "git")]
+pub(crate) use resource::millis_of;
 pub(crate) use resource::split_version;
-pub use resource::{Opened, ResourceEntry, ResourceFacade, ResourceRef, ResourceStat, ResourceVersion};
+pub(crate) use resource::{apply_changes_each, last_change_by_stat, tree_size_by_walk};
+pub use resource::{
+    ChangeLogEntry, ChangeSetOutcome, Opened, ResourceChange, ResourceChangeInfo, ResourceEntry, ResourceFacade,
+    ResourceRef, ResourceStat, ResourceVersion,
+};
 
 #[cfg(test)]
 mod tests {

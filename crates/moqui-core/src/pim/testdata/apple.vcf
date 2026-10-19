@@ -1,0 +1,33 @@
+BEGIN:VCARD
+VERSION:3.0
+PRODID:-//Apple Inc.//iPhone OS 17.0//EN
+N:Appleseed;Johnny;;;
+FN:Johnny Appleseed
+ORG:Apple Inc.;
+item1.EMAIL;type=INTERNET;type=pref:johnny@example.com
+item1.X-ABLabel:_$!<Other>!$_
+item2.TEL;type=pref:+1 (408) 555-0199
+item2.X-ABLabel:iPhone
+TEL;type=WORK;type=VOICE:+1 408 555 0100
+item3.ADR;type=HOME;type=pref:;;1 Infinite Loop;Cupertino;CA;95014;United States
+item3.X-ABADR:us
+BDAY;X-APPLE-OMIT-YEAR=1604:1604-06-15
+UID:9C2F1E2A-0000-4C4D-8F4A-1C1A1E1A1E1A
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+N:;;;;
+FN:Acme Rockets
+ORG:Acme Rockets;
+X-ABShowAs:COMPANY
+TEL;type=MAIN:+1 555 0111
+UID:ACME-UID
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+X-ADDRESSBOOKSERVER-KIND:group
+N:Hiking Club
+FN:Hiking Club
+X-ADDRESSBOOKSERVER-MEMBER:urn:uuid:9C2F1E2A-0000-4C4D-8F4A-1C1A1E1A1E1A
+UID:GROUP-1
+END:VCARD

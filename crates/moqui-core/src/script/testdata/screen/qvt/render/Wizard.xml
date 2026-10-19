@@ -1,0 +1,4 @@
+<screen require-authentication="false" default-menu-title="Wizard Root">
+    <subscreens default-item="Source"/>
+    <widgets><label text="Import contacts" type="h5"/><subscreens-panel id="ImportWizard" type="wizard" finish-text="Import"/></widgets>
+</screen>

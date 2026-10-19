@@ -45,6 +45,20 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
         <default-response type="none"/>
     </transition>
+    <!-- the @ mentions of the rich editors: users whose name or username has the term, answered as [{id, label}] -->
+    <transition name="mentionSearch" read-only="true">
+        <actions>
+            <entity-find entity-name="moqui.security.UserAccount" list="userList" limit="10">
+                <econditions combine="or">
+                    <econdition field-name="username" operator="like" value="%${term || ''}%" ignore-case="true"/>
+                    <econdition field-name="userFullName" operator="like" value="%${term || ''}%" ignore-case="true"/>
+                </econditions>
+                <order-by field-name="userFullName,username"/>
+            </entity-find>
+            <script>ec.web.sendJsonResponse(userList.map((user) => ({id: user.userId, label: user.userFullName || user.username})))</script>
+        </actions>
+        <default-response type="none"/>
+    </transition>
     <!-- the dynamic container loads this screen again with dynPart=Y, which renders only the DynamicPart section -->
     <transition name="loadPart"><default-response url="."/></transition>
     <transition name="openDetail"><default-response url="../Detail"/></transition>
@@ -54,6 +68,12 @@ along with this software (see the LICENSE.md file). If not, see
         <set field="fieldValues" from="{textMasked: '8015551234', textNumber: 42, textArea: 'Plain text area.', textMd: '**Markdown** text area with a preview',
             ddEntity: 'ScreenThemeType', ddMulti: ['UserGroup', 'UserAccount'], dtDate: '2026-10-18', dtTime: '09:30', dtDateTime: '2026-10-18 09:30',
             checkSingle: 'Y', checkMulti: ['email'], radioKind: 'task', displayWrapped: 'A read-only value with a label', displayEntity: 'ScreenThemeType', hid: 'hidden-value'}"/>
+        <!-- the rich editors start with HTML of the kind they write -->
+        <script><![CDATA[
+            fieldValues.textRich = '<h3>Rich text</h3><p>The <strong>Tiptap</strong> editor: <em>marks</em>, lists, <a href="https://tiptap.dev">links</a> ' +
+                'and <code>code</code>.</p><ul><li><p>Type @ for a mention</p></li></ul>'
+            fieldValues.textRichLight = '<p>A <strong>light</strong> editor for notes and chat</p>'
+        ]]></script>
     </actions>
     <widgets>
         <!-- the small text the dynamic container loads -->
@@ -74,6 +94,10 @@ along with this software (see the LICENSE.md file). If not, see
                 <field name="textNumber"><default-field title="text-line input-type=number"><text-line input-type="number" size="10"/></default-field></field>
                 <field name="textArea"><default-field title="text-area"><text-area rows="2"/></default-field></field>
                 <field name="textMd"><default-field title="text-area editor-type=md"><text-area rows="3" editor-type="md"/></default-field></field>
+                <field name="textRich"><default-field title="text-area editor-type=rich mention-transition">
+                    <text-area rows="5" editor-type="rich" mention-transition="mentionSearch"/></default-field></field>
+                <field name="textRichLight"><default-field title="text-area editor-type=rich-light">
+                    <text-area rows="2" editor-type="rich-light" mention-transition="mentionSearch"/></default-field></field>
                 <field name="ddEntity"><default-field title="drop-down entity-options">
                     <drop-down allow-empty="true"><entity-options key="${enumTypeId}" text="${description} [${enumTypeId}]">
                         <entity-find entity-name="moqui.basic.EnumerationType" cache="true"><order-by field-name="description"/></entity-find>
@@ -113,6 +137,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <field-layout>
                     <field-row><field-ref name="textMasked"/><field-ref name="textNumber"/></field-row>
                     <field-row><field-ref name="textArea"/><field-ref name="textMd"/></field-row>
+                    <field-row><field-ref name="textRich"/><field-ref name="textRichLight"/></field-row>
                     <field-row><field-ref name="ddEntity"/><field-ref name="ddMulti"/></field-row>
                     <field-row><field-ref name="ddSearch"/><field-ref name="dtDate"/></field-row>
                     <field-row><field-ref name="dtTime"/><field-ref name="dtDateTime"/></field-row>

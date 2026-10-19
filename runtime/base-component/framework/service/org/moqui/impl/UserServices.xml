@@ -26,6 +26,23 @@ along with this software (see the LICENSE.md file). If not, see
         <actions><script>ec.user.setPreference(preferenceKey, preferenceValue)</script></actions>
     </service>
 
+    <service verb="end" noun="UserVisit" allow-remote="true">
+        <description>End another session of the current user (a Sign-ins list's "sign out there"): the Visit gets its
+            thruDate and each web session of it is ended in the session store, so its browser is signed out on its next
+            request. Only the user's own visit, and not the current one (a logout ends that); ec.user.visitId is the
+            current visit. No Java counterpart.</description>
+        <in-parameters><parameter name="visitId" required="true"/></in-parameters>
+        <out-parameters><parameter name="sessionCount" type="Integer"><description>The web sessions ended: 0 when the
+            visit's session had already expired</description></parameter></out-parameters>
+        <actions><script><![CDATA[
+            try {
+                sessionCount = ec.user.endVisit(visitId)
+            } catch (e) {
+                ec.message.addError(String(e.message || e))
+            }
+        ]]></script></actions>
+    </service>
+
     <service verb="login" noun="UserAccount" authenticate="anonymous-all" allow-remote="false">
         <implements service="org.moqui.impl.UserServices.get#ExternalUserAuthcFactorInfo"/>
         <in-parameters>

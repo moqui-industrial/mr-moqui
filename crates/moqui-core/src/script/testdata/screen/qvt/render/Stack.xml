@@ -1,0 +1,4 @@
+<screen require-authentication="false" default-menu-title="Stack Root">
+    <subscreens default-item="List"/>
+    <widgets><label text="Pages" type="h5"/><subscreens-panel id="Pages" type="stack"/></widgets>
+</screen>

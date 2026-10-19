@@ -23,6 +23,8 @@ use moqui_lib::object::{basic_convert, Value};
 use super::facade::EntityFacade;
 use super::value::EntityValue;
 
+mod changes;
+
 const DB_RESOURCE: &str = "moqui.resource.DbResource";
 const DB_FILE: &str = "moqui.resource.DbResourceFile";
 const DB_HISTORY: &str = "moqui.resource.DbResourceFileHistory";
@@ -222,7 +224,7 @@ impl EntityFacade {
             let blobs = crate::resource::blob::BlobStore::new(self.clone());
             let expected = crate::resource::blob::Expected { id: None, size };
             let info = blobs.put(input, &expected, u64::MAX)?;
-            return self.write_db_content(location, NewContent::Blob(info));
+            return self.write_db_content(location, NewContent::Blob(info), None);
         }
         let mut bytes = Vec::new();
         input
@@ -234,14 +236,20 @@ impl EntityFacade {
     /// Create or replace a `dbresource://` file. Missing parent directories are created. A file in the path, or a
     /// directory at the location, is an error, as `DbResourceReference.putObject`.
     pub fn write_db_resource(&self, location: &str, bytes: &[u8]) -> Result<(), Error> {
-        if bytes.len() as u64 > blob_threshold() {
-            let info = crate::resource::blob::BlobStore::new(self.clone()).put_bytes(bytes)?;
-            return self.write_db_content(location, NewContent::Blob(info));
-        }
-        self.write_db_content(location, NewContent::Inline(bytes))
+        self.write_db_resource_noted(location, bytes, None)
     }
 
-    fn write_db_content(&self, location: &str, content: NewContent<'_>) -> Result<(), Error> {
+    /// [`Self::write_db_resource`] with a note for the version it makes: `DbResourceFile.versionNote`, kept on the
+    /// version's `DbResourceFileHistory` row too, so it stays with the version when a later write replaces it.
+    pub fn write_db_resource_noted(&self, location: &str, bytes: &[u8], note: Option<&str>) -> Result<(), Error> {
+        if bytes.len() as u64 > blob_threshold() {
+            let info = crate::resource::blob::BlobStore::new(self.clone()).put_bytes(bytes)?;
+            return self.write_db_content(location, NewContent::Blob(info), note);
+        }
+        self.write_db_content(location, NewContent::Inline(bytes), note)
+    }
+
+    fn write_db_content(&self, location: &str, content: NewContent<'_>, note: Option<&str>) -> Result<(), Error> {
         self.ensure_db_tables()?;
         let mut parts = db_parts(location)?;
         let Some(filename) = parts.pop() else {
@@ -257,7 +265,12 @@ impl EntityFacade {
             Some(node) => node.id,
             None => self.create_node(parent.as_deref(), &filename, true)?,
         };
-        self.write_bytes(&id, &filename, content)
+        self.write_bytes(
+            &id,
+            &filename,
+            content,
+            note.map(str::trim).filter(|note| !note.is_empty()),
+        )
     }
 
     /// The kind, time, and size of a `dbresource://` location, or `None` when a segment has no row. The root is a
@@ -286,11 +299,7 @@ impl EntityFacade {
         if node.is_file {
             if let Some(file) = self.find(DB_FILE)?.eq("resourceId", Value::string(&node.id)).one()? {
                 last_updated = stamp_millis(file.get("lastUpdatedStamp")).or(last_updated);
-                // a row written before fileSize was kept is read for it
-                size = match basic_convert(file.get("fileSize").unwrap_or(&Value::Null), "Long").value {
-                    Value::I64(size) => u64::try_from(size).unwrap_or(0),
-                    _ => self.file_bytes(&file, &node.id)?.len() as u64,
-                };
+                size = file_size_of(&file, &node.id)?;
             }
         }
         Ok(Some(DbResourceStat {
@@ -501,13 +510,20 @@ impl EntityFacade {
     /// Write a file's bytes as `DbResourceReference.putObject`: the first write is version "01" with its history row
     /// and the MIME type of `filename`; a later write moves the replaced bytes into the current version's history row
     /// (as a reverse delta when [`past_payload`] allows) and adds the next version.
-    fn write_bytes(&self, resource_id: &str, filename: &str, content: NewContent<'_>) -> Result<(), Error> {
+    fn write_bytes(
+        &self,
+        resource_id: &str,
+        filename: &str,
+        content: NewContent<'_>,
+        note: Option<&str>,
+    ) -> Result<(), Error> {
         let (file_data, blob_id) = match &content {
             NewContent::Inline(bytes) => (Value::Bytes(bytes.to_vec()), Value::Null),
             NewContent::Blob(info) => (Value::Null, Value::string(&info.id)),
         };
-        let file_size = Value::I64(i64::try_from(content.size()).unwrap_or(i64::MAX));
         let existing = self.find(DB_FILE)?.eq("resourceId", Value::string(resource_id)).one()?;
+        let note_value = note.map_or(Value::Null, Value::string);
+        let size = Value::I64(i64::try_from(content.size()).unwrap_or(i64::MAX));
         let Some(existing) = existing else {
             let mut value = EntityValue::make(self, DB_FILE)?;
             value.set("resourceId", Value::string(resource_id));
@@ -516,13 +532,15 @@ impl EntityFacade {
             }
             value.set("fileData", file_data);
             value.set("blobId", blob_id);
-            value.set("fileSize", file_size);
+            value.set("fileSize", size);
             value.set("versionName", Value::string(FIRST_VERSION));
             value.set("rootVersionName", Value::string(FIRST_VERSION));
+            value.set("versionNote", note_value.clone());
             value.create(self)?;
             // no fileData: a history row holds the bytes only once it is a past version
             let mut history = self.new_history(resource_id, None)?;
             history.set("versionName", Value::string(FIRST_VERSION));
+            history.set("versionNote", note_value);
             history.create(self)?;
             return Ok(());
         };
@@ -561,15 +579,21 @@ impl EntityFacade {
                     past.set("isDiff", Value::string(if is_diff { "Y" } else { "N" }));
                     past.set("fileData", data);
                 }
+                // the replaced version's note moves to its history row (a row written with it has it already)
+                if let Some(past_note) = text_of(existing.get("versionNote")) {
+                    past.set("versionNote", Value::string(past_note));
+                }
                 past.update(self)?;
             }
         }
+        history.set("versionNote", note_value.clone());
         history.create(self)?;
         let mut value = EntityValue::make(self, DB_FILE)?;
         value.set("resourceId", Value::string(resource_id));
         value.set("fileData", file_data);
         value.set("blobId", blob_id);
-        value.set("fileSize", file_size);
+        value.set("fileSize", size);
+        value.set("versionNote", note_value);
         value.set("versionName", Value::string(&next));
         if text_of(existing.get("rootVersionName")).is_none() {
             value.set("rootVersionName", Value::string(current.unwrap_or(next)));
@@ -868,7 +892,20 @@ fn version_of(row: &EntityValue) -> DbResourceVersion {
         previous_version_name: text_of(row.get("previousVersionName")),
         version_date: row.get("versionDate").cloned().unwrap_or(Value::Null),
         user_id: text_of(row.get("userId")),
+        note: text_of(row.get("versionNote")),
     }
+}
+
+/// A file's size: `fileSize`, written with each write since it was added; a row written before it has its data measured
+/// until its next write sets it.
+fn file_size_of(file: &EntityValue, resource_id: &str) -> Result<u64, Error> {
+    if let Value::I64(size) = file
+        .get("fileSize")
+        .map_or(Value::Null, |value| basic_convert(value, "Long").value)
+    {
+        return Ok(u64::try_from(size).unwrap_or(0));
+    }
+    Ok(blob_bytes(file.get("fileData"), resource_id)?.map_or(0, |bytes| bytes.len() as u64))
 }
 
 /// A `fileData` value as bytes; `None` when it is null.
@@ -1258,5 +1295,37 @@ mod tests {
         assert_eq!(super::text_of(old.get("blobId")), Some(crate::resource::blob::blob_id(&second)));
         assert_eq!(facade.read_db_resource_bytes("dbresource://media/old.bin").unwrap().unwrap(), second);
         assert_eq!(facade.stat_db_resource("dbresource://media/old.bin").unwrap().unwrap().size, 200_000);
+    }
+
+    /// `ResourceRef::size` of a `dbresource://` file is its data length, for the file and for one found among a
+    /// directory's children, whose bytes are read when asked for.
+    #[test]
+    fn a_db_resource_ref_has_its_size_and_a_child_its_bytes() {
+        let (facade, context) = facade();
+        let _entered = context.enter();
+        facade
+            .write_db_resource("dbresource://files/a·b.txt", "héllo".as_bytes())
+            .unwrap();
+        facade.write_db_resource("dbresource://files/empty.txt", b"").unwrap();
+        let resources = context.factory().resource();
+        let file = resources.get("dbresource://files/a·b.txt").unwrap();
+        assert_eq!(file.size(), Some(6));
+        assert_eq!(resources.get("dbresource://files/empty.txt").unwrap().size(), Some(0));
+        let directory = resources.get("dbresource://files").unwrap();
+        assert_eq!(directory.size(), None);
+        let child = directory.find_child_file("a·b.txt");
+        assert_eq!(child.size(), Some(6));
+        assert_eq!(child.read_text().unwrap(), "héllo");
+        let listed: Vec<_> = directory
+            .children()
+            .unwrap()
+            .iter()
+            .map(|child| (child.size(), child.read_bytes().unwrap().len()))
+            .collect();
+        assert!(
+            listed.contains(&(Some(6), 6)) && listed.contains(&(Some(0), 0)),
+            "{listed:?}"
+        );
+        assert_eq!(directory.find_child_file("missing.txt").size(), None);
     }
 }

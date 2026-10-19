@@ -65,6 +65,19 @@ impl CacheFacade {
         self.manager.get(name).map_err(Error::from)
     }
 
+    /// The cache of that name, made with the default settings (no size limit, no expiry) when no conf entry made it,
+    /// as Java's `getCache` creates a default local cache on first use. A configured cache is returned as it is.
+    pub fn get_or_create(&self, name: &str) -> Result<MCache<String, Value>, Error> {
+        if let Some(cache) = self.manager.get(name)? {
+            return Ok(cache);
+        }
+        tracing::info!("Creating default local cache {name}");
+        // `create` returns the cache another thread made first under the same name.
+        self.manager
+            .create::<String, Value>(name.to_string(), CacheConfig::new())
+            .map_err(Error::from)
+    }
+
     /// The size, limits, and counters of each conf cache.
     pub fn infos(&self) -> Result<Vec<CacheInfo>, Error> {
         self.manager.infos().map_err(Error::from)
@@ -97,4 +110,34 @@ fn expire_millis(node: &MNode, cache_name: &str, attr: &str) -> Result<Option<i6
         return Ok(None);
     }
     Ok(Some(seconds.saturating_mul(1_000)))
+}
+
+#[cfg(test)]
+mod tests {
+    use moqui_lib::node::MNode;
+    use moqui_lib::object::Value;
+
+    use super::CacheFacade;
+
+    /// A configured cache keeps its conf settings; a name with none is made on first use with the defaults, once.
+    #[test]
+    fn get_or_create_keeps_a_configured_cache_and_makes_an_unknown_one() {
+        let conf = MNode::parse_text(
+            "conf",
+            r#"<moqui-conf><cache-list><cache name="known" max-elements="5" expire-time-idle="60"/></cache-list></moqui-conf>"#,
+        )
+        .unwrap();
+        let facade = CacheFacade::from_conf(&conf).unwrap();
+        let known = facade.get_or_create("known").unwrap();
+        assert_eq!(known.info().max_entries, 5);
+        assert_eq!(known.info().expire_idle_ms, 60_000);
+        assert!(facade.get("other").unwrap().is_none());
+        let other = facade.get_or_create("other").unwrap();
+        other.put("k".to_string(), Value::string("v")).unwrap();
+        let again = facade.get_or_create("other").unwrap();
+        assert_eq!(again.get(&"k".to_string()).unwrap(), Some(Value::string("v")));
+        assert_eq!(again.info().max_entries, 0);
+        assert_eq!(again.info().expire_idle_ms, 0);
+        assert!(facade.names().unwrap().contains(&"other".to_string()));
+    }
 }

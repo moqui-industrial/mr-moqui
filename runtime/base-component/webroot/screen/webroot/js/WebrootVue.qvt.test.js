@@ -133,6 +133,38 @@ test("a message list notifies once for each item and says whether it did", () =>
     delete moqui.webrootVue;
 });
 
+test("a message info with a link notifies with a button that follows it: an app link in the shell, an external one in a window", () => {
+    const seen = [];
+    const history = [];
+    const went = [];
+    const opened = [];
+    const savedLocation = globalThis.location;
+    const savedOpen = globalThis.open;
+    globalThis.location = { origin: "https://erp.example.com", href: "" };
+    globalThis.open = (url, target, features) => opened.push([url, target, features]);
+    moqui.webrootVue = { $q: { notify: (options) => seen.push(options) }, addNotify: (...args) => history.push(args), setUrl: (url) => went.push(url) };
+    try {
+        assert.equal(moqui.notifyMessages([{ message: "Task created", type: "success", link: "/qapps/Commons/Task/T1", linkText: "Open task" },
+            { message: "Mail sent", link: "https://mail.example.org/m/1" }, "plain", { message: "no link", type: "info" }]), true);
+        assert.deepEqual(seen.map((o) => [o.message, o.type, o.actions ? o.actions[0].label : null]),
+            [["Task created", "positive", "Open task"], ["Mail sent", "info", "Open"], ["plain", "info", null], ["no link", "info", null]]);
+        seen[0].actions[0].handler();
+        seen[1].actions[0].handler();
+        assert.deepEqual(went, ["/qapps/Commons/Task/T1"]);
+        assert.deepEqual(opened, [["https://mail.example.org/m/1", "_blank", "noopener"]]);
+        assert.deepEqual(history[0].slice(0, 3), ["Task created", "positive", "/qapps/Commons/Task/T1"]);
+        // a URL of this origin and a relative link stay in the shell; another scheme or a protocol-relative URL leaves it
+        moqui.openLink("https://erp.example.com/qapps/Sales/Order?orderId=1");
+        moqui.openLink("Detail?x=1");
+        assert.deepEqual(went.slice(1), ["/qapps/Sales/Order?orderId=1", "Detail?x=1"]);
+        assert.ok(moqui.isExternalLink("mailto:a@b.c") && moqui.isExternalLink("//cdn.example.org/x") && !moqui.isExternalLink("/apps/x"));
+    } finally {
+        delete moqui.webrootVue;
+        globalThis.location = savedLocation;
+        globalThis.open = savedOpen;
+    }
+});
+
 test("the QZ Tray component compiles and defines the print functions", () => {
     globalThis.qz = { websocket: { isActive: () => false }, security: {}, printers: {}, api: {}, configs: {}, print() {} };
     require("./MoquiQzComponent.js");

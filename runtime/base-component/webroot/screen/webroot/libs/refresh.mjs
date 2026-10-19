@@ -23,8 +23,9 @@ const args = process.argv.slice(2);
 const write = args.includes('--write');
 const workArg = args.includes('--work') ? args[args.indexOf('--work') + 1] : null;
 
-// Pinned toolchain for the two bundles built here (compiler-dom and highlight.js). Direct and transitive
-// packages are pinned so the bundle is the same bytes next time.
+// Pinned toolchain for the bundles built here (compiler-dom, highlight.js and Tiptap). Direct and transitive
+// packages are pinned so the bundle is the same bytes next time. Each version was published at least two weeks
+// before it was pinned (npm install --before), so a just-released, possibly compromised version is never taken.
 const BUILD_DEPS = {
   esbuild: '0.28.2',
   '@vue/compiler-dom': '3.5.44',
@@ -38,11 +39,76 @@ const BUILD_DEPS = {
   'estree-walker': '2.0.2',
   'source-map-js': '1.2.2',
   'highlight.js': '11.12.0',
+  // Tiptap 3 (pinned Oct 19, 2026, published by Oct 5) and everything its bundle takes in.
+  ...TIPTAP_DEPS(),
 };
 const BUNDLED_LICENSE_PKGS = [
   '@vue/compiler-dom', '@vue/compiler-core', '@vue/shared', '@babel/parser', '@babel/types',
   '@babel/helper-string-parser', '@babel/helper-validator-identifier', 'entities', 'estree-walker',
 ];
+
+// The Tiptap packages and their dependencies, all MIT. A function so BUILD_DEPS above can spread it.
+function TIPTAP_DEPS() {
+  return {
+    '@tiptap/core': '3.31.4',
+    '@tiptap/extension-blockquote': '3.31.4',
+    '@tiptap/extension-bold': '3.31.4',
+    '@tiptap/extension-bullet-list': '3.31.4',
+    '@tiptap/extension-code': '3.31.4',
+    '@tiptap/extension-code-block': '3.31.4',
+    '@tiptap/extension-document': '3.31.4',
+    '@tiptap/extension-dropcursor': '3.31.4',
+    '@tiptap/extension-gapcursor': '3.31.4',
+    '@tiptap/extension-hard-break': '3.31.4',
+    '@tiptap/extension-heading': '3.31.4',
+    '@tiptap/extension-horizontal-rule': '3.31.4',
+    '@tiptap/extension-image': '3.31.4',
+    '@tiptap/extension-italic': '3.31.4',
+    '@tiptap/extension-link': '3.31.4',
+    '@tiptap/extension-list': '3.31.4',
+    '@tiptap/extension-list-item': '3.31.4',
+    '@tiptap/extension-list-keymap': '3.31.4',
+    '@tiptap/extension-mention': '3.31.4',
+    '@tiptap/extension-ordered-list': '3.31.4',
+    '@tiptap/extension-paragraph': '3.31.4',
+    '@tiptap/extension-placeholder': '3.31.4',
+    '@tiptap/extension-strike': '3.31.4',
+    '@tiptap/extension-text': '3.31.4',
+    '@tiptap/extension-underline': '3.31.4',
+    '@tiptap/extensions': '3.31.4',
+    '@tiptap/pm': '3.31.4',
+    '@tiptap/starter-kit': '3.31.4',
+    '@tiptap/suggestion': '3.31.4',
+    '@floating-ui/core': '1.8.0',
+    '@floating-ui/dom': '1.8.0',
+    '@floating-ui/utils': '0.2.12',
+    linkifyjs: '4.3.3',
+    orderedmap: '2.1.1',
+    'prosemirror-changeset': '2.4.4',
+    'prosemirror-commands': '1.7.2',
+    'prosemirror-dropcursor': '1.8.4',
+    'prosemirror-gapcursor': '1.4.1',
+    'prosemirror-history': '1.5.1',
+    'prosemirror-inputrules': '1.5.1',
+    'prosemirror-keymap': '1.2.3',
+    'prosemirror-model': '1.25.12',
+    'prosemirror-schema-list': '1.5.1',
+    'prosemirror-state': '1.4.4',
+    'prosemirror-tables': '1.8.5',
+    'prosemirror-transform': '1.12.2',
+    'prosemirror-view': '1.42.6',
+    'rope-sequence': '1.3.4',
+    'w3c-keyname': '2.2.8',
+  };
+}
+// What the Tiptap bundle exports as the global Tiptap: the editor and the extensions m-rich-text uses.
+const TIPTAP_ENTRY = `export { Editor, Extension, Node, Mark, mergeAttributes } from '@tiptap/core';
+export { default as StarterKit } from '@tiptap/starter-kit';
+export { default as Link } from '@tiptap/extension-link';
+export { default as Image } from '@tiptap/extension-image';
+export { default as Mention } from '@tiptap/extension-mention';
+export { default as Placeholder } from '@tiptap/extension-placeholder';
+`;
 
 const HLJS_LANGS = ['bash', 'css', 'diff', 'groovy', 'java', 'javascript', 'json', 'markdown', 'plaintext',
   'python', 'rust', 'sql', 'typescript', 'xml', 'yaml'];
@@ -189,6 +255,22 @@ SIL Open Font License 1.1 (the fonts): the full text is in licenses/OFL-1.1.txt,
     licenseFiles: ['LICENSE'],
   },
   {
+    // The rich-text editor of m-rich-text, loaded only when an editor mounts. Tiptap has no browser build of its own (it
+    // ships ES modules), so this is a bundle of the packages in TIPTAP_DEPS with ProseMirror in it.
+    id: 'tiptap', name: 'Tiptap (with ProseMirror, bundled)', npm: '@tiptap/core', version: '3.31.4', license: 'MIT',
+    licenseNote: 'Bundles @tiptap/core, starter-kit (and the extensions it includes), extension-link, extension-image, ' +
+      'extension-mention, extension-placeholder, extensions, suggestion and pm 3.31.4, the prosemirror-* packages, ' +
+      '@floating-ui/*, linkifyjs, orderedmap, rope-sequence and w3c-keyname: all MIT. Each license text is below once, ' +
+      'with the packages it is the license of.',
+    copy: [],
+    noticePackages: Object.keys(TIPTAP_DEPS()),
+    noticeDedupe: true,
+    build: 'esbuild --bundle --minify --format=iife --global-name=Tiptap --platform=browser --target=es2020 ' +
+      '--legal-comments=none of an entry that exports Editor, Extension, Node, Mark, mergeAttributes, StarterKit, Link, ' +
+      'Image, Mention and Placeholder. Exposes the global Tiptap.',
+    produce: (ctx) => [['tiptap/tiptap.min.js', ctx.esbuildTiptap()]],
+  },
+  {
     id: 'qz-tray', name: 'QZ Tray connector (qz-tray.js)', npm: 'qz-tray', version: '2.3.0', license: 'LGPL-2.1-only',
     licenseNote: 'The file is served unmodified as its own script, and only when printing is enabled. Never concatenated or minified into another file.',
     copy: [['qz-tray.js', 'qz-tray/qz-tray.js']],
@@ -272,6 +354,11 @@ export const atob = typeof globalThis.atob === 'function' ? globalThis.atob.bind
       return esbuild(['hl-entry.js', '--bundle', '--minify', '--format=iife', '--global-name=hljs', '--platform=browser',
         '--target=es2018', '--legal-comments=none']);
     },
+    esbuildTiptap() {
+      writeFileSync(join(build, 'tt-entry.js'), TIPTAP_ENTRY);
+      return esbuild(['tt-entry.js', '--bundle', '--minify', '--format=iife', '--global-name=Tiptap', '--platform=browser',
+        '--target=es2020', '--legal-comments=none']);
+    },
     esbuildMarked() {
       const src = join(packages.marked.root, 'lib', 'marked.umd.js');
       const v = LIBS.find((l) => l.id === 'marked').version;
@@ -293,12 +380,19 @@ export const atob = typeof globalThis.atob === 'function' ? globalThis.atob.bind
     let text = '';
     if (lib.noticeText) text += lib.noticeText() + '\n';
     for (const f of lib.licenseFiles ?? []) text += `--- ${f} ---\n${readFileSync(join(root, f), 'utf8').trimEnd()}\n\n`;
+    // noticeDedupe: a license text that several packages share is printed once, after the list of them
+    const shared = new Map();
     for (const p of lib.noticePackages ?? []) {
       const pdir = join(build, 'node_modules', p);
-      const lf = readdirSync(pdir).find((n) => /^licen[cs]e(\.md|\.txt)?$/i.test(n));
+      const lf = readdirSync(pdir).sort().find((n) => /^licen[cs]e(\.md|\.txt)?$/i.test(n));
       if (!lf) throw new Error(`no license file in ${p}`);
-      text += `--- ${p} ${JSON.parse(readFileSync(join(pdir, 'package.json'), 'utf8')).version}: ${lf} ---\n${readFileSync(join(pdir, lf), 'utf8').trimEnd()}\n\n`;
+      const named = `${p} ${JSON.parse(readFileSync(join(pdir, 'package.json'), 'utf8')).version}: ${lf}`;
+      const body = readFileSync(join(pdir, lf), 'utf8').trimEnd();
+      if (!lib.noticeDedupe) text += `--- ${named} ---\n${body}\n\n`;
+      else if (shared.has(body)) shared.get(body).push(named);
+      else shared.set(body, [named]);
     }
+    for (const [body, names] of shared) text += `--- ${names.join(', ')} ---\n${body}\n\n`;
     notices.push({ lib, text });
     libMeta.push({
       id: lib.id, name: lib.name, version: lib.version, license: lib.license,

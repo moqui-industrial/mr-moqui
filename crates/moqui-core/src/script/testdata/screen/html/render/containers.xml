@@ -45,5 +45,7 @@
         <image url="/img.png" url-type="plain" alt="Logo" width="20" height="20" style="logo"/>
         <text type="html"><![CDATA[<b>raw</b>]]></text>
         <text template="true"><![CDATA[<i>${html(name)}</i>]]></text>
+        <container-dialog id="TipDlg" button-text="Add" icon="fa fa-plus" tooltip="Add for ${name}"><label text="tip body"/></container-dialog>
+        <link url="save" text="Mark done" link-type="hidden-form-link" background-reload-id="Dyn" background-hide-id="Dlg" background-message="Saved ${name}"/>
     </widgets>
 </screen>

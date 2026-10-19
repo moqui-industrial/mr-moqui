@@ -140,8 +140,10 @@ pub fn set_preference(key: &str, value: Option<&str>) -> Result<(), Error> {
     row.set("preferenceValue", value.map_or(Value::Null, Value::string));
     let tx = facade.transactions_for(USER_PREFERENCE)?;
     let written = tx.run(TransactionAttribute::UseOrBegin, None, || row.create_or_update(&facade));
-    if let Err(err) = written {
-        tracing::error!(error = %err, user_id = %user_id, key = %key, "Error saving UserPreference");
+    match written {
+        Err(err) => tracing::error!(error = %err, user_id = %user_id, key = %key, "Error saving UserPreference"),
+        // the response of a web request tells the page, which applies what the shell reads (moqui.applyPreference)
+        Ok(_) => crate::web::note_changed_preference(key, value),
     }
     Ok(())
 }

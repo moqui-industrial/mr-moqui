@@ -25,6 +25,8 @@ mod eca;
 mod eca_rules;
 mod elfinder;
 mod email_eca;
+#[cfg(all(test, feature = "git"))]
+mod files_tests;
 #[cfg(feature = "git")]
 mod git;
 mod images;
@@ -33,6 +35,7 @@ pub mod info;
 mod inline_tests;
 mod jobs;
 mod mail;
+pub mod mail_capture;
 mod pool;
 mod remote;
 mod request_pool;
@@ -84,6 +87,17 @@ pub(crate) use system_sync::receive_rest_message;
 pub(crate) use validate::clean_safe_html;
 pub use validate::validate;
 pub(crate) use validate::{auto_entity_name, auto_fields};
+
+/// Start the mail client's IMAP IDLE workers (`email_idle_enabled`, on the scheduler's tick). The host calls it once,
+/// after the entity facade is installed; a host built without mail does nothing.
+pub fn start_mail_idle(factory: &std::sync::Arc<crate::context::ExecutionContextFactory>) {
+    mail::start_idle(factory);
+}
+
+/// Stop the IMAP IDLE workers, for the factory's shutdown.
+pub(crate) fn stop_mail_idle(factory: &crate::context::ExecutionContextFactory) {
+    mail::stop_idle(factory);
+}
 
 /// A JSON body as a [`moqui_lib::object::Value`].
 pub(crate) fn parse_json(text: &str) -> Result<moqui_lib::object::Value, crate::context::Error> {

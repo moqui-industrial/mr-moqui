@@ -284,6 +284,14 @@
     const zoneText = (f) => (/^[A-Za-z]+$/.test(f.zoneName || "") ? f.zoneName : "GMT" + offsetText(f.offset, "colon", false));
 
     const dayOfYear = (year, month, day) => Math.round((Date.UTC(year, month - 1, day) - Date.UTC(year, 0, 1)) / 86400000) + 1;
+    const isLeap = (year) => (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+    // The week year and week of a date in the en_US calendar (datefmt.rs week_of_year): weeks from Sunday, week 1 holds January 1.
+    const weekOfYear = (f) => {
+        const doy = dayOfYear(f.year, f.month, f.day);
+        if (doy - f.weekday + 6 > (isLeap(f.year) ? 366 : 365)) return [f.year + 1, 1];
+        const jan1 = new Date(Date.UTC(f.year, 0, 1)).getUTCDay();
+        return [f.year, Math.floor((doy - 1 + jan1) / 7) + 1];
+    };
 
     // fields: { year, month, day, hour, minute, second, nano, weekday (0 Sunday), offset (seconds), zone }
     const formatFields = (f, pattern) => {
@@ -331,6 +339,14 @@
                     break;
                 case "d": out += pad(f.day, count); break;
                 case "D": out += pad(dayOfYear(f.year, f.month, f.day), count); break;
+                case "F": out += pad(Math.floor((f.day - 1) / 7) + 1, count); break;
+                case "W": out += pad(Math.floor((f.day - 1 + new Date(Date.UTC(f.year, f.month - 1, 1)).getUTCDay()) / 7) + 1, count); break;
+                case "w": out += pad(weekOfYear(f)[1], count); break;
+                case "Y": {
+                    const year = weekOfYear(f)[0];
+                    out += count === 2 ? pad(((year % 100) + 100) % 100, 2) : pad(year, count);
+                    break;
+                }
                 case "E": out += count >= 4 ? WEEKDAYS[f.weekday] : WEEKDAYS[f.weekday].slice(0, 3); break;
                 case "a": out += f.hour < 12 ? "AM" : "PM"; break;
                 case "H": out += pad(f.hour, count); break;
@@ -437,6 +453,21 @@
         return formatCurrencyAmount(amount, hideSymbol ? "" : info.symbol, digits, state.locale);
     };
 
+    // A Java date pattern (h:mm a, yyyy-MM-dd) rather than a number pattern (#,##0.00): a date or time letter outside quotes and no
+    // # or 0 there, as l10n.rs is_date_pattern.
+    const isDatePattern = (pattern) => {
+        let quoted = false;
+        let letter = false;
+        for (const ch of String(pattern || "")) {
+            if (ch === "'") quoted = !quoted;
+            else if (!quoted) {
+                if (ch === "#" || ch === "0") return false;
+                if ("GyYMLwWDdFEuaHkKhmsSzZXx".indexOf(ch) >= 0) letter = true;
+            }
+        }
+        return letter;
+    };
+
     // A value as text. A string is itself, unless a type says it is a time stamp, date, time or number.
     const format = (value, pattern, type) => {
         if (value === null || value === undefined) return "";
@@ -450,6 +481,8 @@
         if (typeof value === "string") return value;
         if (typeof value === "boolean") return String(value);
         if (value instanceof Date) return formatTimestamp(value, pattern, state.timeZone);
+        // A time stamp reaches the client as epoch millis, so a number with a date pattern is one.
+        if (typeof value === "number" && pattern && isDatePattern(pattern)) return formatTimestamp(value, pattern, state.timeZone);
         if (typeof value === "number" || typeof value === "bigint") return formatNumber(value, pattern, state.locale);
         const json = JSON.stringify(value);
         return json.length > 128 ? JSON.stringify(value, null, 2) : json;
@@ -480,7 +513,7 @@
 
     return {
         format, formatNumber, formatCurrency: formatCurrencyWith(false), formatCurrencyNoSymbol: formatCurrencyWith(true),
-        formatCurrencyAmount, formatTimestamp, formatDate, formatTime, localize, loadCatalog, parseDecimal, roundHalfEven,
+        formatCurrencyAmount, formatTimestamp, formatDate, formatTime, isDatePattern, localize, loadCatalog, parseDecimal, roundHalfEven,
         setLocale: (locale) => { state.locale = String(locale || "en_US").replace("-", "_"); },
         setTimeZone: (zone) => { state.timeZone = zone || "UTC"; },
         setCurrencies: (currencies) => { state.currencies = currencies || {}; },
