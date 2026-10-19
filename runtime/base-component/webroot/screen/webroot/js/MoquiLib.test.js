@@ -319,6 +319,67 @@ test("oauthPopup hears a window cut off from the page on the channel, and asks t
     }
 });
 
+test("oauthPopup asks the status while a window cut off from the page is open, gives up after cutOffWaitMs, and cancels", async () => {
+    // Google's page cuts the window off (it reads as closed at once): the first status that is not pending ends the wait
+    let win = oauthWindow();
+    try {
+        let asked = 0;
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://accounts.example.com/a", signInId: "S5" }),
+            async () => (++asked < 3 ? { status: "pending" } : { status: "success", emailAccountId: "A5" }), { pollMs: 5, statusPollMs: 5 });
+        await waitFor(() => win.popup.location.href);
+        win.popup.closed = true;
+        const result = await started;
+        assert.equal(result.status, "success");
+        assert.equal(result.emailAccountId, "A5");
+        assert.equal(asked, 3);
+    } finally {
+        win.restore();
+    }
+    // the status is asked while the window is open too, so a lost message does not leave it waiting
+    win = oauthWindow();
+    try {
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://accounts.example.com/a", signInId: "S6" }),
+            async () => ({ status: "error", errorCode: "expired", message: "The sign-in took too long." }), { pollMs: 5, statusPollMs: 5 });
+        const result = await started;
+        assert.equal(result.errorCode, "expired");
+        assert.equal(win.popup.closed, false);
+    } finally {
+        win.restore();
+    }
+    // cut off and never answered: timedOut after cutOffWaitMs, the window closed
+    win = oauthWindow();
+    try {
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://accounts.example.com/a", signInId: "S7" }),
+            async () => ({ status: "pending" }), { pollMs: 5, statusPollMs: 5, cutOffWaitMs: 40 });
+        await waitFor(() => win.popup.location.href);
+        win.popup.closed = true;
+        const result = await started;
+        assert.equal(result.status, "cancelled");
+        assert.equal(result.errorCode, "timedOut");
+        assert.equal(win.listeners.size, 0);
+    } finally {
+        win.restore();
+    }
+    // the handle's cancel(): cancelled, the window closed, nothing left listening
+    win = oauthWindow();
+    try {
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://accounts.example.com/a", signInId: "S8" }),
+            async () => ({ status: "pending" }), { pollMs: 5 });
+        assert.equal(typeof started.cancel, "function");
+        await waitFor(() => win.popup.location.href);
+        started.cancel();
+        const result = await started;
+        assert.equal(result.status, "cancelled");
+        assert.equal(result.errorCode, "cancelled");
+        assert.equal(result.signInId, "S8");
+        assert.ok(win.popup.closed);
+        assert.equal(win.listeners.size, 0);
+        assert.equal(win.channels.size, 0);
+    } finally {
+        win.restore();
+    }
+});
+
 test("oauthPopup reports a blocked window, a start that failed, and a URL that is not http", async () => {
     let win = oauthWindow({ blocked: true });
     try {

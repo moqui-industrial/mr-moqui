@@ -18,6 +18,12 @@
 //! Reply-To of its identity, Subject, Date, Message-ID, In-Reply-To and References; the text and HTML bodies as
 //! alternatives; inline files by Content-ID beside the HTML and the others attached. Bcc is not written (lettre leaves it
 //! out of the message, as a sent copy has it).
+//!
+//! A received message (one whose `headersString` holds the header block it came with, not only the headers the client
+//! writes itself) keeps that block: its Received, Authentication-Results, DKIM-Signature, List-Unsubscribe and the rest
+//! as they came, folded lines and all, with the MIME structure (MIME-Version, Content-Type, Content-Transfer-Encoding)
+//! of the body made again in place of the original's. A header block cut at the most the store keeps loses its last,
+//! perhaps partial, field.
 
 use std::collections::BTreeMap;
 
@@ -26,8 +32,9 @@ use moqui_lib::object::Value;
 
 use super::implementation::{
     build_lettre, client_headers, find_one, new_message_id, note_error, split_addresses, stored_attachments, Letter,
+    CLIENT_HEADERS,
 };
-use super::store::MESSAGE;
+use super::store::{HEADERS_MAX, MESSAGE};
 use super::sync::{value_millis, value_number};
 use crate::context::ExecutionContext;
 use crate::entity::{EntityFacade, EntityValue};
@@ -134,8 +141,82 @@ fn message_mime(facade: &EntityFacade, message: &EntityValue) -> Result<Vec<u8>,
         extra_headers: client_headers(&field_text(message, "headersString")),
     };
     stored_attachments(facade, &id, &mut letter).map_err(|err| err.message().to_string())?;
-    let built = build_lettre(&letter).map_err(|err| err.message().to_string())?;
-    Ok(built.formatted())
+    let built = build_lettre(&letter)
+        .map_err(|err| err.message().to_string())?
+        .formatted();
+    Ok(with_received_headers(built, &field_text(message, "headersString")))
+}
+
+/// The header fields the body made again has its own of: the MIME structure of the top part.
+const STRUCTURE_HEADERS: [&str; 7] = [
+    "MIME-Version",
+    "Content-Type",
+    "Content-Transfer-Encoding",
+    "Content-Disposition",
+    "Content-ID",
+    "Content-Length",
+    "Content-MD5",
+];
+
+/// The fields of a header block, each its first line and the folded lines after it, without line ends. A line that
+/// is not a field (a stray line, an mbox `From ` line) is left out with its folded lines.
+fn header_fields(block: &str) -> Vec<(String, Vec<String>)> {
+    let mut fields: Vec<(String, Vec<String>)> = Vec::new();
+    let mut skipping = false;
+    for line in block.split('\n').map(|line| line.trim_end_matches('\r')) {
+        if line.starts_with([' ', '\t']) {
+            if !skipping {
+                if let Some((_, lines)) = fields.last_mut() {
+                    lines.push(line.to_string());
+                }
+            }
+            continue;
+        }
+        let name = line.split_once(':').map(|(name, _)| name).unwrap_or_default();
+        // RFC 5322 field name: printable ASCII but space and colon
+        skipping = name.is_empty() || !name.bytes().all(|byte| (33..=126).contains(&byte) && byte != b':');
+        if !skipping {
+            fields.push((name.to_string(), vec![line.to_string()]));
+        }
+    }
+    fields
+}
+
+fn named(name: &str, names: &[&str]) -> bool {
+    names.iter().any(|known| known.eq_ignore_ascii_case(name))
+}
+
+/// The message with the header block a received message came with in place of the one made again, keeping the made
+/// MIME structure. A message whose stored headers are only the client's own (a draft, a reply sent from here), or none,
+/// is as it was made.
+fn with_received_headers(built: Vec<u8>, stored: &str) -> Vec<u8> {
+    let mut fields = header_fields(stored);
+    if !fields.iter().any(|(name, _)| !named(name, &CLIENT_HEADERS)) {
+        return built;
+    }
+    // a block cut at the most the store keeps may end in the middle of a field
+    if stored.len() + 2 >= HEADERS_MAX {
+        fields.pop();
+    }
+    let Some(split) = built.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return built;
+    };
+    let made = String::from_utf8_lossy(&built[..split]).into_owned();
+    let mut out = String::new();
+    for (_, lines) in fields.iter().filter(|(name, _)| !named(name, &STRUCTURE_HEADERS)) {
+        out.push_str(&lines.join("\r\n"));
+        out.push_str("\r\n");
+    }
+    for (_, lines) in header_fields(&made)
+        .iter()
+        .filter(|(name, _)| named(name, &STRUCTURE_HEADERS[..3]))
+    {
+        out.push_str(&lines.join("\r\n"));
+        out.push_str("\r\n");
+    }
+    let mut bytes = out.into_bytes();
+    bytes.extend_from_slice(&built[split + 2..]);
+    bytes
 }
 
 /// The subject as a file name: what is not a word character, space, dot or hyphen becomes `_`, at most 80 characters,
@@ -362,11 +443,131 @@ mod tests {
             "{files:?}"
         );
 
+        // a received message: its stored headers are in the file
+        row(
+            &facade,
+            super::MESSAGE,
+            &[
+                ("emailMessageId", text("EXP2")),
+                ("emailAccountId", text(&account)),
+                ("statusId", text("ES_RECEIVED")),
+                ("subject", text("News")),
+                ("bodyText", text("Hello")),
+                ("fromAddress", text("news@example.org")),
+                ("toAddresses", text("team@example.com")),
+                ("messageId", text("<news2@example.org>")),
+                (
+                    "headersString",
+                    text("Received: from mail.example.org\n\tby mx.example.com\nFrom: news@example.org\nTo: team@example.com\nSubject: News\nMessage-ID: <news2@example.org>\nList-Unsubscribe: <mailto:leave@example.org>\nContent-Type: text/plain"),
+                ),
+            ],
+        );
+        let (out, errors) = call("export#EmailMessage", &[("emailMessageId", text("EXP2"))]);
+        assert!(errors.is_empty(), "{errors}");
+        let mime = to_plain_string(out.get("mimeText").unwrap());
+        assert!(
+            mime.starts_with("Received: from mail.example.org\r\n\tby mx.example.com\r\n"),
+            "{mime}"
+        );
+        assert!(
+            mime.contains("List-Unsubscribe: <mailto:leave@example.org>\r\n"),
+            "{mime}"
+        );
+
         // a user who does not reach the account gets nothing
         login("eve");
         let (out, errors) = call("export#EmailMessage", &[("emailMessageId", text("EXP1"))]);
         assert!(errors.contains("Email message EXP1 not found"), "{errors}");
         assert!(!out.contains_key("mimeBytes"));
+    }
+
+    /// A received message keeps the header block it came with (folded fields too), with the MIME structure of the body
+    /// made again and not the original's; a stray line is left out, and a draft's own headers are the made ones.
+    #[test]
+    fn a_received_message_keeps_its_stored_headers() {
+        let stored = concat!(
+            "From MAILER-DAEMON Mon Oct 19 10:00:00 2026\n",
+            "Received: from mail.example.org (mail.example.org [192.0.2.1])\n",
+            "\tby mx.example.com with ESMTPS id abc123\n",
+            "\tfor <team@example.com>; Mon, 19 Oct 2026 10:00:00 +0000\n",
+            "Authentication-Results: mx.example.com; dkim=pass header.d=example.org; spf=pass\n",
+            "DKIM-Signature: v=1; a=rsa-sha256; d=example.org; s=s1;\n",
+            " h=from:to:subject; bh=AAAA; b=BBBB\n",
+            "From: \"News\" <news@example.org>\n",
+            "To: team@example.com\n",
+            "Subject: =?utf-8?q?Caf=C3=A9_news?=\n",
+            "Date: Mon, 19 Oct 2026 10:00:00 +0000\n",
+            "Message-ID: <news1@example.org>\n",
+            "List-Unsubscribe: <mailto:leave@example.org>, <https://example.org/leave?u=1>\n",
+            "List-Unsubscribe-Post: List-Unsubscribe=One-Click\n",
+            "MIME-Version: 1.0\n",
+            "Content-Type: multipart/alternative; boundary=\"old-boundary\"",
+        );
+        let letter = super::Letter {
+            subject: "Café news".to_string(),
+            from_address: "news@example.org".to_string(),
+            from_name: "News".to_string(),
+            to: vec!["team@example.com".to_string()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            reply_to: vec!["identity@example.com".to_string()],
+            bounce: String::new(),
+            body: "<p>Hello</p>".to_string(),
+            body_text: "Hello".to_string(),
+            attachments: Vec::new(),
+            inline: Vec::new(),
+            message_id: "<news1@example.org>".to_string(),
+            in_reply_to: String::new(),
+            references: String::new(),
+            date: Some(1_760_000_000_000),
+            extra_headers: Vec::new(),
+        };
+        let built = super::build_lettre(&letter).unwrap().formatted();
+        let mime = String::from_utf8(super::with_received_headers(built.clone(), stored)).unwrap();
+        let (head, body) = mime.split_once("\r\n\r\n").expect("a header block");
+        for expected in [
+            "Received: from mail.example.org (mail.example.org [192.0.2.1])\r\n\tby mx.example.com with ESMTPS id abc123\r\n\tfor <team@example.com>; Mon, 19 Oct 2026 10:00:00 +0000\r\n",
+            "Authentication-Results: mx.example.com; dkim=pass",
+            "DKIM-Signature: v=1; a=rsa-sha256; d=example.org; s=s1;\r\n h=from:to:subject; bh=AAAA; b=BBBB\r\n",
+            "List-Unsubscribe: <mailto:leave@example.org>, <https://example.org/leave?u=1>\r\n",
+            "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n",
+            "Subject: =?utf-8?q?Caf=C3=A9_news?=\r\n",
+        ] {
+            assert!(format!("{head}\r\n").contains(expected), "{expected} in {head}");
+        }
+        assert!(head.starts_with("Received: "), "{head}");
+        assert!(
+            !head.contains("MAILER-DAEMON") && !head.contains("old-boundary"),
+            "{head}"
+        );
+        // the made structure, once; not the identity's Reply-To the builder would add
+        assert_eq!(head.matches("MIME-Version:").count(), 1, "{head}");
+        assert_eq!(head.to_ascii_lowercase().matches("content-type:").count(), 1, "{head}");
+        assert!(!head.contains("identity@example.com"), "{head}");
+        let made = String::from_utf8_lossy(&built).into_owned();
+        assert!(made.ends_with(body), "the made body");
+        let parsed = mail_parser::MessageParser::default().parse(mime.as_bytes()).unwrap();
+        assert_eq!(parsed.subject(), Some("Café news"));
+        assert_eq!(parsed.body_text(0).as_deref().map(str::trim), Some("Hello"));
+        assert!(parsed.body_html(0).is_some_and(|html| html.contains("<p>Hello</p>")));
+        assert_eq!(parsed.message_id(), Some("news1@example.org"));
+        assert!(parsed.header("List-Unsubscribe").is_some());
+
+        // only the client's own headers (an automatic reply's): the message as made
+        let own = super::with_received_headers(
+            built.clone(),
+            "Auto-Submitted: auto-replied\nX-Auto-Response-Suppress: All",
+        );
+        assert_eq!(own, built);
+        assert_eq!(super::with_received_headers(built.clone(), ""), built);
+        // a block cut at the most the store keeps loses its last field
+        let long = format!("Received: from a\nX-Long: {}", "x".repeat(super::HEADERS_MAX));
+        let cut = String::from_utf8(super::with_received_headers(built, &long)).unwrap();
+        assert!(
+            cut.starts_with("Received: from a\r\n") && !cut.contains("X-Long"),
+            "{}",
+            &cut[..80]
+        );
     }
 
     #[test]

@@ -920,7 +920,7 @@ fn wiki_pages_keep_versions_and_move_clone_and_delete() {
         "org.moqui.impl.WikiServices.delete#WikiPage",
         &params(&[("wikiSpaceId", "TS2"), ("pagePath", "Renamed")]),
     );
-    assert!(errors(&context).contains("has child pages"), "{}", errors(&context));
+    assert!(errors(&context).contains("has pages under it"), "{}", errors(&context));
     context.message().clear();
     let parent = sync(
         "delete#WikiPage",

@@ -174,7 +174,8 @@ along with this software (see the LICENSE.md file). If not, see
             host is given); emailServerId names an existing server instead, and ownerUserId another owner, only for
             internal work (authorization disabled). The Internal account is made by ensure#InternalAccount.
             recordFilingEnumId defaults by kind: an external account files only what is linked (ErfLinkedOnly), a hosted
-            or shared one every party match (ErfAllMatches).</description>
+            or shared one every party match (ErfAllMatches). statusId EasPaused makes an account the sync job leaves until
+            its setup is done (update#EmailAccount makes it active).</description>
         <in-parameters>
             <parameter name="accountKindEnumId" default-value="EakExternal"/>
             <parameter name="emailAddress" required="true" allow-html="any"/>
@@ -183,6 +184,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="syncWindowDays" type="Integer"/>
             <parameter name="syncIntervalMinutes" type="Integer"/>
             <parameter name="recordFilingEnumId"/>
+            <parameter name="statusId" default-value="EasActive"><description>EasActive or EasPaused</description></parameter>
             <parameter name="ownerPartyId"/>
             <parameter name="ownerUserId"/>
             <parameter name="sequenceNum" type="Integer"/>
@@ -209,6 +211,7 @@ along with this software (see the LICENSE.md file). If not, see
                         : `Unknown account kind ${accountKindEnumId}`)
                 return
             }
+            if (!['EasActive', 'EasPaused'].includes(statusId)) { ec.message.addError(`A new account is Active or Paused, not ${statusId}`); return }
             const authzOff = ec.artifactExecution.authzDisabled()
             if (!ec.user.userId && !authzOff) { ec.message.addError('No user for the email account'); return }
             if (ownerUserId && ownerUserId !== ec.user.userId && !authzOff) { ec.message.addError('An email account is made for yourself'); return }
@@ -236,7 +239,7 @@ along with this software (see the LICENSE.md file). If not, see
                 accountName: accountName || emailAddress, color: color, syncWindowDays: syncWindowDays,
                 syncIntervalMinutes: syncIntervalMinutes,
                 recordFilingEnumId: recordFilingEnumId || (accountKindEnumId === 'EakExternal' ? 'ErfLinkedOnly' : 'ErfAllMatches'),
-                statusId: 'EasActive', sequenceNum: sequenceNum}, false, null, null)
+                statusId: statusId, sequenceNum: sequenceNum}, false, null, null)
             account.create()
             emailAccountId = account.emailAccountId
             const FOLDERS = [['EfkInbox', 'Inbox', 'INBOX'], ['EfkDrafts', 'Drafts', null], ['EfkSent', 'Sent', null],
@@ -1634,7 +1637,11 @@ along with this software (see the LICENSE.md file). If not, see
         <description>Begin the sign-in with Google or Microsoft for a mail account, in a popup (moqui.oauthPopup). For an
             account the user manages (emailAccountId; its own server, or one is made with the provider's servers) or for
             a new account (emailAddress with accountName, displayName and accountKindEnumId EakExternal or EakShared),
-            which complete#OAuthSignIn makes once the user signed in. oauthProviderEnumId defaults to the account
+            which complete#OAuthSignIn makes once the user signed in: paused (statusId EasPaused, the default) so the sync
+            job leaves it until the app has finished its setup and makes it active (update#EmailAccount), or active at
+            once (EasActive) only with a sync window; syncWindowDays defaults to a year (365, the add-account wizard's),
+            0 is all mail. statusId and syncWindowDays are for a new account only: an account signing in again keeps
+            its status and window (one whose sign-in failed is active again). oauthProviderEnumId defaults to the account
             server's, else the address's domain. The state, the PKCE verifier (S256) and a nonce stay in the user's
             session for ten minutes, bound to the user and the account or address; the redirect URI is the deployment's
             (email_oauth_redirect_uri), never the request's. The signed-in address must be the account's, unless
@@ -1647,6 +1654,8 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="accountName"/>
             <parameter name="displayName"/>
             <parameter name="accountKindEnumId"/>
+            <parameter name="syncWindowDays" type="Integer"><description>A new account's: default 365, 0 for all mail</description></parameter>
+            <parameter name="statusId"><description>A new account's: EasPaused (the default) or EasActive (with a sync window)</description></parameter>
             <parameter name="oauthProviderEnumId"/>
             <parameter name="allowAddressChange" type="Boolean" default="false"/>
         </in-parameters>
@@ -1717,11 +1726,33 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="get" noun="OAuthProviders" type="rust" location="moqui_core::service::mail::get_oauth_providers"
             transaction="ignore" allow-remote="false">
         <description>The OAuth providers (EmailOAuthProvider) and whether this server is set up for each (a client id and
-            secret, not disabled, and a redirect URI), for the wizard's account kinds; redirectUri is the one to register
-            at the providers.</description>
+            secret, not disabled, and a redirect URI), for the wizard's account kinds, with how an address is known to be
+            the provider's mail (addressDomainList, hostSuffixList, mxSuffixList: lower case); redirectUri is the one to
+            register at the providers. No secret is answered.</description>
         <out-parameters>
-            <parameter name="providerList" type="List"><parameter name="provider" type="Map"/></parameter>
+            <parameter name="providerList" type="List"><parameter name="provider" type="Map"><description>oauthProviderEnumId,
+                description, configured, addressDomainList, hostSuffixList, mxSuffixList</description></parameter></parameter>
             <parameter name="redirectUri"/>
+        </out-parameters>
+    </service>
+    <service verb="find" noun="OAuthProvider" type="rust" location="moqui_core::service::mail::find_oauth_provider"
+            transaction="ignore" allow-remote="false">
+        <description>The EmailOAuthProvider whose mail an address is, as discover#EmailServer finds it but with no network:
+            the address's domain in addressDomains (gmail.com, outlook.com), else storeHost under a hostSuffixes entry (a
+            company domain whose incoming server is at Google or Microsoft); with lookupMx also the domain's MX hosts under
+            mxSuffixes (Google Workspace or Microsoft 365 on the company's own domain), a DNS query of a few seconds.
+            configured says whether this server is set up to sign in with it (get#OAuthProviders); matchedBy is domain, host
+            or mx. oauthProviderEnumId is empty when no provider has the mail, which is not an error.</description>
+        <in-parameters>
+            <parameter name="emailAddress" allow-html="any"/>
+            <parameter name="storeHost"/>
+            <parameter name="lookupMx" type="Boolean" default="false"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="oauthProviderEnumId"/>
+            <parameter name="providerName"/>
+            <parameter name="configured" type="Boolean"/>
+            <parameter name="matchedBy"/>
         </out-parameters>
     </service>
     <service verb="revoke" noun="OAuthSignIn" type="rust" location="moqui_core::service::mail::revoke_oauth_sign_in"
@@ -1773,9 +1804,11 @@ along with this software (see the LICENSE.md file). If not, see
         <description>A stored message as an RFC 5322 file (.eml) to download, with its EmailMessageAttachment files (inline
             ones by Content-ID beside the HTML): the mail client keeps no raw message, so the MIME is made again by the
             send path's builder from the stored fields and headers, as the copy of sent mail appended to Sent (no Bcc). A
-            message of an account the user does not reach at read level is "not found"; one with no account only with
+            received message keeps the header block it came with (headersString: Received, Authentication-Results,
+            DKIM-Signature, List-Unsubscribe and the rest, as they came), with the MIME structure of the body made again.
+            A message of an account the user does not reach at read level is "not found"; one with no account only with
             authorization disabled. A screen sends it with ec.web.sendTextResponse(out.mimeText, out.contentType,
-            out.fileName): the text is 7-bit, the same as mimeBytes.</description>
+            out.fileName): the text is the same as mimeBytes (7-bit, unless a received header came 8-bit).</description>
         <in-parameters><parameter name="emailMessageId" required="true"/></in-parameters>
         <out-parameters>
             <parameter name="mimeBytes" type="byte[]"/>

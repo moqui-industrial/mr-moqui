@@ -115,6 +115,8 @@ pub struct ScreenTest {
     root: Option<String>,
     base_url: String,
     render_mode: Option<String>,
+    /// Request headers of every render, such as `X-Moqui-Client-Modes`.
+    headers: Vec<(String, String)>,
     base_screen_path: String,
     stats: Arc<std::sync::Mutex<ScreenTestStats>>,
     start_time_ms: i64,
@@ -127,6 +129,7 @@ impl ScreenTest {
             root: None,
             base_url: String::new(),
             render_mode: None,
+            headers: Vec::new(),
             base_screen_path: String::new(),
             stats: Arc::new(std::sync::Mutex::new(ScreenTestStats::default())),
             start_time_ms: crate::user::now_millis(),
@@ -293,6 +296,9 @@ impl ScreenTest {
         if let Some(mode) = &self.render_mode {
             render = render.render_mode(mode.clone());
         }
+        for (name, value) in &self.headers {
+            render = render.header(name.clone(), value.clone());
+        }
         render
     }
 
@@ -314,6 +320,20 @@ impl ScreenTest {
     pub fn render_mode(mut self, mode: impl Into<String>) -> Self {
         self.render_mode = Some(mode.into());
         self
+    }
+
+    /// A request header for every render (a later one of the same name wins).
+    #[must_use]
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push((name.into(), value.into()));
+        self
+    }
+
+    /// `X-Moqui-Client-Modes` for every render, as `moqui.loadComponent` sends it for a screen whose render modes it does not
+    /// know (`qvue,qjs`): a `.qvt` request then gets the first of them the target names, and `X-Moqui-Qvt` says which.
+    #[must_use]
+    pub fn client_modes(self, modes: impl Into<String>) -> Self {
+        self.header("X-Moqui-Client-Modes", modes)
     }
 
     /// Render `path` (a `?a=b` tail adds parameters) with `parameters`, in the current execution

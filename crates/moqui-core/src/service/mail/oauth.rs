@@ -69,6 +69,8 @@ const SIGN_IN_MILLIS: i64 = 10 * 60 * 1000;
 /// How long an outcome stays for `get#OAuthStatus` after the sign-in expired.
 const KEEP_MILLIS: i64 = 10 * 60 * 1000;
 const MAX_PENDING: usize = 8;
+/// How far back a new account's first sync reads by default, in days: a year, the add-account wizard's default.
+const NEW_SYNC_WINDOW_DAYS: i64 = 365;
 /// An access token is refreshed this long before it expires.
 const EARLY_MILLIS: i64 = 60 * 1000;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -706,6 +708,12 @@ struct Pending {
     display_name: String,
     #[serde(default)]
     account_kind: String,
+    /// A new account's sync window in days, 0 for all mail.
+    #[serde(default)]
+    sync_window_days: i64,
+    /// A new account's status: EasPaused (also when empty) or EasActive.
+    #[serde(default)]
+    account_status: String,
     created: i64,
     expires: i64,
     #[serde(default)]
@@ -834,6 +842,8 @@ pub(super) fn start_sign_in(
         account_name: param_text(parameters, "accountName"),
         display_name: param_text(parameters, "displayName"),
         account_kind: String::new(),
+        sync_window_days: 0,
+        account_status: String::new(),
         created: now_millis(),
         expires: now_millis() + SIGN_IN_MILLIS,
         used: false,
@@ -857,6 +867,33 @@ pub(super) fn start_sign_in(
             note_error(format!("An account of kind {kind} does not sign in with a provider"));
             return Ok(out);
         }
+        // the new account waits for the app to finish its setup (paused), or syncs at once within a window, so the
+        // job does not bring in the whole mailbox a minute after the sign-in
+        let window = match parameters.get("syncWindowDays") {
+            None | Some(Value::Null) => Some(NEW_SYNC_WINDOW_DAYS),
+            Some(value) if to_plain_string(value).trim().is_empty() => Some(NEW_SYNC_WINDOW_DAYS),
+            Some(value) => value_number(Some(value)).filter(|days| *days >= 0),
+        };
+        let Some(window) = window else {
+            note_error("The sync window is a number of days (0 for all mail)");
+            return Ok(out);
+        };
+        let status = match param_text(parameters, "statusId") {
+            status if status.is_empty() => "EasPaused".to_string(),
+            status => status,
+        };
+        if !matches!(status.as_str(), "EasPaused" | "EasActive") {
+            note_error(format!("A new account is Paused or Active, not {status}"));
+            return Ok(out);
+        }
+        if status == "EasActive" && window == 0 {
+            note_error(
+                "An account that syncs at once needs a sync window (syncWindowDays), or it starts paused (EasPaused) until its setup is done",
+            );
+            return Ok(out);
+        }
+        pending.sync_window_days = window;
+        pending.account_status = status;
         if provider_id.is_empty() {
             let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
             if let Some(found) = detect(&load_providers(facade)?, domain, &[], &[]) {
@@ -1501,7 +1538,8 @@ fn store_on_account(
     .map_err(|err| format!("The sign-in could not be kept: {err}"))
 }
 
-/// A new account of the user's (create#EmailAccount) on the provider's servers, signed in.
+/// A new account of the user's (create#EmailAccount) on the provider's servers, signed in: paused until the app finishes
+/// its setup, or active with a sync window, as start#OAuthSignIn was asked.
 fn store_new_account(
     facade: &EntityFacade,
     pending: &Pending,
@@ -1527,6 +1565,16 @@ fn store_new_account(
         parameters.insert("mailUsername".into(), Value::string(address));
         parameters.insert("authTypeEnumId".into(), Value::string(OAUTH));
         parameters.insert("oauthProviderEnumId".into(), Value::string(&provider.id));
+        if pending.sync_window_days > 0 {
+            parameters.insert("syncWindowDays".into(), Value::I64(pending.sync_window_days));
+        }
+        // a sign-in started before the status was kept is paused too
+        let status = if pending.account_status == "EasActive" {
+            "EasActive"
+        } else {
+            "EasPaused"
+        };
+        parameters.insert("statusId".into(), Value::string(status));
         let created = crate::service::sync(&format!("{SERVICES}.create#EmailAccount"), &parameters)
             .map_err(|err| LibError::new(err.to_string()))?;
         if let Some(errors) = take_errors_string() {
@@ -1737,7 +1785,12 @@ pub(super) fn sign_in_status(
     Ok(out)
 }
 
-/// `get#OAuthProviders`: each provider, whether this server is set up for it, and the redirect URI to register.
+fn text_list(items: &[String]) -> Value {
+    Value::List(items.iter().map(Value::string).collect())
+}
+
+/// `get#OAuthProviders`: each provider, whether this server is set up for it, how an address is known to be its mail
+/// (address domains, host and MX suffixes), and the redirect URI to register. No secret.
 pub(super) fn providers_service(
     _parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
@@ -1750,12 +1803,66 @@ pub(super) fn providers_service(
             map.insert("oauthProviderEnumId".to_string(), Value::string(&provider.id));
             map.insert("description".to_string(), Value::string(&provider.name));
             map.insert("configured".to_string(), Value::Bool(provider.configured()));
+            map.insert("addressDomainList".to_string(), text_list(&provider.address_domains));
+            map.insert("hostSuffixList".to_string(), text_list(&provider.host_suffixes));
+            map.insert("mxSuffixList".to_string(), text_list(&provider.mx_suffixes));
             Value::Map(map)
         })
         .collect();
     let mut out = BTreeMap::new();
     out.insert("providerList".into(), Value::List(list));
     out.insert("redirectUri".into(), Value::string(redirect_uri()));
+    Ok(out)
+}
+
+/// `find#OAuthProvider`: the provider whose mail an address (or an incoming server) is, with no network: by the
+/// address's domain (addressDomains), then the server's host (hostSuffixes); the domain's MX hosts (mxSuffixes, a
+/// company domain at Google Workspace or Microsoft 365) only with `lookupMx`, a DNS query of a few seconds at most.
+/// Nothing found is no provider, not an error.
+pub(super) fn find_provider_service(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    let mut out = BTreeMap::new();
+    let address = param_text(parameters, "emailAddress").trim().to_ascii_lowercase();
+    let domain = address
+        .rsplit_once('@')
+        .map(|(_, domain)| domain.trim().trim_end_matches('.').to_string())
+        .unwrap_or_default();
+    let host = param_text(parameters, "storeHost").trim().to_ascii_lowercase();
+    let providers = {
+        let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+        load_providers(facade)?
+    };
+    let by = |test: &dyn Fn(&Provider) -> bool| providers.iter().find(|provider| test(provider)).cloned();
+    let mut found = (!domain.is_empty())
+        .then(|| by(&|provider| provider.address_domains.contains(&domain)))
+        .flatten()
+        .map(|provider| (provider, "domain"));
+    if found.is_none() && !host.is_empty() {
+        found = by(&|provider| provider.host_suffixes.iter().any(|suffix| host_under(&host, suffix)))
+            .map(|provider| (provider, "host"));
+    }
+    if found.is_none()
+        && flag(parameters, "lookupMx")
+        && super::discover::lookup_domain(&domain)
+        && !facade.sim_active()
+    {
+        let mx = super::discover::mx_hosts(&domain);
+        found = detect(&providers, &domain, &[], &mx).map(|provider| (provider, "mx"));
+    }
+    match found {
+        Some((provider, matched)) => {
+            text_out(&mut out, "oauthProviderEnumId", &provider.id);
+            text_out(&mut out, "providerName", &provider.name);
+            out.insert("configured".into(), Value::Bool(provider.configured()));
+            text_out(&mut out, "matchedBy", matched);
+        }
+        None => {
+            out.insert("oauthProviderEnumId".into(), Value::Null);
+            out.insert("configured".into(), Value::Bool(false));
+        }
+    }
     Ok(out)
 }
 
