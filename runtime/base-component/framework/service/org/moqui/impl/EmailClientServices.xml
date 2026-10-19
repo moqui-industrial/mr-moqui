@@ -31,9 +31,14 @@ along with this software (see the LICENSE.md file). If not, see
     folder: a message waiting to send (ES_SCHEDULED: a scheduled send or the undo-send hold) or one whose send failed
     (ES_READY with sendError) has no folder. Sent mail moves to Sent.
 
-    Not yet (plans/Remaining-Work.md, IronStone M5c-M5f): the sync engine (sync#EmailAccount, which fills push#RemoteChanges
-    with the IMAP side of local changes), rules (run#EmailRules), autodiscover (discover#EmailServer), report#Spam and
-    unsubscribe#Message, the search document, OAuth and the SMTP listener. -->
+    The sync engine (M5d, Rust in moqui_core::service::mail): sync#EmailAccount reads an IMAP or POP3 account into
+    EmailMessage rows (the job sync#DueEmailAccounts and the IMAP IDLE workers run it), push#RemoteChanges queues the
+    server side of each local change (EmailRemoteChange), which the sync makes; discover#EmailServer suggests the
+    servers for an address; import#EmailMessages reads .eml and .mbox files. The rules (EmailRule) run on new Inbox mail
+    and on demand (run#EmailRules); block#Sender and report#Spam are the Inbox's spam actions.
+
+    Not yet (plans/Remaining-Work.md, IronStone M5e-M5f): unsubscribe#Message, the search document, OAuth (XOAUTH2) and
+    the SMTP listener. -->
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
 
     <!-- ========== Access ========== -->
@@ -99,7 +104,7 @@ along with this software (see the LICENSE.md file). If not, see
                     ownerPartyId: row.ownerPartyId ?? null, accountKindEnumId: row.accountKindEnumId ?? null,
                     emailServerId: row.emailServerId ?? null, ownsEmailServer: row.ownsEmailServer === 'Y',
                     emailAddress: row.emailAddress ?? null, accountName: row.accountName ?? null, color: row.color ?? null,
-                    syncWindowDays: row.syncWindowDays ?? null,
+                    syncWindowDays: row.syncWindowDays ?? null, syncIntervalMinutes: row.syncIntervalMinutes ?? null,
                     recordFilingEnumId: row.recordFilingEnumId || defaultFiling(row.accountKindEnumId),
                     statusId: row.statusId || 'EasActive', lastSyncDate: toMillis(row.lastSyncDate), lastSyncError: row.lastSyncError ?? null,
                     sequenceNum: row.sequenceNum ?? null, isOwner: isOwner, isInternal: isInternal, level: rowLevel,
@@ -165,6 +170,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="accountName"/>
             <parameter name="color"/>
             <parameter name="syncWindowDays" type="Integer"/>
+            <parameter name="syncIntervalMinutes" type="Integer"/>
             <parameter name="recordFilingEnumId"/>
             <parameter name="ownerPartyId"/>
             <parameter name="ownerUserId"/>
@@ -217,6 +223,7 @@ along with this software (see the LICENSE.md file). If not, see
             account.setFields({ownerUserId: ownerUserId, ownerPartyId: ownerPartyId, accountKindEnumId: accountKindEnumId,
                 emailServerId: emailServerId, ownsEmailServer: ownsServer ? 'Y' : 'N', emailAddress: emailAddress,
                 accountName: accountName || emailAddress, color: color, syncWindowDays: syncWindowDays,
+                syncIntervalMinutes: syncIntervalMinutes,
                 recordFilingEnumId: recordFilingEnumId || (accountKindEnumId === 'EakExternal' ? 'ErfLinkedOnly' : 'ErfAllMatches'),
                 statusId: 'EasActive', sequenceNum: sequenceNum}, false, null, null)
             account.create()
@@ -251,6 +258,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="emailAddress" allow-html="any"/>
             <parameter name="color"/>
             <parameter name="syncWindowDays"/>
+            <parameter name="syncIntervalMinutes"/>
             <parameter name="recordFilingEnumId"/>
             <parameter name="sequenceNum"/>
             <parameter name="statusId"/>
@@ -318,7 +326,13 @@ along with this software (see the LICENSE.md file). If not, see
                 } else {
                     server.update()
                 }
+                // new settings are worth a try: a sign-in that failed, or a server that could not be reached, is tried again
+                if (!given(statusId) && ['EasAuthFailed', 'EasError'].includes(account.statusId)) {
+                    account.set('statusId', 'EasActive')
+                    account.set('lastSyncError', null)
+                }
             }
+            if (given(syncIntervalMinutes)) account.set('syncIntervalMinutes', blank(syncIntervalMinutes))
             account.update()
         ]]></script></actions>
     </service>
@@ -353,6 +367,8 @@ along with this software (see the LICENSE.md file). If not, see
             if (!deleteLocalCopies) {
                 account.set('statusId', 'EasRemoved')
                 account.update()
+                // nothing more goes to its server
+                ec.entity.find('moqui.basic.email.EmailRemoteChange').condition('emailAccountId', emailAccountId).deleteAll()
                 ec.entity.find('moqui.basic.email.EmailAccountUser').condition('emailAccountId', emailAccountId)
                         .conditionDate('fromDate', 'thruDate', null).updateAll({thruDate: now})
                 if (ownedServer) ec.entity.find('moqui.basic.email.EmailServer').condition('emailServerId', ownedServer)
@@ -377,6 +393,7 @@ along with this software (see the LICENSE.md file). If not, see
             ec.entity.find('moqui.basic.email.EmailRule').condition('emailAccountId', emailAccountId).deleteAll()
             ec.entity.find('moqui.basic.email.EmailOutOfOffice').condition('emailAccountId', emailAccountId).deleteAll()
             ec.entity.find('moqui.basic.email.EmailAccountUser').condition('emailAccountId', emailAccountId).deleteAll()
+            ec.entity.find('moqui.basic.email.EmailRemoteChange').condition('emailAccountId', emailAccountId).deleteAll()
             account.delete()
             if (ownedServer && ec.entity.find('moqui.basic.email.EmailAccount').condition('emailServerId', ownedServer).count() === 0)
                 ec.entity.find('moqui.basic.email.EmailServer').condition('emailServerId', ownedServer).deleteAll()
@@ -454,7 +471,8 @@ along with this software (see the LICENSE.md file). If not, see
                     (foldersByAccount[folder.emailAccountId] ||= []).push({emailFolderId: folder.emailFolderId, folderName: folder.folderName ?? null,
                         folderPath: folder.folderPath ?? null, parentFolderId: folder.parentFolderId ?? null,
                         folderKindEnumId: folder.folderKindEnumId || 'EfkOther', sequenceNum: folder.sequenceNum ?? null,
-                        unreadCount: 0, totalCount: folder.totalCount ?? null})
+                        unreadCount: 0, totalCount: folder.totalCount ?? null, subscribed: folder.subscribed !== 'N',
+                        removed: folder.remoteRemovedDate != null})
                 }
                 for (const label of ec.entity.find('moqui.basic.email.EmailLabel').condition('emailAccountId', 'in', mailIds)
                         .orderBy('sequenceNum,labelName').list()) {
@@ -1202,12 +1220,17 @@ along with this software (see the LICENSE.md file). If not, see
         ]]></script></actions>
     </service>
 
-    <service verb="push" noun="RemoteChanges">
-        <description>The hook for the server side of a local change, for an account with a server: changeType flags,
-            move, labels, delete, createFolder or renameFolder, with the emailMessageIdList, the target emailFolderId,
-            and for a move fromFolderMap (emailMessageId to the folder it left). Nothing yet: the sync engine
-            (sync#EmailAccount, M5d) makes it IMAP STORE, MOVE, EXPUNGE, CREATE and RENAME, or queues them for its next
-            session. Callers ignore its errors.</description>
+    <service verb="push" noun="RemoteChanges" type="rust" location="moqui_core::service::mail::push_remote_changes"
+            allow-remote="false">
+        <description>Internal (authorization disabled): queue the server side of a local change of an account with an
+            IMAP server, as EmailRemoteChange rows in the caller's transaction; nothing for any other account or for a
+            message kept only here. changeType flags (flagMap names the flags changed), move (to the message's folder
+            here), labels (stored as IMAP keywords), keywords (addKeywordList, removeKeywordList, such as $Junk), delete
+            (where the message is on the server is kept with the change, as its row goes), sent (APPEND to Sent, unless
+            the server keeps a copy of what it sends), createFolder or renameFolder (emailFolderId). The sync makes them,
+            in order, at the start and end of each session, and right after the commit when email_sync_push_now is on
+            (the default). A change made from the message's state when applied, so later changes need no merging.
+            fromFolderMap and oldName are accepted for the callers, which ignore its errors.</description>
         <in-parameters>
             <parameter name="emailAccountId" required="true"/>
             <parameter name="changeType" required="true"/>
@@ -1215,11 +1238,100 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="emailFolderId"/>
             <parameter name="fromFolderMap" type="Map"/>
             <parameter name="flagMap" type="Map"/>
+            <parameter name="addKeywordList" type="List"/>
+            <parameter name="removeKeywordList" type="List"/>
             <parameter name="oldName"/>
         </in-parameters>
-        <actions><script><![CDATA[
-            // M5d: IMAP for accounts whose server has a storeHost. Until then the change is only local.
-        ]]></script></actions>
+    </service>
+
+    <!-- ========== Sync, autodiscover and import (Rust: moqui_core::service::mail) ========== -->
+
+    <service verb="sync" noun="EmailAccount" type="rust" location="moqui_core::service::mail::sync_account"
+            transaction="ignore" allow-remote="false">
+        <description>
+            Sync an account with its IMAP or POP3 server now: a user's "Sync now" (one who reaches the account), or the
+            job and the IDLE workers (authorization disabled). The queued local changes go to the server first; then
+            LIST maps the server's folders (INBOX and the special-use attributes onto the account's folders), and each
+            subscribed folder, the Inbox first, brings its new mail (within syncWindowDays; at most email_sync_batch a
+            folder a session), its flags (CONDSTORE CHANGEDSINCE when offered, else a scan every email_flag_scan
+            minutes) and its expunges (QRESYNC VANISHED, else by UID). A message is stored once, by folder and UID and
+            by Message-ID across folders (a move keeps the row and its links); its files are DbResource files under
+            dbresource://email/; it is threaded by In-Reply-To and References; received mail is ES_RECEIVED, the Sent
+            folder's ES_SENT. The rules run on the new Inbox mail. A POP3 account is fetch-only into the Inbox, by
+            UIDL. Each message, folder and account is on its own: one that fails is logged and the rest go on; a
+            refused sign-in marks the account EasAuthFailed with lastSyncError. No two syncs of an account run at once
+            (syncLockedUntil): a second one reports busy. pushOnly makes only the queued changes; inboxOnly reads the
+            Inbox (and the other folders only when mail left it).
+        </description>
+        <in-parameters>
+            <parameter name="emailAccountId" required="true"/>
+            <parameter name="pushOnly" type="Boolean" default="false"/>
+            <parameter name="inboxOnly" type="Boolean" default="false"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="outcome"><description>synced, busy, skipped, paused, failed or authFailed</description></parameter>
+            <parameter name="message"/>
+            <parameter name="newCount" type="Integer"/>
+            <parameter name="updatedCount" type="Integer"/>
+            <parameter name="removedCount" type="Integer"/>
+            <parameter name="pushedCount" type="Integer"/>
+            <parameter name="folderCount" type="Integer"/>
+            <parameter name="skippedCount" type="Integer"><description>Messages that did not parse or could not be stored</description></parameter>
+            <parameter name="folderErrorList" type="List"/>
+        </out-parameters>
+    </service>
+    <service verb="sync" noun="DueEmailAccounts" type="rust" location="moqui_core::service::mail::sync_due_accounts"
+            transaction="ignore" authenticate="anonymous-all" allow-remote="false">
+        <description>The ServiceJob sync_EmailAccounts_frequent: sync each account with an incoming server whose last sync
+            is older than its interval (syncIntervalMinutes, else the email_sync_interval property, 5 minutes; three times
+            as long after an error), each on its own. Paused accounts, those whose sign-in failed and those syncing now
+            are left.</description>
+        <out-parameters>
+            <parameter name="syncedCount" type="Integer"/>
+            <parameter name="failedCount" type="Integer"/>
+            <parameter name="busyCount" type="Integer"/>
+        </out-parameters>
+    </service>
+    <service verb="discover" noun="EmailServer" type="rust" location="moqui_core::service::mail::discover_server"
+            transaction="ignore" allow-remote="false">
+        <description>The servers for an address, for the MailAccounts wizard, within a few seconds: Thunderbird autoconfig
+            (autoconfig.domain, the domain's .well-known URL, then the ISPDB; email_autoconfig_urls replaces the list),
+            then DNS SRV records (RFC 6186), else the guesses imap.domain and smtp.domain. The best of each, as the fields
+            create#EmailAccount takes, and every one found in incomingList and outgoingList. oauthOnly when the provider
+            signs in only with OAuth.</description>
+        <in-parameters><parameter name="emailAddress" required="true" allow-html="any"/></in-parameters>
+        <out-parameters>
+            <parameter name="source"><description>autoconfig, ispdb, srv or guess</description></parameter>
+            <parameter name="displayName"/>
+            <parameter name="storeHost"/><parameter name="storePort"/><parameter name="storeProtocol"/>
+            <parameter name="smtpHost"/><parameter name="smtpPort"/><parameter name="smtpSsl"/><parameter name="smtpStartTls"/>
+            <parameter name="mailUsername"/>
+            <parameter name="oauthOnly" type="Boolean"/>
+            <parameter name="incomingList" type="List"><parameter name="server" type="Map"/></parameter>
+            <parameter name="outgoingList" type="List"><parameter name="server" type="Map"/></parameter>
+        </out-parameters>
+    </service>
+    <service verb="import" noun="EmailMessages" type="rust" location="moqui_core::service::mail::import_messages"
+            transaction="ignore" allow-remote="false">
+        <description>Import .eml files (a message each) and .mbox files into a folder of an account the user may send from
+            (local or synced): file or fileList (uploads), location or locationList (resource locations), or messageText.
+            The messages are kept here only (nothing is appended to the server); one already in the folder by Message-ID
+            is not imported again; one that does not parse or cannot be stored is logged and the rest go on.</description>
+        <in-parameters>
+            <parameter name="emailFolderId" required="true"/>
+            <parameter name="file" type="org.apache.commons.fileupload2.core.FileItem"/>
+            <parameter name="fileList" type="List"/>
+            <parameter name="location"/>
+            <parameter name="locationList" type="List"/>
+            <parameter name="messageText" allow-html="any"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="importedCount" type="Integer"/>
+            <parameter name="duplicateCount" type="Integer"/>
+            <parameter name="failedCount" type="Integer"/>
+            <parameter name="emailMessageIdList" type="List"/>
+            <parameter name="errorList" type="List"/>
+        </out-parameters>
     </service>
     <service verb="publish" noun="AccountCounts">
         <description>Internal: send the shell counts of the users of these accounts (their owners and members), after a
@@ -1466,9 +1578,15 @@ along with this software (see the LICENSE.md file). If not, see
             for (const target of toTrash) if (!resolved.accountMap[target.emailAccountId]?.folderIdByKind?.EfkTrash) {
                 ec.message.addError(`Email account ${target.emailAccountId} has no Trash folder`); return }
             const accounts = new Set()
+            // the server side of the deletes first, while the rows still say where each message is on the server
+            const deletedByAccount = {}
+            for (const target of toDelete) (deletedByAccount[target.emailAccountId] ||= []).push(target.emailMessageId)
+            for (const accountId of Object.keys(deletedByAccount)) {
+                if (resolved.accountMap[accountId]?.emailServerId) ec.service.sync().name('org.moqui.impl.EmailClientServices.push#RemoteChanges')
+                        .parameters({emailAccountId: accountId, changeType: 'delete', emailMessageIdList: deletedByAccount[accountId]}).disableAuthz().call()
+            }
             // each one deleted in its own transaction, so one a record refers to does not stop the rest; before any move
             // here, so the transaction of this service holds no lock a delete waits on
-            const deletedByAccount = {}
             for (const target of toDelete) {
                 ec.message.pushErrors()
                 ec.service.sync().name('org.moqui.impl.EmailClientServices.delete#LocalMessages').parameter('emailMessageIdList', [target.emailMessageId])
@@ -1483,7 +1601,6 @@ along with this software (see the LICENSE.md file). If not, see
                     ec.message.clearErrors()
                 }
                 ec.message.popErrors()
-                ;(deletedByAccount[target.emailAccountId] ||= []).push(target.emailMessageId)
                 accounts.add(target.emailAccountId)
                 emailMessageIdList.push(target.emailMessageId)
                 deletedCount++
@@ -1503,10 +1620,6 @@ along with this software (see the LICENSE.md file). If not, see
                 if (resolved.accountMap[accountId]?.emailServerId) ec.service.sync().name('org.moqui.impl.EmailClientServices.push#RemoteChanges')
                         .parameters({emailAccountId: accountId, changeType: 'move', emailMessageIdList: Object.keys(fromFolders[accountId]),
                             emailFolderId: resolved.accountMap[accountId].folderIdByKind.EfkTrash, fromFolderMap: fromFolders[accountId]}).disableAuthz().call()
-            }
-            for (const accountId of Object.keys(deletedByAccount)) {
-                if (resolved.accountMap[accountId]?.emailServerId) ec.service.sync().name('org.moqui.impl.EmailClientServices.push#RemoteChanges')
-                        .parameters({emailAccountId: accountId, changeType: 'delete', emailMessageIdList: deletedByAccount[accountId]}).disableAuthz().call()
             }
             if (accounts.size) ec.service.sync().name('org.moqui.impl.EmailClientServices.publish#AccountCounts')
                     .parameter('emailAccountIdList', Array.from(accounts)).disableAuthz().call()
@@ -1574,7 +1687,8 @@ along with this software (see the LICENSE.md file). If not, see
             if (!ids.length) return
             ec.entity.find('moqui.basic.email.EmailMessageLabel').condition('emailMessageId', 'in', ids).deleteAll()
             ec.entity.find('moqui.basic.email.EmailMessage').condition('emailMessageId', 'in', ids)
-                    .updateAll({emailAccountId: null, emailFolderId: null, emailIdentityId: null, emailServerId: null})
+                    .updateAll({emailAccountId: null, emailFolderId: null, emailIdentityId: null, emailServerId: null,
+                        remoteFolderId: null, remoteUid: null})
         ]]></script></actions>
     </service>
 
@@ -1975,6 +2089,9 @@ along with this software (see the LICENSE.md file). If not, see
             if (messageId && !message.messageId) message.set('messageId', messageId)
             message.update()
             statusId = 'ES_SENT'
+            // its copy in the server's Sent folder (an IMAP account; the sync APPENDs it, or finds the server's own copy)
+            if (message.emailAccountId) ec.service.sync().name('org.moqui.impl.EmailClientServices.push#RemoteChanges').parameters({
+                emailAccountId: message.emailAccountId, changeType: 'sent', emailMessageIdList: [emailMessageId]}).disableAuthz().call()
             if (message.parentEmailMessageId && message.inReplyTo) {
                 const parent = ec.entity.find('moqui.basic.email.EmailMessage').condition('emailMessageId', message.parentEmailMessageId).one()
                 if (parent != null && parent.isAnswered !== 'Y') { parent.set('isAnswered', 'Y'); parent.update() }
@@ -2130,6 +2247,647 @@ along with this software (see the LICENSE.md file). If not, see
                 accountCountMap[row.emailAccountId] = (accountCountMap[row.emailAccountId] || 0) + 1
             }
             unreadThreadCount = threads.size
+        ]]></script></actions>
+    </service>
+
+    <!-- ========== Rules and spam ========== -->
+
+    <!-- A rule (EmailRule) is its owner's: on one account (emailAccountId; the owner must manage it) or on all the
+        accounts the owner owns (no emailAccountId). Rules run in sequenceNum order on the mail the sync stores in an
+        Inbox, and on demand over a folder (run#EmailRules). Each condition is {field, operator, value}: field from, to,
+        cc, subject, body, hasAttachment, listId, size, or a header name ({field: 'header', header: 'X-Spam-Flag'} or the
+        name itself); operator contains, is, matches (a regular expression), startsWith, all ignoring case, and for the
+        size greater or less (bytes, or with K or M). matchAllEnumId ErmAll (the default) or ErmAny. Each action is
+        {action, value}: moveToFolder (a folder id, name or path), addLabel (a label id or name, made when missing),
+        markRead, flag, forwardTo (addresses, sent through the account), delete (to Trash), markSpam (to Junk, keyword
+        $Junk), stopProcessing; createTask and createRequest are for an app to add. -->
+    <service verb="normalize" noun="EmailRule">
+        <description>Internal, for create#EmailRule and update#EmailRule: the conditions and actions of a rule checked and
+            in their stored form, or an error saying what is wrong. A conditionsJson or actionsJson text is read as the
+            list.</description>
+        <in-parameters>
+            <parameter name="conditionList" type="List"/>
+            <parameter name="actionList" type="List"/>
+            <parameter name="conditionsJson" allow-html="any"/>
+            <parameter name="actionsJson" allow-html="any"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="conditionsJson"/>
+            <parameter name="actionsJson"/>
+        </out-parameters>
+        <actions><script><![CDATA[
+            const FIELDS = ['from', 'to', 'cc', 'subject', 'body', 'hasAttachment', 'listId', 'size', 'header']
+            const OPERATORS = ['contains', 'is', 'matches', 'startsWith', 'greater', 'less']
+            const ACTIONS = ['moveToFolder', 'addLabel', 'markRead', 'flag', 'forwardTo', 'delete', 'markSpam', 'stopProcessing',
+                'createTask', 'createRequest']
+            const listOf = (list, json, what) => {
+                if (list != null) return Array.from(list)
+                if (json == null || json === '') return []
+                try { const parsed = JSON.parse(String(json)); return Array.isArray(parsed) ? parsed : null }
+                catch (err) { return null }
+            }
+            const givenConditions = listOf(conditionList, conditionsJson)
+            const givenActions = listOf(actionList, actionsJson)
+            conditionsJson = null
+            actionsJson = null
+            if (givenConditions == null) { ec.message.addError('The rule conditions are not a list'); return }
+            if (givenActions == null) { ec.message.addError('The rule actions are not a list'); return }
+            const conditions = []
+            for (const given of givenConditions) {
+                if (given == null || typeof given !== 'object') { ec.message.addError('Each rule condition is a {field, operator, value}'); return }
+                let field = String(given.field || '').trim()
+                let header = given.header ? String(given.header).trim() : null
+                if (!field) { ec.message.addError('A rule condition needs a field'); return }
+                if (!FIELDS.includes(field)) { header = field; field = 'header' }
+                if (field === 'header' && !/^[A-Za-z0-9-]+$/.test(header || '')) { ec.message.addError(`${header || 'That'} is not a header name`); return }
+                const operator = String(given.operator || (field === 'size' ? 'greater' : (field === 'hasAttachment' ? 'is' : 'contains')))
+                if (!OPERATORS.includes(operator)) { ec.message.addError(`Unknown rule operator ${operator}`); return }
+                if ((operator === 'greater' || operator === 'less') && field !== 'size') { ec.message.addError(`The operator ${operator} is for the size only`); return }
+                let value = given.value == null ? '' : String(given.value)
+                if (field === 'hasAttachment') {
+                    value = ['false', 'n', 'no', '0'].includes(value.trim().toLowerCase()) ? 'N' : 'Y'
+                } else if (field === 'size') {
+                    if (!/^\s*\d+(\.\d+)?\s*[kKmM]?[bB]?\s*$/.test(value)) { ec.message.addError(`${value} is not a size`); return }
+                } else if (!value.trim()) {
+                    ec.message.addError(`The ${field === 'header' ? header : field} condition needs a value`); return
+                }
+                if (operator === 'matches') {
+                    try { new RegExp(value, 'i') } catch (err) { ec.message.addError(`${value} is not a regular expression: ${err.message || err}`); return }
+                }
+                const condition = {field: field, operator: operator, value: value}
+                if (field === 'header') condition.header = header
+                conditions.push(condition)
+            }
+            if (!conditions.length) { ec.message.addError('A rule needs a condition'); return }
+            const actions = []
+            for (const given of givenActions) {
+                if (given == null || typeof given !== 'object') { ec.message.addError('Each rule action is an {action, value}'); return }
+                const action = String(given.action || '').trim()
+                if (!ACTIONS.includes(action)) { ec.message.addError(`Unknown rule action ${action || '(none)'}`); return }
+                const value = given.value == null ? '' : String(given.value).trim()
+                if (['moveToFolder', 'addLabel', 'forwardTo'].includes(action) && !value) { ec.message.addError(`The ${action} action needs a value`); return }
+                if (action === 'forwardTo' && value.split(',').some((address) => !address.includes('@'))) {
+                    ec.message.addError(`Not an email address: ${value}`); return }
+                actions.push(value ? {action: action, value: value} : {action: action})
+            }
+            if (!actions.length) { ec.message.addError('A rule needs an action'); return }
+            conditionsJson = JSON.stringify(conditions)
+            actionsJson = JSON.stringify(actions)
+        ]]></script></actions>
+    </service>
+    <service verb="get" noun="EmailRuleAccess">
+        <description>Internal, for the rule services: whether the current user may change a rule: its owner, or a manager
+            of its account. level is the user's on the rule's account (3 for a rule on all of the owner's accounts).</description>
+        <in-parameters><parameter name="emailRuleId" required="true"/></in-parameters>
+        <out-parameters>
+            <parameter name="rule" type="Map"/>
+            <parameter name="canChange" type="Boolean"/>
+        </out-parameters>
+        <actions><script><![CDATA[
+            canChange = false
+            const row = ec.entity.find('moqui.basic.email.EmailRule').condition('emailRuleId', emailRuleId).one()
+            rule = row ? row.getMap() : null
+            if (row == null) return
+            if (row.ownerUserId && row.ownerUserId === ec.user.userId) { canChange = true; return }
+            if (row.emailAccountId) {
+                const access = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailAccountAccess')
+                        .parameter('emailAccountId', row.emailAccountId).call()
+                canChange = (access.level || 0) >= 3
+            }
+        ]]></script></actions>
+    </service>
+    <service verb="find" noun="EmailRules">
+        <description>The rules the current user may change, in order: their own, and those on the accounts they manage
+            (emailAccountId for one account's, which also lists the user's rules on all accounts). Each has its fields,
+            conditionList, actionList, accountName (null for all accounts) and isOwner.</description>
+        <in-parameters><parameter name="emailAccountId"/></in-parameters>
+        <out-parameters><parameter name="ruleList" type="List"><parameter name="rule" type="Map"/></parameter></out-parameters>
+        <actions><script><![CDATA[
+            const cf = ec.entity.conditionFactory
+            ruleList = []
+            if (!ec.user.userId) return
+            const access = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailAccountAccess').call()
+            if (ec.message.hasError()) return
+            const managed = access.accountList.filter((account) => account.level >= 3 && !account.isInternal).map((account) => account.emailAccountId)
+            const names = {}
+            for (const account of access.accountList) names[account.emailAccountId] = account.accountName || account.emailAddress
+            const reach = [cf.makeCondition('ownerUserId', 'equals', ec.user.userId)]
+            if (managed.length) reach.push(cf.makeCondition('emailAccountId', 'in', managed))
+            let find = ec.entity.find('moqui.basic.email.EmailRule').condition(cf.makeCondition(reach, 'or'))
+            const parse = (text) => { try { const list = JSON.parse(text || '[]'); return Array.isArray(list) ? list : [] } catch (err) { return [] } }
+            for (const row of find.orderBy('sequenceNum').orderBy('emailRuleId').list()) {
+                if (emailAccountId && row.emailAccountId && row.emailAccountId !== emailAccountId) continue
+                ruleList.push({emailRuleId: row.emailRuleId, ruleName: row.ruleName ?? null, emailAccountId: row.emailAccountId ?? null,
+                    accountName: row.emailAccountId ? (names[row.emailAccountId] ?? null) : null, ownerUserId: row.ownerUserId ?? null,
+                    isOwner: row.ownerUserId === ec.user.userId, sequenceNum: row.sequenceNum ?? null, enabled: row.enabled !== 'N',
+                    matchAllEnumId: row.matchAllEnumId || 'ErmAll', stopProcessing: row.stopProcessing === 'Y',
+                    matchedCount: row.matchedCount ?? 0, conditionList: parse(row.conditionsJson), actionList: parse(row.actionsJson)})
+            }
+        ]]></script></actions>
+    </service>
+    <service verb="create" noun="EmailRule">
+        <description>A rule of the current user: on emailAccountId (which they must manage), or on all their own accounts.
+            It goes after their other rules unless sequenceNum is given.</description>
+        <in-parameters>
+            <parameter name="ruleName" required="true"/>
+            <parameter name="emailAccountId"/>
+            <parameter name="matchAllEnumId" default-value="ErmAll"/>
+            <parameter name="conditionList" type="List"/>
+            <parameter name="actionList" type="List"/>
+            <parameter name="conditionsJson" allow-html="any"/>
+            <parameter name="actionsJson" allow-html="any"/>
+            <parameter name="enabled" default-value="Y"/>
+            <parameter name="stopProcessing" default-value="N"/>
+            <parameter name="sequenceNum" type="Integer"/>
+        </in-parameters>
+        <out-parameters><parameter name="emailRuleId"/></out-parameters>
+        <actions><script><![CDATA[
+            if (!ec.user.userId) { ec.message.addError('No user for the email rule'); return }
+            if (emailAccountId) {
+                const access = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailAccountAccess')
+                        .parameter('emailAccountId', emailAccountId).call()
+                if (ec.message.hasError()) return
+                if (!(access.level >= 1)) { ec.message.addError(`Email account ${emailAccountId} not found`); return }
+                if (access.level < 3) { ec.message.addError(`You may not add rules to email account ${emailAccountId}`); return }
+                if (access.account.isInternal) { ec.message.addError('Internal messages have no rules'); return }
+            }
+            if (!['ErmAll', 'ErmAny'].includes(matchAllEnumId)) { ec.message.addError(`Unknown rule match ${matchAllEnumId}`); return }
+            const normal = ec.service.sync().name('org.moqui.impl.EmailClientServices.normalize#EmailRule').parameters({
+                conditionList: conditionList, actionList: actionList, conditionsJson: conditionsJson, actionsJson: actionsJson}).call()
+            if (ec.message.hasError()) return
+            if (sequenceNum == null) {
+                const last = ec.entity.find('moqui.basic.email.EmailRule').condition('ownerUserId', ec.user.userId)
+                        .orderBy('-sequenceNum').limit(1).list()
+                sequenceNum = last.length ? Number(last[0].sequenceNum || 0) + 10 : 10
+            }
+            const row = ec.entity.makeValue('moqui.basic.email.EmailRule')
+            row.setSequencedIdPrimary()
+            row.setFields({ownerUserId: ec.user.userId, emailAccountId: emailAccountId || null, ruleName: String(ruleName).trim(),
+                sequenceNum: sequenceNum, enabled: enabled === 'N' || enabled === false ? 'N' : 'Y', matchAllEnumId: matchAllEnumId,
+                conditionsJson: normal.conditionsJson, actionsJson: normal.actionsJson, matchedCount: 0,
+                stopProcessing: stopProcessing === 'Y' || stopProcessing === true ? 'Y' : 'N'}, false, null, null)
+            row.create()
+            emailRuleId = row.emailRuleId
+        ]]></script></actions>
+    </service>
+    <service verb="update" noun="EmailRule">
+        <description>Change a rule (its owner, or a manager of its account). A field given is set; the conditions and
+            actions are replaced when given.</description>
+        <in-parameters>
+            <parameter name="emailRuleId" required="true"/>
+            <parameter name="ruleName"/>
+            <parameter name="matchAllEnumId"/>
+            <parameter name="conditionList" type="List"/>
+            <parameter name="actionList" type="List"/>
+            <parameter name="conditionsJson" allow-html="any"/>
+            <parameter name="actionsJson" allow-html="any"/>
+            <parameter name="enabled"/>
+            <parameter name="stopProcessing"/>
+            <parameter name="sequenceNum"/>
+        </in-parameters>
+        <actions><script><![CDATA[
+            const check = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailRuleAccess').parameter('emailRuleId', emailRuleId).call()
+            if (ec.message.hasError()) return
+            if (check.rule == null) { ec.message.addError(`Email rule ${emailRuleId} not found`); return }
+            if (!check.canChange) { ec.message.addError(`You may not change email rule ${emailRuleId}`); return }
+            const row = ec.entity.find('moqui.basic.email.EmailRule').condition('emailRuleId', emailRuleId).one()
+            if (ruleName != null) {
+                if (!String(ruleName).trim()) { ec.message.addError('A rule needs a name'); return }
+                row.set('ruleName', String(ruleName).trim())
+            }
+            if (matchAllEnumId != null) {
+                if (!['ErmAll', 'ErmAny'].includes(matchAllEnumId)) { ec.message.addError(`Unknown rule match ${matchAllEnumId}`); return }
+                row.set('matchAllEnumId', matchAllEnumId)
+            }
+            const conditionsGiven = conditionList != null || conditionsJson != null
+            const actionsGiven = actionList != null || actionsJson != null
+            if (conditionsGiven || actionsGiven) {
+                const normal = ec.service.sync().name('org.moqui.impl.EmailClientServices.normalize#EmailRule').parameters({
+                    conditionList: conditionList, actionList: actionList,
+                    conditionsJson: conditionsGiven ? conditionsJson : row.conditionsJson, actionsJson: actionsGiven ? actionsJson : row.actionsJson}).call()
+                if (ec.message.hasError()) return
+                row.set('conditionsJson', normal.conditionsJson)
+                row.set('actionsJson', normal.actionsJson)
+            }
+            if (enabled != null) row.set('enabled', enabled === 'N' || enabled === false || enabled === 'false' ? 'N' : 'Y')
+            if (stopProcessing != null) row.set('stopProcessing', stopProcessing === 'Y' || stopProcessing === true || stopProcessing === 'true' ? 'Y' : 'N')
+            if (sequenceNum != null && sequenceNum !== '') row.set('sequenceNum', Number(sequenceNum))
+            row.update()
+        ]]></script></actions>
+    </service>
+    <service verb="delete" noun="EmailRule">
+        <description>Delete a rule (its owner, or a manager of its account).</description>
+        <in-parameters><parameter name="emailRuleId" required="true"/></in-parameters>
+        <actions><script><![CDATA[
+            const check = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailRuleAccess').parameter('emailRuleId', emailRuleId).call()
+            if (ec.message.hasError()) return
+            if (check.rule == null) { ec.message.addError(`Email rule ${emailRuleId} not found`); return }
+            if (!check.canChange) { ec.message.addError(`You may not delete email rule ${emailRuleId}`); return }
+            ec.entity.find('moqui.basic.email.EmailRule').condition('emailRuleId', emailRuleId).deleteAll()
+        ]]></script></actions>
+    </service>
+    <service verb="reorder" noun="EmailRules">
+        <description>Put rules in this order (each the user may change): their sequenceNum becomes 10, 20, 30 and on.</description>
+        <in-parameters><parameter name="emailRuleIdList" type="List" required="true"/></in-parameters>
+        <actions><script><![CDATA[
+            const ids = Array.from(emailRuleIdList || []).filter((id) => id)
+            for (const id of ids) {
+                const check = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailRuleAccess').parameter('emailRuleId', id).call()
+                if (ec.message.hasError()) return
+                if (check.rule == null) { ec.message.addError(`Email rule ${id} not found`); return }
+                if (!check.canChange) { ec.message.addError(`You may not change email rule ${id}`); return }
+            }
+            ids.forEach((id, index) => ec.entity.find('moqui.basic.email.EmailRule').condition('emailRuleId', id)
+                    .updateAll({sequenceNum: (index + 1) * 10}))
+        ]]></script></actions>
+    </service>
+    <service verb="run" noun="EmailRules">
+        <description>
+            Run the rules of an account on messages: on the mail the sync just stored (emailAccountId and
+            emailMessageIdList, internal: authorization disabled), or on demand over a folder (emailFolderId, send
+            permission on its account; emailRuleId for one rule, limit the newest messages, 2000 by default). The rules
+            are those on the account and its owner's on all accounts, enabled, in order; a matched rule's actions run
+            and its matchedCount goes up; stopProcessing ends the rules for that message. Drafts and the Outbox are left.
+            A rule that fails is logged and skipped, and the others go on. The server side of what the actions change
+            goes through push#RemoteChanges.
+        </description>
+        <in-parameters>
+            <parameter name="emailAccountId"/>
+            <parameter name="emailMessageIdList" type="List"/>
+            <parameter name="emailFolderId"/>
+            <parameter name="emailRuleId"/>
+            <parameter name="limit" type="Integer" default="2000"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="matchedCount" type="Integer"/>
+            <parameter name="actionCount" type="Integer"/>
+            <parameter name="ruleErrorList" type="List"/>
+        </out-parameters>
+        <actions><script><![CDATA[
+            const cf = ec.entity.conditionFactory
+            const MESSAGE = 'moqui.basic.email.EmailMessage'
+            matchedCount = 0
+            actionCount = 0
+            ruleErrorList = []
+            const authzOff = ec.artifactExecution.authzDisabled()
+            let accountId = emailAccountId
+            let ids = []
+            if (emailFolderId) {
+                const folder = ec.entity.find('moqui.basic.email.EmailFolder').condition('emailFolderId', emailFolderId).one()
+                if (folder == null) { ec.message.addError(`Email folder ${emailFolderId} not found`); return }
+                if (!authzOff) {
+                    const access = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailAccountAccess')
+                            .parameter('emailAccountId', folder.emailAccountId).call()
+                    if (ec.message.hasError()) return
+                    if (!(access.level >= 1)) { ec.message.addError(`Email folder ${emailFolderId} not found`); return }
+                    if (access.level < 2) { ec.message.addError(`You may not change the mail of email account ${folder.emailAccountId}`); return }
+                }
+                accountId = folder.emailAccountId
+                ids = Array.from(ec.entity.find(MESSAGE).condition('emailFolderId', emailFolderId)
+                        .condition('statusId', 'not-in', ['ES_DRAFT', 'ES_SCHEDULED', 'ES_READY']).selectField('emailMessageId')
+                        .orderBy('-messageDate').limit(limit > 0 ? limit : 2000).list()).map((row) => row.emailMessageId)
+            } else {
+                if (!authzOff) { ec.message.addError('Run the rules over a folder (emailFolderId)'); return }
+                ids = Array.from(emailMessageIdList || []).filter((id) => id)
+            }
+            if (!accountId || !ids.length) return
+            const account = ec.entity.find('moqui.basic.email.EmailAccount').condition('emailAccountId', accountId).one()
+            if (account == null || account.accountKindEnumId === 'EakInternal') return
+            const reach = [cf.makeCondition('emailAccountId', 'equals', accountId)]
+            if (account.ownerUserId) reach.push(cf.makeCondition([cf.makeCondition('emailAccountId', 'equals', null),
+                cf.makeCondition('ownerUserId', 'equals', account.ownerUserId)], 'and'))
+            let rules = []
+            for (const row of ec.entity.find('moqui.basic.email.EmailRule').condition(cf.makeCondition(reach, 'or'))
+                    .orderBy('sequenceNum').orderBy('emailRuleId').list()) {
+                if (emailRuleId ? row.emailRuleId !== emailRuleId : row.enabled === 'N') continue
+                try {
+                    const conditions = JSON.parse(row.conditionsJson || '[]'), actions = JSON.parse(row.actionsJson || '[]')
+                    if (!Array.isArray(conditions) || !Array.isArray(actions) || !conditions.length) throw new Error('no conditions')
+                    rules.push({id: row.emailRuleId, name: row.ruleName || row.emailRuleId, all: row.matchAllEnumId !== 'ErmAny',
+                        stop: row.stopProcessing === 'Y', conditions: conditions, actions: actions})
+                } catch (err) {
+                    ec.logger.log('error', `Email rule ${row.emailRuleId} of account ${accountId} is not readable, skipped: ${err.message || err}`)
+                    ruleErrorList.push(`${row.ruleName || row.emailRuleId}: ${err.message || err}`)
+                }
+            }
+            if (emailRuleId && !rules.length) { ec.message.addError(`Email rule ${emailRuleId} not found for email account ${accountId}`); return }
+            if (!rules.length) return
+
+            const folders = Array.from(ec.entity.find('moqui.basic.email.EmailFolder').condition('emailAccountId', accountId)
+                    .orderBy('sequenceNum,emailFolderId').list())
+            const folderOfKind = (kind) => folders.find((folder) => folder.folderKindEnumId === kind && folder.remoteRemovedDate == null)
+                    || folders.find((folder) => folder.folderKindEnumId === kind) || null
+            const findFolder = (value) => folders.find((folder) => folder.emailFolderId === value)
+                    || folders.find((folder) => folder.folderPath && folder.folderPath === value)
+                    || folders.find((folder) => String(folder.folderName || '').toLowerCase() === String(value).toLowerCase()) || null
+            const labels = Array.from(ec.entity.find('moqui.basic.email.EmailLabel').condition('emailAccountId', accountId).list())
+            const own = new Set([String(account.emailAddress || '').toLowerCase()])
+            for (const identity of ec.entity.find('moqui.basic.email.EmailIdentity').condition('emailAccountId', accountId).list())
+                if (identity.emailAddress) own.add(String(identity.emailAddress).toLowerCase())
+            const now = ec.user.nowTimestamp
+            const textOf = (html) => html ? String(html).replace(/<(style|script)[^>]*>[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]*>/g, ' ')
+                    .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+                    .replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim() : ''
+            const escape = (text) => String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            const headerValue = (headers, name) => {
+                let found = null
+                for (const line of String(headers || '').split(/\r?\n/)) {
+                    if (found != null) { if (/^[ \t]/.test(line)) { found += ' ' + line.trim(); continue } break }
+                    const colon = line.indexOf(':')
+                    if (colon > 0 && line.substring(0, colon).trim().toLowerCase() === String(name).toLowerCase()) found = line.substring(colon + 1).trim()
+                }
+                return found
+            }
+            const addressesOf = (list) => {
+                const text = String(list || '')
+                const out = [text]
+                for (const entry of text.split(',')) {
+                    const trimmed = entry.trim()
+                    if (!trimmed) continue
+                    out.push(trimmed)
+                    const angle = /<([^>]+)>/.exec(trimmed)
+                    if (angle) out.push(angle[1].trim())
+                }
+                return out
+            }
+            const sizeOf = (text) => {
+                const match = /^\s*(\d+(?:\.\d+)?)\s*([kKmM]?)/.exec(String(text))
+                if (!match) return 0
+                const unit = match[2].toLowerCase()
+                return Number(match[1]) * (unit === 'k' ? 1024 : (unit === 'm' ? 1048576 : 1))
+            }
+            const patterns = {}
+            const test = (condition, message) => {
+                if (condition.field === 'hasAttachment') return (message.hasAttachment === 'Y') === (condition.value !== 'N')
+                if (condition.field === 'size') {
+                    const size = Number(message.messageSize || 0), limit = sizeOf(condition.value)
+                    return condition.operator === 'less' ? size < limit : (condition.operator === 'is' ? size === limit : size > limit)
+                }
+                let values
+                switch (condition.field) {
+                    case 'from': values = [message.fromAddress, message.fromName, message.fromName ? `${message.fromName} <${message.fromAddress}>` : null]; break
+                    case 'to': values = addressesOf(message.toAddresses); break
+                    case 'cc': values = addressesOf(message.ccAddresses); break
+                    case 'subject': values = [message.subject]; break
+                    case 'body': values = [message.bodyText || textOf(message.body)]; break
+                    case 'listId': values = [headerValue(message.headersString, 'List-Id')]; break
+                    default: values = [headerValue(message.headersString, condition.header || condition.field)]
+                }
+                values = values.filter((value) => value != null && value !== '').map((value) => String(value))
+                const wanted = String(condition.value).trim().toLowerCase()
+                switch (condition.operator) {
+                    case 'is': return values.some((value) => value.trim().toLowerCase() === wanted)
+                    case 'startsWith': return values.some((value) => value.trim().toLowerCase().startsWith(wanted))
+                    case 'matches': {
+                        const pattern = patterns[condition.value] || (patterns[condition.value] = new RegExp(condition.value, 'i'))
+                        return values.some((value) => pattern.test(value))
+                    }
+                    default: return values.some((value) => value.toLowerCase().includes(wanted))
+                }
+            }
+            const pushes = {flags: {}, move: new Set(), labels: new Set(), keywords: new Set()}
+            const flag = (message, field) => {
+                if (message[field] === 'Y') return
+                message.set(field, 'Y')
+                message.update()
+                ;(pushes.flags[field] ||= new Set()).add(message.emailMessageId)
+            }
+            const moveTo = (message, folder) => {
+                if (folder == null) throw new Error('the folder is not there')
+                if (message.emailFolderId === folder.emailFolderId) return
+                message.set('emailFolderId', folder.emailFolderId)
+                message.set('archivedDate', folder.folderKindEnumId === 'EfkArchive' ? (message.archivedDate || now) : null)
+                message.update()
+                pushes.move.add(message.emailMessageId)
+            }
+            const label = (message, value) => {
+                let found = labels.find((known) => known.emailLabelId === value)
+                        || labels.find((known) => String(known.labelName || '').toLowerCase() === String(value).toLowerCase())
+                if (found == null) {
+                    found = ec.entity.makeValue('moqui.basic.email.EmailLabel')
+                    found.setSequencedIdPrimary()
+                    found.setFields({emailAccountId: accountId, labelName: String(value)}, false, null, null)
+                    found.create()
+                    labels.push(found)
+                }
+                if (ec.entity.find('moqui.basic.email.EmailMessageLabel').condition('emailMessageId', message.emailMessageId)
+                        .condition('emailLabelId', found.emailLabelId).count() > 0) return
+                const row = ec.entity.makeValue('moqui.basic.email.EmailMessageLabel')
+                row.setFields({emailMessageId: message.emailMessageId, emailLabelId: found.emailLabelId}, false, null, null)
+                row.create()
+                pushes.labels.add(message.emailMessageId)
+            }
+            const forward = (message, to) => {
+                // not mail this account sent, so a rule forwarding to the account itself does not loop
+                if (own.has(String(message.fromAddress || '').toLowerCase())) return
+                const identities = Array.from(ec.entity.find('moqui.basic.email.EmailIdentity').condition('emailAccountId', accountId).orderBy('emailIdentityId').list())
+                const identity = identities.find((candidate) => candidate.isDefault === 'Y') || identities[0] || null
+                const drafts = folderOfKind('EfkDrafts')
+                const subject = /^fwd?:/i.test(message.subject || '') ? message.subject : `Fwd: ${message.subject || ''}`
+                const from = message.fromName ? `${message.fromName} <${message.fromAddress}>` : (message.fromAddress || '')
+                const intro = ['---------- Forwarded message ----------', `From: ${from}`, `Subject: ${message.subject || ''}`, `To: ${message.toAddresses || ''}`]
+                const text = message.bodyText || textOf(message.body)
+                const references = [].concat(String(message.referencesHeader || '').split(/\s+/), message.messageId ? [message.messageId] : []).filter((id) => id)
+                const draft = ec.entity.makeValue(MESSAGE)
+                draft.setSequencedIdPrimary()
+                draft.setFields({statusId: 'ES_DRAFT', emailAccountId: accountId, emailFolderId: drafts ? drafts.emailFolderId : null,
+                    emailIdentityId: identity ? identity.emailIdentityId : null, emailServerId: account.emailServerId,
+                    fromAddress: identity?.emailAddress || account.emailAddress, fromName: identity ? (identity.displayName ?? null) : (account.accountName ?? null),
+                    toAddresses: to, subject: subject, contentType: 'text/html', isRead: 'Y', messageDate: now,
+                    body: `<p>${intro.map(escape).join('<br>')}</p>` + (message.body || `<pre>${escape(text)}</pre>`),
+                    bodyText: intro.join('\n') + '\n\n' + text, snippet: String(text).substring(0, 137),
+                    parentEmailMessageId: message.emailMessageId, rootEmailMessageId: message.rootEmailMessageId || message.emailMessageId,
+                    referencesHeader: references.length ? references.join(' ') : null, hasAttachment: message.hasAttachment || 'N'}, true, null, null)
+                draft.create()
+                // the files go too, each a copy of its own, so deleting either message leaves the other's
+                for (const file of ec.entity.find('moqui.basic.email.EmailMessageAttachment').condition('emailMessageId', message.emailMessageId).list()) {
+                    if (!file.attachmentLocation) continue
+                    const name = String(file.fileName || 'attachment').replace(/[\/\\?#%:]/g, '_')
+                    const location = `dbresource://email/${accountId}/${draft.emailMessageId}/${name}`
+                    ec.resource.getLocationReference(location).copyFrom(file.attachmentLocation)
+                    const copy = ec.entity.makeValue('moqui.basic.email.EmailMessageAttachment')
+                    copy.setSequencedIdPrimary()
+                    copy.setFields({emailMessageId: draft.emailMessageId, attachmentLocation: location, fileName: file.fileName,
+                        fileSize: file.fileSize, contentType: file.contentType, contentId: file.contentId, isInline: file.isInline}, false, null, null)
+                    copy.create()
+                }
+                const sent = ec.service.sync().name('org.moqui.impl.EmailClientServices.deliver#DraftMessage')
+                        .parameters({emailMessageId: draft.emailMessageId, fromStatusIdList: ['ES_DRAFT']}).disableAuthz().call()
+                if (ec.message.hasError()) throw new Error(ec.message.errorsString)
+                if (!sent.sent) ec.logger.warn(`Email rule forward of message ${message.emailMessageId} to ${to} waits in the Outbox: ${sent.sendError}`)
+            }
+            const apply = (action, message) => {
+                switch (action.action) {
+                    case 'moveToFolder': moveTo(message, findFolder(action.value)); return false
+                    case 'delete': moveTo(message, folderOfKind('EfkTrash')); return false
+                    case 'markSpam': moveTo(message, folderOfKind('EfkJunk')); pushes.keywords.add(message.emailMessageId); return false
+                    case 'markRead': flag(message, 'isRead'); return false
+                    case 'flag': flag(message, 'isFlagged'); return false
+                    case 'addLabel': label(message, action.value); return false
+                    case 'forwardTo': forward(message, action.value); return false
+                    case 'stopProcessing': return true
+                    default:
+                        ec.logger.info(`Email rule action ${action.action} is for an app to make; skipped`)
+                        return false
+                }
+            }
+            const matched = {}
+            const failing = new Set()
+            for (const id of ids) {
+                const message = ec.entity.find(MESSAGE).condition('emailMessageId', id).one()
+                if (message == null || message.emailAccountId !== accountId) continue
+                if (['ES_DRAFT', 'ES_SCHEDULED', 'ES_READY'].includes(message.statusId)) continue
+                let any = false
+                for (const rule of rules) {
+                    if (failing.has(rule.id)) continue
+                    let hit = false
+                    try { hit = rule.all ? rule.conditions.every((condition) => test(condition, message)) : rule.conditions.some((condition) => test(condition, message)) }
+                    catch (err) {
+                        failing.add(rule.id)
+                        ec.logger.log('error', `Email rule ${rule.id} of account ${accountId} failed, skipped: ${err.message || err}`)
+                        ruleErrorList.push(`${rule.name}: ${err.message || err}`)
+                        continue
+                    }
+                    if (!hit) continue
+                    any = true
+                    matched[rule.id] = (matched[rule.id] || 0) + 1
+                    let stop = rule.stop
+                    for (const action of rule.actions) {
+                        ec.message.pushErrors()
+                        try {
+                            if (apply(action, message)) stop = true
+                            actionCount++
+                        } catch (err) {
+                            ec.logger.log('error', `Email rule ${rule.id} action ${action.action} on message ${id} failed: ${err.message || err}`)
+                            ruleErrorList.push(`${rule.name}: ${action.action}: ${err.message || err}`)
+                        }
+                        ec.message.clearErrors()
+                        ec.message.popErrors()
+                    }
+                    if (stop) break
+                }
+                if (any) matchedCount++
+            }
+            for (const ruleId of Object.keys(matched)) {
+                const row = ec.entity.find('moqui.basic.email.EmailRule').condition('emailRuleId', ruleId).one()
+                if (row == null) continue
+                row.set('matchedCount', Number(row.matchedCount || 0) + matched[ruleId])
+                row.update()
+            }
+            const push = (changeType, set, more) => {
+                if (!set.size || !account.emailServerId) return
+                ec.service.sync().name('org.moqui.impl.EmailClientServices.push#RemoteChanges').parameters(Object.assign({emailAccountId: accountId,
+                    changeType: changeType, emailMessageIdList: Array.from(set)}, more || {})).disableAuthz().call()
+            }
+            for (const field of Object.keys(pushes.flags)) push('flags', pushes.flags[field], {flagMap: {[field]: 'Y'}})
+            push('keywords', pushes.keywords, {addKeywordList: ['$Junk'], removeKeywordList: ['$NotJunk']})
+            push('labels', pushes.labels)
+            push('move', pushes.move)
+            if (matchedCount) ec.service.sync().name('org.moqui.impl.EmailClientServices.publish#AccountCounts')
+                    .parameter('emailAccountIdList', [accountId]).disableAuthz().call()
+        ]]></script></actions>
+    </service>
+    <service verb="report" noun="Spam">
+        <description>Spam: move messages (or a thread) to their account's Junk folder (send permission), with the IMAP
+            keyword $Junk where the server keeps keywords, so a server that learns from it does. notSpam moves those in
+            Junk back to the Inbox with $NotJunk. Drafts and the Outbox are left.</description>
+        <in-parameters>
+            <parameter name="emailMessageId"/>
+            <parameter name="emailMessageIdList" type="List"/>
+            <parameter name="rootEmailMessageId"/>
+            <parameter name="notSpam" type="Boolean" default="false"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="updatedCount" type="Integer"/>
+            <parameter name="emailMessageIdList" type="List"/>
+        </out-parameters>
+        <actions><script><![CDATA[
+            updatedCount = 0
+            const resolved = ec.service.sync().name('org.moqui.impl.EmailClientServices.resolve#MessageTargets').parameters({
+                emailMessageId: emailMessageId, emailMessageIdList: emailMessageIdList, rootEmailMessageId: rootEmailMessageId, minLevel: 2}).call()
+            emailMessageIdList = []
+            if (ec.message.hasError()) return
+            const byAccount = {}
+            for (const target of resolved.targetList) {
+                if (['ES_DRAFT', 'ES_SCHEDULED', 'ES_READY'].includes(target.statusId)) continue
+                const byKind = resolved.accountMap[target.emailAccountId]?.folderIdByKind || {}
+                const toFolder = notSpam ? byKind.EfkInbox : byKind.EfkJunk
+                if (!toFolder) { ec.message.addError(`Email account ${target.emailAccountId} has no ${notSpam ? 'Inbox' : 'Junk'} folder`); return }
+                if (notSpam && target.folderKindEnumId !== 'EfkJunk') continue
+                const row = ec.entity.find('moqui.basic.email.EmailMessage').condition('emailMessageId', target.emailMessageId).one()
+                if (row.emailFolderId !== toFolder) {
+                    row.set('emailFolderId', toFolder)
+                    row.set('archivedDate', null)
+                    row.update()
+                }
+                ;(byAccount[target.emailAccountId] ||= []).push(target.emailMessageId)
+                emailMessageIdList.push(target.emailMessageId)
+                updatedCount++
+            }
+            for (const accountId of Object.keys(byAccount)) {
+                if (!resolved.accountMap[accountId]?.emailServerId) continue
+                ec.service.sync().name('org.moqui.impl.EmailClientServices.push#RemoteChanges').parameters({emailAccountId: accountId,
+                    changeType: 'keywords', emailMessageIdList: byAccount[accountId],
+                    addKeywordList: [notSpam ? '$NotJunk' : '$Junk'], removeKeywordList: [notSpam ? '$Junk' : '$NotJunk']}).disableAuthz().call()
+                ec.service.sync().name('org.moqui.impl.EmailClientServices.push#RemoteChanges').parameters({emailAccountId: accountId,
+                    changeType: 'move', emailMessageIdList: byAccount[accountId]}).disableAuthz().call()
+            }
+            if (updatedCount) ec.service.sync().name('org.moqui.impl.EmailClientServices.publish#AccountCounts')
+                    .parameter('emailAccountIdList', Object.keys(byAccount)).disableAuthz().call()
+        ]]></script></actions>
+    </service>
+    <service verb="block" noun="Sender">
+        <description>Block a sender: a rule of the current user on the account (which they must manage) that moves mail
+            from that address to Junk and stops the other rules, and the message given to Junk now (report#Spam). The address is the sender of emailMessageId, or emailAddress
+            with emailAccountId. A sender blocked already gets no second rule.</description>
+        <in-parameters>
+            <parameter name="emailMessageId"/>
+            <parameter name="emailAddress" allow-html="any"/>
+            <parameter name="emailAccountId"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="emailRuleId"/>
+            <parameter name="movedCount" type="Integer"/>
+        </out-parameters>
+        <actions><script><![CDATA[
+            movedCount = 0
+            emailRuleId = null
+            let address = emailAddress ? String(emailAddress).trim() : null
+            let accountId = emailAccountId
+            if (emailMessageId) {
+                const resolved = ec.service.sync().name('org.moqui.impl.EmailClientServices.resolve#MessageTargets').parameters({
+                    emailMessageId: emailMessageId, minLevel: 2}).call()
+                if (ec.message.hasError()) return
+                const message = ec.entity.find('moqui.basic.email.EmailMessage').condition('emailMessageId', emailMessageId).one()
+                address = message.fromAddress
+                accountId = resolved.targetList[0].emailAccountId
+            }
+            const angle = /<([^>]+)>/.exec(String(address || ''))
+            if (angle) address = angle[1].trim()
+            if (!address || !address.includes('@')) { ec.message.addError('Block which sender? An email address is required'); return }
+            if (!accountId) { ec.message.addError('Block the sender in which email account? emailAccountId is required'); return }
+            const access = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailAccountAccess').parameter('emailAccountId', accountId).call()
+            if (ec.message.hasError()) return
+            if (!(access.level >= 1)) { ec.message.addError(`Email account ${accountId} not found`); return }
+            if (access.level < 3) { ec.message.addError(`You may not add rules to email account ${accountId}`); return }
+            const existing = Array.from(ec.entity.find('moqui.basic.email.EmailRule').condition('emailAccountId', accountId).list())
+                    .find((rule) => { try { const conditions = JSON.parse(rule.conditionsJson || '[]'), actions = JSON.parse(rule.actionsJson || '[]')
+                        return conditions.length === 1 && conditions[0].field === 'from' && conditions[0].operator === 'is'
+                            && String(conditions[0].value).toLowerCase() === address.toLowerCase() && actions.some((action) => action.action === 'markSpam')
+                    } catch (err) { return false } })
+            if (existing) {
+                emailRuleId = existing.emailRuleId
+            } else {
+                emailRuleId = ec.service.sync().name('org.moqui.impl.EmailClientServices.create#EmailRule').parameters({
+                    ruleName: ec.l10n.localize('Block') + ' ' + address, emailAccountId: accountId, sequenceNum: 0, stopProcessing: 'Y',
+                    conditionList: [{field: 'from', operator: 'is', value: address}], actionList: [{action: 'markSpam'}]}).call().emailRuleId
+                if (ec.message.hasError()) return
+            }
+            if (emailMessageId) {
+                const moved = ec.service.sync().name('org.moqui.impl.EmailClientServices.report#Spam').parameter('emailMessageId', emailMessageId).call()
+                if (ec.message.hasError()) return
+                movedCount = moved.updatedCount || 0
+            }
         ]]></script></actions>
     </service>
 

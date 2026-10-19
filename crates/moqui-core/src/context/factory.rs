@@ -376,6 +376,8 @@ impl ExecutionContextFactory {
 
     /// Stop request/service workers before closing tools. The host calls this after its listeners stop.
     pub fn shutdown(&self) {
+        // the mail IDLE workers first: each holds the factory and a connection while it waits
+        crate::service::stop_mail_idle(self);
         self.requests.shutdown();
         self.pools.shutdown();
         self.shutdown_tools();

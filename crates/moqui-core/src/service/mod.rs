@@ -82,6 +82,17 @@ pub(crate) use validate::clean_safe_html;
 pub use validate::validate;
 pub(crate) use validate::{auto_entity_name, auto_fields};
 
+/// Start the mail client's IMAP IDLE workers (`email_idle_enabled`, on the scheduler's tick). The host calls it once,
+/// after the entity facade is installed; a host built without mail does nothing.
+pub fn start_mail_idle(factory: &std::sync::Arc<crate::context::ExecutionContextFactory>) {
+    mail::start_idle(factory);
+}
+
+/// Stop the IMAP IDLE workers, for the factory's shutdown.
+pub(crate) fn stop_mail_idle(factory: &crate::context::ExecutionContextFactory) {
+    mail::stop_idle(factory);
+}
+
 /// A JSON body as a [`moqui_lib::object::Value`].
 pub(crate) fn parse_json(text: &str) -> Result<moqui_lib::object::Value, crate::context::Error> {
     let json = serde_json::from_str::<serde_json::Value>(text)

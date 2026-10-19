@@ -13,8 +13,10 @@
  */
 
 //! Outbound SMTP and inbound IMAP/POP3 for the email services. The bodies live in [`implementation`] when the `mail`
-//! feature is on. These functions are the registry entries either way, so a host built without mail still resolves
-//! the locations and reports that mail is not built in.
+//! feature is on, with the mail client's sync engine beside it: [`sync`] (`sync#EmailAccount` and the job), [`remote`]
+//! (local changes onto the server), [`idle`] (IMAP IDLE workers), [`store`] (a received message as a row),
+//! [`discover`] (autodiscover) and [`import`] (.eml and .mbox). These functions are the registry entries either way, so
+//! a host built without mail still resolves the locations and reports that mail is not built in.
 
 use std::collections::BTreeMap;
 
@@ -25,85 +27,127 @@ use crate::entity::EntityFacade;
 use crate::service::rust_services::RustServiceFn;
 
 #[cfg(feature = "mail")]
+mod discover;
+#[cfg(feature = "mail")]
+mod idle;
+#[cfg(feature = "mail")]
 mod implementation;
+#[cfg(feature = "mail")]
+mod import;
+#[cfg(feature = "mail")]
+mod remote;
+#[cfg(feature = "mail")]
+mod store;
+#[cfg(feature = "mail")]
+mod sync;
 
 #[cfg(all(test, feature = "mail"))]
 pub(crate) use implementation::{SharedSinkGuard, SinkGuard};
 
 #[cfg(all(test, feature = "mail"))]
 mod client_tests;
+#[cfg(all(test, feature = "mail"))]
+mod fake_servers;
+#[cfg(all(test, feature = "mail"))]
+mod sync_tests;
 
 pub(in crate::service) fn register(map: &mut BTreeMap<&'static str, RustServiceFn>) -> Result<(), String> {
     rust_service!(map, send_template)?;
     rust_service!(map, send_message)?;
     rust_service!(map, poll_server)?;
     rust_service!(map, test_server)?;
+    rust_service!(map, sync_account)?;
+    rust_service!(map, sync_due_accounts)?;
+    rust_service!(map, push_remote_changes)?;
+    rust_service!(map, discover_server)?;
+    rust_service!(map, import_messages)?;
     Ok(())
 }
 
+/// Start the IMAP IDLE workers on the scheduler's tick (`email_idle_enabled`). The host calls it once after boot.
 #[cfg(feature = "mail")]
-fn send_template(
-    parameters: &BTreeMap<String, Value>,
-    facade: &EntityFacade,
-) -> Result<BTreeMap<String, Value>, LibError> {
-    implementation::send_template(parameters, facade)
+pub(crate) fn start_idle(factory: &std::sync::Arc<crate::context::ExecutionContextFactory>) {
+    idle::start(factory);
 }
 
 #[cfg(not(feature = "mail"))]
-fn send_template(
-    _parameters: &BTreeMap<String, Value>,
-    _facade: &EntityFacade,
-) -> Result<BTreeMap<String, Value>, LibError> {
-    unavailable("org.moqui.impl.EmailServices.send#EmailTemplate")
-}
+pub(crate) fn start_idle(_factory: &std::sync::Arc<crate::context::ExecutionContextFactory>) {}
 
+/// Stop the IMAP IDLE workers; the factory's shutdown calls it.
 #[cfg(feature = "mail")]
-fn send_message(
-    parameters: &BTreeMap<String, Value>,
-    facade: &EntityFacade,
-) -> Result<BTreeMap<String, Value>, LibError> {
-    implementation::send_message(parameters, facade)
+pub(crate) fn stop_idle(factory: &crate::context::ExecutionContextFactory) {
+    idle::stop_all(factory);
 }
 
 #[cfg(not(feature = "mail"))]
-fn send_message(
-    _parameters: &BTreeMap<String, Value>,
-    _facade: &EntityFacade,
-) -> Result<BTreeMap<String, Value>, LibError> {
-    unavailable("org.moqui.impl.EmailServices.send#EmailMessage")
+pub(crate) fn stop_idle(_factory: &crate::context::ExecutionContextFactory) {}
+
+/// A mail service body: the implementation with mail built in, else an error that says it is not.
+macro_rules! mail_service {
+    ($name:ident, $service:literal, $($body:tt)+) => {
+        #[cfg(feature = "mail")]
+        fn $name(
+            parameters: &BTreeMap<String, Value>,
+            facade: &EntityFacade,
+        ) -> Result<BTreeMap<String, Value>, LibError> {
+            $($body)+(parameters, facade)
+        }
+
+        #[cfg(not(feature = "mail"))]
+        fn $name(
+            _parameters: &BTreeMap<String, Value>,
+            _facade: &EntityFacade,
+        ) -> Result<BTreeMap<String, Value>, LibError> {
+            unavailable($service)
+        }
+    };
 }
 
-#[cfg(feature = "mail")]
-fn poll_server(
-    parameters: &BTreeMap<String, Value>,
-    facade: &EntityFacade,
-) -> Result<BTreeMap<String, Value>, LibError> {
-    implementation::poll_server(parameters, facade)
-}
-
-#[cfg(not(feature = "mail"))]
-fn poll_server(
-    _parameters: &BTreeMap<String, Value>,
-    _facade: &EntityFacade,
-) -> Result<BTreeMap<String, Value>, LibError> {
-    unavailable("org.moqui.impl.EmailServices.poll#EmailServer")
-}
-
-#[cfg(feature = "mail")]
-fn test_server(
-    parameters: &BTreeMap<String, Value>,
-    facade: &EntityFacade,
-) -> Result<BTreeMap<String, Value>, LibError> {
-    implementation::test_server(parameters, facade)
-}
-
-#[cfg(not(feature = "mail"))]
-fn test_server(
-    _parameters: &BTreeMap<String, Value>,
-    _facade: &EntityFacade,
-) -> Result<BTreeMap<String, Value>, LibError> {
-    unavailable("org.moqui.impl.EmailServices.test#EmailServer")
-}
+mail_service!(
+    send_template,
+    "org.moqui.impl.EmailServices.send#EmailTemplate",
+    implementation::send_template
+);
+mail_service!(
+    send_message,
+    "org.moqui.impl.EmailServices.send#EmailMessage",
+    implementation::send_message
+);
+mail_service!(
+    poll_server,
+    "org.moqui.impl.EmailServices.poll#EmailServer",
+    implementation::poll_server
+);
+mail_service!(
+    test_server,
+    "org.moqui.impl.EmailServices.test#EmailServer",
+    implementation::test_server
+);
+mail_service!(
+    sync_account,
+    "org.moqui.impl.EmailClientServices.sync#EmailAccount",
+    sync::sync_account_service
+);
+mail_service!(
+    sync_due_accounts,
+    "org.moqui.impl.EmailClientServices.sync#DueEmailAccounts",
+    sync::sync_due_accounts
+);
+mail_service!(
+    push_remote_changes,
+    "org.moqui.impl.EmailClientServices.push#RemoteChanges",
+    remote::push_changes
+);
+mail_service!(
+    discover_server,
+    "org.moqui.impl.EmailClientServices.discover#EmailServer",
+    discover::discover_server
+);
+mail_service!(
+    import_messages,
+    "org.moqui.impl.EmailClientServices.import#EmailMessages",
+    import::import_messages
+);
 
 #[cfg(not(feature = "mail"))]
 fn unavailable(name: &str) -> Result<BTreeMap<String, Value>, LibError> {
@@ -116,21 +160,24 @@ fn unavailable(name: &str) -> Result<BTreeMap<String, Value>, LibError> {
 mod tests {
     #[test]
     fn mail_paths_match_the_function_types() {
-        assert_eq!(
-            std::any::type_name_of_val(&super::send_template),
-            "moqui_core::service::mail::send_template"
-        );
-        assert_eq!(
-            std::any::type_name_of_val(&super::send_message),
-            "moqui_core::service::mail::send_message"
-        );
-        assert_eq!(
-            std::any::type_name_of_val(&super::poll_server),
-            "moqui_core::service::mail::poll_server"
-        );
-        assert_eq!(
-            std::any::type_name_of_val(&super::test_server),
-            "moqui_core::service::mail::test_server"
-        );
+        for (function, path) in [
+            (std::any::type_name_of_val(&super::send_template), "send_template"),
+            (std::any::type_name_of_val(&super::send_message), "send_message"),
+            (std::any::type_name_of_val(&super::poll_server), "poll_server"),
+            (std::any::type_name_of_val(&super::test_server), "test_server"),
+            (std::any::type_name_of_val(&super::sync_account), "sync_account"),
+            (
+                std::any::type_name_of_val(&super::sync_due_accounts),
+                "sync_due_accounts",
+            ),
+            (
+                std::any::type_name_of_val(&super::push_remote_changes),
+                "push_remote_changes",
+            ),
+            (std::any::type_name_of_val(&super::discover_server), "discover_server"),
+            (std::any::type_name_of_val(&super::import_messages), "import_messages"),
+        ] {
+            assert_eq!(function, format!("moqui_core::service::mail::{path}"));
+        }
     }
 }
