@@ -391,13 +391,17 @@ fn authenticate_with(authorization: Option<&str>, api_key: Option<&str>) -> Resu
         }
         if let Some((username, password)) = crate::web::basic_credentials(header) {
             // an access token (a UserLoginKey) as the password, as git hosts take personal access tokens
-            if password.len() == 40 && crate::user::login_user_key(&password).is_ok() {
-                let user = crate::user::current_username().ok().flatten().unwrap_or_default();
-                if username.is_empty() || user.eq_ignore_ascii_case(&username) {
-                    return Ok(true);
+            if password.len() == 40 {
+                if crate::user::login_user_key(&password).is_ok() {
+                    let user = crate::user::current_username().ok().flatten().unwrap_or_default();
+                    if username.is_empty() || user.eq_ignore_ascii_case(&username) {
+                        return Ok(true);
+                    }
+                    let _ = crate::user::logout();
+                    return Err(Refusal::Unauthenticated("the access token is not this user's".into()));
                 }
-                let _ = crate::user::logout();
-                return Err(Refusal::Unauthenticated("the access token is not this user's".into()));
+                // not a token, so a password of 40 characters: only the password login below counts as a failure
+                crate::web::take_auth_failure();
             }
             crate::user::login_user(&username, &password).map_err(refused)?;
             if current_user().is_none() {

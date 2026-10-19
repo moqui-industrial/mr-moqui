@@ -52,6 +52,15 @@
         AWS Cloudfront: CloudFront-Viewer-Address (requires config in Cloudfront origin request policy)
     -->
     <default-property name="webapp_client_ip_header" value=""/>
+    <!--
+        webapp_trusted_proxies: comma separated address ranges (10.0.0.0/8, fd00::/8, or one address) of the reverse
+        proxies in front. With it, webapp_client_ip_header and X-Forwarded-Proto are believed only from those proxies, the
+        client address is the rightmost one in the header that is not a trusted proxy (so an appended X-Forwarded-For is
+        safe), and the per-client web-protection below is on by default. Empty, the header is believed from any peer.
+        webapp_web_protection: true or false turns the per-client web-protection on or off whatever the proxies.
+    -->
+    <default-property name="webapp_trusted_proxies" value=""/>
+    <default-property name="webapp_web_protection" value=""/>
     <default-property name="webapp_session_flush" value="eventual"/>
     <!-- Minutes without a request before a web session expires. 0 never expires. -->
     <default-property name="webapp_session_timeout" value="60"/>
@@ -376,7 +385,8 @@
                 https-port="${webapp_https_port}" https-host="${webapp_http_host}" https-enabled="${webapp_https_enabled}"
                 handle-cors="${webapp_handle_cors}" allow-origins="${webapp_allow_origins}"
                 require-session-token="${webapp_require_session_token}" upload-executable-allow="${webapp_upload_executable_allow}"
-                websocket-timeout="600000" client-ip-header="${webapp_client_ip_header}">
+                websocket-timeout="600000" client-ip-header="${webapp_client_ip_header}"
+                trusted-proxies="${webapp_trusted_proxies}">
             <!-- root and error screens for OOTB runtime directory (moqui/moqui-runtime repository) -->
             <root-screen host=".*" location="component://webroot/screen/webroot.xml"/>
             <error-screen error="unauthorized" screen-path="error/Unauthorized"/>
@@ -494,6 +504,37 @@
             <!-- TODO: would be nice to handle this differently, ie dynamically based on preflight request path -->
             <response-header type="cors-preflight" name="Access-Control-Allow-Methods" add="true" value="GET,PUT,POST,PATCH,DELETE,OPTIONS"/>
             <response-header type="cors-preflight" name="Access-Control-Max-Age" value="3600"/>
+
+            <!--
+                Load handling and basic WAF at the edge, before a session, a request worker or the database is spent; in
+                memory per server. connections, requests and overload always apply. The per-client parts (max-per-client,
+                methods, rate-limit, ban and the rules) are on when trusted-proxies is set, or with enabled="true" (for a
+                server with no proxy in front); without trusted proxies a server behind a proxy would see every client as
+                the proxy. This is not the ArtifactTarpit, which counts a user's use of screens and services for business
+                quotas; both apply, this first. See plans/proposals/Web-Protection.md.
+            -->
+            <web-protection enabled="${webapp_web_protection}" client-ipv6-prefix="64" max-tracked-clients="100000">
+                <connections max="${webapp_max_connections}" max-per-client="64"
+                        header-timeout="${webapp_header_timeout}" shutdown-timeout="${webapp_shutdown_timeout}"/>
+                <requests methods="GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS" max-uri-length="8192"
+                        max-header-bytes="65536" max-headers="100" max-body="${webapp_max_body}"
+                        max-upload="${webapp_max_upload}" body-timeout="${webapp_body_timeout}"
+                        upload-idle-timeout="${webapp_upload_idle_timeout}" request-timeout="${webapp_request_timeout}"/>
+                <overload queue-timeout="10" retry-after="5"/>
+
+                <rate-limit name="all" requests="50" seconds="1" burst="500"/>
+                <rate-limit name="login" path="/Login/**,/rest/login,/rest/login/**,/SecondFactor/**" methods="POST"
+                        requests="10" seconds="60" burst="10"/>
+
+                <ban name="auth-failure" events="auth-failure" threshold="20" seconds="600" duration="900"/>
+                <ban name="abuse" events="rate-limited,denied" threshold="300" seconds="60" duration="300"/>
+
+                <!-- a rule with a name merges by it, so a component can change it or turn it off with enabled="false" -->
+                <client-rule name="loopback" action="exempt" cidr="127.0.0.0/8,::1"/>
+                <path-rule name="scanners" action="deny"
+                        path="/.env,/.git/**,/wp-admin/**,/wp-login.php,**/*.php,**/*.asp,**/*.aspx"/>
+                <user-agent-rule name="scanners" action="deny" contains="sqlmap,nikto,masscan,zgrab"/>
+            </web-protection>
         </webapp>
     </webapp-list>
 

@@ -25,6 +25,7 @@ use base64::Engine;
 use indexmap::IndexMap;
 use moqui_lib::object::Value;
 
+pub mod address;
 pub mod error_info;
 pub mod multipart;
 
@@ -39,6 +40,19 @@ const EXPOSE_HEADERS: &str =
 
 thread_local! {
     static WEB: RefCell<Option<WebSlot>> = const { RefCell::new(None) };
+    /// Set by a login with credentials that were not valid, for the host's web protection to count.
+    static AUTH_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Mark the work on this thread as having tried credentials that were not valid.
+pub(crate) fn note_auth_failure() {
+    AUTH_FAILED.with(|flag| flag.set(true));
+}
+
+/// Whether the work on this thread tried credentials that were not valid since the last call, and forget it. The
+/// host asks after a request's job; a worker's cleanup forgets it so it does not reach the next job.
+pub fn take_auth_failure() -> bool {
+    AUTH_FAILED.with(|flag| flag.replace(false))
 }
 
 /// One HTTP request, already read off the socket.
@@ -952,14 +966,39 @@ pub(crate) enum BodyError {
     Executable(String),
 }
 
-/// The largest request body: `webapp_max_body`, 10 MiB by default, and for a `multipart/form-data` body
-/// `webapp_max_upload`.
+/// The largest request body: `web-protection` `requests` `max-body` (`webapp_max_body`, 10 MiB by default), and
+/// for a `multipart/form-data` body `max-upload` (`webapp_max_upload`). The conf of the current context's factory,
+/// or the properties with none.
 pub fn body_limit(request: &WebRequest) -> usize {
+    ExecutionContext::with_current(|ec| body_limit_for(Some(ec.factory().as_ref()), request))
+        .unwrap_or_else(|| body_limit_for(None, request))
+}
+
+/// [`body_limit`] by the conf of `factory`.
+pub fn body_limit_for(factory: Option<&crate::context::ExecutionContextFactory>, request: &WebRequest) -> usize {
     if is_multipart(request) {
-        max_upload()
+        parse_size(&protection_setting(factory, "requests", "max-upload", "webapp_max_upload"))
+            .unwrap_or(DEFAULT_MAX_UPLOAD)
     } else {
-        parse_size(&moqui_lib::env::get_prop_or_env("webapp_max_body")).unwrap_or(DEFAULT_MAX_BODY)
+        parse_size(&protection_setting(factory, "requests", "max-body", "webapp_max_body")).unwrap_or(DEFAULT_MAX_BODY)
     }
+}
+
+/// The `webroot` webapp's `web-protection` setting: the attribute `name` of its child `child` (empty for
+/// `web-protection` itself), or the property `property` when the conf leaves it out or it expands to nothing.
+pub fn protection_setting(
+    factory: Option<&crate::context::ExecutionContextFactory>,
+    child: &str,
+    name: &str,
+    property: &str,
+) -> String {
+    let configured = factory
+        .map(|factory| factory.web_protection_setting("webroot", child, name))
+        .unwrap_or_default();
+    if !configured.is_empty() || property.is_empty() {
+        return configured;
+    }
+    moqui_lib::env::get_prop_or_env(property).trim().to_string()
 }
 
 pub fn is_multipart(request: &WebRequest) -> bool {
@@ -978,7 +1017,8 @@ pub fn max_upload() -> usize {
     parse_size(&moqui_lib::env::get_prop_or_env("webapp_max_upload")).unwrap_or(DEFAULT_MAX_UPLOAD)
 }
 
-fn parse_size(text: &str) -> Option<usize> {
+/// Bytes, or a number with a `k`, `m` or `g` suffix. `None` when `text` is not a size.
+pub fn parse_size(text: &str) -> Option<usize> {
     let text = text.trim().to_ascii_lowercase();
     let (digits, unit) = match text.chars().last()? {
         'k' => (&text[..text.len() - 1], 1024),
@@ -1200,18 +1240,28 @@ pub(crate) fn visitor_cookie_of(request: &WebRequest) -> Option<String> {
         .and_then(|header| cookie_value(header, crate::user::VISITOR_COOKIE_NAME))
 }
 
-/// First hop of `webapp_client_ip_header` when that property is set and the header is present.
+/// The client's address: what the proxy in front names in `client-ip-header`, when that proxy is believed
+/// ([`address::ClientAddressing`]), else the socket peer.
 pub fn client_ip(request: &WebRequest) -> String {
-    let name = moqui_lib::env::get_prop_or_env("webapp_client_ip_header");
-    if !name.is_empty() {
-        if let Some(value) = request.header(&name) {
-            let first = value.split(',').next().unwrap_or("").trim();
-            if !first.is_empty() {
-                return first.to_string();
-            }
-        }
+    let addressing = client_addressing();
+    if addressing.header().is_empty() {
+        return request.peer_ip.clone();
     }
-    request.peer_ip.clone()
+    let Ok(peer) = request.peer_ip.trim().parse::<std::net::IpAddr>() else {
+        return request.peer_ip.clone();
+    };
+    let client = addressing.resolve(peer, request.header(addressing.header()));
+    if client == peer.to_canonical() {
+        request.peer_ip.clone()
+    } else {
+        client.to_string()
+    }
+}
+
+/// The current factory's [`address::ClientAddressing`], read once; from the properties with no current context.
+pub fn client_addressing() -> std::sync::Arc<address::ClientAddressing> {
+    ExecutionContext::with_current(|ec| ec.factory().extension(address::ClientAddressing::of_factory))
+        .unwrap_or_else(|| std::sync::Arc::new(address::ClientAddressing::of_properties()))
 }
 
 /// `WebUtilities.ipMatches`: comma separated patterns, each four dot separated parts of a number,

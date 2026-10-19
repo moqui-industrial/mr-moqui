@@ -187,6 +187,34 @@ fn merge_webapp_children(base: &MNode, over: &MNode) {
     base.merge_single_child(over, "session-config");
     base.merge_children_by_keys(over, "endpoint", &["path"], None);
     merge_response_headers(base, over);
+    merge_web_protection(base, over);
+}
+
+/// `web-protection`: its attributes and its single children (`connections`, `requests`, `overload`) merge
+/// attributes, `rate-limit` and `ban` merge by `name`, and a rule merges by `name` when it has one and appends when
+/// it has none.
+fn merge_web_protection(base: &MNode, over: &MNode) {
+    let Some(over_node) = over.first_named("web-protection") else {
+        return;
+    };
+    let Some(base_node) = base.first_named("web-protection") else {
+        base.append_node(over_node.deep_copy());
+        return;
+    };
+    base_node.copy_attributes_from(&over_node);
+    for single in ["connections", "requests", "overload"] {
+        base_node.merge_single_child(&over_node, single);
+    }
+    base_node.merge_children_by_keys(&over_node, "rate-limit", &["name"], None);
+    base_node.merge_children_by_keys(&over_node, "ban", &["name"], None);
+    for rule in ["client-rule", "path-rule", "user-agent-rule"] {
+        base_node.merge_children_by_keys(&over_node, rule, &["name"], None);
+        for child in over_node.children_named(rule) {
+            if child.attribute("name").is_none_or(|name| name.is_empty()) {
+                base_node.append_node(child.deep_copy());
+            }
+        }
+    }
 }
 
 fn merge_init_params(base: &MNode, over: &MNode) {
@@ -377,4 +405,76 @@ fn same_attr(left: &MNode, right: &MNode, name: &str) -> bool {
 
 fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use moqui_lib::node::MNode;
+
+    #[test]
+    fn a_component_web_protection_merges_by_name_and_appends_rules() {
+        let base = MNode::parse_text(
+            "moqui-conf",
+            r#"<moqui-conf><webapp-list><webapp name="webroot">
+                <web-protection client-ipv6-prefix="64">
+                    <connections max-per-client="64"/>
+                    <rate-limit name="all" requests="50" burst="500"/>
+                    <rate-limit name="login" requests="10" seconds="60"/>
+                    <ban name="abuse" events="denied" threshold="300" seconds="60" duration="300"/>
+                    <client-rule name="loopback" action="exempt" cidr="127.0.0.0/8"/>
+                </web-protection>
+            </webapp></webapp-list></moqui-conf>"#,
+        )
+        .unwrap();
+        let over = MNode::parse_text(
+            "moqui-conf",
+            r#"<moqui-conf><webapp-list><webapp name="webroot">
+                <web-protection enabled="true">
+                    <connections max-per-client="8"/>
+                    <rate-limit name="login" enabled="false"/>
+                    <rate-limit name="api" path="/rest/**" requests="5"/>
+                    <client-rule action="deny" cidr="198.51.100.0/24"/>
+                    <client-rule name="loopback" enabled="false"/>
+                </web-protection>
+            </webapp></webapp-list></moqui-conf>"#,
+        )
+        .unwrap();
+        super::merge_conf(&base, &over);
+        let protection = base
+            .first_named("webapp-list")
+            .and_then(|list| list.first_named("webapp"))
+            .and_then(|webapp| webapp.first_named("web-protection"))
+            .unwrap();
+        assert_eq!(protection.attribute("enabled").as_deref(), Some("true"));
+        assert_eq!(protection.attribute("client-ipv6-prefix").as_deref(), Some("64"));
+        let connections = protection.first_named("connections").unwrap();
+        assert_eq!(connections.attribute("max-per-client").as_deref(), Some("8"));
+        let limits = protection.children_named("rate-limit");
+        let names: Vec<String> = limits.iter().filter_map(|limit| limit.attribute("name")).collect();
+        assert_eq!(names, ["all", "login", "api"]);
+        assert_eq!(limits[1].attribute("enabled").as_deref(), Some("false"));
+        assert_eq!(limits[1].attribute("requests").as_deref(), Some("10"));
+        assert_eq!(protection.children_named("ban").len(), 1);
+        let rules = protection.children_named("client-rule");
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].attribute("enabled").as_deref(), Some("false"));
+        assert_eq!(rules[0].attribute("cidr").as_deref(), Some("127.0.0.0/8"));
+    }
+
+    #[test]
+    fn a_component_adds_web_protection_where_there_is_none() {
+        let base = MNode::parse_text(
+            "moqui-conf",
+            r#"<moqui-conf><webapp-list><webapp name="webroot"/></webapp-list></moqui-conf>"#,
+        )
+        .unwrap();
+        let over = MNode::parse_text(
+            "moqui-conf",
+            r#"<moqui-conf><webapp-list><webapp name="webroot"><web-protection enabled="false"/></webapp></webapp-list></moqui-conf>"#,
+        )
+        .unwrap();
+        super::merge_conf(&base, &over);
+        let webapp = base.first_named("webapp-list").and_then(|list| list.first_named("webapp")).unwrap();
+        assert!(webapp.first_named("web-protection").is_some());
+    }
 }

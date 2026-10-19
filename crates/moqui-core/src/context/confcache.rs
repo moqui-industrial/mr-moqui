@@ -26,6 +26,9 @@ pub(super) struct ConfCache {
     user_facade: HashMap<(String, String), String>,
     /// `webapp` attributes: `(webapp name, attribute)` to the raw value, `${}` not yet expanded.
     webapp: HashMap<(String, String), String>,
+    /// `web-protection` attributes of a `webapp`: `(webapp name, child, attribute)` to the raw value, the child empty
+    /// for an attribute of `web-protection` itself.
+    protection: HashMap<(String, String, String), String>,
 }
 
 impl ConfCache {
@@ -68,6 +71,22 @@ impl ConfCache {
                 for (name, value) in node.attributes() {
                     cache.webapp.entry((webapp.clone(), name)).or_insert(value);
                 }
+                if let Some(protection) = node.first_named("web-protection") {
+                    for (name, value) in protection.attributes() {
+                        cache
+                            .protection
+                            .entry((webapp.clone(), String::new(), name))
+                            .or_insert(value);
+                    }
+                    for child in protection.children() {
+                        for (name, value) in child.attributes() {
+                            cache
+                                .protection
+                                .entry((webapp.clone(), child.name(), name))
+                                .or_insert(value);
+                        }
+                    }
+                }
             }
         }
         cache
@@ -86,5 +105,11 @@ impl ConfCache {
 
     pub(super) fn webapp_attr(&self, webapp: &str, name: &str) -> Option<String> {
         self.webapp.get(&(webapp.to_string(), name.to_string())).cloned()
+    }
+
+    pub(super) fn protection_attr(&self, webapp: &str, child: &str, name: &str) -> Option<String> {
+        self.protection
+            .get(&(webapp.to_string(), child.to_string(), name.to_string()))
+            .cloned()
     }
 }

@@ -35,7 +35,8 @@ use moqui_core::resource::git::server::{self, GitHttpRequest, GitService, HttpRe
 use tokio::sync::{mpsc, oneshot};
 
 use crate::git_bridge::{ChannelReader, ChannelWriter, Chunk, QUEUED};
-use crate::http::{forwarded_https, plain, HttpState, TlsConnection};
+use crate::guard::Event;
+use crate::http::{forwarded_https, plain, ClientAddr, HttpState, TlsConnection};
 
 const DEFAULT_MAX_REQUEST: u64 = 64 * 1024 * 1024;
 const DEFAULT_MAX_PUSH: u64 = 2 * 1024 * 1024 * 1024;
@@ -125,6 +126,7 @@ pub(crate) async fn handle(
     request: Request,
 ) -> Response {
     let over_tls = request.extensions().get::<TlsConnection>().is_some();
+    let client = request.extensions().get::<ClientAddr>().map_or(peer.ip(), |client| client.0);
     let (parts, body) = request.into_parts();
     let path = parts.uri.path().strip_prefix("/git/").unwrap_or("");
     let (repository, tail) = match path.find(".git/") {
@@ -138,7 +140,8 @@ pub(crate) async fn handle(
         };
         let lfs_path = lfs_path.to_string();
         let query = query.to_string();
-        return handle_lfs(state, peer, over_tls, parts, body, repository, lfs_path, query).await;
+        let from = Origin { peer, client, over_tls };
+        return handle_lfs(state, from, parts, body, repository, lfs_path, query).await;
     }
     let (service, advertise) = match (parts.method.as_str(), tail) {
         ("GET", "info/refs") => (
@@ -172,8 +175,7 @@ pub(crate) async fn handle(
     {
         return plain(413, &format!("the git request is over {limit} bytes"));
     }
-    let secure =
-        over_tls || forwarded_https(&parts.headers) || peer.ip().is_loopback() || property("git_allow_http") == "true";
+    let secure = secure(&state, over_tls, &parts.headers, peer);
     let git_request = GitHttpRequest {
         repository,
         service,
@@ -183,7 +185,7 @@ pub(crate) async fn handle(
         authorization: header("authorization"),
         api_key: header("api_key").or_else(|| header("login_key")),
         secure,
-        client_ip: peer.ip().to_string(),
+        client_ip: client.to_string(),
     };
     let idle = property("git_idle_timeout")
         .parse::<u64>()
@@ -194,6 +196,7 @@ pub(crate) async fn handle(
     let (out_tx, out_rx) = mpsc::channel(QUEUED);
     let (head_tx, head_rx) = oneshot::channel();
     let factory = Arc::clone(&state.factory);
+    let guard = Arc::clone(&state.guard);
     let submitted = server::pool(&factory).try_submit(Arc::clone(&factory), move || {
         let mut reader = ChannelReader::new(body_rx);
         let mut responder = Responder {
@@ -202,10 +205,13 @@ pub(crate) async fn handle(
         };
         server::serve_http(&git_request, &mut reader, &mut responder);
         let _ = std::io::Write::flush(&mut responder.body);
+        if moqui_core::web::take_auth_failure() {
+            guard.record(client, Event::AuthFailure);
+        }
         Ok(())
     });
     if submitted.is_err() {
-        return plain(503, "the git server is busy; try again");
+        return state.guard.unavailable("the git server is busy; try again");
     }
     tokio::spawn(feed(body, body_tx, limit, idle));
     let Ok((status, headers)) = head_rx.await else {
@@ -221,11 +227,26 @@ pub(crate) async fn handle(
 }
 
 /// `/git/<repositoryId>.git/info/lfs/...`: Git LFS, on the git pool as a clone is, an object's body streamed in and out.
-#[allow(clippy::too_many_arguments)]
+/// Where a request came from: the socket peer, the client it is for, and whether it came over this listener's TLS.
+#[derive(Clone, Copy)]
+struct Origin {
+    peer: SocketAddr,
+    client: std::net::IpAddr,
+    over_tls: bool,
+}
+
+/// Whether credentials may be taken: over TLS (the listener's, or a believed proxy's `X-Forwarded-Proto`), from
+/// loopback, or with `git_allow_http=true`.
+fn secure(state: &HttpState, over_tls: bool, headers: &axum::http::HeaderMap, peer: SocketAddr) -> bool {
+    over_tls
+        || forwarded_https(headers, peer.ip(), state.guard.conf.addressing())
+        || peer.ip().is_loopback()
+        || property("git_allow_http") == "true"
+}
+
 async fn handle_lfs(
     state: Arc<HttpState>,
-    peer: SocketAddr,
-    over_tls: bool,
+    from: Origin,
     parts: axum::http::request::Parts,
     body: axum::body::Body,
     repository: String,
@@ -247,8 +268,8 @@ async fn handle_lfs(
     if content_length.is_some_and(|length| length > limit) {
         return plain(413, &format!("the LFS request is over {limit} bytes"));
     }
-    let secure =
-        over_tls || forwarded_https(&parts.headers) || peer.ip().is_loopback() || property("git_allow_http") == "true";
+    let Origin { peer, client, over_tls } = from;
+    let secure = secure(&state, over_tls, &parts.headers, peer);
     let request = lfs::LfsHttpRequest {
         repository,
         method: parts.method.as_str().to_string(),
@@ -259,7 +280,7 @@ async fn handle_lfs(
         range: header("range"),
         content_length,
         secure,
-        client_ip: peer.ip().to_string(),
+        client_ip: client.to_string(),
     };
     let idle = property("git_idle_timeout")
         .parse::<u64>()
@@ -270,6 +291,7 @@ async fn handle_lfs(
     let (out_tx, out_rx) = mpsc::channel(QUEUED);
     let (head_tx, head_rx) = oneshot::channel();
     let factory = Arc::clone(&state.factory);
+    let guard = Arc::clone(&state.guard);
     let submitted = server::pool(&factory).try_submit(Arc::clone(&factory), move || {
         let mut reader = ChannelReader::new(body_rx);
         let mut responder = Responder {
@@ -278,10 +300,13 @@ async fn handle_lfs(
         };
         lfs::serve_lfs(&request, &mut reader, &mut responder);
         let _ = std::io::Write::flush(&mut responder.body);
+        if moqui_core::web::take_auth_failure() {
+            guard.record(client, Event::AuthFailure);
+        }
         Ok(())
     });
     if submitted.is_err() {
-        return plain(503, "the git server is busy; try again");
+        return state.guard.unavailable("the git server is busy; try again");
     }
     tokio::spawn(feed(body, body_tx, limit, idle));
     let Ok((status, headers)) = head_rx.await else {

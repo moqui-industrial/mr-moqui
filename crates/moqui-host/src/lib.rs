@@ -51,6 +51,8 @@ mod git_bridge;
 #[cfg(all(feature = "axum", feature = "git"))]
 mod git_http;
 #[cfg(feature = "axum")]
+mod guard;
+#[cfg(feature = "axum")]
 mod http;
 #[cfg(feature = "axum")]
 mod notws;

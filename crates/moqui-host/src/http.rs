@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -36,61 +36,106 @@ use moqui_lib::error::Error;
 use tokio::net::TcpListener;
 use tower::ServiceExt as _;
 
+use crate::guard::{setting, Event, Guard, GuardConf};
 use crate::{notws, search_proxy};
 
 pub(crate) struct HttpState {
     pub factory: Arc<ExecutionContextFactory>,
     pub shutdown: tokio::sync::watch::Receiver<bool>,
     pub limits: ListenLimits,
+    pub guard: Arc<Guard>,
 }
 
-/// Bounds on the public listeners. Timeouts are whole seconds in their property, and `0` turns one off.
+/// The client of a request: the socket peer, or the address a trusted proxy in front names
+/// (`moqui_core::web::address`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClientAddr(pub IpAddr);
+
+/// Bounds on the public listeners, from `web-protection`'s `connections` and `requests` in the `webroot` webapp, each
+/// with its `webapp_*` property as the default. Timeouts are whole seconds, and `0` turns one off. These apply whether
+/// or not the per-client parts of [`Guard`] are on.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ListenLimits {
-    /// `webapp_header_timeout`, default 30: a client sends its whole request head in this time. A kept-alive
-    /// connection that sends nothing for as long is closed too.
+    /// `header-timeout` (`webapp_header_timeout`), default 30: a client sends its whole request head in this time.
+    /// A kept-alive connection that sends nothing for as long is closed too.
     pub header: Option<Duration>,
-    /// `webapp_body_timeout`, default 60: the whole request body arrives in this time, or the answer is 408. Not
-    /// for a `multipart/form-data` upload, which is read as it arrives.
+    /// `body-timeout` (`webapp_body_timeout`), default 60: the whole request body arrives in this time, or the answer
+    /// is 408. Not for a `multipart/form-data` upload, which is read as it arrives.
     pub body: Option<Duration>,
-    /// `webapp_upload_idle_timeout`, default 60: an upload that sends nothing for this long is cut off with 408.
+    /// `upload-idle-timeout` (`webapp_upload_idle_timeout`), default 60: an upload that sends nothing for this long
+    /// is cut off with 408.
     pub upload_idle: Option<Duration>,
-    /// `webapp_request_timeout`, default 300: from the request head to the response head, or the answer is 504.
-    /// `/notws` is exempt, and a response body, such as a long download, is sent after it.
+    /// `request-timeout` (`webapp_request_timeout`), default 300: from the request head to the response head, or the
+    /// answer is 504. `/notws` is exempt, and a response body, such as a long download, is sent after it.
     pub request: Option<Duration>,
-    /// `webapp_max_connections`, default 1024: connections served at once, HTTP and HTTPS together. Past it the
-    /// listeners stop accepting until one closes.
+    /// `max` (`webapp_max_connections`), default 1024: connections served at once, HTTP and HTTPS together. Past it
+    /// the listeners stop accepting until one closes.
     pub connections: usize,
-    /// `webapp_shutdown_timeout`, default 30: after a stop, how long open connections may take to finish before the
-    /// listener stops without them.
+    /// `shutdown-timeout` (`webapp_shutdown_timeout`), default 30: after a stop, how long open connections may take to
+    /// finish before the listener stops without them.
     pub shutdown: Option<Duration>,
+    /// `max-uri-length`, default 8192: a longer path and query is answered 414.
+    pub max_uri: usize,
+    /// `max-header-bytes`, default 64 KiB (at least 8 KiB): a longer request head is answered 431.
+    pub max_header_bytes: usize,
+    /// `max-headers`, default 100: a request head with more header fields is answered 431.
+    pub max_headers: usize,
 }
 
+/// The smallest read buffer hyper takes.
+const MIN_HEADER_BYTES: usize = 8 * 1024;
+
 impl ListenLimits {
-    pub(crate) fn from_properties() -> Self {
-        Self {
-            header: seconds_property("webapp_header_timeout", 30),
-            body: seconds_property("webapp_body_timeout", 60),
-            upload_idle: seconds_property("webapp_upload_idle_timeout", 60),
-            request: seconds_property("webapp_request_timeout", 300),
-            connections: moqui_lib::env::get_prop_or_env("webapp_max_connections")
-                .trim()
+    /// From `web-protection` (`None` for the properties and defaults alone).
+    pub(crate) fn from_node(node: Option<&moqui_lib::node::MNode>) -> Self {
+        let seconds = |child: &str, name: &str, property: &str, default: u64| {
+            let seconds = setting(node, child, name, property).parse::<u64>().unwrap_or(default);
+            (seconds > 0).then(|| Duration::from_secs(seconds))
+        };
+        let count = |child: &str, name: &str, property: &str, default: usize| {
+            setting(node, child, name, property)
                 .parse::<usize>()
                 .ok()
                 .filter(|count| *count > 0)
-                .unwrap_or(1024),
-            shutdown: seconds_property("webapp_shutdown_timeout", 30),
+                .unwrap_or(default)
+        };
+        Self {
+            header: seconds("connections", "header-timeout", "webapp_header_timeout", 30),
+            body: seconds("requests", "body-timeout", "webapp_body_timeout", 60),
+            upload_idle: seconds("requests", "upload-idle-timeout", "webapp_upload_idle_timeout", 60),
+            request: seconds("requests", "request-timeout", "webapp_request_timeout", 300),
+            connections: count("connections", "max", "webapp_max_connections", 1024),
+            shutdown: seconds("connections", "shutdown-timeout", "webapp_shutdown_timeout", 30),
+            max_uri: count("requests", "max-uri-length", "", 8192),
+            max_header_bytes: count("requests", "max-header-bytes", "", 64 * 1024).max(MIN_HEADER_BYTES),
+            max_headers: count("requests", "max-headers", "", 100),
+        }
+    }
+
+    /// The defaults, for tests.
+    #[cfg(test)]
+    pub(crate) fn defaults() -> Self {
+        Self {
+            header: None,
+            body: None,
+            upload_idle: None,
+            request: None,
+            connections: 1024,
+            shutdown: None,
+            max_uri: 8192,
+            max_header_bytes: 64 * 1024,
+            max_headers: 100,
         }
     }
 }
 
-/// Seconds from `name`, `default` when it is empty or not a number, `None` when it is `0`.
-fn seconds_property(name: &str, default: u64) -> Option<Duration> {
-    let seconds = moqui_lib::env::get_prop_or_env(name)
-        .trim()
-        .parse::<u64>()
-        .unwrap_or(default);
-    (seconds > 0).then(|| Duration::from_secs(seconds))
+/// The listener limits and the web protection, from the factory's conf.
+fn protection(factory: &ExecutionContextFactory) -> (ListenLimits, Guard) {
+    let node = crate::guard::protection_node(factory.conf_text());
+    let addressing = factory.extension(moqui_core::web::address::ClientAddressing::of_factory);
+    let limits = ListenLimits::from_node(node.as_ref());
+    let guard = Guard::new(GuardConf::from_node(node.as_ref(), addressing));
+    (limits, guard)
 }
 
 /// Addresses and handles the test uses after the plain HTTP listener binds.
@@ -155,7 +200,10 @@ pub(crate) async fn listen(
         if cfg!(feature = "git") { "/git and " } else { "" }
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let limits = ListenLimits::from_properties();
+    let (limits, guard) = protection(&factory);
+    let guard = Arc::new(guard);
+    guard.log_start();
+    tokio::spawn(sweep(Arc::clone(&guard), shutdown_rx.clone()));
     // Text responses are compressed when the client accepts gzip (`Compressible`).
     let app = Router::new()
         .route("/health", get(health))
@@ -176,6 +224,7 @@ pub(crate) async fn listen(
             factory,
             shutdown: shutdown_rx.clone(),
             limits,
+            guard: Arc::clone(&guard),
         }));
     // Both loops end when the watch turns true, which `shutdown` sets after a stop, Ctrl-C, or SIGTERM.
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
@@ -188,6 +237,7 @@ pub(crate) async fn listen(
         None,
         app.clone(),
         limits,
+        Arc::clone(&guard),
         Arc::clone(&permits),
         stopped(shutdown_rx.clone()),
     );
@@ -195,7 +245,7 @@ pub(crate) async fn listen(
         Some((listener, _, acceptor)) => {
             tokio::join!(
                 plain,
-                serve(listener, Some(acceptor), app, limits, permits, stopped(shutdown_rx))
+                serve(listener, Some(acceptor), app, limits, guard, permits, stopped(shutdown_rx))
             );
         }
         None => plain.await,
@@ -204,22 +254,38 @@ pub(crate) async fn listen(
     Ok(())
 }
 
+/// Drop the idle clients from `guard` every half minute until the listeners stop.
+async fn sweep(guard: Arc<Guard>, mut stopped: tokio::sync::watch::Receiver<bool>) {
+    loop {
+        tokio::select! {
+            _ = stopped.wait_for(|stopped| *stopped) => return,
+            () = tokio::time::sleep(Duration::from_secs(30)) => guard.sweep(),
+        }
+    }
+}
+
 /// Serve `app` until `stop` resolves, taking one of `permits` for each open connection, then let every open connection finish, as `axum::serve` does, for up to
 /// `limits.shutdown`; the connections still open then are dropped with the runtime. Each
 /// connection is served here rather than by `axum::serve`, which gives hyper no timer, so that
 /// `header_read_timeout` takes effect. With `tls` the handshake runs in the connection's own task, so a slow
-/// client cannot hold up accepting.
+/// client cannot hold up accepting. `guard` admits each connection before its handshake and checks each request
+/// before the router.
 async fn serve(
     listener: TcpListener,
     tls: Option<tokio_rustls::TlsAcceptor>,
     app: Router,
     limits: ListenLimits,
+    guard: Arc<Guard>,
     permits: Arc<tokio::sync::Semaphore>,
     stop: impl Future<Output = ()>,
 ) {
     let (closing, closing_rx) = tokio::sync::watch::channel(false);
     let mut builder = hyper::server::conn::http1::Builder::new();
-    builder.timer(TokioTimer::new()).header_read_timeout(limits.header);
+    builder
+        .timer(TokioTimer::new())
+        .header_read_timeout(limits.header)
+        .max_buf_size(limits.max_header_bytes)
+        .max_headers(limits.max_headers);
     let mut stop = std::pin::pin!(stop);
     loop {
         let permit = tokio::select! {
@@ -249,14 +315,28 @@ async fn serve(
                 continue;
             }
         };
+        // a denied or banned client, or one over its connections, is closed before any handshake
+        let Some(slot) = guard.admit(remote.ip()) else {
+            drop(stream);
+            continue;
+        };
         let _ = stream.set_nodelay(true);
         let router = app.clone();
         let builder = builder.clone();
         let closing = closing_rx.clone();
         let tls = tls.clone();
+        let guard = Arc::clone(&guard);
         tokio::spawn(async move {
+            let serving = Serving {
+                remote,
+                router,
+                builder,
+                limits,
+                guard,
+                closing,
+            };
             match tls {
-                None => run_connection(stream, remote, false, router, builder, limits, closing).await,
+                None => run_connection(stream, false, serving).await,
                 Some(acceptor) => {
                     let handshake = acceptor.accept(stream);
                     let secured = match limits.header {
@@ -264,14 +344,13 @@ async fn serve(
                         None => Some(handshake.await),
                     };
                     match secured {
-                        Some(Ok(stream)) => {
-                            run_connection(stream, remote, true, router, builder, limits, closing).await
-                        }
+                        Some(Ok(stream)) => run_connection(stream, true, serving).await,
                         Some(Err(err)) => tracing::debug!("TLS handshake with {remote} failed: {err}"),
                         None => tracing::debug!("TLS handshake with {remote} timed out"),
                     }
                 }
             }
+            drop(slot);
             drop(permit);
         });
     }
@@ -291,22 +370,45 @@ async fn serve(
     }
 }
 
-async fn run_connection<S>(
-    stream: S,
+/// What one connection is served with.
+struct Serving {
     remote: SocketAddr,
-    secure: bool,
     router: Router,
     builder: hyper::server::conn::http1::Builder,
     limits: ListenLimits,
-    mut closing: tokio::sync::watch::Receiver<bool>,
-) where
+    guard: Arc<Guard>,
+    closing: tokio::sync::watch::Receiver<bool>,
+}
+
+async fn run_connection<S>(stream: S, secure: bool, serving: Serving)
+where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    let Serving {
+        remote,
+        router,
+        builder,
+        limits,
+        guard,
+        mut closing,
+    } = serving;
     let service = hyper::service::service_fn(move |mut request: hyper::Request<hyper::body::Incoming>| {
+        let client = guard.client_of(remote.ip(), request.headers());
         request.extensions_mut().insert(ConnectInfo(remote));
+        request.extensions_mut().insert(ClientAddr(client));
         if secure {
             request.extensions_mut().insert(TlsConnection);
         }
+        let uri_length = request.uri().path_and_query().map_or(0, |whole| whole.as_str().len());
+        let refused = if uri_length > limits.max_uri {
+            Some(plain(414, "the request URI is too long"))
+        } else {
+            let (method, path) = (request.method().as_str(), request.uri().path());
+            guard
+                .check(remote.ip(), client, method, path, request.headers())
+                .err()
+                .map(|refused| *refused.response)
+        };
         // a websocket, a git clone or push (which has its own idle timeout), and an upload (whose screen has the
         // deadline once it has arrived) run as long as they need
         let upload = request
@@ -317,8 +419,11 @@ async fn run_connection<S>(
         let deadline = limits.request.filter(|_| {
             request.uri().path() != "/notws" && !request.uri().path().starts_with("/git/") && !upload
         });
-        let call = router.clone().oneshot(request);
+        let call = refused.is_none().then(|| router.clone().oneshot(request));
         async move {
+            let Some(call) = call else {
+                return Ok(refused.unwrap_or_else(|| plain(500, "refused")));
+            };
             match deadline {
                 Some(deadline) => match tokio::time::timeout(deadline, call).await {
                     Ok(response) => response,
@@ -408,6 +513,7 @@ async fn metrics(State(state): State<Arc<HttpState>>, ConnectInfo(peer): Connect
         "checked_out {}\nparked {}\nwaiting {}\nidle {}\ncheckouts {}\nrequest_queue {}\nstatements {}\nstatement_ms {}\n",
         stats.checked_out, stats.parked, stats.waiting, idle, stats.checkouts, depth, statements, statement_ms
     );
+    text.push_str(&state.guard.metrics());
     // With a search read replica: its replay lag (-1 when it cannot be read) and the reads that ran on the primary.
     let factory = Arc::clone(&state.factory);
     let replica = tokio::task::spawn_blocking(move || {
@@ -434,14 +540,15 @@ async fn dispatch_screen(
     let started = std::time::Instant::now();
     let started_millis = crate::logging::now_millis();
     let over_tls = request.extensions().get::<TlsConnection>().is_some();
+    let client = request.extensions().get::<ClientAddr>().map_or(peer.ip(), |client| client.0);
     let (parts, body) = request.into_parts();
     let mut web = WebRequest::new(parts.method.as_str(), parts.uri.path());
-    web.https = over_tls || forwarded_https(&parts.headers);
+    web.https = over_tls || forwarded_https(&parts.headers, peer.ip(), state.guard.conf.addressing());
     web.peer_ip = peer.ip().to_string();
     web.headers = header_map(&parts.headers);
     web.query = moqui_core::web::form_pairs(parts.uri.query().unwrap_or(""));
     // The limit is `webapp_max_body` (10 MiB), or `webapp_max_upload` for a multipart body, and it stops the read.
-    let limit = moqui_core::web::body_limit(&web);
+    let limit = moqui_core::web::body_limit_for(Some(&state.factory), &web);
     let declared = parts
         .headers
         .get(axum::http::header::CONTENT_LENGTH)
@@ -466,7 +573,7 @@ async fn dispatch_screen(
     }
     let log = RequestLog {
         started_millis,
-        client_ip: moqui_core::web::client_ip(&web),
+        client_ip: client.to_string(),
         method: parts.method.as_str().to_string(),
         https: web.https,
         host: web.header("host").unwrap_or("").to_string(),
@@ -479,15 +586,34 @@ async fn dispatch_screen(
     let factory = Arc::clone(&state.factory);
     let job_factory = Arc::clone(&factory);
     let serve_factory = Arc::clone(&factory);
-    let (done, result) = tokio::sync::oneshot::channel();
-    // The job owns `done`. A worker that panics or a pool that stops drops it, which ends the wait.
+    let (done, result) = tokio::sync::oneshot::channel::<Option<WebResponse>>();
+    let guard = Arc::clone(&state.guard);
+    let queued = std::time::Instant::now();
+    let queue_timeout = state.guard.conf.queue_timeout;
+    // The job owns `done`. A worker that panics or a pool that stops drops it, which ends the wait. A job nobody waits
+    // for any more (the deadline passed, the client went away) is not run, and one that waited past the queue timeout
+    // is answered `None`, a 503, instead.
     let submitted = factory.request_pool().try_submit(job_factory, move || {
-        let _ = done.send(moqui_core::screen::serve(&serve_factory, web));
+        if done.is_closed() {
+            guard.counts.abandoned.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
+        if queue_timeout.is_some_and(|wait| queued.elapsed() > wait) {
+            guard.counts.queue_expired.fetch_add(1, Ordering::Relaxed);
+            let _ = done.send(None);
+            return Ok(());
+        }
+        let response = moqui_core::screen::serve(&serve_factory, web);
+        if moqui_core::web::take_auth_failure() {
+            guard.record(client, Event::AuthFailure);
+        }
+        let _ = done.send(Some(response));
         Ok(())
     });
     if let Err(err) = submitted {
         if err.kind() == ErrorKind::Unavailable {
-            return plain(503, "service unavailable");
+            state.guard.counts.queue_full.fetch_add(1, Ordering::Relaxed);
+            return state.guard.unavailable("service unavailable");
         }
         return internal_error(err.message());
     }
@@ -500,10 +626,11 @@ async fn dispatch_screen(
         None => result.await,
     };
     match result {
-        Ok(response) => {
+        Ok(Some(response)) => {
             log.queue(&response, started.elapsed());
             from_web(&state.factory, response)
         }
+        Ok(None) => state.guard.unavailable("the server is busy; try again"),
         Err(_) => plain(500, "request worker stopped"),
     }
 }
@@ -689,10 +816,14 @@ impl RequestLog {
     }
 }
 
-/// `X-Forwarded-Proto` is believed only when `webapp_client_ip_header` marks a reverse proxy in front.
-/// A direct client could otherwise force `Secure` cookies and HSTS.
-pub(crate) fn forwarded_https(headers: &axum::http::HeaderMap) -> bool {
-    if moqui_lib::env::get_prop_or_env("webapp_client_ip_header").is_empty() {
+/// `X-Forwarded-Proto` is believed only when `client-ip-header` marks a reverse proxy in front, and `peer` is one of
+/// the `trusted-proxies` when there are any. A direct client could otherwise force `Secure` cookies and HSTS.
+pub(crate) fn forwarded_https(
+    headers: &axum::http::HeaderMap,
+    peer: IpAddr,
+    addressing: &moqui_core::web::address::ClientAddressing,
+) -> bool {
+    if !addressing.believes(peer) {
         return false;
     }
     headers
@@ -918,7 +1049,12 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use super::{http_port, serve, status_allowed, ListenLimits, TlsConnection};
+    use crate::guard::Guard;
     use crate::tls;
+
+    fn unguarded() -> Arc<Guard> {
+        Arc::new(Guard::disabled())
+    }
 
     async fn read_all(stream: &mut TcpStream) -> String {
         let mut buf = Vec::new();
@@ -936,15 +1072,13 @@ mod tests {
         let app = Router::new().route("/", get(|| async { "ok" }));
         let limits = ListenLimits {
             header: Some(Duration::from_millis(300)),
-            body: None,
-            upload_idle: None,
-            request: None,
             connections: 1,
             shutdown: None,
+            ..ListenLimits::defaults()
         };
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let permits = Arc::new(Semaphore::new(limits.connections));
-        let server = tokio::spawn(serve(listener, None, app, limits, permits, async move {
+        let server = tokio::spawn(serve(listener, None, app, limits, unguarded(), permits, async move {
             let _ = stopped.await;
         }));
 
@@ -983,15 +1117,13 @@ mod tests {
         let app = Router::new().route("/", get(std::future::pending::<&'static str>));
         let limits = ListenLimits {
             header: None,
-            body: None,
-            upload_idle: None,
-            request: None,
             connections: 4,
             shutdown: Some(Duration::from_millis(300)),
+            ..ListenLimits::defaults()
         };
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let permits = Arc::new(Semaphore::new(limits.connections));
-        let server = tokio::spawn(serve(listener, None, app, limits, permits, async move {
+        let server = tokio::spawn(serve(listener, None, app, limits, unguarded(), permits, async move {
             let _ = stopped.await;
         }));
         let mut stuck = TcpStream::connect(address).await.unwrap();
@@ -1029,11 +1161,9 @@ mod tests {
         );
         let limits = ListenLimits {
             header: Some(Duration::from_secs(5)),
-            body: None,
-            upload_idle: None,
-            request: None,
             connections: 4,
             shutdown: None,
+            ..ListenLimits::defaults()
         };
         let permits = Arc::new(Semaphore::new(limits.connections));
         let (stop_secure, secure_stopped) = tokio::sync::oneshot::channel::<()>();
@@ -1049,12 +1179,13 @@ mod tests {
                     Some(tokio_rustls::TlsAcceptor::from(config)),
                     app.clone(),
                     limits,
+                    unguarded(),
                     Arc::clone(&permits),
                     async move {
                         let _ = secure_stopped.await;
                     },
                 ),
-                serve(plain_listener, None, app, limits, permits, async move {
+                serve(plain_listener, None, app, limits, unguarded(), permits, async move {
                     let _ = plain_stopped.await;
                 }),
             );
@@ -1089,6 +1220,110 @@ mod tests {
             .expect("the listeners did not stop")
             .unwrap();
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    /// A listener with `guard`, answering `ok` to everything the guard lets through, until the sender drops.
+    async fn guarded(
+        guard: Arc<Guard>,
+        limits: ListenLimits,
+    ) -> (std::net::SocketAddr, tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().fallback(|| async { "ok" });
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let permits = Arc::new(Semaphore::new(limits.connections));
+        let server = tokio::spawn(serve(listener, None, app, limits, guard, permits, async move {
+            let _ = stopped.await;
+        }));
+        (address, stop, server)
+    }
+
+    async fn ask(address: std::net::SocketAddr, request: &str) -> String {
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        read_all(&mut stream).await
+    }
+
+    #[tokio::test]
+    async fn the_guard_and_the_request_limits_answer_on_the_socket() {
+        let guard = crate::guard::tests::guard(
+            r#"<web-protection enabled="true">
+                <rate-limit name="all" requests="1" seconds="60" burst="2"/>
+                <path-rule action="deny" path="/.env"/>
+            </web-protection>"#,
+            "",
+        );
+        let limits = ListenLimits {
+            header: Some(Duration::from_secs(5)),
+            max_uri: 64,
+            max_header_bytes: 8192,
+            ..ListenLimits::defaults()
+        };
+        let (address, stop, server) = guarded(guard, limits).await;
+        let get = |path: &str| format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+
+        let answered = ask(address, &get("/.env")).await;
+        assert!(answered.starts_with("HTTP/1.1 404"), "{answered}");
+        // a burst of two, then the rate of one a minute
+        for _ in 0..2 {
+            let answered = ask(address, &get("/")).await;
+            assert!(answered.starts_with("HTTP/1.1 200"), "{answered}");
+        }
+        let answered = ask(address, &get("/")).await;
+        assert!(answered.starts_with("HTTP/1.1 429"), "{answered}");
+        assert!(answered.to_ascii_lowercase().contains("retry-after: "), "{answered}");
+
+        let long = format!("/{}", "a".repeat(100));
+        let answered = ask(address, &get(&long)).await;
+        assert!(answered.starts_with("HTTP/1.1 414"), "{answered}");
+        let big = format!(
+            "GET / HTTP/1.1\r\nHost: x\r\nX-Big: {}\r\nConnection: close\r\n\r\n",
+            "b".repeat(9000)
+        );
+        let answered = ask(address, &big).await;
+        assert!(answered.starts_with("HTTP/1.1 431"), "{answered}");
+
+        drop(stop);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the listener did not stop")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_client_over_its_connections_is_closed_before_its_request() {
+        let guard = crate::guard::tests::guard(
+            r#"<web-protection enabled="true"><connections max-per-client="1"/></web-protection>"#,
+            "",
+        );
+        let limits = ListenLimits {
+            header: Some(Duration::from_secs(5)),
+            ..ListenLimits::defaults()
+        };
+        let (address, stop, server) = guarded(guard, limits).await;
+        // the one connection this client may hold, open with half a request
+        let mut held = TcpStream::connect(address).await.unwrap();
+        held.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // closed without an answer: an end of stream, or a reset when the request was still unread
+        let mut refused = TcpStream::connect(address).await.unwrap();
+        let _ = refused.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").await;
+        let mut buf = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(5), refused.read_to_end(&mut buf))
+            .await
+            .expect("the refused connection was not closed");
+        assert!(read.is_err() || buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+        // given back when it closes
+        drop(held);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let answered = ask(address, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").await;
+        assert!(answered.starts_with("HTTP/1.1 200"), "{answered}");
+
+        drop(stop);
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the listener did not stop")
+            .unwrap();
     }
 
     #[test]

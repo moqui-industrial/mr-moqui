@@ -367,9 +367,11 @@ Framework service XML with no Rust body (`BasicServices`, `UserServices`, `Serve
 | `moqui-core/src/web/mod.rs` | `WebFacadeImpl` as an owned request and response: parameters, body, headers, session cookie, redirect checks (`WebUtilities.isSameOriginRedirect`), IP match, CORS origin, credential stripping. No servlet types. | Port |
 | `moqui-core/src/web/multipart.rs` | Multipart bodies and `WebUtilities.isExecutable` on an upload. | Port |
 | `moqui-core/src/web/error_info.rs` | The `errorThrowable` facts `error/*.xml` reads. | Partial |
+| `moqui-core/src/web/address.rs` | The client address behind `client-ip-header` (`WebFacadeImpl.getClientIp`), with `trusted-proxies` and CIDR ranges added. | Partial |
 | `moqui-core/src/outbound.rs` | Outbound HTTP for `remote-rest` and `http` resources. The server uses `moqui-lib` `RestClient`. The browser installs `fetch`. | Partial |
 | `moqui-host/src/http.rs` | `MoquiServlet` and the public HTTP and HTTPS listeners. Screen work runs on the request pool. | Port |
 | `moqui-host/src/logging.rs` | `LoggerFacadeImpl`, `ElasticSearchLogger`, `ElasticRequestLogFilter` (ship `moqui_logs` and `moqui_http_log`). File names match Java. Console color is new. | Partial |
+| `moqui-host/src/guard.rs` | Web protection at the edge (`web-protection` in the webapp conf): per-client connection caps, rate limits, bans, client, method, path and user-agent rules. Not the ArtifactTarpit. [Web-Protection](proposals/Web-Protection.md). | Native |
 | `moqui-host/src/notws.rs` | `NotificationEndpoint` at `GET /notws`. The socket does not hold an execution context. | Port |
 | `moqui-host/src/search_proxy.rs` | Jetty `ElasticSearchProxy` and `KibanaProxy` servlets declared in `MoquiDefaultConf.xml`, behind the `MoquiAuthFilter` rules. OpenSearch only. | Port |
 | `moqui-host/src/tls.rs` | Public HTTPS certificates from `runtime/cert`. Java terminated TLS at a proxy. | Native |
