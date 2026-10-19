@@ -148,6 +148,35 @@ along with this software (see the LICENSE.md file). If not, see
         <relationship type="one" related="moqui.resource.GitUpdate"/>
     </entity>
 
+    <!-- Large content by its SHA-256, in chunks (crates/moqui-core/src/resource/blob.rs, docs/Git-Hosting.md). No Java
+        counterpart. A row that refers to a blob has a relationship to ContentBlob: gc#ContentBlobs deletes the blobs
+        no such row refers to. -->
+    <entity entity-name="ContentBlob" package="moqui.resource" use="nontransactional" cache="never">
+        <field name="blobId" type="id-long" is-pk="true"><description>The SHA-256 of the content, lowercase hex</description></field>
+        <field name="blobSize" type="number-integer"/>
+        <field name="storageKind" type="text-short"><description>db: ContentBlobChunk rows</description></field>
+        <field name="storageKey" type="id-long"><description>The chunks' storageKey: the upload's</description></field>
+        <field name="chunkSize" type="number-integer"><description>The size of each chunk but the last</description></field>
+        <field name="chunkCount" type="number-integer"/>
+        <field name="createdDate" type="date-time"/>
+        <index name="CONTENT_BLOB_KEY"><index-field name="storageKey"/></index>
+    </entity>
+    <entity entity-name="ContentBlobChunk" package="moqui.resource" use="nontransactional" cache="never">
+        <field name="storageKey" type="id-long" is-pk="true"/>
+        <field name="chunkSeq" type="number-integer" is-pk="true"/>
+        <field name="chunkData" type="binary-very-long"/>
+    </entity>
+    <entity entity-name="ContentBlobUpload" package="moqui.resource" use="nontransactional" cache="never">
+        <description>A blob being written: its chunks are under storageKey until the ContentBlob row is made. One
+            whose lastActivityDate is a day old is abandoned, and gc#ContentBlobs deletes its chunks.</description>
+        <field name="storageKey" type="id-long" is-pk="true"/>
+        <field name="status" type="text-short"/>
+        <field name="receivedSize" type="number-integer"/>
+        <field name="userId" type="id"/>
+        <field name="startedDate" type="date-time"/>
+        <field name="lastActivityDate" type="date-time"/>
+    </entity>
+
     <!-- ========================================================= -->
     <!-- moqui.resource.wiki -->
     <!-- ========================================================= -->

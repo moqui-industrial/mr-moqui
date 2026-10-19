@@ -132,6 +132,10 @@
     <default-property name="git_gc_prune_days" value="14"/>
     <default-property name="git_gc_reflog_days" value="30"/>
     <default-property name="git_gc_max_objects" value="20000000"/>
+    <!-- Content blobs (moqui.resource.ContentBlob): bytes per ContentBlobChunk row, and how many days a blob nothing
+        refers to is kept (gc#ContentBlobs). -->
+    <default-property name="blob_chunk_size" value="1048576"/>
+    <default-property name="blob_gc_prune_days" value="14"/>
 
     <!-- Properties for the primary (transactional group) datasource -->
     <default-property name="entity_ds_db_conf" value="h2"/>
