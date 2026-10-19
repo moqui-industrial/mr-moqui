@@ -914,12 +914,13 @@ fn wiki_pages_keep_versions_and_move_clone_and_delete() {
         .unwrap();
     assert_eq!(copied.bytes, b"child".to_vec());
 
-    // a page with a child is kept; the child, then the page, are deleted
+    // a page with a child is kept (an error, so a SECA's work before it rolls back); the child, then the page, are
+    // deleted
     let _ = crate::service::sync(
         "org.moqui.impl.WikiServices.delete#WikiPage",
         &params(&[("wikiSpaceId", "TS2"), ("pagePath", "Renamed")]),
     );
-    assert!(messages(&context).contains("has child pages"), "{}", messages(&context));
+    assert!(errors(&context).contains("has child pages"), "{}", errors(&context));
     context.message().clear();
     let parent = sync(
         "delete#WikiPage",

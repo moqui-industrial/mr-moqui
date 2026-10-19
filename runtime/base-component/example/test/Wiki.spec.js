@@ -1,7 +1,8 @@
 // Knowledge and notes (org.moqui.impl.WikiServices, IronStone M9) on the real database: a note in the user's notes space
 // (R22) moved into a space in a git repository with its history replayed, a page's links and backlinks across a rename,
-// a review approved and refused from the notification tray, and search that leaves out another user's notes. The rules
-// in full are the Rust tests in crates/moqui-core/src/service/wiki_tests.rs.
+// a new top-level page that is its own file beside a nested page of the same name, a review approved and refused from the
+// notification tray, and search that leaves out another user's notes. The rules in full are the Rust tests in
+// crates/moqui-core/src/service/wiki_tests.rs.
 
 const WIKI = "org.moqui.impl.WikiServices"
 const NOTIFY = "org.moqui.impl.NotificationServices"
@@ -77,6 +78,24 @@ feature("backlinks follow a page across a rename", {
         links.map((row) => row.toPagePath) == ["First", "Missing"]
         links.map((row) => row.found) == [true, false]
         byAlias.pagePath == "First"
+    },
+})
+
+feature("a new top-level page is its own file, not written over a page of the same name under another", {
+    when() {
+        ec.user.internalLoginUser("wikiAuthor")
+        save(LNK, "Policies", "# Policies\n")
+        const nested = save(LNK, "Policies/Travel", "# Travel policy\n")
+        const top = save(LNK, "Travel", "# Travel at the top\n")
+        const text = (pageId) => wiki("get#WikiPageInfo", { wikiPageId: pageId }).pageReference.getText()
+        return { nested, top, nestedText: text(nested), topText: text(top),
+            topLocation: wiki("get#WikiPageInfo", { wikiPageId: top }).pageLocation }
+    },
+    then({ nested, top, nestedText, topText, topLocation }) {
+        nested != top
+        nestedText == "# Travel policy\n"
+        topText == "# Travel at the top\n"
+        topLocation == `dbresource://WikiSpace/${LNK}/Travel.md`
     },
 })
 
