@@ -1040,6 +1040,20 @@ impl HostEntity {
         self.val().clone()
     }
 
+    /// Run `write` on a [`Self::snapshot`]; after it, the value holds what the database does, so a later update writes
+    /// only the fields set after this write.
+    fn write(
+        &self,
+        ctx: &Ctx<'_>,
+        write: impl FnOnce(&EntityValue, &EntityFacade) -> Result<(), moqui_lib::error::Error>,
+    ) -> rquickjs::Result<()> {
+        let facade = facade_of(ctx)?;
+        let written = self.snapshot();
+        write(&written, &facade).map_err(|err| throw_lib(ctx, &err))?;
+        self.val().note_written(&written);
+        Ok(())
+    }
+
     /// What `name` is on the entity of this value, or None when no entity definition can be reached.
     fn member(&self, name: &str) -> Option<Member> {
         let facade = ExecutionContext::with_current(|ec| ec.factory().entity()).flatten()?;
@@ -1482,17 +1496,13 @@ impl HostEntity {
     }
 
     fn create(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
-        host_guard(&ctx, || {
-            let facade = facade_of(&ctx)?;
-            self.snapshot().create(&facade).map_err(|err| throw_lib(&ctx, &err))
-        })
+        host_guard(&ctx, || self.write(&ctx, |value, facade| value.create(facade)))
     }
 
+    /// `update()`: write the fields that changed since the value was read or last written, as Java's `update`, so a
+    /// field another transaction changed in between is left as it wrote it.
     fn update(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
-        host_guard(&ctx, || {
-            let facade = facade_of(&ctx)?;
-            self.snapshot().update(&facade).map_err(|err| throw_lib(&ctx, &err))
-        })
+        host_guard(&ctx, || self.write(&ctx, |value, facade| value.update(facade)))
     }
 
     fn delete(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
@@ -1504,10 +1514,7 @@ impl HostEntity {
 
     fn create_or_update(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            let facade = facade_of(&ctx)?;
-            self.snapshot()
-                .create_or_update(&facade)
-                .map_err(|err| throw_lib(&ctx, &err))
+            self.write(&ctx, |value, facade| value.create_or_update(facade))
         })
     }
 
@@ -2141,6 +2148,71 @@ mod tests {
                     && JSON.parse(JSON.stringify(list))[1].enumId === "E2" && Object.keys(list).join() === "0,1,2";
             })()"#,
         );
+    }
+
+    /// A script's `update()` of a value it found writes only the fields it changed, by property, `set` or `setFields`:
+    /// another value read with it keeps the field it changed, a field set to what it held is not written, and after an
+    /// update a field set back to what it was read with is.
+    #[test]
+    fn a_script_update_writes_only_the_fields_it_changed() {
+        clear_context_stack();
+        let tape = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let context = ExecutionContextFactory::test_context();
+        context
+            .factory()
+            .set_entity(crate::testing::open_with_tape(std::sync::Arc::clone(&tape)));
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        seed();
+        let updates = || -> Vec<String> {
+            moqui_lib::sync::lock(&tape)
+                .iter()
+                .filter(|sql| sql.starts_with("UPDATE"))
+                .map(|sql| sql.split(" WHERE ").next().unwrap_or_default().to_string())
+                .collect()
+        };
+        holds(
+            r#"(function () {
+                const read = () => ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E1").useCache(false).one();
+                const a = read(), b = read(), c = read();
+                a.description = "by property";
+                a.update();
+                b.setFields({ sequenceNum: 7, description: "first" }, true, null, null);
+                b.update();
+                c.set("enumCode", "C1");
+                c.description = c.description;
+                c.update();
+                const stored = read();
+                return stored.description === "by property" && stored.sequenceNum === 7 && stored.enumCode === "C1";
+            })()"#,
+        );
+        let written = updates();
+        assert_eq!(written.len(), 3, "{written:?}");
+        assert!(
+            written[0].contains("description") && !written[0].contains("sequence_num"),
+            "{written:?}"
+        );
+        assert!(
+            written[1].contains("sequence_num") && !written[1].contains("description"),
+            "{written:?}"
+        );
+        assert!(
+            written[2].contains("enum_code") && !written[2].contains("description"),
+            "{written:?}"
+        );
+        holds(
+            r#"(function () {
+                const value = ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E2").useCache(false).one();
+                value.description = "changed";
+                value.update();
+                value.update();
+                value.description = "second";
+                value.update();
+                return ec.entity.find("moqui.basic.Enumeration").condition("enumId", "E2").useCache(false).one()
+                    .description === "second";
+            })()"#,
+        );
+        assert_eq!(updates().len(), 5, "{:?}", updates());
     }
 
     #[test]

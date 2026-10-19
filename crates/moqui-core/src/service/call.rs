@@ -2252,6 +2252,67 @@ mod tests {
         assert_eq!(row.get("testMedium").and_then(Value::as_str), Some("after"));
     }
 
+    /// Java's entity-auto `update`: only the fields passed are written, and a `statusId` is checked against the stored
+    /// status (read when the update runs, so after any change since a caller read the row), which the results give as
+    /// `oldStatusId`.
+    #[test]
+    fn an_entity_auto_update_writes_the_fields_passed_and_checks_the_stored_status() {
+        let (facade, ctx) = seeded_context(&[]);
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        let entity = "moqui.service.message.SystemMessage";
+        let mut row = facade.make_value(entity).unwrap();
+        row.set("systemMessageId", Value::string("M1"));
+        row.set("statusId", Value::string("SmsgReceived"));
+        row.set("messageText", Value::string("keep"));
+        row.set("failCount", Value::I64(2));
+        row.create(&facade).unwrap();
+        for (from, to) in [("SmsgReceived", "SmsgConsumed"), ("SmsgConsumed", "SmsgConfirmed")] {
+            let mut transition = facade.make_value("moqui.basic.StatusFlowTransition").unwrap();
+            transition.set("statusFlowId", Value::string("Default"));
+            transition.set("statusId", Value::string(from));
+            transition.set("toStatusId", Value::string(to));
+            transition.create(&facade).unwrap();
+        }
+        let read = || {
+            facade
+                .find(entity)
+                .unwrap()
+                .eq("systemMessageId", Value::string("M1"))
+                .use_cache(false)
+                .one()
+                .unwrap()
+                .unwrap()
+        };
+        // A caller read the row, then another changed its status.
+        let mut stale = read();
+        let mut other = read();
+        other.set("statusId", Value::string("SmsgConsumed"));
+        other.update(&facade).unwrap();
+        let params = BTreeMap::from([
+            ("systemMessageId".to_string(), Value::string("M1")),
+            ("statusId".to_string(), Value::string("SmsgConfirmed")),
+        ]);
+        let out = super::sync_checked(&format!("update#{entity}"), &params, &super::CallOptions::default()).unwrap();
+        assert_eq!(out.get("oldStatusId"), Some(&Value::string("SmsgConsumed")), "{out:?}");
+        assert_eq!(out.get("statusChanged"), Some(&Value::Bool(true)), "{out:?}");
+        let stored = read();
+        assert_eq!(stored.get("statusId"), Some(&Value::string("SmsgConfirmed")));
+        assert_eq!(stored.get("messageText"), Some(&Value::string("keep")));
+        // The stale value changes another field; the status it read is not written back.
+        stale.set("messageText", Value::string("stale"));
+        stale.update(&facade).unwrap();
+        assert_eq!(read().get("statusId"), Some(&Value::string("SmsgConfirmed")));
+        assert_eq!(read().get("messageText"), Some(&Value::string("stale")));
+        let back = BTreeMap::from([
+            ("systemMessageId".to_string(), Value::string("M1")),
+            ("statusId".to_string(), Value::string("SmsgReceived")),
+        ]);
+        let err = super::sync_checked(&format!("update#{entity}"), &back, &super::CallOptions::default()).unwrap_err();
+        assert!(err.to_string().contains("Status change not allowed"), "{err}");
+        assert_eq!(read().get("statusId"), Some(&Value::string("SmsgConfirmed")));
+    }
+
     #[test]
     fn a_script_service_runs_its_javascript_file_and_optional_chaining_loads() {
         let script = std::env::temp_dir().join(format!("moqui-script-service-{}.js", std::process::id()));

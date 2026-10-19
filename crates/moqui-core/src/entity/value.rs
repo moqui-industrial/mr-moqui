@@ -14,8 +14,8 @@
 
 //! One entity record and a list of records.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_db::model::EntityDefinition;
@@ -38,14 +38,66 @@ use super::{cache, fk, load_feed, sequence};
 /// those fields in the user's locale through [`Self::get_localized`] and [`Self::localized_fields`], as Java's
 /// `get` and `getMap`, and a value of a view reads its `pq-expression` aliases there too; [`Self::get`],
 /// [`Self::fields`] and every write use the stored values.
+///
+/// A value read from the database (a find, the entity cache or a refresh), or written to it since, keeps what each
+/// field it sets held before, as Java's `dbValueMap`, so its update writes only the fields that changed and leaves a
+/// field another transaction changed in between as that one wrote it. A value from [`EntityFacade::make_value`] that
+/// was not written yet updates every field it holds. See [`Self::is_field_modified`].
 #[derive(Clone, Debug)]
 pub struct EntityValue {
     entity_name: String,
     fields: BTreeMap<String, Value>,
     l10n: Option<Box<Localizer>>,
-    /// The `lastUpdatedStamp` the value was read with, so an update can tell a stamp the caller set from the one read, as
-    /// Java's `dbValueMap` does for that field.
-    read_stamp: Option<Value>,
+    read: ReadState,
+}
+
+/// What an [`EntityValue`] read from the database held before the caller changed it. Behind a lock so a write, which
+/// takes the value by reference, can mark the value written; a clone has a copy of its own.
+#[derive(Default)]
+struct ReadState(Mutex<Read>);
+
+#[derive(Clone, Debug, Default)]
+struct Read {
+    /// Read from the database, or written to it since.
+    from_db: bool,
+    /// Each field set since the value was read or written, with what it held then (`None`: it held nothing).
+    before: BTreeMap<String, Option<Value>>,
+}
+
+impl ReadState {
+    fn read() -> Self {
+        Self(Mutex::new(Read {
+            from_db: true,
+            before: BTreeMap::new(),
+        }))
+    }
+
+    fn get(&self) -> MutexGuard<'_, Read> {
+        lock(&self.0)
+    }
+
+    fn get_mut(&mut self) -> &mut Read {
+        self.0.get_mut().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The value holds what the database does, as Java's `setSyncedWithDb` after a create or an update.
+    fn synced(&self) {
+        let mut read = self.get();
+        read.from_db = true;
+        read.before.clear();
+    }
+}
+
+impl Clone for ReadState {
+    fn clone(&self) -> Self {
+        Self(Mutex::new(self.get().clone()))
+    }
+}
+
+impl std::fmt::Debug for ReadState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.get().fmt(f)
+    }
 }
 
 /// Two values are equal when they hold the same stored fields of the same entity.
@@ -107,7 +159,7 @@ impl EntityValue {
             entity_name: full_name,
             fields: BTreeMap::new(),
             l10n: None,
-            read_stamp: None,
+            read: ReadState::default(),
         })
     }
 
@@ -115,9 +167,9 @@ impl EntityValue {
     pub(crate) fn from_fields(entity_name: String, fields: BTreeMap<String, Value>) -> Self {
         Self {
             entity_name,
-            read_stamp: fields.get(STAMP).filter(|stamp| !stamp.is_null()).cloned(),
             fields,
             l10n: None,
+            read: ReadState::read(),
         }
     }
 
@@ -222,8 +274,14 @@ impl EntityValue {
         out
     }
 
+    /// Set a field. On a value read from the database the first set of a field keeps what it held, as Java's `put`
+    /// keeps it in `dbValueMap`, for [`Self::is_field_modified`].
     pub fn set(&mut self, field: impl Into<String>, value: Value) {
         let field = field.into();
+        let read = self.read.get_mut();
+        if read.from_db && !read.before.contains_key(&field) {
+            read.before.insert(field.clone(), self.fields.get(&field).cloned());
+        }
         if let Some(l10n) = self.l10n.as_deref_mut() {
             // A copy of its own, so a clone that shares the reads does not see this field's.
             let kept: HashMap<_, _> = lock(&l10n.memo)
@@ -240,10 +298,76 @@ impl EntityValue {
         &self.fields
     }
 
+    /// Java's `isFieldModified`: whether `field` changed, so an update writes it. On a value not read from the
+    /// database, every field it holds. On one read from the database or written since, a field set to something
+    /// other than what it held then (compared as an update compares, a number by value) or set when it held nothing.
+    pub fn is_field_modified(&self, field: &str) -> bool {
+        let Some(value) = self.fields.get(field) else {
+            return false;
+        };
+        let read = self.read.get();
+        if !read.from_db {
+            return true;
+        }
+        match read.before.get(field) {
+            None => false,
+            Some(None) => true,
+            Some(Some(old)) => !same_field_value(old, value),
+        }
+    }
+
+    /// Java's `isModified`: whether any field changed (see [`Self::is_field_modified`]).
+    pub fn is_modified(&self) -> bool {
+        let read = self.read.get();
+        if !read.from_db {
+            return !self.fields.is_empty();
+        }
+        read.before
+            .iter()
+            .any(|(name, old)| match (old, self.fields.get(name)) {
+                (_, None) => false,
+                (None, Some(_)) => true,
+                (Some(old), Some(value)) => !same_field_value(old, value),
+            })
+    }
+
+    /// Java's `getOriginalDbValue`: what `field` held when the value was read from the database or last written, or
+    /// what it holds when it was not set since.
+    pub fn original_db_value(&self, field: &str) -> Option<Value> {
+        match self.read.get().before.get(field) {
+            Some(old) => old.clone(),
+            None => self.fields.get(field).cloned(),
+        }
+    }
+
+    /// What each field set since the value was read or written held then; `None` when the value was not read from
+    /// the database, so that an update writes every field it holds.
+    pub(crate) fn read_before(&self) -> Option<BTreeMap<String, Option<Value>>> {
+        let read = self.read.get();
+        read.from_db.then(|| read.before.clone())
+    }
+
+    /// `written`, a copy of this value taken for a write, was written: what it held is what the database holds now. A
+    /// field set on this value since the copy was taken (by an ECA rule during the write) stays modified.
+    pub(crate) fn note_written(&mut self, written: &EntityValue) {
+        let fields = &self.fields;
+        let read = self.read.get_mut();
+        read.from_db = true;
+        read.before.clear();
+        for (name, value) in fields {
+            let was = written.fields.get(name);
+            if was != Some(value) {
+                read.before.insert(name.clone(), was.cloned());
+            }
+        }
+    }
+
+    /// Insert the value. It then holds what the database does: a later update writes only the fields set after.
     pub fn create(&self, facade: &EntityFacade) -> Result<(), Error> {
         facade.create_value(self)
     }
 
+    /// Java's `update`: write the fields that changed (see [`Self::is_field_modified`]), and nothing when none did.
     pub fn update(&self, facade: &EntityFacade) -> Result<(), Error> {
         facade.update_value(self)
     }
@@ -254,7 +378,7 @@ impl EntityValue {
 
     pub fn refresh(&mut self, facade: &EntityFacade) -> Result<(), Error> {
         let fresh = facade.refresh_fields(&self.entity_name, &self.fields)?;
-        self.read_stamp = fresh.get(STAMP).filter(|stamp| !stamp.is_null()).cloned();
+        self.read = ReadState::read();
         self.fields = fresh;
         if let Some(l10n) = self.l10n.as_deref_mut() {
             l10n.memo = Arc::new(Mutex::new(HashMap::new()));
@@ -318,44 +442,58 @@ impl EntityList {
 }
 
 impl EntityFacade {
+    /// Insert `value`, which then holds what the database does (see [`EntityValue::is_field_modified`]).
     pub fn create_value(&self, value: &EntityValue) -> Result<(), Error> {
         let mut stack = HashSet::new();
-        self.insert_record(value, &mut stack)
+        self.insert_record(value, &mut stack)?;
+        value.read.synced();
+        Ok(())
     }
 
+    /// Java's `update`: write the fields of `value` that changed since it was read or written, or every field it
+    /// holds when it was not read; then it holds what the database does.
     pub fn update_value(&self, value: &EntityValue) -> Result<(), Error> {
-        self.write_update(&value.entity_name, &value.fields, None, value.read_stamp.as_ref())
+        let before = value.read_before();
+        self.write_update(&value.entity_name, &value.fields, None, before.as_ref())?;
+        value.read.synced();
+        Ok(())
     }
 
     pub fn delete_value(&self, value: &EntityValue) -> Result<(), Error> {
         self.write_delete(&value.entity_name, &value.fields)
     }
 
+    /// Java's `createOrUpdate`: update the row when it is there, as [`Self::update_value`] (a value read from the
+    /// database writes only the fields that changed), else create it with every field the value holds.
     pub fn create_or_update_value(&self, value: &EntityValue) -> Result<(), Error> {
+        let before = value.read_before();
         // As Java, fill primary-key defaults first.
-        let mut value = value.clone();
-        let defaults = self.apply_field_defaults(&value.entity_name, &value.fields)?;
-        let keys = self.pk_map(&value.entity_name, &defaults)?;
-        value.fields.extend(keys.clone());
+        let mut copy = value.clone();
+        let defaults = self.apply_field_defaults(&copy.entity_name, &copy.fields)?;
+        let keys = self.pk_map(&copy.entity_name, &defaults)?;
+        copy.fields.extend(keys.clone());
         // Rust then tries one UPDATE by primary key, for a row that is probably there: an `update` hit when it
         // updates the row, the Rust-only `update-probe` when it matches none. Otherwise as Java: refresh a clone
         // before choosing the write.
         // Opt in to Java's read-first create-or-update; keep UPDATE-first by default.
         if moqui_lib::env::get_prop_or_env("create-or-update") != "true"
-            && self.update_if_exists(&value.entity_name, &value.fields)?
+            && self.update_if_exists(&copy.entity_name, &copy.fields, before.as_ref())?
         {
+            value.read.synced();
             return Ok(());
         }
         let stored = {
             // Java refreshes a throwaway clone without accessing its localized fields.
             let _raw = super::field_rw::RawReadGuard::enter();
-            self.refresh_by_pk(&value.entity_name, &keys)?
+            self.refresh_by_pk(&copy.entity_name, &keys)?
         };
         // The row just read is the one the update would read again, in the same transaction.
         match stored {
-            Some(row) => self.write_update(&value.entity_name, &value.fields, Some(row.fields), None),
-            None => self.create_value(&value),
+            Some(row) => self.write_update(&copy.entity_name, &copy.fields, Some(row.fields), before.as_ref())?,
+            None => self.create_value(&copy)?,
         }
+        value.read.synced();
+        Ok(())
     }
 
     pub(crate) fn insert_record(&self, value: &EntityValue, stack: &mut HashSet<String>) -> Result<(), Error> {
@@ -373,7 +511,7 @@ impl EntityFacade {
         self.require_pk(&value.entity_name, &plain)?;
         fk::enforce(self, &value.entity_name, &plain, stack)?;
         self.reject_view(&value.entity_name, "create")?;
-        self.finish_write(&value.entity_name, "create", plain, None, None)
+        self.finish_write(&value.entity_name, "create", plain, None, None, None)
             .map(|_| ())
     }
 
@@ -450,25 +588,26 @@ impl EntityFacade {
     /// [`update_reads_row`]) it is read, or taken from `known` when the caller just read it, and the update then writes
     /// only the fields that differ from it, and nothing when none do. See [`Self::update_columns`].
     ///
-    /// `read_stamp` is the `lastUpdatedStamp` a found value was read with. When the caller set another one, the row is
-    /// read too, so the update keeps the caller's stamp as Java does (P1-15).
+    /// `before` is what each field a value read from the database set since held then
+    /// ([`EntityValue::read_before`]). With it the update writes only the fields that changed from that (and those a
+    /// field default or a run-before ECA rule fills), so a field another transaction changed since the read is left as
+    /// it wrote it; with no change it writes nothing and reads no row. With none (a value that was not read, or a
+    /// changed primary key) it writes every field `values` holds.
     fn write_update(
         &self,
         entity_name: &str,
         values: &BTreeMap<String, Value>,
         known: Option<BTreeMap<String, Value>>,
-        read_stamp: Option<&Value>,
+        before: Option<&BTreeMap<String, Option<Value>>>,
     ) -> Result<(), Error> {
         self.reject_view(entity_name, "update")?;
         let (has_defaults, reads_row) = self.with_entity(entity_name, |entity, _, _| {
             Ok((has_field_defaults(entity), update_reads_row(entity)))
         })?;
-        let stamp_set = read_stamp.is_some_and(|read| {
-            values
-                .get(STAMP)
-                .is_some_and(|stamp| !stamp.is_null() && !same_field_value(read, stamp))
-        });
-        let reads_row = reads_row || stamp_set || load_feed::feed_wants_old(self, entity_name);
+        let rules = load_feed::match_rules_with(self, entity_name, "update");
+        // A value read and not set since has nothing to write, unless a default or a run-before rule sets a field.
+        let untouched = before.is_some_and(BTreeMap::is_empty) && !has_defaults && rules.is_empty();
+        let reads_row = !untouched && (reads_row || load_feed::feed_wants_old(self, entity_name));
         let mut values = if has_defaults {
             self.fill_field_defaults(entity_name, values, DefaultFields::Pk, None)?
         } else {
@@ -486,15 +625,35 @@ impl EntityFacade {
         } else {
             None
         };
+        let unfilled = (has_defaults && before.is_some()).then(|| values.clone());
         if has_defaults {
             values = self.fill_field_defaults(entity_name, &values, DefaultFields::NonPk, stored.as_ref())?;
         }
         let mut plain = self.normalize_values(entity_name, &values, true)?;
+        let mut modified = match before {
+            Some(before) => {
+                self.with_entity(entity_name, |entity, _, _| Ok(modified_fields(entity, before, &plain)))?
+            }
+            None => None,
+        };
+        // A field a default filled changed too, as Java's `checkSetFieldDefaults` puts it on the value.
+        if let (Some(modified), Some(unfilled)) = (modified.as_mut(), unfilled) {
+            for (name, value) in &values {
+                if unfilled.get(name) != Some(value) {
+                    modified.insert(name.clone());
+                }
+            }
+        }
         let stored = match stored {
-            // As Java's `setDbValueMap`, the value takes each stored field it does not set.
+            // As Java's `setDbValueMap`, the value takes each stored field it does not set. A value read from the
+            // database takes the stored value of each field it did not change too, so the ECA rules, the cache and the
+            // data feed see the row as this update leaves it.
             Some(row) => {
                 for (name, value) in &row {
                     plain.entry(name.clone()).or_insert_with(|| value.clone());
+                }
+                if let Some(modified) = &modified {
+                    take_unmodified(&mut plain, &row, modified);
                 }
                 Some(row)
             }
@@ -503,22 +662,24 @@ impl EntityFacade {
             None if reads_row => Some(plain.clone()),
             None => None,
         };
-        let rules = load_feed::match_rules_with(self, entity_name, "update");
-        self.finish_write(entity_name, "update", plain, Some(rules), stored)
+        self.finish_write(entity_name, "update", plain, Some(rules), stored, modified.as_ref())
             .map(|_| ())
     }
 
     /// The columns an update writes, after its run-before ECA rules, as Java's `update`; `None` when it writes nothing.
     ///
-    /// With no `stored` row each non-PK field of `plain` is written; with one, only those that differ from it. A
-    /// `lastUpdatedStamp` in `plain` is kept only when it differs from a stored non-null one; otherwise it is set to the
-    /// transaction start time. Nothing is written when no other field would be. A create-only field that would change
-    /// is an error, as is, with optimistic locking, a `lastUpdatedStamp` that is not the stored one.
+    /// Only the fields in `modified` are written when it is given (a value read from the database: the fields that
+    /// changed); every non-PK field of `plain` otherwise. With a `stored` row only those that differ from it are. A
+    /// `lastUpdatedStamp` in `plain` is kept only when it differs from a stored non-null one, or with no stored row
+    /// when `modified` has it (the caller changed a non-null stamp it read); otherwise it is set to the transaction
+    /// start time. Nothing is written when no other field would be. A create-only field that would change is an
+    /// error, as is, with optimistic locking, a `lastUpdatedStamp` that is not the stored one.
     fn update_columns(
         &self,
         entity_name: &str,
         stored: Option<&BTreeMap<String, Value>>,
         plain: &mut BTreeMap<String, Value>,
+        modified: Option<&BTreeSet<String>>,
     ) -> Result<Option<Vec<String>>, Error> {
         let (mut columns, kept_stamp, create_only, optimistic_lock, has_stamp) =
             self.with_entity(entity_name, |entity, _, _| {
@@ -529,10 +690,14 @@ impl EntityFacade {
                     let Some(value) = plain.get(&field.name) else {
                         continue;
                     };
+                    if modified.is_some_and(|modified| !modified.contains(&field.name)) {
+                        continue;
+                    }
                     let old = stored.map(|row| row.get(&field.name).unwrap_or(&Value::Null));
                     if field.name == STAMP {
-                        match old.filter(|old| !old.is_null()) {
-                            Some(old) if !same_field_value(old, value) => kept_stamp = true,
+                        match old {
+                            Some(old) if !old.is_null() && !same_field_value(old, value) => kept_stamp = true,
+                            None if modified.is_some() => kept_stamp = true,
                             _ => continue,
                         }
                     } else if old.is_some_and(|old| same_field_value(old, value)) {
@@ -598,7 +763,14 @@ impl EntityFacade {
     /// authorization is on (an update checks `update`, a new row checks `create`), or the update has no column to
     /// set. Foreign key checks belong to create only, and the path that follows a miss is the unchanged one, so they
     /// are not skipped. A probe that updates no row leaves no feed touch, cache clear, or ECA run behind.
-    fn update_if_exists(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<bool, Error> {
+    ///
+    /// `before` is as for [`Self::write_update`]: a value read from the database sets only the fields that changed.
+    fn update_if_exists(
+        &self,
+        entity_name: &str,
+        values: &BTreeMap<String, Value>,
+        before: Option<&BTreeMap<String, Option<Value>>>,
+    ) -> Result<bool, Error> {
         let eligible = self.with_entity(entity_name, |entity, dialect, _| {
             Ok(dialect.name == "postgres"
                 && !entity.is_view
@@ -615,11 +787,14 @@ impl EntityFacade {
             return Ok(false);
         }
         let plain = self.normalize_values(entity_name, values, true)?;
-        // The columns as `update_columns` finds them with no stored row: every non-PK field but the stamp it sets.
-        let has_columns = self.with_entity(entity_name, |entity, _, _| {
-            Ok(present_columns(entity, &plain, true, true)
+        // The columns as `update_columns` finds them with no stored row: every non-PK field (of those that changed, for
+        // a value read from the database) but the stamp it sets.
+        let (has_columns, modified) = self.with_entity(entity_name, |entity, _, _| {
+            let modified = before.and_then(|before| modified_fields(entity, before, &plain));
+            let has_columns = present_columns(entity, &plain, true, true)
                 .into_iter()
-                .any(|column| column != STAMP))
+                .any(|column| column != STAMP && modified.as_ref().is_none_or(|modified| modified.contains(column)));
+            Ok((has_columns, modified))
         })?;
         if !has_columns {
             return Ok(false);
@@ -628,7 +803,7 @@ impl EntityFacade {
         if !rules.is_empty() {
             return Ok(false);
         }
-        Ok(self.finish_write(entity_name, "update-probe", plain, Some(rules), None)? > 0)
+        Ok(self.finish_write(entity_name, "update-probe", plain, Some(rules), None, modified.as_ref())? > 0)
     }
 
     fn write_delete(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
@@ -643,7 +818,8 @@ impl EntityFacade {
             }
             Ok(())
         })?;
-        self.finish_write(entity_name, "delete", plain, None, None).map(|_| ())
+        self.finish_write(entity_name, "delete", plain, None, None, None)
+            .map(|_| ())
     }
 
     /// Insert, or update on a primary-key conflict. Values are sealed the same way as a create.
@@ -653,12 +829,16 @@ impl EntityFacade {
         let mut stack = HashSet::new();
         fk::enforce(self, entity_name, &plain, &mut stack)?;
         self.reject_view(entity_name, "create")?;
-        self.finish_write(entity_name, "upsert", plain, None, None).map(|_| ())
+        self.finish_write(entity_name, "upsert", plain, None, None, None)
+            .map(|_| ())
     }
 
     /// Run the write, or leave it with the cache when the gate handles it. Values are plaintext. `rules` are the
     /// ECA rules a caller already matched for this write; `None` matches them here. `stored` is the row an update read
-    /// first; an update returns 0 without writing when [`Self::update_columns`] finds nothing to write.
+    /// first; an update returns 0 without writing when [`Self::update_columns`] finds nothing to write. `modified` is
+    /// the fields an update of a value read from the database changed (see [`Self::write_update`]); a field a run-before
+    /// rule sets is added to it. The ECA rules, the cache and the data feed get every field of `plain`; an update writes
+    /// (and audits, and holds in a transaction cache) only its columns.
     fn finish_write(
         &self,
         entity_name: &str,
@@ -666,6 +846,7 @@ impl EntityFacade {
         plain: BTreeMap<String, Value>,
         rules: Option<Vec<EcaRule>>,
         stored: Option<BTreeMap<String, Value>>,
+        modified: Option<&BTreeSet<String>>,
     ) -> Result<u64, Error> {
         // `update-probe` is an update that leaves no trace when it matches no row; see `update_if_exists`. It is
         // authorized as an update. Its hit is an `update` when it updated a row, and the Rust-only `update-probe`
@@ -703,16 +884,25 @@ impl EntityFacade {
         };
         let eca = crate::user::context_entered();
         let mut plain = plain;
+        let mut modified = modified.cloned();
         if eca {
             let before = plain.clone();
             crate::service::run_matched_eca(self, entity_name, seal_operation, true, &rules, &mut plain, None)?;
             // A run-before rule may have set fields (`entityValue` or `set-results`): convert them as a write would.
             if plain != before {
                 plain = self.normalize_values(entity_name, &plain, operation == "update")?;
+                // What it set is written, as Java's rule sets it on the value; the stamp stays the update's to set.
+                if let Some(modified) = modified.as_mut() {
+                    for (name, value) in &plain {
+                        if name != STAMP && before.get(name).is_none_or(|was| !same_field_value(was, value)) {
+                            modified.insert(name.clone());
+                        }
+                    }
+                }
             }
         }
         let write_columns = if operation == "update" {
-            match self.update_columns(entity_name, stored.as_ref(), &mut plain)? {
+            match self.update_columns(entity_name, stored.as_ref(), &mut plain, modified.as_ref())? {
                 Some(columns) => Some(columns),
                 None => return Ok(0),
             }
@@ -720,11 +910,23 @@ impl EntityFacade {
             None
         };
         let cache_values = plain.clone();
+        // As Java binds only the fields an update changes, only those and the key are sealed and written: a stored field
+        // that could not be decrypted is not written back, and one another transaction changed since the value was read
+        // is left as it wrote it.
+        let plain = match &write_columns {
+            Some(columns) => self.with_entity(entity_name, |entity, _, _| {
+                Ok(plain
+                    .into_iter()
+                    .filter(|(name, _)| columns.contains(name) || entity.field(name).is_some_and(|field| field.is_pk))
+                    .collect::<BTreeMap<_, _>>())
+            })?,
+            None => plain,
+        };
         let mut affected = 1;
         if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Handled {
             load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values), None);
         } else {
-            let mut after_values = eca.then(|| plain.clone());
+            let mut after_values = eca.then(|| cache_values.clone());
             // An after rule with `get-original-value` on an update or delete gets the row as it was before the write.
             let pre_row = if eca
                 && (operation == "update" || operation == "delete")
@@ -735,6 +937,12 @@ impl EntityFacade {
             } else {
                 None
             };
+            // As for the stored row an update reads (see `write_update`): the row as this update leaves it.
+            if let (Some(values), Some(row), Some(modified)) = (after_values.as_mut(), &pre_row, &modified) {
+                if operation == "update" {
+                    take_unmodified(values, row.fields(), modified);
+                }
+            }
             // The data feed feeds an update only when a document field changes, so it needs the row as it was.
             let feed_old = if operation == "update" && !probe && load_feed::feed_wants_old(self, entity_name) {
                 match (&stored, &pre_row) {
@@ -765,19 +973,6 @@ impl EntityFacade {
             }
             // Java's `checkTableRuntime` before each write, when the group adds missing tables at runtime.
             self.check_table_runtime(entity_name);
-            // As Java binds only the fields an update changes, only those and the key are sealed: a stored field that
-            // could not be decrypted is not written back.
-            let plain = match &write_columns {
-                Some(columns) => self.with_entity(entity_name, |entity, _, _| {
-                    Ok(plain
-                        .into_iter()
-                        .filter(|(name, _)| {
-                            columns.contains(name) || entity.field(name).is_some_and(|field| field.is_pk)
-                        })
-                        .collect())
-                })?,
-                None => plain,
-            };
             let prepared = self.seal_values(entity_name, seal_operation, plain, stored.as_ref())?;
             let (sql, params) = self.with_group(entity_name, |entity, dialect, _, _| {
                 let columns = present_columns(entity, &prepared, operation == "update", operation == "update");
@@ -1269,6 +1464,45 @@ fn update_reads_row(entity: &EntityDefinition) -> bool {
                     .as_deref()
                     .is_some_and(|flag| matches!(flag, "true" | "update"))
         })
+}
+
+/// The fields of `plain`, an update's values converted to their types, that changed from what a value read from the
+/// database held (`before`, see [`EntityValue::read_before`]): each one set to something else, or set when it held
+/// nothing. The stamp only when it read a non-null one, as Java counts `lastUpdatedStamp` against `dbValueMap`. `None`
+/// when a primary key field changed: the value names another row, so each field it holds is written.
+fn modified_fields(
+    entity: &EntityDefinition,
+    before: &BTreeMap<String, Option<Value>>,
+    plain: &BTreeMap<String, Value>,
+) -> Option<BTreeSet<String>> {
+    let mut names = BTreeSet::new();
+    for (name, old) in before {
+        let (Some(field), Some(value)) = (entity.field(name), plain.get(name)) else {
+            continue;
+        };
+        if old.as_ref().is_some_and(|old| same_field_value(old, value)) {
+            continue;
+        }
+        if field.is_pk {
+            return None;
+        }
+        if name == STAMP && old.as_ref().is_none_or(Value::is_null) {
+            continue;
+        }
+        names.insert(name.clone());
+    }
+    Some(names)
+}
+
+/// Each field of `row`, a stored row just read, that `modified` does not name into `values`, the fields of an update of a
+/// value read from the database: such a value holds a field it did not change as it read it, and another transaction
+/// may have written it since. The stamp stays the value's, for the optimistic lock check.
+fn take_unmodified(values: &mut BTreeMap<String, Value>, row: &BTreeMap<String, Value>, modified: &BTreeSet<String>) {
+    for (name, value) in row {
+        if name != STAMP && !modified.contains(name) {
+            values.insert(name.clone(), value.clone());
+        }
+    }
 }
 
 /// Whether an update leaves a field as stored: both null, or the same value (a number by value, so `10.0` and
