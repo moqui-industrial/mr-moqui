@@ -16,7 +16,7 @@
   },
   "notices": {
     "path": "NOTICES.md",
-    "sha256": "26000eb720121f69b96637e0bb8c779c8b67d053e139fc1b6ad7dca04620b6a6"
+    "sha256": "48112ae45e753718f438446c0d8220b07f3dedd7d135c11268536c391eb8bedc"
   },
   "libraries": [
     {
@@ -235,6 +235,12 @@
           "from": "dist/lang/nl.umd.prod.js",
           "size": 3166,
           "sha256": "5867786bb872ad173922d0db9b468dc0e843b935b337c4440db188fbb2bfc27c"
+        },
+        {
+          "path": "quasar/icon-set/material-symbols-outlined.umd.prod.js",
+          "from": "dist/icon-set/material-symbols-outlined.umd.prod.js",
+          "size": 2781,
+          "sha256": "d62e378fcbdd7eacbe2918b9d642002e12e16b607f8d538aa7b7b639de560908"
         }
       ]
     },
@@ -264,6 +270,29 @@
           "from": "iconfont/material-icons.woff",
           "size": 164912,
           "sha256": "fd84f88b497040d4f7d5e8c9f8635aef8d3e706c0fa52e2b6facf14eee87e522"
+        }
+      ]
+    },
+    {
+      "id": "material-symbols",
+      "name": "Material Symbols Outlined (Google)",
+      "version": "0.47.6",
+      "license": "Apache-2.0",
+      "source": "https://registry.npmjs.org/@material-symbols/font-400/-/font-400-0.47.6.tgz",
+      "npm": "@material-symbols/font-400@0.47.6",
+      "tarballIntegrity": "sha512-T+v1rDipz/fMhsg3sUazUKU4OQp9shj8sM/GsNvx3Drm1s0BqUkeR7S33MaO8Q89TnuKzEUpIU9xB48mqQr3Fw==",
+      "files": [
+        {
+          "path": "material-symbols/outlined.css",
+          "from": "outlined.css",
+          "size": 631,
+          "sha256": "d40f96e0e2996bcca93fce0f573855fdb77c41cb9f86501f7fa999470adbecee"
+        },
+        {
+          "path": "material-symbols/material-symbols-outlined.woff2",
+          "from": "material-symbols-outlined.woff2",
+          "size": 492196,
+          "sha256": "b80bfde9ea6756c14a7c69af85903f465dd24688a161df3a64028f9aa20da151"
         }
       ]
     },

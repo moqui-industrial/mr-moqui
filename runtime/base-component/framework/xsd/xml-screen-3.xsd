@@ -54,8 +54,10 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:restriction base="xs:token">
                     <xs:enumeration value="url-screen"/>
                     <xs:enumeration value="url-plain"/>
-                    <xs:enumeration value="icon"><xs:annotation><xs:documentation>Icon name, actually an icon
-                        style used in an 'i' element in HTML output.</xs:documentation></xs:annotation></xs:enumeration>
+                    <xs:enumeration value="icon"><xs:annotation><xs:documentation>Icon name. CSS classes when it has a
+                        space or starts with fa- (fa fa-home), used in an 'i' element. Otherwise a Quasar icon name, such
+                        as sym_o_hub (Material Symbols outlined) or home (Material Icons), which the qvt menus show with
+                        q-icon and the html app list with the Material Symbols font.</xs:documentation></xs:annotation></xs:enumeration>
                 </xs:restriction>
             </xs:simpleType>
         </xs:attribute>

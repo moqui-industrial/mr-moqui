@@ -60,7 +60,7 @@ pub use sections::{
     append_to_after_screen_writer, append_to_script_writer, render_active_screen, render_include_screen,
     render_section, render_section_include, render_subscreen, render_text,
 };
-pub(super) use sections::{iteration_entries, paginate_items};
+pub(super) use sections::{is_security, iteration_entries, paginate_items};
 pub use theme::{get_theme_icon_class, get_theme_values};
 
 /// Generates and runs the code of a section on the script runtime that is running the render.

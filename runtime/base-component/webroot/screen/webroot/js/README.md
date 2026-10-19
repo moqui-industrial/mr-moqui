@@ -137,9 +137,12 @@ container-dialog's button comes through the component's `button` slot (`q-btn de
 `open_in_new`). The exports of a list (csv, xlsx, text, print) are the items of one `q-btn-dropdown`, and the page buttons are a
 `q-pagination`, in a `form-list-nav-row` above the table (with the tools) and another below it.
 
-The `icon` attribute of `link`, `submit`, `button-menu` and the dialogs is a Material Icons name (`add`, `edit`; a `sym_o_*` name later),
-written as `<q-icon name="…" size="sm">`, or CSS classes when the value has a space or an `fa` prefix (`fa fa-plus`), written as
-`<i class="… q-icon">`; the dialogs give either form to the `icon` prop of their `q-btn`. The cells of a `field-row` are `col-xs-12 col-sm-6`
+The `icon` attribute of `link`, `submit`, `button-menu` and the dialogs is a Quasar icon name, Material Symbols outlined (`sym_o_add`, the
+style guide's names) or Material Icons (`add`, `edit`), written as `<q-icon name="…" size="sm">`, or CSS classes when the value has a space or
+an `fa` prefix (`fa fa-plus`), written as `<i class="… q-icon">`; the dialogs give either form to the `icon` prop of their `q-btn`. A menu
+image of `menu-image-type="icon"` follows the same rule (`moqui.isIconClass`): `m-menu-icon` draws it as a `q-icon` in the drawer, the
+breadcrumbs' subscreen menus and the screen history, and as an `i` with the classes for `fa fa-*`. Quasar's own icons (select arrows,
+pagination, expansion items) are its `material-symbols-outlined` icon set, set when the app is created. The cells of a `field-row` are `col-xs-12 col-sm-6`
 (two fields side by side from 600px, stacked below), `col-sm-4` for three fields and `col-sm-3` for four.
 
 Two small classes of the style guide are in the same sheet: `.m-muted` for a caption (`grey-7`, and `grey-5` under `body--dark`), and `.m-tonal` on a
@@ -166,7 +169,7 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-dynamic-container`, `m-dynamic-dialog` | a screen loaded into a container, or a dialog, with `load`, `reload` and `hide`; the dialog's button takes `button-text`, `button-class`, `color` and `button-icon` (default `open_in_new`), as `m-container-dialog` does |
 | `m-tree-top`, `m-tree-item` | tree: `items` is the node list or its URL (`<screen>/actions/<tree>`, posted `treeNodeId`, `treeNodeName`, `treeOpenPath`). A node's `children` is a list when it came inline (on `open-path`), `true` to load from the URL when the node is opened, `false` for a leaf |
 | `m-subscreens-tabs` (also `m-subscreens-menu`), `m-subscreens-active`, `m-subscreens-panel` | the subscreen menu and the place of the active subscreen |
-| `m-menu-nav-item`, `m-menu-subscreen-item`, `m-menu-item-content` | the navigation of the shell |
+| `m-menu-nav-item`, `m-menu-subscreen-item`, `m-menu-item-content`, `m-menu-icon` | the navigation of the shell; `m-menu-icon` is a menu image of type icon (`name`, `size`) |
 | `m-chart`, `m-mermaid` | Chart.js 4 and Mermaid 11, loaded on first use. `m-chart` takes `config`; `m-mermaid` takes the diagram in its `text` attribute (the compiler condenses the line breaks of slot content), `height` and `config` |
 | `m-script`, `m-stylesheet` | `<script>` and `<link>` of a screen's text |
 

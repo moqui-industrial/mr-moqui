@@ -220,3 +220,17 @@ test("a field widget puts its form's error on the Quasar field", () => {
     assert.deepEqual(errorAttrs.call({ name: "note", mForm: { fieldErrors: { title: "Bad" } } }), {});
     assert.deepEqual(errorAttrs.call({ name: "note", mForm: null }), {});
 });
+
+test("a menu image of type icon is a Quasar icon name for q-icon, or CSS classes for an i element", () => {
+    ["fa fa-home", "fa-home", "glyphicon glyphicon-cog"].forEach((image) => assert.equal(moqui.isIconClass(image), true, image));
+    ["sym_o_hub", "home", "o_home", "mdi-home", "", null, undefined].forEach((image) => assert.equal(moqui.isIconClass(image), false, String(image)));
+    const icon = qvt.components["m-menu-icon"];
+    assert.equal(icon.computed.isClass.call({ name: "sym_o_receipt_long" }), false);
+    assert.equal(icon.computed.isClass.call({ name: "fa fa-cog" }), true);
+    // the drawer, the breadcrumbs' subscreen menus and the screen history all draw a menu icon through it
+    assert.match(qvt.components["m-menu-item-content"].template, /<m-menu-icon v-if="menuItem.imageType === 'icon'" :name="menuItem.image"/);
+    const shell = qvt.components["m-qapps-root"].template;
+    assert.match(shell, /<m-menu-icon v-if="subscreen.image && subscreen.imageType === 'icon'" :name="subscreen.image"/);
+    assert.match(shell, /<m-menu-icon v-if="histItem.image && histItem.imageType === 'icon'" :name="histItem.image"/);
+    assert.doesNotMatch(shell, /:class="(subscreen|histItem)\.image"/);
+});

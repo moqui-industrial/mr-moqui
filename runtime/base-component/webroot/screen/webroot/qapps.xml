@@ -32,6 +32,10 @@ along with this software (see the LICENSE.md file). If not, see
         footer_scripts.add(staticOnly ? '/libs/vue/vue.runtime.global.prod.js' : '/libs/vue/vue.global.prod.js')
         footer_scripts.add('/libs/quasar/quasar.umd.prod.js')
         footer_scripts.add('/libs/quasar/lang/' + quasarLang + '.umd.prod.js')
+        // Quasar's icon set of Material Symbols, outlined, which WebrootVue.qvt.js sets; only with the font among the theme's
+        // stylesheets (a database loaded before it keeps Quasar's Material Icons until the theme data is loaded again)
+        if (sri.getThemeValues('STRT_STYLESHEET').some((sheet) => String(sheet).includes('/libs/material-symbols/')))
+            footer_scripts.add('/libs/quasar/icon-set/material-symbols-outlined.umd.prod.js')
         footer_scripts.add('/js/MoquiLib.js')
         footer_scripts.add('/js/MoquiL10n.js')
         // the render functions of the components, precompiled from their templates; WebrootVue.qvt.js applies them when it starts

@@ -23,7 +23,8 @@ along with this software (see the LICENSE.md file). If not, see
                 <text type="html"><![CDATA[
                     <#list sri.getMenuItems("/apps") as item>
                     <#if !item.hasParameters>
-                    <a href="${html(item.url)}" data-btn="primary" data-size="lg" class="app-list-link"><#if item.image && item.imageType == "icon"><i class="${html(item.image)}"></i><#elseif item.image><img src="${html(item.imageType == "url-plain" ? item.image : sri.buildUrl(item.image).url)}" height="18" alt=""><#else><i class="fa fa-link"></i></#if> ${html(ec.resource.expand(item.title, ""))}</a>
+                    <#assign iconClass = item.image && item.imageType == "icon" && (item.image.includes(" ") || item.image.startsWith("fa-"))>
+                    <a href="${html(item.url)}" data-btn="primary" data-size="lg" class="app-list-link"><#if iconClass><i class="${html(item.image)}"></i><#elseif item.image && item.imageType == "icon"><span class="material-symbols-outlined" style="font-size:18px;vertical-align:middle">${html(item.image.startsWith("sym_o_") ? item.image.slice(6) : item.image)}</span><#elseif item.image><img src="${html(item.imageType == "url-plain" ? item.image : sri.buildUrl(item.image).url)}" height="18" alt=""><#else><i class="fa fa-link"></i></#if> ${html(ec.resource.expand(item.title, ""))}</a>
                     </#if>
                     </#list>
                     <p>&nbsp;</p>
@@ -33,7 +34,8 @@ along with this software (see the LICENSE.md file). If not, see
                 <text type="qvt"><![CDATA[
                     <#list sri.getMenuItems("/apps") as item>
                     <#if !item.hasParameters>
-                    <div class="q-my-sm"><q-btn unelevated no-caps class="m-btn-tonal" to="${html(item.url)}" style="min-width:250px"><i class="${html(item.image && item.imageType == "icon" ? item.image : "fa fa-link")}" style="padding-right: 8px;"></i> ${html(ec.resource.expand(item.title, ""))}</q-btn></div>
+                    <#assign icon = item.image && item.imageType == "icon" ? item.image : "fa fa-link">
+                    <div class="q-my-sm"><q-btn unelevated no-caps class="m-btn-tonal" to="${html(item.url)}" style="min-width:250px"><#if icon.includes(" ") || icon.startsWith("fa-")><i class="${html(icon)}" style="padding-right: 8px;"></i><#else><q-icon name="${html(icon)}" size="xs" class="q-mr-sm"></q-icon></#if> ${html(ec.resource.expand(item.title, ""))}</q-btn></div>
                     </#if>
                     </#list>
                     <p>&nbsp;</p>

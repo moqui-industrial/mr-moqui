@@ -33,6 +33,9 @@
         const quasar = moqui.getQuasarColor(color);
         return ["m-btn-tonal", quasar && quasar !== "default" ? "text-" + quasar : "", extra || ""].filter((part) => part).join(" ");
     };
+    // A menu image of type icon (menu-image-type="icon") is CSS classes when it has a space or starts with fa- (the baseline's
+    // "fa fa-home"), else a Quasar icon name (sym_o_hub, or a Material Icons name), which m-menu-icon shows with q-icon.
+    moqui.isIconClass = (image) => /\s/.test(image || "") || String(image || "").startsWith("fa-");
 
     const rootVm = () => moqui.webrootVue;
     const notify = (options) => {
@@ -2442,10 +2445,19 @@
         props: { menuItem: Object, active: Boolean },
         template:
             '<q-item-section v-if="menuItem.image" avatar>' +
-                '<i v-if="menuItem.imageType === \'icon\'" :class="menuItem.image"></i>' +
+                '<m-menu-icon v-if="menuItem.imageType === \'icon\'" :name="menuItem.image" size="xs"></m-menu-icon>' +
                 '<img v-else :src="menuItem.image" :alt="menuItem.title" height="14" class="invertible">' +
             '</q-item-section>' +
             '<q-item-section :class="{\'text-primary text-weight-medium\':active}">{{menuItem.title}}</q-item-section>'
+    });
+
+    // The image of a menu entry whose imageType is icon, in the drawer, the breadcrumbs and the screen history: q-icon for a Quasar
+    // icon name, an i element with the classes for CSS classes (moqui.isIconClass).
+    component("m-menu-icon", {
+        name: "mMenuIcon",
+        props: { name: String, size: String },
+        template: '<i v-if="isClass" :class="name"></i><q-icon v-else :name="name" :size="size"></q-icon>',
+        computed: { isClass() { return moqui.isIconClass(this.name); } }
     });
 
     /* ========== the application ========== */
@@ -2470,7 +2482,7 @@
         "                    <q-menu anchor=\"bottom left\" self=\"top left\"><q-list dense style=\"min-width:200px;\">\n" +
         "                        <q-item v-for=\"subscreen in navMenuItem.subscreens\" :key=\"subscreen.name\" clickable v-close-popup :active=\"subscreen.active\" active-class=\"text-primary text-weight-medium\" :to=\"subscreen.pathWithParams\">\n" +
         "                            <q-item-section avatar>\n" +
-        "                                <i v-if=\"subscreen.image && subscreen.imageType === 'icon'\" :class=\"subscreen.image\"></i>\n" +
+        "                                <m-menu-icon v-if=\"subscreen.image && subscreen.imageType === 'icon'\" :name=\"subscreen.image\" size=\"xs\"></m-menu-icon>\n" +
         "                                <img v-else-if=\"subscreen.image\" :src=\"subscreen.image\" :alt=\"subscreen.title\" width=\"18\" class=\"invertible\">\n" +
         "                                <q-icon v-else name=\"chevron_right\" size=\"xs\"></q-icon>\n" +
         "                            </q-item-section>\n" +
@@ -2513,7 +2525,7 @@
         "            <q-menu><q-list dense style=\"min-width:300px;\">\n" +
         "                <q-item v-for=\"histItem in navHistoryList\" :key=\"histItem.pathWithParams\" clickable v-close-popup :to=\"histItem.pathWithParams\">\n" +
         "                    <q-item-section avatar>\n" +
-        "                        <i v-if=\"histItem.image && histItem.imageType === 'icon'\" :class=\"histItem.image\"></i>\n" +
+        "                        <m-menu-icon v-if=\"histItem.image && histItem.imageType === 'icon'\" :name=\"histItem.image\" size=\"xs\"></m-menu-icon>\n" +
         "                        <img v-else-if=\"histItem.image\" :src=\"histItem.image\" :alt=\"histItem.title\" width=\"18\" class=\"invertible\">\n" +
         "                        <q-icon v-else name=\"chevron_right\" size=\"xs\"></q-icon>\n" +
         "                    </q-item-section>\n" +
@@ -3004,6 +3016,8 @@
             plugins: { Notify: root.Quasar.Notify, LoadingBar: root.Quasar.LoadingBar } };
         const langKey = String(config.quasarLang || "enUS").replace(/-([a-zA-Z])/g, (m, ch) => ch.toUpperCase()).replace("-", "");
         if (root.Quasar.Lang && root.Quasar.Lang[langKey]) quasarOptions.lang = root.Quasar.Lang[langKey];
+        // Quasar's own icons (select arrows, pagination, expansion) as Material Symbols, outlined (the sym_o_* names; qapps.xml loads the set)
+        if (root.Quasar.IconSet && root.Quasar.IconSet.materialSymbolsOutlined) quasarOptions.iconSet = root.Quasar.IconSet.materialSymbolsOutlined;
         app.use(root.Quasar, quasarOptions);
         Object.keys(qvt.components).forEach((name) => app.component(name, qvt.components[name]));
         app.config.globalProperties.moqui = moqui;

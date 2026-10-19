@@ -1519,10 +1519,29 @@
               ], 8, ["href", "onClick"]))
             }
         } },
-        "m-menu-item-content": { hash: "42f15aff", make: function (Vue) {
-            const { normalizeClass: _normalizeClass, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, createVNode: _createVNode, Fragment: _Fragment } = Vue
+        "m-menu-icon": { hash: "1d47e7c6", make: function (Vue) {
+            const { normalizeClass: _normalizeClass, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, resolveComponent: _resolveComponent, createBlock: _createBlock } = Vue
 
             return function render(_ctx, _cache) {
+              const _component_q_icon = _resolveComponent("q-icon")
+
+              return (_ctx.isClass)
+                ? (_openBlock(), _createElementBlock("i", {
+                    key: 0,
+                    class: _normalizeClass(_ctx.name)
+                  }, null, 2))
+                : (_openBlock(), _createBlock(_component_q_icon, {
+                    key: 1,
+                    name: _ctx.name,
+                    size: _ctx.size
+                  }, null, 8, ["name", "size"]))
+            }
+        } },
+        "m-menu-item-content": { hash: "29c35951", make: function (Vue) {
+            const { resolveComponent: _resolveComponent, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, createElementBlock: _createElementBlock, withCtx: _withCtx, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, normalizeClass: _normalizeClass, createVNode: _createVNode, Fragment: _Fragment } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_m_menu_icon = _resolveComponent("m-menu-icon")
               const _component_q_item_section = _resolveComponent("q-item-section")
 
               return (_openBlock(), _createElementBlock(_Fragment, null, [
@@ -1533,10 +1552,11 @@
                     }, {
                       default: _withCtx(() => [
                         (_ctx.menuItem.imageType === 'icon')
-                          ? (_openBlock(), _createElementBlock("i", {
+                          ? (_openBlock(), _createBlock(_component_m_menu_icon, {
                               key: 0,
-                              class: _normalizeClass(_ctx.menuItem.image)
-                            }, null, 2))
+                              name: _ctx.menuItem.image,
+                              size: "xs"
+                            }, null, 8, ["name"]))
                           : (_openBlock(), _createElementBlock("img", {
                               key: 1,
                               src: _ctx.menuItem.image,
@@ -1734,8 +1754,8 @@
               ], 4))
             }
         } },
-        "m-qapps-root": { hash: "7f08df34", make: function (Vue) {
-            const { resolveComponent: _resolveComponent, createVNode: _createVNode, createElementVNode: _createElementVNode, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, renderList: _renderList, Fragment: _Fragment, createElementBlock: _createElementBlock, normalizeClass: _normalizeClass, resolveDirective: _resolveDirective, withDirectives: _withDirectives, resolveDynamicComponent: _resolveDynamicComponent, withModifiers: _withModifiers } = Vue
+        "m-qapps-root": { hash: "f717e5fa", make: function (Vue) {
+            const { resolveComponent: _resolveComponent, createVNode: _createVNode, createElementVNode: _createElementVNode, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, renderList: _renderList, Fragment: _Fragment, createElementBlock: _createElementBlock, resolveDirective: _resolveDirective, withDirectives: _withDirectives, resolveDynamicComponent: _resolveDynamicComponent, normalizeClass: _normalizeClass, withModifiers: _withModifiers } = Vue
 
             return function render(_ctx, _cache) {
               const _component_q_btn = _resolveComponent("q-btn")
@@ -1743,6 +1763,7 @@
               const _component_q_toolbar_title = _resolveComponent("q-toolbar-title")
               const _component_q_breadcrumbs_el = _resolveComponent("q-breadcrumbs-el")
               const _component_q_icon = _resolveComponent("q-icon")
+              const _component_m_menu_icon = _resolveComponent("m-menu-icon")
               const _component_q_item_section = _resolveComponent("q-item-section")
               const _component_q_item = _resolveComponent("q-item")
               const _component_q_list = _resolveComponent("q-list")
@@ -1865,10 +1886,11 @@
                                                             _createVNode(_component_q_item_section, { avatar: "" }, {
                                                               default: _withCtx(() => [
                                                                 (subscreen.image && subscreen.imageType === 'icon')
-                                                                  ? (_openBlock(), _createElementBlock("i", {
+                                                                  ? (_openBlock(), _createBlock(_component_m_menu_icon, {
                                                                       key: 0,
-                                                                      class: _normalizeClass(subscreen.image)
-                                                                    }, null, 2))
+                                                                      name: subscreen.image,
+                                                                      size: "xs"
+                                                                    }, null, 8, ["name"]))
                                                                   : (subscreen.image)
                                                                     ? (_openBlock(), _createElementBlock("img", {
                                                                         key: 1,
@@ -2082,10 +2104,11 @@
                                               _createVNode(_component_q_item_section, { avatar: "" }, {
                                                 default: _withCtx(() => [
                                                   (histItem.image && histItem.imageType === 'icon')
-                                                    ? (_openBlock(), _createElementBlock("i", {
+                                                    ? (_openBlock(), _createBlock(_component_m_menu_icon, {
                                                         key: 0,
-                                                        class: _normalizeClass(histItem.image)
-                                                      }, null, 2))
+                                                        name: histItem.image,
+                                                        size: "xs"
+                                                      }, null, 8, ["name"]))
                                                     : (histItem.image)
                                                       ? (_openBlock(), _createElementBlock("img", {
                                                           key: 1,

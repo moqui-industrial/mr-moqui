@@ -963,6 +963,7 @@ fn the_qapps_shell_and_its_menu_data_work_for_a_signed_in_user() {
     assert!(!shell.contains("Error rendering"), "{shell}");
     for sheet in [
         "/libs/fontawesome/css/font-awesome.min.css",
+        "/libs/material-symbols/outlined.css",
         "/libs/material-icons/material-icons.css",
         "/libs/quasar/quasar.prod.css",
         "/css/WebrootVue.qvt.css",
@@ -977,6 +978,7 @@ fn the_qapps_shell_and_its_menu_data_work_for_a_signed_in_user() {
         "/libs/vue/vue.global.prod.js",
         "/libs/quasar/quasar.umd.prod.js",
         "/libs/quasar/lang/en-US.umd.prod.js",
+        "/libs/quasar/icon-set/material-symbols-outlined.umd.prod.js",
         "/js/MoquiLib.js",
         "/js/MoquiL10n.js",
         "/js/WebrootVue.qvt.render.js",

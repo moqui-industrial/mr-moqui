@@ -141,12 +141,15 @@ Behaviour changes made when the [Code-Quality-Review](archive/Code-Quality-Revie
 
 ## Gallery fixes (2026-10-18)
 
-Defects the screen archetype gallery (`runtime/base-component/example/screen/Gallery/`) found in the qvt render mode and the script runtime; two of the fixes differ from Java on purpose.
+Defects the screen archetype gallery (`runtime/base-component/example/screen/Gallery/`) found in the qvt render mode and the script runtime; these fixes differ from Java on purpose. The last three rows are gallery findings F4 and F28, fixed after the gallery commit.
 
 | Area | Difference | Rationale / where documented |
 |---|---|---|
 | csv render | A `label` writes nothing in the csv render mode; Java's `DefaultScreenMacros.csv.ftl` wrote the label text with no line break, so a screen's captions ran into the header row | An export is the table; the difference is named in the top comment of `runtime/base-component/framework/template/screen/ScreenCsv.js` |
 | entity-find | `limit` and `offset` that expand to an empty or non-numeric text apply no limit or offset and log at debug; Java's `as Integer` threw | Failure tolerance (AGENTS.md); `find_count` in `script/runtime/entities.rs` |
+| menus | F4: a subscreen whose screen does not load or parse, or whose menu title or `disable-when` fails, is logged with its location and left out of `sri.getMenuData` (the qvt shell's `menuData`) and `sri.getMenuItems` (the html menu, the app list); its siblings and the parent still show. Java's `getMenuData` throws, so the whole menu answers 500 | Failure tolerance (AGENTS.md); a security error leaves the item out quietly. Doc comment at `leave_out` in `screen/menu.rs` |
+| qvt render | F28: when a section, form, subscreen or included screen fails in the qvt mode, what it wrote is dropped before the error text is written in its place, and a `{` in that text is `&#123;`; Java and the html mode keep the partial output | A qvt response is a Vue template, which does not compile with the elements the failed part left open, and the text is not an interpolation. Doc comment at `guarded` in `screen/sri/sections.rs` |
+| qvt render | F28: the screen a `.qvt` request renders alone (always standalone, below the root) writes its error in its place as it does under its parents, and the response is 200; Java's render start throws, so the request is a 500 | The client shows the screen where its parents would; the html mode already shows a subscreen's error that way. `render_active_screen` in `screen/sri/sections.rs` |
 
 ## Print fixes (2026-10-18)
 

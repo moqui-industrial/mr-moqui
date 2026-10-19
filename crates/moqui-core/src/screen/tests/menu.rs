@@ -13,9 +13,11 @@
  */
 
 //! The menu data of the `menuData` transition (`sri.getMenuData`): the user-specific menu as JSON, with the
-//! pre-actions of the screens on the path run for their titles and the subscreens the user may not view dropped.
+//! pre-actions of the screens on the path run for their titles, the subscreens the user may not view dropped, and a
+//! subscreen that does not load logged and left out. And the menu images of the app list.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use super::{basic, request, World};
 use crate::screen::serve_at;
@@ -24,7 +26,17 @@ fn screen_authz_conf() -> &'static str {
     "<moqui-conf><artifact-execution-facade><artifact-execution type=\"AT_XML_SCREEN\" authz-enabled=\"true\"/></artifact-execution-facade></moqui-conf>"
 }
 
-/// A root screen with the transition of webroot.xml, an app with an open screen, a screen only the admin group may
+/// A root screen with the `menuData` transition of webroot.xml.
+const ROOT: &str = r#"<screen require-authentication="false">
+    <transition name="menuData" read-only="true"><actions><script><![CDATA[
+        const menuDataList = sri.getMenuData(sri.getScreenUrlInfo().extraPathNameList)
+        if (menuDataList != null) ec.web.sendJsonResponse(menuDataList)
+    ]]></script></actions><default-response type="none"/></transition>
+    <subscreens default-item="App"/>
+    <widgets><subscreens-active/></widgets>
+</screen>"#;
+
+/// [`ROOT`], an app with an open screen, a screen only the admin group may
 /// view, and a screen that takes a required parameter. The open screen's pre-actions set the title its menu item shows.
 fn tree(name: &str) -> (PathBuf, String) {
     let dir = std::env::temp_dir().join(format!("moqui-menu-{name}-{}", std::process::id()));
@@ -32,17 +44,7 @@ fn tree(name: &str) -> (PathBuf, String) {
     std::fs::create_dir_all(dir.join("Root/App")).unwrap();
     let base = dir.to_string_lossy().into_owned();
     let write = |path: &str, text: &str| std::fs::write(dir.join(path), text.replace("{dir}", &base)).unwrap();
-    write(
-        "Root.xml",
-        r#"<screen require-authentication="false">
-            <transition name="menuData" read-only="true"><actions><script><![CDATA[
-                const menuDataList = sri.getMenuData(sri.getScreenUrlInfo().extraPathNameList)
-                if (menuDataList != null) ec.web.sendJsonResponse(menuDataList)
-            ]]></script></actions><default-response type="none"/></transition>
-            <subscreens default-item="App"/>
-            <widgets><subscreens-active/></widgets>
-        </screen>"#,
-    );
+    write("Root.xml", ROOT);
     write(
         "Root/App.xml",
         r#"<screen require-authentication="true" default-menu-title="The App">
@@ -163,5 +165,153 @@ fn menu_data_lists_what_the_user_may_view_and_runs_the_pre_actions_for_titles() 
     assert_eq!(status, 401);
     let (status, _) = get_menu(&world, &root, Some("admin"), "/menuData/App/Nothing");
     assert_eq!(status, 404);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A subscreen that does not parse, and one whose actions are not JavaScript, are logged by location and left out of the
+/// menu data and of the html menu, and their siblings and the parent still render (AGENTS.md failure tolerance).
+#[test]
+fn a_subscreen_that_does_not_load_is_logged_and_left_out_of_the_menu() {
+    let dir = std::env::temp_dir().join(format!("moqui-menu-broken-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Root/App")).unwrap();
+    let base = dir.to_string_lossy().into_owned();
+    let write = |path: &str, text: &str| std::fs::write(dir.join(path), text.replace("{dir}", &base)).unwrap();
+    write("Root.xml", ROOT);
+    write(
+        "Root/App.xml",
+        r#"<screen require-authentication="false" default-menu-title="The App">
+            <subscreens default-item="Open">
+                <subscreens-item name="Open" menu-title="Open" location="{dir}/Root/App/Open.xml"/>
+                <subscreens-item name="Broken" menu-title="Broken" location="{dir}/Root/App/Broken.xml"/>
+                <subscreens-item name="Script" menu-title="Script" location="{dir}/Root/App/Script.xml"/>
+                <subscreens-item name="Other" menu-title="Other" location="{dir}/Root/App/Other.xml"/>
+            </subscreens>
+            <widgets><subscreens-menu/><subscreens-active/></widgets>
+        </screen>"#,
+    );
+    write(
+        "Root/App/Open.xml",
+        r#"<screen require-authentication="false"><widgets><label text="open"/></widgets></screen>"#,
+    );
+    write(
+        "Root/App/Broken.xml",
+        r#"<screen require-authentication="false"><widgets><label text="broken"></widgets></screen>"#,
+    );
+    write(
+        "Root/App/Script.xml",
+        r#"<screen require-authentication="false"><actions><script>const x = ;</script></actions><widgets/></screen>"#,
+    );
+    write(
+        "Root/App/Other.xml",
+        r#"<screen require-authentication="false"><widgets><label text="other"/></widgets></screen>"#,
+    );
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let world = World::open("");
+    world.user("plain", None);
+
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let (menu, page) = tracing::subscriber::with_default(crate::testing::LogSubscriber(Arc::clone(&lines)), || {
+        let menu = get_menu(&world, &root, Some("plain"), "/menuData/App/Open");
+        let mut get = request("GET", "/App/Open");
+        get.set_header("authorization", basic("plain"));
+        (menu, serve_at(&world.factory, get, &root))
+    });
+    let (status, menu) = menu;
+    assert_eq!(status, 200, "{menu}");
+    let names: Vec<&str> = menu[0]["subscreens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Open", "Other"], "{menu}");
+    assert_eq!(menu[1]["name"], "Open");
+    // the html menu leaves them out the same way, and the page renders
+    assert_eq!(page.status, 200, "{}", page.body_text());
+    let body = page.body_text();
+    assert!(body.contains("open") && body.contains("/App/Other"), "{body}");
+    assert!(!body.contains("/App/Broken"), "{body}");
+    let logged = lines.lock().unwrap().join("\n");
+    for name in ["Broken", "Script"] {
+        let location = dir.join(format!("Root/App/{name}.xml")).to_string_lossy().into_owned();
+        assert!(
+            logged.contains(&format!("Leaving subscreen {name} [{location}]")),
+            "{name} in {logged}"
+        );
+    }
+    assert!(logged.contains("does not match"), "{logged}");
+    assert!(logged.contains("not JavaScript"), "{logged}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The app list (`apps/AppList.xml`) draws an app's icon menu image as a Quasar icon (`q-icon`) in qvt and in the Material
+/// Symbols font in html, and keeps an `fa fa-*` image as the classes of an `i` element.
+#[test]
+fn the_app_list_draws_a_quasar_icon_name_and_keeps_fa_classes() {
+    let app_list = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtime/base-component/webroot/screen/webroot/apps/AppList.xml")
+        .to_string_lossy()
+        .into_owned();
+    let dir = std::env::temp_dir().join(format!("moqui-menu-app-list-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Root/apps")).unwrap();
+    let base = dir.to_string_lossy().into_owned();
+    let write = |path: &str, text: &str| {
+        std::fs::write(
+            dir.join(path),
+            text.replace("{dir}", &base).replace("{appList}", &app_list),
+        )
+        .unwrap()
+    };
+    write(
+        "Root.xml",
+        r#"<screen require-authentication="false"><subscreens default-item="apps">
+            <subscreens-item name="apps" location="{dir}/Root/apps.xml"/></subscreens><widgets><subscreens-active/></widgets></screen>"#,
+    );
+    write(
+        "Root/apps.xml",
+        r#"<screen require-authentication="false"><subscreens default-item="AppList">
+            <subscreens-item name="AppList" location="{appList}" menu-include="false"/>
+            <subscreens-item name="Hub" menu-title="Hub" location="{dir}/Root/apps/Hub.xml"/>
+            <subscreens-item name="Fa" menu-title="Fa" location="{dir}/Root/apps/Fa.xml"/>
+        </subscreens><widgets><subscreens-active/></widgets></screen>"#,
+    );
+    write(
+        "Root/apps/Hub.xml",
+        r#"<screen require-authentication="false" menu-image="sym_o_hub" menu-image-type="icon"><widgets/></screen>"#,
+    );
+    write(
+        "Root/apps/Fa.xml",
+        r#"<screen require-authentication="false" menu-image="fa fa-home" menu-image-type="icon"><widgets/></screen>"#,
+    );
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let world = World::open("");
+    world.user("plain", None);
+    let body = |path: &str| {
+        let mut get = request("GET", path);
+        get.set_header("authorization", basic("plain"));
+        let response = serve_at(&world.factory, get, &root);
+        assert_eq!(response.status, 200, "{path}: {}", response.body_text());
+        response.body_text()
+    };
+    let qvt = body("/apps/AppList.qvt");
+    assert!(
+        qvt.contains(r#"<q-icon name="sym_o_hub" size="xs" class="q-mr-sm"></q-icon> Hub"#),
+        "{qvt}"
+    );
+    assert!(
+        qvt.contains(r#"<i class="fa fa-home" style="padding-right: 8px;"></i> Fa"#),
+        "{qvt}"
+    );
+    super::qvt::assert_compiles(&["AppList".to_string()], std::slice::from_ref(&qvt));
+    let html = body("/apps/AppList");
+    assert!(
+        html.contains(
+            r#"<span class="material-symbols-outlined" style="font-size:18px;vertical-align:middle">hub</span> Hub"#
+        ),
+        "{html}"
+    );
+    assert!(html.contains(r#"<i class="fa fa-home"></i> Fa"#), "{html}");
     let _ = std::fs::remove_dir_all(&dir);
 }

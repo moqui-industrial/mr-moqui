@@ -27,7 +27,8 @@ use crate::screen::render::{check_condition, Frames, RenderState};
 use crate::script::ContextFrame;
 use crate::{script, web};
 
-fn is_security(err: &Error) -> bool {
+/// An error that answers who may see what: it stops a render, and is not written in place of the output.
+pub(in crate::screen) fn is_security(err: &Error) -> bool {
     matches!(
         err.kind(),
         ErrorKind::AuthenticationRequired | ErrorKind::Unauthorized | ErrorKind::Tarpit
@@ -37,7 +38,11 @@ fn is_security(err: &Error) -> bool {
 /// Run a nested render. As in Java, an error other than a security one is logged and its message is
 /// written as text where the output would have been, so one section does not lose the page. In production the text
 /// names only an error id; the detail is in the log under it.
+///
+/// A qvt page is a Vue template, which does not compile with the elements the failed render left open, so there what it
+/// wrote is dropped before the message, and a brace in the message is a character reference, not an interpolation.
 pub(super) fn guarded(state: &RenderState, label: &str, body: impl FnOnce() -> Result<(), Error>) -> Result<(), Error> {
+    let written = (state.render_mode == "qvt").then(|| web::output_body_len().unwrap_or(0));
     match body() {
         Err(err) if !is_security(&err) => {
             let detail = format!("Error rendering {label}: {err}");
@@ -50,7 +55,12 @@ pub(super) fn guarded(state: &RenderState, label: &str, body: impl FnOnce() -> R
                 tracing::error!("{detail}");
                 format!("Error rendering {label}: {}", err.message())
             };
-            write(state, &encode_html(&text));
+            if let Some(len) = written {
+                web::truncate_output(len);
+                write(state, &encode_html(&text).replace('{', "&#123;"));
+            } else {
+                write(state, &encode_html(&text));
+            }
             Ok(())
         }
         other => other,
@@ -61,9 +71,17 @@ pub(super) fn guarded(state: &RenderState, label: &str, body: impl FnOnce() -> R
 ///
 /// # Errors
 ///
-/// Returns an error when the user may not view the screen, or a section raises one.
+/// Returns an error when the user may not view the screen, or a section raises one. In qvt below the root, only a
+/// security error.
 pub fn render_active_screen(state: &RenderState, runner: &dyn Runner, is_target: bool) -> Result<(), Error> {
     let def = active_def(state);
+    // A qvt render below the root screen is a screen the client shows inside its parents, as the html render shows
+    // the subscreen, so its error is written in its place the same way.
+    if state.render_mode == "qvt" && state.screen_path_index.get() > 0 {
+        return guarded(state, &format!("screen [{}]", def.location), || {
+            render_def(state, runner, &def, is_target)
+        });
+    }
     render_def(state, runner, &def, is_target)
 }
 

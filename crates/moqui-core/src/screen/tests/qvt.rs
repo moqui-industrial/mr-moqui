@@ -199,6 +199,84 @@ fn row_selection_multi_forms_find_dialogs_and_the_options_of_a_drop_down() {
     );
 }
 
+/// A qvt render error is logged and written in place of what failed, as the html render does: a section's error replaces
+/// the section and the screen goes on, and an error in the screen itself replaces the screen, which `.qvt` renders alone.
+/// What the failed part wrote is dropped so the template still compiles, and a brace in the message is not an
+/// interpolation.
+#[test]
+fn a_qvt_render_error_is_logged_and_written_in_its_place() {
+    let dir = std::env::temp_dir().join(format!("moqui-qvt-error-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Root")).unwrap();
+    let write = |path: &str, text: &str| std::fs::write(dir.join(path), text).unwrap();
+    write(
+        "Root.xml",
+        r#"<screen require-authentication="false"><subscreens default-item="Section"/>
+            <widgets><subscreens-active/></widgets></screen>"#,
+    );
+    write(
+        "Root/Section.xml",
+        r#"<screen require-authentication="false"><widgets>
+            <label text="before"/>
+            <section name="Broken"><widgets><container><label text="inside"/>
+                <render-mode><text type="qvt"><![CDATA[<b>${nope.bad()}</b>]]></text></render-mode>
+            </container></widgets></section>
+            <label text="after"/>
+        </widgets></screen>"#,
+    );
+    write(
+        "Root/Whole.xml",
+        r#"<screen require-authentication="false"><widgets><container><label text="first"/>
+            <render-mode><text type="qvt"><![CDATA[${(() => { throw new Error('a {{ brace }}') })()}]]></text></render-mode>
+        </container></widgets></screen>"#,
+    );
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let context = ExecutionContextFactory::test_context();
+    let render = |path: &str| {
+        make_render(context.factory())
+            .root_screen(root.clone())
+            .screen_path(path)
+            .render_mode("qvt")
+            .render()
+            .unwrap_or_else(|err| panic!("{path}: {err}"))
+            .body_text()
+    };
+    let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (section, whole) =
+        tracing::subscriber::with_default(crate::testing::LogSubscriber(std::sync::Arc::clone(&lines)), || {
+            (render("/Section.qvt"), render("/Whole.qvt"))
+        });
+    let section_location = dir.join("Root/Section.xml").to_string_lossy().into_owned();
+    let whole_location = dir.join("Root/Whole.xml").to_string_lossy().into_owned();
+    assert!(section.contains(">before<") && section.contains(">after<"), "{section}");
+    assert!(
+        section.contains(&format!(
+            "Error rendering section [Broken] in screen [{section_location}]"
+        )),
+        "{section}"
+    );
+    assert!(!section.contains("inside"), "{section}");
+    assert!(
+        whole.contains(&format!("Error rendering screen [{whole_location}]")),
+        "{whole}"
+    );
+    assert!(!whole.contains("first") && !whole.contains("{{"), "{whole}");
+    assert!(whole.contains("a &#123;&#123; brace }}"), "{whole}");
+    assert_compiles(&["section".to_string(), "whole".to_string()], &[section, whole]);
+    let logged = lines.lock().unwrap().join("\n");
+    assert!(
+        logged.contains(&format!(
+            "Error rendering section [Broken] in screen [{section_location}]"
+        )),
+        "{logged}"
+    );
+    assert!(
+        logged.contains(&format!("Error rendering screen [{whole_location}]")),
+        "{logged}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `WebrootVue.qvt.render.js` is the render functions of the client components as their templates are now: the file
 /// is made again and compared. `UPDATE_GOLDEN=1` writes it.
 #[test]
