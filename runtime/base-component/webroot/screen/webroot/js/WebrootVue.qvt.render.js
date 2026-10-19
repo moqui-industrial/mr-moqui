@@ -966,11 +966,11 @@
               ]), 1040, ["model-value", "onUpdate:modelValue", "use-chips", "fill-input", "hide-selected", "name", "for", "form", "input-debounce", "onFilter", "clearable", "disable", "multiple", "emit-value", "new-value-mode", "rules", "label", "loading", "bg-color", "options"]))
             }
         } },
-        "m-dynamic-container": { hash: "a6e86558", make: function (Vue) {
+        "m-dynamic-container": { hash: "70ca5338", make: function (Vue) {
             const { resolveDynamicComponent: _resolveDynamicComponent, openBlock: _openBlock, createBlock: _createBlock } = Vue
 
             return function render(_ctx, _cache) {
-              return (_openBlock(), _createBlock(_resolveDynamicComponent(_ctx.curComponent)))
+              return (_openBlock(), _createBlock(_resolveDynamicComponent(_ctx.curComponent), { ref: "screen" }, null, 512))
             }
         } },
         "m-dynamic-dialog": { hash: "9c4723b0", make: function (Vue) {
@@ -4468,7 +4468,7 @@
               ]), 1032, ["label", "name", "id", "size", "maxlength", "form", "tooltip", "modelValue", "onUpdate:modelValue"]))
             }
         } },
-        "m-text-line": { hash: "ea3ef30a", make: function (Vue) {
+        "m-text-line": { hash: "fdb70647", make: function (Vue) {
             const { toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, renderSlot: _renderSlot, mergeProps: _mergeProps, createSlots: _createSlots } = Vue
 
             return function render(_ctx, _cache) {
@@ -4499,7 +4499,7 @@
                 "fill-mask": _ctx.fillMask,
                 "reverse-fill-mask": _ctx.reverseFillMask,
                 autocapitalize: "off",
-                autocomplete: "off"
+                autocomplete: _ctx.autocomplete
               }, _ctx.errorAttrs), _createSlots({
                 default: _withCtx(() => [
                   (_ctx.tooltip)
@@ -4522,7 +4522,7 @@
                       key: "0"
                     }
                   : undefined
-              ]), 1040, ["label", "prefix", "model-value", "onUpdate:modelValue", "type", "for", "name", "size", "maxlength", "form", "loading", "rules", "disable", "bg-color", "mask", "fill-mask", "reverse-fill-mask"]))
+              ]), 1040, ["label", "prefix", "model-value", "onUpdate:modelValue", "type", "for", "name", "size", "maxlength", "form", "loading", "rules", "disable", "bg-color", "mask", "fill-mask", "reverse-fill-mask", "autocomplete"]))
             }
         } },
         "m-tree-item": { hash: "f60fcdc3", make: function (Vue) {
@@ -4600,11 +4600,14 @@
               ], 8, ["id"]))
             }
         } },
-        "m-user-status-dialog": { hash: "644ab304", make: function (Vue) {
-            const { toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, withKeys: _withKeys, createElementVNode: _createElementVNode, resolveDirective: _resolveDirective, withDirectives: _withDirectives, openBlock: _openBlock, createBlock: _createBlock } = Vue
+        "m-user-status-dialog": { hash: "8b5ac844", make: function (Vue) {
+            const { toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, withKeys: _withKeys, createElementVNode: _createElementVNode, resolveDirective: _resolveDirective, withDirectives: _withDirectives } = Vue
 
             return function render(_ctx, _cache) {
               const _component_q_card_section = _resolveComponent("q-card-section")
+              const _component_q_item_section = _resolveComponent("q-item-section")
+              const _component_q_item = _resolveComponent("q-item")
+              const _component_q_list = _resolveComponent("q-list")
               const _component_q_input = _resolveComponent("q-input")
               const _component_q_select = _resolveComponent("q-select")
               const _component_q_btn = _resolveComponent("q-btn")
@@ -4628,6 +4631,54 @@
                       }),
                       _createVNode(_component_q_card_section, { class: "q-pt-none q-gutter-y-sm" }, {
                         default: _withCtx(() => [
+                          (_ctx.presets.length)
+                            ? (_openBlock(), _createBlock(_component_q_list, {
+                                key: 0,
+                                dense: "",
+                                class: "m-status-presets"
+                              }, {
+                                default: _withCtx(() => [
+                                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.presets, (preset, index) => {
+                                    return (_openBlock(), _createBlock(_component_q_item, {
+                                      key: index,
+                                      clickable: "",
+                                      dense: "",
+                                      "data-preset": index,
+                                      onClick: $event => (_ctx.usePreset(preset))
+                                    }, {
+                                      default: _withCtx(() => [
+                                        _createVNode(_component_q_item_section, {
+                                          avatar: "",
+                                          style: {"min-width":"28px"}
+                                        }, {
+                                          default: _withCtx(() => [
+                                            _createTextVNode(_toDisplayString(preset.emoji), 1)
+                                          ]),
+                                          _: 2
+                                        }, 1024),
+                                        _createVNode(_component_q_item_section, null, {
+                                          default: _withCtx(() => [
+                                            _createTextVNode(_toDisplayString(preset.text), 1)
+                                          ]),
+                                          _: 2
+                                        }, 1024),
+                                        _createVNode(_component_q_item_section, {
+                                          side: "",
+                                          class: "text-caption"
+                                        }, {
+                                          default: _withCtx(() => [
+                                            _createTextVNode(_toDisplayString(_ctx.clearLabel(preset.clearAfter)), 1)
+                                          ]),
+                                          _: 2
+                                        }, 1024)
+                                      ]),
+                                      _: 2
+                                    }, 1032, ["data-preset", "onClick"]))
+                                  }), 128))
+                                ]),
+                                _: 1
+                              }))
+                            : _createCommentVNode("", true),
                           _createElementVNode("div", { class: "row no-wrap q-gutter-x-sm" }, [
                             _createVNode(_component_q_input, {
                               modelValue: _ctx.emoji,

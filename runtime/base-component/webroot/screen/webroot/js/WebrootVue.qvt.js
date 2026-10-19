@@ -197,6 +197,26 @@
     moqui.NotFound = markRaw({ template: '<div id="current-page-root"><h4>Screen not found at {{$root.currentPath}}</h4></div>' });
     moqui.EmptyComponent = markRaw({ template: '<div id="current-page-root"><div class="spinner"><div>&nbsp;</div></div></div>' });
 
+    // The screen a component was loaded as (js/README.md, Loading a screen): {url, path, parameters, containerId}, the path without its
+    // query and its .qvt, .qvue or .qjs, the parameters its query. Each m-dynamic-container and m-dynamic-dialog provides it as mScreen
+    // for the screen it loaded (so a tray tab, the quick-create dialog and a record panel too), and the root for the page, so a .qvue
+    // screen reads its own query with inject: ["mScreen"] wherever it is. The members are getters over the loader, so a watch or a
+    // template that reads one follows the next load.
+    moqui.urlScreen = (urlOf, containerId) => {
+        const parts = () => {
+            const url = String(urlOf() || "");
+            const quest = url.indexOf("?");
+            const path = (quest >= 0 ? url.slice(0, quest) : url).replace(/\.(qvt|qvue|qjs)$/, "");
+            return { url, path, search: quest >= 0 ? url.slice(quest + 1) : "" };
+        };
+        return {
+            get url() { return parts().url; },
+            get path() { return parts().path; },
+            get parameters() { return moqui.searchToObj(parts().search); },
+            containerId: containerId || null
+        };
+    };
+
     // A text of a merged qvt response as a component: the template of the screen in a div with the id of its container.
     // A script element is run by m-script and a link element is loaded by m-stylesheet, because Vue ignores both.
     moqui.mergedFragmentComponent = (text, divId) => {
@@ -226,7 +246,12 @@
     };
 
     // path: the screen path, extraPath, search and bodyParameters as the router has them. renderModes lists the render
-    // modes the screen says it supports: qjs or qvue makes the request for that companion instead of qvt.
+    // modes the screen says it supports: qjs or qvue makes the request for that companion instead of qvt. Without them (a string
+    // URL: an m-dynamic-container or m-dynamic-dialog, a tray tab, a quick-create kind) the request is .qvt with
+    // X-Moqui-Client-Modes: qvue,qjs, and the server answers the first of those the screen's render-modes name, saying which in
+    // X-Moqui-Qvt, so a .qvue screen loads as qvue wherever it is loaded, as the router picks it. A path ending in .qvt, .qvue or
+    // .qjs is that mode.
+    moqui.clientModesHeader = "qvue,qjs";
     moqui.loadComponent = (urlInfo, callback, divId) => {
         const jsExt = moqui.urlExtensions.js;
         const vueExt = moqui.urlExtensions.vue;
@@ -265,17 +290,20 @@
         let url = path;
         const modes = renderModes || [];
         let kind = qvtExt;
+        let negotiate = false;
         if (url.slice(-vueExt.length) === vueExt) kind = vueExt;
         else if (url.slice(-jsExt.length) === jsExt) kind = jsExt;
+        else if (url.slice(-qvtExt.length - 1) === "." + qvtExt) kind = qvtExt;
         else if (modes.indexOf(vueExt) >= 0) { url += "." + vueExt; kind = vueExt; }
         else if (modes.indexOf(jsExt) >= 0) { url += "." + jsExt; kind = jsExt; }
-        else url += "." + qvtExt;
+        else { url += "." + qvtExt; negotiate = !renderModes; }
         if (extraPath && extraPath.length > 0) url += "/" + extraPath;
         if (search && search.length > 0) url += "?" + search;
 
         const controller = new root.AbortController();
         const hasBody = bodyParameters && !moqui.isEmptyObject(bodyParameters);
         const options = { signal: controller.signal, accept: "text/html,application/javascript,*/*" };
+        if (negotiate) options.headers = { "X-Moqui-Client-Modes": moqui.clientModesHeader };
         if (hasBody) { options.method = "POST"; options.params = bodyParameters; }
         console.info("loadComponent " + url + (divId ? " id " + divId : ""));
 
@@ -292,6 +320,9 @@
             if (!text) { callback(moqui.NotFound); return; }
             const cacheControl = result.headers.get("Cache-Control") || "";
             const cacheable = cacheControl.indexOf("max-age") >= 0;
+            // the mode the server chose for a .qvt request that named the client modes
+            const answered = negotiate ? result.headers.get("X-Moqui-Qvt") : null;
+            if (answered === vueExt || answered === jsExt) kind = answered;
             if (result.json && moqui.isPlainObject(result.json) && kind === qvtExt) {
                 if (result.json.screenUrl) rootVm().setUrl(result.json.screenUrl);
                 else if (result.json.redirectUrl) root.location.replace(result.json.redirectUrl);
@@ -305,7 +336,7 @@
                 if (comp.template) done(comp, cacheable);
                 else {
                     // the companion has the script and the template is the qvt of the same screen
-                    const qvtUrl = (path.slice(-jsExt.length) === jsExt ? path.slice(0, -jsExt.length) : path) + "." + qvtExt;
+                    const qvtUrl = (path.slice(-jsExt.length - 1) === "." + jsExt ? path.slice(0, -jsExt.length - 1) : path) + "." + qvtExt;
                     moqui.request(qvtUrl + (search ? "?" + search : ""), { signal: controller.signal, accept: "text/html" }).then((htmlResult) => {
                         comp.template = htmlResult.text;
                         done(comp, cacheable);
@@ -1160,8 +1191,20 @@
         name: "mDynamicContainer",
         props: { id: { type: String, required: true }, url: String },
         data() { return { curComponent: moqui.EmptyComponent, curUrl: "" }; },
-        template: '<component :is="curComponent"></component>',
+        provide() { return { mScreen: moqui.urlScreen(() => this.curUrl, this.id) }; },
+        template: '<component :is="curComponent" ref="screen"></component>',
         methods: {
+            // The shell's refresh of a container it keeps (a tray tab, on a shellCounts push and the poll while the socket is down):
+            // the screen's own shellRefresh() when its component has one, so it updates in place (an open chat room stays open),
+            // else a reload.
+            shellRefresh() {
+                const screen = this.$refs.screen;
+                if (screen && typeof screen.shellRefresh === "function") {
+                    try { screen.shellRefresh(); } catch (err) { console.error("shellRefresh of " + this.id + " failed", err); }
+                    return;
+                }
+                this.reload();
+            },
             // the screen again: the content shown stays until the new one is there (a tray tab keeps its place); the same component
             // (a cached one) is made again by a moment without it
             reload() {
@@ -1190,7 +1233,8 @@
         name: "mDynamicDialog",
         props: { id: String, url: { type: String, required: true }, color: String, buttonText: String, buttonClass: String, title: String, width: String,
             openDialog: { type: Boolean, default: false }, dynamicParams: { type: Object, default: null }, buttonIcon: { type: String, default: "open_in_new" } },
-        data() { return { curComponent: moqui.EmptyComponent, curUrl: "", isShown: false }; },
+        data() { return { curComponent: moqui.EmptyComponent, curUrl: "", loadedUrl: "", isShown: false }; },
+        provide() { return { mScreen: moqui.urlScreen(() => this.loadedUrl, this.id) }; },
         template:
             '<span>' +
                 '<q-btn dense unelevated no-caps :icon="buttonIcon" :label="buttonText" :class="moqui.tonalClass(color, buttonClass)" @click="isShown = true"></q-btn>' +
@@ -1203,7 +1247,7 @@
         },
         watch: {
             curUrl(newUrl) {
-                if (!newUrl || newUrl.length === 0) { this.curComponent = moqui.EmptyComponent; return; }
+                if (!newUrl || newUrl.length === 0) { this.curComponent = moqui.EmptyComponent; this.loadedUrl = ""; return; }
                 // values of other fields on the page, by element id, are added to the URL
                 if (moqui.isPlainObject(this.dynamicParams)) {
                     const parts = [];
@@ -1214,6 +1258,7 @@
                     });
                     if (parts.length) newUrl = newUrl + (newUrl.indexOf("?") > 0 ? "&" : "?") + parts.join("&");
                 }
+                this.loadedUrl = newUrl;
                 moqui.loadComponent(newUrl, (comp) => {
                     this.curComponent = comp;
                     this.$nextTick(() => { if (this.$refs.dialog) this.$refs.dialog.focusFirst(); });
@@ -2461,14 +2506,14 @@
         mixins: [fieldMixin, localValueMixin],
         props: { modelValue: [String, Number], type: { type: String, default: "text" }, id: String, name: String, size: String, fields: Object, label: String,
             tooltip: String, prefix: String, disable: Boolean, mask: String, fillMask: String, reverseFillMask: Boolean, rules: Array, required: Boolean,
-            requiredMessage: { type: String, default: "Required" }, maxlength: String, form: String,
+            requiredMessage: { type: String, default: "Required" }, maxlength: String, form: String, autocomplete: { type: String, default: "off" },
             defaultUrl: String, defaultParameters: Object, dependsOn: Object, dependsOptional: Boolean, defaultLoadInit: Boolean },
         emits: ["update:modelValue"],
         data() { return { loading: false }; },
         template:
             '<q-input dense outlined stack-label hide-bottom-space no-error-icon :label="label" :prefix="prefix" :model-value="local" @update:model-value="onInput" :type="type"' +
                     ' :for="id" :name="name" :size="size" :maxlength="maxlength" :form="form" :loading="loading" :rules="allRules" :disable="disable" :bg-color="bg"' +
-                    ' :mask="mask" :fill-mask="fillMask" :reverse-fill-mask="reverseFillMask" autocapitalize="off" autocomplete="off" v-bind="errorAttrs">' +
+                    ' :mask="mask" :fill-mask="fillMask" :reverse-fill-mask="reverseFillMask" autocapitalize="off" :autocomplete="autocomplete" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
                 '<template v-if="$slots.append" v-slot:append><slot name="append"></slot></template>' +
             '</q-input>',
@@ -4833,9 +4878,11 @@
                     if (body && top) body.scrollTop = top;
                 });
             },
+            // a tab's screen refreshes itself when it can (m-dynamic-container.shellRefresh), else it is loaded again
             reload(key) {
                 const container = this.containers[key];
-                if (container && container.reload) container.reload();
+                if (container && container.shellRefresh) container.shellRefresh();
+                else if (container && container.reload) container.reload();
             }
         },
         watch: {
@@ -5111,6 +5158,12 @@
                 quickCreateShow: false, quickCreateUrl: "", quickCreateTitle: "", keysHelpShow: false,
                 shell: Object.assign({ logoUrl: "", title: "", logoutUrl: "/Login/logout", footerHtml: "" }, config.shell), labels: Object.assign({}, qvt.shellLabels, config.labels)
             };
+        },
+        // the page's screen for inject: ["mScreen"] (moqui.urlScreen; a container provides its own): the current path and parameters
+        provide() {
+            const vm = this;
+            return { mScreen: { get url() { const search = vm.currentSearch; return vm.currentPath + (search ? "?" + search : ""); },
+                get path() { return vm.currentPath; }, get parameters() { return vm.currentParameters; }, containerId: null } };
         },
         methods: {
             setUrl(url, bodyParameters, onComplete, pushState = true) {
@@ -5809,6 +5862,14 @@
         push(location) { moqui.webrootVue.setUrl(location, null); return Promise.resolve(location); }
     });
 
+    // The Quasar plugins of the qapps shell and of the public shell: Notify (moqui.notifyMessages, $q.notify), LoadingBar (the root's
+    // loading count) and Dialog, so a screen can confirm with this.$q.dialog({title, message, cancel: true}).onOk(...).
+    qvt.quasarPlugins = (quasar) => {
+        const plugins = {};
+        ["Notify", "LoadingBar", "Dialog"].forEach((name) => { if (quasar && quasar[name]) plugins[name] = quasar[name]; });
+        return plugins;
+    };
+
     // Start the application: the language pack, the formatter, the components, and the mount on the shell.
     // The render functions of the components, precompiled from their templates into WebrootVue.qvt.render.js (moqui.qvtRenders), which loads
     // first. One is used only while its hash matches the template here, so a template edited without making the file again is compiled in the
@@ -5863,7 +5924,7 @@
         else options.template = shell.template;
         const app = root.Vue.createApp(options);
         const quasarOptions = { config: Object.assign({ brand: { info: "#1e7b8e" }, notify: { progress: true, closeBtn: "X", position: "top-right" }, loadingBar: { color: "primary", size: "3px", position: "top" } }, config.quasar),
-            plugins: { Notify: root.Quasar.Notify, LoadingBar: root.Quasar.LoadingBar } };
+            plugins: qvt.quasarPlugins(root.Quasar) };
         const langKey = String(config.quasarLang || "enUS").replace(/-([a-zA-Z])/g, (m, ch) => ch.toUpperCase()).replace("-", "");
         if (root.Quasar.Lang && root.Quasar.Lang[langKey]) quasarOptions.lang = root.Quasar.Lang[langKey];
         // Quasar's own icons (select arrows, pagination, expansion) as Material Symbols, outlined (the sym_o_* names; qapps.xml loads the set)

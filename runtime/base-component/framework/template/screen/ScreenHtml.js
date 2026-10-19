@@ -266,7 +266,7 @@
             const check = validate(n.parent);
             w("<input" + A({
                 type: "password", name: fnm(n), id: fid(n), size: at(n, "size") || "25", maxlength: at(n, "maxlength") || null,
-                required: check.required || null, title: tip(n), form: owner()
+                autocomplete: xn(at(n, "autocomplete")) || "new-password", required: check.required || null, title: tip(n), form: owner()
             }) + ">");
         };
 

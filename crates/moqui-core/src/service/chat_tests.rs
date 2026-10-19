@@ -840,6 +840,105 @@ fn the_timeline_pages_and_applies_edits_redactions_reactions_threads_and_pins() 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A membership starts at the member's own default level (CHAT_NOTIFY_DEFAULT) in create#Room and add#Member, but in a direct room;
+/// a mention's notification leaves out the message text for a user whose CHAT_NOTIFY_PREVIEW is N.
+#[test]
+fn a_member_starts_at_their_default_level_and_a_mention_may_leave_out_the_text() {
+    let (ctx, facade, dir) = setup("defaults", crate::service::ServicePools::idle());
+    let _entered = ctx.enter();
+    install(&dir);
+    users(&facade, &["dla", "dlb", "dlc", "dld"]);
+    for (user, key, value) in [
+        ("dlb", "CHAT_NOTIFY_DEFAULT", "none"),
+        ("dlc", "CHAT_NOTIFY_DEFAULT", "mentions"),
+        ("dld", "CHAT_NOTIFY_DEFAULT", "bogus"),
+        ("dlc", "CHAT_NOTIFY_PREVIEW", "N"),
+    ] {
+        row(
+            &facade,
+            "moqui.security.UserPreference",
+            &[
+                ("userId", text(user)),
+                ("preferenceKey", text(key)),
+                ("preferenceValue", text(value)),
+            ],
+        );
+    }
+    row(
+        &facade,
+        "moqui.security.user.NotificationTopic",
+        &[
+            ("topic", text("ChatMention")),
+            ("persistOnSend", text("Y")),
+            (
+                "titleTemplate",
+                text("${authorName} mentioned you in ${roomName}: ${summary}"),
+            ),
+        ],
+    );
+    let level = |room: &str, user: &str| {
+        let _authz = ctx.disable_authz();
+        facade
+            .find("moqui.chat.ChatRoomMember")
+            .unwrap()
+            .eq("chatRoomId", text(room))
+            .eq("userId", text(user))
+            .one()
+            .unwrap()
+            .and_then(|row| row.get("notificationLevelEnumId").map(to_plain_string))
+            .unwrap_or_default()
+    };
+    login("dla");
+    let team = room("private", "Defaults", &["dlb", "dlc"]);
+    assert_eq!(level(&team, "dla"), "CnlAll", "no preference: the room's");
+    assert_eq!(level(&team, "dlb"), "CnlNone");
+    assert_eq!(level(&team, "dlc"), "CnlMentions");
+    ok("add#Member", &[("chatRoomId", text(&team)), ("userId", text("dld"))]);
+    assert_eq!(level(&team, "dld"), "CnlAll", "a value that is no level: the room's");
+    let open = room("public", "Lobby", &[]);
+    login("dlb");
+    ok("add#Member", &[("chatRoomId", text(&open))]);
+    assert_eq!(level(&open, "dlb"), "CnlNone", "joining a public room");
+    login("dla");
+    let direct = room("direct", "", &["dlb"]);
+    assert_eq!(level(&direct, "dlb"), "CnlAll", "a direct room's messages always count");
+
+    // the mention of dlc (no preview) and of dld (preview): the text is in dld's notification only
+    send(
+        &team,
+        r#"<p>secret plan <span data-mention-id="dlc">@Dlc</span> <span data-mention-id="dld">@Dld</span></p>"#,
+    );
+    let _authz = ctx.disable_authz();
+    let title_of = |user: &str| {
+        let users = facade
+            .find("moqui.security.user.NotificationMessageUser")
+            .unwrap()
+            .eq("userId", text(user))
+            .list()
+            .unwrap();
+        assert_eq!(users.len(), 1, "{user}");
+        let id = to_plain_string(users.get(0).unwrap().get("notificationMessageId").unwrap());
+        let message = facade
+            .find("moqui.security.user.NotificationMessage")
+            .unwrap()
+            .eq("notificationMessageId", text(&id))
+            .one()
+            .unwrap()
+            .unwrap();
+        (
+            to_plain_string(message.get("titleText").unwrap()),
+            message.get("messageJson").map(to_plain_string).unwrap_or_default(),
+        )
+    };
+    let (shown_title, shown_json) = title_of("dld");
+    assert_eq!(shown_title, "Dla mentioned you in Defaults: secret plan @Dlc @Dld");
+    assert!(shown_json.contains("secret plan"), "{shown_json}");
+    let (hidden_title, hidden_json) = title_of("dlc");
+    assert_eq!(hidden_title, "Dla mentioned you in Defaults");
+    assert!(!hidden_json.contains("secret"), "{hidden_json}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Unread and mention counts: messages from others after the read marker, mentions among them, by notification level;
 /// a mention is notified on ChatMention unless the level is none; a redaction takes its mention back.
 #[test]

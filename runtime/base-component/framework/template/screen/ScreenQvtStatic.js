@@ -567,6 +567,8 @@
             const check = validate(n.parent);
             const field = fieldOf(n);
             const out = Object.assign({ type: "password", name: nameOf(n), size: at(n, "size") || "25", maxlength: at(n, "maxlength") || null, required: check.required || null, form: owner() }, idAttrs(n));
+            if (at(n, "autocomplete")) plainAttr(out, "autocomplete", at(n, "autocomplete"), n);
+            else out.autocomplete = "new-password";
             labelAttr(n, out);
             tipOf(n, out);
             Object.assign(out, bindOnly(n, field, "''"));
@@ -941,8 +943,8 @@
         const fieldName = (n) => (n.parent && n.parent.parent ? at(n.parent.parent, "name") : "");
 
         // As ScreenQvt.js: an empty text is not written unless display-if-empty (then the placeholder shows); a select takes the
-        // option elements it holds (list-options and entity-options are not read here: use editable-load), date and date-time
-        // the date picker.
+        // option elements it holds and the options of its list-options and entity-options, which the package holds by its id
+        // (mqOpt_editable_{id}: the screen's, or a form-single's extras; not in a form-list row), date and date-time the date picker.
         const editable = (n) => {
             const found = sri.staticUrl(at(n, "transition"), "transition");
             const load = first(n, "editable-load");
@@ -957,13 +959,18 @@
             else out["v-if"] = "$mq.str(" + labelValue + ").trim()";
             if (n.attrs && n.attrs.value !== undefined) plainAttr(out, "value", at(n, "value"), n);
             if (widgetType === "select") {
-                if (kids(n, "list-options").length || kids(n, "entity-options").length) note("editable-options", n, "an editable select takes its option elements or editable-load here");
                 const fixed = kids(n, "option").map((o) => {
                     const key = at(o, "key");
                     const label = o.attrs && o.attrs.text !== undefined ? exp(at(o, "text"), o, "text", true) : "ec.l10n.localize(" + (isDynamic(key) ? exp(key, o, "key", false) : sq(key)) + ")";
                     return "{value:" + (isDynamic(key) ? exp(key, o, "key", false) : sq(key)) + ",label:" + label + "}";
                 });
-                if (fixed.length) out[":options"] = "[" + fixed.join(",") + "]";
+                const id = at(n, "id");
+                const looked = kids(n, "list-options").length || kids(n, "entity-options").length;
+                if (looked && (st.inList || !id || isDynamic(id))) {
+                    note("editable-options", n, "an editable select takes its list-options and entity-options by a plain id, outside a form-list row; else its option elements or editable-load");
+                }
+                if (looked && id && !isDynamic(id) && !st.inList) out[":options"] = "[" + fixed.join(",") + "].concat($scope[" + sq("mqOpt_editable_" + id) + "]||[])";
+                else if (fixed.length) out[":options"] = "[" + fixed.join(",") + "]";
             }
             plainAttr(out, "id", at(n, "id"), n);
             if (load) {
@@ -1796,7 +1803,7 @@
             w("<" + (at(n, "type") || "div") + A(out) + ">");
         };
         const boxOpen = (n, header) => {
-            const out = { type: at(n, "type") || "default", "initial-open": at(n, "initial") === "closed" ? "false" : null };
+            const out = { type: at(n, "type") || "default", ":initial-open": at(n, "initial") === "closed" ? "false" : null };
             plainAttr(out, "id", at(n, "id"), n);
             if (header && at(header, "title")) out[":title"] = exp(at(header, "title"), header, "title", true);
             w("<m-container-box" + A(out) + ">");
@@ -2055,9 +2062,19 @@
     const formSingleMacro = stmt((node) => `$s.formSingle(${wlit(node, true)});\n`);
 
     const formListMacro = stmt((node) => {
-        const columns = S.formListColumns(node);
         // The columns are lists of field names, and the runtime finds the fields in the form it is given.
-        return `$s.formListWith(${wlit(node, true)}, ${JSON.stringify(columns.map((column) => column.map((field) => attr(field, "name"))))});\n`;
+        const call = (type) => `$s.formListWith(${wlit(node, true)}, ${JSON.stringify(S.formListColumns(node, type).map((column) => column.map((field) => attr(field, "name"))))});\n`;
+        const types = [];
+        childrenNamed(node, "columns").forEach((columns) => { const type = attr(columns, "type"); if (type && !types.includes(type)) types.push(type); });
+        if (!types.length) return call(null);
+        // columns type="mobile": the template is the same for every request, so it holds the list of each type and the client shows the one
+        // of the _uiType it asks with (moqui.loadComponent sends mobile below 600 px; the screen package has the parameter), as the merged
+        // render picks it on the server
+        let code = "";
+        types.forEach((type, index) => {
+            code += `sri.write(${lit(`<template v-${index ? "else-if" : "if"}="_uiType === ${JSON.stringify(type).replace(/"/g, "'")}">`)});\n${call(type)}sri.write("</template>");\n`;
+        });
+        return code + `sri.write("<template v-else>");\n${call(null)}sri.write("</template>");\n`;
     });
 
     const typeMatches = (type) => !type || type === "any" || type.split(",").map((name) => name.trim()).includes(MODE);

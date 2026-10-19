@@ -1026,6 +1026,11 @@ along with this software (see the LICENSE.md file). If not, see
     <xs:element name="password" substitutionGroup="SubFields"><xs:complexType>
         <xs:attribute name="size" type="xs:positiveInteger" default="30"/>
         <xs:attribute name="maxlength" type="xs:positiveInteger"/>
+        <xs:attribute name="autocomplete" type="xs:string" default="new-password"><xs:annotation><xs:documentation>The
+            autocomplete token of the input. The default, new-password, keeps the browser from filling in the user's own
+            sign-in password (a mail server's app password, an API key, another user's new password); use current-password
+            only where the user types their own password to prove who they are (the old password of a change).
+        </xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>
     <xs:element name="radio" substitutionGroup="SubFields"><xs:complexType>
         <xs:choice minOccurs="0" maxOccurs="unbounded">

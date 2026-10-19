@@ -22,6 +22,13 @@ const instance = () => {
     return { vm, options };
 };
 
+test("the root provides the route's screen as mScreen", () => {
+    const options = moqui.publicRootOptions(config);
+    const vm = { basePath: "/s/TOKEN1234", currentParameters: { folder: "a b" } };
+    const screen = options.provide.call(vm).mScreen;
+    assert.deepEqual([screen.url, screen.path, screen.parameters], ["/s/TOKEN1234?folder=a%20b", "/s/TOKEN1234", { folder: "a b" }]);
+});
+
 test("the root loads the route's screen at its base path with its render modes", () => {
     const { vm } = instance();
     const loaded = [];

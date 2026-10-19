@@ -562,6 +562,11 @@ fn walk_widgets(state: &RenderState, owner: &Arc<ScreenDef>, node: &MNode, depth
                     walk_widgets(state, &other, &widgets.node()?, depth + 1)?;
                 }
             }
+            "editable" => {
+                if let Some((key, options)) = editable_options(state, &child) {
+                    script::set_context_name(&key, moqui_lib::json::from_json(&options))?;
+                }
+            }
             // A form reads its own scope, and the rest of these hold no widgets with actions.
             "form-single" | "form-list" | "tree" | "actions" | "condition" | "row-actions" | "entity-find" => {}
             _ => walk_widgets(state, owner, &child, depth)?,
@@ -653,6 +658,36 @@ fn is_name(text: &str) -> bool {
 /// field's sub-node among its children and the place of the widget in the sub-node.
 pub(crate) fn option_key(form: &str, field: &str, sub_index: usize, widget_index: usize) -> String {
     format!("mqOpt_{form}_{field}_{sub_index}_{widget_index}")
+}
+
+/// The key of the options of an editable select, by its id, which `ScreenQvtStatic.js` reads.
+pub(crate) fn editable_option_key(id: &str) -> String {
+    format!("mqOpt_editable_{id}")
+}
+
+/// The options of an `editable` select from its `list-options` and `entity-options`, as a drop-down's, under
+/// [`editable_option_key`]: the package (or a form's extras) holds them, and the template adds them to its `option` elements.
+/// None for another editable, one with no plain id, or a lookup that fails (logged).
+fn editable_options(state: &RenderState, widget: &MNode) -> Option<(String, serde_json::Value)> {
+    if widget.attribute("widget-type").as_deref() != Some("select")
+        || (widget.first_named("list-options").is_none() && widget.first_named("entity-options").is_none())
+    {
+        return None;
+    }
+    let id = widget.attribute("id").unwrap_or_default();
+    if id.is_empty() || id.contains("${") {
+        tracing::warn!(
+            "an editable select with list-options or entity-options needs a plain id in a server-static screen"
+        );
+        return None;
+    }
+    match lookup_options(state, widget) {
+        Ok(options) => Some((editable_option_key(&id), options)),
+        Err(err) => {
+            tracing::warn!("options of editable {id}: {err}");
+            None
+        }
+    }
 }
 
 pub(crate) fn is_lookup(widget: &MNode) -> bool {
@@ -754,6 +789,11 @@ fn collect_widget(
             }
             Err(err) => tracing::warn!("options of {field_name} in {form_name}: {err}"),
         },
+        "editable" => {
+            if let Some((key, options)) = editable_options(state, widget) {
+                out.insert(key, options);
+            }
+        }
         _ => {}
     }
 }

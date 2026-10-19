@@ -482,6 +482,7 @@
             const name = fnm(n);
             w("<m-text-line" + A(Object.assign({
                 id: fid(n), type: "password", name, label: label(n), size: at(n, "size") || "25", maxlength: at(n, "maxlength") || null,
+                autocomplete: xn(at(n, "autocomplete")) || "new-password",
                 required: check.required || null, disable: st.disabled || null, form: owner(), tooltip: tip(n)
             }, bindOnly(name, ""))) + "></m-text-line>");
         };
@@ -2145,7 +2146,7 @@
             {
                 const $type = ${noL10n(attr(node, "type") || "default")} || "default";
                 sri.write("<m-container-box" + $v.A({id: ${nodeIdCode(node)}, type: $type, title: ${title ? `ec.resource.expand(${lit(title)}, "")` : "null"},
-                    "initial-open": ${noL10n(attr(node, "initial") || "")} === "closed" ? "false" : null}) + ">");
+                    ":initial-open": ${noL10n(attr(node, "initial") || "")} === "closed" ? "false" : null}) + ">");
             }
             ${header ? `sri.write("<template v-slot:header>");\n${header.source}sri.write("</template>");` : ""}
             ${toolbar ? `sri.write("<template v-slot:toolbar>");\n${toolbar.source}sri.write("</template>");` : ""}

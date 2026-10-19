@@ -29,6 +29,8 @@ use crate::service::rust_services::RustServiceFn;
 #[cfg(feature = "mail")]
 mod discover;
 #[cfg(feature = "mail")]
+mod export;
+#[cfg(feature = "mail")]
 mod idle;
 #[cfg(feature = "mail")]
 mod implementation;
@@ -61,6 +63,7 @@ pub(in crate::service) fn register(map: &mut BTreeMap<&'static str, RustServiceF
     rust_service!(map, push_remote_changes)?;
     rust_service!(map, discover_server)?;
     rust_service!(map, import_messages)?;
+    rust_service!(map, export_message)?;
     Ok(())
 }
 
@@ -148,6 +151,11 @@ mail_service!(
     "org.moqui.impl.EmailClientServices.import#EmailMessages",
     import::import_messages
 );
+mail_service!(
+    export_message,
+    "org.moqui.impl.EmailClientServices.export#EmailMessage",
+    export::export_message
+);
 
 #[cfg(not(feature = "mail"))]
 fn unavailable(name: &str) -> Result<BTreeMap<String, Value>, LibError> {
@@ -176,6 +184,7 @@ mod tests {
             ),
             (std::any::type_name_of_val(&super::discover_server), "discover_server"),
             (std::any::type_name_of_val(&super::import_messages), "import_messages"),
+            (std::any::type_name_of_val(&super::export_message), "export_message"),
         ] {
             assert_eq!(function, format!("moqui_core::service::mail::{path}"));
         }

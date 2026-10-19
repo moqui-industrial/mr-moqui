@@ -500,6 +500,11 @@ fn row_selection_multi_forms_find_dialogs_and_the_options_of_a_drop_down() {
         out.contains("'title_0':'One'") && out.contains("'title_1':'Two'"),
         "{out}"
     );
+    // a box that starts closed binds the Boolean prop: the text "false" would be truthy and leave it open
+    assert!(
+        out.contains(r#"<m-container-box type="default" title="Closed" :initial-open="false">"#),
+        "{out}"
+    );
 }
 
 /// A qvt render error is logged and written in place of what failed, as the html render does: a section's error replaces

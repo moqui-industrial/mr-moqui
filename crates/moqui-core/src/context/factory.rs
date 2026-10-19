@@ -92,6 +92,8 @@ pub struct ExecutionContextFactory {
     pub(crate) sessions: std::sync::Mutex<crate::user::session::SessionTable>,
     /// True after this factory's cluster heartbeat hook is registered.
     pub(crate) cluster_heartbeat: AtomicBool,
+    /// True once [`Self::shutdown`] began: work that would reach the database later (the shell counts sender) stops.
+    shutting_down: AtomicBool,
     /// Artifact hit counts and bins, written by the scheduler tick.
     hits: super::hits::ArtifactHits,
     /// When the factory booted, in epoch milliseconds, for the status of the tools dashboard.
@@ -236,6 +238,7 @@ impl ExecutionContextFactory {
             executor: options.executor,
             sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(flush_mode)),
             cluster_heartbeat: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
             hits,
             started_millis: jiff::Timestamp::now().as_millisecond(),
             native,
@@ -376,11 +379,17 @@ impl ExecutionContextFactory {
 
     /// Stop request/service workers before closing tools. The host calls this after its listeners stop.
     pub fn shutdown(&self) {
+        self.shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
         // the mail IDLE workers first: each holds the factory and a connection while it waits
         crate::service::stop_mail_idle(self);
         self.requests.shutdown();
         self.pools.shutdown();
         self.shutdown_tools();
+    }
+
+    /// True once [`Self::shutdown`] began.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Stop tools in reverse order. Call only after their callers have stopped.
@@ -1304,6 +1313,7 @@ impl ExecutionContextFactory {
                 crate::user::session::FlushMode::Eventual,
             )),
             cluster_heartbeat: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
             hits: super::hits::ArtifactHits::from_conf(conf_text),
             started_millis: jiff::Timestamp::now().as_millisecond(),
             native: crate::native::NativeRegistry::default(),

@@ -426,6 +426,98 @@ fn the_suite_shell_palette_quick_create_and_keys_work_in_chromium() {
     }
 }
 
+/// A `.qvue` screen that the theme and the provider name without its extension (the gallery's QuickTask, `render-modes="qvue"`)
+/// loads as qvue in a tray tab and in the quick-create dialog: `moqui.loadComponent` asks for `.qvt` with `X-Moqui-Client-Modes`
+/// and the server answers the qvue. The component reads its own query and path through `inject: ["mScreen"]`, the tray's
+/// `shellCounts` refresh calls its `shellRefresh()` instead of mounting it again (what was typed stays), and its Discard asks with
+/// `$q.dialog` (Quasar's Dialog plugin).
+#[test]
+fn a_qvue_screen_loads_in_the_tray_and_quick_create_and_refreshes_in_place_in_chromium() {
+    let gate = start_with_data(
+        "browser-qvue",
+        r#"<entity-facade-xml type="seed">
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="900" resourceTypeEnumId="STRT_TRAY_TODAY" resourceValue="gallery/QuickTask"/>
+        </entity-facade-xml>"#,
+    );
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    let detail = format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR");
+    browser.navigate(&detail);
+    browser.wait_for(
+        "the Today counter and the record of the screen context",
+        "!!document.getElementById('m-counter-today') && !!moqui.webrootVue.shellData && (moqui.webrootVue.screenRecord || {}).id === 'STT_INTERNAL_QUASAR'",
+        WAIT,
+    );
+    browser.eval(FETCH_SPY);
+    browser.click("Today", "document.getElementById('m-counter-today')");
+    browser.wait_for(
+        "the qvue screen in the tray, with its own path",
+        "!!document.querySelector('#m-tray #GalleryTaskStatus') && document.querySelector('#m-tray #GalleryTaskStatus').innerText.indexOf('/apps/gallery/QuickTask · refreshed 0') >= 0",
+        WAIT,
+    );
+    let loaded = fetched(&mut browser, "the tray tab's load", "/apps/gallery/QuickTask.qvt");
+    assert_eq!(loaded["status"], 200, "{loaded}");
+    // what is typed stays through the refresh of a shellCounts push: the screen refreshes itself
+    browser.click(
+        "the task field",
+        "document.querySelector('#m-tray [id=\"GalleryTask_taskName\"]')",
+    );
+    browser.type_text("kept");
+    browser.eval("moqui.webrootVue.onShellNotification({topic: 'shellCounts', message: {today: 1}}), true");
+    browser.wait_for(
+        "refreshed in place",
+        "document.querySelector('#m-tray #GalleryTaskStatus').innerText.indexOf('refreshed 1') >= 0 \
+         && document.querySelector('#m-tray [id=\"GalleryTask_taskName\"]').value === 'kept'",
+        WAIT,
+    );
+    browser.eval("moqui.webrootVue.closeTray(), true");
+
+    // the + menu: the qvue kind gets the record of the screen context from its own query; Discard asks first
+    browser.click("the + menu", "document.getElementById('m-quick-create-menu')");
+    browser.click("the qvue kind", &by_text(".q-menu .q-item", "Gallery task"));
+    browser.wait_for(
+        "the qvue screen in the dialog with the record",
+        "!!document.getElementById('m-quick-create') && document.getElementById('m-quick-create').innerText.indexOf('On moqui.basic.Enumeration STT_INTERNAL_QUASAR') >= 0",
+        WAIT,
+    );
+    browser.click("Discard", &by_text("#m-quick-create button", "Discard"));
+    browser.wait_for(
+        "the confirmation of $q.dialog",
+        "Array.from(document.querySelectorAll('.q-dialog')).some((el) => el.innerText.indexOf('Discard the task?') >= 0)",
+        WAIT,
+    );
+    browser.click("OK", &by_text(".q-dialog button", "OK"));
+    browser.wait_for(
+        "the quick-create dialog closed",
+        "!document.getElementById('m-quick-create')",
+        WAIT,
+    );
+    // Save posts to the transition under the screen's own path, with the record
+    browser.click("the + menu", "document.getElementById('m-quick-create-menu')");
+    browser.click("the qvue kind", &by_text(".q-menu .q-item", "Gallery task"));
+    browser.wait_for(
+        "the qvue screen in the dialog",
+        "!!document.querySelector('#m-quick-create [id=\"GalleryTask_taskName\"]')",
+        WAIT,
+    );
+    browser.click(
+        "the task field",
+        "document.querySelector('#m-quick-create [id=\"GalleryTask_taskName\"]')",
+    );
+    browser.type_text("From the gate");
+    browser.click("Save", &by_text("#m-quick-create button", "Save"));
+    browser.wait_for(
+        "the task's message",
+        "Array.from(document.querySelectorAll('.q-notification')).some((el) => el.innerText.indexOf('the task \"From the gate\" would be saved on moqui.basic.Enumeration STT_INTERNAL_QUASAR') >= 0)",
+        WAIT,
+    );
+    browser.wait_for("the dialog closed", "!document.getElementById('m-quick-create')", WAIT);
+    let posted = fetched(&mut browser, "the task post", "/apps/gallery/QuickTask/saveTask");
+    assert_eq!(posted["status"], 200, "{posted}");
+    assert_clean(&mut browser, "a qvue screen in the tray and quick create");
+}
+
 /// The tray panel of the suite shell, with theme values on DEFAULT_QUASAR that name gallery screens as BOSS names its own
 /// (`gallery/Panel` for Today, `gallery/Landing` for Notifications, `gallery/List` for Mail, `gallery/Split` for
 /// Messages): the counters appear and the notify history goes; Today opens the tray with the Panel archetype inside it, in
@@ -820,6 +912,8 @@ fn the_account_status_and_the_presence_dots_work_in_chromium() {
         r#"<entity-facade-xml type="seed">
             <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="920" resourceTypeEnumId="STRT_CHATTER_SCREEN" resourceValue="Chatter"/>
             <moqui.security.UserAccount userId="GATE_ADA" username="gate.ada" userFullName="Ada Lovelace"/>
+            <moqui.security.UserPreference userId="EX_JOHN_DOE" preferenceKey="CHAT_STATUS_PRESETS"
+                preferenceValue="[{&quot;emoji&quot;:&quot;🚀&quot;,&quot;text&quot;:&quot;Shipping&quot;,&quot;clearAfter&quot;:&quot;60&quot;},{&quot;emoji&quot;:&quot;📅&quot;,&quot;text&quot;:&quot;In a meeting&quot;,&quot;clearAfter&quot;:&quot;0&quot;}]"/>
             <moqui.chat.ChatRoom chatRoomId="GATE_DM" roomTypeEnumId="CrtDirect" visibilityEnumId="CrvMembers" directKey="EX_JOHN_DOE,GATE_ADA" lastEventSeq="0"/>
             <moqui.chat.ChatRoomMember chatRoomId="GATE_DM" userId="EX_JOHN_DOE" roleEnumId="CmrMember" lastReadEventSeq="0" notificationLevelEnumId="CnlAll"/>
             <moqui.chat.ChatRoomMember chatRoomId="GATE_DM" userId="GATE_ADA" roleEnumId="CmrMember" lastReadEventSeq="0" notificationLevelEnumId="CnlAll"/>
@@ -894,15 +988,24 @@ fn the_account_status_and_the_presence_dots_work_in_chromium() {
         "!!document.querySelector('.q-dialog input[name=statusText]')",
         WAIT,
     );
-    browser.click(
-        "the status text",
-        "document.querySelector('.q-dialog input[name=statusText]')",
+    // the user's presets (the CHAT_STATUS_PRESETS preference), not the defaults; one fills the dialog
+    assert_eq!(
+        browser.eval("Array.from(document.querySelectorAll('.q-dialog [data-preset]')).map((el) => el.innerText.replace(/\\s+/g, ' ').trim()).join('|')"),
+        "🚀 Shipping 1 hour|📅 In a meeting"
     );
-    browser.type_text("In a meeting");
+    browser.click(
+        "the In a meeting preset",
+        "document.querySelector('.q-dialog [data-preset=\"1\"]')",
+    );
+    browser.wait_for(
+        "the preset in the dialog",
+        "document.querySelector('.q-dialog input[name=statusText]').value === 'In a meeting' && document.querySelector('.q-dialog input[name=emoji]').value === '📅'",
+        WAIT,
+    );
     browser.click("Save", "document.getElementById('m-status-save')");
     browser.wait_for(
         "the saved status message",
-        "moqui.chat.state.me && moqui.chat.state.me.statusText === 'In a meeting' && !document.querySelector('.q-dialog input[name=statusText]')",
+        "moqui.chat.state.me && moqui.chat.state.me.statusText === 'In a meeting' && moqui.chat.state.me.emoji === '📅' && !document.querySelector('.q-dialog input[name=statusText]')",
         WAIT,
     );
     browser.click("the account menu", "document.getElementById('m-account')");
@@ -1529,6 +1632,20 @@ fn qapps_widgets(browser: &mut Browser, base: &str) {
         WAIT,
     );
     browser.eval(FETCH_SPY);
+    // a box with initial="closed" starts closed (its Boolean prop is bound, not the text "false") and opens from its title
+    assert_eq!(
+        browser.eval("(() => { const text = Array.from(document.querySelectorAll('p')).find((el) => el.textContent === 'Shown once opened'); return !!text && text.offsetParent === null; })()"),
+        true
+    );
+    browser.click(
+        "the closed box's title",
+        &by_text(".m-container-box .text-subtitle1", "Gate closed box"),
+    );
+    browser.wait_for(
+        "the box opened",
+        "Array.from(document.querySelectorAll('p')).some((el) => el.textContent === 'Shown once opened' && el.offsetParent !== null)",
+        WAIT,
+    );
     browser.wait_for(
         "Chart.js drew the chart",
         "!!(window.Chart && Chart.getChart(document.querySelector('#GateCharts canvas')))",

@@ -46,6 +46,12 @@
             computed: {
                 currentLinkPath() { return this.basePath; }
             },
+            // the route's screen for inject: ["mScreen"], as the /qapps root gives it
+            provide() {
+                const vm = this;
+                return { mScreen: { get url() { const search = moqui.objToSearch(vm.currentParameters); return vm.basePath + (search ? "?" + search : ""); },
+                    get path() { return vm.basePath; }, get parameters() { return vm.currentParameters; }, containerId: null } };
+            },
             methods: {
                 // a path under the route stays here (its parameters reload the screen); any other URL leaves the page
                 setUrl(url) {
@@ -114,7 +120,7 @@
         options.template = ROOT_TEMPLATE;
         const app = root.Vue.createApp(options);
         const quasarOptions = { config: Object.assign({ notify: { progress: true, closeBtn: "X", position: "top-right" } }, config.quasar),
-            plugins: { Notify: root.Quasar.Notify, LoadingBar: root.Quasar.LoadingBar } };
+            plugins: qvt && qvt.quasarPlugins ? qvt.quasarPlugins(root.Quasar) : { Notify: root.Quasar.Notify, LoadingBar: root.Quasar.LoadingBar, Dialog: root.Quasar.Dialog } };
         const langKey = String(config.quasarLang || "enUS").replace(/-([a-zA-Z])/g, (m, ch) => ch.toUpperCase()).replace("-", "");
         if (root.Quasar.Lang && root.Quasar.Lang[langKey]) quasarOptions.lang = root.Quasar.Lang[langKey];
         if (root.Quasar.IconSet && root.Quasar.IconSet.materialSymbolsOutlined) quasarOptions.iconSet = root.Quasar.IconSet.materialSymbolsOutlined;
