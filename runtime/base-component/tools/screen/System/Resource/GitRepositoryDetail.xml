@@ -13,8 +13,9 @@ along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
 <!-- One moqui.resource.GitRepository: its settings, the fetch, init, export and import actions of
-    org.moqui.impl.GitServices (docs/Revision-Management.md), its clone URLs, branches and tags, recent commits, and the
-    log of its updates (pushes, fetches, imports) with the outcome of their gitECA rules (docs/Git-Hosting.md). -->
+    org.moqui.impl.GitServices (docs/Revision-Management.md), the storage of a db one with its collection and check,
+    Git LFS, its clone URLs, branches and tags, recent commits, and the log of its updates (pushes, fetches, imports)
+    with the outcome of their gitECA rules (docs/Git-Hosting.md). -->
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         default-menu-title="Git Repository" default-menu-include="false">
 
@@ -37,6 +38,12 @@ along with this software (see the LICENSE.md file). If not, see
     <transition name="exportGitRepository"><service-call name="org.moqui.impl.GitServices.export#GitRepository"/>
         <default-response url="."/></transition>
     <transition name="importGitRepository"><service-call name="org.moqui.impl.GitServices.import#GitRepository"/>
+        <default-response url="."/></transition>
+    <transition name="gcGitRepository"><service-call name="org.moqui.impl.GitServices.gc#GitRepositories"/>
+        <default-response url="."/></transition>
+    <transition name="fsckGitRepository"><service-call name="org.moqui.impl.GitServices.fsck#GitRepository"/>
+        <default-response url="."/></transition>
+    <transition name="setupGitLfs"><service-call name="org.moqui.impl.GitServices.setup#GitLfs"/>
         <default-response url="."/></transition>
     <!-- run the gitECA post events of an update again -->
     <transition name="rerunGitUpdate">
@@ -122,6 +129,25 @@ along with this software (see the LICENSE.md file). If not, see
                                     tooltip="git://otherId, a repository directory, or a URL; the Remote URL when empty. Replaces the branch.">
                                 <text-line size="40"/></default-field></field>
                             <field name="submitButton"><default-field title="Import"><submit confirmation="Replace the branch with the imported one?"/></default-field></field>
+                        </form-single>
+                        <label text="Storage: ${gitRepository.objectCount ?? '?'} objects, ${gitRepository.storedBytes != null ? Math.round(gitRepository.storedBytes / 1024) + ' KiB' : '? bytes'} after the last collection${gitRepository.lastGcDate ? ' (' + ec.l10n.format(gitRepository.lastGcDate, 'yyyy-MM-dd HH:mm') + ': ' + (gitRepository.lastGcResult ?? '') + ')' : ''}"
+                                type="p"/>
+                        <form-single name="GcGitRepository" transition="gcGitRepository">
+                            <field name="repositoryId"><default-field><hidden/></default-field></field>
+                            <field name="dryRun" from="'true'"><default-field title="Dry Run"
+                                    tooltip="Count what would be deleted, and change nothing">
+                                <check><option key="true" text=" "/></check></default-field></field>
+                            <field name="submitButton"><default-field title="Collect and Repack"><submit/></default-field></field>
+                        </form-single>
+                        <link url="fsckGitRepository" text="Check Objects" parameter-map="{repositoryId:repositoryId}"/>
+                    </widgets></section>
+                    <section name="LfsActions" condition="!isRemote"><widgets>
+                        <form-single name="SetupGitLfs" transition="setupGitLfs">
+                            <field name="repositoryId"><default-field><hidden/></default-field></field>
+                            <field name="patterns"><default-field title="Keep in Git LFS"
+                                    tooltip="gitattributes patterns separated by spaces; images, video, audio, PDFs and archives when empty">
+                                <text-line size="40"/></default-field></field>
+                            <field name="submitButton"><default-field title="Set Up LFS"><submit/></default-field></field>
                         </form-single>
                     </widgets></section>
                 </box-body></container-box>

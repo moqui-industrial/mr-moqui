@@ -158,6 +158,35 @@ along with this software (see the LICENSE.md file). If not, see
         <relationship type="one" related="moqui.resource.GitUpdate"/>
     </entity>
 
+    <!-- Git LFS (crates/moqui-core/src/resource/git/server/lfs.rs, docs/Git-Hosting.md). No Java counterpart. -->
+    <entity entity-name="GitLfsObject" package="moqui.resource" use="nontransactional" cache="never">
+        <description>A Git LFS object of a repository, its content the ContentBlob of the same SHA-256. A repository
+            has an object only once it was uploaded to it: the same content in another repository is stored once,
+            and knowing its oid does not reach it.</description>
+        <field name="repositoryId" type="id" is-pk="true"/>
+        <field name="oid" type="id-long" is-pk="true"><description>The SHA-256 of the content, the oid of the LFS
+            pointer in the repository</description></field>
+        <field name="objectSize" type="number-integer"/>
+        <field name="uploadedByUserId" type="id"/>
+        <field name="uploadedDate" type="date-time"/>
+        <relationship type="one" related="moqui.resource.GitRepository"/>
+        <relationship type="one" related="moqui.resource.ContentBlob" short-alias="blob">
+            <key-map field-name="oid" related="blobId"/></relationship>
+    </entity>
+    <entity entity-name="GitLfsLock" package="moqui.resource" use="nontransactional" cache="never">
+        <description>A file of a repository locked with git lfs lock, so others do not change it meanwhile.</description>
+        <field name="lockId" type="id" is-pk="true"/>
+        <field name="repositoryId" type="id"/>
+        <field name="lockPath" type="text-medium"/>
+        <field name="refName" type="text-medium"/>
+        <field name="ownerUserId" type="id"/>
+        <field name="lockedDate" type="date-time"/>
+        <relationship type="one" related="moqui.resource.GitRepository"/>
+        <relationship type="one-nofk" title="Owner" related="moqui.security.UserAccount">
+            <key-map field-name="ownerUserId" related="userId"/></relationship>
+        <index name="GIT_LFS_LOCK_PATH" unique="true"><index-field name="repositoryId"/><index-field name="lockPath"/></index>
+    </entity>
+
     <!-- Large content by its SHA-256, in chunks (crates/moqui-core/src/resource/blob.rs, docs/Git-Hosting.md). No Java
         counterpart. A row that refers to a blob has a relationship to ContentBlob: gc#ContentBlobs deletes the blobs
         no such row refers to. -->

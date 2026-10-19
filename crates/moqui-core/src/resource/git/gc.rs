@@ -96,6 +96,9 @@ pub struct GcReport {
     /// Rows rewritten, and the bytes that saved.
     pub repacked: usize,
     pub saved_bytes: i64,
+    /// LFS objects the repository no longer refers to, whose association was removed (their content goes with
+    /// `gc#ContentBlobs` when nothing else has it).
+    pub lfs_deleted: u64,
     /// Rows and bytes stored after the run.
     pub objects: usize,
     pub stored_bytes: u64,
@@ -109,6 +112,9 @@ impl GcReport {
             "{} objects, {} bytes; deleted {} ({} bytes), repacked {} (saved {} bytes)",
             self.objects, self.stored_bytes, self.deleted, self.deleted_bytes, self.repacked, self.saved_bytes
         );
+        if self.lfs_deleted > 0 {
+            text.push_str(&format!("; {} LFS objects let go", self.lfs_deleted));
+        }
         if let Some(stopped) = &self.stopped {
             text.push_str("; ");
             text.push_str(stopped);
@@ -457,6 +463,7 @@ fn collect(store: &DbStore, roots: &Roots, options: &GcOptions) -> Result<GcRepo
     let depths = table.depths();
     let mut garbage: Vec<usize> = (0..table.objs.len()).filter(|at| !kept[*at]).collect();
     garbage.sort_by_key(|at| std::cmp::Reverse(depths[*at].unwrap_or(u32::MAX)));
+    sweep_lfs(store, &table, &kept, cutoff, options.dry_run, &mut report)?;
     if options.dry_run {
         report.deleted = garbage.len() as u64;
         report.deleted_bytes = garbage.iter().map(|at| table.objs[*at].stored).sum();
@@ -501,6 +508,61 @@ fn collect(store: &DbStore, roots: &Roots, options: &GcOptions) -> Result<GcRepo
         .map(|(_, obj)| obj.stored)
         .sum();
     Ok(report)
+}
+
+/// Let go of the LFS objects of the repository uploaded before the cutoff that no kept pointer file names. Only a
+/// repository with such objects reads its small blobs for pointers.
+fn sweep_lfs(
+    store: &DbStore,
+    table: &Table,
+    kept: &[bool],
+    cutoff: i64,
+    dry_run: bool,
+    report: &mut GcReport,
+) -> Result<(), Error> {
+    let entity = store.entity();
+    if !entity.table_ready(super::server::lfs::GIT_LFS_OBJECT) {
+        return Ok(());
+    }
+    let old = entity
+        .find(super::server::lfs::GIT_LFS_OBJECT)?
+        .eq("repositoryId", Value::string(store.repository_id()))
+        .condition(Condition::less(
+            "uploadedDate",
+            basic_convert(&Value::I64(cutoff), "java.sql.Timestamp").value,
+        ))
+        .list()?;
+    if old.is_empty() {
+        return Ok(());
+    }
+    let small: Vec<ObjectId> = table
+        .objs
+        .iter()
+        .enumerate()
+        .filter(|(at, obj)| kept[*at] && obj.kind == Kind::Blob && obj.size <= super::server::lfs::MAX_POINTER)
+        .map(|(_, obj)| obj.id)
+        .collect();
+    let mut named: HashSet<String> = HashSet::new();
+    store.find_many(&small, &mut |_, _, data| {
+        if let Some((oid, _)) = super::server::lfs::pointer(data) {
+            named.insert(oid);
+        }
+        Ok(())
+    })?;
+    for row in old.iter() {
+        let oid = text(row.get("oid")).unwrap_or_default();
+        if named.contains(&oid) {
+            continue;
+        }
+        if !dry_run {
+            if let Err(err) = row.delete(entity) {
+                tracing::error!(repository = %store.repository_id(), "LFS object {oid} was not let go: {}", err.message());
+                continue;
+            }
+        }
+        report.lfs_deleted += 1;
+    }
+    Ok(())
 }
 
 /// Keep the delta bases of what is kept, down each chain.

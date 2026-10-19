@@ -547,7 +547,9 @@ impl russh::server::Handler for Connection {
             return Ok(());
         }
         let line = String::from_utf8_lossy(data).into_owned();
-        if moqui_core::resource::git::server::parse_ssh_command(&line).is_some() {
+        if moqui_core::resource::git::server::parse_ssh_command(&line).is_some()
+            || moqui_core::resource::git::server::lfs::parse_ssh_command(&line).is_some()
+        {
             let (Some(username), true) = (self.username.clone(), self.can_git) else {
                 return session.channel_failure(channel);
             };

@@ -205,6 +205,59 @@ fn repositories_are_cloned_and_pushed_over_http_and_ssh() {
         assert!(matches!(fsck.get("checkedCount"), Some(Value::I64(count)) if *count > 5), "{fsck:?}");
         moqui_core::user::logout().unwrap();
     }
+    // Git LFS: a batch, an upload with the token it gives, and the download
+    {
+        let content: Vec<u8> = (0..300_000u32).map(|n| (n % 241) as u8).collect();
+        let oid: String = {
+            use sha2::Digest as _;
+            sha2::Sha256::digest(&content).iter().map(|byte| format!("{byte:02x}")).collect()
+        };
+        let basic = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("john.doe:moqui")
+        );
+        let batch = format!(
+            r#"{{"operation":"upload","transfers":["basic"],"objects":[{{"oid":"{oid}","size":{}}}]}}"#,
+            content.len()
+        );
+        let (status, _, body) = crate::common::exchange(
+            http,
+            &crate::common::http_request(
+                "POST",
+                "/git/hosted-db.git/info/lfs/objects/batch",
+                &[
+                    ("Authorization", &basic),
+                    ("Accept", "application/vnd.git-lfs+json"),
+                    ("Content-Type", "application/vnd.git-lfs+json"),
+                ],
+                &batch,
+            ),
+        );
+        assert_eq!(status, 200, "{body}");
+        let reply: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let upload = &reply["objects"][0]["actions"]["upload"];
+        let href = upload["href"].as_str().unwrap();
+        let path = &href[href.find("/git/").unwrap()..];
+        let token = upload["header"]["Authorization"].as_str().unwrap();
+        let mut request = format!(
+            "PUT {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: {token}\r\nContent-Length: {}\r\n\r\n",
+            content.len()
+        )
+        .into_bytes();
+        request.extend_from_slice(&content);
+        let mut stream = std::net::TcpStream::connect(http).unwrap();
+        std::io::Write::write_all(&mut stream, &request).unwrap();
+        let mut response = Vec::new();
+        std::io::Read::read_to_end(&mut stream, &mut response).unwrap();
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200"));
+        let (status, _, downloaded) = crate::common::exchange_bytes(
+            http,
+            &crate::common::http_request("GET", &format!("/git/hosted-db.git/info/lfs/objects/{oid}"), &[("Authorization", &basic)], ""),
+        );
+        assert_eq!(status, 200);
+        assert!(downloaded == content);
+    }
+
     let after_gc = work.join("hosted-db-after-gc");
     let url = format!("http://john.doe:moqui@127.0.0.1:{}/git/hosted-db.git", http.port());
     git_ok(&work, &home, None, &["clone", &url, &after_gc.to_string_lossy()]);
@@ -240,6 +293,18 @@ fn repositories_are_cloned_and_pushed_over_http_and_ssh() {
         git_ok(&clone, &home, Some(&ssh), &["pull", "--rebase", "origin", "main"]);
         git_ok(&clone, &home, Some(&ssh), &["push", "origin", "main"]);
     }
+    // git-lfs asks for the HTTPS endpoint and a token over SSH
+    let ssh_args: Vec<String> = ssh.split_whitespace().skip(1).map(str::to_string).collect();
+    let output = Command::new("ssh")
+        .args(&ssh_args)
+        .args(["-p", &ssh_port.to_string(), "john.doe@127.0.0.1", "git-lfs-authenticate", "hosted-db.git", "download"])
+        .env("HOME", &home)
+        .env_remove("SSH_AUTH_SOCK")
+        .output()
+        .unwrap();
+    let answer = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{answer} {}", String::from_utf8_lossy(&output.stderr));
+    assert!(answer.contains("/git/hosted-db.git/info/lfs") && answer.contains("MoquiLfs"), "{answer}");
     let check = work.join("ssh-check");
     git_ok(&work, &home, Some(&ssh), &["clone", &url, &check.to_string_lossy()]);
     assert!(check.join("ssh-0.txt").is_file() && check.join("ssh-2.txt").is_file());

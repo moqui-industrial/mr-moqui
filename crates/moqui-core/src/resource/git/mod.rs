@@ -23,6 +23,7 @@
 //! A write commits at once, by the current user, with a `Moqui-User-Id` trailer the history reads back. Guide:
 //! `docs/Revision-Management.md`.
 
+pub mod attributes;
 pub(crate) mod browse;
 pub(crate) mod db;
 pub(crate) mod delta;
@@ -30,6 +31,7 @@ pub(crate) mod diff;
 pub(crate) mod events;
 pub(crate) mod fs;
 pub mod gc;
+pub(crate) mod lfs_files;
 pub(crate) mod ops;
 pub(crate) mod revwalk;
 pub mod server;
@@ -126,6 +128,8 @@ struct Inner {
     updated: Mutex<HashMap<String, i64>>,
     /// Decoded objects of the `db` repositories.
     objects: Arc<db::ObjectCache>,
+    /// Parsed `.gitattributes` files, by blob.
+    attributes: attributes::RulesCache,
 }
 
 impl std::fmt::Debug for GitProvider {
@@ -196,6 +200,7 @@ impl GitProvider {
                 event_locks: Mutex::new(HashMap::new()),
                 updated: Mutex::new(HashMap::new()),
                 objects: db::object_cache(),
+                attributes: attributes::rules_cache(),
             }),
         }
     }
@@ -787,7 +792,10 @@ impl crate::native::ResourceProvider for GitProvider {
         let not_found = || Error::new(format!("resource not found: {location}"));
         let head = Self::head(&repo)?.ok_or_else(not_found)?;
         match ops::resolve(repo.store.as_ref(), &head.tree, &path)? {
-            Some((mode, blob)) if !mode.is_tree() => ops::object(repo.store.as_ref(), &blob, Kind::Blob),
+            Some((mode, blob)) if !mode.is_tree() => match self.lfs_content(&repo, &blob)? {
+                Some(info) => Ok(crate::resource::source::read_all(self.lfs_source(&info)?.as_ref())?),
+                None => ops::object(repo.store.as_ref(), &blob, Kind::Blob),
+            },
             _ => Err(not_found()),
         }
     }
@@ -806,6 +814,13 @@ impl crate::native::ResourceProvider for GitProvider {
         else {
             return Ok(None);
         };
+        if let Some(info) = self.lfs_content(&repo, &blob)? {
+            let stat = ResourceStat {
+                size: info.size,
+                ..stat
+            };
+            return Ok(Some((stat, self.lfs_source(&info)?)));
+        }
         if let Some(source) = repo.store.content_source(&blob)? {
             return Ok(Some((stat, source)));
         }
@@ -839,7 +854,10 @@ impl crate::native::ResourceProvider for GitProvider {
             }),
             Some((_, blob)) => Some(ResourceStat {
                 is_file: true,
-                size: repo.store.object_size(&blob)?.unwrap_or(0),
+                size: match self.lfs_content(&repo, &blob)? {
+                    Some(info) => info.size,
+                    None => repo.store.object_size(&blob)?.unwrap_or(0),
+                },
                 last_modified,
             }),
             None => None,
@@ -874,7 +892,7 @@ impl crate::native::ResourceProvider for GitProvider {
         if path.is_empty() {
             return Err(Error::new(format!("cannot write the root of a repository: {location}")));
         }
-        let blob = repo.store.write(Kind::Blob, bytes)?;
+        let blob = self.store_file(&repo, &path, lfs_files::FileContent::Bytes(bytes))?;
         self.put_file(&repo, location, path, blob)
     }
 
@@ -892,7 +910,7 @@ impl crate::native::ResourceProvider for GitProvider {
         if path.is_empty() {
             return Err(Error::new(format!("cannot write the root of a repository: {location}")));
         }
-        let blob = repo.store.write_stream(Kind::Blob, size, input)?;
+        let blob = self.store_file(&repo, &path, lfs_files::FileContent::Stream(input, size))?;
         self.put_file(&repo, location, path, blob)
     }
 

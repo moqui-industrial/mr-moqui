@@ -35,7 +35,23 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="init" noun="GitRepository" type="rust" location="moqui_core::service::git::init_repository">
         <description>Make a repository ready: create the bare repository of a local kind (a local repository is also
             created on its first use), fetch a remote kind for the first time. A db kind needs nothing.</description>
-        <in-parameters><parameter name="repositoryId" required="true"/></in-parameters>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="contentRepository" type="Boolean" default-value="false"><description>A repository of
+                content, such as a web site's images: keep images, video, audio, PDFs and archives in Git LFS
+                (setup#GitLfs)</description></parameter>
+        </in-parameters>
+    </service>
+    <service verb="setup" noun="GitLfs" type="rust" location="moqui_core::service::git::setup_lfs">
+        <description>Keep the files matching patterns in Git LFS: a commit of the repository's .gitattributes with
+            filter=lfs for each pattern it does not have. A git:// write of such a file stores its content as a content
+            blob and commits its LFS pointer; git-lfs clients push and fetch it at /git/repositoryId.git/info/lfs.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="patterns" type="List"><description>gitattributes patterns (*.png, media/**); images,
+                video, audio, PDFs and archives when empty</description></parameter>
+        </in-parameters>
+        <out-parameters><parameter name="commitId"><description>Empty when it had them all</description></parameter></out-parameters>
     </service>
     <service verb="export" noun="GitRepository" type="rust" location="moqui_core::service::git::export_repository">
         <description>Write a db kind repository as a bare repository on disk, with its branch and HEAD, so it can be

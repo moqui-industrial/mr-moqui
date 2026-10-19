@@ -21,6 +21,7 @@
 //! push or delete a ref. With that type's authorization off in the conf the server refuses everything. Guide:
 //! `docs/Git-Hosting.md`.
 
+pub mod lfs;
 pub(crate) mod pack_in;
 pub(crate) mod pack_out;
 pub(crate) mod pktline;
@@ -301,6 +302,28 @@ pub(crate) fn copy_objects(
     result.map(|_| planned.objects.len())
 }
 
+/// The base URL git clients reach the web server at: `git_public_url`, else from the webapp host and port
+/// properties.
+pub(crate) fn public_base_url() -> String {
+    let configured = property("git_public_url");
+    if !configured.is_empty() {
+        return configured.trim_end_matches('/').to_string();
+    }
+    let host = Some(property("webapp_http_host"))
+        .filter(|host| !host.is_empty())
+        .unwrap_or_else(|| "localhost".to_string());
+    let (scheme, port, default) = if property("webapp_https_enabled") == "true" {
+        ("https", property("webapp_https_port"), "443")
+    } else {
+        ("http", property("webapp_http_port"), "80")
+    };
+    if port.is_empty() || port == default {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{scheme}://{host}:{port}")
+    }
+}
+
 /// Why a request is refused, before any protocol is spoken.
 #[derive(Debug)]
 enum Refusal {
@@ -354,8 +377,14 @@ fn current_user() -> Option<String> {
 
 /// Log the user of an HTTP request in. False when it carries no credentials.
 fn authenticate(request: &GitHttpRequest) -> Result<bool, Refusal> {
+    authenticate_with(request.authorization.as_deref(), request.api_key.as_deref())
+}
+
+/// Log a user in by an `Authorization` header (Basic, with a password or an access token, or Bearer) or an `api_key`.
+/// False when there are no credentials.
+fn authenticate_with(authorization: Option<&str>, api_key: Option<&str>) -> Result<bool, Refusal> {
     let refused = |err: Error| Refusal::Unauthenticated(err.message().to_string());
-    if let Some(header) = request.authorization.as_deref().map(str::trim) {
+    if let Some(header) = authorization.map(str::trim) {
         if let Some(token) = header.strip_prefix("Bearer ").or_else(|| header.strip_prefix("bearer ")) {
             crate::user::login_user_key(token.trim()).map_err(refused)?;
             return Ok(true);
@@ -379,7 +408,7 @@ fn authenticate(request: &GitHttpRequest) -> Result<bool, Refusal> {
             return Ok(true);
         }
     }
-    if let Some(key) = request.api_key.as_deref().filter(|key| !key.is_empty()) {
+    if let Some(key) = api_key.filter(|key| !key.is_empty()) {
         crate::user::login_user_key(key).map_err(refused)?;
         return Ok(true);
     }
@@ -550,6 +579,20 @@ pub fn serve_ssh(
         let _ = stderr.flush();
         128
     };
+    if lfs::parse_ssh_command(command).is_some() {
+        return match lfs::ssh_authenticate(username, command) {
+            Ok(answer) => {
+                let _ = writeln!(output, "{answer}");
+                let _ = output.flush();
+                0
+            }
+            Err(err) => {
+                let _ = writeln!(stderr, "{}", err.message());
+                let _ = stderr.flush();
+                1
+            }
+        };
+    }
     let Some((service, id)) = parse_ssh_command(command) else {
         return fail(stderr, &format!("not a git command: {command}"));
     };

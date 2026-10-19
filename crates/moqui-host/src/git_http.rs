@@ -132,6 +132,14 @@ pub(crate) async fn handle(
         None => path.split_once('/').unwrap_or((path, "")),
     };
     let query = parts.uri.query().unwrap_or("");
+    if let Some(lfs_path) = tail.strip_prefix("info/lfs/") {
+        let Some(repository) = server::repository_of(repository) else {
+            return plain(404, "not a git repository");
+        };
+        let lfs_path = lfs_path.to_string();
+        let query = query.to_string();
+        return handle_lfs(state, peer, over_tls, parts, body, repository, lfs_path, query).await;
+    }
     let (service, advertise) = match (parts.method.as_str(), tail) {
         ("GET", "info/refs") => (
             query
@@ -210,4 +218,80 @@ pub(crate) async fn handle(
     response
         .body(axum::body::Body::new(ChannelBody(out_rx)))
         .unwrap_or_else(|_| plain(500, "a git response header was not valid"))
+}
+
+/// `/git/<repositoryId>.git/info/lfs/...`: Git LFS, on the git pool as a clone is, an object's body streamed in and out.
+#[allow(clippy::too_many_arguments)]
+async fn handle_lfs(
+    state: Arc<HttpState>,
+    peer: SocketAddr,
+    over_tls: bool,
+    parts: axum::http::request::Parts,
+    body: axum::body::Body,
+    repository: String,
+    path: String,
+    query: String,
+) -> Response {
+    use moqui_core::resource::git::server::lfs;
+
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    };
+    let upload = parts.method == axum::http::Method::PUT;
+    let limit = if upload { lfs::max_object_size() } else { 1024 * 1024 };
+    let content_length = header("content-length").and_then(|length| length.parse::<u64>().ok());
+    if content_length.is_some_and(|length| length > limit) {
+        return plain(413, &format!("the LFS request is over {limit} bytes"));
+    }
+    let secure =
+        over_tls || forwarded_https(&parts.headers) || peer.ip().is_loopback() || property("git_allow_http") == "true";
+    let request = lfs::LfsHttpRequest {
+        repository,
+        method: parts.method.as_str().to_string(),
+        path,
+        query,
+        authorization: header("authorization"),
+        api_key: header("api_key").or_else(|| header("login_key")),
+        range: header("range"),
+        content_length,
+        secure,
+        client_ip: peer.ip().to_string(),
+    };
+    let idle = property("git_idle_timeout")
+        .parse::<u64>()
+        .ok()
+        .filter(|seconds| *seconds > 0)
+        .map_or(DEFAULT_IDLE, Duration::from_secs);
+    let (body_tx, body_rx) = mpsc::channel(QUEUED);
+    let (out_tx, out_rx) = mpsc::channel(QUEUED);
+    let (head_tx, head_rx) = oneshot::channel();
+    let factory = Arc::clone(&state.factory);
+    let submitted = server::pool(&factory).try_submit(Arc::clone(&factory), move || {
+        let mut reader = ChannelReader::new(body_rx);
+        let mut responder = Responder {
+            head: Some(head_tx),
+            body: ChannelWriter::new(out_tx),
+        };
+        lfs::serve_lfs(&request, &mut reader, &mut responder);
+        let _ = std::io::Write::flush(&mut responder.body);
+        Ok(())
+    });
+    if submitted.is_err() {
+        return plain(503, "the git server is busy; try again");
+    }
+    tokio::spawn(feed(body, body_tx, limit, idle));
+    let Ok((status, headers)) = head_rx.await else {
+        return plain(500, "the LFS request ended without a response");
+    };
+    let mut response = Response::builder().status(status);
+    for (name, value) in headers {
+        response = response.header(name, value);
+    }
+    response
+        .body(axum::body::Body::new(ChannelBody(out_rx)))
+        .unwrap_or_else(|_| plain(500, "an LFS response header was not valid"))
 }

@@ -314,7 +314,7 @@ pub(crate) fn respond_opened(
 
 /// What a `Range` header asks of a file of a known size.
 #[derive(Debug, PartialEq, Eq)]
-enum ByteRange {
+pub(crate) enum ByteRange {
     /// No range this answers: not `bytes=`, more than one range, or not well formed. The whole file is sent.
     Whole,
     /// A range that starts past the end, or an empty suffix: 416.
@@ -324,7 +324,7 @@ enum ByteRange {
 }
 
 /// One range of RFC 9110: `bytes=first-last`, `bytes=first-` or `bytes=-suffix`. A last byte past the end is the end.
-fn byte_range(header: &str, total: u64) -> ByteRange {
+pub(crate) fn byte_range(header: &str, total: u64) -> ByteRange {
     let Some((unit, spec)) = header.trim().split_once('=') else {
         return ByteRange::Whole;
     };

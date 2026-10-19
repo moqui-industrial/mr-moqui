@@ -147,6 +147,7 @@ mod tests {
                 "moqui_core::service::git::init_repository",
                 "moqui_core::service::git::process_pending_updates",
                 "moqui_core::service::git::process_update",
+                "moqui_core::service::git::setup_lfs",
             ]);
             expected.sort_unstable();
         }

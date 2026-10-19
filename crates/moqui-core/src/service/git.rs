@@ -44,6 +44,7 @@ pub(in crate::service) fn register(
     rust_service!(map, commit_files)?;
     rust_service!(map, process_update)?;
     rust_service!(map, process_pending_updates)?;
+    rust_service!(map, setup_lfs)?;
     rust_service!(map, gc_repositories)?;
     rust_service!(map, fsck_repository)?;
     Ok(())
@@ -136,7 +137,8 @@ fn fetch_all_repositories(
     }
 }
 
-/// `init#GitRepository`: create a local bare repository, or fetch a remote one for the first time.
+/// `init#GitRepository`: create a local bare repository, or fetch a remote one for the first time; with
+/// `contentRepository`, keep images, video, audio, PDFs and archives in Git LFS.
 fn init_repository(
     parameters: &BTreeMap<String, Value>,
     _facade: &EntityFacade,
@@ -146,9 +148,50 @@ fn init_repository(
     };
     match provider.init(&id) {
         Ok(done) => add_message(done),
-        Err(err) => add_error(err.message()),
+        Err(err) => {
+            add_error(err.message());
+            return Ok(BTreeMap::new());
+        }
+    }
+    if flag(parameters, "contentRepository") {
+        if let Err(err) = provider.setup_lfs(&id, &crate::resource::git::attributes::DEFAULT_LFS_PATTERNS) {
+            add_error(err.message());
+        }
     }
     Ok(BTreeMap::new())
+}
+
+/// `setup#GitLfs`: keep files matching `patterns` (images, video, audio, PDFs and archives when empty) in Git LFS,
+/// by a commit of the repository's `.gitattributes`. Out: `commitId` (empty when it had them all).
+fn setup_lfs(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+    let Some((provider, id)) = provider_and_id(parameters, true) else {
+        return Ok(BTreeMap::new());
+    };
+    if let Err(err) = crate::user::authorize(GIT_ARTIFACT_TYPE, &id, "update") {
+        add_error(err.message());
+        return Ok(BTreeMap::new());
+    }
+    let given: Vec<String> = match parameters.get("patterns") {
+        Some(Value::List(patterns)) => patterns.iter().map(to_plain_string).filter(|text| !text.trim().is_empty()).collect(),
+        Some(value) if !is_empty(value) => to_plain_string(value)
+            .split([',', ' ', '\n'])
+            .filter(|pattern| !pattern.trim().is_empty())
+            .map(|pattern| pattern.trim().to_string())
+            .collect(),
+        _ => Vec::new(),
+    };
+    let patterns: Vec<&str> = if given.is_empty() {
+        crate::resource::git::attributes::DEFAULT_LFS_PATTERNS.to_vec()
+    } else {
+        given.iter().map(String::as_str).collect()
+    };
+    match provider.setup_lfs(&id, &patterns) {
+        Ok(made) => Ok(out([("commitId", made.map_or(Value::Null, |id| Value::string(id.to_string())))])),
+        Err(err) => {
+            add_error(err.message());
+            Ok(BTreeMap::new())
+        }
+    }
 }
 
 /// `export#GitRepository`: write a db repository as a bare repository on disk. Out: `exportPath`, `objectCount`.
@@ -438,29 +481,6 @@ fn get_blob(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Res
     }
 }
 
-/// The base URL git clients reach the web server at: `git_public_url`, else from the webapp host and port
-/// properties.
-fn public_base_url() -> String {
-    let property = |name: &str| moqui_lib::env::get_prop_or_env(name).trim().to_string();
-    let configured = property("git_public_url");
-    if !configured.is_empty() {
-        return configured.trim_end_matches('/').to_string();
-    }
-    let host = Some(property("webapp_http_host"))
-        .filter(|host| !host.is_empty())
-        .unwrap_or_else(|| "localhost".to_string());
-    let (scheme, port, default) = if property("webapp_https_enabled") == "true" {
-        ("https", property("webapp_https_port"), "443")
-    } else {
-        ("http", property("webapp_http_port"), "80")
-    };
-    if port.is_empty() || port == default {
-        format!("{scheme}://{host}")
-    } else {
-        format!("{scheme}://{host}:{port}")
-    }
-}
-
 /// `get#GitCloneUrls`: how to clone a repository. Out: `httpsUrl` (`<base>/git/<id>.git`), and `sshUrl` when the SSH
 /// server is on (`ssh_port`), with the current user's username, as the SSH server logs in Moqui users.
 fn get_clone_urls(
@@ -471,7 +491,7 @@ fn get_clone_urls(
         return Ok(BTreeMap::new());
     };
     let property = |name: &str| moqui_lib::env::get_prop_or_env(name).trim().to_string();
-    let http = format!("{}/git/{id}.git", public_base_url());
+    let http = format!("{}/git/{id}.git", crate::resource::git::server::public_base_url());
     let ssh_port = Some(property("ssh_public_port"))
         .filter(|port| !port.is_empty())
         .unwrap_or_else(|| property("ssh_port"));

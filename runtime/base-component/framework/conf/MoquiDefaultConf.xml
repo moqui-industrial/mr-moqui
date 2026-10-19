@@ -140,6 +140,12 @@
     <default-property name="git_gc_prune_days" value="14"/>
     <default-property name="git_gc_reflog_days" value="30"/>
     <default-property name="git_gc_max_objects" value="20000000"/>
+    <!-- Git LFS at /git/<repositoryId>.git/info/lfs: objects up to git_lfs_max_object_size bytes; the tokens of its
+        actions (and of git-lfs-authenticate over SSH) are signed with git_lfs_token_key (generated into runtime/.env),
+        and git_lfs_token_key_previous still reads while a key is changed. -->
+    <default-property name="git_lfs_max_object_size" value="5368709120"/>
+    <default-property name="git_lfs_token_key" value="CHANGEME" is-secret="true"/>
+    <default-property name="git_lfs_token_key_previous" value="" is-secret="true"/>
     <!-- Content blobs (moqui.resource.ContentBlob): bytes per ContentBlobChunk row, and how many days a blob nothing
         refers to is kept (gc#ContentBlobs). -->
     <default-property name="blob_chunk_size" value="1048576"/>

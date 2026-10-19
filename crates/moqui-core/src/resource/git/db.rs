@@ -546,6 +546,10 @@ impl DbStore {
         &self.repository_id
     }
 
+    pub(crate) fn entity(&self) -> &EntityFacade {
+        &self.entity
+    }
+
     /// Every row without its data, in id order, a page at a time.
     pub(crate) fn scan(&self, each: &mut dyn FnMut(ScanRow) -> Result<(), Error>) -> Result<(), Error> {
         let _rows = super::rows_guard();

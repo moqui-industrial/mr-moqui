@@ -218,6 +218,31 @@ fn handle(factory: &Arc<ExecutionContextFactory>, stream: TcpStream) {
     let (path, query) = target.split_once('?').unwrap_or((&target, ""));
     let rest = path.strip_prefix("/git/").unwrap_or("");
     let (repository, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    if let Some(lfs_path) = tail.strip_prefix("info/lfs/") {
+        let content_length = headers.get("content-length").and_then(|value| value.parse::<u64>().ok());
+        let request = super::lfs::LfsHttpRequest {
+            repository: super::repository_of(repository).unwrap_or_default(),
+            method: method.clone(),
+            path: lfs_path.to_string(),
+            query: query.to_string(),
+            authorization: headers.get("authorization").cloned(),
+            api_key: None,
+            range: headers.get("range").cloned(),
+            content_length,
+            secure: true,
+            client_ip: "127.0.0.1".into(),
+        };
+        let mut body = reader.take(content_length.unwrap_or(0));
+        let mut responder = Responder {
+            stream: std::io::BufWriter::new(stream),
+            status: None,
+        };
+        super::lfs::serve_lfs(&request, &mut body, &mut responder);
+        let _ = responder.stream.flush();
+        // a body not read (a refused request) is read, so closing does not reset the connection
+        let _ = std::io::copy(&mut body, &mut std::io::sink());
+        return;
+    }
     let (service, advertise) = match (method.as_str(), tail) {
         ("GET", "info/refs") => (query.strip_prefix("service=").and_then(GitService::from_name), true),
         ("POST", name) => (GitService::from_name(name), false),
@@ -703,6 +728,197 @@ fn large_objects_are_content_blobs_streamed_in_and_out() {
     git_ok(&fixture.dir, &home, &["clone", &url, &again.to_string_lossy()]);
     assert!(!again.join("big.bin").exists());
     assert_eq!(std::fs::read_to_string(again.join("big.txt")).unwrap(), text);
+}
+
+/// One HTTP/1.1 request to `base`: the status, the headers by lowercase name, and the body.
+fn http(
+    base: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> (u16, HashMap<String, String>, Vec<u8>) {
+    let address = base.trim_start_matches("http://");
+    let mut stream = TcpStream::connect(address).unwrap();
+    let mut head = format!("{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\n", body.len());
+    for (name, value) in headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(body).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    let split = response.windows(4).position(|window| window == b"\r\n\r\n").unwrap();
+    let text = String::from_utf8_lossy(&response[..split]).into_owned();
+    let mut lines = text.split("\r\n");
+    let status = lines.next().unwrap().split_whitespace().nth(1).unwrap().parse().unwrap();
+    let headers = lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        .collect();
+    (status, headers, response[split + 4..].to_vec())
+}
+
+fn json_of(body: &[u8]) -> serde_json::Value {
+    serde_json::from_slice(body).unwrap_or_else(|err| panic!("{err}: {}", String::from_utf8_lossy(body)))
+}
+
+#[test]
+fn lfs_objects_are_uploaded_downloaded_and_locked_over_the_batch_api() {
+    let fixture = fixture("lfs");
+    moqui_lib::env::set_property("git_lfs_token_key", "the key of the lfs test".to_string());
+    define(&fixture, "art", "db");
+    define(&fixture, "other", "db");
+    let base = http_server(fixture.context.factory());
+    let basic = |user: &str| {
+        format!(
+            "Basic {}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, format!("{user}:{PASSWORD}"))
+        )
+    };
+    let (writer, reader) = (basic(WRITER), basic(READER));
+    let lfs_json = "application/vnd.git-lfs+json";
+    let content: Vec<u8> = (0..3_000_000u32).map(|n| (n * 7 % 251) as u8).collect();
+    let oid = crate::resource::blob::blob_id(&content);
+    let batch = |repo: &str, auth: &str, operation: &str| {
+        let body = serde_json::json!({ "operation": operation, "transfers": ["basic"],
+            "objects": [{ "oid": oid, "size": content.len() }], "hash_algo": "sha256" });
+        http(
+            &base,
+            "POST",
+            &format!("/git/{repo}.git/info/lfs/objects/batch"),
+            &[("Authorization", auth), ("Accept", lfs_json), ("Content-Type", lfs_json)],
+            body.to_string().as_bytes(),
+        )
+    };
+    let path_of = |href: &str| href[href.find("/git/").unwrap()..].to_string();
+
+    // without credentials: 401 with LFS-Authenticate
+    let (status, headers, _) = http(&base, "POST", "/git/art.git/info/lfs/objects/batch", &[], b"{}");
+    assert_eq!(status, 401);
+    assert!(headers.contains_key("lfs-authenticate"));
+
+    // the writer uploads: an upload and a verify action, each with a token
+    let (status, _, body) = batch("art", &writer, "upload");
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let reply = json_of(&body);
+    let actions = &reply["objects"][0]["actions"];
+    let upload = actions["upload"]["href"].as_str().unwrap().to_string();
+    let token = actions["upload"]["header"]["Authorization"].as_str().unwrap().to_string();
+    assert!(token.starts_with("MoquiLfs v1."));
+    let verify = actions["verify"]["href"].as_str().unwrap().to_string();
+    // content that is not the oid's is refused
+    let (status, _, _) = http(&base, "PUT", &path_of(&upload), &[("Authorization", &token)], b"other bytes");
+    assert_eq!(status, 422);
+    let (status, _, body) = http(&base, "PUT", &path_of(&upload), &[("Authorization", &token)], &content);
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let verify_body = serde_json::json!({ "oid": oid, "size": content.len() }).to_string();
+    let (status, _, _) = http(&base, "POST", &path_of(&verify), &[("Authorization", &token)], verify_body.as_bytes());
+    assert_eq!(status, 200);
+    // there now: no actions
+    let (_, _, body) = batch("art", &writer, "upload");
+    assert!(json_of(&body)["objects"][0].get("actions").is_none());
+
+    // the reader may download, a range too, and may not upload
+    let (status, _, body) = batch("art", &reader, "download");
+    assert_eq!(status, 200);
+    let download = json_of(&body)["objects"][0]["actions"]["download"].clone();
+    let (href, token) = (
+        download["href"].as_str().unwrap().to_string(),
+        download["header"]["Authorization"].as_str().unwrap().to_string(),
+    );
+    let (status, headers, body) = http(&base, "GET", &path_of(&href), &[("Authorization", &token)], b"");
+    assert_eq!(status, 200);
+    assert_eq!(headers.get("etag"), Some(&format!("\"lfs-{oid}\"")));
+    assert!(body == content);
+    let (status, _, body) = http(
+        &base,
+        "GET",
+        &path_of(&href),
+        &[("Authorization", &token), ("Range", "bytes=1000-1999")],
+        b"",
+    );
+    assert_eq!(status, 206);
+    assert_eq!(body, content[1000..2000]);
+    let (status, _, _) = batch("art", &reader, "upload");
+    assert_eq!(status, 403);
+    // a download token does not upload
+    let (status, _, _) = http(&base, "PUT", &path_of(&upload), &[("Authorization", &token)], &content);
+    assert_eq!(status, 403);
+
+    // another repository does not have the object until it is uploaded there; then it is stored once
+    let (_, _, body) = batch("other", &writer, "download");
+    assert_eq!(json_of(&body)["objects"][0]["error"]["code"], 404);
+    let (status, _, _) = http(
+        &base,
+        "GET",
+        &format!("/git/other.git/info/lfs/objects/{oid}"),
+        &[("Authorization", &writer)],
+        b"",
+    );
+    assert_eq!(status, 404);
+    let (status, _, _) = http(&base, "GET", &path_of(&href).replace("/art.git/", "/other.git/"), &[("Authorization", &token)], b"");
+    assert_eq!(status, 401, "a token is for its repository");
+    let (_, _, body) = batch("other", &writer, "upload");
+    let upload = json_of(&body)["objects"][0]["actions"]["upload"].clone();
+    let (status, _, _) = http(
+        &base,
+        "PUT",
+        &path_of(upload["href"].as_str().unwrap()),
+        &[("Authorization", upload["header"]["Authorization"].as_str().unwrap())],
+        &content,
+    );
+    assert_eq!(status, 200);
+    {
+        let _entered = fixture.context.enter();
+        let _authz = fixture.context.disable_authz();
+        let blobs = fixture.entity.find("moqui.resource.ContentBlob").unwrap().list().unwrap();
+        assert_eq!(blobs.len(), 1);
+        let objects = fixture.entity.find("moqui.resource.GitLfsObject").unwrap().list().unwrap();
+        assert_eq!(objects.len(), 2);
+    }
+
+    // locks
+    let locks = "/git/art.git/info/lfs/locks";
+    let lock_body = serde_json::json!({ "path": "images/logo.psd", "ref": { "name": "refs/heads/main" } }).to_string();
+    let (status, _, body) = http(&base, "POST", locks, &[("Authorization", &writer)], lock_body.as_bytes());
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
+    let lock = json_of(&body)["lock"].clone();
+    assert_eq!(lock["owner"]["name"], WRITER);
+    let (status, _, _) = http(&base, "POST", locks, &[("Authorization", &writer)], lock_body.as_bytes());
+    assert_eq!(status, 409);
+    let (status, _, _) = http(&base, "POST", locks, &[("Authorization", &reader)], lock_body.as_bytes());
+    assert_eq!(status, 403);
+    let (status, _, body) = http(&base, "GET", &format!("{locks}?path=images/logo.psd"), &[("Authorization", &reader)], b"");
+    assert_eq!(status, 200);
+    assert_eq!(json_of(&body)["locks"].as_array().unwrap().len(), 1);
+    let (_, _, body) = http(&base, "POST", &format!("{locks}/verify"), &[("Authorization", &writer)], b"{}");
+    assert_eq!(json_of(&body)["ours"].as_array().unwrap().len(), 1);
+    let id = lock["id"].as_str().unwrap();
+    let (status, _, _) = http(&base, "POST", &format!("{locks}/{id}/unlock"), &[("Authorization", &writer)], b"{}");
+    assert_eq!(status, 200);
+    let (_, _, body) = http(&base, "GET", locks, &[("Authorization", &writer)], b"");
+    assert!(json_of(&body)["locks"].as_array().unwrap().is_empty());
+
+    // over SSH, git-lfs-authenticate gives the endpoint and a token
+    {
+        let factory = Arc::clone(fixture.context.factory());
+        let context = factory.new_context();
+        let _entered = context.enter();
+        let (mut output, mut errors) = (Vec::new(), Vec::new());
+        let status = super::serve_ssh(WRITER, "git-lfs-authenticate 'art.git' upload", None, &mut &b""[..], &mut output, &mut errors);
+        assert_eq!(status, 0, "{}", String::from_utf8_lossy(&errors));
+        let answer = json_of(&output);
+        assert!(answer["href"].as_str().unwrap().ends_with("/git/art.git/info/lfs"));
+        assert!(answer["header"]["Authorization"].as_str().unwrap().starts_with("MoquiLfs "));
+        let mut errors = Vec::new();
+        let status = super::serve_ssh(READER, "git-lfs-authenticate 'art.git' upload", None, &mut &b""[..], &mut Vec::new(), &mut errors);
+        assert_ne!(status, 0, "the reader may not push");
+        let status = super::serve_ssh(WRITER, "git-lfs-transfer 'art.git' upload", None, &mut &b""[..], &mut Vec::new(), &mut Vec::new());
+        assert_ne!(status, 0);
+    }
+    moqui_lib::env::clear_property("git_lfs_token_key");
 }
 
 #[test]

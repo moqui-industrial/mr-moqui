@@ -241,7 +241,7 @@ impl GitProvider {
             if path.is_empty() || path.iter().any(|segment| segment == "." || segment == ".." || segment == ".git") {
                 return Err(Error::new(format!("bad path {}", path.join("/"))));
             }
-            let blob = repo.store.write(Kind::Blob, bytes)?;
+            let blob = self.store_file(&repo, path, super::lfs_files::FileContent::Bytes(bytes))?;
             edits.push(super::ops::Edit::Put(path.clone(), gix::objs::tree::EntryKind::Blob, blob));
         }
         edits.extend(removes.iter().cloned().map(super::ops::Edit::Remove));

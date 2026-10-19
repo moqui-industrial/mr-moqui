@@ -666,3 +666,85 @@ fn gc_deletes_what_no_ref_reaches_and_repacks_the_rest() {
     let err = damaged[0].1.as_ref().unwrap_err();
     assert!(err.message().contains("missing object"), "{}", err.message());
 }
+
+#[test]
+fn lfs_files_through_git_locations_are_content_blobs_behind_pointers() {
+    let fixture = fixture("lfs-files");
+    let _entered = fixture.context.enter();
+    define(&fixture.entity, "site", "db", None, None);
+    let resources = fixture.context.factory().resource();
+    let provider = resources.git().unwrap().clone();
+    let patterns = super::attributes::DEFAULT_LFS_PATTERNS;
+    let before = provider.setup_lfs("site", &patterns).unwrap().unwrap();
+    assert!(provider.setup_lfs("site", &patterns).unwrap().is_none(), "the patterns are there");
+    let image: Vec<u8> = (0..300_000u32).map(|n| (n * 17 % 253) as u8).collect();
+    resources.write_bytes("git://site/images/logo.png", &image).unwrap();
+    resources.write_bytes("git://site/readme.md", b"# Site\n").unwrap();
+
+    // the commit holds a pointer; the content is a blob of the repository
+    let store = super::db::DbStore::new(fixture.entity.clone(), "site", super::db::object_cache());
+    let head = store.read_ref("refs/heads/main").unwrap().unwrap();
+    let tree = ops::read_commit(&store, &head).unwrap().tree;
+    let path = |text: &str| text.split('/').map(str::to_string).collect::<Vec<_>>();
+    let (_, pointer_blob) = ops::resolve(&store, &tree, &path("images/logo.png")).unwrap().unwrap();
+    let pointer = ops::object(&store, &pointer_blob, Kind::Blob).unwrap();
+    let oid = crate::resource::blob::blob_id(&image);
+    assert_eq!(super::server::lfs::pointer(&pointer), Some((oid.clone(), image.len() as u64)));
+    let (_, readme) = ops::resolve(&store, &tree, &path("readme.md")).unwrap().unwrap();
+    assert_eq!(ops::object(&store, &readme, Kind::Blob).unwrap(), b"# Site\n");
+
+    // read, stat and open give the content
+    assert_eq!(resources.get("git://site/images/logo.png").unwrap().read_bytes().unwrap(), image);
+    assert_eq!(resources.stat("git://site/images/logo.png").unwrap().unwrap().size, image.len() as u64);
+    let opened = resources.open("git://site/images/logo.png").unwrap().unwrap();
+    assert_eq!(opened.source.read_at(299_990, 100).unwrap(), image[299_990..]);
+    assert_eq!(opened.source.tag(), Some(format!("sha256-{oid}")));
+
+    // the branch put back to before the file, and old, its LFS object goes, then its content
+    let now = store.read_ref("refs/heads/main").unwrap();
+    let edit = RefEdit {
+        name: "refs/heads/main".into(),
+        expected: now,
+        new: Some(before),
+    };
+    assert_eq!(store.update_refs(&[edit], true).unwrap(), [RefOutcome::Updated]);
+    {
+        // as a push would leave it
+        let _rows = super::rows_guard();
+        let mut row = fixture
+            .entity
+            .find(super::GIT_REPOSITORY)
+            .unwrap()
+            .eq("repositoryId", Value::string("site"))
+            .one()
+            .unwrap()
+            .unwrap();
+        row.set("headCommitId", Value::string(before.to_string()));
+        row.update(&fixture.entity).unwrap();
+    }
+    provider.refresh("site");
+    let month_ago = jiff::Timestamp::now().as_millisecond() - 30 * 24 * 60 * 60 * 1000;
+    store.stamp_all(month_ago);
+    {
+        let _rows = super::rows_guard();
+        let mut row = fixture
+            .entity
+            .find("moqui.resource.GitLfsObject")
+            .unwrap()
+            .eq("repositoryId", Value::string("site"))
+            .one()
+            .unwrap()
+            .unwrap();
+        row.set(
+            "uploadedDate",
+            moqui_lib::object::basic_convert(&Value::I64(month_ago), "java.sql.Timestamp").value,
+        );
+        row.update(&fixture.entity).unwrap();
+    }
+    let outcome = provider.gc(Some("site"), &gc_options(false)).unwrap();
+    let report = outcome[0].1.as_ref().unwrap();
+    assert_eq!(report.lfs_deleted, 1, "{report:?}");
+    let blobs = crate::resource::blob::BlobStore::new(fixture.entity.clone());
+    let (deleted, bytes, _) = blobs.collect(jiff::Timestamp::now().as_millisecond() + 1000, false).unwrap();
+    assert_eq!((deleted, bytes), (1, image.len() as u64));
+}
