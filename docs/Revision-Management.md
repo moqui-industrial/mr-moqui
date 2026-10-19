@@ -114,11 +114,14 @@ an error in the message facade, as for any service.
 
 ### Wiki spaces on git
 
-Create a space with its root under a repository, for example
-`create#WikiSpace(wikiSpaceId: "DOCS", rootPageDirectory: "git://docs")`, or point an existing `WikiSpace.rootPageLocation`
-at `git://<repositoryId>/<SPACE>.md`. Each page save is then a commit, and the page history, compare, publish and
-`#version` views work on commits. The gallery's Editor screen makes such a space (`EXGIT`, in the `db` repository
-`example-wiki`) with its "Create the git space" action.
+Create a space with its own repository, `create#WikiSpace(wikiSpaceId: "DOCS", repositoryKind: "db")` (or `local` on
+disk; `remote` with a `remoteUrl` is a read-only mirror, for administrators), which makes the `GitRepository`
+`WIKI_DOCS` and roots the space at `git://WIKI_DOCS/DOCS.md`; or put it under an existing repository,
+`create#WikiSpace(wikiSpaceId: "DOCS", rootPageDirectory: "git://docs")`, or point an existing
+`WikiSpace.rootPageLocation` at `git://<repositoryId>/<SPACE>.md`. Each page save is then a commit (its `versionNote`
+the message), and the page history, compare, publish and `#version` views work on commits. The gallery's Editor screen
+makes such a space (`EXGIT`, in the `db` repository `example-wiki`) with its "Create the git space" action. The wiki
+services are below, "Wiki pages".
 
 ### Limits
 
@@ -162,6 +165,12 @@ const result = ec.resource.makeChangeSet('git://docs/')
         .mkdir('empty')
         .commit('Reorganize the specs')           // {versionName, applied: [paths], failures: [{path, error}]}
 ```
+
+`.author(userId, date)` before `commit` writes the versions as that user at that date (a timestamp or milliseconds), for
+a version copied from other storage with its history: on `git://` the commit's author (name, email, date) and its
+`Moqui-User-Id`, with the current user, now, as committer; on `dbresource://` the history row's `userId` and
+`versionDate`. A git version's date is its author date, as `git log` shows it. In Rust,
+`crate::context::with_version_author` around the writes.
 
 On a `git://` root it is one commit, each change applied to the tree the changes before it made, with the message (or a
 summary of the changes). Elsewhere each change applies in order: on `dbresource://` in the caller's transaction, with the
@@ -234,6 +243,27 @@ path, name, folder, content and file type, size, modified date and user, tags) o
 tag change, restore and trash (which removes them), and `index#MirrorDrives` brings a mirror's documents to its head
 after a fetch (the `Files.secas.xml` rules). `find#Resources` filters by the drives the user may open. Extracted text is
 later.
+
+## Wiki pages
+
+`org.moqui.impl.WikiServices` (`runtime/base-component/framework/service/org/moqui/impl/WikiServices.xml`) keeps
+knowledge spaces and each user's notes (`ensure#UserNotesSpace`, a private space on database files) over this API.
+`WikiSpace` and `WikiPage` are `moqui.*` entities, which entity filters never apply to, so the services check the wiki's
+own rules: `get#WikiPageAccess` (view, update, admin, and the storage of a space or page; a space with `restrictView`
+through a `WikiSpaceUser` row, a page with it through a `WikiPageUser` row; the ADMIN group sees all, and internal work
+with no user and authorization disabled does everything) and `get#WikiViewScope` (the spaces a user may view and the
+restricted pages hidden from them, for the services that read many pages).
+
+| Service | |
+|---|---|
+| `update#WikiPage(wikiSpaceId, pagePath or wikiPageId, pageName, parentPath or parentWikiPageId, pageText, versionNote)` | A new version with its note and a `WikiPageHistory` row; a new name or parent is a `move#WikiPage`. A path that is only the alias of a moved page is a new page there |
+| `create#WikiSpace(..., repositoryKind, memberList)`, `clone#WikiSpace(baseWikiSpaceId, ..., repositoryKind, copyHistory)` | Above, "Wiki spaces on git"; the creator administers the space. A clone with history replays every version (below); without, each page once |
+| `move#WikiPage(wikiPageId, toWikiSpaceId, toParentPath or toParentWikiPageId, toPageName, versionNote)` | The page with its child pages and attachments. On the same storage the files move (the database tree keeps the history rows; on git one commit, which the history follows); into other storage `copy#WikiPageFiles` replays each file's versions oldest first, one change set each by the version's own author at its own date (`.author`, above) with a note naming where it came from, then the old files go. The rows keep their ids (history, categories, users, comments and reviews stay); a replay renames their version names; a `WikiPageHistory` row records the move with `oldWikiSpaceId` and `oldPagePath`, and a `WikiPageAlias` at the old path keeps links to it working |
+| `get#WikiPageHistory`, `get#WikiPageVersionDiff(fromVersionName, toVersionName)`, `restore#WikiPageVersion(versionName, versionNote)` | The History tab: versions with their notes and who wrote them, the server's line diff, and a restore as a new version |
+| `get#WikiPageBacklinks`, `get#WikiPageLinks` | `WikiPageLink` rows, indexed from each save's text (markdown links, reference definitions, `[[path]]`, `wiki:SPACE/path`; relative paths from the page's parent; not in code); a page made at a path takes the links written to it, a moved page keeps its backlinks through its alias, a deleted one leaves links to a page not there. A text that cannot be read for links is logged and the save stands |
+| `request#WikiPageReview(versionName, reviewerUserIdList, dueDate, note, link)`, `decide#WikiPageReview(decision approve or changes, decisionNote, publish)`, `cancel#WikiPageReview`, `find#WikiPageReviews(filter toDo, requested or all, wikiSpaceId, statusId)` | `WikiPageReview` rows (`WprRequested`, then `WprApproved`, which publishes the version, `WprChangesRequested` or `WprCancelled`); the reviewer is told on topic `WikiPageReview`, an approval the tray decides (`approve#WikiPageReview`, `refuse#WikiPageReview` with the reason), the requester on `WikiPageReviewDecision` |
+| `search#WikiPages(text, wikiSpaceId)` | Through any search document on `WikiPage` (its content, title and last change from `get#WikiPageManualDocumentData`) when search is available, else the page paths; never a page the user may not view |
+| `get#WikiSpacePages(includeDetail)` | The tree, without the restricted pages a user may not view; with the detail each page's title, snippet, last change, categories and pinned (the category `Pinned`), for a notes list |
 
 ## Token routes and the public shell
 
