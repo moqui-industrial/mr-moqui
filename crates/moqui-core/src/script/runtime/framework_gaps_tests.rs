@@ -991,3 +991,56 @@ fn a_script_iterator_moves_like_an_entity_list_iterator() {
         })()"#,
     );
 }
+
+#[test]
+fn resource_versions_diffs_and_location_text_of_a_version() {
+    clear_context_stack();
+    let context = ExecutionContextFactory::test_context();
+    let facade = crate::testing::open();
+    facade.assume_db_tables();
+    context.factory().set_entity(facade);
+    let _entered = context.enter();
+    holds(
+        r##"(function () {
+            const location = "dbresource://wiki/page.md";
+            const ref = ec.resource.getLocationReference(location);
+            ref.putText("first line\nsecond line\n");
+            ref.putText("first line\nsecond line changed\nthird line\n");
+            const history = ref.getVersionHistory();
+            const diff = ref.getVersionDiff("01", "02");
+            const toCurrent = ref.getVersionDiff("01", null);
+            const root = ref.getRootVersion();
+            return ref.supportsVersion() && history.length === 2 && history[0].versionName === "02"
+                && root.getVersionName() === "01" && root.getText() === "first line\nsecond line\n"
+                && root.getNextVersions().length === 1 && root.getNextVersions()[0].getPreviousVersion().getVersionName() === "01"
+                && ref.getNextVersions("01")[0].versionName === "02"
+                && diff.stats.insertions === 2 && diff.stats.deletions === 1 && diff.html.includes("<ins>")
+                && diff.unifiedDiff.startsWith("--- 01\n+++ 02\n") && toCurrent.toName === "current"
+                && ec.resource.getLocationText(location + "#01") === "first line\nsecond line\n"
+                && ec.resource.getLocationText(location) === "first line\nsecond line changed\nthird line\n"
+                && ec.resource.getLocationReference(location + "#01").getText() === "first line\nsecond line changed\nthird line\n"
+                && ec.resource.template(location + "#01", "").includes("second line")
+                && !ec.resource.template(location + "#01", "").includes("changed")
+                && ec.resource.template(location, "").includes("changed");
+        })()"##,
+    );
+    holds(
+        r##"(function () {
+            const ref = ec.resource.getLocationReference("dbresource://wiki/page.md");
+            try { ref.getVersionDiff("01", "09"); return false; } catch (e) { return String(e).includes("version 09 not found"); }
+        })()"##,
+    );
+    let dir = std::env::temp_dir().join(format!("moqui-versions-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("plain.txt"), "plain").unwrap();
+    set_dir(&dir);
+    holds(
+        r##"(function () {
+            const ref = ec.resource.getLocationReference(dir + "/plain.txt");
+            return !ref.supportsVersion() && ref.getVersionHistory().length === 0 && ref.getCurrentVersion() === null
+                && ref.getText("01") === null && ec.resource.getLocationText(dir + "/plain.txt#01") === "plain";
+        })()"##,
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    clear_context_stack();
+}

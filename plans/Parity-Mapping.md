@@ -136,8 +136,10 @@ Entity model and SQL text. No `ExecutionContext` and no driver. The entity secti
 | `moqui-core/src/context/conf.rs` | `ExecutionContextFactoryImpl.mergeConfigNodes` over `MoquiDefaultConf.xml`. | Port |
 | `moqui-core/src/context/component.rs` | Component directories and one-pass `depends-on`, from the factory's component load. | Port |
 | `moqui-core/src/context/locate.rs` | `component://`, `file:`, and `classpath://` as an alias for framework `service/`, `entity/`, `data/`, `screen/`, `template/`. `ClasspathResourceReference`. | Partial |
-| `moqui-core/src/context/resource.rs` | `ResourceFacadeImpl` and `reference/{Base,Component,Wrapper,Db}ResourceReference`. Schemes: `file`, `runtime`, `component`, `dbresource`, `http`. | Port |
-| `moqui-core/src/entity/dbresource.rs` | `DbResourceReference` record operations (versions, the `DbResource` entities). The scheme router is `context/resource.rs`. | Port |
+| `moqui-core/src/context/resource.rs` | `ResourceFacadeImpl` and `reference/{Base,Component,Wrapper,Db}ResourceReference`, with the `ResourceReference` version methods for `dbresource` and providers. Schemes: `file`, `runtime`, `component`, `dbresource`, `http`, and `git` (`resource/git`). | Port |
+| `moqui-core/src/entity/dbresource.rs` | `DbResourceReference` record operations (versions, the `DbResource` entities), with past text versions as reverse deltas (Java's TODO). The scheme router is `context/resource.rs`. | Port |
+| `moqui-core/src/resource/textdiff.rs` | No Java basis: line diffs of versions (unified text, strict apply, the `moqui-diff` HTML table). Java's compare screens used jsdiff in the browser. | Native |
+| `moqui-core/src/resource/git/` | No Java basis: the `git://` scheme over gitoxide (`fs.rs`) or the `GitObject`/`GitRef` entities (`db.rs`), with paths, commits and history in `ops.rs`. `service/git.rs` is `org.moqui.impl.GitServices`. | Native |
 | `moqui-core/src/context/cache.rs` | `CacheFacadeImpl` on one `MCache` per `<cache name>`. | Port |
 | `moqui-core/src/context/artifact.rs` | `ArtifactExecutionFacadeImpl` stack and `ArtifactExecutionInfoImpl`. Push and pop are tracing spans. | Partial |
 | `moqui-core/src/context/hits.rs` | `countArtifactHit`. The scheduler tick writes `ArtifactHit` and `ArtifactHitBin`. | Port |

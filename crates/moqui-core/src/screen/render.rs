@@ -238,6 +238,10 @@ pub struct RenderState {
     pub form_lists: RefCell<Vec<Option<super::sri::FormRows>>>,
     /// Dynamic forms being rendered, by name, which `sri` reads instead of the definition's forms.
     pub dynamic_forms: RefCell<std::collections::HashMap<String, Arc<super::form::FormInstance>>>,
+    /// `sri.baseLinkUrl(url)`: the base URL relative links in rendered content resolve against, as Java's
+    /// `ScreenRenderImpl.baseLinkUrl`; `None` is the current screen's path. Nothing in the port reads it yet: Java
+    /// rewrites the relative links of rendered markdown with it, and the port's markdown leaves them as written.
+    pub base_link_url: RefCell<Option<String>>,
     /// Keys `sri.once` has seen, so a mode writes its document wrapper only for the outermost screen.
     pub once: RefCell<std::collections::HashSet<String>>,
     /// The theme of this render and its resource values by type, found once as Java's `curThemeId`.
@@ -287,6 +291,7 @@ impl RenderState {
             script_text: RefCell::new(String::new()),
             form_lists: RefCell::new(Vec::new()),
             dynamic_forms: RefCell::new(std::collections::HashMap::new()),
+            base_link_url: RefCell::new(None),
             once: RefCell::new(std::collections::HashSet::new()),
             theme_id: RefCell::new(None),
             theme_values: RefCell::new(std::collections::HashMap::new()),

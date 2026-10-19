@@ -13,7 +13,9 @@ use moqui_lib::node::MNode;
 use moqui_lib::object::{HostObject, Value};
 use moqui_lib::sync::{lock, read, write};
 
-use crate::context::{ComponentInfo, Error, ExecutionContext, ExecutionContextFactory, ResourceEntry, ResourceStat};
+use crate::context::{
+    ComponentInfo, Error, ExecutionContext, ExecutionContextFactory, ResourceEntry, ResourceStat, ResourceVersion,
+};
 use crate::script::template::TemplateRenderer;
 
 /// Submit a `NativeComponent { name, register }` from a linked component crate.
@@ -141,6 +143,32 @@ pub trait ResourceProvider: Send + Sync + std::fmt::Debug {
     }
     fn rename(&self, location: &str, _new_location: &str) -> Result<(), Error> {
         Err(Error::new(format!("renaming is not supported: {location}")))
+    }
+    /// True when this storage keeps versions of the file at `location` (`ResourceReference.supportsVersion`). The
+    /// version methods below answer nothing unless it does.
+    fn supports_version(&self, _location: &str) -> bool {
+        false
+    }
+    fn version(&self, _location: &str, _version_name: &str) -> Result<Option<ResourceVersion>, Error> {
+        Ok(None)
+    }
+    fn current_version(&self, _location: &str) -> Result<Option<ResourceVersion>, Error> {
+        Ok(None)
+    }
+    fn root_version(&self, _location: &str) -> Result<Option<ResourceVersion>, Error> {
+        Ok(None)
+    }
+    /// Every version of the file, newest first.
+    fn version_history(&self, _location: &str) -> Result<Vec<ResourceVersion>, Error> {
+        Ok(Vec::new())
+    }
+    /// The versions made from `version_name`.
+    fn next_versions(&self, _location: &str, _version_name: &str) -> Result<Vec<ResourceVersion>, Error> {
+        Ok(Vec::new())
+    }
+    /// The bytes of one version, or `None` when there is no such version.
+    fn read_version(&self, _location: &str, _version_name: &str) -> Result<Option<Vec<u8>>, Error> {
+        Ok(None)
     }
 }
 
@@ -279,6 +307,10 @@ impl NativeRegistry {
                 let class = required(&node, "class")?;
                 if let Some(constructor) = self.resources.get(&class) {
                     factory.resource().install_provider(&scheme, constructor(factory)?)?;
+                } else if scheme == "git" && class == GIT_RESOURCE_CLASS {
+                    // Built in, behind the `git` cargo feature; without it the scheme stays unsupported.
+                    #[cfg(feature = "git")]
+                    factory.resource().install_git()?;
                 } else if !builtin_resource(&scheme, &class) {
                     return Err(Error::new(format!(
                         "resource-reference {scheme}: implementation {class} is not linked"
@@ -298,6 +330,9 @@ impl NativeRegistry {
         Ok(())
     }
 }
+
+/// The class `MoquiDefaultConf.xml` names for `git://` locations (crate::resource::git).
+pub(crate) const GIT_RESOURCE_CLASS: &str = "org.moqui.impl.context.reference.GitResourceReference";
 
 fn builtin_resource(scheme: &str, class: &str) -> bool {
     matches!(

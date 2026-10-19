@@ -274,7 +274,34 @@ fn sri_get_active_screen_def<'js>(ctx: Ctx<'js>) -> rquickjs::Result<Object<'js>
     })
 }
 
-/// `sri.getScreenUrlInfo()`: the screen the request ended at and the one above it, for the page title.
+/// `sri.baseLinkUrl(url)`: set (or with null clear) the base URL of relative links in rendered content. Returns `sri`'s
+/// answer in Java, the render; scripts call it for its effect, so this returns nothing.
+fn sri_base_link_url(ctx: Ctx<'_>, url: Opt<JsValue<'_>>) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        let url = match url.0.as_ref().filter(|value| !value.is_null() && !value.is_undefined()) {
+            Some(value) => Some(moqui_lib::object::to_plain_string(&js_to_host(&ctx, value)?)),
+            None => None,
+        };
+        with_render(&ctx, false, |state| {
+            *state.base_link_url.borrow_mut() = url.filter(|url| !url.is_empty());
+            Ok(())
+        })
+    })
+}
+
+/// The base URL `sri.baseLinkUrl` set, or null.
+fn sri_get_base_link_url<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let url = with_render(&ctx, false, |state| Ok(state.base_link_url.borrow().clone()))?;
+        match url {
+            Some(url) => url.into_js(&ctx),
+            None => Null.into_js(&ctx),
+        }
+    })
+}
+
+/// `sri.getScreenUrlInfo()`: the screen the request ended at and the one above it, for the page title, and the path
+/// name lists (`fullPathNameList`, `minimalPathNameList`, `preTransitionPathNameList`, `extraPathNameList`).
 fn sri_get_screen_url_info<'js>(ctx: Ctx<'js>) -> rquickjs::Result<Object<'js>> {
     host_guard(&ctx, || {
         let (target, parent) = with_render(&ctx, false, |state| {
@@ -282,9 +309,20 @@ fn sri_get_screen_url_info<'js>(ctx: Ctx<'js>) -> rquickjs::Result<Object<'js>> 
             let parent = defs.len().checked_sub(2).and_then(|index| defs.get(index)).cloned();
             Ok((Arc::clone(&state.url_info.target_screen), parent))
         })?;
-        let extra = with_render(&ctx, false, |state| Ok(state.url_info.extra_path.clone()))?;
+        let (extra, full, minimal, pre_transition) = with_render(&ctx, false, |state| {
+            let info = &state.url_info;
+            Ok((
+                info.extra_path.clone(),
+                info.full_path.clone(),
+                info.minimal_path.clone(),
+                info.pre_transition_path.clone(),
+            ))
+        })?;
         let object = Object::new(ctx.clone())?;
         object.set("extraPathNameList", extra)?;
+        object.set("fullPathNameList", full)?;
+        object.set("minimalPathNameList", minimal)?;
+        object.set("preTransitionPathNameList", pre_transition)?;
         object.set("targetScreen", screen_def_object(&ctx, &target)?)?;
         if let Some(parent) = parent {
             object.set("parentScreen", screen_def_object(&ctx, &parent)?)?;
@@ -905,6 +943,8 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
         };
     }
     method!("sendRedirectAndStopRender", sri_send_redirect_and_stop_render);
+    method!("baseLinkUrl", sri_base_link_url);
+    method!("getBaseLinkUrl", sri_get_base_link_url);
     method!("write", sri_write);
     method!("renderSection", sri_render_section);
     method!("renderSectionInclude", sri_render_section_include);

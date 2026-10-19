@@ -94,6 +94,10 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.service.job.ServiceJob jobName="consume_AllReceivedSystemMessages_frequent" description="Consume All Received SystemMessages"
             serviceName="org.moqui.impl.SystemMessageServices.consume#AllReceivedSystemMessages" cronExpression="0 0/15 * * * ?" paused="Y"/>
 
+    <!-- Fetches the remote kind GitRepository mirrors that have a fetchIntervalMinutes; nothing to do without them -->
+    <moqui.service.job.ServiceJob jobName="fetch_AllGitRepositories_frequent" description="Fetch remote Git repository mirrors"
+            serviceName="org.moqui.impl.GitServices.fetch#AllGitRepositories" cronExpression="0 0/5 * * * ?" paused="N"/>
+
     <!-- Change paused to 'N' to run the poll EmailServer job; NOTE emailServerId=SYSTEM, change if needed along with run frequency -->
     <moqui.service.job.ServiceJob jobName="poll_EmailServer_frequent" description="Poll EmailServer to get new messages"
             serviceName="org.moqui.impl.EmailServices.poll#EmailServer" cronExpression="0 0/15 * * * ?" paused="Y">

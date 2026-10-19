@@ -16,6 +16,6 @@ along with this software (see the LICENSE.md file). If not, see
         default-menu-title="Resource Finder" default-menu-index="10">
     <subscreens default-item="ElFinder"/>
     <widgets>
-        <subscreens-active/>
+        <subscreens-panel id="ResourcePanel" type="tab"/>
     </widgets>
 </screen>

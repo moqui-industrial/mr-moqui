@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a 
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- One moqui.resource.GitRepository: its settings, and the fetch, init, export and import actions of
+    org.moqui.impl.GitServices (docs/Revision-Management.md). -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Git Repository" default-menu-include="false">
+
+    <parameter name="repositoryId" required="true"/>
+
+    <!-- an empty access token leaves the stored one; clearAccessToken removes it -->
+    <transition name="updateGitRepository">
+        <actions>
+            <set field="updateMap" from="Object.assign({}, ec.web.parameters)"/>
+            <if condition="!accessToken"><script>delete updateMap.accessToken</script></if>
+            <if condition="clearAccessToken == 'Y'"><set field="updateMap.accessToken" from="null"/></if>
+            <service-call name="update#moqui.resource.GitRepository" in-map="updateMap"/>
+        </actions>
+        <default-response url="."/>
+    </transition>
+    <transition name="fetchGitRepository"><service-call name="org.moqui.impl.GitServices.fetch#GitRepository"/>
+        <default-response url="."/></transition>
+    <transition name="initGitRepository"><service-call name="org.moqui.impl.GitServices.init#GitRepository"/>
+        <default-response url="."/></transition>
+    <transition name="exportGitRepository"><service-call name="org.moqui.impl.GitServices.export#GitRepository"/>
+        <default-response url="."/></transition>
+    <transition name="importGitRepository"><service-call name="org.moqui.impl.GitServices.import#GitRepository"/>
+        <default-response url="."/></transition>
+
+    <actions>
+        <entity-find-one entity-name="moqui.resource.GitRepository" value-field="gitRepository"/>
+        <set field="rootLocation" value="git://${repositoryId}/"/>
+        <set field="isRemote" from="gitRepository?.repositoryKind == 'remote'"/>
+        <set field="isDb" from="gitRepository?.repositoryKind == 'db'"/>
+        <set field="hasAccessToken" from="!!gitRepository?.accessToken"/>
+    </actions>
+    <widgets>
+        <container-row>
+            <row-col lg="6">
+                <form-single name="GitRepositoryForm" map="gitRepository" transition="updateGitRepository">
+                    <field name="repositoryId"><default-field title="ID"><display/></default-field></field>
+                    <field name="rootLocation" from="rootLocation"><default-field title="Location"><display/></default-field></field>
+                    <field name="description"><default-field><text-line size="50"/></default-field></field>
+                    <field name="repositoryKind"><default-field title="Kind"><display/></default-field></field>
+                    <field name="branch"><default-field tooltip="main when empty"><text-line size="20"/></default-field></field>
+                    <field name="localPath"><default-field title="Local Path"
+                            tooltip="The bare repository of a local or remote kind; relative to the runtime directory unless absolute, runtime/git/ID when empty">
+                        <text-line size="50"/></default-field></field>
+                    <field name="remoteUrl"><default-field title="Remote URL"><text-line size="60"/></default-field></field>
+                    <field name="username"><default-field><text-line size="30"/></default-field></field>
+                    <field name="accessToken" from="''"><default-field title="Access Token"
+                            tooltip="An HTTPS password or token; leave empty to keep the one stored">
+                        <password size="30"/></default-field></field>
+                    <field name="clearAccessToken" from="'N'"><conditional-field condition="hasAccessToken" title="Clear Token">
+                        <check><option key="Y" text=" "/></check></conditional-field></field>
+                    <field name="fetchIntervalMinutes"><default-field title="Fetch Every (minutes)"
+                            tooltip="For a remote repository: fetch#AllGitRepositories fetches it when this long has passed; never when empty">
+                        <text-line size="6"/></default-field></field>
+                    <field name="headCommitId"><default-field title="Head"><display/></default-field></field>
+                    <field name="lastFetchDate"><default-field title="Last Fetch"><display/></default-field></field>
+                    <field name="lastFetchError"><default-field title="Fetch Error"><display/></default-field></field>
+                    <field name="submitButton"><default-field title="Update"><submit/></default-field></field>
+                </form-single>
+            </row-col>
+            <row-col lg="6">
+                <container-box><box-header title="Actions"/><box-body>
+                    <section name="RemoteActions" condition="isRemote"><widgets>
+                        <link url="fetchGitRepository" text="Fetch Now" parameter-map="{repositoryId:repositoryId}"/>
+                        <label text="Replaces the mirror's branch with the remote one." type="p"/>
+                    </widgets></section>
+                    <section name="LocalActions" condition="gitRepository?.repositoryKind == 'local'"><widgets>
+                        <link url="initGitRepository" text="Create Bare Repository" parameter-map="{repositoryId:repositoryId}"/>
+                        <label text="A local repository is also created on its first write. Clone it, or push to it, with the git command line."
+                                type="p"/>
+                    </widgets></section>
+                    <section name="DbActions" condition="isDb"><widgets>
+                        <form-single name="ExportGitRepository" transition="exportGitRepository">
+                            <field name="repositoryId"><default-field><hidden/></default-field></field>
+                            <field name="targetPath"><default-field title="Export To"
+                                    tooltip="A directory for a bare repository; the Local Path (or runtime/git/ID) when empty">
+                                <text-line size="40"/></default-field></field>
+                            <field name="submitButton"><default-field title="Export"><submit/></default-field></field>
+                        </form-single>
+                        <form-single name="ImportGitRepository" transition="importGitRepository">
+                            <field name="repositoryId"><default-field><hidden/></default-field></field>
+                            <field name="source"><default-field title="Import From"
+                                    tooltip="git://otherId, a repository directory, or a URL; the Remote URL when empty. Replaces the branch.">
+                                <text-line size="40"/></default-field></field>
+                            <field name="submitButton"><default-field title="Import"><submit confirmation="Replace the branch with the imported one?"/></default-field></field>
+                        </form-single>
+                    </widgets></section>
+                </box-body></container-box>
+            </row-col>
+        </container-row>
+    </widgets>
+</screen>

@@ -18,10 +18,22 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 
+use moqui_lib::object::Value;
 use moqui_lib::resource::{FileResource, Resource};
 
 use super::error::Error;
 use crate::entity::{DbResourceInfo, EntityFacade};
+use crate::resource::textdiff::{self, TextDiff};
+
+/// One version of a file, as Java's `ResourceReference.Version`: a `dbresource` history row, or a commit of a `git`
+/// file. `version_date` is a Timestamp value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResourceVersion {
+    pub version_name: String,
+    pub previous_version_name: Option<String>,
+    pub version_date: Value,
+    pub user_id: Option<String>,
+}
 
 /// A resolved resource with its logical location.
 ///
@@ -96,6 +108,15 @@ struct DbSnapChild {
 impl ResourceRef {
     pub fn location(&self) -> &str {
         &self.location
+    }
+
+    /// True when the storage keeps versions of this file (`ResourceReference.supportsVersion`).
+    pub fn supports_version(&self) -> bool {
+        match &self.stored {
+            Stored::Db(_) => true,
+            Stored::Native(provider) => provider.supports_version(&self.location),
+            Stored::File(_) | Stored::Http(_) => false,
+        }
     }
 
     pub fn exists(&self) -> bool {
@@ -328,6 +349,9 @@ pub struct ResourceFacade {
     /// Shared with the factory. `None` until the host installs an entity facade.
     entity: Arc<RwLock<Option<EntityFacade>>>,
     providers: RwLock<HashMap<String, Arc<dyn crate::native::ResourceProvider>>>,
+    /// The `git` scheme, once `MoquiDefaultConf.xml` names it; the `GitServices` reach it here.
+    #[cfg(feature = "git")]
+    git: OnceLock<crate::resource::git::GitProvider>,
 }
 
 impl ResourceFacade {
@@ -341,7 +365,25 @@ impl ResourceFacade {
             components,
             entity,
             providers: RwLock::new(HashMap::new()),
+            #[cfg(feature = "git")]
+            git: OnceLock::new(),
         }
+    }
+
+    /// Install the `git` scheme (`resource-reference scheme="git"` in the conf).
+    #[cfg(feature = "git")]
+    pub(crate) fn install_git(&self) -> Result<(), Error> {
+        let provider = crate::resource::git::GitProvider::new(Arc::clone(&self.entity), self.runtime_dir.clone());
+        self.install_provider("git", Arc::new(provider.clone()))?;
+        self.git
+            .set(provider)
+            .map_err(|_| Error::new("the git resource scheme is installed twice"))
+    }
+
+    /// The `git` scheme's provider, when it is installed.
+    #[cfg(feature = "git")]
+    pub fn git(&self) -> Option<&crate::resource::git::GitProvider> {
+        self.git.get()
     }
 
     pub(crate) fn install_provider(
@@ -363,6 +405,11 @@ impl ResourceFacade {
         Ok(())
     }
 
+    /// True when a provider (a component's scheme, or `git`) serves `location`.
+    pub fn has_provider(&self, location: &str) -> bool {
+        self.provider(location).is_some()
+    }
+
     fn provider(&self, location: &str) -> Option<Arc<dyn crate::native::ResourceProvider>> {
         moqui_lib::sync::read(&self.providers).get(scheme_of(location)).cloned()
     }
@@ -372,8 +419,9 @@ impl ResourceFacade {
             return Err(Error::new("resource location is empty"));
         }
         if let Some(provider) = self.provider(location) {
+            // A `#version` suffix names a version (`getLocationText`), not part of the path.
             return Ok(ResourceRef {
-                location: location.to_string(),
+                location: strip_hash(location).to_string(),
                 stored: Stored::Native(provider),
             });
         }
@@ -388,7 +436,7 @@ impl ResourceFacade {
                     fetched: Arc::new(OnceLock::new()),
                 }),
             }),
-            "dbresource" => self.db_ref(location),
+            "dbresource" => self.db_ref(strip_hash(location)),
             "file" => Ok(self.file_ref(location)),
             "runtime" => Ok(self.runtime_ref(location)),
             "component" => self.component_ref(location),
@@ -564,6 +612,138 @@ impl ResourceFacade {
         std::fs::rename(&from, &to).map_err(|err| io_error(location, &err))
     }
 
+    /// The storage that keeps versions of `location`, if any.
+    fn versioned(&self, location: &str) -> Result<Versioned, Error> {
+        if let Some(provider) = self.provider(location) {
+            return Ok(if provider.supports_version(location) {
+                Versioned::Provider(provider)
+            } else {
+                Versioned::None
+            });
+        }
+        if scheme_of(location) == "dbresource" {
+            return Ok(Versioned::Db(self.db_facade()?));
+        }
+        Ok(Versioned::None)
+    }
+
+    /// True when the storage keeps versions of `location` (`ResourceReference.supportsVersion`): `dbresource` files,
+    /// and a provider scheme that says so (`git`).
+    pub fn supports_version(&self, location: &str) -> bool {
+        let location = strip_hash(location);
+        match self.provider(location) {
+            Some(provider) => provider.supports_version(location),
+            None => scheme_of(location) == "dbresource",
+        }
+    }
+
+    /// One version of a file by name (`getVersion`), or `None`.
+    pub fn version(&self, location: &str, version_name: &str) -> Result<Option<ResourceVersion>, Error> {
+        let location = strip_hash(location);
+        match self.versioned(location)? {
+            Versioned::Provider(provider) => provider.version(location, version_name),
+            Versioned::Db(facade) => facade.db_resource_version(location, version_name).map_err(Error::from),
+            Versioned::None => Ok(None),
+        }
+    }
+
+    /// The version the file has now (`getCurrentVersion`).
+    pub fn current_version(&self, location: &str) -> Result<Option<ResourceVersion>, Error> {
+        let location = strip_hash(location);
+        match self.versioned(location)? {
+            Versioned::Provider(provider) => provider.current_version(location),
+            Versioned::Db(facade) => facade.db_resource_current_version(location).map_err(Error::from),
+            Versioned::None => Ok(None),
+        }
+    }
+
+    /// The first version of the file (`getRootVersion`).
+    pub fn root_version(&self, location: &str) -> Result<Option<ResourceVersion>, Error> {
+        let location = strip_hash(location);
+        match self.versioned(location)? {
+            Versioned::Provider(provider) => provider.root_version(location),
+            Versioned::Db(facade) => facade.db_resource_root_version(location).map_err(Error::from),
+            Versioned::None => Ok(None),
+        }
+    }
+
+    /// Every version of the file, newest first (`getVersionHistory`). Empty when the storage keeps none.
+    pub fn version_history(&self, location: &str) -> Result<Vec<ResourceVersion>, Error> {
+        let location = strip_hash(location);
+        match self.versioned(location)? {
+            Versioned::Provider(provider) => provider.version_history(location),
+            Versioned::Db(facade) => facade.db_resource_version_history(location).map_err(Error::from),
+            Versioned::None => Ok(Vec::new()),
+        }
+    }
+
+    /// The versions made from `version_name` (`getNextVersions`).
+    pub fn next_versions(&self, location: &str, version_name: &str) -> Result<Vec<ResourceVersion>, Error> {
+        let location = strip_hash(location);
+        match self.versioned(location)? {
+            Versioned::Provider(provider) => provider.next_versions(location, version_name),
+            Versioned::Db(facade) => facade
+                .db_resource_next_versions(location, version_name)
+                .map_err(Error::from),
+            Versioned::None => Ok(Vec::new()),
+        }
+    }
+
+    /// The bytes of one version (`openStream(versionName)`), or `None` when there is no such version or the storage
+    /// keeps no versions.
+    pub fn read_version(&self, location: &str, version_name: &str) -> Result<Option<Vec<u8>>, Error> {
+        let location = strip_hash(location);
+        match self.versioned(location)? {
+            Versioned::Provider(provider) => provider.read_version(location, version_name),
+            Versioned::Db(facade) => facade
+                .read_db_resource_version(location, version_name)
+                .map_err(Error::from),
+            Versioned::None => Ok(None),
+        }
+    }
+
+    /// The text of one version (`getText(versionName)`); bytes that are not UTF-8 are decoded lossily.
+    pub fn version_text(&self, location: &str, version_name: &str) -> Result<Option<String>, Error> {
+        Ok(self
+            .read_version(location, version_name)?
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    /// The text at a location, where a `#versionName` suffix reads that version, as Java's
+    /// `ResourceFacade.getLocationText`. A suffix on storage that keeps no versions is ignored.
+    pub fn location_text(&self, location: &str) -> Result<String, Error> {
+        if let Some((path, version_name)) = split_version(location) {
+            if self.supports_version(path) {
+                return self
+                    .version_text(path, version_name)?
+                    .ok_or_else(|| Error::new(format!("version {version_name} not found: {path}")));
+            }
+        }
+        self.get(location)?.read_text()
+    }
+
+    /// The line diff from version `lhs` to version `rhs` of a file; an empty name is the current text. A version that
+    /// does not exist is an error naming it.
+    pub fn version_diff(&self, location: &str, lhs: &str, rhs: &str) -> Result<TextDiff, Error> {
+        let location = strip_hash(location);
+        let text = |name: &str| -> Result<String, Error> {
+            if name.is_empty() {
+                return self.get(location)?.read_text();
+            }
+            self.version_text(location, name)?
+                .ok_or_else(|| Error::new(format!("version {name} not found: {location}")))
+        };
+        let (old, new) = (text(lhs)?, text(rhs)?);
+        let name = |name: &str| {
+            if name.is_empty() {
+                "current".to_string()
+            } else {
+                name.to_string()
+            }
+        };
+        Ok(textdiff::diff(&old, &new, &name(lhs), &name(rhs)))
+    }
+
     fn db_facade(&self) -> Result<EntityFacade, Error> {
         self.installed()
             .ok_or_else(|| Error::new("database resource is not available"))
@@ -671,6 +851,21 @@ fn scheme_of(location: &str) -> &str {
     match location.find(':') {
         Some(index) if index > 1 && !location[..index].contains('/') => &location[..index],
         _ => "file",
+    }
+}
+
+/// Where a location's versions are kept.
+enum Versioned {
+    Provider(Arc<dyn crate::native::ResourceProvider>),
+    Db(EntityFacade),
+    None,
+}
+
+/// `location#versionName` as the location and the version name; `None` without a non-empty suffix.
+pub(crate) fn split_version(location: &str) -> Option<(&str, &str)> {
+    match location.find('#') {
+        Some(index) if index > 0 && index + 1 < location.len() => Some((&location[..index], &location[index + 1..])),
+        _ => None,
     }
 }
 

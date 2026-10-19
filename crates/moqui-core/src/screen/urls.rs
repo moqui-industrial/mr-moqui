@@ -86,6 +86,18 @@ impl UrlInstance {
         }
     }
 
+    /// The path of the screens only, without a transition or extra path names, as Java's `getScreenOnlyPath`.
+    pub fn screen_only_path(&self) -> String {
+        if self.missing() {
+            return "#".to_string();
+        }
+        match (&self.plain, &self.info) {
+            (Some(plain), _) => plain.clone(),
+            (None, Some(info)) => encode_path(&info.pre_transition_path),
+            (None, None) => encode_path(&self.names),
+        }
+    }
+
     pub fn minimal_path_url(&self) -> String {
         if self.missing() {
             return "#".to_string();

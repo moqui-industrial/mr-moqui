@@ -25,7 +25,7 @@ inbound-smtp = []
 
 [dependencies]
 # The workspace entry has default features off (moqui-browser); the server wants all three.
-moqui-core = { workspace = true, features = ["mail", "http", "cluster-tls"] }
+moqui-core = { workspace = true, features = ["mail", "http", "cluster-tls", "git"] }
 moqui-lib = { workspace = true, features = ["http"] }
 tracing = { workspace = true }
 # Log line and log entry timestamps (crates/moqui-host/src/logging.rs). Already in the graph under moqui-lib.

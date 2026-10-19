@@ -38,7 +38,8 @@ pub use factory::{
 pub(crate) use hits::{secret_parameter, Hit};
 pub use locate::{framework_dir, locate};
 pub use message::{ErrorMark, MessageFacade, ValidationError};
-pub use resource::{ResourceEntry, ResourceFacade, ResourceRef, ResourceStat};
+pub(crate) use resource::split_version;
+pub use resource::{ResourceEntry, ResourceFacade, ResourceRef, ResourceStat, ResourceVersion};
 
 #[cfg(test)]
 mod tests {

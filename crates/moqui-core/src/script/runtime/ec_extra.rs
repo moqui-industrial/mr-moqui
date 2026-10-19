@@ -197,7 +197,26 @@ pub(super) fn add_resource_functions<'js>(ctx: &Ctx<'js>, resource: &Object<'js>
     )?;
     caught(ctx, "resource.code128Svg", resource.set("code128Svg", code128))?;
     let template = caught(ctx, "resource.template", Function::new(ctx.clone(), resource_template))?;
-    caught(ctx, "resource.template", resource.set("template", template))
+    caught(ctx, "resource.template", resource.set("template", template))?;
+    let extensions = caught(
+        ctx,
+        "resource.getTemplateRendererExtensionSet",
+        Function::new(ctx.clone(), resource_template_extensions),
+    )?;
+    caught(
+        ctx,
+        "resource.getTemplateRendererExtensionSet",
+        resource.set("getTemplateRendererExtensionSet", extensions),
+    )
+}
+
+/// `ec.resource.getTemplateRendererExtensionSet()`: the file extensions a template renderer is configured for (`md`,
+/// `md.fancy`, ...), as a list in conf order.
+fn resource_template_extensions(ctx: Ctx<'_>) -> rquickjs::Result<Vec<String>> {
+    host_guard(&ctx, || {
+        let factory = with_ec(&ctx, |ec| Arc::clone(ec.factory()))?;
+        Ok(crate::script::template::TemplateRegistry::of(&factory).extensions())
+    })
 }
 
 /// `ec.resource.code128Svg(text, options)`: the Code 128 barcode of `text` as an inline `<svg>`, for a print document,

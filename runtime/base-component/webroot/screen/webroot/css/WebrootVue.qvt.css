@@ -189,6 +189,20 @@ ul.float-plain.condensed li { margin: 0 4px 0 0; padding: 4px; }
 /* jsdiff */
 .compare del { background-color:#f2dede; text-decoration:none; }
 .compare ins { background-color:#dff0d8; text-decoration:none; }
+/* version compare table (TextDiff::render_html, crates/moqui-core/src/resource/textdiff.rs); translucent colours so
+   the same rules read in light and dark */
+.moqui-diff { border-collapse: collapse; width: 100%; font-family: ui-monospace, "Courier New", monospace; font-size: 13px; }
+.moqui-diff th { font-weight: normal; opacity: .7; text-align: right; padding: 2px 6px; white-space: nowrap; max-width: 12em; overflow: hidden; text-overflow: ellipsis; }
+.moqui-diff td { padding: 0 6px; vertical-align: top; }
+.moqui-diff td.ln { text-align: right; opacity: .6; user-select: none; width: 1%; white-space: nowrap; }
+.moqui-diff td.sign { user-select: none; width: 1%; }
+.moqui-diff td.code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.moqui-diff tr.diff-hunk td { background: rgba(127, 127, 127, .14); opacity: .8; padding-top: 2px; padding-bottom: 2px; }
+.moqui-diff tr.diff-del td { background: rgba(220, 53, 69, .12); }
+.moqui-diff tr.diff-ins td { background: rgba(40, 167, 69, .12); }
+.moqui-diff del { background: rgba(220, 53, 69, .35); text-decoration: none; }
+.moqui-diff ins { background: rgba(40, 167, 69, .35); text-decoration: none; }
+.moqui-diff tr.diff-none td { padding: 8px; opacity: .7; }
 
 /* ====== print style overrides ====== */
 

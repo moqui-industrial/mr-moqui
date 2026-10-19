@@ -35,6 +35,7 @@ mod entity_db;
 mod field_rw;
 mod gate1;
 mod gate2;
+mod git_resources;
 mod load_feed;
 mod notws;
 mod opensearch_start;

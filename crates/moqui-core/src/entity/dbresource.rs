@@ -52,14 +52,10 @@ pub struct DbResourceStat {
     pub size: u64,
 }
 
-/// One `DbResourceFileHistory` row, as Java's `ResourceReference.Version`. `version_date` is a Timestamp value.
-#[derive(Clone, Debug, PartialEq)]
-pub struct DbResourceVersion {
-    pub version_name: String,
-    pub previous_version_name: Option<String>,
-    pub version_date: Value,
-    pub user_id: Option<String>,
-}
+/// One `DbResourceFileHistory` row, as Java's `ResourceReference.Version`: the facade's [`ResourceVersion`].
+///
+/// [`ResourceVersion`]: crate::context::ResourceVersion
+pub type DbResourceVersion = crate::context::ResourceVersion;
 
 struct Node {
     id: String,
@@ -355,8 +351,8 @@ impl EntityFacade {
     }
 
     /// Write a file's bytes as `DbResourceReference.putObject`: the first write is version "01" with its history row
-    /// and the MIME type of `filename`; a later write keeps the replaced bytes in the current version's history row and
-    /// adds the next version.
+    /// and the MIME type of `filename`; a later write moves the replaced bytes into the current version's history row
+    /// (as a reverse delta when [`past_payload`] allows) and adds the next version.
     fn write_bytes(&self, resource_id: &str, filename: &str, bytes: &[u8]) -> Result<(), Error> {
         let existing = self.find(DB_FILE)?.eq("resourceId", Value::string(resource_id)).one()?;
         let Some(existing) = existing else {
@@ -376,6 +372,11 @@ impl EntityFacade {
             return Ok(());
         };
         let current = text_of(existing.get("versionName"));
+        // The next version's name first: the replaced version's delta is made against it.
+        let mut history = self.new_history(resource_id, current.as_deref())?;
+        history.set_sequenced_id_secondary(self)?;
+        let next = text_of(history.get("versionName"))
+            .ok_or_else(|| Error::new(format!("no next version name for DbResource {resource_id}")))?;
         if let Some(current) = &current {
             let past = self
                 .find(DB_HISTORY)?
@@ -383,17 +384,23 @@ impl EntityFacade {
                 .eq("versionName", Value::string(current))
                 .one()?;
             if past.is_some() {
+                let mime = text_of(existing.get("mimeType"))
+                    .or_else(|| moqui_lib::resource::content_type_for_name(filename).map(str::to_string));
+                let (is_diff, data) = match blob_bytes(existing.get("fileData"), resource_id)? {
+                    Some(old) => {
+                        let (is_diff, data) = past_payload(mime.as_deref(), current, &next, &old, bytes);
+                        (is_diff, Value::Bytes(data))
+                    }
+                    None => (false, Value::Null),
+                };
                 let mut past = EntityValue::make(self, DB_HISTORY)?;
                 past.set("resourceId", Value::string(resource_id));
                 past.set("versionName", Value::string(current));
-                past.set("fileData", existing.get("fileData").cloned().unwrap_or(Value::Null));
+                past.set("isDiff", Value::string(if is_diff { "Y" } else { "N" }));
+                past.set("fileData", data);
                 past.update(self)?;
             }
         }
-        let mut history = self.new_history(resource_id, current.as_deref())?;
-        history.set_sequenced_id_secondary(self)?;
-        let next = text_of(history.get("versionName"))
-            .ok_or_else(|| Error::new(format!("no next version name for DbResource {resource_id}")))?;
         history.create(self)?;
         let mut value = EntityValue::make(self, DB_FILE)?;
         value.set("resourceId", Value::string(resource_id));
@@ -494,7 +501,9 @@ impl EntityFacade {
     }
 
     /// The bytes of one version of the file at `location`, as `openStream(versionName)`: the history row's data, or
-    /// the file's data when it is the current version. `None` when there is no such version.
+    /// the file's data when it is the current version. A version stored as a reverse delta (`isDiff="Y"`) is rebuilt
+    /// from the nearest full copy after it; Java leaves that a TODO and answers null (Parity-Diffs, revision
+    /// management). `None` when there is no such version, or when its delta chain is broken, which is logged.
     pub fn read_db_resource_version(&self, location: &str, version_name: &str) -> Result<Option<Vec<u8>>, Error> {
         let Some((resource_id, file)) = self.file_row(location)? else {
             return Ok(None);
@@ -508,7 +517,17 @@ impl EntityFacade {
             return Ok(None);
         };
         if text_of(history.get("isDiff")).as_deref() == Some("Y") {
-            return Ok(None);
+            return match self.rebuild_version(&resource_id, &file, version_name) {
+                Ok(text) => Ok(Some(text.into_bytes())),
+                Err(err) => {
+                    tracing::error!(
+                        location,
+                        version = version_name,
+                        "cannot rebuild DbResource version: {err}"
+                    );
+                    Ok(None)
+                }
+            };
         }
         if let Some(bytes) = blob_bytes(history.get("fileData"), &resource_id)? {
             return Ok(Some(bytes));
@@ -520,9 +539,108 @@ impl EntityFacade {
             blob_bytes(file.get("fileData"), &resource_id)?.unwrap_or_default(),
         ))
     }
+
+    /// The text of a delta-stored version: walk `previousVersionName` from the current version down to `target`, start
+    /// from the nearest full text on that path (the file itself, or a past row stored whole), and apply each reverse
+    /// delta from there down to `target`.
+    fn rebuild_version(&self, resource_id: &str, file: &EntityValue, target: &str) -> Result<String, Error> {
+        let rows: std::collections::HashMap<String, EntityValue> = self
+            .find(DB_HISTORY)?
+            .eq("resourceId", Value::string(resource_id))
+            .list()?
+            .into_values()
+            .into_iter()
+            .filter_map(|row| text_of(row.get("versionName")).map(|name| (name, row)))
+            .collect();
+        let current = text_of(file.get("versionName"))
+            .ok_or_else(|| Error::new(format!("DbResource {resource_id} has no current version")))?;
+        // newest first: path[0] is the current version, the last is `target`
+        let mut path = vec![current];
+        while path.last().map(String::as_str) != Some(target) {
+            let name = path.last().map(String::as_str).unwrap_or_default();
+            let previous = rows
+                .get(name)
+                .and_then(|row| text_of(row.get("previousVersionName")))
+                .ok_or_else(|| Error::new(format!("version {target} is not before version {name}")))?;
+            if path.len() > rows.len() || path.contains(&previous) {
+                return Err(Error::new(format!("the version chain loops at {previous}")));
+            }
+            path.push(previous);
+        }
+        let full_text = |index: usize| -> Result<Option<String>, Error> {
+            let bytes = if index == 0 {
+                blob_bytes(file.get("fileData"), resource_id)?
+            } else {
+                let row = &rows[&path[index]];
+                if text_of(row.get("isDiff")).as_deref() == Some("Y") {
+                    return Ok(None);
+                }
+                blob_bytes(row.get("fileData"), resource_id)?
+            };
+            match bytes {
+                Some(bytes) => String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|_| Error::new(format!("version {} is not UTF-8 text", path[index]))),
+                None if index == 0 => Ok(Some(String::new())),
+                None => Ok(None),
+            }
+        };
+        let last = path.len() - 1;
+        let mut start = None;
+        for index in (0..last).rev() {
+            if let Some(text) = full_text(index)? {
+                start = Some((index, text));
+                break;
+            }
+        }
+        let (start, mut text) = start.ok_or_else(|| Error::new(format!("no full copy after version {target}")))?;
+        for name in &path[start + 1..] {
+            let row = &rows[name];
+            if text_of(row.get("isDiff")).as_deref() != Some("Y") {
+                return Err(Error::new(format!("version {name} is neither a delta nor a full copy")));
+            }
+            let patch = blob_bytes(row.get("fileData"), resource_id)?
+                .ok_or_else(|| Error::new(format!("version {name} has no delta")))?;
+            let patch =
+                String::from_utf8(patch).map_err(|_| Error::new(format!("version {name}: delta is not UTF-8")))?;
+            text = crate::resource::textdiff::apply_unified(&text, &patch)
+                .map_err(|err| Error::new(format!("version {name}: {err}")))?;
+        }
+        Ok(text)
+    }
 }
 
 const FIRST_VERSION: &str = "01";
+
+/// A past version is stored whole when its number is a multiple of this, so rebuilding any version applies at most
+/// this many minus one deltas.
+const FULL_COPY_EVERY: u32 = 20;
+
+/// What a replaced version keeps in its history row: `(true, reverse delta)` or `(false, its bytes)`. The delta is a
+/// unified diff from the `next` version's text back to `current`'s (`--- next` / `+++ current`), so the newest text
+/// stays whole in `DbResourceFile` and an older one is rebuilt by walking back. Java has this as a TODO
+/// (`DbResourceReference.putText`) and always stores the whole bytes. Stored whole: binary MIME types, bytes that are
+/// not UTF-8, every [`FULL_COPY_EVERY`]th version, and a delta more than half the size of the text it replaces.
+fn past_payload(mime: Option<&str>, current: &str, next: &str, old: &[u8], new: &[u8]) -> (bool, Vec<u8>) {
+    let whole = || (false, old.to_vec());
+    if mime.is_some_and(moqui_lib::resource::is_binary_content_type) {
+        return whole();
+    }
+    if current
+        .parse::<u32>()
+        .map_or(true, |number| number % FULL_COPY_EVERY == 0)
+    {
+        return whole();
+    }
+    let (Ok(old_text), Ok(new_text)) = (std::str::from_utf8(old), std::str::from_utf8(new)) else {
+        return whole();
+    };
+    let patch = crate::resource::textdiff::unified(new_text, old_text, next, current);
+    if patch.len() * 2 > old.len() {
+        return whole();
+    }
+    (true, patch.into_bytes())
+}
 
 fn text_of(value: Option<&Value>) -> Option<String> {
     match value? {
@@ -747,5 +865,136 @@ mod tests {
             .list()
             .unwrap();
         assert!(rows.is_empty(), "{} history rows left", rows.len());
+    }
+
+    /// A page of numbered lines with line `edit` changed, big enough that a one-line change is stored as a delta.
+    fn page(edit: usize) -> String {
+        (1..=40)
+            .map(|line| {
+                if line == edit {
+                    format!("line {line} edited in version {edit}\n")
+                } else {
+                    format!("line {line}\n")
+                }
+            })
+            .collect()
+    }
+
+    fn history_rows(facade: &EntityFacade) -> Vec<(String, String, Option<Vec<u8>>)> {
+        facade
+            .find("moqui.resource.DbResourceFileHistory")
+            .unwrap()
+            .order_by("versionName", false)
+            .list()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    super::text_of(row.get("versionName")).unwrap_or_default(),
+                    super::text_of(row.get("isDiff")).unwrap_or_default(),
+                    super::blob_bytes(row.get("fileData"), "test").unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn past_text_versions_are_reverse_deltas_and_every_version_reads_back() {
+        let (facade, context) = facade();
+        let _entered = context.enter();
+        let location = "dbresource://wiki/long.md";
+        for version in 1..=25 {
+            facade.write_db_resource(location, page(version).as_bytes()).unwrap();
+        }
+        for version in 1..=25 {
+            let name = format!("{version:02}");
+            let bytes = facade.read_db_resource_version(location, &name).unwrap();
+            assert_eq!(bytes, Some(page(version).into_bytes()), "version {name}");
+        }
+        let rows = history_rows(&facade);
+        assert_eq!(rows.len(), 25);
+        for (name, is_diff, data) in &rows {
+            let number: u32 = name.parse().unwrap();
+            match number {
+                25 => assert!(data.is_none(), "the current version's row holds no bytes"),
+                20 => assert_eq!((is_diff.as_str(), data.as_deref()), ("N", Some(page(20).as_bytes()))),
+                _ => {
+                    assert_eq!(is_diff, "Y", "version {name}");
+                    let delta = String::from_utf8(data.clone().unwrap()).unwrap();
+                    assert!(
+                        delta.starts_with(&format!("--- {:02}\n+++ {name}\n", number + 1)),
+                        "{delta}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn binary_bytes_and_large_rewrites_are_stored_whole() {
+        let (facade, context) = facade();
+        let _entered = context.enter();
+        let image = "dbresource://files/a.png";
+        let big = page(0).repeat(3);
+        facade.write_db_resource(image, big.as_bytes()).unwrap();
+        facade
+            .write_db_resource(image, (big.clone() + "x\n").as_bytes())
+            .unwrap();
+        let invalid = "dbresource://files/b.txt";
+        let mut latin1 = page(0).into_bytes();
+        latin1.push(0xE9);
+        facade.write_db_resource(invalid, &latin1).unwrap();
+        facade.write_db_resource(invalid, page(3).as_bytes()).unwrap();
+        let rewrite = "dbresource://files/c.txt";
+        facade.write_db_resource(rewrite, page(0).as_bytes()).unwrap();
+        facade.write_db_resource(rewrite, b"something else entirely\n").unwrap();
+        let first: Vec<_> = history_rows(&facade)
+            .into_iter()
+            .filter(|(name, ..)| name == "01")
+            .collect();
+        assert_eq!(first.len(), 3);
+        for (_, is_diff, data) in first {
+            assert_eq!(is_diff, "N");
+            assert!(data.is_some());
+        }
+        assert_eq!(
+            facade.read_db_resource_version(image, "01").unwrap(),
+            Some(big.into_bytes())
+        );
+        assert_eq!(facade.read_db_resource_version(invalid, "01").unwrap(), Some(latin1));
+        assert_eq!(
+            facade.read_db_resource_version(rewrite, "01").unwrap(),
+            Some(page(0).into_bytes())
+        );
+    }
+
+    #[test]
+    fn a_broken_delta_reads_as_no_version_and_the_others_still_read() {
+        let (facade, context) = facade();
+        let _entered = context.enter();
+        let location = "dbresource://wiki/broken.md";
+        for version in 1..=4 {
+            facade.write_db_resource(location, page(version).as_bytes()).unwrap();
+        }
+        let (resource_id, _) = facade.file_row(location).unwrap().unwrap();
+        let mut row = crate::entity::EntityValue::make(&facade, "moqui.resource.DbResourceFileHistory").unwrap();
+        row.set("resourceId", moqui_lib::object::Value::string(&resource_id));
+        row.set("versionName", moqui_lib::object::Value::string("02"));
+        row.set(
+            "fileData",
+            moqui_lib::object::Value::Bytes(b"@@ -1 +1 @@\n-nope\n+still nope\n".to_vec()),
+        );
+        row.update(&facade).unwrap();
+        assert_eq!(
+            facade.read_db_resource_version(location, "03").unwrap(),
+            Some(page(3).into_bytes())
+        );
+        assert_eq!(facade.read_db_resource_version(location, "02").unwrap(), None);
+        // 01 is rebuilt through 02's delta, so it is lost with it
+        assert_eq!(facade.read_db_resource_version(location, "01").unwrap(), None);
+        assert_eq!(
+            facade.read_db_resource_version(location, "04").unwrap(),
+            Some(page(4).into_bytes())
+        );
     }
 }

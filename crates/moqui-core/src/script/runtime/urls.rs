@@ -71,6 +71,24 @@ impl HostUrl {
         })
     }
 
+    /// Java's `getScreenOnlyPath`: the screens of the path, without a transition or extra path names.
+    fn get_screen_only_path(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || Ok(self.inner.borrow().screen_only_path()))
+    }
+
+    /// Java's `getScreenPathUrl`: [`Self::get_screen_only_path`] after the base URL.
+    fn get_screen_path_url(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || {
+            let inner = self.inner.borrow();
+            let path = inner.screen_only_path();
+            Ok(if inner.plain.is_some() || path == "#" {
+                path
+            } else {
+                format!("{}{path}", inner.base.trim_end_matches('/'))
+            })
+        })
+    }
+
     fn get_minimal_path_url(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
         host_guard(&ctx, || Ok(self.inner.borrow().minimal_path_url()))
     }

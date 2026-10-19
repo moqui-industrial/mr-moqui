@@ -40,6 +40,7 @@ const DATA: &str = r#"<entity-facade-xml type="seed">
     <moqui.service.message.SystemMessage systemMessageId="GATE_MSG" systemMessageTypeId="GateSmsg" statusId="SmsgProduced"
         isOutgoing="Y" messageText="{}"/>
     <moqui.entity.sync.EntitySync entitySyncId="GATE_SYNC" description="Gate sync" statusId="EsNotStarted" forPull="N"/>
+    <moqui.resource.GitRepository repositoryId="GATE_GIT" description="Gate git" repositoryKind="db"/>
     <moqui.server.Visit visitId="GATE_VISIT" userId="EX_JOHN_DOE" clientIpAddress="127.0.0.1" fromDate="2026-01-02 03:04:05"/>
     <moqui.server.instance.AppInstance appInstanceId="GATE_AI" instanceName="gate" hostName="gate.example"/>
     <moqui.basic.EnumerationType enumTypeId="GateEnumType" description="Gate enum type"/>
@@ -78,6 +79,7 @@ const DETAILS: &[&str] = &[
     "/System/SystemMessage/Message/SystemMessageDetail/EditMessageText?systemMessageId=GATE_MSG",
     "/System/EntitySync/EntitySyncDetail?entitySyncId=GATE_SYNC",
     "/System/EntitySync/EntitySyncHistory?entitySyncId=GATE_SYNC",
+    "/System/Resource/GitRepositoryDetail?repositoryId=GATE_GIT",
     "/System/Visit/VisitDetail?visitId=GATE_VISIT",
     "/System/Instance/InstanceDetail?appInstanceId=GATE_AI",
     "/System/DataDocument/Edit/EditDataDocument?dataDocumentId=GateDoc",
