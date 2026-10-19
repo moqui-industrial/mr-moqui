@@ -195,7 +195,7 @@ impl GitProvider {
 
     /// Set each ref's result once a push made (or refused) it, and make the update pending (`none` when nothing
     /// changed), then schedule its post events.
-    pub(crate) fn finish_update(&self, update_id: &str, results: &[(String, String)]) {
+    pub(crate) fn finish_update(&self, repository_id: &str, update_id: &str, results: &[(String, String)]) {
         let _rows = rows_guard();
         let changed = results.iter().any(|(_, result)| result == "ok");
         let outcome = (|| -> Result<(), Error> {
@@ -221,7 +221,7 @@ impl GitProvider {
             return;
         }
         if changed {
-            self.schedule(update_id);
+            self.schedule(repository_id);
         }
     }
 
@@ -256,9 +256,9 @@ impl GitProvider {
             })
             .collect();
         let join = origin.source == "write";
-        let Some(update_id) = self.write_update(repository_id, origin, prior, &refs, "pending", join) else {
+        if self.write_update(repository_id, origin, prior, &refs, "pending", join).is_none() {
             return;
-        };
+        }
         // a write's commit is in the caller's transaction: its events run once that commits
         let deferred = join
             && (|| -> Result<bool, Error> {
@@ -269,21 +269,71 @@ impl GitProvider {
                 let factory = ExecutionContext::with_current(|ec| Arc::clone(ec.factory()))
                     .ok_or_else(|| Error::new("no execution context"))?;
                 let provider = self.clone();
-                let id = update_id.clone();
+                let id = repository_id.to_string();
                 transactions.on_commit(move || schedule_on(&factory, provider, id))?;
                 Ok(true)
             })()
             .unwrap_or(false);
         if !deferred {
-            self.schedule(&update_id);
+            self.schedule(repository_id);
         }
     }
 
-    /// Run an update's post events on a job of the git pool. When the pool cannot take it, the update stays pending
+    /// Run a repository's pending updates on a job of the git pool. When the pool cannot take it, they stay pending
     /// for the job that runs pending updates.
-    pub(crate) fn schedule(&self, update_id: &str) {
+    pub(crate) fn schedule(&self, repository_id: &str) {
         if let Some(factory) = ExecutionContext::with_current(|ec| Arc::clone(ec.factory())) {
-            schedule_on(&factory, self.clone(), update_id.to_string());
+            schedule_on(&factory, self.clone(), repository_id.to_string());
+        }
+    }
+
+    /// Run the pending updates of a repository one at a time, oldest first, so its events run in the order its refs
+    /// changed; a run in another worker of this process waits its turn. (processed, failed) counts.
+    pub fn process_repository(&self, repository_id: &str) -> Result<(usize, usize), Error> {
+        let lock = Arc::clone(
+            moqui_lib::sync::lock(&self.inner.event_locks)
+                .entry(repository_id.to_string())
+                .or_default(),
+        );
+        let _turn = moqui_lib::sync::lock(&lock);
+        let entity = self.entity()?;
+        let (mut processed, mut failed) = (0, 0);
+        loop {
+            let next = {
+                let _rows = rows_guard();
+                entity
+                    .find(GIT_UPDATE)?
+                    .eq("repositoryId", Value::string(repository_id))
+                    .eq("ecaStatus", Value::string("pending"))
+                    .order_by("updateDate", false)
+                    .order_by("updateId", false)
+                    .select_field("updateId")
+                    .limit(1)
+                    .list()?
+                    .iter()
+                    .find_map(|row| text(row.get("updateId")))
+            };
+            let Some(update_id) = next else {
+                return Ok((processed, failed));
+            };
+            match self.process_update(&update_id) {
+                Ok(status) if status == "failed" => failed += 1,
+                Ok(_) => processed += 1,
+                Err(err) => {
+                    tracing::error!(update = %update_id, "git update events failed: {err}");
+                    failed += 1;
+                    // the update keeps its status; do not loop on it
+                    let _rows = rows_guard();
+                    entity
+                        .find(GIT_UPDATE)?
+                        .eq("updateId", Value::string(&update_id))
+                        .eq("ecaStatus", Value::string("pending"))
+                        .update_all([
+                            ("ecaStatus".to_string(), Value::string("failed")),
+                            ("ecaError".to_string(), Value::string(err.message())),
+                        ])?;
+                }
+            }
         }
     }
 
@@ -376,25 +426,30 @@ impl GitProvider {
                 tracing::error!("cannot reconcile a cut-short git update: {err}");
             }
         }
-        let pending: Vec<String> = {
+        let repositories: Vec<String> = {
             let _rows = rows_guard();
-            entity
+            let mut ids: Vec<String> = entity
                 .find(GIT_UPDATE)?
                 .eq("ecaStatus", Value::string("pending"))
-                .order_by("updateId", false)
-                .select_field("updateId")
+                .select_field("repositoryId")
+                .distinct(true)
                 .list()?
                 .iter()
-                .filter_map(|row| text(row.get("updateId")))
-                .collect()
+                .filter_map(|row| text(row.get("repositoryId")))
+                .collect();
+            ids.sort();
+            ids.dedup();
+            ids
         };
         let (mut processed, mut failed) = (0, 0);
-        for id in pending {
-            match self.process_update(&id) {
-                Ok(status) if status == "failed" => failed += 1,
-                Ok(_) => processed += 1,
+        for repository_id in repositories {
+            match self.process_repository(&repository_id) {
+                Ok((done, bad)) => {
+                    processed += done;
+                    failed += bad;
+                }
                 Err(err) => {
-                    tracing::error!(update = %id, "git update events failed: {err}");
+                    tracing::error!(repository = %repository_id, "git update events failed: {err}");
                     failed += 1;
                 }
             }
@@ -426,7 +481,7 @@ impl GitProvider {
             results.push((name, if made { "ok".into() } else { "not made: the push was cut short".into() }));
         }
         drop(_rows);
-        self.finish_update(&update_id, &results);
+        self.finish_update(&repository_id, &update_id, &results);
         Ok(())
     }
 
@@ -576,16 +631,16 @@ impl GitProvider {
     }
 }
 
-fn schedule_on(factory: &Arc<crate::context::ExecutionContextFactory>, provider: GitProvider, update_id: String) {
-    let id = update_id.clone();
+fn schedule_on(factory: &Arc<crate::context::ExecutionContextFactory>, provider: GitProvider, repository_id: String) {
+    let id = repository_id.clone();
     let submitted = super::server::pool(factory).try_submit(Arc::clone(factory), move || {
-        if let Err(err) = provider.process_update(&id) {
-            tracing::error!(update = %id, "git update events failed: {err}");
+        if let Err(err) = provider.process_repository(&id) {
+            tracing::error!(repository = %id, "git update events failed: {err}");
         }
         Ok(())
     });
     if let Err(err) = submitted {
-        tracing::warn!(update = %update_id, "git update events left for the pending job: {err}");
+        tracing::warn!(repository = %repository_id, "git update events left for the pending job: {err}");
     }
 }
 

@@ -41,6 +41,7 @@ pub(in crate::service) fn register(
     rust_service!(map, get_commit_diff)?;
     rust_service!(map, get_blob)?;
     rust_service!(map, get_clone_urls)?;
+    rust_service!(map, commit_files)?;
     rust_service!(map, process_update)?;
     rust_service!(map, process_pending_updates)?;
     Ok(())
@@ -526,6 +527,49 @@ fn process_pending_updates(
             ("processedCount", count(processed)),
             ("failedCount", count(failed)),
         ])),
+        Err(err) => {
+            add_error(err.message());
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// `commit#GitFiles`: commit files on the default branch in one commit with a message. Out: `commitId` (empty when
+/// nothing changed).
+fn commit_files(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+    let Some((provider, id)) = provider_and_id(parameters, true) else {
+        return Ok(BTreeMap::new());
+    };
+    if let Err(err) = crate::user::authorize(GIT_ARTIFACT_TYPE, &id, "update") {
+        add_error(err.message());
+        return Ok(BTreeMap::new());
+    }
+    let Some(message) = text(parameters, "message") else {
+        add_error("message is required");
+        return Ok(BTreeMap::new());
+    };
+    let segments = |path: &str| -> Vec<String> {
+        path.split('/')
+            .filter(|segment| !segment.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let mut puts = Vec::new();
+    if let Some(Value::Map(files)) = parameters.get("fileMap") {
+        for (path, content) in files {
+            let bytes = match content {
+                Value::Bytes(bytes) => bytes.clone(),
+                other => to_plain_string(other).into_bytes(),
+            };
+            puts.push((segments(path), bytes));
+        }
+    }
+    let removes: Vec<Vec<String>> = match parameters.get("removePaths") {
+        Some(Value::List(paths)) => paths.iter().map(|path| segments(&to_plain_string(path))).collect(),
+        _ => Vec::new(),
+    };
+    match provider.commit_files(&id, &message, &puts, &removes) {
+        Ok(made) => Ok(out([("commitId", made.map_or(Value::Null, |id| Value::string(id.to_string())))])),
         Err(err) => {
             add_error(err.message());
             Ok(BTreeMap::new())

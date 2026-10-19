@@ -128,6 +128,7 @@ mod tests {
         ];
         if cfg!(feature = "git") {
             expected.extend([
+                "moqui_core::service::git::commit_files",
                 "moqui_core::service::git::export_repository",
                 "moqui_core::service::git::fetch_all_repositories",
                 "moqui_core::service::git::fetch_repository",

@@ -155,6 +155,19 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="sshUrl"/>
         </out-parameters>
     </service>
+    <service verb="commit" noun="GitFiles" type="rust" location="moqui_core::service::git::commit_files">
+        <description>Commit files on the default branch of a local or db repository in one commit, with a message, as
+            the current user (with the Moqui-User-Id trailer). Needs AT_GIT_REPOSITORY update on the repository. A
+            gitECA rule with source write sees it.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="message" required="true" allow-html="any"/>
+            <parameter name="fileMap" type="Map" allow-html="any"><description>Path to its new text (or bytes)</description></parameter>
+            <parameter name="removePaths" type="List"/>
+        </in-parameters>
+        <out-parameters><parameter name="commitId"><description>Empty when nothing changed</description></parameter></out-parameters>
+    </service>
+
     <!-- gitECA events: each push, mirror fetch, import and (when a rule listens) git:// write is a GitUpdate, whose post
         events run on the git pool soon after it. -->
     <service verb="process" noun="GitUpdate" type="rust" location="moqui_core::service::git::process_update">

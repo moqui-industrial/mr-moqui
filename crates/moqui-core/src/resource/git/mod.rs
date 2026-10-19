@@ -117,6 +117,8 @@ struct Inner {
     /// Writers of a repository in this process take turns; across processes the ref compare-and-set keeps refs
     /// consistent. Kept apart from `repos`, so a refresh that reopens a repository does not give it a second lock.
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// The runs of each repository's gitECA post events take turns, so they run one change at a time, in order.
+    event_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// When each repository's refs last changed (milliseconds): a push of commits dated in the past still changes the
     /// last-modified time of its files, which caches over `git://` locations go by.
     updated: Mutex<HashMap<String, i64>>,
@@ -187,6 +189,7 @@ impl GitProvider {
                 runtime_dir,
                 repos: RwLock::new(HashMap::new()),
                 locks: Mutex::new(HashMap::new()),
+                event_locks: Mutex::new(HashMap::new()),
                 updated: Mutex::new(HashMap::new()),
             }),
         }

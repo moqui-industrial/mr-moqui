@@ -253,7 +253,10 @@ pub(crate) fn commit(
         let mut message = message.trim_end().to_string();
         message.push('\n');
         if let Some(user_id) = &author.user_id {
-            message.push('\n');
+            // into the message's trailer block when it ends in one, else as a block of its own
+            if trailers(&message).is_empty() {
+                message.push('\n');
+            }
             message.push_str(USER_TRAILER);
             message.push_str(user_id);
             message.push('\n');
@@ -696,6 +699,23 @@ mod tests {
         assert!(trailers("Task: only a subject\n").is_empty());
         assert!(trailers("Subject\n\nTask: X\nnot a trailer\n").is_empty());
         assert!(trailers("Subject\n\nSee: http://x\n").len() == 1);
+    }
+
+    #[test]
+    fn the_user_trailer_joins_a_trailer_block_the_message_ends_in() {
+        let store = MemoryStore::default();
+        let blob = store.write(Kind::Blob, b"x").unwrap();
+        let id = commit(&store, "main", &author(), |_| {
+            Ok(Some((
+                vec![Edit::Put(path("a.txt"), EntryKind::Blob, blob)],
+                "Subject\n\nTask: PROJ-1".to_string(),
+            )))
+        })
+        .unwrap()
+        .unwrap();
+        let message = read_commit(&store, &id).unwrap().message;
+        assert_eq!(message, "Subject\n\nTask: PROJ-1\nMoqui-User-Id: EX_JOHN_DOE\n");
+        assert_eq!(trailers(&message).len(), 2);
     }
 
     #[test]

@@ -830,7 +830,7 @@ impl Session<'_> {
                     )
                 })
                 .collect();
-            self.provider.finish_update(&update_id, &outcomes);
+            self.provider.finish_update(&definition.id, &update_id, &outcomes);
         }
         Ok(())
     }

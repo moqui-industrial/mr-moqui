@@ -708,7 +708,7 @@ fn settled(fixture: &Fixture) -> Vec<EntityValue> {
         if !busy {
             return rows.iter().cloned().collect();
         }
-        assert!(started.elapsed().as_secs() < 30, "git updates did not settle");
+        assert!(started.elapsed().as_secs() < 30, "git updates did not settle: {rows:?}");
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
@@ -836,7 +836,14 @@ fn mirror_fetches_and_opted_in_writes_raise_events() {
         let resources = fixture.context.factory().resource();
         resources.write_bytes("git://src/a.md", b"one\n").unwrap();
         resources.write_bytes("git://src/a.md", b"two\n").unwrap();
-        resources.git().unwrap().fetch("mirror").unwrap();
+        crate::user::logout().unwrap();
+    }
+    // the in-memory test database commits whole tables, so the runs of two repositories must not overlap
+    settled(&fixture);
+    {
+        let _entered = fixture.context.enter();
+        crate::user::internal_login_user(WRITER).unwrap();
+        fixture.context.factory().resource().git().unwrap().fetch("mirror").unwrap();
         crate::user::logout().unwrap();
     }
     settled(&fixture);

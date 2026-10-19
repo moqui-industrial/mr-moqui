@@ -223,6 +223,36 @@ impl GitProvider {
     }
 }
 
+impl GitProvider {
+    /// Commit files on a repository's default branch in one commit with `message`, as the current user: `puts` are
+    /// paths and their new bytes, `removes` paths to delete (a directory goes with its last file). The new commit, or
+    /// `None` when nothing changed.
+    pub(crate) fn commit_files(
+        &self,
+        repository_id: &str,
+        message: &str,
+        puts: &[(Vec<String>, Vec<u8>)],
+        removes: &[Vec<String>],
+    ) -> Result<Option<ObjectId>, Error> {
+        let repo = self.repo(repository_id)?;
+        Self::writable(&repo, &format!("git://{repository_id}/"))?;
+        let mut edits = Vec::new();
+        for (path, bytes) in puts {
+            if path.is_empty() || path.iter().any(|segment| segment == "." || segment == ".." || segment == ".git") {
+                return Err(Error::new(format!("bad path {}", path.join("/"))));
+            }
+            let blob = repo.store.write(Kind::Blob, bytes)?;
+            edits.push(super::ops::Edit::Put(path.clone(), gix::objs::tree::EntryKind::Blob, blob));
+        }
+        edits.extend(removes.iter().cloned().map(super::ops::Edit::Remove));
+        if edits.is_empty() {
+            return Ok(None);
+        }
+        let message = message.trim().to_string();
+        self.commit(&repo, |_| Ok(Some((edits.clone(), message.clone()))))
+    }
+}
+
 /// Whether `commit` changed what is at `path` against its first parent (a root commit changed it when it has it).
 fn changed_path(store: &dyn super::store::GitStore, commit: &ops::CommitInfo, path: &[String]) -> Result<bool, Error> {
     let here = ops::resolve(store, &commit.tree, path)?.map(|(_, id)| id);
