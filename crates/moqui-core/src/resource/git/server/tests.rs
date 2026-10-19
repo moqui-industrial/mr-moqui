@@ -457,6 +457,163 @@ fn http_clone_push_and_fetch_on_each_kind_and_protocol() {
     }
 }
 
+/// A text file of about 20 KB, with `round` changed in a few of its lines.
+fn big_text(round: usize) -> String {
+    (0..600)
+        .map(|line| {
+            if line % 97 == round % 97 {
+                format!("line {line} was changed in round {round}\n")
+            } else {
+                format!("line {line} of a file that grows a history of small edits\n")
+            }
+        })
+        .collect()
+}
+
+/// The `GitObject` rows of a repository: storage, kind and size by id.
+fn object_rows(fixture: &Fixture, id: &str) -> HashMap<String, (String, String, i64)> {
+    let _entered = fixture.context.enter();
+    let _authz = fixture.context.disable_authz();
+    let rows = fixture
+        .entity
+        .find("moqui.resource.GitObject")
+        .unwrap()
+        .eq("repositoryId", Value::string(id))
+        .list()
+        .unwrap();
+    rows.iter()
+        .map(|row| {
+            let text = |name: &str| row.get(name).map(moqui_lib::object::to_plain_string).unwrap_or_default();
+            let size = text("objectSize").parse().unwrap_or(0);
+            (text("objectId"), (text("storage"), text("objectType"), size))
+        })
+        .collect()
+}
+
+#[test]
+fn a_db_repository_keeps_pushed_deltas_and_sends_them_back() {
+    if !git_available() {
+        eprintln!("skipped: git is not on the PATH");
+        return;
+    }
+    let fixture = fixture("deltas");
+    let id = "deltas";
+    define(&fixture, id, "db");
+    let base = http_server(fixture.context.factory());
+    let home = fixture.dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let url = url_with(&base, WRITER, id);
+    let source = fixture.dir.join("source");
+    git_ok(&fixture.dir, &home, &["clone", &url, &source.to_string_lossy()]);
+    for round in 0..12 {
+        write_file(&source, "big.txt", &big_text(round));
+        git_ok(&source, &home, &["add", "."]);
+        git_ok(&source, &home, &["commit", "-m", &format!("Round {round}")]);
+    }
+    git_ok(&source, &home, &["push", "origin", "main"]);
+
+    // the push's deltas are rows of their own; commits are whole, and everything is compressed
+    let rows = object_rows(&fixture, id);
+    let deltas = rows.values().filter(|(storage, _, _)| storage == "delta").count();
+    assert!(deltas >= 5, "{deltas} delta rows of {}", rows.len());
+    assert!(rows.values().all(|(storage, _, _)| storage == "zlib" || storage == "delta"));
+    assert!(rows
+        .values()
+        .filter(|(_, kind, _)| kind == "commit")
+        .all(|(storage, _, _)| storage == "zlib"));
+
+    // every version reads back through the store as git has it
+    {
+        let _entered = fixture.context.enter();
+        let provider = fixture.context.factory().resource().git().unwrap().clone();
+        let store = &provider.repo(id).unwrap().store;
+        for commit in git_ok(&source, &home, &["rev-list", "HEAD"]).lines() {
+            let blob = git_ok(&source, &home, &["rev-parse", &format!("{commit}:big.txt")]);
+            let blob = gix::ObjectId::from_hex(blob.trim().as_bytes()).unwrap();
+            let expected = git_ok(&source, &home, &["cat-file", "blob", &blob.to_string()]);
+            let (kind, data) = store.find(&blob).unwrap().unwrap();
+            assert_eq!(kind, Kind::Blob);
+            assert_eq!(String::from_utf8(data).unwrap(), expected);
+        }
+    }
+
+    // a clone gets them as deltas, with ofs-delta (v2) and without (v0 with the capability turned off is not
+    // possible from the client, so both protocols)
+    for version in ["0", "2"] {
+        let clone = fixture.dir.join(format!("clone-v{version}"));
+        let protocol = format!("protocol.version={version}");
+        // kept as a pack, small as it is
+        let keep = ["-c", "transfer.unpackLimit=1", "-c", &protocol];
+        git_ok(&fixture.dir, &home, &[&keep[..], &["clone", &url, &clone.to_string_lossy()]].concat());
+        assert_eq!(std::fs::read_to_string(clone.join("big.txt")).unwrap(), big_text(11));
+        let fsck = git_ok(&clone, &home, &["fsck", "--strict", "--full"]);
+        assert!(!fsck.contains("error"), "{fsck}");
+        let pack_dir = clone.join(".git/objects/pack");
+        let index = std::fs::read_dir(&pack_dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "idx"))
+            .unwrap();
+        let verified = git_ok(&clone, &home, &["verify-pack", "-v", &index.to_string_lossy()]);
+        assert!(verified.contains("chain length"), "the clone's pack has no deltas:\n{verified}");
+    }
+
+    // a fetch of one more edit is a thin pack: the delta against the version the client has
+    let clone = fixture.dir.join("clone-v2");
+    write_file(&source, "big.txt", &big_text(12));
+    git_ok(&source, &home, &["commit", "-am", "Round 12"]);
+    git_ok(&source, &home, &["push", "origin", "main"]);
+    git_ok(&clone, &home, &["pull", "--ff-only", "origin", "main"]);
+    assert_eq!(std::fs::read_to_string(clone.join("big.txt")).unwrap(), big_text(12));
+    let fsck = git_ok(&clone, &home, &["fsck", "--strict", "--full"]);
+    assert!(!fsck.contains("error"), "{fsck}");
+
+    // the same objects pushed again (another branch) are not stored twice
+    let before = object_rows(&fixture, id).len();
+    git_ok(&source, &home, &["push", "origin", "main:copy"]);
+    assert_eq!(object_rows(&fixture, id).len(), before);
+
+    // a collection after a force push deletes what only the old branch had; a clone after it is whole
+    git_ok(&source, &home, &["reset", "--hard", "HEAD~1"]);
+    git_ok(&source, &home, &["push", "--force", "origin", "main"]);
+    git_ok(&source, &home, &["push", "origin", "--delete", "copy"]);
+    {
+        let _entered = fixture.context.enter();
+        let provider = fixture.context.factory().resource().git().unwrap().clone();
+        let store = crate::resource::git::db::DbStore::new(
+            fixture.entity.clone(),
+            id,
+            crate::resource::git::db::object_cache(),
+        );
+        store.stamp_all(jiff::Timestamp::now().as_millisecond() - 30 * 24 * 60 * 60 * 1000);
+        let mut options =
+            crate::resource::git::gc::GcOptions::from_properties(false, std::time::Duration::from_secs(120));
+        options.reflog_millis = 0;
+        // the updates of the pushes are older than the window, and done
+        let _authz = fixture.context.disable_authz();
+        fixture
+            .entity
+            .find("moqui.resource.GitUpdate")
+            .unwrap()
+            .eq("repositoryId", Value::string(id))
+            .update_all([("ecaStatus".to_string(), Value::string("done"))])
+            .unwrap();
+        let outcome = provider.gc(Some(id), &options).unwrap();
+        let report = outcome[0].1.as_ref().unwrap();
+        assert!(report.deleted >= 3, "the commit, tree and blob of round 12: {report:?}");
+        let fsck = provider
+            .fsck(id, std::time::Instant::now() + std::time::Duration::from_secs(60))
+            .unwrap();
+        assert!(fsck.errors.is_empty(), "{:?}", fsck.errors);
+    }
+    let again = fixture.dir.join("after-gc");
+    git_ok(&fixture.dir, &home, &["clone", &url, &again.to_string_lossy()]);
+    assert_eq!(std::fs::read_to_string(again.join("big.txt")).unwrap(), big_text(11));
+    let fsck = git_ok(&again, &home, &["fsck", "--strict", "--full"]);
+    assert!(!fsck.contains("error"), "{fsck}");
+}
+
 #[test]
 fn shallow_fetches_deepen_and_unshallow() {
     if !git_available() {
@@ -618,7 +775,8 @@ fn a_planned_pack_holds_what_the_client_lacks() {
     assert_eq!(delta.commits, 1);
     assert_eq!(delta.objects.len(), 3);
     let mut pack = Vec::new();
-    pack_out::write_pack(&store, &all.objects, true, None, &mut pack).unwrap();
+    let deltas = pack_out::Deltas { ofs: true, thin: None };
+    pack_out::write_pack(&store, &all.objects, deltas, None, &mut pack).unwrap();
     let read = pack_out::read_back(&pack);
     assert_eq!(read.len(), all.objects.len());
     for (id, kind) in read {

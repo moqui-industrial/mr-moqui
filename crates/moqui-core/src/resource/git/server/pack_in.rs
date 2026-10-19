@@ -17,7 +17,7 @@
 //! read from there with the repository's under them ([`Quarantine`]), every object they refer to must be in one or the
 //! other, and only an accepted push moves them into the repository. A rejected or failed push leaves nothing behind.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -28,12 +28,30 @@ use gix::odb::pack::cache::lru::MemoryCappedHashmap;
 use gix::odb::pack::Bundle;
 use gix::ObjectId;
 
+use gix::odb::pack::data::decode::header::ResolvedBase;
+use gix::odb::pack::data::entry::Header;
+
 use crate::context::Error;
 use crate::resource::git::ops;
-use crate::resource::git::store::{GitStore, RefEdit, RefOutcome};
+use crate::resource::git::store::{GitStore, Incoming, RefEdit, RefOutcome};
 
 /// Memory for decoded delta bases while reading the quarantined pack.
 const DELTA_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+/// A pushed delta is kept as one when its chain is at most `git_db_delta_depth` (50) deep and its object at most
+/// `git_db_delta_max_size` (16 MiB); others are stored whole, as are commits and tags.
+fn delta_limits() -> (u32, u64) {
+    let number = |name: &str, default: u64| {
+        moqui_lib::env::get_prop_or_env(name)
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(default)
+    };
+    (
+        u32::try_from(number("git_db_delta_depth", 50)).unwrap_or(50),
+        number("git_db_delta_max_size", 16 * 1024 * 1024),
+    )
+}
 
 fn pack_error(what: &str, err: impl std::fmt::Display) -> Error {
     Error::new(format!("{what}: {err}"))
@@ -75,6 +93,9 @@ pub(crate) struct Quarantine<'a> {
     bundle: Option<Bundle>,
     files: Option<(PathBuf, PathBuf)>,
     cache: Mutex<(gix::zlib::Inflate, MemoryCappedHashmap)>,
+    /// The objects of the repository the pushed ones refer to, found by [`Quarantine::check_closure`]: an accepted
+    /// push freshens them.
+    referenced: Mutex<Vec<ObjectId>>,
 }
 
 impl std::fmt::Debug for Quarantine<'_> {
@@ -114,6 +135,7 @@ pub(crate) fn receive<'a>(
             gix::zlib::Inflate::default(),
             MemoryCappedHashmap::new(DELTA_CACHE_BYTES),
         )),
+        referenced: Mutex::new(Vec::new()),
     };
     let lookup = StoreFind {
         store: base,
@@ -189,6 +211,9 @@ impl Quarantine<'_> {
             }
         };
         for id in &ids {
+            if self.kind_in_pack(id)? == Some(Kind::Blob) {
+                continue;
+            }
             let (kind, data) = self
                 .find_in_pack(id)?
                 .ok_or_else(|| Error::new(format!("object {id} is listed in the pushed pack but cannot be read")))?;
@@ -229,7 +254,28 @@ impl Quarantine<'_> {
                 )));
             }
         }
+        *moqui_lib::sync::lock(&self.referenced) = outside;
         Ok(())
+    }
+
+    /// The kind of a pushed object from its entry's header (and those of its delta bases), without decoding it.
+    fn kind_in_pack(&self, id: &ObjectId) -> Result<Option<Kind>, Error> {
+        let Some(bundle) = &self.bundle else {
+            return Ok(None);
+        };
+        let Some(index) = bundle.index.lookup(id) else {
+            return Ok(None);
+        };
+        let entry = bundle
+            .pack
+            .entry(bundle.index.pack_offset_at_index(index))
+            .map_err(|err| pack_error(&format!("reading {id} from the pushed pack"), err))?;
+        let mut cache = moqui_lib::sync::lock(&self.cache);
+        let outcome = bundle
+            .pack
+            .decode_header(entry, &mut cache.0, &|base| resolve_in(bundle, base))
+            .map_err(|err| pack_error(&format!("reading {id} from the pushed pack"), err))?;
+        Ok(Some(outcome.kind))
     }
 
     /// Move the pushed objects into the repository: the pack files into its `objects/pack` on disk, or each object
@@ -257,13 +303,126 @@ impl Quarantine<'_> {
             }
             return Ok(ids.len());
         }
-        let mut objects = ids.iter().map(|id| {
-            self.find_in_pack(id)?
-                .ok_or_else(|| Error::new(format!("object {id} of the pushed pack cannot be read")))
-        });
-        self.base.write_batch(&mut objects)?;
+        let referenced = std::mem::take(&mut *moqui_lib::sync::lock(&self.referenced));
+        self.base.freshen(&referenced)?;
+        self.store_entries()?;
         Ok(ids.len())
     }
+
+    /// Store the pushed objects as the pack has them, in its order (a delta's base is before it): a whole object's
+    /// compressed entry as it is, a delta as a delta against its base, unless it is a commit or tag, its object is
+    /// large or its chain deep (stored whole then). Objects the repository has already are freshened.
+    fn store_entries(&self) -> Result<(), Error> {
+        let Some(bundle) = &self.bundle else {
+            return Ok(());
+        };
+        let (max_depth, max_size) = delta_limits();
+        let mut entries: Vec<(u64, ObjectId)> = bundle.index.iter().map(|entry| (entry.pack_offset, entry.oid)).collect();
+        entries.sort_unstable_by_key(|(offset, _)| *offset);
+        let by_offset: HashMap<u64, ObjectId> = entries.iter().map(|(offset, id)| (*offset, *id)).collect();
+        let ids: Vec<ObjectId> = entries.iter().map(|(_, id)| *id).collect();
+        let existing = self.base.meta_many(&ids)?;
+        self.base.freshen(&existing.keys().copied().collect::<Vec<_>>())?;
+        // how deep each stored object's delta chain is
+        let mut depths: HashMap<ObjectId, u32> = existing.iter().map(|(id, meta)| (*id, meta.depth)).collect();
+        let end = bundle.pack.pack_end() as u64;
+        let mut at = 0;
+        let mut objects = std::iter::from_fn(|| {
+            while at < entries.len() {
+                let (offset, id) = entries[at];
+                let next = entries.get(at + 1).map_or(end, |(offset, _)| *offset);
+                at += 1;
+                if existing.contains_key(&id) {
+                    continue;
+                }
+                return Some(self.incoming(bundle, offset, next, id, &by_offset, &mut depths, max_depth, max_size));
+            }
+            None
+        });
+        self.base.store_objects(&mut objects)?;
+        Ok(())
+    }
+
+    /// The pushed object `id` whose entry is at `offset` (up to `next`), to store.
+    #[allow(clippy::too_many_arguments)]
+    fn incoming(
+        &self,
+        bundle: &Bundle,
+        offset: u64,
+        next: u64,
+        id: ObjectId,
+        by_offset: &HashMap<u64, ObjectId>,
+        depths: &mut HashMap<ObjectId, u32>,
+        max_depth: u32,
+        max_size: u64,
+    ) -> Result<Incoming, Error> {
+        let read_error = |err: &dyn std::fmt::Display| pack_error(&format!("reading {id} from the pushed pack"), err);
+        let entry = bundle.pack.entry(offset).map_err(|err| read_error(&err))?;
+        let data = bundle
+            .pack
+            .entry_slice(entry.data_offset..next)
+            .ok_or_else(|| Error::new(format!("the entry of {id} is outside the pushed pack")))?;
+        let base = match entry.header {
+            Header::Commit | Header::Tree | Header::Blob | Header::Tag => {
+                depths.insert(id, 0);
+                return Ok(Incoming::Zlib {
+                    id,
+                    kind: entry.header.as_kind().unwrap_or(Kind::Blob),
+                    size: entry.decompressed_size,
+                    data: data.to_vec(),
+                });
+            }
+            Header::OfsDelta { base_distance } => offset
+                .checked_sub(base_distance)
+                .and_then(|base| by_offset.get(&base))
+                .copied(),
+            Header::RefDelta { base_id } => Some(base_id),
+        };
+        let delta_size = entry.decompressed_size;
+        let outcome = {
+            let mut cache = moqui_lib::sync::lock(&self.cache);
+            bundle
+                .pack
+                .decode_header(entry, &mut cache.0, &|base| resolve_in(bundle, base))
+                .map_err(|err| read_error(&err))?
+        };
+        let depth = base.and_then(|base| depths.get(&base)).map(|depth| depth + 1);
+        let keep = matches!(outcome.kind, Kind::Tree | Kind::Blob)
+            && outcome.object_size <= max_size
+            && depth.is_some_and(|depth| depth <= max_depth);
+        match (keep, base, depth) {
+            (true, Some(base), Some(depth)) => {
+                depths.insert(id, depth);
+                Ok(Incoming::Delta {
+                    id,
+                    kind: outcome.kind,
+                    size: outcome.object_size,
+                    base,
+                    depth,
+                    delta_size,
+                    data: data.to_vec(),
+                })
+            }
+            _ => {
+                // a whole object; a delta whose base comes later in the pack (allowed for a REF_DELTA) too
+                let (kind, data) = self
+                    .find_in_pack(&id)?
+                    .ok_or_else(|| Error::new(format!("object {id} of the pushed pack cannot be read")))?;
+                depths.insert(id, 0);
+                Ok(Incoming::Content { kind, data })
+            }
+        }
+    }
+}
+
+/// Where the base of a `REF_DELTA` entry is: in the pack (a thin pack's bases from the repository are added to it
+/// as it is indexed).
+fn resolve_in(bundle: &Bundle, base: &gix::hash::oid) -> gix::Result<Option<ResolvedBase>> {
+    let Some(index) = bundle.index.lookup(base) else {
+        return Ok(None);
+    };
+    let entry = bundle.pack.entry(bundle.index.pack_offset_at_index(index))?;
+    Ok(Some(ResolvedBase::InPack(entry)))
 }
 
 /// The repository with the quarantined objects over it: what pre-receive rules and checks read before a push is

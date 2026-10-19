@@ -253,6 +253,54 @@ fn max_object_size() -> Option<usize> {
     Some(number_property("git_max_object_size").unwrap_or(512 * 1024 * 1024))
 }
 
+/// Copy the objects `head` reaches and the commits `haves` do not from `from` into `to`, as a push does: a pack of
+/// them (deltas from `from`'s packs or rows kept) written to `scratch` (a directory, removed after), indexed into a
+/// quarantine, checked to be whole, and accepted. How many objects.
+pub(crate) fn copy_objects(
+    from: &dyn GitStore,
+    to: &dyn GitStore,
+    head: ObjectId,
+    haves: &[ObjectId],
+    scratch: &std::path::Path,
+) -> Result<usize, Error> {
+    let planned = plan::plan(from, &[head], haves, &[], &HashSet::new(), &[])?;
+    if planned.objects.is_empty() {
+        return Ok(0);
+    }
+    std::fs::create_dir_all(scratch).map_err(|err| Error::new(format!("cannot create {}: {err}", scratch.display())))?;
+    let result = (|| {
+        let pack_path = scratch.join("copy.pack");
+        let mut file = std::io::BufWriter::new(
+            std::fs::File::create(&pack_path)
+                .map_err(|err| Error::new(format!("cannot create {}: {err}", pack_path.display())))?,
+        );
+        let deltas = pack_out::Deltas { ofs: true, thin: None };
+        pack_out::write_pack(from, &planned.objects, deltas, pack_threads(), &mut file)?;
+        file.flush()
+            .map_err(|err| Error::new(format!("writing {}: {err}", pack_path.display())))?;
+        drop(file);
+        let mut input = std::io::BufReader::new(
+            std::fs::File::open(&pack_path).map_err(|err| Error::new(format!("cannot open {}: {err}", pack_path.display())))?,
+        );
+        let quarantine = match to.disk_path() {
+            // on the repository's own filesystem, so accepting is a rename
+            Some(path) => path.join("objects").join(format!(
+                "incoming-{}-{}",
+                std::process::id(),
+                QUARANTINES.fetch_add(1, Ordering::Relaxed)
+            )),
+            None => scratch.join("quarantine"),
+        };
+        let mut received = pack_in::receive(to, &mut input, &quarantine, max_object_size(), pack_threads())?;
+        received.check_closure(&HashSet::new())?;
+        received.accept()
+    })();
+    if let Err(err) = std::fs::remove_dir_all(scratch) {
+        tracing::warn!("cannot remove {}: {err}", scratch.display());
+    }
+    result.map(|_| planned.objects.len())
+}
+
 /// Why a request is refused, before any protocol is spoken.
 #[derive(Debug)]
 enum Refusal {

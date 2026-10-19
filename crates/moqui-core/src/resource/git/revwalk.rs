@@ -36,6 +36,11 @@ const MAX_WALK: usize = 10_000_000;
 /// How many more commits a limited walk reads once only hidden commits are queued.
 const SLOP: usize = 5;
 
+/// After this many commits read one at a time, a walk reads the rest of the history in one scan, where the store
+/// can ([`GitStore::scan_commits`]), of at most [`PRELOAD_MAX`] commits.
+const PRELOAD_AFTER: usize = 1000;
+const PRELOAD_MAX: usize = 2_000_000;
+
 /// A queued commit: newest first, then in the order queued.
 #[derive(PartialEq, Eq)]
 struct Queued {
@@ -74,6 +79,9 @@ pub(crate) struct Walk<'a> {
     seq: u64,
     /// Queued commits that are not hidden: when none are left, what is still queued can only hide.
     visible_queued: usize,
+    /// Commits read by a scan, and how many were read one at a time before it.
+    preloaded: Option<HashMap<ObjectId, CommitInfo>>,
+    single_reads: usize,
 }
 
 impl<'a> Walk<'a> {
@@ -85,6 +93,45 @@ impl<'a> Walk<'a> {
             queue: BinaryHeap::new(),
             seq: 0,
             visible_queued: 0,
+            preloaded: None,
+            single_reads: 0,
+        }
+    }
+
+    /// Read the commits of the store in one scan, for a walk of much of the history (a full clone). False when the
+    /// store reads commits one at a time only.
+    pub(crate) fn preload(&mut self) -> Result<bool, Error> {
+        if self.preloaded.is_some() {
+            return Ok(true);
+        }
+        let mut commits = HashMap::new();
+        let scanned = self.store.scan_commits(&mut |id, data| {
+            commits.insert(id, ops::parse_commit(&id, data)?);
+            Ok(commits.len() < PRELOAD_MAX)
+        })?;
+        if scanned {
+            self.preloaded = Some(commits);
+        }
+        Ok(scanned)
+    }
+
+    /// A commit, from the scan when there was one.
+    fn commit(&mut self, id: &ObjectId, hidden: bool) -> Result<Option<CommitInfo>, Error> {
+        if let Some(commit) = self.preloaded.as_ref().and_then(|commits| commits.get(id)) {
+            return Ok(Some(commit.clone()));
+        }
+        self.single_reads += 1;
+        if self.single_reads == PRELOAD_AFTER && self.preload()? {
+            if let Some(commit) = self.preloaded.as_ref().and_then(|commits| commits.get(id)) {
+                return Ok(Some(commit.clone()));
+            }
+        }
+        match self.store.find(id)? {
+            Some((Kind::Commit, data)) => Ok(Some(ops::parse_commit(id, &data)?)),
+            // a hidden parent the repository does not have: a shallow repository's boundary
+            None if hidden => Ok(None),
+            None => Err(Error::new(format!("git commit {id} is missing"))),
+            Some((kind, _)) => Err(Error::new(format!("git object {id} is a {kind}, not a commit"))),
         }
     }
 
@@ -119,12 +166,8 @@ impl<'a> Walk<'a> {
         if self.nodes.len() >= MAX_WALK {
             return Err(Error::new(format!("commit walk passed {MAX_WALK} commits")));
         }
-        let commit = match self.store.find(&id)? {
-            Some((Kind::Commit, _)) => ops::read_commit(self.store, &id)?,
-            // a hidden parent the repository does not have: a shallow repository's boundary
-            None if hidden => return Ok(()),
-            None => return Err(Error::new(format!("git commit {id} is missing"))),
-            Some((kind, _)) => return Err(Error::new(format!("git object {id} is a {kind}, not a commit"))),
+        let Some(commit) = self.commit(&id, hidden)? else {
+            return Ok(());
         };
         self.seq += 1;
         self.queue.push(Queued {

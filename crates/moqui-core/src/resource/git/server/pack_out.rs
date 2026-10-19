@@ -15,18 +15,33 @@
 //! The pack data a fetch sends: version 2, SHA-1, the planned objects. A repository on disk gives gix-pack's
 //! generator its object database, so objects already stored as deltas in a pack go out as those deltas (with their
 //! base in the same pack); a client that did not ask for `ofs-delta` gets whole objects. The `db` kind (and any other
-//! store) writes whole objects, read and compressed on this thread: gix's generator reads on worker threads, which have
-//! no Moqui context to read rows in.
+//! store) writes objects as it stores them, read in batches on this thread (gix's generator reads on worker threads,
+//! which have no Moqui context to read rows in): a compressed object is copied as it is, a delta goes out as a delta
+//! against its base when the base is in the pack (written first when it comes later) or, in a thin pack, the client
+//! has it, and is applied to its base otherwise.
 
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
-#[cfg(test)]
 use gix::objs::Kind;
+use gix::odb::pack::data::entry::Header;
 use gix::odb::pack::data::output::{self, Count};
 use gix::ObjectId;
 
 use crate::context::Error;
-use crate::resource::git::store::GitStore;
+use crate::resource::git::store::{deflate, GitStore, Packed};
+
+/// Objects read per batch while a pack is written.
+const WINDOW: usize = 256;
+
+/// What the client takes beyond whole objects.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Deltas<'a> {
+    /// `ofs-delta`: a delta may name its base by its offset in the pack.
+    pub ofs: bool,
+    /// `thin-pack`: a delta may be against an object the client has, which is not in the pack.
+    pub thin: Option<&'a HashSet<ObjectId>>,
+}
 
 fn pack_error(what: &str, err: impl std::fmt::Display) -> Error {
     Error::new(format!("{what}: {err}"))
@@ -36,15 +51,15 @@ fn pack_error(what: &str, err: impl std::fmt::Display) -> Error {
 pub(crate) fn write_pack(
     store: &dyn GitStore,
     objects: &[ObjectId],
-    ofs_delta: bool,
+    deltas: Deltas<'_>,
     threads: Option<usize>,
     out: &mut dyn Write,
 ) -> Result<(), Error> {
     let count = u32::try_from(objects.len()).map_err(|_| Error::new("too many objects for one pack"))?;
-    if let (true, Some(handle)) = (ofs_delta, store.pack_handle()) {
+    if let (true, Some(handle)) = (deltas.ofs, store.pack_handle()) {
         return write_from_packs(handle, objects, count, threads, out);
     }
-    write_whole(store, objects, count, out)
+    write_stored(store, objects, count, deltas, out)
 }
 
 /// Through gix-pack's generator over a repository's object database, copying packed entries (deltas included).
@@ -97,35 +112,142 @@ fn write_from_packs(
     Ok(())
 }
 
-/// Whole objects, each read and compressed here.
-fn write_whole(store: &dyn GitStore, objects: &[ObjectId], count: u32, out: &mut dyn Write) -> Result<(), Error> {
-    let io = |err: std::io::Error| pack_error("writing the pack", err);
-    let mut hashed = gix::hash::io::Write::new(out, gix::hash::Kind::Sha1);
-    hashed
-        .write_all(&gix::odb::pack::data::header::encode(gix::odb::pack::data::Version::V2, count))
-        .map_err(io)?;
-    for id in objects {
-        let (kind, data) = store
-            .find(id)?
-            .ok_or_else(|| Error::new(format!("git object {id} is missing")))?;
-        let entry = output::Entry::from_data(
-            &Count::from_data(*id, None),
-            &gix::objs::Data::new(&data, kind, gix::hash::Kind::Sha1),
-            gix::zlib::Compression::DEFAULT,
-        )
-        .map_err(|err| pack_error(&format!("compressing {id}"), err))?;
-        let header = entry.to_entry_header(gix::odb::pack::data::Version::V2, |_| 0);
-        header
-            .write_to(entry.decompressed_size as u64, &mut hashed)
-            .map_err(io)?;
-        hashed.write_all(&entry.compressed_data).map_err(io)?;
+/// A pack being written, hashed as it goes, with where each object went.
+struct PackOut<'a> {
+    out: gix::hash::io::Write<&'a mut dyn Write>,
+    offset: u64,
+    written: HashMap<ObjectId, u64>,
+}
+
+impl PackOut<'_> {
+    fn entry(&mut self, id: ObjectId, header: Header, size: u64, data: &[u8]) -> Result<(), Error> {
+        let io = |err: std::io::Error| pack_error("writing the pack", err);
+        let length = header.write_to(size, &mut self.out).map_err(io)?;
+        self.out.write_all(data).map_err(io)?;
+        self.written.insert(id, self.offset);
+        self.offset += (length + data.len()) as u64;
+        Ok(())
     }
-    let digest = hashed
+}
+
+fn header_of(kind: Kind) -> Header {
+    match kind {
+        Kind::Commit => Header::Commit,
+        Kind::Tree => Header::Tree,
+        Kind::Blob => Header::Blob,
+        Kind::Tag => Header::Tag,
+    }
+}
+
+/// Objects as the store keeps them: a batch at a time, in order, a delta's base first when it is in the pack.
+fn write_stored(
+    store: &dyn GitStore,
+    objects: &[ObjectId],
+    count: u32,
+    deltas: Deltas<'_>,
+    out: &mut dyn Write,
+) -> Result<(), Error> {
+    let header = gix::odb::pack::data::header::encode(gix::odb::pack::data::Version::V2, count);
+    let mut pack = PackOut {
+        out: gix::hash::io::Write::new(out, gix::hash::Kind::Sha1),
+        offset: header.len() as u64,
+        written: HashMap::with_capacity(objects.len()),
+    };
+    pack.out
+        .write_all(&header)
+        .map_err(|err| pack_error("writing the pack", err))?;
+    let in_pack: HashSet<ObjectId> = objects.iter().copied().collect();
+    for window in objects.chunks(WINDOW) {
+        let mut packed: HashMap<ObjectId, Packed> = HashMap::with_capacity(window.len());
+        store.packed_many(window, &mut |id, object| {
+            packed.insert(id, object);
+            Ok(())
+        })?;
+        for id in window {
+            if pack.written.contains_key(id) {
+                continue;
+            }
+            let object = match packed.remove(id) {
+                Some(object) => object,
+                None => one_packed(store, id)?,
+            };
+            write_object(store, &mut pack, *id, object, &in_pack, deltas)?;
+        }
+    }
+    if pack.written.len() != objects.len() {
+        return Err(Error::new(format!(
+            "the pack has {} objects, not the {count} its header says",
+            pack.written.len()
+        )));
+    }
+    let digest = pack
+        .out
         .hash
         .try_finalize()
         .map_err(|err| pack_error("hashing the pack", err))?;
-    hashed.inner.write_all(digest.as_slice()).map_err(io)?;
-    hashed.inner.flush().map_err(io)
+    let io = |err: std::io::Error| pack_error("writing the pack", err);
+    pack.out.inner.write_all(digest.as_slice()).map_err(io)?;
+    pack.out.inner.flush().map_err(io)
+}
+
+fn one_packed(store: &dyn GitStore, id: &ObjectId) -> Result<Packed, Error> {
+    let mut found = None;
+    store.packed_many(std::slice::from_ref(id), &mut |_, object| {
+        found = Some(object);
+        Ok(())
+    })?;
+    found.ok_or_else(|| Error::new(format!("git object {id} is missing")))
+}
+
+/// Write one object; for a delta whose base is in the pack and not written yet, the base (and its bases) first.
+fn write_object(
+    store: &dyn GitStore,
+    pack: &mut PackOut<'_>,
+    id: ObjectId,
+    object: Packed,
+    in_pack: &HashSet<ObjectId>,
+    deltas: Deltas<'_>,
+) -> Result<(), Error> {
+    let mut chain = vec![(id, object)];
+    while let Some((_, Packed::Delta { base, .. })) = chain.last() {
+        let base = *base;
+        if pack.written.contains_key(&base) || !in_pack.contains(&base) || chain.iter().any(|(id, _)| *id == base) {
+            break;
+        }
+        chain.push((base, one_packed(store, &base)?));
+    }
+    while let Some((id, object)) = chain.pop() {
+        match object {
+            Packed::Whole { kind, data } => pack.entry(id, header_of(kind), data.len() as u64, &deflate(&data))?,
+            Packed::Zlib { kind, size, data } => pack.entry(id, header_of(kind), size, &data)?,
+            Packed::Delta {
+                kind,
+                base,
+                delta_size,
+                data,
+                ..
+            } => {
+                if let Some(at) = pack.written.get(&base).copied() {
+                    let header = if deltas.ofs {
+                        Header::OfsDelta {
+                            base_distance: pack.offset - at,
+                        }
+                    } else {
+                        Header::RefDelta { base_id: base }
+                    };
+                    pack.entry(id, header, delta_size, &data)?;
+                } else if deltas.thin.is_some_and(|has| has.contains(&base)) && !in_pack.contains(&base) {
+                    pack.entry(id, Header::RefDelta { base_id: base }, delta_size, &data)?;
+                } else {
+                    let (_, content) = store
+                        .find(&id)?
+                        .ok_or_else(|| Error::new(format!("git object {id} is missing")))?;
+                    pack.entry(id, header_of(kind), content.len() as u64, &deflate(&content))?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether every object of `objects` that is not a commit or tree is in the store (commits and trees were read while

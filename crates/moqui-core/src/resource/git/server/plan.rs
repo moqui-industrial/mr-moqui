@@ -18,7 +18,7 @@
 //! edge (the client's commits the sent ones have as parents). The client's shallow commits, and the new boundary, are
 //! walked as commits with no parents, so a hidden walk does not reach past what the client really has.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use gix::objs::Kind;
 use gix::ObjectId;
@@ -174,6 +174,9 @@ pub(crate) struct Plan {
     /// Every object, commits first.
     pub objects: Vec<ObjectId>,
     pub commits: usize,
+    /// The trees and blobs the client has (those under the trees of the commits at the edge), which a thin pack may
+    /// send deltas against.
+    pub excluded: HashSet<ObjectId>,
 }
 
 /// The objects reachable from `wants` (commits, annotated tags, or with `allow-reachable-sha1-in-want` a tree or
@@ -193,6 +196,10 @@ pub(crate) fn plan(
     let mut extra_roots: Vec<(ObjectId, Kind)> = Vec::new();
     let mut tag_objects: Vec<ObjectId> = Vec::new();
     let mut walk = Walk::new(store).with_grafts(grafts);
+    if haves.is_empty() && edges.is_empty() {
+        // a clone walks all of the history
+        walk.preload()?;
+    }
     for id in haves.iter().chain(edges) {
         walk.push(*id, true)?;
     }
@@ -235,14 +242,13 @@ pub(crate) fn plan(
             }
         }
     }
-    let mut excluded: HashSet<ObjectId> = HashSet::new();
-    for edge in &edge_commits {
-        if store.object_size(edge)?.is_none() {
-            continue;
-        }
-        let tree = ops::read_commit(store, edge)?.tree;
-        walk_tree(store, tree, &mut excluded, &mut |_| {})?;
+    let present = store.contains_many(&edge_commits)?;
+    let mut edge_trees = Vec::new();
+    for edge in edge_commits.iter().filter(|edge| present.contains(*edge)) {
+        edge_trees.push(ops::read_commit(store, edge)?.tree);
     }
+    let mut excluded: HashSet<ObjectId> = HashSet::new();
+    walk_trees(store, &edge_trees, &mut excluded, &mut |_| {})?;
     for commit in &commits {
         sent.insert(commit.id);
         objects.push(commit.id);
@@ -270,55 +276,80 @@ pub(crate) fn plan(
             }
         }
     }
-    let mut seen = excluded;
-    for commit in &commits {
-        walk_tree(store, commit.tree, &mut seen, &mut |id| {
-            if sent.insert(id) {
-                objects.push(id);
-            }
-        })?;
+    let mut seen = excluded.clone();
+    let mut roots: Vec<ObjectId> = commits.iter().map(|commit| commit.tree).collect();
+    for (id, kind) in &extra_roots {
+        if *kind == Kind::Tree {
+            roots.push(*id);
+        }
     }
+    walk_trees(store, &roots, &mut seen, &mut |id| {
+        if sent.insert(id) {
+            objects.push(id);
+        }
+    })?;
     for (id, kind) in extra_roots {
-        if kind == Kind::Tree {
-            walk_tree(store, id, &mut seen, &mut |id| {
-                if sent.insert(id) {
-                    objects.push(id);
-                }
-            })?;
-        } else if seen.insert(id) && sent.insert(id) {
+        if kind != Kind::Tree && seen.insert(id) && sent.insert(id) {
             objects.push(id);
         }
     }
     Ok(Plan {
         objects,
         commits: commit_count,
+        excluded,
     })
 }
 
-/// Every tree and blob under `tree` (itself included) not in `seen`, which each is added to. A submodule entry names
-/// another repository's commit and is passed over.
-fn walk_tree(
+/// Trees read per batch of a walk.
+const TREE_BATCH: usize = 256;
+
+/// Every tree and blob under `roots` (themselves included) not in `seen`, which each is added to: a level of the
+/// trees at a time, read in batches. A submodule entry names another repository's commit and is passed over.
+pub(crate) fn walk_trees(
     store: &dyn GitStore,
-    tree: ObjectId,
+    roots: &[ObjectId],
     seen: &mut HashSet<ObjectId>,
     each: &mut dyn FnMut(ObjectId),
 ) -> Result<(), Error> {
-    let mut pending = vec![tree];
-    while let Some(id) = pending.pop() {
-        if !seen.insert(id) {
-            continue;
+    let mut level: Vec<ObjectId> = Vec::new();
+    for root in roots {
+        if seen.insert(*root) {
+            each(*root);
+            level.push(*root);
         }
-        each(id);
-        for entry in ops::read_tree(store, &id)?.entries {
-            if entry.mode.is_commit() {
-                continue;
-            }
-            if entry.mode.is_tree() {
-                pending.push(entry.oid);
-            } else if seen.insert(entry.oid) {
-                each(entry.oid);
+    }
+    while !level.is_empty() {
+        let mut next = Vec::new();
+        for batch in level.chunks(TREE_BATCH) {
+            let mut trees: HashMap<ObjectId, Vec<u8>> = HashMap::with_capacity(batch.len());
+            store.find_many(batch, &mut |id, kind, data| {
+                if kind != Kind::Tree {
+                    return Err(Error::new(format!("git object {id} is a {kind}, not a tree")));
+                }
+                trees.insert(id, data.to_vec());
+                Ok(())
+            })?;
+            for id in batch {
+                let data = trees
+                    .get(id)
+                    .ok_or_else(|| Error::new(format!("git tree {id} is missing")))?;
+                let tree = gix::objs::TreeRef::from_bytes(data, ops::HASH)
+                    .map_err(|err| Error::new(format!("git tree {id}: {err}")))?;
+                for entry in tree.entries {
+                    if entry.mode.is_commit() {
+                        continue;
+                    }
+                    let oid = entry.oid.to_owned();
+                    if seen.insert(oid) {
+                        each(oid);
+                        if entry.mode.is_tree() {
+                            next.push(oid);
+                        }
+                    }
+                }
             }
         }
+        level = next;
     }
     Ok(())
 }

@@ -363,6 +363,27 @@ fn sql_features_run_on_postgres() {
         .unwrap();
     assert_eq!(ids(searched), ["B"], "highest testId of the alpha rows, one per page");
 
+    // Bytes go to a bytea column in binary format and come back the same, every byte value.
+    facade
+        .check_tables(&["moqui.resource.DbResource", "moqui.resource.DbResourceFile"])
+        .unwrap();
+    let data: Vec<u8> = (0..=255u8).cycle().take(70_000).collect();
+    let mut resource = facade.make_value("moqui.resource.DbResource").unwrap();
+    resource.set("resourceId", Value::string("BYTES"));
+    resource.create(&facade).unwrap();
+    let mut file = facade.make_value("moqui.resource.DbResourceFile").unwrap();
+    file.set("resourceId", Value::string("BYTES"));
+    file.set("fileData", Value::Bytes(data.clone()));
+    file.create(&facade).unwrap();
+    let read = facade
+        .find("moqui.resource.DbResourceFile")
+        .unwrap()
+        .eq("resourceId", Value::string("BYTES"))
+        .one()
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.get("fileData"), Some(&Value::Bytes(data)));
+
     drop(facade);
     drop(cluster);
 }

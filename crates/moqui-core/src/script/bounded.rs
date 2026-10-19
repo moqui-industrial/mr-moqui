@@ -93,6 +93,17 @@ impl<K: Hash + Eq + Clone, V: Clone> BoundedMap<K, V> {
         );
     }
 
+    /// Drop one entry.
+    pub(crate) fn remove<Q>(&mut self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        if let Some(old) = self.entries.remove(key) {
+            self.bytes -= old.bytes;
+        }
+    }
+
     /// Drop every entry.
     pub(crate) fn clear(&mut self) {
         self.entries.clear();

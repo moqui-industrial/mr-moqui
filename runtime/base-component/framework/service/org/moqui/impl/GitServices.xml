@@ -168,6 +168,41 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters><parameter name="commitId"><description>Empty when nothing changed</description></parameter></out-parameters>
     </service>
 
+    <!-- The storage of db repositories (docs/Git-Hosting.md, Storage) -->
+    <service verb="gc" noun="GitRepositories" type="rust" location="moqui_core::service::git::gc_repositories"
+            transaction="ignore">
+        <description>Delete the objects of db kind repositories that no ref reaches (and no change in progress or of
+            the last git_gc_reflog_days days needs) and that were not written or referenced in the last
+            git_gc_prune_days days; then repack: store the versions of each path as deltas of each other, the newest
+            whole, compress rows written before the zlib format, and make delta chains deeper than git_db_delta_depth
+            shorter (for the gc_GitRepositories_daily ServiceJob). A repository whose refs reach a missing object is
+            not collected. A repository that fails has its error recorded (lastGcResult) and logged, and the others
+            still run.</description>
+        <in-parameters>
+            <parameter name="repositoryId"><description>Every db repository when empty</description></parameter>
+            <parameter name="dryRun" type="Boolean" default-value="false"><description>Count what would be deleted
+                and change nothing</description></parameter>
+            <parameter name="timeoutMinutes" type="Integer" default-value="60"><description>When repacking stops; the
+                deletes are done first</description></parameter>
+        </in-parameters>
+        <out-parameters><parameter name="results" type="List"><description>A Map per repository: repositoryId,
+            deletedCount, deletedBytes, repackedCount, savedBytes, objectCount, storedBytes, summary, or
+            error</description></parameter></out-parameters>
+    </service>
+    <service verb="fsck" noun="GitRepository" type="rust" location="moqui_core::service::git::fsck_repository"
+            transaction="ignore">
+        <description>Decode every object of a db kind repository (applying its deltas) and check it against its id,
+            and that every ref points to an object that is there. An error names the damaged objects.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="timeoutMinutes" type="Integer" default-value="60"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="checkedCount" type="Integer"/>
+            <parameter name="errors" type="List"/>
+        </out-parameters>
+    </service>
+
     <!-- gitECA events: each push, mirror fetch, import and (when a rule listens) git:// write is a GitUpdate, whose post
         events run on the git pool soon after it. -->
     <service verb="process" noun="GitUpdate" type="rust" location="moqui_core::service::git::process_update">

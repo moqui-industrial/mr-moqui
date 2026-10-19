@@ -92,9 +92,13 @@ pub(crate) fn read_tree(store: &dyn GitStore, id: &ObjectId) -> Result<Tree, Err
 }
 
 pub(crate) fn read_commit(store: &dyn GitStore, id: &ObjectId) -> Result<CommitInfo, Error> {
-    let data = object(store, id, Kind::Commit)?;
+    parse_commit(id, &object(store, id, Kind::Commit)?)
+}
+
+/// The commit `id` whose content is `data`.
+pub(crate) fn parse_commit(id: &ObjectId, data: &[u8]) -> Result<CommitInfo, Error> {
     let commit =
-        gix::objs::CommitRef::from_bytes(&data, HASH).map_err(|err| Error::new(format!("git commit {id}: {err}")))?;
+        gix::objs::CommitRef::from_bytes(data, HASH).map_err(|err| Error::new(format!("git commit {id}: {err}")))?;
     let seconds = commit
         .committer()
         .ok()
@@ -500,59 +504,6 @@ pub(crate) fn read_at(store: &dyn GitStore, commit: &ObjectId, path: &[String]) 
         Some((mode, blob)) if !mode.is_tree() => object(store, &blob, Kind::Blob).map(Some),
         _ => Ok(None),
     }
-}
-
-/// Every object reachable from `head`: its commits, their trees and the blobs in them. For copying a repository from
-/// one store to another; `seen` holds what the target already has, so a later copy only walks what is new.
-pub(crate) fn reachable(
-    store: &dyn GitStore,
-    head: &ObjectId,
-    seen: &mut std::collections::HashSet<ObjectId>,
-    mut each: impl FnMut(&ObjectId, Kind, &[u8]) -> Result<(), Error>,
-) -> Result<usize, Error> {
-    let mut count = 0;
-    let mut pending = vec![(*head, Kind::Commit)];
-    while let Some((id, kind)) = pending.pop() {
-        if !seen.insert(id) {
-            continue;
-        }
-        // a submodule entry names a commit of another repository; it is not here
-        if kind == Kind::Commit && id != *head && store.find(&id)?.is_none() {
-            continue;
-        }
-        let (found, data) = store.find(&id)?.ok_or_else(|| missing(&id))?;
-        match found {
-            Kind::Commit => {
-                let commit = gix::objs::CommitRef::from_bytes(&data, HASH)
-                    .map_err(|err| Error::new(format!("git commit {id}: {err}")))?;
-                pending.push((commit.tree(), Kind::Tree));
-                pending.extend(commit.parents().map(|parent| (parent, Kind::Commit)));
-            }
-            Kind::Tree => {
-                let tree = gix::objs::TreeRef::from_bytes(&data, HASH)
-                    .map_err(|err| Error::new(format!("git tree {id}: {err}")))?;
-                for entry in tree.entries {
-                    let kind = if entry.mode.is_tree() {
-                        Kind::Tree
-                    } else if entry.mode.is_commit() {
-                        Kind::Commit
-                    } else {
-                        Kind::Blob
-                    };
-                    pending.push((entry.oid.to_owned(), kind));
-                }
-            }
-            Kind::Tag => {
-                let tag = gix::objs::TagRef::from_bytes(&data, HASH)
-                    .map_err(|err| Error::new(format!("git tag {id}: {err}")))?;
-                pending.push((tag.target(), tag.target_kind));
-            }
-            Kind::Blob => {}
-        }
-        each(&id, found, &data)?;
-        count += 1;
-    }
-    Ok(count)
 }
 
 #[cfg(test)]

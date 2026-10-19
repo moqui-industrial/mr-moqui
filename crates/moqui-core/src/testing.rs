@@ -464,7 +464,11 @@ impl MemConn {
 
     fn exec(&mut self, stmt: Stmt, params: &[Value]) -> Result<(u64, Vec<DbRow>), Error> {
         match stmt {
-            Stmt::Insert { table, columns } => {
+            Stmt::Insert {
+                table,
+                columns,
+                conflict,
+            } => {
                 let mut row = BTreeMap::new();
                 for (index, column) in columns.iter().enumerate() {
                     let value = params
@@ -474,6 +478,14 @@ impl MemConn {
                     row.insert(column.clone(), value);
                 }
                 let mut rows = self.read_table(&table);
+                if let Some(keys) = conflict {
+                    if rows
+                        .iter()
+                        .any(|other| keys.iter().all(|key| other.get(key) == row.get(key)))
+                    {
+                        return Ok((0, Vec::new()));
+                    }
+                }
                 rows.push(row);
                 self.put_table(&table, rows);
                 Ok((1, Vec::new()))
@@ -799,6 +811,8 @@ enum Stmt {
     Insert {
         table: String,
         columns: Vec<String>,
+        /// `ON CONFLICT (columns) DO NOTHING`: a row equal on these is not inserted again.
+        conflict: Option<Vec<String>>,
     },
     Update {
         table: String,
@@ -914,8 +928,29 @@ fn parse_insert(cur: &mut Cur) -> Result<Stmt, Error> {
         cur.expect_symbol(b'?')?;
     }
     cur.expect_symbol(b')')?;
+    let conflict = if cur.eat_keyword("ON") {
+        cur.expect_keyword("CONFLICT")?;
+        cur.expect_symbol(b'(')?;
+        let mut keys = Vec::new();
+        loop {
+            keys.push(cur.quoted()?);
+            if !cur.eat_symbol(b',') {
+                break;
+            }
+        }
+        cur.expect_symbol(b')')?;
+        cur.expect_keyword("DO")?;
+        cur.expect_keyword("NOTHING")?;
+        Some(keys)
+    } else {
+        None
+    };
     cur.expect_end()?;
-    Ok(Stmt::Insert { table, columns })
+    Ok(Stmt::Insert {
+        table,
+        columns,
+        conflict,
+    })
 }
 
 fn parse_update(cur: &mut Cur) -> Result<Stmt, Error> {

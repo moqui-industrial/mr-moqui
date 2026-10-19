@@ -16,9 +16,9 @@
 //! in `ops` over [`GitStore`]; a bare repository on disk ([`super::fs::FsStore`]) and rows in `GitObject` and `GitRef`
 //! ([`super::db::DbStore`]) are the two kinds of storage.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 #[cfg(test)]
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 #[cfg(test)]
 use std::sync::Mutex;
 
@@ -74,10 +74,235 @@ pub(crate) enum RefOutcome {
     Aborted,
 }
 
+/// How a store keeps an object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Storage {
+    /// The content itself.
+    Raw,
+    /// The zlib stream of the content, as a pack entry's body.
+    Zlib,
+    /// The zlib stream of git delta instructions against another object.
+    Delta,
+}
+
+impl Storage {
+    /// The `GitObject.storage` value: empty for [`Storage::Raw`].
+    pub(crate) fn name(self) -> Option<&'static str> {
+        match self {
+            Storage::Raw => None,
+            Storage::Zlib => Some("zlib"),
+            Storage::Delta => Some("delta"),
+        }
+    }
+
+    pub(crate) fn parse(text: Option<&str>) -> Result<Self, Error> {
+        match text {
+            None | Some("") => Ok(Storage::Raw),
+            Some("zlib") => Ok(Storage::Zlib),
+            Some("delta") => Ok(Storage::Delta),
+            Some(other) => Err(Error::new(format!("unknown git object storage {other}"))),
+        }
+    }
+}
+
+/// What a store knows of an object without reading its content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ObjectMeta {
+    pub kind: Kind,
+    pub size: u64,
+    pub storage: Storage,
+    /// The base of a delta.
+    pub base: Option<ObjectId>,
+    /// Deltas from this object to a whole one: 0 for a whole object.
+    pub depth: u32,
+    /// The size of what is stored.
+    pub stored_bytes: u64,
+}
+
+/// An object as a store keeps it, for a pack to copy.
+#[derive(Clone, Debug)]
+pub(crate) enum Packed {
+    /// The content, to compress.
+    Whole { kind: Kind, data: Vec<u8> },
+    /// The zlib stream of the `size` bytes of content: a pack entry's body as it is.
+    Zlib { kind: Kind, size: u64, data: Vec<u8> },
+    /// The zlib stream of `delta_size` bytes of git delta instructions that make the object from `base`.
+    Delta {
+        kind: Kind,
+        base: ObjectId,
+        delta_size: u64,
+        data: Vec<u8>,
+    },
+}
+
+/// An object to store, as a received pack has it. The id of a compressed one is known (the pack's index has it), and
+/// its content was checked against it.
+#[derive(Clone, Debug)]
+pub(crate) enum Incoming {
+    Content { kind: Kind, data: Vec<u8> },
+    Zlib { id: ObjectId, kind: Kind, size: u64, data: Vec<u8> },
+    /// The base is stored first, or is in the store already.
+    Delta {
+        id: ObjectId,
+        kind: Kind,
+        size: u64,
+        base: ObjectId,
+        depth: u32,
+        delta_size: u64,
+        data: Vec<u8>,
+    },
+}
+
+impl Incoming {
+    /// The content of an object, for a store that keeps only content: a compressed one inflated, a delta applied to
+    /// its base, which `find` reads. Its id.
+    pub(crate) fn into_content(
+        self,
+        find: &dyn Fn(&ObjectId) -> Result<Found, Error>,
+    ) -> Result<(ObjectId, Kind, Vec<u8>), Error> {
+        let (id, kind, data) = match self {
+            Incoming::Content { kind, data } => return Ok((object_id(kind, &data)?, kind, data)),
+            Incoming::Zlib { id, kind, size, data } => (id, kind, inflate(&data, size)?),
+            Incoming::Delta {
+                id,
+                kind,
+                size,
+                base,
+                delta_size,
+                data,
+                ..
+            } => {
+                let (_, base_data) = find(&base)?
+                    .ok_or_else(|| Error::new(format!("the delta base {base} of git object {id} is missing")))?;
+                let delta = inflate(&data, delta_size)?;
+                (id, kind, super::delta::apply(&base_data, &delta, Some(size))?)
+            }
+        };
+        verify(id, kind, &data)?;
+        Ok((id, kind, data))
+    }
+}
+
+/// The `size` bytes a zlib stream holds; any other length is an error.
+pub(crate) fn inflate(data: &[u8], size: u64) -> Result<Vec<u8>, Error> {
+    use std::io::Read;
+    let expected = usize::try_from(size).map_err(|_| Error::new("a git object too large for memory"))?;
+    let mut out = Vec::with_capacity(expected);
+    flate2::read::ZlibDecoder::new(data)
+        .take(size.saturating_add(1))
+        .read_to_end(&mut out)
+        .map_err(|err| Error::new(format!("inflating a git object: {err}")))?;
+    if out.len() != expected {
+        return Err(Error::new(format!(
+            "a git object inflated to {} bytes, not {expected}",
+            out.len()
+        )));
+    }
+    Ok(out)
+}
+
+/// The zlib stream of `data`: level 6, or 1 for over 1 MiB, where the time costs more than the bytes saved.
+pub(crate) fn deflate(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let level = if data.len() > 1024 * 1024 { 1 } else { 6 };
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::with_capacity(data.len() / 2 + 64), flate2::Compression::new(level));
+    // writing to a Vec cannot fail
+    let _ = encoder.write_all(data);
+    encoder.finish().unwrap_or_default()
+}
+
+/// That `data` is the content of the object `id`: a store's rows are checked as they are read, so damage (or a wrong
+/// delta) is an error rather than a wrong file.
+pub(crate) fn verify(id: ObjectId, kind: Kind, data: &[u8]) -> Result<(), Error> {
+    let actual = object_id(kind, data)?;
+    if actual != id {
+        return Err(Error::new(format!(
+            "git object {id} is damaged: its content hashes to {actual}"
+        )));
+    }
+    Ok(())
+}
+
+/// An object's kind and content, when the store has it.
+pub(crate) type Found = Option<(Kind, Vec<u8>)>;
+
+/// What [`GitStore::find_many`] passes each object found to.
+pub(crate) type EachObject<'a> = dyn FnMut(ObjectId, Kind, &[u8]) -> Result<(), Error> + 'a;
+
+/// What [`GitStore::scan_commits`] passes each commit to: false stops the scan.
+pub(crate) type EachCommit<'a> = dyn FnMut(ObjectId, &[u8]) -> Result<bool, Error> + 'a;
+
 /// Objects by id and refs by full name (`refs/heads/main`). Objects are immutable, so a store may cache them.
 pub(crate) trait GitStore: Send + Sync + std::fmt::Debug {
     /// The kind and raw content (no git header) of an object, or `None` when the store does not have it.
     fn find(&self, id: &ObjectId) -> Result<Option<(Kind, Vec<u8>)>, Error>;
+
+    /// [`GitStore::find`] of many objects, each found one passed to `each` (in no set order); the ones the store does
+    /// not have are passed over. A store of rows reads them a batch at a time.
+    fn find_many(&self, ids: &[ObjectId], each: &mut EachObject<'_>) -> Result<(), Error> {
+        for id in ids {
+            if let Some((kind, data)) = self.find(id)? {
+                each(*id, kind, &data)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// What the store knows of each of `ids` it has, without their content.
+    fn meta_many(&self, ids: &[ObjectId]) -> Result<HashMap<ObjectId, ObjectMeta>, Error> {
+        let mut found = HashMap::new();
+        for id in ids {
+            if let Some((kind, data)) = self.find(id)? {
+                let size = data.len() as u64;
+                found.insert(
+                    *id,
+                    ObjectMeta {
+                        kind,
+                        size,
+                        storage: Storage::Raw,
+                        base: None,
+                        depth: 0,
+                        stored_bytes: size,
+                    },
+                );
+            }
+        }
+        Ok(found)
+    }
+
+    /// Each of `ids` as stored, for a pack, in no set order; one the store does not have is an error.
+    fn packed_many(&self, ids: &[ObjectId], each: &mut dyn FnMut(ObjectId, Packed) -> Result<(), Error>) -> Result<(), Error> {
+        for id in ids {
+            let (kind, data) = self
+                .find(id)?
+                .ok_or_else(|| Error::new(format!("git object {id} is missing")))?;
+            each(*id, Packed::Whole { kind, data })?;
+        }
+        Ok(())
+    }
+
+    /// Store objects as a received pack has them, the bases of deltas first, skipping those already there. How many
+    /// were new.
+    fn store_objects(&self, objects: &mut dyn Iterator<Item = Result<Incoming, Error>>) -> Result<usize, Error> {
+        let mut contents = objects.map(|object| {
+            let (_, kind, data) = object?.into_content(&|id| self.find(id))?;
+            Ok((kind, data))
+        });
+        self.write_batch(&mut contents)
+    }
+
+    /// Note that `ids`, which the store has, are referenced again (by a push, a write), so a collection of
+    /// unreachable objects running at the same time keeps them.
+    fn freshen(&self, _ids: &[ObjectId]) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Every commit the store has, for a walk of much of the history, when the store can read them faster in one
+    /// pass than one at a time; `each` returns false to stop. False when the store cannot, and nothing was passed to
+    /// `each`.
+    fn scan_commits(&self, _each: &mut EachCommit<'_>) -> Result<bool, Error> {
+        Ok(false)
+    }
 
     /// The size of an object's content without reading it all, where the store can.
     fn object_size(&self, id: &ObjectId) -> Result<Option<u64>, Error> {

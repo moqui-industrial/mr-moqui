@@ -220,7 +220,7 @@ fn a_db_repository_exports_and_imports_with_the_same_ids() {
     assert_eq!(path, export);
     assert!(written > 10);
     let store = fs::FsStore::open(&export).unwrap();
-    let db_head = super::db::DbStore::new(fixture.entity.clone(), "wiki")
+    let db_head = super::db::DbStore::new(fixture.entity.clone(), "wiki", super::db::object_cache())
         .read_ref("refs/heads/main")
         .unwrap();
     assert_eq!(store.read_ref("refs/heads/main").unwrap(), db_head);
@@ -335,7 +335,7 @@ fn refs_logs_commits_and_diffs_read_any_revision() {
     resources.write_bytes("git://code/README.md", b"# Code\n").unwrap();
     resources.write_bytes("git://code/src/a.rs", b"fn a() {\n    b();\n}\n").unwrap();
     let head = provider.resolve_commit("code", "").unwrap().expect("a head");
-    let store = super::db::DbStore::new(fixture.entity.clone(), "code");
+    let store = super::db::DbStore::new(fixture.entity.clone(), "code", super::db::object_cache());
     assert!(store.compare_and_set_ref("refs/tags/v1", None, head).unwrap());
 
     let refs = provider.refs("code", "refs/").unwrap();
@@ -473,7 +473,7 @@ fn ref_updates_and_batches_are_the_same_on_each_store() {
     let path = fixture.dir.join("store.git");
     let fs_store = fs::FsStore::init(&path, "main").unwrap();
     store_scenario(&fs_store);
-    store_scenario(&super::db::DbStore::new(fixture.entity.clone(), "stores"));
+    store_scenario(&super::db::DbStore::new(fixture.entity.clone(), "stores", super::db::object_cache()));
 
     // a delete of a packed ref (git pack-refs moves loose refs into packed-refs)
     let packed = fixture.dir.join("packed.git");
@@ -505,4 +505,164 @@ impl ObjectIdHex {
     fn parse(hex: &str) -> gix::ObjectId {
         gix::ObjectId::from_hex(hex.as_bytes()).unwrap()
     }
+}
+
+/// The rows of a db repository: id to (storage, kind).
+fn rows_of(entity: &EntityFacade, id: &str) -> std::collections::HashMap<String, (String, String)> {
+    let _rows = super::rows_guard();
+    entity
+        .find("moqui.resource.GitObject")
+        .unwrap()
+        .eq("repositoryId", Value::string(id))
+        .list()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            let text = |name: &str| row.get(name).map(moqui_lib::object::to_plain_string).unwrap_or_default();
+            (text("objectId"), (text("storage"), text("objectType")))
+        })
+        .collect()
+}
+
+fn gc_options(dry_run: bool) -> super::gc::GcOptions {
+    let mut options = super::gc::GcOptions::from_properties(dry_run, std::time::Duration::from_secs(120));
+    options.reflog_millis = 0;
+    options
+}
+
+#[test]
+fn gc_deletes_what_no_ref_reaches_and_repacks_the_rest() {
+    let fixture = fixture("gc");
+    let _entered = fixture.context.enter();
+    define(&fixture.entity, "gc", "db", None, None);
+    let resources = fixture.context.factory().resource();
+    let provider = resources.git().unwrap().clone();
+    // ten versions of a file, as a wiki page's saves are: whole rows
+    let text = |version: usize| -> String {
+        (0..400)
+            .map(|line| if line == version * 7 { format!("line {line}, version {version}\n") } else { format!("line {line} of a page\n") })
+            .collect()
+    };
+    for version in 0..10 {
+        resources.write_bytes("git://gc/page.md", text(version).as_bytes()).unwrap();
+    }
+    let store = super::db::DbStore::new(fixture.entity.clone(), "gc", super::db::object_cache());
+    // a branch with a file of its own, then the branch deleted: unreachable
+    let author = ops::Author {
+        name: "Test".into(),
+        email: "test@example.com".into(),
+        user_id: None,
+    };
+    let main = store.read_ref("refs/heads/main").unwrap().unwrap();
+    store
+        .update_refs(
+            &[RefEdit {
+                name: "refs/heads/feature".into(),
+                expected: None,
+                new: Some(main),
+            }],
+            true,
+        )
+        .unwrap();
+    let lost = store.write(Kind::Blob, b"only on the feature branch\n").unwrap();
+    ops::commit(&store, "feature", &author, |_| {
+        Ok(Some((
+            vec![ops::Edit::Put(vec!["feature.txt".into()], gix::objs::tree::EntryKind::Blob, lost)],
+            "Feature".into(),
+        )))
+    })
+    .unwrap()
+    .unwrap();
+    let feature = store.read_ref("refs/heads/feature").unwrap().unwrap();
+    store
+        .update_refs(
+            &[RefEdit {
+                name: "refs/heads/feature".into(),
+                expected: Some(feature),
+                new: None,
+            }],
+            true,
+        )
+        .unwrap();
+    // an unreachable blob that a writer references again keeps
+    let kept = store.write(Kind::Blob, b"referenced again\n").unwrap();
+    let month_ago = jiff::Timestamp::now().as_millisecond() - 30 * 24 * 60 * 60 * 1000;
+    store.stamp_all(month_ago);
+    store.freshen(&[kept]).unwrap();
+    let before = rows_of(&fixture.entity, "gc");
+    assert!(before.values().all(|(storage, _)| storage == "zlib"));
+
+    // a dry run counts and changes nothing
+    let dry = provider.gc(Some("gc"), &gc_options(true)).unwrap();
+    let report = dry[0].1.as_ref().unwrap();
+    assert_eq!(report.deleted, 3, "the blob, tree and commit of the feature: {report:?}");
+    assert_eq!(rows_of(&fixture.entity, "gc").len(), before.len());
+
+    let outcome = provider.gc(Some("gc"), &gc_options(false)).unwrap();
+    let report = outcome[0].1.as_ref().unwrap();
+    assert_eq!(report.deleted, 3, "{report:?}");
+    assert!(report.repacked >= 8, "{report:?}");
+    assert!(report.saved_bytes > 0, "{report:?}");
+    let after = rows_of(&fixture.entity, "gc");
+    assert!(!after.contains_key(&lost.to_string()));
+    assert!(!after.contains_key(&feature.to_string()));
+    assert!(after.contains_key(&kept.to_string()));
+    let deltas = after.values().filter(|(storage, kind)| storage == "delta" && kind == "blob").count();
+    assert!(deltas >= 8, "{deltas} blob deltas");
+    // every version still reads, through a cache of its own
+    let fresh = super::db::DbStore::new(fixture.entity.clone(), "gc", super::db::object_cache());
+    let history = resources.version_history("git://gc/page.md").unwrap();
+    assert_eq!(history.len(), 10);
+    for version in &history {
+        let read = resources.read_version("git://gc/page.md", &version.version_name).unwrap().unwrap();
+        assert!(String::from_utf8(read).unwrap().starts_with("line 0"));
+    }
+    assert_eq!(resources.get("git://gc/page.md").unwrap().read_text().unwrap(), text(9));
+    for id in after.keys() {
+        let id = gix::ObjectId::from_hex(id.as_bytes()).unwrap();
+        assert!(fresh.find(&id).unwrap().is_some(), "{id} reads");
+    }
+    let fsck = provider.fsck("gc", std::time::Instant::now() + std::time::Duration::from_secs(60)).unwrap();
+    assert!(fsck.errors.is_empty(), "{:?}", fsck.errors);
+    assert_eq!(fsck.checked, after.len());
+    {
+        let _rows = super::rows_guard();
+        let row = fixture
+            .entity
+            .find(super::GIT_REPOSITORY)
+            .unwrap()
+            .eq("repositoryId", Value::string("gc"))
+            .one()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row.get("objectCount").map(moqui_lib::object::to_plain_string),
+            Some(after.len().to_string())
+        );
+        assert!(row.get("lastGcResult").map(moqui_lib::object::to_plain_string).unwrap_or_default().contains("deleted 3"));
+        assert_eq!(row.get("gcLeaseOwner"), Some(&Value::Null));
+    }
+
+    // a second run has nothing to do
+    let again = provider.gc(Some("gc"), &gc_options(false)).unwrap();
+    let report = again[0].1.as_ref().unwrap();
+    assert_eq!((report.deleted, report.repacked), (0, 0), "{report:?}");
+
+    // a repository whose refs reach a missing object is not collected
+    {
+        let _rows = super::rows_guard();
+        let head = store.read_ref("refs/heads/main").unwrap().unwrap();
+        let tree = ops::read_commit(&store, &head).unwrap().tree;
+        fixture
+            .entity
+            .find("moqui.resource.GitObject")
+            .unwrap()
+            .eq("repositoryId", Value::string("gc"))
+            .eq("objectId", Value::string(tree.to_string()))
+            .delete_all()
+            .unwrap();
+    }
+    let damaged = provider.gc(Some("gc"), &gc_options(false)).unwrap();
+    let err = damaged[0].1.as_ref().unwrap_err();
+    assert!(err.message().contains("missing object"), "{}", err.message());
 }

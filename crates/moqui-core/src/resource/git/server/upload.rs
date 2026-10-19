@@ -339,13 +339,11 @@ impl Send<'_> {
                 ))
                 .map_err(io_error)?;
         }
-        super::pack_out::write_pack(
-            self.store,
-            &planned.objects,
-            request.has("ofs-delta"),
-            self.threads,
-            &mut writer,
-        )?;
+        let deltas = super::pack_out::Deltas {
+            ofs: request.has("ofs-delta"),
+            thin: request.has("thin-pack").then_some(&planned.excluded),
+        };
+        super::pack_out::write_pack(self.store, &planned.objects, deltas, self.threads, &mut writer)?;
         writer.flush().map_err(io_error)?;
         drop(writer);
         if band.is_some() {

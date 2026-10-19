@@ -488,7 +488,11 @@ mod driver {
     }
 
     impl ToSql for Param<'_> {
-        fn to_sql(&self, _ty: &Type, out: &mut BytesMut) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        fn to_sql(&self, ty: &Type, out: &mut BytesMut) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+            if let (Value::Bytes(bytes), true) = (self.0, ty == &Type::BYTEA) {
+                out.extend_from_slice(bytes);
+                return Ok(IsNull::No);
+            }
             match value_text(self.0)? {
                 Some(text) => {
                     out.extend_from_slice(text.as_bytes());
@@ -502,8 +506,14 @@ mod driver {
             true
         }
 
-        fn encode_format(&self, _ty: &Type) -> Format {
-            Format::Text
+        /// Text, so the server parses each value as its column's type, except bytes for a `bytea`: sent as they are
+        /// rather than as hex text twice their size (which also overflows the 1 GB field limit at half of it).
+        fn encode_format(&self, ty: &Type) -> Format {
+            if ty == &Type::BYTEA && matches!(self.0, Value::Bytes(_)) {
+                Format::Binary
+            } else {
+                Format::Text
+            }
         }
 
         postgres::types::to_sql_checked!();

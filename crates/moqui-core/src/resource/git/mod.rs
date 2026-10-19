@@ -25,9 +25,11 @@
 
 pub(crate) mod browse;
 pub(crate) mod db;
+pub(crate) mod delta;
 pub(crate) mod diff;
 pub(crate) mod events;
 pub(crate) mod fs;
+pub mod gc;
 pub(crate) mod ops;
 pub(crate) mod revwalk;
 pub mod server;
@@ -36,7 +38,7 @@ pub(crate) mod store;
 mod tests;
 pub(crate) mod values;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -122,6 +124,8 @@ struct Inner {
     /// When each repository's refs last changed (milliseconds): a push of commits dated in the past still changes the
     /// last-modified time of its files, which caches over `git://` locations go by.
     updated: Mutex<HashMap<String, i64>>,
+    /// Decoded objects of the `db` repositories.
+    objects: Arc<db::ObjectCache>,
 }
 
 impl std::fmt::Debug for GitProvider {
@@ -191,6 +195,7 @@ impl GitProvider {
                 locks: Mutex::new(HashMap::new()),
                 event_locks: Mutex::new(HashMap::new()),
                 updated: Mutex::new(HashMap::new()),
+                objects: db::object_cache(),
             }),
         }
     }
@@ -249,7 +254,11 @@ impl GitProvider {
                 Box::new(fs::FsStore::open(&definition.path)?)
             }
             RepositoryKind::Local => Box::new(fs::FsStore::init(&definition.path, &definition.branch)?),
-            RepositoryKind::Db => Box::new(db::DbStore::new(self.entity()?, &definition.id)),
+            RepositoryKind::Db => Box::new(db::DbStore::new(
+                self.entity()?,
+                &definition.id,
+                Arc::clone(&self.inner.objects),
+            )),
         };
         Ok(Repo { definition, store })
     }
@@ -609,14 +618,8 @@ impl GitProvider {
         let Some(head) = Self::head(&repo)? else {
             return Ok((path, 0));
         };
-        let mut seen = HashSet::new();
-        let count = ops::reachable(repo.store.as_ref(), &head.id, &mut seen, |id, kind, data| {
-            let written = target.write(kind, data)?;
-            if written != *id {
-                return Err(Error::new(format!("object {id} was written as {written}")));
-            }
-            Ok(())
-        })?;
+        let haves: Vec<ObjectId> = target.list_refs("refs/")?.into_iter().map(|(_, id)| id).collect();
+        let count = server::copy_objects(repo.store.as_ref(), &target, head.id, &haves, &self.scratch("export", repository_id))?;
         let name = ops::branch_ref(&definition.branch);
         let current = target.read_ref(&name)?;
         if !target.compare_and_set_ref(&name, current, head.id)? {
@@ -654,7 +657,11 @@ impl GitProvider {
             }
             let other = self.definition(other)?;
             let store: Box<dyn GitStore> = match other.kind {
-                RepositoryKind::Db => Box::new(db::DbStore::new(self.entity()?, &other.id)),
+                RepositoryKind::Db => Box::new(db::DbStore::new(
+                    self.entity()?,
+                    &other.id,
+                    Arc::clone(&self.inner.objects),
+                )),
                 _ => Box::new(fs::FsStore::open(&other.path)?),
             };
             (store, other.branch)
@@ -703,14 +710,8 @@ impl GitProvider {
         let repo = self.repo(repository_id)?;
         let lock = self.lock_of(repository_id);
         let _turn = moqui_lib::sync::lock(&lock);
-        let mut seen = HashSet::new();
-        let count = ops::reachable(from, &head, &mut seen, |id, kind, data| {
-            let written = repo.store.write(kind, data)?;
-            if written != *id {
-                return Err(Error::new(format!("object {id} was written as {written}")));
-            }
-            Ok(())
-        })?;
+        let haves: Vec<ObjectId> = repo.store.list_refs("refs/")?.into_iter().map(|(_, id)| id).collect();
+        let count = server::copy_objects(from, repo.store.as_ref(), head, &haves, &self.scratch("import", repository_id))?;
         let name = ops::branch_ref(branch);
         let prior = repo.store.list_refs("refs/")?;
         let current = repo.store.read_ref(&name)?;
@@ -736,6 +737,18 @@ impl GitProvider {
             self.record_update(repository_id, &origin, repo.store.as_ref(), &prior, &[change]);
         }
         Ok((head.to_string(), count))
+    }
+}
+
+impl GitProvider {
+    /// A new scratch directory under `runtime/tmp` for a copy of objects.
+    fn scratch(&self, what: &str, repository_id: &str) -> PathBuf {
+        static SCRATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        self.inner.runtime_dir.join("tmp").join(format!(
+            "git-{what}-{repository_id}-{}-{}",
+            std::process::id(),
+            SCRATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
     }
 }
 

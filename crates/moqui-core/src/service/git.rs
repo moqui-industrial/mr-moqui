@@ -44,6 +44,8 @@ pub(in crate::service) fn register(
     rust_service!(map, commit_files)?;
     rust_service!(map, process_update)?;
     rust_service!(map, process_pending_updates)?;
+    rust_service!(map, gc_repositories)?;
+    rust_service!(map, fsck_repository)?;
     Ok(())
 }
 
@@ -570,6 +572,91 @@ fn commit_files(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) ->
     };
     match provider.commit_files(&id, &message, &puts, &removes) {
         Ok(made) => Ok(out([("commitId", made.map_or(Value::Null, |id| Value::string(id.to_string())))])),
+        Err(err) => {
+            add_error(err.message());
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+fn flag(parameters: &BTreeMap<String, Value>, key: &str) -> bool {
+    text(parameters, key).is_some_and(|value| matches!(value.as_str(), "true" | "Y" | "y"))
+}
+
+/// `gc#GitRepositories`: delete the unreachable objects of db repositories and repack them. Out: `results`, a Map
+/// per repository.
+fn gc_repositories(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+    let Some((provider, id)) = provider_and_id(parameters, false) else {
+        return Ok(BTreeMap::new());
+    };
+    let minutes = number(parameters, "timeoutMinutes", 60).max(1);
+    let options = crate::resource::git::gc::GcOptions::from_properties(
+        flag(parameters, "dryRun"),
+        std::time::Duration::from_secs(u64::try_from(minutes).unwrap_or(60) * 60),
+    );
+    let repository = (!id.is_empty()).then_some(id.as_str());
+    match provider.gc(repository, &options) {
+        Ok(outcomes) => {
+            let mut results = Vec::with_capacity(outcomes.len());
+            for (repository_id, outcome) in outcomes {
+                let mut entries = vec![("repositoryId", Value::string(&repository_id))];
+                match outcome {
+                    Ok(report) => {
+                        let number = |value: u64| Value::I64(i64::try_from(value).unwrap_or(i64::MAX));
+                        entries.extend([
+                            ("deletedCount", number(report.deleted)),
+                            ("deletedBytes", number(report.deleted_bytes)),
+                            ("repackedCount", count(report.repacked)),
+                            ("savedBytes", Value::I64(report.saved_bytes)),
+                            ("objectCount", count(report.objects)),
+                            ("storedBytes", number(report.stored_bytes)),
+                            ("summary", Value::string(report.summary())),
+                        ]);
+                    }
+                    Err(err) => {
+                        // recorded on the repository and logged; the others still ran
+                        add_error(format!("git gc of {repository_id}: {}", err.message()));
+                        entries.push(("error", Value::string(err.message())));
+                    }
+                }
+                results.push(map(entries));
+            }
+            Ok(out([("results", Value::List(results))]))
+        }
+        Err(err) => {
+            add_error(err.message());
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// `fsck#GitRepository`: decode every object of a db repository and check it against its id. Out: `checkedCount`,
+/// `errors`.
+fn fsck_repository(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, LibError> {
+    let Some((provider, id)) = provider_and_id(parameters, true) else {
+        return Ok(BTreeMap::new());
+    };
+    let minutes = number(parameters, "timeoutMinutes", 60).max(1);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(u64::try_from(minutes).unwrap_or(60) * 60);
+    match provider.fsck(&id, deadline) {
+        Ok(report) => {
+            if report.errors.is_empty() {
+                add_message(format!("Checked {} objects of git repository {id}: no errors", report.checked));
+            } else {
+                add_error(format!(
+                    "git repository {id} has {} damaged objects or refs: {}",
+                    report.errors.len(),
+                    report.errors.iter().take(5).cloned().collect::<Vec<_>>().join("; ")
+                ));
+            }
+            if let Some(stopped) = &report.stopped {
+                add_message(stopped.clone());
+            }
+            Ok(out([
+                ("checkedCount", count(report.checked)),
+                ("errors", Value::List(report.errors.into_iter().map(Value::string).collect())),
+            ]))
+        }
         Err(err) => {
             add_error(err.message());
             Ok(BTreeMap::new())

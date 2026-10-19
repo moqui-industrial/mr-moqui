@@ -17,7 +17,8 @@
 //! write's after (`pending`). A pending update's post events run on a job of the git pool soon after
 //! ([`GitProvider::process_update`]), or from the `process_PendingGitUpdates_frequent` job when that did not happen:
 //! the rows are what make the events survive a restart. The commits new to the repository are worked out then, from
-//! the refs before the change (`priorTips`): objects are never deleted, so the walk gives the same answer later.
+//! the refs before the change (`priorTips`): a collection of unreachable objects (`gc#GitRepositories`) keeps the
+//! tips of an update not yet done, so the walk gives the same answer later.
 //! The pre events of a push run in the push itself, against its quarantined objects ([`pre_receive`]).
 
 use std::collections::{BTreeMap, HashSet};
