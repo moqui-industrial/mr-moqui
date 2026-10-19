@@ -765,5 +765,20 @@ fn the_render_modes_list_and_a_link_parameter_take_either_name() {
         .render()
         .unwrap();
     assert_eq!(print_body(&followed), print_body(&render(&old, "html-print").unwrap()));
+    // A test render's path query names the mode, as Java's ScreenTest puts the query in the request parameters.
+    let root = write(
+        "Root.xml",
+        "",
+        &format!(
+            r#"<subscreens-active/></widgets><subscreens><subscreens-item name="Old" location="{old}"/></subscreens><widgets>"#
+        ),
+    );
+    let tested = ScreenTest::new(context.factory()).root_screen(root).test_render(
+        "Old?renderMode=xsl-fo",
+        BTreeMap::new(),
+        None,
+    );
+    let output = tested.output.expect("a print render");
+    assert!(print_body(&output).contains("old list</div>"), "{}", output.body_text());
     let _ = std::fs::remove_dir_all(&dir);
 }

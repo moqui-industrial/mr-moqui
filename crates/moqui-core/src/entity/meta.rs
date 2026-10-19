@@ -71,6 +71,8 @@ pub(crate) struct TableState {
     /// A find on a table that does not exist returns nothing, as Java. Off until the host turns it on, so a test
     /// driver that answers no metadata still runs its finds.
     find_check: AtomicBool,
+    /// The facade reads the model alone, with no database: every table counts as absent.
+    model_only: AtomicBool,
     exists: Mutex<HashMap<String, bool>>,
     checked: Mutex<HashSet<String>>,
     /// Serializes the runtime check, as Java's `synchronized internalCheckTable`.
@@ -93,6 +95,9 @@ impl EntityFacade {
     /// Whether the entity's table is in the database, asked of the database. A view asks of its members: true when
     /// any of them has a table, as Java's `tableExists`. The answer for a table is remembered.
     pub fn table_exists(&self, entity_name: &str) -> Result<bool, Error> {
+        if self.inner.tables.model_only.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
         let (full_name, members) = view_members(self, entity_name)?;
         if let Some(members) = members {
             for member in members {
@@ -139,6 +144,14 @@ impl EntityFacade {
         self.inner.tables.find_check.store(on, Ordering::Relaxed);
     }
 
+    /// For a run that reads the entity model and no data (a lint or a type generation): every table counts as absent,
+    /// so a find returns nothing and the database is never asked. Without it, each read fails as a database error, which
+    /// callers such as the screen cache treat as a passing failure and try again.
+    pub fn set_model_only(&self) {
+        self.inner.tables.model_only.store(true, Ordering::Relaxed);
+        self.inner.tables.find_check.store(true, Ordering::Relaxed);
+    }
+
     /// Forget what is known of the tables, as Java's `forceCheckExistingTables`, so the next use asks again.
     pub fn forget_tables(&self) {
         lock(&self.inner.tables.exists).clear();
@@ -171,7 +184,7 @@ impl EntityFacade {
     /// member tables), creating it or adding missing columns. A failure is logged; the caller goes on.
     pub(crate) fn check_table_runtime(&self, entity_name: &str) {
         let state = &self.inner.tables;
-        if lock(&state.checked).contains(entity_name) {
+        if state.model_only.load(Ordering::Relaxed) || lock(&state.checked).contains(entity_name) {
             return;
         }
         let found = self.with_entity(entity_name, |entity, _, _| {

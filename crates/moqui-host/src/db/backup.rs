@@ -139,7 +139,7 @@ fn backup_one(dir: &Path, target: &ToolTarget, request: &BackupRequest) -> Resul
         "dump".to_string()
     } else {
         let from = next_incremental(dir, target, request.full_every)?;
-        take_physical(dir, target, &name, from, request.timeout)?
+        take_physical(dir, target, &name, from, request.fast_checkpoint, request.timeout)?
     };
     let archives = archives_for_retain(dir, &target.prefix);
     let plan = retain(&archives, stamp, &TimeZone::system(), request);
@@ -198,6 +198,7 @@ fn take_physical(
     target: &ToolTarget,
     name: &str,
     from: Option<IncrementalFrom>,
+    fast_checkpoint: bool,
     timeout: Duration,
 ) -> Result<String, Error> {
     let partial = dir.join(format!("{name}.partial"));
@@ -209,6 +210,9 @@ fn take_physical(
     args.push(partial.display().to_string());
     args.push("-X".to_string());
     args.push("stream".to_string());
+    if fast_checkpoint {
+        args.push("--checkpoint=fast".to_string());
+    }
     if let Some(source) = &from {
         args.push(format!("--incremental={}", source.manifest.display()));
     }
@@ -216,7 +220,7 @@ fn take_physical(
         remove_partial(&partial);
         if from.is_some() && fallback_full(&err) {
             tracing::error!("incremental backup of {} failed, taking a full: {err}", target.prefix);
-            return take_physical(dir, target, name, None, timeout);
+            return take_physical(dir, target, name, None, fast_checkpoint, timeout);
         }
         return Err(err);
     }
@@ -777,6 +781,8 @@ mod tests {
             monthly: 12,
             yearly: None,
             full_every: 7,
+            // A spread checkpoint on the idle test cluster takes about 30 seconds for each pg_basebackup.
+            fast_checkpoint: true,
             timeout: Duration::from_secs(180),
         }
     }

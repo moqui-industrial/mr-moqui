@@ -126,6 +126,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="backupMode" type="String" default="dump"/>
             <parameter name="backupDir" type="String"/>
             <parameter name="fullEvery" type="Integer" default="7"/>
+            <parameter name="fastCheckpoint" type="Boolean" default="false"/>
             <parameter name="timeoutMinutes" type="Integer" default="120"/>
             <parameter name="systemMessageRemoteId" type="String"/>
         </in-parameters>

@@ -40,7 +40,9 @@ impl DbDriver for ModelOnly {
     }
 }
 
-/// A factory booted as for a server, with an entity facade over [`ModelOnly`]: the model loads and no data is read.
+/// A factory booted as for a server, with an entity facade over [`ModelOnly`]: the model loads and no data is read. The facade is
+/// model-only, so every table counts as absent and a find returns nothing; without that each `SubscreensItem` read fails, no
+/// screen definition stays cached, and each `//` link search loads every screen again.
 ///
 /// # Errors
 ///
@@ -56,6 +58,7 @@ pub(crate) fn model_only_factory(runtime: &Path, framework: &Path) -> Result<Arc
         ..Default::default()
     };
     let facade = open_entity_facade(framework, Arc::new(ModelOnly), pool)?;
+    facade.set_model_only();
     attach(&factory, facade);
     Ok(factory)
 }

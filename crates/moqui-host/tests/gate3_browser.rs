@@ -19,7 +19,7 @@
 //! content with a clean console: no uncaught exception, no `console.error` or `console.warn`, and no error or warning log entry (a failed
 //! request is one). The client features the macros bind are driven as a user would: dialogs, click to edit, a background submit, the
 //! column picker, a form post with the session token, Quasar menus and popups, the lazy Chart.js and Mermaid, and the pages and sort of a
-//! form-list. The run also executes the server-static compatibility report.
+//! form-list. The server-static compatibility report, and the fixture's clean verdict in it, is `it::qvt_report`.
 //!
 //! The browser is `pdf-chromium-path`, else `chromium`, `chromium-browser` or `google-chrome` on the `PATH`. A missing binary fails.
 
@@ -113,20 +113,6 @@ fn the_server_merged_modes_render_in_chromium_with_a_clean_console() {
 
 #[test]
 fn server_static_qvt_renders_in_chromium_with_its_actions_data() {
-    // the same run executes the compatibility report, and the fixture is clean in it
-    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let reports = moqui_host::qvt_report::qvt_static_reports(
-        &repo.join("runtime"),
-        &repo.join("runtime/base-component/framework"),
-    )
-    .unwrap();
-    let fixture = reports
-        .iter()
-        .find(|(location, _)| location.ends_with("ArtifactGroup/ArtifactGroupDetail.xml"))
-        .and_then(|(_, report)| report.as_ref().ok())
-        .expect("a report for the fixture");
-    assert!(fixture.is_clean(), "{}", fixture.render());
-
     let gate = start_with("browser-static", true);
     let base = format!("http://{}", gate.server.address());
     let mut browser = Browser::launch();

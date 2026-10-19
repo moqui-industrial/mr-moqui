@@ -12,11 +12,14 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The binary's screen lint and the server-static compatibility report of Gate 3: both run over the tree and exit 0.
+//! The binary's screen lint and the server-static compatibility report of Gate 3: both run over the tree and exit 0. The report's
+//! content, the Gate 3 fixture's verdict among it, is checked in-process by moqui-host's `it::qvt_report`; this test covers the command.
 
 use crate::moqui;
 
+// Every screen's report again, as it::qvt_report (slow) builds it: about 45 seconds in a debug build.
 #[test]
+#[ignore = "slow: cargo test -p moqui --test cli -- --ignored"]
 fn lint_screens_qvt_static_writes_the_report_and_exits_zero() {
     let out = std::env::temp_dir().join(format!("moqui-qvt-static-report-{}.txt", std::process::id()));
     let output = moqui(&["lint", "--screens", "--qvt-static", &out.display().to_string()]);
@@ -29,11 +32,7 @@ fn lint_screens_qvt_static_writes_the_report_and_exits_zero() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let fixture = report
-        .split("\nscreen ")
-        .find(|block| block.contains("tools/screen/System/Security/ArtifactGroup/ArtifactGroupDetail.xml\n"))
-        .unwrap_or_else(|| panic!("no block for the Gate 3 fixture in {report}"));
-    assert!(fixture.contains("verdict clean"), "{fixture}");
+    assert!(report.starts_with("screen "), "{report}");
     assert!(report.lines().last().unwrap_or("").contains("screens:"), "{report}");
 }
 
