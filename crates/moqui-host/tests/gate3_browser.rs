@@ -33,7 +33,7 @@ use example as _;
 use std::time::Duration;
 
 use common::cdp::{Browser, Problem};
-use common::{start, start_with, start_with_conf, FIXTURE};
+use common::{start, start_with, start_with_conf, start_with_data, FIXTURE};
 
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -243,6 +243,368 @@ fn a_notification_sent_on_the_server_shows_in_the_html_and_qapps_pages() {
         true
     );
     assert_clean(&mut browser, "qvt notification");
+}
+
+/// A key with modifiers (CDP: 1 Alt, 2 Ctrl, 4 Meta, 8 Shift) as a keydown that types nothing, then its keyup.
+fn key_chord(browser: &mut Browser, key: &str, code: &str, key_code: i64, modifiers: i64) {
+    for kind in ["rawKeyDown", "keyUp"] {
+        browser.call(
+            "Input.dispatchKeyEvent",
+            serde_json::json!({"type": kind, "key": key, "code": code, "windowsVirtualKeyCode": key_code, "modifiers": modifiers}),
+        );
+    }
+    browser.pump(Duration::from_millis(150));
+}
+
+fn ctrl_k(browser: &mut Browser) {
+    key_chord(browser, "k", "KeyK", 75, 2);
+}
+
+/// Replace the palette's text: select what is there, then type over it.
+fn palette_text(browser: &mut Browser, text: &str) {
+    browser.eval("(() => { const input = document.getElementById('m-palette-input'); input.focus(); input.select(); return true; })()");
+    browser.type_text(text);
+}
+
+/// The text of the palette's rows, once one has `shown`.
+fn palette_row(browser: &mut Browser, what: &str, shown: &str) -> String {
+    let found = browser.wait_for(
+        what,
+        &format!(
+            "Array.from(document.querySelectorAll('#m-palette .q-item')).map((el) => el.innerText).find((text) => text.indexOf({shown:?}) >= 0) || null"
+        ),
+        WAIT,
+    );
+    found.as_str().unwrap_or_default().to_string()
+}
+
+/// The suite shell of `/qapps` (IronStone impl-drawers-commons M1) over the gallery's shell providers, without BOSS: the
+/// launcher and the app title, Ctrl+K and the palette (a screen by title, the gallery's palette source by its `~` prefix,
+/// `:` and Enter to open), the `+` menu and the quick-create dialog with the screen context's record, closing when its form
+/// submits, and the keys (`?` and the gallery's `g w`). No tray, counters or Inbox without the theme values. The console
+/// stays clean. With `MOQUI_SHELL_SHOTS=<dir>` it saves PNGs of the header with the palette and the `+` menu open, light
+/// and dark, 1280 and 390 px wide.
+#[test]
+fn the_suite_shell_palette_quick_create_and_keys_work_in_chromium() {
+    let gate = start("browser-shell");
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    let detail = format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR");
+    browser.navigate(&detail);
+    browser.wait_for(
+        "the shell data",
+        "!!(window.moqui && moqui.webrootVue && moqui.webrootVue.shellData && moqui.webrootVue.shellData.apps.some((app) => app.name === 'gallery'))",
+        WAIT,
+    );
+    browser.wait_for(
+        "the record of the screen context",
+        "(moqui.webrootVue.screenRecord || {}).id === 'STT_INTERNAL_QUASAR'",
+        WAIT,
+    );
+    browser.eval(FETCH_SPY);
+    // the header: the current app's title, the launcher with the apps, Search; no tray, counters or Inbox without BOSS's
+    // theme values, and the notify history stays
+    let header = browser.eval("document.getElementById('top').innerText");
+    assert!(header.as_str().unwrap().contains("Gallery"), "{header}");
+    assert_eq!(
+        browser.eval(
+            "!!document.getElementById('m-launcher') && !!document.getElementById('m-search') && !document.querySelector('[id^=m-counter-]') \
+             && !document.getElementById('m-tray') && moqui.webrootVue.trayTabs.length === 0"
+        ),
+        true
+    );
+    browser.click("the launcher", "document.getElementById('m-launcher')");
+    browser.wait_for(
+        "the launcher's apps",
+        "!!document.querySelector('.m-launcher .m-launcher-current') && document.querySelector('.m-launcher').innerText.indexOf('All applications') >= 0",
+        WAIT,
+    );
+    browser.press("Escape");
+    browser.wait_for("the launcher closed", "!document.querySelector('.m-launcher')", WAIT);
+
+    // Ctrl+K: the palette with its input focused; a screen by its title
+    ctrl_k(&mut browser);
+    browser.wait_for(
+        "the palette",
+        "!!document.getElementById('m-palette') && document.activeElement && document.activeElement.id === 'm-palette-input'",
+        WAIT,
+    );
+    browser.type_text("widget");
+    let row = palette_row(&mut browser, "the Widgets screen", "Widgets");
+    assert!(row.contains("Gallery"), "the app is the subtitle: {row}");
+    palette_row(&mut browser, "the gallery's palette action", "Open the widget gallery");
+    // the gallery's palette source by its prefix: shellSearch with its group only
+    palette_text(&mut browser, "~Quasar");
+    palette_row(
+        &mut browser,
+        "a row of the gallery's palette source",
+        "Internal Applications - Quasar",
+    );
+    let searched = fetched(&mut browser, "the palette search", "/shellSearch");
+    let url = searched["url"].as_str().unwrap();
+    assert!(
+        url.contains("groups=GalleryEnumerations") && url.contains("text=Quasar"),
+        "{url}"
+    );
+    assert_eq!(searched["status"], 200, "{searched}");
+    assert_eq!(
+        browser.eval("Array.from(document.querySelectorAll('#m-palette .q-item__label--header')).map((el) => el.innerText.trim()).join('|')"),
+        "Enumerations"
+    );
+    // : is the screens alone, and Enter opens the first
+    palette_text(&mut browser, ":widgets");
+    palette_row(&mut browser, "the Widgets screen alone", "Widgets");
+    browser.press("Enter");
+    browser.wait_for(
+        "the Widgets screen",
+        "location.pathname === '/qapps/gallery/Widgets'",
+        WAIT,
+    );
+    browser.wait_for("the palette closed", "!document.getElementById('m-palette')", WAIT);
+    assert_clean(&mut browser, "the palette");
+
+    // the + menu on a record: the gallery's kind; its dialog gets the record of the screen context and closes on save
+    browser.navigate(&detail);
+    browser.wait_for(
+        "the record of the screen context",
+        "!!(moqui.webrootVue && moqui.webrootVue.shellData && (moqui.webrootVue.screenRecord || {}).id === 'STT_INTERNAL_QUASAR')",
+        WAIT,
+    );
+    browser.eval(FETCH_SPY);
+    browser.click("the + menu", "document.getElementById('m-quick-create-menu')");
+    browser.click(
+        "the gallery's quick-create kind",
+        &by_text(".q-menu .q-item", "Gallery note"),
+    );
+    browser.wait_for(
+        "the quick-create dialog with the record",
+        "!!document.getElementById('m-quick-create') && document.getElementById('m-quick-create').innerText.indexOf('On moqui.basic.Enumeration STT_INTERNAL_QUASAR') >= 0",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("moqui.webrootVue.assistReach.join(',')"),
+        "m-canvas,m-quick-create"
+    );
+    browser.click("the note field", "document.querySelector('#m-quick-create textarea')");
+    browser.type_text("From the gate");
+    browser.click("Save", &by_text("#m-quick-create button", "Save"));
+    browser.wait_for(
+        "the note's message",
+        "Array.from(document.querySelectorAll('.q-notification')).some((el) => el.innerText.indexOf('the note would be saved on moqui.basic.Enumeration STT_INTERNAL_QUASAR') >= 0)",
+        WAIT,
+    );
+    browser.wait_for("the dialog closed", "!document.getElementById('m-quick-create')", WAIT);
+    let posted = fetched(&mut browser, "the note post", "/saveNote");
+    assert_eq!(posted["status"], 200, "{posted}");
+    assert!(
+        posted["sent"].to_string().contains("recordId=STT_INTERNAL_QUASAR"),
+        "{posted}"
+    );
+    assert_clean(&mut browser, "quick create");
+
+    // the keys: ? lists them, with the gallery's own; g then w goes to the widgets
+    browser.eval("document.activeElement && document.activeElement.blur && document.activeElement.blur(), true");
+    key_chord(&mut browser, "?", "Slash", 191, 8);
+    browser.wait_for(
+        "the keys overlay",
+        "!!document.getElementById('m-keys-help') && document.getElementById('m-keys-help').innerText.indexOf('Go to the widgets') >= 0",
+        WAIT,
+    );
+    browser.press("Escape");
+    browser.wait_for("the overlay closed", "!document.getElementById('m-keys-help')", WAIT);
+    browser.eval("document.activeElement && document.activeElement.blur && document.activeElement.blur(), true");
+    key_chord(&mut browser, "g", "KeyG", 71, 0);
+    key_chord(&mut browser, "w", "KeyW", 87, 0);
+    browser.wait_for(
+        "g w went to the widgets",
+        "location.pathname === '/qapps/gallery/Widgets'",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the keys");
+
+    if let Some(dir) = std::env::var_os("MOQUI_SHELL_SHOTS") {
+        shell_shots(&mut browser, &detail, std::path::Path::new(&dir));
+    }
+}
+
+/// The tray panel of the suite shell, with theme values on DEFAULT_QUASAR that name gallery screens as BOSS names its own
+/// (`gallery/Panel` for Today, `gallery/Landing` for Notifications, `gallery/List` for the Inbox): the counters appear and the
+/// notify history goes; Today opens the tray with the Panel archetype inside it, in Assist's reach; a tab is loaded once and
+/// kept, the tray stays open across navigation and Esc closes it; a `shellCounts` message sets a badge. With
+/// `MOQUI_SHELL_SHOTS=<dir>` it saves PNGs of the open tray, light and dark, 1280 and 390 px wide.
+#[test]
+fn the_suite_shell_tray_shows_the_theme_screens_in_chromium() {
+    let gate = start_with_data(
+        "browser-tray",
+        r#"<entity-facade-xml type="seed">
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="900" resourceTypeEnumId="STRT_TRAY_TODAY" resourceValue="gallery/Panel"/>
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="901" resourceTypeEnumId="STRT_TRAY_NOTIFICATIONS" resourceValue="gallery/Landing"/>
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="902" resourceTypeEnumId="STRT_INBOX_SCREEN" resourceValue="gallery/List"/>
+        </entity-facade-xml>"#,
+    );
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    let detail = format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR");
+    browser.navigate(&detail);
+    browser.wait_for(
+        "the counters",
+        "!!document.getElementById('m-counter-today') && !!document.getElementById('m-counter-notifications') && !!document.getElementById('m-counter-mail')",
+        WAIT,
+    );
+    // no Chat tab without its theme value, and the notify history gives way to the Notifications tab
+    assert_eq!(
+        browser.eval("!document.getElementById('m-counter-chat') && !document.querySelector('#top .q-btn i.q-icon[class*=notifications]') \
+             && moqui.webrootVue.trayTabs.map((tab) => tab.key).join(',')"),
+        "today,notifications"
+    );
+    browser.click("Today", "document.getElementById('m-counter-today')");
+    browser.wait_for(
+        "the Panel archetype in the tray",
+        "!!document.getElementById('m-tray') && document.getElementById('m-tray').offsetParent !== null \
+         && document.getElementById('m-tray').innerText.indexOf('Overdue') >= 0",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("moqui.webrootVue.assistReach.join(',')"),
+        "m-canvas,m-tray"
+    );
+    assert_eq!(
+        browser.eval("!!document.getElementById('m-canvas').contains(document.getElementById('m-tray')) && Math.round(document.getElementById('m-tray').getBoundingClientRect().width)"),
+        400
+    );
+    // the other tab, then back: Today was loaded once and kept
+    browser.click("the Notifications tab", &by_text("#m-tray .q-tab", "Notifications"));
+    browser.wait_for(
+        "the Landing archetype in the tray",
+        "document.getElementById('m-tray').innerText.indexOf('Archetype 3.1') >= 0",
+        WAIT,
+    );
+    browser.eval("(document.querySelectorAll('#m-tray .m-tray-body')[0].firstElementChild.dataset.kept = 'yes'), true");
+    browser.click("the Today tab", &by_text("#m-tray .q-tab", "Today"));
+    browser.wait_for(
+        "Today again, the same content",
+        "!!document.querySelector('#m-tray .m-tray-body > [data-kept=yes]') && document.querySelector('#m-tray .m-tray-body > [data-kept=yes]').offsetParent !== null",
+        WAIT,
+    );
+    // a shellCounts message sets the badges
+    browser.eval("moqui.webrootVue.onShellNotification({topic: 'shellCounts', message: {today: 4, mail: 120, notifications: 0}}), true");
+    browser.wait_for(
+        "the badges",
+        "(document.querySelector('#m-counter-today .q-badge') || {}).innerText === '4' && (document.querySelector('#m-counter-mail .q-badge') || {}).innerText === '99+' \
+         && !document.querySelector('#m-counter-notifications .q-badge')",
+        WAIT,
+    );
+    // the tray stays open across navigation; Esc closes it; the Inbox count is a link
+    // (a link of the canvas goes through setUrl)
+    browser.eval("moqui.webrootVue.setUrl('/qapps/gallery/Landing'), true");
+    browser.wait_for(
+        "the Landing screen",
+        "location.pathname === '/qapps/gallery/Landing'",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("document.getElementById('m-tray').offsetParent !== null"),
+        true
+    );
+    browser.eval("document.activeElement && document.activeElement.blur && document.activeElement.blur(), true");
+    browser.press("Escape");
+    browser.wait_for(
+        "the tray closed",
+        "document.getElementById('m-tray').offsetParent === null",
+        WAIT,
+    );
+    browser.click("the Inbox count", "document.getElementById('m-counter-mail')");
+    browser.wait_for("the Inbox screen", "location.pathname === '/qapps/gallery/List'", WAIT);
+    assert_clean(&mut browser, "the tray");
+
+    if let Some(dir) = std::env::var_os("MOQUI_SHELL_SHOTS") {
+        use base64::Engine as _;
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        for (width, height) in [(1280, 900), (390, 844)] {
+            browser.call(
+                "Emulation.setDeviceMetricsOverride",
+                serde_json::json!({"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 600}),
+            );
+            browser.navigate(&detail);
+            browser.wait_for("the counters", "!!document.getElementById('m-counter-today')", WAIT);
+            for dark in [false, true] {
+                let mode = if dark { "dark" } else { "light" };
+                browser.eval(&format!(
+                    "moqui.webrootVue.$q.dark.set({dark}), moqui.webrootVue.openTray('today'), true"
+                ));
+                browser.wait_for(
+                    "the tray",
+                    "!!document.getElementById('m-tray') && document.getElementById('m-tray').innerText.indexOf('Overdue') >= 0",
+                    WAIT,
+                );
+                browser.pump(Duration::from_millis(500));
+                let shot = browser.call("Page.captureScreenshot", serde_json::json!({"format": "png"}));
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(shot["data"].as_str().unwrap())
+                    .unwrap();
+                std::fs::write(dir.join(format!("tray-{mode}-{width}.png")), bytes).unwrap();
+            }
+        }
+        browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
+    }
+}
+
+/// The header with the palette open and with the `+` menu open, light and dark, 1280 and 390 px wide, as PNGs in `dir`.
+fn shell_shots(browser: &mut Browser, page: &str, dir: &std::path::Path) {
+    use base64::Engine as _;
+    std::fs::create_dir_all(dir).unwrap();
+    let save = |browser: &mut Browser, name: &str| {
+        browser.pump(Duration::from_millis(500));
+        let shot = browser.call("Page.captureScreenshot", serde_json::json!({"format": "png"}));
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(shot["data"].as_str().unwrap())
+            .unwrap();
+        std::fs::write(dir.join(name), bytes).unwrap();
+    };
+    for (width, height) in [(1280, 900), (390, 844)] {
+        browser.call(
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 600}),
+        );
+        browser.navigate(page);
+        browser.wait_for(
+            "the shell data",
+            "!!(window.moqui && moqui.webrootVue && moqui.webrootVue.shellData && moqui.webrootVue.screenRecord)",
+            WAIT,
+        );
+        for dark in [false, true] {
+            let mode = if dark { "dark" } else { "light" };
+            browser.eval(&format!("moqui.webrootVue.$q.dark.set({dark}), true"));
+            ctrl_k(browser);
+            browser.wait_for(
+                "the palette",
+                "document.activeElement && document.activeElement.id === 'm-palette-input'",
+                WAIT,
+            );
+            browser.type_text("gallery");
+            palette_row(browser, "the gallery screens", "Gallery");
+            browser.wait_for(
+                "the palette search",
+                "Array.from(document.querySelectorAll('#m-palette .q-item__label--header')).some((el) => el.innerText.indexOf('Enumerations') >= 0) \
+                 || !document.querySelector('#m-palette .q-spinner')",
+                WAIT,
+            );
+            save(browser, &format!("palette-{mode}-{width}.png"));
+            browser.press("Escape");
+            browser.wait_for("the palette closed", "!document.getElementById('m-palette')", WAIT);
+            browser.click("the + menu", "document.getElementById('m-quick-create-menu')");
+            browser.wait_for("the + menu open", "!!document.querySelector('.q-menu')", WAIT);
+            save(browser, &format!("quick-create-{mode}-{width}.png"));
+            browser.press("Escape");
+            browser.wait_for("the + menu closed", "!document.querySelector('.q-menu')", WAIT);
+        }
+    }
+    browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
+    // dark mode was set on the page only, not saved as the user's preference
+    browser.eval("moqui.webrootVue.$q.dark.set(false), true");
 }
 
 /// The user id of a seeded user.

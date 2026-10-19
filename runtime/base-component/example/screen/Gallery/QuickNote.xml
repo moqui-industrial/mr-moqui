@@ -20,8 +20,13 @@ along with this software (see the LICENSE.md file). If not, see
     <parameter name="recordEntity"/>
     <parameter name="recordId"/>
 
+    <!-- The answer stays in the dialog: JSON with the message (messageInfos, as a url response carries them) and no screenUrl,
+        so the shell's quick-create dialog closes on it and the page under it stays. -->
     <transition name="saveNote">
-        <actions><message type="success">Gallery: the note would be saved${recordId ? ' on ' + recordEntity + ' ' + recordId : ''}; nothing is written.</message></actions>
+        <actions><script><![CDATA[
+            const text = 'Gallery: the note would be saved' + (recordId ? ' on ' + recordEntity + ' ' + recordId : '') + '; nothing is written.'
+            ec.web.sendJsonResponse({messageInfos: [{message: text, type: 'success'}]})
+        ]]></script></actions>
         <default-response type="none"/>
     </transition>
 

@@ -187,7 +187,8 @@ fn the_html_client_passes_its_node_tests() {
 }
 
 /// The qvt client: MoquiLib.js, the formatter MoquiL10n.js (checked against the vectors the server formatter uses),
-/// and the components of WebrootVue.qvt.js (every template compiles). Nothing runs when `node` is not installed.
+/// the components of WebrootVue.qvt.js (every template compiles) and its suite shell (palette, key map, screen context).
+/// Nothing runs when `node` is not installed.
 #[test]
 fn the_qvt_client_passes_its_node_tests() {
     let dir =
@@ -199,6 +200,7 @@ fn the_qvt_client_passes_its_node_tests() {
         "MoquiL10n.test.js",
         "WebrootVue.qvt.test.js",
         "WebrootVue.qvt.static.test.js",
+        "WebrootVue.qvt.shell.test.js",
     ] {
         command.arg(dir.join(name));
     }

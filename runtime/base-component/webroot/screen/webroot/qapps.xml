@@ -80,7 +80,17 @@ along with this software (see the LICENSE.md file). If not, see
                 screenHistory: ec.l10n.localize('Screen History'), account: ec.l10n.localize('Account'), welcome: ec.l10n.localize('Welcome'),
                 logout: ec.l10n.localize('Logout'), switchDarkLight: ec.l10n.localize('Switch Dark/Light'), reLogin: ec.l10n.localize('Re-Login'),
                 authenticationCode: ec.l10n.localize('Authentication Code'), signIn: ec.l10n.localize('Sign in'), password: ec.l10n.localize('Password'),
-                reloadPage: ec.l10n.localize('Reload Page') }
+                reloadPage: ec.l10n.localize('Reload Page'),
+                // the suite shell: launcher, search and palette, quick create, the tray and its counts, the keys (js/README.md)
+                applications: ec.l10n.localize('Applications'), allApplications: ec.l10n.localize('All applications'), search: ec.l10n.localize('Search'),
+                quickCreate: ec.l10n.localize('Create'), quickCreateFirst: ec.l10n.localize('Create in this app'), today: ec.l10n.localize('Today'),
+                chat: ec.l10n.localize('Chat'), inbox: ec.l10n.localize('Inbox'), notifications: ec.l10n.localize('Notifications'), close: ec.l10n.localize('Close'),
+                closeTopmost: ec.l10n.localize('Close the dialog, menu or panel'), keyboardShortcuts: ec.l10n.localize('Keyboard shortcuts'),
+                keysEverywhere: ec.l10n.localize('Everywhere'), recent: ec.l10n.localize('Recent'), screens: ec.l10n.localize('Screens'),
+                savedFinds: ec.l10n.localize('Saved finds'), actions: ec.l10n.localize('Actions'), more: ec.l10n.localize('More'),
+                noResults: ec.l10n.localize('Nothing found'), paletteHint: ec.l10n.localize('Search screens, records and actions'),
+                paletteEmpty: ec.l10n.localize('Type to search screens, records, people and actions'),
+                paletteKeys: ec.l10n.localize('↑ ↓ to move, Enter to open, Ctrl+Enter in a new tab') }
         }
         // conditional QZ Tray scripts, only for a user who turned printing on; the client loads them
     ]]></script></pre-actions>

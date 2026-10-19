@@ -227,21 +227,26 @@ test("a menu image of type icon is a Quasar icon name for q-icon, or CSS classes
     const icon = qvt.components["m-menu-icon"];
     assert.equal(icon.computed.isClass.call({ name: "sym_o_receipt_long" }), false);
     assert.equal(icon.computed.isClass.call({ name: "fa fa-cog" }), true);
-    // the drawer, the breadcrumbs' subscreen menus and the screen history all draw a menu icon through it
+    // the drawer, the breadcrumbs' subscreen menus, the launcher and the palette (its Recent group is the screen history) all
+    // draw a menu icon through it
     assert.match(qvt.components["m-menu-item-content"].template, /<m-menu-icon v-if="menuItem.imageType === 'icon'" :name="menuItem.image"/);
     const shell = qvt.components["m-qapps-root"].template;
     assert.match(shell, /<m-menu-icon v-if="subscreen.image && subscreen.imageType === 'icon'" :name="subscreen.image"/);
-    assert.match(shell, /<m-menu-icon v-if="histItem.image && histItem.imageType === 'icon'" :name="histItem.image"/);
-    assert.doesNotMatch(shell, /:class="(subscreen|histItem)\.image"/);
+    assert.match(shell, /<m-menu-icon v-if="app.image && app.imageType === 'icon'" :name="app.image"/);
+    assert.match(qvt.components["m-shell-palette"].template, /<m-menu-icon v-if="row.icon \|\| \(row.image && row.imageType === 'icon'\)" :name="row.icon \|\| row.image"/);
+    assert.doesNotMatch(shell, /:class="(subscreen|histItem|app)\.image"/);
+    // the screen history menu is gone from the header
+    assert.doesNotMatch(shell, /navHistoryList|screenHistory/);
 });
 
 test("an m-screen-context registers with the root, follows its props and leaves on unmount; the latest one is the screen context", () => {
     const options = qvt.rootOptions({ basePath: "/apps", linkBasePath: "/qapps", appRootPath: "" });
     const data = options.data();
     assert.deepEqual(data.screenContexts, []);
-    assert.deepEqual(data.assistReach, ["m-canvas"]);
+    assert.deepEqual(options.computed.assistReach.call(data), ["m-canvas"]);
     const root = Object.assign(data, { currentPath: "/apps/gallery/Detail", currentParameters: { enumId: "STT_INTERNAL" } });
     Object.keys(options.methods).forEach((name) => { root[name] = options.methods[name].bind(root); });
+    Object.defineProperty(root, "screenRecord", { get: () => options.computed.screenRecord.call(root) });
     const screenContext = () => options.computed.screenContext.call(root);
     assert.deepEqual(screenContext(), { path: "/apps/gallery/Detail", parameters: { enumId: "STT_INTERNAL" }, record: null, selection: null, filters: null, forms: [] });
 
@@ -260,7 +265,8 @@ test("an m-screen-context registers with the root, follows its props and leaves 
     const dialog = make({ recordEntity: "moqui.basic.EnumerationType", recordId: 42, selectionForm: "EnumList" });
     comp.mounted.call(dialog);
     assert.deepEqual(screenContext().record, { entity: "moqui.basic.EnumerationType", id: "42", title: "" });
-    assert.deepEqual(screenContext().selection, { form: "EnumList" });
+    // no list of that name is on the page, so nothing is selected
+    assert.deepEqual(screenContext().selection, { form: "EnumList", ids: [] });
     // a prop change keeps the registration's place
     page.recordId = "STT_ERROR";
     comp.watch.value.call(page, page.value);

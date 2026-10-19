@@ -64,7 +64,8 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 | `MoquiQzComponent.js` | QZ Tray 2.3 printing, loaded after `/libs/qz-tray/qz-tray.js` and only when the user preference `qz.print.enabled` is `true`. |
 | `../css/WebrootVue.qvt.css` | the styles of the shell, the div tables and the widgets |
 
-The tests are `MoquiLib.test.js`, `MoquiL10n.test.js`, `WebrootVue.qvt.test.js` and `WebrootVue.qvt.static.test.js` (the script and package
+The tests are `MoquiLib.test.js`, `MoquiL10n.test.js`, `WebrootVue.qvt.test.js`, `WebrootVue.qvt.shell.test.js` (the palette, the key map, the
+screen context's forms and the root's shell data) and `WebrootVue.qvt.static.test.js` (the script and package
 the server answers for `crates/moqui-core` `testdata/Static/Items` run on the real Vue runtime over a fake DOM; every component template compiles with the vendored
 Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
 browser (mounting, Quasar menus and popups, dialogs, posts, the lazy libraries, static lists) is the Chromium smoke of Gate 3
@@ -180,14 +181,16 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 list under the name of the form and `Count`, `PageIndex`, `PageSize`, `PageMaxIndex`, `PageRangeLow`, `PageRangeHigh` keys. The server-merged
 macros write the rows themselves; this component is for the screens that fetch.
 
-The shell is a `q-layout` with a `q-header` (menu button, logo, title, the screen path as `q-breadcrumbs`, the documentation, notification,
-history and account menus), a `q-drawer` with the screen menu (`QUASAR_LEFT_OPEN`; an overlay below 1024px), the page, and a `q-footer` with the
+The shell is a `q-layout` with a `q-header` (menu button, the launcher, the current app's title, the screen path as `q-breadcrumbs`, Search,
+the `+` menu, the Today, Chat, Inbox and Notifications buttons, the documentation, the notify history when there is no Notifications tab, and
+the account menu: see Shell data and providers), a `q-drawer` with the screen menu (`QUASAR_LEFT_OPEN`; an overlay below 1024px), the page, and a `q-footer` with the
 theme's footer items. The `LoadingBar` plugin runs while the root's `loading` count is above zero. `config.quasar` (brand, notify, loadingBar) is the
 JSON of the theme's `STRT_QUASAR_CONFIG` resource, merged over the defaults.
 The shell gives Quasar a stand-in for `vue-router` (`$router.resolve`, `push`, `replace`, and `$route`), so `q-btn to="..."` and `q-item to="..."` navigate with `setUrl`.
 `moqui.webrootVue` is the root: `setUrl(url, bodyParameters)`, `setParameters(obj)`, `reloadContainer(id)`, `loadContainer(id, url)`,
-`hideContainer(id)`, `addNotify`, `getLinkPath`, and the screen context: `setScreenContext(key, value)`, `removeScreenContext(key)`,
-`screenContext` and `assistReach` (below).
+`hideContainer(id)`, `addNotify`, `getLinkPath`, the screen context: `setScreenContext(key, value)`, `removeScreenContext(key)`,
+`screenContext` and `assistReach`, and the suite shell: `shellData`, `shellCounts`, `openPalette()`, `openTray(key)`, `closeTray()`,
+`openQuickCreate(item)` (below).
 
 ## Shell data and providers
 
@@ -266,20 +269,71 @@ entity filters, so it shows only what the user may see. `example.ExampleServices
 two seconds: requests inside that window fold into one send at its end. Inside a transaction the request waits for the commit, and the
 sends are made on a server thread, so the caller never waits for the counts. The EECAs and SECAs on the records the counts read call it.
 
+**`GET /shellCounts`** (read-only, 401 without a user): `{counts}`, what `get#ShellCounts` answers for the current user (null without a counts
+service). The shell asks it every five minutes while the notification socket is down.
+
 **Screen context.** The `context` element (`<context record-entity record-id title selection-form/>`) writes an `m-screen-context`; in a
 server-static screen its attributes are bound over the screen's actions data. The root keeps the registrations of the mounted ones in
 `screenContexts` and exposes the latest as:
 
 ```
 screenContext: { path, parameters,                         // currentPath (/apps/...) and currentParameters
-                 record: { entity, id, title } | null,     // with an entity and an id
-                 selection: { form } | null,               // the form-list whose selected rows are the selection
-                 filters: null, forms: [] }                // not gathered yet
-assistReach: ["m-canvas"]                                  // ids of the elements Assist may reach: the q-page-container
+                 record: { entity, id, title } | null,     // with an entity and an id (also screenRecord)
+                 selection: { form, ids } | null,          // the selection-form list and the values of its selected rows
+                 filters: [ { form, parameters } ] | null, // the current parameters that are find fields of a list or find form
+                 forms: [ { name, kind, fields, findFields?, rows? } ] }   // kind form, find or list
+assistReach: ["m-canvas", "m-tray"?, "m-quick-create"?]   // ids Assist may reach: the q-page-container, the tray while open, the
+                                                           // quick-create dialog while open; never the header, drawer or palette
 ```
 
-A dialog's screen with a context registers after the page's and is the latest until it is unmounted. Quick create passes `record.entity`
-and `record.id` as `recordEntity` and `recordId`.
+`forms` comes from the forms mounted now (`moqui.screenForms`: each `m-form`, `m-form-link` and `m-form-list`, and the `m-checkbox-set`
+of a list's selection; `moqui.screenFormsContext` gathers them): a single form by its name with its field names, a find form (`m-form-link`)
+as `find`, and a list as `list`. A list is known by its `<list>_table` element: its row forms (`<list>_<n>`) fold into it (`fields`, `rows`)
+and its header find form (`<list>_header`) gives `findFields`; an `m-form-list` and a multi form are lists too. `filters` are, for each list
+or find form, the current URL parameters with a value that are its find fields (with their `_op`, `_not`, `_ic`, `_from`, `_thru` and period
+companions). `selection.ids` are the values of the checked rows of the selection-form list (`rows` for an `m-form-list`). A dialog's
+screen with a context registers after the page's and is the latest until it is unmounted.
+
+### The shell in the client
+
+`m-qapps-root` fetches `/shellData` once when the page starts and again after a re-login, and keeps it as `shellData` (`shellCounts` holds the
+latest counts). The header, left to right (IronStone style-guide §2.2, design §1.2):
+
+- **Launcher**: the theme's logo as a button whose `q-menu` is a grid of `shellData.apps` (their `m-menu-icon` icons), the current app
+  outlined, and "All applications" to the AppList. The title is the current app's (`currentApp`, the first path name), the theme's outside one.
+- **Search** opens the palette; a label and the key hint (Ctrl K, ⌘K on a Mac) from 1024 px, the icon alone below.
+- **`+`**: the `quickCreate` kinds of every app, the current app's first, once per link; a `requiresRecord` kind only while there is a record
+  in the screen context. A kind opens its link (as `/apps/...`) in `m-shell-quick-create`, an `m-dialog` with an `m-dynamic-container`, with
+  `recordEntity`, `recordId` and `recordTitle` from the screen context. An `m-form` in it with no `submit-hide-id` closes it when the answer has
+  no errors (it injects `mSubmitHide`); going to another screen closes it too. A quick-create screen answers its form with JSON (messages in
+  `messageInfos`) and no `screenUrl` to stay on the page (example `Gallery/QuickNote.xml`), or with a `screenUrl` to open the new record.
+- **Today, Chat, Inbox, Notifications**: each only when its theme value is set (R27). Today, Chat and Notifications open the tray on their tab;
+  the Inbox count is a link to `shell.inboxScreen`. Badges are `shellCounts.today`, `chat`, `mail` and `notifications` (a number, or a map's
+  `total`). Without a Notifications tab the notify-history menu stays. The screen history is the palette's Recent.
+- **Account menu**: the `accountMenuItems` of every app after the user's name. The right `q-drawer` slot stays free for Assist (R1).
+
+**Tray** (`m-shell-tray`, id `m-tray`): a `q-page-sticky` at the right of the canvas, inside the `q-page-container`, 400 px from 600 px and the
+full width below, over the screen. A tab per tray screen of the theme; each is an `m-dynamic-container` of its link (as `/apps/...`) mounted on
+its first opening and then kept, so its state lasts across navigation. The root keeps the open state, the tab and each tab's scroll (also in
+`sessionStorage`, for a reload). Esc and the close button close it. On the notification socket, `shellCounts` sets the badges and reloads the
+open tab; `todayItems` reloads Today, a `chatRoom:` topic Chat, and `notifications` or an app's `notification-topic` Notifications. A reload keeps
+the tab's content until the new one is there (`m-dynamic-container.reload`). While the socket is down the counts are fetched every five
+minutes (`/shellCounts`) and the open tab reloaded.
+
+**Palette** (`m-shell-palette`, id `m-palette`): a `q-dialog` at the top, Ctrl+K or Cmd+K anywhere but in a rich-text editor (which keeps
+Ctrl+K). Groups (`moqui.shellPalette.groups`): Recent (the screens of this page before the current one) before any text; then Screens (the
+apps' menus by title), Saved finds (the current menu data's), Actions (the apps' `paletteActions`), and the `shellSearch` groups, asked
+250 ms after the text stops changing, each up to five rows with a "more" row to its `moreUrl`. `>` shows the actions alone, `:` the screens
+alone, and a source's prefix (`@`, `#`, `~`) only its sources' groups (`groups` of the request). The arrow keys move, Enter opens the selected
+row (the first by default), Ctrl+Enter or Cmd+Enter opens it in a new tab.
+
+**Keys** (`moqui.keymap`, design §1.7): `registerScope(scope, bindings)` returns the function that takes them back; a binding is
+`{keys, label, run(event), action, when(), notInEditor}`, keys like `Mod+K` (Ctrl or Cmd), `Ctrl+Shift+A`, `Esc`, `?` or the chord `g c`
+(1.5 s). A screen's or `.qvue` component's scope is tried before `global`; a text input, select or editable element keeps the single keys it
+types; while a dialog is open single keys wait. The shell's own: Mod+K the palette, Esc closes the tray when no dialog or menu is open (Quasar
+closes those), `?` the overlay of the keys on now, `c` the current app's first `+` kind. The apps' `keymap` providers: an empty or `global`
+scope everywhere, another while its app is the current one. The `KEYMAP` user preference (`config.preferences`) changes keys:
+`{"global": {"palette": "Mod+P", "g c": "g x"}}`, by scope, the binding's `action` or else its keys.
 
 ## Server-static screens
 

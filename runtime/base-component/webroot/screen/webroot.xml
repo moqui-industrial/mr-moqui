@@ -65,6 +65,20 @@ along with this software (see the LICENSE.md file). If not, see
             ]]></script></actions>
         <default-response type="none"/>
     </transition>
+    <!-- The badge counts alone, for the shell's poll while the notification socket is down: {counts}, what
+        org.moqui.impl.ShellServices.get#ShellCounts answers for the current user (null without a counts service). 401
+        without a user. -->
+    <transition name="shellCounts" read-only="true" begin-transaction="false">
+        <actions><script><![CDATA[
+            if (!ec.user.userId) {
+                ec.web.sendJsonError(401, 'Authentication required')
+            } else {
+                const out = ec.service.sync().name('org.moqui.impl.ShellServices.get#ShellCounts').call()
+                ec.web.sendJsonResponse({counts: out.counts ?? null})
+            }
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
     <transition name="email"><path-parameter name="emailMessageId"/><actions><script>ec.web.viewEmailMessage()</script></actions>
         <default-response type="none"/></transition>
 
@@ -72,7 +86,7 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- TODO: get fancier with this, crawl screen tree looking for screens that don't require authc, maybe some sort of setting to allow robots or not -->
         <!-- TODO: also generate sitemap XML with paths we want crawled, based on ? -->
         <actions><script><![CDATA[
-            const disallowList = ['apps', 'qapps', 'rest', 'rpc', 'status', 'menuData', 'shellData', 'shellSearch', 'llm']
+            const disallowList = ['apps', 'qapps', 'rest', 'rpc', 'status', 'menuData', 'shellData', 'shellSearch', 'shellCounts', 'llm']
             let robotsText = "user-agent: *\n"
             for (const disPath of disallowList) robotsText += `disallow: /${disPath}\n`
             ec.web.sendTextResponse(robotsText)

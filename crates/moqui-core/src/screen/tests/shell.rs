@@ -673,6 +673,54 @@ fn shell_counts_come_from_the_service_of_the_users_qapps_theme_and_a_failing_one
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The `shellCounts` transition of webroot.xml (the shell's poll while the socket is down), as that file writes it, under
+/// the test root: 401 without a user, else `{counts}` of the user's theme service, null without one.
+#[test]
+fn the_shell_counts_transition_answers_the_counts_of_the_current_user() {
+    let dir = tree("counts-transition");
+    let webroot = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/webroot/screen/webroot.xml"),
+    )
+    .unwrap();
+    let start = webroot
+        .find("<transition name=\"shellCounts\"")
+        .expect("webroot.xml has shellCounts");
+    let end = start + webroot[start..].find("</transition>").unwrap() + "</transition>".len();
+    let root_text = ROOT.replacen(
+        "<subscreens default-item",
+        &format!("{}\n    <subscreens default-item", &webroot[start..end]),
+        1,
+    );
+    std::fs::write(dir.join("Root.xml"), root_text).unwrap();
+    let world = world(&dir);
+    let root = root_of(&dir);
+    let (status, _) = get(&world, &root, None, "/shellCounts", &[]);
+    assert_eq!(status, 401);
+    let (status, answer) = get(&world, &root, Some("plain"), "/shellCounts", &[]);
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(answer, json!({"counts": {"today": 3, "chat": 1, "user": "plain"}}));
+    let (_, answer) = get(&world, &root, Some("other"), "/shellCounts", &[]);
+    assert_eq!(answer, json!({"counts": {"other": true}}));
+    {
+        let ctx = world.factory.new_context();
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        row(
+            &world,
+            "moqui.security.UserScreenTheme",
+            &[
+                ("userId", Value::string("admin")),
+                ("screenThemeTypeEnumId", Value::string("STT_INTERNAL_QUASAR")),
+                ("screenThemeId", Value::string("EMPTY_QUASAR")),
+            ],
+        );
+    }
+    let (status, answer) = get(&world, &root, Some("admin"), "/shellCounts", &[]);
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(answer, json!({"counts": null}), "no counts service in the theme");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The shellCounts messages for `user` the topic carried so far.
 fn sent_counts(seen: &Arc<Mutex<Vec<serde_json::Value>>>, user: &str) -> Vec<serde_json::Value> {
     seen.lock()

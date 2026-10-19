@@ -1021,7 +1021,18 @@
         data() { return { curComponent: moqui.EmptyComponent, curUrl: "" }; },
         template: '<component :is="curComponent"></component>',
         methods: {
-            reload() { const saveUrl = this.curUrl; this.curUrl = ""; setTimeout(() => { this.curUrl = saveUrl; }, 20); },
+            // the screen again: the content shown stays until the new one is there (a tray tab keeps its place); the same component
+            // (a cached one) is made again by a moment without it
+            reload() {
+                const url = this.curUrl;
+                if (!url) return;
+                moqui.loadComponent(url, (comp) => {
+                    if (this.curUrl !== url) return;
+                    if (comp !== this.curComponent) { this.curComponent = comp; return; }
+                    this.curComponent = moqui.EmptyComponent;
+                    this.$nextTick(() => { this.curComponent = comp; });
+                }, this.id);
+            },
             load(url) { if (this.curUrl === url) this.reload(); else this.curUrl = url; }
         },
         watch: {
@@ -1178,9 +1189,111 @@
 
     /* ========== form components ========== */
 
+    // The forms of the screens shown (m-form, m-form-link, m-form-list and the m-checkbox-set of a list's selection), while
+    // mounted. The root's formsVersion changes with them, so its screenContext is gathered again.
     moqui.screenForms = [];
-    moqui.registerScreenForm = (vm) => { if (vm && moqui.screenForms.indexOf(vm) < 0) moqui.screenForms.push(vm); };
-    moqui.unregisterScreenForm = (vm) => { const i = moqui.screenForms.indexOf(vm); if (i >= 0) moqui.screenForms.splice(i, 1); };
+    const formsChanged = () => { if (moqui.webrootVue && typeof moqui.webrootVue.formsVersion === "number") moqui.webrootVue.formsVersion += 1; };
+    moqui.registerScreenForm = (vm) => { if (vm && moqui.screenForms.indexOf(vm) < 0) { moqui.screenForms.push(vm); formsChanged(); } };
+    moqui.unregisterScreenForm = (vm) => { const i = moqui.screenForms.indexOf(vm); if (i >= 0) { moqui.screenForms.splice(i, 1); formsChanged(); } };
+
+    // The forms part of the root's screenContext, from the registered forms (vms), the page (dom: hasTable(name), the
+    // <name>_table element of a list is on the page; holds(vm, name), that list is inside the vm's element), the current
+    // parameters and the context's selection-form:
+    // - forms: [{name, kind, fields}], kind form (m-form), find (m-form-link) or list. A list's row forms (<list>_<n>) fold
+    //   into it (fields, rows: their count), its header find form (<list>_header) gives its findFields, and an m-form-list
+    //   or a multi form (one form for all rows) is a list too. A list is known by its <list>_table element.
+    // - filters: [{form, parameters}] or null, the current parameters with a value that are find fields of a list or a find
+    //   form (also their _op, _not, _ic, _from, _thru and period companions).
+    // - selection: {form, ids} or null, the values of the selected rows of the selection-form list (its m-checkbox-set,
+    //   or the rows of an m-form-list with selection, as rows).
+    const META_FIELDS = ["moquiFormName", "moquiSessionToken", "_isMulti", "pageIndex", "orderByField", "lastStandalone", "formListFindId"];
+    const FIND_SUFFIXES = ["_op", "_not", "_ic", "_from", "_thru", "_period", "_poffset", "_pdate"];
+    moqui.screenFormsContext = (vms, dom, parameters, selectionForm) => {
+        const page = dom || { hasTable: () => false, holds: () => false };
+        const forms = [];
+        const byName = {};
+        const entry = (name, kind) => {
+            if (!byName[name]) { byName[name] = { name, kind, fields: [] }; forms.push(byName[name]); }
+            if (kind === "list") byName[name].kind = "list";
+            return byName[name];
+        };
+        const addAll = (target, names) => names.forEach((name) => { if (target.indexOf(name) < 0) target.push(name); });
+        const fieldNames = (fields) => Object.keys(fields || {}).filter((name) => META_FIELDS.indexOf(name) < 0);
+        const holders = [];
+        (vms || []).forEach((vm) => {
+            if (!vm) return;
+            const type = vm.$options && vm.$options.name ? vm.$options.name : "";
+            if (Array.isArray(vm.checkboxValues) && vm.checkboxValues.length && vm.getCheckboxValueArray) holders.push(vm);
+            if (type === "mCheckboxSet") return;
+            const attrs = vm.$attrs || {};
+            const name = String(vm.name || attrs.name || attrs.id || "");
+            if (!name) return;
+            if (type === "mFormList") {
+                const list = entry(name, "list");
+                const rows = Array.isArray(vm.rowList) ? vm.rowList : [];
+                list.rows = rows.length;
+                addAll(list.fields, fieldNames(rows[0]));
+                return;
+            }
+            const part = /^(.+)_(\d+|header|first|second|last|clr)$/.exec(name);
+            if (part && page.hasTable(part[1])) {
+                const list = entry(part[1], "list");
+                if (part[2] === "header") { list.findFields = list.findFields || []; addAll(list.findFields, fieldNames(vm.fields)); }
+                else if (/^\d+$/.test(part[2])) { list.rows = (list.rows || 0) + 1; addAll(list.fields, fieldNames(vm.fields)); }
+                return;
+            }
+            const fields = vm.fields || {};
+            if (fields._isMulti === "true" && page.hasTable(name)) {
+                const list = entry(name, "list");
+                const indexes = {};
+                fieldNames(fields).forEach((key) => {
+                    const match = /^(.+)_(\d+)$/.exec(key);
+                    if (!match) return;
+                    indexes[match[2]] = true;
+                    if (list.fields.indexOf(match[1]) < 0) list.fields.push(match[1]);
+                });
+                list.rows = Object.keys(indexes).length;
+                return;
+            }
+            addAll(entry(name, type === "mFormLink" ? "find" : "form").fields, fieldNames(fields));
+        });
+        const filters = [];
+        const params = parameters || {};
+        forms.forEach((form) => {
+            const finds = form.kind === "list" ? form.findFields : form.kind === "find" ? form.fields : null;
+            if (!finds || !finds.length) return;
+            const found = {};
+            Object.keys(params).forEach((key) => {
+                const value = params[key];
+                if (value === null || value === undefined || value === "" || META_FIELDS.indexOf(key) >= 0) return;
+                const suffix = FIND_SUFFIXES.find((end) => key.endsWith(end) && finds.indexOf(key.slice(0, -end.length)) >= 0);
+                if (finds.indexOf(key) >= 0 || suffix) found[key] = value;
+            });
+            if (Object.keys(found).length) filters.push({ form: form.name, parameters: found });
+        });
+        let selection = null;
+        if (selectionForm) {
+            selection = { form: selectionForm, ids: [] };
+            const holder = holders.find((vm) => page.holds(vm, selectionForm));
+            const formList = (vms || []).find((vm) => vm && vm.$options && vm.$options.name === "mFormList" && vm.name === selectionForm && vm.selectedRows);
+            if (holder) selection.ids = holder.getCheckboxValueArray().map((value) => String(value));
+            else if (formList) selection.rows = formList.selectedRows();
+        }
+        return { forms, filters: filters.length ? filters : null, selection };
+    };
+    // the page part of screenFormsContext in the browser
+    moqui.screenFormsDom = () => {
+        const doc = root.document;
+        if (!doc || !doc.getElementById) return null;
+        return {
+            hasTable: (name) => !!doc.getElementById(name + "_table"),
+            holds: (vm, name) => {
+                const el = vm && vm.$el;
+                const table = doc.getElementById(name + "_table");
+                return !!(el && table && el.contains && el.contains(table));
+            }
+        };
+    };
 
     // Selected rows of a list: a state for each row, the shift click range, and the parameters for the selected values.
     const checkboxSetMixin = {
@@ -1232,7 +1345,10 @@
         name: "mCheckboxSet",
         mixins: [checkboxSetMixin],
         template: '<span class="checkbox-set"><slot :checkboxAllState="checkboxAllState" :setCheckboxAllState="setCheckboxAllState"' +
-            ' :checkboxStates="checkboxStates" :clickCheckbox="clickCheckbox" :addCheckboxParameters="addCheckboxParameters"></slot></span>'
+            ' :checkboxStates="checkboxStates" :clickCheckbox="clickCheckbox" :addCheckboxParameters="addCheckboxParameters"></slot></span>',
+        // the selected rows of a list are the screen context's selection
+        mounted() { moqui.registerScreenForm(this); },
+        beforeUnmount() { moqui.unregisterScreenForm(this); }
     });
 
     // The button a form was submitted with: the one clicked, else the one that has the focus.
@@ -1253,11 +1369,20 @@
         else formData.append(key, value === null || value === undefined ? "" : value);
     };
 
+    // whether a transition's answer carries errors or validation errors
+    moqui.responseHasErrors = (resp) => {
+        if (!resp || !moqui.isPlainObject(resp)) return false;
+        const some = (value) => (Array.isArray(value) || moqui.isString(value) ? value.length > 0 : !!value);
+        return some(resp.errors) || some(resp.validationErrors);
+    };
+
     // The fields and the buttons of a form. The value a field starts with is the fields-initial, and a changed field is
     // tinted by the widget through fieldChanged.
     component("m-form", {
         name: "mForm",
         mixins: [checkboxSetMixin],
+        // a dialog that closes when a form in it submits without errors and has no submit-hide-id (the shell's quick create)
+        inject: { mSubmitHide: { default: null } },
         props: { fieldsInitial: Object, action: { type: String, required: true }, method: { type: String, default: "POST" }, readOnly: { type: Boolean, default: false },
             submitMessage: String, submitReloadId: String, submitHideId: String, focusField: String, noValidate: Boolean, excludeEmptyFields: Boolean,
             parentCheckboxSet: Object, checkboxOptional: Boolean, bodyParameterNames: Array, validationErrorsInitial: Array },
@@ -1388,6 +1513,7 @@
                     else if (resp.redirectUrl && resp.redirectUrl.length > 0) root.location.href = resp.redirectUrl;
                 } else console.warn("m-form no response or non-JSON response");
                 if (this.submitHideId && this.submitHideId.length > 0) this.$root.hideContainer(this.submitHideId);
+                else if (this.mSubmitHide && !moqui.responseHasErrors(resp)) this.mSubmitHide.hide();
                 if (this.submitReloadId && this.submitReloadId.length > 0) this.$root.reloadContainer(this.submitReloadId);
                 if (this.submitMessage && this.submitMessage.length) {
                     notify(Object.assign({}, moqui.notifyOpts, { message: this.submitMessage }));
@@ -2480,6 +2606,514 @@
         unmounted() { if (this.$root.removeScreenContext) this.$root.removeScreenContext(this.contextKey); }
     });
 
+    /* ========== the suite shell: palette, keys, tray and quick create ========== */
+
+    // The pure part of the palette (IronStone design-drawers-commons §1.5), tested under Node: the prefix of the text, the
+    // screens of the shell data with their ranking by title, and the groups in the order the palette shows them.
+    const palette = {
+        LIMIT: 5,
+        RECENT_LIMIT: 25,
+        // > is actions only, : screens only, and the prefix of a palette source (@, #, the gallery's ~) the provider groups of
+        // the sources with it (the longest prefix that starts the text); otherwise everything is searched. The text after the
+        // prefix is trimmed.
+        parse(text, sources) {
+            const raw = String(text === null || text === undefined ? "" : text).replace(/^\s+/, "");
+            const head = raw.charAt(0);
+            if (head === ">") return { text: raw.slice(1).trim(), mode: "actions", prefix: ">", groups: [] };
+            if (head === ":") return { text: raw.slice(1).trim(), mode: "screens", prefix: ":", groups: [] };
+            let prefix = "";
+            (sources || []).forEach((source) => {
+                const own = source && source.prefix ? String(source.prefix) : "";
+                if (own && raw.startsWith(own) && own.length > prefix.length) prefix = own;
+            });
+            if (prefix) {
+                const groups = [];
+                sources.forEach((source) => { if (source && source.prefix === prefix && groups.indexOf(source.group) < 0) groups.push(source.group); });
+                return { text: raw.slice(prefix.length).trim(), mode: "sources", prefix, groups };
+            }
+            return { text: raw.trim(), mode: "all", prefix: "", groups: [] };
+        },
+        // How well a title matches the text, lower is better and -1 is no match: the whole title, its start, every word of
+        // the text starting a word of the title, every word anywhere in it. Case is ignored.
+        score(title, text) {
+            const shown = String(title || "").toLowerCase();
+            const wanted = String(text || "").toLowerCase().trim();
+            if (!wanted) return 0;
+            if (shown === wanted) return 0;
+            if (shown.startsWith(wanted)) return 1;
+            const words = wanted.split(/\s+/);
+            const titleWords = shown.split(/[\s\-_/.,:;()·›]+/).filter((word) => word.length);
+            if (words.every((word) => titleWords.some((titleWord) => titleWord.startsWith(word)))) return 2;
+            if (words.every((word) => shown.indexOf(word) >= 0)) return 3;
+            return -1;
+        },
+        // The items of list whose title matches, best first; ties keep the order of the list (the menu order).
+        rank(list, text, titleOf) {
+            const title = titleOf || ((item) => item.title);
+            const scored = [];
+            (list || []).forEach((item, index) => {
+                const score = palette.score(title(item), text);
+                if (score >= 0) scored.push({ item, score, index });
+            });
+            scored.sort((left, right) => left.score - right.score || left.index - right.index);
+            return scored.map((entry) => entry.item);
+        },
+        // The Screens group's rows: each app root, then its menu entries (depth one and two, as shellData lists them) with
+        // the app and the parent entry as the subtitle.
+        screens(apps) {
+            const out = [];
+            (apps || []).forEach((app) => {
+                if (!app) return;
+                out.push({ title: app.title, subtitle: "", url: app.path, image: app.image, imageType: app.imageType, app: app.name });
+                const parents = [];
+                (app.menu || []).forEach((entry) => {
+                    const depth = Math.max(1, Number(entry.depth) || 1);
+                    parents.length = depth - 1;
+                    const trail = [app.title].concat(parents.filter((title) => title)).join(" › ");
+                    out.push({ title: entry.title, subtitle: trail, url: entry.path, image: entry.image, imageType: entry.imageType, app: app.name });
+                    parents[depth - 1] = entry.title;
+                });
+            });
+            return out;
+        },
+        // The groups shown for a parsed text, in this order: Recent before any text; else Screens, Saved finds and Actions,
+        // which the client has, then the provider groups the server answered (input.remote, shellSearch), each with up to
+        // LIMIT rows and a last "more" row to its moreUrl. A > text shows only Actions and a : text only Screens, with more
+        // rows each; a source prefix only the provider groups of its sources. Every row is a copy with its index in the
+        // whole list (the arrow keys move over it).
+        groups(query, input) {
+            const given = input || {};
+            const labels = given.labels || {};
+            const out = [];
+            const add = (key, label, icon, rows, limit, moreUrl) => {
+                if (!rows || !rows.length) return;
+                const group = { key, label, icon: icon || null, rows: rows.slice(0, limit).map((row) => Object.assign({}, row)) };
+                if (moreUrl) group.rows.push({ more: true, title: (labels.more || "More") + ": " + label, url: moreUrl, icon: "sym_o_arrow_forward" });
+                out.push(group);
+            };
+            const text = query.text;
+            const recentLabel = labels.recent || "Recent";
+            const screensLabel = labels.screens || "Screens";
+            const findsLabel = labels.savedFinds || "Saved finds";
+            const actionsLabel = labels.actions || "Actions";
+            if (query.mode === "all" && !text) {
+                add("recent", recentLabel, "sym_o_history", given.recent, palette.RECENT_LIMIT);
+            } else if (query.mode === "screens") {
+                add("screens", screensLabel, "sym_o_web", palette.rank(given.screens, text), palette.RECENT_LIMIT);
+            } else if (query.mode === "actions") {
+                add("actions", actionsLabel, "sym_o_bolt", palette.rank(given.actions, text), 50);
+            } else {
+                if (query.mode === "all") {
+                    add("screens", screensLabel, "sym_o_web", palette.rank(given.screens, text), palette.LIMIT);
+                    add("savedFinds", findsLabel, "sym_o_saved_search", palette.rank(given.savedFinds, text), palette.LIMIT);
+                    add("actions", actionsLabel, "sym_o_bolt", palette.rank(given.actions, text), palette.LIMIT);
+                }
+                (given.remote || []).forEach((group) => {
+                    if (!group || (query.mode === "sources" && query.groups.indexOf(group.group) < 0)) return;
+                    const rows = (group.rows || []).filter((row) => row && row.url).map((row) => ({ title: row.title || row.url, subtitle: row.subtitle || "",
+                        icon: row.icon || group.icon || null, url: row.url }));
+                    add("source:" + group.group, group.label || group.group, group.icon, rows, palette.LIMIT, group.moreUrl);
+                });
+            }
+            let index = 0;
+            out.forEach((group) => group.rows.forEach((row) => { row.index = index; index += 1; }));
+            return out;
+        },
+        rows(groups) { return [].concat(...(groups || []).map((group) => group.rows)); }
+    };
+    moqui.shellPalette = palette;
+
+    // The key map of the suite shell (design-drawers-commons §1.7), tested under Node. Bindings are registered by scope: the
+    // shell's under "global", a screen's or a .qvue component's with registerScope(scope, bindings), which returns the
+    // function that takes them back. A binding is { keys, label, run(event), action, when(), notInEditor }: keys like "Mod+K"
+    // (Ctrl, or Cmd on a Mac), "Ctrl+Shift+A", "Esc", "?" or the chord "g c" (g, then c within 1.5 s); run returns false
+    // when it did not use the key; when() says whether it is on now; notInEditor leaves the key to a rich-text editor
+    // (contenteditable). The latest scope is tried first and "global" last. A text input, select or editable element
+    // keeps the single keys it types (a key with no Ctrl, Alt or Cmd). The KEYMAP user preference changes a binding's keys:
+    // JSON {scope: {id: keys}}, where the id is the binding's action, else its keys as registered.
+    const KEY_NAMES = { esc: "escape", escape: "escape", enter: "enter", return: "enter", space: " ", spacebar: " ", tab: "tab", up: "arrowup",
+        down: "arrowdown", left: "arrowleft", right: "arrowright", del: "delete", delete: "delete", backspace: "backspace", plus: "+" };
+    const MODIFIER_KEYS = ["shift", "control", "alt", "meta", "os", "altgraph"];
+    const keymap = {
+        scopes: [],
+        overrides: {},
+        pending: null,
+        CHORD_MS: 1500,
+        isMac: false,
+        // A function that, when it answers true, keeps the single typed keys from running (the shell: while a dialog is open).
+        typedBlocked: null,
+        // The steps of a key text: each { key, ctrl, alt, shift, meta, mod }, key in lower case as KeyboardEvent.key has it.
+        parse(text) {
+            return String(text || "").trim().split(/\s+/).filter((part) => part.length).map((part) => {
+                let key = part;
+                let modifiers = [];
+                if (part.length > 1 && part.endsWith("++")) { key = "+"; modifiers = part.slice(0, -2).split("+"); }
+                else if (part !== "+" && part.indexOf("+") > 0) { const pieces = part.split("+"); key = pieces.pop(); modifiers = pieces; }
+                const step = { key: "", ctrl: false, alt: false, shift: false, meta: false, mod: false };
+                modifiers.forEach((name) => {
+                    const lower = name.toLowerCase();
+                    if (lower === "ctrl" || lower === "control") step.ctrl = true;
+                    else if (lower === "alt" || lower === "option") step.alt = true;
+                    else if (lower === "shift") step.shift = true;
+                    else if (lower === "meta" || lower === "cmd" || lower === "command") step.meta = true;
+                    else if (lower === "mod") step.mod = true;
+                });
+                const lower = key.toLowerCase();
+                step.key = KEY_NAMES[lower] || lower;
+                return step;
+            });
+        },
+        // Whether a keydown event is the step. Mod is Ctrl or Cmd. Shift counts for a letter and a named key; other
+        // printable characters (? !) are what the keyboard types with or without it.
+        matches(step, event) {
+            if (!step || !event || String(event.key || "").toLowerCase() !== step.key) return false;
+            if (step.mod) { if (!(event.ctrlKey || event.metaKey)) return false; }
+            else if (!!event.ctrlKey !== step.ctrl || !!event.metaKey !== step.meta) return false;
+            if (!!event.altKey !== step.alt) return false;
+            if ((/^[a-z]$/.test(step.key) || step.key.length > 1) && !!event.shiftKey !== step.shift) return false;
+            return true;
+        },
+        sameStep(left, right) {
+            return left.key === right.key && left.ctrl === right.ctrl && left.alt === right.alt && left.shift === right.shift && left.meta === right.meta && left.mod === right.mod;
+        },
+        // a key a text input types: one character with no Ctrl, Alt, Cmd or Mod
+        isTyped(step) { return step.key.length === 1 && !step.ctrl && !step.alt && !step.meta && !step.mod; },
+        isEditable(target) {
+            if (!target) return false;
+            if (target.isContentEditable) return true;
+            return !!(target.closest && target.closest("[contenteditable]:not([contenteditable=false])"));
+        },
+        // a text input, a text area, a select or an editable element
+        isText(target) {
+            if (!target) return false;
+            if (keymap.isEditable(target)) return true;
+            const tag = String(target.tagName || "").toUpperCase();
+            if (tag === "TEXTAREA" || tag === "SELECT") return true;
+            if (tag !== "INPUT") return false;
+            const type = String(target.type || "text").toLowerCase();
+            return ["button", "checkbox", "radio", "submit", "reset", "image", "file", "range", "color"].indexOf(type) < 0;
+        },
+        registerScope(scope, bindings) {
+            const entry = { scope: String(scope || "global"), bindings: (bindings || []).filter((binding) => binding && binding.keys) };
+            keymap.scopes.push(entry);
+            return () => {
+                const index = keymap.scopes.indexOf(entry);
+                if (index >= 0) keymap.scopes.splice(index, 1);
+            };
+        },
+        // The KEYMAP preference: JSON text or a map of scope to {id: keys}. A value that is not one is ignored and answered false.
+        setOverrides(value) {
+            let map = value;
+            if (typeof value === "string") {
+                if (!value.trim()) { keymap.overrides = {}; return true; }
+                try { map = JSON.parse(value); } catch (err) { keymap.overrides = {}; return false; }
+            }
+            if (!moqui.isPlainObject(map)) { keymap.overrides = {}; return value === null || value === undefined; }
+            const out = {};
+            Object.keys(map).forEach((scope) => {
+                if (!moqui.isPlainObject(map[scope])) return;
+                out[scope] = {};
+                Object.keys(map[scope]).forEach((id) => { if (typeof map[scope][id] === "string" && map[scope][id].trim()) out[scope][id] = map[scope][id].trim(); });
+            });
+            keymap.overrides = out;
+            return true;
+        },
+        idOf(binding) { return binding.action || binding.keys; },
+        keysOf(scope, binding) {
+            const own = keymap.overrides[scope];
+            const id = keymap.idOf(binding);
+            return own && own[id] ? own[id] : binding.keys;
+        },
+        // The bindings on now, in the order they are tried: the other scopes, latest first, then global.
+        active() {
+            const ordered = keymap.scopes.filter((entry) => entry.scope !== "global").reverse()
+                .concat(keymap.scopes.filter((entry) => entry.scope === "global"));
+            const out = [];
+            ordered.forEach((entry) => entry.bindings.forEach((binding) => {
+                if (binding.when && !binding.when()) return;
+                const keys = keymap.keysOf(entry.scope, binding);
+                out.push({ scope: entry.scope, binding, keys, steps: keymap.parse(keys) });
+            }));
+            return out;
+        },
+        // The keys as the help overlay shows them: Mod as Ctrl, or ⌘ on a Mac.
+        format(keys) {
+            return String(keys || "").trim().split(/\s+/).map((part) => part.replace(/\bMod\b/g, keymap.isMac ? "⌘" : "Ctrl")
+                .replace(/\bEsc(ape)?\b/gi, "Esc")).join(" ");
+        },
+        // What the ? overlay lists: each active binding with a label, the keys formatted, once per scope and keys.
+        describe() {
+            const seen = {};
+            return keymap.active().filter((entry) => entry.binding.label).filter((entry) => {
+                const key = entry.scope + "\u0001" + entry.keys;
+                if (seen[key]) return false;
+                seen[key] = true;
+                return true;
+            }).map((entry) => ({ scope: entry.scope, keys: keymap.format(entry.keys), label: entry.binding.label }));
+        },
+        // Handle a keydown event: run the binding the key completes, or keep it as the start of a chord. True when the key
+        // was used, and then its default is prevented.
+        handle(event, now) {
+            if (!event || event.isComposing || event.defaultPrevented) return false;
+            const at = now === undefined ? Date.now() : now;
+            if (MODIFIER_KEYS.indexOf(String(event.key || "").toLowerCase()) >= 0) return false;
+            const inText = keymap.isText(event.target);
+            const inEditor = keymap.isEditable(event.target);
+            const typedBlocked = keymap.typedBlocked ? !!keymap.typedBlocked() : false;
+            const pending = keymap.pending && at - keymap.pending.time <= keymap.CHORD_MS ? keymap.pending.steps : [];
+            keymap.pending = null;
+            const used = () => { if (event.preventDefault) event.preventDefault(); return true; };
+            const attempt = (prefix) => {
+                let started = null;
+                const entries = keymap.active();
+                for (let i = 0; i < entries.length; i++) {
+                    const entry = entries[i];
+                    const steps = entry.steps;
+                    if (steps.length <= prefix.length || !prefix.every((step, index) => keymap.sameStep(step, steps[index]))) continue;
+                    const step = steps[prefix.length];
+                    if (!keymap.matches(step, event)) continue;
+                    // an earlier key of a chord was typed already, so only the first key is kept by a text input
+                    if (keymap.isTyped(step) && prefix.length === 0 && (inText || typedBlocked)) continue;
+                    if (inEditor && entry.binding.notInEditor) continue;
+                    if (steps.length === prefix.length + 1) {
+                        if (entry.binding.run && entry.binding.run(event) !== false) return "ran";
+                    } else if (!started) started = prefix.concat([step]);
+                }
+                if (started) {
+                    keymap.pending = { steps: started, time: at };
+                    return "started";
+                }
+                return null;
+            };
+            if (pending.length && attempt(pending)) return used();
+            return attempt([]) ? used() : false;
+        }
+    };
+    moqui.keymap = keymap;
+
+    // The palette (design §1.5): a dialog at the top with one input and grouped results. The groups are palette.groups over
+    // the root's shell data and the shellSearch answer, which is asked 250 ms after the text stops changing; the arrow keys
+    // move, Enter opens the selected row (the first by default) and Ctrl+Enter or Cmd+Enter opens it in a new tab.
+    component("m-shell-palette", {
+        name: "mShellPalette",
+        data() { return { text: "", remote: [], searching: false, selected: 0, seq: 0, timer: null, remoteKey: "" }; },
+        template:
+            '<q-dialog :model-value="$root.paletteOpen" @update:model-value="$root.paletteOpen = $event" position="top" @show="onShow" @hide="onHide">' +
+                '<q-card id="m-palette" flat bordered class="m-palette column no-wrap">' +
+                    '<div class="q-pa-sm"><m-text-line v-model="text" id="m-palette-input" name="paletteText" :placeholder="$root.labels.paletteHint" @keydown="onKey">' +
+                        '<template v-slot:append><q-spinner v-if="searching" size="xs" color="grey-6"></q-spinner><q-icon v-else name="sym_o_search" size="xs"></q-icon></template>' +
+                    '</m-text-line></div>' +
+                    '<q-separator></q-separator>' +
+                    '<div ref="results" class="col scroll m-palette-results"><q-list dense class="q-pb-sm">' +
+                        '<template v-for="group in groups" :key="group.key">' +
+                            '<q-item-label header class="q-pt-sm q-pb-xs text-weight-medium">{{group.label}}</q-item-label>' +
+                            '<q-item v-for="row in group.rows" :key="group.key + \'_\' + row.index" clickable :active="row.index === selected" active-class="m-palette-active"' +
+                                    ' :data-index="row.index" @click="open(row, $event)" @mousemove="selected = row.index">' +
+                                '<q-item-section avatar class="m-palette-icon">' +
+                                    '<m-menu-icon v-if="row.icon || (row.image && row.imageType === \'icon\')" :name="row.icon || row.image" size="xs"></m-menu-icon>' +
+                                    '<img v-else-if="row.image" :src="row.image" alt="" width="18" class="invertible">' +
+                                    '<q-icon v-else name="sym_o_chevron_right" size="xs"></q-icon>' +
+                                '</q-item-section>' +
+                                '<q-item-section><q-item-label lines="1" :class="{\'text-primary\': row.more}">{{row.title}}</q-item-label>' +
+                                    '<q-item-label v-if="row.subtitle" caption lines="1">{{row.subtitle}}</q-item-label></q-item-section>' +
+                            '</q-item>' +
+                        '</template>' +
+                        '<q-item v-if="!rows.length && !searching"><q-item-section class="m-muted">{{query.text ? $root.labels.noResults : $root.labels.paletteEmpty}}</q-item-section></q-item>' +
+                    '</q-list></div>' +
+                    '<q-separator class="gt-xs"></q-separator>' +
+                    '<div class="row items-center q-px-sm q-py-xs text-caption m-muted gt-xs">{{hint}}</div>' +
+                '</q-card>' +
+            '</q-dialog>',
+        computed: {
+            query() { return palette.parse(this.text, this.$root.paletteSources); },
+            groups() {
+                const root_ = this.$root;
+                return palette.groups(this.query, { recent: root_.paletteRecent, screens: root_.paletteScreens, savedFinds: root_.paletteSavedFinds,
+                    actions: root_.paletteActions, remote: this.remote, labels: root_.labels });
+            },
+            rows() { return palette.rows(this.groups); },
+            // the keys and the prefixes, under the results
+            hint() {
+                const labels = this.$root.labels;
+                const prefixes = [];
+                (this.$root.paletteSources || []).forEach((source) => { if (source.prefix && prefixes.indexOf(source.prefix + " " + source.label) < 0) prefixes.push(source.prefix + " " + source.label); });
+                return [labels.paletteKeys, "> " + labels.actions, ": " + labels.screens].concat(prefixes).join(" · ");
+            }
+        },
+        watch: {
+            query(next) { this.selected = 0; this.schedule(next); },
+            rows(list) { if (this.selected >= list.length) this.selected = 0; }
+        },
+        methods: {
+            onShow() {
+                const input = root.document.getElementById("m-palette-input");
+                if (input && input.focus) input.focus();
+            },
+            onHide() {
+                clearTimeout(this.timer);
+                this.seq += 1;
+                this.text = "";
+                this.remote = [];
+                this.remoteKey = "";
+                this.searching = false;
+                this.selected = 0;
+            },
+            // the provider groups of the text, 250 ms after it stops changing; an answer to an older text is dropped
+            schedule(query) {
+                clearTimeout(this.timer);
+                const wanted = query.text && (query.mode === "all" || query.mode === "sources") && (this.$root.paletteSources || []).length;
+                if (!wanted) {
+                    this.seq += 1;
+                    this.remote = [];
+                    this.remoteKey = "";
+                    this.searching = false;
+                    return;
+                }
+                const key = query.mode + "|" + query.groups.join(",") + "|" + query.text;
+                if (key === this.remoteKey) return;
+                this.searching = true;
+                this.timer = setTimeout(() => this.search(query, key), 250);
+            },
+            search(query, key) {
+                this.seq += 1;
+                const seq = this.seq;
+                const params = { text: query.text, limit: String(palette.LIMIT) };
+                if (query.groups.length) params.groups = query.groups.join(",");
+                moqui.request(this.$root.appRootPath + "/shellSearch", { params }).then((result) => {
+                    if (seq !== this.seq) return;
+                    this.searching = false;
+                    this.remoteKey = key;
+                    this.remote = result.json && Array.isArray(result.json.groups) ? result.json.groups : [];
+                }, (err) => {
+                    if (seq !== this.seq) return;
+                    this.searching = false;
+                    this.remote = [];
+                    moqui.handleAjaxError(err);
+                });
+            },
+            onKey(event) {
+                const key = event.key;
+                if (key === "ArrowDown" || key === "ArrowUp") {
+                    event.preventDefault();
+                    const count = this.rows.length;
+                    if (!count) return;
+                    this.selected = (this.selected + (key === "ArrowDown" ? 1 : count - 1)) % count;
+                    this.$nextTick(() => {
+                        const el = this.$refs.results && this.$refs.results.querySelector('[data-index="' + this.selected + '"]');
+                        if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+                    });
+                } else if (key === "Enter") {
+                    event.preventDefault();
+                    this.open(this.rows.find((row) => row.index === this.selected) || this.rows[0], event);
+                }
+            },
+            open(row, event) {
+                if (!row || !row.url) return;
+                const newTab = !!(event && (event.ctrlKey || event.metaKey));
+                this.$root.paletteOpen = false;
+                if (newTab) root.open(this.$root.getLinkPath(row.url), "_blank");
+                else this.$root.setUrl(row.url);
+            }
+        }
+    });
+
+    // The tray panel (design §1.4): one panel at the right of the canvas, 400 px from 600 px and the full width below, with a tab
+    // for each tray screen the theme names. A tab is an m-dynamic-container loaded on its first opening and kept (v-show), so
+    // its state lasts across navigation; the root keeps the open state, the tab and each tab's scroll position.
+    component("m-shell-tray", {
+        name: "mShellTray",
+        // the containers and scroll elements of the tabs, by key, from the function refs: not reactive
+        data() { return { containers: markRaw({}), bodies: markRaw({}) }; },
+        template:
+            '<q-page-sticky v-if="$root.trayMounted" v-show="$root.trayOpen" position="right" expand class="m-tray-sticky">' +
+                '<q-card id="m-tray" flat bordered square class="m-tray column no-wrap">' +
+                    '<div class="row items-center no-wrap q-pl-xs">' +
+                        '<q-tabs :model-value="$root.trayTab" @update:model-value="$root.openTray($event)" dense no-caps inline-label narrow-indicator align="left"' +
+                                ' class="col text-grey-7" active-color="primary" indicator-color="primary">' +
+                            '<q-tab v-for="tab in $root.trayTabs" :key="tab.key" :name="tab.key" :icon="tab.icon" :label="tab.label">' +
+                                '<q-badge v-if="$root.countOf(tab.key)" color="negative" rounded floating>{{$root.countText(tab.key)}}</q-badge></q-tab>' +
+                        '</q-tabs>' +
+                        '<q-btn flat round dense icon="sym_o_close" @click="$root.closeTray()"><q-tooltip>{{$root.labels.close}}</q-tooltip></q-btn>' +
+                    '</div>' +
+                    '<q-separator></q-separator>' +
+                    '<div v-for="tab in $root.trayTabs" :key="tab.key" v-show="$root.trayTab === tab.key" :ref="(el) => { bodies[tab.key] = el; }"' +
+                            ' class="col scroll q-pa-sm m-tray-body" @scroll="onScroll(tab.key, $event)">' +
+                        '<m-dynamic-container v-if="$root.trayLoaded[tab.key]" :ref="(vm) => { containers[tab.key] = vm; }" :id="\'m-tray-\' + tab.key" :url="tab.loadUrl"></m-dynamic-container>' +
+                    '</div>' +
+                '</q-card>' +
+            '</q-page-sticky>',
+        methods: {
+            onScroll(key, event) { this.$root.keepTrayScroll(key, event.target.scrollTop); },
+            // the tab's last scroll position, once it shows again (a hidden element loses it)
+            restoreScroll(key) {
+                this.$nextTick(() => {
+                    const body = this.bodies[key];
+                    const top = this.$root.trayScroll[key];
+                    if (body && top) body.scrollTop = top;
+                });
+            },
+            reload(key) {
+                const container = this.containers[key];
+                if (container && container.reload) container.reload();
+            }
+        },
+        watch: {
+            "$root.trayTab"(key) { if (key) this.restoreScroll(key); },
+            "$root.trayOpen"(open) { if (open && this.$root.trayTab) this.restoreScroll(this.$root.trayTab); }
+        },
+        mounted() { this.$root.shellTray = this; },
+        unmounted() { if (this.$root.shellTray === this) this.$root.shellTray = null; }
+    });
+
+    // The quick-create frame (design §1.5): the screen of a + menu kind in a dialog, with the screen context as parameters
+    // (recordEntity, recordId, recordTitle). A form in it that submits without errors closes it (mSubmitHide, which m-form
+    // takes when it has no submit-hide-id of its own); it is also the container m-quick-create while open.
+    component("m-shell-quick-create", {
+        name: "mShellQuickCreate",
+        provide() { return { mSubmitHide: this }; },
+        template:
+            '<m-dialog :model-value="$root.quickCreateShow" @update:model-value="$root.quickCreateShow = $event" id="m-quick-create" :title="$root.quickCreateTitle" width="560" @on-show="onShow">' +
+                '<m-dynamic-container v-if="$root.quickCreateShow && $root.quickCreateUrl" id="m-quick-create-body" :url="$root.quickCreateUrl"></m-dynamic-container>' +
+            '</m-dialog>',
+        methods: {
+            onShow() { this.$root.addContainer("m-quick-create", this); },
+            hide() { this.$root.quickCreateShow = false; },
+            reload() { const url = this.$root.quickCreateUrl; this.$root.quickCreateUrl = ""; this.$nextTick(() => { this.$root.quickCreateUrl = url; }); },
+            load(url) { this.$root.quickCreateUrl = url; }
+        }
+    });
+
+    // The ? overlay: the keys on now, by scope.
+    component("m-shell-keys", {
+        name: "mShellKeys",
+        data() { return { entries: [] }; },
+        template:
+            '<m-dialog :model-value="$root.keysHelpShow" @update:model-value="$root.keysHelpShow = $event" id="m-keys-help" :title="$root.labels.keyboardShortcuts" width="520">' +
+                '<div v-for="group in groups" :key="group.scope" class="q-mb-md">' +
+                    '<div class="text-subtitle2 q-mb-xs">{{group.title}}</div>' +
+                    '<q-list dense bordered separator class="rounded-borders">' +
+                        '<q-item v-for="entry in group.entries" :key="entry.keys"><q-item-section>{{entry.label}}</q-item-section>' +
+                            '<q-item-section side><span class="m-kbd">{{entry.keys}}</span></q-item-section></q-item>' +
+                    '</q-list>' +
+                '</div>' +
+            '</m-dialog>',
+        computed: {
+            groups() {
+                const out = [];
+                this.entries.forEach((entry) => {
+                    let group = out.find((item) => item.scope === entry.scope);
+                    if (!group) {
+                        group = { scope: entry.scope, title: entry.scope === "global" ? this.$root.labels.keysEverywhere : entry.scope, entries: [] };
+                        out.push(group);
+                    }
+                    group.entries.push(entry);
+                });
+                return out;
+            }
+        },
+        watch: { "$root.keysHelpShow"(shown) { if (shown) this.entries = keymap.describe(); } }
+    });
+
     /* ========== the application ========== */
 
     // The application component. Its template is the markup of the page shell (WebrootVue.qvt.html.fancy), which Vue takes from
@@ -2492,8 +3126,28 @@
         "<q-layout view=\"hHh LpR fFf\">\n" +
         "    <q-header bordered id=\"top\" :class=\"$q.dark.isActive ? 'bg-dark text-white' : 'bg-white text-dark'\"><q-toolbar dense>\n" +
         "        <q-btn flat round dense icon=\"menu\" @click=\"toggleLeftOpen()\"></q-btn>\n" +
-        "        <m-link v-if=\"shell.logoUrl\" href=\"/apps\" class=\"row items-center q-mx-sm\"><img :src=\"shell.logoUrl\" alt=\"Home\" height=\"28\"></m-link>\n" +
-        "        <q-toolbar-title v-if=\"shell.title\" shrink class=\"text-subtitle1 text-weight-medium q-pr-sm\">{{shell.title}}</q-toolbar-title>\n" +
+        // the launcher: the theme's logo as a button with a grid of the apps the user may open (shellData), the current one marked
+        "        <q-btn flat dense no-caps id=\"m-launcher\" class=\"q-mx-xs\" :aria-label=\"labels.applications\">\n" +
+        "            <img v-if=\"shell.logoUrl\" :src=\"shell.logoUrl\" alt=\"\" height=\"28\"><q-icon v-else name=\"sym_o_apps\"></q-icon>\n" +
+        "            <q-tooltip>{{labels.applications}}</q-tooltip>\n" +
+        "            <q-menu anchor=\"bottom left\" self=\"top left\" class=\"m-launcher\"><div class=\"q-pa-sm\">\n" +
+        "                <div class=\"m-launcher-grid\">\n" +
+        "                    <q-btn v-for=\"app in shellApps\" :key=\"app.name\" unelevated no-caps v-close-popup class=\"m-btn-tonal m-launcher-app\"\n" +
+        "                            :class=\"{'m-launcher-current': currentApp && app.name === currentApp.name}\" @click=\"setUrl(app.path)\">\n" +
+        "                        <div class=\"column items-center no-wrap full-width\">\n" +
+        "                            <m-menu-icon v-if=\"app.image && app.imageType === 'icon'\" :name=\"app.image\" size=\"md\"></m-menu-icon>\n" +
+        "                            <img v-else-if=\"app.image\" :src=\"app.image\" :alt=\"app.title\" height=\"28\" class=\"invertible\">\n" +
+        "                            <q-icon v-else name=\"sym_o_apps\" size=\"md\"></q-icon>\n" +
+        "                            <div class=\"m-launcher-title\">{{app.title}}</div>\n" +
+        "                        </div>\n" +
+        "                    </q-btn>\n" +
+        "                </div>\n" +
+        "                <q-separator class=\"q-my-sm\"></q-separator>\n" +
+        "                <q-btn flat no-caps dense icon=\"sym_o_apps\" :label=\"labels.allApplications\" v-close-popup @click=\"setUrl(linkBasePath + '/AppList')\"></q-btn>\n" +
+        "            </div></q-menu>\n" +
+        "        </q-btn>\n" +
+        // the current app's title; the theme's title outside an app (the AppList)
+        "        <q-toolbar-title v-if=\"headerTitle\" shrink class=\"text-subtitle1 text-weight-medium q-pr-sm\">{{headerTitle}}</q-toolbar-title>\n" +
         "        <q-breadcrumbs class=\"gt-xs\" gutter=\"xs\" separator-color=\"grey-5\" active-color=\"grey-8\">\n" +
         "            <template v-for=\"(navMenuItem, menuIndex) in navMenuList\" :key=\"navMenuItem.path || menuIndex\">\n" +
         "                <q-breadcrumbs-el v-if=\"menuIndex === navMenuList.length - 1\" :label=\"navMenuItem.title\" class=\"text-weight-medium\"></q-breadcrumbs-el>\n" +
@@ -2516,6 +3170,28 @@
         "\n" +
         "        <q-space></q-space>\n" +
         "\n" +
+        // Search opens the palette (Ctrl+K or Cmd+K anywhere); a label and the key from 1024 px, the icon alone below
+        "        <q-btn flat dense no-caps id=\"m-search\" icon=\"sym_o_search\" :round=\"!$q.screen.gt.sm\" :label=\"$q.screen.gt.sm ? labels.search : undefined\" @click=\"openPalette()\">\n" +
+        "            <span v-if=\"$q.screen.gt.sm\" class=\"m-kbd q-ml-sm\">{{paletteKeyHint}}</span>\n" +
+        "            <q-tooltip>{{labels.search}} ({{paletteKeyHint}})</q-tooltip>\n" +
+        "        </q-btn>\n" +
+        // quick create: the kinds of the apps the user may open, the current app's first; a kind that needs a record only with one in context
+        "        <q-btn v-if=\"quickCreateItems.length\" flat round dense id=\"m-quick-create-menu\" icon=\"sym_o_add\">\n" +
+        "            <q-tooltip>{{labels.quickCreate}}</q-tooltip>\n" +
+        "            <q-menu anchor=\"bottom right\" self=\"top right\"><q-list dense style=\"min-width:220px;\">\n" +
+        "                <q-item v-for=\"item in quickCreateItems\" :key=\"item.key\" clickable v-close-popup @click=\"openQuickCreate(item)\">\n" +
+        "                    <q-item-section avatar><m-menu-icon :name=\"item.icon || 'sym_o_add'\" size=\"xs\"></m-menu-icon></q-item-section>\n" +
+        "                    <q-item-section>{{item.label}}</q-item-section>\n" +
+        "                </q-item>\n" +
+        "            </q-list></q-menu>\n" +
+        "        </q-btn>\n" +
+        // Today, Chat, the Inbox count and Notifications, each only when the theme names its screen; the tray ones open the tray on their tab
+        "        <q-btn v-for=\"counter in headerCounters\" :key=\"counter.key\" flat round dense :id=\"'m-counter-' + counter.key\" :icon=\"counter.icon\"\n" +
+        "                :class=\"{'text-primary': counter.tray && trayOpen && trayTab === counter.key}\" @click=\"counter.tray ? toggleTray(counter.key) : setUrl(counter.url)\">\n" +
+        "            <q-badge v-if=\"countOf(counter.key)\" floating rounded color=\"negative\">{{countText(counter.key)}}</q-badge>\n" +
+        "            <q-tooltip>{{counter.label}}</q-tooltip>\n" +
+        "        </q-btn>\n" +
+        "\n" +
         "        <component :is=\"qzVue\" ref=\"qzVue\"></component>\n" +
         "\n" +
         "        <q-btn v-if=\"documentMenuList.length\" flat round dense icon=\"help_outline\">\n" +
@@ -2529,7 +3205,8 @@
         "\n" +
         "        <template v-for=\"navPlugin in navPlugins\"><component :is=\"navPlugin\"></component></template>\n" +
         "\n" +
-        "        <q-btn flat round dense icon=\"notifications\">\n" +
+        // the notifications of this page, when no Notifications tab is in the tray (a deployment without BOSS)
+        "        <q-btn v-if=\"!shellValues.trayNotifications\" flat round dense icon=\"notifications\">\n" +
         "            <q-tooltip>{{labels.notifyHistory}}</q-tooltip>\n" +
         "            <q-menu><q-list dense separator style=\"min-width:320px;max-width:440px;\">\n" +
         "                <q-item v-if=\"!notifyHistoryList.length\"><q-item-section class=\"text-grey-6\">{{labels.notifyHistory}}</q-item-section></q-item>\n" +
@@ -2540,27 +3217,20 @@
         "            </q-list></q-menu>\n" +
         "        </q-btn>\n" +
         "\n" +
-        "        <q-btn flat round dense icon=\"history\">\n" +
-        "            <q-tooltip>{{labels.screenHistory}}</q-tooltip>\n" +
-        "            <q-menu><q-list dense style=\"min-width:300px;\">\n" +
-        "                <q-item v-for=\"histItem in navHistoryList\" :key=\"histItem.pathWithParams\" clickable v-close-popup :to=\"histItem.pathWithParams\">\n" +
-        "                    <q-item-section avatar>\n" +
-        "                        <m-menu-icon v-if=\"histItem.image && histItem.imageType === 'icon'\" :name=\"histItem.image\" size=\"xs\"></m-menu-icon>\n" +
-        "                        <img v-else-if=\"histItem.image\" :src=\"histItem.image\" :alt=\"histItem.title\" width=\"18\" class=\"invertible\">\n" +
-        "                        <q-icon v-else name=\"chevron_right\" size=\"xs\"></q-icon>\n" +
-        "                    </q-item-section>\n" +
-        "                    <q-item-section>{{histItem.title}}</q-item-section>\n" +
-        "                </q-item>\n" +
-        "            </q-list></q-menu>\n" +
-        "        </q-btn>\n" +
-        "\n" +
-        "        <q-btn flat round dense icon=\"account_circle\">\n" +
+        // (the screen history is the palette's Recent group)
+        "        <q-btn flat round dense icon=\"account_circle\" id=\"m-account\">\n" +
         "            <q-tooltip>{{userFullName || labels.account}}</q-tooltip>\n" +
         "            <q-menu><q-list style=\"min-width:240px;\">\n" +
         "                <q-item v-if=\"userFullName || username\"><q-item-section>\n" +
         "                    <q-item-label class=\"text-weight-medium\">{{userFullName || username}}</q-item-label><q-item-label v-if=\"userFullName\" caption>{{username}}</q-item-label>\n" +
         "                </q-item-section></q-item>\n" +
         "                <q-separator v-if=\"userFullName || username\"></q-separator>\n" +
+        // the account-menu-item providers of the apps (IronStone: Preferences and Account)
+        "                <q-item v-for=\"item in accountMenuItems\" :key=\"item.url\" clickable v-close-popup @click=\"setUrl(item.url)\">\n" +
+        "                    <q-item-section avatar><m-menu-icon :name=\"item.icon || 'sym_o_chevron_right'\"></m-menu-icon></q-item-section>\n" +
+        "                    <q-item-section>{{item.label}}</q-item-section>\n" +
+        "                </q-item>\n" +
+        "                <q-separator v-if=\"accountMenuItems.length\"></q-separator>\n" +
         "                <q-item v-for=\"(accountPlugin, accountIndex) in accountPlugins\" :key=\"accountIndex\"><q-item-section><component :is=\"accountPlugin\"></component></q-item-section></q-item>\n" +
         "                <q-item tag=\"label\" clickable>\n" +
         "                    <q-item-section avatar><q-icon name=\"dark_mode\"></q-icon></q-item-section>\n" +
@@ -2578,6 +3248,8 @@
         "                </q-item>\n" +
         "            </q-list></q-menu>\n" +
         "        </q-btn>\n" +
+        // The Assist toggle and its right q-drawer (view LpR) come with the Assist port (mr-moqui Phase 13): the slot is kept free,
+        // the screen context and assistReach are its inputs (IronStone impl-drawers-commons R1).
         "    </q-toolbar></q-header>\n" +
         "\n" +
         "    <q-drawer v-model=\"leftOpen\" side=\"left\" bordered :width=\"260\" :breakpoint=\"1023\">\n" +
@@ -2586,6 +3258,7 @@
         "\n" +
         "    <q-page-container id=\"m-canvas\">\n" +
         "        <q-page class=\"q-pa-sm\"><m-subscreens-active></m-subscreens-active></q-page>\n" +
+        "        <m-shell-tray v-if=\"trayTabs.length\"></m-shell-tray>\n" +
         "    </q-page-container>\n" +
         "\n" +
         "    <q-footer bordered id=\"footer\" class=\"text-caption q-pa-xs\" :class=\"$q.dark.isActive ? 'bg-dark text-grey-5' : 'bg-grey-2 text-grey-8'\">\n" +
@@ -2613,8 +3286,21 @@
         "            <q-btn flat no-caps color=\"negative\" @click.prevent=\"reLoginReload\" :label=\"labels.reloadPage\"></q-btn></div>\n" +
         "        </q-form>\n" +
         "    </div>\n" +
-        "</m-dialog>\n"
+        "</m-dialog>\n" +
+        "\n" +
+        // the palette, the quick-create dialog and the ? overlay of the keys
+        "<m-shell-palette></m-shell-palette>\n" +
+        "<m-shell-quick-create></m-shell-quick-create>\n" +
+        "<m-shell-keys></m-shell-keys>\n"
     });
+
+    // The text of the suite shell when the page's labels (qapps.xml, localized there) do not have it.
+    qvt.shellLabels = { applications: "Applications", allApplications: "All applications", search: "Search", quickCreate: "Create",
+        quickCreateFirst: "Create in this app", today: "Today", chat: "Chat", inbox: "Inbox", notifications: "Notifications", close: "Close",
+        closeTopmost: "Close the dialog, menu or panel", keyboardShortcuts: "Keyboard shortcuts", keysEverywhere: "Everywhere", recent: "Recent",
+        screens: "Screens", savedFinds: "Saved finds", actions: "Actions", more: "More", noResults: "Nothing found",
+        paletteHint: "Search screens, records and actions", paletteEmpty: "Type to search screens, records, people and actions",
+        paletteKeys: "↑ ↓ to move, Enter to open, Ctrl+Enter in a new tab" };
 
     const rootOptions = (config) => ({
         data() {
@@ -2626,9 +3312,14 @@
                 username: config.username || "", locale: config.locale || "en", userFullName: config.userFullName || "",
                 reLoginShow: false, reLoginPassword: null, reLoginMfaData: null, reLoginOtp: null,
                 notificationClient: null, sessionTokenBc: null, qzVue: null, leftOpen: !!config.leftOpen,
-                // the m-screen-context registrations, oldest first, and the ids of the elements Assist may reach (the canvas)
-                screenContexts: [], assistReach: ["m-canvas"],
-                shell: Object.assign({ logoUrl: "", title: "", logoutUrl: "/Login/logout", footerHtml: "" }, config.shell), labels: Object.assign({}, config.labels)
+                // the m-screen-context registrations, oldest first; formsVersion changes as the forms of the screens come and go
+                screenContexts: [], formsVersion: 0,
+                // the suite shell: shellData (fetched once per page load and after a re-login) and the latest counts; the palette;
+                // the tray's open state, tab, the tabs loaded once and their scroll positions; the quick-create dialog; the ? overlay
+                shellData: null, shellCounts: {}, paletteOpen: false,
+                trayOpen: false, trayTab: "", trayMounted: false, trayLoaded: {}, trayScroll: {},
+                quickCreateShow: false, quickCreateUrl: "", quickCreateTitle: "", keysHelpShow: false,
+                shell: Object.assign({ logoUrl: "", title: "", logoutUrl: "/Login/logout", footerHtml: "" }, config.shell), labels: Object.assign({}, qvt.shellLabels, config.labels)
             };
         },
         methods: {
@@ -2661,6 +3352,8 @@
                 if (!screenUrl || screenUrl.length === 0) return;
                 this.lastNavTime = Date.now();
                 this.activeContainers = {};
+                // a link or a response that goes to another screen closes the quick-create dialog
+                this.quickCreateShow = false;
 
                 // the menu data changes, and that changes the screens and subscreens shown
                 const menuDataUrl = this.appRootPath && this.appRootPath.length && screenUrl.indexOf(this.appRootPath) === 0 ?
@@ -2739,6 +3432,156 @@
                 const index = this.screenContexts.findIndex((item) => item.key === key);
                 if (index >= 0) this.screenContexts.splice(index, 1);
             },
+
+            // ---- the suite shell (js/README.md, "Shell data and providers") ----
+
+            // The shell data of the page: the apps, their providers, the theme's shell values and the first counts. Fetched
+            // once when the page starts and again after a re-login; the keys of the providers are registered from it.
+            loadShellData() {
+                return moqui.request(this.appRootPath + "/shellData").then((result) => {
+                    const data = result.json && moqui.isPlainObject(result.json) ? result.json : null;
+                    if (!data) return;
+                    this.shellData = { apps: Array.isArray(data.apps) ? data.apps : [], shell: moqui.isPlainObject(data.shell) ? data.shell : {}, counts: data.counts };
+                    this.shellCounts = moqui.isPlainObject(data.counts) ? data.counts : {};
+                    this.registerProviderKeys();
+                    this.restoreTray();
+                }, moqui.handleAjaxError);
+            },
+            // the counts alone, for the poll while the notification socket is down; nothing without a counts service
+            loadShellCounts() {
+                if (!this.shellData || this.shellData.counts === null || this.shellData.counts === undefined) return null;
+                return moqui.request(this.appRootPath + "/shellCounts").then((result) => {
+                    const counts = result.json && moqui.isPlainObject(result.json.counts) ? result.json.counts : null;
+                    if (counts) this.shellCounts = counts;
+                }, (err) => console.info("shell counts not loaded", err && err.status));
+            },
+            pollShellCounts() {
+                const socket = this.notificationClient && this.notificationClient.webSocket;
+                if (socket && root.WebSocket && socket.readyState === root.WebSocket.OPEN) return;
+                this.loadShellCounts();
+                if (this.trayOpen) this.reloadTrayTab(this.trayTab);
+            },
+            // A message of the notification socket: shellCounts sets the badges and reloads the open tab; todayItems, a chatRoom:
+            // topic, notifications and the apps' notification-topic providers reload their tab.
+            onShellNotification(jsonObj) {
+                const topic = jsonObj && jsonObj.topic ? String(jsonObj.topic) : "";
+                if (!topic) return;
+                if (topic === "shellCounts") {
+                    let counts = jsonObj.message;
+                    if (moqui.isString(counts)) { try { counts = JSON.parse(counts); } catch (err) { counts = null; } }
+                    if (moqui.isPlainObject(counts)) this.shellCounts = counts;
+                    if (this.trayOpen) this.reloadTrayTab(this.trayTab);
+                } else if (topic === "todayItems") this.reloadTrayTab("today");
+                else if (topic.indexOf("chatRoom:") === 0) this.reloadTrayTab("chat");
+                else if (topic === "notifications" || this.shellNotificationTopics.indexOf(topic) >= 0) this.reloadTrayTab("notifications");
+            },
+            // a count of shellCounts: a number, or a map's total or count
+            countOf(key) {
+                const value = this.shellCounts ? this.shellCounts[key] : null;
+                if (moqui.isPlainObject(value)) return Number(value.total !== undefined ? value.total : value.count) || 0;
+                return Number(value) || 0;
+            },
+            countText(key) { const count = this.countOf(key); return count > 99 ? "99+" : String(count); },
+            // a /qapps link of the shell data as a path to load a screen from (/apps)
+            shellLoadPath(url) {
+                const text = String(url || "");
+                const link = this.linkBasePath;
+                if (link && (text === link || text.indexOf(link + "/") === 0 || text.indexOf(link + "?") === 0)) return this.basePath + text.slice(link.length);
+                return text;
+            },
+
+            openPalette() { this.paletteOpen = true; },
+            openTray(key) {
+                if (!this.trayTabs.some((tab) => tab.key === key)) return;
+                this.trayTab = key;
+                this.trayLoaded[key] = true;
+                this.trayMounted = true;
+                this.trayOpen = true;
+                this.saveTray();
+            },
+            closeTray() { this.trayOpen = false; this.saveTray(); },
+            toggleTray(key) { if (this.trayOpen && this.trayTab === key) this.closeTray(); else this.openTray(key); },
+            reloadTrayTab(key) { if (key && this.trayLoaded[key] && this.shellTray) this.shellTray.reload(key); },
+            keepTrayScroll(key, top) {
+                this.trayScroll[key] = top;
+                clearTimeout(this.traySaveTimer);
+                this.traySaveTimer = setTimeout(() => this.saveTray(), 250);
+            },
+            // the tray's state for a reload of the page, in sessionStorage (each tab of the browser its own); none when storage is off
+            saveTray() {
+                try { root.sessionStorage.setItem("moqui.shell.tray", JSON.stringify({ open: this.trayOpen, tab: this.trayTab, scroll: this.trayScroll })); } catch (err) { /* no storage */ }
+            },
+            restoreTray() {
+                let saved = null;
+                try { saved = JSON.parse(root.sessionStorage.getItem("moqui.shell.tray") || "null"); } catch (err) { saved = null; }
+                if (!moqui.isPlainObject(saved) || !saved.tab || !this.trayTabs.some((tab) => tab.key === saved.tab)) return;
+                if (moqui.isPlainObject(saved.scroll)) this.trayScroll = Object.assign({}, saved.scroll);
+                if (saved.open) this.openTray(saved.tab);
+                else this.trayTab = saved.tab;
+            },
+
+            // A + menu kind: its screen in the quick-create dialog, with the record of the screen context as parameters.
+            openQuickCreate(item) {
+                if (!item || !item.url) return;
+                const record = this.screenRecord;
+                const params = {};
+                if (record) {
+                    params.recordEntity = record.entity;
+                    params.recordId = record.id;
+                    if (record.title) params.recordTitle = record.title;
+                }
+                const search = moqui.objToSearch(params);
+                const url = this.shellLoadPath(item.url);
+                this.quickCreateTitle = item.label || "";
+                this.quickCreateUrl = url + (search ? (url.indexOf("?") > 0 ? "&" : "?") + search : "");
+                this.quickCreateShow = true;
+            },
+
+            // The shell's own keys: the palette (not inside a rich-text editor, whose Ctrl+K is its own), Esc, ? and c.
+            shellKeyBindings() {
+                const labels = this.labels;
+                return [
+                    { keys: "Mod+K", action: "palette", label: labels.search, notInEditor: true, run: () => { this.openPalette(); } },
+                    { keys: "Esc", action: "close", label: labels.closeTopmost, run: () => this.closeTopmost() },
+                    { keys: "?", action: "help", label: labels.keyboardShortcuts, run: () => { this.keysHelpShow = true; } },
+                    { keys: "c", action: "quickCreate", label: labels.quickCreateFirst, run: () => {
+                        const item = this.currentAppQuickCreate[0];
+                        if (!item) return false;
+                        this.openQuickCreate(item);
+                        return true;
+                    } }
+                ];
+            },
+            // Esc: a Quasar dialog or menu closes itself; else the tray closes
+            closeTopmost() {
+                if (this.shellPopupOpen()) return false;
+                if (this.trayOpen) { this.closeTray(); return true; }
+                return false;
+            },
+            shellPopupOpen() { return !!(root.document && root.document.querySelector(".q-dialog, .q-menu")); },
+            // The keymap providers of the apps: a "global" scope is on everywhere, another while its app is the current one.
+            registerProviderKeys() {
+                (this.providerKeysOff || []).forEach((off) => off());
+                this.providerKeysOff = [];
+                this.shellApps.forEach((app) => {
+                    const keymaps = app.providers && Array.isArray(app.providers.keymaps) ? app.providers.keymaps : [];
+                    keymaps.forEach((map) => {
+                        const scope = map.scope || "global";
+                        const when = scope === "global" ? null : () => this.currentAppName === app.name || this.currentAppName === scope;
+                        const bindings = (map.keys || []).map((key) => ({
+                            keys: key.keys, label: key.label, action: key.action || null, when,
+                            run: () => {
+                                if (key.url) { this.setUrl(key.url); return true; }
+                                if (key.action === "palette") { this.openPalette(); return true; }
+                                if (key.action === "quickCreate") { const item = this.currentAppQuickCreate[0]; if (item) { this.openQuickCreate(item); return true; } }
+                                return false;
+                            }
+                        }));
+                        this.providerKeysOff.push(keymap.registerScope(scope, bindings));
+                    });
+                });
+            },
+            onShellKeydown(event) { keymap.handle(event); },
 
             addPlugin(list, url) { moqui.loadComponent(this.appRootPath + url, (comp) => { list.push(comp); }); },
             addPluginsWait(list, urlList, urlIndex) {
@@ -2820,6 +3663,8 @@
                 const msg = "Background login successful";
                 this.$q.notify({ timeout: 12000, type: "positive", message: msg });
                 this.addNotify(msg, "positive");
+                // the new session may be another user's view of the apps
+                this.loadShellData();
             },
             reLoginSubmit() {
                 moqui.request(this.appRootPath + "/rest/login", { method: "POST", params: { username: this.username, password: this.reLoginPassword } })
@@ -2924,15 +3769,125 @@
             currentLinkUrl() { const search = this.currentSearch; return this.currentLinkPath + (search.length > 0 ? "?" + search : ""); },
             basePathSize() { return this.basePath.split("/").length - this.appRootPath.split("/").length; },
             ScreenTitle() { return this.navMenuList.length > 0 ? this.navMenuList[this.navMenuList.length - 1].title : ""; },
-            // What the shell and Assist know of the screen shown: its path and parameters, the record and selection of the latest
-            // m-screen-context (a record needs an entity and an id), and the filters and forms, which are not gathered yet.
+            // The record of the latest m-screen-context (a record needs an entity and an id), apart from the rest of the screen
+            // context so the + menu does not follow every field of every form.
+            screenRecord() {
+                const list = this.screenContexts;
+                const latest = list.length ? list[list.length - 1].value : null;
+                return latest && latest.recordEntity && latest.recordId ? { entity: latest.recordEntity, id: latest.recordId, title: latest.title || "" } : null;
+            },
+            // What the shell and Assist know of the screen shown: its path and parameters, the record of the latest m-screen-context,
+            // the selected rows of its selection-form, the active find parameters of the lists, and the forms with their field
+            // names (moqui.screenFormsContext).
             screenContext() {
                 const list = this.screenContexts;
                 const latest = list.length ? list[list.length - 1].value : null;
-                const record = latest && latest.recordEntity && latest.recordId ?
-                    { entity: latest.recordEntity, id: latest.recordId, title: latest.title || "" } : null;
-                return { path: this.currentPath, parameters: Object.assign({}, this.currentParameters), record,
-                    selection: latest && latest.selectionForm ? { form: latest.selectionForm } : null, filters: null, forms: [] };
+                const selectionForm = latest && latest.selectionForm ? latest.selectionForm : "";
+                // formsVersion: a form came or went
+                const gathered = this.formsVersion >= 0 ? moqui.screenFormsContext(moqui.screenForms, moqui.screenFormsDom(), this.currentParameters, selectionForm) :
+                    { forms: [], filters: null, selection: null };
+                return { path: this.currentPath, parameters: Object.assign({}, this.currentParameters), record: this.screenRecord,
+                    selection: gathered.selection, filters: gathered.filters, forms: gathered.forms };
+            },
+            // The ids of the elements Assist may reach (IronStone design §1.1): the canvas, the tray panel while it is there and the
+            // quick-create dialog while it is open; not the header, the drawer or the palette.
+            assistReach() {
+                return ["m-canvas"].concat(this.trayMounted && this.trayOpen ? ["m-tray"] : [], this.quickCreateShow ? ["m-quick-create"] : []);
+            },
+
+            // ---- the suite shell ----
+            shellApps() { return this.shellData ? this.shellData.apps : []; },
+            shellValues() { return this.shellData && this.shellData.shell ? this.shellData.shell : {}; },
+            currentAppName() { return this.currentPathList.length ? this.currentPathList[0] : ""; },
+            currentApp() { return this.shellApps.find((app) => app.name === this.currentAppName) || null; },
+            // the current app's title in the header; the theme's title outside an app (the AppList)
+            headerTitle() { return this.currentApp ? this.currentApp.title : this.shell.title; },
+            // the apps with the current one first, for the + menu and the account menu
+            shellAppsCurrentFirst() {
+                const current = this.currentApp;
+                return current ? [current].concat(this.shellApps.filter((app) => app !== current)) : this.shellApps;
+            },
+            // the + menu: the quick-create kinds of the apps, the current app's first, once per screen; a kind that needs a record
+            // only with one in the screen context
+            quickCreateItems() {
+                const record = this.screenRecord;
+                const seen = {};
+                const out = [];
+                this.shellAppsCurrentFirst.forEach((app) => ((app.providers && app.providers.quickCreate) || []).forEach((item) => {
+                    if (!item.url || seen[item.url] || (item.requiresRecord && !record)) return;
+                    seen[item.url] = true;
+                    out.push(Object.assign({ key: app.name + ":" + (item.kind || item.url), app: app.name }, item));
+                }));
+                return out;
+            },
+            currentAppQuickCreate() { return this.quickCreateItems.filter((item) => this.currentApp && item.app === this.currentApp.name); },
+            accountMenuItems() {
+                const seen = {};
+                const out = [];
+                this.shellAppsCurrentFirst.forEach((app) => ((app.providers && app.providers.accountMenuItems) || []).forEach((item) => {
+                    if (!item.url || seen[item.url]) return;
+                    seen[item.url] = true;
+                    out.push(item);
+                }));
+                return out;
+            },
+            shellNotificationTopics() {
+                const out = [];
+                this.shellApps.forEach((app) => ((app.providers && app.providers.notificationTopics) || []).forEach((topic) => { if (out.indexOf(topic) < 0) out.push(topic); }));
+                return out;
+            },
+            // the tabs of the tray: the screens the theme names (STRT_TRAY_TODAY, STRT_TRAY_CHAT, STRT_TRAY_NOTIFICATIONS)
+            trayTabs() {
+                const values = this.shellValues;
+                const labels = this.labels;
+                return [{ key: "today", icon: "sym_o_today", label: labels.today, url: values.trayToday },
+                    { key: "chat", icon: "sym_o_chat", label: labels.chat, url: values.trayChat },
+                    { key: "notifications", icon: "sym_o_notifications", label: labels.notifications, url: values.trayNotifications }]
+                    .filter((tab) => tab.url).map((tab) => Object.assign(tab, { loadUrl: this.shellLoadPath(tab.url) }));
+            },
+            // the header's count buttons in their order: Today, Chat, the Inbox (a link) and Notifications, each when it is set
+            headerCounters() {
+                const tray = (key) => this.trayTabs.find((tab) => tab.key === key);
+                const out = [];
+                ["today", "chat"].forEach((key) => { const tab = tray(key); if (tab) out.push({ key, icon: tab.icon, label: tab.label, tray: true }); });
+                if (this.shellValues.inboxScreen) out.push({ key: "mail", icon: "sym_o_mail", label: this.labels.inbox, url: this.shellValues.inboxScreen, tray: false });
+                const notifications = tray("notifications");
+                if (notifications) out.push({ key: "notifications", icon: notifications.icon, label: notifications.label, tray: true });
+                return out;
+            },
+            paletteKeyHint() { return keymap.isMac ? "⌘K" : "Ctrl K"; },
+            paletteSources() {
+                const out = [];
+                this.shellApps.forEach((app) => ((app.providers && app.providers.paletteSources) || []).forEach((source) => {
+                    if (!out.some((other) => other.group === source.group)) out.push(source);
+                }));
+                return out;
+            },
+            paletteScreens() { return palette.screens(this.shellApps); },
+            paletteActions() {
+                const seen = {};
+                const out = [];
+                this.shellAppsCurrentFirst.forEach((app) => ((app.providers && app.providers.paletteActions) || []).forEach((action) => {
+                    if (!action.url || seen[action.url]) return;
+                    seen[action.url] = true;
+                    out.push({ title: action.label, subtitle: app.title, icon: action.icon || "sym_o_bolt", url: action.url });
+                }));
+                return out;
+            },
+            // the saved finds of the screens on the current path, from its menu data
+            paletteSavedFinds() {
+                const seen = {};
+                const out = [];
+                this.navMenuList.forEach((item) => (item.savedFinds || []).forEach((find) => {
+                    if (!find.pathWithParams || seen[find.pathWithParams]) return;
+                    seen[find.pathWithParams] = true;
+                    out.push({ title: find.title, subtitle: item.title, icon: "sym_o_saved_search", url: find.pathWithParams });
+                }));
+                return out;
+            },
+            // the screens of this page before the current one, newest first (the palette's Recent)
+            paletteRecent() {
+                return this.navHistoryList.slice(1).map((item) => ({ title: item.title, url: item.pathWithParams, image: item.image, imageType: item.imageType }));
             },
             documentMenuList() {
                 const docList = [];
@@ -2958,12 +3913,26 @@
             }
             this.addPluginsWait(this.navPlugins, config.navPlugins, 0);
             this.addPluginsWait(this.accountPlugins, config.accountPlugins, 0);
+            // the keys: Mod is Cmd on a Mac; the user's KEYMAP preference changes bindings; single keys wait while a dialog is open
+            const nav = root.navigator || {};
+            keymap.isMac = /Mac|iPhone|iPad|iPod/.test(nav.platform || nav.userAgent || "");
+            const keymapPref = config.preferences ? config.preferences.KEYMAP : null;
+            if (!keymap.setOverrides(keymapPref)) console.info("The KEYMAP preference is not JSON of {scope: {action: keys}}, ignored");
+            keymap.typedBlocked = () => !!(root.document && root.document.querySelector(".q-dialog"));
         },
         mounted() {
             // the shell is hidden until Vue has compiled it
             root.document.getElementById("apps-root").style.display = "";
             this.setUrl(root.location.pathname + root.location.search);
-            if (this.notificationClient) this.notificationClient.registerListener("ALL");
+            if (this.notificationClient) {
+                this.notificationClient.registerListener("ALL");
+                this.notificationClient.registerListener("ALL", this.onShellNotification);
+            }
+            // the suite shell: its data once, its keys, and the counts every 5 minutes while the socket is down
+            this.loadShellData();
+            this.shellKeysOff = keymap.registerScope("global", this.shellKeyBindings());
+            root.document.addEventListener("keydown", this.onShellKeydown);
+            this.shellPollTimer = setInterval(() => this.pollShellCounts(), 5 * 60 * 1000);
             // desktop notifications: ask once, if the browser has not been told yet
             if (root.Notification && root.Notification.permission === "default") {
                 root.Notification.requestPermission().then((status) => {
@@ -2973,7 +3942,13 @@
             }
             if (config.qz && config.qz.enabled) this.loadQz();
         },
-        unmounted() { if (this.sessionTokenBc) this.sessionTokenBc.close(); }
+        unmounted() {
+            if (this.sessionTokenBc) this.sessionTokenBc.close();
+            if (this.shellKeysOff) this.shellKeysOff();
+            (this.providerKeysOff || []).forEach((off) => off());
+            root.document.removeEventListener("keydown", this.onShellKeydown);
+            clearInterval(this.shellPollTimer);
+        }
     });
 
     // QZ Tray printing, when the user turned it on: qz-tray.js and the print component are loaded now and not before.

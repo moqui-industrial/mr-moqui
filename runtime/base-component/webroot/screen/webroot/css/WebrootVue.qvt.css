@@ -40,6 +40,29 @@ body.test.body--dark #top { background:#1b3a1b!important; }
 .q-drawer .q-item__section--side { padding-right:4px; } /* orig 16px */
 .q-drawer .q-expansion-item__content .q-item { padding-left:8px; }
 
+/* the suite shell (IronStone style-guide 2.2, 2.4): the launcher grid, the key hint, the palette and the tray panel */
+.m-launcher-grid { display:grid; grid-template-columns:repeat(3, 112px); gap:6px; }
+@media (max-width: 599.98px) { .m-launcher-grid { grid-template-columns:repeat(3, minmax(0, 1fr)); width:calc(100vw - 40px); } }
+.q-btn.m-launcher-app { margin:0; min-height:84px; padding:8px 4px; }
+.q-btn.m-launcher-app .q-icon { font-size:28px; }
+.m-launcher-title { font-size:12px; line-height:1.2; margin-top:6px; text-align:center; white-space:normal; overflow-wrap:anywhere; }
+.q-btn.m-launcher-current { box-shadow:inset 0 0 0 2px var(--q-primary); }
+/* a keyboard key as text: the palette hint on the Search button, the ? overlay */
+.m-kbd { font-size:11px; line-height:16px; padding:0 5px; border:1px solid currentColor; border-radius:4px; opacity:.65; white-space:nowrap; }
+.m-palette { width:640px; max-width:100vw; max-height:80vh; }
+.m-palette-results { max-height:60vh; min-height:48px; }
+.m-palette .q-item { min-height:36px; }
+.m-palette .q-item__section--avatar.m-palette-icon { min-width:32px; }
+.m-palette .q-item.m-palette-active { color:inherit; background:color-mix(in srgb, var(--q-primary) 12%, transparent); }
+.body--dark .m-palette .q-item.m-palette-active { background:color-mix(in srgb, var(--q-primary) 24%, transparent); }
+/* the tray panel: at the right of the canvas between the header and the footer, over the screen; the full width on a phone */
+.q-page-sticky.m-tray-sticky { z-index:1000; align-items:stretch; justify-content:flex-end; }
+.m-tray { width:400px; height:100%; border-top:none; border-bottom:none; border-right:none; }
+@media (max-width: 599.98px) { .m-tray { width:100vw; } }
+.m-tray .q-tab { padding:0 10px; min-height:40px; }
+.m-tray-body { overflow-y:auto; min-height:0; }
+@media print { .m-tray-sticky { display:none!important; } }
+
 /* ====== buttons ====== */
 
 /* the three kinds a macro writes: unelevated primary (a submit), tonal (a secondary action) and flat (a tool) */
