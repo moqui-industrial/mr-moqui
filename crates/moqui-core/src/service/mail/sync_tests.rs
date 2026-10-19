@@ -1178,6 +1178,55 @@ fn sent_mail_is_appended_to_sent_unless_the_server_kept_a_copy() {
     assert_eq!(imap.messages("Sent Mail").len(), 2);
 }
 
+/// A sync that stops at email_sync_batch with mail left is due again at the job's next run, before its interval, until
+/// the backlog is in; then the interval holds again.
+#[test]
+fn the_job_goes_on_with_a_backlog_at_its_next_run() {
+    let _lock = crate::user::session::cookie_property_lock();
+    struct Batch;
+    impl Drop for Batch {
+        fn drop(&mut self) {
+            moqui_lib::env::clear_property("email_sync_batch");
+        }
+    }
+    let _batch = Batch;
+    moqui_lib::env::set_property("email_sync_batch", "1");
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    alice(&facade);
+    let imap = FakeImap::start(&["UIDPLUS"]);
+    for (id, subject) in [("<b1@example.com>", "One"), ("<b2@example.com>", "Two")] {
+        imap.add(
+            "INBOX",
+            &mail(id, "x@example.com", "alice@example.com", subject, "", "b"),
+            &[],
+        );
+    }
+    let account = imap_account(imap.port, "app-password");
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let first = ok("sync#DueEmailAccounts", &[]);
+    assert_eq!(out_number(&first, "syncedCount"), 1, "{first:?}");
+    let in_first = [
+        by_message_id(&facade, &account, "<b1@example.com>").is_some(),
+        by_message_id(&facade, &account, "<b2@example.com>").is_some(),
+    ];
+    assert_eq!(
+        in_first.iter().filter(|found| **found).count(),
+        1,
+        "one message a session"
+    );
+    // the interval has not passed, but the account has a backlog
+    let second = ok("sync#DueEmailAccounts", &[]);
+    assert_eq!(out_number(&second, "syncedCount"), 1, "{second:?}");
+    assert!(by_message_id(&facade, &account, "<b1@example.com>").is_some());
+    assert!(by_message_id(&facade, &account, "<b2@example.com>").is_some());
+    // all in: a sync that fetched everything leaves no backlog, so the interval holds (a capped session is the one
+    // that found more than the batch; the second found one, so it is not)
+    let third = ok("sync#DueEmailAccounts", &[]);
+    assert_eq!(out_number(&third, "syncedCount"), 0, "{third:?}");
+}
+
 /// The job syncs what is due and leaves a paused account; a sync holding the lock makes another one busy.
 #[test]
 fn the_job_syncs_due_accounts_and_the_lock_keeps_one_at_a_time() {

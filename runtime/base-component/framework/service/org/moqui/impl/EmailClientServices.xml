@@ -1774,8 +1774,9 @@ along with this software (see the LICENSE.md file). If not, see
             transaction="ignore" authenticate="anonymous-all" allow-remote="false">
         <description>The ServiceJob sync_EmailAccounts_frequent: sync each account with an incoming server whose last sync
             is older than its interval (syncIntervalMinutes, else the email_sync_interval property, 5 minutes; three times
-            as long after an error), each on its own. Paused accounts, those whose sign-in failed and those syncing now
-            are left.</description>
+            as long after an error), or whose last sync stopped at email_sync_batch with mail left on the server (at every
+            run of the job, so a large first sync goes on a batch a minute), each on its own. Paused accounts, those whose
+            sign-in failed and those syncing now are left.</description>
         <out-parameters>
             <parameter name="syncedCount" type="Integer"/>
             <parameter name="failedCount" type="Integer"/>

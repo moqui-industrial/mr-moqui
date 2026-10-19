@@ -789,6 +789,9 @@ pub(super) struct SyncReport {
     pub(super) folder_count: usize,
     pub(super) skipped_messages: usize,
     pub(super) folder_errors: Vec<String>,
+    /// A folder had more new mail than `email_sync_batch`: the job syncs the account again at its next run, whatever
+    /// its interval, until the backlog is in (a first sync of a large mailbox).
+    pub(super) capped: bool,
 }
 
 impl SyncReport {
@@ -974,6 +977,7 @@ pub(super) fn run_sync(facade: &EntityFacade, account_id: &str, options: &SyncOp
         )))
     });
     record_outcome(facade, &account, &result, &mut report, options);
+    set_backlog(account_id, report.capped && report.outcome == "synced");
     release_lease(facade, account_id);
     progress.finish(&report);
     tracing::info!(
@@ -2086,6 +2090,7 @@ fn sync_folder(
     }
     // the new messages
     let capped = wanted.len() > session.batch;
+    report.capped |= capped;
     let pending = wanted.len();
     wanted.truncate(session.batch);
     progress.new_mail(wanted.len(), pending, locals.len());
@@ -2719,9 +2724,34 @@ pub(super) fn open_pop(
 
 // ---- the job ----
 
+/// The accounts of this server whose last sync stopped at `email_sync_batch` with new mail left on the server.
+#[derive(Default)]
+struct Backlog(std::sync::Mutex<HashSet<String>>);
+
+fn backlog() -> Option<std::sync::Arc<Backlog>> {
+    ExecutionContext::with_current(|ec| ec.factory().extension(|_| Backlog::default()))
+}
+
+fn set_backlog(account_id: &str, capped: bool) {
+    if let Some(backlog) = backlog() {
+        let mut ids = moqui_lib::sync::lock(&backlog.0);
+        if capped {
+            ids.insert(account_id.to_string());
+        } else {
+            ids.remove(account_id);
+        }
+    }
+}
+
+fn has_backlog(account_id: &str) -> bool {
+    backlog().is_some_and(|backlog| moqui_lib::sync::lock(&backlog.0).contains(account_id))
+}
+
 /// `sync#DueEmailAccounts`, the job `sync_EmailAccounts_frequent`: each account with an incoming server whose last
 /// sync is older than its interval (`syncIntervalMinutes`, else `email_sync_interval`, 5 minutes; three times that
-/// after an error), each on its own. A paused account, one whose sign-in failed and one syncing now are left.
+/// after an error), or whose last sync stopped at `email_sync_batch` with mail left (at every run of the job, so a
+/// large first sync goes on a batch a minute), each on its own. A paused account, one whose sign-in failed and one
+/// syncing now are left.
 pub(super) fn sync_due_accounts(
     _parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
@@ -2761,9 +2791,10 @@ pub(super) fn sync_due_accounts(
             interval *= 3;
         }
         // a few seconds' slack, so a job every minute syncs an account every interval, not every interval and a minute
-        if account
-            .last_sync_millis
-            .is_some_and(|last| now - last + 5_000 < interval)
+        if !has_backlog(&account.id)
+            && account
+                .last_sync_millis
+                .is_some_and(|last| now - last + 5_000 < interval)
         {
             continue;
         }
