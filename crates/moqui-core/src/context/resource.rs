@@ -25,14 +25,23 @@ use super::error::Error;
 use crate::entity::{DbResourceInfo, EntityFacade};
 use crate::resource::textdiff::{self, TextDiff};
 
+mod changes;
+use changes::db_file_size;
+#[cfg(feature = "git")]
+pub(crate) use changes::millis_of;
+pub(crate) use changes::{apply_changes_each, last_change_by_stat, tree_size_by_walk};
+pub use changes::{ChangeLogEntry, ChangeSetOutcome, ResourceChange, ResourceChangeInfo};
+
 /// One version of a file, as Java's `ResourceReference.Version`: a `dbresource` history row, or a commit of a `git`
-/// file. `version_date` is a Timestamp value.
+/// file. `version_date` is a Timestamp value. `note` is what was written with the version: the commit message (without
+/// its `Moqui-User-Id` trailer) of a `git` file, the `versionNote` of a `dbresource` one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResourceVersion {
     pub version_name: String,
     pub previous_version_name: Option<String>,
     pub version_date: Value,
     pub user_id: Option<String>,
+    pub note: Option<String>,
 }
 
 /// A resolved resource with its logical location.
@@ -230,16 +239,14 @@ impl ResourceRef {
         }
     }
 
-    /// The size in bytes of a file resource: a file, a provider's file, or a `dbresource://` file (the length of its
-    /// data: `DbResourceFile` has no size column). A directory, a missing file and an `http` resource have none.
+    /// The size in bytes of a file resource: a file, a provider's file, or a `dbresource://` file (its
+    /// `DbResourceFile.fileSize`, else the length of its data). A directory, a missing file and an `http` resource have
+    /// none.
     pub fn size(&self) -> Option<u64> {
         match &self.stored {
             Stored::Native(provider) => provider.stat(&self.location).ok().flatten().map(|stat| stat.size),
             Stored::File(file) => file.size().ok(),
-            Stored::Db(snap) => snap
-                .file_bytes(&self.location)
-                .ok()
-                .and_then(|bytes| u64::try_from(bytes.len()).ok()),
+            Stored::Db(snap) => db_file_size(&self.location, snap),
             Stored::Http(_) => None,
         }
     }

@@ -192,6 +192,22 @@ along with this software (see the LICENSE.md file). If not, see
                     <xs:attribute name="screen-path" type="xs:string" use="required">
                         <xs:annotation><xs:documentation>The path to the screen to render on error</xs:documentation></xs:annotation></xs:attribute>
                 </xs:complexType></xs:element>
+                <xs:element minOccurs="0" maxOccurs="unbounded" name="token-route">
+                    <xs:annotation><xs:documentation>An anonymous token route: /name/token renders the screen at
+                        screen-location in the public shell (Vue, Quasar, the theme and the m-* components, with no header,
+                        drawers or login), /name/token.qvt (or .qvue, .qjs) the screen itself, and /name/token/path what is
+                        below it. The token-service runs first, with token and routeName, and answers valid and routeContext;
+                        a token it does not accept gets a short "link expired or not found" page and nothing else runs. The
+                        screen's context has token and tokenRoute {name, token, basePath, title, context}. A route named as
+                        a framework path (apps, qapps, rest, ...) is left out. No Java counterpart.</xs:documentation></xs:annotation>
+                    <xs:complexType>
+                        <xs:attribute name="name" type="xs:string" use="required">
+                            <xs:annotation><xs:documentation>The first path segment, for example s, u or call</xs:documentation></xs:annotation></xs:attribute>
+                        <xs:attribute name="screen-location" type="xs:string" use="required"/>
+                        <xs:attribute name="token-service" type="xs:string" use="required"/>
+                        <xs:attribute name="title" type="xs:string"/>
+                    </xs:complexType>
+                </xs:element>
                 <xs:element minOccurs="0" name="first-hit-in-visit"><xs:complexType><xs:sequence><xs:element ref="actions"/></xs:sequence></xs:complexType></xs:element>
                 <xs:element minOccurs="0" name="before-request"><xs:complexType><xs:sequence><xs:element ref="actions"/></xs:sequence></xs:complexType></xs:element>
                 <xs:element minOccurs="0" name="after-request"><xs:complexType><xs:sequence><xs:element ref="actions"/></xs:sequence></xs:complexType></xs:element>

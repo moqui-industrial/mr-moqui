@@ -14,7 +14,8 @@ use moqui_lib::object::{HostObject, Value};
 use moqui_lib::sync::{lock, read, write};
 
 use crate::context::{
-    ComponentInfo, Error, ExecutionContext, ExecutionContextFactory, ResourceEntry, ResourceStat, ResourceVersion,
+    ChangeLogEntry, ChangeSetOutcome, ComponentInfo, Error, ExecutionContext, ExecutionContextFactory, ResourceChange,
+    ResourceChangeInfo, ResourceEntry, ResourceStat, ResourceVersion,
 };
 use crate::script::template::TemplateRenderer;
 
@@ -169,6 +170,62 @@ pub trait ResourceProvider: Send + Sync + std::fmt::Debug {
     /// The bytes of one version, or `None` when there is no such version.
     fn read_version(&self, _location: &str, _version_name: &str) -> Result<Option<Vec<u8>>, Error> {
         Ok(None)
+    }
+    /// Write a file with a note for the version it makes (a commit message on `git`). Storage that keeps no notes
+    /// writes the bytes and drops the note.
+    fn write_bytes_noted(&self, location: &str, bytes: &[u8], _note: Option<&str>) -> Result<(), Error> {
+        self.write_bytes(location, bytes)
+    }
+    /// Apply a change set under the directory `root` ([`crate::context::ResourceFacade::apply_change_set`]): one
+    /// version for all of it where the storage can (one commit on `git`), else each change on its own, in order. A
+    /// change that fails is reported in the outcome and the others still apply.
+    fn apply_changes(
+        &self,
+        root: &str,
+        changes: &[ResourceChange],
+        message: Option<&str>,
+    ) -> Result<ChangeSetOutcome, Error> {
+        Ok(crate::context::apply_changes_each(self, root, changes, message))
+    }
+    /// The last change of a file or directory: on storage with versions its current version, else its stat.
+    fn last_change(&self, location: &str) -> Result<Option<ResourceChangeInfo>, Error> {
+        crate::context::last_change_by_stat(self, location)
+    }
+    /// [`Self::last_change`] of each entry of a directory, by name.
+    fn child_changes(&self, location: &str) -> Result<Vec<(String, ResourceChangeInfo)>, Error> {
+        let mut found = Vec::new();
+        for entry in self.list(location)? {
+            if let Some(change) = self.last_change(&entry.location)? {
+                found.push((entry.name, change));
+            }
+        }
+        Ok(found)
+    }
+    /// The versions under a location, newest first, at most `limit`: a file's own versions here; `git` gives every
+    /// commit that changed something under a directory.
+    fn change_log(&self, location: &str, limit: usize) -> Result<Vec<ChangeLogEntry>, Error> {
+        Ok(self
+            .version_history(location)?
+            .into_iter()
+            .take(limit)
+            .map(|version| ChangeLogEntry {
+                version,
+                paths: Vec::new(),
+            })
+            .collect())
+    }
+    /// The bytes of every file under a location (one file: its size), for a quota.
+    fn tree_size(&self, location: &str) -> Result<u64, Error> {
+        crate::context::tree_size_by_walk(self, location)
+    }
+    /// Write a file as it was in `version_name` back as its newest version, with a note; the new version's name. `git`
+    /// puts back a directory with everything under it too, in one commit.
+    fn restore_version(&self, location: &str, version_name: &str, note: Option<&str>) -> Result<Option<String>, Error> {
+        let bytes = self
+            .read_version(location, version_name)?
+            .ok_or_else(|| Error::new(format!("version {version_name} not found: {location}")))?;
+        self.write_bytes_noted(location, &bytes, note)?;
+        Ok(self.current_version(location)?.map(|version| version.version_name))
     }
 }
 

@@ -24,6 +24,8 @@ mod eca;
 mod eca_rules;
 mod elfinder;
 mod email_eca;
+#[cfg(all(test, feature = "git"))]
+mod files_tests;
 #[cfg(feature = "git")]
 mod git;
 mod images;
