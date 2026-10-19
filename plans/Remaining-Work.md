@@ -60,6 +60,19 @@ The gallery (`runtime/base-component/example/screen/Gallery/`, [style-guide §10
 | Entity | `moqui.basic.EnumerationAndType` (alias-all view) returns a null `lastUpdatedStamp`; check the alias-all handling of the stamp fields against Java | gallery finding F23, unverified |
 | REST | The ADMIN demo user gets 403 on `/rest/e1/moqui.basic.EnumerationType` (`AT_ENTITY … view`); check the REST entity authorization seed | gallery finding F27, unverified |
 
+## Found during the IronStone build (2026-10-19)
+
+Found while building the suite shell, the notifications and the Mantle services of ironstone-boss `plan/impl-drawers-commons.md`.
+The child-list dates of the Postgres search, condition objects in a script's context and the shell breadcrumbs were fixed on
+2026-10-19 (M2 framework). Open:
+
+| Area | Item | Source |
+|---|---|---|
+| Search | Dates in child lists are now stored as ISO-8601 text when indexed (`ObjectMapping::type_dates`); a document indexed before keeps its epoch-millis text, so a child-date filter on it still fails on Postgres until its DataFeed is indexed again (`index#DataFeedDocuments`). mr-mantle-usl `search#Universal` can now limit to current party rows (its TODO, `parties.partyThruDate`) | M2 framework |
+| Notifications | `approve#` and `refuse#NotificationMessage` mark only the deciding user's `NotificationMessageUser` row viewed; the other recipients of the same approval keep it waiting until they open it (their approve service call answers with the record's state) | M2 framework |
+| Notifications | The daily digest is one list per user, newest last; no grouping by topic or app yet, and no per-user hour (the job runs at 06:00 server time) | M2 framework |
+| Screens | In a server-static screen a link url with `${}` is bound as text (`exp`), so a relative path in it is not resolved against the screen; a plain url and its query are | M2 framework (number-card links) |
+
 ## Parity gap review
 
 The entity and service modules (Parity-Mapping's Entity and Service sections) were reviewed phase by phase against their Java sources on 2026-10-16: [EntityService-Parity-Review](archive/EntityService-Parity-Review.md), 8 phases, with the accepted differences in [Parity-Diffs](Parity-Diffs.md). The rest of [Parity-Mapping](Parity-Mapping.md) (moqui-lib, moqui-db, context and resources, user and session, transactions and drivers, script and templates, screens and macros, web and the HTTP host, search, notifications and cluster, mail and the tool components, tooling, browser host) has had no phase review yet; the threads to carry through one are [Parity-Mapping, Cross-cutting threads](Parity-Mapping.md#cross-cutting-threads).

@@ -435,7 +435,8 @@ impl HostUser {
         host_guard(&ctx, || Ok(crate::l10n::locale()))
     }
 
-    /// The time zone of the session, the user's own when there is no other, else UTC.
+    /// The time zone of the session, the user's own when there is no other, else the server's (Java's
+    /// `ec.user.getTimeZone()`).
     #[qjs(get, rename = "timeZone")]
     fn time_zone_property(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
         host_guard(&ctx, || Ok(session_time_zone_name()))
@@ -443,6 +444,40 @@ impl HostUser {
 
     fn get_time_zone(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
         host_guard(&ctx, || Ok(session_time_zone_name()))
+    }
+
+    /// `setTimeZone(name)`, Java's `UserFacade.setTimeZone`: the session's time zone from now on, also saved on the
+    /// signed-in user's `UserAccount`; with nobody signed in (a job) the session's only. An unknown zone is an error;
+    /// null or empty clears it.
+    fn set_time_zone(&self, ctx: Ctx<'_>, zone: Opt<JsValue<'_>>) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            let zone = optional_text(&ctx, zone.0.as_ref())?.filter(|zone| !zone.trim().is_empty());
+            if let Some(zone) = zone.as_deref() {
+                if jiff::tz::TimeZone::get(zone).is_err() {
+                    return Err(Exception::throw_message(
+                        &ctx,
+                        &format!("Time zone {zone} is not known"),
+                    ));
+                }
+            }
+            save_user_setting("timeZone", zone.as_deref())
+                .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+            crate::user::session::set_time_zone(zone.as_deref());
+            Ok(())
+        })
+    }
+
+    /// `setLocale(name)`, Java's `UserFacade.setLocale`: as [`Self::set_time_zone`], for the locale (`en_US`, `de`).
+    fn set_locale(&self, ctx: Ctx<'_>, locale: Opt<JsValue<'_>>) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            let locale = optional_text(&ctx, locale.0.as_ref())?
+                .map(|locale| locale.trim().replace('-', "_"))
+                .filter(|locale| !locale.is_empty());
+            save_user_setting("locale", locale.as_deref())
+                .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+            crate::user::session::set_locale(locale.as_deref());
+            Ok(())
+        })
     }
 
     /// The logged-in user's `UserAccount` without the password and lockout columns, or null.
@@ -501,12 +536,29 @@ impl HostUser {
     }
 }
 
+/// `field` of the signed-in user's `UserAccount`, as Java's `setLocale` and `setTimeZone` save it. Nothing with nobody
+/// signed in.
+fn save_user_setting(field: &str, value: Option<&str>) -> Result<(), Error> {
+    let Some(user_id) = crate::user::current_user_id()?.filter(|id| !id.is_empty()) else {
+        return Ok(());
+    };
+    let facade = ExecutionContext::with_current(|ec| ec.factory().entity())
+        .flatten()
+        .ok_or_else(|| Error::new("no entity facade is installed"))?;
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let mut account = facade.make_value("moqui.security.UserAccount")?;
+    account.set("userId", Value::string(user_id));
+    account.set(field, value.map_or(Value::Null, Value::string));
+    account.update(&facade)?;
+    Ok(())
+}
+
 fn session_time_zone_name() -> String {
     crate::user::time_zone()
         .ok()
         .flatten()
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "UTC".to_string())
+        .unwrap_or_else(crate::l10n::server_time_zone_name)
 }
 
 /// The columns of `UserAccount` that never leave the server.

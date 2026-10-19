@@ -1191,7 +1191,7 @@ fn typed_equals(value: &Value, expected: &str) -> bool {
         Value::Time(_) => "java.sql.Time",
         _ => return to_plain_string(value) == expected,
     };
-    let converted = moqui_lib::object::basic_convert(&Value::string(expected), java_type).value;
+    let converted = crate::l10n::basic_convert(&Value::string(expected), java_type).value;
     matches!(
         moqui_lib::object::compare_obj(value, &converted),
         Ok(std::cmp::Ordering::Equal)

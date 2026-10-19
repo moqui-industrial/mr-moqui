@@ -1290,6 +1290,38 @@
             return sri.getFieldValueString(n);
         };
 
+        // ---- dashboards ----
+
+        // The tone of a number-card's delta: good, bad or neutral, by its sign (a leading + or -, else the number's) and
+        // delta-good (up, the default: a rise is good; down: a fall is). The qvt client's m-number-card reads it the same way.
+        const deltaTone = (delta, good) => {
+            const text = String(delta || "").trim();
+            const number = parseFloat(text.replace(/[^0-9.\-+]/g, ""));
+            const sign = /^[-\u2212]/.test(text) ? -1 : /^\+/.test(text) ? 1 : (isNaN(number) ? 0 : Math.sign(number));
+            if (sign === 0) return "neutral";
+            return (good === "down" ? sign < 0 : sign > 0) ? "good" : "bad";
+        };
+        // A number-card as plain markup: the title, the value and the delta, the whole card a link when it has one. Only an
+        // icon given as CSS classes is drawn, as the html pages have no icon font.
+        const numberCard = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const value = (text) => (text && text !== "null" ? text : "");
+            const delta = value(xn(at(n, "delta")));
+            let href = null;
+            if (at(n, "link")) {
+                const url = sri.makeUrlByType(at(n, "link"), "transition", n, "true");
+                if (!url.getDisableLink()) href = url.getUrlWithParams();
+            }
+            const iconName = xn(at(n, "icon"));
+            const tag = href ? "a" : "div";
+            w("<" + tag + A({ id: nodeId(n) || null, href, class: cls("number-card", xn(at(n, "style")) || null), "data-size": at(n, "size") || null }) + ">" +
+                (iconName && /\s|^fa/.test(iconName) ? icon(iconName) : "") +
+                '<span class="number-card-title">' + e(value(x(at(n, "title")))) + "</span>" +
+                '<strong class="number-card-value">' + e(value(xn(at(n, "value")))) + "</strong>" +
+                (delta ? '<span class="number-card-delta" data-tone="' + deltaTone(delta, at(n, "delta-good")) + '">' + e(delta) + "</span>" : "") +
+                "</" + tag + ">\n");
+        };
+
         const h = {
             reset, e, lib, fid, fnm,
             textLine, textArea, password, file, hidden, reset_, submit, dateTime, dateFind, datePeriod, rangeFind, textFind,
@@ -1300,7 +1332,8 @@
             valueText, rowCellOpen, rowCellClose,
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
-            labelCols: (value) => { st.labelCols = value || ""; }
+            labelCols: (value) => { st.labelCols = value || ""; },
+            numberCard
         };
         Object.defineProperty(globalThis, "$mqHtml", { value: h, configurable: true });
     };
@@ -1651,6 +1684,18 @@
         sri.write("</div>\\n");
     `);
 
+    // A dashboard: its children in a grid of columns at least min-width px wide (moqui-html.css), each in a cell.
+    const dashboardMacro = stmt((node) => {
+        const minWidth = parseInt(attr(node, "min-width") || "", 10);
+        const style = attr(node, "style");
+        return js`
+            sri.write("<div" + $h.A({id: ${attr(node, "id") ? "$h.nodeId(" + bareLit(node) + ")" : "null"}, class: $h.cls("dashboard", ${style ? noL10n(style) : "null"}),
+                style: ${minWidth > 0 ? lit(`--dashboard-min:${minWidth}px`) : "null"}}) + ">");
+            ${node.children.map((kid) => `sri.write(${lit(`<div class="dashboard-item${kid.name === "section-iterate" ? " dashboard-each" : ""}">`)});\n${kid.source || ""}sri.write("</div>");\n`).join("")}
+            sri.write("</div>\\n");
+        `;
+    });
+
     const containerPanelMacro = stmt((node) => {
         const part = (name) => { const kid = child(node, name); return kid ? kid.source : ""; };
         const sized = (name) => {
@@ -1748,6 +1793,8 @@
         "editable": widget("editable"),
         // the shell's screen context (m-screen-context in qvt): the html pages have no shell, so nothing
         "context": stmt(() => ""),
+        "dashboard": dashboardMacro,
+        "number-card": widget("numberCard", false),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

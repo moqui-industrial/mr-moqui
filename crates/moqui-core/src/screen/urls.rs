@@ -254,27 +254,34 @@ fn join_query(mut base: String, query: &str) -> String {
 ///
 /// Returns an error when an expression in the path does not expand.
 pub fn build_url(state: &RenderState, subscreen_path: &str) -> Result<UrlInstance, Error> {
+    build_url_inline(state, subscreen_path).map(|(url, _)| url)
+}
+
+/// [`build_url`] and the inline `?` and `~` parameters of the path, which a transition alias carries to its target.
+fn build_url_inline(state: &RenderState, subscreen_path: &str) -> Result<(UrlInstance, Vec<(String, String)>), Error> {
     let expanded = if subscreen_path.contains("${") {
         script::expand_localized(subscreen_path)?
     } else {
         subscreen_path.to_string()
     };
     if is_external(&expanded) {
-        return Ok(plain_url(expanded));
+        return Ok((plain_url(expanded), Vec::new()));
     }
     let prepared = match resolve_path(state, &active_screen_path(state), &expanded) {
         Ok(prepared) => prepared,
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(missing_url()),
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok((missing_url(), Vec::new())),
         Err(err) => return Err(err),
     };
     let mut url = resolve_names_at(state, prepared.names, state.url_info.last_standalone, prepared.cache)?;
     // Inline `?` and `~` parameters override screen parameters. Link parameters are added after this.
+    let mut inline = Vec::new();
     for (name, value) in prepared.inline {
         if !value.is_empty() {
-            url.parameters.insert(name, value);
+            url.parameters.insert(name.clone(), value.clone());
+            inline.push((name, value));
         }
     }
-    Ok(url)
+    Ok((url, inline))
 }
 
 /// A URL for path names from the root.
@@ -597,8 +604,13 @@ pub fn make_url_by_type(
     expand_transition_url: bool,
 ) -> Result<UrlInstance, Error> {
     let kind = script::expand_localized(url_type)?;
+    let mut inline = Vec::new();
     let mut url = match kind.as_str() {
-        "transition" | "screen" => build_url(state, orig_url)?,
+        "transition" | "screen" => {
+            let (url, parameters) = build_url_inline(state, orig_url)?;
+            inline = parameters;
+            url
+        }
         "content" => return Err(Error::new("The url-type of content is not yet supported")),
         _ => {
             let plain = script::expand_localized(orig_url)?;
@@ -614,7 +626,12 @@ pub fn make_url_by_type(
     // Before the link's own parameters, so those still override the alias response.
     if expand_transition_url {
         if let Some(info) = url.info.clone() {
-            if let Some(alias) = alias_url(state, &info)? {
+            if let Some(mut alias) = alias_url(state, &info)? {
+                // The url's own query (`list?enumTypeId=X`) goes to the screen the alias names, as it went to the
+                // transition; it was lost with the transition's url.
+                for (name, value) in inline {
+                    alias.parameters.insert(name, value);
+                }
                 url = alias;
             }
         }

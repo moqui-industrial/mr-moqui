@@ -287,11 +287,38 @@ fn static_fixture(name: &str) -> (String, crate::screen::statics::StaticReport) 
 
 #[test]
 fn the_qvt_fixture_screens_become_templates_that_compile() {
-    for name in ["containers", "fields", "lists", "extras", "braces", "shell"] {
+    for name in [
+        "containers",
+        "fields",
+        "lists",
+        "extras",
+        "braces",
+        "shell",
+        "Dashboard",
+    ] {
         let (html, report) = static_fixture(name);
         golden(&format!("render/{name}.html"), &html);
         eprintln!("{}", report.render());
     }
+}
+
+/// A number-card of a server-static screen is bound over the scope as a label is: the value and delta expressions are
+/// the scope's, the title localized, the link the screen's path with its query, and a condition a v-if.
+#[test]
+fn a_number_card_is_bound_over_the_scope_in_a_static_template() {
+    let (html, _) = static_fixture("Dashboard");
+    for expected in [
+        r#"<div id="Counters" class="m-dashboard counters" style="--m-dashboard-min:160px"><div class="m-dashboard-item">"#,
+        r#":value="ec.resource.expandNoL10n('${openCount}',{'openCount':()=&gt;(openCount)})""#,
+        r#":title="ec.l10n.localize('Open orders')""#,
+        r#"<template v-if="(showHidden)"><m-number-card"#,
+        // the query of the url is kept, over a parameter of the target screen from the scope (a link's too)
+        r#":href="$mq.url('/Orders',{'statusId':'Open'},$mq.merge({'statusId':$scope['statusId']},null))""#,
+        r#"<m-link :href="$mq.url('/Orders',{'statusId':'Open','sort':'-date'},$mq.merge({'statusId':$scope['statusId']},null))""#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    assert!(!html.contains(">42<") && !html.contains("value=\"42\""), "{html}");
 }
 
 /// The screen context of a server-static screen is bound in the browser over the screen's data (R18): each `${}` of the

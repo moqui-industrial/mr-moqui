@@ -17,10 +17,11 @@
 //! `divide` uses scale `max(left, right, 10)` and half-up, so `1/3` is `0.3333333333`.
 //! That is the Groovy rule. The half-even screen formatter is a later phase.
 //!
-//! A timestamp or date with no zone is read in the zone passed to the parser.
-//! [`basic_convert`] uses UTC, which is the framework default before a user is logged in.
-//! Java reads such text in the user's zone, so framework code with a user parses through
-//! `l10n` with the user's zone rather than through `basic_convert`.
+//! A timestamp with no offset is read in the zone passed to the parser. [`basic_convert`] and
+//! [`convert_checked`] read it in UTC, the form a database driver gives this port's timestamps
+//! back in. Text a person, a script or a data file wrote is in the session time zone, as Java's
+//! `ec.l10n.parseTimestamp` reads it: [`basic_convert_in`] and [`convert_checked_in`] take that
+//! zone, and [`text_time_zone`] is it where the framework has registered it (`moqui-core`'s `l10n`).
 //! `java.sql` date and time values are civil dates and times. Their plain form is the
 //! UTC epoch millis of that civil value, which matches `getTime` when the JVM zone is UTC.
 
@@ -225,11 +226,22 @@ pub fn compare_like(value: &Value, pattern: &Value) -> bool {
 /// Operators from `ObjectUtilities.compare`. Ordered compares error when the values
 /// cannot be ordered. `equals` uses Java `equals`: decimal scale matters.
 pub fn compare(field: &Value, operator: &str, to_field: &Value, java_type: &str) -> Result<bool, Error> {
-    let field = basic_convert(field, java_type).value;
+    compare_in(field, operator, to_field, java_type, &TimeZone::UTC)
+}
+
+/// [`compare`] with timestamp text that has no offset read in `zone`, as [`basic_convert_in`].
+pub fn compare_in(
+    field: &Value,
+    operator: &str,
+    to_field: &Value,
+    java_type: &str,
+    zone: &TimeZone,
+) -> Result<bool, Error> {
+    let field = basic_convert_in(field, java_type, zone).value;
     let to_field = if is_empty(to_field) {
         to_field.clone()
     } else {
-        basic_convert(to_field, java_type).value
+        basic_convert_in(to_field, java_type, zone).value
     };
     let result = match operator {
         "less" => compare_obj(&field, &to_field)? == Ordering::Less,
@@ -312,8 +324,26 @@ pub fn add_numbers(left: &Value, right: &Value) -> Result<Value, Error> {
 /// Coerce `value` to the Java type name used on an entity field.
 ///
 /// Boolean strings are only `true` and `y`, case-insensitive. A failed conversion
-/// returns the original value and `changed == false`.
+/// returns the original value and `changed == false`. Timestamp text without an offset is UTC, the form a database
+/// driver gives back; text a person or a script wrote goes through [`basic_convert_in`] with the session time zone.
 pub fn basic_convert(value: &Value, java_type: &str) -> Converted {
+    basic_convert_in(value, java_type, &TimeZone::UTC)
+}
+
+/// [`basic_convert_in`] in [`text_time_zone`], for text a person or a script wrote that reaches a layer with no session
+/// at hand (a condition value bound against a timestamp column). The zone is looked up only for timestamp text.
+pub fn basic_convert_text(value: &Value, java_type: &str) -> Converted {
+    if matches!(value, Value::String(_)) && simple_type_name(java_type) == "Timestamp" {
+        basic_convert_in(value, java_type, &text_time_zone())
+    } else {
+        basic_convert(value, java_type)
+    }
+}
+
+/// [`basic_convert`] with timestamp text that has no offset read in `zone`, the session time zone for text a person,
+/// a script or a data file wrote (Java's `ec.l10n.parseTimestamp`). Text with an offset or `Z`, and epoch millis, are
+/// the moment they name in any zone.
+pub fn basic_convert_in(value: &Value, java_type: &str, zone: &TimeZone) -> Converted {
     if value.is_null() || java_type.is_empty() {
         return Converted {
             value: value.clone(),
@@ -327,7 +357,7 @@ pub fn basic_convert(value: &Value, java_type: &str) -> Converted {
             changed: false,
         };
     }
-    let converted = convert_to(value, target);
+    let converted = convert_to(value, target, zone);
     match converted {
         Some(next) => Converted {
             value: next,
@@ -338,6 +368,23 @@ pub fn basic_convert(value: &Value, java_type: &str) -> Converted {
             changed: false,
         },
     }
+}
+
+/// The zone [`text_time_zone`] asks for, registered once by the framework.
+static TEXT_TIME_ZONE: std::sync::OnceLock<fn() -> TimeZone> = std::sync::OnceLock::new();
+
+/// Registers the zone timestamp text without an offset is read in where a layer below the framework converts text a
+/// person or a script wrote (a condition value bound against a timestamp column). `moqui-core` registers the session
+/// time zone; the first registration stands.
+pub fn set_text_time_zone(zone: fn() -> TimeZone) {
+    let _ = TEXT_TIME_ZONE.set(zone);
+}
+
+/// The registered zone for timestamp text a person or a script wrote: the session time zone once the framework is up,
+/// else UTC.
+#[must_use]
+pub fn text_time_zone() -> TimeZone {
+    TEXT_TIME_ZONE.get().map_or(TimeZone::UTC, |zone| zone())
 }
 
 pub fn parse_timestamp(input: &str, zone: &TimeZone) -> Option<Timestamp> {
@@ -407,6 +454,11 @@ pub fn parse_time(input: &str) -> Option<Time> {
 /// scalar type `java_type` names and cannot become one. A type this module does not convert
 /// (`Object`, `List`, and so on) accepts the value as it is.
 pub fn convert_checked(value: &Value, java_type: &str) -> Option<Value> {
+    convert_checked_in(value, java_type, &TimeZone::UTC)
+}
+
+/// [`convert_checked`] with timestamp text that has no offset read in `zone`, as [`basic_convert_in`].
+pub fn convert_checked_in(value: &Value, java_type: &str, zone: &TimeZone) -> Option<Value> {
     if value.is_null() || java_type.is_empty() {
         return Some(value.clone());
     }
@@ -414,7 +466,7 @@ pub fn convert_checked(value: &Value, java_type: &str) -> Option<Value> {
     if matches_target(value, target) {
         return Some(value.clone());
     }
-    match convert_to(value, target) {
+    match convert_to(value, target, zone) {
         Some(next) => Some(next),
         None if is_scalar_target(target) => None,
         None => Some(value.clone()),
@@ -462,7 +514,7 @@ fn matches_target(value: &Value, target: &str) -> bool {
     )
 }
 
-fn convert_to(value: &Value, target: &str) -> Option<Value> {
+fn convert_to(value: &Value, target: &str, zone: &TimeZone) -> Option<Value> {
     match target {
         "String" => Some(Value::String(to_plain_string(value))),
         "Boolean" => Some(Value::Bool(to_bool(value)?)),
@@ -470,7 +522,7 @@ fn convert_to(value: &Value, target: &str) -> Option<Value> {
         "Long" => Some(Value::I64(to_i64(value)?)),
         "Double" | "Float" => Some(Value::F64(to_f64(value)?)),
         "BigDecimal" => Some(Value::Decimal(to_decimal(value)?)),
-        "Timestamp" => Some(Value::Timestamp(to_timestamp(value)?)),
+        "Timestamp" => Some(Value::Timestamp(to_timestamp(value, zone)?)),
         "Date" => Some(Value::Date(to_date(value)?)),
         "Time" => Some(Value::Time(to_time(value)?)),
         "byte[]" | "Blob" => Some(Value::Bytes(to_bytes(value)?)),
@@ -542,10 +594,10 @@ fn to_decimal(value: &Value) -> Option<Decimal> {
     }
 }
 
-fn to_timestamp(value: &Value) -> Option<Timestamp> {
+fn to_timestamp(value: &Value, zone: &TimeZone) -> Option<Timestamp> {
     match value {
         Value::Timestamp(timestamp) => Some(*timestamp),
-        Value::String(text) => parse_timestamp(text, &TimeZone::UTC),
+        Value::String(text) => parse_timestamp(text, zone),
         Value::I64(millis) => Timestamp::from_millisecond(*millis).ok(),
         Value::I32(millis) => Timestamp::from_millisecond(i64::from(*millis)).ok(),
         Value::Date(date) => date_to_timestamp(*date),
@@ -998,17 +1050,23 @@ mod tests {
 
     #[test]
     fn a_double_out_of_the_integer_range_does_not_convert() {
-        assert_eq!(convert_to(&Value::F64(42.0), "Long"), Some(Value::I64(42)));
         assert_eq!(
-            convert_to(&Value::F64(-9.223_372_036_854_776e18), "Long"),
+            convert_to(&Value::F64(42.0), "Long", &TimeZone::UTC),
+            Some(Value::I64(42))
+        );
+        assert_eq!(
+            convert_to(&Value::F64(-9.223_372_036_854_776e18), "Long", &TimeZone::UTC),
             Some(Value::I64(i64::MIN))
         );
-        assert_eq!(convert_to(&Value::F64(1e20), "Long"), None);
-        assert_eq!(convert_to(&Value::F64(-1e20), "Long"), None);
-        assert_eq!(convert_to(&Value::F64(9.223_372_036_854_776e18), "Long"), None);
-        assert_eq!(convert_to(&Value::F64(f64::NAN), "Long"), None);
-        assert_eq!(convert_to(&Value::F64(3e10), "Integer"), None);
-        assert_eq!(convert_to(&Value::F64(7.5), "Integer"), None);
+        assert_eq!(convert_to(&Value::F64(1e20), "Long", &TimeZone::UTC), None);
+        assert_eq!(convert_to(&Value::F64(-1e20), "Long", &TimeZone::UTC), None);
+        assert_eq!(
+            convert_to(&Value::F64(9.223_372_036_854_776e18), "Long", &TimeZone::UTC),
+            None
+        );
+        assert_eq!(convert_to(&Value::F64(f64::NAN), "Long", &TimeZone::UTC), None);
+        assert_eq!(convert_to(&Value::F64(3e10), "Integer", &TimeZone::UTC), None);
+        assert_eq!(convert_to(&Value::F64(7.5), "Integer", &TimeZone::UTC), None);
     }
 
     #[test]
@@ -1048,6 +1106,58 @@ mod tests {
         let bad = basic_convert(&Value::string("nope"), "Integer");
         assert!(!bad.changed);
         assert_eq!(bad.value, Value::string("nope"));
+    }
+
+    /// Timestamp text without an offset is read in the zone given, Java's `parseTimestamp` in the user's zone; an offset,
+    /// `Z` and epoch millis are the moment they name in any zone, and a date or time stays a civil value.
+    #[test]
+    fn timestamp_text_is_read_in_the_zone_given() {
+        let chicago = TimeZone::get("America/Chicago").unwrap();
+        let stamp = |text: &str| Value::Timestamp(text.parse::<Timestamp>().unwrap());
+        for (text, in_chicago, in_utc) in [
+            ("2016-11-01", "2016-11-01T05:00:00Z", "2016-11-01T00:00:00Z"),
+            ("2016-11-08 00:00:00.0", "2016-11-08T06:00:00Z", "2016-11-08T00:00:00Z"),
+            ("2016-11-10 12:00", "2016-11-10T18:00:00Z", "2016-11-10T12:00:00Z"),
+            ("2016-11-10T12:00:00Z", "2016-11-10T12:00:00Z", "2016-11-10T12:00:00Z"),
+            (
+                "2016-11-10T12:00:00-03:00",
+                "2016-11-10T15:00:00Z",
+                "2016-11-10T15:00:00Z",
+            ),
+            ("1478779200000", "2016-11-10T12:00:00Z", "2016-11-10T12:00:00Z"),
+        ] {
+            assert_eq!(
+                basic_convert_in(&Value::string(text), "java.sql.Timestamp", &chicago).value,
+                stamp(in_chicago),
+                "{text}"
+            );
+            assert_eq!(
+                convert_checked_in(&Value::string(text), "Timestamp", &chicago),
+                Some(stamp(in_chicago)),
+                "{text}"
+            );
+            assert_eq!(
+                basic_convert(&Value::string(text), "java.sql.Timestamp").value,
+                stamp(in_utc),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            basic_convert_in(&Value::string("2016-11-01"), "java.sql.Date", &chicago).value,
+            Value::Date(Date::new(2016, 11, 1).unwrap())
+        );
+        assert!(compare_in(
+            &Value::string("2016-11-01 00:00"),
+            "equals",
+            &stamp("2016-11-01T05:00:00Z"),
+            "Timestamp",
+            &chicago
+        )
+        .unwrap());
+        // Unregistered, the text zone is UTC.
+        if TEXT_TIME_ZONE.get().is_none() {
+            assert_eq!(text_time_zone(), TimeZone::UTC);
+        }
     }
 
     #[test]

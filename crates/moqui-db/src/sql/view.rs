@@ -181,6 +181,19 @@ impl<'a> Renderer<'a> {
         })
     }
 
+    /// A member's table alias. Java writes it unquoted (`ORDER_ITEM OITM`), so the database folds it as it folds any
+    /// unquoted name, and raw SQL written against the Java aliases (a `makeConditionWhere` of `OITM.ORDER_ID`) finds
+    /// it. Here it is quoted in that folded case: lower case on Postgres, upper case on H2, Oracle, DB2 and Derby, as
+    /// written elsewhere (MySQL, SQLite and SQL Server match it as written). The legacy name style, which quotes
+    /// entity names as written, keeps the alias as written too.
+    fn member_alias(&self, entity_alias: &str) -> String {
+        if self.dialect.legacy_names {
+            quote_ident(self.dialect, entity_alias)
+        } else {
+            quote_physical_ident(self.dialect, entity_alias)
+        }
+    }
+
     fn query(
         &self,
         condition: Option<&Condition>,
@@ -317,7 +330,7 @@ impl<'a> Renderer<'a> {
     fn member_column(&self, entity_alias: &str, field: &str) -> Result<String, Error> {
         let member = self.member(entity_alias)?;
         let entity = self.member_entity(member)?;
-        let qualifier = quote_ident(self.dialect, entity_alias);
+        let qualifier = self.member_alias(entity_alias);
         match self.kind(member)? {
             Kind::Table => {
                 let definition = entity
@@ -368,7 +381,7 @@ impl<'a> Renderer<'a> {
                     .ok_or_else(|| Error::new(format!("invalid field name {field} for entity {}", entity.full_name)))?;
                 Ok(format!(
                     "{}.{}",
-                    quote_ident(self.dialect, entity_alias),
+                    self.member_alias(entity_alias),
                     quote_column(self.dialect, &definition.column_name)
                 ))
             };
@@ -383,7 +396,7 @@ impl<'a> Renderer<'a> {
             );
             let outer = format!(
                 "{}.{}",
-                quote_ident(self.dialect, &member.entity_alias),
+                self.member_alias(&member.entity_alias),
                 quote_ident(self.dialect, &alias.name)
             );
             return Ok((outer, false));
@@ -799,7 +812,7 @@ impl<'a> Renderer<'a> {
             }
             let plain = format!(
                 "{}.{}",
-                quote_ident(self.dialect, alias.entity_alias.as_deref().unwrap_or("")),
+                self.member_alias(alias.entity_alias.as_deref().unwrap_or("")),
                 quote_ident(self.dialect, &alias.name)
             );
             if sql == plain {
@@ -1011,7 +1024,7 @@ impl<'a> Renderer<'a> {
             }
         }
         out.push(" ");
-        out.push(&quote_ident(self.dialect, &member.entity_alias));
+        out.push(&self.member_alias(&member.entity_alias));
         Ok(())
     }
 
@@ -1079,7 +1092,7 @@ impl<'a> Renderer<'a> {
             let query = nested.query(condition.as_ref(), &options, &[])?;
             return nested.write_select(out, &query, true);
         }
-        let qualifier = quote_ident(self.dialect, &member.entity_alias);
+        let qualifier = self.member_alias(&member.entity_alias);
         let column = |field: &str| -> Result<String, Error> {
             let definition = entity
                 .field(field)

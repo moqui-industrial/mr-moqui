@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd">
+    <!-- The daily notification digest (org.moqui.impl.NotificationServices.send#UserNotificationDigest): notificationList
+        (title, link, topicDescription, sentText, type), notificationCount, userFullName. A link becomes a full URL as in
+        NotificationEmail.xml. -->
+    <actions>
+        <script><![CDATA[
+            let baseUrl = ''
+            if (webHostName) {
+                baseUrl = 'https://' + webHostName
+            } else {
+                const rootUrl = ec.web.getWebappRootUrl(sri?.webappName || 'webroot', null, true, false)
+                if (rootUrl && !rootUrl.includes('localhost')) baseUrl = rootUrl
+            }
+            digestRows = (notificationList || []).map((nm) => {
+                let linkUrl = nm.link || ''
+                if (linkUrl && !linkUrl.startsWith('http') && baseUrl)
+                    linkUrl = baseUrl.replace(/\/$/, '') + (linkUrl.startsWith('/') ? '' : '/') + linkUrl
+                return Object.assign({}, nm, {linkUrl: linkUrl})
+            })
+            digestTitle = ec.l10n.localize('Your notifications') + ' (' + (notificationCount || digestRows.length) + ')'
+        ]]></script>
+    </actions>
+    <widgets><render-mode>
+        <text type="html"><![CDATA[
+<html><body>
+    <h2>${html(digestTitle)}</h2>
+    <#if userFullName><p>${html(userFullName)}</p></#if>
+    <#list digestRows as nm>
+    <p><#if nm.linkUrl.startsWith("http")><a href="${html(nm.linkUrl)}">${html(nm.title)}</a><#else>${html(nm.title)}</#if><br>
+        <small>${html(nm.topicDescription ?? "")} &#183; ${html(nm.sentText ?? "")}</small></p>
+    </#list>
+</body></html>
+        ]]></text>
+        <text type="text"><![CDATA[
+${digestTitle}
+
+<#list digestRows as nm>
+${nm.title}
+  ${nm.topicDescription ?? ""} - ${nm.sentText ?? ""}<#if nm.linkUrl>
+  ${nm.linkUrl}</#if>
+
+</#list>
+        ]]></text>
+    </render-mode></widgets>
+</screen>

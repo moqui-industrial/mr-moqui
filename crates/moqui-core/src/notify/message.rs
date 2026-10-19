@@ -32,6 +32,37 @@ const USER_ACCOUNT: &str = "moqui.security.UserAccount";
 const GROUP_MEMBER: &str = "moqui.security.UserGroupMember";
 const EMAIL_SERVICE: &str = "org.moqui.impl.EmailServices.send#EmailTemplate";
 
+/// The fields of a notification that say why it came, what it is about, who did it and from which app (IronStone
+/// design-drawers-commons §19, "Notification fields and approvals"). They are stored on the `NotificationMessage` row
+/// and sent in the wrapped message.
+#[derive(Debug, Default, Clone)]
+struct RecordFields {
+    reason_enum_id: Option<String>,
+    record_entity_name: Option<String>,
+    record_id: Option<String>,
+    actor_user_id: Option<String>,
+    app_name: Option<String>,
+}
+
+/// The `enumCode` of each `NotificationReason` and its `enumId`, so a sender may name the reason by its short name.
+const REASON_CODES: [(&str, &str); 7] = [
+    ("mention", "NrMention"),
+    ("assignment", "NrAssignment"),
+    ("approval", "NrApproval"),
+    ("dateAlert", "NrDateAlert"),
+    ("reminder", "NrReminder"),
+    ("comment", "NrComment"),
+    ("system", "NrSystem"),
+];
+
+fn non_empty(text: String) -> Option<String> {
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
 /// A notification to send. Title and link templates expand once, in [`Self::send`].
 #[derive(Debug, Default)]
 pub struct NotificationMessage {
@@ -51,6 +82,7 @@ pub struct NotificationMessage {
     persist: Option<bool>,
     email_template_id: Option<String>,
     email_message_save: Option<bool>,
+    record: RecordFields,
     notification_message_id: Option<String>,
     notify_user_ids: Vec<String>,
     email_message_id_by_user_id: HashMap<String, String>,
@@ -154,6 +186,50 @@ impl NotificationMessage {
         self
     }
 
+    /// The `NotificationReason` of the notification: an `enumId` (`NrMention`), or the short name of one of the seeded
+    /// reasons (`mention`, `assignment`, `approval`, `dateAlert`, `reminder`, `comment`, `system`). Empty clears it.
+    pub fn reason(&mut self, reason: impl Into<String>) -> &mut Self {
+        let reason = reason.into();
+        let enum_id = REASON_CODES
+            .iter()
+            .find(|(code, _)| *code == reason)
+            .map(|(_, enum_id)| (*enum_id).to_string())
+            .unwrap_or(reason);
+        self.record.reason_enum_id = non_empty(enum_id);
+        self
+    }
+
+    /// The record the notification is about. Empty clears it.
+    pub fn record(&mut self, entity_name: impl Into<String>, record_id: impl Into<String>) -> &mut Self {
+        self.record_entity_name(entity_name).record_id(record_id)
+    }
+
+    pub fn record_entity_name(&mut self, entity_name: impl Into<String>) -> &mut Self {
+        self.record.record_entity_name = non_empty(entity_name.into());
+        self
+    }
+
+    pub fn record_id(&mut self, record_id: impl Into<String>) -> &mut Self {
+        self.record.record_id = non_empty(record_id.into());
+        self
+    }
+
+    /// Who did what the notification tells of. When unset, [`Self::send`] uses the current user, if any.
+    pub fn actor_user_id(&mut self, actor_user_id: impl Into<String>) -> &mut Self {
+        self.record.actor_user_id = non_empty(actor_user_id.into());
+        self
+    }
+
+    /// The app the notification comes from: an app root's name, as in its `/qapps` path.
+    pub fn app_name(&mut self, app_name: impl Into<String>) -> &mut Self {
+        self.record.app_name = non_empty(app_name.into());
+        self
+    }
+
+    pub fn reason_enum_id(&self) -> Option<&str> {
+        self.record.reason_enum_id.as_deref()
+    }
+
     pub fn topic_name(&self) -> &str {
         &self.topic
     }
@@ -216,6 +292,12 @@ impl NotificationMessage {
         let show_alert = resolve_bool(self.show_alert, topic.as_ref(), "showAlert");
         let alert_no_auto_hide = resolve_bool(self.alert_no_auto_hide, topic.as_ref(), "alertNoAutoHide");
         let message = self.resolved_message()?;
+        if self.record.actor_user_id.is_none() {
+            self.record.actor_user_id = crate::user::current_user_id()
+                .ok()
+                .flatten()
+                .filter(|id| !id.is_empty());
+        }
         let title_template = self
             .title_template
             .clone()
@@ -249,6 +331,7 @@ impl NotificationMessage {
                 self.link_text.as_deref().unwrap_or(""),
                 &type_name,
                 show_alert,
+                &self.record,
                 &self.notify_user_ids,
             )?;
             self.notification_message_id = Some(id);
@@ -441,7 +524,7 @@ fn terminated(row: &EntityValue, now: jiff::Timestamp) -> bool {
 }
 
 fn as_timestamp(value: &Value) -> Option<jiff::Timestamp> {
-    match &basic_convert(value, "Timestamp").value {
+    match &crate::l10n::basic_convert(value, "Timestamp").value {
         Value::Timestamp(stamp) => Some(*stamp),
         _ => None,
     }
@@ -460,6 +543,7 @@ fn persist_rows(
     link: &str,
     type_name: &str,
     show_alert: bool,
+    record: &RecordFields,
     users: &[String],
 ) -> Result<String, Error> {
     let tx = facade.transactions_for(MESSAGE)?;
@@ -487,6 +571,11 @@ fn persist_rows(
         }
         row.set("typeString", Value::string(type_name));
         row.set("showAlert", Value::string(if show_alert { "Y" } else { "N" }));
+        for (field, value) in record.fields() {
+            if let Some(value) = value {
+                row.set(field, Value::string(value));
+            }
+        }
         row.create(facade)?;
         for user_id in users {
             let mut user = facade.make_value(MESSAGE_USER)?;
@@ -553,7 +642,35 @@ fn wrapped_message(
     wrapped.insert("persistOnSend".to_string(), Value::Bool(persist));
     wrapped.insert("showAlert".to_string(), Value::Bool(show_alert));
     wrapped.insert("alertNoAutoHide".to_string(), Value::Bool(alert_no_auto_hide));
+    for (field, value) in message.record.fields() {
+        wrapped.insert(field.to_string(), value.map(Value::string).unwrap_or(Value::Null));
+    }
+    // The inbox is the topic's, so the client tells the actionable notifications from the automatic updates.
+    wrapped.insert(
+        "inboxEnumId".to_string(),
+        Value::string(
+            topic
+                .and_then(|row| field_str(row, "inboxEnumId"))
+                .unwrap_or_else(|| DEFAULT_INBOX.to_string()),
+        ),
+    );
     wrapped
+}
+
+/// The `NotificationInbox` of a topic that names none, and of a topic with no `NotificationTopic` record.
+pub const DEFAULT_INBOX: &str = "NinNotifications";
+
+impl RecordFields {
+    /// Each field by its `NotificationMessage` field name, also its key in the wrapped message.
+    fn fields(&self) -> [(&'static str, Option<&str>); 5] {
+        [
+            ("reasonEnumId", self.reason_enum_id.as_deref()),
+            ("recordEntityName", self.record_entity_name.as_deref()),
+            ("recordId", self.record_id.as_deref()),
+            ("actorUserId", self.actor_user_id.as_deref()),
+            ("appName", self.app_name.as_deref()),
+        ]
+    }
 }
 
 /// Java's `NotificationMessageImpl.send` email loop: `send#EmailTemplate` for each recipient who wants

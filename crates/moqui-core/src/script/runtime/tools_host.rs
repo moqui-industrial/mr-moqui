@@ -2139,7 +2139,7 @@ fn is_last_run_before_last_schedule(
         let millis = |value: Option<&JsValue<'_>>| -> rquickjs::Result<Option<i64>> {
             match value.filter(|value| !value.is_null() && !value.is_undefined()) {
                 Some(value) => Ok(
-                    match moqui_lib::object::basic_convert(&js_to_host(&ctx, value)?, "java.sql.Timestamp").value {
+                    match crate::l10n::basic_convert(&js_to_host(&ctx, value)?, "java.sql.Timestamp").value {
                         Value::Timestamp(stamp) => Some(stamp.as_millisecond()),
                         _ => None,
                     },
@@ -2172,17 +2172,15 @@ fn next_cron_execution<'js>(ctx: Ctx<'js>, cron: String, after: Opt<JsValue<'js>
             .as_ref()
             .filter(|value| !value.is_null() && !value.is_undefined())
         {
-            Some(value) => {
-                match moqui_lib::object::basic_convert(&js_to_host(&ctx, value)?, "java.sql.Timestamp").value {
-                    Value::Timestamp(stamp) => stamp.as_millisecond(),
-                    _ => {
-                        return Err(Exception::throw_message(
-                            &ctx,
-                            "nextCronExecution needs a moment to start after",
-                        ))
-                    }
+            Some(value) => match crate::l10n::basic_convert(&js_to_host(&ctx, value)?, "java.sql.Timestamp").value {
+                Value::Timestamp(stamp) => stamp.as_millisecond(),
+                _ => {
+                    return Err(Exception::throw_message(
+                        &ctx,
+                        "nextCronExecution needs a moment to start after",
+                    ))
                 }
-            }
+            },
             None => jiff::Timestamp::now().as_millisecond(),
         };
         match crate::service::info::next_cron_execution(&cron, after)

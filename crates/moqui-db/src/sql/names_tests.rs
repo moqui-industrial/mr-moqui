@@ -148,7 +148,8 @@ fn java_names_cover_crud_schema_keys_and_joins_without_changing_logical_aliases(
     )
     .unwrap()
     .sql;
-    assert!(joined.contains("\"L\".\"account_ref\" = \"U\".\"user_id\""), "{joined}");
+    // A member's table alias folds as Java's unquoted `CUSTOM_LOGIN L` does on Postgres, so raw SQL can name it.
+    assert!(joined.contains("\"l\".\"account_ref\" = \"u\".\"user_id\""), "{joined}");
     assert!(joined.contains("AS \"userId\""), "{joined}");
     let mysql = dialects.get("mysql").unwrap();
     assert_eq!(
@@ -244,4 +245,59 @@ fn legacy_is_explicit_and_keeps_existing_quoted_schema_and_overrides() {
         insert(model.entity("UserAccount").unwrap(), &replaced, &["userId"]).unwrap(),
         "INSERT INTO \"OLD_ACCOUNTS\" (\"OLD_KEY\") VALUES (?)"
     );
+}
+
+/// Java writes a view's member tables with their entity-alias unquoted (`CUSTOM_LOGIN L`), so raw SQL such as a
+/// `makeConditionWhere` names a member by that alias in any case. The alias is quoted as the database folds it unquoted.
+#[test]
+fn a_raw_condition_names_a_view_member_by_its_java_alias() {
+    let (model, dialects) = fixture("java");
+    let view = model.entity("LoginUser").unwrap();
+    let raw = Condition::where_sql("L.ACCOUNT_REF IS NOT NULL");
+    let sql = |name: &str| {
+        select_view(
+            view,
+            &model,
+            dialects.get(name).unwrap(),
+            &PlainValues { now: Value::Null },
+            Some(&raw),
+            &[],
+            LimitOffset::default(),
+        )
+        .unwrap()
+        .sql
+    };
+    let pg = sql("postgres");
+    assert!(
+        pg.contains(
+            "\"custom_login\" \"l\" INNER JOIN \"user_account\" \"u\" ON \"l\".\"account_ref\" = \"u\".\"user_id\""
+        ),
+        "{pg}"
+    );
+    assert!(pg.contains("\"l\".\"custom_id\" AS \"loginId\""), "{pg}");
+    assert!(pg.ends_with("(L.ACCOUNT_REF IS NOT NULL)"), "{pg}");
+    let h2 = sql("h2");
+    assert!(
+        h2.contains("\"CUSTOM_LOGIN\" \"L\" INNER JOIN \"USER_ACCOUNT\" \"U\""),
+        "{h2}"
+    );
+    let mysql = sql("mysql");
+    assert!(
+        mysql.contains("`CUSTOM_LOGIN` `L` INNER JOIN `USER_ACCOUNT` `U`"),
+        "{mysql}"
+    );
+    // The legacy style quotes names as written, the aliases with them.
+    let (model, dialects) = fixture("legacy");
+    let legacy = select_view(
+        model.entity("LoginUser").unwrap(),
+        &model,
+        dialects.get("postgres").unwrap(),
+        &PlainValues { now: Value::Null },
+        None,
+        &[],
+        LimitOffset::default(),
+    )
+    .unwrap()
+    .sql;
+    assert!(legacy.contains("\"CUSTOM_LOGIN\" \"L\""), "{legacy}");
 }

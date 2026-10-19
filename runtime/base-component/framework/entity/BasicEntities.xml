@@ -601,6 +601,7 @@ along with this software (see the LICENSE.md file). If not, see
             <moqui.basic.Enumeration description="Added Email Authentication Type" enumId="EMT_ADDED_EMAIL_AUTHC_FACTOR" parentEnumId="EMT_SYSTEM" enumTypeId="EmailType"/>
             <moqui.basic.Enumeration description="Email Authentication Code Sent" enumId="EMT_EMAIL_AUTHC_FACTOR_SENT" parentEnumId="EMT_SYSTEM" enumTypeId="EmailType"/>
             <moqui.basic.Enumeration description="Notification" enumId="EMT_NOTIFICATION" parentEnumId="EMT_SYSTEM" enumTypeId="EmailType"/>
+            <moqui.basic.Enumeration description="Notification Digest" enumId="EMT_NOTIFICATION_DIGEST" parentEnumId="EMT_SYSTEM" enumTypeId="EmailType"/>
             <moqui.basic.Enumeration description="Screen Render" enumId="EMT_SCREEN_RENDER" parentEnumId="EMT_SYSTEM" enumTypeId="EmailType"/>
             <!-- <moqui.basic.Enumeration description="Error Notice" enumId="EMT_ERROR_NOTICE" parentEnumId="EMT_SYSTEM" enumTypeId="EmailType"/> -->
 

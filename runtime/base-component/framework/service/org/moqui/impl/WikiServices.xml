@@ -561,6 +561,68 @@ along with this software (see the LICENSE.md file). If not, see
                 <script>rootPageReference.putText(`\nAutomatic root page for space ${description || wikiSpaceId}\n\n`)</script></if>
         </actions>
     </service>
+    <service verb="ensure" noun="UserNotesSpace">
+        <description>A user's private notes space, made on first use (IronStone R22: a quick note without a record goes here):
+            a WikiSpace with the id NOTES_{userId} (the user id may be at most 34 characters, the id 40) on database files, as
+            create#WikiSpace makes one, with restrictView and restrictUpdate Y, a WikiSpaceUser row for the owner with view,
+            update and admin, and the root page. Idempotent: an existing space is answered as it is, and its owner's row added
+            when it is missing. Another user's space only with authorization disabled.</description>
+        <in-parameters><parameter name="userId"><description>Default the current user</description></parameter></in-parameters>
+        <out-parameters>
+            <parameter name="wikiSpaceId"/>
+            <parameter name="rootPageLocation"/>
+            <parameter name="created" type="Boolean"><description>True when this call made the space</description></parameter>
+        </out-parameters>
+        <actions>
+            <set field="created" from="false"/>
+            <if condition="!userId"><set field="userId" from="ec.user.userId"/></if>
+            <if condition="!userId"><return error="true" message="A notes space needs a user"/></if>
+            <script><![CDATA[
+                // disableAuthz answers true when authorization was disabled already, as for internal work
+                if (userId !== ec.user.userId && !ec.artifactExecution.disableAuthz()) {
+                    ec.artifactExecution.enableAuthz()
+                    ec.message.addError("Another user's notes space is made only with authorization disabled")
+                }
+            ]]></script>
+            <if condition="ec.message.hasError()"><return/></if>
+            <set field="wikiSpaceId" value="NOTES_${userId}"/>
+            <if condition="wikiSpaceId.length &gt; 40"><return error="true" message="User ID ${userId} is too long for a notes space ID"/></if>
+            <script><![CDATA[
+                const wasDisabled = ec.artifactExecution.disableAuthz()
+                try {
+                    let wikiSpace = ec.entity.find('moqui.resource.wiki.WikiSpace').condition('wikiSpaceId', wikiSpaceId).one()
+                    if (wikiSpace == null) {
+                        const account = ec.entity.find('moqui.security.UserAccount').condition('userId', userId).useCache(true).one()
+                        if (account == null) {
+                            ec.message.addError(`No user ${userId} to make a notes space for`)
+                        } else {
+                            const description = 'Notes of ' + (account.userFullName || account.username || userId)
+                            rootPageLocation = `dbresource://WikiSpace/${wikiSpaceId}.md`
+                            ec.service.sync().name('create#moqui.resource.wiki.WikiSpace').parameters({wikiSpaceId: wikiSpaceId,
+                                description: description, rootPageLocation: rootPageLocation, restrictView: 'Y', restrictUpdate: 'Y',
+                                allowAnyHtml: 'N'}).call()
+                            // the root page, as create#WikiSpace writes one when no file is there
+                            const rootPageReference = ec.resource.getLocationReference(rootPageLocation)
+                            if (!rootPageReference.exists) rootPageReference.putText(`\n# ${description}\n\n`)
+                            created = true
+                        }
+                    } else {
+                        rootPageLocation = wikiSpace.rootPageLocation
+                    }
+                    if (!ec.message.hasError()) {
+                        const owner = ec.entity.find('moqui.resource.wiki.WikiSpaceUser').condition('wikiSpaceId', wikiSpaceId)
+                                .condition('userId', userId).one()
+                        if (owner == null) {
+                            ec.service.sync().name('create#moqui.resource.wiki.WikiSpaceUser').parameters({wikiSpaceId: wikiSpaceId,
+                                userId: userId, allowAdmin: 'Y', allowView: 'Y', allowUpdate: 'Y', receiveNotifications: 'N'}).call()
+                        }
+                    }
+                } finally {
+                    if (!wasDisabled) ec.artifactExecution.enableAuthz()
+                }
+            ]]></script>
+        </actions>
+    </service>
     <service verb="clone" noun="WikiSpace" transaction-timeout="1800">
         <in-parameters>
             <parameter name="baseWikiSpaceId" required="true"/>

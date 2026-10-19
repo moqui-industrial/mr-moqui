@@ -1599,6 +1599,31 @@
             }) + "></m-screen-context>\n");
         };
 
+        // ---- dashboards ----
+
+        // A number-card (style-guide §8.2): an m-number-card with the title localized, the value and delta as expanded, and the
+        // link as a screen link resolves (a path or transition of this screen, with its query); a link to something other than a
+        // screen is a plain anchor (external). Nothing for a false condition.
+        const numberCard = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const value = (text) => (text && text !== "null" ? text : null);
+            let href = null;
+            let external = null;
+            if (at(n, "link")) {
+                const url = sri.makeUrlByType(at(n, "link"), "transition", n, "true");
+                if (!url.getDisableLink()) {
+                    const screen = url.isScreenUrl();
+                    href = screen ? url.pathWithParams : url.getUrlWithParams();
+                    external = screen ? null : true;
+                }
+            }
+            w("<m-number-card" + A({
+                id: nodeId(n) || null, title: value(x(at(n, "title"))), value: value(xn(at(n, "value"))), delta: value(xn(at(n, "delta"))),
+                "delta-good": at(n, "delta-good") || null, icon: value(xn(at(n, "icon"))), href, external, size: at(n, "size") || null,
+                class: xn(at(n, "style")) || null
+            }) + "></m-number-card>\n");
+        };
+
         const h = {
             reset, push, pop, e, t, A, cls, at, x, xn, nodeId, cond, fid, fnm, fieldRef, st,
             textLine, textArea, password, file, hidden, reset_, submit, dateTime, dateFind, datePeriod, rangeFind, textFind,
@@ -1608,7 +1633,7 @@
             formList, rowCellOpen, rowCellClose, valueText, sectionPaginate, headerCell,
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
-            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext
+            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard
         };
         Object.defineProperty(globalThis, "$mqQvt", { value: h, configurable: true });
     };
@@ -1988,6 +2013,24 @@
         sri.write("</div>\\n");
     `);
 
+    // A dashboard: its children in a responsive grid (m-dashboard: CSS grid columns of at least min-width px, as many as fit),
+    // each in a cell of its own; a cell whose child wrote nothing is hidden by the style sheet. The cell of a section-iterate
+    // is m-dashboard-each, which the style sheet takes out of the grid (display: contents), so each row's widget is a cell.
+    const dashboardMacro = stmt((node) => {
+        const minWidth = parseInt(attr(node, "min-width") || "", 10);
+        const gridStyle = minWidth > 0 ? `--m-dashboard-min:${minWidth}px` : "";
+        const style = attr(node, "style");
+        return js`
+            sri.write("<div" + $v.A({id: ${nodeIdCode(node)}, class: $v.cls("m-dashboard", ${style ? noL10n(style) : "null"}), style: ${gridStyle ? lit(gridStyle) : "null"}}) + ">");
+            ${node.children.map((kid) => js`
+                sri.write(${lit(`<div class="m-dashboard-item${kid.name === "section-iterate" ? " m-dashboard-each" : ""}">`)});
+                ${kid.source || ""}
+                sri.write("</div>");
+            `).join("")}
+            sri.write("</div>\\n");
+        `;
+    });
+
     const containerPanelMacro = stmt((node) => {
         const part = (name) => { const kid = child(node, name); return kid ? kid.source : ""; };
         const id = attr(node, "id");
@@ -2107,6 +2150,8 @@
         "label": widget("label", false),
         "editable": widget("editable"),
         "context": widget("screenContext", false),
+        "dashboard": dashboardMacro,
+        "number-card": widget("numberCard", false),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

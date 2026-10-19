@@ -152,7 +152,7 @@ fn clean_param(
         // Java parses a number by its format and adds this error when it does not read
         return Err(vec![not_converted(param, &value)]);
     } else {
-        convert_checked(&value, &param.java_type).ok_or_else(|| vec![not_converted(param, &value)])?
+        crate::l10n::convert_checked(&value, &param.java_type).ok_or_else(|| vec![not_converted(param, &value)])?
     };
     if !validate {
         return Ok(Some(value));
@@ -433,8 +433,10 @@ pub(crate) fn auto_fields(
 }
 
 /// Java's `ParameterInfo.convertType` for text: a number by the parameter's `format`, else as the user's locale writes
-/// it, a date or time by its `format` then the usual forms, and a timestamp by its `format` (in UTC unless the text has
-/// an offset). `None` leaves the value to the plain conversion.
+/// it, a date or time by its `format` then the usual forms, and a timestamp by its `format` then the usual forms, in the
+/// session time zone unless the text has an offset (`ec.l10n.parseTimestamp`: the user's zone, else the server's), so a
+/// date picker's `yyyy-MM-dd` is the user's midnight and a time a form shows in the user's zone reads back the same.
+/// `None` leaves the value to the plain conversion.
 fn convert_text(param: &ParamDef, value: &Value) -> Option<Value> {
     let Value::String(text) = value else {
         return None;
@@ -445,32 +447,12 @@ fn convert_text(param: &ParamDef, value: &Value) -> Option<Value> {
         "Integer" | "int" | "Long" | "long" | "Float" | "float" | "Double" | "double" | "BigDecimal" | "BigInteger" => {
             crate::l10n::parse_number_format(text, format)
         }
-        // A timestamp by its format, read as every other timestamp text of this port is (its offset, else UTC), so a
-        // parameter and the data check that compares it read the same text the same way.
-        "Timestamp" => format.and_then(|pattern| formatted_timestamp(text, pattern)),
+        "Timestamp" => crate::l10n::parse_timestamp_format(text, format),
         "Date" => crate::l10n::parse_date_format(text, format),
         "Time" => crate::l10n::parse_time_format(text, format),
         _ => None,
     }?;
     convert_checked(&parsed, &param.java_type)
-}
-
-/// `text` read by the Java date `pattern`, at its offset, else in UTC.
-fn formatted_timestamp(text: &str, pattern: &str) -> Option<Value> {
-    let parsed = moqui_lib::datefmt::parse(text, pattern)?;
-    let nanos = parsed.millisecond.unwrap_or(0).checked_mul(1_000_000)?;
-    let civil = jiff::civil::DateTime::new(
-        parsed.year.unwrap_or(1970),
-        parsed.month.unwrap_or(1),
-        parsed.day.unwrap_or(1),
-        parsed.hour.unwrap_or(0),
-        parsed.minute.unwrap_or(0),
-        parsed.second.unwrap_or(0),
-        nanos,
-    )
-    .ok()?;
-    let offset = jiff::tz::Offset::from_seconds(parsed.offset_seconds.unwrap_or(0)).ok()?;
-    offset.to_timestamp(civil).ok().map(Value::Timestamp)
 }
 
 fn short_type(java_type: &str) -> &str {
@@ -903,7 +885,7 @@ pub(crate) fn current_facade() -> Option<EntityFacade> {
 
 /// A date, time or timestamp value, or text Java's conversion reads as one, as epoch millis.
 fn stamp_millis(value: &Value) -> Option<i64> {
-    match basic_convert(value, "Timestamp").value {
+    match crate::l10n::basic_convert(value, "Timestamp").value {
         Value::Timestamp(stamp) => Some(stamp.as_millisecond()),
         _ => None,
     }
@@ -1099,6 +1081,52 @@ mod parameter_tests {
         for url in ["moqui.org", "https://", "not a url"] {
             assert!(!apply_check(&Check::TextUrl, &Value::string(url)).is_empty(), "{url}");
         }
+    }
+
+    /// Java's `convertType`: a timestamp's text, by the parameter's `format` or not, is read in the session time zone
+    /// unless it has an offset, so a date picker's "due today" is the user's midnight, not UTC's (which is the evening
+    /// before in America/Chicago).
+    #[test]
+    fn a_timestamp_is_read_in_the_session_time_zone() {
+        let context = crate::context::ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        crate::user::session::set_time_zone(Some("America/Chicago"));
+        let stamp = |text: &str| Value::Timestamp(text.parse::<jiff::Timestamp>().unwrap());
+        let mut due = param("dueDate", "java.sql.Timestamp", Required::False);
+        due.format = Some("yyyy-MM-dd".to_string());
+        assert_eq!(
+            convert_text(&due, &Value::string("2026-10-19")),
+            Some(stamp("2026-10-19T05:00:00Z"))
+        );
+        // text the format does not read takes the usual forms, in the same zone
+        assert_eq!(
+            convert_text(&due, &Value::string("2026-10-19 08:30")),
+            Some(stamp("2026-10-19T13:30:00Z"))
+        );
+        let plain = param("fromDate", "Timestamp", Required::False);
+        assert_eq!(
+            convert_text(&plain, &Value::string("2026-01-05 00:00:00.000")),
+            Some(stamp("2026-01-05T06:00:00Z")),
+            "standard time"
+        );
+        assert_eq!(
+            convert_text(&plain, &Value::string("2026-10-19")),
+            Some(stamp("2026-10-19T05:00:00Z"))
+        );
+        // an offset and epoch millis are what they say
+        assert_eq!(
+            convert_text(&plain, &Value::string("2026-10-19T10:00:00Z")),
+            Some(stamp("2026-10-19T10:00:00Z"))
+        );
+        assert_eq!(
+            convert_text(&plain, &Value::string("1791979200000")),
+            Some(stamp("2026-10-14T12:00:00Z"))
+        );
+        crate::user::session::set_time_zone(Some("UTC"));
+        assert_eq!(
+            convert_text(&due, &Value::string("2026-10-19")),
+            Some(stamp("2026-10-19T00:00:00Z"))
+        );
     }
 
     /// Java's `convertType`: a date by the parameter's `format`, a number as the locale writes it or by its `format`.

@@ -81,6 +81,9 @@ pub(super) fn object_to_js<'js>(ctx: &Ctx<'js>, object: &HostObject) -> rquickjs
     if let Some(inner) = object.downcast::<crate::native::ToolHandle>() {
         return tool_to_js(ctx, inner);
     }
+    if let Some(inner) = object.downcast::<Condition>() {
+        return condition_js(ctx, Some(Condition::clone(&inner)));
+    }
     Err(Exception::throw_message(ctx, "cannot convert this object"))
 }
 
@@ -310,6 +313,11 @@ fn js_value_to_host_in<'js>(ctx: &Ctx<'_>, value: &JsValue<'js>, path: &mut Vec<
         // A tool stays the tool, so its methods are there again when the value is read back.
         if let Some(class) = object.as_class::<HostTool>() {
             return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
+        }
+        // An entity condition stays the condition, as the Java EntityCondition in the context does, so a later
+        // `<entity-find>` applies it through `<econdition-object>`; it has no own properties and would be an empty map.
+        if let Some(class) = object.as_class::<HostCondition>() {
+            return Ok(Value::Object(HostObject::new(class.borrow().inner.clone())));
         }
         // A `Date` has no own properties; it is a time stamp, as a Java `Date` passed to a service is.
         if let Some(millis) = js_date_millis(object) {

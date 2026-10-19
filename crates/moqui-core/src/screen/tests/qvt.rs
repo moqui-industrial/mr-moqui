@@ -150,6 +150,60 @@ fn the_screen_context_and_the_shell_providers() {
     }
 }
 
+/// `dashboard` is a grid of cells, one per child (a card whose condition is false leaves an empty cell the style sheet
+/// hides), and `number-card` an m-number-card: the title localized and encoded, the value and delta expanded, a link to a
+/// screen as its path with the query, a link elsewhere external. The html mode writes plain cards and the text mode a line.
+#[test]
+fn a_dashboard_lays_out_number_cards() {
+    let out = check("Dashboard", &[]);
+    for expected in [
+        r#"<div id="Counters" class="m-dashboard counters" style="--m-dashboard-min:160px">"#,
+        r#"<div class="m-dashboard-item"><m-number-card title="Open orders" value="42" delta="+3" icon="sym_o_receipt_long" href="/Orders?statusId=Open"></m-number-card>"#,
+        r#"<m-number-card title="Late shipments" value="3" delta="+1" delta-good="down" href="https://example.com/late" external size="lg"></m-number-card>"#,
+        r#"<div class="m-dashboard-item"></div>"#,
+        r#"<m-number-card id="Revenue" title="Revenue {{x}} &amp; more" value="$1,200" delta="-5%" icon="fa fa-dollar" size="sm" class="wide"></m-number-card>"#,
+        r#"<div class="m-dashboard"><div class="m-dashboard-item"><m-number-card title="Plain" value="7"></m-number-card>"#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    assert!(!out.contains("Hidden"), "{out}");
+    for (mode, expected) in [
+        (
+            "html",
+            vec![
+                r#"<div id="Counters" class="dashboard counters" style="--dashboard-min:160px"><div class="dashboard-item">"#,
+                r#"<a href="/Orders?statusId=Open" class="number-card"><span class="number-card-title">Open orders</span><strong class="number-card-value">42</strong><span class="number-card-delta" data-tone="good">+3</span></a>"#,
+                r#"<span class="number-card-delta" data-tone="bad">+1</span>"#,
+                r#"<div id="Revenue" class="number-card wide" data-size="sm"><i class="fa fa-dollar"></i> <span class="number-card-title">Revenue {{x}} &amp; more</span>"#,
+                r#"<span class="number-card-delta" data-tone="bad">-5%</span>"#,
+            ],
+        ),
+        (
+            "text",
+            vec!["Open orders: 42 (+3)", "Late shipments: 3 (+1)", "Plain: 7"],
+        ),
+        (
+            "html-print",
+            vec![
+                r#"<div class="number-card"><div class="number-card-title">Open orders</div><div class="number-card-value">42</div><div>+3</div></div>"#,
+            ],
+        ),
+    ] {
+        let context = ExecutionContextFactory::test_context();
+        let output = make_render(context.factory())
+            .root_screen(render_dir().join("Dashboard.xml").to_string_lossy().into_owned())
+            .screen_path("")
+            .render_mode(mode)
+            .render()
+            .unwrap_or_else(|err| panic!("{mode}: {err}"));
+        let text = output.body_text();
+        for expected in expected {
+            assert!(text.contains(expected), "{expected} in {mode}: {text}");
+        }
+        assert!(!text.contains("Hidden"), "{mode}: {text}");
+    }
+}
+
 #[test]
 fn form_lists() {
     let out = check("lists", &[]);
@@ -191,6 +245,11 @@ fn an_alias_transition_link_points_at_the_screen() {
     );
     // A screen that does not exist is `#`.
     assert!(out.contains(">#</span>"), "{out}");
+    // The query of an alias transition's url goes to the screen it names, beside the response's parameters.
+    assert!(
+        out.contains("href=\"/Detail?id=Q2&amp;fromResponse=yes\" class=\"m-link-text\">With query"),
+        "{out}"
+    );
 }
 
 #[test]

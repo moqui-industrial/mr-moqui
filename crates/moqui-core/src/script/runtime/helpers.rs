@@ -140,7 +140,7 @@ pub(super) fn js_compare<'js>(
         };
         let kind = kind.0.filter(|name| !name.is_empty() && name != "Object");
         let kind = kind.unwrap_or_else(|| java_type_of(&field).to_string());
-        moqui_lib::object::compare(&field, &operator, &target, &kind).map_err(|err| throw_lib(&ctx, &err))
+        crate::l10n::compare(&field, &operator, &target, &kind).map_err(|err| throw_lib(&ctx, &err))
     })
 }
 
@@ -151,7 +151,7 @@ pub(super) fn js_basic_convert<'js>(
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let host = js_to_host(&ctx, &value)?;
-        host_to_js(&ctx, moqui_lib::object::basic_convert(&host, &kind).value)
+        host_to_js(&ctx, crate::l10n::basic_convert(&host, &kind).value)
     })
 }
 
@@ -229,8 +229,10 @@ pub(super) fn js_compare_order<'js>(ctx: Ctx<'js>, left: JsValue<'js>, right: Js
     })
 }
 
+/// A time stamp from a script's value: epoch millis, a time stamp, or text, which is in the session time zone unless it
+/// has an offset.
 pub(super) fn timestamp_of(value: &Value) -> Value {
-    moqui_lib::object::basic_convert(value, "java.sql.Timestamp").value
+    crate::l10n::basic_convert(value, "java.sql.Timestamp").value
 }
 
 /// `ec.user.nowTimestamp`: the context's effective time, or the clock.

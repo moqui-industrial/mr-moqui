@@ -227,21 +227,26 @@ test("a menu image of type icon is a Quasar icon name for q-icon, or CSS classes
     const icon = qvt.components["m-menu-icon"];
     assert.equal(icon.computed.isClass.call({ name: "sym_o_receipt_long" }), false);
     assert.equal(icon.computed.isClass.call({ name: "fa fa-cog" }), true);
-    // the drawer, the breadcrumbs' subscreen menus and the screen history all draw a menu icon through it
+    // the drawer, the breadcrumbs' subscreen menus, the launcher and the palette (its Recent group is the screen history) all
+    // draw a menu icon through it
     assert.match(qvt.components["m-menu-item-content"].template, /<m-menu-icon v-if="menuItem.imageType === 'icon'" :name="menuItem.image"/);
     const shell = qvt.components["m-qapps-root"].template;
     assert.match(shell, /<m-menu-icon v-if="subscreen.image && subscreen.imageType === 'icon'" :name="subscreen.image"/);
-    assert.match(shell, /<m-menu-icon v-if="histItem.image && histItem.imageType === 'icon'" :name="histItem.image"/);
-    assert.doesNotMatch(shell, /:class="(subscreen|histItem)\.image"/);
+    assert.match(shell, /<m-menu-icon v-if="app.image && app.imageType === 'icon'" :name="app.image"/);
+    assert.match(qvt.components["m-shell-palette"].template, /<m-menu-icon v-if="row.icon \|\| \(row.image && row.imageType === 'icon'\)" :name="row.icon \|\| row.image"/);
+    assert.doesNotMatch(shell, /:class="(subscreen|histItem|app)\.image"/);
+    // the screen history menu is gone from the header
+    assert.doesNotMatch(shell, /navHistoryList|screenHistory/);
 });
 
 test("an m-screen-context registers with the root, follows its props and leaves on unmount; the latest one is the screen context", () => {
     const options = qvt.rootOptions({ basePath: "/apps", linkBasePath: "/qapps", appRootPath: "" });
     const data = options.data();
     assert.deepEqual(data.screenContexts, []);
-    assert.deepEqual(data.assistReach, ["m-canvas"]);
+    assert.deepEqual(options.computed.assistReach.call(data), ["m-canvas"]);
     const root = Object.assign(data, { currentPath: "/apps/gallery/Detail", currentParameters: { enumId: "STT_INTERNAL" } });
     Object.keys(options.methods).forEach((name) => { root[name] = options.methods[name].bind(root); });
+    Object.defineProperty(root, "screenRecord", { get: () => options.computed.screenRecord.call(root) });
     const screenContext = () => options.computed.screenContext.call(root);
     assert.deepEqual(screenContext(), { path: "/apps/gallery/Detail", parameters: { enumId: "STT_INTERNAL" }, record: null, selection: null, filters: null, forms: [] });
 
@@ -260,7 +265,8 @@ test("an m-screen-context registers with the root, follows its props and leaves 
     const dialog = make({ recordEntity: "moqui.basic.EnumerationType", recordId: 42, selectionForm: "EnumList" });
     comp.mounted.call(dialog);
     assert.deepEqual(screenContext().record, { entity: "moqui.basic.EnumerationType", id: "42", title: "" });
-    assert.deepEqual(screenContext().selection, { form: "EnumList" });
+    // no list of that name is on the page, so nothing is selected
+    assert.deepEqual(screenContext().selection, { form: "EnumList", ids: [] });
     // a prop change keeps the registration's place
     page.recordId = "STT_ERROR";
     comp.watch.value.call(page, page.value);
@@ -275,4 +281,33 @@ test("an m-screen-context registers with the root, follows its props and leaves 
     assert.deepEqual(root.screenContexts, []);
     // the canvas the reach list names is in the shell
     assert.match(qvt.components["m-qapps-root"].template, /<q-page-container id="m-canvas">/);
+});
+
+test("a number card's delta has the tone of its sign against delta-good, and the card is a link only with an href", () => {
+    const tone = (delta, good) => { const info = moqui.numberCardDelta(delta, good); return info ? [info.sign, info.tone, info.icon] : null; };
+    assert.deepEqual(tone("+3"), [1, "good", "sym_o_trending_up"]);
+    assert.deepEqual(tone("-12%"), [-1, "bad", "sym_o_trending_down"]);
+    assert.deepEqual(tone("−4"), [-1, "bad", "sym_o_trending_down"], "a minus sign");
+    assert.deepEqual(tone("7", "up"), [1, "good", "sym_o_trending_up"], "a number's own sign");
+    assert.deepEqual(tone("+3", "down"), [1, "bad", "sym_o_trending_up"], "more late shipments are bad");
+    assert.deepEqual(tone("-2 days", "down"), [-1, "good", "sym_o_trending_down"]);
+    assert.deepEqual(tone("0"), [0, "neutral", "sym_o_trending_flat"]);
+    assert.deepEqual(tone("steady"), [0, "neutral", "sym_o_trending_flat"]);
+    assert.equal(tone(""), null);
+    assert.equal(tone(null), null);
+    const card = qvt.components["m-number-card"];
+    const computed = (props) => {
+        const self = Object.assign({ deltaGood: "up", size: "md", external: false }, props);
+        Object.keys(card.computed).forEach((name) => Object.defineProperty(self, name, { get: () => card.computed[name].call(self) }));
+        return self;
+    };
+    assert.equal(computed({}).wrapper, "div");
+    assert.equal(computed({ href: "/apps/gallery/List" }).wrapper, "m-link");
+    assert.equal(computed({ href: "https://example.com", external: true }).wrapper, "a");
+    assert.equal(computed({ value: "" }).shownValue, "–");
+    assert.equal(computed({ value: 42 }).shownValue, "42");
+    assert.equal(computed({ size: "lg" }).valueClass, "text-h4");
+    assert.equal(computed({ delta: "+3", deltaGood: "down" }).deltaClass, "text-negative");
+    assert.equal(computed({ delta: "+3" }).deltaClass, "text-positive");
+    assert.equal(computed({ delta: "0" }).deltaClass, "m-muted");
 });

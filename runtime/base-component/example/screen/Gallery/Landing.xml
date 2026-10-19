@@ -60,30 +60,16 @@ along with this software (see the LICENSE.md file). If not, see
     <widgets>
         <container-box type="info"><box-header title="Archetype 3.1 Landing"/><box-body>
             <label type="p" text="The home of an app: a row of counters, the lists of my work, shortcuts and a chart, each a link into the List screen with its filter. Framework data stands in for the business: enumerations by type instead of orders by status. One column on a phone, counters two per row."/>
-            <label type="p" text="Fallbacks for §8: number-card is a q-card with a text-overline label and a text-h5 value through render-mode; the assigned-to-me list is an inline list because the framework has no work-item entity; the status chips are tonal anchor-button links until the m-tonal chip exists."/>
+            <label type="p" text="The counters are number-card elements in a dashboard. Fallbacks for §8: the assigned-to-me list is an inline list because the framework has no work-item entity; the status chips are tonal anchor-button links until the m-tonal chip exists."/>
         </box-body></container-box>
 
-        <!-- counters: number-card fallback, each card a link into the list with the type filter -->
-        <container style="row q-col-gutter-sm q-ma-sm">
-            <render-mode><text type="qvt"><![CDATA[
-<div class="col-xs-6 col-sm-4 col-md-2"><q-card flat bordered class="full-height"><q-card-section class="q-pa-sm">
-    <m-link href="${sri.makeUrlByType('list', 'transition', null, 'true').pathWithParams}" class="m-link-text">
-        <div class="text-overline text-grey-6 ellipsis">All enumerations</div>
-        <div class="text-h5 text-weight-medium">${ec.l10n.format(enumTotal, '#,##0')}</div>
-    </m-link>
-</q-card-section></q-card></div>
-            ]]></text></render-mode>
+        <!-- counters: number cards in a dashboard, each a link into the list with the type filter; two a row on a phone -->
+        <dashboard min-width="150">
+            <number-card title="All enumerations" value="${ec.l10n.format(enumTotal, '#,##0')}" icon="sym_o_list_alt" link="list"/>
             <section-iterate name="CounterCards" list="counterList" entry="card"><widgets>
-                <render-mode><text type="qvt"><![CDATA[
-<div class="col-xs-6 col-sm-4 col-md-2"><q-card flat bordered class="full-height"><q-card-section class="q-pa-sm">
-    <m-link href="${sri.makeUrlByType('list', 'transition', null, 'true').addParameter('enumTypeId', card.enumTypeId).pathWithParams}" class="m-link-text">
-        <div class="text-overline text-grey-6 ellipsis">${WebUtilities.encodeHtml(card.description)}</div>
-        <div class="text-h5 text-weight-medium">${ec.l10n.format(card.count, '#,##0')}</div>
-    </m-link>
-</q-card-section></q-card></div>
-                ]]></text></render-mode>
+                <number-card title="${card.description}" value="${ec.l10n.format(card.count, '#,##0')}" link="list?enumTypeId=${card.enumTypeId}"/>
             </widgets></section-iterate>
-        </container>
+        </dashboard>
 
         <container-row>
             <row-col md="7">

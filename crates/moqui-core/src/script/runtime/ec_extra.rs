@@ -354,7 +354,8 @@ fn epoch_millis_timestamp(value: &Value) -> Option<Value> {
                 } else {
                     "java.sql.Timestamp"
                 };
-                let converted = moqui_lib::object::basic_convert(value, java_type);
+                // In the session time zone, which the pattern formats it in, so the text shows as written.
+                let converted = crate::l10n::basic_convert(value, java_type);
                 return (!matches!(converted.value, Value::Null | Value::String(_))).then_some(converted.value);
             }
             Err(_) => return None,

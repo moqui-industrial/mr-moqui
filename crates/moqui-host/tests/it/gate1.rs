@@ -276,6 +276,25 @@ fn sql_features_run_on_postgres() {
         .unwrap();
     assert_eq!(all_groups.len(), 2);
 
+    // Raw SQL names a view member by its entity-alias as Java writes it, unquoted (`TEST_ENTITY TE`), the way a
+    // `makeConditionWhere` does; Postgres folds both to `te`.
+    let raw = facade
+        .find("moqui.test.TestEntityCount")
+        .unwrap()
+        .condition(Condition::where_sql(
+            "TE.TEST_MEDIUM = 'alpha' AND te.TEST_NUMBER_INTEGER > 1",
+        ))
+        .list()
+        .unwrap();
+    assert_eq!(raw.len(), 1);
+    assert_eq!(
+        raw.values()[0]
+            .get("entityCount")
+            .map(moqui_lib::object::to_plain_string)
+            .as_deref(),
+        Some("1")
+    );
+
     // UPPER() on both sides.
     let ignoring = facade
         .find("moqui.test.TestEntity")

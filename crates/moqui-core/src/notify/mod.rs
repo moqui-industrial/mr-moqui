@@ -25,4 +25,6 @@ pub use topic::{
 };
 
 #[cfg(test)]
+mod service_tests;
+#[cfg(test)]
 mod tests;

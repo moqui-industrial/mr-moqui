@@ -52,12 +52,13 @@ const MAX_LIMIT: usize = 50;
 
 /// The `shell` keys and the theme value types of the user's qapps theme behind them. A screen path (true) goes to the
 /// client as a link the user may open, or null; a subscreen name (false) as it is written.
-const SHELL_VALUES: [(&str, &str, bool); 7] = [
+const SHELL_VALUES: [(&str, &str, bool); 8] = [
     ("trayToday", "STRT_TRAY_TODAY", true),
     ("trayChat", "STRT_TRAY_CHAT", true),
     ("trayNotifications", "STRT_TRAY_NOTIFICATIONS", true),
     ("quickCreate", "STRT_QUICK_CREATE", true),
-    ("inboxScreen", "STRT_INBOX_SCREEN", true),
+    ("mailScreen", "STRT_MAIL_SCREEN", true),
+    ("messagesScreen", "STRT_MESSAGES_SCREEN", true),
     ("chatterScreen", "STRT_CHATTER_SCREEN", false),
     ("recordFilesScreen", "STRT_RECORD_FILES_SCREEN", false),
 ];

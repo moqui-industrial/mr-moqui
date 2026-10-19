@@ -752,7 +752,8 @@ pub(super) fn add_condition(conditions: &mut Vec<Condition>, condition: Conditio
 }
 
 /// What a view's `entity-condition` and SQL expressions read: the time now, `${}` expansion in
-/// the script runtime, and plain conversion of definition text.
+/// the script runtime, and conversion of definition text, a timestamp in the session time zone as Java's
+/// `convertFieldString` reads an `econdition` value.
 pub(crate) struct FindValues;
 
 impl ConditionValues for FindValues {
@@ -769,7 +770,7 @@ impl ConditionValues for FindValues {
         if text.is_empty() || text == "null" {
             return Ok(Value::Null);
         }
-        Ok(basic_convert(&Value::string(text), java_type).value)
+        Ok(crate::l10n::basic_convert(&Value::string(text), java_type).value)
     }
 }
 
