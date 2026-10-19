@@ -235,3 +235,14 @@ Fixes of the gaps the BOSS screens found; where a fix differs from Java on purpo
 | sessions | `org.moqui.impl.UserServices.end#UserVisit` and `ec.user.endVisit(visitId)` end another session of the user; `ec.user.visitId` and `ec.user.visit` as Java's `getVisitId` and `getVisit` | No Java counterpart for ending another session; doc comment at `end_user_visit` |
 | mail | With `mail_capture_sends=true`, or the `MailCapture` tool enabled by a spec, `send#EmailMessage` keeps the message in memory (`ec.factory.getTool('MailCapture')`) instead of connecting | docs/Testing.md, "Mail"; module doc of `service/mail_capture.rs` |
 | shell | `sri.getShellProviders(kind)`, the providers of `getShellData` alone, kept per session | js/README.md, "Shell data and providers"; doc comment at `shell_providers` |
+
+## Modified fields (2026-10-19)
+
+An `EntityValue` read from the database (a find, the entity cache, a refresh), or written since, keeps what each field it sets held before, as Java's `dbValueMap`, and its update writes only the fields that changed (doc comment of `EntityValue` and `write_update` in `entity/value.rs`).
+
+| Area | Difference | Rationale / where documented |
+|---|---|---|
+| entity value update | A found value's `update` (and `createOrUpdate`, `updateAll`, a script's `update()`) writes only the fields set to something other than what was read, plus `lastUpdatedStamp`, and nothing (no statement, no audit row, no after rule) when none changed. Java's find leaves `isFromDb` false, so Java's update of a found value writes every field it holds, or, when the entity reads the row first (audit log, create-only, field defaults, optimistic lock, data feed), every held field that differs from the row, a stale one too | A find, a set and an update no longer write back a field another transaction changed in between (a lost update); a value from `makeValue` still writes every field it holds, as data load and the entity-auto services use. The stamp a caller sets on a found value is kept without a row read (P1-15) |
+| entity value | `clone` keeps what the value read and what it changed; Java's `cloneValue` copies `dbValueMap` and starts not modified | A copy of a found value updates as the value would |
+| ECA rules, cache, data feed | When an update of a found value reads the stored row (the entity reads it first, or an after rule has `get-original-value`), a field the value did not change is given to the rules, the cache clear and the data feed as stored; Java's `entityValue` holds the value as read, which Java also writes | The rules see the row as the update leaves it, so a field another transaction changed does not look changed by this one; `take_unmodified` in `entity/value.rs` |
+| transaction cache, sim | A held update holds, and its flush writes, only the fields the update writes | As the direct write |

@@ -2025,6 +2025,12 @@ const PARITY_ENTITIES: &str = r#"<entities>
         <field name="lockedId" type="id" is-pk="true"/>
         <field name="note" type="text-medium"/>
     </entity>
+    <entity entity-name="ParityAudited" package="moqui.test">
+        <field name="auditedId" type="id" is-pk="true"/>
+        <field name="status" type="id" enable-audit-log="true"/>
+        <field name="note" type="text-medium" enable-audit-log="true"/>
+        <field name="other" type="text-medium"/>
+    </entity>
     <view-entity entity-name="ParityItemView" package="moqui.test">
         <member-entity entity-alias="I" entity-name="moqui.test.ParityItem"/>
         <alias-all entity-alias="I"/>
@@ -2353,6 +2359,341 @@ fn optimistic_lock_refuses_an_update_of_a_stale_value() {
     let err = second.update(&facade).unwrap_err();
     assert!(err.to_string().contains("updated by someone else"), "{err}");
     assert_eq!(read().get("note"), Some(&Value::string("first")));
+}
+
+fn test_entity_read(facade: &EntityFacade, test_id: &str) -> super::EntityValue {
+    facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .eq("testId", Value::string(test_id))
+        .use_cache(false)
+        .one()
+        .unwrap()
+        .unwrap()
+}
+
+fn create_test_entity(facade: &EntityFacade, test_id: &str, medium: &str, short: &str) {
+    let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+    row.set("testId", Value::string(test_id));
+    row.set("testMedium", Value::string(medium));
+    row.set("value", Value::string(short));
+    row.set("testNumberInteger", Value::I64(1));
+    row.create(facade).unwrap();
+}
+
+/// The statements on `tape` other than reads.
+fn tape_writes(tape: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+    tape.lock()
+        .unwrap()
+        .iter()
+        .filter(|sql| !sql.starts_with("SELECT"))
+        .cloned()
+        .collect()
+}
+
+/// The `SET` part of an update statement.
+fn set_part(sql: &str) -> &str {
+    sql.split(" WHERE ").next().unwrap_or(sql)
+}
+
+/// A lost update: two values read the same row and each changes a different field. As an update writes only the
+/// fields its value changed, both changes are kept.
+#[test]
+fn two_values_read_together_each_keep_the_field_they_changed() {
+    let facade = crate::testing::open();
+    create_test_entity(&facade, "LOST", "medium", "short");
+    let (mut first, mut second) = (test_entity_read(&facade, "LOST"), test_entity_read(&facade, "LOST"));
+    first.set("testMedium", Value::string("first"));
+    second.set("value", Value::string("second"));
+    assert!(first.is_modified() && first.is_field_modified("testMedium") && !first.is_field_modified("value"));
+    assert_eq!(first.original_db_value("testMedium"), Some(Value::string("medium")));
+    first.update(&facade).unwrap();
+    second.update(&facade).unwrap();
+    let stored = test_entity_read(&facade, "LOST");
+    assert_eq!(stored.get("testMedium"), Some(&Value::string("first")));
+    assert_eq!(stored.get("value"), Some(&Value::string("second")));
+    // A clone keeps what the value read; a copy for another row (a changed key) writes every field it holds.
+    let mut copy = second.clone();
+    copy.set("value", Value::string("copied"));
+    assert!(copy.is_field_modified("value") && !copy.is_field_modified("testMedium"));
+    copy.set("testId", Value::string("COPY"));
+    copy.create(&facade).unwrap();
+    assert_eq!(
+        test_entity_read(&facade, "COPY").get("testMedium"),
+        Some(&Value::string("medium"))
+    );
+}
+
+/// A value read and not changed, set to what it held (a number as text too), or changed and set back, updates
+/// nothing: no statement and no audit row; with nothing set it does not even read the row its audit log would compare
+/// with. After an update the value holds what was written, so a field set back to what it was read with is written.
+#[test]
+fn an_update_of_a_found_value_with_no_change_writes_nothing() {
+    let tape = Arc::new(Mutex::new(Vec::new()));
+    let facade = crate::testing::open_with_tape(Arc::clone(&tape));
+    facade.set_disable_audit_log(false);
+    let entity = "moqui.service.message.SystemMessage";
+    let mut row = facade.make_value(entity).unwrap();
+    row.set("systemMessageId", Value::string("NC"));
+    row.set("statusId", Value::string("SmsgReceived"));
+    row.set("messageText", Value::string("text"));
+    row.set("failCount", Value::I64(1));
+    row.create(&facade).unwrap();
+    let audits = || {
+        facade
+            .find("moqui.entity.EntityAuditLog")
+            .unwrap()
+            .eq("changedEntityName", Value::string(entity))
+            .use_cache(false)
+            .list()
+            .unwrap()
+    };
+    let audited = audits().len();
+    let read = || {
+        facade
+            .find(entity)
+            .unwrap()
+            .eq("systemMessageId", Value::string("NC"))
+            .use_cache(false)
+            .one()
+            .unwrap()
+            .unwrap()
+    };
+    let mut found = read();
+    tape.lock().unwrap().clear();
+    found.update(&facade).unwrap();
+    assert!(tape.lock().unwrap().is_empty(), "{:?}", tape.lock().unwrap());
+    found.set("messageText", Value::string("text"));
+    found.set("failCount", Value::string("1"));
+    found.set("statusId", Value::string("SmsgConsumed"));
+    found.set("statusId", Value::string("SmsgReceived"));
+    assert!(!found.is_modified());
+    found.update(&facade).unwrap();
+    found.create_or_update(&facade).unwrap();
+    assert!(tape_writes(&tape).is_empty(), "{:?}", tape_writes(&tape));
+    assert_eq!(audits().len(), audited);
+
+    found.set("messageText", Value::string("changed"));
+    found.update(&facade).unwrap();
+    let written = tape_writes(&tape);
+    assert_eq!(written.len(), 1, "{written:?}");
+    let set = set_part(&written[0]);
+    assert!(
+        set.contains("message_text") && set.contains("last_updated_stamp"),
+        "{set}"
+    );
+    assert!(!set.contains("status_id") && !set.contains("fail_count"), "{set}");
+    found.set("messageText", Value::string("text"));
+    found.update(&facade).unwrap();
+    assert_eq!(read().get("messageText"), Some(&Value::string("text")));
+    assert_eq!(audits().len(), audited, "messageText is not audited");
+}
+
+/// The audit log of an update has a row for each audited field the value changed, with the stored value it replaced
+/// (read before the write, as Java's `dbValueMap`), and none for a field it did not change: a value read before
+/// another update neither writes back nor audits the field that update changed.
+#[test]
+fn an_update_audits_the_fields_it_changed_with_the_stored_old_values() {
+    let fixture = ParityFixture::new();
+    let facade = fixture.open(None);
+    facade.set_disable_audit_log(false);
+    let entity = "moqui.test.ParityAudited";
+    let mut row = facade.make_value(entity).unwrap();
+    row.set("auditedId", Value::string("A1"));
+    row.set("status", Value::string("A"));
+    row.set("note", Value::string("n1"));
+    row.create(&facade).unwrap();
+    let read = || {
+        facade
+            .find(entity)
+            .unwrap()
+            .eq("auditedId", Value::string("A1"))
+            .use_cache(false)
+            .one()
+            .unwrap()
+            .unwrap()
+    };
+    let updates = |field: &str| -> Vec<(Option<String>, Option<String>)> {
+        let text = |row: &super::EntityValue, name: &str| row.get(name).and_then(Value::as_str).map(str::to_string);
+        facade
+            .find("moqui.entity.EntityAuditLog")
+            .unwrap()
+            .eq("changedEntityName", Value::string(entity))
+            .eq("changedFieldName", Value::string(field))
+            .use_cache(false)
+            .list()
+            .unwrap()
+            .iter()
+            .filter(|row| row.get("oldValueText").is_some_and(|old| !old.is_null()))
+            .map(|row| (text(row, "oldValueText"), text(row, "newValueText")))
+            .collect()
+    };
+    let (mut first, mut stale) = (read(), read());
+    first.set("note", Value::string("n2"));
+    first.update(&facade).unwrap();
+    stale.set("status", Value::string("B"));
+    stale.update(&facade).unwrap();
+    let stored = read();
+    assert_eq!(stored.get("note"), Some(&Value::string("n2")));
+    assert_eq!(stored.get("status"), Some(&Value::string("B")));
+    assert_eq!(updates("note"), [(Some("n1".to_string()), Some("n2".to_string()))]);
+    assert_eq!(updates("status"), [(Some("A".to_string()), Some("B".to_string()))]);
+
+    // The old value is the stored one, not the one the value was read with.
+    let mut later = read();
+    let mut other = facade.make_value(entity).unwrap();
+    other.set("auditedId", Value::string("A1"));
+    other.set("status", Value::string("C"));
+    other.update(&facade).unwrap();
+    later.set("status", Value::string("D"));
+    later.update(&facade).unwrap();
+    let status = updates("status");
+    assert!(
+        status.contains(&(Some("C".to_string()), Some("D".to_string()))),
+        "{status:?}"
+    );
+    assert!(
+        !status.contains(&(Some("B".to_string()), Some("D".to_string()))),
+        "{status:?}"
+    );
+    assert_eq!(updates("note").len(), 1);
+}
+
+/// A value made with `makeValue` and its key updates the fields it holds, and leaves the others as stored; after the
+/// write it updates only the fields set since.
+#[test]
+fn a_made_value_updates_the_fields_it_holds_then_those_set_since() {
+    let tape = Arc::new(Mutex::new(Vec::new()));
+    let facade = crate::testing::open_with_tape(Arc::clone(&tape));
+    create_test_entity(&facade, "MADE", "medium", "short");
+    tape.lock().unwrap().clear();
+    let mut made = facade.make_value("moqui.test.TestEntity").unwrap();
+    made.set("testId", Value::string("MADE"));
+    made.set("testMedium", Value::string("made"));
+    assert!(made.is_field_modified("testMedium") && !made.is_field_modified("value"));
+    made.update(&facade).unwrap();
+    made.set("value", Value::string("later"));
+    made.update(&facade).unwrap();
+    let written = tape_writes(&tape);
+    assert_eq!(written.len(), 2, "{written:?}");
+    assert!(set_part(&written[0]).contains("test_medium") && !set_part(&written[0]).contains("\"value\""));
+    assert!(set_part(&written[1]).contains("\"value\"") && !set_part(&written[1]).contains("test_medium"));
+    let stored = test_entity_read(&facade, "MADE");
+    assert_eq!(stored.get("testMedium"), Some(&Value::string("made")));
+    assert_eq!(stored.get("value"), Some(&Value::string("later")));
+}
+
+/// `createOrUpdate` of a found value updates the fields it changed; of a value whose row is gone it creates the row
+/// with every field the value holds. Data load still writes the fields a record names and leaves the others.
+#[test]
+fn create_or_update_and_data_load_write_what_they_name() {
+    let tape = Arc::new(Mutex::new(Vec::new()));
+    let facade = crate::testing::open_with_tape(Arc::clone(&tape));
+    create_test_entity(&facade, "COU", "medium", "short");
+    let mut found = test_entity_read(&facade, "COU");
+    let mut other = test_entity_read(&facade, "COU");
+    other.set("value", Value::string("other"));
+    other.update(&facade).unwrap();
+    tape.lock().unwrap().clear();
+    found.set("testMedium", Value::string("found"));
+    found.create_or_update(&facade).unwrap();
+    let written = tape_writes(&tape);
+    assert_eq!(written.len(), 1, "{written:?}");
+    assert!(!set_part(&written[0]).contains("\"value\""), "{}", written[0]);
+    let stored = test_entity_read(&facade, "COU");
+    assert_eq!(stored.get("testMedium"), Some(&Value::string("found")));
+    assert_eq!(stored.get("value"), Some(&Value::string("other")));
+
+    stored.delete(&facade).unwrap();
+    let mut gone = stored.clone();
+    gone.set("testMedium", Value::string("again"));
+    gone.create_or_update(&facade).unwrap();
+    let again = test_entity_read(&facade, "COU");
+    assert_eq!(again.get("testMedium"), Some(&Value::string("again")));
+    assert_eq!(again.get("value"), Some(&Value::string("other")));
+
+    super::load_feed::load_entity_xml_text(
+        &facade,
+        "named-fields",
+        r#"<entity-facade-xml><moqui.test.TestEntity testId="COU" testMedium="loaded"/></entity-facade-xml>"#,
+        &super::load_feed::LoadOptions::default(),
+    )
+    .unwrap();
+    let loaded = test_entity_read(&facade, "COU");
+    assert_eq!(loaded.get("testMedium"), Some(&Value::string("loaded")));
+    assert_eq!(loaded.get("value"), Some(&Value::string("other")));
+}
+
+/// An update ECA rule with `get-original-value` sees the row as the update leaves it: a field the value did not change
+/// is the stored one, not the one the value read before another update changed it, so it does not look changed.
+#[test]
+fn an_update_eca_rule_sees_the_stored_value_of_a_field_the_value_did_not_change() {
+    crate::script::clear_context_stack();
+    let facade = crate::testing::open_with(
+        &framework_dir(),
+        crate::testing::Options {
+            entity_eca: true,
+            ..Default::default()
+        },
+    );
+    super::load_feed::add_eca_rules(
+        &facade,
+        r#"<eecas>
+            <eeca id="TestSeesStored" entity="moqui.test.TestEntity" on-update="true" get-original-value="true">
+                <actions><script>
+                    const seen = ec.entity.makeValue("moqui.test.Foo");
+                    seen.fooId = "SEEN-" + entityValue.testMedium;
+                    seen.fooText = entityValue.value + "|" + originalValue.value;
+                    seen.create();
+                </script></actions>
+            </eeca>
+        </eecas>"#,
+    )
+    .unwrap();
+    let context = crate::context::ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    create_test_entity(&facade, "EECA", "m0", "v0");
+    let (mut stale, mut other) = (test_entity_read(&facade, "EECA"), test_entity_read(&facade, "EECA"));
+    other.set("value", Value::string("v1"));
+    other.update(&facade).unwrap();
+    stale.set("testMedium", Value::string("m1"));
+    stale.update(&facade).unwrap();
+    let seen = |id: &str| {
+        facade
+            .find("moqui.test.Foo")
+            .unwrap()
+            .eq("fooId", Value::string(id))
+            .one()
+            .unwrap()
+            .and_then(|row| row.get("fooText").cloned())
+    };
+    assert_eq!(seen("SEEN-m0"), Some(Value::string("v1|v0")));
+    assert_eq!(seen("SEEN-m1"), Some(Value::string("v1|v1")));
+    assert_eq!(
+        test_entity_read(&facade, "EECA").get("value"),
+        Some(&Value::string("v1"))
+    );
+}
+
+/// `updateAll` sets the fields on each row found and updates a row only when they change it, writing only them.
+#[test]
+fn update_all_writes_only_the_fields_it_sets_on_the_rows_they_change() {
+    let tape = Arc::new(Mutex::new(Vec::new()));
+    let facade = crate::testing::open_with_tape(Arc::clone(&tape));
+    create_test_entity(&facade, "UA1", "same", "a");
+    create_test_entity(&facade, "UA2", "other", "b");
+    tape.lock().unwrap().clear();
+    let updated = facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .update_all([("testMedium".to_string(), Value::string("same"))])
+        .unwrap();
+    assert_eq!(updated, 1);
+    let written = tape_writes(&tape);
+    assert_eq!(written.len(), 1, "{written:?}");
+    assert!(!set_part(&written[0]).contains("\"value\""), "{}", written[0]);
 }
 
 /// The framework conf, to change before a facade is opened on it.

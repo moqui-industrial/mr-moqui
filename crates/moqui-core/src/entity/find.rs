@@ -323,16 +323,11 @@ impl EntityFind {
         let mut updated = 0_i64;
         for value in list.values() {
             let mut changed = value.clone();
-            let mut modified = false;
             for (name, new_value) in &fields {
-                let same = value.get(name).is_some_and(|old| {
-                    old == new_value
-                        || moqui_lib::object::to_plain_string(old) == moqui_lib::object::to_plain_string(new_value)
-                });
-                modified |= !same;
                 changed.set(name.clone(), new_value.clone());
             }
-            if modified {
+            // As Java's `updateAll`, only a row the fields change is updated, and only those fields are written.
+            if changed.is_modified() {
                 changed.update(&facade)?;
                 updated += 1;
             }
