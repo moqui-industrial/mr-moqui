@@ -82,12 +82,31 @@ impl WebRequest {
     }
 }
 
-/// One HTTP response. Repeated names are separate headers, so `Set-Cookie` can appear twice.
+/// One HTTP response. Repeated names are separate headers, so `Set-Cookie` can appear twice. A large body is a
+/// [`ResponseStream`] the host reads a window at a time as the client takes it, and `body` is empty.
 #[derive(Clone, Debug)]
 pub struct WebResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    pub stream: Option<ResponseStream>,
+}
+
+/// `length` bytes of `source` from `offset`: the body of a response too large to hold.
+#[derive(Clone)]
+pub struct ResponseStream {
+    pub source: std::sync::Arc<dyn crate::resource::source::ByteSource>,
+    pub offset: u64,
+    pub length: u64,
+}
+
+impl std::fmt::Debug for ResponseStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResponseStream")
+            .field("offset", &self.offset)
+            .field("length", &self.length)
+            .finish()
+    }
 }
 
 impl WebResponse {
@@ -96,7 +115,15 @@ impl WebResponse {
             status,
             headers: Vec::new(),
             body: body.into(),
+            stream: None,
         }
+    }
+
+    /// The length of the body, streamed or not.
+    pub fn body_len(&self) -> u64 {
+        self.stream
+            .as_ref()
+            .map_or(self.body.len() as u64, |stream| stream.length)
     }
 
     pub fn header(&self, name: &str) -> Option<&str> {
@@ -126,6 +153,8 @@ struct WebSlot {
     request_details: String,
     /// The names in the URL query string, which `getSecureRequestParameters` leaves out.
     query_names: Vec<String>,
+    /// The method and the conditional headers of the request, for a file response (`sendResourceResponse`).
+    conditional: crate::screen::static_files::Conditional,
     /// [`client_ip`] of the request, for the login `ipAllowed` check.
     client_ip: String,
     /// The first locale of the request's `Accept-Language`, as Java's `request.getLocale()`.
@@ -136,6 +165,7 @@ struct WebSlot {
     status: u16,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    stream: Option<ResponseStream>,
 }
 
 /// Puts back the thread-local web slot that was there before the install, or clears it when there was
@@ -171,6 +201,7 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             referrer: String::new(),
             request_details: String::new(),
             query_names: Vec::new(),
+            conditional: Default::default(),
             client_ip: String::new(),
             locale: None,
             base_url,
@@ -178,6 +209,7 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             status: 200,
             headers: Vec::new(),
             body: Vec::new(),
+            stream: None,
         })
     });
     WebGuard { previous }
@@ -278,6 +310,7 @@ pub(crate) fn set_request_info(request: &WebRequest) {
             web.request_details = details;
             web.query_names = request.query.iter().map(|(name, _)| name.clone()).collect();
             web.client_ip = client_ip(request);
+            web.conditional = crate::screen::static_files::Conditional::of(request);
         }
     });
 }
@@ -540,25 +573,27 @@ pub(crate) fn send_text_response(text: &str) {
     send_bytes(200, "text/plain", text.as_bytes().to_vec());
 }
 
-/// `ec.web.sendResourceResponse(location, inline)`: the bytes at a resource location with the type of its file name,
-/// shown inline or as an attachment. Nothing at the location, or a directory, is 404.
+/// `ec.web.sendResourceResponse(location, inline)`: the file at a resource location with the type of its file name,
+/// shown inline or as an attachment; a large one streams, and a `Range` or `If-None-Match` of the request is answered.
+/// Nothing at the location, or a directory, is 404.
 pub(crate) fn send_resource_response(location: &str, inline: bool) {
-    let bytes = ExecutionContext::with_current(|ec| {
-        let resource = ec.factory().resource().get(location).ok()?;
-        if !resource.exists() {
-            return None;
+    let opened = ExecutionContext::with_current(|ec| ec.factory().resource().open(location)).transpose();
+    let opened = match opened {
+        Ok(Some(Some(opened))) => opened,
+        Ok(_) => {
+            tracing::warn!("Sending not found response, resource not found at: {location}");
+            send_bytes(
+                404,
+                "text/plain",
+                format!("Resource not found at {location}").into_bytes(),
+            );
+            return;
         }
-        resource.read_bytes().ok()
-    })
-    .flatten();
-    let Some(bytes) = bytes else {
-        tracing::warn!("Sending not found response, resource not found at: {location}");
-        send_bytes(
-            404,
-            "text/plain",
-            format!("Resource not found at {location}").into_bytes(),
-        );
-        return;
+        Err(err) => {
+            tracing::warn!("Sending error response, resource at {location} cannot be read: {}", err.message());
+            send_bytes(500, "text/plain", format!("Resource at {location} cannot be read").into_bytes());
+            return;
+        }
     };
     let file_name = location.trim_end_matches('/').rsplit('/').next().unwrap_or(location);
     let mut headers = Vec::new();
@@ -597,7 +632,11 @@ pub(crate) fn send_resource_response(location: &str, inline: bool) {
             format!("attachment; filename=\"{safe}\"; filename*=utf-8''{encoded}"),
         ));
     }
-    send_bytes_with_headers(200, headers, bytes);
+    let conditional = WEB.with(|slot| slot.borrow().as_ref().map(|web| web.conditional.clone())).unwrap_or_default();
+    if let Err(err) = crate::screen::static_files::respond_opened(&conditional, headers, &opened) {
+        tracing::warn!("Sending error response, resource at {location} cannot be read: {}", err.message());
+        send_bytes(500, "text/plain", format!("Resource at {location} cannot be read").into_bytes());
+    }
 }
 
 /// The signer for QZ Tray, from `qz-private-key.pem`. Java reads it once from the classpath at class load. This
@@ -701,6 +740,29 @@ pub(crate) fn send_bytes_with_headers(status: u16, headers: Vec<(String, String)
     });
 }
 
+/// A response whose body is `stream`, read by the host as the client takes it. One already sent is left alone.
+pub(crate) fn send_stream(status: u16, headers: Vec<(String, String)>, stream: ResponseStream) {
+    WEB.with(|slot| {
+        let mut web = slot.borrow_mut();
+        let Some(web) = web.as_mut() else {
+            return;
+        };
+        if web.sent {
+            return;
+        }
+        web.sent = true;
+        web.status = status;
+        web.headers.extend(headers);
+        web.body.clear();
+        web.stream = Some(stream);
+    });
+}
+
+/// Move the body stream out of the slot, when the response has one.
+pub(crate) fn take_stream() -> Option<ResponseStream> {
+    WEB.with(|slot| slot.borrow_mut().as_mut().and_then(|web| web.stream.take()))
+}
+
 fn send_bytes(status: u16, content_type: &str, body: Vec<u8>) {
     WEB.with(|slot| {
         let mut web = slot.borrow_mut();
@@ -740,18 +802,20 @@ pub(crate) fn clear_output() {
             web.status = 200;
             web.headers.clear();
             web.body.clear();
+            web.stream = None;
         }
     });
 }
 
 /// What a request had written, set aside while something else uses the slot's output.
-pub(crate) struct OutputStash((u16, Vec<(String, String)>, Vec<u8>, bool));
+pub(crate) struct OutputStash((u16, Vec<(String, String)>, Vec<u8>, bool), Option<ResponseStream>);
 
 /// Take what was written so far and leave the slot empty, for output that is not the response.
 pub(crate) fn stash_output() -> OutputStash {
+    let stream = take_stream();
     let taken = take_output();
     clear_output();
-    OutputStash(taken)
+    OutputStash(taken, stream)
 }
 
 /// Put back what [`stash_output`] took, dropping anything written since.
@@ -763,6 +827,7 @@ pub(crate) fn restore_output(stash: OutputStash) {
             web.headers = headers;
             web.body = body;
             web.sent = sent;
+            web.stream = stash.1;
         }
     });
 }

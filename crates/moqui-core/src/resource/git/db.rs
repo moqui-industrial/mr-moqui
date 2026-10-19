@@ -1108,6 +1108,14 @@ impl GitStore for DbStore {
         Ok(written)
     }
 
+    fn content_source(&self, id: &ObjectId) -> Result<Option<Arc<dyn crate::resource::source::ByteSource>>, Error> {
+        let _rows = super::rows_guard();
+        match self.rows(std::slice::from_ref(id), false)?.into_iter().next() {
+            Some(row) if row.meta.storage == Storage::Blob => Ok(Some(self.blobs().source(&self.blob_of(&row)?))),
+            _ => Ok(None),
+        }
+    }
+
     fn freshen(&self, ids: &[ObjectId]) -> Result<(), Error> {
         let _rows = super::rows_guard();
         let before = now_millis() - FRESHEN_AFTER_MILLIS;

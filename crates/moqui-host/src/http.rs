@@ -35,7 +35,6 @@ use moqui_core::web::{WebRequest, WebResponse};
 use moqui_lib::error::Error;
 use tokio::net::TcpListener;
 use tower::ServiceExt as _;
-use tower_http::compression::Predicate as _;
 
 use crate::{notws, search_proxy};
 
@@ -152,8 +151,7 @@ pub(crate) async fn listen(
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let limits = ListenLimits::from_properties();
-    // Text responses are compressed when the client accepts gzip. Images and other types that are
-    // compressed already are left alone by the layer's default predicate.
+    // Text responses are compressed when the client accepts gzip (`Compressible`).
     let app = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
@@ -166,12 +164,7 @@ pub(crate) async fn listen(
         .route("/kibana/{*rest}", any(search_proxy::kibana))
         .route("/git/{*rest}", any(crate::git_http::handle))
         .fallback(dispatch_screen)
-        // git packs are compressed already, and a git client asks for gzip anyway
-        .layer(tower_http::compression::CompressionLayer::new().compress_when(
-            tower_http::compression::predicate::DefaultPredicate::new().and(
-                tower_http::compression::predicate::NotForContentType::const_new("application/x-git-"),
-            ),
-        ))
+        .layer(tower_http::compression::CompressionLayer::new().compress_when(Compressible))
         .with_state(Arc::new(HttpState {
             factory,
             shutdown: shutdown_rx.clone(),
@@ -479,7 +472,7 @@ async fn dispatch_screen(
     match result.await {
         Ok(response) => {
             log.queue(&response, started.elapsed());
-            from_web(response)
+            from_web(&state.factory, response)
         }
         Err(_) => plain(500, "request worker stopped"),
     }
@@ -588,7 +581,7 @@ impl RequestLog {
         entry.insert("time_final_ms".into(), Value::I64(millis));
         entry.insert(
             "bytes".into(),
-            Value::I64(i64::try_from(response.body.len()).unwrap_or(i64::MAX)),
+            Value::I64(i64::try_from(response.body_len()).unwrap_or(i64::MAX)),
         );
         if !self.referrer.is_empty() {
             entry.insert("referrer".into(), Value::String(self.referrer));
@@ -662,14 +655,67 @@ fn status_allowed(ip: &str) -> bool {
     allowed.iter().any(|item| item == ip)
 }
 
-fn from_web(response: WebResponse) -> Response {
+fn from_web(factory: &Arc<moqui_core::context::ExecutionContextFactory>, response: WebResponse) -> Response {
     let mut builder = Response::builder().status(response.status);
     for (name, value) in response.headers {
         builder = builder.header(name, value);
     }
+    let body = match response.stream {
+        Some(stream) => crate::source_body::body(Arc::clone(factory), stream),
+        None => axum::body::Body::from(response.body),
+    };
     builder
-        .body(axum::body::Body::from(response.body))
+        .body(body)
         .unwrap_or_else(|_| plain(500, "could not build the response"))
+}
+
+/// The responses worth compressing: text (and JSON, JavaScript, XML, SVG, WebAssembly) over 32 bytes, not a range
+/// (whose `Content-Range` names the bytes as they are). Media, archives, PDFs and git packs are compressed already, and
+/// compressing one would also lose its `Content-Length` and ranges.
+#[derive(Clone, Copy)]
+struct Compressible;
+
+impl tower_http::compression::Predicate for Compressible {
+    fn should_compress<B>(&self, response: &axum::http::Response<B>) -> bool
+    where
+        B: axum::body::HttpBody,
+    {
+        if response.status() == axum::http::StatusCode::PARTIAL_CONTENT
+            || response.headers().contains_key(axum::http::header::CONTENT_RANGE)
+        {
+            return false;
+        }
+        let small = response
+            .headers()
+            .get(axum::http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .is_some_and(|length| length <= 32);
+        let kind = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.split(';').next().unwrap_or("").trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        !small
+            && (kind.starts_with("text/")
+                || kind.ends_with("+json")
+                || kind.ends_with("+xml")
+                || matches!(
+                    kind.as_str(),
+                    "application/json"
+                        | "application/javascript"
+                        | "application/xml"
+                        | "application/wasm"
+                        | "application/x-www-form-urlencoded"
+                        | "application/graphql"
+                        | "image/svg+xml"
+                        | "image/x-icon"
+                        | "font/ttf"
+                        | "font/otf"
+                        | "application/vnd.ms-fontobject"
+                ))
+    }
 }
 
 fn json(status: u16, body: &str) -> Response {

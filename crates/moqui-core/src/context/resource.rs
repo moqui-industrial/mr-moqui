@@ -331,6 +331,13 @@ pub struct ResourceStat {
     pub last_modified: Option<i64>,
 }
 
+/// A file opened by [`ResourceFacade::open`].
+#[derive(Clone)]
+pub struct Opened {
+    pub stat: ResourceStat,
+    pub source: Arc<dyn crate::resource::source::ByteSource>,
+}
+
 /// One entry of [`ResourceFacade::list`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResourceEntry {
@@ -472,6 +479,43 @@ impl ResourceFacade {
             std::fs::create_dir_all(parent).map_err(|err| io_error(location, &err))?;
         }
         std::fs::write(&path, bytes).map_err(|err| io_error(location, &err))
+    }
+
+    /// The file at a location to read a window at a time, for a response, with what it is: `None` when no file is
+    /// there. A file on disk is read as it is sent; other storage on the first read, or a window at a time where it
+    /// can (a content blob).
+    pub fn open(&self, location: &str) -> Result<Option<Opened>, Error> {
+        if let Some(provider) = self.provider(location) {
+            return Ok(provider
+                .open(location)?
+                .map(|(stat, source)| Opened { stat, source }));
+        }
+        let resource = self.get(location)?;
+        if !resource.exists() || !resource.is_file() {
+            return Ok(None);
+        }
+        if let Some(path) = resource.file_path() {
+            let source = crate::resource::source::FileSource::open(path)?;
+            let stat = ResourceStat {
+                is_file: true,
+                size: crate::resource::source::ByteSource::len(&source),
+                last_modified: resource.last_modified(),
+            };
+            return Ok(Some(Opened {
+                stat,
+                source: Arc::new(source),
+            }));
+        }
+        let bytes = resource.read_bytes()?;
+        let stat = ResourceStat {
+            is_file: true,
+            size: bytes.len() as u64,
+            last_modified: resource.last_modified(),
+        };
+        Ok(Some(Opened {
+            stat,
+            source: Arc::new(crate::resource::source::MemorySource::new(bytes)),
+        }))
     }
 
     /// The kind, size, and last-modified milliseconds of a location, or `None` when nothing is there.

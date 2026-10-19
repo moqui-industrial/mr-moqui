@@ -39,7 +39,7 @@ pub(crate) use hits::{secret_parameter, Hit};
 pub use locate::{framework_dir, locate};
 pub use message::{ErrorMark, MessageFacade, ValidationError};
 pub(crate) use resource::split_version;
-pub use resource::{ResourceEntry, ResourceFacade, ResourceRef, ResourceStat, ResourceVersion};
+pub use resource::{Opened, ResourceEntry, ResourceFacade, ResourceRef, ResourceStat, ResourceVersion};
 
 #[cfg(test)]
 mod tests {

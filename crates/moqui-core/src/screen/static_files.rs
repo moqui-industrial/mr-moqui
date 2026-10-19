@@ -186,6 +186,29 @@ fn matches_tag(header: &str, tag: &str) -> bool {
         .any(|candidate| candidate.trim() == "*" || strip(candidate) == ours)
 }
 
+/// Bodies up to this size are sent from memory; a larger one streams, read a window at a time as the client takes it.
+const INLINE_BODY: u64 = 256 * 1024;
+
+/// The method and conditional headers of a request, which a file response answers.
+#[derive(Clone, Debug, Default)]
+pub struct Conditional {
+    method: String,
+    range: Option<String>,
+    if_range: Option<String>,
+    if_none_match: Option<String>,
+}
+
+impl Conditional {
+    pub fn of(request: &WebRequest) -> Self {
+        Self {
+            method: request.method.to_ascii_uppercase(),
+            range: request.header("range").map(str::to_string),
+            if_range: request.header("if-range").map(str::to_string),
+            if_none_match: request.header("if-none-match").map(str::to_string),
+        }
+    }
+}
+
 /// Write the response for the file at `location` into the thread's web slot.
 ///
 /// # Errors
@@ -197,10 +220,9 @@ pub fn respond(
     location: &str,
     versioned: bool,
 ) -> Result<(), Error> {
-    let resource = factory.resource().get(location)?;
-    if !resource.exists() || !resource.is_file() {
+    let Some(opened) = factory.resource().open(location)? else {
         return Err(Error::of_kind(ErrorKind::NotFound, format!("no such file: {location}")));
-    }
+    };
     let name = location.rsplit('/').next().unwrap_or(location);
     let method = request.method.to_ascii_uppercase();
     if method != "GET" && method != "HEAD" {
@@ -213,69 +235,80 @@ pub fn respond(
     } else {
         REVALIDATE_CACHE
     };
-    let mut headers = vec![
+    let headers = vec![
         ("Content-Type".to_string(), media_type(name).to_string()),
         ("Cache-Control".to_string(), cache.to_string()),
         ("Vary".to_string(), "Accept-Encoding".to_string()),
-        ("Accept-Ranges".to_string(), "bytes".to_string()),
     ];
-    let modified = resource.last_modified();
-    let size = resource.size();
-    let known = modified.is_some() && size.is_some();
-    let mut bytes = None;
-    if !known {
-        bytes = Some(resource.read_bytes()?);
-    }
-    let tag = file_tag(modified, size, bytes.as_deref());
-    headers.push(("ETag".to_string(), tag.clone()));
-    if request
-        .header("if-none-match")
-        .is_some_and(|presented| matches_tag(presented, &tag))
-    {
-        web::send_bytes_with_headers(304, headers, Vec::new());
-        return Ok(());
+    respond_opened(&Conditional::of(request), headers, &opened)
+}
+
+/// The response for an opened file, with `headers` (its type and caching): an `ETag` (the content's own tag, else one
+/// from its size and modification time), a 304 for a matching `If-None-Match`, one byte range for `Range` (unless
+/// `If-Range` names another version), no body for `HEAD`. A body over [`INLINE_BODY`] streams.
+pub(crate) fn respond_opened(
+    request: &Conditional,
+    mut headers: Vec<(String, String)>,
+    opened: &crate::context::Opened,
+) -> Result<(), Error> {
+    let source = &opened.source;
+    let total = source.len();
+    headers.push(("Accept-Ranges".to_string(), "bytes".to_string()));
+    let tag = match source.tag() {
+        Some(tag) => Some(format!("\"{tag}\"")),
+        None if opened.stat.last_modified.is_some() => Some(file_tag(opened.stat.last_modified, Some(total), None)),
+        // no version to name, so a small file's content names it
+        None if total <= INLINE_BODY => {
+            let bytes = source.read_at(0, usize::try_from(total).unwrap_or(0))?;
+            Some(file_tag(None, None, Some(&bytes)))
+        }
+        None => None,
+    };
+    if let Some(tag) = &tag {
+        headers.push(("ETag".to_string(), tag.clone()));
+        if request
+            .if_none_match
+            .as_deref()
+            .is_some_and(|presented| matches_tag(presented, tag))
+        {
+            web::send_bytes_with_headers(304, headers, Vec::new());
+            return Ok(());
+        }
     }
     // One byte range, unless `If-Range` names another version of the file: then the whole file, as for a request
     // without a range.
-    let range = request.header("range").filter(|_| {
+    let range = request.range.as_deref().filter(|_| {
         request
-            .header("if-range")
-            .is_none_or(|presented| presented.trim() == tag)
+            .if_range
+            .as_deref()
+            .is_none_or(|presented| tag.as_deref().is_some_and(|tag| presented.trim() == tag))
     });
-    if let Some(range) = range {
-        let total = match (size, &bytes) {
-            (Some(size), _) => size,
-            (None, Some(bytes)) => bytes.len() as u64,
-            (None, None) => resource.read_bytes()?.len() as u64,
-        };
-        match byte_range(range, total) {
-            ByteRange::Whole => {}
-            ByteRange::Unsatisfiable => {
-                headers.push(("Content-Range".to_string(), format!("bytes */{total}")));
-                web::send_bytes_with_headers(416, headers, Vec::new());
-                return Ok(());
-            }
-            ByteRange::Span(start, end) => {
-                let length = end - start + 1;
-                headers.push(("Content-Range".to_string(), format!("bytes {start}-{end}/{total}")));
-                headers.push(("Content-Length".to_string(), length.to_string()));
-                let body = if method == "HEAD" {
-                    Vec::new()
-                } else {
-                    read_span(&resource, bytes, start, length)?
-                };
-                web::send_bytes_with_headers(206, headers, body);
-                return Ok(());
-            }
+    let (status, start, length) = match range.map(|range| byte_range(range, total)) {
+        None | Some(ByteRange::Whole) => (200, 0, total),
+        Some(ByteRange::Unsatisfiable) => {
+            headers.push(("Content-Range".to_string(), format!("bytes */{total}")));
+            web::send_bytes_with_headers(416, headers, Vec::new());
+            return Ok(());
         }
-    }
-    let bytes = match bytes {
-        Some(bytes) => bytes,
-        None => resource.read_bytes()?,
+        Some(ByteRange::Span(start, end)) => {
+            headers.push(("Content-Range".to_string(), format!("bytes {start}-{end}/{total}")));
+            (206, start, end - start + 1)
+        }
     };
-    headers.push(("Content-Length".to_string(), bytes.len().to_string()));
-    let body = if method == "HEAD" { Vec::new() } else { bytes };
-    web::send_bytes_with_headers(200, headers, body);
+    headers.push(("Content-Length".to_string(), length.to_string()));
+    if request.method == "HEAD" {
+        web::send_bytes_with_headers(status, headers, Vec::new());
+    } else if length <= INLINE_BODY {
+        let body = source.read_at(start, usize::try_from(length).unwrap_or(0))?;
+        web::send_bytes_with_headers(status, headers, body);
+    } else {
+        let stream = web::ResponseStream {
+            source: std::sync::Arc::clone(source),
+            offset: start,
+            length,
+        };
+        web::send_stream(status, headers, stream);
+    }
     Ok(())
 }
 
@@ -327,35 +360,6 @@ fn byte_range(header: &str, total: u64) -> ByteRange {
 /// `first-` with nothing after the dash.
 fn last_is_empty(spec: &str) -> bool {
     spec.split_once('-').is_some_and(|(_, last)| last.trim().is_empty())
-}
-
-/// `length` bytes from `start`: read from the file when it is one, so a range of a large file does not read it whole.
-fn read_span(
-    resource: &crate::context::ResourceRef,
-    bytes: Option<Vec<u8>>,
-    start: u64,
-    length: u64,
-) -> Result<Vec<u8>, Error> {
-    if let (None, Some(path)) = (&bytes, resource.file_path()) {
-        use std::io::{Read, Seek, SeekFrom};
-        let mut file = std::fs::File::open(path).map_err(|err| Error::new(format!("{}: {err}", path.display())))?;
-        file.seek(SeekFrom::Start(start))
-            .map_err(|err| Error::new(format!("{}: {err}", path.display())))?;
-        let mut out = Vec::with_capacity(usize::try_from(length).unwrap_or(0));
-        file.take(length)
-            .read_to_end(&mut out)
-            .map_err(|err| Error::new(format!("{}: {err}", path.display())))?;
-        return Ok(out);
-    }
-    let bytes = match bytes {
-        Some(bytes) => bytes,
-        None => resource.read_bytes()?,
-    };
-    let start = usize::try_from(start).unwrap_or(usize::MAX).min(bytes.len());
-    let end = start
-        .saturating_add(usize::try_from(length).unwrap_or(usize::MAX))
-        .min(bytes.len());
-    Ok(bytes[start..end].to_vec())
 }
 
 /// Write a response made in memory with the validators of a file: `ETag`, a 304 when the request has it, and no body for HEAD. The

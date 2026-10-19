@@ -134,6 +134,59 @@ impl ByteSource for FileSource {
     }
 }
 
+/// Content read whole on first use, for storage that cannot read part of a file: nothing is read for a `HEAD`, a 304,
+/// or a response the client does not take.
+pub struct LazySource {
+    len: u64,
+    tag: Option<String>,
+    needs_context: bool,
+    load: Box<dyn Fn() -> Result<Vec<u8>, Error> + Send + Sync>,
+    data: std::sync::OnceLock<Result<Arc<Vec<u8>>, String>>,
+}
+
+impl LazySource {
+    /// `len` bytes that `load` reads; `needs_context` when it reads the database.
+    pub fn new(len: u64, needs_context: bool, load: impl Fn() -> Result<Vec<u8>, Error> + Send + Sync + 'static) -> Self {
+        Self {
+            len,
+            tag: None,
+            needs_context,
+            load: Box::new(load),
+            data: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(tag.into());
+        self
+    }
+}
+
+impl ByteSource for LazySource {
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    fn tag(&self) -> Option<String> {
+        self.tag.clone()
+    }
+
+    fn read_at(&self, offset: u64, max: usize) -> Result<Vec<u8>, Error> {
+        let data = self
+            .data
+            .get_or_init(|| (self.load)().map(Arc::new).map_err(|err| err.message().to_string()))
+            .as_ref()
+            .map_err(|message| Error::new(message.clone()))?;
+        let start = usize::try_from(offset).unwrap_or(usize::MAX).min(data.len());
+        let end = start.saturating_add(max).min(data.len());
+        Ok(data[start..end].to_vec())
+    }
+
+    fn needs_context(&self) -> bool {
+        self.needs_context
+    }
+}
+
 /// A [`ByteSource`] as a [`Read`], from `offset` to the end, a window at a time.
 pub struct SourceReader {
     source: Arc<dyn ByteSource>,

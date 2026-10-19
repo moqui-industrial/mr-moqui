@@ -309,6 +309,12 @@ pub(crate) trait GitStore: Send + Sync + std::fmt::Debug {
         self.write_batch(&mut contents)
     }
 
+    /// The content of an object to read a window at a time, when the store keeps it apart from its rows (a large
+    /// object's content blob); `None` otherwise, and the caller reads it with [`GitStore::find`].
+    fn content_source(&self, _id: &ObjectId) -> Result<Option<std::sync::Arc<dyn crate::resource::source::ByteSource>>, Error> {
+        Ok(None)
+    }
+
     /// Note that `ids`, which the store has, are referenced again (by a push, a write), so a collection of
     /// unreachable objects running at the same time keeps them.
     fn freshen(&self, _ids: &[ObjectId]) -> Result<(), Error> {

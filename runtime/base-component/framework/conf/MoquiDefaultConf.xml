@@ -30,6 +30,9 @@
     <default-property name="webapp_upload_executable_allow" value="false"/>
     <!-- Largest multipart/form-data request body, in bytes or with a k, m or g suffix. Other request bodies stop at 1 MiB. -->
     <default-property name="webapp_max_upload" value="104857600"/>
+    <!-- A file response over 256 KiB streams, read a window at a time as the client takes it; at most
+        webapp_transfer_workers reads of files in the database run at once. -->
+    <default-property name="webapp_transfer_workers" value="16"/>
     <!-- Path of the notification WebSocket the html and qvt clients of a signed in user connect to, the /notws endpoint by default as
         in Java. Empty means the clients do not connect. -->
     <default-property name="webapp_notification_endpoint" value="/notws"/>

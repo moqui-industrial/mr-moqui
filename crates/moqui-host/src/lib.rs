@@ -52,6 +52,8 @@ mod notws;
 #[cfg(feature = "axum")]
 mod search_proxy;
 #[cfg(feature = "axum")]
+mod source_body;
+#[cfg(feature = "axum")]
 mod tls;
 
 /// No arguments start the HTTP listener and block until it stops.

@@ -767,6 +767,30 @@ impl crate::native::ResourceProvider for GitProvider {
         }
     }
 
+    /// The file at the branch head: its blob, which the `ETag` names, read on first use, or a content blob's
+    /// chunks a window at a time.
+    fn open(self: Arc<Self>, location: &str) -> Result<crate::native::OpenedFile, Error> {
+        let Some(stat) = self.stat(location)?.filter(|stat| stat.is_file) else {
+            return Ok(None);
+        };
+        let (repo, path) = self.located(location)?;
+        let Some(head) = Self::head(&repo)? else {
+            return Ok(None);
+        };
+        let Some((_, blob)) = ops::resolve(repo.store.as_ref(), &head.tree, &path)?.filter(|(mode, _)| !mode.is_tree())
+        else {
+            return Ok(None);
+        };
+        if let Some(source) = repo.store.content_source(&blob)? {
+            return Ok(Some((stat, source)));
+        }
+        let source = crate::resource::source::LazySource::new(stat.size, true, move || {
+            Ok(ops::object(repo.store.as_ref(), &blob, Kind::Blob)?)
+        })
+        .with_tag(format!("git-{blob}"));
+        Ok(Some((stat, Arc::new(source))))
+    }
+
     fn stat(&self, location: &str) -> Result<Option<ResourceStat>, Error> {
         let (repo, path) = self.located(location)?;
         let Some(head) = Self::head(&repo)? else {

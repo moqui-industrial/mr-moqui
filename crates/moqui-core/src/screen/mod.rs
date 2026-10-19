@@ -270,11 +270,13 @@ fn dispatch_request(
     if let Some(pdf) = pdf {
         return Ok(pdf);
     }
+    let stream = web::take_stream();
     let (status, headers, body, sent) = web::take_output();
     Ok(WebResponse {
         status: if sent { status } else { 200 },
         headers,
         body,
+        stream,
     })
 }
 
@@ -288,9 +290,15 @@ fn fop_screen_path(path: &str) -> Option<&str> {
 /// but the content type, and `inline` when the render named no file. Another outcome, such as a redirect to the login
 /// screen, is sent as it is.
 fn fop_response() -> Result<WebResponse, Error> {
+    let stream = web::take_stream();
     let (status, headers, body, sent) = web::take_output();
     if sent && status != 200 {
-        return Ok(WebResponse { status, headers, body });
+        return Ok(WebResponse {
+            status,
+            headers,
+            body,
+            stream,
+        });
     }
     let bytes = PdfRenderer::render(&String::from_utf8_lossy(&body))?;
     let mut headers: Vec<(String, String)> = headers
@@ -308,6 +316,7 @@ fn fop_response() -> Result<WebResponse, Error> {
         status: 200,
         headers,
         body: bytes,
+        stream: None,
     })
 }
 
@@ -396,8 +405,14 @@ fn error_page(
         let _ = web::take_output();
         return None;
     }
+    let stream = web::take_stream();
     let (_, headers, body, sent) = web::take_output();
-    sent.then_some(WebResponse { status, headers, body })
+    sent.then_some(WebResponse {
+        status,
+        headers,
+        body,
+        stream,
+    })
 }
 
 fn attach_session(
