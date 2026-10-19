@@ -1104,6 +1104,22 @@ fn search_and_page_lists_leave_out_what_a_user_may_not_view() {
     login("bob");
     let found = ok("search#WikiPages", &[("text", text("welcome"))]);
     assert_eq!(column(&maps(&found, "pageList"), "pagePath"), ["Welcome Guide"]);
+    // the text of the restricted page by its path (the public wiki REST endpoint): nothing for bob, the page for alice
+    let page_text = || {
+        let out = ok(
+            "get#PublishedWikiPageText",
+            &[
+                ("wikiSpaceId", text("PUB")),
+                ("pagePath", text("Welcome Secret")),
+                ("versionName", text("01")),
+            ],
+        );
+        out.get("pageText").cloned().unwrap_or(Value::Null)
+    };
+    assert_eq!(page_text(), Value::Null, "bob may not view the restricted page");
+    login("alice");
+    assert!(matches!(page_text(), Value::String(body) if body.contains("Secret")));
+    login("bob");
     let pages = ok(
         "get#WikiSpacePages",
         &[("wikiSpaceId", text("PUB")), ("includeDetail", Value::Bool(true))],

@@ -79,6 +79,13 @@ along with this software (see the LICENSE.md file). If not, see
             </if>
 
             <if condition="wikiPage == null"><return message="No page found at path ${pagePath} in space ${wikiSpaceId}"/></if>
+            <!-- a page of a restricted space or a restricted page is shown only to a signed-in user who may view it
+                (get#WikiPageAccess); else as if not found -->
+            <if condition="wikiPage.restrictView == 'Y' || wikiSpace.restrictView == 'Y'">
+                <if condition="!ec.user.userId"><return message="No page found at path ${pagePath} in space ${wikiSpaceId}"/></if>
+                <service-call name="org.moqui.impl.WikiServices.get#WikiPageAccess" in-map="{wikiPageId:wikiPage.wikiPageId}" out-map="pageAccess"/>
+                <if condition="!pageAccess?.canView"><return message="No page found at path ${pagePath} in space ${wikiSpaceId}"/></if>
+            </if>
 
             <set field="publishedVersionName" from="wikiPage.publishedVersionName"/>
             <set field="versionName" from="versionName || publishedVersionName"/>
