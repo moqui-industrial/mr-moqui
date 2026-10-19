@@ -2160,8 +2160,23 @@ along with this software (see the LICENSE.md file). If not, see
             emailMessageId = draft.emailMessageId
             let attachmentBytes = 0
             if (attachmentList != null) {
-                for (const attachment of attachmentList) if (!attachment || !attachment.attachmentLocation) {
-                    ec.message.addError('Each attachment needs its attachmentLocation'); return }
+                // a file the caller names is one of the draft's own, or one under this account's mail files
+                // (dbresource://email/<account>/), where the upload and forward services put them; an internal caller
+                // with authorization disabled may name any
+                const kept = new Set(Array.from(ec.entity.find('moqui.basic.email.EmailMessageAttachment')
+                        .condition('emailMessageId', draft.emailMessageId).list()).map((row) => String(row.attachmentLocation)))
+                const ownPrefix = `dbresource://email/${emailAccountId}/`
+                const internal = ec.artifactExecution.authzDisabled()
+                for (const attachment of attachmentList) {
+                    if (!attachment || !attachment.attachmentLocation) { ec.message.addError('Each attachment needs its attachmentLocation'); return }
+                    const location = String(attachment.attachmentLocation)
+                    if (!internal && !kept.has(location) && (!location.startsWith(ownPrefix) || location.split('/').includes('..'))) {
+                        ec.logger.warn(`save#Draft of user ${ec.user.userId}: attachment location ${location} refused`)
+                        ec.message.addError(ec.resource.expand('The attachment ${name} is not a file of this message', '',
+                                {name: attachment.fileName || location.substring(location.lastIndexOf('/') + 1)}))
+                        return
+                    }
+                }
             }
             if (ec.entity.find(MESSAGE).condition('emailMessageId', emailMessageId).count() === 0) draft.create()
             else draft.update()

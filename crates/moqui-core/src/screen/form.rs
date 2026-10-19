@@ -1571,4 +1571,19 @@ mod tests {
         let shape = super::entity_shape("DataDocument.FormDoc").unwrap();
         assert!(shape.fields.iter().any(|(name, _, _)| name == "enumTypeId"));
     }
+
+    /// A `display-entity` of a status or an enumeration shows its `description`: the first non-key field ending in
+    /// `Name` would come first (StatusItem once gained a `colorName`, and every status in a form showed empty).
+    #[test]
+    fn a_status_and_an_enumeration_are_described_by_their_description() {
+        let framework = crate::testing::framework_dir();
+        let conf_text = std::fs::read_to_string(framework.join("conf/MoquiDefaultConf.xml")).unwrap();
+        let conf = parse(&conf_text);
+        let model = EntityModel::load_directory(&conf.first_named("database-list").unwrap(), &framework.join("entity"))
+            .unwrap();
+        for entity_name in ["moqui.basic.StatusItem", "moqui.basic.Enumeration"] {
+            let shape = read_entity_shape(&model, entity_name).unwrap();
+            assert_eq!(shape.description_field, "description", "{entity_name}");
+        }
+    }
 }

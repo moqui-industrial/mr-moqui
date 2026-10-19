@@ -21,7 +21,7 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="get" noun="StatusColors" authenticate="false" allow-remote="false" transaction="ignore">
         <description>The color of each status (a Quasar color name: grey-7, primary, warning, positive, negative or info) by
-            its meaning, the status color map of style-guide §5.2: StatusItem.colorName when the item has one (an app seeds
+            its meaning, the status color map of style-guide §5.2: StatusItem.statusColor when the item has one (an app seeds
             the map for its statuses that way), else a color from the words of the status id, then of its description:
             ended badly (Cancel, Reject, Void, Lost, Fail, Error, Declin, Denied, Abort, Refus) negative; done well
             (Complete, Paid, Shipped, Deliver, Won, Resolved, Closed, Finish, Done, Confirm, Consumed, Accepted, Success)
@@ -52,7 +52,7 @@ along with this software (see the LICENSE.md file). If not, see
                 const id = String(raw)
                 if (colors[id]) continue
                 const item = ec.entity.find('moqui.basic.StatusItem').condition('statusId', id).useCache(true).disableAuthz().one()
-                colors[id] = (item && item.colorName ? String(item.colorName) : null) || byWords(id) || byWords(item ? item.description : null) || 'grey-7'
+                colors[id] = (item && item.statusColor ? String(item.statusColor) : null) || byWords(id) || byWords(item ? item.description : null) || 'grey-7'
             }
         ]]></script></actions>
     </service>

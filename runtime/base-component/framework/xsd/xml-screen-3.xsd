@@ -1138,7 +1138,7 @@ along with this software (see the LICENSE.md file). If not, see
         others (Hold, Cancel) as secondary ones, those that end badly in the negative color. Each button posts the transition
         with the new status in parameter-name (statusId) and the parameters, after a confirmation. The stages and transitions
         come from org.moqui.impl.StatusServices.get#StatusBar (the StatusItem rows of the type in sequence order and the
-        StatusFlowTransition rows of the flow); the colors from the status color map (StatusItem.colorName, else the words of
+        StatusFlowTransition rows of the flow); the colors from the status color map (StatusItem.statusColor, else the words of
         the status id: get#StatusColors). In qvt an m-status-bar; in a server-static screen the attributes are bound over the
         screen's actions data and the browser asks the root screen's statusBar transition for the flow. In html chips and
         buttons; in text and print the status description. The attributes may hold ${} expressions.

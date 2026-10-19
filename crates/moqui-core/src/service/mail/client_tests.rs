@@ -1044,33 +1044,74 @@ fn drafts_send_now_scheduled_held_and_failed() {
         "not an email draft",
     );
 
-    // a reply, saved twice, then sent now
-    let saved = ok(
+    // a file the caller names is the draft's own or one of this account's mail files; anything else is refused, the
+    // test's own files here, another account's and a path out of the account's folder
+    let file = |location: &str| {
+        Value::List(vec![Value::Map(IndexMap::from([(
+            "attachmentLocation".to_string(),
+            text(location),
+        )]))])
+    };
+    for location in [
+        note.clone(),
+        "dbresource://email/OTHER_ACCOUNT/1/secret.pdf".to_string(),
+        format!("dbresource://email/{account}/../OTHER_ACCOUNT/secret.pdf"),
+    ] {
+        refused(
+            "save#Draft",
+            &[("emailAccountId", text(&account)), ("attachmentList", file(&location))],
+            "is not a file of this message",
+        );
+    }
+    let own = ok(
         "save#Draft",
         &[
             ("emailAccountId", text(&account)),
-            ("parentEmailMessageId", text("M1")),
-            ("toAddresses", text("\"Sender\" <m1@sender.example.com>")),
-            ("body", text("<p>Thanks</p>")),
-            ("bodyText", text("Thanks")),
             (
                 "attachmentList",
-                Value::List(vec![
-                    Value::Map(IndexMap::from([
-                        ("attachmentLocation".to_string(), text(&note)),
-                        ("contentType".to_string(), text("text/plain")),
-                        ("fileSize".to_string(), Value::I64(13)),
-                    ])),
-                    Value::Map(IndexMap::from([
-                        ("attachmentLocation".to_string(), text(&logo)),
-                        ("contentType".to_string(), text("image/png")),
-                        ("contentId".to_string(), text("<logo@example.com>")),
-                        ("isInline".to_string(), Value::Bool(true)),
-                    ])),
-                ]),
+                file(&format!("dbresource://email/{account}/upload/notes.txt")),
             ),
         ],
     );
+    let own = out_text(&own, "emailMessageId");
+    {
+        let _authz = ctx.disable_authz();
+        ok(
+            "delete#LocalMessages",
+            &[("emailMessageIdList", Value::List(vec![text(&own)]))],
+        );
+    }
+
+    // a reply, saved twice, then sent now; its files are named by an internal caller (an app's upload service)
+    let saved = {
+        let _authz = ctx.disable_authz();
+        ok(
+            "save#Draft",
+            &[
+                ("emailAccountId", text(&account)),
+                ("parentEmailMessageId", text("M1")),
+                ("toAddresses", text("\"Sender\" <m1@sender.example.com>")),
+                ("body", text("<p>Thanks</p>")),
+                ("bodyText", text("Thanks")),
+                (
+                    "attachmentList",
+                    Value::List(vec![
+                        Value::Map(IndexMap::from([
+                            ("attachmentLocation".to_string(), text(&note)),
+                            ("contentType".to_string(), text("text/plain")),
+                            ("fileSize".to_string(), Value::I64(13)),
+                        ])),
+                        Value::Map(IndexMap::from([
+                            ("attachmentLocation".to_string(), text(&logo)),
+                            ("contentType".to_string(), text("image/png")),
+                            ("contentId".to_string(), text("<logo@example.com>")),
+                            ("isInline".to_string(), Value::Bool(true)),
+                        ])),
+                    ]),
+                ),
+            ],
+        )
+    };
     let draft = out_text(&saved, "emailMessageId");
     assert_eq!(out_text(&saved, "rootEmailMessageId"), "M1");
     assert_eq!(message_field(&facade, &draft, "statusId"), "ES_DRAFT");

@@ -299,7 +299,7 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="statusCode" type="text-medium"/>
         <field name="sequenceNum" type="number-integer"/>
         <field name="description" type="text-medium" enable-localization="true"/>
-        <field name="colorName" type="text-short"><description>The color of the status by its meaning, a Quasar color name:
+        <field name="statusColor" type="text-short"><description>The color of the status by its meaning, a Quasar color name:
             grey-7 (draft, proposed), primary (in progress), warning (waiting), positive (done well), negative (ended badly)
             or info (informational). The status-bar element and the status chips read it through
             org.moqui.impl.StatusServices.get#StatusColors, which guesses one from the words of the status id when it is
