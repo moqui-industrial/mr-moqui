@@ -41,6 +41,7 @@ Test
 
 Help
   help             [command]                                This list, or the detail for one command
+  version                                                   The version, package and features of this binary
 
 Server options
   -p, --port N       HTTP port (webapp_http_port, default 8080). Also: port=N, -port=N, --port=N.
@@ -56,11 +57,16 @@ Server options
   moqui -p 8081 -D entity_ds_db_conf=postgres
 
 Environment
-  MOQUI_RUNTIME      Runtime directory (default: runtime)
+  MOQUI_RUNTIME      Runtime directory (default: the first with a base-component directory of
+                     runtime in the working directory, runtime beside this executable, and the
+                     directory of this executable)
   MOQUI_FRAMEWORK    Framework component (default: <runtime>/base-component/framework)
   MOQUI_CONF         Runtime conf merged over MoquiDefaultConf.xml, relative to the runtime
-                     directory or absolute. Unset uses conf/MoquiDevConf.xml when that file
-                     exists. runtime/.env is read after the conf merge and does not select it.
+                     directory or absolute. Unset uses MoquiConf.xml in the runtime directory,
+                     else conf/MoquiDevConf.xml, when that file exists. runtime/.env is read after
+                     the conf merge and does not select it.
+  MOQUI_INSTALL      Where the embedded Postgres is unpacked, in <dir>/postgres (default: install
+                     in the runtime directory)
   webapp_http_port   HTTP port (default 8080). webapp_https_listen_port defaults to 8443 and cluster_https_port
                      to 8444. webapp_https_port is the HTTPS port in generated URLs (empty is 443).
   entity_ds_db_conf  postgres, mysql, or mysql8 for an external server; otherwise embedded
@@ -230,6 +236,15 @@ moqui help, moqui --help, moqui -h, and moqui -? print the command list.
 moqui help <command> and moqui <command> --help (or -h) print that command.
 ";
 
+const VERSION: &str = "\
+moqui version
+    The version, the package this binary was built as (lite, enterprise, maximal, or custom), and every
+    feature built in. See docs/Packaging.md.
+
+  moqui version
+  moqui --version
+";
+
 /// The command list: groups, one line per command, and the environment variables that select the runtime.
 #[must_use]
 pub fn overview() -> &'static str {
@@ -248,6 +263,7 @@ pub fn command_help(name: &str) -> Option<&'static str> {
         "types" => Some(TYPES),
         "test" => Some(TEST),
         "help" => Some(HELP),
+        "version" => Some(VERSION),
         _ => None,
     }
 }
@@ -291,7 +307,8 @@ pub fn is_server_invocation(args: &[String]) -> bool {
 fn is_known_command(name: &str) -> bool {
     matches!(
         name,
-        "help" | "--help" | "-h" | "-?" | "load" | "save-db" | "load-save" | "lint" | "convert" | "types" | "test"
+        "help" | "--help" | "-h" | "-?" | "version" | "--version" | "load" | "save-db" | "load-save" | "lint" | "convert"
+            | "types" | "test"
     )
 }
 
@@ -470,6 +487,7 @@ pub fn command_usage(command: &str) -> Error {
         "types" => "moqui types [--out dir]",
         "test" => "moqui test [component ...] [options]",
         "help" => "moqui help [command]",
+        "version" => "moqui version",
         _ => "moqui [command] [args...]",
     };
     let help = if command_help(command).is_some() {

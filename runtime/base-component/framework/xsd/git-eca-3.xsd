@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- gitECA rules: *.gitecas.xml files in a component's service directory. No Java counterpart (MR Moqui). Guide:
+    docs/Git-Hosting.md; the values each event puts in the context are described by the
+    org.moqui.GitServices.process#GitEca service interface. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+    <xs:include schemaLocation="xml-actions-3.xsd"/>
+
+    <xs:element name="gitecas">
+        <xs:complexType><xs:sequence><xs:element maxOccurs="unbounded" ref="giteca"/></xs:sequence></xs:complexType>
+    </xs:element>
+    <xs:element name="giteca">
+        <xs:annotation>
+            <xs:documentation>
+                Run the actions, when the condition is met, on an event of a git repository: a push to it, a fetch of
+                a mirror, an import, or a write through a git:// location.
+
+                The pre events run in a push before it is accepted: an error the actions leave in the message facade
+                refuses the push (pre-receive) or that ref (pre-ref-update), and the messages show on the client as
+                remote: lines. The post events run after the refs changed, each rule in a transaction of its own; a
+                rule that fails is logged and recorded on the moqui.resource.GitUpdate, and the others still run.
+                Rules run with authorization off.
+
+                The context has repositoryId, source, transport, userId, updateId and refUpdates (a List of Maps:
+                refName, refType, shortName, oldId, newId, changeType), and for a per-ref event those fields of its
+                ref with isDefaultBranch and newCommitIds; commit (commitId, shortId, summary, body, message,
+                trailers, authorName, authorEmail, authorDate, committerName, committerEmail, committerDate,
+                parentIds, moquiUserId) with refName and isDefaultBranch for a commit event; tag (tagName, targetId,
+                commitId, annotated, message, taggerName, taggerEmail, taggerDate) for a tag event; pushOptions for a
+                push; and for pre-receive the commits a push adds, as newCommits.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element minOccurs="0" ref="condition"/>
+                <xs:element ref="actions"/>
+            </xs:sequence>
+            <xs:attribute name="rule-name" type="xs:string" use="required"/>
+            <xs:attribute name="id" type="xs:string">
+                <xs:annotation><xs:documentation>A later rule with the same id (in a component loaded later) replaces
+                    this one.</xs:documentation></xs:annotation>
+            </xs:attribute>
+            <xs:attribute name="event" use="required">
+                <xs:simpleType>
+                    <xs:restriction base="xs:token">
+                        <xs:enumeration value="pre-receive"><xs:annotation><xs:documentation>Once per push, before
+                            any ref changes.</xs:documentation></xs:annotation></xs:enumeration>
+                        <xs:enumeration value="pre-ref-update"><xs:annotation><xs:documentation>Once per ref of a
+                            push, before it changes.</xs:documentation></xs:annotation></xs:enumeration>
+                        <xs:enumeration value="ref-update"><xs:annotation><xs:documentation>Once per ref that
+                            changed: created, moved or deleted.</xs:documentation></xs:annotation></xs:enumeration>
+                        <xs:enumeration value="commit"><xs:annotation><xs:documentation>Once per commit new to the
+                            repository, oldest first, with the ref it came on.</xs:documentation></xs:annotation></xs:enumeration>
+                        <xs:enumeration value="tag"><xs:annotation><xs:documentation>Once per tag
+                            created.</xs:documentation></xs:annotation></xs:enumeration>
+                        <xs:enumeration value="post-receive"><xs:annotation><xs:documentation>Once per change, after
+                            the others.</xs:documentation></xs:annotation></xs:enumeration>
+                    </xs:restriction>
+                </xs:simpleType>
+            </xs:attribute>
+            <xs:attribute name="source" type="xs:string" default="push,fetch,import">
+                <xs:annotation><xs:documentation>A comma-separated list of push, fetch, import and write. A write
+                    (each save of a git:// file, such as a wiki page) only runs rules that name it.</xs:documentation></xs:annotation>
+            </xs:attribute>
+            <xs:attribute name="repository-pattern" type="xs:string">
+                <xs:annotation><xs:documentation>A regular expression the whole repositoryId must match.</xs:documentation></xs:annotation>
+            </xs:attribute>
+            <xs:attribute name="ref-pattern" type="xs:string">
+                <xs:annotation><xs:documentation>A regular expression the whole ref name (refs/heads/main) must match;
+                    an event without a ref does not match.</xs:documentation></xs:annotation>
+            </xs:attribute>
+            <xs:attribute name="ref-type">
+                <xs:simpleType>
+                    <xs:restriction base="xs:token">
+                        <xs:enumeration value="branch"/>
+                        <xs:enumeration value="tag"/>
+                    </xs:restriction>
+                </xs:simpleType>
+            </xs:attribute>
+            <xs:attribute name="default-branch-only" type="boolean" default="false">
+                <xs:annotation><xs:documentation>Only for the repository's default branch (a commit event: a commit
+                    that came on it).</xs:documentation></xs:annotation>
+            </xs:attribute>
+            <xs:attribute name="priority" type="xs:positiveInteger" default="5"/>
+            <xs:attribute name="run-on-error" type="boolean" default="false">
+                <xs:annotation><xs:documentation>Run even after another rule of the same change failed.</xs:documentation></xs:annotation>
+            </xs:attribute>
+        </xs:complexType>
+    </xs:element>
+</xs:schema>

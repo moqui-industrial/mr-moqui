@@ -18,7 +18,7 @@
 //! removed at stop. A directory left by a process that is gone is removed at the next install, after
 //! its postmaster, if one is still live, is stopped.
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(feature = "embedded-postgres")]
 mod overlay {
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex, Weak};
@@ -180,5 +180,22 @@ mod overlay {
     }
 }
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(feature = "embedded-postgres")]
 pub use overlay::SimOverlay;
+
+/// Without embedded Postgres there is no overlay cluster: the facade gets no sim starter, so `enter_sim` reports that
+/// sim is not available.
+#[cfg(not(feature = "embedded-postgres"))]
+pub struct SimOverlay;
+
+#[cfg(not(feature = "embedded-postgres"))]
+impl SimOverlay {
+    #[must_use]
+    pub fn install(
+        _facade: &moqui_core::entity::EntityFacade,
+        _db_dir: &std::path::Path,
+        _install_dir: Option<std::path::PathBuf>,
+    ) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self)
+    }
+}

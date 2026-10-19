@@ -23,15 +23,25 @@
 //! A write commits at once, by the current user, with a `Moqui-User-Id` trailer the history reads back. Guide:
 //! `docs/Revision-Management.md`.
 
+pub mod attributes;
+pub(crate) mod browse;
 pub(crate) mod db;
+pub(crate) mod delta;
+pub(crate) mod diff;
+pub(crate) mod events;
 pub(crate) mod fs;
+pub mod gc;
 pub(crate) mod index;
+pub(crate) mod lfs_files;
 pub(crate) mod ops;
+pub(crate) mod revwalk;
+pub mod server;
 pub(crate) mod store;
 #[cfg(test)]
 mod tests;
+pub(crate) mod values;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -51,6 +61,11 @@ use crate::entity::{EntityFacade, EntityValue};
 use crate::script::bounded::BoundedMap;
 
 pub(crate) const GIT_REPOSITORY: &str = "moqui.resource.GitRepository";
+
+/// The artifact type of repository access over git and the `get#Git*` services: `view` to clone, fetch and read;
+/// `create` and `update` to push new refs and fast-forwards; `delete` to force a push or delete a ref. The `git://`
+/// resource scheme is not checked against it.
+pub const GIT_ARTIFACT_TYPE: &str = "AT_GIT_REPOSITORY";
 
 /// The `resource-reference` class that names this provider in `MoquiDefaultConf.xml`.
 pub const GIT_CLASS: &str = crate::native::GIT_RESOURCE_CLASS;
@@ -89,6 +104,8 @@ pub(crate) struct Definition {
     pub kind: RepositoryKind,
     pub remote_url: Option<String>,
     pub branch: String,
+    /// The row names its branch (else it is `main` until a first push names one).
+    pub branch_explicit: bool,
     pub path: PathBuf,
     pub credentials: fs::Credentials,
 }
@@ -98,8 +115,6 @@ pub(crate) struct Definition {
 struct Repo {
     definition: Definition,
     store: Box<dyn GitStore>,
-    /// Writers in this process take turns; across processes the ref compare-and-set keeps a branch consistent.
-    lock: Mutex<()>,
 }
 
 /// The `git` scheme of the resource facade, and the operations of `org.moqui.impl.GitServices`.
@@ -113,6 +128,18 @@ struct Inner {
     entity: Arc<RwLock<Option<EntityFacade>>>,
     runtime_dir: PathBuf,
     repos: RwLock<HashMap<String, Arc<Repo>>>,
+    /// Writers of a repository in this process take turns; across processes the ref compare-and-set keeps refs
+    /// consistent. Kept apart from `repos`, so a refresh that reopens a repository does not give it a second lock.
+    locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// The runs of each repository's gitECA post events take turns, so they run one change at a time, in order.
+    event_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// When each repository's refs last changed (milliseconds): a push of commits dated in the past still changes the
+    /// last-modified time of its files, which caches over `git://` locations go by.
+    updated: Mutex<HashMap<String, i64>>,
+    /// Decoded objects of the `db` repositories.
+    objects: Arc<db::ObjectCache>,
+    /// Parsed `.gitattributes` files, by blob.
+    attributes: attributes::RulesCache,
     /// The path index of each branch ("repositoryId\nbranch"), brought to the branch's head when it is used.
     indexes: Mutex<BoundedMap<String, Arc<Mutex<BranchIndex>>>>,
 }
@@ -146,6 +173,13 @@ fn parse_location(location: &str) -> Result<(String, Vec<String>), Error> {
     Ok((repository, path))
 }
 
+/// Authorization off while the provider reads and writes its own rows (`GitRepository`, `GitObject`, `GitRef`, and
+/// the author's `UserAccount`): access to a repository is checked where it is reached, `AT_GIT_REPOSITORY` for the
+/// git server and the `get#Git*` services, and the screen or service that uses a `git://` location.
+pub(crate) fn rows_guard() -> Option<crate::context::AuthzGuard> {
+    crate::context::ExecutionContext::with_current(crate::context::ExecutionContext::disable_authz)
+}
+
 fn text(value: Option<&Value>) -> Option<String> {
     match value? {
         Value::Null => None,
@@ -174,6 +208,11 @@ impl GitProvider {
                 entity,
                 runtime_dir,
                 repos: RwLock::new(HashMap::new()),
+                locks: Mutex::new(HashMap::new()),
+                event_locks: Mutex::new(HashMap::new()),
+                updated: Mutex::new(HashMap::new()),
+                objects: db::object_cache(),
+                attributes: attributes::rules_cache(),
                 indexes: Mutex::new(BoundedMap::with_bytes(INDEX_BRANCHES, INDEX_BYTES)),
             }),
         }
@@ -187,6 +226,7 @@ impl GitProvider {
 
     /// The `GitRepository` row of `repository_id`.
     pub(crate) fn definition(&self, repository_id: &str) -> Result<Definition, Error> {
+        let _rows = rows_guard();
         let entity = self.entity()?;
         let row = entity
             .find(GIT_REPOSITORY)?
@@ -198,6 +238,9 @@ impl GitProvider {
                 ))
             })?;
         let kind = RepositoryKind::parse(repository_id, &text(row.get("repositoryKind")).unwrap_or_default())?;
+        if let Some(updated) = millis(row.get("lastUpdateDate")) {
+            self.note_update(repository_id, updated);
+        }
         let path = match text(row.get("localPath")) {
             Some(path) if Path::new(&path).is_absolute() => PathBuf::from(path),
             Some(path) => self.inner.runtime_dir.join(path),
@@ -208,6 +251,7 @@ impl GitProvider {
             kind,
             remote_url: text(row.get("remoteUrl")),
             branch: text(row.get("branch")).unwrap_or_else(|| DEFAULT_BRANCH.to_string()),
+            branch_explicit: text(row.get("branch")).is_some(),
             path,
             credentials: fs::Credentials {
                 username: text(row.get("username")),
@@ -228,13 +272,22 @@ impl GitProvider {
                 Box::new(fs::FsStore::open(&definition.path)?)
             }
             RepositoryKind::Local => Box::new(fs::FsStore::init(&definition.path, &definition.branch)?),
-            RepositoryKind::Db => Box::new(db::DbStore::new(self.entity()?, &definition.id)),
+            RepositoryKind::Db => Box::new(db::DbStore::new(
+                self.entity()?,
+                &definition.id,
+                Arc::clone(&self.inner.objects),
+            )),
         };
-        Ok(Repo {
-            definition,
-            store,
-            lock: Mutex::new(()),
-        })
+        Ok(Repo { definition, store })
+    }
+
+    /// The lock writers of `repository_id` take turns on.
+    fn lock_of(&self, repository_id: &str) -> Arc<Mutex<()>> {
+        Arc::clone(
+            moqui_lib::sync::lock(&self.inner.locks)
+                .entry(repository_id.to_string())
+                .or_default(),
+        )
     }
 
     fn repo(&self, repository_id: &str) -> Result<Arc<Repo>, Error> {
@@ -263,6 +316,7 @@ impl GitProvider {
 
     /// A user as a commit author, by their `UserAccount`; `current` falls back to the current username.
     fn author_of(&self, user_id: Option<String>, current: bool) -> Author {
+        let _rows = rows_guard();
         let account = user_id.as_ref().and_then(|user_id| {
             let entity = self.entity().ok()?;
             entity
@@ -324,23 +378,54 @@ impl GitProvider {
         repo: &Repo,
         edits: impl FnMut(Option<&ops::CommitInfo>) -> Result<Option<(Vec<Edit>, String)>, Error>,
     ) -> Result<Option<ObjectId>, Error> {
-        let _turn = moqui_lib::sync::lock(&repo.lock);
+        let lock = self.lock_of(&repo.definition.id);
+        let _turn = moqui_lib::sync::lock(&lock);
+        // the refs before, only when a gitECA rule listens for writes
+        let prior = if crate::service::git_eca::listening_after("write") {
+            repo.store.list_refs("refs/").ok()
+        } else {
+            None
+        };
         let committer = self.author();
         let author = self.version_author(&committer);
         let made = ops::commit_as(repo.store.as_ref(), &repo.definition.branch, &author, &committer, edits)?;
         if let Some(id) = made {
             self.remember_head(&repo.definition.id, Some(id), None);
+            if let Some(prior) = prior {
+                let name = ops::branch_ref(&repo.definition.branch);
+                let old = prior.iter().find(|(candidate, _)| *candidate == name).map(|(_, id)| *id);
+                let origin = events::UpdateOrigin {
+                    source: "write",
+                    transport: "internal",
+                    user_id: crate::user::current_user_id().ok().flatten(),
+                    ..Default::default()
+                };
+                let change = store::RefChange {
+                    name,
+                    old,
+                    new: Some(id),
+                };
+                self.record_update(&repo.definition.id, &origin, repo.store.as_ref(), &prior, &[change]);
+            }
         }
         Ok(made)
     }
 
-    /// Set `headCommitId` (and the fetch outcome, when given) on a repository's row. A failure is logged: the commit
-    /// or fetch it describes already happened.
+    fn note_update(&self, repository_id: &str, millis: i64) {
+        let mut updated = moqui_lib::sync::lock(&self.inner.updated);
+        let entry = updated.entry(repository_id.to_string()).or_insert(millis);
+        *entry = (*entry).max(millis);
+    }
+
+    /// When a repository's refs last changed here, or as its row last said.
+    fn last_update(&self, repository_id: &str) -> Option<i64> {
+        moqui_lib::sync::lock(&self.inner.updated).get(repository_id).copied()
+    }
+
+    /// Set `headCommitId` and `lastUpdateDate` (and the fetch outcome, when given) on a repository's row. A failure
+    /// is logged: the commit, push or fetch it describes already happened.
     fn remember_head(&self, repository_id: &str, head: Option<ObjectId>, fetch: Option<Option<&str>>) {
-        let outcome = (|| -> Result<(), Error> {
-            let entity = self.entity()?;
-            let mut row = EntityValue::make(&entity, GIT_REPOSITORY)?;
-            row.set("repositoryId", Value::string(repository_id));
+        self.write_row(repository_id, |row| {
             row.set(
                 "headCommitId",
                 head.map_or(Value::Null, |id| Value::string(id.to_string())),
@@ -349,6 +434,37 @@ impl GitProvider {
                 row.set("lastFetchDate", crate::user::now_effective_value());
                 row.set("lastFetchError", error.map_or(Value::Null, Value::string));
             }
+        });
+    }
+
+    /// Set only `lastUpdateDate`: refs changed, the default branch did not.
+    fn remember_update(&self, repository_id: &str) {
+        self.write_row(repository_id, |_| {});
+    }
+
+    /// Name the default branch of a repository whose row named none, after the first push to it.
+    fn set_default_branch(&self, repository_id: &str, branch: &str) {
+        self.write_row(repository_id, |row| row.set("branch", Value::string(branch)));
+        if let Ok(definition) = self.definition(repository_id) {
+            if definition.kind != RepositoryKind::Db {
+                if let Err(err) = fs::set_head(&definition.path, branch) {
+                    tracing::error!(repository = repository_id, "cannot point HEAD at {branch}: {err}");
+                }
+            }
+        }
+        self.refresh(repository_id);
+    }
+
+    fn write_row(&self, repository_id: &str, fields: impl FnOnce(&mut EntityValue)) {
+        let now = jiff::Timestamp::now().as_millisecond();
+        self.note_update(repository_id, now);
+        let _rows = rows_guard();
+        let outcome = (|| -> Result<(), Error> {
+            let entity = self.entity()?;
+            let mut row = EntityValue::make(&entity, GIT_REPOSITORY)?;
+            row.set("repositoryId", Value::string(repository_id));
+            row.set("lastUpdateDate", crate::user::now_value());
+            fields(&mut row);
             row.update(&entity)?;
             Ok(())
         })();
@@ -443,14 +559,6 @@ impl GitProvider {
         let (repo, root_path) = self.located(root)?;
         Self::writable(&repo, root)?;
         let store = repo.store.as_ref();
-        let mut blobs = Vec::with_capacity(changes.len());
-        for change in changes {
-            blobs.push(match change {
-                ResourceChange::Write { bytes, .. } => Some(store.write(Kind::Blob, bytes)?),
-                ResourceChange::MakeDirectory { .. } => Some(store.write(Kind::Blob, b"")?),
-                _ => None,
-            });
-        }
         let full = |path: &str| -> Vec<String> {
             root_path
                 .iter()
@@ -458,6 +566,17 @@ impl GitProvider {
                 .chain(path.split('/').map(str::to_string))
                 .collect()
         };
+        let mut blobs = Vec::with_capacity(changes.len());
+        for change in changes {
+            blobs.push(match change {
+                // a file the attributes keep in LFS is its content blob behind a pointer, as for a single write
+                ResourceChange::Write { path, bytes } => {
+                    Some(self.store_file(&repo, &full(path), lfs_files::FileContent::Bytes(bytes))?)
+                }
+                ResourceChange::MakeDirectory { .. } => Some(store.write(Kind::Blob, b"")?),
+                _ => None,
+            });
+        }
         let message = message
             .map(str::trim)
             .filter(|message| !message.is_empty())
@@ -548,8 +667,8 @@ impl GitProvider {
 
     // ---- operations of org.moqui.impl.GitServices ----
 
-    /// Fetch a `remote` repository's branch into its mirror (created on the first fetch), and record the outcome on
-    /// its row. The new head.
+    /// Fetch a `remote` repository's branches and tags into its mirror (created on the first fetch), and record the
+    /// outcome on its row. The new head of its branch.
     pub fn fetch(&self, repository_id: &str) -> Result<Option<String>, Error> {
         let definition = self.definition(repository_id)?;
         if definition.kind != RepositoryKind::Remote {
@@ -567,15 +686,43 @@ impl GitProvider {
             )));
         }
         let outcome = {
-            let repo = self.repo(repository_id).ok();
-            let _turn = repo.as_ref().map(|repo| moqui_lib::sync::lock(&repo.lock));
-            fs::fetch(&definition.path, &url, &definition.branch, &definition.credentials)
+            let lock = self.lock_of(repository_id);
+            let _turn = moqui_lib::sync::lock(&lock);
+            fs::fetch(&definition.path, &url, &definition.branch, &definition.credentials, true)
         };
         self.refresh(repository_id);
         match outcome {
-            Ok(head) => {
-                self.remember_head(repository_id, head, Some(None));
-                Ok(head.map(|id| id.to_string()))
+            Ok(fetched) => {
+                if !fetched.changes.is_empty() {
+                    tracing::info!(
+                        repository = repository_id,
+                        "fetch changed {} refs: {}",
+                        fetched.changes.len(),
+                        fetched
+                            .changes
+                            .iter()
+                            .map(|change| change.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                self.remember_head(repository_id, fetched.head, Some(None));
+                if let Ok(repo) = self.repo(repository_id) {
+                    let origin = events::UpdateOrigin {
+                        source: "fetch",
+                        transport: "internal",
+                        user_id: crate::user::current_user_id().ok().flatten(),
+                        ..Default::default()
+                    };
+                    self.record_update(
+                        repository_id,
+                        &origin,
+                        repo.store.as_ref(),
+                        &fetched.before,
+                        &fetched.changes,
+                    );
+                }
+                Ok(fetched.head.map(|id| id.to_string()))
             }
             Err(err) => {
                 let current = fs::FsStore::open(&definition.path)
@@ -591,10 +738,12 @@ impl GitProvider {
     /// repository is recorded on its row and logged, and the others are still fetched. (fetched, failed) ids.
     pub fn fetch_due(&self) -> Result<(Vec<String>, Vec<String>), Error> {
         let entity = self.entity()?;
+        let rows_authz = rows_guard();
         let rows = entity
             .find(GIT_REPOSITORY)?
             .eq("repositoryKind", Value::string("remote"))
             .list()?;
+        drop(rows_authz);
         let now = jiff::Timestamp::now().as_millisecond();
         let (mut fetched, mut failed) = (Vec::new(), Vec::new());
         for row in rows.iter() {
@@ -667,19 +816,14 @@ impl GitProvider {
             None => definition.path.clone(),
         };
         let repo = self.repo(repository_id)?;
-        let _turn = moqui_lib::sync::lock(&repo.lock);
+        let lock = self.lock_of(repository_id);
+        let _turn = moqui_lib::sync::lock(&lock);
         let target = fs::FsStore::init(&path, &definition.branch)?;
         let Some(head) = Self::head(&repo)? else {
             return Ok((path, 0));
         };
-        let mut seen = HashSet::new();
-        let count = ops::reachable(repo.store.as_ref(), &head.id, &mut seen, |id, kind, data| {
-            let written = target.write(kind, data)?;
-            if written != *id {
-                return Err(Error::new(format!("object {id} was written as {written}")));
-            }
-            Ok(())
-        })?;
+        let haves: Vec<ObjectId> = target.list_refs("refs/")?.into_iter().map(|(_, id)| id).collect();
+        let count = server::copy_objects(repo.store.as_ref(), &target, head.id, &haves, &self.scratch("export", repository_id))?;
         let name = ops::branch_ref(&definition.branch);
         let current = target.read_ref(&name)?;
         if !target.compare_and_set_ref(&name, current, head.id)? {
@@ -717,7 +861,11 @@ impl GitProvider {
             }
             let other = self.definition(other)?;
             let store: Box<dyn GitStore> = match other.kind {
-                RepositoryKind::Db => Box::new(db::DbStore::new(self.entity()?, &other.id)),
+                RepositoryKind::Db => Box::new(db::DbStore::new(
+                    self.entity()?,
+                    &other.id,
+                    Arc::clone(&self.inner.objects),
+                )),
                 _ => Box::new(fs::FsStore::open(&other.path)?),
             };
             (store, other.branch)
@@ -740,7 +888,7 @@ impl GitProvider {
                 "git-import-{repository_id}-{}",
                 jiff::Timestamp::now().as_millisecond()
             ));
-            fs::fetch(&path, &source, &definition.branch, &definition.credentials)?;
+            fs::fetch(&path, &source, &definition.branch, &definition.credentials, false)?;
             scratch = Some(path.clone());
             (Box::new(fs::FsStore::open(&path)?), definition.branch.clone())
         };
@@ -764,16 +912,12 @@ impl GitProvider {
             .read_ref(&ops::branch_ref(from_branch))?
             .ok_or_else(|| Error::new(format!("the source has no branch {from_branch}")))?;
         let repo = self.repo(repository_id)?;
-        let _turn = moqui_lib::sync::lock(&repo.lock);
-        let mut seen = HashSet::new();
-        let count = ops::reachable(from, &head, &mut seen, |id, kind, data| {
-            let written = repo.store.write(kind, data)?;
-            if written != *id {
-                return Err(Error::new(format!("object {id} was written as {written}")));
-            }
-            Ok(())
-        })?;
+        let lock = self.lock_of(repository_id);
+        let _turn = moqui_lib::sync::lock(&lock);
+        let haves: Vec<ObjectId> = repo.store.list_refs("refs/")?.into_iter().map(|(_, id)| id).collect();
+        let count = server::copy_objects(from, repo.store.as_ref(), head, &haves, &self.scratch("import", repository_id))?;
         let name = ops::branch_ref(branch);
+        let prior = repo.store.list_refs("refs/")?;
         let current = repo.store.read_ref(&name)?;
         if !repo.store.compare_and_set_ref(&name, current, head)? {
             return Err(Error::new(format!(
@@ -782,7 +926,67 @@ impl GitProvider {
         }
         drop(_turn);
         self.remember_head(repository_id, Some(head), None);
+        if current != Some(head) {
+            let origin = events::UpdateOrigin {
+                source: "import",
+                transport: "internal",
+                user_id: crate::user::current_user_id().ok().flatten(),
+                ..Default::default()
+            };
+            let change = store::RefChange {
+                name,
+                old: current,
+                new: Some(head),
+            };
+            self.record_update(repository_id, &origin, repo.store.as_ref(), &prior, &[change]);
+        }
         Ok((head.to_string(), count))
+    }
+}
+
+impl GitProvider {
+    /// Commit the stored `blob` as the file at `path`, with `note` as the message (else `Create <path>` or `Update
+    /// <path>`); nothing when the file is that blob already.
+    fn put_file(
+        &self,
+        repo: &Repo,
+        location: &str,
+        path: Vec<String>,
+        blob: ObjectId,
+        note: Option<&str>,
+    ) -> Result<(), Error> {
+        let shown = path.join("/");
+        self.commit(repo, |head| {
+            let existing = match head {
+                Some(head) => ops::resolve(repo.store.as_ref(), &head.tree, &path)?,
+                None => None,
+            };
+            let kind = match existing {
+                Some((mode, _)) if mode.is_tree() => {
+                    return Err(Error::new(format!("is a directory: {location}")));
+                }
+                Some((_, id)) if id == blob => return Ok(None),
+                Some((mode, _)) if mode.is_executable() => EntryKind::BlobExecutable,
+                _ => EntryKind::Blob,
+            };
+            let verb = if existing.is_some() { "Update" } else { "Create" };
+            let message = note
+                .map(str::trim)
+                .filter(|note| !note.is_empty())
+                .map_or_else(|| format!("{verb} {shown}"), str::to_string);
+            Ok(Some((vec![Edit::Put(path.clone(), kind, blob)], message)))
+        })?;
+        Ok(())
+    }
+
+    /// A new scratch directory under `runtime/tmp` for a copy of objects.
+    fn scratch(&self, what: &str, repository_id: &str) -> PathBuf {
+        static SCRATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        self.inner.runtime_dir.join("tmp").join(format!(
+            "git-{what}-{repository_id}-{}-{}",
+            std::process::id(),
+            SCRATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
     }
 }
 
@@ -796,9 +1000,40 @@ impl crate::native::ResourceProvider for GitProvider {
         let not_found = || Error::new(format!("resource not found: {location}"));
         let head = Self::head(&repo)?.ok_or_else(not_found)?;
         match ops::resolve(repo.store.as_ref(), &head.tree, &path)? {
-            Some((mode, blob)) if !mode.is_tree() => ops::object(repo.store.as_ref(), &blob, Kind::Blob),
+            Some((mode, blob)) if !mode.is_tree() => self.file_content(&repo, &blob),
             _ => Err(not_found()),
         }
+    }
+
+    /// The file at the branch head: its blob, which the `ETag` names, read on first use, or a content blob's
+    /// chunks a window at a time.
+    fn open(self: Arc<Self>, location: &str) -> Result<crate::native::OpenedFile, Error> {
+        let Some(stat) = self.stat(location)?.filter(|stat| stat.is_file) else {
+            return Ok(None);
+        };
+        let (repo, path) = self.located(location)?;
+        let Some(head) = Self::head(&repo)? else {
+            return Ok(None);
+        };
+        let Some((_, blob)) = ops::resolve(repo.store.as_ref(), &head.tree, &path)?.filter(|(mode, _)| !mode.is_tree())
+        else {
+            return Ok(None);
+        };
+        if let Some(info) = self.lfs_content(&repo, &blob)? {
+            let stat = ResourceStat {
+                size: info.size,
+                ..stat
+            };
+            return Ok(Some((stat, self.lfs_source(&info)?)));
+        }
+        if let Some(source) = repo.store.content_source(&blob)? {
+            return Ok(Some((stat, source)));
+        }
+        let source = crate::resource::source::LazySource::new(stat.size, true, move || {
+            Ok(ops::object(repo.store.as_ref(), &blob, Kind::Blob)?)
+        })
+        .with_tag(format!("git-{blob}"));
+        Ok(Some((stat, Arc::new(source))))
     }
 
     fn stat(&self, location: &str) -> Result<Option<ResourceStat>, Error> {
@@ -811,13 +1046,19 @@ impl crate::native::ResourceProvider for GitProvider {
                 last_modified: None,
             }));
         };
+        // the file's last change; the newest is when the refs last moved here, as a push of commits dated in the past,
+        // or two saves within a second, still change what caches over git:// locations go by
         let joined = path.join("/");
-        let last_modified = self
-            .indexed(&repo, &head, |index| {
-                index.last_change(&joined).map(|commit| commit.info.seconds)
-            })?
-            .or(Some(head.seconds))
-            .map(|seconds| seconds.saturating_mul(1000));
+        let changed = self.indexed(&repo, &head, |index| {
+            index.last_change(&joined).map(|commit| (commit.info.id, commit.info.seconds))
+        })?;
+        let head_millis = head.seconds.saturating_mul(1000);
+        let last_modified = Some(match changed {
+            Some((id, seconds)) if id != head.id => seconds.saturating_mul(1000),
+            _ => self
+                .last_update(&repo.definition.id)
+                .map_or(head_millis, |updated| updated.max(head_millis)),
+        });
         Ok(match ops::resolve(repo.store.as_ref(), &head.tree, &path)? {
             Some((mode, _)) if mode.is_tree() => Some(ResourceStat {
                 is_file: false,
@@ -826,7 +1067,7 @@ impl crate::native::ResourceProvider for GitProvider {
             }),
             Some((_, blob)) => Some(ResourceStat {
                 is_file: true,
-                size: repo.store.object_size(&blob)?.unwrap_or(0),
+                size: self.file_size(&repo, &blob)?,
                 last_modified,
             }),
             None => None,
@@ -866,29 +1107,26 @@ impl crate::native::ResourceProvider for GitProvider {
         if path.is_empty() {
             return Err(Error::new(format!("cannot write the root of a repository: {location}")));
         }
-        let blob = repo.store.write(Kind::Blob, bytes)?;
-        let shown = path.join("/");
-        self.commit(&repo, |head| {
-            let existing = match head {
-                Some(head) => ops::resolve(repo.store.as_ref(), &head.tree, &path)?,
-                None => None,
-            };
-            let kind = match existing {
-                Some((mode, _)) if mode.is_tree() => {
-                    return Err(Error::new(format!("is a directory: {location}")));
-                }
-                Some((_, id)) if id == blob => return Ok(None),
-                Some((mode, _)) if mode.is_executable() => EntryKind::BlobExecutable,
-                _ => EntryKind::Blob,
-            };
-            let verb = if existing.is_some() { "Update" } else { "Create" };
-            let message = note
-                .map(str::trim)
-                .filter(|note| !note.is_empty())
-                .map_or_else(|| format!("{verb} {shown}"), str::to_string);
-            Ok(Some((vec![Edit::Put(path.clone(), kind, blob)], message)))
-        })?;
-        Ok(())
+        let blob = self.store_file(&repo, &path, lfs_files::FileContent::Bytes(bytes))?;
+        self.put_file(&repo, location, path, blob, note)
+    }
+
+    /// A large file is stored as it is read (a content blob of a `db` repository), never all in memory.
+    fn write_from(&self, location: &str, input: &mut dyn std::io::Read, size: Option<u64>) -> Result<(), Error> {
+        let Some(size) = size else {
+            let mut bytes = Vec::new();
+            input
+                .read_to_end(&mut bytes)
+                .map_err(|err| Error::new(format!("reading the content for {location}: {err}")))?;
+            return self.write_bytes(location, &bytes);
+        };
+        let (repo, path) = self.located(location)?;
+        Self::writable(&repo, location)?;
+        if path.is_empty() {
+            return Err(Error::new(format!("cannot write the root of a repository: {location}")));
+        }
+        let blob = self.store_file(&repo, &path, lfs_files::FileContent::Stream(input, size))?;
+        self.put_file(&repo, location, path, blob, None)
     }
 
     /// Git keeps no empty directories, so a new directory gets an empty `.gitkeep` file, the usual convention. A
@@ -1034,7 +1272,7 @@ impl crate::native::ResourceProvider for GitProvider {
             .into_iter()
             .find(|(version, _)| version.version_name == id)
         {
-            Some((_, version)) => ops::object(repo.store.as_ref(), &version.blob, Kind::Blob).map(Some),
+            Some((_, version)) => self.file_content(&repo, &version.blob).map(Some),
             None => Ok(None),
         }
     }
@@ -1063,7 +1301,7 @@ impl crate::native::ResourceProvider for GitProvider {
         let size = if mode.is_tree() {
             None
         } else {
-            Some(repo.store.object_size(&id)?.unwrap_or(0))
+            Some(self.file_size(&repo, &id)?)
         };
         Ok(Some(change_info(!mode.is_tree(), size, change)))
     }
@@ -1095,7 +1333,7 @@ impl crate::native::ResourceProvider for GitProvider {
         let mut found = Vec::with_capacity(entries.len());
         for (entry, change) in entries.into_iter().zip(changes) {
             let size = if entry.is_file {
-                Some(repo.store.object_size(&entry.id)?.unwrap_or(0))
+                Some(self.file_size(&repo, &entry.id)?)
             } else {
                 None
             };
@@ -1181,7 +1419,7 @@ impl crate::native::ResourceProvider for GitProvider {
             return Ok(0);
         };
         if !mode.is_tree() {
-            return Ok(repo.store.object_size(&id)?.unwrap_or(0));
+            return self.file_size(&repo, &id);
         }
         let mut total = 0;
         let mut pending = vec![id];
@@ -1190,7 +1428,7 @@ impl crate::native::ResourceProvider for GitProvider {
                 if entry.mode.is_tree() {
                     pending.push(entry.oid);
                 } else if !entry.mode.is_commit() {
-                    total += repo.store.object_size(&entry.oid)?.unwrap_or(0);
+                    total += self.file_size(&repo, &entry.oid)?;
                 }
             }
         }

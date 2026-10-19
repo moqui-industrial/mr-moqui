@@ -160,12 +160,12 @@ fn flag(map: &IndexMap<String, Value>, key: &str) -> bool {
 }
 
 fn upload(name: &str, bytes: &[u8]) -> Value {
-    Value::Object(HostObject::new(UploadedFile {
-        field_name: "file".to_string(),
-        file_name: name.to_string(),
-        content_type: "application/octet-stream".to_string(),
-        bytes: bytes.to_vec(),
-    }))
+    Value::Object(HostObject::new(UploadedFile::in_memory(
+        "file",
+        name,
+        "application/octet-stream",
+        bytes.to_vec(),
+    )))
 }
 
 fn files(items: &[(&str, &str)]) -> Value {
@@ -734,21 +734,52 @@ fn version_notes_are_kept_on_both_storages_and_read_back_from_the_script_api() {
         .unwrap();
     assert_eq!(number(file.get("fileSize")), 5);
     assert_eq!(resources.get("dbresource://vn/a.md").unwrap().size(), Some(5));
+    // a file over the blob threshold is a content blob, and its notes stay with its versions as an inline file's do
+    let (big_one, big_two) = (vec![7u8; 70_000], vec![8u8; 70_001]);
+    resources
+        .write_bytes_noted("dbresource://vn/big.bin", &big_one, Some("Big one"))
+        .unwrap();
+    resources
+        .write_bytes_noted("dbresource://vn/big.bin", &big_two, Some("Big two"))
+        .unwrap();
+    let versions = resources.version_history("dbresource://vn/big.bin").unwrap();
+    let notes: Vec<Option<String>> = versions.iter().map(|version| version.note.clone()).collect();
+    assert_eq!(notes, [Some("Big two".to_string()), Some("Big one".to_string())]);
+    assert_eq!(
+        resources
+            .read_version("dbresource://vn/big.bin", &versions[1].version_name)
+            .unwrap(),
+        Some(big_one)
+    );
+    assert_eq!(resources.get("dbresource://vn/big.bin").unwrap().size(), Some(70_001));
+    let blobs = facade
+        .find("moqui.resource.DbResourceFile")
+        .unwrap()
+        .list()
+        .unwrap()
+        .into_values()
+        .into_iter()
+        .filter(|row| row.get("blobId").is_some_and(|id| !id.is_null()))
+        .count();
+    assert_eq!(blobs, 1);
     let out = crate::script::eval_value(
         r#"(() => {
         const ref = ec.resource.getLocationReference("dbresource://vn/b.md")
         ref.putText("bee", "A note")
+        const copy = ec.resource.getLocationReference("dbresource://vn/e.md")
+        copy.putStream(ref.openStream(), "Copied")
+        const copied = copy.getText() + ":" + copy.getVersionHistory()[0].note
         ec.resource.getLocationReference("git://vn/b.md").putText("bee", "Git note")
         const cs = ec.resource.makeChangeSet("git://vn").write("c.md", "sea").write("d.md", new Uint8Array([100, 101])).commit("Two files")
         const versions = ec.resource.getLocationReference("dbresource://vn/b.md").getVersionHistory()
         const git = ec.resource.getLocationReference("git://vn/b.md").getCurrentVersion()
         const children = ec.resource.getChildChanges("git://vn")
         return [versions[0].note, versions[0].getNote(), git.note, cs.applied.length, cs.versionName.length,
-            children.find((child) => child.name === "c.md").note, ec.resource.getLastChange("git://vn/d.md").size].join("|")
+            children.find((child) => child.name === "c.md").note, ec.resource.getLastChange("git://vn/d.md").size, copied].join("|")
         })()"#,
     )
     .unwrap();
-    assert_eq!(to_plain_string(&out), "A note|A note|Git note|2|40|Two files|2");
+    assert_eq!(to_plain_string(&out), "A note|A note|Git note|2|40|Two files|2|bee:Copied");
 }
 
 #[test]
@@ -1704,6 +1735,7 @@ fn a_records_drive_shows_its_folder_map_and_only_the_records_a_user_may_see() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "image")]
 #[test]
 fn an_image_preview_is_a_thumbnail_made_once() {
     let (context, facade) = setup();

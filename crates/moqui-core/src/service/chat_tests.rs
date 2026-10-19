@@ -1465,13 +1465,7 @@ fn files_go_with_their_message_and_go_away_with_it() {
     let root = format!("file:{}", dir.join("chat").display());
     moqui_lib::env::set_property("chat_attachment_root", &root);
     let upload = |name: &str, bytes: &[u8]| {
-        crate::web::multipart::UploadedFile {
-            field_name: "file".to_string(),
-            file_name: name.to_string(),
-            content_type: "text/plain".to_string(),
-            bytes: bytes.to_vec(),
-        }
-        .into_value()
+        crate::web::multipart::UploadedFile::in_memory("file", name, "text/plain", bytes.to_vec()).into_value()
     };
     login("fla");
     let chat = room("private", "Files", &["flb"]);

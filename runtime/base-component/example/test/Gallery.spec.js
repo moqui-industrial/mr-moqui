@@ -183,7 +183,7 @@ const pageText = (space, path) => ec.resource.getLocationReference(
         .replace(/\.md$/, "") + "/" + path + ".md")
 
 feature("the editor's #space space keeps versions, compares, views and restores them", {
-    where: [{ space: "EXAMPLE" }, { space: "EXGIT" }],
+    where: [{ space: "EXAMPLE" }, { space: "EXGIT", requires: ["git"] }],
     expect({ space }) {
         if (space === "EXGIT" && !ec.entity.find("moqui.resource.wiki.WikiSpace").condition("wikiSpaceId", "EXGIT").one())
             editor("createGitSpace", {}, "post")

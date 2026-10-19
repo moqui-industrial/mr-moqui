@@ -655,7 +655,7 @@ fn names_in_dir(root: &Path, dir: &Path, names: &mut BTreeSet<String>) {
         if path.is_dir() {
             names_in_dir(root, &path, names);
         } else if file_name.ends_with(".xml")
-            && ![".secas.xml", ".emecas.xml", ".rest.xml"]
+            && ![".secas.xml", ".emecas.xml", ".gitecas.xml", ".rest.xml"]
                 .iter()
                 .any(|suffix| file_name.ends_with(suffix))
         {
@@ -1052,6 +1052,8 @@ fn load_service(prefix: &str, node: &MNode, failures: &mut Vec<String>) -> Optio
         }
         match super::rust_services::get(&location) {
             Some(run) => Some(run),
+            // Loads; a call says the feature is not built in (call.rs).
+            None if super::rust_services::missing_feature(&location).is_some() => None,
             None => {
                 failures.push(format!("service {name} rust location {location} is not registered"));
                 return None;
@@ -1062,7 +1064,7 @@ fn load_service(prefix: &str, node: &MNode, failures: &mut Vec<String>) -> Optio
     };
     let kind = if native_fn.is_some() {
         ServiceKind::Native
-    } else if rust_fn.is_some() {
+    } else if rust_fn.is_some() || type_name == "rust" {
         ServiceKind::Rust
     } else {
         kind_of(&type_name, &location)

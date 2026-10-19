@@ -80,8 +80,20 @@ impl Drop for LocalLogin {
 }
 
 /// The password check and login of [`login_user`]. True when the session id should rotate: the password was right
-/// and the session did not already hold this user.
+/// and the session did not already hold this user. Credentials that are not valid are noted for the web protection.
 fn password_login(username: &str, password: &str) -> Result<bool, Error> {
+    noting_invalid(check_password_login(username, password))
+}
+
+/// `result`, noted with [`crate::web::note_auth_failure`] when it is the invalid login error.
+fn noting_invalid<T>(result: Result<T, Error>) -> Result<T, Error> {
+    if result.as_ref().is_err_and(|err| err.message() == INVALID_LOGIN) {
+        crate::web::note_auth_failure();
+    }
+    result
+}
+
+fn check_password_login(username: &str, password: &str) -> Result<bool, Error> {
     clear_pre_authc();
     if username.is_empty() || password.is_empty() {
         return Err(Error::new(INVALID_LOGIN));
@@ -251,6 +263,10 @@ pub fn login_external_user(username: &str) -> Result<(), Error> {
 ///
 /// Returns [`INVALID_LOGIN`](Error) when the key is empty, unknown, or expired, or the account cannot log in.
 pub fn login_user_key(key: &str) -> Result<(), Error> {
+    noting_invalid(check_login_key(key))
+}
+
+fn check_login_key(key: &str) -> Result<(), Error> {
     if key.is_empty() {
         return Err(Error::new(INVALID_LOGIN));
     }
@@ -836,12 +852,9 @@ fn row_value(row: &DbRow, name: &str) -> Value {
     row.get(name).cloned().unwrap_or(Value::Null)
 }
 
+/// A count read straight from the driver: Postgres gives a `NUMERIC(20,0)` column as a decimal.
 fn row_i64(row: &DbRow, name: &str) -> i64 {
-    match row.get(name) {
-        Some(Value::I64(number)) => *number,
-        Some(Value::I32(number)) => i64::from(*number),
-        _ => 0,
-    }
+    row.get(name).and_then(value_i64).unwrap_or(0)
 }
 
 fn text_field(value: &EntityValue, name: &str) -> String {
@@ -860,6 +873,7 @@ fn value_i64(value: &Value) -> Option<i64> {
     match value {
         Value::I64(number) => Some(*number),
         Value::I32(number) => Some(i64::from(*number)),
+        Value::Decimal(number) if number.is_integer() => i64::try_from(*number).ok(),
         Value::String(text) => text.parse().ok(),
         _ => None,
     }
@@ -1006,13 +1020,25 @@ mod tests {
     }
 
     #[test]
+    fn a_count_the_driver_gives_as_a_decimal_is_its_number() {
+        // Postgres reads a NUMERIC(20,0) column, such as successiveFailedLogins, as a decimal
+        assert_eq!(value_i64(&Value::Decimal("3".parse().unwrap())), Some(3));
+        assert_eq!(value_i64(&Value::Decimal("3.5".parse().unwrap())), None);
+        assert_eq!(value_i64(&Value::I32(2)), Some(2));
+    }
+
+    #[test]
     fn the_fourth_failed_login_disables_the_account_the_third_does_not_and_it_survives_rollback() {
         let (ctx, facade) = open_ctx();
         let _guard = ctx.enter();
         session::add_flash_message("keep");
         create_user(&facade, "ada", "Secret1!", |_| {});
+        crate::web::take_auth_failure();
         for _ in 0..3 {
             assert_eq!(login_user("ada", "wrong").unwrap_err().to_string(), INVALID_LOGIN);
+            // noted for the web protection, once taken
+            assert!(crate::web::take_auth_failure());
+            assert!(!crate::web::take_auth_failure());
         }
         let before = load_user(&facade, "ada");
         assert_eq!(i64_field(&before, "successiveFailedLogins"), 3);

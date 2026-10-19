@@ -125,16 +125,44 @@ pub fn tool_value(tool: Arc<dyn Tool>) -> Value {
 /// What a tool [`Value`] holds.
 pub(crate) struct ToolHandle(pub(crate) Arc<dyn Tool>);
 
+/// A file [`ResourceProvider::open`] found: what it is, and its content to read a window at a time.
+pub type OpenedFile = Option<(ResourceStat, Arc<dyn crate::resource::source::ByteSource>)>;
+
 /// Storage for a configured resource scheme. Mutating operations are opt-in.
 /// Providers must apply their own outbound/sim policy before external I/O.
 pub trait ResourceProvider: Send + Sync + std::fmt::Debug {
     fn read_bytes(&self, location: &str) -> Result<Vec<u8>, Error>;
     fn stat(&self, location: &str) -> Result<Option<ResourceStat>, Error>;
+    /// The file at `location` to read a window at a time, for a response: `None` when no file is there. By default
+    /// [`ResourceProvider::read_bytes`] on the first read, of the size `stat` gave.
+    fn open(
+        self: Arc<Self>,
+        location: &str,
+    ) -> Result<OpenedFile, Error>
+    where
+        Self: 'static,
+    {
+        let Some(stat) = self.stat(location)?.filter(|stat| stat.is_file) else {
+            return Ok(None);
+        };
+        let at = location.to_string();
+        let source = crate::resource::source::LazySource::new(stat.size, true, move || Ok(self.read_bytes(&at)?));
+        Ok(Some((stat, Arc::new(source))))
+    }
     fn list(&self, location: &str) -> Result<Vec<ResourceEntry>, Error> {
         Err(Error::new(format!("listing is not supported: {location}")))
     }
     fn write_bytes(&self, location: &str, _bytes: &[u8]) -> Result<(), Error> {
         Err(Error::new(format!("writing is not supported: {location}")))
+    }
+    /// Write the file at `location` from `input` (of `size` bytes, when known), as an upload streams: by default read
+    /// into memory and [`ResourceProvider::write_bytes`].
+    fn write_from(&self, location: &str, input: &mut dyn std::io::Read, _size: Option<u64>) -> Result<(), Error> {
+        let mut bytes = Vec::new();
+        input
+            .read_to_end(&mut bytes)
+            .map_err(|err| Error::new(format!("reading the content for {location}: {err}")))?;
+        self.write_bytes(location, &bytes)
     }
     fn make_directory(&self, location: &str) -> Result<(), Error> {
         Err(Error::new(format!("mkdir is not supported: {location}")))

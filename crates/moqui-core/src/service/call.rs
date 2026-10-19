@@ -943,7 +943,12 @@ fn execute(
     match def.kind {
         ServiceKind::Rust => match def.rust_fn {
             Some(run) => run(parameters, facade),
-            None => Err(LibError::new(format!("service {} has no rust function", def.name))),
+            None => Err(LibError::new(
+                match super::rust_services::missing_feature(&def.location) {
+                    Some(feature) => format!("service {}: {feature} is not built into this host", def.name),
+                    None => format!("service {} has no rust function", def.name),
+                },
+            )),
         },
         ServiceKind::Native => {
             let run = def

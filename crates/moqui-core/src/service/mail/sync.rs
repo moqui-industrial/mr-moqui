@@ -35,7 +35,7 @@
 //!
 //! The email-ECA rules (`*.emecas.xml`, as poll#EmailServer runs them) run once on each new message as it is stored in
 //! the Inbox, IMAP or POP3, in a transaction of their own, a failing rule logged ([`eca_due`] says which messages are new
-//! mail; [`super::implementation::run_stored_ecas`] is what any other fetch path calls).
+//! mail; [`super::inbound::run_stored_ecas`] is what any other fetch path calls).
 //!
 //! Failure tolerant per account, folder and message: a message that does not parse is logged by account, folder and
 //! UID and skipped; a folder that fails is logged and the others go on; a sign-in the server refuses marks the account
@@ -50,9 +50,10 @@ use std::net::TcpStream;
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::{to_plain_string, Value};
 
-use super::implementation::{
-    connect_tcp, find_one, folder_kind, force_new, name_attribute, note_error, note_message, parse_port, require_host,
-    run_stored_ecas, stamp_millis, use_tls, wrap_tls, Net, Pop3, StoreSettings, StoredMessage,
+use super::implementation::{find_one, force_new, note_error, note_message, parse_port, require_host};
+use super::inbound::{
+    connect_tcp, folder_kind, name_attribute, run_stored_ecas, stamp_millis, use_tls, wrap_tls, Net, Pop3,
+    StoreSettings, StoredMessage,
 };
 use super::store::{self, parse_message, update_fields, Placement, MESSAGE};
 use crate::context::ExecutionContext;

@@ -28,8 +28,14 @@
     <default-property name="webapp_status_ips" value="127.0.0.1"/>
     <default-property name="webapp_require_session_token" value="true"/>
     <default-property name="webapp_upload_executable_allow" value="false"/>
-    <!-- Largest multipart/form-data request body, in bytes or with a k, m or g suffix. Other request bodies stop at 1 MiB. -->
-    <default-property name="webapp_max_upload" value="104857600"/>
+    <!-- Largest multipart/form-data request body, in bytes or with a k, m or g suffix (other request bodies stop at
+        webapp_max_body). An upload is read as it arrives, a file over 256 KiB into a file in runtime/tmp/upload, and is
+        cut off when nothing arrives for webapp_upload_idle_timeout seconds. -->
+    <default-property name="webapp_max_upload" value="2147483648"/>
+    <default-property name="webapp_upload_idle_timeout" value="60"/>
+    <!-- A file response over 256 KiB streams, read a window at a time as the client takes it; at most
+        webapp_transfer_workers reads of files in the database run at once. -->
+    <default-property name="webapp_transfer_workers" value="16"/>
     <!-- Path of the notification WebSocket the html and qvt clients of a signed in user connect to, the /notws endpoint by default as
         in Java. Empty means the clients do not connect. -->
     <default-property name="webapp_notification_endpoint" value="/notws"/>
@@ -46,6 +52,15 @@
         AWS Cloudfront: CloudFront-Viewer-Address (requires config in Cloudfront origin request policy)
     -->
     <default-property name="webapp_client_ip_header" value=""/>
+    <!--
+        webapp_trusted_proxies: comma separated address ranges (10.0.0.0/8, fd00::/8, or one address) of the reverse
+        proxies in front. With it, webapp_client_ip_header and X-Forwarded-Proto are believed only from those proxies, the
+        client address is the rightmost one in the header that is not a trusted proxy (so an appended X-Forwarded-For is
+        safe), and the per-client web-protection below is on by default. Empty, the header is believed from any peer.
+        webapp_web_protection: true or false turns the per-client web-protection on or off whatever the proxies.
+    -->
+    <default-property name="webapp_trusted_proxies" value=""/>
+    <default-property name="webapp_web_protection" value=""/>
     <default-property name="webapp_session_flush" value="eventual"/>
     <!-- Minutes without a request before a web session expires. 0 never expires. -->
     <default-property name="webapp_session_timeout" value="60"/>
@@ -132,6 +147,62 @@
     <default-property name="ssh_sftp_root" value="runtime://sftp"/>
     <default-property name="ssh_sftp_max_file" value="268435456"/>
     <default-property name="ssh_max_sessions" value="8"/>
+    <!-- A user with only SSH_GIT (git over SSH) may log in by password too; by key only when false. -->
+    <default-property name="ssh_git_password_auth" value="false"/>
+
+    <!--
+        The git server: clone, fetch and push of GitRepository repositories at <git_public_url>/git/<repositoryId>.git
+        (smart HTTP) and over the SSH server (SSH_GIT), checked against AT_GIT_REPOSITORY (docs/Git-Hosting.md).
+        git_public_url is the base URL clone URLs show; from the webapp host and port when empty. ssh_public_host and
+        ssh_public_port are the SSH host and port clone URLs show; webapp_http_host and ssh_port when empty.
+        git_max_concurrent clones and pushes run at once, on threads of their own, with git_max_queued waiting.
+        git_max_request bytes of an upload-pack request, git_max_push_size bytes of a push, git_max_object_size bytes
+        of one pushed object; git_idle_timeout seconds of silence in a request body end it. git_pack_threads (all
+        cores when empty) compress and index packs. Credentials over plain HTTP are refused unless git_allow_http.
+    -->
+    <default-property name="git_public_url" value=""/>
+    <default-property name="ssh_public_host" value=""/>
+    <default-property name="ssh_public_port" value=""/>
+    <default-property name="git_max_concurrent" value="4"/>
+    <default-property name="git_max_queued" value="16"/>
+    <default-property name="git_max_request" value="67108864"/>
+    <default-property name="git_max_push_size" value="2147483648"/>
+    <default-property name="git_max_object_size" value="536870912"/>
+    <default-property name="git_idle_timeout" value="120"/>
+    <default-property name="git_pack_threads" value=""/>
+    <default-property name="git_allow_http" value="false"/>
+    <!--
+        The storage of db kind git repositories (docs/Git-Hosting.md, Storage). Objects are rows of zlib streams, or of
+        deltas against another object, as a pack has them: git_db_delta_depth (50) deltas at most from an object to a
+        whole one, and objects up to git_db_delta_max_size bytes as deltas; an object over git_db_large_object bytes
+        is a content blob (moqui.resource.ContentBlob), read and sent a window at a time. git_db_write_format=raw writes new rows
+        uncompressed, as versions before this format read them. git_db_cache_bytes of decoded objects are kept in
+        memory for all repositories. gc#GitRepositories deletes unreachable objects not written or referenced in the
+        last git_gc_prune_days days (at least 1), keeps the commits of the last git_gc_reflog_days days of changes (a
+        force push can be undone), and passes over a repository of more than git_gc_max_objects objects.
+    -->
+    <default-property name="git_db_delta_depth" value="50"/>
+    <default-property name="git_db_delta_max_size" value="16777216"/>
+    <default-property name="git_db_large_object" value="8388608"/>
+    <default-property name="git_db_write_format" value="v2"/>
+    <default-property name="git_db_cache_bytes" value="67108864"/>
+    <default-property name="git_gc_prune_days" value="14"/>
+    <default-property name="git_gc_reflog_days" value="30"/>
+    <default-property name="git_gc_max_objects" value="20000000"/>
+    <!-- Git LFS at /git/<repositoryId>.git/info/lfs: objects up to git_lfs_max_object_size bytes; the tokens of its
+        actions (and of git-lfs-authenticate over SSH) are signed with git_lfs_token_key (generated into runtime/.env),
+        and git_lfs_token_key_previous still reads while a key is changed. -->
+    <default-property name="git_lfs_max_object_size" value="5368709120"/>
+    <default-property name="git_lfs_token_key" value="CHANGEME" is-secret="true"/>
+    <default-property name="git_lfs_token_key_previous" value="" is-secret="true"/>
+    <!-- Content blobs (moqui.resource.ContentBlob): bytes per ContentBlobChunk row, and how many days a blob nothing
+        refers to is kept (gc#ContentBlobs). -->
+    <default-property name="blob_chunk_size" value="1048576"/>
+    <default-property name="blob_gc_prune_days" value="14"/>
+    <!-- A dbresource file over this many bytes is a content blob (stored once, streamed), not fileData. -->
+    <default-property name="dbresource_blob_threshold" value="65536"/>
+    <!-- Image conversions (convert#Image) that may run at once; a decoded image may take hundreds of MB. -->
+    <default-property name="image_max_concurrent" value="2"/>
 
     <!--
         The inbound SMTP listener for hosted and shared mail accounts, behind the edge gateway (a host built with the
@@ -361,7 +432,8 @@
                 https-port="${webapp_https_port}" https-host="${webapp_http_host}" https-enabled="${webapp_https_enabled}"
                 handle-cors="${webapp_handle_cors}" allow-origins="${webapp_allow_origins}"
                 require-session-token="${webapp_require_session_token}" upload-executable-allow="${webapp_upload_executable_allow}"
-                websocket-timeout="600000" client-ip-header="${webapp_client_ip_header}">
+                websocket-timeout="600000" client-ip-header="${webapp_client_ip_header}"
+                trusted-proxies="${webapp_trusted_proxies}">
             <!-- root and error screens for OOTB runtime directory (moqui/moqui-runtime repository) -->
             <root-screen host=".*" location="component://webroot/screen/webroot.xml"/>
             <error-screen error="unauthorized" screen-path="error/Unauthorized"/>
@@ -479,6 +551,37 @@
             <!-- TODO: would be nice to handle this differently, ie dynamically based on preflight request path -->
             <response-header type="cors-preflight" name="Access-Control-Allow-Methods" add="true" value="GET,PUT,POST,PATCH,DELETE,OPTIONS"/>
             <response-header type="cors-preflight" name="Access-Control-Max-Age" value="3600"/>
+
+            <!--
+                Load handling and basic WAF at the edge, before a session, a request worker or the database is spent; in
+                memory per server. connections, requests and overload always apply. The per-client parts (max-per-client,
+                methods, rate-limit, ban and the rules) are on when trusted-proxies is set, or with enabled="true" (for a
+                server with no proxy in front); without trusted proxies a server behind a proxy would see every client as
+                the proxy. This is not the ArtifactTarpit, which counts a user's use of screens and services for business
+                quotas; both apply, this first. See plans/proposals/Web-Protection.md.
+            -->
+            <web-protection enabled="${webapp_web_protection}" client-ipv6-prefix="64" max-tracked-clients="100000">
+                <connections max="${webapp_max_connections}" max-per-client="64"
+                        header-timeout="${webapp_header_timeout}" shutdown-timeout="${webapp_shutdown_timeout}"/>
+                <requests methods="GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS" max-uri-length="8192"
+                        max-header-bytes="65536" max-headers="100" max-body="${webapp_max_body}"
+                        max-upload="${webapp_max_upload}" body-timeout="${webapp_body_timeout}"
+                        upload-idle-timeout="${webapp_upload_idle_timeout}" request-timeout="${webapp_request_timeout}"/>
+                <overload queue-timeout="10" retry-after="5"/>
+
+                <rate-limit name="all" requests="50" seconds="1" burst="500"/>
+                <rate-limit name="login" path="/Login/**,/rest/login,/rest/login/**,/SecondFactor/**" methods="POST"
+                        requests="10" seconds="60" burst="10"/>
+
+                <ban name="auth-failure" events="auth-failure" threshold="20" seconds="600" duration="900"/>
+                <ban name="abuse" events="rate-limited,denied" threshold="300" seconds="60" duration="300"/>
+
+                <!-- a rule with a name merges by it, so a component can change it or turn it off with enabled="false" -->
+                <client-rule name="loopback" action="exempt" cidr="127.0.0.0/8,::1"/>
+                <path-rule name="scanners" action="deny"
+                        path="/.env,/.git/**,/wp-admin/**,/wp-login.php,**/*.php,**/*.asp,**/*.aspx"/>
+                <user-agent-rule name="scanners" action="deny" contains="sqlmap,nikto,masscan,zgrab"/>
+            </web-protection>
         </webapp>
     </webapp-list>
 
@@ -489,6 +592,9 @@
         <!-- NOTE: entity tarpit disabled by default for performance and tracking overhead reasons -->
         <artifact-execution type="AT_ENTITY" authz-enabled="true" tarpit-enabled="false"/>
         <artifact-execution type="AT_LLM" authz-enabled="true" tarpit-enabled="true"/>
+        <!-- Clone, fetch and push of git repositories (GitRepository.repositoryId), and the get#Git* services. The git
+            server refuses to serve when this is not enabled. -->
+        <artifact-execution type="AT_GIT_REPOSITORY" authz-enabled="true" tarpit-enabled="false"/>
         <!-- The Java enabled a type with no entry here; this one is listed because a missing entry is disabled here.
             The service REST API checks the path of each request (MOQUI_API for /moqui). -->
         <artifact-execution type="AT_REST_PATH" authz-enabled="true" tarpit-enabled="true"/>

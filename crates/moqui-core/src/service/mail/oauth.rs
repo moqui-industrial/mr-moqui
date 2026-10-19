@@ -50,7 +50,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use sha2::{Digest, Sha256};
 
-use super::implementation::{find_one, force_new, note_error, stamp_millis};
+use super::implementation::{find_one, force_new, note_error};
+use super::inbound::stamp_millis;
 use super::sync::{value_number, ACCOUNT, SERVER};
 use crate::context::ExecutionContext;
 use crate::entity::{Condition, EntityFacade, EntityValue};

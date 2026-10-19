@@ -362,17 +362,21 @@ pub(crate) fn tree_size_by_walk<P: ResourceProvider + ?Sized>(provider: &P, loca
     Ok(total)
 }
 
-/// The size of a `dbresource://` reference: the snapshot's bytes, or for a file found under a directory its
-/// `fileSize` (else its data length) read now.
+/// The size of a `dbresource://` reference: of its bytes when they were read, else its `fileSize` (else its data
+/// length) read now.
 pub(super) fn db_file_size(location: &str, snap: &DbSnap) -> Option<u64> {
     if !snap.exists || !snap.is_file {
         return None;
     }
-    if snap.loaded {
-        return u64::try_from(snap.bytes.len()).ok();
+    if let Some(Ok(bytes)) = snap.bytes.get() {
+        return u64::try_from(bytes.len()).ok();
     }
-    let facade = super::super::ExecutionContext::with_current(|ec| ec.factory().entity()).flatten()?;
-    facade.stat_db_resource(location).ok().flatten().map(|stat| stat.size)
+    snap.facade
+        .as_ref()?
+        .stat_db_resource(location)
+        .ok()
+        .flatten()
+        .map(|stat| stat.size)
 }
 
 impl ResourceFacade {

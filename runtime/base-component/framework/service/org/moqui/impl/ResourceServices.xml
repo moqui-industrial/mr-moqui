@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Large content in the database: moqui.resource.ContentBlob and its chunks. No Java counterpart. The bodies are Rust:
+    crates/moqui-core/src/service/content.rs over crates/moqui-core/src/resource/blob.rs. Guide: docs/Git-Hosting.md,
+    Storage. -->
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+    <service verb="gc" noun="ContentBlobs" type="rust" location="moqui_core::service::content::gc_content_blobs"
+            transaction="ignore">
+        <description>Delete the blobs that no row refers to (by a relationship to moqui.resource.ContentBlob) and that
+            were not written or referenced again in the last blob_gc_prune_days days, and the chunks of uploads with
+            nothing written for a day (for the gc_ContentBlobs_daily ServiceJob).</description>
+        <in-parameters><parameter name="dryRun" type="Boolean" default-value="false"/></in-parameters>
+        <out-parameters>
+            <parameter name="deletedCount" type="Integer"/>
+            <parameter name="deletedBytes" type="Long"/>
+            <parameter name="abandonedCount" type="Integer"/>
+        </out-parameters>
+    </service>
+    <service verb="migrate" noun="DbResourceBlobs" type="rust" location="moqui_core::service::content::migrate_db_resource_blobs"
+            transaction="ignore">
+        <description>Move the dbresource files, and their past versions, written before content blobs and over
+            dbresource_blob_threshold bytes into content blobs, and record the size of the others. Run once after an
+            upgrade; it can be run again, and goes on from where a timeout stopped it.</description>
+        <in-parameters><parameter name="timeoutMinutes" type="Integer" default-value="60"/></in-parameters>
+        <out-parameters>
+            <parameter name="movedCount" type="Integer"/>
+            <parameter name="sizedCount" type="Integer"/>
+        </out-parameters>
+    </service>
+</services>

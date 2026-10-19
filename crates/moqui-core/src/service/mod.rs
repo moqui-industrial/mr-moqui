@@ -21,6 +21,7 @@ pub(crate) mod call;
 mod chat;
 #[cfg(test)]
 mod chat_tests;
+mod content;
 pub mod coverage;
 pub(crate) mod define;
 mod eca;
@@ -33,6 +34,7 @@ mod files_tests;
 mod wiki_tests;
 #[cfg(feature = "git")]
 mod git;
+#[cfg(feature = "image")]
 mod images;
 pub mod info;
 #[cfg(test)]
@@ -44,7 +46,9 @@ mod pool;
 mod remote;
 mod request_pool;
 mod rest;
+pub(crate) mod git_eca;
 pub(crate) mod rule_actions;
+mod user_keys;
 mod schedule;
 #[cfg(test)]
 mod script_ports_tests;
@@ -52,6 +56,7 @@ mod seca;
 mod security_checks;
 pub(crate) mod semaphore;
 pub(crate) mod shell;
+#[cfg(feature = "xlsx")]
 mod spreadsheet;
 mod sso;
 mod system_sync;
@@ -69,13 +74,12 @@ pub(crate) use define::{input_hints, input_js_rules, merge_param, VALIDATE_NUMBE
 pub use eca::{run_data_file_service, run_matched_eca, schedule_feed_receive, search_not_up};
 pub use email_eca::{email_rule_count, run_email_rule, run_email_rules};
 #[cfg(test)]
-#[cfg(test)]
 pub(crate) use jobs::send_job_error_notification;
 pub use jobs::{run_job_now, PassReport};
 /// Mail the host's SMTP listener (moqui-host `inbound-smtp`) received: the recipient lookup and the delivery.
-#[cfg(feature = "mail")]
-pub use mail::inbound as mail_inbound;
-#[cfg(all(test, feature = "mail"))]
+#[cfg(feature = "imap")]
+pub use mail::delivery as mail_inbound;
+#[cfg(all(test, feature = "smtp"))]
 pub(crate) use mail::{SharedSinkGuard, SinkGuard};
 pub use pool::{start_pools, PoolStatus, RunnerStats, ServicePools};
 #[cfg(feature = "http")]

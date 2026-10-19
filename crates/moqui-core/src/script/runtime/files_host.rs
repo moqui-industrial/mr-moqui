@@ -128,10 +128,18 @@ fn with_resources<T>(
 fn content_bytes(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<Vec<u8>> {
     if let Some(object) = value.as_object() {
         if let Some(class) = object.as_class::<HostUpload>() {
-            return Ok(class.borrow().inner.bytes.clone());
+            return class
+                .borrow()
+                .inner
+                .read_bytes()
+                .map_err(|err| Exception::throw_message(ctx, err.message()));
         }
         if let Some(class) = object.as_class::<super::upload::HostStream>() {
-            return Ok(class.borrow().inner.bytes.clone());
+            return class
+                .borrow()
+                .inner
+                .bytes()
+                .map_err(|err| Exception::throw_message(ctx, err.message()));
         }
     }
     let refused = || Exception::throw_message(ctx, "a file's content is text, bytes, an uploaded file or a stream");
@@ -141,9 +149,12 @@ fn content_bytes(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<Vec<u8>
         Value::String(text) => Ok(text.into_bytes()),
         Value::Object(object) => {
             if let Some(file) = object.downcast::<crate::web::multipart::UploadedFile>() {
-                Ok(file.bytes.clone())
+                file.read_bytes()
+                    .map_err(|err| Exception::throw_message(ctx, err.message()))
             } else if let Some(stream) = object.downcast::<super::upload::StreamBytes>() {
-                Ok(stream.bytes.clone())
+                stream
+                    .bytes()
+                    .map_err(|err| Exception::throw_message(ctx, err.message()))
             } else {
                 Err(refused())
             }
@@ -423,6 +434,7 @@ fn files_thumbnail<'js>(
 }
 
 /// The image in `bytes` scaled to fit `max` by `max` (never up), as PNG: `(width, height, png)`.
+#[cfg(feature = "image")]
 pub(crate) fn thumbnail_png(bytes: &[u8], max: u32) -> Option<(u32, u32, Vec<u8>)> {
     let image = ::image::load_from_memory(bytes).ok()?;
     let small = if image.width() > max || image.height() > max {
@@ -433,6 +445,12 @@ pub(crate) fn thumbnail_png(bytes: &[u8], max: u32) -> Option<(u32, u32, Vec<u8>
     let mut out = Cursor::new(Vec::new());
     small.write_to(&mut out, ::image::ImageFormat::Png).ok()?;
     Some((small.width(), small.height(), out.into_inner()))
+}
+
+/// No image decoder in this build (the `image` feature): no thumbnail.
+#[cfg(not(feature = "image"))]
+pub(crate) fn thumbnail_png(_bytes: &[u8], _max: u32) -> Option<(u32, u32, Vec<u8>)> {
+    None
 }
 
 /// A zip of the files at the entries' locations, each under its `path`, written to `target`. An entry that cannot be
@@ -596,6 +614,7 @@ mod tests {
         assert!(!check_grant("secret", "share:1", "nonsense"));
     }
 
+    #[cfg(feature = "image")]
     #[test]
     fn a_thumbnail_fits_the_box_and_keeps_the_aspect() {
         let image = ::image::RgbImage::from_pixel(400, 200, ::image::Rgb([10, 120, 200]));

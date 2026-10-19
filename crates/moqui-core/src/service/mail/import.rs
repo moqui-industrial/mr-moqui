@@ -49,10 +49,14 @@ fn uploaded(value: &Value, out: &mut Vec<Source>) {
         }
         Value::Object(object) => {
             if let Some(file) = object.downcast::<crate::web::multipart::UploadedFile>() {
-                out.push(Source {
-                    name: file.file_name.clone(),
-                    bytes: file.bytes.clone(),
-                });
+                match file.read_bytes() {
+                    Ok(bytes) => out.push(Source {
+                        name: file.file_name.clone(),
+                        bytes,
+                    }),
+                    // the others are still imported
+                    Err(err) => tracing::error!("the uploaded file {} was not read: {}", file.file_name, err.message()),
+                }
             }
         }
         Value::Bytes(bytes) => out.push(Source {

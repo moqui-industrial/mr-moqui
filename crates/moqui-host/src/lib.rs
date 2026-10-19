@@ -17,15 +17,17 @@
 //! `types` writes TypeScript declarations. No arguments start the plain HTTP listener. Database drivers live in [`db`].
 //! The search store and backend are placed by [`search`].
 
-// The server, its cluster listeners and its startup load need the `axum` and embedded Postgres features. A build without
-// them is a library for the CLI and tests, where those items are unused; the default build still lints them.
+// The server, its cluster listeners and its startup load need the `axum` feature and a database driver (`postgres`,
+// which `embedded-postgres` includes, or `mysql`). A build without them is a library for the CLI and tests, where those
+// items are unused; the default build still lints them.
 #![cfg_attr(
-    not(all(feature = "axum", feature = "embedded-postgres", feature = "postgres")),
+    not(all(feature = "axum", any(feature = "postgres", feature = "mysql"))),
     allow(dead_code, unused_imports)
 )]
 
 pub mod db;
 pub mod edge;
+#[cfg(feature = "print")]
 pub mod ipp;
 pub mod logging;
 #[cfg(feature = "pdf")]
@@ -34,9 +36,11 @@ pub mod qvt_report;
 pub mod search;
 #[cfg(feature = "inbound-smtp")]
 pub mod smtp;
+#[cfg(feature = "ssh")]
 pub mod ssh;
+#[cfg(feature = "sso")]
 pub mod sso;
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(feature = "embedded-postgres")]
 pub mod test_cmd;
 pub mod types;
 pub mod usage;
@@ -44,12 +48,20 @@ pub mod usage;
 mod cluster_edge;
 mod cluster_notify;
 
+#[cfg(all(feature = "git", any(feature = "axum", feature = "ssh")))]
+mod git_bridge;
+#[cfg(all(feature = "axum", feature = "git"))]
+mod git_http;
+#[cfg(feature = "axum")]
+mod guard;
 #[cfg(feature = "axum")]
 mod http;
 #[cfg(feature = "axum")]
 mod notws;
 #[cfg(feature = "axum")]
 mod search_proxy;
+#[cfg(feature = "axum")]
+mod source_body;
 #[cfg(feature = "axum")]
 mod tls;
 
@@ -61,7 +73,7 @@ mod tls;
 use moqui_lib::sync::lock;
 
 pub fn serve() -> Result<(), moqui_lib::error::Error> {
-    #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+    #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
     {
         let (runtime, framework) = runtime_framework_dirs();
         let cluster = runtime.join("db/embedded");
@@ -71,7 +83,7 @@ pub fn serve() -> Result<(), moqui_lib::error::Error> {
         server.wait();
         Ok(())
     }
-    #[cfg(not(all(feature = "axum", feature = "embedded-postgres", feature = "postgres")))]
+    #[cfg(not(all(feature = "axum", any(feature = "postgres", feature = "mysql"))))]
     {
         Err(moqui_lib::error::Error::new("http server is not in this build"))
     }
@@ -98,11 +110,16 @@ impl Server {
         self.address
     }
 
-    /// The SSH server's address, when `ssh_port` is set.
+    /// The SSH server's address, when `ssh_port` is set and this build has the `ssh` feature.
     #[must_use]
     pub fn ssh_address(&self) -> Option<std::net::SocketAddr> {
-        let factory = self.factory.as_ref()?;
-        *lock(&factory.extension(|_| ssh::server::SshAddress::default()).0)
+        #[cfg(feature = "ssh")]
+        {
+            let factory = self.factory.as_ref()?;
+            *lock(&factory.extension(|_| ssh::server::SshAddress::default()).0)
+        }
+        #[cfg(not(feature = "ssh"))]
+        None
     }
 
     /// The inbound SMTP listener's address, when this build has the `inbound-smtp` feature and `smtp_listen_port` is set.
@@ -182,7 +199,7 @@ pub fn start_server(
     cluster_dir: impl AsRef<std::path::Path>,
     bind: std::net::SocketAddr,
 ) -> Result<Server, moqui_lib::error::Error> {
-    #[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+    #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
     {
         start_server_in(
             runtime_dir.as_ref().to_path_buf(),
@@ -191,7 +208,7 @@ pub fn start_server(
             ListenBind::Address(bind),
         )
     }
-    #[cfg(not(all(feature = "axum", feature = "embedded-postgres", feature = "postgres")))]
+    #[cfg(not(all(feature = "axum", any(feature = "postgres", feature = "mysql"))))]
     {
         let _ = (runtime_dir, framework_dir, cluster_dir, bind);
         Err(moqui_lib::error::Error::new("http server is not in this build"))
@@ -206,7 +223,8 @@ fn join_server(thread: std::thread::JoinHandle<Result<(), moqui_lib::error::Erro
     }
 }
 
-/// `pg_dump --format=custom` of the embedded `moqui` database at `dir`.
+/// `pg_dump --format=custom` of the embedded `moqui` database at `dir`, with the Postgres install of the runtime
+/// directory (`MOQUI_RUNTIME`).
 ///
 /// # Errors
 ///
@@ -216,10 +234,11 @@ pub fn save_db(
     dir: impl AsRef<std::path::Path>,
     dump: impl AsRef<std::path::Path>,
 ) -> Result<(), moqui_lib::error::Error> {
-    db::embedded::save_db(dir.as_ref(), dump.as_ref())
+    db::embedded::save_db(&runtime_framework_dirs().0, dir.as_ref(), dump.as_ref())
 }
 
-/// `pg_restore --format=custom` into the embedded `moqui` database at `dir`.
+/// `pg_restore --format=custom` into the embedded `moqui` database at `dir`, with the Postgres install of the runtime
+/// directory (`MOQUI_RUNTIME`).
 ///
 /// # Errors
 ///
@@ -229,7 +248,7 @@ pub fn load_save(
     dir: impl AsRef<std::path::Path>,
     dump: impl AsRef<std::path::Path>,
 ) -> Result<(), moqui_lib::error::Error> {
-    db::embedded::load_save(dir.as_ref(), dump.as_ref())
+    db::embedded::load_save(&runtime_framework_dirs().0, dir.as_ref(), dump.as_ref())
 }
 
 /// The process entry of a moqui binary: [`dispatch`] on the command line arguments, the line it returns printed, and
@@ -264,6 +283,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
+    register_build();
     let args: Vec<String> = args.into_iter().map(|arg| arg.as_ref().to_string()).collect();
     if let Some(help) = usage::help_request(&args) {
         return help.map(Some);
@@ -283,21 +303,25 @@ where
             load_save(dir, file)?;
             Ok(None)
         }
+        [command] if command == "version" || command == "--version" => {
+            println!("{}", version_text());
+            Ok(None)
+        }
         [command, rest @ ..] if command == "types" => {
             dispatch_types(rest)?;
             Ok(None)
         }
         [command, rest @ ..] if command == "test" => {
-            #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+            #[cfg(feature = "embedded-postgres")]
             {
                 test_cmd::dispatch_test(rest)?;
                 Ok(None)
             }
-            #[cfg(not(all(feature = "embedded-postgres", feature = "postgres")))]
+            #[cfg(not(feature = "embedded-postgres"))]
             {
                 let _ = rest;
                 Err(moqui_lib::error::Error::new(
-                    "moqui test needs the embedded-postgres and postgres features",
+                    "moqui test runs on scratch embedded Postgres databases; this build has no embedded-postgres",
                 ))
             }
         }
@@ -355,31 +379,51 @@ where
 /// A known command with the wrong arguments names that command. Anything else is an unknown command.
 fn usage_error(args: &[String]) -> moqui_lib::error::Error {
     match args.first().map(String::as_str) {
-        Some(name @ ("save-db" | "load-save" | "lint" | "convert" | "types" | "load" | "test")) => {
+        Some(name @ ("save-db" | "load-save" | "lint" | "convert" | "types" | "load" | "test" | "version")) => {
             usage::command_usage(name)
         }
+        Some("--version") => usage::command_usage("version"),
         Some(name) => usage::unknown_command(name),
         None => usage::unknown_command(""),
     }
 }
 
-/// `MOQUI_RUNTIME`, default `runtime`, and `MOQUI_FRAMEWORK`, default `framework` beside the runtime. Like Moqui's
-/// `moqui.runtime`: an install runs from its own directory unless told otherwise.
+/// `MOQUI_RUNTIME`, default [`default_runtime_dir`], and `MOQUI_FRAMEWORK`, default `framework` beside the runtime.
+/// Like Moqui's `moqui.runtime`: an install runs from its own directory unless told otherwise.
 fn runtime_framework_dirs() -> (std::path::PathBuf, std::path::PathBuf) {
-    let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
+    let runtime = std::env::var_os("MOQUI_RUNTIME")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(default_runtime_dir, Into::into);
     let framework = framework_from_env(&runtime);
     (runtime, framework)
 }
 
+/// The first runtime directory, one with `base-component` in it, of: `runtime` in the working directory, `runtime`
+/// beside the executable (links resolved), and the executable's own directory, so an archive from `./moq archive` (a
+/// runtime with the binary in it) runs as `/path/to/it/moqui` from anywhere. None: `runtime`, which boot reports.
+fn default_runtime_dir() -> std::path::PathBuf {
+    let exe = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+    runtime_dir_for(std::path::Path::new("runtime"), exe.as_deref())
+}
+
+fn runtime_dir_for(local: &std::path::Path, exe: Option<&std::path::Path>) -> std::path::PathBuf {
+    let exe_dir = exe.and_then(std::path::Path::parent);
+    std::iter::once(local.to_path_buf())
+        .chain(exe_dir.map(|dir| dir.join("runtime")))
+        .chain(exe_dir.map(std::path::Path::to_path_buf))
+        .find(|dir| dir.join("base-component").is_dir())
+        .unwrap_or_else(|| local.to_path_buf())
+}
+
 /// Create `dir` and its parents when missing.
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn create_dir(dir: &std::path::Path) -> Result<(), moqui_lib::error::Error> {
     std::fs::create_dir_all(dir)
         .map_err(|err| moqui_lib::error::Error::new(format!("could not create {}", dir.display())).with_source(err))
 }
 
 /// `dir` as an absolute path with no links.
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn canonical_dir(dir: &std::path::Path) -> Result<std::path::PathBuf, moqui_lib::error::Error> {
     std::fs::canonicalize(dir)
         .map_err(|err| moqui_lib::error::Error::new(format!("could not resolve {}", dir.display())).with_source(err))
@@ -626,7 +670,7 @@ pub fn load_data(
     cluster_dir: impl AsRef<std::path::Path>,
     flags: &LoadFlags,
 ) -> Result<LoadReport, moqui_lib::error::Error> {
-    #[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+    #[cfg(any(feature = "postgres", feature = "mysql"))]
     {
         load_embedded(
             runtime_dir.as_ref(),
@@ -635,14 +679,14 @@ pub fn load_data(
             flags,
         )
     }
-    #[cfg(not(all(feature = "embedded-postgres", feature = "postgres")))]
+    #[cfg(not(any(feature = "postgres", feature = "mysql")))]
     {
         let _ = (runtime_dir, framework_dir, cluster_dir, flags);
         Err(moqui_lib::error::Error::new("embedded postgres is not in this build"))
     }
 }
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn load_embedded(
     runtime_dir: &std::path::Path,
     framework_dir: &std::path::Path,
@@ -667,7 +711,7 @@ fn load_embedded(
     let opened_at = std::time::Instant::now();
     let opened = crate::db::entity_db::transactional_conf(&factory).and_then(|conf| {
         let pool = load_pool(&conf.pool);
-        let install = crate::db::embedded::shared_install_dir(&runtime_dir.join("db"), cluster_dir);
+        let install = crate::db::embedded::shared_install_dir(&runtime_dir, cluster_dir);
         tracing::info!(
             "Opening DataSource transactional, database {}, max pool {}, cluster directory {}",
             conf.dialect,
@@ -702,7 +746,7 @@ fn load_embedded(
     outcome
 }
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn load_with_factory(
     factory: &std::sync::Arc<moqui_core::context::ExecutionContextFactory>,
     framework_dir: &std::path::Path,
@@ -762,7 +806,7 @@ fn load_with_factory(
 }
 
 /// Wait until the service workers have nothing running or queued, or `limit` passes.
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn wait_for_workers(factory: &moqui_core::context::ExecutionContextFactory, limit: std::time::Duration) {
     let deadline = std::time::Instant::now() + limit;
     loop {
@@ -786,18 +830,18 @@ fn wait_for_workers(factory: &moqui_core::context::ExecutionContextFactory, limi
 /// A load's pool is the conf's, opened lazily (`min` 0). Its data feed runs on the service workers, each of which can
 /// hold a connection and park another for a `force-new` call, so the load needs the same room the server checks for
 /// at startup (`check_serve_caps`); a small fixed pool ran out on Mantle's demo data.
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn load_pool(conf: &moqui_core::transaction::PoolConfig) -> moqui_core::transaction::PoolConfig {
     moqui_core::transaction::PoolConfig { min: 0, ..conf.clone() }
 }
 
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 enum ListenBind {
     Address(std::net::SocketAddr),
     Property,
 }
 
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 fn start_server_in(
     runtime_dir: std::path::PathBuf,
     framework_dir: std::path::PathBuf,
@@ -825,7 +869,7 @@ fn start_server_in(
     }
 }
 
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 fn thread_failure(
     thread: std::thread::JoinHandle<Result<(), moqui_lib::error::Error>>,
     fallback: &str,
@@ -837,7 +881,7 @@ fn thread_failure(
     }
 }
 
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 fn serve_thread(
     runtime_dir: std::path::PathBuf,
     framework_dir: std::path::PathBuf,
@@ -865,6 +909,8 @@ fn serve_thread(
         .factory
         .clone()
         .ok_or_else(|| moqui_lib::error::Error::new("http server has no factory"))?;
+    // what uploads cut short by a stop left behind
+    moqui_core::web::multipart::Spool::under(factory.runtime_dir()).sweep();
     let cluster = process
         .cluster_edge
         .as_ref()
@@ -915,7 +961,7 @@ fn serve_thread(
     listened
 }
 
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 fn listen_address(bind: &ListenBind) -> Result<std::net::SocketAddr, moqui_lib::error::Error> {
     match bind {
         ListenBind::Address(address) => Ok(*address),
@@ -926,7 +972,7 @@ fn listen_address(bind: &ListenBind) -> Result<std::net::SocketAddr, moqui_lib::
     }
 }
 
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 fn boot_server(
     runtime_dir: &std::path::Path,
     framework_dir: &std::path::Path,
@@ -935,7 +981,7 @@ fn boot_server(
     boot_server_factory(runtime_dir, framework_dir, cluster_dir, true)
 }
 
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 fn boot_server_factory(
     runtime_dir: &std::path::Path,
     framework_dir: &std::path::Path,
@@ -957,6 +1003,8 @@ fn boot_server_factory(
         runtime_dir.display(),
         framework_dir.display()
     );
+    register_build();
+    tracing::info!("Built as {}", version_text());
     let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(&runtime_dir, &framework_dir)
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     log_files_attached(&runtime_dir);
@@ -965,7 +1013,7 @@ fn boot_server_factory(
     let conf = crate::db::entity_db::transactional_conf(&factory)?;
     // `(request cap + service cap) * 2` must fit in `max - reserve`; check_serve_caps below says so.
     let pool = conf.pool.clone();
-    let install = crate::db::embedded::shared_install_dir(&runtime_dir.join("db"), &cluster_dir);
+    let install = crate::db::embedded::shared_install_dir(&runtime_dir, &cluster_dir);
     let db_started = std::time::Instant::now();
     tracing::info!(
         "Opening DataSource transactional, database {}, max pool {}, cluster directory {}",
@@ -1006,6 +1054,7 @@ fn boot_server_factory(
             None
         }
     };
+    #[cfg(feature = "embedded-postgres")]
     crate::db::backup::install(&facade, &db, search.as_ref(), &runtime_dir);
     // Log events and HTTP requests go to moqui_logs and moqui_http_log through the search backend (shipped above).
     factory.init_tools().map_err(moqui_lib::error::Error::from)?;
@@ -1061,7 +1110,9 @@ fn boot_server_factory(
     // The SSH server binds before the member row is written: with cluster_transport=ssh the row carries its address
     // and host key.
     let cluster_posts = Arc::new(std::sync::Mutex::new(Vec::new()));
+    #[cfg(feature = "ssh")]
     let sshd = ssh::server::start(&factory, &runtime_dir, Arc::clone(&cluster_posts))?;
+    #[cfg(feature = "ssh")]
     if sshd.is_some() {
         tracing::info!("SSH server started");
     } else {
@@ -1084,10 +1135,13 @@ fn boot_server_factory(
     let cluster_edge = cluster_edge::listen(Arc::clone(&factory), cluster_posts)?;
     notws::install_push().map_err(moqui_lib::error::Error::from)?;
     tracing::info!("Cluster, cluster edge listener and notification WebSocket push initialized");
+    #[cfg(feature = "ssh")]
     ssh::install_client(&factory, &runtime_dir);
+    #[cfg(feature = "sso")]
     sso::install();
+    #[cfg(feature = "print")]
     ipp::install();
-    tracing::info!("SSH client, SSO and IPP integrations installed");
+    tracing::info!("Integrations installed: {}", integrations());
     // last, so mail is taken only once everything it runs is up
     let smtpd = start_smtp(&factory);
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1102,6 +1156,7 @@ fn boot_server_factory(
         runtime: Some(runtime),
         pdf: Some(pdf),
         smtpd: Some(smtpd),
+        #[cfg(feature = "ssh")]
         sshd,
         cluster_edge: Some(cluster_edge),
         notify_listener,
@@ -1114,19 +1169,20 @@ fn boot_server_factory(
 }
 
 /// How long the axum runtime waits for its blocking tasks when it stops.
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 const RUNTIME_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Drop order is the axum runtime, the PDF browser, the SMTP listener, the SSH server, the cluster listeners (while the request pool is still up),
 /// the factory, the search store, the facade, the sim overlay, then the entity database (its driver, then its cluster). The search store
 /// outlives the factory so a dedicated postmaster stops after the facade's clients, and the overlay outlives the facade
 /// for its sim pool.
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 struct ServeProcess {
     /// Stopped with [`RUNTIME_SHUTDOWN`] as its limit.
     runtime: Option<tokio::runtime::Runtime>,
     pdf: Option<PdfSlot>,
     smtpd: Option<SmtpSlot>,
+    #[cfg(feature = "ssh")]
     sshd: Option<ssh::server::SshServer>,
     cluster_edge: Option<crate::cluster_edge::ClusterEdge>,
     notify_listener: Option<crate::cluster_notify::NotifyListener>,
@@ -1137,7 +1193,7 @@ struct ServeProcess {
     db: Option<crate::db::entity_db::EntityDb>,
 }
 
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 impl Drop for ServeProcess {
     fn drop(&mut self) {
         logging::stop_shipping();
@@ -1150,6 +1206,7 @@ impl Drop for ServeProcess {
         }
         self.pdf.take();
         self.smtpd.take();
+        #[cfg(feature = "ssh")]
         self.sshd.take();
         self.cluster_edge.take();
         self.notify_listener.take();
@@ -1214,12 +1271,78 @@ fn install_pdf(_runtime_dir: &std::path::Path) -> PdfSlot {
     moqui_core::screen::install_pdf_unavailable("PDF is not available: this build leaves out the pdf feature");
 }
 
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+/// The package this host was built as (docs/Packaging.md): the largest of `maximal`, `enterprise` and `lite` its
+/// features include, else `custom`.
+#[must_use]
+pub fn build_package() -> &'static str {
+    if cfg!(feature = "maximal") {
+        "maximal"
+    } else if cfg!(feature = "enterprise") {
+        "enterprise"
+    } else if cfg!(feature = "lite") {
+        "lite"
+    } else {
+        "custom"
+    }
+}
+
+/// The host's own features in this build; [`moqui_core::build_info::features`] adds the framework's.
+#[must_use]
+pub fn build_features() -> Vec<&'static str> {
+    [
+        ("axum", cfg!(feature = "axum")),
+        ("embedded-postgres", cfg!(feature = "embedded-postgres")),
+        ("postgres", cfg!(feature = "postgres")),
+        ("mysql", cfg!(feature = "mysql")),
+        ("pdf", cfg!(feature = "pdf")),
+        ("ssh", cfg!(feature = "ssh")),
+        ("sso", cfg!(feature = "sso")),
+        ("print", cfg!(feature = "print")),
+        ("inbound-smtp", cfg!(feature = "inbound-smtp")),
+    ]
+    .into_iter()
+    .filter_map(|(name, built)| built.then_some(name))
+    .collect()
+}
+
+/// Tell the framework this build's package and host features, once.
+fn register_build() {
+    moqui_core::build_info::set_host(build_package(), &build_features());
+}
+
+/// `moqui version`: the version, the package, and every feature.
+fn version_text() -> String {
+    format!(
+        "moqui {} ({}): {}",
+        env!("CARGO_PKG_VERSION"),
+        build_package(),
+        moqui_core::build_info::features().join(", ")
+    )
+}
+
+/// The host integrations this build installs, for the boot log.
+fn integrations() -> String {
+    let names: Vec<&str> = [
+        ("SSH client", cfg!(feature = "ssh")),
+        ("SSO", cfg!(feature = "sso")),
+        ("IPP", cfg!(feature = "print")),
+    ]
+    .into_iter()
+    .filter_map(|(name, built)| built.then_some(name))
+    .collect();
+    if names.is_empty() {
+        "none in this build".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 struct Ready {
     tx: Option<std::sync::mpsc::Sender<Result<http::ListenReport, String>>>,
 }
 
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 impl Ready {
     fn fail(&mut self, err: &moqui_lib::error::Error) {
         if let Some(tx) = self.tx.take() {
@@ -1236,7 +1359,7 @@ impl Ready {
     }
 }
 
-#[cfg(all(feature = "axum", feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 impl Drop for Ready {
     fn drop(&mut self) {
         if let Some(tx) = self.tx.take() {
@@ -1269,7 +1392,7 @@ fn should_load_data(existing: i64, flags: &LoadFlags, startup: bool) -> bool {
     }
 }
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn load_in_context(
     framework_dir: &std::path::Path,
     facade: &moqui_core::entity::EntityFacade,
@@ -1418,10 +1541,10 @@ fn index_feeds_on_start_empty(factory: &std::sync::Arc<moqui_core::context::Exec
 }
 
 /// The `loadDataEmptyDb` frame of Java's `checkEmptyDb`, popped on drop.
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 struct EmptyDbLoadFrame;
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 impl EmptyDbLoadFrame {
     fn push() -> Result<Self, moqui_lib::error::Error> {
         let pushed = moqui_core::context::ExecutionContext::with_current(|ctx| {
@@ -1440,7 +1563,7 @@ impl EmptyDbLoadFrame {
     }
 }
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 impl Drop for EmptyDbLoadFrame {
     fn drop(&mut self) {
         moqui_core::context::ExecutionContext::with_current(|ctx| {
@@ -1465,7 +1588,7 @@ fn report_message_errors(location: &str) {
 }
 
 /// One data location: logs the start and "Loaded N records ... in N.NNs" like `EntityDataLoaderImpl`.
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn load_one(
     facade: &moqui_core::entity::EntityFacade,
     location: &str,
@@ -1541,7 +1664,7 @@ fn component_data_locations(factory: &moqui_core::context::ExecutionContextFacto
     locations
 }
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn apply_facade_flags(facade: &moqui_core::entity::EntityFacade, flags: &LoadFlags) {
     if flags.raw || flags.disable_entity_eca {
         facade.set_disable_entity_eca(true);
@@ -1557,7 +1680,7 @@ fn apply_facade_flags(facade: &moqui_core::entity::EntityFacade, flags: &LoadFla
     }
 }
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn register_services(
     framework_dir: &std::path::Path,
     extra: &[std::path::PathBuf],
@@ -1589,7 +1712,7 @@ fn register_services(
     Ok(())
 }
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn entity_count(facade: &moqui_core::entity::EntityFacade, name: &str) -> Result<i64, moqui_lib::error::Error> {
     facade.find(name)?.count()
 }
@@ -1794,6 +1917,7 @@ fn framework_component_path(location: &str) -> Option<&str> {
 /// [`db::embedded`] builds a forwarding `libxml2.so.2` into the install's `lib` before any server binary runs.
 /// Every theseus binary searches that directory through its `$ORIGIN/../lib` runpath, so the process
 /// environment is never changed: `set_var` with other threads running is undefined behaviour.
+#[cfg(feature = "embedded-postgres")]
 pub(crate) mod xmlshim {
     use std::path::{Path, PathBuf};
 
@@ -2024,6 +2148,29 @@ pub(crate) mod xmlshim {
 #[cfg(test)]
 mod tests {
     use super::{dispatch, load_options, parse_load_args, should_load_data, startup_load_flags, LoadFlags};
+
+    #[test]
+    fn runtime_is_the_local_one_else_beside_or_around_the_executable() {
+        let root = std::env::temp_dir().join(format!("moqui-runtime-lookup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let local = root.join("work/runtime");
+        let archive = root.join("archive");
+        let beside = archive.join("runtime");
+        let exe = archive.join("moqui");
+        // A directory without base-component is not a runtime.
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::create_dir_all(&beside).unwrap();
+        assert_eq!(super::runtime_dir_for(&local, Some(&exe)), local);
+        // The archive layout: the binary sits in the runtime.
+        std::fs::create_dir_all(archive.join("base-component")).unwrap();
+        assert_eq!(super::runtime_dir_for(&local, Some(&exe)), archive);
+        assert_eq!(super::runtime_dir_for(&local, None), local);
+        std::fs::create_dir_all(beside.join("base-component")).unwrap();
+        assert_eq!(super::runtime_dir_for(&local, Some(&exe)), beside);
+        std::fs::create_dir_all(local.join("base-component")).unwrap();
+        assert_eq!(super::runtime_dir_for(&local, Some(&exe)), local);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn startup_load_honors_all_including_demo() {

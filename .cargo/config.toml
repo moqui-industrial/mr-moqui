@@ -14,9 +14,9 @@ lint = "clippy --workspace --all-targets -- -D warnings"
 # The host without its default features (no server, no embedded Postgres, MySQL or PDF), which `lint` does not build.
 lint-min = "clippy -p moqui-host --no-default-features --all-targets -- -D warnings"
 
-# The build profiles, here rather than in Cargo.toml so they apply to the generated crate `./moq build` links add-on
-# components through (target/moqui-app), which is its own workspace. Cargo reads this file from the directory it runs
-# in and its parents, so run cargo from the repository.
+# The build profiles, one for each package (docs/Packaging.md), here rather than in Cargo.toml so they apply to the
+# generated crate `./moq build` links add-on components through (target/moqui-app), which is its own workspace. Cargo
+# reads this file from the directory it runs in and its parents, so run cargo from the repository.
 
 # Phase 6 unwinds across the service boundary. This is already the compiler default.
 [profile.dev]
@@ -28,8 +28,24 @@ panic = "unwind"
 [profile.dev.package."*"]
 opt-level = 3
 
+# The Maximal package (`./moq build --release`, docs/Packaging.md).
 [profile.release]
 panic = "unwind"
+
+# The Default package (`./moq build`): optimized, so it serves and deploys as release does, with incremental builds of
+# the workspace and path crates (cargo applies `incremental` to those only) for a quick rebuild after an edit, and more
+# codegen units for them. Dependencies keep the release settings; they are built once.
+[profile.lite]
+inherits = "release"
+incremental = true
+codegen-units = 256
+
+[profile.lite.package."*"]
+codegen-units = 16
+
+# The Enterprise package (`./moq build --enterprise`): release settings, in its own target/enterprise.
+[profile.enterprise]
+inherits = "release"
 
 [env]
 POSTGRESQL_VERSION = { value = "=18.6.0", force = true }

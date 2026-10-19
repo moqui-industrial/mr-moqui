@@ -16,7 +16,7 @@
 //! runs the connector against a `dbresource://` volume, with a multipart upload and the `file` download through
 //! `ec.web.sendResourceResponse`. The commands one by one are in `moqui-core/src/service/elfinder/tests.rs`.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
 use std::net::SocketAddr;
 

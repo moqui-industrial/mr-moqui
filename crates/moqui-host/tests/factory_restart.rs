@@ -1,5 +1,5 @@
 //! Empty-db startup destroys the bootstrap factory before initializing against seeded data.
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
 use std::sync::{Arc, Mutex, Weak};
 

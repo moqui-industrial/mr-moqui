@@ -262,6 +262,7 @@ Lunch on Friday?
 `
 
 feature("an import, rules, the remote change queue and a sync whose server is not there, on the real database", {
+    requires: ["imap"],
     when() {
         ec.user.internalLoginUser("mailClientOwner")
         const local = mail("create#EmailAccount", { emailAddress: "local@example.com", accountName: "Local" }).emailAccountId

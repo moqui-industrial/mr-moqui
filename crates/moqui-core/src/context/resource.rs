@@ -102,45 +102,52 @@ fn http_get(url: &str, sim: bool) -> Result<String, String> {
     }
 }
 
-#[derive(Clone, Debug)]
+/// A `dbresource` node as found. A file's bytes are read when they are first asked for.
+#[derive(Clone)]
 struct DbSnap {
     exists: bool,
     is_file: bool,
-    /// The file's bytes, when `loaded`.
-    bytes: Vec<u8>,
-    /// False for a file found among a directory's children, whose bytes are read when asked for.
-    loaded: bool,
+    bytes: Arc<OnceLock<Result<Vec<u8>, String>>>,
+    facade: Option<EntityFacade>,
     children: Vec<DbSnapChild>,
 }
 
+impl std::fmt::Debug for DbSnap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DbSnap")
+            .field("exists", &self.exists)
+            .field("is_file", &self.is_file)
+            .field("children", &self.children)
+            .finish()
+    }
+}
+
 impl DbSnap {
-    /// A file under a directory snapshot: its bytes are read on use.
-    fn child_file() -> Self {
+    /// A file under a directory read before, whose bytes are read when wanted.
+    fn file(facade: Option<EntityFacade>, exists: bool) -> Self {
         Self {
-            exists: true,
-            is_file: true,
-            bytes: Vec::new(),
-            loaded: false,
+            exists,
+            is_file: exists,
+            bytes: Arc::new(OnceLock::new()),
+            facade,
             children: Vec::new(),
         }
     }
 
-    /// The file's bytes: the snapshot's, or for a child file a read of its location now.
-    fn file_bytes(&self, location: &str) -> Result<std::borrow::Cow<'_, [u8]>, Error> {
-        if !self.exists || !self.is_file {
-            return Err(Error::new(format!("not a file: {location}")));
-        }
-        if self.loaded {
-            return Ok(std::borrow::Cow::Borrowed(&self.bytes));
-        }
-        let facade = super::ExecutionContext::with_current(|ec| ec.factory().entity())
-            .flatten()
-            .ok_or_else(|| Error::new("database resource is not available"))?;
-        let info = facade.read_db_resource(location).map_err(Error::from)?;
-        if !info.exists || !info.is_file {
-            return Err(Error::new(format!("not a file: {location}")));
-        }
-        Ok(std::borrow::Cow::Owned(info.bytes))
+    fn bytes(&self, location: &str) -> Result<Vec<u8>, Error> {
+        self.bytes
+            .get_or_init(|| {
+                let Some(facade) = &self.facade else {
+                    return Ok(Vec::new());
+                };
+                // a file of a listing deleted since is no file now
+                facade
+                    .read_db_resource_bytes(location)
+                    .map_err(|err| err.message().to_string())?
+                    .ok_or_else(|| format!("not a file: {location}"))
+            })
+            .clone()
+            .map_err(Error::new)
     }
 }
 
@@ -223,8 +230,13 @@ impl ResourceRef {
                 .fetch()
                 .clone()
                 .map_err(|message| Error::new(format!("{message}: {}", self.location))),
-            Stored::Db(snap) => String::from_utf8(snap.file_bytes(&self.location)?.into_owned())
-                .map_err(|_| Error::new(format!("dbresource is not utf-8: {}", self.location))),
+            Stored::Db(snap) => {
+                if !snap.exists || !snap.is_file {
+                    return Err(Error::new(format!("not a file: {}", self.location)));
+                }
+                String::from_utf8(snap.bytes(&self.location)?)
+                    .map_err(|_| Error::new(format!("dbresource is not utf-8: {}", self.location)))
+            }
         }
     }
 
@@ -238,7 +250,12 @@ impl ResourceRef {
                 .clone()
                 .map(String::into_bytes)
                 .map_err(|message| Error::new(format!("{message}: {}", self.location))),
-            Stored::Db(snap) => Ok(snap.file_bytes(&self.location)?.into_owned()),
+            Stored::Db(snap) => {
+                if !snap.exists || !snap.is_file {
+                    return Err(Error::new(format!("not a file: {}", self.location)));
+                }
+                snap.bytes(&self.location)
+            }
         }
     }
 
@@ -294,7 +311,7 @@ impl ResourceRef {
                 .filter(|child| child.is_file)
                 .map(|child| Self {
                     location: child.location.clone(),
-                    stored: Stored::Db(DbSnap::child_file()),
+                    stored: Stored::Db(DbSnap::file(snap.facade.clone(), true)),
                 })
                 .collect()),
         }
@@ -334,18 +351,12 @@ impl ResourceRef {
                 {
                     return Self {
                         location: child.location.clone(),
-                        stored: Stored::Db(DbSnap::child_file()),
+                        stored: Stored::Db(DbSnap::file(snap.facade.clone(), true)),
                     };
                 }
                 Self {
                     location: join_location(&self.location, relative),
-                    stored: Stored::Db(DbSnap {
-                        exists: false,
-                        is_file: false,
-                        bytes: Vec::new(),
-                        loaded: true,
-                        children: Vec::new(),
-                    }),
+                    stored: Stored::Db(DbSnap::file(snap.facade.clone(), false)),
                 }
             }
         }
@@ -359,6 +370,13 @@ pub struct ResourceStat {
     pub size: u64,
     /// Milliseconds since the epoch, when the storage keeps one.
     pub last_modified: Option<i64>,
+}
+
+/// A file opened by [`ResourceFacade::open`].
+#[derive(Clone)]
+pub struct Opened {
+    pub stat: ResourceStat,
+    pub source: Arc<dyn crate::resource::source::ByteSource>,
 }
 
 /// One entry of [`ResourceFacade::list`].
@@ -502,6 +520,126 @@ impl ResourceFacade {
             std::fs::create_dir_all(parent).map_err(|err| io_error(location, &err))?;
         }
         std::fs::write(&path, bytes).map_err(|err| io_error(location, &err))
+    }
+
+    /// The file at a location to read a window at a time, for a response, with what it is: `None` when no file is
+    /// there. A file on disk is read as it is sent; other storage on the first read, or a window at a time where it
+    /// can (a content blob). A `#versionName` suffix opens that version on storage that keeps versions, as
+    /// [`Self::location_bytes`] reads it.
+    pub fn open(&self, location: &str) -> Result<Option<Opened>, Error> {
+        if let Some((path, version_name)) = split_version(location) {
+            if self.supports_version(path) {
+                return Ok(self.read_version(path, version_name)?.map(|bytes| Opened {
+                    stat: ResourceStat {
+                        is_file: true,
+                        size: bytes.len() as u64,
+                        last_modified: None,
+                    },
+                    source: Arc::new(crate::resource::source::MemorySource::new(bytes)),
+                }));
+            }
+        }
+        if let Some(provider) = self.provider(location) {
+            return Ok(provider
+                .open(location)?
+                .map(|(stat, source)| Opened { stat, source }));
+        }
+        if scheme_of(location) == "dbresource" {
+            return Ok(self
+                .db_facade()?
+                .open_db_resource(location)
+                .map_err(Error::from)?
+                .map(|(stat, source)| Opened {
+                    stat: ResourceStat {
+                        is_file: true,
+                        size: stat.size,
+                        last_modified: stat.last_updated,
+                    },
+                    source,
+                }));
+        }
+        let resource = self.get(location)?;
+        if !resource.exists() || !resource.is_file() {
+            return Ok(None);
+        }
+        if let Some(path) = resource.file_path() {
+            let source = crate::resource::source::FileSource::open(path)?;
+            let stat = ResourceStat {
+                is_file: true,
+                size: crate::resource::source::ByteSource::len(&source),
+                last_modified: resource.last_modified(),
+            };
+            return Ok(Some(Opened {
+                stat,
+                source: Arc::new(source),
+            }));
+        }
+        let bytes = resource.read_bytes()?;
+        let stat = ResourceStat {
+            is_file: true,
+            size: bytes.len() as u64,
+            last_modified: resource.last_modified(),
+        };
+        Ok(Some(Opened {
+            stat,
+            source: Arc::new(crate::resource::source::MemorySource::new(bytes)),
+        }))
+    }
+
+    /// Write several files together: a change set of each repository (one commit for the files of a `git://`
+    /// repository), else each as [`ResourceFacade::write_bytes`] does. A file that is not written is an error.
+    pub fn write_many(&self, files: &[(String, Vec<u8>)]) -> Result<(), Error> {
+        let mut by_root: indexmap::IndexMap<String, Vec<ResourceChange>> = indexmap::IndexMap::new();
+        for (location, bytes) in files {
+            let location = strip_hash(location);
+            let under = location
+                .split_once("://")
+                .and_then(|(scheme, rest)| {
+                    let (top, path) = rest.trim_start_matches('/').split_once('/')?;
+                    Some((format!("{scheme}://{top}"), path.trim_matches('/').to_string()))
+                })
+                .filter(|(_, path)| !path.is_empty());
+            match under.filter(|_| self.provider(location).is_some()) {
+                Some((root, path)) => by_root.entry(root).or_default().push(ResourceChange::Write {
+                    path,
+                    bytes: bytes.clone(),
+                }),
+                None => self.write_bytes(location, bytes)?,
+            }
+        }
+        for (root, changes) in by_root {
+            let names: Vec<&str> = changes.iter().map(ResourceChange::path).collect();
+            let message = match names.as_slice() {
+                [one] => format!("Write {one}"),
+                many => format!("Write {} files: {}", many.len(), many.join(", ")),
+            };
+            let outcome = self.apply_change_set(&root, &changes, Some(&message))?;
+            if let Some((path, why)) = outcome.failures.first() {
+                return Err(Error::new(format!("{root}/{path} was not written: {why}")));
+            }
+        }
+        Ok(())
+    }
+
+    /// Write a file from `input` (of `size` bytes, when known), creating its parent directories: an upload streamed
+    /// to storage, never all in memory where the storage can take it as it is read (a file, a `git://` content blob).
+    pub fn write_from(&self, location: &str, input: &mut dyn std::io::Read, size: Option<u64>) -> Result<(), Error> {
+        if let Some(provider) = self.provider(location) {
+            return provider.write_from(location, input, size);
+        }
+        if scheme_of(location) == "dbresource" {
+            return self
+                .db_facade()?
+                .write_db_resource_from(location, input, size)
+                .map_err(Error::from);
+        }
+        let path = self.writable_path(location)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| io_error(location, &err))?;
+        }
+        let mut file = std::fs::File::create(&path).map_err(|err| io_error(location, &err))?;
+        std::io::copy(input, &mut file).map_err(|err| io_error(location, &err))?;
+        Ok(())
     }
 
     /// The kind, size, and last-modified milliseconds of a location, or `None` when nothing is there.
@@ -817,13 +955,13 @@ impl ResourceFacade {
         let Some(facade) = self.installed() else {
             return Err(Error::new("database resource is not available"));
         };
-        let info = facade.read_db_resource(location).map_err(Error::from)?;
+        let info = facade.db_resource_entry(location).map_err(Error::from)?;
         if !info.exists {
             return Err(Error::new(format!("resource not found: {location}")));
         }
         Ok(ResourceRef {
             location: location.to_string(),
-            stored: Stored::Db(db_snap(location, &info)),
+            stored: Stored::Db(db_snap(location, &info, facade.clone())),
         })
     }
 
@@ -876,12 +1014,12 @@ impl ResourceFacade {
     }
 }
 
-fn db_snap(location: &str, info: &DbResourceInfo) -> DbSnap {
+fn db_snap(location: &str, info: &DbResourceInfo, facade: EntityFacade) -> DbSnap {
     DbSnap {
         exists: info.exists,
         is_file: info.is_file,
-        bytes: info.bytes.clone(),
-        loaded: true,
+        bytes: Arc::new(OnceLock::new()),
+        facade: Some(facade),
         children: info
             .children
             .iter()

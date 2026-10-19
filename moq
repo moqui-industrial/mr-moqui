@@ -58,12 +58,12 @@ else
 fi
 
 # name|group|arguments|description. Drives the task list, matching, and completion.
-TASKS='build|Run|[--debug] [cargo args...]|Build the release binary (cargo build --release -p moqui), or the debug binary with --debug
-run|Run|[opts] [moqui-args...]|Run the release binary with the dev conf
-run-production|Run|[opts] [moqui-args...]|Run the release binary with the production conf
+TASKS='build|Run|[--debug/--release/--enterprise] [cargo args...]|Build the Default package (target/lite/moqui), or Debug, Maximal or Enterprise
+run|Run|[opts] [moqui-args...]|Run the binary with the dev conf
+run-production|Run|[opts] [moqui-args...]|Run the binary with the production conf
 load|Run|[types] [name=value] [opts]|Load data, all types by default, with the dev conf
-load-production|Run|[types] [name=value] [opts]|Load data with the release binary and production conf
-test|Run|[component...] [test opts]|Run component tests (moqui test) with the release binary and the dev conf
+load-production|Run|[types] [name=value] [opts]|Load data with the production conf
+test|Run|[component...] [test opts]|Run component tests (moqui test) with the dev conf
 load-save|Run|[-n name] [load args...]|clean-all, load, then save-db
 save-db|Database|[name]|Save the embedded database and OpenSearch data to runtime/save/<name>
 reload-save|Database|[name]|clean-db, then restore a save-db copy
@@ -83,6 +83,7 @@ component-set|Components|<set...> [-t type] [-r repo]|Get the components in a co
 component-depends|Components|[-t type] [-r repo]|Get missing depends-on components for runtime/component
 component-create|Components|<name> [opts]|Create a component from the start component
 component-zip|Components|[name...]|Zip components in runtime/component
+archive|Package|[file] [opts]|Zip (or --tgz) runtime with the binary and MoquiConf.xml (mr-moqui-YYYYMMDD.zip)
 completion|Setup|[bash or zsh] [--install]|Print or install shell completion
 help|Setup|[task]|Show the task list or help for one task'
 
@@ -117,7 +118,8 @@ get-depends|component-depends
 get-component-set|component-set
 create-component|component-create
 zip-component|component-zip
-zip-components|component-zip'
+zip-components|component-zip
+add-runtime|archive'
 
 # ========== utilities ==========
 
@@ -392,35 +394,46 @@ help_task() {
     fi
 }
 
-RUN_OPTIONS_HELP='      --debug          Use target/debug/moqui (default: target/release/moqui)
+PACKAGE_OPTIONS_HELP='      --debug          The Debug package, target/debug/moqui (unoptimized, every feature)
+      --release        The Maximal package, target/release/moqui (every feature, Postgres embedded)
+      --enterprise     The Enterprise package, target/enterprise/moqui (every feature, databases external)
+                       With none of these: the Default package, target/lite/moqui (the web server on
+                       embedded Postgres, PDF and SMTP). docs/Packaging.md lists the features of each'
+
+RUN_OPTIONS_HELP="$PACKAGE_OPTIONS_HELP"'
   -c, --conf FILE      Runtime conf merged over MoquiDefaultConf.xml (sets MOQUI_CONF); relative to
                        the runtime directory, like conf/MoquiProductionConf.xml, or a path
   -p, --port N         HTTP port (webapp_http_port)
       --https-port N   HTTPS port to listen on (webapp_https_listen_port), or off
   -D name=value        Set any conf property, as an environment variable; repeatable. Use the
                        underscore name (entity_ds_db_conf), not a dotted one
-      --build          Build first (cargo build --release -p moqui, or without --release with --debug). A
-                       binary that is not there is always built
+      --build          Build the package first (./moq build). A binary that is not there is always built
       --               End of moq options'
 
 help_build() {
-    cat <<'EOF'
-Builds the moqui binary with cargo in this repo: target/release/moqui (cargo build --release -p
-moqui), or target/debug/moqui with --debug. Other words go to cargo as they are. The tasks that run
-moqui (run, load, test, save-db, ...) build the binary they need when it is not there.
+    cat <<EOF
+Builds a moqui package with cargo in this repo (docs/Packaging.md): the Default package by default,
+or Debug, Maximal or Enterprise. Each has its own cargo profile, features and binary:
+  Default     cargo build --profile lite --no-default-features -F lite -p moqui        target/lite/moqui
+  Debug       cargo build --profile dev --no-default-features -F maximal -p moqui      target/debug/moqui
+  Maximal     cargo build --profile release --no-default-features -F maximal -p moqui  target/release/moqui
+  Enterprise  cargo build --profile enterprise --no-default-features -F enterprise -p moqui
+                                                                                 target/enterprise/moqui
+Other words go to cargo as they are. The tasks that run moqui (run, load, test, save-db, ...) build
+the binary they need when it is not there.
 
 A component in runtime/component with a Cargo.toml beside its component.xml is a Rust crate: the
 build generates target/moqui-app, a crate that links those crates with the framework, and builds
-it to the same target/release/moqui or target/debug/moqui. See runtime/component/README.md.
+it to the same binary path. See runtime/component/README.md.
   ./moq build
-  ./moq build --debug
-  ./moq build -- --features some-feature
+  ./moq build --release
+  ./moq build --enterprise -- --timings
 
-The release build for distribution also strips psql from the bundled Postgres first; see README.md
+A build for distribution also strips psql from the bundled Postgres first; see README.md
 (scripts/pg-payload.sh strip, then check).
 
 Options:
-      --debug          Build target/debug/moqui
+$PACKAGE_OPTIONS_HELP
       --               End of moq options; the rest goes to cargo
 EOF
 }
@@ -432,7 +445,7 @@ moqui arguments it starts the HTTP server. The first argument that is not a moq 
 everything after it, goes to the binary, so moqui's own commands run with the same conf:
   ./moq run                         serve with runtime/conf/MoquiDevConf.xml
   ./moq run -p 8081 -D entity_ds_db_conf=postgres
-  ./moq run --debug                 the debug binary, still the dev conf
+  ./moq run --release               the Maximal binary, still the dev conf
   ./moq run lint --screens          moqui lint --screens
   ./moq run types --out /tmp/types
 
@@ -443,11 +456,10 @@ EOF
 
 help_run_production() {
     cat <<EOF
-Like run, but with target/release/moqui and conf/MoquiProductionConf.xml unless --debug or
---conf says otherwise. Build the release binary as README.md describes (scripts/pg-payload.sh
-strip, then cargo build --release -p moqui).
+Like run, but with conf/MoquiProductionConf.xml unless --conf says otherwise. For a distribution,
+build the binary as README.md describes (scripts/pg-payload.sh strip, then ./moq build).
   ./moq run-production
-  ./moq run-production --debug -c conf/MoquiDevConf.xml
+  ./moq run-production --enterprise -D entity_ds_db_conf=postgres
 
 Options:
 $RUN_OPTIONS_HELP
@@ -458,27 +470,28 @@ LOAD_HELP='Words without "=" are data types, joined into types=a,b. name=value w
 they are: components=a,b, timeout=<seconds>, raw=true, disableEntityEca=true,
 disableAuditLog=true, disableFkCreate=true, disableDataFeed=true.
 
-Options (as for run): --debug, -c FILE, -D name=value, --build, and
+Options (as for run): --debug, --release, --enterprise, -c FILE, -D name=value, --build, and
   -l, --location FILE  Load only this data file (location=<absolute path>)'
 
 help_test() {
     cat <<EOF
-Runs moqui test, the JavaScript specs in each component's test/ directory, with the debug
-binary and the dev conf. Arguments go to moqui test; the moq options below are read first and
+Runs moqui test, the JavaScript specs in each component's test/ directory, with the Default
+binary (or the package asked for) and the dev conf. A spec that requires a feature the binary
+leaves out (spec({ requires: [...] })) is reported as skipped. Arguments go to moqui test; the moq options below are read first and
 any other option is passed on, so moqui's own options work as they are:
   ./moq test mantle-usl
   ./moq test mantle-usl --db snapshot
   ./moq test mantle-usl --spec OrderToCashBasicFlow --feature "ship Sales Order"
   ./moq test mantle-usl --junit build/test-results
 
-Options (as for run): --debug, -c FILE, -p, -D name=value, --build, and
+Options (as for run): --debug, --release, --enterprise, -c FILE, -p, -D name=value, --build, and
   --  End of moq options; everything after it goes to moqui test
 EOF
 }
 
 help_load() {
     cat <<EOF
-Loads data into the configured database with the release binary and the dev conf. With no data
+Loads data into the configured database with the dev conf. With no data
 types it loads all of them, like gradle load.
   ./moq load
   ./moq load seed seed-initial install
@@ -491,7 +504,7 @@ EOF
 
 help_load_production() {
     cat <<EOF
-Loads data with the release binary and conf/MoquiProductionConf.xml. With no data types it
+Loads data with conf/MoquiProductionConf.xml. With no data types it
 loads moqui's default set: seed, seed-initial, install.
   ./moq load-production
   ./moq load-production seed
@@ -522,7 +535,9 @@ This saves only the embedded database, not an external one set by entity_ds_db_c
   ./moq save-db before-upgrade
 
 Options:
-      --debug          Use the debug binary (default: release). A binary that is not there is built
+      --debug, --release
+                       Use the Debug or Maximal binary (default: the Default package). A binary that
+                       is not there is built
       --skip-opensearch  Leave out the OpenSearch data
 EOF
 }
@@ -536,7 +551,9 @@ must be stopped. The name defaults to "default".
   ./moq reload-save before-upgrade
 
 Options:
-      --debug          Use the debug binary (default: release). A binary that is not there is built
+      --debug, --release
+                       Use the Debug or Maximal binary (default: the Default package). A binary that
+                       is not there is built
       --skip-opensearch  Leave runtime/opensearch/data alone
 EOF
 }
@@ -545,7 +562,7 @@ help_clean_db() {
     cat <<'EOF'
 Deletes runtime/db/embedded (the embedded Postgres cluster), runtime/txlog, and the OpenSearch
 data and logs in runtime/opensearch. An OpenSearch daemon with a pid file is stopped first and
-started again after. It keeps runtime/db/install (the unpacked Postgres) and
+started again after. It keeps runtime/install (the unpacked Postgres) and
 runtime/db/instance_id, and refuses while the embedded Postgres is running.
 EOF
 }
@@ -557,7 +574,7 @@ help_clean_log() {
 help_clean_all() {
     cat <<'EOF'
 clean-db, clean-log, runtime/tmp, and tidy-cargo. tidy-cargo removes old cargo artifacts and keeps
-the current debug and release builds. Saves in runtime/save are kept; delete those by hand.
+the current build of each package. Saves in runtime/save are kept; delete those by hand.
 load-save cleans the runtime data only, not target/.
 EOF
 }
@@ -565,7 +582,7 @@ EOF
 help_tidy_cargo() {
     cat <<'EOF'
 Deletes old cargo artifacts under target/ and keeps the current build. Each unit cargo still
-builds keeps its newest output: the debug and release binaries, test harnesses, and each feature
+builds keeps its newest output: the binary of each package, test harnesses, and each feature
 set, such as moqui-core with and without its default features. A later cargo build of unchanged
 code does not recompile.
 
@@ -577,7 +594,7 @@ removes the directories for hashes the current build does not use. A build scrip
 fingerprint does not record the profile or the features, so each run that a kept library names
 stays, along with its output under build/.
 
-It does not remove target/debug/moqui, target/release/moqui, or target/moqui-app. A cargo build
+It does not remove a package's binary (target/<profile>/moqui) or target/moqui-app. A cargo build
 that is running is left alone. load-save does not run this.
 EOF
 }
@@ -732,6 +749,45 @@ build.gradle. Needs zip.
 EOF
 }
 
+help_archive() {
+    cat <<EOF
+Writes a zip, or with --tgz a gzipped tar, that expands to one directory named for the file
+without .zip or .tgz. That directory is a runtime directory with the binary in it:
+  moqui           the binary of the package asked for (the Default package unless --debug,
+                  --release or --enterprise)
+  MoquiConf.xml   the instance conf, merged over the framework defaults: a copy of
+                  conf/MoquiProductionConf.xml, or the --conf file
+  README.txt      how to run it, the package, and what went in
+  LICENSE.md
+  and all of runtime/ (.env, base-component, conf, db, ...) except log/, tmp/, save/ and
+  install/, with Chromium, OpenSearch and the embedded database when they are there
+The binary uses the directory it is in as the runtime when it has base-component/, and merges
+the MoquiConf.xml there, so it runs as <dir>/moqui from any directory; on its first start it
+unpacks the embedded Postgres into <dir>/install.
+
+The file goes in the current directory unless named elsewhere, with .zip (or .tgz) added when
+the name lacks it; a name ending in .tgz or .tar.gz means --tgz. A directory gets the default
+name inside it. The archive also leaves out .git, the target/ of component crates, OpenSearch
+logs, and pid files. The database is copied as files, so the embedded Postgres must be stopped;
+an OpenSearch daemon with a pid file is stopped for the copy and started again after. Needs zip,
+or tar and gzip.
+  ./moq archive
+  ./moq archive --release /backups/shop.zip
+  ./moq archive --tgz --no-data dist/
+
+Options:
+$PACKAGE_OPTIONS_HELP
+      --build          Build the package first. A binary that is not there is always built
+  -c, --conf FILE      The conf put in the archive as MoquiConf.xml (default
+                       conf/MoquiProductionConf.xml); relative to the runtime directory, or a path
+      --tgz            A gzipped tar (.tgz) instead of a zip
+      --with-save      Include runtime/save (the save-db copies)
+      --no-data        Leave out the instance data and secrets: runtime/db, the OpenSearch data,
+                       runtime/txlog, runtime/.env and runtime/cert
+  -f, --force          Replace the file when it is there
+EOF
+}
+
 help_completion() {
     cat <<EOF
 Prints the completion script for bash or zsh (default: from \$SHELL). It completes task names
@@ -752,7 +808,7 @@ help_help() {
 # ========== binary, conf, and properties ==========
 
 # Set by parse_run_opts.
-OPT_PROFILE=
+OPT_PACKAGE=
 OPT_CONF=
 OPT_BUILD=
 OPT_LOCATION=
@@ -784,7 +840,7 @@ add_property() {
 parse_run_opts() {
     local mode=$1 arg
     shift
-    OPT_PROFILE=
+    OPT_PACKAGE=
     OPT_CONF=
     OPT_BUILD=
     OPT_LOCATION=
@@ -793,7 +849,9 @@ parse_run_opts() {
     while [ $# -gt 0 ]; do
         arg=$1
         case $arg in
-            --debug) OPT_PROFILE=debug ;;
+            --debug) set_package debug ;;
+            --release) set_package release ;;
+            --enterprise) set_package enterprise ;;
             -c | --conf)
                 [ $# -ge 2 ] || die "$arg needs a file"
                 OPT_CONF=$2
@@ -869,30 +927,76 @@ parse_run_opts() {
     done
 }
 
-binary_path() {
-    printf '%s\n' "$ROOT/target/$1/moqui"
+# The packages (docs/Packaging.md): default, and debug, release and enterprise from --debug, --release and --enterprise.
+# Each builds with its own cargo profile, so their artifacts and binaries stay apart, and with the package feature of
+# crates/moqui (or of the generated crate in target/moqui-app).
+package_profile() {
+    case $1 in
+        default) echo lite ;;
+        debug) echo dev ;;
+        *) echo "$1" ;;
+    esac
 }
 
-# cargo build for a profile ($1: release or debug), with any more cargo arguments after it. With component crates in
-# runtime/component (a Cargo.toml beside a component.xml) the binary is the generated crate in target/moqui-app, which
-# links them with the framework; without, it is crates/moqui. Either way it lands in target/$profile/moqui.
+package_features() {
+    case $1 in
+        default) echo lite ;;
+        debug | release) echo maximal ;;
+        enterprise) echo enterprise ;;
+    esac
+}
+
+# The profile's directory under target/: cargo puts the dev profile in target/debug.
+package_dir() {
+    case $1 in
+        default) echo lite ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# Record the package an option asked for ($1: debug, release, or enterprise). Two different ones are an error.
+set_package() {
+    [ -z "$OPT_PACKAGE" ] || [ "$OPT_PACKAGE" = "$1" ] || die "--$OPT_PACKAGE and --$1 ask for two packages"
+    OPT_PACKAGE=$1
+}
+
+binary_path() {
+    printf '%s\n' "$ROOT/target/$(package_dir "$1")/moqui"
+}
+
+# cargo build for a package ($1: default, debug, release, or enterprise), with any more cargo arguments after it. With
+# component crates in runtime/component (a Cargo.toml beside a component.xml) the binary is the generated crate in
+# target/moqui-app, which links them with the framework; without, it is crates/moqui. Either way it lands at
+# binary_path.
 build_binary() {
-    local profile=$1
+    local package=$1
     shift
     need_tool cargo
-    local -a release_arg
-    release_arg=()
-    [ "$profile" = release ] && release_arg=(--release)
+    [ "$package" = enterprise ] || ensure_pg_archive
+    local -a package_args
+    package_args=(--profile "$(package_profile "$package")" --no-default-features
+        --features "$(package_features "$package")")
     local -a addons
     mapfile -t addons < <(component_crate_dirs "$RUNTIME_DIR/component" "$RUNTIME_DIR/ecomponent")
     if [ ${#addons[@]} -eq 0 ]; then
-        run_cmd cargo build "${release_arg[@]}" -p moqui "$@" >&2 || die "cargo build failed"
+        run_cmd cargo build "${package_args[@]}" -p moqui "$@" >&2 || die "cargo build failed"
         return
     fi
     local app=$ROOT/target/moqui-app
     write_app_crate "$app" "${addons[@]}"
-    run_cmd cargo build "${release_arg[@]}" --manifest-path "$app/Cargo.toml" --target-dir "$ROOT/target" "$@" >&2 \
+    run_cmd cargo build "${package_args[@]}" --manifest-path "$app/Cargo.toml" --target-dir "$ROOT/target" "$@" >&2 \
         || die "cargo build failed"
+}
+
+# The Postgres archive a package with embedded Postgres embeds (crates/moqui-host/build.rs): downloaded and stripped of
+# psql by scripts/pg-payload.sh strip the first time, unless MOQUI_PG_ARCHIVE names one.
+ensure_pg_archive() {
+    local payload=$ROOT/scripts/pg-payload.sh archive
+    [ -z "${MOQUI_PG_ARCHIVE:-}" ] && [ -x "$payload" ] || return 0
+    archive=$("$payload" path) || die "could not find where the Postgres archive is kept"
+    [ ! -f "$archive" ] || return 0
+    info "The embedded Postgres archive is not there yet; getting it ($(rel "$payload") strip)" >&2
+    run_cmd "$payload" strip >&2 || die "could not get the embedded Postgres archive"
 }
 
 # The component directories under each of $@ that have a Rust crate: a Cargo.toml beside the component.xml.
@@ -960,8 +1064,16 @@ publish = false
 name = \"moqui\"
 path = \"src/main.rs\"
 
+# The packages, as crates/moqui has them (docs/Packaging.md). ./moq build picks one with --no-default-features.
+[features]
+default = [\"maximal\"]
+lite = [\"moqui-host/lite\"]
+enterprise = [\"moqui-host/enterprise\"]
+maximal = [\"moqui-host/maximal\"]
+inbound-smtp = [\"moqui-host/inbound-smtp\"]
+
 [dependencies]
-moqui-host = { path = \"$ROOT/crates/moqui-host\" }
+moqui-host = { path = \"$ROOT/crates/moqui-host\", default-features = false }
 moqui-core = { path = \"$ROOT/crates/moqui-core\", default-features = false }
 ${deps}
 # Its own workspace: not a member of the repository's.
@@ -982,15 +1094,15 @@ fn main() {
     fi
 }
 
-# The binary for a profile. It is built first when asked (--build), and when it is not there.
+# The binary for a package. It is built first when asked (--build), and when it is not there.
 moqui_binary() {
-    local profile=$1 bin
-    bin=$(binary_path "$profile")
+    local package=$1 bin
+    bin=$(binary_path "$package")
     if [ -n "$OPT_BUILD" ]; then
-        build_binary "$profile"
+        build_binary "$package"
     elif [ ! -x "$bin" ]; then
         info "$(rel "$bin") is not built, building it" >&2
-        build_binary "$profile"
+        build_binary "$package"
     fi
     if [ ! -x "$bin" ] && ! dry_run; then
         die "$(rel "$bin") is not there after the build"
@@ -998,9 +1110,9 @@ moqui_binary() {
     printf '%s\n' "$bin"
 }
 
-# The binary for the profile asked for (--debug), else release.
+# The binary for the package asked for (--debug, --release, --enterprise), else the Default package.
 any_binary() {
-    moqui_binary "${OPT_PROFILE:-release}"
+    moqui_binary "${OPT_PACKAGE:-default}"
 }
 
 # MOQUI_CONF as an absolute path. A relative name is tried in the runtime directory, then from the caller's directory.
@@ -1036,12 +1148,14 @@ apply_run_env() {
 # ========== run tasks ==========
 
 task_build() {
-    local profile=release
     local -a cargo_args
     cargo_args=()
+    OPT_PACKAGE=
     while [ $# -gt 0 ]; do
         case $1 in
-            --debug) profile=debug ;;
+            --debug) set_package debug ;;
+            --release) set_package release ;;
+            --enterprise) set_package enterprise ;;
             --)
                 shift
                 cargo_args+=("$@")
@@ -1051,13 +1165,13 @@ task_build() {
         esac
         shift
     done
-    build_binary "$profile" "${cargo_args[@]}"
+    build_binary "${OPT_PACKAGE:-default}" "${cargo_args[@]}"
 }
 
 task_run() {
     parse_run_opts run "$@"
     local bin
-    bin=$(moqui_binary "${OPT_PROFILE:-release}") || exit 1
+    bin=$(moqui_binary "${OPT_PACKAGE:-default}") || exit 1
     apply_run_env ""
     exec_cmd "$bin" "${OPT_REST[@]}"
 }
@@ -1065,7 +1179,7 @@ task_run() {
 task_run_production() {
     parse_run_opts run "$@"
     local bin
-    bin=$(moqui_binary "${OPT_PROFILE:-release}") || exit 1
+    bin=$(moqui_binary "${OPT_PACKAGE:-default}") || exit 1
     apply_run_env "$PRODUCTION_CONF"
     exec_cmd "$bin" "${OPT_REST[@]}"
 }
@@ -1073,16 +1187,16 @@ task_run_production() {
 task_test() {
     parse_run_opts test "$@"
     local bin
-    bin=$(moqui_binary "${OPT_PROFILE:-release}") || exit 1
+    bin=$(moqui_binary "${OPT_PACKAGE:-default}") || exit 1
     apply_run_env ""
     exec_cmd "$bin" test "${OPT_REST[@]}"
 }
 
-# $1 profile, $2 conf, $3 default types ("" for moqui's default), then the load arguments.
+# $1 conf, $2 default types ("" for moqui's default), then the load arguments.
 run_load() {
-    local profile=$1 conf=$2 default_types=$3 bin word types='' has_types=''
+    local conf=$1 default_types=$2 bin word types='' has_types=''
     local -a flags
-    shift 3
+    shift 2
     parse_run_opts load "$@"
     flags=()
     for word in "${OPT_REST[@]}"; do
@@ -1108,17 +1222,17 @@ run_load() {
         [ -f "$location" ] || die "data file $OPT_LOCATION not found"
         flags+=("location=$location")
     fi
-    bin=$(moqui_binary "${OPT_PROFILE:-$profile}") || exit 1
+    bin=$(moqui_binary "${OPT_PACKAGE:-default}") || exit 1
     apply_run_env "$conf"
     exec_cmd "$bin" load "${flags[@]}"
 }
 
 task_load() {
-    run_load release "" all "$@"
+    run_load "" all "$@"
 }
 
 task_load_production() {
-    run_load release "$PRODUCTION_CONF" "" "$@"
+    run_load "$PRODUCTION_CONF" "" "$@"
 }
 
 task_load_save() {
@@ -1874,7 +1988,7 @@ EOF
     done <"$TIDY_TMP/delete"
     kb=$(tidy_du_kb "$TIDY_TMP/delete")
     if dry_run; then
-        info "tidy-cargo: would remove $(tidy_human_kb "$kb") of old artifacts under target/; the current debug and release builds stay"
+        info "tidy-cargo: would remove $(tidy_human_kb "$kb") of old artifacts under target/; the current build of each package stays"
         return 0
     fi
     info "tidy-cargo: removing $(tidy_human_kb "$kb") of old artifacts under target/"
@@ -1882,7 +1996,7 @@ EOF
         [ -n "$path" ] || continue
         rm -rf -- "$path"
     done <"$TIDY_TMP/delete"
-    info "tidy-cargo: removed $(tidy_human_kb "$kb") of old artifacts under target/; the current debug and release builds stay"
+    info "tidy-cargo: removed $(tidy_human_kb "$kb") of old artifacts under target/; the current build of each package stays"
 }
 
 # Hold every profile lock for the rest of this process. A build waiting on the lock starts after
@@ -2125,18 +2239,20 @@ tidy_human_kb() {
     }'
 }
 
-# Sets SAVE_NAME and SKIP_OPENSEARCH, and OPT_PROFILE for any_binary.
+# Sets SAVE_NAME and SKIP_OPENSEARCH, and OPT_PACKAGE for any_binary.
 parse_save_args() {
     local task=$1
     shift
     SAVE_NAME=default
     SKIP_OPENSEARCH=
-    OPT_PROFILE=
+    OPT_PACKAGE=
     OPT_BUILD=
     local named=''
     while [ $# -gt 0 ]; do
         case $1 in
-            --debug) OPT_PROFILE=debug ;;
+            --debug) set_package debug ;;
+            --release) set_package release ;;
+            --enterprise) set_package enterprise ;;
             --skip-opensearch) SKIP_OPENSEARCH=1 ;;
             -*) die "unknown option $1" ;;
             *)
@@ -2897,6 +3013,255 @@ task_component_zip() {
     done
 }
 
+# ========== archive ==========
+
+# The archive for a file name ($1, may be empty) and default extension ($2, .zip or .tgz): relative to the caller's
+# directory, the extension added unless it has one, and the default name inside a directory.
+archive_path() {
+    local file=$1 default
+    default=mr-moqui-$(date +%Y%m%d)$2
+    if [ -z "$file" ]; then
+        abs_path "$default"
+        return
+    fi
+    file=$(abs_path "$file")
+    case $file in
+        */)
+            printf '%s\n' "$file$default"
+            return
+            ;;
+    esac
+    if [ -d "$file" ]; then
+        printf '%s/%s\n' "$file" "$default"
+        return
+    fi
+    case $file in *.zip | *.tgz | *.tar.gz) ;; *) file=$file$2 ;; esac
+    printf '%s\n' "$file"
+}
+
+package_name() {
+    case $1 in
+        default) echo Default ;;
+        debug) echo Debug ;;
+        release) echo Maximal ;;
+        enterprise) echo Enterprise ;;
+    esac
+}
+
+# README.txt of an archive. $1 file, $2 directory name, $3 binary, $4 package, $5 conf, then the runtime entries.
+archive_readme() {
+    local file=$1 name=$2 bin=$3 package=$4 conf=$5 commit version entry list='' secrets=''
+    shift 5
+    for entry in "$@"; do
+        list="$list ${entry#"$name"/}"
+        [ "$entry" != "$name/.env" ] || secrets=1
+    done
+    commit=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null) || commit=
+    if [ -n "$commit" ] && [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        commit="$commit, with local changes"
+    fi
+    version=$("$bin" version 2>/dev/null) || version=
+    {
+        printf '%s\n\n' "$name"
+        printf 'MR Moqui, from ./moq archive on %s%s.\n' "$(date +%Y-%m-%d)" "${commit:+ (commit $commit)}"
+        printf 'The %s package, built for %s.\n' "$(package_name "$package")" "$(uname -sm)"
+        [ -z "$version" ] || printf '%s\n' "$version" | sed 's/^/  /'
+        cat <<EOF
+
+Run
+  $name/moqui starts the server (HTTP on 8080, HTTPS on 8443) from any directory: this
+  directory is its runtime. $name/moqui help lists its other commands and options.
+
+  MoquiConf.xml is this instance's conf, merged over the framework defaults, a copy of
+  $(rel "$conf").
+  Edit it for this host, or choose another conf with --conf or MOQUI_CONF.
+
+  With the embedded Postgres, the first start unpacks it from the binary into install/postgres/.
+
+Contents
+  moqui, MoquiConf.xml, README.txt, LICENSE.md, and from the runtime:$list
+  Left out: log, tmp, save, install, db/install, .git, component target/ directories, OpenSearch
+  logs and pid files.
+EOF
+        if [ -n "$secrets" ]; then
+            cat <<EOF
+
+  .env holds the generated secrets of this instance, among them the key of the database's
+  encrypted fields. Keep it with the database, and keep this archive private.
+EOF
+        fi
+    } >"$file"
+}
+
+task_archive() {
+    local file='' conf=$PRODUCTION_CONF force='' with_save='' no_data='' named='' tgz=''
+    OPT_PACKAGE=
+    OPT_BUILD=
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --debug) set_package debug ;;
+            --release) set_package release ;;
+            --enterprise) set_package enterprise ;;
+            --build) OPT_BUILD=1 ;;
+            -c | --conf)
+                [ $# -ge 2 ] || die "$1 needs a file"
+                conf=$2
+                shift
+                ;;
+            --conf=*) conf=${1#--conf=} ;;
+            --tgz) tgz=1 ;;
+            --with-save) with_save=1 ;;
+            --no-data) no_data=1 ;;
+            -f | --force) force=1 ;;
+            -*) die "unknown option $1" ;;
+            *)
+                [ -z "$named" ] || die "archive takes one file name"
+                file=$1
+                named=1
+                ;;
+        esac
+        shift
+    done
+    local out name
+    if [ -n "$tgz" ]; then
+        out=$(archive_path "$file" .tgz)
+    else
+        out=$(archive_path "$file" .zip)
+    fi
+    case $out in
+        *.tar.gz)
+            name=$(basename "$out" .tar.gz)
+            tgz=1
+            ;;
+        *.tgz)
+            name=$(basename "$out" .tgz)
+            tgz=1
+            ;;
+        *)
+            [ -z "$tgz" ] || die "--tgz writes a .tgz or .tar.gz, not $(basename "$out")"
+            name=$(basename "$out" .zip)
+            ;;
+    esac
+    if [ -n "$tgz" ]; then
+        need_tool tar gzip
+        if tar --help 2>&1 | grep -q BusyBox; then
+            die "--tgz needs GNU or BSD tar; BusyBox tar takes only one -C"
+        fi
+    else
+        need_tool zip
+    fi
+    valid_name "$name" || die "archive name '$name' may use only letters, digits, '.', '_' and '-'"
+    [ -d "$(dirname "$out")" ] || die "no directory $(rel "$(dirname "$out")") for $(basename "$out")"
+    case $out in
+        "$RUNTIME_DIR"/*) die "$(rel "$out") is inside $(rel "$RUNTIME_DIR"), which the archive holds" ;;
+    esac
+    if [ -e "$out" ] && [ -z "$force" ]; then
+        die "$(rel "$out") is there already; -f replaces it"
+    fi
+    conf=$(resolve_conf "$conf") || exit 1
+    [ -n "$no_data" ] || require_server_stopped archive
+    local bin
+    bin=$(moqui_binary "${OPT_PACKAGE:-default}") || exit 1
+
+    # The archive's own files take the place of runtime entries with their names.
+    local entry base
+    local -a entries excludes
+    entries=()
+    for entry in "$RUNTIME_DIR"/* "$RUNTIME_DIR"/.[!.]*; do
+        [ -e "$entry" ] || [ -h "$entry" ] || continue
+        base=${entry##*/}
+        case $base in
+            log | tmp | install | .git | moqui | MoquiConf.xml | README.txt | LICENSE.md) continue ;;
+            save) [ -n "$with_save" ] || continue ;;
+            db | txlog | .env | cert) [ -z "$no_data" ] || continue ;;
+        esac
+        entries+=("$name/$base")
+    done
+    excludes=("$name/db/install" "$name/db/install/*" "$name/opensearch/logs/*" "$name/opensearch/pid"
+        "*/postmaster.pid" "*/.git" "*/.git/*" "$name/component/*/target/*" "$name/ecomponent/*/target/*" "*/.venv/*"
+        "*/__pycache__/*" "*/.DS_Store" "*~")
+    [ -z "$no_data" ] || excludes+=("$name/opensearch/data/*")
+
+    # Beside the archive, so the binary is linked or copied onto the disk the archive goes to.
+    local stage
+    stage=$(mktemp -d "$(dirname "$out")/.moq-archive.XXXXXX") || die "could not make a temp directory"
+    (
+        trap 'rm -rf "$stage"' EXIT
+        archive_write "$stage" "$out" "$name" "$bin" "$conf" "$no_data" "$tgz" "${#entries[@]}" "${entries[@]}" \
+            "${excludes[@]}"
+    ) || exit $?
+    dry_run && return 0
+    info "Created $(rel "$out") ($(tidy_human_kb "$(du -sk "$out" | awk '{print $1}')")), which expands to $name/"
+    if [ -z "$no_data" ] && { [ -e "$RUNTIME_DIR/.env" ] || [ -d "$RUNTIME_DIR/cert" ]; }; then
+        warn "the archive holds .env and cert/, the secrets of this instance; keep it private"
+    fi
+}
+
+# Stage the archive's top directory in $1 and write it to $2. Then: name, binary, conf, no_data, tgz, the number of
+# runtime entries, the entries, and the exclude patterns. The archive's own files are in $1/top/<name>; the runtime
+# entries are read through $1/rt/<name>, a link to the runtime, so the archive holds the links inside it as links.
+archive_write() {
+    local stage=$1 out=$2 name=$3 bin=$4 conf=$5 no_data=$6 tgz=$7 count=$8 status
+    shift 8
+    local -a entries excludes top
+    entries=("${@:1:count}")
+    excludes=("${@:count+1}")
+    local dir=$stage/top/$name
+    mkdir -p "$dir" "$stage/rt" || die "could not stage $name"
+    ln "$bin" "$dir/moqui" 2>/dev/null || run_cmd cp -p "$bin" "$dir/moqui" || die "could not stage $name/moqui"
+    cp "$conf" "$dir/MoquiConf.xml" && ln -s "$RUNTIME_DIR" "$stage/rt/$name" || die "could not stage $name"
+    top=("$name/moqui" "$name/MoquiConf.xml" "$name/README.txt")
+    if [ -f "$ROOT/LICENSE.md" ]; then
+        cp "$ROOT/LICENSE.md" "$dir/LICENSE.md" || die "could not stage $name"
+        top+=("$name/LICENSE.md")
+    fi
+    archive_readme "$dir/README.txt" "$name" "$bin" "${OPT_PACKAGE:-default}" "$conf" "${entries[@]}"
+    local part=$out.part
+    rm -f -- "$part"
+    if [ -e "$out" ]; then
+        run_cmd rm -f -- "$out" || die "could not replace $(rel "$out")"
+    fi
+    info "Writing $(rel "$out")"
+    if [ -z "$no_data" ] && [ -d "$OS_DIR/data" ]; then
+        opensearch_pause
+    fi
+    if [ -n "$tgz" ]; then
+        local pattern
+        local -a tar_excludes
+        tar_excludes=()
+        for pattern in "${excludes[@]}"; do
+            tar_excludes+=("--exclude=$pattern")
+        done
+        # The exclusions go before the files, as GNU tar wants them.
+        run_cmd tar -czf "$part" "${tar_excludes[@]}" -C "$stage/top" "${top[@]}" -C "$stage/rt" "${entries[@]}"
+        status=$?
+    else
+        if dry_run; then
+            show_cmd cd "$stage/top"
+        fi
+        (cd "$stage/top" && run_cmd zip -q "$part" "${top[@]}")
+        status=$?
+        if [ "$status" -eq 0 ]; then
+            if dry_run; then
+                show_cmd cd "$stage/rt"
+            fi
+            # -y keeps the links inside the runtime as links; the rt/<name> link is only a directory on the way in.
+            (cd "$stage/rt" && run_cmd zip -qry "$part" "${entries[@]}" -x "${excludes[@]}")
+            status=$?
+        fi
+    fi
+    opensearch_resume
+    case $tgz:$status in
+        *:0) ;;
+        :18) warn "zip could not read some files, and the archive leaves them out" ;;
+        *)
+            rm -f -- "$part"
+            die "writing $(basename "$out") failed (exit $status)"
+            ;;
+    esac
+    run_cmd mv -- "$part" "$out" || die "could not move $(rel "$part") to $(rel "$out")"
+}
+
 # ========== completion ==========
 
 completion_bash() {
@@ -3073,7 +3438,7 @@ complete_run_like() {
         --https-port) filter_prefix "$cur" off; return ;;
     esac
     case $cur in
-        -*) filter_prefix "$cur" --debug -c --conf -p --port --https-port -D --build --; return ;;
+        -*) filter_prefix "$cur" --debug --release --enterprise -c --conf -p --port --https-port -D --build --; return ;;
     esac
     printf '%s\n' "$positional"
 }
@@ -3082,7 +3447,7 @@ complete_run_like() {
 complete_task() {
     local task=$1 cur=$2 prev=$3 nargs=$4 first_arg=$5
     case $task in
-        build) filter_prefix "$cur" --debug ;;
+        build) filter_prefix "$cur" --debug --release --enterprise ;;
         run | run-production)
             local out
             out=$(complete_run_like "$cur" "$prev" @binary)
@@ -3127,7 +3492,7 @@ complete_task() {
             ;;
         save-db | reload-save)
             case $cur in
-                -*) filter_prefix "$cur" --debug --skip-opensearch ;;
+                -*) filter_prefix "$cur" --debug --release --enterprise --skip-opensearch ;;
                 *) filter_prefix "$cur" $(save_names) ;;
             esac
             ;;
@@ -3173,6 +3538,21 @@ complete_task() {
             esac
             ;;
         component-zip) filter_prefix "$cur" $(component_names_local) ;;
+        archive)
+            case $prev in
+                -c | --conf)
+                    filter_prefix "$cur" $(conf_names)
+                    return
+                    ;;
+            esac
+            case $cur in
+                -*)
+                    filter_prefix "$cur" --debug --release --enterprise --build -c --conf --tgz --with-save \
+                        --no-data -f --force
+                    ;;
+                *) echo @files ;;
+            esac
+            ;;
         completion) filter_prefix "$cur" bash zsh --install ;;
         help) filter_prefix "$cur" $(task_names) ;;
     esac

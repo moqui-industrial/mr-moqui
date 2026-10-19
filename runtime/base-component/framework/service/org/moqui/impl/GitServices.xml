@@ -35,7 +35,23 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="init" noun="GitRepository" type="rust" location="moqui_core::service::git::init_repository">
         <description>Make a repository ready: create the bare repository of a local kind (a local repository is also
             created on its first use), fetch a remote kind for the first time. A db kind needs nothing.</description>
-        <in-parameters><parameter name="repositoryId" required="true"/></in-parameters>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="contentRepository" type="Boolean" default-value="false"><description>A repository of
+                content, such as a web site's images: keep images, video, audio, PDFs and archives in Git LFS
+                (setup#GitLfs)</description></parameter>
+        </in-parameters>
+    </service>
+    <service verb="setup" noun="GitLfs" type="rust" location="moqui_core::service::git::setup_lfs">
+        <description>Keep the files matching patterns in Git LFS: a commit of the repository's .gitattributes with
+            filter=lfs for each pattern it does not have. A git:// write of such a file stores its content as a content
+            blob and commits its LFS pointer; git-lfs clients push and fetch it at /git/repositoryId.git/info/lfs.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="patterns" type="List"><description>gitattributes patterns (*.png, media/**); images,
+                video, audio, PDFs and archives when empty</description></parameter>
+        </in-parameters>
+        <out-parameters><parameter name="commitId"><description>Empty when it had them all</description></parameter></out-parameters>
     </service>
     <service verb="export" noun="GitRepository" type="rust" location="moqui_core::service::git::export_repository">
         <description>Write a db kind repository as a bare repository on disk, with its branch and HEAD, so it can be
@@ -61,6 +77,163 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters>
             <parameter name="headCommitId"/>
             <parameter name="objectCount" type="Integer"/>
+        </out-parameters>
+    </service>
+    <!-- Reading a repository as git sees it: any branch, tag or commit. Each checks AT_GIT_REPOSITORY view for the
+        repository (the git:// resource scheme does not). -->
+    <service verb="get" noun="GitRefs" type="rust" location="moqui_core::service::git::get_refs">
+        <description>The branches and tags of a repository, each with the commit it names and, for an annotated tag,
+            the tag object.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="refType"><description>branch or tag; all refs when empty</description></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="defaultBranch"/>
+            <parameter name="headCommitId"/>
+            <parameter name="refList" type="List"><description>Maps: refName, shortName, refType (branch, tag, other),
+                objectId, isDefault, annotated, commitId, summary, commitDate, authorName, tag (tagName, targetId,
+                targetType, message, taggerName, taggerEmail, taggerDate)</description></parameter>
+        </out-parameters>
+    </service>
+    <service verb="get" noun="GitLog" type="rust" location="moqui_core::service::git::get_log">
+        <description>Commits reachable from a revision, newest commit date first.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="revision"><description>A branch or tag name, a full ref name, or a commit id or prefix;
+                the default branch when empty</description></parameter>
+            <parameter name="path"><description>Only the commits that changed this path against their first
+                parent</description></parameter>
+            <parameter name="afterCommitId"><description>Start after this commit: the last commitId of the previous
+                page</description></parameter>
+            <parameter name="limit" type="Integer" default="50"><description>At most 500</description></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="commitList" type="List"><description>Maps: commitId, shortId, treeId, parentIds,
+                authorName, authorEmail, authorDate, committerName, committerEmail, committerDate, summary, body,
+                message, trailers (a Map of name to a List of values), moquiUserId</description></parameter>
+            <parameter name="hasMore" type="Boolean"/>
+        </out-parameters>
+    </service>
+    <service verb="get" noun="GitCommit" type="rust" location="moqui_core::service::git::get_commit">
+        <description>A commit and the files it changed against its first parent (every file for a root commit). No
+            commit out when the revision names no commit.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="commitId" required="true"><description>A commit id or a unique prefix of at least 4 hex
+                digits, or a branch or tag name</description></parameter>
+            <parameter name="stats" type="Boolean" default="true"><description>Count inserted and deleted lines of
+                each file</description></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="commit" type="Map"><description>As each map of get#GitLog commitList</description></parameter>
+            <parameter name="fileList" type="List"><description>Maps: path, changeType (added, modified, deleted),
+                oldObjectId, newObjectId, and with stats binary, tooLarge, insertions, deletions</description></parameter>
+            <parameter name="insertions" type="Integer"/>
+            <parameter name="deletions" type="Integer"/>
+        </out-parameters>
+    </service>
+    <service verb="get" noun="GitCommitDiff" type="rust" location="moqui_core::service::git::get_commit_diff">
+        <description>The line diff of each file a commit changed, or of one file. A binary file, or a side over 1 MB,
+            has no diff.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="commitId" required="true"/>
+            <parameter name="path"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="fileDiffList" type="List"><description>Maps as get#GitCommit fileList, with unifiedDiff
+                and html (an escaped moqui-diff table, for a render-mode text type="html,qvt") for a text
+                file</description></parameter>
+        </out-parameters>
+    </service>
+    <service verb="get" noun="GitBlob" type="rust" location="moqui_core::service::git::get_blob">
+        <description>The file at a path in a revision; no out parameters when it is not a file there.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="revision"/>
+            <parameter name="path" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="size" type="Integer"/>
+            <parameter name="binary" type="Boolean"/>
+            <parameter name="text"><description>A UTF-8 file without NUL bytes</description></parameter>
+            <parameter name="bytes" type="Object"><description>Any other file</description></parameter>
+        </out-parameters>
+    </service>
+    <service verb="get" noun="GitCloneUrls" type="rust" location="moqui_core::service::git::get_clone_urls">
+        <description>The URLs to clone a repository with: HTTPS from the git_public_url property (else the webapp
+            host and port properties) and, when the SSH server is on, SSH with the current user's username, from
+            ssh_public_host and ssh_public_port (else the webapp host and ssh_port).</description>
+        <in-parameters><parameter name="repositoryId" required="true"/></in-parameters>
+        <out-parameters>
+            <parameter name="httpsUrl"/>
+            <parameter name="sshUrl"/>
+        </out-parameters>
+    </service>
+    <service verb="commit" noun="GitFiles" type="rust" location="moqui_core::service::git::commit_files">
+        <description>Commit files on the default branch of a local or db repository in one commit, with a message, as
+            the current user (with the Moqui-User-Id trailer). Needs AT_GIT_REPOSITORY update on the repository. A
+            gitECA rule with source write sees it.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="message" required="true" allow-html="any"/>
+            <parameter name="fileMap" type="Map" allow-html="any"><description>Path to its new text (or bytes)</description></parameter>
+            <parameter name="removePaths" type="List"/>
+        </in-parameters>
+        <out-parameters><parameter name="commitId"><description>Empty when nothing changed</description></parameter></out-parameters>
+    </service>
+
+    <!-- The storage of db repositories (docs/Git-Hosting.md, Storage) -->
+    <service verb="gc" noun="GitRepositories" type="rust" location="moqui_core::service::git::gc_repositories"
+            transaction="ignore">
+        <description>Delete the objects of db kind repositories that no ref reaches (and no change in progress or of
+            the last git_gc_reflog_days days needs) and that were not written or referenced in the last
+            git_gc_prune_days days; then repack: store the versions of each path as deltas of each other, the newest
+            whole, compress rows written before the zlib format, and make delta chains deeper than git_db_delta_depth
+            shorter (for the gc_GitRepositories_daily ServiceJob). A repository whose refs reach a missing object is
+            not collected. A repository that fails has its error recorded (lastGcResult) and logged, and the others
+            still run.</description>
+        <in-parameters>
+            <parameter name="repositoryId"><description>Every db repository when empty</description></parameter>
+            <parameter name="dryRun" type="Boolean" default-value="false"><description>Count what would be deleted
+                and change nothing</description></parameter>
+            <parameter name="timeoutMinutes" type="Integer" default-value="60"><description>When repacking stops; the
+                deletes are done first</description></parameter>
+        </in-parameters>
+        <out-parameters><parameter name="results" type="List"><description>A Map per repository: repositoryId,
+            deletedCount, deletedBytes, repackedCount, savedBytes, objectCount, storedBytes, summary, or
+            error</description></parameter></out-parameters>
+    </service>
+    <service verb="fsck" noun="GitRepository" type="rust" location="moqui_core::service::git::fsck_repository"
+            transaction="ignore">
+        <description>Decode every object of a db kind repository (applying its deltas) and check it against its id,
+            and that every ref points to an object that is there. An error names the damaged objects.</description>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="timeoutMinutes" type="Integer" default-value="60"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="checkedCount" type="Integer"/>
+            <parameter name="errors" type="List"/>
+        </out-parameters>
+    </service>
+
+    <!-- gitECA events: each push, mirror fetch, import and (when a rule listens) git:// write is a GitUpdate, whose post
+        events run on the git pool soon after it. -->
+    <service verb="process" noun="GitUpdate" type="rust" location="moqui_core::service::git::process_update">
+        <description>Run the gitECA post events (ref-update, commit, tag, post-receive) of a pending GitUpdate, as the
+            user who made it. Nothing when it is not pending (it ran, or another worker has it).</description>
+        <in-parameters><parameter name="updateId" required="true"/></in-parameters>
+        <out-parameters><parameter name="ecaStatus"/></out-parameters>
+    </service>
+    <service verb="process" noun="PendingGitUpdates" type="rust" location="moqui_core::service::git::process_pending_updates">
+        <description>Run the post events of every pending GitUpdate, after putting back the ones a restart cut short
+            (for the process_PendingGitUpdates_frequent ServiceJob). One that fails is recorded on its row and logged,
+            and the others still run.</description>
+        <out-parameters>
+            <parameter name="processedCount" type="Integer"/>
+            <parameter name="failedCount" type="Integer"/>
         </out-parameters>
     </service>
 </services>

@@ -176,6 +176,7 @@ fn a_form_list_in_csv_and_xml_and_a_form_single_in_neither() {
     );
 }
 
+#[cfg(feature = "xlsx")]
 #[test]
 fn a_form_list_in_xlsx_is_a_sheet_with_typed_cells() {
     use calamine::{Data, Reader};

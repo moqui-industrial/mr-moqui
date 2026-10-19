@@ -295,6 +295,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <xs:attribute name="value" type="xs:string" use="required"/>
                     <xs:attribute name="add" type="boolean" default="false"/>
                 </xs:complexType></xs:element>
+                <xs:element minOccurs="0" ref="web-protection"/>
             </xs:sequence>
             <xs:attribute name="name" type="name-plain" use="required"><xs:annotation><xs:documentation>
                 Matched against value of a context-param.param-value element in the web.xml file where the param-name is "moqui-name".</xs:documentation></xs:annotation></xs:attribute>
@@ -322,7 +323,138 @@ along with this software (see the LICENSE.md file). If not, see
                 address; if the outer-most proxy handles X-Forwarded-For by always setting it to its client IP address
                 instead of the common default behavior of appending to an existing X-Forwarded-For header then it is fine,
                 but should generally be set to a more reliable header for the reverse-proxy used.
+
+                With trusted-proxies set the header is read only from those proxies, and the address taken is the
+                rightmost one that is not itself a trusted proxy, so an appended X-Forwarded-For is safe too.
             </xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="trusted-proxies" type="xs:string"><xs:annotation><xs:documentation>
+                Comma separated address ranges (10.0.0.0/8, fd00::/8, or one address) of the reverse proxies in front.
+                client-ip-header and X-Forwarded-Proto are believed only from these. When one or more are set the
+                per-client parts of web-protection are on by default. Empty, the header is believed from any peer
+                (first hop), as before. No Java counterpart.
+            </xs:documentation></xs:annotation></xs:attribute>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:element name="web-protection">
+        <xs:annotation><xs:documentation>Load handling and basic WAF features at the edge, checked before a session,
+            a request worker or the database is spent, in memory per server. The global limits (connections, requests,
+            overload) always apply. The per-client parts (max-per-client, the request methods, rate-limit, ban, and the
+            rules) apply when enabled is true, or when it is empty and the webapp has trusted-proxies. Not the
+            ArtifactTarpit, which counts a user's use of screens and services for business quotas; both apply, this
+            first. Each attribute left out or empty uses its webapp_* property, then the built-in default. No Java
+            counterpart.</xs:documentation></xs:annotation>
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element minOccurs="0" name="connections"><xs:complexType>
+                    <xs:attribute name="max" type="xs:string"><xs:annotation><xs:documentation>
+                        Connections served at once, HTTP and HTTPS together (webapp_max_connections, 1024). Past it new
+                        connections wait until one closes.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="max-per-client" type="xs:string"><xs:annotation><xs:documentation>
+                        Connections from one client address at once (64); past it a new one is closed. Trusted proxies
+                        and exempt clients are not counted.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="header-timeout" type="xs:string"><xs:annotation><xs:documentation>
+                        Seconds for the request head, the TLS handshake, and an idle kept-alive connection
+                        (webapp_header_timeout, 30); 0 is no limit.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="shutdown-timeout" type="xs:string"><xs:annotation><xs:documentation>
+                        Seconds open connections may take to finish after a stop (webapp_shutdown_timeout, 30).</xs:documentation></xs:annotation></xs:attribute>
+                </xs:complexType></xs:element>
+                <xs:element minOccurs="0" name="requests"><xs:complexType>
+                    <xs:attribute name="methods" type="xs:string"><xs:annotation><xs:documentation>
+                        Comma separated request methods allowed; another is answered 405. Empty allows any. A per-client
+                        rule: it applies when the per-client parts are on.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="max-uri-length" type="xs:string"><xs:annotation><xs:documentation>
+                        Longest path and query (8192); longer is answered 414.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="max-header-bytes" type="xs:string"><xs:annotation><xs:documentation>
+                        Largest request head in bytes (65536, at least 8192); larger is answered 431.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="max-headers" type="xs:string"><xs:annotation><xs:documentation>
+                        Most header fields in a request (100); more is answered 431.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="max-body" type="xs:string"><xs:annotation><xs:documentation>
+                        Largest request body that is not multipart, bytes or with a k, m or g suffix (webapp_max_body,
+                        10m); larger is answered 413.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="max-upload" type="xs:string"><xs:annotation><xs:documentation>
+                        Largest multipart/form-data body (webapp_max_upload, 2g).</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="body-timeout" type="xs:string"><xs:annotation><xs:documentation>
+                        Seconds for a whole request body that is not an upload (webapp_body_timeout, 60); then 408.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="upload-idle-timeout" type="xs:string"><xs:annotation><xs:documentation>
+                        Seconds an upload may send nothing (webapp_upload_idle_timeout, 60); then 408.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="request-timeout" type="xs:string"><xs:annotation><xs:documentation>
+                        Seconds from the request head to the response head (webapp_request_timeout, 300); then 504.</xs:documentation></xs:annotation></xs:attribute>
+                </xs:complexType></xs:element>
+                <xs:element minOccurs="0" name="overload"><xs:complexType>
+                    <xs:attribute name="queue-timeout" type="xs:string"><xs:annotation><xs:documentation>
+                        Seconds a request may wait for a request worker (10); one that waited
+                        longer is answered 503 instead of run. 0 is no limit.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="retry-after" type="xs:string"><xs:annotation><xs:documentation>
+                        The Retry-After seconds of a 503 for a full queue or a busy server (5).</xs:documentation></xs:annotation></xs:attribute>
+                </xs:complexType></xs:element>
+                <xs:element minOccurs="0" maxOccurs="unbounded" name="rate-limit"><xs:complexType>
+                    <xs:annotation><xs:documentation>Per client: requests per seconds sustained and burst at once, over
+                        the requests path and methods match (all when left out). Past it the answer is 429 with
+                        Retry-After. A request takes a token from every rate-limit that matches it. Merged by name; a
+                        component sets enabled="false" to turn one off.</xs:documentation></xs:annotation>
+                    <xs:attribute name="name" type="xs:string" use="required"/>
+                    <xs:attribute name="requests" type="xs:string"/>
+                    <xs:attribute name="seconds" type="xs:string" default="1"/>
+                    <xs:attribute name="burst" type="xs:string"><xs:annotation><xs:documentation>
+                        Requests allowed at once; requests when left out.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="path" type="xs:string"><xs:annotation><xs:documentation>
+                        Comma separated url-pattern style globs: * within a segment, ** across segments.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="methods" type="xs:string"/>
+                    <xs:attribute name="enabled" type="xs:string" default="true"/>
+                </xs:complexType></xs:element>
+                <xs:element minOccurs="0" maxOccurs="unbounded" name="ban"><xs:complexType>
+                    <xs:annotation><xs:documentation>Per client: threshold of events within seconds bans the client for
+                        duration seconds. A banned client's connections are closed and its requests answered 403. Merged
+                        by name.</xs:documentation></xs:annotation>
+                    <xs:attribute name="name" type="xs:string" use="required"/>
+                    <xs:attribute name="events" type="xs:string"><xs:annotation><xs:documentation>
+                        Comma separated: auth-failure (credentials that were not valid: a login form, Basic auth, an API
+                        or login key, git), rate-limited (a 429), denied (a rule refused the request).</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="threshold" type="xs:string"/>
+                    <xs:attribute name="seconds" type="xs:string"/>
+                    <xs:attribute name="duration" type="xs:string"/>
+                    <xs:attribute name="enabled" type="xs:string" default="true"/>
+                </xs:complexType></xs:element>
+                <xs:element minOccurs="0" maxOccurs="unbounded" name="client-rule"><xs:complexType>
+                    <xs:attribute name="name" type="xs:string"><xs:annotation><xs:documentation>
+                        A rule with a name merges by it; one without is added.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="enabled" type="xs:string" default="true"/>
+                    <xs:attribute name="action"><xs:simpleType><xs:restriction base="xs:token">
+                        <xs:enumeration value="deny"><xs:annotation><xs:documentation>Connections closed, requests 403.</xs:documentation></xs:annotation></xs:enumeration>
+                        <xs:enumeration value="exempt"><xs:annotation><xs:documentation>No rules, rate limits or bans; the global limits still apply.</xs:documentation></xs:annotation></xs:enumeration>
+                    </xs:restriction></xs:simpleType></xs:attribute>
+                    <xs:attribute name="cidr" type="xs:string"><xs:annotation><xs:documentation>
+                        Comma separated address ranges.</xs:documentation></xs:annotation></xs:attribute>
+                </xs:complexType></xs:element>
+                <xs:element minOccurs="0" maxOccurs="unbounded" name="path-rule"><xs:complexType>
+                    <xs:attribute name="name" type="xs:string"><xs:annotation><xs:documentation>
+                        A rule with a name merges by it; one without is added.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="enabled" type="xs:string" default="true"/>
+                    <xs:attribute name="action"><xs:simpleType><xs:restriction base="xs:token">
+                        <xs:enumeration value="deny"><xs:annotation><xs:documentation>Answered 404.</xs:documentation></xs:annotation></xs:enumeration>
+                    </xs:restriction></xs:simpleType></xs:attribute>
+                    <xs:attribute name="path" type="xs:string"><xs:annotation><xs:documentation>
+                        Comma separated url-pattern style globs, matched without regard to case against the decoded path.</xs:documentation></xs:annotation></xs:attribute>
+                </xs:complexType></xs:element>
+                <xs:element minOccurs="0" maxOccurs="unbounded" name="user-agent-rule"><xs:complexType>
+                    <xs:attribute name="name" type="xs:string"><xs:annotation><xs:documentation>
+                        A rule with a name merges by it; one without is added.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="enabled" type="xs:string" default="true"/>
+                    <xs:attribute name="action"><xs:simpleType><xs:restriction base="xs:token">
+                        <xs:enumeration value="deny"><xs:annotation><xs:documentation>Answered 403.</xs:documentation></xs:annotation></xs:enumeration>
+                    </xs:restriction></xs:simpleType></xs:attribute>
+                    <xs:attribute name="contains" type="xs:string"><xs:annotation><xs:documentation>
+                        Comma separated text; a User-Agent containing one, without regard to case, is denied.</xs:documentation></xs:annotation></xs:attribute>
+                </xs:complexType></xs:element>
+            </xs:sequence>
+            <xs:attribute name="enabled" type="xs:string"><xs:annotation><xs:documentation>
+                true or false for the per-client parts (webapp_web_protection); empty, on when the webapp has
+                trusted-proxies.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="client-ipv6-prefix" type="xs:string" default="64"><xs:annotation><xs:documentation>
+                IPv6 clients are counted by this many leading bits of their address.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-tracked-clients" type="xs:string" default="100000"><xs:annotation><xs:documentation>
+                Most clients kept in memory; past it new clients are served without per-client limits.</xs:documentation></xs:annotation></xs:attribute>
         </xs:complexType>
     </xs:element>
 

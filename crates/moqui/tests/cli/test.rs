@@ -20,8 +20,8 @@ use std::process::Command;
 
 use super::repo;
 
-/// A runtime under `/tmp` (the Postgres socket path must be short) with the repo's conf, `base-component`, the
-/// shared Postgres install, and the given components linked. Removed on drop.
+/// A runtime under `/tmp` (the Postgres socket path must be short) with the repo's conf, `base-component`, and the
+/// given components linked. It uses the repo's shared Postgres install through `MOQUI_INSTALL`. Removed on drop.
 struct TestRuntime {
     dir: PathBuf,
 }
@@ -38,9 +38,8 @@ fn fixture_component() -> PathBuf {
 
 /// None when the shared Postgres install is not unpacked yet: the test is skipped rather than unpacking one.
 fn test_runtime(tag: &str, components: &[(&str, &Path)]) -> Option<TestRuntime> {
-    let install = repo().join("runtime/db/install");
-    if !install.is_dir() {
-        eprintln!("skipped: no runtime/db/install");
+    if !repo().join("runtime/install/postgres").is_dir() {
+        eprintln!("skipped: no runtime/install/postgres");
         return None;
     }
     let dir = PathBuf::from("/tmp").join(format!("mct-{tag}-{}", std::process::id()));
@@ -54,7 +53,6 @@ fn test_runtime(tag: &str, components: &[(&str, &Path)]) -> Option<TestRuntime> 
         }
     }
     std::os::unix::fs::symlink(repo().join("runtime/base-component"), dir.join("base-component")).unwrap();
-    std::os::unix::fs::symlink(install, dir.join("db/install")).unwrap();
     for (name, path) in components {
         std::os::unix::fs::symlink(path, dir.join("component").join(name)).unwrap();
     }
@@ -68,6 +66,7 @@ fn moqui_test(runtime: &TestRuntime, args: &[&str]) -> (String, String, bool) {
         .current_dir(repo())
         .env("MOQUI_RUNTIME", &runtime.dir)
         .env("MOQUI_FRAMEWORK", repo().join("runtime/base-component/framework"))
+        .env("MOQUI_INSTALL", repo().join("runtime/install"))
         .output()
         .unwrap();
     (

@@ -547,6 +547,23 @@ impl Connector<'_> {
         }
     }
 
+    /// An uploaded file, streamed to storage that takes it as it is read.
+    fn put_upload(&self, entry: &Entry, file: &UploadedFile) -> Result<(), LibError> {
+        match &entry.store {
+            Store::Facade => with_resources(|resources| {
+                resources.write_from(&entry.location, &mut file.reader()?, Some(file.size()))
+            }),
+            Store::File(path) => {
+                let mut out = std::fs::File::create(path).map_err(|err| io_error(&entry.location, &err))?;
+                std::io::copy(&mut file.reader()?, &mut out).map_err(|err| io_error(&entry.location, &err))?;
+                Ok(())
+            }
+            Store::Db => self
+                .facade
+                .write_db_resource_from(&entry.location, &mut file.reader()?, Some(file.size())),
+        }
+    }
+
     fn read_text(&self, entry: &Entry) -> Result<String, LibError> {
         let bytes = match &entry.store {
             Store::Db => {
@@ -772,7 +789,7 @@ impl Connector<'_> {
                         fail(&mut response, ROOT_REFUSED);
                         break 'upload;
                     }
-                    self.put_bytes(&entry, &file.bytes)?;
+                    self.put_upload(&entry, &file)?;
                     added.push(self.info(&entry)?);
                 }
                 response.insert("added".to_string(), Value::List(added));

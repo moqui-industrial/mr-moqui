@@ -546,6 +546,25 @@ impl ExecutionContextFactory {
         (attr("https-enabled") == "true").then(|| (attr("https-host"), attr("https-port")))
     }
 
+    /// A `webapp` attribute with `${}` expanded and trimmed; empty when the conf leaves it out.
+    pub fn webapp_setting(&self, webapp_name: &str, name: &str) -> String {
+        self.conf()
+            .webapp_attr(webapp_name, name)
+            .map(|raw| moqui_lib::env::expand(&raw).unwrap_or(raw))
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default()
+    }
+
+    /// An attribute of the `webapp`'s `web-protection` (`child` empty) or of its child element `child`, with `${}`
+    /// expanded and trimmed; empty when the conf leaves it out.
+    pub fn web_protection_setting(&self, webapp_name: &str, child: &str, name: &str) -> String {
+        self.conf()
+            .protection_attr(webapp_name, child, name)
+            .map(|raw| moqui_lib::env::expand(&raw).unwrap_or(raw))
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default()
+    }
+
     fn conf(&self) -> &ConfCache {
         self.conf_cache.get_or_init(|| ConfCache::parse(&self.conf_text))
     }

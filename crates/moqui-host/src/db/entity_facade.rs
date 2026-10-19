@@ -191,7 +191,7 @@ pub fn apply_datasource_conf(
     facade.set_find_table_check(true);
 }
 
-#[cfg(all(test, unix, feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(test, unix, feature = "embedded-postgres"))]
 mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;

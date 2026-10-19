@@ -27,7 +27,9 @@ mod report;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use moqui_core::testkit::{run_spec, spec_depends_on, suite_order, RunOptions, SpecFile};
+use moqui_core::testkit::{
+    run_spec, spec_depends_on, spec_missing_features, suite_order, CaseResult, Outcome, RunOptions, SpecFile, SpecResult,
+};
 use moqui_lib::error::Error;
 
 pub use fixture::{DbMode, TestFixture};
@@ -290,6 +292,18 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
     }
     for component in &components {
         for spec in &component.specs {
+            let missing = spec_missing_features(&spec.source);
+            if !missing.is_empty() {
+                let result = skipped_spec(spec, &missing);
+                for case in &result.cases {
+                    println!("{}", report::case_line(&spec.name, case));
+                }
+                results.push(report::ComponentSpec {
+                    component: component.name.clone(),
+                    result,
+                });
+                continue;
+            }
             let context = fixture.factory.new_context();
             let entered = context.enter();
             let result = run_spec(spec, &options, &mut |case| {
@@ -327,6 +341,25 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
         return Err(Error::new(format!("{failed} test failure(s)")));
     }
     Ok(())
+}
+
+/// A spec that `requires` features this build leaves out: one skipped case that names them.
+fn skipped_spec(spec: &SpecFile, missing: &[String]) -> SpecResult {
+    SpecResult {
+        name: spec.name.clone(),
+        display: spec.display.clone(),
+        cases: vec![CaseResult {
+            name: "(every feature)".to_string(),
+            outcome: Outcome::Skipped(format!(
+                "requires {}, not built into this binary (moqui version)",
+                missing.join(", ")
+            )),
+            duration: std::time::Duration::ZERO,
+        }],
+        setup_failure: None,
+        cleanup_failure: None,
+        duration: std::time::Duration::ZERO,
+    }
 }
 
 /// Leave out the components the factory did not load, and return their names.

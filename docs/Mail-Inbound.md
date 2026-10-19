@@ -7,12 +7,12 @@ world with TLS, checks SPF, DKIM and DMARC, filters spam and viruses, queues and
 mr-moqui over plain SMTP. The listener stores it in the account's Inbox as the IMAP sync stores fetched mail and runs what
 new mail runs. External accounts (Gmail, Microsoft 365, any IMAP or POP server) keep using the sync. As of Oct 19, 2026.
 
-The code is `crates/moqui-host/src/smtp.rs` (the server) and `crates/moqui-core/src/service/mail/inbound.rs` (routing and
-delivery). It is the moqui-host feature `inbound-smtp`, off in the default build:
+The code is `crates/moqui-host/src/smtp.rs` (the server) and `crates/moqui-core/src/service/mail/delivery.rs` (routing and
+delivery). It is the moqui-host feature `inbound-smtp`, in the Debug, Maximal (`--release`) and Enterprise packages
+([Packaging](Packaging.md)); the Default package leaves it out, and adds it with:
 
 ```
 ./moq build -- --features inbound-smtp
-cargo build -p moqui --features inbound-smtp
 ```
 
 It adds no crate: the server is a small RFC 5321 server on Tokio, for the one client it serves.

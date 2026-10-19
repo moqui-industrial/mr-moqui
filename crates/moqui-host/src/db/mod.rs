@@ -19,7 +19,7 @@ use std::sync::Arc;
 use moqui_core::driver::{ConfDb, DbDriver};
 use moqui_lib::error::Error;
 
-#[cfg(all(feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(feature = "embedded-postgres")]
 pub mod backup;
 pub mod embedded;
 pub mod entity_db;
@@ -120,7 +120,7 @@ pub fn install_conf_drivers() {
     moqui_core::driver::install_conf_driver_factory(Arc::new(conf_driver));
 }
 
-#[cfg(all(test, unix, feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(test, unix, feature = "embedded-postgres"))]
 mod tests {
     use std::path::PathBuf;
 

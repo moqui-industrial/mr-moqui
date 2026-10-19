@@ -22,7 +22,8 @@ use mail_parser::{MessageParser, MimeHeaders, PartType};
 use moqui_lib::error::Error as LibError;
 use moqui_lib::object::Value;
 
-use super::implementation::{address_text, stamp_millis};
+pub(super) use super::implementation::header_value;
+use super::inbound::{address_text, stamp_millis};
 use crate::context::ExecutionContext;
 use crate::entity::{Condition, EntityFacade, EntityValue};
 use crate::service::util::{field_text, now_millis};
@@ -89,28 +90,6 @@ impl Parsed {
     pub(super) fn header(&self, name: &str) -> String {
         header_value(&self.headers, name)
     }
-}
-
-/// The unfolded value of the first header `name` in a raw header block.
-pub(super) fn header_value(headers: &str, name: &str) -> String {
-    let mut found: Option<String> = None;
-    for line in headers.split('\n') {
-        let line = line.trim_end_matches('\r');
-        if let Some(value) = found.as_mut() {
-            if line.starts_with([' ', '\t']) {
-                value.push(' ');
-                value.push_str(line.trim());
-                continue;
-            }
-            break;
-        }
-        if let Some((field, value)) = line.split_once(':') {
-            if field.trim().eq_ignore_ascii_case(name) {
-                found = Some(value.trim().to_string());
-            }
-        }
-    }
-    found.unwrap_or_default()
 }
 
 /// Parse a message. A message with no header fields at all (an empty fetch, a stray binary) is not mail and is

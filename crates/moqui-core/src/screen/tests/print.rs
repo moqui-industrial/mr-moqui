@@ -356,9 +356,9 @@ fn resource_images_reach_the_pdf_engine_as_data_urls() {
     let _entered = context.enter();
     let dir = std::env::temp_dir().join(format!("moqui-pdf-images-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let mut png = Vec::new();
-    image::RgbImage::new(2, 2)
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    // A 1x1 PNG.
+    let png = base64::engine::general_purpose::STANDARD
+        .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
         .unwrap();
     std::fs::write(dir.join("a&b.png"), &png).unwrap();
     let svg = "<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"/>";

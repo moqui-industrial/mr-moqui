@@ -105,9 +105,13 @@ pub(crate) fn read_tree(store: &dyn GitStore, id: &ObjectId) -> Result<Tree, Err
 }
 
 pub(crate) fn read_commit(store: &dyn GitStore, id: &ObjectId) -> Result<CommitInfo, Error> {
-    let data = object(store, id, Kind::Commit)?;
+    parse_commit(id, &object(store, id, Kind::Commit)?)
+}
+
+/// The commit `id` whose content is `data`.
+pub(crate) fn parse_commit(id: &ObjectId, data: &[u8]) -> Result<CommitInfo, Error> {
     let commit =
-        gix::objs::CommitRef::from_bytes(&data, HASH).map_err(|err| Error::new(format!("git commit {id}: {err}")))?;
+        gix::objs::CommitRef::from_bytes(data, HASH).map_err(|err| Error::new(format!("git commit {id}: {err}")))?;
     let seconds = commit
         .author()
         .ok()
@@ -276,7 +280,10 @@ pub(crate) fn commit_as(
         let mut message = message.trim_end().to_string();
         message.push('\n');
         if let Some(user_id) = &author.user_id {
-            message.push('\n');
+            // into the message's trailer block when it ends in one, else as a block of its own
+            if trailers(&message).is_empty() {
+                message.push('\n');
+            }
             message.push_str(USER_TRAILER);
             message.push_str(user_id);
             message.push('\n');
@@ -304,6 +311,164 @@ pub(crate) fn commit_as(
     )))
 }
 
+/// A person and time on a commit or tag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Signature {
+    pub name: String,
+    pub email: String,
+    /// Seconds since the epoch.
+    pub seconds: i64,
+    /// The time zone offset, in seconds east of UTC.
+    pub offset: i32,
+}
+
+impl Signature {
+    fn of(signature: gix::actor::SignatureRef<'_>) -> Self {
+        let time = signature.time().unwrap_or_default();
+        Self {
+            name: signature.name.trim().to_str_lossy().into_owned(),
+            email: signature.email.trim().to_str_lossy().into_owned(),
+            seconds: time.seconds,
+            offset: time.offset,
+        }
+    }
+
+    fn unknown() -> Self {
+        Self {
+            name: String::new(),
+            email: String::new(),
+            seconds: 0,
+            offset: 0,
+        }
+    }
+}
+
+/// Everything a commit says, for logs, the commit view and gitECA rules.
+#[derive(Clone, Debug)]
+pub(crate) struct CommitDetails {
+    pub id: ObjectId,
+    pub tree: ObjectId,
+    pub parents: Vec<ObjectId>,
+    pub author: Signature,
+    pub committer: Signature,
+    pub message: String,
+}
+
+impl CommitDetails {
+    /// The first line of the message.
+    pub(crate) fn summary(&self) -> &str {
+        self.message.lines().next().unwrap_or("").trim()
+    }
+
+    /// The `Name: value` lines of the message's last paragraph, when every line of it is one (a continuation line
+    /// that starts with a space or tab is joined to the one before), as git reads trailers. The subject alone is not a
+    /// trailer block.
+    pub(crate) fn trailers(&self) -> Vec<(String, String)> {
+        trailers(&self.message)
+    }
+}
+
+/// The trailers of a commit or tag message: see [`CommitDetails::trailers`].
+pub(crate) fn trailers(message: &str) -> Vec<(String, String)> {
+    let paragraphs: Vec<&str> = message
+        .trim()
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|paragraph| !paragraph.is_empty())
+        .collect();
+    if paragraphs.len() < 2 {
+        return Vec::new();
+    }
+    let mut found: Vec<(String, String)> = Vec::new();
+    for line in paragraphs[paragraphs.len() - 1].lines() {
+        if line.starts_with([' ', '\t']) {
+            match found.last_mut() {
+                Some((_, value)) => {
+                    value.push(' ');
+                    value.push_str(line.trim());
+                    continue;
+                }
+                None => return Vec::new(),
+            }
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            return Vec::new();
+        };
+        if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
+            return Vec::new();
+        }
+        found.push((name.to_string(), value.trim().to_string()));
+    }
+    found
+}
+
+pub(crate) fn commit_details(store: &dyn GitStore, id: &ObjectId) -> Result<CommitDetails, Error> {
+    let data = object(store, id, Kind::Commit)?;
+    let commit =
+        gix::objs::CommitRef::from_bytes(&data, HASH).map_err(|err| Error::new(format!("git commit {id}: {err}")))?;
+    Ok(CommitDetails {
+        id: *id,
+        tree: commit.tree(),
+        parents: commit.parents().collect(),
+        author: commit.author().map_or_else(|_| Signature::unknown(), Signature::of),
+        committer: commit.committer().map_or_else(|_| Signature::unknown(), Signature::of),
+        message: commit.message.to_str_lossy().into_owned(),
+    })
+}
+
+/// An annotated tag object.
+#[derive(Clone, Debug)]
+pub(crate) struct TagDetails {
+    pub name: String,
+    pub target: ObjectId,
+    pub target_kind: Kind,
+    pub tagger: Option<Signature>,
+    pub message: String,
+}
+
+pub(crate) fn tag_details(store: &dyn GitStore, id: &ObjectId) -> Result<TagDetails, Error> {
+    let data = object(store, id, Kind::Tag)?;
+    let tag = gix::objs::TagRef::from_bytes(&data, HASH).map_err(|err| Error::new(format!("git tag {id}: {err}")))?;
+    Ok(TagDetails {
+        name: tag.name.to_str_lossy().into_owned(),
+        target: tag.target(),
+        target_kind: tag.target_kind,
+        tagger: tag.tagger().ok().flatten().map(Signature::of),
+        message: tag.message.to_str_lossy().into_owned(),
+    })
+}
+
+/// The object `revision` names in a repository whose default branch is `branch`: empty or `HEAD` for that branch's
+/// head, a full ref name, a branch or tag name, a full object id, or a unique prefix of at least 4 hex digits.
+/// `None` when it names nothing; an ambiguous prefix is an error.
+pub(crate) fn resolve_revision(store: &dyn GitStore, branch: &str, revision: &str) -> Result<Option<ObjectId>, Error> {
+    let revision = revision.trim();
+    if revision.is_empty() || revision == "HEAD" {
+        return store.read_ref(&branch_ref(branch));
+    }
+    if revision.len() == 40 {
+        if let Ok(id) = ObjectId::from_hex(revision.as_bytes()) {
+            return Ok(store.object_size(&id)?.map(|_| id));
+        }
+    }
+    let names = if revision.starts_with("refs/") {
+        vec![revision.to_string()]
+    } else {
+        vec![branch_ref(revision), format!("refs/tags/{revision}")]
+    };
+    for name in names {
+        if let Some(id) = store.read_ref(&name)? {
+            return Ok(Some(id));
+        }
+    }
+    let found = store.find_prefix(revision, 2)?;
+    match found.as_slice() {
+        [] => Ok(None),
+        [id] => Ok(Some(*id)),
+        _ => Err(Error::new(format!("{revision} names more than one object; give more digits"))),
+    }
+}
+
 /// The `Moqui-User-Id` trailer of a commit message.
 pub(crate) fn user_of(message: &str) -> Option<String> {
     message
@@ -326,66 +491,12 @@ pub(crate) fn version_date(seconds: i64) -> Value {
 }
 
 /// The bytes of the file at `path` in commit `commit`, or `None` when it is not a file there.
-#[cfg(test)]
 pub(crate) fn read_at(store: &dyn GitStore, commit: &ObjectId, path: &[String]) -> Result<Option<Vec<u8>>, Error> {
     let commit = read_commit(store, commit)?;
     match resolve(store, &commit.tree, path)? {
         Some((mode, blob)) if !mode.is_tree() => object(store, &blob, Kind::Blob).map(Some),
         _ => Ok(None),
     }
-}
-
-/// Every object reachable from `head`: its commits, their trees and the blobs in them. For copying a repository from
-/// one store to another; `seen` holds what the target already has, so a later copy only walks what is new.
-pub(crate) fn reachable(
-    store: &dyn GitStore,
-    head: &ObjectId,
-    seen: &mut std::collections::HashSet<ObjectId>,
-    mut each: impl FnMut(&ObjectId, Kind, &[u8]) -> Result<(), Error>,
-) -> Result<usize, Error> {
-    let mut count = 0;
-    let mut pending = vec![(*head, Kind::Commit)];
-    while let Some((id, kind)) = pending.pop() {
-        if !seen.insert(id) {
-            continue;
-        }
-        // a submodule entry names a commit of another repository; it is not here
-        if kind == Kind::Commit && id != *head && store.find(&id)?.is_none() {
-            continue;
-        }
-        let (found, data) = store.find(&id)?.ok_or_else(|| missing(&id))?;
-        match found {
-            Kind::Commit => {
-                let commit = gix::objs::CommitRef::from_bytes(&data, HASH)
-                    .map_err(|err| Error::new(format!("git commit {id}: {err}")))?;
-                pending.push((commit.tree(), Kind::Tree));
-                pending.extend(commit.parents().map(|parent| (parent, Kind::Commit)));
-            }
-            Kind::Tree => {
-                let tree = gix::objs::TreeRef::from_bytes(&data, HASH)
-                    .map_err(|err| Error::new(format!("git tree {id}: {err}")))?;
-                for entry in tree.entries {
-                    let kind = if entry.mode.is_tree() {
-                        Kind::Tree
-                    } else if entry.mode.is_commit() {
-                        Kind::Commit
-                    } else {
-                        Kind::Blob
-                    };
-                    pending.push((entry.oid.to_owned(), kind));
-                }
-            }
-            Kind::Tag => {
-                let tag = gix::objs::TagRef::from_bytes(&data, HASH)
-                    .map_err(|err| Error::new(format!("git tag {id}: {err}")))?;
-                pending.push((tag.target(), tag.target_kind));
-            }
-            Kind::Blob => {}
-        }
-        each(&id, found, &data)?;
-        count += 1;
-    }
-    Ok(count)
 }
 
 #[cfg(test)]
@@ -524,6 +635,38 @@ mod tests {
             .map(|entry| entry.name)
             .collect();
         assert_eq!(names, ["a.txt", "b.txt", "c.txt"]);
+    }
+
+    #[test]
+    fn trailers_are_the_last_paragraph_when_every_line_is_one() {
+        let found = trailers("Fix login\n\nLonger text.\n\nTask: PROJ-100023\nSigned-off-by: A <a@b.c>\n  continued\n");
+        assert_eq!(
+            found,
+            [
+                ("Task".to_string(), "PROJ-100023".to_string()),
+                ("Signed-off-by".to_string(), "A <a@b.c> continued".to_string())
+            ]
+        );
+        assert!(trailers("Task: only a subject\n").is_empty());
+        assert!(trailers("Subject\n\nTask: X\nnot a trailer\n").is_empty());
+        assert!(trailers("Subject\n\nSee: http://x\n").len() == 1);
+    }
+
+    #[test]
+    fn the_user_trailer_joins_a_trailer_block_the_message_ends_in() {
+        let store = MemoryStore::default();
+        let blob = store.write(Kind::Blob, b"x").unwrap();
+        let id = commit(&store, "main", &author(), |_| {
+            Ok(Some((
+                vec![Edit::Put(path("a.txt"), EntryKind::Blob, blob)],
+                "Subject\n\nTask: PROJ-1".to_string(),
+            )))
+        })
+        .unwrap()
+        .unwrap();
+        let message = read_commit(&store, &id).unwrap().message;
+        assert_eq!(message, "Subject\n\nTask: PROJ-1\nMoqui-User-Id: EX_JOHN_DOE\n");
+        assert_eq!(trailers(&message).len(), 2);
     }
 
     #[test]

@@ -17,7 +17,7 @@
 //! available, the clean services delete by a time basis, an entity data snapshot goes
 //! out to a zip and back in, and the cache admin screen clears a cache.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
 use std::net::SocketAddr;
 

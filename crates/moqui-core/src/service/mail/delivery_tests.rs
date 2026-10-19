@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The SMTP listener's side of the mail client ([`super::inbound`]), as the host calls it with no user and
+//! The SMTP listener's side of the mail client ([`super::delivery`]), as the host calls it with no user and
 //! authorization disabled: routing by account and identity address, case and plus tag, and which accounts it takes;
 //! delivery once per account with the trace fields, files, threading, rules and email ECAs once, a resend not doubled;
 //! the gateway's spam verdict to Junk and only its Authentication-Results kept; a store that fails as that account's
@@ -20,7 +20,7 @@
 
 use moqui_lib::object::Value;
 
-use super::inbound::{deliver, find_recipient, Envelope, Options, Outcome, Recipients, Report};
+use super::delivery::{deliver, find_recipient, Envelope, Options, Outcome, Recipients, Report};
 use super::sync_tests::{
     alice, by_message_id, field, folder_id, install, map, now, ok, one, out_text, rows, setup, stamp, text, update,
 };

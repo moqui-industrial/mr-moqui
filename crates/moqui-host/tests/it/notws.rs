@@ -14,7 +14,7 @@
 
 //! Notification socket and one cluster cache post. `cluster_https_port=0` is an ephemeral bind.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};

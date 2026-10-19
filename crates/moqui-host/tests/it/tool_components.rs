@@ -20,7 +20,7 @@
 //! - `moqui-cups`: `get#ServerPrinters`, `print#Document`, `get#PrintJobDetailsFromServer` and `cancel#PrintJob` against
 //!   an IPP server in the test, and a send to a server that does not answer.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres", feature = "axum"))]
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "image", feature = "xlsx", feature = "print"))]
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Cursor, Read, Write};

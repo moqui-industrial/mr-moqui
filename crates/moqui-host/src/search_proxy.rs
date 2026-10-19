@@ -118,7 +118,7 @@ async fn proxy(
         Ok(())
     });
     if submitted.is_err() {
-        return plain(503, "service unavailable");
+        return state.guard.unavailable("service unavailable");
     }
     match result.await {
         Ok(Ok(PermissionCheck::Allowed)) => {}

@@ -81,13 +81,7 @@ fn names(list: &serde_json::Value) -> Vec<String> {
 }
 
 fn upload(name: &str, bytes: &[u8]) -> Value {
-    UploadedFile {
-        field_name: "upload[]".to_string(),
-        file_name: name.to_string(),
-        content_type: "text/plain".to_string(),
-        bytes: bytes.to_vec(),
-    }
-    .into_value()
+    UploadedFile::in_memory("upload[]", name, "text/plain", bytes.to_vec()).into_value()
 }
 
 struct TempDir(PathBuf);

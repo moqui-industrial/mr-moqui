@@ -3,9 +3,9 @@
 (function (g) {
     // A plain assignment to a global goes through the context stack's proxy, which takes only data; these are defined.
     const define = (name, value) => Object.defineProperty(g, name, { value, writable: true, configurable: true });
-    const SPEC_FIELDS = ["dependsOn", "stepwise", "allowMessageErrors", "timeout", "tempSequences", "setupSpec",
-        "cleanupSpec", "setup", "cleanup"];
-    const FEATURE_FIELDS = ["given", "when", "then", "expect", "cleanup", "where", "ignore", "timeout",
+    const SPEC_FIELDS = ["dependsOn", "requires", "stepwise", "allowMessageErrors", "timeout", "tempSequences",
+        "setupSpec", "cleanupSpec", "setup", "cleanup"];
+    const FEATURE_FIELDS = ["given", "when", "then", "expect", "cleanup", "where", "ignore", "requires", "timeout",
         "allowMessageErrors"];
     const REWRITTEN = "$pa";
 
@@ -96,6 +96,7 @@
                 const def = T.features[c.feature].def;
                 return {
                     name: c.name, ignore: ignoreOf(def.ignore),
+                    requires: [...Array.from(def.requires || []), ...Array.from((c.row && c.row.requires) || [])].map(String),
                     timeout: def.timeout == null ? null : Number(def.timeout), allowMessageErrors: !!def.allowMessageErrors
                 };
             })

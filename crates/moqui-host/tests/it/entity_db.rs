@@ -16,7 +16,7 @@
 //! server, here a second embedded cluster reached through its socket directory, and starts no
 //! postmaster in the cluster directory. It sets process properties, so it holds the serial lock.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#![cfg(all(unix, feature = "embedded-postgres"))]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

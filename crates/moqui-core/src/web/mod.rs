@@ -25,6 +25,7 @@ use base64::Engine;
 use indexmap::IndexMap;
 use moqui_lib::object::Value;
 
+pub mod address;
 pub mod error_info;
 pub mod multipart;
 
@@ -39,6 +40,19 @@ const EXPOSE_HEADERS: &str =
 
 thread_local! {
     static WEB: RefCell<Option<WebSlot>> = const { RefCell::new(None) };
+    /// Set by a login with credentials that were not valid, for the host's web protection to count.
+    static AUTH_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Mark the work on this thread as having tried credentials that were not valid.
+pub(crate) fn note_auth_failure() {
+    AUTH_FAILED.with(|flag| flag.set(true));
+}
+
+/// Whether the work on this thread tried credentials that were not valid since the last call, and forget it. The
+/// host asks after a request's job; a worker's cleanup forgets it so it does not reach the next job.
+pub fn take_auth_failure() -> bool {
+    AUTH_FAILED.with(|flag| flag.replace(false))
 }
 
 /// One HTTP request, already read off the socket.
@@ -51,6 +65,9 @@ pub struct WebRequest {
     /// Decoded query pairs in request order. A repeated name becomes a list parameter.
     pub query: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// A `multipart/form-data` body the host read as it arrived ([`multipart::MultipartReader`]), its large files
+    /// spooled to disk; `body` is empty then.
+    pub multipart: Option<std::sync::Arc<multipart::Parsed>>,
     pub peer_ip: String,
     pub session_cookie: Option<String>,
     pub visitor_cookie: Option<String>,
@@ -66,6 +83,7 @@ impl WebRequest {
             headers: BTreeMap::new(),
             query: Vec::new(),
             body: Vec::new(),
+            multipart: None,
             peer_ip: String::new(),
             session_cookie: None,
             visitor_cookie: None,
@@ -82,12 +100,31 @@ impl WebRequest {
     }
 }
 
-/// One HTTP response. Repeated names are separate headers, so `Set-Cookie` can appear twice.
+/// One HTTP response. Repeated names are separate headers, so `Set-Cookie` can appear twice. A large body is a
+/// [`ResponseStream`] the host reads a window at a time as the client takes it, and `body` is empty.
 #[derive(Clone, Debug)]
 pub struct WebResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    pub stream: Option<ResponseStream>,
+}
+
+/// `length` bytes of `source` from `offset`: the body of a response too large to hold.
+#[derive(Clone)]
+pub struct ResponseStream {
+    pub source: std::sync::Arc<dyn crate::resource::source::ByteSource>,
+    pub offset: u64,
+    pub length: u64,
+}
+
+impl std::fmt::Debug for ResponseStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResponseStream")
+            .field("offset", &self.offset)
+            .field("length", &self.length)
+            .finish()
+    }
 }
 
 impl WebResponse {
@@ -96,7 +133,15 @@ impl WebResponse {
             status,
             headers: Vec::new(),
             body: body.into(),
+            stream: None,
         }
+    }
+
+    /// The length of the body, streamed or not.
+    pub fn body_len(&self) -> u64 {
+        self.stream
+            .as_ref()
+            .map_or(self.body.len() as u64, |stream| stream.length)
     }
 
     pub fn header(&self, name: &str) -> Option<&str> {
@@ -126,6 +171,8 @@ struct WebSlot {
     request_details: String,
     /// The names in the URL query string, which `getSecureRequestParameters` leaves out.
     query_names: Vec<String>,
+    /// The method and the conditional headers of the request, for a file response (`sendResourceResponse`).
+    conditional: crate::screen::static_files::Conditional,
     /// [`client_ip`] of the request, for the login `ipAllowed` check.
     client_ip: String,
     /// The first locale of the request's `Accept-Language`, as Java's `request.getLocale()`.
@@ -136,6 +183,7 @@ struct WebSlot {
     status: u16,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    stream: Option<ResponseStream>,
     /// The user preferences this request set, by key (`None` removed), which the response tells the client
     /// (`X-Moqui-Preferences`, [`take_changed_preferences`]).
     changed_preferences: BTreeMap<String, Option<String>>,
@@ -174,6 +222,7 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             referrer: String::new(),
             request_details: String::new(),
             query_names: Vec::new(),
+            conditional: Default::default(),
             client_ip: String::new(),
             locale: None,
             base_url,
@@ -182,6 +231,7 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             status: 200,
             headers: Vec::new(),
             body: Vec::new(),
+            stream: None,
         })
     });
     WebGuard { previous }
@@ -306,6 +356,7 @@ pub(crate) fn set_request_info(request: &WebRequest) {
             web.request_details = details;
             web.query_names = request.query.iter().map(|(name, _)| name.clone()).collect();
             web.client_ip = client_ip(request);
+            web.conditional = crate::screen::static_files::Conditional::of(request);
         }
     });
 }
@@ -663,31 +714,33 @@ fn attachment_disposition(file_name: &str) -> String {
     format!("attachment; filename=\"{safe}\"; filename*=utf-8''{encoded}")
 }
 
-/// `ec.web.sendResourceResponse(location, inline, fileName)`: the bytes at a resource location (a `#versionName` suffix
+/// `ec.web.sendResourceResponse(location, inline, fileName)`: the file at a resource location (a `#versionName` suffix
 /// sends that version, on storage that keeps versions), with the type of its file name, shown inline or as an
 /// attachment named `file_name` (the location's last segment when none is given, so a zip or a copy kept under a random
-/// name downloads under its own name). Nothing at the location, a directory, or a version that is not there is 404.
+/// name downloads under its own name); a large one streams, and a `Range` or `If-None-Match` of the request is
+/// answered. Nothing at the location, a directory, or a version that is not there is 404.
 ///
 /// Only an application's own files (`component://`, `classpath://`) shown inline may be kept by a shared cache, as Java
 /// sends every inline resource; anything else (a drive's or a record's file, a temporary zip) is `private, no-store`, so
 /// a proxy or a shared browser keeps no copy of what a user was allowed to read.
 pub(crate) fn send_resource_response(location: &str, inline: bool, file_name: Option<&str>) {
-    let bytes = ExecutionContext::with_current(|ec| match ec.factory().resource().location_bytes(location) {
-        Ok(found) => found,
-        Err(err) => {
-            tracing::warn!("Could not read the resource at {location}: {err}");
-            None
+    let opened = ExecutionContext::with_current(|ec| ec.factory().resource().open(location)).transpose();
+    let opened = match opened {
+        Ok(Some(Some(opened))) => opened,
+        Ok(_) => {
+            tracing::warn!("Sending not found response, resource not found at: {location}");
+            send_bytes(
+                404,
+                "text/plain",
+                format!("Resource not found at {location}").into_bytes(),
+            );
+            return;
         }
-    })
-    .flatten();
-    let Some(bytes) = bytes else {
-        tracing::warn!("Sending not found response, resource not found at: {location}");
-        send_bytes(
-            404,
-            "text/plain",
-            format!("Resource not found at {location}").into_bytes(),
-        );
-        return;
+        Err(err) => {
+            tracing::warn!("Sending error response, resource at {location} cannot be read: {}", err.message());
+            send_bytes(500, "text/plain", format!("Resource at {location} cannot be read").into_bytes());
+            return;
+        }
     };
     let base = location.split_once('#').map_or(location, |(base, _)| base);
     let last = base.trim_end_matches('/').rsplit('/').next().unwrap_or(base);
@@ -712,7 +765,11 @@ pub(crate) fn send_resource_response(location: &str, inline: bool, file_name: Op
         "private, no-store"
     };
     headers.push(("Cache-Control".to_string(), cache.to_string()));
-    send_bytes_with_headers(200, headers, bytes);
+    let conditional = WEB.with(|slot| slot.borrow().as_ref().map(|web| web.conditional.clone())).unwrap_or_default();
+    if let Err(err) = crate::screen::static_files::respond_opened(&conditional, headers, &opened) {
+        tracing::warn!("Sending error response, resource at {location} cannot be read: {}", err.message());
+        send_bytes(500, "text/plain", format!("Resource at {location} cannot be read").into_bytes());
+    }
 }
 
 /// The signer for QZ Tray, from `qz-private-key.pem`. Java reads it once from the classpath at class load. This
@@ -816,6 +873,29 @@ pub(crate) fn send_bytes_with_headers(status: u16, headers: Vec<(String, String)
     });
 }
 
+/// A response whose body is `stream`, read by the host as the client takes it. One already sent is left alone.
+pub(crate) fn send_stream(status: u16, headers: Vec<(String, String)>, stream: ResponseStream) {
+    WEB.with(|slot| {
+        let mut web = slot.borrow_mut();
+        let Some(web) = web.as_mut() else {
+            return;
+        };
+        if web.sent {
+            return;
+        }
+        web.sent = true;
+        web.status = status;
+        web.headers.extend(headers);
+        web.body.clear();
+        web.stream = Some(stream);
+    });
+}
+
+/// Move the body stream out of the slot, when the response has one.
+pub(crate) fn take_stream() -> Option<ResponseStream> {
+    WEB.with(|slot| slot.borrow_mut().as_mut().and_then(|web| web.stream.take()))
+}
+
 fn send_bytes(status: u16, content_type: &str, body: Vec<u8>) {
     WEB.with(|slot| {
         let mut web = slot.borrow_mut();
@@ -855,18 +935,20 @@ pub(crate) fn clear_output() {
             web.status = 200;
             web.headers.clear();
             web.body.clear();
+            web.stream = None;
         }
     });
 }
 
 /// What a request had written, set aside while something else uses the slot's output.
-pub(crate) struct OutputStash((u16, Vec<(String, String)>, Vec<u8>, bool));
+pub(crate) struct OutputStash((u16, Vec<(String, String)>, Vec<u8>, bool), Option<ResponseStream>);
 
 /// Take what was written so far and leave the slot empty, for output that is not the response.
 pub(crate) fn stash_output() -> OutputStash {
+    let stream = take_stream();
     let taken = take_output();
     clear_output();
-    OutputStash(taken)
+    OutputStash(taken, stream)
 }
 
 /// Put back what [`stash_output`] took, dropping anything written since.
@@ -878,6 +960,7 @@ pub(crate) fn restore_output(stash: OutputStash) {
             web.headers = headers;
             web.body = body;
             web.sent = sent;
+            web.stream = stash.1;
         }
     });
 }
@@ -920,17 +1003,42 @@ pub(crate) enum BodyError {
     Executable(String),
 }
 
-/// The largest request body: `webapp_max_body`, 10 MiB by default, and for a `multipart/form-data` body
-/// `webapp_max_upload`.
+/// The largest request body: `web-protection` `requests` `max-body` (`webapp_max_body`, 10 MiB by default), and
+/// for a `multipart/form-data` body `max-upload` (`webapp_max_upload`). The conf of the current context's factory,
+/// or the properties with none.
 pub fn body_limit(request: &WebRequest) -> usize {
+    ExecutionContext::with_current(|ec| body_limit_for(Some(ec.factory().as_ref()), request))
+        .unwrap_or_else(|| body_limit_for(None, request))
+}
+
+/// [`body_limit`] by the conf of `factory`.
+pub fn body_limit_for(factory: Option<&crate::context::ExecutionContextFactory>, request: &WebRequest) -> usize {
     if is_multipart(request) {
-        max_upload()
+        parse_size(&protection_setting(factory, "requests", "max-upload", "webapp_max_upload"))
+            .unwrap_or(DEFAULT_MAX_UPLOAD)
     } else {
-        parse_size(&moqui_lib::env::get_prop_or_env("webapp_max_body")).unwrap_or(DEFAULT_MAX_BODY)
+        parse_size(&protection_setting(factory, "requests", "max-body", "webapp_max_body")).unwrap_or(DEFAULT_MAX_BODY)
     }
 }
 
-pub(crate) fn is_multipart(request: &WebRequest) -> bool {
+/// The `webroot` webapp's `web-protection` setting: the attribute `name` of its child `child` (empty for
+/// `web-protection` itself), or the property `property` when the conf leaves it out or it expands to nothing.
+pub fn protection_setting(
+    factory: Option<&crate::context::ExecutionContextFactory>,
+    child: &str,
+    name: &str,
+    property: &str,
+) -> String {
+    let configured = factory
+        .map(|factory| factory.web_protection_setting("webroot", child, name))
+        .unwrap_or_default();
+    if !configured.is_empty() || property.is_empty() {
+        return configured;
+    }
+    moqui_lib::env::get_prop_or_env(property).trim().to_string()
+}
+
+pub fn is_multipart(request: &WebRequest) -> bool {
     request
         .header("content-type")
         .unwrap_or("")
@@ -939,14 +1047,15 @@ pub(crate) fn is_multipart(request: &WebRequest) -> bool {
         .is_some_and(|start| start.eq_ignore_ascii_case("multipart/"))
 }
 
-const DEFAULT_MAX_UPLOAD: usize = 100 * 1024 * 1024;
+const DEFAULT_MAX_UPLOAD: usize = 2 * 1024 * 1024 * 1024;
 
-/// `webapp_max_upload`: bytes, or a number with a `k`, `m` or `g` suffix. 100 MiB when unset or not a size.
+/// `webapp_max_upload`: bytes, or a number with a `k`, `m` or `g` suffix. 2 GiB when unset or not a size.
 pub fn max_upload() -> usize {
     parse_size(&moqui_lib::env::get_prop_or_env("webapp_max_upload")).unwrap_or(DEFAULT_MAX_UPLOAD)
 }
 
-fn parse_size(text: &str) -> Option<usize> {
+/// Bytes, or a number with a `k`, `m` or `g` suffix. `None` when `text` is not a size.
+pub fn parse_size(text: &str) -> Option<usize> {
     let text = text.trim().to_ascii_lowercase();
     let (digits, unit) = match text.chars().last()? {
         'k' => (&text[..text.len() - 1], 1024),
@@ -977,8 +1086,11 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
     let mut json_list = None;
     let mut multipart_files = BTreeMap::new();
     if media.starts_with("multipart/") {
-        let parsed = multipart::parse(request.header("content-type").unwrap_or(""), &request.body)
-            .map_err(|err| BodyError::Multipart(err.to_string()))?;
+        let parsed = match &request.multipart {
+            Some(parsed) => multipart::Parsed::clone(parsed),
+            None => multipart::parse(request.header("content-type").unwrap_or(""), &request.body)
+                .map_err(|err| BodyError::Multipart(err.to_string()))?,
+        };
         pairs.extend(parsed.fields);
         if !upload_executable_allowed() {
             if let Some(file) = parsed.files.iter().find(|file| file.is_executable()) {
@@ -1165,18 +1277,28 @@ pub(crate) fn visitor_cookie_of(request: &WebRequest) -> Option<String> {
         .and_then(|header| cookie_value(header, crate::user::VISITOR_COOKIE_NAME))
 }
 
-/// First hop of `webapp_client_ip_header` when that property is set and the header is present.
+/// The client's address: what the proxy in front names in `client-ip-header`, when that proxy is believed
+/// ([`address::ClientAddressing`]), else the socket peer.
 pub fn client_ip(request: &WebRequest) -> String {
-    let name = moqui_lib::env::get_prop_or_env("webapp_client_ip_header");
-    if !name.is_empty() {
-        if let Some(value) = request.header(&name) {
-            let first = value.split(',').next().unwrap_or("").trim();
-            if !first.is_empty() {
-                return first.to_string();
-            }
-        }
+    let addressing = client_addressing();
+    if addressing.header().is_empty() {
+        return request.peer_ip.clone();
     }
-    request.peer_ip.clone()
+    let Ok(peer) = request.peer_ip.trim().parse::<std::net::IpAddr>() else {
+        return request.peer_ip.clone();
+    };
+    let client = addressing.resolve(peer, request.header(addressing.header()));
+    if client == peer.to_canonical() {
+        request.peer_ip.clone()
+    } else {
+        client.to_string()
+    }
+}
+
+/// The current factory's [`address::ClientAddressing`], read once; from the properties with no current context.
+pub fn client_addressing() -> std::sync::Arc<address::ClientAddressing> {
+    ExecutionContext::with_current(|ec| ec.factory().extension(address::ClientAddressing::of_factory))
+        .unwrap_or_else(|| std::sync::Arc::new(address::ClientAddressing::of_properties()))
 }
 
 /// `WebUtilities.ipMatches`: comma separated patterns, each four dot separated parts of a number,

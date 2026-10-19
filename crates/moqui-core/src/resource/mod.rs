@@ -15,6 +15,8 @@
 //! Resource revision support behind the resource facade (`crate::context::resource`): line diffs of versions, and
 //! the `git://` location scheme. Guide: `docs/Revision-Management.md`.
 
+pub mod blob;
 #[cfg(feature = "git")]
 pub mod git;
+pub mod source;
 pub mod textdiff;

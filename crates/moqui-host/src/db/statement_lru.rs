@@ -43,6 +43,8 @@ impl<S> StatementLru<S> {
         self.entries.len()
     }
 
+    /// Only the MySQL driver asks.
+    #[cfg_attr(not(feature = "mysql"), allow(dead_code))]
     pub(crate) fn contains(&self, sql: &str) -> bool {
         self.entries.contains_key(sql)
     }
@@ -81,6 +83,7 @@ impl<S> StatementLru<S> {
     }
 
     /// Every statement, in no order.
+    #[cfg_attr(not(feature = "mysql"), allow(dead_code))]
     pub(crate) fn into_values(self) -> impl Iterator<Item = S> {
         self.entries.into_values().map(|(statement, _)| statement)
     }

@@ -35,13 +35,16 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="versionName" type="text-short"/>
         <field name="rootVersionName" type="text-short"/>
         <field name="fileData" type="binary-very-long"/>
-        <field name="fileSize" type="number-integer"><description>The bytes of fileData, written with each write so a
-            folder list need not read the files; a row written before this field is sized from its data until its next
-            write.</description></field>
+        <field name="blobId" type="id-long"><description>The content blob of content over
+            dbresource_blob_threshold bytes, in place of fileData</description></field>
+        <field name="fileSize" type="number-integer"><description>The bytes of the content (fileData, or the content
+            blob), written with each write so a folder list need not read the files; a row written before this field is
+            sized from its data until its next write (or migrate#DbResourceBlobs).</description></field>
         <field name="versionNote" type="text-medium"><description>The note written with the current version (an
             upload's version note); its DbResourceFileHistory row keeps it too, so it stays with the version when a
             later write replaces it.</description></field>
         <relationship type="one" related="moqui.resource.DbResource" short-alias="dbResource"/>
+        <relationship type="one" related="moqui.resource.ContentBlob" short-alias="blob"/>
         <relationship type="many" related="moqui.resource.DbResourceFileHistory" short-alias="histories">
             <key-map field-name="resourceId"/></relationship>
     </entity>
@@ -53,8 +56,10 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="userId" type="id"/>
         <field name="isDiff" type="text-indicator"/>
         <field name="fileData" type="binary-very-long"/>
+        <field name="blobId" type="id-long"><description>The content blob of a past version kept as one</description></field>
         <field name="versionNote" type="text-medium"><description>The note written with this version</description></field>
         <relationship type="one" related="moqui.resource.DbResourceFile"/>
+        <relationship type="one" related="moqui.resource.ContentBlob" short-alias="blob"/>
         <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
     </entity>
 
@@ -78,24 +83,143 @@ along with this software (see the LICENSE.md file). If not, see
             fetches this repository when this long has passed since the last fetch; never when empty</description></field>
         <field name="lastFetchDate" type="date-time"/>
         <field name="lastFetchError" type="text-long"/>
-        <field name="headCommitId" type="text-short"><description>The branch head after the last write or fetch</description></field>
+        <field name="headCommitId" type="text-short"><description>The branch head after the last write, push or fetch</description></field>
+        <field name="lastUpdateDate" type="date-time"><description>When a write, push or fetch last changed a ref</description></field>
+        <field name="objectCount" type="number-integer"><description>For db: GitObject rows after the last
+            gc#GitRepositories</description></field>
+        <field name="storedBytes" type="number-integer"><description>For db: bytes of objectData after the last
+            gc#GitRepositories</description></field>
+        <field name="lastGcDate" type="date-time"/>
+        <field name="lastGcResult" type="text-long"/>
+        <field name="gcLeaseOwner" type="text-short"><description>The run of gc#GitRepositories that holds this
+            repository (the only one that rewrites its objects) until gcLeaseUntil</description></field>
+        <field name="gcLeaseUntil" type="date-time"/>
         <relationship type="many" related="moqui.resource.GitRef" short-alias="refs"><key-map field-name="repositoryId"/></relationship>
     </entity>
     <entity entity-name="GitObject" package="moqui.resource" use="nontransactional" cache="never">
-        <description>A git object of a db kind repository: its raw content without the git header, uncompressed (the
-            database compresses large values), keyed by its SHA-1 hex id.</description>
+        <description>A git object of a db kind repository, keyed by its SHA-1 hex id, stored as storage says.
+            lastUpdatedStamp is when it was written or last referenced again: gc#GitRepositories deletes only an
+            unreachable object not touched since its cutoff.</description>
         <field name="repositoryId" type="id" is-pk="true"/>
         <field name="objectId" type="text-short" is-pk="true"/>
         <field name="objectType" type="text-short"><description>commit, tree, blob, or tag</description></field>
-        <field name="objectSize" type="number-integer"/>
+        <field name="objectSize" type="number-integer"><description>The size of the content</description></field>
+        <field name="storage" type="text-short"><description>What objectData holds: zlib (the zlib stream of the
+            content, as in a pack), delta (the zlib stream of git delta instructions that make the content from the
+            object deltaBaseId), or empty (the content itself, as rows written before these were); or blob, for an
+            object over git_db_large_object bytes: the content is the ContentBlob blobId</description></field>
+        <field name="deltaBaseId" type="text-short"/>
+        <field name="deltaDepth" type="number-integer"><description>Deltas from the object to a whole one</description></field>
+        <field name="deltaSize" type="number-integer"><description>The size of the delta instructions</description></field>
+        <field name="storedBytes" type="number-integer"><description>The size of objectData</description></field>
         <field name="objectData" type="binary-very-long"/>
+        <field name="blobId" type="id-long"/>
         <relationship type="one" related="moqui.resource.GitRepository"/>
+        <relationship type="one" related="moqui.resource.ContentBlob" short-alias="blob"/>
+        <relationship type="one" title="DeltaBase" related="moqui.resource.GitObject" short-alias="deltaBase">
+            <key-map field-name="repositoryId"/><key-map field-name="deltaBaseId" related="objectId"/></relationship>
+        <index name="GIT_OBJ_KIND"><index-field name="repositoryId"/><index-field name="objectType"/>
+            <index-field name="objectId"/></index>
+        <index name="GIT_OBJ_BASE"><index-field name="repositoryId"/><index-field name="deltaBaseId"/></index>
+        <index name="GIT_OBJ_BLOB"><index-field name="blobId"/></index>
     </entity>
     <entity entity-name="GitRef" package="moqui.resource" use="nontransactional" cache="never">
         <field name="repositoryId" type="id" is-pk="true"/>
         <field name="refName" type="text-medium" is-pk="true"><description>refs/heads/branch</description></field>
         <field name="objectId" type="text-short"/>
         <relationship type="one" related="moqui.resource.GitRepository"/>
+    </entity>
+    <entity entity-name="GitUpdate" package="moqui.resource" use="nontransactional" cache="never">
+        <description>One change to the refs of a repository: a push (each one, accepted or not, so this is the push
+            log), a fetch of a mirror, an import, or (when a gitECA rule listens for them) a write through git://. The
+            gitECA rules of its post events (ref-update, commit, tag, post-receive) run from it after the change, so
+            a restart does not lose them (ecaStatus pending, then running, done or failed).</description>
+        <field name="updateId" type="id" is-pk="true"/>
+        <field name="repositoryId" type="id"/>
+        <field name="source" type="text-short"><description>push, fetch, import or write</description></field>
+        <field name="transport" type="text-short"><description>http, ssh or internal</description></field>
+        <field name="userId" type="id"><description>Who pushed or wrote; empty for a fetch run by a job</description></field>
+        <field name="remoteAddress" type="text-short"/>
+        <field name="updateDate" type="date-time"/>
+        <field name="priorTips" type="text-very-long"><description>The ids every ref pointed to before the change,
+            separated by spaces: the commits new to the repository are those the new refs reach and these do
+            not</description></field>
+        <field name="pushOptions" type="text-long"/>
+        <field name="ecaStatus" type="text-short"><description>recording (the refs are being changed), pending,
+            running, done, failed, or none (nothing changed)</description></field>
+        <field name="ecaError" type="text-long"/>
+        <field name="processedDate" type="date-time"/>
+        <relationship type="one" related="moqui.resource.GitRepository"/>
+        <relationship type="many" related="moqui.resource.GitUpdateRef" short-alias="refs"><key-map field-name="updateId"/></relationship>
+        <index name="GIT_UPDATE_STATUS"><index-field name="ecaStatus"/></index>
+        <index name="GIT_UPDATE_REPO"><index-field name="repositoryId"/><index-field name="updateDate"/></index>
+    </entity>
+    <entity entity-name="GitUpdateRef" package="moqui.resource" use="nontransactional" cache="never">
+        <field name="updateId" type="id" is-pk="true"/>
+        <field name="refName" type="text-medium" is-pk="true"/>
+        <field name="oldObjectId" type="text-short"/>
+        <field name="newObjectId" type="text-short"/>
+        <field name="changeType" type="text-short"><description>create, update (a fast-forward), force or delete</description></field>
+        <field name="result" type="text-medium"><description>ok, pending while it is made, or why it was refused</description></field>
+        <relationship type="one" related="moqui.resource.GitUpdate"/>
+    </entity>
+
+    <!-- Git LFS (crates/moqui-core/src/resource/git/server/lfs.rs, docs/Git-Hosting.md). No Java counterpart. -->
+    <entity entity-name="GitLfsObject" package="moqui.resource" use="nontransactional" cache="never">
+        <description>A Git LFS object of a repository, its content the ContentBlob of the same SHA-256. A repository
+            has an object only once it was uploaded to it: the same content in another repository is stored once,
+            and knowing its oid does not reach it.</description>
+        <field name="repositoryId" type="id" is-pk="true"/>
+        <field name="oid" type="id-long" is-pk="true"><description>The SHA-256 of the content, the oid of the LFS
+            pointer in the repository</description></field>
+        <field name="objectSize" type="number-integer"/>
+        <field name="uploadedByUserId" type="id"/>
+        <field name="uploadedDate" type="date-time"/>
+        <relationship type="one" related="moqui.resource.GitRepository"/>
+        <relationship type="one" related="moqui.resource.ContentBlob" short-alias="blob">
+            <key-map field-name="oid" related="blobId"/></relationship>
+    </entity>
+    <entity entity-name="GitLfsLock" package="moqui.resource" use="nontransactional" cache="never">
+        <description>A file of a repository locked with git lfs lock, so others do not change it meanwhile.</description>
+        <field name="lockId" type="id" is-pk="true"/>
+        <field name="repositoryId" type="id"/>
+        <field name="lockPath" type="text-medium"/>
+        <field name="refName" type="text-medium"/>
+        <field name="ownerUserId" type="id"/>
+        <field name="lockedDate" type="date-time"/>
+        <relationship type="one" related="moqui.resource.GitRepository"/>
+        <relationship type="one-nofk" title="Owner" related="moqui.security.UserAccount">
+            <key-map field-name="ownerUserId" related="userId"/></relationship>
+        <index name="GIT_LFS_LOCK_PATH" unique="true"><index-field name="repositoryId"/><index-field name="lockPath"/></index>
+    </entity>
+
+    <!-- Large content by its SHA-256, in chunks (crates/moqui-core/src/resource/blob.rs, docs/Git-Hosting.md). No Java
+        counterpart. A row that refers to a blob has a relationship to ContentBlob: gc#ContentBlobs deletes the blobs
+        no such row refers to. -->
+    <entity entity-name="ContentBlob" package="moqui.resource" use="nontransactional" cache="never">
+        <field name="blobId" type="id-long" is-pk="true"><description>The SHA-256 of the content, lowercase hex</description></field>
+        <field name="blobSize" type="number-integer"/>
+        <field name="storageKind" type="text-short"><description>db: ContentBlobChunk rows</description></field>
+        <field name="storageKey" type="id-long"><description>The chunks' storageKey: the upload's</description></field>
+        <field name="chunkSize" type="number-integer"><description>The size of each chunk but the last</description></field>
+        <field name="chunkCount" type="number-integer"/>
+        <field name="createdDate" type="date-time"/>
+        <index name="CONTENT_BLOB_KEY"><index-field name="storageKey"/></index>
+    </entity>
+    <entity entity-name="ContentBlobChunk" package="moqui.resource" use="nontransactional" cache="never">
+        <field name="storageKey" type="id-long" is-pk="true"/>
+        <field name="chunkSeq" type="number-integer" is-pk="true"/>
+        <field name="chunkData" type="binary-very-long"/>
+    </entity>
+    <entity entity-name="ContentBlobUpload" package="moqui.resource" use="nontransactional" cache="never">
+        <description>A blob being written: its chunks are under storageKey until the ContentBlob row is made. One
+            whose lastActivityDate is a day old is abandoned, and gc#ContentBlobs deletes its chunks.</description>
+        <field name="storageKey" type="id-long" is-pk="true"/>
+        <field name="status" type="text-short"/>
+        <field name="receivedSize" type="number-integer"/>
+        <field name="userId" type="id"/>
+        <field name="startedDate" type="date-time"/>
+        <field name="lastActivityDate" type="date-time"/>
     </entity>
 
     <!-- ========================================================= -->

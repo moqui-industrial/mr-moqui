@@ -20,7 +20,7 @@
 //! The test needs `runtime/component/mantle-udm` and `mantle-usl`, which are not part of this repository, and it
 //! skips without them. The load takes about half a minute.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#![cfg(all(unix, feature = "embedded-postgres"))]
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -541,7 +541,18 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
+/// A path under `/tmp`. The runtimes share one Postgres install in `target/<profile>/moqui-test-install`, rather than
+/// each unpacking its own.
 fn temp_dir(prefix: &str) -> PathBuf {
+    static SHARED: std::sync::Once = std::sync::Once::new();
+    SHARED.call_once(|| {
+        let exe = std::env::current_exe().unwrap();
+        let profile_dir = exe.ancestors().nth(2).expect("target directory");
+        moqui_lib::env::set_property(
+            "MOQUI_INSTALL",
+            profile_dir.join("moqui-test-install").display().to_string(),
+        );
+    });
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

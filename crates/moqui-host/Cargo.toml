@@ -9,24 +9,45 @@ publish.workspace = true
 # The only crate that may depend on Tokio, axum, the sync database clients,
 # postgresql_embedded, process spawn, SSH (russh, russh-sftp), and the OIDC client (huskarl).
 
+# The packages (docs/Packaging.md) are the first three; the binary crates (crates/moqui, and target/moqui-app that
+# `./moq build` generates) forward them. The default is the largest, so `cargo build`, `cargo test` and `cargo lint`
+# cover everything.
 [features]
-default = ["embedded-postgres", "postgres", "mysql", "axum", "pdf"]
-embedded-postgres = ["dep:postgresql_embedded"]
+default = ["maximal"]
+# Default package (`./moq build`): the web server on embedded Postgres, PDF, and outbound mail.
+lite = ["axum", "embedded-postgres", "pdf", "smtp"]
+# Enterprise package (`./moq build --enterprise`): everything, with the databases external.
+enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx", "ssh", "sso", "print", "inbound-smtp"]
+# Maximal package (`./moq build --release`, and the debug build): everything, Postgres embedded.
+maximal = ["enterprise", "embedded-postgres"]
+
+embedded-postgres = ["postgres", "dep:postgresql_embedded", "dep:tar", "dep:flate2"]
 postgres = ["dep:postgres", "dep:tokio-postgres-rustls"]
 mysql = ["dep:mysql"]
-axum = ["dep:axum", "dep:tower", "dep:tower-http", "dep:hyper", "dep:hyper-util"]
+axum = ["dep:axum", "dep:tower", "dep:tower-http", "dep:hyper", "dep:hyper-util", "dep:futures-util"]
 pdf = ["dep:tokio-tungstenite", "dep:futures-util"]
-# MPL-2.0. Not in the default binary. `cargo tree -p moqui-host -F pdf-servo`.
-pdf-servo = ["dep:servo"]
-# No crate. OpenSearch is a separate process, reached through the core HTTP client.
-opensearch = []
-# No crate: the SMTP listener for hosted and shared mail accounts behind the edge gateway (src/smtp.rs, Tokio only).
-# Off by default; it starts when smtp_listen_port is set. docs/Mail-Inbound.md.
-inbound-smtp = []
+# SSH and SFTP: the SFTP client of moqui_core::sftp, the built-in SSH server (SFTP, admin shell, git over SSH), and
+# the SSH cluster channel.
+ssh = ["dep:russh", "dep:russh-sftp"]
+# OIDC and OAuth 2 logins (moqui_core::sso).
+sso = ["dep:huskarl", "dep:p256", "dep:form_urlencoded"]
+# Network printing over IPP (moqui_core::print).
+print = ["dep:ipp"]
+# The SMTP listener for hosted and shared mail accounts behind the edge gateway (src/smtp.rs, Tokio only); it stores
+# through the inbound mail of imap. It starts only when smtp_listen_port is set. docs/Mail-Inbound.md.
+inbound-smtp = ["imap"]
+# Framework features, forwarded to moqui-core.
+mail = ["smtp", "imap"]
+smtp = ["moqui-core/smtp"]
+imap = ["moqui-core/imap"]
+git = ["moqui-core/git"]
+image = ["moqui-core/image"]
+xlsx = ["moqui-core/xlsx"]
 
 [dependencies]
-# The workspace entry has default features off (moqui-browser); the server wants all three.
-moqui-core = { workspace = true, features = ["mail", "http", "cluster-tls", "git"] }
+# The workspace entry has default features off (moqui-browser). The host always has HTTP and the cluster
+# certificate; the other core features follow the host's own.
+moqui-core = { workspace = true, features = ["http", "cluster-tls"] }
 moqui-lib = { workspace = true, features = ["http"] }
 tracing = { workspace = true }
 # Log line and log entry timestamps (crates/moqui-host/src/logging.rs). Already in the graph under moqui-lib.
@@ -39,6 +60,8 @@ sha2 = { workspace = true }
 base64 = { workspace = true }
 serde_json = { workspace = true }
 postgresql_embedded = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
 postgres = { workspace = true, optional = true }
 tokio-postgres-rustls = { workspace = true, optional = true }
 mysql = { workspace = true, optional = true }
@@ -49,16 +72,20 @@ hyper = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
-servo = { workspace = true, optional = true }
-russh = { workspace = true }
-russh-sftp = { workspace = true }
-huskarl = { workspace = true }
+russh = { workspace = true, optional = true }
+russh-sftp = { workspace = true, optional = true }
+huskarl = { workspace = true, optional = true }
 http = { workspace = true }
 bytes = { workspace = true }
-form_urlencoded = { workspace = true }
-p256 = { workspace = true }
+form_urlencoded = { workspace = true, optional = true }
+p256 = { workspace = true, optional = true }
 reqwest = { workspace = true }
-ipp = { workspace = true }
+ipp = { workspace = true, optional = true }
+
+# build.rs stages and checks the Postgres archive of embedded-postgres.
+[build-dependencies]
+tar = { workspace = true }
+flate2 = { workspace = true }
 
 [lints]
 workspace = true

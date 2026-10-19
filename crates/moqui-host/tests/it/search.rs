@@ -20,7 +20,7 @@
 //! to end: entity writes, `DataFeedPending`, a service worker, `index#DataDocuments`, and
 //! `search#DataDocuments`.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#![cfg(all(unix, feature = "embedded-postgres"))]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

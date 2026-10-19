@@ -119,7 +119,7 @@ impl Extractor for JdbcExtractor {
     }
 }
 
-#[cfg(all(test, unix, feature = "embedded-postgres", feature = "postgres"))]
+#[cfg(all(test, unix, feature = "embedded-postgres"))]
 mod tests {
     use std::cell::RefCell;
     use std::path::PathBuf;

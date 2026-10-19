@@ -431,7 +431,7 @@ fn a_user_lists_decides_and_marks_only_their_own_notifications() {
 /// The daily digest: one email per user of the unviewed notifications on the topics they get as a digest (the topic's
 /// default or their own choice), not those a topic emailed at once or an earlier digest carried; each row is marked.
 #[test]
-#[cfg(feature = "mail")]
+#[cfg(feature = "smtp")]
 fn the_daily_digest_sends_each_user_one_email_of_their_digest_topics() {
     let _lock = crate::user::session::cookie_property_lock();
     let (ctx, facade, dir) = setup("digest");

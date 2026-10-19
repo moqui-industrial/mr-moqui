@@ -3,7 +3,7 @@
 ## Quick Start
 
 ```sh
-./moq build   # Do a release build; builds are from full source (including dependencies)
+./moq build   # The Default package (docs/Packaging.md); --release for every feature; from full source
 ./moq load    # Load all data, including demo; skip this and production data loads on first run
 ./moq run     # Start moqui; logs to console, ctrl-c to stop; default ports 8080 and 8443
 ```
@@ -25,7 +25,7 @@ Most of MR-Moqui is a port of the Java framework as it exists when the port begi
 2. **qvt becomes server-static.** With `server-static` set for `qvt`, the server sends a data-free Vue template and the client merges data from `/actions` and from a separate form-list request. The attribute stays opt-in for this pass. Plan: [`plans/archive/QvtServerStatic.md`](plans/archive/QvtServerStatic.md).
 3. **Feed registration commits with the entity change.** Entity create, update, and delete register document keys during the transaction. After the transaction-cache flush and before commit, on the enlisted connection, the feed inserts a pending row. Rollback drops it. Assembly and the index write run after commit on the service worker pool, for same-database Postgres, a second Postgres, and OpenSearch. An index failure leaves the pending row and does not roll the entity change back. Plan: [`plans/archive/SearchFacade.md`](plans/archive/SearchFacade.md).
 4. **JavaScript for scripts and templates.** Scripts, XML action and screen macros, and text templates are JavaScript, initially on QuickJS. `ec.resource.expand()` is a template literal. Structured text uses a second renderer: `if`, `list`, and `assign`, compiled to one cached JavaScript function. A locked-down variant of that renderer is the sandbox for less-trusted templates. Plan: [`plans/archive/Architecture-Proposal.md`](plans/archive/Architecture-Proposal.md) (Templating).
-5. **Print HTML is its own render mode.** Server-side page layout is `html-print` (print CSS and `@page`). The old `xsl-fo` name selects that mode. One long-lived external Chromium process prints it to PDF, through the host's own DevTools client; resource images are inlined first, and `/fop/<path>` sends a screen as PDF, as Java's FOP servlet did. An off-by-default `pdf-servo` feature is planned as the in-process alternate where a child process is forbidden (it has no code yet). Plan: [`plans/archive/Architecture-Proposal.md`](plans/archive/Architecture-Proposal.md) (Tool components and print).
+5. **Print HTML is its own render mode.** Server-side page layout is `html-print` (print CSS and `@page`). The old `xsl-fo` name selects that mode. One long-lived external Chromium process prints it to PDF, through the host's own DevTools client; resource images are inlined first, and `/fop/<path>` sends a screen as PDF, as Java's FOP servlet did. Plan: [`plans/archive/Architecture-Proposal.md`](plans/archive/Architecture-Proposal.md) (Tool components and print).
 6. **Cluster coordination uses the shared database.** Instances find each other in a member table. Cache invalidation and notifications fan out over HTTPS, and that endpoint requires a client certificate whose key material is deployment configuration (member rows hold only key fingerprints). Service jobs stay on the database. There is no Hazelcast, Redis, or session-byte replication. Plan: [`plans/archive/Cluster.md`](plans/archive/Cluster.md).
 7. **Sessions live in the database.** The session is `moqui.server.HttpSession`, cached through the entity one-cache and invalidated on the existing cluster topic. A flush overlays dirty fields onto the latest row and retries on `sessionRevision`. The default flush is eventually consistent. Guarantee mode reads the primary and flushes at login, logout, and the end of the request, so a load balancer without stickiness can fail over. Plan: [`plans/archive/Architecture-Proposal.md`](plans/archive/Architecture-Proposal.md) (Sessions and login) and [`plans/archive/Cluster.md`](plans/archive/Cluster.md).
 8. **Keys are configuration, and unset secrets are generated.** Secret key values (field encryption, session-cookie signing, the cluster certificate pair, later the SSH host key) are `default-property`s in the `entity_ds_crypt_pass` pattern: a `CHANGEME` value in `MoquiDefaultConf.xml` set by config file or environment, never database rows. A `runtime/.env` file in the root of the runtime directory is loaded at startup like environment variables and supports any conf property. A secret still at its `CHANGEME` default is generated with the OS CSPRNG and saved to `runtime/.env`, instead of running on the shipped default. Plan: [`plans/archive/MimoReview.md`](plans/archive/MimoReview.md) (Decisions 1–3).
@@ -48,32 +48,35 @@ Reference guides for built features are in [`docs/`](docs/). Design, status and 
 
 Very basic instructions from a fresh checkout. A Run & Deploy guide will come later.
 
-Prerequisites: Rust 1.94 or newer (`rustc --version`). The first build downloads the
-embedded-Postgres 18.6.0 archive. Node.js is optional; the JS client tests run under
-`cargo test` only when `node` is on the path.
+Prerequisites: Rust 1.94 or newer (`rustc --version`). A build with embedded Postgres embeds the
+18.6.0 archive that `scripts/pg-payload.sh strip` downloads once and strips of psql (it links GPL
+readline); `./moq build` runs that when the archive is missing, and a plain `cargo build` asks for it.
+Node.js is optional; the JS client tests run under `cargo test` only when `node` is on the path.
+
+The build packages are in [`docs/Packaging.md`](docs/Packaging.md): Default (`./moq build`, the web server on
+embedded Postgres, PDF and SMTP), Debug (`--debug`), Maximal (`--release`, every feature) and Enterprise
+(`--enterprise`, every feature with the databases external), plus the browser build.
 
 ```sh
-# Development build, binary at target/debug/moqui (for work on the compiled framework;
-# ./moq runs it with --debug)
-cargo build -p moqui
+scripts/pg-payload.sh strip            # once: the Postgres archive the binary embeds, without psql
+cargo build -p moqui                   # Debug, every feature: target/debug/moqui
+cargo build --profile lite --no-default-features -F lite -p moqui     # Default: target/lite/moqui
+cargo build --release -p moqui         # Maximal: target/release/moqui
+scripts/pg-payload.sh check            # before a distribution: no psql or readline in what is embedded
 
-# Release build, binary at target/release/moqui, which ./moq uses by default. Strip psql (it links GPL readline)
-# from the Postgres archive the binary embeds first, and check the result.
-scripts/pg-payload.sh strip
-cargo build --release -p moqui
-scripts/pg-payload.sh check
-
-# Tests (whole workspace) and lints
+# Tests (whole workspace, every feature) and lints
 cargo test
 cargo lint
+scripts/check-packages.sh              # clippy on each package's feature set
 
 # The Gate 3 tests, left out of the default run (embedded Postgres per test, Chromium: ./moq chromium-download, or
 # pdf_chromium_path, or chromium on the PATH)
 cargo test -p moqui-host --test gate3 --test gate3_browser
 ```
 
-Run from the repo root (paths default to `MOQUI_RUNTIME=runtime`,
-`MOQUI_FRAMEWORK=<runtime>/base-component/framework`, embedded cluster in `runtime/db/embedded`).
+Run from the repo root (paths default to `MOQUI_RUNTIME=runtime`, or the binary's own directory when it is a runtime
+directory, `MOQUI_FRAMEWORK=<runtime>/base-component/framework`, embedded cluster in `runtime/db/embedded`, and the
+embedded Postgres unpacked into `runtime/install/postgres`, or under `MOQUI_INSTALL`).
 Setting `entity_ds_db_conf` to `postgres`, `mysql` or `mysql8`, with the other `entity_ds_*`
 properties, uses that server instead. The examples are in `runtime/conf/MoquiDevConf.xml`.
 
@@ -85,15 +88,16 @@ checkout on Linux or macOS. `./moq` with no arguments lists the tasks, and
 `./moq r-p` and `./moq runProduction` both mean `run-production`.
 
 ```sh
-./moq build                    # cargo build --release -p moqui (--debug for target/debug/moqui), linking
-                               # any component crates in runtime/component; tasks that run moqui build a
-                               # missing binary themselves
-./moq run                      # target/release/moqui with runtime/conf/MoquiDevConf.xml; --debug uses target/debug/moqui
+./moq build                    # the Default package, target/lite/moqui (--debug, --release, --enterprise for
+                               # the others), linking any component crates in runtime/component; tasks that
+                               # run moqui build a missing binary themselves
+./moq run                      # target/lite/moqui with runtime/conf/MoquiDevConf.xml; --release uses target/release/moqui
 ./moq run -p 8081 -D entity_ds_db_conf=postgres
 ./moq run lint --screens       # moqui's own commands, with the same conf
 ./moq load                     # all data types; ./moq load seed seed-initial install
 ./moq test mantle-usl         # run a component's JavaScript specs; extra args go to moqui test (--spec, --db snapshot)
 ./moq save-db before-upgrade   # and later: ./moq reload-save before-upgrade
+./moq archive                  # mr-moqui-YYYYMMDD.zip (or --tgz): runtime/ without logs, with the binary in it
 ./moq git-status               # or any git command in every repo: ./moq git pull
 ./moq completion --install     # tab completion for bash or zsh
 ```
@@ -103,8 +107,8 @@ CREATE or UPDATE). It defaults to off, preserving Rust's UPDATE-first optimizati
 
 With no arguments the binary starts the HTTP server (HTTP on `8080` by default, HTTPS on `8443`, cluster
 HTTPS on `8444`) using `runtime/base-component/framework/conf/MoquiDefaultConf.xml` merged with the runtime conf:
-`runtime/conf/MoquiDevConf.xml` when present, or the file `MOQUI_CONF` names, relative to
-the runtime directory or absolute (`./moq run -c FILE` sets it). `MOQUI_CONF` comes from the
+the file `MOQUI_CONF` names, relative to the runtime directory or absolute (`./moq run -c FILE` sets it); else the
+instance's `runtime/MoquiConf.xml` when present; else `runtime/conf/MoquiDevConf.xml` when present. `MOQUI_CONF` comes from the
 environment, not `runtime/.env`, which is read after the conf merge. Without the script,
 `moqui help` lists the commands and `moqui help load` describes one:
 
@@ -130,11 +134,15 @@ set `webapp_https_port=8443`. Behind a reverse proxy on 443, leave it empty.
 The cluster listener's default port moved from `8443` to `8444` so the public HTTPS listener could have `8443`. Update
 firewall rules and port mappings for members that do not set `cluster_https_port`.
 
-For production packaging, deploy the release binary together with the `runtime/`
-directory (the framework component is inside it) and run `./target/release/moqui` from the directory that
-holds them (or point `MOQUI_RUNTIME` / `MOQUI_FRAMEWORK` at them), with
-`MOQUI_CONF=conf/MoquiProductionConf.xml`. From a checkout, `./moq run-production` does that
-with the release binary.
+For production packaging, `./moq archive` (with `--release` or `--enterprise` for those packages;
+[`docs/Packaging.md`](docs/Packaging.md)) writes a zip, or with `--tgz` a gzipped tar, that expands to one directory:
+the contents of `runtime/` (the framework component is inside it) without its logs, scratch files, saves and unpacked
+Postgres, with the binary and `runtime/conf/MoquiProductionConf.xml` as `MoquiConf.xml` in it. The binary uses its own
+directory as the runtime when that has `base-component/`, and merges the `MoquiConf.xml` there, so it runs as
+`<dir>/moqui` from anywhere; `--no-data` leaves out the database and secrets. By hand: copy the binary into the runtime
+directory, with a `MoquiConf.xml` there or `MOQUI_CONF=conf/MoquiProductionConf.xml`. From a checkout, `./moq run-production` runs the Default binary with the
+production conf, or another with `--release` or `--enterprise`. `moqui version` prints a binary's package and
+features.
 
 ## AI/LLM Policy
 

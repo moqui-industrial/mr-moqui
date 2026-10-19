@@ -129,7 +129,7 @@ fn io(context: &str) -> impl Fn(std::io::Error) -> Error + '_ {
 }
 
 /// A scratch runtime under `/tmp` (the Postgres socket path must stay under 108 bytes): `conf` copied, and
-/// `base-component`, each component, and the shared Postgres install linked.
+/// `base-component`, each component, the instance `MoquiConf.xml`, and the shared Postgres install linked.
 fn scratch_runtime(runtime: &Path) -> Result<PathBuf, Error> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -147,9 +147,15 @@ fn scratch_runtime(runtime: &Path) -> Result<PathBuf, Error> {
             }
         }
     }
-    let install = runtime.join("db/install");
-    if install.is_dir() {
-        link(&install, &scratch.join("db/install"))?;
+    // The real runtime's install, after any move from where an earlier build put it.
+    let install = crate::db::embedded::shared_install_dir(runtime, &runtime.join("db/embedded"));
+    if let Some(root) = install.parent() {
+        std::fs::create_dir_all(root).map_err(io("could not create the install directory"))?;
+        link(root, &scratch.join("install"))?;
+    }
+    let instance_conf = runtime.join("MoquiConf.xml");
+    if instance_conf.is_file() {
+        link(&instance_conf, &scratch.join("MoquiConf.xml"))?;
     }
     Ok(scratch)
 }
@@ -190,7 +196,7 @@ fn prepare_database(runtime: &Path, framework: &Path, scratch: &Path, mode: DbMo
     if let Some(dump) = dump.as_ref().filter(|dump| dump.is_file()) {
         let started = Instant::now();
         tracing::warn!("Restoring the test database from {}", dump.display());
-        crate::db::embedded::load_save(&cluster, dump)?;
+        crate::db::embedded::load_save(scratch, &cluster, dump)?;
         tracing::warn!("Restored in {:.1}s", started.elapsed().as_secs_f64());
         return Ok(());
     }
@@ -206,7 +212,7 @@ fn prepare_database(runtime: &Path, framework: &Path, scratch: &Path, mode: DbMo
         if let Some(dir) = dump.parent() {
             std::fs::create_dir_all(dir).map_err(io("could not create the snapshot directory"))?;
         }
-        crate::db::embedded::save_db(&cluster, &dump)?;
+        crate::db::embedded::save_db(scratch, &cluster, &dump)?;
         tracing::warn!("Saved the test database to {}", dump.display());
     }
     Ok(())
@@ -268,7 +274,7 @@ fn boot(runtime: &Path, framework: &Path) -> Result<Booted, Error> {
     let pool = conf.pool.clone();
     let cluster = runtime.join("db/embedded");
     std::fs::create_dir_all(&cluster).map_err(io("could not create the cluster directory"))?;
-    let install = crate::db::embedded::shared_install_dir(&runtime.join("db"), &cluster);
+    let install = crate::db::embedded::shared_install_dir(runtime, &cluster);
     let db = crate::db::entity_db::open(conf, &cluster, &install, pool.max)?;
     let facade = crate::db::entity_facade::open_entity_facade_for_factory(
         &factory,

@@ -24,7 +24,7 @@
 //!
 //! With `OPENSEARCH_URL` set it also runs against that OpenSearch. Results go in `plans/Performance.md`.
 
-#![cfg(all(unix, feature = "embedded-postgres", feature = "postgres"))]
+#![cfg(all(unix, feature = "embedded-postgres"))]
 
 use std::path::PathBuf;
 use std::sync::Arc;

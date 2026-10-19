@@ -12,8 +12,10 @@ You should have received a copy of the CC0 Public Domain Dedication
 along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
-<!-- One moqui.resource.GitRepository: its settings, and the fetch, init, export and import actions of
-    org.moqui.impl.GitServices (docs/Revision-Management.md). -->
+<!-- One moqui.resource.GitRepository: its settings, the fetch, init, export and import actions of
+    org.moqui.impl.GitServices (docs/Revision-Management.md), the storage of a db one with its collection and check,
+    Git LFS, its clone URLs, branches and tags, recent commits, and the log of its updates (pushes, fetches, imports)
+    with the outcome of their gitECA rules (docs/Git-Hosting.md). -->
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         default-menu-title="Git Repository" default-menu-include="false">
 
@@ -37,6 +39,17 @@ along with this software (see the LICENSE.md file). If not, see
         <default-response url="."/></transition>
     <transition name="importGitRepository"><service-call name="org.moqui.impl.GitServices.import#GitRepository"/>
         <default-response url="."/></transition>
+    <transition name="gcGitRepository"><service-call name="org.moqui.impl.GitServices.gc#GitRepositories"/>
+        <default-response url="."/></transition>
+    <transition name="fsckGitRepository"><service-call name="org.moqui.impl.GitServices.fsck#GitRepository"/>
+        <default-response url="."/></transition>
+    <transition name="setupGitLfs"><service-call name="org.moqui.impl.GitServices.setup#GitLfs"/>
+        <default-response url="."/></transition>
+    <!-- run the gitECA post events of an update again -->
+    <transition name="rerunGitUpdate">
+        <service-call name="update#moqui.resource.GitUpdate" in-map="{updateId:updateId, ecaStatus:'pending', ecaError:null}"/>
+        <actions><service-call name="org.moqui.impl.GitServices.process#GitUpdate" in-map="{updateId:updateId}"/></actions>
+        <default-response url="."/></transition>
 
     <actions>
         <entity-find-one entity-name="moqui.resource.GitRepository" value-field="gitRepository"/>
@@ -44,6 +57,24 @@ along with this software (see the LICENSE.md file). If not, see
         <set field="isRemote" from="gitRepository?.repositoryKind == 'remote'"/>
         <set field="isDb" from="gitRepository?.repositoryKind == 'db'"/>
         <set field="hasAccessToken" from="!!gitRepository?.accessToken"/>
+        <service-call name="org.moqui.impl.GitServices.get#GitCloneUrls" in-map="{repositoryId:repositoryId}" out-map="cloneUrls"/>
+        <!-- a mirror not fetched yet has no refs or commits to show -->
+        <set field="refList" from="[]"/><set field="commitList" from="[]"/>
+        <if condition="!isRemote || gitRepository?.lastFetchDate">
+            <service-call name="org.moqui.impl.GitServices.get#GitRefs" in-map="{repositoryId:repositoryId}" out-map="refsOut"/>
+            <set field="refList" from="refsOut.refList ?? []"/>
+            <service-call name="org.moqui.impl.GitServices.get#GitLog" in-map="{repositoryId:repositoryId, limit:20}" out-map="logOut"/>
+            <set field="commitList" from="logOut.commitList ?? []"/>
+        </if>
+        <entity-find entity-name="moqui.resource.GitUpdate" list="updateList" limit="30">
+            <econdition field-name="repositoryId"/><order-by field-name="-updateDate"/><order-by field-name="-updateId"/></entity-find>
+        <set field="updateRows" from="[]"/>
+        <iterate list="updateList" entry="update">
+            <entity-find entity-name="moqui.resource.GitUpdateRef" list="updateRefList">
+                <econdition field-name="updateId" from="update.updateId"/></entity-find>
+            <script>updateRows.push(Object.assign({}, update, {refsText: updateRefList.map(ref =>
+                ref.refName.replace(/^refs\/(heads|tags)\//, '') + ' ' + ref.changeType + (ref.result == 'ok' ? '' : ': ' + ref.result)).join('; ')}))</script>
+        </iterate>
     </actions>
     <widgets>
         <container-row>
@@ -81,7 +112,7 @@ along with this software (see the LICENSE.md file). If not, see
                     </widgets></section>
                     <section name="LocalActions" condition="gitRepository?.repositoryKind == 'local'"><widgets>
                         <link url="initGitRepository" text="Create Bare Repository" parameter-map="{repositoryId:repositoryId}"/>
-                        <label text="A local repository is also created on its first write. Clone it, or push to it, with the git command line."
+                        <label text="A local repository is also created on its first write. Clone it, or push to it, at its clone URLs."
                                 type="p"/>
                     </widgets></section>
                     <section name="DbActions" condition="isDb"><widgets>
@@ -99,9 +130,72 @@ along with this software (see the LICENSE.md file). If not, see
                                 <text-line size="40"/></default-field></field>
                             <field name="submitButton"><default-field title="Import"><submit confirmation="Replace the branch with the imported one?"/></default-field></field>
                         </form-single>
+                        <label text="Storage: ${gitRepository.objectCount ?? '?'} objects, ${gitRepository.storedBytes != null ? Math.round(gitRepository.storedBytes / 1024) + ' KiB' : '? bytes'} after the last collection${gitRepository.lastGcDate ? ' (' + ec.l10n.format(gitRepository.lastGcDate, 'yyyy-MM-dd HH:mm') + ': ' + (gitRepository.lastGcResult ?? '') + ')' : ''}"
+                                type="p"/>
+                        <form-single name="GcGitRepository" transition="gcGitRepository">
+                            <field name="repositoryId"><default-field><hidden/></default-field></field>
+                            <field name="dryRun" from="'true'"><default-field title="Dry Run"
+                                    tooltip="Count what would be deleted, and change nothing">
+                                <check><option key="true" text=" "/></check></default-field></field>
+                            <field name="submitButton"><default-field title="Collect and Repack"><submit/></default-field></field>
+                        </form-single>
+                        <link url="fsckGitRepository" text="Check Objects" parameter-map="{repositoryId:repositoryId}"/>
+                    </widgets></section>
+                    <section name="LfsActions" condition="!isRemote"><widgets>
+                        <form-single name="SetupGitLfs" transition="setupGitLfs">
+                            <field name="repositoryId"><default-field><hidden/></default-field></field>
+                            <field name="patterns"><default-field title="Keep in Git LFS"
+                                    tooltip="gitattributes patterns separated by spaces; images, video, audio, PDFs and archives when empty">
+                                <text-line size="40"/></default-field></field>
+                            <field name="submitButton"><default-field title="Set Up LFS"><submit/></default-field></field>
+                        </form-single>
                     </widgets></section>
                 </box-body></container-box>
             </row-col>
         </container-row>
+
+        <container-box><box-header title="Clone"/><box-body>
+            <label text="git clone ${cloneUrls.httpsUrl ?? ''}" type="div"/>
+            <label text="git clone ${cloneUrls.sshUrl}" type="div" condition="cloneUrls.sshUrl"/>
+            <label text="Access is granted through AT_GIT_REPOSITORY artifact authorization: view to clone and fetch, create and update to push, delete to force a push or delete a ref."
+                    type="p"/>
+        </box-body></container-box>
+
+        <container-row>
+            <row-col lg="5">
+                <label text="Branches and Tags" type="h5"/>
+                <form-list name="GitRefList" list="refList" skip-form="true">
+                    <field name="shortName"><default-field title="Name"><display/></default-field></field>
+                    <field name="refType"><default-field title="Type"><display/></default-field></field>
+                    <field name="commitId"><default-field title="Commit"><display text="${commitId?.substring(0, 10) ?? ''}"/></default-field></field>
+                    <field name="summary"><default-field><display/></default-field></field>
+                    <field name="commitDate"><default-field title="Date"><display format="yyyy-MM-dd HH:mm"/></default-field></field>
+                </form-list>
+            </row-col>
+            <row-col lg="7">
+                <label text="Recent Commits" type="h5"/>
+                <form-list name="GitCommitList" list="commitList" skip-form="true">
+                    <field name="shortId"><default-field title="Commit"><display/></default-field></field>
+                    <field name="summary"><default-field><display/></default-field></field>
+                    <field name="authorName"><default-field title="Author"><display/></default-field></field>
+                    <field name="committerDate"><default-field title="Date"><display format="yyyy-MM-dd HH:mm"/></default-field></field>
+                </form-list>
+            </row-col>
+        </container-row>
+
+        <label text="Updates" type="h5"/>
+        <form-list name="GitUpdateList" list="updateRows" transition="rerunGitUpdate">
+            <field name="updateId"><default-field title="ID"><display/></default-field></field>
+            <field name="updateDate"><default-field title="Date"><display format="yyyy-MM-dd HH:mm:ss"/></default-field></field>
+            <field name="source"><default-field><display/></default-field></field>
+            <field name="transport"><default-field><display/></default-field></field>
+            <field name="userId"><default-field title="User"><display/></default-field></field>
+            <field name="refsText"><default-field title="Refs"><display/></default-field></field>
+            <field name="ecaStatus"><default-field title="Rules"><display/></default-field></field>
+            <field name="ecaError"><default-field title="Rule Errors"><display/></default-field></field>
+            <field name="submitButton"><conditional-field condition="['done', 'failed'].includes(ecaStatus)" title="Run Rules Again">
+                <submit confirmation="Run the gitECA rules of this update again?"/></conditional-field>
+                <default-field><display text=""/></default-field></field>
+        </form-list>
     </widgets>
 </screen>
