@@ -174,6 +174,37 @@ pub fn start_with(label: &str, static_fixture: bool) -> Gate {
     start_seeded(label, static_fixture, None, "", &[])
 }
 
+/// The token of the token-route gate's public link, and of a revoked one ([`start_token_route`]).
+#[allow(dead_code)]
+pub const LINK_TOKEN: &str = "GateLinkToken0123456789abcdefXY";
+#[allow(dead_code)]
+pub const REVOKED_TOKEN: &str = "GateRevokedToken0123456789abcde";
+
+/// A gate with the token route `tk` (`component://example/screen/PublicLink.xml`, checked by
+/// `FileServices.check#PublicShareToken`) and a drive with a `docs` folder shared by john.doe through the link
+/// [`LINK_TOKEN`] (note "For the gate") and the revoked link [`REVOKED_TOKEN`].
+#[allow(dead_code)]
+pub fn start_token_route(label: &str) -> Gate {
+    let hash = |token: &str| moqui_core::user::single_use_hash(token).unwrap();
+    let data = format!(
+        r#"<entity-facade-xml type="seed">
+    <moqui.resource.ResourceDrive driveId="TKD" driveName="Token drive" driveKindEnumId="RdkShared" rootLocation="dbresource://tokendrive"
+            ownerUserId="EX_JOHN_DOE"/>
+    <moqui.resource.DbResource resourceId="TKR1" filename="tokendrive" isFile="N"/>
+    <moqui.resource.DbResource resourceId="TKR2" parentResourceId="TKR1" filename="docs" isFile="N"/>
+    <moqui.resource.ResourceShare shareId="TKS1" driveId="TKD" path="" isDirectory="Y" isLink="Y" linkTokenHash="{}"
+            permissionEnumId="RspView" note="For the gate" createdByUserId="EX_JOHN_DOE" openedCount="0"/>
+    <moqui.resource.ResourceShare shareId="TKS2" driveId="TKD" path="" isDirectory="Y" isLink="Y" linkTokenHash="{}"
+            permissionEnumId="RspView" note="Revoked" createdByUserId="EX_JOHN_DOE" revokedDate="2026-01-01 00:00:00"/>
+</entity-facade-xml>"#,
+        hash(LINK_TOKEN),
+        hash(REVOKED_TOKEN)
+    );
+    let conf = r#"<webapp-list><webapp name="webroot"><token-route name="tk" screen-location="component://example/screen/PublicLink.xml"
+        token-service="org.moqui.impl.FileServices.check#PublicShareToken" title="Shared with you"/></webapp></webapp-list>"#;
+    start_seeded(label, false, Some(&data), conf, &[])
+}
+
 /// [`start`] with more conf in the runtime's `MoquiDevConf.xml`, such as a response header of this server only, and process properties
 /// that hold while the gate does. They are set once the gate has the one-server lock, and cleared when it drops.
 pub fn start_with_conf(label: &str, extra_conf: &str, properties: &[(&str, &str)]) -> Gate {

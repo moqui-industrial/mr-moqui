@@ -398,6 +398,46 @@ interface MoquiResourceFacade {
             quietZone?: number | boolean;
         } | null,
     ): string;
+    /** A change set under one root (docs/Revision-Management.md, Change sets): one commit on git://, the changes in order elsewhere. */
+    makeChangeSet(root: string): MoquiChangeSet;
+    /** Write with a note for the version (the commit message on git://, versionNote on dbresource://). */
+    putContent(location: string, content: unknown, note?: string | null): void;
+    /** The last change of a file or directory; on git:// from the path index. Null when nothing is there. */
+    getLastChange(location: string): MoquiResourceChange | null;
+    getChildChanges(location: string): (MoquiResourceChange & { name: string })[];
+    /** The versions under a location, newest first; on git:// each commit under the path with the paths it changed. */
+    getChangeLog(location: string, limit?: number | null): { versionName: string; previousVersionName: string | null; versionDate: unknown; userId: string | null; note: string | null; paths: string[] }[];
+    getTreeSize(location: string): number;
+    /** A version written back as the newest; the new version's name. */
+    restoreVersion(location: string, versionName: string, note?: string | null): string | null;
+    getVersionBytes(location: string, versionName: string): Uint8Array | null;
+    contentTypeOf(filename: string): string | null;
+    /** A PNG thumbnail of an image, no side over maxSize (256); null when the bytes are not an image. */
+    makeThumbnail(source: string, target: string, maxSize?: number | null): { width: number; height: number; contentType: string } | null;
+    /** A zip of the files at the entries' locations, each under its path; an entry that cannot be read is in failures. */
+    writeZip(target: string, entries: { path: string; location: string }[]): { count: number; size: number; failures: { path: string; error: string }[] };
+    /** A signed grant for subject, valid ttlSeconds (3600); checkGrant verifies it with the same key. */
+    makeGrant(key: string, subject: string, ttlSeconds?: number | null): string;
+    checkGrant(key: string, subject: string, token: string | null): boolean;
+}
+
+interface MoquiChangeSet {
+    write(path: string, content: unknown): MoquiChangeSet;
+    delete(path: string): MoquiChangeSet;
+    move(from: string, to: string): MoquiChangeSet;
+    mkdir(path: string): MoquiChangeSet;
+    size(): number;
+    commit(message?: string | null): { versionName: string | null; applied: string[]; failures: { path: string; error: string }[] };
+}
+
+interface MoquiResourceChange {
+    isFile: boolean;
+    size: number | null;
+    versionName: string | null;
+    /** Milliseconds since the epoch. */
+    date: number | null;
+    userId: string | null;
+    note: string | null;
 }
 
 interface MoquiL10nFacade {

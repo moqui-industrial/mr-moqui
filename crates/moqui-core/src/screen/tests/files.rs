@@ -205,6 +205,7 @@ fn the_qvt_client_passes_its_node_tests() {
         "WebrootVue.qvt.records.test.js",
         "WebrootVue.qvt.layout.test.js",
         "WebrootVue.qvt.htmlview.test.js",
+        "WebrootPublic.qvt.test.js",
     ] {
         command.arg(dir.join(name));
     }

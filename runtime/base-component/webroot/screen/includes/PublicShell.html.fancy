@@ -1,0 +1,5 @@
+<#-- The page of a token route (PublicShell.xml): the settings WebrootPublic.qvt.js reads and the element it mounts on. The block
+     has its own id, so WebrootVue.qvt.js, loaded for its components, does not start the /qapps shell here. -->
+<script type="application/json" id="moqui-public-config">${raw(JSON.stringify(publicConfig).split("<").join("\\u003c"))}</script>
+<div id="public-root" style="display:none;"></div>
+<noscript><p style="padding:1rem;">This page needs JavaScript.</p></noscript>

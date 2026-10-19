@@ -355,18 +355,19 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     };
 
     // ---- resources: the parts of ResourceReference the tools screens and services call ----
-    // A version of a `dbresource://` or `git://` file: `{versionName, previousVersionName, versionDate, userId}`, with
-    // Java's `Version` methods; `location` is kept for `getText`, `getPreviousVersion` and `getNextVersions`.
+    // A version of a `dbresource://` or `git://` file: `{versionName, previousVersionName, versionDate, userId, note}`,
+    // with Java's `Version` methods; `location` is kept for `getText`, `getPreviousVersion` and `getNextVersions`. `note`
+    // is what was written with the version: the commit message on git, `versionNote` on the database tree.
     wrappers.ResourceVersion = (version) => Object.assign(version, {
         getVersionName: () => version.versionName, getPreviousVersionName: () => version.previousVersionName,
-        getVersionDate: () => version.versionDate, getUserId: () => version.userId,
+        getVersionDate: () => version.versionDate, getUserId: () => version.userId, getNote: () => version.note,
         getText: () => host.resourceVersionText(version.location, String(version.versionName)),
         getPreviousVersion: () => version.previousVersionName == null ? null
             : makeVersion(host.resourceVersion(version.location, "named", String(version.previousVersionName)), version.location),
         getNextVersions: () => host.resourceNextVersions(version.location, String(version.versionName))
             .map((next) => makeVersion(next, version.location)),
         getMap: () => ({ versionName: version.versionName, previousVersionName: version.previousVersionName,
-            versionDate: version.versionDate, userId: version.userId })
+            versionDate: version.versionDate, userId: version.userId, note: version.note })
     });
     const makeVersion = (version, location) => {
         if (version == null) return null;
@@ -390,14 +391,19 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
                 const info = host.resourceInfo(ref.location);
                 return info != null && info.exists && info.file ? host.resourceText(ref.location) : null;
             },
-            putText: (text) => host.resourcePutText(ref.location, String(text)),
-            putBytes: (bytes) => host.resourcePutBytes(ref.location, bytes),
+            // a note (optional) is kept with the version the write makes: the commit message on git, versionNote on the
+            // database tree (docs/Revision-Management.md, Version notes)
+            putText: (text, note) => note == null ? host.resourcePutText(ref.location, String(text))
+                : ec.resource.putContent(ref.location, String(text), note),
+            putBytes: (bytes, note) => note == null ? host.resourcePutBytes(ref.location, bytes)
+                : ec.resource.putContent(ref.location, bytes, note),
             // Java's `putStream(fileItem.getInputStream())` and `putStream(other.openStream())`
             putUpload: (fileItem) => fileItem.write(ref.location),
             // `putStream(stream)`: the stream of `fileItem.getInputStream()` or `openStream()`, or the bytes of a Uint8Array.
-            putStream: function (stream) {
+            putStream: function (stream, note) {
                 if (stream == null) throw new Error("putStream needs a stream");
-                if (typeof stream.write === "function") stream.write(ref.location);
+                if (note != null) ec.resource.putContent(ref.location, stream, note);
+                else if (typeof stream.write === "function") stream.write(ref.location);
                 else host.resourcePutBytes(ref.location, stream);
             },
             // `openStream()` and `getInputStream()`: the file's bytes as a stream; null for a file that is not there
@@ -1791,6 +1797,7 @@ fn version_value(version: crate::context::ResourceVersion) -> Value {
     );
     map.insert("versionDate".to_string(), version.version_date);
     map.insert("userId".to_string(), version.user_id.map_or(Value::Null, Value::string));
+    map.insert("note".to_string(), version.note.map_or(Value::Null, Value::string));
     Value::Map(map)
 }
 
@@ -2550,5 +2557,7 @@ pub(super) fn install<'js>(
             web_utilities.clone(),
             host,
         )),
-    )
+    )?;
+    // change sets, version notes and the rest of what drives use (files_host.rs)
+    super::files_host::install(ctx)
 }

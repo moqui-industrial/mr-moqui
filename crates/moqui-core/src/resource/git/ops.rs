@@ -23,16 +23,13 @@ use gix::ObjectId;
 use moqui_lib::object::Value;
 
 use super::store::GitStore;
-use crate::context::{Error, ResourceVersion};
+use crate::context::Error;
 
 /// Repositories are SHA-1.
 pub(crate) const HASH: gix::hash::Kind = gix::hash::Kind::Sha1;
 
 /// The trailer a commit names its Moqui user with, read back as a version's `userId`.
 pub(crate) const USER_TRAILER: &str = "Moqui-User-Id: ";
-
-/// How many commits a history walk reads before it stops, so a damaged repository cannot loop.
-const MAX_WALK: usize = 1_000_000;
 
 /// How many times a commit is rebuilt on a fresh head when another writer moved the branch first.
 const COMMIT_ATTEMPTS: usize = 4;
@@ -291,48 +288,19 @@ pub(crate) fn user_of(message: &str) -> Option<String> {
         .filter(|user| !user.is_empty())
 }
 
-fn version_date(seconds: i64) -> Value {
+/// A commit message without its `Moqui-User-Id` trailer: the note of the version it made. `None` when nothing is left.
+pub(crate) fn note_of(message: &str) -> Option<String> {
+    let kept: Vec<&str> = message.lines().filter(|line| !line.starts_with(USER_TRAILER)).collect();
+    let note = kept.join("\n").trim().to_string();
+    (!note.is_empty()).then_some(note)
+}
+
+pub(crate) fn version_date(seconds: i64) -> Value {
     jiff::Timestamp::from_second(seconds).map_or(Value::Null, Value::Timestamp)
 }
 
-/// The versions of the file at `path`, newest first: the commits on the first-parent line from `head` whose file
-/// differs from the one in their first parent (a commit that deletes the file is not a version). Each version's
-/// previous version is the next older one.
-pub(crate) fn history(store: &dyn GitStore, head: &ObjectId, path: &[String]) -> Result<Vec<ResourceVersion>, Error> {
-    // (commit, the file's blob there) along the first-parent line
-    let mut line: Vec<(CommitInfo, Option<ObjectId>)> = Vec::new();
-    let mut next = Some(*head);
-    while let Some(id) = next {
-        if line.len() >= MAX_WALK {
-            return Err(Error::new(format!("history walk passed {MAX_WALK} commits")));
-        }
-        let commit = read_commit(store, &id)?;
-        let blob = resolve(store, &commit.tree, path)?
-            .filter(|(mode, _)| !mode.is_tree())
-            .map(|(_, blob)| blob);
-        next = commit.parents.first().copied();
-        line.push((commit, blob));
-    }
-    let mut kept: Vec<&(CommitInfo, Option<ObjectId>)> = Vec::new();
-    for (index, entry) in line.iter().enumerate() {
-        let older = line.get(index + 1).and_then(|(_, blob)| *blob);
-        if entry.1.is_some() && entry.1 != older {
-            kept.push(entry);
-        }
-    }
-    Ok(kept
-        .iter()
-        .enumerate()
-        .map(|(index, (commit, _))| ResourceVersion {
-            version_name: commit.id.to_string(),
-            previous_version_name: kept.get(index + 1).map(|(older, _)| older.id.to_string()),
-            version_date: version_date(commit.seconds),
-            user_id: user_of(&commit.message),
-        })
-        .collect())
-}
-
 /// The bytes of the file at `path` in commit `commit`, or `None` when it is not a file there.
+#[cfg(test)]
 pub(crate) fn read_at(store: &dyn GitStore, commit: &ObjectId, path: &[String]) -> Result<Option<Vec<u8>>, Error> {
     let commit = read_commit(store, commit)?;
     match resolve(store, &commit.tree, path)? {
@@ -447,7 +415,12 @@ mod tests {
         let notes = resolve(&store, &head.tree, &path("notes")).unwrap().unwrap();
         assert!(notes.0.is_tree());
         assert_eq!(list(&store, &notes.1).unwrap().len(), 2);
-        let versions = history(&store, &head.id, &path("notes/a.md")).unwrap();
+        let versions: Vec<crate::context::ResourceVersion> = super::super::index::BranchIndex::build(&store, &head.id)
+            .unwrap()
+            .versions("notes/a.md")
+            .into_iter()
+            .map(|(version, _)| version)
+            .collect();
         let names: Vec<&str> = versions.iter().map(|version| version.version_name.as_str()).collect();
         assert_eq!(names, [third.to_string(), first.to_string()]);
         assert_eq!(
@@ -455,6 +428,7 @@ mod tests {
             Some(first.to_string().as_str())
         );
         assert_eq!(versions[0].user_id.as_deref(), Some("EX_JOHN_DOE"));
+        assert_eq!(versions[0].note.as_deref(), Some("put"));
         assert_eq!(
             read_at(&store, &first, &path("notes/a.md")).unwrap(),
             Some(b"one\n".to_vec())

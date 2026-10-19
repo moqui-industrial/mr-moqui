@@ -2188,3 +2188,35 @@ fn the_html_view_cleans_sandboxes_and_sizes_a_message_in_chromium() {
         }
     }
 }
+
+/// The public shell of a token route in Chromium: the page mounts the route's screen with the m-* components, with no
+/// session user, no /qapps header or drawers, and a clean console.
+#[test]
+fn a_token_route_page_mounts_its_screen_in_the_public_shell() {
+    let gate = common::start_token_route("browser-token");
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    browser.navigate(&format!("{base}/tk/{}", common::LINK_TOKEN));
+    browser.wait_for(
+        "the shared screen in the public shell",
+        "(() => { const root = document.getElementById('public-root'); \
+         return !!root && root.style.display !== 'none' && root.innerText.includes('For the gate') \
+         && root.innerText.includes('Shared by John Doe'); })()",
+        WAIT,
+    );
+    let shell: serde_json::Value = browser.eval(
+        "(() => ({ header: !!document.querySelector('.q-header'), drawer: !!document.querySelector('.q-drawer'), \
+         apps: !!document.getElementById('apps-root'), box: !!document.querySelector('#public-root .q-card, #public-root .q-expansion-item, #public-root [class*=\"m-container-box\"], #public-root .q-item') }))()",
+    );
+    assert_eq!(shell["header"], false, "{shell}");
+    assert_eq!(shell["drawer"], false, "{shell}");
+    assert_eq!(shell["apps"], false, "{shell}");
+    assert_clean(&mut browser, "/tk");
+    // a bad token: the short page, no shell
+    browser.navigate(&format!("{base}/tk/NoSuchToken0000000000"));
+    browser.wait_for(
+        "the expired page",
+        "document.body && document.body.innerText.includes('This link has expired or was not found.')",
+        WAIT,
+    );
+}

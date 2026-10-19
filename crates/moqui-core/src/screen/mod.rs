@@ -36,6 +36,7 @@ pub(crate) mod sri;
 pub mod static_ast;
 pub mod static_files;
 pub mod statics;
+pub mod token_route;
 pub(crate) mod tree;
 mod url;
 pub(crate) mod urls;
@@ -214,6 +215,25 @@ fn dispatch_request(
     login_error: Option<&str>,
     (header_authenticated, new_session): (bool, bool),
 ) -> Result<WebResponse, Error> {
+    // `/<route>/<token>`: a token route's public screen, after its token check (token_route.rs)
+    if let Some(found) = token_route::find(factory, &request.path) {
+        // not again under the route's own screen, which the dispatch below renders as the root
+        if !token_route::token_routes(factory)
+            .iter()
+            .any(|route| route.screen_location == root)
+        {
+            return token_route::dispatch(
+                factory,
+                request,
+                root,
+                parameters,
+                json_list,
+                login_error,
+                (header_authenticated, new_session),
+                found,
+            );
+        }
+    }
     // `/fop/<path>`, Java's `MoquiFopServlet`: the screen at `<path>` as `html-print`, sent as PDF. The `filename`
     // parameter (else `saveFilename`) makes it a download.
     let fop_path = fop_screen_path(&request.path);
