@@ -345,9 +345,9 @@ impl Quarantine<'_> {
 
     /// The pushed object `id` whose entry is at `offset` (up to `next`), to store.
     #[allow(clippy::too_many_arguments)]
-    fn incoming(
+    fn incoming<'b>(
         &self,
-        bundle: &Bundle,
+        bundle: &'b Bundle,
         offset: u64,
         next: u64,
         id: ObjectId,
@@ -355,7 +355,7 @@ impl Quarantine<'_> {
         depths: &mut HashMap<ObjectId, u32>,
         max_depth: u32,
         max_size: u64,
-    ) -> Result<Incoming, Error> {
+    ) -> Result<Incoming<'b>, Error> {
         let read_error = |err: &dyn std::fmt::Display| pack_error(&format!("reading {id} from the pushed pack"), err);
         let entry = bundle.pack.entry(offset).map_err(|err| read_error(&err))?;
         let data = bundle
@@ -369,7 +369,7 @@ impl Quarantine<'_> {
                     id,
                     kind: entry.header.as_kind().unwrap_or(Kind::Blob),
                     size: entry.decompressed_size,
-                    data: data.to_vec(),
+                    data: std::borrow::Cow::Borrowed(data),
                 });
             }
             Header::OfsDelta { base_distance } => offset
@@ -400,7 +400,7 @@ impl Quarantine<'_> {
                     base,
                     depth,
                     delta_size,
-                    data: data.to_vec(),
+                    data: std::borrow::Cow::Borrowed(data),
                 })
             }
             _ => {

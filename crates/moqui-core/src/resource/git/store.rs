@@ -83,6 +83,8 @@ pub(crate) enum Storage {
     Zlib,
     /// The zlib stream of git delta instructions against another object.
     Delta,
+    /// A content blob (`crate::resource::blob`): an object too large for a row.
+    Blob,
 }
 
 impl Storage {
@@ -92,6 +94,7 @@ impl Storage {
             Storage::Raw => None,
             Storage::Zlib => Some("zlib"),
             Storage::Delta => Some("delta"),
+            Storage::Blob => Some("blob"),
         }
     }
 
@@ -100,6 +103,7 @@ impl Storage {
             None | Some("") => Ok(Storage::Raw),
             Some("zlib") => Ok(Storage::Zlib),
             Some("delta") => Ok(Storage::Delta),
+            Some("blob") => Ok(Storage::Blob),
             Some(other) => Err(Error::new(format!("unknown git object storage {other}"))),
         }
     }
@@ -120,7 +124,7 @@ pub(crate) struct ObjectMeta {
 }
 
 /// An object as a store keeps it, for a pack to copy.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) enum Packed {
     /// The content, to compress.
     Whole { kind: Kind, data: Vec<u8> },
@@ -133,14 +137,28 @@ pub(crate) enum Packed {
         delta_size: u64,
         data: Vec<u8>,
     },
+    /// The content to compress as it is read: an object too large to hold.
+    Stream {
+        kind: Kind,
+        source: std::sync::Arc<dyn crate::resource::source::ByteSource>,
+    },
 }
 
 /// An object to store, as a received pack has it. The id of a compressed one is known (the pack's index has it), and
 /// its content was checked against it.
+/// The compressed bytes are the pack's own, not copied, until a store keeps them.
 #[derive(Clone, Debug)]
-pub(crate) enum Incoming {
-    Content { kind: Kind, data: Vec<u8> },
-    Zlib { id: ObjectId, kind: Kind, size: u64, data: Vec<u8> },
+pub(crate) enum Incoming<'a> {
+    Content {
+        kind: Kind,
+        data: Vec<u8>,
+    },
+    Zlib {
+        id: ObjectId,
+        kind: Kind,
+        size: u64,
+        data: std::borrow::Cow<'a, [u8]>,
+    },
     /// The base is stored first, or is in the store already.
     Delta {
         id: ObjectId,
@@ -149,11 +167,11 @@ pub(crate) enum Incoming {
         base: ObjectId,
         depth: u32,
         delta_size: u64,
-        data: Vec<u8>,
+        data: std::borrow::Cow<'a, [u8]>,
     },
 }
 
-impl Incoming {
+impl Incoming<'_> {
     /// The content of an object, for a store that keeps only content: a compressed one inflated, a delta applied to
     /// its base, which `find` reads. Its id.
     pub(crate) fn into_content(
@@ -283,7 +301,7 @@ pub(crate) trait GitStore: Send + Sync + std::fmt::Debug {
 
     /// Store objects as a received pack has them, the bases of deltas first, skipping those already there. How many
     /// were new.
-    fn store_objects(&self, objects: &mut dyn Iterator<Item = Result<Incoming, Error>>) -> Result<usize, Error> {
+    fn store_objects(&self, objects: &mut dyn Iterator<Item = Result<Incoming<'_>, Error>>) -> Result<usize, Error> {
         let mut contents = objects.map(|object| {
             let (_, kind, data) = object?.into_content(&|id| self.find(id))?;
             Ok((kind, data))

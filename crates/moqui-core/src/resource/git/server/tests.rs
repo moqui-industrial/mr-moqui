@@ -615,6 +615,97 @@ fn a_db_repository_keeps_pushed_deltas_and_sends_them_back() {
 }
 
 #[test]
+fn large_objects_are_content_blobs_streamed_in_and_out() {
+    if !git_available() {
+        eprintln!("skipped: git is not on the PATH");
+        return;
+    }
+    let fixture = fixture("large");
+    let id = "large";
+    define(&fixture, id, "db");
+    let base = http_server(fixture.context.factory());
+    let home = fixture.dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let url = url_with(&base, WRITER, id);
+    let source = fixture.dir.join("source");
+    git_ok(&fixture.dir, &home, &["clone", &url, &source.to_string_lossy()]);
+    // 9 MiB that does not compress, and 9 MiB of text
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let binary: Vec<u8> = (0..9 * 1024 * 1024)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as u8
+        })
+        .collect();
+    let text: String = (0..300_000).map(|line| format!("line {line} of a large text file\n")).collect();
+    std::fs::write(source.join("big.bin"), &binary).unwrap();
+    write_file(&source, "big.txt", &text);
+    write_file(&source, "small.txt", "small\n");
+    git_ok(&source, &home, &["add", "."]);
+    git_ok(&source, &home, &["commit", "-m", "Large files"]);
+    git_ok(&source, &home, &["push", "origin", "main"]);
+    let rows = object_rows(&fixture, id);
+    let blob_rows: Vec<_> = rows.values().filter(|(storage, _, _)| storage == "blob").collect();
+    assert_eq!(blob_rows.len(), 2, "{rows:?}");
+    {
+        let _entered = fixture.context.enter();
+        let _authz = fixture.context.disable_authz();
+        let blobs = fixture.entity.find("moqui.resource.ContentBlob").unwrap().list().unwrap();
+        assert_eq!(blobs.len(), 2);
+        let resources = fixture.context.factory().resource();
+        assert_eq!(resources.get(&format!("git://{id}/big.bin")).unwrap().read_bytes().unwrap(), binary);
+        assert_eq!(resources.get(&format!("git://{id}/big.txt")).unwrap().read_text().unwrap(), text);
+    }
+    let clone = fixture.dir.join("clone");
+    git_ok(&fixture.dir, &home, &["-c", "protocol.version=2", "clone", &url, &clone.to_string_lossy()]);
+    assert_eq!(std::fs::read(clone.join("big.bin")).unwrap(), binary);
+    assert_eq!(std::fs::read_to_string(clone.join("big.txt")).unwrap(), text);
+    let fsck = git_ok(&clone, &home, &["fsck", "--strict", "--full"]);
+    assert!(!fsck.contains("error"), "{fsck}");
+
+    // the binary goes from the history; its object, then its blob, are collected
+    git_ok(&source, &home, &["rm", "big.bin"]);
+    git_ok(&source, &home, &["commit", "--amend", "-m", "Large text only"]);
+    git_ok(&source, &home, &["push", "--force", "origin", "main"]);
+    {
+        let _entered = fixture.context.enter();
+        let _authz = fixture.context.disable_authz();
+        let provider = fixture.context.factory().resource().git().unwrap().clone();
+        let store = crate::resource::git::db::DbStore::new(
+            fixture.entity.clone(),
+            id,
+            crate::resource::git::db::object_cache(),
+        );
+        store.stamp_all(jiff::Timestamp::now().as_millisecond() - 30 * 24 * 60 * 60 * 1000);
+        fixture
+            .entity
+            .find("moqui.resource.GitUpdate")
+            .unwrap()
+            .eq("repositoryId", Value::string(id))
+            .update_all([("ecaStatus".to_string(), Value::string("done"))])
+            .unwrap();
+        let mut options =
+            crate::resource::git::gc::GcOptions::from_properties(false, std::time::Duration::from_secs(120));
+        options.reflog_millis = 0;
+        let outcome = provider.gc(Some(id), &options).unwrap();
+        let report = outcome[0].1.as_ref().unwrap();
+        assert!(report.deleted >= 3, "the old commit, its tree and big.bin: {report:?}");
+        let blobs = crate::resource::blob::BlobStore::new(fixture.entity.clone());
+        let tomorrow = jiff::Timestamp::now().as_millisecond() + 24 * 60 * 60 * 1000;
+        let (deleted, bytes, _) = blobs.collect(tomorrow, false).unwrap();
+        assert_eq!((deleted, bytes), (1, binary.len() as u64), "the binary's blob; the text's is referenced");
+        let resources = fixture.context.factory().resource();
+        assert_eq!(resources.get(&format!("git://{id}/big.txt")).unwrap().read_text().unwrap(), text);
+    }
+    let again = fixture.dir.join("again");
+    git_ok(&fixture.dir, &home, &["clone", &url, &again.to_string_lossy()]);
+    assert!(!again.join("big.bin").exists());
+    assert_eq!(std::fs::read_to_string(again.join("big.txt")).unwrap(), text);
+}
+
+#[test]
 fn shallow_fetches_deepen_and_unshallow() {
     if !git_available() {
         eprintln!("skipped: git is not on the PATH");

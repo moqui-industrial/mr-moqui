@@ -30,6 +30,7 @@ use gix::ObjectId;
 
 use crate::context::Error;
 use crate::resource::git::store::{deflate, GitStore, Packed};
+use crate::resource::source::{ByteSource, READ_WINDOW};
 
 /// Objects read per batch while a pack is written.
 const WINDOW: usize = 256;
@@ -128,6 +129,58 @@ impl PackOut<'_> {
         self.offset += (length + data.len()) as u64;
         Ok(())
     }
+
+    /// An object compressed as it is read from `source`, a window at a time. Content that does not compress (a
+    /// sample of its start, as media and archives) is written in stored blocks.
+    fn stream_entry(&mut self, id: ObjectId, kind: Kind, source: &dyn ByteSource) -> Result<(), Error> {
+        let io = |err: std::io::Error| pack_error("writing the pack", err);
+        let size = source.len();
+        let first = source.read_at(0, READ_WINDOW)?;
+        let level = if deflate(&first).len() * 50 >= first.len() * 49 {
+            flate2::Compression::none()
+        } else {
+            flate2::Compression::new(1)
+        };
+        let length = header_of(kind).write_to(size, &mut self.out).map_err(io)?;
+        let mut counted = Counted {
+            inner: &mut self.out,
+            count: 0,
+        };
+        let mut encoder = flate2::write::ZlibEncoder::new(&mut counted, level);
+        encoder.write_all(&first).map_err(io)?;
+        let mut offset = first.len() as u64;
+        while offset < size {
+            let window = source.read_at(offset, READ_WINDOW)?;
+            if window.is_empty() {
+                return Err(Error::new(format!("git object {id} ended at {offset} of its {size} bytes")));
+            }
+            encoder.write_all(&window).map_err(io)?;
+            offset += window.len() as u64;
+        }
+        encoder.finish().map_err(io)?;
+        let written = counted.count;
+        self.written.insert(id, self.offset);
+        self.offset += length as u64 + written;
+        Ok(())
+    }
+}
+
+/// A writer that counts what goes through it.
+struct Counted<'a, W: Write> {
+    inner: &'a mut W,
+    count: u64,
+}
+
+impl<W: Write> Write for Counted<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.count += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 fn header_of(kind: Kind) -> Header {
@@ -220,6 +273,7 @@ fn write_object(
         match object {
             Packed::Whole { kind, data } => pack.entry(id, header_of(kind), data.len() as u64, &deflate(&data))?,
             Packed::Zlib { kind, size, data } => pack.entry(id, header_of(kind), size, &data)?,
+            Packed::Stream { kind, source } => pack.stream_entry(id, kind, source.as_ref())?,
             Packed::Delta {
                 kind,
                 base,

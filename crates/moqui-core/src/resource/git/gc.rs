@@ -706,6 +706,10 @@ fn repack(
                 let obj = &table.objs[*at];
                 (obj.id, obj.storage, obj.size, obj.stored, obj.base)
             };
+            if storage == Storage::Blob {
+                // a content blob stays one
+                continue;
+            }
             let base_kept = base.is_some_and(|base| table.is_marked(&base));
             let fine_delta = storage == Storage::Delta && base_kept && depths[*at] <= options.max_depth;
             if position == 0 || size > options.max_delta_size || fine_delta || size < 64 {
@@ -718,7 +722,11 @@ fn repack(
                 }
                 continue;
             }
-            let candidates: Vec<usize> = group[position.saturating_sub(2)..position].to_vec();
+            let candidates: Vec<usize> = group[position.saturating_sub(2)..position]
+                .iter()
+                .copied()
+                .filter(|candidate| table.objs[*candidate].storage != Storage::Blob)
+                .collect();
             let mut ids = vec![id];
             ids.extend(candidates.iter().map(|candidate| table.objs[*candidate].id));
             let mut contents: HashMap<ObjectId, Vec<u8>> = HashMap::new();

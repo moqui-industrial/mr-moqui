@@ -119,7 +119,8 @@
     <!--
         The storage of db kind git repositories (docs/Git-Hosting.md, Storage). Objects are rows of zlib streams, or of
         deltas against another object, as a pack has them: git_db_delta_depth (50) deltas at most from an object to a
-        whole one, and objects up to git_db_delta_max_size bytes as deltas. git_db_write_format=raw writes new rows
+        whole one, and objects up to git_db_delta_max_size bytes as deltas; an object over git_db_large_object bytes
+        is a content blob (moqui.resource.ContentBlob), read and sent a window at a time. git_db_write_format=raw writes new rows
         uncompressed, as versions before this format read them. git_db_cache_bytes of decoded objects are kept in
         memory for all repositories. gc#GitRepositories deletes unreachable objects not written or referenced in the
         last git_gc_prune_days days (at least 1), keeps the commits of the last git_gc_reflog_days days of changes (a
@@ -127,6 +128,7 @@
     -->
     <default-property name="git_db_delta_depth" value="50"/>
     <default-property name="git_db_delta_max_size" value="16777216"/>
+    <default-property name="git_db_large_object" value="8388608"/>
     <default-property name="git_db_write_format" value="v2"/>
     <default-property name="git_db_cache_bytes" value="67108864"/>
     <default-property name="git_gc_prune_days" value="14"/>

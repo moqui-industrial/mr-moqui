@@ -76,7 +76,7 @@ pub(crate) fn object_cache() -> Arc<ObjectCache> {
 type Decoded = HashMap<ObjectId, (Kind, Arc<Vec<u8>>)>;
 
 /// The fields of a row read without its data.
-const META_FIELDS: [&str; 8] = [
+const META_FIELDS: [&str; 9] = [
     "objectId",
     "objectType",
     "objectSize",
@@ -85,7 +85,16 @@ const META_FIELDS: [&str; 8] = [
     "deltaDepth",
     "deltaSize",
     "storedBytes",
+    "blobId",
 ];
+
+/// Objects over `git_db_large_object` bytes (8 MiB) are content blobs, not row data.
+fn large_object() -> u64 {
+    moqui_lib::env::get_prop_or_env("git_db_large_object")
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(8 * 1024 * 1024)
+}
 
 /// A `GitObject` row as read.
 struct Row {
@@ -94,6 +103,7 @@ struct Row {
     delta_size: u64,
     stamp: Option<i64>,
     data: Option<Vec<u8>>,
+    blob_id: Option<String>,
 }
 
 pub(crate) struct DbStore {
@@ -103,6 +113,7 @@ pub(crate) struct DbStore {
     /// `git_db_write_format=raw`: new rows hold the content itself, as before the zlib format, for a database read by
     /// an older version.
     write_raw: bool,
+    large_object: u64,
 }
 
 impl std::fmt::Debug for DbStore {
@@ -180,6 +191,7 @@ impl DbStore {
             repository_id: Arc::from(repository_id),
             cache,
             write_raw,
+            large_object: large_object(),
         }
     }
 
@@ -217,6 +229,10 @@ impl DbStore {
         if storage == Storage::Delta && base.is_none() {
             return Err(Error::new(format!("GitObject {id} is a delta with no base")));
         }
+        let blob_id = text(value.get("blobId"));
+        if storage == Storage::Blob && blob_id.is_none() {
+            return Err(Error::new(format!("GitObject {id} is a blob with no blobId")));
+        }
         let size = as_u64(long(value.get("objectSize")));
         let data = match value.get("objectData") {
             None => None,
@@ -242,6 +258,22 @@ impl DbStore {
             delta_size: as_u64(long(value.get("deltaSize"))),
             stamp: millis(value.get("lastUpdatedStamp")),
             data,
+            blob_id,
+        })
+    }
+
+    fn blobs(&self) -> crate::resource::blob::BlobStore {
+        crate::resource::blob::BlobStore::new(self.entity.clone())
+    }
+
+    /// The content blob a row of `blob` storage names.
+    fn blob_of(&self, row: &Row) -> Result<crate::resource::blob::BlobInfo, Error> {
+        let blob = row.blob_id.as_deref().unwrap_or_default();
+        self.blobs().stat(blob)?.ok_or_else(|| {
+            Error::new(format!(
+                "the content blob {blob} of git object {} of repository {} is missing",
+                row.id, self.repository_id
+            ))
         })
     }
 
@@ -323,6 +355,12 @@ impl DbStore {
             let mut next = Vec::new();
             for row in self.data_rows(&wanted)? {
                 match row.meta.storage {
+                    Storage::Blob => {
+                        let info = self.blob_of(&row)?;
+                        let content = crate::resource::source::read_all(self.blobs().source(&info).as_ref())?;
+                        verify(row.id, row.meta.kind, &content)?;
+                        done.insert(row.id, (row.meta.kind, Arc::new(content)));
+                    }
                     Storage::Raw | Storage::Zlib => {
                         let data = row.data.as_deref().unwrap_or_default();
                         let content = if row.meta.storage == Storage::Raw {
@@ -699,40 +737,61 @@ struct NewRow {
     depth: u32,
     delta_size: u64,
     data: Vec<u8>,
+    blob_id: Option<String>,
 }
 
 impl NewRow {
-    fn of(incoming: Incoming, write_raw: bool) -> Result<Self, Error> {
+    fn whole(id: ObjectId, kind: Kind, size: u64, storage: Storage, data: Vec<u8>) -> Self {
+        Self {
+            id,
+            kind,
+            size,
+            storage,
+            base: None,
+            depth: 0,
+            delta_size: 0,
+            data,
+            blob_id: None,
+        }
+    }
+
+    fn blob(id: ObjectId, kind: Kind, size: u64, blob_id: String) -> Self {
+        let mut row = Self::whole(id, kind, size, Storage::Blob, Vec::new());
+        row.blob_id = Some(blob_id);
+        row
+    }
+}
+
+impl DbStore {
+    /// The row of an object to store: a large one's content into a blob (a compressed one inflated into it as it is
+    /// read, so it is never all in memory).
+    fn new_row(&self, incoming: Incoming<'_>) -> Result<NewRow, Error> {
         Ok(match incoming {
             Incoming::Content { kind, data } => {
                 let id = object_id(kind, &data)?;
                 let size = data.len() as u64;
-                let (storage, data) = if write_raw {
-                    (Storage::Raw, data)
+                if size > self.large_object {
+                    let blob = self.blobs().put_bytes(&data)?;
+                    NewRow::blob(id, kind, size, blob.id)
+                } else if self.write_raw {
+                    NewRow::whole(id, kind, size, Storage::Raw, data)
                 } else {
-                    (Storage::Zlib, deflate(&data))
-                };
-                Self {
-                    id,
-                    kind,
-                    size,
-                    storage,
-                    base: None,
-                    depth: 0,
-                    delta_size: 0,
-                    data,
+                    NewRow::whole(id, kind, size, Storage::Zlib, deflate(&data))
                 }
             }
-            Incoming::Zlib { id, kind, size, data } => Self {
-                id,
-                kind,
-                size,
-                storage: Storage::Zlib,
-                base: None,
-                depth: 0,
-                delta_size: 0,
-                data,
-            },
+            Incoming::Zlib { id, kind, size, data } if size > self.large_object => {
+                let mut writer = self.blobs().begin()?;
+                let mut decoder = flate2::read::ZlibDecoder::new(&data[..]);
+                std::io::copy(&mut decoder, &mut writer)
+                    .map_err(|err| Error::new(format!("storing git object {id} as a blob: {err}")))?;
+                let expected = crate::resource::blob::Expected {
+                    id: None,
+                    size: Some(size),
+                };
+                let blob = writer.finish(&expected)?;
+                NewRow::blob(id, kind, size, blob.id)
+            }
+            Incoming::Zlib { id, kind, size, data } => NewRow::whole(id, kind, size, Storage::Zlib, data.into_owned()),
             Incoming::Delta {
                 id,
                 kind,
@@ -741,7 +800,7 @@ impl NewRow {
                 depth,
                 delta_size,
                 data,
-            } => Self {
+            } => NewRow {
                 id,
                 kind,
                 size,
@@ -749,7 +808,8 @@ impl NewRow {
                 base: Some(base),
                 depth,
                 delta_size,
-                data,
+                data: data.into_owned(),
+                blob_id: None,
             },
         })
     }
@@ -775,6 +835,7 @@ impl DbStore {
                 "deltaSize",
                 "storedBytes",
                 "objectData",
+                "blobId",
             ];
             if definition.field("lastUpdatedStamp").is_some() {
                 columns.push("lastUpdatedStamp");
@@ -815,7 +876,11 @@ impl DbStore {
                     _ => Value::Null,
                 },
                 "storedBytes" => i64_of(row.data.len() as u64),
-                "objectData" => Value::Bytes(row.data.clone()),
+                "objectData" => match row.storage {
+                    Storage::Blob => Value::Null,
+                    _ => Value::Bytes(row.data.clone()),
+                },
+                "blobId" => row.blob_id.as_deref().map_or(Value::Null, Value::string),
                 "lastUpdatedStamp" => stamp.clone(),
                 _ => Value::Null,
             })
@@ -945,9 +1010,9 @@ impl GitStore for DbStore {
         let _rows = super::rows_guard();
         let mut found = 0;
         for chunk in ids.chunks(BATCH) {
-            for row in self.data_rows(chunk)? {
+            for mut row in self.data_rows(chunk)? {
                 found += 1;
-                let data = row.data.unwrap_or_default();
+                let data = row.data.take().unwrap_or_default();
                 let packed = match row.meta.storage {
                     Storage::Raw => Packed::Whole {
                         kind: row.meta.kind,
@@ -963,6 +1028,10 @@ impl GitStore for DbStore {
                         base: row.meta.base.unwrap_or(row.id),
                         delta_size: row.delta_size,
                         data,
+                    },
+                    Storage::Blob => Packed::Stream {
+                        kind: row.meta.kind,
+                        source: self.blobs().source(&self.blob_of(&row)?),
                     },
                 };
                 each(row.id, packed)?;
@@ -1017,7 +1086,7 @@ impl GitStore for DbStore {
 
     /// Chunks of about [`BATCH_BYTES`]: one query for the objects already there (freshened when old), then the new
     /// ones inserted in one transaction.
-    fn store_objects(&self, objects: &mut dyn Iterator<Item = Result<Incoming, Error>>) -> Result<usize, Error> {
+    fn store_objects(&self, objects: &mut dyn Iterator<Item = Result<Incoming<'_>, Error>>) -> Result<usize, Error> {
         let _rows = super::rows_guard();
         if !self.entity.table_ready(GIT_OBJECT) {
             return Err(Error::new("the GitObject table is not there"));
@@ -1027,7 +1096,7 @@ impl GitStore for DbStore {
         let mut chunk: Vec<NewRow> = Vec::new();
         let mut bytes = 0u64;
         for object in objects {
-            let row = NewRow::of(object?, self.write_raw)?;
+            let row = self.new_row(object?)?;
             bytes += row.data.len() as u64;
             chunk.push(row);
             if chunk.len() >= BATCH || bytes >= BATCH_BYTES {
@@ -1080,7 +1149,7 @@ impl GitStore for DbStore {
                 let content = match row.meta.storage {
                     Storage::Raw => row.data.unwrap_or_default(),
                     Storage::Zlib => inflate(row.data.as_deref().unwrap_or_default(), row.meta.size)?,
-                    Storage::Delta => match self.find(&row.id)? {
+                    Storage::Delta | Storage::Blob => match self.find(&row.id)? {
                         Some((_, data)) => data,
                         None => continue,
                     },

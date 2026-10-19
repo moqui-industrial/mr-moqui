@@ -94,18 +94,22 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="objectSize" type="number-integer"><description>The size of the content</description></field>
         <field name="storage" type="text-short"><description>What objectData holds: zlib (the zlib stream of the
             content, as in a pack), delta (the zlib stream of git delta instructions that make the content from the
-            object deltaBaseId), or empty (the content itself, as rows written before these were)</description></field>
+            object deltaBaseId), or empty (the content itself, as rows written before these were); or blob, for an
+            object over git_db_large_object bytes: the content is the ContentBlob blobId</description></field>
         <field name="deltaBaseId" type="text-short"/>
         <field name="deltaDepth" type="number-integer"><description>Deltas from the object to a whole one</description></field>
         <field name="deltaSize" type="number-integer"><description>The size of the delta instructions</description></field>
         <field name="storedBytes" type="number-integer"><description>The size of objectData</description></field>
         <field name="objectData" type="binary-very-long"/>
+        <field name="blobId" type="id-long"/>
         <relationship type="one" related="moqui.resource.GitRepository"/>
+        <relationship type="one" related="moqui.resource.ContentBlob" short-alias="blob"/>
         <relationship type="one" title="DeltaBase" related="moqui.resource.GitObject" short-alias="deltaBase">
             <key-map field-name="repositoryId"/><key-map field-name="deltaBaseId" related="objectId"/></relationship>
         <index name="GIT_OBJ_KIND"><index-field name="repositoryId"/><index-field name="objectType"/>
             <index-field name="objectId"/></index>
         <index name="GIT_OBJ_BASE"><index-field name="repositoryId"/><index-field name="deltaBaseId"/></index>
+        <index name="GIT_OBJ_BLOB"><index-field name="blobId"/></index>
     </entity>
     <entity entity-name="GitRef" package="moqui.resource" use="nontransactional" cache="never">
         <field name="repositoryId" type="id" is-pk="true"/>
