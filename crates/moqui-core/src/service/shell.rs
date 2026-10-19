@@ -154,7 +154,7 @@ fn get_shell_counts(
 }
 
 /// The user ids of `userIdList`: a list, or a comma separated text; without blanks and repeats.
-fn user_ids(value: Option<&Value>) -> Vec<String> {
+pub(crate) fn user_ids(value: Option<&Value>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut add = |id: String| {
         let id = id.trim().to_string();

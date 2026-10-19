@@ -188,7 +188,8 @@ fn the_html_client_passes_its_node_tests() {
 
 /// The qvt client: MoquiLib.js, the formatter MoquiL10n.js (checked against the vectors the server formatter uses),
 /// the components of WebrootVue.qvt.js (every template compiles), its suite shell (palette, key map, screen context) and
-/// its record components (the HTML of m-rich-text, the record panels, avatars and record cards).
+/// its record components (the HTML of m-rich-text, the record panels, avatars and record cards), and the chat store
+/// (WebrootChat.js: presence, unread counts, typing, a pushed event merged into a timeline, the status menu).
 /// Nothing runs when `node` is not installed.
 #[test]
 fn the_qvt_client_passes_its_node_tests() {
@@ -204,6 +205,7 @@ fn the_qvt_client_passes_its_node_tests() {
         "WebrootVue.qvt.shell.test.js",
         "WebrootVue.qvt.records.test.js",
         "WebrootVue.qvt.layout.test.js",
+        "WebrootChat.test.js",
     ] {
         command.arg(dir.join(name));
     }

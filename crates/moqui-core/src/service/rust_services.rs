@@ -64,6 +64,7 @@ fn build() -> BTreeMap<&'static str, RustServiceFn> {
         super::images::register(&mut map),
         super::spreadsheet::register(&mut map),
         super::shell::register(&mut map),
+        super::chat::register(&mut map),
         #[cfg(feature = "git")]
         super::git::register(&mut map),
     ] {
@@ -84,6 +85,8 @@ mod tests {
         keys.sort_unstable();
         let mut expected = vec![
             "moqui_core::service::backup::backup_embedded_database",
+            "moqui_core::service::chat::check_record_visible",
+            "moqui_core::service::chat::push_signal",
             "moqui_core::service::elfinder::run_command",
             "moqui_core::service::images::convert_image",
             "moqui_core::service::images::image_reader_file_suffixes",

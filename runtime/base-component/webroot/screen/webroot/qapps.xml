@@ -38,6 +38,8 @@ along with this software (see the LICENSE.md file). If not, see
             footer_scripts.add('/libs/quasar/icon-set/material-symbols-outlined.umd.prod.js')
         footer_scripts.add('/js/MoquiLib.js')
         footer_scripts.add('/js/MoquiL10n.js')
+        // the chat store and the account menu's status (moqui.chat), before the client, which registers its components
+        footer_scripts.add('/js/WebrootChat.js')
         // the render functions of the components, precompiled from their templates; WebrootVue.qvt.js applies them when it starts
         footer_scripts.add('/js/WebrootVue.qvt.render.js')
         footer_scripts.add('/js/WebrootVue.qvt.js')
@@ -90,7 +92,15 @@ along with this software (see the LICENSE.md file). If not, see
                 savedFinds: ec.l10n.localize('Saved finds'), actions: ec.l10n.localize('Actions'), more: ec.l10n.localize('More'),
                 noResults: ec.l10n.localize('Nothing found'), paletteHint: ec.l10n.localize('Search screens, records and actions'),
                 paletteEmpty: ec.l10n.localize('Type to search screens, records, people and actions'),
-                paletteKeys: ec.l10n.localize('↑ ↓ to move, Enter to open, Ctrl+Enter in a new tab') }
+                paletteKeys: ec.l10n.localize('↑ ↓ to move, Enter to open, Ctrl+Enter in a new tab'),
+                // the account menu's status (js/WebrootChat.js)
+                statusOnline: ec.l10n.localize('Online'), statusAway: ec.l10n.localize('Away'), statusDnd: ec.l10n.localize('Do not disturb'),
+                statusInvisible: ec.l10n.localize('Invisible'), statusOffline: ec.l10n.localize('Offline'),
+                setStatus: ec.l10n.localize('Set a status message'), clearStatus: ec.l10n.localize('Clear status message'),
+                statusText: ec.l10n.localize("What's your status?"), emoji: ec.l10n.localize('Emoji'), clearAfter: ec.l10n.localize('Clear after'),
+                dontClear: ec.l10n.localize("Don't clear"), minutes30: ec.l10n.localize('30 minutes'), hour1: ec.l10n.localize('1 hour'),
+                hours4: ec.l10n.localize('4 hours'), thisWeek: ec.l10n.localize('This week'),
+                save: ec.l10n.localize('Save'), cancel: ec.l10n.localize('Cancel') }
         }
         // conditional QZ Tray scripts, only for a user who turned printing on; the client loads them
     ]]></script></pre-actions>

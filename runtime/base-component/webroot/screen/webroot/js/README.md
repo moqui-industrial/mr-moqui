@@ -61,12 +61,14 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 | `MoquiLib.js` | the `moqui` object: type checks, `deepCopy`, field comparison, `objToSearch` / `searchToObj` / `parseHref` / `makeHref`, `request` (fetch with the session token), `loadScript` / `loadStylesheet`, `parseVue` and `evalComponentJs` (the `qvue` and `qjs` text), `NotificationClient`, `LruMap`. Runs under Node. |
 | `MoquiL10n.js` | `moqui.l10n`: `format`, `formatCurrency`, `formatCurrencyNoSymbol` and `localize`. A copy of `crates/moqui-lib` `format.rs` and `datefmt.rs`: Java `DecimalFormat` and date pattern subset, HALF_EVEN on decimal text. `MoquiL10n.test.js` runs `crates/moqui-lib/testdata/format-vectors.json`. |
 | `WebrootVue.qvt.js` | the `m-*` components and the application. `moqui.qvt.components` holds the definitions. |
+| `WebrootChat.js` | `moqui.chat`: the chat store and presence of the shell (below, Chat store and presence), and the account menu's status components, in `moqui.qvtComponents`, which `WebrootVue.qvt.js` registers. Loads before it. Runs under Node. |
 | `MoquiQzComponent.js` | QZ Tray 2.3 printing, loaded after `/libs/qz-tray/qz-tray.js` and only when the user preference `qz.print.enabled` is `true`. |
 | `../css/WebrootVue.qvt.css` | the styles of the shell, the div tables and the widgets |
 
 The tests are `MoquiLib.test.js`, `MoquiL10n.test.js`, `WebrootVue.qvt.test.js`, `WebrootVue.qvt.shell.test.js` (the palette, the key map, the
 screen context's forms and the root's shell data), `WebrootVue.qvt.records.test.js` (the HTML of the rich-text editor, the record panel URL,
-avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer) and `WebrootVue.qvt.static.test.js` (the script and package
+avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer), `WebrootChat.test.js` (the chat store: presence,
+typing, read markers, unread counts, a pushed event merged into a timeline, do not disturb, the status components) and `WebrootVue.qvt.static.test.js` (the script and package
 the server answers for `crates/moqui-core` `testdata/Static/Items` run on the real Vue runtime over a fake DOM; every component template compiles with the vendored
 Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
 browser (mounting, Quasar menus and popups, dialogs, posts, the lazy libraries, static lists) is the Chromium smoke of Gate 3
@@ -76,7 +78,7 @@ browser (mounting, Quasar menus and popups, dialogs, posts, the lazy libraries, 
 
 `/qapps/**` is one HTML page, `includes/WebrootVue.qvt.html.fancy`, made by the pre-actions of `qapps.xml`. The libraries load at the end
 of the body in this order: `vue/vue.global.prod.js`, `quasar/quasar.umd.prod.js`, `quasar/lang/<pack>.umd.prod.js`, `MoquiLib.js`,
-`MoquiL10n.js`, `WebrootVue.qvt.js`. Compiling templates in the browser needs `unsafe-eval` in a content security policy; the page has no
+`MoquiL10n.js`, `WebrootChat.js`, `WebrootVue.qvt.render.js`, `WebrootVue.qvt.js`. Compiling templates in the browser needs `unsafe-eval` in a content security policy; the page has no
 inline script and no inline event handler, and the settings are a data block:
 
 ```html
@@ -179,7 +181,7 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-screen-context` | the `context` element: while mounted it registers `recordEntity`, `recordId`, `title` and `selectionForm` with the root (`setScreenContext`), again when one changes, and takes them back when unmounted (see Shell data and providers) |
 | `m-number-card` | the `number-card` element: a `q-card flat bordered` with the `title` as `text-overline`, the `value` (`text-h5`; `size` `sm` is `text-h6`, `lg` `text-h4`), the `delta` with an arrow, green or red by its sign against `delta-good` (`up`, the default, or `down`; no sign is muted: `moqui.numberCardDelta`), and the `icon`; with `href` the whole card is an `m-link` (`external`: a plain anchor). The `dashboard` element around cards is no component: a `div.m-dashboard` CSS grid, columns of at least its `min-width` (`--m-dashboard-min`, 200 px), each child in a `div.m-dashboard-item` (an empty one hidden, a `section-iterate`'s rows each a cell) |
 | `m-chatter`, `m-record-files` | the `chatter` and `record-files` elements: `record-entity`, `record-id`, `default-tab`, `hide`, `id` (of the `m-dynamic-container` the panel loads into, for `submit-reload-id`). See Record panels below |
-| `m-avatar` | a `q-avatar`: `image` (a face image URL; initials when it does not load), else the initials of `name` on a color of the name (`moqui.avatar`), else a person icon; `size` (32px), `color`, `text-color`, `square`, `rounded`, `tooltip` (the name); `presence` (`online`, `away`, `dnd`, `offline`) draws a dot, nothing without it |
+| `m-avatar` | a `q-avatar`: `image` (a face image URL; initials when it does not load), else the initials of `name` on a color of the name (`moqui.avatar`), else a person icon; `size` (32px), `color`, `text-color`, `square`, `rounded`, `tooltip` (the name); `presence` (`online`, `away`, `dnd`, `offline`) draws a dot, and `user-id` the dot of that user's presence from the chat store (asked for once mounted), nothing without either |
 | `m-record-card` | a compact card of a record: `record-entity`, `record-id`, and `card-url` (asked once per page for each record, GET with `recordEntity` and `recordId` and `card-parameters`) or `card` (the JSON itself); `dense`. See Record cards below |
 | `m-chart`, `m-mermaid` | Chart.js 4 and Mermaid 11, loaded on first use. `m-chart` takes `config`; `m-mermaid` takes the diagram in its `text` attribute (the compiler condenses the line breaks of slot content), `height` and `config` |
 | `m-script`, `m-stylesheet` | `<script>` and `<link>` of a screen's text |
@@ -341,7 +343,8 @@ latest counts). The header, left to right (IronStone style-guide §2.2, design �
   Mail and Messages are one button (`m-counter-mail`) to the mail screen whose badge is their sum. Badges are `shellCounts.today`, `chat`,
   `email`, `messages` and `notifications` (a number, or a map's `total`); `updates` has no badge. Without a Notifications tab the
   notify-history menu stays. The screen history is the palette's Recent.
-- **Account menu**: the `accountMenuItems` of every app after the user's name. The right `q-drawer` slot stays free for Assist (R1).
+- **Account menu**: the user's avatar with their presence dot as its button; in the menu, the status (`m-user-status-menu`, below) after the user's
+  name, then the `accountMenuItems` of every app. The Chat button has the user's own dot too. The right `q-drawer` slot stays free for Assist (R1).
 
 **Tray** (`m-shell-tray`, id `m-tray`): a `q-page-sticky` at the right of the canvas, inside the `q-page-container`, 400 px from 600 px and the
 full width below, over the screen. A tab per tray screen of the theme; each is an `m-dynamic-container` of its link (as `/apps/...`) mounted on
@@ -462,6 +465,55 @@ transition, and normally has no submit button of its own (one it has does the sa
 back to it. The html mode writes the wizard's steps as a numbered list of links with Back and Next links, and the stack's
 breadcrumb (`moqui-html.css` `.wizard`, `.stack-crumbs`); a split is two columns (`.split`) stacked below 1024 px with
 `data-selected` and a back link.
+
+## Chat store and presence
+
+IronStone impl-drawers-commons M10 (design-drawers-commons §1.8, §13): `WebrootChat.js` is `moqui.chat`, the page's store over the
+notification socket, started by the shell root once mounted for a signed-in user. The server side is `org.moqui.impl.ChatServices`
+(`framework/service/org/moqui/impl/ChatServices.xml`, which describes the rooms, the access rules and the pushes); BOSS's Chat screens use
+the store for the live parts and their own transitions over those services for the rest.
+
+**The pushes** are NotificationMessages that are not persisted and show no alert, routed by the socket to their users only:
+
+```
+chatRoom:<chatRoomId>  {kind: 'event', chatRoomId, eventSeq, event}           // to the room's members: a new event, as get#Timeline lists one
+                       {kind: 'typing', chatRoomId, userId, typing}            // to the other members (signal#Typing; nothing stored)
+                       {kind: 'read', chatRoomId, userId, lastReadEventSeq}    // a member's read marker (read receipts)
+chatUser:<userId>      {kind: 'room', action: 'joined'|'left'|'changed'|'role'|'settings', chatRoomId}
+                       {kind: 'read', chatRoomId, lastReadEventSeq} | {kind: 'read', all: true}   // read in another tab
+userStatus             {userId, presence, statusText, emoji, clearAtDate, inCall}   // to the user's room members; self and status to the user
+```
+
+`presence` is `online`, `away`, `dnd` or `offline` (an invisible user is offline to others). The shell's own `shellCounts` topic carries the
+header's Chat badge (`counts.chat`, the app's counts service adding `get#UnreadCounts`).
+
+**The store** (`moqui.chat`; its `state` is a Vue reactive object):
+
+| | |
+|---|---|
+| `state` | `me` (the user's status: `status` as chosen, `presence`, `statusText`, `emoji`, `clearAtDate`, `autoAwayMinutes`), `presence` (userId to `{presence, statusText, emoji, clearAtDate, inCall}`), `unread` (chatRoomId to `{unread, mentions}`), `typing` (chatRoomId to userId to the time it ends), `reads` (chatRoomId to userId to lastReadEventSeq), `openRooms` |
+| `on(kind, fn)` | a listener of `event`, `typing`, `read`, `room` or `presence`; returns the function that removes it. While a screen listens to `event` or `room`, a chat push no longer reloads the tray's Chat tab (`trayReloads`); a typing or read signal never does |
+| `openRoom(id)`, `closeRoom(id)` | a room shown now: its events do not count as unread, and the socket is told of its topic |
+| `typing(id, false?)` | tell the room the user is typing, at most every 3 seconds, and once when it stops; `typingIn(id)` the users typing there |
+| `presenceOf(userId)`, `statusOf(userId)` | the dot (`""` while not known) and the status; `watchUsers(ids)` asks for them, the asks of the moment in one request, each user once in five minutes |
+| `myPresence()`, `quiet()` | the user's own dot (invisible is grey) and do not disturb: while it is on the page's toasts are off (`notificationClient.disableDisplay()`) and a screen plays no chat sound; the notifications are still recorded and counted |
+| `setStatus({status, statusText, emoji, clearAt, clearStatus})` | `clearAt` is minutes, `today` or `week` (the end of today or of Sunday, in the browser's zone) |
+| `applyEvent(list, event, me, threadRoot)` | merge a pushed event into a timeline list as `get#Timeline` answers it: a message added in its place once (a thread reply counts on its root unless the list is that thread), an edit, a reaction, a redaction (of a message or a reaction) and a pin applied |
+| `reduce(state, jsonObj, me, now)` | the socket message on a state (pure; the store's listener) |
+
+**Auto-away.** The store notes the user's input (keys, pointer, wheel, touch, focus, the tab coming back) and posts a heartbeat every minute
+with the seconds since the last input; the server sets away after the user's `CHAT_AUTO_AWAY_MINUTES` preference (10 by default) and
+offline 3 minutes after the last heartbeat (`expire#UserStatuses`, each minute, publishes those changes and clears a status at its clear-at
+time). Input after an idle beat past the auto-away minutes beats at once, so the others see the user back.
+
+**The webroot transitions** of the store, each as the current user (401 without one): `GET /userStatus` `{myStatus}`, `POST /setUserStatus`
+(`status`, `statusText`, `emoji`, `clearAtDate` in epoch millis, `clearAfterMinutes`, `clearStatus`), `POST /userStatusHeartbeat`
+(`idleSeconds`), `GET /userStatuses?userIds=a,b` `{statusMap}`, `POST /chatTyping` (`chatRoomId`, `typing`) and `GET /chatUnread`
+`{total, unread, mentions, roomCounts}`.
+
+**The account menu's status**: `m-user-status-menu` (the current status and its message, the four statuses, "Set a status message", "Clear status
+message") and `m-user-status-dialog` (emoji, text up to 100 characters, clear after: don't clear, 30 minutes, 1 hour, 4 hours, today, this
+week), outside the menu so it outlives it.
 
 ## Server-static screens
 

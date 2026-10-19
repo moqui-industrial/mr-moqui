@@ -535,7 +535,11 @@ fn client_components_are_precompiled() {
     let compiler = read("libs/vue/compiler-dom.cjs.js");
     let made = crate::screen::vue_check::precompiled_components(
         &compiler,
-        &[&read("js/MoquiLib.js"), &read("js/WebrootVue.qvt.js")],
+        &[
+            &read("js/MoquiLib.js"),
+            &read("js/WebrootChat.js"),
+            &read("js/WebrootVue.qvt.js"),
+        ],
     )
     .unwrap();
     let path = js.join("js/WebrootVue.qvt.render.js");
