@@ -1003,6 +1003,16 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="replyOncePerDays" type="number-integer"/>
         <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
     </entity>
+    <entity entity-name="EmailOutOfOfficeSent" package="moqui.basic.email" use="transactional" cache="never">
+        <description>When an account's automatic reply last went to a sender (the address in lower case), so it goes once
+            per sender in replyOncePerDays (EmailClientServices.send#OutOfOfficeReplies). Storing the automatic reply
+            clears them, so a new one goes to everyone again.</description>
+        <field name="emailAccountId" type="id" is-pk="true"/>
+        <field name="toAddress" type="text-medium" is-pk="true"/>
+        <field name="lastSentDate" type="date-time"/>
+        <field name="emailMessageId" type="id"><description>The message the last reply answered</description></field>
+        <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
+    </entity>
     <entity entity-name="EmailTextBlock" package="moqui.basic.email" use="transactional" cache="never">
         <description>Canned text for the composer: a user's own, or shared with the members of userGroupId.</description>
         <field name="emailTextBlockId" type="id" is-pk="true"/>

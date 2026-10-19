@@ -1,0 +1,14 @@
+<screen require-authentication="false">
+    <actions>
+        <set field="body" value="&lt;p&gt;Hi {{ada}} &lt;b&gt;there&lt;/b&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;img src=&quot;cid:logo@x&quot;&gt;&lt;/p&gt;"/>
+        <set field="plain" value="Plain {{text}} &amp; more"/>
+        <set field="trusted" from="true"/>
+        <set field="cids" from="{'logo@x': '/apps/mail/attachment?id=7'}"/>
+    </actions>
+    <widgets>
+        <html-view id="Body" html="${body}" allow-remote="trusted" cid-map="cids" style="q-mt-sm"/>
+        <html-view text="${plain}" collapse-quotes="false" dark="off"/>
+        <html-view html="${body}" condition="false"/>
+        <label text="the message is in its frame"/>
+    </widgets>
+</screen>

@@ -343,6 +343,12 @@ span.hover-image-container:hover img.hover-image { display: initial; margin: 10p
 .m-record-card { min-width:0; max-width:420px; }
 .m-record-card-item { min-height:0; padding:6px 10px; }
 .m-record-card-icon { min-width:32px; color:var(--q-primary); }
+/* m-html-view: an email body in its sandboxed frame, as tall as its content; a designed message keeps a light card in dark mode */
+.m-html-view { width:100%; min-width:0; }
+.m-html-view-frame { display:block; width:100%; border:0; background:transparent; }
+.m-html-view-card { border-radius:8px; }
+.m-html-view-images { gap:4px; margin:0 0 8px; padding:2px 4px 2px 10px; border-radius:6px; font-size:13px; background:rgba(0,0,0,0.04); }
+.body--dark .m-html-view-images { background:rgba(255,255,255,0.06); }
 .m-record-card-body { min-width:0; }
 
 /* container-split (style-guide §3.8): a q-splitter of side and main pane from 1024 px; stacked below, one pane at a time when

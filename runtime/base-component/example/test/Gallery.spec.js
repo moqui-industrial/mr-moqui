@@ -9,7 +9,7 @@ const galleryScreens = [
     ["Landing", "qvt"], ["List", "qvt"], ["Detail", "qvt"], ["Record360", "qvt"], ["Task", "qvt"],
     ["Board", "qvue"], ["Calendar", "qvue"], ["Split", "qvt"], ["Settings", "qvt"], ["Wizard", "qvt"],
     ["Dialog", "qvt"], ["Report", "qvt"], ["Panel", "qvt"], ["Widgets", "qvt"], ["Editor", "qvt"], ["QuickNote", "qvt"],
-    ["Chatter", "qvt"], ["RecordFiles", "qvt"],
+    ["Chatter", "qvt"], ["RecordFiles", "qvt"], ["Message", "qvt"],
 ]
 
 spec({

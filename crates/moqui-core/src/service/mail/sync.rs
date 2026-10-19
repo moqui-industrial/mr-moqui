@@ -1251,8 +1251,9 @@ fn imap_sync(
     // 3. copies, and what left and went nowhere
     resolve_pending(&mut conn, &mut session, report)?;
     remove_vanished(&mut session, report);
-    // 4. the rules, on the new mail of the Inbox
+    // 4. the rules, on the new mail of the Inbox, then what new mail brings: a snoozed thread back, the automatic reply
     run_rules(&account.id, &session.new_inbox_ids);
+    after_new_mail(&account.id, &session.new_inbox_ids);
     // 5. what the rules and the user changed meanwhile
     report.pushed_count += super::remote::apply_queue(&mut conn, facade, account)?;
     let _ = conn.session.logout();
@@ -2246,6 +2247,29 @@ fn run_rules(account_id: &str, ids: &[String]) {
     }
 }
 
+/// What new Inbox mail brings once the rules ran, each part on its own (a part that fails is logged and the other
+/// runs): a snoozed thread with new mail is back in the Inbox (`wake#SnoozedThreads`, as Gmail does), and the account's
+/// automatic reply goes to the senders it is for (`send#OutOfOfficeReplies`).
+fn after_new_mail(account_id: &str, ids: &[String]) {
+    if ids.is_empty() {
+        return;
+    }
+    for service in ["wake#SnoozedThreads", "send#OutOfOfficeReplies"] {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("emailAccountId".to_string(), Value::string(account_id));
+        parameters.insert(
+            "emailMessageIdList".to_string(),
+            Value::List(ids.iter().map(Value::string).collect()),
+        );
+        if let Err(err) = crate::service::sync(&format!("{SERVICES}.{service}"), &parameters) {
+            tracing::error!("{service} on the new mail of email account {account_id} failed: {err}");
+        }
+        if let Some(text) = take_errors_string() {
+            tracing::error!("{service} on the new mail of email account {account_id} failed: {text}");
+        }
+    }
+}
+
 // ---- POP3 ----
 
 fn pop_sync(
@@ -2361,6 +2385,7 @@ fn pop_sync(
     }
     report.folder_count = 1;
     run_rules(&account.id, &new_ids);
+    after_new_mail(&account.id, &new_ids);
     Ok(())
 }
 

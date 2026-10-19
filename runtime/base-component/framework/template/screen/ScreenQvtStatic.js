@@ -1783,6 +1783,21 @@
         const chatter = (n) => recordPanel("m-chatter", n);
         const recordFiles = (n) => recordPanel("m-record-files", n);
 
+        // html-view as ScreenQvt.js writes it, the html and text bound over the scope (the screen's data), allow-remote and
+        // cid-map expressions of it, the condition a v-if.
+        const htmlView = (n) => {
+            const out = {};
+            plainAttr(out, "id", at(n, "id"), n);
+            plainAttr(out, "html", at(n, "html"), n);
+            plainAttr(out, "text", at(n, "text"), n);
+            if (at(n, "allow-remote")) out[":allow-remote"] = "!!" + X(at(n, "allow-remote"), n, "allow-remote");
+            if (at(n, "cid-map")) out[":cid-map"] = X(at(n, "cid-map"), n, "cid-map");
+            if (at(n, "collapse-quotes") === "false") out[":collapse-quotes"] = "false";
+            if (at(n, "dark") && at(n, "dark") !== "auto") out.dark = at(n, "dark");
+            plainAttr(out, "class", at(n, "style"), n);
+            w(withCondition(n, "<m-html-view" + A(out) + "></m-html-view>\n"));
+        };
+
         // ---- dashboards ----
 
         // A number-card as ScreenQvt.js writes it, its attributes bound over the scope as a label's text is: the title localized,
@@ -1839,7 +1854,7 @@
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
             split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose, screenContext,
-            numberCard, dashboardOpen, chatter, recordFiles, splitOpen
+            numberCard, dashboardOpen, chatter, recordFiles, splitOpen, htmlView
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -2029,6 +2044,7 @@
         "number-card": widget("numberCard", false),
         "chatter": widget("chatter", false),
         "record-files": widget("recordFiles", false),
+        "html-view": widget("htmlView", false),
         "form-single": formSingleMacro,
         "form-list": formListMacro
     });

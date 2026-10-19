@@ -1679,6 +1679,53 @@
                 : _createCommentVNode("", true)
             }
         } },
+        "m-html-view": { hash: "b2da5b44", make: function (Vue) {
+            const { resolveComponent: _resolveComponent, createVNode: _createVNode, toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, normalizeClass: _normalizeClass, normalizeStyle: _normalizeStyle } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_icon = _resolveComponent("q-icon")
+              const _component_q_btn = _resolveComponent("q-btn")
+
+              return (_openBlock(), _createElementBlock("div", {
+                class: "m-html-view",
+                "data-state": _ctx.state,
+                "data-blocked": _ctx.blocked
+              }, [
+                (_ctx.blocked && !_ctx.remoteAllowed && _ctx.imagesBar)
+                  ? (_openBlock(), _createElementBlock("div", {
+                      key: 0,
+                      class: "m-html-view-images row items-center no-wrap"
+                    }, [
+                      _createVNode(_component_q_icon, {
+                        name: "sym_o_hide_image",
+                        size: "xs",
+                        class: "q-mr-sm"
+                      }),
+                      _createElementVNode("span", { class: "col m-muted" }, _toDisplayString(_ctx.t("Images from this sender are hidden")), 1),
+                      _createVNode(_component_q_btn, {
+                        flat: "",
+                        dense: "",
+                        "no-caps": "",
+                        color: "primary",
+                        class: "m-html-view-show",
+                        label: _ctx.t('Show images'),
+                        onClick: _ctx.showImages
+                      }, null, 8, ["label", "onClick"])
+                    ]))
+                  : _createCommentVNode("", true),
+                _createElementVNode("iframe", {
+                  ref: "frame",
+                  class: _normalizeClass(["m-html-view-frame", {'m-html-view-card': _ctx.designed && _ctx.isDark}]),
+                  title: _ctx.title,
+                  sandbox: "allow-same-origin allow-popups allow-popups-to-escape-sandbox",
+                  referrerpolicy: "no-referrer",
+                  srcdoc: _ctx.srcdoc,
+                  style: _normalizeStyle(_ctx.frameStyle),
+                  onLoad: _ctx.onLoad
+                }, null, 46, ["title", "srcdoc", "onLoad"])
+              ], 8, ["data-state", "data-blocked"]))
+            }
+        } },
         "m-link": { hash: "449c1400", make: function (Vue) {
             const { renderSlot: _renderSlot, openBlock: _openBlock, createElementBlock: _createElementBlock } = Vue
 

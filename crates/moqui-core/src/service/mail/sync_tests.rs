@@ -1858,3 +1858,172 @@ fn parse_message_reads_headers_bodies_and_files() {
     assert!(super::store::parse_message(b"\x00\x01 not mail").is_err());
     assert!(super::store::parse_message(b"   \r\n").is_err());
 }
+
+/// A draft saved here goes to the server's Drafts at the next sync (`\Draft`, with a Message-ID the sync then knows it
+/// by), a save after replaces that copy, and the send takes it out of Drafts: the copy in Sent has the same Message-ID.
+/// A draft discarded before its change went leaves nothing there.
+#[test]
+fn drafts_go_to_the_servers_drafts_are_replaced_and_leave_when_sent() {
+    let _lock = crate::user::session::cookie_property_lock();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    alice(&facade);
+    let imap = FakeImap::start(&["UIDPLUS", "MOVE"]);
+    let account = imap_account(imap.port, "app-password");
+    sync(&account);
+    let save = |more: &[(&str, Value)]| -> String {
+        let mut parameters = vec![
+            ("emailAccountId", text(&account)),
+            ("toAddresses", text("bob@example.com")),
+        ];
+        parameters.extend_from_slice(more);
+        out_text(&ok("save#Draft", &parameters), "emailMessageId")
+    };
+    let draft = save(&[("subject", text("Plan")), ("body", text("<p>First</p>"))]);
+    // autosaves before the push make one change
+    save(&[("emailMessageId", text(&draft)), ("body", text("<p>First, again</p>"))]);
+    assert_eq!(changes(&facade, &account), 1);
+    sync(&account);
+    let drafts = imap.messages("Drafts");
+    assert_eq!(drafts.len(), 1, "{drafts:?}");
+    assert!(drafts[0].1.contains(&"\\Draft".to_string()), "{drafts:?}");
+    assert!(drafts[0].1.contains(&"\\Seen".to_string()), "{drafts:?}");
+    let row = one(&facade, MESSAGE, "emailMessageId", &draft);
+    let message_id = field(&row, "messageId");
+    assert!(!message_id.is_empty());
+    assert_eq!(drafts[0].2, message_id);
+    assert_eq!(field(&row, "remoteFolderId"), folder_id(&facade, &account, "EfkDrafts"));
+    assert_eq!(field(&row, "remoteUid"), drafts[0].0.to_string());
+    assert!(imap.raw_messages("Drafts")[0].1.contains("First, again"));
+
+    // a save after replaces the copy; the sync keeps one row
+    save(&[("emailMessageId", text(&draft)), ("subject", text("Plan v2"))]);
+    sync(&account);
+    let drafts = imap.raw_messages("Drafts");
+    assert_eq!(drafts.len(), 1, "{drafts:?}");
+    assert!(drafts[0].1.contains("Subject: Plan v2"), "{}", drafts[0].1);
+    assert_eq!(
+        rows(
+            &facade,
+            MESSAGE,
+            &[("emailAccountId", &account), ("messageId", &message_id)]
+        )
+        .len(),
+        1
+    );
+    sync(&account);
+    assert_eq!(
+        rows(
+            &facade,
+            MESSAGE,
+            &[("emailAccountId", &account), ("messageId", &message_id)]
+        )
+        .len(),
+        1
+    );
+
+    // sent: out of Drafts there, and Sent has it under the same Message-ID
+    let _sink = super::SinkGuard::install();
+    let sent = ok("send#Draft", &[("emailMessageId", text(&draft))]);
+    assert_eq!(sent.get("sent"), Some(&Value::Bool(true)), "{sent:?}");
+    assert_eq!(out_text(&sent, "messageId"), message_id);
+    sync(&account);
+    assert!(imap.messages("Drafts").is_empty(), "{:?}", imap.messages("Drafts"));
+    assert!(
+        imap.messages("Sent Mail").iter().any(|(_, _, mid)| *mid == message_id),
+        "{:?}",
+        imap.messages("Sent Mail")
+    );
+
+    // discarded before its change went: nothing on the server
+    let gone = save(&[("subject", text("Never mind"))]);
+    ok("trash#Messages", &[("emailMessageId", text(&gone))]);
+    imap.clear_log();
+    sync(&account);
+    assert!(imap.messages("Drafts").is_empty());
+    assert!(
+        !imap.commands().iter().any(|command| command.starts_with("APPEND")),
+        "{:?}",
+        imap.commands()
+    );
+}
+
+/// New Inbox mail at a sync: a reply in a snoozed thread brings it back, and the account's automatic reply goes to
+/// its sender once (Auto-Submitted, appended to Sent), not again for the reply.
+#[test]
+fn new_mail_at_a_sync_wakes_its_thread_and_gets_the_automatic_reply() {
+    let _lock = crate::user::session::cookie_property_lock();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    alice(&facade);
+    let imap = FakeImap::start(&["UIDPLUS", "MOVE"]);
+    let account = imap_account(imap.port, "app-password");
+    sync(&account);
+    ok(
+        "store#EmailOutOfOffice",
+        &[
+            ("emailAccountId", text(&account)),
+            ("fromDate", stamp(now() - 86_400_000)),
+            ("bodyHtml", text("<p>Back on Monday</p>")),
+        ],
+    );
+    let sink = super::SinkGuard::install();
+    imap.add(
+        "INBOX",
+        &mail(
+            "<root@x.example.org>",
+            "Ada <ada@x.example.org>",
+            "alice@example.com",
+            "Plan",
+            "",
+            "First",
+        ),
+        &[],
+    );
+    sync(&account);
+    let sent = sink.sent();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].to, ["ada@x.example.org"]);
+    assert_eq!(sent[0].subject, "Automatic reply: Plan");
+    assert!(
+        sent[0].mime.contains("Auto-Submitted: auto-replied"),
+        "{}",
+        sent[0].mime
+    );
+    let copies = imap.raw_messages("Sent Mail");
+    assert_eq!(copies.len(), 1, "the reply is appended to Sent");
+    assert!(copies[0].1.contains("Auto-Submitted: auto-replied"), "{}", copies[0].1);
+
+    let root = by_message_id(&facade, &account, "<root@x.example.org>").expect("the root");
+    let root_id = field(&root, "emailMessageId");
+    ok(
+        "snooze#Messages",
+        &[
+            ("rootEmailMessageId", text(&root_id)),
+            ("snoozedThruDate", stamp(now() + 86_400_000)),
+        ],
+    );
+    assert!(!field(&one(&facade, MESSAGE, "emailMessageId", &root_id), "snoozedThruDate").is_empty());
+    imap.add(
+        "INBOX",
+        &mail(
+            "<reply@x.example.org>",
+            "Ada <ada@x.example.org>",
+            "alice@example.com",
+            "Re: Plan",
+            "In-Reply-To: <root@x.example.org>\n",
+            "Second",
+        ),
+        &[],
+    );
+    sync(&account);
+    assert_eq!(
+        field(&one(&facade, MESSAGE, "emailMessageId", &root_id), "snoozedThruDate"),
+        ""
+    );
+    let reply = by_message_id(&facade, &account, "<reply@x.example.org>").expect("the reply");
+    assert_eq!(field(&reply, "rootEmailMessageId"), root_id);
+    assert_eq!(sink.sent().len(), 1, "once per sender");
+}

@@ -20,7 +20,8 @@
 //! sync makes it. A change is made from the message's state when it is applied, not when it was queued: a flag change
 //! stores the flags it named as they are now, a move takes the message from where it is on the server
 //! (`remoteFolderId`) to its folder here, a label change stores the labels as keywords, a sent message is appended to
-//! Sent (unless the server keeps a copy of what it sends, found by Message-ID). A message whose UID is not known (a move
+//! Sent (unless the server keeps a copy of what it sends, found by Message-ID), a draft saved here is appended to Drafts
+//! (replacing its copy there; [`apply_draft`]). A message whose UID is not known (a move
 //! without UIDPLUS) is found by Message-ID. A change that cannot be made yet waits; one that fails
 //! [`MAX_ATTEMPTS`] times is dropped and logged.
 
@@ -32,7 +33,8 @@ use moqui_lib::object::{to_plain_string, Value};
 use moqui_lib::sync::lock;
 
 use super::implementation::{
-    build_lettre, find_one, force_new, note_error, split_addresses, stamp_millis, stored_attachments, Letter,
+    build_lettre, client_headers, find_one, force_new, new_message_id, note_error, split_addresses, stamp_millis,
+    stored_attachments, Letter,
 };
 use super::store::{update_fields, MESSAGE};
 use super::sync::{
@@ -46,7 +48,7 @@ use crate::service::util::{field_text, now_millis, param_text};
 /// Tries before a change that keeps failing is dropped.
 pub(super) const MAX_ATTEMPTS: i64 = 10;
 
-const MESSAGE_CHANGES: &[&str] = &["flags", "move", "labels", "keywords"];
+const MESSAGE_CHANGES: &[&str] = &["flags", "move", "labels", "keywords", "draft"];
 
 // ---- queueing ----
 
@@ -107,7 +109,7 @@ pub(super) fn push_changes(
     let ids = text_list(parameters.get("emailMessageIdList"));
     let mut queued = 0;
     match change_type.as_str() {
-        "flags" | "move" | "labels" | "keywords" | "delete" | "sent" => {
+        "flags" | "move" | "labels" | "keywords" | "delete" | "sent" | "draft" => {
             let change_json = match change_type.as_str() {
                 "flags" => {
                     let names: Vec<String> = match parameters.get("flagMap") {
@@ -127,9 +129,25 @@ pub(super) fn push_changes(
                     continue;
                 };
                 let remote_folder = field_text(&message, "remoteFolderId");
-                // a message kept only here has nothing on the server, but a sent one is appended there
-                if remote_folder.is_empty() && change_type != "sent" {
+                // a message kept only here has nothing on the server, but a sent one or a draft is appended there
+                if remote_folder.is_empty() && change_type != "sent" && change_type != "draft" {
                     continue;
+                }
+                // one draft change waiting is enough, since it appends the draft as it is then; a draft sent before
+                // its change went has nothing to append
+                if change_type == "draft" || change_type == "sent" {
+                    let waiting = facade
+                        .find(CHANGE)?
+                        .eq("emailAccountId", Value::string(&account_id))
+                        .eq("emailMessageId", Value::string(id))
+                        .eq("changeType", Value::string("draft"));
+                    if change_type == "draft" {
+                        if waiting.count()? > 0 {
+                            continue;
+                        }
+                    } else {
+                        waiting.delete_all()?;
+                    }
                 }
                 let mut fields = vec![("emailMessageId", Value::string(id))];
                 if let Some(json) = &change_json {
@@ -319,6 +337,7 @@ pub(super) fn apply_queue(
             "keywords" => apply_keywords(conn, facade, &folders, &change),
             "delete" => apply_delete(conn, &folders, &change),
             "sent" => apply_sent(conn, facade, &folders, &change),
+            "draft" => apply_draft(conn, facade, &folders, &change),
             "createFolder" => apply_create_folder(conn, facade, &folders, &change),
             "renameFolder" => apply_rename_folder(conn, facade, &folders, &change),
             other => Ok(Outcome::Drop(format!("unknown change {other}"))),
@@ -727,6 +746,7 @@ fn sent_copy(facade: &EntityFacade, message: &EntityValue) -> Result<Vec<u8>, Li
         in_reply_to: field_text(message, "inReplyTo"),
         references: field_text(message, "referencesHeader"),
         date: value_millis(message.get("sentDate")),
+        extra_headers: client_headers(&field_text(message, "headersString")),
     };
     stored_attachments(facade, &id, &mut letter).map_err(|err| LibError::new(err.message()))?;
     let built = build_lettre(&letter).map_err(|err| LibError::new(err.message()))?;
@@ -811,6 +831,86 @@ fn apply_sent(
             ],
         )
     })?;
+    Ok(Outcome::Done)
+}
+
+/// A draft saved here, appended to the server's Drafts (`\Draft`, `\Seen`) so another client sees it, and the copy
+/// appended before it (an earlier save) expunged there: the new copy goes first, so the server is never left without
+/// it. The draft gets a Message-ID the first time, which the sync finds it by, and which its send keeps. A draft sent,
+/// scheduled or deleted since has nothing to append (the sent change takes its copy out of Drafts).
+fn apply_draft(
+    conn: &mut ImapConn,
+    facade: &EntityFacade,
+    folders: &[FolderInfo],
+    change: &EntityValue,
+) -> Result<Outcome, ApplyError> {
+    let Some(message) = load_message(facade, change)? else {
+        return Ok(Outcome::Done);
+    };
+    if field_text(&message, "statusId") != "ES_DRAFT" {
+        return Ok(Outcome::Done);
+    }
+    let Some(drafts) = folders
+        .iter()
+        .find(|folder| folder.kind == "EfkDrafts" && !folder.path.is_empty() && !folder.removed)
+        .cloned()
+    else {
+        return Ok(Outcome::Drop(
+            "the account has no Drafts folder on the server".to_string(),
+        ));
+    };
+    let id = field_text(&message, "emailMessageId");
+    let mut message_id = field_text(&message, "messageId");
+    if message_id.trim().is_empty() {
+        message_id =
+            new_message_id(&field_text(&message, "fromAddress")).map_err(|err| LibError::new(err.message()))?;
+        force_new(facade, || {
+            update_fields(facade, &id, &[("messageId", Value::string(&message_id))])
+        })?;
+    }
+    // the copy appended before, if the sync knows where it is
+    let earlier = match folder_by_id(folders, &field_text(&message, "remoteFolderId")) {
+        Some(folder) if folder.kind == "EfkDrafts" => locate(conn, facade, folders, &message)?,
+        _ => None,
+    };
+    let mut copy = message.clone();
+    copy.set("messageId", Value::string(&message_id));
+    copy.set("sentDate", message.get("messageDate").cloned().unwrap_or(Value::Null));
+    let bytes = match sent_copy(facade, &copy) {
+        Ok(bytes) => bytes,
+        Err(err) => return Ok(Outcome::Drop(format!("could not make the draft's copy: {err}"))),
+    };
+    let appended = conn
+        .session
+        .append(&drafts.path, &bytes)
+        .flag(imap::types::Flag::Seen)
+        .flag(imap::types::Flag::Draft)
+        .finish()?;
+    conn.selected = None;
+    let uid = appended_uid(&appended);
+    force_new(facade, || {
+        update_fields(
+            facade,
+            &id,
+            &[
+                ("remoteFolderId", Value::string(&drafts.id)),
+                ("remoteUid", uid.map_or(Value::Null, |uid| Value::I64(i64::from(uid)))),
+            ],
+        )
+    })?;
+    if let Some((folder, old_uid)) = earlier {
+        if uid != Some(old_uid) || folder.id != drafts.id {
+            let removed = select(conn, &folder.path, false).and_then(|_| expunge_uid(conn, old_uid));
+            match removed {
+                Err(err) if connection_lost(&err) => return Err(ApplyError::Imap(err)),
+                Err(err) => tracing::warn!(
+                    "The earlier copy of draft {id} (UID {old_uid} of {}) stays on the server: {err}",
+                    folder.path
+                ),
+                Ok(()) => {}
+            }
+        }
+    }
     Ok(Outcome::Done)
 }
 

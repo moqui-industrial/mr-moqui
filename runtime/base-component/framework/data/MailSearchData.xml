@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The mail client's search document (IronStone design-drawers-commons §19 Search DataDocuments): each EmailMessage of an
+    account, in its own index (moqui_mail), so no search over another index (Mantle's universal search over mantle) finds
+    mail. The real-time feed indexes a message when it is stored or changed (the sync, the import, drafts, flags, labels)
+    and removes it when it is deleted forever; an empty index is filled on start. The index holds no access rule:
+    EmailClientServices.find#Messages filters by the accounts the user reaches (emailAccountId) in the search and again in
+    the entity find, so a user never sees another user's mail. -->
+<entity-facade-xml type="seed">
+    <moqui.entity.document.DataDocument dataDocumentId="MoquiEmailMessage" indexName="moqui_mail" documentName="Email Message"
+            primaryEntityName="moqui.basic.email.EmailMessage" documentTitle="${subject}">
+        <fields fieldSeqId="01" fieldPath="emailMessageId"/>
+        <fields fieldSeqId="02" fieldPath="rootEmailMessageId"/>
+        <fields fieldSeqId="03" fieldPath="emailAccountId"/>
+        <fields fieldSeqId="04" fieldPath="emailFolderId"/>
+        <fields fieldSeqId="05" fieldPath="statusId" searchRole="category"/>
+        <fields fieldSeqId="06" fieldPath="messageId"/>
+
+        <fields fieldSeqId="10" fieldPath="subject" searchRole="title" searchWeight="A"/>
+        <fields fieldSeqId="11" fieldPath="fromName" searchRole="subtitle" searchWeight="B"/>
+        <fields fieldSeqId="12" fieldPath="fromAddress" searchRole="code" searchWeight="B"/>
+        <fields fieldSeqId="13" fieldPath="toAddresses" searchWeight="B"/>
+        <fields fieldSeqId="14" fieldPath="ccAddresses" searchWeight="C"/>
+        <fields fieldSeqId="15" fieldPath="bodyText" searchWeight="D"/>
+
+        <fields fieldSeqId="20" fieldPath="messageDate"/>
+        <fields fieldSeqId="21" fieldPath="sentDate"/>
+        <fields fieldSeqId="22" fieldPath="receivedDate"/>
+
+        <fields fieldSeqId="30" fieldPath="isRead"/>
+        <fields fieldSeqId="31" fieldPath="isFlagged"/>
+        <fields fieldSeqId="32" fieldPath="isAnswered"/>
+        <fields fieldSeqId="33" fieldPath="hasAttachment"/>
+        <fields fieldSeqId="34" fieldPath="messageSize"/>
+
+        <fields fieldSeqId="40" fieldPath="labels:emailLabelId"/>
+        <fields fieldSeqId="41" fieldPath="labels:label:labelName" fieldNameAlias="labelName"/>
+    </moqui.entity.document.DataDocument>
+
+    <moqui.entity.feed.DataFeed dataFeedId="MoquiMailSearch" dataFeedTypeEnumId="DTFDTP_RT_PUSH" indexOnStartEmpty="Y"
+            feedName="Mail Search" feedReceiveServiceName="org.moqui.search.SearchServices.index#DataDocuments"
+            feedDeleteServiceName="org.moqui.search.SearchServices.delete#DataDocument">
+        <documents dataDocumentId="MoquiEmailMessage"/>
+    </moqui.entity.feed.DataFeed>
+</entity-facade-xml>

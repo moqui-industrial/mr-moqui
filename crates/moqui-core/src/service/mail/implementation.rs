@@ -165,6 +165,7 @@ pub(super) fn send_template(
         in_reply_to: String::new(),
         references: String::new(),
         date: None,
+        extra_headers: Vec::new(),
     };
     if !filter_recipients(&mut letter, &field_text(&server, "allowedToDomains"), &email_message_id) {
         return Ok(ids(&email_message_id, ""));
@@ -271,9 +272,25 @@ pub(super) fn send_message(
             reply_to = field_text(&identity, "replyToAddress");
         }
     }
-    let message_id = match new_message_id(&from_address) {
-        Ok(message_id) => message_id,
-        Err(text) => return refuse(text.to_string()),
+    // a client message keeps the Message-ID it has (a draft appended to the server's Drafts, or one synced from there),
+    // so its copy in the server's Sent is found by it and the draft's copy is the same message
+    let kept_id = if client {
+        field_text(&message, "messageId")
+    } else {
+        String::new()
+    };
+    let message_id = if kept_id.trim().is_empty() {
+        match new_message_id(&from_address) {
+            Ok(message_id) => message_id,
+            Err(text) => return refuse(text.to_string()),
+        }
+    } else {
+        kept_id.trim().to_string()
+    };
+    let extra_headers = if client {
+        client_headers(&field_text(&message, "headersString"))
+    } else {
+        Vec::new()
     };
     let mut letter = Letter {
         subject: field_text(&message, "subject"),
@@ -292,6 +309,7 @@ pub(super) fn send_message(
         in_reply_to: field_text(&message, "inReplyTo"),
         references: field_text(&message, "referencesHeader"),
         date: None,
+        extra_headers,
     };
     if !filter_recipients(&mut letter, &field_text(&server, "allowedToDomains"), &email_message_id) {
         if client {
@@ -1050,6 +1068,27 @@ pub(super) struct Letter {
     /// The Date header in epoch milliseconds; now when None. The copy of sent mail the sync appends to Sent has the
     /// time it was sent.
     pub(super) date: Option<i64>,
+    /// Headers a client message carries in its `headersString` that go out with it ([`CLIENT_HEADERS`]): the
+    /// automatic reply's `Auto-Submitted: auto-replied` (RFC 3834) and its loop guards.
+    pub(super) extra_headers: Vec<(String, String)>,
+}
+
+/// The headers of a client message's `headersString` that are sent: an automatic reply's (RFC 3834 and the Microsoft
+/// and list conventions), so the mail it answers is not answered back. Any other header there is the received mail's.
+pub(super) const CLIENT_HEADERS: [&str; 3] = ["Auto-Submitted", "X-Auto-Response-Suppress", "Precedence"];
+
+/// The [`CLIENT_HEADERS`] of a stored header block, in order, each once.
+pub(super) fn client_headers(headers: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for name in CLIENT_HEADERS {
+        let value = super::store::header_value(headers, name);
+        let value = value.trim();
+        // a header value is one line of printable text
+        if !value.is_empty() && !value.contains(['\r', '\n']) && value.len() < 200 {
+            out.push((name.to_string(), value.to_string()));
+        }
+    }
+    out
 }
 
 fn deliver(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
@@ -1141,6 +1180,11 @@ pub(super) fn build_lettre(letter: &Letter) -> Result<lettre::Message, Error> {
     }
     if !letter.references.trim().is_empty() {
         builder = builder.references(letter.references.split_whitespace().collect::<Vec<_>>().join(" "));
+    }
+    for (name, value) in &letter.extra_headers {
+        let header = lettre::message::header::HeaderName::new_from_ascii(name.clone())
+            .map_err(|err| Error::new(format!("header {name} is not valid: {err}")))?;
+        builder = builder.raw_header(lettre::message::header::HeaderValue::new(header, value.clone()));
     }
     let mut recipients = Vec::new();
     for address in letter.to.iter().chain(letter.cc.iter()).chain(letter.bcc.iter()) {
@@ -1255,7 +1299,7 @@ fn mailbox(address: &str, name: &str) -> Result<lettre::message::Mailbox, Error>
 }
 
 /// A random `<hex@host>` Message-ID, the host the domain of the from address.
-fn new_message_id(from: &str) -> Result<String, Error> {
+pub(super) fn new_message_id(from: &str) -> Result<String, Error> {
     let mut bytes = [0u8; 12];
     getrandom::fill(&mut bytes).map_err(|err| Error::new(format!("could not make a Message-ID: {err}")))?;
     let host = mailbox(from, "")
@@ -1669,17 +1713,20 @@ fn store_steps(server: &EntityValue, steps: &mut Vec<(&'static str, bool, String
         ));
         return;
     }
-    let session = connect_net(&host, port, use_tls(&protocol, port)).and_then(|net| {
-        let mut client = imap::Client::new(net);
-        client.read_greeting().map_err(|err| Error::new(err.to_string()))?;
-        client
-            .login(&settings.user, &settings.password)
-            .map_err(|(err, _)| Error::new(err.to_string()))
-    });
-    let mut session = match session {
-        Ok(session) => {
+    // the connection the sync makes: TLS from the start on imaps or port 993, else STARTTLS when the server offers it
+    let info = super::sync::ServerInfo {
+        host: host.clone(),
+        port,
+        protocol: protocol.clone(),
+        user: settings.user.clone(),
+        password: settings.password.clone(),
+        auth_type: field_text(server, "authTypeEnumId"),
+        store_delete: false,
+    };
+    let mut session = match super::sync::open_imap(&info) {
+        Ok(conn) => {
             steps.push(("storeLogin", true, format!("Signed in to IMAP {place}")));
-            session
+            conn.session
         }
         Err(err) => {
             steps.push(("storeLogin", false, format!("IMAP {place}: {err}")));

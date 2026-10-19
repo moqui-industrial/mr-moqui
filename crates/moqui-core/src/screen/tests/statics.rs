@@ -362,6 +362,21 @@ fn the_record_panels_are_bound_over_the_scope_in_a_static_template() {
     assert!(!html.contains("T100"), "{html}");
 }
 
+/// An html-view of a server-static screen is bound over the scope: the html and text are expressions of the screen's data,
+/// allow-remote and cid-map expressions, the condition a v-if; no message text is in the template.
+#[test]
+fn the_html_view_is_bound_over_the_scope_in_a_static_template() {
+    let (html, _) = static_fixture("htmlview");
+    for expected in [
+        r#"<m-html-view id="Body" :html="ec.resource.expandNoL10n('${body}',{'body':()=&gt;(body)})" :allow-remote="!!(trusted)" :cid-map="(cids)" class="q-mt-sm"></m-html-view>"#,
+        r#"<m-html-view :text="ec.resource.expandNoL10n('${plain}',{'plain':()=&gt;(plain)})" :collapse-quotes="false" dark="off"></m-html-view>"#,
+        r#"<template v-if="(false)"><m-html-view"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    assert!(!html.contains("{{ada}}") && !html.contains("alert(1)"), "{html}");
+}
+
 /// A split of a server-static screen is the same m-container-split, its panes the side and main slots, the selection read from
 /// the URL in the browser: nothing in it is request data. A wizard or stack panel reads its steps from the menu data.
 #[test]

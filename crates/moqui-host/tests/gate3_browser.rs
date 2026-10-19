@@ -1974,3 +1974,217 @@ fn print_and_text_modes(browser: &mut Browser, base: &str) {
     assert_eq!(parsed, 2, "the xml mode parses as XML");
     assert_clean(browser, "the text modes");
 }
+
+/// m-html-view on the gallery Message screen (IronStone design-drawers-commons §12 reading pane): the designed message is
+/// cleaned into a frame sandboxed without scripts, so its script, its onerror handler and its javascript: link do not run and
+/// its form is gone; its remote image and tracking pixel are not fetched (no request at all) until Show images, and its cid:
+/// image is the host's file as a data: URL; its links open in a new window without the opener; the reply history opens from
+/// its "..." with a real click in the frame; and the frame is as tall as its content before and after. The plain message is
+/// escaped, with its links and its quoted reply collapsed, and follows dark mode while the designed one stays a light card.
+#[test]
+fn the_html_view_cleans_sandboxes_and_sizes_a_message_in_chromium() {
+    let gate = start("browser-htmlview");
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    browser.call(
+        "Emulation.setDeviceMetricsOverride",
+        serde_json::json!({"width": 1280, "height": 900, "deviceScaleFactor": 1, "mobile": false}),
+    );
+    browser.navigate(&format!("{base}/qapps/gallery/Message"));
+    let frame = |id: &str| format!("document.querySelector('#{id} iframe')");
+    let doc = |id: &str| format!("{}.contentDocument", frame(id));
+    let fits = |id: &str| {
+        format!(
+            "(() => {{ const f = {}; const d = f && f.contentDocument; const r = d && d.getElementById('m-hv-root'); \
+             return !!r && f.offsetHeight > 30 && Math.abs(f.offsetHeight - Math.max(Math.ceil(r.getBoundingClientRect().height), 16)) <= 1; }})()",
+            frame(id)
+        )
+    };
+    browser.wait_for(
+        "the designed message in its frame",
+        &format!(
+            "document.querySelector('#DesignedMessage').dataset.state === 'ready' && !!{d} && !!{d}.querySelector('.m-hv-blocked') && {fits}",
+            d = doc("DesignedMessage"),
+            fits = fits("DesignedMessage")
+        ),
+        WAIT,
+    );
+    browser.wait_for("the plain message in its frame", &fits("PlainMessage"), WAIT);
+    // nothing of the message ran or reached the network
+    browser.pump(Duration::from_millis(1500));
+    assert_eq!(browser.eval("window.__htmlViewRan === undefined"), true);
+    assert_eq!(
+        browser.eval(&format!("{}.getAttribute('sandbox')", frame("DesignedMessage"))),
+        "allow-same-origin allow-popups allow-popups-to-escape-sandbox"
+    );
+    let cleaned = browser.eval(&format!(
+        "(() => {{ const d = {}; return {{ scripts: d.querySelectorAll('script').length, handlers: d.querySelectorAll('[onerror]').length, \
+         forms: d.querySelectorAll('form, input, button').length, remote: d.querySelectorAll('img[src^=\"http\"]').length, \
+         blocked: d.querySelectorAll('.m-hv-blocked[title=\"Image hidden\"]').length, cid: d.querySelectorAll('img[src^=\"data:image/png\"]').length, \
+         bad: d.querySelectorAll('a[href^=\"javascript\"]').length, good: (d.querySelector('a[href=\"https://moqui.org/\"]') || {{}}).rel, \
+         target: (d.querySelector('a[href=\"https://moqui.org/\"]') || {{}}).target, fixed: d.querySelectorAll('[style*=\"fixed\"]').length, \
+         quote: !!d.querySelector('details.m-hv-quote:not([open]) > summary.m-hv-more'), \
+         policy: d.querySelector('meta[http-equiv=\"Content-Security-Policy\"]').content, \
+         fetched: {}.contentWindow.performance.getEntriesByType('resource').map((entry) => entry.name).filter((name) => name.indexOf('MoquiLogo') >= 0) }}; }})()",
+        doc("DesignedMessage"),
+        frame("DesignedMessage")
+    ));
+    assert_eq!(cleaned["scripts"], 0, "{cleaned}");
+    assert_eq!(cleaned["handlers"], 0, "{cleaned}");
+    assert_eq!(cleaned["forms"], 0, "{cleaned}");
+    assert_eq!(cleaned["remote"], 0, "{cleaned}");
+    assert_eq!(
+        cleaned["blocked"], 1,
+        "the remote picture is a placeholder, the pixel is gone: {cleaned}"
+    );
+    assert_eq!(cleaned["cid"], 1, "the cid: image from the host's file: {cleaned}");
+    assert_eq!(cleaned["bad"], 0, "{cleaned}");
+    assert_eq!(cleaned["good"], "noopener noreferrer", "{cleaned}");
+    assert_eq!(cleaned["target"], "_blank", "{cleaned}");
+    assert_eq!(cleaned["fixed"], 0, "{cleaned}");
+    assert_eq!(cleaned["quote"], true, "{cleaned}");
+    assert!(
+        cleaned["policy"].as_str().unwrap().contains("img-src data:;"),
+        "{cleaned}"
+    );
+    assert_eq!(
+        cleaned["fetched"],
+        serde_json::json!([]),
+        "no remote image was requested: {cleaned}"
+    );
+    assert_eq!(
+        browser.eval("document.querySelector('#DesignedMessage').dataset.blocked"),
+        "2",
+        "the picture and the banner's background"
+    );
+    assert_clean(&mut browser, "the designed message");
+
+    // the reply history opens with a click in the frame, and the frame grows to it
+    let closed = browser
+        .eval(&format!("{}.offsetHeight", frame("DesignedMessage")))
+        .as_f64()
+        .unwrap();
+    let point = browser.eval(&format!(
+        "(() => {{ const f = {}; f.scrollIntoView({{block: 'center'}}); const s = f.contentDocument.querySelector('summary.m-hv-more'); \
+         const a = f.getBoundingClientRect(), b = s.getBoundingClientRect(); return [a.left + b.left + b.width / 2, a.top + b.top + b.height / 2]; }})()",
+        frame("DesignedMessage")
+    ));
+    let (x, y) = (point[0].as_f64().unwrap(), point[1].as_f64().unwrap());
+    for kind in ["mouseMoved", "mousePressed", "mouseReleased"] {
+        browser.call(
+            "Input.dispatchMouseEvent",
+            serde_json::json!({"type": kind, "x": x, "y": y, "button": "left", "buttons": if kind == "mousePressed" { 1 } else { 0 }, "clickCount": 1}),
+        );
+    }
+    let height = format!("{}.offsetHeight", frame("DesignedMessage"));
+    browser.wait_for(
+        "the reply history open and the frame grown to it",
+        &format!(
+            "!!{}.querySelector('details.m-hv-quote[open]') && {height} > {closed} + 20 && {}",
+            doc("DesignedMessage"),
+            fits("DesignedMessage")
+        ),
+        WAIT,
+    );
+    assert_eq!(browser.eval("window.__htmlViewRan === undefined"), true);
+
+    // Show images: the remote picture loads, the bar is gone, the pixel and the banner's background too
+    browser.click(
+        "Show images",
+        "document.querySelector('#DesignedMessage .m-html-view-show')",
+    );
+    browser.wait_for(
+        "the remote picture loaded",
+        &format!(
+            "(() => {{ const img = {}.getElementById('remotePicture'); return !!img && img.complete && img.naturalWidth > 0; }})() \
+             && !document.querySelector('#DesignedMessage .m-html-view-images') && {}",
+            doc("DesignedMessage"),
+            fits("DesignedMessage")
+        ),
+        WAIT,
+    );
+    assert!(browser
+        .eval(&format!(
+            "{}.querySelector('meta[http-equiv=\"Content-Security-Policy\"]').content",
+            doc("DesignedMessage")
+        ))
+        .as_str()
+        .unwrap()
+        .contains("img-src data: https: http:"));
+    assert_eq!(browser.eval("window.__htmlViewRan === undefined"), true);
+    assert_clean(&mut browser, "the images shown");
+
+    // the plain message: escaped, its links, its quote collapsed
+    let plain = browser.eval(&format!(
+        "(() => {{ const d = {}; return {{ bold: d.querySelectorAll('b').length, text: d.querySelector('.m-hv-plain').textContent, \
+         links: Array.from(d.querySelectorAll('a')).map((a) => a.href), quote: !!d.querySelector('details.m-hv-quote > summary') }}; }})()",
+        doc("PlainMessage")
+    ));
+    assert_eq!(plain["bold"], 0, "{plain}");
+    assert!(
+        plain["text"].as_str().unwrap().contains("Use <b>plain</b> words"),
+        "{plain}"
+    );
+    assert_eq!(
+        plain["links"],
+        serde_json::json!([
+            "https://moqui.org/docs",
+            "mailto:ada@example.com",
+            "mailto:bob@example.com"
+        ]),
+        "{plain}"
+    );
+    assert_eq!(plain["quote"], true, "{plain}");
+
+    // dark mode: the plain message follows it, the designed one stays a light card
+    browser.eval("moqui.webrootVue.$q.dark.set(true), true");
+    browser.wait_for(
+        "the plain message in dark mode",
+        &format!(
+            "(() => {{ const d = {}; return !!d && !!d.body && getComputedStyle(d.body).color === 'rgb(227, 227, 227)'; }})() && {}",
+            doc("PlainMessage"),
+            fits("PlainMessage")
+        ),
+        WAIT,
+    );
+    browser.wait_for(
+        "the designed message a light card",
+        &format!(
+            "{}.classList.contains('m-html-view-card') && (() => {{ const d = {}; return !!d && !!d.documentElement && \
+             getComputedStyle(d.documentElement).backgroundColor === 'rgb(255, 255, 255)'; }})()",
+            frame("DesignedMessage"),
+            doc("DesignedMessage")
+        ),
+        WAIT,
+    );
+    assert_clean(&mut browser, "dark mode");
+
+    if let Some(dir) = std::env::var_os("MOQUI_SHELL_SHOTS") {
+        use base64::Engine as _;
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        for (width, height) in [(1280, 900), (390, 844)] {
+            browser.call(
+                "Emulation.setDeviceMetricsOverride",
+                serde_json::json!({"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 600}),
+            );
+            for dark in [false, true] {
+                browser.eval(&format!(
+                    "moqui.webrootVue.$q.dark.set({dark}), window.scrollTo(0, 0), true"
+                ));
+                browser.wait_for("the frames sized", &fits("DesignedMessage"), WAIT);
+                browser.pump(Duration::from_millis(800));
+                let shot = browser.call(
+                    "Page.captureScreenshot",
+                    serde_json::json!({"format": "png", "captureBeyondViewport": true}),
+                );
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(shot["data"].as_str().unwrap())
+                    .unwrap();
+                let mode = if dark { "dark" } else { "light" };
+                std::fs::write(dir.join(format!("html-view-{mode}-{width}.png")), bytes).unwrap();
+            }
+        }
+    }
+}

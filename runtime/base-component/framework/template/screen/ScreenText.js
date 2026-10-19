@@ -274,6 +274,12 @@ const $formList = (name, cols) => {
             return condition ? `if (${condition}) {\n${line}}\n` : line;
         }),
         "dashboard": stmt((node, children) => children),
+        // an html-view as its text: the text body, else the HTML's text
+        "html-view": stmt((node) => {
+            const line = `{ const $v = ${S.htmlViewTextExpr(node)}; if ($v) sri.write($v + "\\n"); }\n`;
+            const condition = attr(node, "condition");
+            return condition ? `if (${condition}) {\n${line}}\n` : line;
+        }),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

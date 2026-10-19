@@ -1100,6 +1100,32 @@ along with this software (see the LICENSE.md file). If not, see
     </xs:documentation></xs:annotation><xs:complexType>
         <xs:attributeGroup ref="AttlistRecordPanel"/>
     </xs:complexType></xs:element>
+    <xs:element name="html-view" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        An email or other untrusted HTML body (IronStone design-drawers-commons §12 reading pane, §19 m-html-view), shown
+        in a frame sandboxed without scripts: in qvt an m-html-view, which cleans the HTML with DOMPurify in the browser,
+        blocks remote images (with a Show images bar) unless allow-remote, shows cid: images from cid-map, collapses the
+        reply history at the end, opens links in a new window, follows dark mode and is as tall as its content; bound over
+        the screen's data in a server-static screen. In html the HTML cleaned on the server (the safe set) in a sandboxed
+        frame that loads no image but data:, or the text escaped. The text and print modes write the text (or the HTML's
+        text). The attributes may hold ${} expressions.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="id" type="xs:string"/>
+        <xs:attribute name="html" type="xs:string"><xs:annotation><xs:documentation>The HTML body, such as
+            ${emailMessage.body}. It is cleaned before it is shown; nothing in it runs.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="text" type="xs:string"><xs:annotation><xs:documentation>A text/plain body, shown when html is
+            empty: escaped, its addresses and URLs as links, the reply history collapsed.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="allow-remote" type="xs:string"><xs:annotation><xs:documentation>A condition: remote images show
+            at once (a trusted sender); otherwise they wait for Show images.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="cid-map" type="xs:string"><xs:annotation><xs:documentation>An expression of a Map from Content-ID
+            to an image URL of this server (or a data: URL), for the cid: images of the body.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="collapse-quotes" type="boolean" default="true"/>
+        <xs:attribute name="dark" default="auto"><xs:annotation><xs:documentation>auto follows the theme, on and off fix
+            it. A designed message (its own colors) stays a light card in dark mode.</xs:documentation></xs:annotation>
+            <xs:simpleType><xs:restriction base="xs:token"><xs:enumeration value="auto"/><xs:enumeration value="on"/>
+                <xs:enumeration value="off"/></xs:restriction></xs:simpleType></xs:attribute>
+        <xs:attribute name="condition" type="xs:string"/>
+        <xs:attribute name="style" type="xs:string"/>
+    </xs:complexType></xs:element>
 
     <!-- ================ Dashboards ================ -->
     <xs:element name="dashboard" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>

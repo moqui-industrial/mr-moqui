@@ -117,6 +117,7 @@ table.panel { border: 1px solid black; }
 .no-break { break-inside: avoid; page-break-inside: avoid; }
 a { color: blue; }
 .dashboard { margin: 4pt 0; }
+.html-view { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 6pt; }
 .number-card { display: inline-block; vertical-align: top; min-width: 90pt; margin: 0 6pt 6pt 0; padding: 4pt 6pt; border: thin solid #999999; break-inside: avoid; }
 .number-card-title { font-size: 7pt; text-transform: uppercase; letter-spacing: 0.5pt; }
 .number-card-value { font-size: 14pt; font-weight: bold; }
@@ -388,6 +389,12 @@ a { color: blue; }
         "label": labelMacro,
         "number-card": numberCardMacro,
         "dashboard": stmt((node, children) => `sri.write("<div class=\\"dashboard\\">");\n${children}sri.write("</div>\\n");\n`),
+        // an html-view printed as its text (no remote image is fetched for a print)
+        "html-view": stmt((node) => {
+            const line = `{ const $v = ${S.htmlViewTextExpr(node)}; if ($v) sri.write("<div class=\\"html-view\\">" + $e($v) + "</div>\\n"); }\n`;
+            const condition = attr(node, "condition");
+            return condition ? `if (${condition}) {\n${line}}\n` : line;
+        }),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

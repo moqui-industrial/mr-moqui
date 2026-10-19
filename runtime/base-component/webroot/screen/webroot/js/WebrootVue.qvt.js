@@ -3715,6 +3715,475 @@
         }
     });
 
+    /* ========== m-html-view: an email or HTML body in a sandboxed frame ========== */
+
+    // The pure part of m-html-view (IronStone design-drawers-commons §12 reading pane, §19), tested under Node with a small
+    // fake DOM (WebrootVue.qvt.htmlview.test.js). The body is cleaned with DOMPurify (libs/dompurify, loaded with the first
+    // view), then walked by process: images by imageSource (data: kept, cid: through the host's map, remote ones only when
+    // allowed, a placeholder otherwise, tracking pixels dropped), links by linkHref (http, https, mailto, tel; a new window
+    // with rel noopener noreferrer), the CSS of style attributes and style blocks by css (remote url() only when allowed,
+    // no @import, no expression() or behaviors, no fixed positions), and the reply history at the end (Gmail, Outlook,
+    // Apple Mail, Thunderbird and Yahoo markers, or a last blockquote) collapsed into a <details> behind a "..." summary,
+    // which opens without a script. srcdoc makes the frame's document with its content security policy: no script, no
+    // connection, images only data: (and http and https when remote images are allowed), styles inline.
+    const hvEscape = (text) => String(text === null || text === undefined ? "" : text).replace(/[&<>"']/g,
+        (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+    const HV_QUOTE_CLASSES = ["gmail_quote", "gmail_extra", "yahoo_quoted", "moz-cite-prefix", "protonmail_quote", "zmail_extra"];
+    const HV_RUN_IDS = ["divRplyFwdMsg", "appendonsend", "mail-editor-reference-message-container"];
+    const HV_ORIGINAL = /^\s*-{2,}\s*(Original Message|Forwarded message|Ursprüngliche Nachricht|Message d'origine)\s*-{2,}/i;
+    const HV_ATTRIBUTION = /^\s*(On\s.+\swrote:|Am\s.+\sschrieb.*:|Le\s.+\sa écrit\s*:|El\s.+\sescribió:)\s*$/i;
+    moqui.htmlView = {
+        // a Content-ID as a key of the host's map: without its angle brackets, lower case
+        cidKey(id) { return String(id || "").trim().replace(/^cid:/i, "").replace(/^<|>$/g, "").toLowerCase(); },
+        // where an image may come from: {src, remote, blocked}; src null drops it (a relative path, javascript:, file:)
+        imageSource(src, options) {
+            const opts = options || {};
+            const text = String(src || "").trim();
+            if (/^data:image\/(png|gif|jpe?g|webp|bmp|svg\+xml|x-icon|avif);/i.test(text)) return { src: text, remote: false, blocked: false };
+            if (/^cid:/i.test(text)) {
+                const map = opts.cidMap || {};
+                const found = map[moqui.htmlView.cidKey(text)];
+                return found ? { src: found, remote: false, blocked: false } : { src: null, remote: false, blocked: false };
+            }
+            const absolute = text.indexOf("//") === 0 ? "https:" + text : text;
+            if (/^https?:\/\//i.test(absolute)) return opts.allowRemote ? { src: absolute, remote: true, blocked: false } : { src: null, remote: true, blocked: true };
+            return { src: null, remote: false, blocked: false };
+        },
+        // a link the frame may open: http, https, mailto and tel, and an anchor in the message; null removes the link
+        linkHref(href) {
+            const text = String(href || "").trim();
+            if (!text) return null;
+            if (text.charAt(0) === "#") return text;
+            if (/^(https?:\/\/|mailto:|tel:)/i.test(text)) return text;
+            if (text.indexOf("//") === 0) return "https:" + text;
+            return null;
+        },
+        // CSS as the frame may use it: {css, blocked} with remote url() only when allowed (counted when not), no @import,
+        // no expression(), behavior or -moz-binding, no fixed positions; backslash escapes are read first, so none hides
+        // a url()
+        css(text, allowRemote) {
+            let blocked = 0;
+            let css = String(text || "").replace(/\\([0-9a-f]{1,6})\s?|\\(.)/gi, (whole, hex, ch) => {
+                if (ch !== undefined) return ch;
+                const point = parseInt(hex, 16);
+                return point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : "";
+            });
+            css = css.replace(/@import[^;]*;?/gi, "").replace(/expression\s*\(/gi, "(").replace(/(behavior|-moz-binding)\s*:[^;}]*/gi, "");
+            css = css.replace(/position\s*:\s*fixed/gi, "position:static");
+            css = css.replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, (whole, quote, target) => {
+                const url = target.trim();
+                if (/^data:/i.test(url) && !/^data:[^,]*(script|html)/i.test(url)) return whole;
+                if (/^(https?:)?\/\//i.test(url)) {
+                    if (allowRemote) return "url(" + quote + url + quote + ")";
+                    blocked++;
+                    return "none";
+                }
+                return "none";
+            });
+            return { css, blocked };
+        },
+        // a designed message (its own colors or backgrounds) keeps a light card in dark mode; a plain one follows the theme
+        isDesigned(html) {
+            return /\bbgcolor\s*=|\sbackground\s*=|background(-color|-image)?\s*:|(^|[\s;"'{])color\s*:|<font[^>]*\scolor\s*=/i.test(String(html || ""));
+        },
+        escape: hvEscape,
+        // text already escaped, with its addresses and URLs as links that open in a new window (a URL ends before a
+        // space, a quote or an angle bracket, and its trailing punctuation stays text)
+        autolink(escaped) {
+            return String(escaped || "").replace(/\b(?:https?:\/\/|www\.)(?:(?!&(?:quot|#39|lt|gt);)[^\s<>"'])+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, (whole) => {
+                let url = whole;
+                let tail = "";
+                const trailing = /[.,;:!?)\]}]+$/.exec(url);
+                if (trailing) { tail = trailing[0]; url = url.slice(0, -tail.length); }
+                if (!url) return whole;
+                const plainUrl = url.replace(/&amp;/g, "&");
+                const href = /^www\./i.test(plainUrl) ? "https://" + plainUrl : (/^https?:\/\//i.test(plainUrl) ? plainUrl : "mailto:" + plainUrl);
+                return '<a href="' + hvEscape(href) + '" target="_blank" rel="noopener noreferrer">' + url + "</a>" + tail;
+            });
+        },
+        // the index of the first line of the reply history at the end of a text (quoted lines, an attribution or an
+        // "Original Message" line before them), or -1
+        quoteStart(lines) {
+            for (let index = 0; index < lines.length; index++) if (HV_ORIGINAL.test(lines[index])) return index;
+            let end = lines.length - 1;
+            while (end >= 0 && !lines[end].trim()) end--;
+            if (end < 0 || !/^\s*>/.test(lines[end])) return -1;
+            let start = end;
+            while (start > 0 && (/^\s*>/.test(lines[start - 1]) || !lines[start - 1].trim())) start--;
+            while (start < end && !lines[start].trim()) start++;
+            let before = start - 1;
+            while (before >= 0 && !lines[before].trim()) before--;
+            if (before >= 0 && HV_ATTRIBUTION.test(lines[before])) start = before;
+            else if (before >= 1 && HV_ATTRIBUTION.test(lines[before - 1] + " " + lines[before])) start = before - 1;
+            return start;
+        },
+        summary() { return '<summary class="m-hv-more" title="Show trimmed content" aria-label="Show trimmed content">•••</summary>'; },
+        // a text/plain body as HTML: escaped, with links, the reply history at the end collapsed
+        textToHtml(text, collapseQuotes) {
+            const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+            const start = collapseQuotes === false ? -1 : moqui.htmlView.quoteStart(lines);
+            const block = (part) => moqui.htmlView.autolink(hvEscape(part.join("\n")));
+            if (start < 0) return '<div class="m-hv-plain">' + block(lines) + "</div>";
+            const shown = lines.slice(0, start);
+            while (shown.length && !shown[shown.length - 1].trim()) shown.pop();
+            return '<div class="m-hv-plain">' + block(shown) + "</div>" + '<details class="m-hv-quote">' + moqui.htmlView.summary() +
+                '<div class="m-hv-plain">' + block(lines.slice(start)) + "</div></details>";
+        },
+        // whether a node shows nothing: no text but spaces, no image (a tracking pixel aside)
+        isEmptyContent(node) {
+            if (!node) return true;
+            if (node.nodeType === 3) return !String(node.textContent || "").trim();
+            if (node.nodeType !== 1) return true;
+            if (String(node.textContent || "").trim()) return false;
+            const stack = [node];
+            while (stack.length) {
+                const el = stack.pop();
+                if (String(el.tagName || "").toLowerCase() === "img") {
+                    const width = parseInt(el.getAttribute("width") || "", 10), height = parseInt(el.getAttribute("height") || "", 10);
+                    if (!(width <= 2 && height <= 2)) return false;
+                }
+                for (const child of Array.from(el.childNodes || [])) if (child.nodeType === 1) stack.push(child);
+            }
+            return true;
+        },
+        // whether nothing shows after a node, up to the root
+        isTrailing(node, rootNode) {
+            let current = node;
+            while (current && current !== rootNode) {
+                for (let next = current.nextSibling; next; next = next.nextSibling) if (!moqui.htmlView.isEmptyContent(next)) return false;
+                current = current.parentNode;
+            }
+            return true;
+        },
+        // what kind of reply history an element starts: "element" (it is the quote), "run" (it and what follows), or null
+        quoteKind(el) {
+            if (!el || el.nodeType !== 1) return null;
+            const tag = String(el.tagName || "").toLowerCase();
+            const classes = String(el.getAttribute("class") || "").split(/\s+/);
+            const id = String(el.getAttribute("id") || "");
+            if (HV_RUN_IDS.indexOf(id) >= 0) return "run";
+            if (tag === "hr" && el.nextSibling && el.nextSibling.nodeType === 1 && HV_RUN_IDS.indexOf(String(el.nextSibling.getAttribute("id") || "")) >= 0) return "run";
+            if (tag === "blockquote" || classes.some((name) => HV_QUOTE_CLASSES.indexOf(name) >= 0)) return "element";
+            if ((tag === "div" || tag === "p") && HV_ORIGINAL.test(String(el.textContent || "")) && String(el.textContent || "").length < 2000) return "run";
+            return null;
+        },
+        // the reply history at the end of a cleaned body, wrapped in <details>; the count of blocks collapsed
+        collapse(rootNode, doc) {
+            const found = [];
+            const walk = (node) => {
+                for (const child of Array.from(node.childNodes || [])) {
+                    if (child.nodeType !== 1) continue;
+                    const kind = moqui.htmlView.quoteKind(child);
+                    if (kind) {
+                        found.push({ node: child, kind });
+                        // a run takes the siblings after it
+                        if (kind === "run") return;
+                        continue;
+                    }
+                    walk(child);
+                }
+            };
+            walk(rootNode);
+            let count = 0;
+            for (const item of found) {
+                const parent = item.node.parentNode;
+                if (!parent) continue;
+                const nodes = [item.node];
+                if (item.kind === "run") for (let next = item.node.nextSibling; next; next = next.nextSibling) nodes.push(next);
+                if (!moqui.htmlView.isTrailing(nodes[nodes.length - 1], rootNode)) continue;
+                const details = doc.createElement("details");
+                details.setAttribute("class", "m-hv-quote");
+                const summary = doc.createElement("summary");
+                summary.setAttribute("class", "m-hv-more");
+                summary.setAttribute("title", "Show trimmed content");
+                summary.setAttribute("aria-label", "Show trimmed content");
+                summary.textContent = "•••";
+                details.appendChild(summary);
+                parent.insertBefore(details, item.node);
+                for (const node of nodes) details.appendChild(node);
+                count++;
+            }
+            return count;
+        },
+        // the cleaned body made safe for the frame: images, links, style attributes and the reply history; {blocked}
+        process(rootNode, doc, options) {
+            const opts = options || {};
+            let blocked = 0;
+            const elements = [];
+            const gather = (node) => {
+                for (const child of Array.from(node.childNodes || [])) if (child.nodeType === 1) { elements.push(child); gather(child); }
+            };
+            gather(rootNode);
+            const size = (el, name) => {
+                const value = parseInt(el.getAttribute(name) || "", 10);
+                if (!isNaN(value)) return value;
+                const style = /(?:^|;)\s*NAME\s*:\s*(\d+)px/i.source.replace("NAME", name);
+                const match = new RegExp(style, "i").exec(String(el.getAttribute("style") || ""));
+                return match ? parseInt(match[1], 10) : null;
+            };
+            for (const el of elements) {
+                const tag = String(el.tagName || "").toLowerCase();
+                if (el.getAttribute("style") !== null && el.getAttribute("style") !== undefined) {
+                    const cleaned = moqui.htmlView.css(el.getAttribute("style"), opts.allowRemote);
+                    blocked += cleaned.blocked;
+                    el.setAttribute("style", cleaned.css);
+                }
+                const background = el.getAttribute("background");
+                if (background !== null && background !== undefined) {
+                    const source = moqui.htmlView.imageSource(background, opts);
+                    if (source.blocked) blocked++;
+                    if (source.src) el.setAttribute("background", source.src); else el.removeAttribute("background");
+                }
+                if (tag === "img") {
+                    const source = moqui.htmlView.imageSource(el.getAttribute("src"), opts);
+                    const width = size(el, "width"), height = size(el, "height");
+                    const pixel = width !== null && height !== null && width <= 2 && height <= 2;
+                    if (source.src) { el.setAttribute("src", source.src); continue; }
+                    if (source.blocked && !pixel) blocked++;
+                    // a pixel, or an image with nothing to show and nothing to say, is left out
+                    if (pixel || !el.parentNode || (!source.blocked && !el.getAttribute("alt"))) { if (el.parentNode) el.parentNode.removeChild(el); continue; }
+                    const holder = doc.createElement("span");
+                    holder.setAttribute("class", "m-hv-blocked");
+                    holder.setAttribute("title", source.blocked ? "Image hidden" : "Image not available");
+                    const dims = [];
+                    if (width) dims.push("width:" + Math.min(width, 2000) + "px");
+                    if (height) dims.push("height:" + Math.min(height, 2000) + "px");
+                    if (dims.length) holder.setAttribute("style", dims.join(";"));
+                    holder.textContent = el.getAttribute("alt") || "";
+                    el.parentNode.replaceChild(holder, el);
+                    continue;
+                }
+                if (tag === "a" || tag === "area") {
+                    const href = moqui.htmlView.linkHref(el.getAttribute("href"));
+                    if (href === null) el.removeAttribute("href");
+                    else {
+                        el.setAttribute("href", href);
+                        if (href.charAt(0) !== "#") { el.setAttribute("target", "_blank"); el.setAttribute("rel", "noopener noreferrer"); }
+                    }
+                } else if (el.getAttribute("target") !== null && el.getAttribute("target") !== undefined) {
+                    el.removeAttribute("target");
+                }
+            }
+            const collapsed = opts.collapseQuotes === false ? 0 : moqui.htmlView.collapse(rootNode, doc);
+            return { blocked, collapsed };
+        },
+        // DOMPurify's options: HTML only (no SVG or MathML), no forms, frames, plugins, media, scripts or document-level
+        // elements, no srcset, poster or ping (which reach the network on their own), no data- attributes of the sender
+        purifyOptions: {
+            USE_PROFILES: { html: true }, RETURN_DOM: true, FORCE_BODY: true, ALLOW_DATA_ATTR: false,
+            FORBID_TAGS: ["style", "form", "input", "button", "select", "option", "optgroup", "textarea", "iframe", "frame", "frameset",
+                "object", "embed", "applet", "base", "link", "meta", "audio", "video", "source", "track", "script", "noscript", "template",
+                "dialog", "portal", "title"],
+            FORBID_ATTR: ["srcset", "poster", "ping", "formaction", "action", "autofocus", "srcdoc"]
+        },
+        // the style blocks of an HTML message (the head's included), as one cleaned CSS text, and the rest of it
+        splitStyles(html, allowRemote) {
+            let blocked = 0;
+            const parts = [];
+            const rest = String(html || "").replace(/<style[^>]*>([\s\S]*?)<\/style\s*>/gi, (whole, css) => {
+                const cleaned = moqui.htmlView.css(css, allowRemote);
+                blocked += cleaned.blocked;
+                parts.push(cleaned.css.replace(/<\/?style/gi, ""));
+                return "";
+            });
+            return { css: parts.join("\n"), html: rest, blocked };
+        },
+        // an HTML message cleaned for the frame (a browser, DOMPurify loaded): {content, css, blocked, designed}
+        sanitize(html, purify, options) {
+            const opts = options || {};
+            const styles = moqui.htmlView.splitStyles(html, opts.allowRemote);
+            const body = purify.sanitize(styles.html, moqui.htmlView.purifyOptions);
+            const done = moqui.htmlView.process(body, body.ownerDocument, opts);
+            return { content: body.innerHTML, css: styles.css, blocked: styles.blocked + done.blocked, designed: moqui.htmlView.isDesigned(html) };
+        },
+        // the frame's content security policy: nothing but inline styles and images (data:, and http and https when
+        // remote images are allowed), no script, connection, form, frame or base
+        csp(allowRemote) {
+            const images = allowRemote ? "data: https: http:" : "data:";
+            return "default-src 'none'; img-src " + images + "; style-src 'unsafe-inline'; font-src " + images +
+                "; base-uri 'none'; form-action 'none'; frame-src 'none'";
+        },
+        // the frame's document: its policy, no referrer, the theme (dark for a plain message in dark mode, a light card
+        // for a designed one), the message's own styles, then the content in #m-hv-root, which the host measures
+        srcdoc(parts) {
+            const p = parts || {};
+            const dark = !!p.dark && !p.designed;
+            const font = p.font || "Roboto, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif";
+            const base = [
+                ":root { color-scheme: " + (dark ? "dark" : "light") + "; }",
+                "html, body { margin: 0; padding: 0; overflow: hidden; background: " + (p.designed && p.dark ? "#ffffff" : "transparent") + "; }",
+                "body { font-family: " + font + "; font-size: " + (p.fontSize || "14px") + "; line-height: 1.5; color: " +
+                    (dark ? "#e3e3e3" : "#1f1f1f") + "; overflow-wrap: anywhere; }",
+                "#m-hv-root { display: flow-root; overflow-x: auto; padding: " + (p.designed && p.dark ? "12px" : "0") + "; }",
+                "img { max-width: 100%; }",
+                "a[href] { color: " + (dark ? "#8ab4f8" : "#1a73e8") + "; }",
+                "a:not([href]) { color: inherit; text-decoration: none; }",
+                ".m-hv-plain { white-space: pre-wrap; font-family: inherit; }",
+                "blockquote { margin: 0 0 0 .8ex; padding-left: 1ex; border-left: 2px solid " + (dark ? "#5f6368" : "#dadce0") + "; }",
+                "details.m-hv-quote { margin: 8px 0 0; }",
+                "summary.m-hv-more { display: inline-block; list-style: none; cursor: pointer; padding: 0 8px; line-height: 14px; font-size: 11px;" +
+                    " letter-spacing: 1px; border-radius: 7px; color: " + (dark ? "#e3e3e3" : "#3c4043") + "; background: " + (dark ? "#3c4043" : "#e8eaed") + "; }",
+                "summary.m-hv-more::-webkit-details-marker { display: none; }",
+                "details.m-hv-quote[open] > summary.m-hv-more { margin-bottom: 6px; }",
+                ".m-hv-blocked { display: inline-block; vertical-align: middle; max-width: 100%; min-width: 16px; min-height: 16px; overflow: hidden;" +
+                    " box-sizing: border-box; font-size: 11px; color: #80868b; background: " + (dark ? "#2d2e30" : "#f1f3f4") + "; border: 1px dashed #bdc1c6; }"
+            ].join("\n");
+            return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+                "<meta http-equiv=\"Content-Security-Policy\" content=\"" + hvEscape(moqui.htmlView.csp(!!p.allowRemote)) + "\">" +
+                "<meta name=\"referrer\" content=\"no-referrer\">" +
+                "<style>" + base + "</style>" + (p.css ? "<style>" + String(p.css).replace(/<\/?style/gi, "") + "</style>" : "") +
+                "</head><body><div id=\"m-hv-root\">" + (p.content || "") + "</div></body></html>";
+        }
+    };
+
+    // The host's cid: images as data: URLs, as the frame shows no other: a data: URL as it is, a URL of this origin
+    // fetched with the session (once per page for each, at most 5 MB), anything else left out.
+    const hvCidCache = new moqui.LruMap(50);
+    const hvCidData = (map) => {
+        const out = {};
+        const pending = [];
+        for (const key of Object.keys(map || {})) {
+            const url = String(map[key] || "");
+            const id = moqui.htmlView.cidKey(key);
+            if (!url || !id) continue;
+            if (/^data:image\//i.test(url)) { out[id] = url; continue; }
+            let absolute;
+            try { absolute = new root.URL(url, root.location.href); } catch (err) { continue; }
+            if (absolute.origin !== root.location.origin) continue;
+            let loading = hvCidCache.get(absolute.href);
+            if (!loading) {
+                loading = root.fetch(absolute.href, { credentials: "same-origin" }).then((response) => {
+                    if (!response.ok) throw new Error("status " + response.status);
+                    return response.blob();
+                }).then((blob) => new Promise((resolve, reject) => {
+                    if (blob.size > 5 * 1024 * 1024 || !/^image\//.test(blob.type)) { resolve(null); return; }
+                    const reader = new root.FileReader();
+                    reader.onload = () => resolve(String(reader.result));
+                    reader.onerror = () => reject(reader.error);
+                    reader.readAsDataURL(blob);
+                }));
+                hvCidCache.put(absolute.href, loading);
+            }
+            pending.push(loading.then((data) => { if (data) out[id] = data; }, (err) => {
+                hvCidCache.remove(absolute.href);
+                console.info("m-html-view: the inline image " + key + " did not load: " + err);
+            }));
+        }
+        return Promise.all(pending).then(() => out);
+    };
+
+    // An email or HTML body (design §12 reading pane): html (or text, a text/plain body), cleaned and shown in a frame
+    // sandboxed without scripts (allow-same-origin, so the host measures it, and allow-popups-to-escape-sandbox, so its
+    // links open in a normal window). Remote images are hidden until "Show images" (the show-images event) or allow-remote
+    // (a trusted sender); remote-images says how many were hidden. cid-map is {contentId: url} for the inline images.
+    // The reply history at the end is collapsed (collapse-quotes). dark is auto (the theme), on or off. The frame is as
+    // tall as its content.
+    component("m-html-view", {
+        name: "mHtmlView",
+        props: { html: String, text: String, allowRemote: Boolean, cidMap: Object, collapseQuotes: { type: Boolean, default: true },
+            imagesBar: { type: Boolean, default: true }, dark: { type: String, default: "auto" }, title: { type: String, default: "Message" } },
+        emits: ["remote-images", "show-images", "loaded"],
+        data() { return { showRemote: false, srcdoc: "", blocked: 0, designed: false, state: "loading", height: 0 }; },
+        computed: {
+            remoteAllowed() { return this.allowRemote || this.showRemote; },
+            isDark() {
+                if (this.dark === "on") return true;
+                if (this.dark === "off") return false;
+                return !!(this.$q && this.$q.dark && this.$q.dark.isActive);
+            },
+            source() { return [this.html || "", this.text || "", this.remoteAllowed, this.isDark, this.collapseQuotes, JSON.stringify(this.cidMap || {})]; },
+            frameStyle() {
+                return { height: (this.height || 24) + "px", colorScheme: this.isDark && !this.designed ? "dark" : "light" };
+            }
+        },
+        template:
+            '<div class="m-html-view" :data-state="state" :data-blocked="blocked">' +
+                '<div v-if="blocked && !remoteAllowed && imagesBar" class="m-html-view-images row items-center no-wrap">' +
+                    '<q-icon name="sym_o_hide_image" size="xs" class="q-mr-sm"></q-icon>' +
+                    '<span class="col m-muted">{{t("Images from this sender are hidden")}}</span>' +
+                    '<q-btn flat dense no-caps color="primary" class="m-html-view-show" :label="t(\'Show images\')" @click="showImages"></q-btn>' +
+                '</div>' +
+                '<iframe ref="frame" class="m-html-view-frame" :class="{\'m-html-view-card\': designed && isDark}" :title="title"' +
+                    ' sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"' +
+                    ' :srcdoc="srcdoc" :style="frameStyle" @load="onLoad"></iframe>' +
+            '</div>',
+        watch: { source() { this.render(); } },
+        mounted() {
+            this.renderCount = 0;
+            if (root.ResizeObserver) {
+                this.widthObserver = new root.ResizeObserver(() => this.measure());
+                this.widthObserver.observe(this.$el);
+            }
+            this.render();
+        },
+        beforeUnmount() {
+            if (this.widthObserver) this.widthObserver.disconnect();
+            if (this.contentObserver) this.contentObserver.disconnect();
+            if (this.timers) this.timers.forEach((timer) => root.clearTimeout(timer));
+        },
+        methods: {
+            t(text) { return moqui.l10n && moqui.l10n.localize ? moqui.l10n.localize(text) : text; },
+            render() {
+                const count = ++this.renderCount;
+                const hv = moqui.htmlView;
+                const host = this.$el && root.getComputedStyle ? root.getComputedStyle(this.$el) : null;
+                const look = { dark: this.isDark, allowRemote: this.remoteAllowed, font: host ? host.fontFamily : null, fontSize: host ? host.fontSize : null };
+                const finish = (built) => {
+                    if (count !== this.renderCount) return;
+                    this.designed = !!built.designed;
+                    this.blocked = built.blocked || 0;
+                    this.srcdoc = hv.srcdoc(Object.assign({}, look, built));
+                    this.$emit("remote-images", this.remoteAllowed ? 0 : this.blocked);
+                };
+                const plain = (text) => ({ content: hv.textToHtml(text, this.collapseQuotes), css: "", blocked: 0, designed: false });
+                if (!this.html) { this.state = "ready"; finish(plain(this.text || "")); return; }
+                Promise.all([moqui.loadScript("/libs/dompurify/purify.min.js", null, () => !!root.DOMPurify), hvCidData(this.cidMap)]).then(([, cids]) => {
+                    if (count !== this.renderCount) return;
+                    this.state = "ready";
+                    finish(hv.sanitize(this.html, root.DOMPurify, { allowRemote: this.remoteAllowed, cidMap: cids, collapseQuotes: this.collapseQuotes }));
+                }).catch((err) => {
+                    if (count !== this.renderCount) return;
+                    // without the cleaner the message is its text: the text body, or the HTML's text read without running it
+                    console.info("m-html-view: showing the text of the message: " + err);
+                    this.state = "failed";
+                    let text = this.text;
+                    if (!text && root.DOMParser) text = new root.DOMParser().parseFromString(String(this.html), "text/html").body.textContent;
+                    finish(plain(text || ""));
+                });
+            },
+            showImages() { this.showRemote = true; this.$emit("show-images"); },
+            // the height of the content: #m-hv-root's box, measured from here (no script runs in the frame), again when
+            // the frame's width or content changes, an image loads or a quote opens
+            measure() {
+                const frame = this.$refs.frame;
+                let doc = null;
+                try { doc = frame ? frame.contentDocument : null; } catch (err) { doc = null; }
+                const box = doc ? doc.getElementById("m-hv-root") : null;
+                if (!box) return;
+                const height = Math.max(Math.ceil(box.getBoundingClientRect().height), 16);
+                if (height !== this.height) this.height = height;
+            },
+            onLoad() {
+                const frame = this.$refs.frame;
+                let doc = null;
+                try { doc = frame ? frame.contentDocument : null; } catch (err) { doc = null; }
+                if (!doc || !doc.getElementById("m-hv-root")) return;
+                this.measure();
+                if (this.contentObserver) this.contentObserver.disconnect();
+                if (root.ResizeObserver) {
+                    this.contentObserver = new root.ResizeObserver(() => this.measure());
+                    this.contentObserver.observe(doc.getElementById("m-hv-root"));
+                }
+                const again = () => this.measure();
+                doc.addEventListener("toggle", again, true);
+                doc.addEventListener("load", again, true);
+                if (this.timers) this.timers.forEach((timer) => root.clearTimeout(timer));
+                this.timers = [100, 400, 1500].map((delay) => root.setTimeout(again, delay));
+                this.$emit("loaded", { height: this.height, blocked: this.blocked });
+            }
+        }
+    });
+
     /* ========== the suite shell: palette, keys, tray and quick create ========== */
 
     // The pure part of the palette (IronStone design-drawers-commons §1.5), tested under Node: the prefix of the text, the

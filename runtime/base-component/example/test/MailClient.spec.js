@@ -30,6 +30,14 @@ const message = (id, kind, offset, fields) => {
     row.create()
 }
 
+// the search index has an account's messages now, rather than when the data feed's worker gets to them
+const indexMail = (accountIds) => {
+    if (!ec.search.isAvailable()) return false
+    ec.search.ensureIndex({ documentType: "MoquiEmailMessage" })
+    for (const id of accountIds) ec.search.indexDocuments(ec.entity.getDataDocuments("MoquiEmailMessage", { emailAccountId: id }))
+    return true
+}
+
 spec({
     setup() { ec.artifactExecution.disableAuthz() },
     cleanup() { ec.artifactExecution.enableAuthz() },
@@ -50,6 +58,7 @@ feature("an account with its folders, and the message list in threads with its c
         message("MCM4", "EfkInbox", 40, { snoozedThruDate: new Date(Date.now() + 86400000) })
         message("MCM5", "EfkTrash", 50)
         message("MCM6", null, 60, { statusId: "ES_SCHEDULED", scheduledSendDate: new Date(Date.now() + 86400000), isRead: "Y" })
+        indexMail([accountId])
         const inbox = mail("find#Messages")
         const page = mail("find#Messages", { pageSize: 1 })
         const next = mail("find#Messages", { pageSize: 1, beforeDate: page.nextBeforeDate })
@@ -287,5 +296,65 @@ feature("an import, rules, the remote change queue and a sync whose server is no
         account.syncLockedUntil == null
         due.failedCount >= 0
         stillQueued == 1
+    },
+})
+
+// The search document on the real database (data/MailSearchData.xml): the free text of the search line is searched in the
+// MoquiEmailMessage index of the search backend (Postgres here), every word somewhere in the message, the last one as a
+// prefix, a "phrase" as it is and a -word out; the operators are conditions; and only the accounts the user reaches are
+// searched, so another user's mail with the same words is never found. A message deleted forever leaves the index.
+feature("the search line through the search index, only in the user's own accounts", {
+    when() {
+        ec.user.internalLoginUser("mailClientStranger")
+        const strangerAccount = mail("create#EmailAccount", { emailAddress: "stranger@example.com", smtpHost: "127.0.0.1", smtpPort: "1" }).emailAccountId
+        ec.user.internalLoginUser("mailClientOwner")
+        const own = mail("create#EmailAccount", { emailAddress: "owner@example.com", smtpHost: "127.0.0.1", smtpPort: "1" }).emailAccountId
+        const save = (id, account, fields) => {
+            const folder = ec.entity.find("moqui.basic.email.EmailFolder").condition("emailAccountId", account)
+                .condition("folderKindEnumId", "EfkInbox").one()
+            const row = ec.entity.makeValue("moqui.basic.email.EmailMessage")
+            row.setFields(Object.assign({ emailMessageId: id, emailAccountId: account, emailFolderId: folder.emailFolderId, statusId: "ES_RECEIVED",
+                toAddresses: "owner@example.com", messageDate: new Date(), isRead: "N" }, fields), true, null, null)
+            row.create()
+        }
+        save("MCS1", own, { subject: "Quarterly zeppelin forecast", bodyText: "The numbers for the airship fleet", fromAddress: "ada@math.example.com",
+            fromName: "Ada Lovelace", messageDate: new Date(Date.now() - 3000) })
+        save("MCS2", own, { subject: "Lunch", bodyText: "Zeppelins are late again", fromAddress: "bob@example.com", messageDate: new Date(Date.now() - 2000) })
+        save("MCS3", own, { subject: "Hangar plans", bodyText: "Airship hangar", fromAddress: "carol@example.com", hasAttachment: "Y",
+            messageDate: new Date(Date.now() - 1000) })
+        save("MCS4", strangerAccount, { subject: "Zeppelin secrets", bodyText: "Zeppelin airship numbers", fromAddress: "spy@example.com" })
+        const indexed = indexMail([own, strangerAccount])
+        const find = (text) => mail("find#Messages", { view: "all", threadMode: false, searchText: text })
+        const ids = (out) => out.threadList.map((row) => row.emailMessageId)
+        const zeppelin = find("zeppelin")
+        const results = { indexed, mode: zeppelin.searchMode, zeppelin: ids(zeppelin), prefix: ids(find("zepp")), both: ids(find("airship numbers")),
+            phrase: ids(find('"airship fleet"')), excluded: ids(find("airship -hangar")), from: ids(find("from:ada airship")),
+            attachment: ids(find("airship has:attachment")), byName: ids(find("lovelace")) }
+        // a message deleted forever leaves the index
+        mail("trash#Messages", { emailMessageId: "MCS2" })
+        mail("trash#Messages", { emailMessageId: "MCS2", deleteForever: true })
+        ec.search.processFeedPending()
+        results.deletedDocument = ec.search.getDocument("MoquiEmailMessage", "MCS2")
+        results.keptDocument = ec.search.getDocument("MoquiEmailMessage", "MCS1")
+        // the stranger finds only theirs
+        ec.user.internalLoginUser("mailClientStranger")
+        results.stranger = ids(find("zeppelin"))
+        ec.user.internalLoginUser("mailClientOwner")
+        return results
+    },
+    then(results) {
+        results.indexed == true
+        results.mode == "index"
+        results.zeppelin == ["MCS2", "MCS1"]
+        results.prefix == ["MCS2", "MCS1"]
+        results.both == ["MCS1"]
+        results.phrase == ["MCS1"]
+        results.excluded == ["MCS1"]
+        results.from == ["MCS1"]
+        results.attachment == ["MCS3"]
+        results.byName == ["MCS1"]
+        results.deletedDocument == null
+        results.keptDocument != null
+        results.stranger == ["MCS4"]
     },
 })

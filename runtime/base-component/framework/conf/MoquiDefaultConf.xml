@@ -806,6 +806,7 @@
         <load-data location="component://framework/data/LlmTypeData.xml"/>
         <load-data location="component://framework/data/UnitData.xml"/>
         <load-data location="component://framework/data/MoquiSetupData.xml"/>
+        <load-data location="component://framework/data/MailSearchData.xml"/>
         <load-data location="component://framework/data/SftpDemoData.xml"/>
     </entity-facade>
     <database-list>

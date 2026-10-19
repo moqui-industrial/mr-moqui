@@ -252,6 +252,51 @@ fn the_record_panels_and_the_rich_text_editors() {
     }
 }
 
+/// `html-view` is an m-html-view with the HTML and text as attribute values (so `{{` in a message is never compiled), the
+/// allow-remote condition and the cid map bound; a false condition writes nothing. The html mode cleans the HTML on the
+/// server into a frame sandboxed without scripts whose policy loads only data: images; the text modes write its text.
+#[test]
+fn the_html_view_element() {
+    let out = check("htmlview", &[]);
+    for expected in [
+        r#"<m-html-view id="Body" html="&lt;p&gt;Hi {{ada}} &lt;b&gt;there&lt;/b&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;img src=&quot;cid:logo@x&quot;&gt;&lt;/p&gt;" :allow-remote="true" :cid-map="{'logo@x':'/apps/mail/attachment?id=7'}" class="q-mt-sm"></m-html-view>"#,
+        r#"<m-html-view text="Plain {{text}} &amp; more" :collapse-quotes="false" dark="off"></m-html-view>"#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    assert_eq!(out.matches("<m-html-view").count(), 2, "{out}");
+    let render = |mode: &str| {
+        let context = ExecutionContextFactory::test_context();
+        let output = make_render(context.factory())
+            .root_screen(render_dir().join("htmlview.xml").to_string_lossy().into_owned())
+            .screen_path("")
+            .render_mode(mode)
+            .render()
+            .unwrap_or_else(|err| panic!("{mode}: {err}"));
+        output.body_text()
+    };
+    let html = render("html");
+    assert_eq!(html.matches("<iframe").count(), 2, "{html}");
+    assert!(
+        html.contains(r#"sandbox="allow-popups allow-popups-to-escape-sandbox""#),
+        "{html}"
+    );
+    assert!(
+        !html.contains("allow-scripts") && !html.contains("allow-same-origin"),
+        "{html}"
+    );
+    assert!(html.contains("img-src data:;"), "{html}");
+    assert!(
+        !html.to_lowercase().contains("&lt;script"),
+        "the cleaned body has no script: {html}"
+    );
+    assert!(html.contains("Hi {{ada}}"), "{html}");
+    let text = render("text");
+    assert!(text.contains("Hi {{ada}} there"), "{text}");
+    assert!(text.contains("Plain {{text}} & more"), "{text}");
+    assert!(!text.contains("alert(1)") || !text.contains("<script"), "{text}");
+}
+
 #[test]
 fn form_lists() {
     let out = check("lists", &[]);

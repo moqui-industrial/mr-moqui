@@ -1590,8 +1590,14 @@ fn fake_smtp() -> u16 {
     port
 }
 
-/// A scripted IMAP server: greeting, LOGIN, LIST with special-use attributes, LOGOUT. Returns its port.
+/// A scripted IMAP server: greeting, CAPABILITY, LOGIN, LIST with special-use attributes, LOGOUT. Returns its port.
 fn fake_imap() -> u16 {
+    fake_imap_with(false, std::sync::Arc::new(std::sync::Mutex::new(Vec::new())))
+}
+
+/// [`fake_imap`], offering STARTTLS when `starttls` (and closing after its OK, so the TLS handshake fails); every
+/// command it gets goes into `log`.
+fn fake_imap_with(starttls: bool, log: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -1604,7 +1610,16 @@ fn fake_imap() -> u16 {
             let mut parts = line.trim_end().splitn(3, ' ');
             let tag = parts.next().unwrap_or("*").to_string();
             let command = parts.next().unwrap_or("").to_ascii_uppercase();
+            log.lock().unwrap().push(command.clone());
             let reply = match command.as_str() {
+                "CAPABILITY" if starttls => {
+                    format!("* CAPABILITY IMAP4rev1 STARTTLS LOGINDISABLED\r\n{tag} OK CAPABILITY completed\r\n")
+                }
+                "CAPABILITY" => format!("* CAPABILITY IMAP4rev1\r\n{tag} OK CAPABILITY completed\r\n"),
+                "STARTTLS" => {
+                    let _ = writer.write_all(format!("{tag} OK Begin TLS negotiation now\r\n").as_bytes());
+                    break;
+                }
                 "LOGIN" => format!("{tag} OK LOGIN completed\r\n"),
                 "LIST" => format!(
                     concat!(
@@ -1728,4 +1743,617 @@ fn test_email_account_against_local_servers() {
         &[("emailAccountId", text(&account))],
         "You may not test",
     );
+
+    // a plain IMAP port whose server offers STARTTLS: the test upgrades to TLS as the sync does, and never signs in in
+    // plain text (here the TLS handshake fails, since the scripted server has no TLS)
+    login("alice");
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let secure = fake_imap_with(true, log.clone());
+    ok(
+        "update#EmailAccount",
+        &[
+            ("emailAccountId", text(&account)),
+            ("storePort", text(&secure.to_string())),
+        ],
+    );
+    let upgraded = ok(
+        "test#EmailAccount",
+        &[("emailAccountId", text(&account)), ("testSmtp", Value::Bool(false))],
+    );
+    let steps = maps(&upgraded, "stepList");
+    assert_eq!(field(&steps[0], "step"), "storeLogin", "{steps:?}");
+    assert_eq!(field(&steps[0], "ok"), "false", "{steps:?}");
+    let commands = log.lock().unwrap().clone();
+    assert!(commands.contains(&"STARTTLS".to_string()), "{commands:?}");
+    assert!(!commands.contains(&"LOGIN".to_string()), "{commands:?}");
+}
+
+/// Message ids of a find#Messages answer listed by message, for a search line in a view.
+fn searched(view: &str, search_text: &str) -> Vec<String> {
+    let mut parameters = vec![("threadMode", Value::Bool(false)), ("searchText", text(search_text))];
+    if !view.is_empty() {
+        parameters.push(("view", text(view)));
+    }
+    message_ids(&ok("find#Messages", &parameters))
+}
+
+/// The search line without the search index (no backend here): Gmail's operators as conditions, in: as the view or
+/// a folder by name, the free text as words that must each be somewhere (a phrase as it is, -words out), the errors
+/// for a value that is not understood, and only the mail of the accounts the user reaches.
+#[test]
+fn the_search_line_operators_and_free_text_without_the_index() {
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    let account = shared_account(&facade, "smtp.example.com");
+    let day = |days: i64| now() - days * DAY;
+    message(
+        &facade,
+        &account,
+        "S1",
+        "EfkInbox",
+        day(9),
+        &[
+            ("fromAddress", text("ada@math.example.com")),
+            ("fromName", text("Ada Lovelace")),
+            ("subject", text("Weekly report")),
+            ("body", text("<p>Numbers for the engine</p>")),
+            ("bodyText", text("Numbers for the engine")),
+            ("messageSize", Value::I64(1_000)),
+        ],
+    );
+    message(
+        &facade,
+        &account,
+        "S2",
+        "EfkInbox",
+        day(8),
+        &[
+            ("fromAddress", text("bob@builder.example.com")),
+            ("subject", text("Invoice 77")),
+            ("ccAddresses", text("Ada <ada@math.example.com>")),
+            ("hasAttachment", text("Y")),
+            ("isFlagged", text("Y")),
+            ("isRead", text("Y")),
+            ("messageSize", Value::I64(200_000)),
+        ],
+    );
+    message(
+        &facade,
+        &account,
+        "S3",
+        "EfkSent",
+        day(5),
+        &[
+            ("statusId", text("ES_SENT")),
+            ("fromAddress", text("team@example.com")),
+            ("toAddresses", text("carol@example.com")),
+            ("subject", text("Re: weekly report")),
+            ("isRead", text("Y")),
+        ],
+    );
+    message(
+        &facade,
+        &account,
+        "S4",
+        "EfkInbox",
+        day(3),
+        &[
+            ("fromAddress", text("noreply@news.example.com")),
+            ("subject", text("News")),
+            ("body", text("<p>Engine news</p>")),
+        ],
+    );
+    let projects = out_text(
+        &ok(
+            "create#EmailFolder",
+            &[("emailAccountId", text(&account)), ("folderName", text("Projects"))],
+        ),
+        "emailFolderId",
+    );
+    message(
+        &facade,
+        &account,
+        "S5",
+        "",
+        day(12),
+        &[("emailFolderId", text(&projects)), ("subject", text("Engine plans"))],
+    );
+    message(
+        &facade,
+        &account,
+        "S6",
+        "EfkTrash",
+        day(1),
+        &[("subject", text("Engine in the trash"))],
+    );
+    row(
+        &facade,
+        "moqui.basic.email.EmailLabel",
+        &[
+            ("emailLabelId", text("SL1")),
+            ("emailAccountId", text(&account)),
+            ("labelName", text("News letters")),
+        ],
+    );
+    row(
+        &facade,
+        "moqui.basic.email.EmailMessageLabel",
+        &[("emailMessageId", text("S4")), ("emailLabelId", text("SL1"))],
+    );
+    row(
+        &facade,
+        "moqui.basic.email.EmailMessageAttachment",
+        &[
+            ("emailMessageAttachmentId", text("SA1")),
+            ("emailMessageId", text("S2")),
+            ("fileName", text("invoice-77.pdf")),
+        ],
+    );
+
+    // the free text: each word somewhere, a phrase as it is, a -word out; LIKE, as no search index is configured
+    let out = ok(
+        "find#Messages",
+        &[
+            ("view", text("all")),
+            ("threadMode", Value::Bool(false)),
+            ("searchText", text("engine")),
+        ],
+    );
+    assert_eq!(out_text(&out, "searchMode"), "text");
+    assert_eq!(message_ids(&out), ["S4", "S1", "S5"]);
+    assert_eq!(searched("all", "engine numbers"), ["S1"]);
+    assert_eq!(searched("all", "\"weekly report\""), ["S3", "S1"]);
+    assert_eq!(searched("all", "engine -news"), ["S1", "S5"]);
+    assert_eq!(searched("anywhere", "engine"), ["S6", "S4", "S1", "S5"]);
+    assert_eq!(searched("", "in:anywhere engine"), ["S6", "S4", "S1", "S5"]);
+
+    // the operators
+    assert_eq!(searched("all", "from:ada"), ["S1"]);
+    assert_eq!(searched("all", "from:(Ada Lovelace)"), ["S1"]);
+    assert_eq!(searched("all", "-from:ada"), ["S4", "S3", "S2", "S5"]);
+    assert_eq!(searched("all", "to:ada"), ["S2"]);
+    assert_eq!(searched("all", "to:carol"), ["S3"]);
+    assert_eq!(searched("all", "subject:\"weekly report\""), ["S3", "S1"]);
+    assert_eq!(searched("all", "has:attachment"), ["S2"]);
+    assert_eq!(searched("all", "-has:attachment"), ["S4", "S3", "S1", "S5"]);
+    assert_eq!(searched("all", "label:news-letters"), ["S4"]);
+    assert_eq!(searched("all", "label:\"News Letters\""), ["S4"]);
+    assert_eq!(searched("all", "-label:news-letters"), ["S3", "S2", "S1", "S5"]);
+    assert!(searched("all", "label:nothing").is_empty());
+    assert_eq!(searched("all", "is:unread"), ["S4", "S1", "S5"]);
+    assert_eq!(searched("all", "is:read"), ["S3", "S2"]);
+    assert_eq!(searched("all", "is:starred"), ["S2"]);
+    assert_eq!(searched("all", "-is:flagged is:unread"), ["S4", "S1", "S5"]);
+    assert_eq!(searched("all", "older_than:6d"), ["S2", "S1", "S5"]);
+    assert_eq!(searched("all", "newer_than:6d"), ["S4", "S3"]);
+    let date = |days: i64| {
+        jiff::Timestamp::from_millisecond(day(days))
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .strftime("%Y/%m/%d")
+            .to_string()
+    };
+    assert_eq!(searched("all", &format!("after:{}", date(6))), ["S4", "S3"]);
+    assert_eq!(searched("all", &format!("before:{}", date(6))), ["S2", "S1", "S5"]);
+    assert_eq!(searched("all", "larger:100K"), ["S2"]);
+    assert_eq!(searched("all", "smaller:10k"), ["S1"]);
+    assert_eq!(searched("all", "filename:invoice"), ["S2"]);
+    assert_eq!(searched("all", "from:ada engine"), ["S1"]);
+
+    // in: is the view, or the folders of that name
+    let sent = ok("find#Messages", &[("searchText", text("in:sent"))]);
+    assert_eq!(out_text(&sent, "view"), "sent");
+    assert_eq!(thread_ids(&sent), ["S3"]);
+    let folder = ok("find#Messages", &[("searchText", text("in:projects"))]);
+    assert_eq!(out_text(&folder, "view"), "folder");
+    assert_eq!(thread_ids(&folder), ["S5"]);
+    assert_eq!(out_text(&folder, "searchMode"), "");
+
+    // the terms for the chips
+    let chips = ok(
+        "find#Messages",
+        &[("view", text("all")), ("searchText", text("from:ada -is:read report"))],
+    );
+    let terms: Vec<(String, String, String)> = maps(&chips, "termList")
+        .iter()
+        .map(|term| (field(term, "operator"), field(term, "value"), field(term, "negate")))
+        .collect();
+    assert_eq!(
+        terms,
+        [
+            ("from".to_string(), "ada".to_string(), "false".to_string()),
+            ("is".to_string(), "read".to_string(), "true".to_string())
+        ]
+    );
+    let parsed = ok(
+        "parse#SearchText",
+        &[(
+            "searchText",
+            text(
+                "from:ada \"weekly report\" -news https://x.example.com/a:b subject:(big plan) larger:5M nothing:here",
+            ),
+        )],
+    );
+    assert_eq!(
+        parsed.get("wordList"),
+        Some(&list(&["https://x.example.com/a:b", "nothing:here"]))
+    );
+    assert_eq!(parsed.get("phraseList"), Some(&list(&["weekly report"])));
+    assert_eq!(parsed.get("excludeList"), Some(&list(&["news"])));
+    assert_eq!(
+        maps(&parsed, "termList")
+            .iter()
+            .map(|term| format!("{}:{}", field(term, "operator"), field(term, "value")))
+            .collect::<Vec<_>>(),
+        ["from:ada", "subject:big plan", "larger:5M"]
+    );
+
+    // a value that is not understood is an error naming it
+    for (line, expected) in [
+        ("before:someday", "needs a date"),
+        ("is:purple", "is:purple is not a search term"),
+        ("has:boat", "has:boat is not a search term"),
+        ("-in:trash", "-in:trash is not a search term"),
+        ("in:nowhere", "No folder nowhere"),
+        ("larger:huge", "needs a size"),
+        ("older_than:soon", "needs a count"),
+    ] {
+        refused(
+            "find#Messages",
+            &[("view", text("all")), ("searchText", text(line))],
+            expected,
+        );
+    }
+
+    // a member reads the same; a stranger finds none of it
+    login("bob");
+    assert_eq!(searched("all", "engine"), ["S4", "S1", "S5"]);
+    login("eve");
+    assert!(searched("all", "engine").is_empty());
+}
+
+/// New mail in a snoozed thread brings the thread back (Gmail); mail the rules sent to Junk does not, and only the sync
+/// (authorization disabled) calls it.
+#[test]
+fn new_mail_wakes_its_snoozed_thread() {
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    let account = shared_account(&facade, "smtp.example.com");
+    let later = stamp(now() + DAY);
+    message(
+        &facade,
+        &account,
+        "W1",
+        "EfkInbox",
+        now() - DAY,
+        &[("snoozedThruDate", later.clone())],
+    );
+    message(
+        &facade,
+        &account,
+        "W2",
+        "EfkInbox",
+        now(),
+        &[("rootEmailMessageId", text("W1")), ("parentEmailMessageId", text("W1"))],
+    );
+    message(
+        &facade,
+        &account,
+        "W3",
+        "EfkInbox",
+        now() - DAY,
+        &[("snoozedThruDate", later)],
+    );
+    message(
+        &facade,
+        &account,
+        "W4",
+        "EfkJunk",
+        now(),
+        &[("rootEmailMessageId", text("W3"))],
+    );
+    refused(
+        "wake#SnoozedThreads",
+        &[
+            ("emailAccountId", text(&account)),
+            ("emailMessageIdList", list(&["W2"])),
+        ],
+        "internal",
+    );
+    let woken = {
+        let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+        ok(
+            "wake#SnoozedThreads",
+            &[
+                ("emailAccountId", text(&account)),
+                ("emailMessageIdList", list(&["W2", "W4"])),
+            ],
+        )
+    };
+    assert_eq!(out_number(&woken, "wokenCount"), 1);
+    assert_eq!(message_field(&facade, "W1", "snoozedThruDate"), "");
+    assert_ne!(message_field(&facade, "W3", "snoozedThruDate"), "");
+    let inbox = ok("find#Messages", &[]);
+    assert!(thread_ids(&inbox).contains(&"W1".to_string()), "{inbox:?}");
+}
+
+/// The automatic reply: once per sender in its days, the internal text to a user or an address of the organization's
+/// domains, never to a list, bulk or automatic mail, a no-reply sender, mail the account was not sent to, mail from
+/// before it was on, or spam; with Auto-Submitted on it; and storing it again starts over.
+#[test]
+fn the_automatic_reply_goes_once_to_each_sender_it_is_for() {
+    let _lock = crate::user::session::cookie_property_lock();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    for id in ["alice", "bob"] {
+        user(&facade, id);
+    }
+    login("alice");
+    let account = out_text(
+        &ok(
+            "create#EmailAccount",
+            &[
+                ("emailAddress", text("alice@home.example.net")),
+                ("accountName", text("Alice")),
+                ("smtpHost", text("smtp.example.net")),
+                ("smtpStartTls", text("N")),
+            ],
+        ),
+        "emailAccountId",
+    );
+    // a shared account makes its domain the organization's own
+    ok(
+        "create#EmailAccount",
+        &[
+            ("accountKindEnumId", text("EakShared")),
+            ("emailAddress", text("orders@acme.example.com")),
+            ("smtpHost", text("smtp.example.net")),
+        ],
+    );
+    let store = || {
+        ok(
+            "store#EmailOutOfOffice",
+            &[
+                ("emailAccountId", text(&account)),
+                ("fromDate", stamp(now() - DAY)),
+                ("subject", text("Away")),
+                ("bodyHtml", text("<p>Away until Monday</p>")),
+                ("internalBodyHtml", text("<p>Away; ask Dave</p>")),
+                ("replyOncePerDays", Value::I64(4)),
+            ],
+        )
+    };
+    store();
+    let received = |id: &str, from: &str, kind: &str, more: &[(&str, Value)]| {
+        let mut fields = vec![
+            ("fromAddress", text(from)),
+            ("toAddresses", text("Alice <alice@home.example.net>")),
+            ("receivedDate", stamp(now() - 60_000)),
+            ("messageId", text(&format!("<{id}@mail.example.org>"))),
+        ];
+        fields.extend_from_slice(more);
+        message(&facade, &account, id, kind, now() - 60_000, &fields);
+    };
+    received("O1", "ada@math.example.org", "EfkInbox", &[]);
+    received("O2", "ADA@math.example.org", "EfkInbox", &[]);
+    received("O3", "dave@acme.example.com", "EfkInbox", &[]);
+    received("O4", "bob@example.com", "EfkInbox", &[]);
+    received(
+        "O5",
+        "news@lists.example.org",
+        "EfkInbox",
+        &[("headersString", text("List-Id: <news.lists.example.org>"))],
+    );
+    received(
+        "O6",
+        "deals@shop.example.org",
+        "EfkInbox",
+        &[("headersString", text("Precedence: bulk"))],
+    );
+    received(
+        "O7",
+        "robot@x.example.org",
+        "EfkInbox",
+        &[("headersString", text("Auto-Submitted: auto-replied"))],
+    );
+    received("O8", "no-reply@x.example.org", "EfkInbox", &[]);
+    received(
+        "O9",
+        "someone@x.example.org",
+        "EfkInbox",
+        &[("toAddresses", text("list@lists.example.org"))],
+    );
+    received(
+        "O10",
+        "old@x.example.org",
+        "EfkInbox",
+        &[("receivedDate", stamp(now() - 10 * DAY))],
+    );
+    received("O11", "spam@x.example.org", "EfkJunk", &[]);
+    let sink = crate::service::SinkGuard::install();
+    let reply = |ids: &[&str]| {
+        let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+        ok(
+            "send#OutOfOfficeReplies",
+            &[("emailAccountId", text(&account)), ("emailMessageIdList", list(ids))],
+        )
+    };
+    let out = reply(&["O1", "O2", "O3", "O4", "O5", "O6", "O7", "O8", "O9", "O10", "O11"]);
+    assert_eq!(out_number(&out, "sentCount"), 3, "{out:?}");
+    let sent = sink.sent();
+    let to: Vec<String> = sent.iter().map(|mail| mail.to.join(",")).collect();
+    assert_eq!(to, ["ada@math.example.org", "dave@acme.example.com", "bob@example.com"]);
+    assert!(sent.iter().all(|mail| mail.subject == "Away"), "{sent:?}");
+    assert!(sent[0].body.contains("Away until Monday"), "{:?}", sent[0].body);
+    assert!(sent[1].body.contains("ask Dave"), "{:?}", sent[1].body);
+    assert!(sent[2].body.contains("ask Dave"), "{:?}", sent[2].body);
+    assert!(
+        sent[0].mime.contains("Auto-Submitted: auto-replied"),
+        "{}",
+        sent[0].mime
+    );
+    assert!(
+        sent[0].mime.contains("In-Reply-To: <O1@mail.example.org>"),
+        "{}",
+        sent[0].mime
+    );
+    // the mail answered is not marked answered, and the reply is not in its thread
+    assert_eq!(message_field(&facade, "O1", "isAnswered"), "");
+
+    // once per sender in its days; a new automatic reply goes to everyone again
+    received("O12", "ada@math.example.org", "EfkInbox", &[]);
+    assert_eq!(out_number(&reply(&["O12"]), "sentCount"), 0);
+    store();
+    assert_eq!(out_number(&reply(&["O12"]), "sentCount"), 1);
+    assert_eq!(sink.sent().len(), 4);
+
+    // off: nothing
+    ok(
+        "store#EmailOutOfOffice",
+        &[
+            ("emailAccountId", text(&account)),
+            ("enabled", Value::Bool(false)),
+            ("bodyHtml", text("<p>Away</p>")),
+        ],
+    );
+    received("O13", "carol@x.example.org", "EfkInbox", &[]);
+    assert_eq!(out_number(&reply(&["O13"]), "sentCount"), 0);
+}
+
+/// The test's HTTP sender: it answers the list's addresses and passes any other request on, as a test elsewhere in
+/// the crate may make one meanwhile.
+struct ListServer {
+    seen: std::sync::Mutex<Vec<crate::outbound::Request>>,
+    status: std::sync::atomic::AtomicU16,
+}
+
+impl crate::outbound::HttpSender for ListServer {
+    fn send(&self, request: crate::outbound::Request) -> Result<crate::outbound::Response, moqui_lib::error::Error> {
+        if !request.url.starts_with("https://lists.example.org/") {
+            return crate::outbound::send_default(request);
+        }
+        self.seen.lock().unwrap().push(request);
+        Ok(crate::outbound::Response {
+            status: self.status.load(std::sync::atomic::Ordering::SeqCst),
+            body: "ok".to_string(),
+            ..Default::default()
+        })
+    }
+}
+
+/// Unsubscribe by List-Unsubscribe: the one-click POST (RFC 8058), the mailto when the POST fails, the address for the
+/// client to open, a private host refused, and get#Thread saying which.
+#[test]
+fn unsubscribe_one_click_mailto_and_url() {
+    let _lock = crate::user::session::cookie_property_lock();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    let account = shared_account(&facade, "smtp.example.com");
+    let both = "List-Unsubscribe: <mailto:leave@lists.example.org?subject=leave%20now>,\n <https://lists.example.org/u/1>\nList-Unsubscribe-Post: List-Unsubscribe=One-Click";
+    message(
+        &facade,
+        &account,
+        "U1",
+        "EfkInbox",
+        now(),
+        &[("headersString", text(both))],
+    );
+    message(
+        &facade,
+        &account,
+        "U2",
+        "EfkInbox",
+        now(),
+        &[("headersString", text(both))],
+    );
+    message(
+        &facade,
+        &account,
+        "U3",
+        "EfkInbox",
+        now(),
+        &[(
+            "headersString",
+            text("List-Unsubscribe: <https://lists.example.org/page?id=3>"),
+        )],
+    );
+    message(
+        &facade,
+        &account,
+        "U4",
+        "EfkInbox",
+        now(),
+        &[(
+            "headersString",
+            text("List-Unsubscribe: <https://192.168.1.9/u>\nList-Unsubscribe-Post: List-Unsubscribe=One-Click"),
+        )],
+    );
+    message(&facade, &account, "U5", "EfkInbox", now(), &[]);
+    let server = std::sync::Arc::new(ListServer {
+        seen: std::sync::Mutex::new(Vec::new()),
+        status: std::sync::atomic::AtomicU16::new(200),
+    });
+    crate::outbound::install_http_sender(server.clone());
+    let sink = crate::service::SinkGuard::install();
+
+    let one = ok("unsubscribe#Message", &[("emailMessageId", text("U1"))]);
+    assert_eq!(out_text(&one, "method"), "oneClick");
+    assert_eq!(one.get("unsubscribed"), Some(&Value::Bool(true)));
+    {
+        let seen = server.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].method, crate::outbound::Method::Post);
+        assert_eq!(seen[0].url, "https://lists.example.org/u/1");
+        assert_eq!(seen[0].body.as_deref(), Some("List-Unsubscribe=One-Click"));
+        assert!(
+            seen[0]
+                .headers
+                .iter()
+                .any(|(name, value)| name.eq_ignore_ascii_case("content-type")
+                    && value == "application/x-www-form-urlencoded"),
+            "{:?}",
+            seen[0].headers
+        );
+    }
+    assert!(sink.sent().is_empty());
+
+    // the POST fails: the mailto goes from the account
+    server.status.store(500, std::sync::atomic::Ordering::SeqCst);
+    let mailto = ok("unsubscribe#Message", &[("emailMessageId", text("U2"))]);
+    assert_eq!(out_text(&mailto, "method"), "mailto");
+    assert!(out_text(&mailto, "postError").contains("HTTP 500"), "{mailto:?}");
+    let sent = sink.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].to, ["leave@lists.example.org"]);
+    assert_eq!(sent[0].subject, "leave now");
+
+    // no one-click: the page for the client to open, nothing sent
+    let url = ok("unsubscribe#Message", &[("emailMessageId", text("U3"))]);
+    assert_eq!(out_text(&url, "method"), "url");
+    assert_eq!(out_text(&url, "url"), "https://lists.example.org/page?id=3");
+    // a private host is not posted to
+    let private = ok("unsubscribe#Message", &[("emailMessageId", text("U4"))]);
+    assert_eq!(out_text(&private, "method"), "url");
+    assert!(out_text(&private, "postError").contains("public host"), "{private:?}");
+    assert_eq!(server.seen.lock().unwrap().len(), 2);
+    refused(
+        "unsubscribe#Message",
+        &[("emailMessageId", text("U5"))],
+        "no List-Unsubscribe",
+    );
+    crate::outbound::clear_http_sender();
+
+    let thread = |id: &str| {
+        field(
+            &maps(&ok("get#Thread", &[("emailMessageId", text(id))]), "messageList")[0],
+            "unsubscribeMethod",
+        )
+    };
+    assert_eq!(thread("U1"), "oneClick");
+    assert_eq!(thread("U3"), "url");
+    assert_eq!(thread("U5"), "");
 }

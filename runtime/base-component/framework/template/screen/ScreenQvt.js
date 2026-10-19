@@ -1649,6 +1649,24 @@
         const chatter = (n) => recordPanel("m-chatter", n);
         const recordFiles = (n) => recordPanel("m-record-files", n);
 
+        // An email or HTML body (html-view): an m-html-view, which cleans the HTML in the browser and shows it in a sandboxed
+        // frame. The html and text are attribute values (never template text, so nothing in them is compiled); allow-remote
+        // is a condition, cid-map an expression of a map. Nothing for a false condition.
+        const htmlView = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const value = (text) => (text && text !== "null" ? text : null);
+            const map = at(n, "cid-map") ? ec.resource.expression(at(n, "cid-map"), "") : null;
+            const cids = {};
+            if (map && typeof map === "object") for (const key of Object.keys(map)) if (map[key] !== null && map[key] !== undefined) cids[key] = String(map[key]);
+            w("<m-html-view" + A({
+                id: nodeId(n) || null, html: value(xn(at(n, "html"))), text: value(xn(at(n, "text"))),
+                ":allow-remote": at(n, "allow-remote") && cond(at(n, "allow-remote")) ? "true" : null,
+                ":cid-map": Object.keys(cids).length ? js_(cids) : null,
+                ":collapse-quotes": at(n, "collapse-quotes") === "false" ? "false" : null,
+                dark: at(n, "dark") && at(n, "dark") !== "auto" ? at(n, "dark") : null, class: value(xn(at(n, "style")))
+            }) + "></m-html-view>\n");
+        };
+
         // ---- dashboards ----
 
         // A number-card (style-guide §8.2): an m-number-card with the title localized, the value and delta as expanded, and the
@@ -1683,7 +1701,7 @@
             formList, rowCellOpen, rowCellClose, valueText, sectionPaginate, headerCell,
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
-            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard, chatter, recordFiles, splitOpen
+            quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard, chatter, recordFiles, splitOpen, htmlView
         };
         Object.defineProperty(globalThis, "$mqQvt", { value: h, configurable: true });
     };
@@ -2219,6 +2237,7 @@
         "number-card": widget("numberCard", false),
         "chatter": widget("chatter", false),
         "record-files": widget("recordFiles", false),
+        "html-view": widget("htmlView", false),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

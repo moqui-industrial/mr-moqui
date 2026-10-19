@@ -39,7 +39,7 @@
         "panel-right", "panel-footer", "container-dialog", "dynamic-container", "dynamic-dialog", "button-menu",
         "tree", "tree-node", "tree-sub-node", "label", "link", "image", "parameter", "dialog",
         "render-dynamic-form", "dynamic-form", "form-list-user-columns", "context", "dashboard", "number-card",
-        "chatter", "record-files", "container-split", "split-side", "split-main"
+        "chatter", "record-files", "container-split", "split-side", "split-main", "html-view"
     ];
     const formElements = [
         "form-single", "form-list", "row-actions", "field", "header-field", "first-row-field", "second-row-field",
@@ -62,6 +62,11 @@
         "auto-widget-entity", "auto-widget-service", "visible-when", "editable-load", "action", "tree",
         "dynamic-container", "dynamic-dialog", "button-menu", "include-content", "parameter"
     ];
+
+    // The text of an html-view for the text and print modes, as an expression of (text, html): the text, else the HTML's
+    // text (tags out, line breaks at blocks, the common entities read).
+    const htmlViewTextFn = String.raw`((t, h) => { const v = t && t !== "null" ? String(t) : (h && h !== "null" ? String(h).replace(/<(style|script)[^>]*>[\s\S]*?<\/\1>/gi, " ").replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, "\n").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&") : ""); return v.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(); })`;
+    const htmlViewTextExpr = (node) => `${htmlViewTextFn}(ec.resource.expandNoL10n(${jsString(attr(node, "text") || "")}), ec.resource.expandNoL10n(${jsString(attr(node, "html") || "")}))`;
 
     const expandExpr = (text) => `ec.resource.expand(${jsString(text)})`;
     const expandNoL10nExpr = (text) => `ec.resource.expandNoL10n(${jsString(text)})`;
@@ -305,7 +310,7 @@
     const noops = (names) => T.noops(names);
 
     return {
-        allElements, opaqueElements, expandExpr, expandNoL10nExpr, nodeLit, bareLit, write, indent, widgetsSource,
+        allElements, opaqueElements, expandExpr, expandNoL10nExpr, htmlViewTextExpr, nodeLit, bareLit, write, indent, widgetsSource,
         setCode, widgetless, fieldChain, hideGuard, titleText, localizedTitle, fieldLit, renderTextCode, anyMacros,
         displayValueExpr, linkTextExpr, dateTimeFormat, listFieldHiddenWidget, formListColumns, headerSub, noops
     };

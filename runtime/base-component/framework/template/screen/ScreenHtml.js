@@ -1402,6 +1402,24 @@
         const chatter = (n) => recordPanel(n, "STRT_CHATTER_SCREEN", "Chatter");
         const recordFiles = (n) => recordPanel(n, "STRT_RECORD_FILES_SCREEN", "Files");
 
+        // html-view: the html mode has no cleaner in the page, so the HTML is cleaned here (StringUtilities.cleanHtml: the safe
+        // set, no styles) and shown in a frame sandboxed without scripts whose policy loads no image but data: (no remote
+        // image, no tracking), or the text escaped; links open in a new window. The frame is a fixed height the reader can
+        // resize (no script measures it). Nothing for a false condition.
+        const htmlView = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const html = xn(at(n, "html"));
+            const text = xn(at(n, "text"));
+            if ((!html || html === "null") && (!text || text === "null")) return;
+            const content = html && html !== "null" ? StringUtilities.cleanHtml(html) :
+                '<div style="white-space:pre-wrap">' + e(text) + "</div>";
+            const doc = '<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;; img-src data:; style-src &#39;unsafe-inline&#39;; base-uri &#39;none&#39;; form-action &#39;none&#39;">' +
+                '<meta name="referrer" content="no-referrer"><base target="_blank"><style>body{margin:0;font-family:sans-serif;font-size:14px;line-height:1.5;overflow-wrap:anywhere}img{max-width:100%}</style></head><body>' +
+                content + "</body></html>";
+            w("<iframe" + A({ id: nodeId(n) || null, class: cls("html-view", xn(at(n, "style")) || null), title: "Message",
+                sandbox: "allow-popups allow-popups-to-escape-sandbox", referrerpolicy: "no-referrer", srcdoc: doc }) + "></iframe>\n");
+        };
+
         const h = {
             reset, e, lib, fid, fnm,
             textLine, textArea, password, file, hidden, reset_, submit, dateTime, dateFind, datePeriod, rangeFind, textFind,
@@ -1413,7 +1431,7 @@
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
             labelCols: (value) => { st.labelCols = value || ""; },
-            numberCard, chatter, recordFiles, splitOpen, splitMain
+            numberCard, chatter, recordFiles, splitOpen, splitMain, htmlView
         };
         Object.defineProperty(globalThis, "$mqHtml", { value: h, configurable: true });
     };
@@ -1891,6 +1909,7 @@
         "number-card": widget("numberCard", false),
         "chatter": widget("chatter", false),
         "record-files": widget("recordFiles", false),
+        "html-view": widget("htmlView", false),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

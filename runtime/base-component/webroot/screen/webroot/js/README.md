@@ -66,7 +66,7 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 
 The tests are `MoquiLib.test.js`, `MoquiL10n.test.js`, `WebrootVue.qvt.test.js`, `WebrootVue.qvt.shell.test.js` (the palette, the key map, the
 screen context's forms and the root's shell data), `WebrootVue.qvt.records.test.js` (the HTML of the rich-text editor, the record panel URL,
-avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer) and `WebrootVue.qvt.static.test.js` (the script and package
+avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer), `WebrootVue.qvt.htmlview.test.js` (m-html-view's cleaning) and `WebrootVue.qvt.static.test.js` (the script and package
 the server answers for `crates/moqui-core` `testdata/Static/Items` run on the real Vue runtime over a fake DOM; every component template compiles with the vendored
 Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
 browser (mounting, Quasar menus and popups, dialogs, posts, the lazy libraries, static lists) is the Chromium smoke of Gate 3
@@ -185,6 +185,7 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-chatter`, `m-record-files` | the `chatter` and `record-files` elements: `record-entity`, `record-id`, `default-tab`, `hide`, `id` (of the `m-dynamic-container` the panel loads into, for `submit-reload-id`). See Record panels below |
 | `m-avatar` | a `q-avatar`: `image` (a face image URL; initials when it does not load), else the initials of `name` on a color of the name (`moqui.avatar`), else a person icon; `size` (32px), `color`, `text-color`, `square`, `rounded`, `tooltip` (the name); `presence` (`online`, `away`, `dnd`, `offline`) draws a dot, nothing without it |
 | `m-record-card` | a compact card of a record: `record-entity`, `record-id`, and `card-url` (asked once per page for each record, GET with `recordEntity` and `recordId` and `card-parameters`) or `card` (the JSON itself); `dense`. See Record cards below |
+| `m-html-view` | an email or other untrusted HTML body in a frame sandboxed without scripts: `html` (or `text`, a text/plain body), `allow-remote` (a trusted sender: remote images at once), `cid-map` (`{contentId: url}` of the inline images), `collapse-quotes` (true), `images-bar` (true: the "Show images" bar), `dark` (`auto`, `on`, `off`), `title`; emits `remote-images` (how many were hidden), `show-images` (the bar's button was pressed), `loaded` (`{height, blocked}`). In XML the `html-view` element. See Email bodies below |
 | `m-chart`, `m-mermaid` | Chart.js 4 and Mermaid 11, loaded on first use. `m-chart` takes `config`; `m-mermaid` takes the diagram in its `text` attribute (the compiler condenses the line breaks of slot content), `height` and `config` |
 | `m-script`, `m-stylesheet` | `<script>` and `<link>` of a screen's text |
 
@@ -460,6 +461,46 @@ library does not load, the field is `m-text-area` with `editor-type="html"`. The
 
 or that object under `card`. A failure or an answer that is not a map shows the entity and id (logged with `console.info`).
 `moqui.recordCard.normalize` reads it.
+
+**Email bodies** (`m-html-view`, IronStone design-drawers-commons §12 reading pane). DOMPurify (`libs/dompurify`, loaded with the
+first view) cleans the HTML: the HTML profile only (no SVG or MathML), and no script, style element (the message's style blocks
+are taken out first and cleaned as CSS), form or control, frame, object or embed, base, link, meta, media or template, and no
+`srcset`, `poster`, `ping`, `formaction` or data- attribute of the sender. `moqui.htmlView.process` then walks the result:
+
+- **Images.** `data:` images stay; `cid:` ones come from `cid-map`, whose URLs (this origin only, with the session) are read into
+  `data:` URLs first, since the frame shows no other; a remote (`http`, `https`, `//`) image is a placeholder of its size with its
+  alt text until "Show images" (the bar, or `allow-remote` set by the host for a trusted sender), and a tracking pixel (at most
+  2 by 2) is dropped; a relative or `javascript:` source is dropped. `remote-images` reports the count, CSS backgrounds included.
+- **Links.** `http`, `https`, `mailto`, `tel` and anchors stay, with `target="_blank"` and `rel="noopener noreferrer"`; any other
+  `href` is removed (the text stays). A `target` elsewhere is removed.
+- **CSS.** In style attributes and style blocks: remote `url()` only when images are allowed, no `@import`, `expression()`,
+  `behavior` or `-moz-binding`, no fixed positions; backslash escapes are read first, so none hides a `url()`.
+- **Reply history.** The quoted part at the end (Gmail `gmail_quote`, Apple Mail and Thunderbird `blockquote type=cite`,
+  Outlook `#divRplyFwdMsg` and what follows it, Yahoo, a "-----Original Message-----" line, or a last `blockquote`) goes into a
+  `<details class="m-hv-quote">` behind a "•••" summary, which opens without a script. A quote with a reply after it stays.
+  A text body is escaped, its URLs and addresses made links, and its trailing `>` lines with the "On ... wrote:" line before
+  them collapsed the same way.
+
+The frame is `<iframe sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"
+srcdoc="...">`: no `allow-scripts`, so nothing in the message runs even if the cleaning missed it; `allow-same-origin` only so the
+host can measure the content (with no script in the frame it cannot use it); links open in a normal window. The document's
+policy (`moqui.htmlView.csp`) is `default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; base-uri 'none';
+form-action 'none'; frame-src 'none'`, with `data: https: http:` for images and fonts once images are allowed, and a
+`<meta name="referrer" content="no-referrer">`.
+The host sizes the frame to `#m-hv-root` after it loads and again when the frame's width or content changes (a
+`ResizeObserver` from the host), an image loads or a quote opens: the frame is as tall as the message and the page scrolls,
+not the frame. Dark mode: a plain message (no colors or backgrounds of its own) takes light text on the dark card; a designed
+one stays on a light card (`m-html-view-card`). Without DOMPurify (the script blocked) the view shows the message's text. The
+pure parts (`imageSource`, `linkHref`, `css`, `isDesigned`, `autolink`, `textToHtml`, `quoteStart`, `quoteKind`, `collapse`,
+`process`, `splitStyles`, `csp`, `srcdoc`) are tested in `WebrootVue.qvt.htmlview.test.js` over a small fake DOM; the sandbox,
+the policy, Show images, the quote toggle, the height and dark mode are `gate3_browser.rs`
+`the_html_view_cleans_sandboxes_and_sizes_a_message_in_chromium` on the gallery's Message screen.
+
+In XML: `<html-view html="${message.body}" text="${message.bodyText}" allow-remote="trustedSender" cid-map="cidMap"
+collapse-quotes="true" dark="auto"/>` (with `id`, `condition` and `style`). The HTML and text are attribute values, never
+template text, so nothing in a message is compiled; a server-static screen binds them over its data. The html mode cleans the
+HTML on the server (`StringUtilities.cleanHtml`, the safe set without styles) into a frame sandboxed without scripts that loads
+no image but `data:`; the text and print modes write the text (or the HTML's text).
 
 ## Layout panels: split, wizard and stack
 

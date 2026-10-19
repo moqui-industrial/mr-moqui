@@ -253,6 +253,17 @@ impl FakeImap {
             .collect()
     }
 
+    /// The raw text of each message in a folder, by UID.
+    pub(super) fn raw_messages(&self, folder: &str) -> Vec<(u32, String)> {
+        let mut state = lock(&self.state);
+        let folder = state.folder(folder).expect("fake folder");
+        folder
+            .messages
+            .iter()
+            .map(|message| (message.uid, String::from_utf8_lossy(&message.raw).to_string()))
+            .collect()
+    }
+
     pub(super) fn folder_names(&self) -> Vec<String> {
         lock(&self.state)
             .folders
