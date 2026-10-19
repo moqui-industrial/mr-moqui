@@ -35,7 +35,8 @@
 //!
 //! Failure tolerant per account, folder and message: a message that does not parse is logged by account, folder and
 //! UID and skipped; a folder that fails is logged and the others go on; a sign-in the server refuses marks the account
-//! EasAuthFailed with `lastSyncError` and ends only that account's sync. A POP3 account is fetch-only into the Inbox,
+//! EasAuthFailed with `lastSyncError` and ends only that account's sync, as does an OAuth sign-in whose refresh token
+//! the provider refuses ([`super::oauth`]; such an account signs in with XOAUTH2). A POP3 account is fetch-only into the Inbox,
 //! by UIDL, deleting from the server only when its EmailServer says so (`storeDelete`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -68,8 +69,19 @@ const HEADER_CHUNK: usize = 100;
 
 // ---- the account ----
 
+/// An access token, whose `Debug` does not show it.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct AccessToken(pub(super) String);
+
+impl std::fmt::Debug for AccessToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AccessToken(<redacted>)")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct ServerInfo {
+    pub(super) server_id: String,
     pub(super) host: String,
     pub(super) port: u16,
     pub(super) protocol: String,
@@ -77,9 +89,15 @@ pub(super) struct ServerInfo {
     pub(super) password: String,
     pub(super) auth_type: String,
     pub(super) store_delete: bool,
+    /// For an EatOAuth2 server, the access token [`connect_imap`] signs in with (XOAUTH2).
+    pub(super) access_token: Option<AccessToken>,
 }
 
 impl ServerInfo {
+    pub(super) fn is_oauth(&self) -> bool {
+        self.auth_type == super::oauth::OAUTH
+    }
+
     pub(super) fn is_pop(&self) -> bool {
         matches!(self.protocol.as_str(), "pop3" | "pop3s")
     }
@@ -154,6 +172,7 @@ fn server_info(row: &EntityValue) -> Option<ServerInfo> {
     };
     let port = parse_port(&field_text(row, "storePort"), default_port).unwrap_or(default_port);
     Some(ServerInfo {
+        server_id: field_text(row, "emailServerId"),
         host,
         port,
         protocol,
@@ -161,6 +180,7 @@ fn server_info(row: &EntityValue) -> Option<ServerInfo> {
         password: field_text(row, "mailPassword"),
         auth_type: field_text(row, "authTypeEnumId"),
         store_delete: field_text(row, "storeDelete") == "Y",
+        access_token: None,
     })
 }
 
@@ -275,6 +295,9 @@ fn kind_rank(kind: &str) -> u8 {
 pub(super) enum SyncFailure {
     /// The server refused the sign-in: the account is EasAuthFailed until its settings change.
     Auth(String),
+    /// The OAuth sign-in has ended (the provider refused the refresh token, or there is none): the account is
+    /// EasAuthFailed until the user signs in again. The token store marked and logged it already.
+    SignIn(String),
     /// The server could not be reached or the connection broke: EasError, tried again later.
     Connect(String),
 }
@@ -282,7 +305,16 @@ pub(super) enum SyncFailure {
 impl std::fmt::Display for SyncFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Auth(text) | Self::Connect(text) => f.write_str(text),
+            Self::Auth(text) | Self::SignIn(text) | Self::Connect(text) => f.write_str(text),
+        }
+    }
+}
+
+impl From<super::oauth::TokenError> for SyncFailure {
+    fn from(err: super::oauth::TokenError) -> Self {
+        match err {
+            super::oauth::TokenError::SignIn(text) => Self::SignIn(text),
+            super::oauth::TokenError::Unavailable(text) => Self::Connect(text),
         }
     }
 }
@@ -451,16 +483,52 @@ pub(super) fn open_imap(server: &ServerInfo) -> Result<ImapConn, SyncFailure> {
     })
 }
 
-/// Sign in as the server's authentication type says. Password now; XOAUTH2 with the OAuth client (M5e) goes here.
+/// Sign in as the server's authentication type says: LOGIN with the password, or for EatOAuth2 `AUTHENTICATE XOAUTH2`
+/// with the access token [`connect_imap`] put on the server.
 fn sign_in(client: imap::Client<Net>, server: &ServerInfo) -> Result<imap::Session<Net>, SyncFailure> {
-    if server.auth_type == "EatOAuth2" {
-        return Err(SyncFailure::Auth(
-            "OAuth 2.0 sign-in (XOAUTH2) is not available yet; use a password or an app password".to_string(),
-        ));
+    if server.is_oauth() {
+        let Some(token) = &server.access_token else {
+            return Err(SyncFailure::Connect(format!(
+                "IMAP {}: no access token to sign in with",
+                server.host
+            )));
+        };
+        let authenticator = super::oauth::XOauth2 {
+            response: super::oauth::xoauth2(&server.user, &token.0),
+        };
+        return client
+            .authenticate("XOAUTH2", &authenticator)
+            .map_err(|(err, _)| classify_login(&err, &server.host));
     }
     client
         .login(&server.user, &server.password)
         .map_err(|(err, _)| classify_login(&err, &server.host))
+}
+
+/// [`open_imap`], first getting an access token for an EatOAuth2 server; a token the server refuses is replaced by a
+/// new one once (it may have been revoked or have ended early).
+pub(super) fn connect_imap(facade: &EntityFacade, server: &ServerInfo) -> Result<ImapConn, SyncFailure> {
+    if !server.is_oauth() {
+        return open_imap(server);
+    }
+    let mut signed = server.clone();
+    let token = super::oauth::access_token(facade, &server.server_id, None)?;
+    signed.access_token = Some(AccessToken(token.clone()));
+    match open_imap(&signed) {
+        Err(SyncFailure::Auth(text)) => {
+            tracing::debug!(
+                "IMAP {} refused the access token, trying a new one: {text}",
+                server.host
+            );
+            let fresh = super::oauth::access_token(facade, &server.server_id, Some(&token))?;
+            if fresh == token {
+                return Err(SyncFailure::Auth(text));
+            }
+            signed.access_token = Some(AccessToken(fresh));
+            open_imap(&signed)
+        }
+        other => other,
+    }
 }
 
 fn classify_login(err: &imap::Error, host: &str) -> SyncFailure {
@@ -866,6 +934,12 @@ pub(super) fn run_sync(facade: &EntityFacade, account_id: &str, options: &SyncOp
     if !server.is_imap() && !server.is_pop() {
         return SyncReport::with("failed", format!("storeProtocol {} is not supported", server.protocol));
     }
+    if server.is_pop() && server.is_oauth() {
+        return SyncReport::with(
+            "failed",
+            format!("Email account {account_id}: a provider sign-in (OAuth) syncs over IMAP, not POP3"),
+        );
+    }
     match account.status.as_str() {
         "EasRemoved" => return SyncReport::with("skipped", format!("Email account {account_id} is removed")),
         "EasPaused" => return SyncReport::with("paused", format!("Email account {account_id} is paused")),
@@ -955,6 +1029,13 @@ fn record_outcome(
         }
         Err(SyncFailure::Auth(text)) => {
             tracing::error!(account = %account.id, "Email account {} sign-in failed: {text}", account.id);
+            report.outcome = "authFailed";
+            report.message = text.clone();
+            fields.push(("statusId", Value::string("EasAuthFailed")));
+            fields.push(("lastSyncError", Value::string(clip(text, 4000))));
+        }
+        // the token store marked the account and logged it
+        Err(SyncFailure::SignIn(text)) => {
             report.outcome = "authFailed";
             report.message = text.clone();
             fields.push(("statusId", Value::string("EasAuthFailed")));
@@ -1177,7 +1258,7 @@ fn imap_sync(
     options: &SyncOptions,
     report: &mut SyncReport,
 ) -> Result<(), SyncFailure> {
-    let mut conn = open_imap(server)?;
+    let mut conn = connect_imap(facade, server)?;
     if conn.caps.has("QRESYNC") && conn.caps.has("ENABLE") {
         if conn.session.run_command_and_check_ok("ENABLE QRESYNC").is_ok() {
             conn.qresync = true;

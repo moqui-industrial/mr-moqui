@@ -15,7 +15,8 @@
 //! Outbound SMTP and inbound IMAP/POP3 for the email services. The bodies live in [`implementation`] when the `mail`
 //! feature is on, with the mail client's sync engine beside it: [`sync`] (`sync#EmailAccount` and the job), [`remote`]
 //! (local changes onto the server), [`idle`] (IMAP IDLE workers), [`store`] (a received message as a row),
-//! [`discover`] (autodiscover) and [`import`] (.eml and .mbox). These functions are the registry entries either way, so
+//! [`discover`] (autodiscover), [`import`] (.eml and .mbox) and [`oauth`] (sign-in with Google or Microsoft, the token
+//! store and XOAUTH2). These functions are the registry entries either way, so
 //! a host built without mail still resolves the locations and reports that mail is not built in.
 
 use std::collections::BTreeMap;
@@ -35,6 +36,8 @@ mod implementation;
 #[cfg(feature = "mail")]
 mod import;
 #[cfg(feature = "mail")]
+mod oauth;
+#[cfg(feature = "mail")]
 mod remote;
 #[cfg(feature = "mail")]
 mod store;
@@ -49,6 +52,8 @@ mod client_tests;
 #[cfg(all(test, feature = "mail"))]
 mod fake_servers;
 #[cfg(all(test, feature = "mail"))]
+mod oauth_tests;
+#[cfg(all(test, feature = "mail"))]
 mod sync_tests;
 
 pub(in crate::service) fn register(map: &mut BTreeMap<&'static str, RustServiceFn>) -> Result<(), String> {
@@ -61,6 +66,12 @@ pub(in crate::service) fn register(map: &mut BTreeMap<&'static str, RustServiceF
     rust_service!(map, push_remote_changes)?;
     rust_service!(map, discover_server)?;
     rust_service!(map, import_messages)?;
+    rust_service!(map, start_oauth_sign_in)?;
+    rust_service!(map, complete_oauth_sign_in)?;
+    rust_service!(map, get_oauth_status)?;
+    rust_service!(map, get_oauth_providers)?;
+    rust_service!(map, revoke_oauth_sign_in)?;
+    rust_service!(map, revoke_oauth_token)?;
     Ok(())
 }
 
@@ -148,6 +159,36 @@ mail_service!(
     "org.moqui.impl.EmailClientServices.import#EmailMessages",
     import::import_messages
 );
+mail_service!(
+    start_oauth_sign_in,
+    "org.moqui.impl.EmailClientServices.start#OAuthSignIn",
+    oauth::start_sign_in
+);
+mail_service!(
+    complete_oauth_sign_in,
+    "org.moqui.impl.EmailClientServices.complete#OAuthSignIn",
+    oauth::complete_sign_in
+);
+mail_service!(
+    get_oauth_status,
+    "org.moqui.impl.EmailClientServices.get#OAuthStatus",
+    oauth::sign_in_status
+);
+mail_service!(
+    get_oauth_providers,
+    "org.moqui.impl.EmailClientServices.get#OAuthProviders",
+    oauth::providers_service
+);
+mail_service!(
+    revoke_oauth_sign_in,
+    "org.moqui.impl.EmailClientServices.revoke#OAuthSignIn",
+    oauth::sign_out_service
+);
+mail_service!(
+    revoke_oauth_token,
+    "org.moqui.impl.EmailClientServices.revoke#OAuthToken",
+    oauth::revoke_token_service
+);
 
 #[cfg(not(feature = "mail"))]
 fn unavailable(name: &str) -> Result<BTreeMap<String, Value>, LibError> {
@@ -176,6 +217,27 @@ mod tests {
             ),
             (std::any::type_name_of_val(&super::discover_server), "discover_server"),
             (std::any::type_name_of_val(&super::import_messages), "import_messages"),
+            (
+                std::any::type_name_of_val(&super::start_oauth_sign_in),
+                "start_oauth_sign_in",
+            ),
+            (
+                std::any::type_name_of_val(&super::complete_oauth_sign_in),
+                "complete_oauth_sign_in",
+            ),
+            (std::any::type_name_of_val(&super::get_oauth_status), "get_oauth_status"),
+            (
+                std::any::type_name_of_val(&super::get_oauth_providers),
+                "get_oauth_providers",
+            ),
+            (
+                std::any::type_name_of_val(&super::revoke_oauth_sign_in),
+                "revoke_oauth_sign_in",
+            ),
+            (
+                std::any::type_name_of_val(&super::revoke_oauth_token),
+                "revoke_oauth_token",
+            ),
         ] {
             assert_eq!(function, format!("moqui_core::service::mail::{path}"));
         }

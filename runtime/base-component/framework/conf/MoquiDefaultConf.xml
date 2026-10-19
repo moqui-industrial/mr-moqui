@@ -93,6 +93,24 @@
     <default-property name="email_dns_server" value=""/>
 
     <!--
+        Sign-in with Google or Microsoft for mail accounts (OAuth 2.0 with PKCE, XOAUTH2 for IMAP and SMTP;
+        docs/Mail-OAuth.md). Each provider (moqui.basic.email.EmailOAuthProvider) needs the deployment's own OAuth client,
+        registered at the provider with the redirect URI below: its client id and secret here or in the environment
+        (EMAIL_OAUTH_GOOGLE_CLIENT_ID and so on); a provider without both is not offered. The secret is never written to
+        a log or answered by a service. email_oauth_microsoft_tenant: common (the default; work, school and personal
+        accounts), organizations, consumers or a tenant id.
+        email_oauth_redirect_uri: the callback the provider sends the browser back to, exactly as registered there;
+        empty for the webroot webapp's URL from this conf (webapp_http_host, webapp_https_enabled and the ports) and
+        /emailOAuth/callback. It is never taken from a request.
+    -->
+    <default-property name="email_oauth_redirect_uri" value=""/>
+    <default-property name="email_oauth_google_client_id" value=""/>
+    <default-property name="email_oauth_google_client_secret" value="" is-secret="true"/>
+    <default-property name="email_oauth_microsoft_client_id" value=""/>
+    <default-property name="email_oauth_microsoft_client_secret" value="" is-secret="true"/>
+    <default-property name="email_oauth_microsoft_tenant" value=""/>
+
+    <!--
         PDF (the html-print render through headless Chromium). pdf_chromium_path names the executable; empty, or a path
         that names no file, looks in runtime/chromium (from ./moq chromium-download), then for chromium, then
         chromium-browser, on the PATH. Google Chrome is used only when pdf_chromium_path names it. Startup logs each one

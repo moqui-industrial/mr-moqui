@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 use moqui_lib::object::Value;
 use moqui_lib::sync::lock;
 
-use super::sync::{account_info, open_imap, run_sync, select, SyncFailure, SyncOptions, ACCOUNT};
+use super::sync::{account_info, connect_imap, run_sync, select, SyncFailure, SyncOptions, ACCOUNT};
 use crate::context::ExecutionContextFactory;
 use crate::entity::{Condition, EntityFacade};
 use crate::service::util::field_text;
@@ -318,7 +318,8 @@ fn watch(
     socket: &Mutex<Option<TcpStream>>,
     resync: bool,
 ) -> Ended {
-    let server = {
+    // the sign-in in a context of its own: an OAuth server's access token is read, or refreshed, there
+    let mut conn = {
         let ctx = factory.new_context();
         let _entered = ctx.enter();
         let _authz = ctx.disable_authz();
@@ -333,15 +334,14 @@ fn watch(
         if account.status != "EasActive" {
             return Ended::Done(format!("the account is {}", account.status));
         }
-        match account.server.filter(super::sync::ServerInfo::is_imap) {
-            Some(server) => server,
-            None => return Ended::Done("the account has no IMAP server".to_string()),
+        let Some(server) = account.server.filter(super::sync::ServerInfo::is_imap) else {
+            return Ended::Done("the account has no IMAP server".to_string());
+        };
+        match connect_imap(&facade, &server) {
+            Ok(conn) => conn,
+            Err(SyncFailure::Auth(text) | SyncFailure::SignIn(text)) => return Ended::Done(text),
+            Err(SyncFailure::Connect(text)) => return Ended::Retry(text),
         }
-    };
-    let mut conn = match open_imap(&server) {
-        Ok(conn) => conn,
-        Err(SyncFailure::Auth(text)) => return Ended::Done(text),
-        Err(SyncFailure::Connect(text)) => return Ended::Retry(text),
     };
     *lock(socket) = conn.socket.as_ref().and_then(|socket| socket.try_clone().ok());
     if stop.load(Ordering::SeqCst) {

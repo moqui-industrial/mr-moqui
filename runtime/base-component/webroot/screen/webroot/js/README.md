@@ -599,6 +599,19 @@ time). Input after an idle beat past the auto-away minutes beats at once, so the
 message") and `m-user-status-dialog` (emoji, text up to 100 characters, clear after: don't clear, 30 minutes, 1 hour, 4 hours, today, this
 week), outside the menu so it outlives it.
 
+## Mail sign-in popup
+
+`moqui.oauthPopup(start, status, options)` (`MoquiLib.js`; `docs/Mail-OAuth.md`) runs a mail account's sign-in with Google or Microsoft in a
+popup. Call it in the click handler, so the window opens before any request and no popup blocker stops it; `start()` is the app's request
+to `EmailClientServices.start#OAuthSignIn` (a promise of `{authUrl, signInId}`), `status(signInId)` its request to `get#OAuthStatus`. The
+callback page (`/emailOAuth/callback`) posts `{type: 'moqui-email-oauth', signInId, status, errorCode, message, emailAccountId, emailAddress,
+expectedAddress}` to its opener on this page's own origin and on the BroadcastChannel `moqui-email-oauth` (a provider page may cut
+`window.opener`); the helper takes it only from that origin and that window (or the channel) and for its own `signInId`. A window closed
+with no message is asked about once by `status`. It resolves with `status` `success`, `error` (`errorCode` as `complete#OAuthSignIn`, and
+`popupBlocked`, `startFailed`) or `cancelled`; no token reaches the page. On `addressMismatch` the app asks the user, then starts again with
+`allowAddressChange`. Options: `width`, `height`, `pollMs`, `closedWaitMs`, `maxWaitMs` (a window cut off from the page), `signal` (an
+AbortSignal that cancels).
+
 ## Server-static screens
 
 `plans/archive/QvtServerStatic.md` is the plan. A screen whose `server-static` names `qvt` (or that has only subscreens placeholders) answers `<path>.qvt` with

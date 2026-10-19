@@ -217,3 +217,131 @@ test("loadScript: a failed load rejects every waiter and a later call tries agai
         console.error = savedError;
     }
 });
+
+// A browser window for oauthPopup: open() gives a popup whose location and closed state a test drives, window
+// messages go to the listeners added, and a BroadcastChannel stand-in delivers what a test posts on it.
+function oauthWindow({ blocked } = {}) {
+    const saved = {};
+    const names = ["open", "location", "addEventListener", "removeEventListener", "BroadcastChannel"];
+    names.forEach((name) => { saved[name] = Object.getOwnPropertyDescriptor(globalThis, name); });
+    const listeners = new Set();
+    const channels = new Set();
+    const popup = { closed: false, location: { href: "" }, close() { this.closed = true; } };
+    const win = {
+        popup, listeners, channels,
+        message: (data, origin, source) => listeners.forEach((listener) => listener({ data, origin, source })),
+        broadcast: (data) => channels.forEach((channel) => channel.onmessage && channel.onmessage({ data })),
+        restore: () => names.forEach((name) => {
+            if (saved[name]) Object.defineProperty(globalThis, name, saved[name]);
+            else delete globalThis[name];
+        }),
+    };
+    globalThis.open = () => (blocked ? null : popup);
+    globalThis.location = { origin: "https://erp.example.com" };
+    globalThis.addEventListener = (type, listener) => { if (type === "message") listeners.add(listener); };
+    globalThis.removeEventListener = (type, listener) => { listeners.delete(listener); };
+    globalThis.BroadcastChannel = class {
+        constructor(name) { this.name = name; channels.add(this); }
+        postMessage() {}
+        close() { channels.delete(this); }
+    };
+    return win;
+}
+
+const waitFor = async (check) => {
+    for (let i = 0; i < 200 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+};
+
+test("oauthPopup takes the outcome only from its own origin and window, with no extra fields", async () => {
+    const win = oauthWindow();
+    try {
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://accounts.example.com/auth?x=1", signInId: "S1" }),
+            async () => ({ status: "pending" }), { pollMs: 5 });
+        await waitFor(() => win.popup.location.href);
+        assert.equal(win.popup.location.href, "https://accounts.example.com/auth?x=1");
+        const outcome = { type: "moqui-email-oauth", signInId: "S1", status: "success", emailAccountId: "A1",
+            emailAddress: "ann@example.com", accessToken: "never" };
+        win.message(outcome, "https://evil.example.com", win.popup);
+        win.message(outcome, "https://erp.example.com", {});
+        win.message({ ...outcome, signInId: "OTHER" }, "https://erp.example.com", win.popup);
+        win.message(outcome, "https://erp.example.com", win.popup);
+        const result = await started;
+        assert.equal(result.status, "success");
+        assert.equal(result.emailAccountId, "A1");
+        assert.equal(result.accessToken, undefined);
+        assert.equal(win.listeners.size, 0);
+        assert.equal(win.channels.size, 0);
+    } finally {
+        win.restore();
+    }
+});
+
+test("oauthPopup hears a window cut off from the page on the channel, and asks the status once it is closed", async () => {
+    let win = oauthWindow();
+    try {
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://login.example.com/a", signInId: "S2" }),
+            async () => ({ status: "pending" }), { pollMs: 5 });
+        await waitFor(() => win.popup.location.href);
+        win.broadcast({ type: "moqui-email-oauth", signInId: "S2", status: "error", errorCode: "addressMismatch", expectedAddress: "a@x.com" });
+        const result = await started;
+        assert.equal(result.errorCode, "addressMismatch");
+        assert.equal(result.expectedAddress, "a@x.com");
+    } finally {
+        win.restore();
+    }
+    // the window closed with no message: the status says how it ended, or after a short wait that it was closed
+    win = oauthWindow();
+    try {
+        let asked = 0;
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://login.example.com/a", signInId: "S3" }),
+            async (id) => { asked++; assert.equal(id, "S3"); return { status: "success", emailAccountId: "A3" }; },
+            { pollMs: 5, cutOffMs: 0 });
+        await waitFor(() => win.popup.location.href);
+        win.popup.closed = true;
+        const result = await started;
+        assert.equal(result.status, "success");
+        assert.equal(result.emailAccountId, "A3");
+        assert.ok(asked >= 1);
+    } finally {
+        win.restore();
+    }
+    win = oauthWindow();
+    try {
+        const started = moqui.oauthPopup(async () => ({ authUrl: "https://login.example.com/a", signInId: "S4" }),
+            async () => ({ status: "pending" }), { pollMs: 5, cutOffMs: 0, closedWaitMs: 20 });
+        await waitFor(() => win.popup.location.href);
+        win.popup.closed = true;
+        const result = await started;
+        assert.equal(result.status, "cancelled");
+        assert.equal(result.errorCode, "closed");
+    } finally {
+        win.restore();
+    }
+});
+
+test("oauthPopup reports a blocked window, a start that failed, and a URL that is not http", async () => {
+    let win = oauthWindow({ blocked: true });
+    try {
+        const result = await moqui.oauthPopup(async () => ({ authUrl: "https://x.example.com", signInId: "S" }), async () => ({}));
+        assert.equal(result.errorCode, "popupBlocked");
+    } finally {
+        win.restore();
+    }
+    win = oauthWindow();
+    try {
+        const result = await moqui.oauthPopup(async () => { throw new Error("Sign-in with Google is not set up"); }, async () => ({}));
+        assert.equal(result.errorCode, "startFailed");
+        assert.match(result.message, /not set up/);
+        assert.ok(win.popup.closed);
+    } finally {
+        win.restore();
+    }
+    win = oauthWindow();
+    try {
+        const result = await moqui.oauthPopup(async () => ({ authUrl: "javascript:alert(1)", signInId: "S" }), async () => ({}));
+        assert.equal(result.errorCode, "startFailed");
+        assert.equal(win.popup.location.href, "");
+    } finally {
+        win.restore();
+    }
+});
