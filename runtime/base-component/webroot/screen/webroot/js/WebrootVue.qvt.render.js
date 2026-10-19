@@ -6,7 +6,7 @@
 (function (moqui) {
     "use strict";
     moqui.qvtRenders = {
-        "m-avatar": { hash: "626354a7", make: function (Vue) {
+        "m-avatar": { hash: "ad2eb49a", make: function (Vue) {
             const { openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, resolveComponent: _resolveComponent, createBlock: _createBlock, normalizeClass: _normalizeClass, createTextVNode: _createTextVNode, withCtx: _withCtx } = Vue
 
             return function render(_ctx, _cache) {
@@ -40,11 +40,11 @@
                           key: 2,
                           name: "sym_o_person"
                         })),
-                  (_ctx.presence)
+                  (_ctx.shownPresence)
                     ? (_openBlock(), _createElementBlock("span", {
                         key: 3,
-                        class: _normalizeClass(["m-avatar-presence", 'm-presence-' + _ctx.presence]),
-                        title: _ctx.presence
+                        class: _normalizeClass(["m-avatar-presence", 'm-presence-' + _ctx.shownPresence]),
+                        title: _ctx.shownPresence
                       }, null, 10, ["title"]))
                     : _createCommentVNode("", true),
                   (_ctx.tooltip && _ctx.name)
@@ -2034,7 +2034,7 @@
               }, 8, ["href", "class"]))
             }
         } },
-        "m-qapps-root": { hash: "fbb9912b", make: function (Vue) {
+        "m-qapps-root": { hash: "f304ab9b", make: function (Vue) {
             const { resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, renderList: _renderList, Fragment: _Fragment, createElementVNode: _createElementVNode, normalizeClass: _normalizeClass, resolveDirective: _resolveDirective, withDirectives: _withDirectives, resolveDynamicComponent: _resolveDynamicComponent, withModifiers: _withModifiers } = Vue
 
             return function render(_ctx, _cache) {
@@ -2054,6 +2054,8 @@
               const _component_q_badge = _resolveComponent("q-badge")
               const _component_m_dynamic_dialog = _resolveComponent("m-dynamic-dialog")
               const _component_q_item_label = _resolveComponent("q-item-label")
+              const _component_m_avatar = _resolveComponent("m-avatar")
+              const _component_m_user_status_menu = _resolveComponent("m-user-status-menu")
               const _component_q_toggle = _resolveComponent("q-toggle")
               const _component_q_toolbar = _resolveComponent("q-toolbar")
               const _component_q_header = _resolveComponent("q-header")
@@ -2072,6 +2074,7 @@
               const _component_m_shell_palette = _resolveComponent("m-shell-palette")
               const _component_m_shell_quick_create = _resolveComponent("m-shell-quick-create")
               const _component_m_shell_keys = _resolveComponent("m-shell-keys")
+              const _component_m_user_status_dialog = _resolveComponent("m-user-status-dialog")
               const _directive_close_popup = _resolveDirective("close-popup")
 
               return (_openBlock(), _createElementBlock(_Fragment, null, [
@@ -2417,6 +2420,12 @@
                                         _: 2
                                       }, 1024))
                                     : _createCommentVNode("", true),
+                                  (counter.key === 'chat' && _ctx.myPresence)
+                                    ? (_openBlock(), _createElementBlock("span", {
+                                        key: 1,
+                                        class: _normalizeClass(["m-avatar-presence m-shell-presence", 'm-presence-' + _ctx.myPresence])
+                                      }, null, 2))
+                                    : _createCommentVNode("", true),
                                   _createVNode(_component_q_tooltip, null, {
                                     default: _withCtx(() => [
                                       _createTextVNode(_toDisplayString(counter.label), 1)
@@ -2569,10 +2578,14 @@
                               flat: "",
                               round: "",
                               dense: "",
-                              icon: "account_circle",
                               id: "m-account"
                             }, {
                               default: _withCtx(() => [
+                                _createVNode(_component_m_avatar, {
+                                  name: _ctx.userFullName || _ctx.username,
+                                  "user-id": _ctx.userId,
+                                  size: "28px"
+                                }, null, 8, ["name", "user-id"]),
                                 _createVNode(_component_q_tooltip, null, {
                                   default: _withCtx(() => [
                                     _createTextVNode(_toDisplayString(_ctx.userFullName || _ctx.labels.account), 1)
@@ -2615,6 +2628,12 @@
                                         (_ctx.userFullName || _ctx.username)
                                           ? (_openBlock(), _createBlock(_component_q_separator, { key: 1 }))
                                           : _createCommentVNode("", true),
+                                        (_ctx.chatStatus)
+                                          ? (_openBlock(), _createBlock(_component_m_user_status_menu, { key: 2 }))
+                                          : _createCommentVNode("", true),
+                                        (_ctx.chatStatus)
+                                          ? (_openBlock(), _createBlock(_component_q_separator, { key: 3 }))
+                                          : _createCommentVNode("", true),
                                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.accountMenuItems, (item) => {
                                           return _withDirectives((_openBlock(), _createBlock(_component_q_item, {
                                             key: item.url,
@@ -2643,7 +2662,7 @@
                                           ])
                                         }), 128)),
                                         (_ctx.accountMenuItems.length)
-                                          ? (_openBlock(), _createBlock(_component_q_separator, { key: 2 }))
+                                          ? (_openBlock(), _createBlock(_component_q_separator, { key: 4 }))
                                           : _createCommentVNode("", true),
                                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.accountPlugins, (accountPlugin, accountIndex) => {
                                           return (_openBlock(), _createBlock(_component_q_item, { key: accountIndex }, {
@@ -2906,7 +2925,10 @@
                 }, 8, ["modelValue", "onUpdate:modelValue", "title"]),
                 _createVNode(_component_m_shell_palette),
                 _createVNode(_component_m_shell_quick_create),
-                _createVNode(_component_m_shell_keys)
+                _createVNode(_component_m_shell_keys),
+                (_ctx.chatStatus)
+                  ? (_openBlock(), _createBlock(_component_m_user_status_dialog, { key: 0 }))
+                  : _createCommentVNode("", true)
               ], 64))
             }
         } },
@@ -4431,6 +4453,256 @@
                   }, null, 8, ["model", "top"]))
                 }), 128))
               ], 8, ["id"]))
+            }
+        } },
+        "m-user-status-dialog": { hash: "644ab304", make: function (Vue) {
+            const { toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, withKeys: _withKeys, createElementVNode: _createElementVNode, resolveDirective: _resolveDirective, withDirectives: _withDirectives, openBlock: _openBlock, createBlock: _createBlock } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_card_section = _resolveComponent("q-card-section")
+              const _component_q_input = _resolveComponent("q-input")
+              const _component_q_select = _resolveComponent("q-select")
+              const _component_q_btn = _resolveComponent("q-btn")
+              const _component_q_card_actions = _resolveComponent("q-card-actions")
+              const _component_q_card = _resolveComponent("q-card")
+              const _component_q_dialog = _resolveComponent("q-dialog")
+              const _directive_close_popup = _resolveDirective("close-popup")
+
+              return (_openBlock(), _createBlock(_component_q_dialog, {
+                modelValue: _ctx.open,
+                "onUpdate:modelValue": $event => ((_ctx.open) = $event)
+              }, {
+                default: _withCtx(() => [
+                  _createVNode(_component_q_card, { style: {"min-width":"320px","max-width":"96vw"} }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_q_card_section, { class: "text-subtitle1" }, {
+                        default: _withCtx(() => [
+                          _createTextVNode(_toDisplayString(_ctx.labels.setStatus), 1)
+                        ]),
+                        _: 1
+                      }),
+                      _createVNode(_component_q_card_section, { class: "q-pt-none q-gutter-y-sm" }, {
+                        default: _withCtx(() => [
+                          _createElementVNode("div", { class: "row no-wrap q-gutter-x-sm" }, [
+                            _createVNode(_component_q_input, {
+                              modelValue: _ctx.emoji,
+                              "onUpdate:modelValue": $event => ((_ctx.emoji) = $event),
+                              dense: "",
+                              outlined: "",
+                              "stack-label": "",
+                              label: _ctx.labels.emoji,
+                              maxlength: "16",
+                              style: {"width":"84px"},
+                              name: "emoji"
+                            }, null, 8, ["modelValue", "onUpdate:modelValue", "label"]),
+                            _createVNode(_component_q_input, {
+                              modelValue: _ctx.text,
+                              "onUpdate:modelValue": $event => ((_ctx.text) = $event),
+                              dense: "",
+                              outlined: "",
+                              "stack-label": "",
+                              autofocus: "",
+                              class: "col",
+                              label: _ctx.labels.statusText,
+                              maxlength: "100",
+                              name: "statusText",
+                              onKeyup: _withKeys(_ctx.save, ["enter"])
+                            }, null, 8, ["modelValue", "onUpdate:modelValue", "label", "onKeyup"])
+                          ]),
+                          _createVNode(_component_q_select, {
+                            modelValue: _ctx.clear,
+                            "onUpdate:modelValue": $event => ((_ctx.clear) = $event),
+                            options: _ctx.clearOptions,
+                            "emit-value": "",
+                            "map-options": "",
+                            dense: "",
+                            outlined: "",
+                            "stack-label": "",
+                            label: _ctx.labels.clearAfter,
+                            name: "clearAt"
+                          }, null, 8, ["modelValue", "onUpdate:modelValue", "options", "label"])
+                        ]),
+                        _: 1
+                      }),
+                      _createVNode(_component_q_card_actions, { align: "right" }, {
+                        default: _withCtx(() => [
+                          _withDirectives(_createVNode(_component_q_btn, {
+                            flat: "",
+                            "no-caps": "",
+                            label: _ctx.labels.cancel
+                          }, null, 8, ["label"]), [
+                            [_directive_close_popup]
+                          ]),
+                          _createVNode(_component_q_btn, {
+                            unelevated: "",
+                            "no-caps": "",
+                            color: "primary",
+                            label: _ctx.labels.save,
+                            loading: _ctx.saving,
+                            id: "m-status-save",
+                            onClick: _ctx.save
+                          }, null, 8, ["label", "loading", "onClick"])
+                        ]),
+                        _: 1
+                      })
+                    ]),
+                    _: 1
+                  })
+                ]),
+                _: 1
+              }, 8, ["modelValue", "onUpdate:modelValue"]))
+            }
+        } },
+        "m-user-status-menu": { hash: "8683de21", make: function (Vue) {
+            const { normalizeClass: _normalizeClass, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, renderList: _renderList, Fragment: _Fragment, createElementBlock: _createElementBlock, resolveDirective: _resolveDirective, withDirectives: _withDirectives } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_item_section = _resolveComponent("q-item-section")
+              const _component_q_item_label = _resolveComponent("q-item-label")
+              const _component_q_item = _resolveComponent("q-item")
+              const _component_q_icon = _resolveComponent("q-icon")
+              const _directive_close_popup = _resolveDirective("close-popup")
+
+              return (_openBlock(), _createElementBlock("div", { class: "m-user-status" }, [
+                _createVNode(_component_q_item, {
+                  id: "m-status-current",
+                  dense: ""
+                }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_q_item_section, {
+                      avatar: "",
+                      class: "m-status-avatar"
+                    }, {
+                      default: _withCtx(() => [
+                        _createElementVNode("span", {
+                          class: _normalizeClass(["m-status-dot", 'm-presence-' + _ctx.currentDot])
+                        }, null, 2)
+                      ]),
+                      _: 1
+                    }),
+                    _createVNode(_component_q_item_section, null, {
+                      default: _withCtx(() => [
+                        _createVNode(_component_q_item_label, null, {
+                          default: _withCtx(() => [
+                            _createTextVNode(_toDisplayString(_ctx.currentLabel), 1)
+                          ]),
+                          _: 1
+                        }),
+                        (_ctx.me.statusText || _ctx.me.emoji)
+                          ? (_openBlock(), _createBlock(_component_q_item_label, {
+                              key: 0,
+                              caption: "",
+                              class: "m-status-text"
+                            }, {
+                              default: _withCtx(() => [
+                                _createTextVNode(_toDisplayString(_ctx.me.emoji ? _ctx.me.emoji + ' ' : '') + _toDisplayString(_ctx.me.statusText), 1)
+                              ]),
+                              _: 1
+                            }))
+                          : _createCommentVNode("", true)
+                      ]),
+                      _: 1
+                    })
+                  ]),
+                  _: 1
+                }),
+                (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.options, (option) => {
+                  return _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                    key: option.value,
+                    dense: "",
+                    clickable: "",
+                    active: _ctx.current === option.value,
+                    "data-status": option.value,
+                    onClick: $event => (_ctx.choose(option.value))
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_q_item_section, {
+                        avatar: "",
+                        class: "m-status-avatar"
+                      }, {
+                        default: _withCtx(() => [
+                          _createElementVNode("span", {
+                            class: _normalizeClass(["m-status-dot", 'm-presence-' + option.dot])
+                          }, null, 2)
+                        ]),
+                        _: 2
+                      }, 1024),
+                      _createVNode(_component_q_item_section, null, {
+                        default: _withCtx(() => [
+                          _createTextVNode(_toDisplayString(option.label), 1)
+                        ]),
+                        _: 2
+                      }, 1024)
+                    ]),
+                    _: 2
+                  }, 1032, ["active", "data-status", "onClick"])), [
+                    [_directive_close_popup]
+                  ])
+                }), 128)),
+                _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                  dense: "",
+                  clickable: "",
+                  "data-status": "message",
+                  onClick: _ctx.openDialog
+                }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_q_item_section, {
+                      avatar: "",
+                      class: "m-status-avatar"
+                    }, {
+                      default: _withCtx(() => [
+                        _createVNode(_component_q_icon, {
+                          name: "sym_o_edit",
+                          size: "xs"
+                        })
+                      ]),
+                      _: 1
+                    }),
+                    _createVNode(_component_q_item_section, null, {
+                      default: _withCtx(() => [
+                        _createTextVNode(_toDisplayString(_ctx.labels.setStatus), 1)
+                      ]),
+                      _: 1
+                    })
+                  ]),
+                  _: 1
+                }, 8, ["onClick"])), [
+                  [_directive_close_popup]
+                ]),
+                (_ctx.me.statusText || _ctx.me.emoji)
+                  ? _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                      key: 0,
+                      dense: "",
+                      clickable: "",
+                      "data-status": "clear",
+                      onClick: _ctx.clearText
+                    }, {
+                      default: _withCtx(() => [
+                        _createVNode(_component_q_item_section, {
+                          avatar: "",
+                          class: "m-status-avatar"
+                        }, {
+                          default: _withCtx(() => [
+                            _createVNode(_component_q_icon, {
+                              name: "sym_o_close",
+                              size: "xs"
+                            })
+                          ]),
+                          _: 1
+                        }),
+                        _createVNode(_component_q_item_section, null, {
+                          default: _withCtx(() => [
+                            _createTextVNode(_toDisplayString(_ctx.labels.clearStatus), 1)
+                          ]),
+                          _: 1
+                        })
+                      ]),
+                      _: 1
+                    }, 8, ["onClick"])), [
+                      [_directive_close_popup]
+                    ])
+                  : _createCommentVNode("", true)
+              ]))
             }
         } }
     };

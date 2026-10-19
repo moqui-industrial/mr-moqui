@@ -163,6 +163,9 @@ along with this software (see the LICENSE.md file). If not, see
             <moqui.basic.Enumeration description="Shell Chatter Screen (subscreen name under the current app root)" enumId="STRT_CHATTER_SCREEN" enumTypeId="ScreenThemeResourceType"/>
             <moqui.basic.Enumeration description="Shell Record Files Screen (subscreen name under the current app root)" enumId="STRT_RECORD_FILES_SCREEN" enumTypeId="ScreenThemeResourceType"/>
             <moqui.basic.Enumeration description="Shell Counts Service (service name, called with userId, answers counts)" enumId="STRT_SHELL_COUNTS_SERVICE" enumTypeId="ScreenThemeResourceType"/>
+            <!-- Chat (org.moqui.impl.ChatServices): whether the current user may see the record a record room is bound to, so a
+                user who is not a member may read and join it; without one only members reach such a room -->
+            <moqui.basic.Enumeration description="Record Visible Service (service name, called with recordEntityName, recordId and checkOnly, answers recordVisible)" enumId="STRT_RECORD_VISIBLE_SERVICE" enumTypeId="ScreenThemeResourceType"/>
         </seed-data>
     </entity>
     <entity entity-name="ScreenThemeIcon" package="moqui.screen" use="configuration" cache="true">

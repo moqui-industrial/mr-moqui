@@ -1,0 +1,234 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Chat and presence (IronStone design-drawers-commons §1.8, §13, §19 "Chat and calls"; impl-drawers-commons M10). No Java
+    counterpart. A Matrix-style store: a room, its members and an append-only timeline of events numbered per room. A chat
+    message is not a CommunicationEvent; an app makes one only when a user links a message to a record or turns it into a
+    task, request or event.
+
+    These are moqui.* entities, which entity filters never apply to (R21): screens read them only through
+    org.moqui.impl.ChatServices, which checks each room. -->
+<entities xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/entity-definition-3.xsd">
+
+    <entity entity-name="ChatRoom" package="moqui.chat" use="transactional" cache="never">
+        <description>A room: a direct message between two or more users (CrtDirect, one per set of users, reused), a private
+            group (CrtPrivate), a public room (CrtPublic) or a room bound to a record (CrtRecord, one per record). Who may
+            read and join beyond its members is visibilityEnumId: members only (CrvMembers), any user (CrvUsers), or the
+            users who may see the record (CrvRecord, asked of the service the theme value STRT_RECORD_VISIBLE_SERVICE
+            names). lastEventSeq is the number of the room's last event; the next event takes the next number.</description>
+        <field name="chatRoomId" type="id" is-pk="true"/>
+        <field name="roomTypeEnumId" type="id"/>
+        <field name="roomName" type="text-medium"><description>Empty for a direct room, which shows the other members' names</description></field>
+        <field name="topic" type="text-long"/>
+        <field name="avatarLocation" type="text-medium"/>
+        <field name="visibilityEnumId" type="id"/>
+        <field name="recordEntityName" type="text-medium"/>
+        <field name="recordId" type="text-medium"/>
+        <field name="directKey" type="text-medium"><description>For a direct room, its members' userIds sorted and joined
+            with commas, so the room of a set of users is found and reused</description></field>
+        <field name="retentionDays" type="number-integer"><description>How long the room keeps its events; empty for
+            always (the retention job is later)</description></field>
+        <field name="createdByUserId" type="id"/>
+        <field name="createdDate" type="date-time"/>
+        <field name="archivedDate" type="date-time"><description>An archived room is read only</description></field>
+        <field name="lastEventSeq" type="number-integer"/>
+        <field name="lastEventDate" type="date-time"/>
+        <field name="lastMessageSeq" type="number-integer"><description>The last message of the room's main timeline,
+            for the room list</description></field>
+        <field name="lastMessageUserId" type="id"/>
+        <field name="lastMessageDate" type="date-time"/>
+        <field name="lastMessageSnippet" type="text-medium"/>
+        <relationship type="one" title="ChatRoomType" related="moqui.basic.Enumeration" short-alias="type">
+            <key-map field-name="roomTypeEnumId"/></relationship>
+        <relationship type="one" title="ChatRoomVisibility" related="moqui.basic.Enumeration" short-alias="visibility">
+            <key-map field-name="visibilityEnumId"/></relationship>
+        <relationship type="one-nofk" title="CreatedBy" related="moqui.security.UserAccount" short-alias="createdBy">
+            <key-map field-name="createdByUserId" related="userId"/></relationship>
+        <relationship type="many" related="moqui.chat.ChatRoomMember" short-alias="members">
+            <key-map field-name="chatRoomId"/></relationship>
+        <relationship type="many" related="moqui.chat.ChatEvent" short-alias="events">
+            <key-map field-name="chatRoomId"/></relationship>
+        <index name="CHAT_ROOM_RECORD"><index-field name="recordEntityName"/><index-field name="recordId"/></index>
+        <index name="CHAT_ROOM_DIRECT"><index-field name="directKey"/></index>
+        <index name="CHAT_ROOM_VISIBLE"><index-field name="visibilityEnumId"/><index-field name="archivedDate"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType description="Chat Room Type" enumTypeId="ChatRoomType"/>
+            <moqui.basic.Enumeration description="Direct" enumId="CrtDirect" enumCode="direct" enumTypeId="ChatRoomType" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Private" enumId="CrtPrivate" enumCode="private" enumTypeId="ChatRoomType" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Public" enumId="CrtPublic" enumCode="public" enumTypeId="ChatRoomType" sequenceNum="3"/>
+            <moqui.basic.Enumeration description="Record" enumId="CrtRecord" enumCode="record" enumTypeId="ChatRoomType" sequenceNum="4"/>
+
+            <moqui.basic.EnumerationType description="Chat Room Visibility" enumTypeId="ChatRoomVisibility"/>
+            <moqui.basic.Enumeration description="Members only" enumId="CrvMembers" enumCode="members" enumTypeId="ChatRoomVisibility" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Any user may read and join" enumId="CrvUsers" enumCode="users" enumTypeId="ChatRoomVisibility" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Users who may see the record may read and join" enumId="CrvRecord" enumCode="record" enumTypeId="ChatRoomVisibility" sequenceNum="3"/>
+        </seed-data>
+        <master>
+            <detail relationship="type"/><detail relationship="visibility"/><detail relationship="members"/>
+        </master>
+    </entity>
+
+    <entity entity-name="ChatRoomMember" package="moqui.chat" use="transactional" cache="never">
+        <description>A user in a room, now (leftDate empty) or before. A member reads up to lastReadEventSeq; the events
+            after it are unread. notificationLevelEnumId says what counts and notifies: every message (CnlAll), mentions
+            only (CnlMentions) or nothing (CnlNone). A muted room (isMuted) counts and notifies as CnlMentions and the
+            client plays no sound for it. An agent member (CmrAgent) is a service user whose agentRef names the service
+            the room's messages are handed to (the Assist port's entry point; no model runs in the framework).</description>
+        <field name="chatRoomId" type="id" is-pk="true"/>
+        <field name="userId" type="id" is-pk="true"/>
+        <field name="roleEnumId" type="id"/>
+        <field name="agentRef" type="text-medium"><description>For an agent member, the service that receives the room's
+            messages (deliver#AgentMessage calls it)</description></field>
+        <field name="joinedDate" type="date-time"/>
+        <field name="leftDate" type="date-time"/>
+        <field name="lastReadEventSeq" type="number-integer"/>
+        <field name="lastReadDate" type="date-time"/>
+        <field name="notificationLevelEnumId" type="id"/>
+        <field name="isPinned" type="text-indicator"/>
+        <field name="isMuted" type="text-indicator"/>
+        <field name="addedByUserId" type="id"/>
+        <relationship type="one" related="moqui.chat.ChatRoom" short-alias="room"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
+        <relationship type="one" title="ChatMemberRole" related="moqui.basic.Enumeration" short-alias="role">
+            <key-map field-name="roleEnumId"/></relationship>
+        <relationship type="one" title="ChatNotificationLevel" related="moqui.basic.Enumeration" short-alias="notificationLevel">
+            <key-map field-name="notificationLevelEnumId"/></relationship>
+        <index name="CHAT_MEMBER_USER"><index-field name="userId"/><index-field name="leftDate"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType description="Chat Member Role" enumTypeId="ChatMemberRole"/>
+            <moqui.basic.Enumeration description="Owner" enumId="CmrOwner" enumCode="owner" enumTypeId="ChatMemberRole" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Moderator" enumId="CmrModerator" enumCode="moderator" enumTypeId="ChatMemberRole" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Member" enumId="CmrMember" enumCode="member" enumTypeId="ChatMemberRole" sequenceNum="3"/>
+            <moqui.basic.Enumeration description="Agent" enumId="CmrAgent" enumCode="agent" enumTypeId="ChatMemberRole" sequenceNum="4"/>
+
+            <moqui.basic.EnumerationType description="Chat Notification Level" enumTypeId="ChatNotificationLevel"/>
+            <moqui.basic.Enumeration description="All messages" enumId="CnlAll" enumCode="all" enumTypeId="ChatNotificationLevel" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Mentions only" enumId="CnlMentions" enumCode="mentions" enumTypeId="ChatNotificationLevel" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Nothing" enumId="CnlNone" enumCode="none" enumTypeId="ChatNotificationLevel" sequenceNum="3"/>
+        </seed-data>
+    </entity>
+
+    <entity entity-name="ChatEvent" package="moqui.chat" use="transactional" cache="never">
+        <description>An event of a room's timeline, numbered per room (eventSeq: 1, 2, ... in the order they happened).
+            A message (CetMessage) has its content in contentJson: {body (safe HTML), mentions [userId], attachments
+            [{chatAttachmentId, attachmentSeq, fileName, contentType, fileSize}], records [{entity, id}]}; replyToEventSeq
+            quotes another, threadRootEventSeq puts it in that message's thread. An edit (CetEdit, editsEventSeq the
+            message, contentJson the new body and mentions), a reaction (CetReaction, relatesToEventSeq the message,
+            contentJson {key}), a redaction (CetRedaction, relatesToEventSeq the message or reaction it removes), a pin
+            (CetPin, contentJson {pinned}), a membership change (CetMembership, contentJson {action: join, leave, add,
+            remove, role; userId; roleEnumId}) and a system row (CetSystem: created, renamed, topic, archived) are events
+            too, so the timeline is what the WebSocket pushes. The fields after sentDate are kept on a message for the
+            reads: its current text (bodyText, for search and snippets), the last edit, the redaction (whose content is
+            then cleared), the pin and its thread's reply count.</description>
+        <field name="chatRoomId" type="id" is-pk="true"/>
+        <field name="eventSeq" type="number-integer" is-pk="true"/>
+        <field name="eventTypeEnumId" type="id"/>
+        <field name="senderUserId" type="id"/>
+        <field name="contentJson" type="text-very-long"/>
+        <field name="replyToEventSeq" type="number-integer"/>
+        <field name="threadRootEventSeq" type="number-integer"/>
+        <field name="editsEventSeq" type="number-integer"/>
+        <field name="relatesToEventSeq" type="number-integer"/>
+        <field name="sentDate" type="date-time"/>
+        <field name="bodyText" type="text-very-long"/>
+        <field name="editedDate" type="date-time"/>
+        <field name="lastEditEventSeq" type="number-integer"/>
+        <field name="redactedDate" type="date-time"/>
+        <field name="redactedByUserId" type="id"/>
+        <field name="pinnedDate" type="date-time"/>
+        <field name="pinnedByUserId" type="id"/>
+        <field name="threadReplyCount" type="number-integer"/>
+        <field name="threadLastDate" type="date-time"/>
+        <relationship type="one" related="moqui.chat.ChatRoom" short-alias="room"/>
+        <relationship type="one-nofk" title="Sender" related="moqui.security.UserAccount" short-alias="sender">
+            <key-map field-name="senderUserId" related="userId"/></relationship>
+        <relationship type="one" title="ChatEventType" related="moqui.basic.Enumeration" short-alias="type">
+            <key-map field-name="eventTypeEnumId"/></relationship>
+        <index name="CHAT_EVENT_THREAD"><index-field name="chatRoomId"/><index-field name="threadRootEventSeq"/></index>
+        <index name="CHAT_EVENT_RELATES"><index-field name="chatRoomId"/><index-field name="relatesToEventSeq"/></index>
+        <index name="CHAT_EVENT_EDITS"><index-field name="chatRoomId"/><index-field name="editsEventSeq"/></index>
+        <index name="CHAT_EVENT_UNREAD"><index-field name="chatRoomId"/><index-field name="eventTypeEnumId"/><index-field name="eventSeq"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType description="Chat Event Type" enumTypeId="ChatEventType"/>
+            <moqui.basic.Enumeration description="Message" enumId="CetMessage" enumCode="message" enumTypeId="ChatEventType" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Edit" enumId="CetEdit" enumCode="edit" enumTypeId="ChatEventType" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Reaction" enumId="CetReaction" enumCode="reaction" enumTypeId="ChatEventType" sequenceNum="3"/>
+            <moqui.basic.Enumeration description="Redaction" enumId="CetRedaction" enumCode="redaction" enumTypeId="ChatEventType" sequenceNum="4"/>
+            <moqui.basic.Enumeration description="Membership" enumId="CetMembership" enumCode="membership" enumTypeId="ChatEventType" sequenceNum="5"/>
+            <moqui.basic.Enumeration description="Pin" enumId="CetPin" enumCode="pin" enumTypeId="ChatEventType" sequenceNum="6"/>
+            <moqui.basic.Enumeration description="Call" enumId="CetCall" enumCode="call" enumTypeId="ChatEventType" sequenceNum="7"/>
+            <moqui.basic.Enumeration description="Poll" enumId="CetPoll" enumCode="poll" enumTypeId="ChatEventType" sequenceNum="8"/>
+            <moqui.basic.Enumeration description="System" enumId="CetSystem" enumCode="system" enumTypeId="ChatEventType" sequenceNum="9"/>
+        </seed-data>
+    </entity>
+
+    <entity entity-name="ChatEventMention" package="moqui.chat" use="transactional" cache="never">
+        <description>A user mentioned in a message (or in its edit), so the mention counts and the Mentions filter are one
+            find. A redaction removes its rows.</description>
+        <field name="chatRoomId" type="id" is-pk="true"/>
+        <field name="eventSeq" type="number-integer" is-pk="true"/>
+        <field name="userId" type="id" is-pk="true"/>
+        <relationship type="one" related="moqui.chat.ChatEvent" short-alias="event"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
+        <index name="CHAT_MENTION_USER"><index-field name="userId"/><index-field name="chatRoomId"/><index-field name="eventSeq"/></index>
+    </entity>
+
+    <entity entity-name="ChatAttachment" package="moqui.chat" use="transactional" cache="never">
+        <description>A file of a message, stored as a DbResource under dbresource://chat/(room)/(attachment)/(file name).
+            upload#Attachment makes the row before the message is sent (eventSeq empty); send#Message gives it the
+            message's eventSeq and its place (attachmentSeq).</description>
+        <field name="chatAttachmentId" type="id" is-pk="true"/>
+        <field name="chatRoomId" type="id"/>
+        <field name="eventSeq" type="number-integer"/>
+        <field name="attachmentSeq" type="number-integer"/>
+        <field name="location" type="text-medium"/>
+        <field name="fileName" type="text-medium"/>
+        <field name="contentType" type="text-medium"/>
+        <field name="fileSize" type="number-integer"/>
+        <field name="uploadedByUserId" type="id"/>
+        <field name="uploadedDate" type="date-time"/>
+        <relationship type="one" related="moqui.chat.ChatRoom" short-alias="room"/>
+        <index name="CHAT_ATTACH_EVENT"><index-field name="chatRoomId"/><index-field name="eventSeq"/></index>
+    </entity>
+
+    <entity entity-name="UserStatus" package="moqui.security" use="transactional" cache="never">
+        <description>A user's presence and status (design-drawers-commons §1.8), set from the account menu: online, away, do
+            not disturb or invisible, a status text with an emoji, and a time it clears at. The client's heartbeat keeps
+            lastSeenDate (offline after a few minutes without one) and lastActiveDate (away after the CHAT_AUTO_AWAY_MINUTES
+            preference without input). Others see invisible as offline. lastPresence is the presence last published on the
+            userStatus topic, so a change is published once. Do not disturb silences the client's toasts and chat sounds;
+            the notifications are still recorded and counted.</description>
+        <field name="userId" type="id" is-pk="true"/>
+        <field name="statusEnumId" type="id"/>
+        <field name="statusText" type="text-medium"/>
+        <field name="emoji" type="text-short"/>
+        <field name="clearAtDate" type="date-time"/>
+        <field name="statusSetDate" type="date-time"/>
+        <field name="lastActiveDate" type="date-time"/>
+        <field name="lastSeenDate" type="date-time"/>
+        <field name="inCall" type="text-indicator"><description>Set by the call services (later)</description></field>
+        <field name="lastPresence" type="text-short"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
+        <relationship type="one" title="UserPresenceStatus" related="moqui.basic.Enumeration" short-alias="status">
+            <key-map field-name="statusEnumId"/></relationship>
+        <index name="USER_STATUS_SEEN"><index-field name="lastPresence"/><index-field name="lastSeenDate"/></index>
+        <seed-data>
+            <moqui.basic.EnumerationType description="User Presence Status" enumTypeId="UserPresenceStatus"/>
+            <moqui.basic.Enumeration description="Online" enumId="UpsOnline" enumCode="online" enumTypeId="UserPresenceStatus" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Away" enumId="UpsAway" enumCode="away" enumTypeId="UserPresenceStatus" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Do not disturb" enumId="UpsDnd" enumCode="dnd" enumTypeId="UserPresenceStatus" sequenceNum="3"/>
+            <moqui.basic.Enumeration description="Invisible" enumId="UpsInvisible" enumCode="invisible" enumTypeId="UserPresenceStatus" sequenceNum="4"/>
+        </seed-data>
+    </entity>
+</entities>

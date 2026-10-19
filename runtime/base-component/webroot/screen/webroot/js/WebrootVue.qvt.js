@@ -19,6 +19,8 @@
 
     const markRaw = (obj) => (root.Vue && root.Vue.markRaw ? root.Vue.markRaw(obj) : obj);
     const component = (name, definition) => { qvt.components[name] = definition; return definition; };
+    // the components of a script loaded before this one (WebrootChat.js: the account menu's status)
+    Object.keys(moqui.qvtComponents || {}).forEach((name) => component(name, moqui.qvtComponents[name]));
 
     moqui.urlExtensions = { js: "qjs", vue: "qvue", qvt: "qvt" };
 
@@ -3598,7 +3600,8 @@
     component("m-record-files", recordPanel("recordFiles", "mRecordFiles"));
 
     // An avatar (design §19): the face image, else the initials of the name on a color of the name, else a person icon. The
-    // presence dot is drawn only with presence (online, away, dnd, offline; the presence of Comms chat, M10).
+    // presence dot is drawn with presence (online, away, dnd, offline), or for user-id with the presence the chat store has
+    // (moqui.chat, WebrootChat.js), which it asks for.
     moqui.avatar = {
         // the first letters of the first and the last word ("Ada Lovelace" AL, "ada.lovelace@example.com" AL), one for one word
         initials(name) {
@@ -3622,20 +3625,23 @@
     component("m-avatar", {
         name: "mAvatar",
         props: { name: String, image: String, size: { type: String, default: "32px" }, color: String, textColor: { type: String, default: "white" },
-            presence: String, square: Boolean, rounded: Boolean, tooltip: Boolean },
+            presence: String, userId: String, square: Boolean, rounded: Boolean, tooltip: Boolean },
         data() { return { failedImage: "" }; },
         computed: {
+            shownPresence() { return this.presence || (this.userId && moqui.chat ? moqui.chat.presenceOf(this.userId) : ""); },
             showImage() { return !!this.image && this.failedImage !== this.image; },
             initials() { return moqui.avatar.initials(this.name); },
             background() { return this.showImage ? undefined : this.color || moqui.avatar.color(this.name); }
         },
+        watch: { userId(id) { if (id && moqui.chat) moqui.chat.watchUsers([id]); } },
+        mounted() { if (this.userId && !this.presence && moqui.chat) moqui.chat.watchUsers([this.userId]); },
         template:
             '<q-avatar class="m-avatar" :size="size" :color="background" :text-color="showImage ? undefined : textColor" :square="square" :rounded="rounded"' +
                     ' :aria-label="name || undefined">' +
                 '<img v-if="showImage" :src="image" :alt="name || \'\'" @error="failedImage = image">' +
                 '<span v-else-if="initials" class="m-avatar-initials">{{initials}}</span>' +
                 '<q-icon v-else name="sym_o_person"></q-icon>' +
-                '<span v-if="presence" class="m-avatar-presence" :class="\'m-presence-\' + presence" :title="presence"></span>' +
+                '<span v-if="shownPresence" class="m-avatar-presence" :class="\'m-presence-\' + shownPresence" :title="shownPresence"></span>' +
                 '<q-tooltip v-if="tooltip && name">{{name}}</q-tooltip>' +
             '</q-avatar>'
     });
@@ -4769,6 +4775,7 @@
         "        <q-btn v-for=\"counter in headerCounters\" :key=\"counter.key\" flat round dense :id=\"'m-counter-' + counter.key\" :icon=\"counter.icon\"\n" +
         "                :class=\"{'text-primary': counter.tray && trayOpen && (counter.any || trayTab === counter.key)}\" @click=\"counter.tray ? toggleTray(counter.any ? null : counter.key) : setUrl(counter.url)\">\n" +
         "            <q-badge v-if=\"counterCount(counter)\" floating rounded color=\"negative\">{{counterText(counter)}}</q-badge>\n" +
+        "            <span v-if=\"counter.key === 'chat' && myPresence\" class=\"m-avatar-presence m-shell-presence\" :class=\"'m-presence-' + myPresence\"></span>\n" +
         "            <q-tooltip>{{counter.label}}</q-tooltip>\n" +
         "        </q-btn>\n" +
         "\n" +
@@ -4798,13 +4805,18 @@
         "        </q-btn>\n" +
         "\n" +
         // (the screen history is the palette's Recent group)
-        "        <q-btn flat round dense icon=\"account_circle\" id=\"m-account\">\n" +
+        "        <q-btn flat round dense id=\"m-account\">\n" +
+        // the user's avatar with their presence dot (the chat store's, design §1.2)
+        "            <m-avatar :name=\"userFullName || username\" :user-id=\"userId\" size=\"28px\"></m-avatar>\n" +
         "            <q-tooltip>{{userFullName || labels.account}}</q-tooltip>\n" +
         "            <q-menu><q-list style=\"min-width:240px;\">\n" +
         "                <q-item v-if=\"userFullName || username\"><q-item-section>\n" +
         "                    <q-item-label class=\"text-weight-medium\">{{userFullName || username}}</q-item-label><q-item-label v-if=\"userFullName\" caption>{{username}}</q-item-label>\n" +
         "                </q-item-section></q-item>\n" +
         "                <q-separator v-if=\"userFullName || username\"></q-separator>\n" +
+        // the status: online, away, do not disturb, invisible, a status message (WebrootChat.js)
+        "                <m-user-status-menu v-if=\"chatStatus\"></m-user-status-menu>\n" +
+        "                <q-separator v-if=\"chatStatus\"></q-separator>\n" +
         // the account-menu-item providers of the apps (IronStone: Preferences and Account)
         "                <q-item v-for=\"item in accountMenuItems\" :key=\"item.url\" clickable v-close-popup @click=\"setUrl(item.url)\">\n" +
         "                    <q-item-section avatar><m-menu-icon :name=\"item.icon || 'sym_o_chevron_right'\"></m-menu-icon></q-item-section>\n" +
@@ -4871,7 +4883,8 @@
         // the palette, the quick-create dialog and the ? overlay of the keys
         "<m-shell-palette></m-shell-palette>\n" +
         "<m-shell-quick-create></m-shell-quick-create>\n" +
-        "<m-shell-keys></m-shell-keys>\n"
+        "<m-shell-keys></m-shell-keys>\n" +
+        "<m-user-status-dialog v-if=\"chatStatus\"></m-user-status-dialog>\n"
     });
 
     // The text of the suite shell when the page's labels (qapps.xml, localized there) do not have it.
@@ -5044,7 +5057,8 @@
                 if (this.trayOpen) this.reloadTrayTab(this.trayTab);
             },
             // A message of the notification socket: shellCounts sets the badges and reloads the open tab; todayItems, a chatRoom:
-            // topic, notifications and the apps' notification-topic providers reload their tab.
+            // topic, notifications and the apps' notification-topic providers reload their tab. A chat signal (typing, read) does
+            // not, nor a chat event while a screen listens to the chat store (moqui.chat.trayReloads).
             onShellNotification(jsonObj) {
                 const topic = jsonObj && jsonObj.topic ? String(jsonObj.topic) : "";
                 if (!topic) return;
@@ -5054,7 +5068,7 @@
                     if (moqui.isPlainObject(counts)) this.shellCounts = counts;
                     if (this.trayOpen) this.reloadTrayTab(this.trayTab);
                 } else if (topic === "todayItems") this.reloadTrayTab("today");
-                else if (topic.indexOf("chatRoom:") === 0) this.reloadTrayTab("chat");
+                else if (topic.indexOf("chatRoom:") === 0) { if (!moqui.chat || moqui.chat.trayReloads(jsonObj)) this.reloadTrayTab("chat"); }
                 else if (topic === "notifications" || this.shellNotificationTopics.indexOf(topic) >= 0) this.reloadTrayTab("notifications");
             },
             // a count of shellCounts: a number, or a map's total or count
@@ -5471,6 +5485,9 @@
                 return out;
             },
             paletteKeyHint() { return keymap.isMac ? "⌘K" : "Ctrl K"; },
+            // the chat store (WebrootChat.js), for a signed in user: the status in the account menu and the user's own dot
+            chatStatus() { return !!(moqui.chat && this.userId); },
+            myPresence() { return moqui.chat && this.userId ? moqui.chat.myPresence() : ""; },
             paletteSources() {
                 const out = [];
                 this.shellApps.forEach((app) => ((app.providers && app.providers.paletteSources) || []).forEach((source) => {
@@ -5544,6 +5561,8 @@
                 this.notificationClient.registerListener("ALL");
                 this.notificationClient.registerListener("ALL", this.onShellNotification);
             }
+            // the chat store: presence, status, heartbeat, the chat pushes (WebrootChat.js)
+            if (moqui.chat) moqui.chat.start(this);
             // the suite shell: its data once, its keys, and the counts every 5 minutes while the socket is down
             this.loadShellData();
             this.shellKeysOff = keymap.registerScope("global", this.shellKeyBindings());

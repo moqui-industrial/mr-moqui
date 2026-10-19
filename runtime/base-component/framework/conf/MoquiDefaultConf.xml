@@ -797,6 +797,7 @@
         <load-entity location="component://framework/entity/TestEntities.xml"/>
         <load-entity location="component://framework/entity/LlmEntities.xml"/>
         <load-entity location="component://framework/entity/A2AEntities.xml"/>
+        <load-entity location="component://framework/entity/ChatEntities.xml"/>
         <!-- in framework/data -->
         <load-data location="component://framework/data/CommonL10nData.xml"/>
         <load-data location="component://framework/data/CurrencyData.xml"/>
@@ -807,6 +808,7 @@
         <load-data location="component://framework/data/UnitData.xml"/>
         <load-data location="component://framework/data/MoquiSetupData.xml"/>
         <load-data location="component://framework/data/MailSearchData.xml"/>
+        <load-data location="component://framework/data/ChatSetupData.xml"/>
         <load-data location="component://framework/data/SftpDemoData.xml"/>
     </entity-facade>
     <database-list>

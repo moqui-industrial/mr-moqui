@@ -90,7 +90,7 @@ along with this software (see the LICENSE.md file). If not, see
             <render-mode><text type="qvt"><![CDATA[
 <q-timeline color="primary" layout="dense" class="q-mt-sm q-mb-none">
     <q-timeline-entry subtitle="Today 09:12" icon="sym_o_note">
-        <template v-slot:title><div class="row items-center no-wrap q-gutter-x-sm"><m-avatar name="John Doe" size="24px"></m-avatar><span class="text-body2">John Doe logged a note</span></div></template>
+        <template v-slot:title><div class="row items-center no-wrap q-gutter-x-sm"><m-avatar name="John Doe" user-id="EX_JOHN_DOE" size="24px"></m-avatar><span class="text-body2">John Doe logged a note</span></div></template>
         <div class="text-body2">Description reviewed with <span data-mention-id="EX_JOHN_DOE" class="text-primary">@John Doe</span> and the <strong>Products</strong> team.</div>
     </q-timeline-entry>
     <q-timeline-entry subtitle="Yesterday 16:40" icon="sym_o_call">

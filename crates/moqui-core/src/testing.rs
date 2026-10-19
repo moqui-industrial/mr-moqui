@@ -703,10 +703,38 @@ fn eval_pred(pred: &Pred, row: &Row, params: &[Value], idx: &mut usize) -> Resul
     }
 }
 
+/// Two numbers of different kinds as one kind, as SQL compares numbers by value: a script's integer is an `I32` and a
+/// `number-integer` column holds an `I64`.
+fn same_kind_numbers(left: &Value, right: &Value) -> Option<(Value, Value)> {
+    let integer = |value: &Value| match value {
+        Value::I32(number) => Some(i64::from(*number)),
+        Value::I64(number) => Some(*number),
+        _ => None,
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let float = |value: &Value| match value {
+        Value::F64(number) => Some(*number),
+        other => integer(other).map(|number| number as f64),
+    };
+    if std::mem::discriminant(left) == std::mem::discriminant(right) {
+        return None;
+    }
+    if let (Some(a), Some(b)) = (integer(left), integer(right)) {
+        return Some((Value::I64(a), Value::I64(b)));
+    }
+    match (float(left), float(right)) {
+        (Some(a), Some(b)) => Some((Value::F64(a), Value::F64(b))),
+        _ => None,
+    }
+}
+
 fn compare(left: &Value, op: Op, right: &Value) -> bool {
     // As SQL: an order comparison with a null is not true.
     if matches!(op, Op::Lt | Op::Gt | Op::Le | Op::Ge) && (left.is_null() || right.is_null()) {
         return false;
+    }
+    if let Some((left, right)) = same_kind_numbers(left, right) {
+        return compare(&left, op, &right);
     }
     let ordering = cmp_values(left, right);
     // Numbers of two types (an `I32` condition value against an `I64` column, a decimal against an integer) are

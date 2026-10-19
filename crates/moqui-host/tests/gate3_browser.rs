@@ -809,6 +809,179 @@ fn the_record_panels_and_the_rich_text_editor_work_in_chromium() {
     );
 }
 
+/// Presence and the account menu's status (IronStone M10, `js/WebrootChat.js`): the heartbeat makes the user online, which the
+/// dot of the account avatar and of an avatar with the user's id in a screen (the gallery Chatter) show; the menu sets do not
+/// disturb (the dot follows, the page's toasts are off) and a status message; another user's status, set on the server, comes
+/// to the page on the userStatus topic because the two share a room.
+#[test]
+fn the_account_status_and_the_presence_dots_work_in_chromium() {
+    let gate = start_with_data(
+        "browser-status",
+        r#"<entity-facade-xml type="seed">
+            <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="920" resourceTypeEnumId="STRT_CHATTER_SCREEN" resourceValue="Chatter"/>
+            <moqui.security.UserAccount userId="GATE_ADA" username="gate.ada" userFullName="Ada Lovelace"/>
+            <moqui.chat.ChatRoom chatRoomId="GATE_DM" roomTypeEnumId="CrtDirect" visibilityEnumId="CrvMembers" directKey="EX_JOHN_DOE,GATE_ADA" lastEventSeq="0"/>
+            <moqui.chat.ChatRoomMember chatRoomId="GATE_DM" userId="EX_JOHN_DOE" roleEnumId="CmrMember" lastReadEventSeq="0" notificationLevelEnumId="CnlAll"/>
+            <moqui.chat.ChatRoomMember chatRoomId="GATE_DM" userId="GATE_ADA" roleEnumId="CmrMember" lastReadEventSeq="0" notificationLevelEnumId="CnlAll"/>
+        </entity-facade-xml>"#,
+    );
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    browser.navigate(&format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR"));
+    browser.eval(FETCH_SPY);
+    // the heartbeat: online, on the account avatar and on the user's avatar in the Chatter panel
+    browser.wait_for(
+        "the account avatar's dot",
+        "!!document.querySelector('#m-account .m-avatar .m-avatar-presence.m-presence-online')",
+        WAIT,
+    );
+    browser.wait_for(
+        "the dot of an avatar with the user's id",
+        "!!document.querySelector('#DetailChatter .m-avatar .m-avatar-presence.m-presence-online')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("moqui.chat.state.me && moqui.chat.state.me.status"),
+        "online"
+    );
+    assert_clean(&mut browser, "presence");
+
+    // the account menu: the status, then do not disturb
+    browser.click("the account menu", "document.getElementById('m-account')");
+    browser.wait_for(
+        "the status in the account menu",
+        "!!document.getElementById('m-status-current') && document.getElementById('m-status-current').innerText.indexOf('Online') >= 0",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("Array.from(document.querySelectorAll('.m-user-status [data-status]')).map((el) => el.dataset.status).join(',')"),
+        "online,away,dnd,invisible,message"
+    );
+    browser.click(
+        "Do not disturb",
+        "document.querySelector('.m-user-status [data-status=dnd]')",
+    );
+    let set = fetched(&mut browser, "the status post", "/setUserStatus");
+    assert_eq!(set["status"], 200, "{set}");
+    let answer: serde_json::Value = serde_json::from_str(set["body"].as_str().unwrap()).unwrap();
+    assert_eq!(answer["myStatus"]["status"], "dnd", "{set}");
+    assert_eq!(answer["myStatus"]["presence"], "dnd", "{set}");
+    browser.wait_for(
+        "the do-not-disturb dot",
+        "!!document.querySelector('#m-account .m-avatar-presence.m-presence-dnd') \
+         && !!document.querySelector('#DetailChatter .m-avatar .m-avatar-presence.m-presence-dnd')",
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("moqui.chat.quiet() && moqui.webrootVue.notificationClient.displayEnable === false"),
+        true
+    );
+
+    // a status message, kept until it is cleared
+    browser.click("the account menu", "document.getElementById('m-account')");
+    browser.wait_for(
+        "the status message item",
+        "!!document.querySelector('.m-user-status [data-status=message]') && document.querySelector('.m-user-status [data-status=message]').offsetParent !== null",
+        WAIT,
+    );
+    browser.click(
+        "Set a status message",
+        "document.querySelector('.m-user-status [data-status=message]')",
+    );
+    browser.wait_for(
+        "the status dialog",
+        "!!document.querySelector('.q-dialog input[name=statusText]')",
+        WAIT,
+    );
+    browser.click(
+        "the status text",
+        "document.querySelector('.q-dialog input[name=statusText]')",
+    );
+    browser.type_text("In a meeting");
+    browser.click("Save", "document.getElementById('m-status-save')");
+    browser.wait_for(
+        "the saved status message",
+        "moqui.chat.state.me && moqui.chat.state.me.statusText === 'In a meeting' && !document.querySelector('.q-dialog input[name=statusText]')",
+        WAIT,
+    );
+    browser.click("the account menu", "document.getElementById('m-account')");
+    browser.wait_for(
+        "the status message in the menu",
+        "!!document.querySelector('#m-status-current .m-status-text') && document.querySelector('#m-status-current .m-status-text').innerText.indexOf('In a meeting') >= 0 \
+         && document.getElementById('m-status-current').innerText.indexOf('Do not disturb') >= 0",
+        WAIT,
+    );
+    {
+        use moqui_lib::object::Value;
+        let factory = gate.server.factory();
+        let ctx = factory.new_context();
+        let entered = ctx.enter();
+        let authz = ctx.disable_authz();
+        let row = factory
+            .entity()
+            .unwrap()
+            .find("moqui.security.UserStatus")
+            .unwrap()
+            .eq("userId", Value::string("EX_JOHN_DOE"))
+            .one()
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.get("statusEnumId").and_then(Value::as_str), Some("UpsDnd"));
+        assert_eq!(row.get("statusText").and_then(Value::as_str), Some("In a meeting"));
+        drop(authz);
+        drop(entered);
+    }
+    browser.press("Escape");
+
+    // another user's status: Ada, in a direct room with John, comes online and busy; the page hears it on userStatus
+    let deadline = std::time::Instant::now() + WAIT;
+    let mut shown = false;
+    while !shown && std::time::Instant::now() < deadline {
+        let factory = gate.server.factory();
+        let ctx = factory.new_context();
+        let entered = ctx.enter();
+        {
+            let _authz = ctx.disable_authz();
+            moqui_core::user::internal_login_user("gate.ada").unwrap();
+        }
+        let call = |name: &str, parameters: &[(&str, moqui_lib::object::Value)]| {
+            let parameters = parameters
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect();
+            moqui_core::service::sync(&format!("org.moqui.impl.ChatServices.{name}"), &parameters)
+                .unwrap_or_else(|err| panic!("{name}: {err}"))
+        };
+        let authz = ctx.disable_authz();
+        call(
+            "heartbeat#UserStatus",
+            &[("idleSeconds", moqui_lib::object::Value::I64(0))],
+        );
+        call(
+            "set#UserStatus",
+            &[
+                ("status", moqui_lib::object::Value::string("dnd")),
+                ("statusText", moqui_lib::object::Value::string("Writing")),
+            ],
+        );
+        drop(authz);
+        drop(entered);
+        let until = std::time::Instant::now() + Duration::from_millis(750);
+        while std::time::Instant::now() < until {
+            browser.pump(Duration::from_millis(100));
+            if browser.try_eval("moqui.chat.presenceOf('GATE_ADA') === 'dnd' && moqui.chat.statusOf('GATE_ADA').statusText === 'Writing'")
+                .is_ok_and(|value| value == serde_json::Value::Bool(true))
+            {
+                shown = true;
+                break;
+            }
+        }
+    }
+    assert!(shown, "the page did not hear Ada's status");
+    assert_clean(&mut browser, "the account status");
+}
+
 /// The gallery Split: a container-split side by side at 1280 px (the side at its width, both panes shown), stacked at 390 px with the
 /// list alone, a country chosen showing it with the back button, and back to the list. The gallery Wizard: Next with an empty
 /// customer name stays with the error by the field, Next with a name goes to Options with the step in the URL, Back keeps the

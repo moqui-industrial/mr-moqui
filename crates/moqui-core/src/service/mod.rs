@@ -18,6 +18,9 @@
 pub(crate) mod rust_services;
 mod backup;
 pub(crate) mod call;
+mod chat;
+#[cfg(test)]
+mod chat_tests;
 pub mod coverage;
 pub(crate) mod define;
 mod eca;
