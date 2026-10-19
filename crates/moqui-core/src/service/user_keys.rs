@@ -203,12 +203,12 @@ fn create_access_token(
         .eq("loginKey", Value::string(&hashed))
         .one()?;
     let thru = row.as_ref().and_then(|row| row.get("thruDate").cloned()).unwrap_or(Value::Null);
-    if let Some(description) = text(parameters, "description") {
-        facade
-            .find(USER_LOGIN_KEY)?
-            .eq("loginKey", Value::string(&hashed))
-            .update_all([("description".to_string(), Value::string(description))])?;
-    }
+    // a description marks the key as an access token (the user's other login keys are sessions')
+    let description = text(parameters, "description").unwrap_or_else(|| "Access token".to_string());
+    facade
+        .find(USER_LOGIN_KEY)?
+        .eq("loginKey", Value::string(&hashed))
+        .update_all([("description".to_string(), Value::string(description))])?;
     Ok(out([
         ("accessToken", Value::string(token)),
         ("loginKey", Value::string(hashed)),

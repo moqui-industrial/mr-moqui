@@ -30,10 +30,16 @@ Built: [Revision-Management](../docs/Revision-Management.md) (dbresource reverse
 
 | Area | Item | Source |
 |---|---|---|
-| Git | No push: gitoxide has none yet. A `db` repository is published by `export#GitRepository` and the git command line. Add `push#GitRepository` when gix supports it | `resource/git/fs.rs` |
+| Git | No push to another server: gitoxide has none yet. A `db` repository is published by `export#GitRepository` and the git command line. Add `push#GitRepository` when gix supports it (pushes *to* Moqui are served: [Git-Hosting](../docs/Git-Hosting.md)) | `resource/git/fs.rs` |
+| Git hosting | `db` repositories send whole objects in a clone (gix-pack only copies deltas from packs, it does not make them); a delta search would shrink clones of long histories | `resource/git/server/pack_out.rs` |
+| Git hosting | No repack: each push to a `local` repository adds a pack, and gix's object database slots fill over many pushes; `repack#GitRepository` (gix has no repack either, so the system git or our own) | `resource/git/server/pack_in.rs` |
+| Git hosting | Not served yet: partial clone (`filter blob:none`), `report-status-v2`, `push-cert`, the dumb HTTP protocol, anonymous read of a public repository | `resource/git/server/` |
+| Git hosting | `GitUpdate` rows (the push log, and one per `git://` write a gitECA rule listens to, such as a wiki save into a repository Mantle's rules watch) are never purged; a job that removes done ones past an age | `resource/git/events.rs` |
+| Git hosting | `SSH_GIT` is granted to ADMIN only: `has_permission` does not count ALL_USERS, so a grant for every user needs a group of its own | `framework/data/SecurityTypeData.xml` |
 | Git | SSH and `file://` fetches run the system `ssh` and `git-upload-pack`; an in-process SSH transport over `russh` (already linked for the SSH server) would drop that | same |
 | Git | File history walks the first-parent line from the head on each call; a cache of each path's versions by head commit would serve large repositories | `resource/git/ops.rs` `history` |
 | Git | SHA-1 repositories only; no submodules, LFS, tags as versions, or signed commits | same |
+| MrSimpleScreens | `Project/ProjectSummary.xml` logs "decimal valueOf is not supported" in `ActiveProjectSection` for a project with no time or cost figures (seen 2026-10-19, before the git boxes were added) | found 2026-10-19 |
 | Screens | The Editor archetype uses `text-area editor-type="md"`; the co-editing component of the style guide (§8) is not built | `example/screen/Gallery/Editor.xml` |
 | Screens | `sri.baseLinkUrl(url)` is kept on the render (`RenderState.base_link_url`) but nothing reads it: Java's markdown renderers resolve a page's relative links against `getBaseLinkUri()`, and the port's markdown leaves them as written, so a relative link in a wiki page is relative to the screen URL | `screen/render.rs`; Java `ScreenRenderImpl.getBaseLinkUri` |
 | MrSimpleScreens | Groovy `take()` is still called in `Order/FindOrder.xml`, `Shipment/FindShipment.xml` and `Accounting/Reports/AccountLedger.xml` (no JS shim); the wiki screens' calls were changed to `substring` | found 2026-10-18 |

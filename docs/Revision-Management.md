@@ -77,8 +77,9 @@ Each repository is a `moqui.resource.GitRepository` row, edited under System, Re
   Postgres compresses large `bytea` values). The database backup holds the repository. Objects are byte for byte
   git's, so an export has the same commit ids. Two servers writing the same branch are kept consistent by the ref
   update, which locks the `GitRef` row and compares before it writes.
-- **`local`**: a bare repository on disk, created on first use (or by `init#GitRepository`). Clone it, or push to it,
-  with the git command line; a push to its branch is seen on the next read.
+- **`local`**: a bare repository on disk, created on first use (or by `init#GitRepository`). Clone and push it at
+  `/git/<repositoryId>.git` or over SSH ([Git-Hosting](Git-Hosting.md)); a push to its branch is seen on the next
+  read.
 - **`remote`**: a read-only mirror of `remoteUrl`, under `localPath`. Writes are refused. `fetch#GitRepository`
   replaces the mirror's branch with the remote's; the first fetch creates the mirror. A fetch is refused in sim mode.
 
@@ -105,11 +106,13 @@ at `git://<repositoryId>/<SPACE>.md`. Each page save is then a commit, and the p
 
 ### Limits
 
-- **No push.** gitoxide, the git library, does not push yet. To publish a `db` repository, export it and push the
-  export with the git command line; a `local` repository can be pushed from directly.
+- **Hosting.** Clone, fetch and push of these repositories over HTTPS and SSH, and the gitECA rules a push runs, are in
+  [Git-Hosting](Git-Hosting.md). There is still no push *from* a repository to another server: publish a `db`
+  repository with `export#GitRepository` and the git command line.
 - **Transports.** HTTPS is built in (reqwest on rustls). A `file://` or local-path URL in a fetch runs the system
   `git-upload-pack`, and an `ssh://` URL the system `ssh`; import from a local repository directory or another
   `git://` repository needs neither, as it copies objects directly.
+- **Mirrors** fetch every branch and tag and drop the refs the remote dropped; `git://` locations read the row's branch.
 - SHA-1 repositories only. No submodules, LFS, or signed commits.
 - The `git` cargo feature of `moqui-core` (on by default, off in the browser build) links gitoxide. Without it the
   `git` scheme is not installed.
