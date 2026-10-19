@@ -154,6 +154,15 @@ pub trait ResourceProvider: Send + Sync + std::fmt::Debug {
     fn write_bytes(&self, location: &str, _bytes: &[u8]) -> Result<(), Error> {
         Err(Error::new(format!("writing is not supported: {location}")))
     }
+    /// Write the file at `location` from `input` (of `size` bytes, when known), as an upload streams: by default read
+    /// into memory and [`ResourceProvider::write_bytes`].
+    fn write_from(&self, location: &str, input: &mut dyn std::io::Read, _size: Option<u64>) -> Result<(), Error> {
+        let mut bytes = Vec::new();
+        input
+            .read_to_end(&mut bytes)
+            .map_err(|err| Error::new(format!("reading the content for {location}: {err}")))?;
+        self.write_bytes(location, &bytes)
+    }
     fn make_directory(&self, location: &str) -> Result<(), Error> {
         Err(Error::new(format!("mkdir is not supported: {location}")))
     }

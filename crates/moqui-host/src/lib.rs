@@ -854,6 +854,8 @@ fn serve_thread(
         .factory
         .clone()
         .ok_or_else(|| moqui_lib::error::Error::new("http server has no factory"))?;
+    // what uploads cut short by a stop left behind
+    moqui_core::web::multipart::Spool::under(factory.runtime_dir()).sweep();
     let cluster = process
         .cluster_edge
         .as_ref()

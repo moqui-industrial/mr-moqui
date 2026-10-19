@@ -518,6 +518,26 @@ impl ResourceFacade {
         }))
     }
 
+    /// Write a file from `input` (of `size` bytes, when known), creating its parent directories: an upload streamed
+    /// to storage, never all in memory where the storage can take it as it is read (a file, a `git://` content blob).
+    pub fn write_from(&self, location: &str, input: &mut dyn std::io::Read, size: Option<u64>) -> Result<(), Error> {
+        if let Some(provider) = self.provider(location) {
+            return provider.write_from(location, input, size);
+        }
+        if scheme_of(location) == "dbresource" {
+            let mut bytes = Vec::new();
+            input.read_to_end(&mut bytes).map_err(|err| io_error(location, &err))?;
+            return self.write_bytes(location, &bytes);
+        }
+        let path = self.writable_path(location)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| io_error(location, &err))?;
+        }
+        let mut file = std::fs::File::create(&path).map_err(|err| io_error(location, &err))?;
+        std::io::copy(input, &mut file).map_err(|err| io_error(location, &err))?;
+        Ok(())
+    }
+
     /// The kind, size, and last-modified milliseconds of a location, or `None` when nothing is there.
     pub fn stat(&self, location: &str) -> Result<Option<ResourceStat>, Error> {
         if let Some(provider) = self.provider(location) {

@@ -1079,6 +1079,60 @@ impl GitStore for DbStore {
         Ok(id)
     }
 
+    /// A large object into a content blob as it is read, hashed as git hashes it on the way.
+    fn write_stream(&self, kind: Kind, size: u64, input: &mut dyn std::io::Read) -> Result<ObjectId, Error> {
+        if size <= self.large_object {
+            let mut data = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
+            std::io::Read::read_to_end(
+                &mut <&mut dyn std::io::Read as std::io::Read>::take(input, size.saturating_add(1)),
+                &mut data,
+            )
+                .map_err(|err| Error::new(format!("reading a git object: {err}")))?;
+            if data.len() as u64 != size {
+                return Err(Error::new(format!("a git object of {} bytes, not {size}", data.len())));
+            }
+            return self.write(kind, &data);
+        }
+        let _rows = super::rows_guard();
+        let mut hasher = gix::hash::hasher(gix::hash::Kind::Sha1);
+        hasher.update(&gix::objs::encode::loose_header(kind, size));
+        let mut writer = self.blobs().begin()?;
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut read = 0u64;
+        loop {
+            let count = input
+                .read(&mut buf)
+                .map_err(|err| Error::new(format!("reading a git object: {err}")))?;
+            if count == 0 {
+                break;
+            }
+            read += count as u64;
+            if read > size {
+                return Err(Error::new(format!("a git object of more than {size} bytes")));
+            }
+            hasher.update(&buf[..count]);
+            writer.write(&buf[..count])?;
+        }
+        if read != size {
+            return Err(Error::new(format!("a git object of {read} bytes, not {size}")));
+        }
+        let id = hasher
+            .try_finalize()
+            .map_err(|err| Error::new(format!("hashing a git object: {err}")))?;
+        if self.contains_many(std::slice::from_ref(&id))?.contains(&id) {
+            // the writer, dropped, deletes what it wrote
+            self.freshen(std::slice::from_ref(&id))?;
+            return Ok(id);
+        }
+        let blob = writer.finish(&crate::resource::blob::Expected {
+            id: None,
+            size: Some(size),
+        })?;
+        let statements = self.statements()?;
+        self.insert_chunk(vec![NewRow::blob(id, kind, size, blob.id)], &statements)?;
+        Ok(id)
+    }
+
     fn write_batch(&self, objects: &mut dyn Iterator<Item = Result<(Kind, Vec<u8>), Error>>) -> Result<usize, Error> {
         let mut incoming = objects.map(|object| object.map(|(kind, data)| Incoming::Content { kind, data }));
         self.store_objects(&mut incoming)

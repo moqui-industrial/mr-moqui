@@ -149,4 +149,47 @@ fn large_files_stream_with_ranges_and_validators() {
     assert_eq!(status, 200, "{body}");
     assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
     drop(slow);
+
+    // an upload is read as it arrives, spooled, and streamed into the repository
+    let upload: Vec<u8> = clip.iter().chain(clip.iter()).chain(clip.iter()).copied().collect();
+    let boundary = "moqui-upload-boundary";
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"upload[]\"; filename=\"upload.mp4\"\r\n\
+             Content-Type: video/mp4\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(&upload);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let media = format!("db_{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("media"));
+    let path = format!(
+        "/System/Resource/ElFinder/command?resourceRoot={}&cmd=upload&target={media}",
+        encode(ROOT)
+    );
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nAuthorization: {john}\r\n\
+         Content-Type: multipart/form-data; boundary={boundary}\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    let started = Instant::now();
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream.write_all(head.as_bytes()).unwrap();
+    for piece in body.chunks(256 * 1024) {
+        stream.write_all(piece).unwrap();
+    }
+    let mut response = Vec::new();
+    std::io::Read::read_to_end(&mut stream, &mut response).unwrap();
+    let text = String::from_utf8_lossy(&response);
+    assert!(text.starts_with("HTTP/1.1 200"), "{text}");
+    assert!(text.contains("upload.mp4"), "{text}");
+    eprintln!("uploaded {} bytes in {:?}", upload.len(), started.elapsed());
+    let (status, headers, read) = get(&file_url("media/upload.mp4"), &[]);
+    assert_eq!(status, 200);
+    assert_eq!(header(&headers, "content-length"), Some(upload.len().to_string()));
+    assert!(read == upload, "the uploaded file reads back");
+    let spool = gate.runtime.join("tmp/upload");
+    let left = std::fs::read_dir(&spool).map(|entries| entries.count()).unwrap_or(0);
+    assert_eq!(left, 0, "no spool file is left");
 }

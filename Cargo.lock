@@ -5565,6 +5565,7 @@ dependencies = [
  "lettre",
  "mail-parser",
  "md-5 0.10.6",
+ "memchr",
  "moqui-db",
  "moqui-lib",
  "oxc_ast",

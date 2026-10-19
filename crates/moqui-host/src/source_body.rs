@@ -100,5 +100,6 @@ pub(crate) fn body(factory: Arc<ExecutionContextFactory>, stream: ResponseStream
             Err(err) => failed(err.to_string()),
         }
     });
-    axum::body::Body::from_stream(windows)
+    // hyper may poll a body once more after its end, which an `unfold` must not be
+    axum::body::Body::from_stream(futures_util::StreamExt::fuse(windows))
 }

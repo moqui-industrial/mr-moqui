@@ -350,6 +350,21 @@ pub(crate) trait GitStore: Send + Sync + std::fmt::Debug {
     /// Store an object and answer its id. Writing an object that is already there is not an error.
     fn write(&self, kind: Kind, data: &[u8]) -> Result<ObjectId, Error>;
 
+    /// Store an object of `size` bytes read from `input`, and answer its id. A store that keeps large objects apart
+    /// takes it as it is read; by default it is read into memory.
+    fn write_stream(&self, kind: Kind, size: u64, input: &mut dyn std::io::Read) -> Result<ObjectId, Error> {
+        let mut data = Vec::with_capacity(usize::try_from(size).unwrap_or(0).min(64 * 1024 * 1024));
+        std::io::Read::read_to_end(
+            &mut <&mut dyn std::io::Read as std::io::Read>::take(input, size.saturating_add(1)),
+            &mut data,
+        )
+            .map_err(|err| Error::new(format!("reading a git object: {err}")))?;
+        if data.len() as u64 != size {
+            return Err(Error::new(format!("a git object of {} bytes, not {size}", data.len())));
+        }
+        self.write(kind, &data)
+    }
+
     /// Store many objects, skipping those already there. How many were new.
     fn write_batch(&self, objects: &mut dyn Iterator<Item = Result<(Kind, Vec<u8>), Error>>) -> Result<usize, Error> {
         let mut written = 0;

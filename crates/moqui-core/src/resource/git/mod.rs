@@ -741,6 +741,31 @@ impl GitProvider {
 }
 
 impl GitProvider {
+    /// Commit the stored `blob` as the file at `path`; nothing when the file is that blob already.
+    fn put_file(&self, repo: &Repo, location: &str, path: Vec<String>, blob: ObjectId) -> Result<(), Error> {
+        let shown = path.join("/");
+        self.commit(repo, |head| {
+            let existing = match head {
+                Some(head) => ops::resolve(repo.store.as_ref(), &head.tree, &path)?,
+                None => None,
+            };
+            let kind = match existing {
+                Some((mode, _)) if mode.is_tree() => {
+                    return Err(Error::new(format!("is a directory: {location}")));
+                }
+                Some((_, id)) if id == blob => return Ok(None),
+                Some((mode, _)) if mode.is_executable() => EntryKind::BlobExecutable,
+                _ => EntryKind::Blob,
+            };
+            let verb = if existing.is_some() { "Update" } else { "Create" };
+            Ok(Some((
+                vec![Edit::Put(path.clone(), kind, blob)],
+                format!("{verb} {shown}"),
+            )))
+        })?;
+        Ok(())
+    }
+
     /// A new scratch directory under `runtime/tmp` for a copy of objects.
     fn scratch(&self, what: &str, repository_id: &str) -> PathBuf {
         static SCRATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -850,27 +875,25 @@ impl crate::native::ResourceProvider for GitProvider {
             return Err(Error::new(format!("cannot write the root of a repository: {location}")));
         }
         let blob = repo.store.write(Kind::Blob, bytes)?;
-        let shown = path.join("/");
-        self.commit(&repo, |head| {
-            let existing = match head {
-                Some(head) => ops::resolve(repo.store.as_ref(), &head.tree, &path)?,
-                None => None,
-            };
-            let kind = match existing {
-                Some((mode, _)) if mode.is_tree() => {
-                    return Err(Error::new(format!("is a directory: {location}")));
-                }
-                Some((_, id)) if id == blob => return Ok(None),
-                Some((mode, _)) if mode.is_executable() => EntryKind::BlobExecutable,
-                _ => EntryKind::Blob,
-            };
-            let verb = if existing.is_some() { "Update" } else { "Create" };
-            Ok(Some((
-                vec![Edit::Put(path.clone(), kind, blob)],
-                format!("{verb} {shown}"),
-            )))
-        })?;
-        Ok(())
+        self.put_file(&repo, location, path, blob)
+    }
+
+    /// A large file is stored as it is read (a content blob of a `db` repository), never all in memory.
+    fn write_from(&self, location: &str, input: &mut dyn std::io::Read, size: Option<u64>) -> Result<(), Error> {
+        let Some(size) = size else {
+            let mut bytes = Vec::new();
+            input
+                .read_to_end(&mut bytes)
+                .map_err(|err| Error::new(format!("reading the content for {location}: {err}")))?;
+            return self.write_bytes(location, &bytes);
+        };
+        let (repo, path) = self.located(location)?;
+        Self::writable(&repo, location)?;
+        if path.is_empty() {
+            return Err(Error::new(format!("cannot write the root of a repository: {location}")));
+        }
+        let blob = repo.store.write_stream(Kind::Blob, size, input)?;
+        self.put_file(&repo, location, path, blob)
     }
 
     /// Git keeps no empty directories, so a new directory gets an empty `.gitkeep` file, the usual convention. A

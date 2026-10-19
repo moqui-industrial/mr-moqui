@@ -50,8 +50,11 @@ pub(crate) struct ListenLimits {
     /// `webapp_header_timeout`, default 30: a client sends its whole request head in this time. A kept-alive
     /// connection that sends nothing for as long is closed too.
     pub header: Option<Duration>,
-    /// `webapp_body_timeout`, default 60: the whole request body arrives in this time, or the answer is 408.
+    /// `webapp_body_timeout`, default 60: the whole request body arrives in this time, or the answer is 408. Not
+    /// for a `multipart/form-data` upload, which is read as it arrives.
     pub body: Option<Duration>,
+    /// `webapp_upload_idle_timeout`, default 60: an upload that sends nothing for this long is cut off with 408.
+    pub upload_idle: Option<Duration>,
     /// `webapp_request_timeout`, default 300: from the request head to the response head, or the answer is 504.
     /// `/notws` is exempt, and a response body, such as a long download, is sent after it.
     pub request: Option<Duration>,
@@ -68,6 +71,7 @@ impl ListenLimits {
         Self {
             header: seconds_property("webapp_header_timeout", 30),
             body: seconds_property("webapp_body_timeout", 60),
+            upload_idle: seconds_property("webapp_upload_idle_timeout", 60),
             request: seconds_property("webapp_request_timeout", 300),
             connections: moqui_lib::env::get_prop_or_env("webapp_max_connections")
                 .trim()
@@ -300,10 +304,16 @@ async fn run_connection<S>(
         if secure {
             request.extensions_mut().insert(TlsConnection);
         }
-        // a websocket, and a git clone or push (which has its own idle timeout), run as long as they need
-        let deadline = limits
-            .request
-            .filter(|_| request.uri().path() != "/notws" && !request.uri().path().starts_with("/git/"));
+        // a websocket, a git clone or push (which has its own idle timeout), and an upload (whose screen has the
+        // deadline once it has arrived) run as long as they need
+        let upload = request
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.trim_start().to_ascii_lowercase().starts_with("multipart/"));
+        let deadline = limits.request.filter(|_| {
+            request.uri().path() != "/notws" && !request.uri().path().starts_with("/git/") && !upload
+        });
         let call = router.clone().oneshot(request);
         async move {
             match deadline {
@@ -437,11 +447,20 @@ async fn dispatch_screen(
     if declared.is_some_and(|length| length > limit) {
         return plain(413, &format!("request body is larger than {limit} bytes"));
     }
-    let bytes = match read_body(&state, body, limit).await {
-        Ok(bytes) => bytes,
-        Err(refused) => return refused.response(),
-    };
-    web.body = bytes.to_vec();
+    let upload = moqui_core::web::is_multipart(&web);
+    if upload {
+        let content_type = web.header("content-type").unwrap_or("").to_string();
+        match read_multipart(&state, body, limit, &content_type).await {
+            Ok(parsed) => web.multipart = Some(Arc::new(parsed)),
+            Err(refused) => return refused.response(),
+        }
+    } else {
+        let bytes = match read_body(&state, body, limit).await {
+            Ok(bytes) => bytes,
+            Err(refused) => return refused.response(),
+        };
+        web.body = bytes.to_vec();
+    }
     let log = RequestLog {
         started_millis,
         client_ip: moqui_core::web::client_ip(&web),
@@ -469,7 +488,15 @@ async fn dispatch_screen(
         }
         return internal_error(err.message());
     }
-    match result.await {
+    // an upload was exempt from the request deadline while it arrived; its screen has the deadline
+    let result = match state.limits.request.filter(|_| upload) {
+        Some(deadline) => match tokio::time::timeout(deadline, result).await {
+            Ok(result) => result,
+            Err(_) => return plain(504, "the request took too long"),
+        },
+        None => result.await,
+    };
+    match result {
         Ok(response) => {
             log.queue(&response, started.elapsed());
             from_web(&state.factory, response)
@@ -478,11 +505,75 @@ async fn dispatch_screen(
     }
 }
 
-/// Why [`read_body`] stopped.
+/// Bytes of an upload gathered before the reader takes them, on a blocking thread (it may write a spool file).
+const UPLOAD_FEED: usize = 1024 * 1024;
+
+/// A `multipart/form-data` body read as it arrives, up to `limit` bytes: its fields, and its files in memory or (past
+/// 256 KiB) spooled to `runtime/tmp/upload`. Each chunk must come within `webapp_upload_idle_timeout`.
+async fn read_multipart(
+    state: &HttpState,
+    body: axum::body::Body,
+    limit: usize,
+    content_type: &str,
+) -> Result<moqui_core::web::multipart::Parsed, BodyRefused> {
+    use futures_util::StreamExt as _;
+    use moqui_core::web::multipart::{MultipartError, MultipartReader, Spool};
+
+    let refused = |err: MultipartError| match err {
+        MultipartError::FieldTooLarge(_) => BodyRefused::TooLarge(limit),
+        MultipartError::Io(why) => BodyRefused::Failed(why),
+        other => BodyRefused::Malformed(other.to_string()),
+    };
+    let spool = Spool::under(state.factory.runtime_dir());
+    let mut reader = MultipartReader::new(content_type, Some(spool)).map_err(refused)?;
+    let mut stream = body.into_data_stream();
+    let mut pending: Vec<u8> = Vec::with_capacity(UPLOAD_FEED);
+    let mut total = 0usize;
+    loop {
+        let next = match state.limits.upload_idle {
+            Some(idle) => tokio::time::timeout(idle, stream.next())
+                .await
+                .map_err(|_| BodyRefused::TimedOut)?,
+            None => stream.next().await,
+        };
+        let done = match next {
+            Some(Ok(chunk)) => {
+                total += chunk.len();
+                if total > limit {
+                    return Err(BodyRefused::TooLarge(limit));
+                }
+                pending.extend_from_slice(&chunk);
+                false
+            }
+            Some(Err(_)) => return Err(BodyRefused::Malformed("the upload was cut short".to_string())),
+            None => true,
+        };
+        if pending.len() >= UPLOAD_FEED || done {
+            let chunk = std::mem::replace(&mut pending, Vec::with_capacity(UPLOAD_FEED));
+            let (back, fed) = tokio::task::spawn_blocking(move || {
+                let fed = reader.feed(&chunk);
+                (reader, fed)
+            })
+            .await
+            .map_err(|err| BodyRefused::Failed(err.to_string()))?;
+            reader = back;
+            fed.map_err(refused)?;
+        }
+        if done {
+            return reader.finish().map_err(refused);
+        }
+    }
+}
+
+/// Why [`read_body`] or [`read_multipart`] stopped.
 pub(crate) enum BodyRefused {
     /// More than this many bytes.
     TooLarge(usize),
     TimedOut,
+    /// An upload that does not follow its boundary.
+    Malformed(String),
+    /// An upload that could not be spooled.
+    Failed(String),
 }
 
 impl BodyRefused {
@@ -490,6 +581,8 @@ impl BodyRefused {
         match self {
             Self::TooLarge(limit) => plain(413, &format!("request body is larger than {limit} bytes")),
             Self::TimedOut => plain(408, "the request body did not arrive in time"),
+            Self::Malformed(why) => plain(400, why),
+            Self::Failed(why) => internal_error(why),
         }
     }
 }
@@ -841,6 +934,7 @@ mod tests {
         let limits = ListenLimits {
             header: Some(Duration::from_millis(300)),
             body: None,
+            upload_idle: None,
             request: None,
             connections: 1,
             shutdown: None,
@@ -887,6 +981,7 @@ mod tests {
         let limits = ListenLimits {
             header: None,
             body: None,
+            upload_idle: None,
             request: None,
             connections: 4,
             shutdown: Some(Duration::from_millis(300)),
@@ -932,6 +1027,7 @@ mod tests {
         let limits = ListenLimits {
             header: Some(Duration::from_secs(5)),
             body: None,
+            upload_idle: None,
             request: None,
             connections: 4,
             shutdown: None,

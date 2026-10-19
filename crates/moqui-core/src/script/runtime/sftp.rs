@@ -395,7 +395,11 @@ fn data_bytes(ctx: &Ctx<'_>, data: &JsValue<'_>) -> rquickjs::Result<Vec<u8>> {
             return Ok(bytes);
         }
         if let Some(upload) = object.as_class::<super::upload::HostUpload>() {
-            return Ok(upload.borrow().inner.bytes.clone());
+            return upload
+                .borrow()
+                .inner
+                .read_bytes()
+                .map_err(|err| Exception::throw_message(ctx, err.message()));
         }
         if let Ok(location) = object.get::<_, String>("resourceLocation") {
             let found = with_ec(ctx, |ec| ec.factory().resource().get(&location))?;

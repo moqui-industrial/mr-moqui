@@ -13,8 +13,8 @@
  */
 
 //! An uploaded file as a script sees it: what the Java `FileItem` showed (name, type, size) and the ways to
-//! keep the bytes. A script cannot hold binary data, so the bytes go to a `dbresource://` location or are read
-//! as text.
+//! keep the bytes. A script cannot hold binary data, so the bytes go to a resource location (streamed, so a large
+//! upload is not read into memory) or are read as text.
 
 use std::sync::Arc;
 
@@ -52,9 +52,7 @@ impl HostUpload {
 
     #[qjs(get, rename = "size")]
     fn size_property<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        host_guard(&ctx, || {
-            i64_to_js(&ctx, i64::try_from(self.inner.bytes.len()).unwrap_or(i64::MAX))
-        })
+        host_guard(&ctx, || i64_to_js(&ctx, i64::try_from(self.inner.size()).unwrap_or(i64::MAX)))
     }
 
     fn get_name(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
@@ -70,35 +68,44 @@ impl HostUpload {
     }
 
     fn get_size<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        host_guard(&ctx, || {
-            i64_to_js(&ctx, i64::try_from(self.inner.bytes.len()).unwrap_or(i64::MAX))
-        })
+        host_guard(&ctx, || i64_to_js(&ctx, i64::try_from(self.inner.size()).unwrap_or(i64::MAX)))
     }
 
     fn is_in_memory(&self) -> bool {
-        true
+        self.inner.is_in_memory()
     }
 
     /// The bytes as UTF-8 text.
     fn get_string(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
-        host_guard(&ctx, || Ok(String::from_utf8_lossy(&self.inner.bytes).into_owned()))
+        host_guard(&ctx, || {
+            let bytes = self
+                .inner
+                .read_bytes()
+                .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        })
     }
 
     /// The bytes as a stream, as the Java `FileItem.getInputStream`. A script hands it to `putStream` of a resource
     /// reference and closes it.
     fn get_input_stream<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<Class<'js, HostStream>> {
         host_guard(&ctx, || {
-            Class::instance(ctx.clone(), HostStream::new(self.inner.bytes.clone()))
+            let source = self
+                .inner
+                .source()
+                .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+            Class::instance(ctx.clone(), HostStream::new(source))
         })
     }
 
-    /// Store the bytes at a `dbresource://` location.
+    /// Store the file at a resource location, as it is read.
     fn write(&self, ctx: Ctx<'_>, location: String) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            with_ec(&ctx, |ec| {
-                ec.factory().resource().write_bytes(&location, &self.inner.bytes)
-            })?
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))
+            let source = self
+                .inner
+                .source()
+                .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
+            HostStream::new(source).put(&ctx, &location)
         })
     }
 
@@ -109,17 +116,30 @@ impl HostUpload {
 }
 
 /// The bytes of an uploaded file or a resource, as the Java `InputStream` a script passes to `putStream`. A script
-/// cannot read it a byte at a time: it reads all of it as text or a `Uint8Array`, or writes it to a location.
+/// cannot read it a byte at a time: it reads all of it as text or a `Uint8Array`, or writes it to a location, which
+/// takes it as it is read.
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub(super) struct HostStream {
     #[qjs(skip_trace)]
-    bytes: Vec<u8>,
+    source: Arc<dyn crate::resource::source::ByteSource>,
 }
 
 impl HostStream {
-    pub(super) fn new(bytes: Vec<u8>) -> Self {
-        Self { bytes }
+    pub(super) fn new(source: Arc<dyn crate::resource::source::ByteSource>) -> Self {
+        Self { source }
+    }
+
+    fn bytes(&self, ctx: &Ctx<'_>) -> rquickjs::Result<Vec<u8>> {
+        crate::resource::source::read_all(self.source.as_ref()).map_err(|err| Exception::throw_message(ctx, err.message()))
+    }
+
+    /// Write the content to `location` a window at a time.
+    fn put(&self, ctx: &Ctx<'_>, location: &str) -> rquickjs::Result<()> {
+        let mut reader = crate::resource::source::SourceReader::new(Arc::clone(&self.source));
+        let size = self.source.len();
+        with_ec(ctx, |ec| ec.factory().resource().write_from(location, &mut reader, Some(size)))?
+            .map_err(|err| Exception::throw_message(ctx, err.message()))
     }
 }
 
@@ -129,28 +149,23 @@ impl HostStream {
     fn close(&self) {}
 
     fn available<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
-        host_guard(&ctx, || {
-            i64_to_js(&ctx, i64::try_from(self.bytes.len()).unwrap_or(i64::MAX))
-        })
+        host_guard(&ctx, || i64_to_js(&ctx, i64::try_from(self.source.len()).unwrap_or(i64::MAX)))
     }
 
     fn read_all_bytes<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
-            rquickjs::TypedArray::<u8>::new(ctx.clone(), self.bytes.clone()).map(rquickjs::TypedArray::into_value)
+            rquickjs::TypedArray::<u8>::new(ctx.clone(), self.bytes(&ctx)?).map(rquickjs::TypedArray::into_value)
         })
     }
 
     /// The bytes as UTF-8 text.
     fn get_text(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
-        host_guard(&ctx, || Ok(String::from_utf8_lossy(&self.bytes).into_owned()))
+        host_guard(&ctx, || Ok(String::from_utf8_lossy(&self.bytes(&ctx)?).into_owned()))
     }
 
     /// Store the bytes at a location, as `putStream` of that location's reference does.
     fn write(&self, ctx: Ctx<'_>, location: String) -> rquickjs::Result<()> {
-        host_guard(&ctx, || {
-            with_ec(&ctx, |ec| ec.factory().resource().write_bytes(&location, &self.bytes))?
-                .map_err(|err| Exception::throw_message(&ctx, err.message()))
-        })
+        host_guard(&ctx, || self.put(&ctx, &location))
     }
 }
 
@@ -163,11 +178,11 @@ pub(crate) fn text_upload_to_js<'js>(
     content_type: &str,
     text: &str,
 ) -> rquickjs::Result<JsValue<'js>> {
-    let inner = Arc::new(UploadedFile {
-        field_name: field_name.to_string(),
-        file_name: file_name.to_string(),
-        content_type: content_type.to_string(),
-        bytes: text.as_bytes().to_vec(),
-    });
+    let inner = Arc::new(UploadedFile::in_memory(
+        field_name,
+        file_name,
+        content_type,
+        text.as_bytes().to_vec(),
+    ));
     Class::instance(ctx.clone(), HostUpload { inner }).and_then(|class| class.into_js(ctx))
 }

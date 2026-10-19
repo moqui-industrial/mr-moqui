@@ -51,6 +51,9 @@ pub struct WebRequest {
     /// Decoded query pairs in request order. A repeated name becomes a list parameter.
     pub query: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// A `multipart/form-data` body the host read as it arrived ([`multipart::MultipartReader`]), its large files
+    /// spooled to disk; `body` is empty then.
+    pub multipart: Option<std::sync::Arc<multipart::Parsed>>,
     pub peer_ip: String,
     pub session_cookie: Option<String>,
     pub visitor_cookie: Option<String>,
@@ -66,6 +69,7 @@ impl WebRequest {
             headers: BTreeMap::new(),
             query: Vec::new(),
             body: Vec::new(),
+            multipart: None,
             peer_ip: String::new(),
             session_cookie: None,
             visitor_cookie: None,
@@ -880,7 +884,7 @@ pub fn body_limit(request: &WebRequest) -> usize {
     }
 }
 
-pub(crate) fn is_multipart(request: &WebRequest) -> bool {
+pub fn is_multipart(request: &WebRequest) -> bool {
     request
         .header("content-type")
         .unwrap_or("")
@@ -889,9 +893,9 @@ pub(crate) fn is_multipart(request: &WebRequest) -> bool {
         .is_some_and(|start| start.eq_ignore_ascii_case("multipart/"))
 }
 
-const DEFAULT_MAX_UPLOAD: usize = 100 * 1024 * 1024;
+const DEFAULT_MAX_UPLOAD: usize = 2 * 1024 * 1024 * 1024;
 
-/// `webapp_max_upload`: bytes, or a number with a `k`, `m` or `g` suffix. 100 MiB when unset or not a size.
+/// `webapp_max_upload`: bytes, or a number with a `k`, `m` or `g` suffix. 2 GiB when unset or not a size.
 pub fn max_upload() -> usize {
     parse_size(&moqui_lib::env::get_prop_or_env("webapp_max_upload")).unwrap_or(DEFAULT_MAX_UPLOAD)
 }
@@ -927,8 +931,11 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
     let mut json_list = None;
     let mut multipart_files = BTreeMap::new();
     if media.starts_with("multipart/") {
-        let parsed = multipart::parse(request.header("content-type").unwrap_or(""), &request.body)
-            .map_err(|err| BodyError::Multipart(err.to_string()))?;
+        let parsed = match &request.multipart {
+            Some(parsed) => multipart::Parsed::clone(parsed),
+            None => multipart::parse(request.header("content-type").unwrap_or(""), &request.body)
+                .map_err(|err| BodyError::Multipart(err.to_string()))?,
+        };
         pairs.extend(parsed.fields);
         if !upload_executable_allowed() {
             if let Some(file) = parsed.files.iter().find(|file| file.is_executable()) {

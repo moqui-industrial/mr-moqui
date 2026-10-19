@@ -28,8 +28,11 @@
     <default-property name="webapp_status_ips" value="127.0.0.1"/>
     <default-property name="webapp_require_session_token" value="true"/>
     <default-property name="webapp_upload_executable_allow" value="false"/>
-    <!-- Largest multipart/form-data request body, in bytes or with a k, m or g suffix. Other request bodies stop at 1 MiB. -->
-    <default-property name="webapp_max_upload" value="104857600"/>
+    <!-- Largest multipart/form-data request body, in bytes or with a k, m or g suffix (other request bodies stop at
+        webapp_max_body). An upload is read as it arrives, a file over 256 KiB into a file in runtime/tmp/upload, and is
+        cut off when nothing arrives for webapp_upload_idle_timeout seconds. -->
+    <default-property name="webapp_max_upload" value="2147483648"/>
+    <default-property name="webapp_upload_idle_timeout" value="60"/>
     <!-- A file response over 256 KiB streams, read a window at a time as the client takes it; at most
         webapp_transfer_workers reads of files in the database run at once. -->
     <default-property name="webapp_transfer_workers" value="16"/>
