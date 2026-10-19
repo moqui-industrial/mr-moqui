@@ -1,8 +1,10 @@
 // The framework's mail client (org.moqui.impl.EmailClientServices) on the real database: the SQL the message list
 // writes (case-insensitive LIKE, NOT IN with nulls, the date cursor), filing and a delete forever under the foreign
 // keys, a send that cannot connect waiting in the Outbox, a send that goes (through the mail capture, docs/Testing.md
-// "Mail"), and removing an account with its mail. The access rules, the views and the sends in full are
-// the Rust tests in crates/moqui-core/src/service/mail/client_tests.rs.
+// "Mail"), removing an account with its mail, and the sync engine's SQL (an import with its files as DbResource rows,
+// rules, the queue of remote changes, the sync lock of an account whose server is not there). The access rules, the
+// views and the sends in full are the Rust tests in crates/moqui-core/src/service/mail/client_tests.rs, and the sync
+// against scripted servers in sync_tests.rs.
 
 const SERVICES = "org.moqui.impl.EmailClientServices"
 const base = Date.now() - 10 * 86400000
@@ -194,5 +196,96 @@ feature("removing an account deletes its mail, folders, labels and server", {
         folders == 0
         account == 0
         ec.entity.find("moqui.basic.email.EmailServer").condition("emailServerId", serverId).count() == 0
+    },
+})
+
+const MBOX = `From billing@example.com Mon Oct 19 10:00:00 2026
+Message-ID: <mbox1@example.com>
+From: billing@example.com
+To: local@example.com
+Subject: Invoice 7
+Date: Mon, 19 Oct 2026 10:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b1"
+
+--b1
+Content-Type: text/plain
+
+Your invoice is attached.
+--b1
+Content-Type: text/plain; name="invoice.txt"
+Content-Disposition: attachment; filename="invoice.txt"
+
+Total 42
+--b1--
+From friend@example.com Mon Oct 19 11:00:00 2026
+Message-ID: <mbox2@example.com>
+From: friend@example.com
+To: local@example.com
+Subject: Lunch
+Date: Mon, 19 Oct 2026 11:00:00 +0000
+Status: O
+
+Lunch on Friday?
+`
+
+feature("an import, rules, the remote change queue and a sync whose server is not there, on the real database", {
+    when() {
+        ec.user.internalLoginUser("mailClientOwner")
+        const local = mail("create#EmailAccount", { emailAddress: "local@example.com", accountName: "Local" }).emailAccountId
+        const inbox = ec.entity.find("moqui.basic.email.EmailFolder").condition("emailAccountId", local)
+            .condition("folderKindEnumId", "EfkInbox").one().emailFolderId
+        const imported = mail("import#EmailMessages", { emailFolderId: inbox, messageText: MBOX })
+        const again = mail("import#EmailMessages", { emailFolderId: inbox, messageText: MBOX })
+        const invoice = ec.entity.find("moqui.basic.email.EmailMessage").condition("messageId", "<mbox1@example.com>").one()
+        const files = ec.entity.find("moqui.basic.email.EmailMessageAttachment").condition("emailMessageId", invoice.emailMessageId).list()
+        const fileText = files.length ? ec.resource.getLocationReference(files[0].attachmentLocation).getText() : null
+        const ruleId = mail("create#EmailRule", { ruleName: "Invoices", emailAccountId: local,
+            conditionList: [{ field: "subject", operator: "contains", value: "INVOICE" }, { field: "hasAttachment", value: "true" }],
+            actionList: [{ action: "addLabel", value: "Billing" }, { action: "flag" }] }).emailRuleId
+        const ran = mail("run#EmailRules", { emailFolderId: inbox })
+        const rules = mail("find#EmailRules")
+        const labels = ec.entity.find("moqui.basic.email.EmailMessageLabel").condition("emailMessageId", invoice.emailMessageId).count()
+        // an IMAP account whose server is not there: its changes wait in the queue, and its sync says why
+        const remote = mail("create#EmailAccount", { emailAddress: "remote@example.com", storeHost: "127.0.0.1", storePort: "1",
+            storeProtocol: "imap", mailPassword: "secret" }).emailAccountId
+        const remoteInbox = ec.entity.find("moqui.basic.email.EmailFolder").condition("emailAccountId", remote)
+            .condition("folderKindEnumId", "EfkInbox").one().emailFolderId
+        const kept = ec.entity.makeValue("moqui.basic.email.EmailMessage")
+        kept.setFields({ emailMessageId: "MCR1", emailAccountId: remote, emailFolderId: remoteInbox, remoteFolderId: remoteInbox,
+            remoteUid: 7, statusId: "ES_RECEIVED", subject: "Remote", messageId: "<mcr1@example.com>", isRead: "N",
+            messageDate: new Date() }, true, null, null)
+        kept.create()
+        mail("set#MessageFlags", { emailMessageId: "MCR1", read: true })
+        const queued = ec.entity.find("moqui.basic.email.EmailRemoteChange").condition("emailAccountId", remote).list()
+        // the push the change started after its commit may hold the account's sync lock for a moment
+        let synced = null
+        for (let attempt = 0; attempt < 1000 && (synced == null || synced.outcome == "busy"); attempt++)
+            synced = mail("sync#EmailAccount", { emailAccountId: remote })
+        const account = ec.entity.find("moqui.basic.email.EmailAccount").condition("emailAccountId", remote).one()
+        const due = mail("sync#DueEmailAccounts")
+        return { imported, again, files, fileText, ran, rules, ruleId, labels, queued, synced, account, due,
+            flagged: ec.entity.find("moqui.basic.email.EmailMessage").condition("emailAccountId", local).condition("isFlagged", "Y").count(),
+            stillQueued: ec.entity.find("moqui.basic.email.EmailRemoteChange").condition("emailAccountId", remote).count() }
+    },
+    then({ imported, again, files, fileText, ran, rules, ruleId, labels, queued, synced, account, due, flagged, stillQueued }) {
+        imported.importedCount == 2
+        again.importedCount == 0
+        again.duplicateCount == 2
+        files.length == 1
+        files[0].fileName == "invoice.txt"
+        fileText.includes("Total 42")
+        ran.matchedCount == 1
+        flagged == 1
+        labels == 1
+        rules.ruleList.some((rule) => rule.emailRuleId == ruleId && rule.matchedCount == 1)
+        queued.length == 1
+        queued[0].changeType == "flags"
+        synced.outcome == "failed"
+        synced.message.includes("could not connect")
+        account.statusId == "EasError"
+        account.syncLockedUntil == null
+        due.failedCount >= 0
+        stillQueued == 1
     },
 })

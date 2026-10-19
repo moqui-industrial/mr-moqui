@@ -120,6 +120,10 @@ along with this software (see the LICENSE.md file). If not, see
             serviceName="org.moqui.impl.EmailClientServices.send#DueDrafts" cronExpression="0 * * * * ?" paused="N"/>
     <moqui.service.job.ServiceJob jobName="return_SnoozedMessages_frequent" description="Bring back snoozed email whose time has come"
             serviceName="org.moqui.impl.EmailClientServices.return#SnoozedMessages" cronExpression="0 * * * * ?" paused="N"/>
+    <!-- Each IMAP and POP3 account whose last sync is older than its interval (syncIntervalMinutes, else the
+         email_sync_interval property); the IMAP IDLE workers sync an Inbox at once between runs. -->
+    <moqui.service.job.ServiceJob jobName="sync_EmailAccounts_frequent" description="Sync the mail accounts that are due"
+            serviceName="org.moqui.impl.EmailClientServices.sync#DueEmailAccounts" cronExpression="0 * * * * ?" paused="N"/>
 
     <!-- Render ScheduledScreens -->
     <moqui.service.job.ServiceJob jobName="render_ScheduledScreens_frequent" description="Render Scheduled Screens"

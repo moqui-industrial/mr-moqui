@@ -560,8 +560,12 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="emailFolderId" type="id"><description>The EmailFolder of its account; empty for a message in the
             Outbox (scheduled, held for undo, or failed to send)</description></field>
         <field name="emailIdentityId" type="id"><description>The identity a draft is sent from</description></field>
-        <field name="remoteUid" type="number-integer"><description>The IMAP UID in its folder, under the folder's
+        <field name="remoteUid" type="number-integer"><description>The IMAP UID in remoteFolderId, under that folder's
             remoteUidValidity</description></field>
+        <field name="remoteFolderId" type="id"><description>The folder the message is in on the server, which remoteUid
+            belongs to: emailFolderId once the sync has made a local move there too (push#RemoteChanges), the folder it
+            left until then; empty for a message kept only here</description></field>
+        <field name="remoteUidl" type="text-medium"><description>The POP3 UIDL of a message fetched from a POP3 server</description></field>
         <field name="messageDate" type="date-time"><description>The date the mail client sorts by: received for received
             mail, sent for sent mail, the last save of a draft, the time a scheduled message goes out</description></field>
         <field name="isRead" type="text-indicator"/>
@@ -597,6 +601,8 @@ along with this software (see the LICENSE.md file). If not, see
         <relationship type="one" related="moqui.basic.email.EmailServer" short-alias="server"/>
         <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
         <relationship type="one" related="moqui.basic.email.EmailFolder" short-alias="folder"/>
+        <relationship type="one" title="Remote" related="moqui.basic.email.EmailFolder" short-alias="remoteFolder">
+            <key-map field-name="remoteFolderId" related="emailFolderId"/></relationship>
         <relationship type="one" related="moqui.basic.email.EmailIdentity" short-alias="identity"/>
         <relationship type="many" related="moqui.basic.email.EmailMessageLabel" short-alias="labels">
             <key-map field-name="emailMessageId"/></relationship>
@@ -610,6 +616,8 @@ along with this software (see the LICENSE.md file). If not, see
         <index name="EMAIL_MSG_ROOT"><index-field name="rootEmailMessageId"/></index>
         <index name="EMAIL_MSG_SCHED"><index-field name="statusId"/><index-field name="scheduledSendDate"/></index>
         <index name="EMAIL_MSG_SNOOZE"><index-field name="snoozedThruDate"/></index>
+        <index name="EMAIL_MSG_REMOTE"><index-field name="remoteFolderId"/><index-field name="remoteUid"/></index>
+        <index name="EMAIL_MSG_REPLY"><index-field name="inReplyTo"/></index>
 
         <seed-data>
             <!-- Email Message Status -->
@@ -750,6 +758,12 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="statusId" type="id"/>
         <field name="lastSyncDate" type="date-time"/>
         <field name="lastSyncError" type="text-long"/>
+        <field name="syncIntervalMinutes" type="number-integer"><description>How often the sync job syncs the account;
+            empty for the email_sync_interval property (5 minutes)</description></field>
+        <field name="syncLockedUntil" type="date-time"><description>A sync of the account holds it until then
+            (sync#EmailAccount), so no two run at once, on this server or another; the lock of a server that stopped
+            ends then</description></field>
+        <field name="syncLockedBy" type="text-medium"/>
         <field name="sequenceNum" type="number-integer"/>
         <relationship type="one-nofk" title="Owner" related="moqui.security.UserAccount" short-alias="owner">
             <key-map field-name="ownerUserId" related="userId"/></relationship>
@@ -861,10 +875,16 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="folderKindEnumId" type="id"/>
         <field name="remoteUidValidity" type="number-integer"/>
         <field name="remoteHighestModSeq" type="number-integer"/>
-        <field name="remoteUidNext" type="number-integer"/>
+        <field name="remoteUidNext" type="number-integer"><description>The sync's next UID to read: every message from
+            it on is new</description></field>
         <field name="unreadCount" type="number-integer"/>
         <field name="totalCount" type="number-integer"/>
-        <field name="subscribed" type="text-indicator"/>
+        <field name="subscribed" type="text-indicator"><description>Y when the sync reads the folder</description></field>
+        <field name="delimiter" type="text-short"><description>The server's hierarchy delimiter in folderPath</description></field>
+        <field name="lastFlagScanDate" type="date-time"><description>When the sync last read the flags of each message,
+            on a server without CONDSTORE</description></field>
+        <field name="remoteRemovedDate" type="date-time"><description>When the folder was no longer on the server: its
+            local messages are kept, and it is synced again if it comes back</description></field>
         <field name="sequenceNum" type="number-integer"/>
         <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
         <relationship type="one" title="Parent" related="moqui.basic.email.EmailFolder" short-alias="parent">
@@ -882,6 +902,32 @@ along with this software (see the LICENSE.md file). If not, see
             <moqui.basic.Enumeration description="Trash" enumId="EfkTrash" enumTypeId="EmailFolderKind" sequenceNum="6"/>
             <moqui.basic.Enumeration description="Other" enumId="EfkOther" enumTypeId="EmailFolderKind" sequenceNum="9"/>
         </seed-data>
+    </entity>
+    <entity entity-name="EmailRemoteChange" package="moqui.basic.email" use="transactional" cache="never">
+        <description>A local change of an account's mail waiting to be made on its IMAP server (push#RemoteChanges). The
+            sync (sync#EmailAccount) applies them in the order made, at the start and the end of each session and, with
+            the email_sync_push_now property on, right after the change commits. One that cannot be made now (the server
+            cannot be reached, the message has no UID yet) waits for the next session; one that fails ten times is dropped
+            with an error logged. So a local change is not lost while the server is away.</description>
+        <field name="emailRemoteChangeId" type="id" is-pk="true"/>
+        <field name="emailAccountId" type="id"/>
+        <field name="changeType" type="text-short"><description>flags, move, labels, keywords, delete, sent (an APPEND
+            to Sent), createFolder or renameFolder</description></field>
+        <field name="emailMessageId" type="id"><description>The message; a deleted one's row is gone, so its place on the
+            server is kept here too</description></field>
+        <field name="emailFolderId" type="id"><description>The folder of a folder change</description></field>
+        <field name="remoteFolderId" type="id"><description>For a delete: the folder the message was in on the server</description></field>
+        <field name="remoteUid" type="number-integer"/>
+        <field name="remoteUidValidity" type="number-integer"/>
+        <field name="messageId" type="text-medium"><description>The Message-ID, to find a message whose UID is not known</description></field>
+        <field name="changeJson" type="text-long"><description>flags: the flags changed ({isRead, isFlagged, isAnswered});
+            keywords: {add, remove}; renameFolder: {oldName}</description></field>
+        <field name="createdDate" type="date-time"/>
+        <field name="attemptCount" type="number-integer"/>
+        <field name="lastAttemptDate" type="date-time"/>
+        <field name="lastError" type="text-long"/>
+        <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
+        <index name="EMAIL_RCHG_ACCT"><index-field name="emailAccountId"/><index-field name="createdDate"/></index>
     </entity>
     <entity entity-name="EmailLabel" package="moqui.basic.email" use="transactional" cache="never">
         <field name="emailLabelId" type="id" is-pk="true"/>
@@ -915,10 +961,12 @@ along with this software (see the LICENSE.md file). If not, see
     </entity>
     <entity entity-name="EmailRule" package="moqui.basic.email" use="transactional" cache="never">
         <description>A user's rule for received mail: conditionsJson is a list of {field, operator, value} (field from, to,
-            subject, body, hasAttachment, listId, size or a header name; operator contains, is, matches or startsWith),
-            matched all or any by matchAllEnumId; actionsJson a list of {action, value} (moveToFolder, addLabel, markRead,
-            flag, forwardTo, delete, markSpam, createTask, createRequest). Rules run in sequenceNum order on the account
-            they name, or on all of the owner's when emailAccountId is empty; stopProcessing ends the run.</description>
+            cc, subject, body, hasAttachment, listId, size, or header with a header name; operator contains, is, matches
+            (a regular expression) or startsWith, and greater or less for the size), matched all or any by
+            matchAllEnumId; actionsJson a list of {action, value} (moveToFolder, addLabel, markRead, flag, forwardTo,
+            delete, markSpam, stopProcessing; createTask and createRequest for an app to add). Rules run in sequenceNum
+            order on the account they name, or on all of the owner's when emailAccountId is empty, when the sync stores
+            new Inbox mail and on demand (EmailClientServices.run#EmailRules); stopProcessing ends the run.</description>
         <field name="emailRuleId" type="id" is-pk="true"/>
         <field name="ownerUserId" type="id"/>
         <field name="emailAccountId" type="id"><description>Empty for all of the owner's accounts</description></field>
