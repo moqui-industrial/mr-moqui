@@ -1687,9 +1687,9 @@
             });
             return out;
         };
-        const listViewColumns = (values, statusTypeId, status) => {
+        const listViewColumns = (values, statusTypeId, status, statusFlowId) => {
             const out = ec.service.sync().name("org.moqui.impl.StatusServices.get#ListViewColumns").parameters({
-                values, statusTypeId: statusTypeId || null, status: !!status
+                values, statusTypeId: statusTypeId || null, status: !!status, statusFlowId: statusFlowId || null
             }).disableAuthz().call() || {};
             const columns = Array.from(out.columns || []).map((column) => ({
                 value: String(column.value), label: String(column.label || column.value), color: column.color ? String(column.color) : ""
@@ -1736,15 +1736,17 @@
                 const group = ab("group-field");
                 const order = listOf(ab("column-order"));
                 const statusTypeId = xn(ab("status-type-id"));
+                const statusFlowId = xn(ab("status-flow-id"));
                 const isStatus = !!statusTypeId || /^statusId$|StatusId$/.test(group);
                 const url = viewTransition(ab("transition"));
                 boardCfg = {
                     groupField: group, titleField: v.title.name, sumField: ab("sum-field") || null, sumFormat: ab("sum-format") || null,
                     parameterName: ab("parameter-name") || null, keyFields: v.keys.board, columnOrder: order, statusTypeId: statusTypeId || null,
+                    statusFlowId: statusFlowId || null,
                     transition: url ? url.path : null, parameters: url ? Object.assign({}, url.getParameterMap(), hidden) : null, columns: [], flow: {}
                 };
                 if (isStatus || order.length) {
-                    const known = listViewColumns(distinct(order.concat(rows.map((row) => row[group]))), statusTypeId, isStatus);
+                    const known = listViewColumns(distinct(order.concat(rows.map((row) => row[group]))), statusTypeId, isStatus, statusFlowId);
                     boardCfg.columns = known.columns;
                     boardCfg.flow = known.flow;
                 }
@@ -1767,6 +1769,13 @@
                     createTransition: create ? create.path : null, createParameters: create ? Object.assign({}, create.getParameterMap(), hidden) : null,
                     createScreen: screen && !screen.getDisableLink() ? screen.getUrlWithParams() : null, colors
                 };
+                // range-find: the rows of the dates shown, from the screen's form request with the range added (no paging)
+                if (ac("range-find") === "true") {
+                    const actions = sri.makeUrlByType("actions", "transition", null, "false");
+                    if (actions && !actions.getDisableLink()) {
+                        Object.assign(calendarCfg, { rangeFind: true, rangeUrl: actions.path + "/" + encodeURIComponent(at(n, "name")), listName: at(n, "list") || null });
+                    }
+                }
             }
             w("<m-list-views" + A({
                 id: formId + "_views", "form-name": at(n, "name"), "form-location": viewsKey(n), ":views": js_(listOf(at(n, "views"))), ":rows": js_(rows),

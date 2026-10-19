@@ -477,8 +477,9 @@
                 socket.onmessage = (event) => {
                     let jsonObj;
                     try { jsonObj = JSON.parse(event.data); } catch (err) { return; }
-                    (this.topicListeners[jsonObj.topic] || []).forEach((callback) => callback(jsonObj, this));
-                    (this.topicListeners.ALL || []).forEach((callback) => callback(jsonObj, this));
+                    // copies, so a listener that unregisters itself (or another) while called skips none
+                    (this.topicListeners[jsonObj.topic] || []).slice().forEach((callback) => callback(jsonObj, this));
+                    (this.topicListeners.ALL || []).slice().forEach((callback) => callback(jsonObj, this));
                 };
                 socket.onclose = () => { setTimeout(() => this.tryReopen(), 30 * 1000); };
                 socket.onerror = (event) => { console.log(event); };
@@ -494,6 +495,8 @@
                 if (!this.displayEnable) return;
                 if (jsonObj.title && jsonObj.showAlert === true) moqui.notifyNotification(jsonObj, moqui.notifyGrowl);
             };
+            // Calls callback(message, client) for each message of the topic (ALL: every message); no callback is the
+            // alert display. Returns a function that unregisters it, as unregisterListener(topic, callback) does.
             this.registerListener = (topic, callback) => {
                 if (!this.webSocket) this.initWebSocket();
                 const listener = callback || this.displayNotify;
@@ -504,6 +507,22 @@
                     if (this.webSocket.readyState === root.WebSocket.OPEN) this.webSocket.send("subscribe:" + topic);
                 }
                 if (list.indexOf(listener) < 0) list.push(listener);
+                return () => this.unregisterListener(topic, listener);
+            };
+            // Removes a listener registerListener added (the same function; none is the alert display). With the topic's
+            // last listener gone the socket stops asking for the topic. True when the listener was there.
+            this.unregisterListener = (topic, callback) => {
+                const listener = callback || this.displayNotify;
+                const list = this.topicListeners[topic];
+                const index = list ? list.indexOf(listener) : -1;
+                if (index < 0) return false;
+                list.splice(index, 1);
+                if (!list.length) {
+                    delete this.topicListeners[topic];
+                    const socket = this.webSocket;
+                    if (socket && socket.readyState === root.WebSocket.OPEN) socket.send("unsubscribe:" + topic);
+                }
+                return true;
             };
         },
 

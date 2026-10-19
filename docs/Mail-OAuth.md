@@ -82,14 +82,18 @@ An account whose incoming server is POP3 (`storeProtocol` pop3 or pop3s) signs i
 the response goes after the server's `+` continuation, never on the AUTH line (RFC 5034 keeps that to 255 octets, and an access
 token is longer); a refused token is the provider's `+` error challenge, answered with an empty line, then `-ERR`, and is tried
 once more with a new token. The sign-in asks for the provider's `popScope` too (Microsoft: `POP.AccessAsUser.All`; Google's
-`https://mail.google.com/` covers POP, and POP must be on in the Gmail settings). A provider sign-in makes an IMAP account; a POP
-account is one whose server was set to POP3 (update#EmailAccount), whose next sign-in then asks for the POP scope. An account
-switched to POP3 after its sign-in fails its first POP sign-in at Microsoft (no POP scope granted) and waits for a new sign-in.
+`https://mail.google.com/` covers POP, and POP must be on in the Gmail settings). A new account's sign-in makes an IMAP account,
+or with `start#OAuthSignIn storeProtocol pop3` a POP account on the provider's POP3 server (`EmailOAuthProvider.popHost`,
+`popPort`, `popProtocol`: seeded `pop.gmail.com` and `outlook.office365.com`, port 995, `pop3s`; a provider with no `popHost`
+refuses it). That sign-in asks for the POP scope, and the account is made only when it succeeds with the scope granted.
+`get#OAuthProviders` answers each provider's IMAP, POP3 and SMTP servers. An existing account is POP once its server is set to
+POP3 (update#EmailAccount), and its next sign-in then asks for the POP scope; an account switched to POP3 after its sign-in fails
+its first POP sign-in at Microsoft (no POP scope granted) and waits for a new sign-in.
 
 ## The flow
 
 1. The wizard (or a Fix button) calls `start#OAuthSignIn` with the account (`emailAccountId`) or a new account's address
-   (`emailAddress`, `accountName`, `displayName`, `accountKindEnumId`) and gets `{authUrl, signInId}`; `moqui.oauthPopup` opens the
+   (`emailAddress`, `accountName`, `displayName`, `accountKindEnumId`, `storeProtocol` imap or pop3) and gets `{authUrl, signInId}`; `moqui.oauthPopup` opens the
    popup in the click and points it there (`webroot/js/README.md`, "Mail sign-in popup"). A new account is made paused
    (`statusId` `EasPaused`, the default) with a sync window of `syncWindowDays` (365 by default, 0 for all mail), so the sync job
    leaves it until the app has finished its setup and made it active (`update#EmailAccount statusId EasActive`); `statusId`

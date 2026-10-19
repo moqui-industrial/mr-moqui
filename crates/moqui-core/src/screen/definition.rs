@@ -1210,14 +1210,34 @@ fn pull_section_include(
         )));
     };
     sections.insert(name.clone(), section.clone());
-    // As Java's pullSectionInclude: only the sections, forms and trees inside the included section come along.
-    let mut names: Vec<(String, String)> = Vec::new();
+    // As Java's pullSectionInclude: only the sections, forms and trees inside the included section come along, and a
+    // section-include inside it is pulled the same way, from its own location: the sections, forms and trees nested in
+    // the section it includes are then found from this screen too.
+    let mut names: Vec<(String, String, MNode)> = Vec::new();
     for fragment in [&section.widgets, &section.fail_widgets].into_iter().flatten() {
         collect_named(&fragment.node()?, &mut names);
     }
-    for (element, key) in names {
+    for (element, key, node) in names {
         match element.as_str() {
-            "section" | "section-iterate" | "section-include" => {
+            "section-include" => {
+                if depth >= MAX_INCLUDE_DEPTH {
+                    return Err(Error::new(format!(
+                        "{location}: section includes are nested too deeply at {from}"
+                    )));
+                }
+                pull_section_include(
+                    facade,
+                    factory,
+                    &node,
+                    &from,
+                    depth + 1,
+                    sections,
+                    forms,
+                    trees,
+                    sources,
+                )?;
+            }
+            "section" | "section-iterate" => {
                 if let Some(value) = other.sections.get(&key) {
                     sections.entry(key).or_insert_with(|| value.clone());
                 }
@@ -1238,16 +1258,23 @@ fn pull_section_include(
     Ok(())
 }
 
-/// The sections, forms and trees below `node`, by element and name.
-fn collect_named(node: &MNode, out: &mut Vec<(String, String)>) {
+/// The sections, section includes, forms and trees below `node`: element, name and node. A section-include is there
+/// without a name too, as its location may name the section after `#`.
+fn collect_named(node: &MNode, out: &mut Vec<(String, String, MNode)>) {
     for child in node.children() {
         let element = child.name();
-        if matches!(
+        if element == "section-include" {
+            out.push((
+                element.clone(),
+                child.attribute("name").unwrap_or_default(),
+                child.clone(),
+            ));
+        } else if matches!(
             element.as_str(),
-            "section" | "section-iterate" | "section-include" | "form-single" | "form-list" | "tree"
+            "section" | "section-iterate" | "form-single" | "form-list" | "tree"
         ) {
             if let Some(name) = child.attribute("name").filter(|name| !name.is_empty()) {
-                out.push((element.clone(), name));
+                out.push((element.clone(), name, child.clone()));
             }
         }
         collect_named(&child, out);

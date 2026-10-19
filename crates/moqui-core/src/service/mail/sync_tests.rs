@@ -2076,3 +2076,127 @@ fn new_mail_at_a_sync_wakes_its_thread_and_gets_the_automatic_reply() {
     assert_eq!(field(&reply, "rootEmailMessageId"), root_id);
     assert_eq!(sink.sent().len(), 1, "once per sender");
 }
+
+/// The email-ECA rules (`*.emecas.xml`, as Mantle's List-Unsubscribe mailto rule) run once on each new message a sync
+/// brings into the Inbox, IMAP and POP3, with `emailAccountId` and `emailMessageId` of its row: not on the first sync
+/// (the mailbox's history), not on mail that arrived long before the last sync (a backlog), not again at the next
+/// sync, and not on a copy of a message the account has; a rule that fails is logged on its own and the others run.
+#[test]
+fn email_eca_rules_run_once_on_each_new_message_a_sync_brings_in() {
+    const DAY: i64 = 86_400_000;
+    let _lock = crate::user::session::cookie_property_lock();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    alice(&facade);
+    crate::service::eca_rules::install(
+        ctx.factory(),
+        crate::service::eca_rules::from_xml(
+            "",
+            r#"<emecas>
+            <emeca rule-name="Fails"><condition><expression>true</expression></condition>
+                <actions><script>throw new Error('rule boom')</script></actions></emeca>
+            <emeca rule-name="ListUnsubscribeMailto">
+                <condition><expression>/^unsubscribe /i.test(String((fields &amp;&amp; fields.subject) || ''))</expression></condition>
+                <actions><script>ec.message.addMessage('eca ' + fields.subject + ' ' + emailMessageId + ' ' + emailAccountId + ' ' + headers['message-id'] + ' ' + emailServerId)</script></actions>
+            </emeca>
+        </emecas>"#,
+        ),
+    );
+    let ran = || -> Vec<String> {
+        ExecutionContext::with_current(|ec| ec.message().messages().to_vec())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|text| text.starts_with("eca "))
+            .collect()
+    };
+    let dated = |message_id: &str, subject: &str, millis: i64| {
+        let date = jiff::Timestamp::from_millisecond(millis)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .strftime("%a, %d %b %Y %H:%M:%S +0000")
+            .to_string();
+        format!(
+            "Message-ID: {message_id}\nFrom: x@example.com\nTo: alice@example.com\nSubject: {subject}\nDate: {date}\n\nbody\n"
+        )
+    };
+
+    // IMAP: the first sync is history
+    let imap = FakeImap::start(&[]);
+    imap.add_folder("Lists", "\\HasNoChildren", true);
+    imap.add("INBOX", &dated("<old@example.com>", "unsubscribe OLD", now()), &[]);
+    let account = imap_account(imap.port, "app-password");
+    let server = field(
+        &one(&facade, "moqui.basic.email.EmailAccount", "emailAccountId", &account),
+        "emailServerId",
+    );
+    sync(&account);
+    assert!(ran().is_empty(), "{:?}", ran());
+    // new mail: once on each new Inbox message, with its row; a failing rule does not stop the other or the sync
+    imap.add("INBOX", &dated("<new1@example.com>", "unsubscribe TOKEN1", now()), &[]);
+    imap.add("INBOX", &dated("<plain@example.com>", "Hello", now()), &[]);
+    imap.add_dated(
+        "INBOX",
+        &dated("<late@example.com>", "unsubscribe LATE", now() - 10 * DAY),
+        &[],
+        now() - 10 * DAY,
+    );
+    imap.add(
+        "Lists",
+        &dated("<listed@example.com>", "unsubscribe LISTED", now()),
+        &[],
+    );
+    let out = sync(&account);
+    assert_eq!(out_number(&out, "newCount"), 4, "{out:?}");
+    let new1 = by_message_id(&facade, &account, "<new1@example.com>").unwrap();
+    assert_eq!(
+        ran(),
+        [format!(
+            "eca unsubscribe TOKEN1 {} {account} <new1@example.com> {server}",
+            field(&new1, "emailMessageId")
+        )]
+    );
+    // the next sync, and a copy into the Inbox of a message the account has: nothing runs again
+    sync(&account);
+    imap.add(
+        "INBOX",
+        &dated("<listed@example.com>", "unsubscribe LISTED", now()),
+        &[],
+    );
+    sync(&account);
+    assert_eq!(ran().len(), 1, "{:?}", ran());
+
+    // POP3: the same, the newest first and by the Date header
+    let pop = FakePop::start();
+    pop.add("p-old", &dated("<pop-old@example.com>", "unsubscribe POPOLD", now()));
+    let pop_account = out_text(
+        &ok(
+            "create#EmailAccount",
+            &[
+                ("emailAddress", text("alice@example.com")),
+                ("storeHost", text("127.0.0.1")),
+                ("storePort", text(&pop.port.to_string())),
+                ("storeProtocol", text("pop3")),
+                ("mailUsername", text("alice")),
+                ("mailPassword", text("pop-password")),
+            ],
+        ),
+        "emailAccountId",
+    );
+    sync(&pop_account);
+    assert_eq!(ran().len(), 1);
+    pop.add("p-new", &dated("<pop-new@example.com>", "unsubscribe POPNEW", now()));
+    pop.add(
+        "p-late",
+        &dated("<pop-late@example.com>", "unsubscribe POPLATE", now() - 10 * DAY),
+    );
+    let out = sync(&pop_account);
+    assert_eq!(out_number(&out, "newCount"), 2, "{out:?}");
+    sync(&pop_account);
+    let lines = ran();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[1].starts_with("eca unsubscribe POPNEW ") && lines[1].contains(&pop_account),
+        "{lines:?}"
+    );
+}

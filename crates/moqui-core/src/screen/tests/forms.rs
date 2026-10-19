@@ -998,3 +998,67 @@ fn a_text_response_takes_a_type_and_a_file_name_and_an_upload_reads_in_its_chars
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What a client shows of a refused transition carries the messages only, never the Rust source location of the
+/// error (`crates/...rs:line:col` after "Rust:"), which stays in the server log: a service whose body fails in Rust
+/// (its failure in the message facade), a service that is not there called from a script, and the JSON answer of a
+/// script after a failed call.
+#[test]
+fn a_refused_transitions_errors_carry_no_rust_source_location() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-rust-origin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let services = dir.join("OriginServices.xml");
+    std::fs::write(
+        &services,
+        "<services><service verb=\"fail\" noun=\"InRust\" authenticate=\"anonymous-all\"><actions><script><![CDATA[\n\
+         ec.resource.getLocationText('component://MissingDiagnostics/screen/A.xml')\n]]></script></actions></service></services>",
+    )
+    .unwrap();
+    let screen = r#"<screen require-authentication="false">
+    <transition name="failService" require-session-token="false">
+        <service-call name="fail#InRust"/>
+        <default-response url="."/><error-response url="."/>
+    </transition>
+    <transition name="missingService" require-session-token="false">
+        <actions><script>ec.service.sync().name('no.such.Services.do#Nothing').call()</script></actions>
+        <default-response url="."/><error-response url="."/>
+    </transition>
+    <transition name="throws" require-session-token="false">
+        <actions><script>ec.resource.getLocationText('component://MissingDiagnostics/screen/B.xml')</script></actions>
+        <default-response url="."/><error-response url="."/>
+    </transition>
+    <transition name="jsonAnswer" require-session-token="false">
+        <actions><script>
+            ec.service.sync().name('fail#InRust').call()
+            ec.web.sendJsonResponse({done: false})
+        </script></actions>
+        <default-response type="none"/>
+    </transition>
+    <widgets><label text="the page"/></widgets>
+</screen>"#;
+    std::fs::write(dir.join("Origin.xml"), screen).unwrap();
+    let root = dir.join("Origin.xml").to_string_lossy().into_owned();
+    let world = World::open("");
+    {
+        let ctx = world.factory.new_context();
+        let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&services)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+    for path in ["/failService", "/missingService", "/throws", "/jsonAnswer"] {
+        let mut post = request("POST", path);
+        post.set_header("accept", "application/json");
+        post.set_header("x-requested-with", "XMLHttpRequest");
+        let answer = serve_at(&world.factory, post, &root);
+        let text = answer.body_text();
+        assert!(
+            text.contains("MissingDiagnostics") || text.contains("no.such.Services"),
+            "{path}: {} {text}",
+            answer.status
+        );
+        assert!(!text.contains("crates/") && !text.contains("Rust:"), "{path}: {text}");
+        assert!(!text.contains(".rs:"), "{path}: {text}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

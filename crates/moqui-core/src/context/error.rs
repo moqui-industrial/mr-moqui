@@ -184,6 +184,23 @@ impl Error {
     }
 }
 
+/// The text of an error for a person to read (the message facade, a JSON answer, a toast): the message without the
+/// diagnostic lines below it, which are indented (a script's stack frames, the `Rust:` source location, the generated
+/// line and the service it ran in). Those go to the server log ([`Error::diagnostic`]).
+pub fn client_text(text: &str) -> String {
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.starts_with(char::is_whitespace))
+        .collect();
+    let joined = kept.join("\n");
+    let trimmed = joined.trim();
+    if trimmed.is_empty() {
+        text.lines().next().unwrap_or_default().trim().to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// A context error that crossed a lib-typed closure comes back as it went in. Any other lib error keeps the kind of a
 /// context error in its source chain.
 impl From<moqui_lib::error::Error> for Error {

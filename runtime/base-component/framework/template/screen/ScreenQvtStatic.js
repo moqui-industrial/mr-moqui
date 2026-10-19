@@ -1753,7 +1753,8 @@
             const boardCfg = board ? {
                 groupField: at(board, "group-field"), titleField: titleName, sumField: of(board, "sum-field") || null, sumFormat: of(board, "sum-format") || null,
                 parameterName: of(board, "parameter-name") || null, keyFields: keyFields(board), columnOrder: names(literal(board, "column-order")),
-                statusTypeId: literal(board, "status-type-id") || null, transition: path(of(board, "transition")), parameters: {}
+                statusTypeId: literal(board, "status-type-id") || null, statusFlowId: literal(board, "status-flow-id") || null,
+                transition: path(of(board, "transition")), parameters: {}
             } : null;
             const calendarCfg = calendar ? {
                 startField: at(calendar, "start-field"), endField: of(calendar, "end-field") || null, titleField: of(calendar, "title-field") || titleName,
@@ -1766,6 +1767,10 @@
                 note("view-hidden-parameters", n, "the hidden-parameters of form-list " + at(n, "name") + " are not posted by its board or calendar in a server-static screen");
             }
             const base = sri.staticUrl(".", "transition").path || "";
+            // range-find: the rows of the dates shown, from the screen's form request with the range added (no paging)
+            if (calendarCfg && of(calendar, "range-find") === "true" && base && base !== "#") {
+                Object.assign(calendarCfg, { rangeFind: true, rangeUrl: base.replace(/\/$/, "") + "/actions/" + encodeURIComponent(at(n, "name")), listName: at(n, "list") || null });
+            }
             return {
                 attrs: { ":views": js_(names(of(n, "views"))), ":board": boardCfg ? js_(boardCfg) : null, ":calendar": calendarCfg ? js_(calendarCfg) : null,
                     "views-location": String(base === "#" ? "" : base).replace(/^\/(apps|qapps)(?=\/|$)/, "") + "#" + at(n, "name") },

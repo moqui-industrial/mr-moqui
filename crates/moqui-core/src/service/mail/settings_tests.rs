@@ -349,7 +349,14 @@ fn the_account_kind_changes_between_personal_and_shared() {
             ("permissionEnumId", text("EapRead")),
         ],
     );
-    refused("update#EmailAccount", &kind("EakExternal"), "shared with 2 more people");
+    // in plain words, without the account's id
+    let _ = call("update#EmailAccount", &kind("EakExternal"));
+    let refusal = errors();
+    assert_eq!(
+        refusal,
+        "This account is shared with 2 more people: remove them first, so only one is left, to make it personal"
+    );
+    assert!(!refusal.contains(&account), "{refusal}");
     login("carol");
     refused("update#EmailAccount", &kind("EakExternal"), "You may not change");
     login("bob");
@@ -795,7 +802,7 @@ fn a_rule_is_tried_on_recent_mail_without_acting() {
         "R3",
         "EfkInbox",
         DAY,
-        &[("subject", text("Invoice 3"))],
+        &[("subject", text("Invoice 3")), ("rootEmailMessageId", text("R1"))],
     );
     message(
         &facade,
@@ -831,8 +838,28 @@ fn a_rule_is_tried_on_recent_mail_without_acting() {
     assert_eq!(out_number(&tried, "testedCount"), 3);
     assert_eq!(out_number(&tried, "matchedCount"), 2);
     assert_eq!(get(&maps(tried.get("matchList"))[0], "subject"), "Invoice 3");
-    // nothing moved and nothing counted
+    // each match carries what opens it in the Inbox: the store, its thread (R3 is a reply in R1's), account and folder
     let inbox = folder_id(&facade, &account, "EfkInbox");
+    let opens = |found: &IndexMap<String, Value>| {
+        [
+            "store",
+            "threadId",
+            "rootEmailMessageId",
+            "emailAccountId",
+            "emailFolderId",
+        ]
+        .map(|name| get(found, name))
+    };
+    let matches = maps(tried.get("matchList"));
+    assert_eq!(
+        opens(&matches[0]),
+        ["email", "R1", "R1", account.as_str(), inbox.as_str()]
+    );
+    assert_eq!(
+        opens(&matches[1]),
+        ["email", "R1", "R1", account.as_str(), inbox.as_str()]
+    );
+    // nothing moved and nothing counted
     assert_eq!(
         field(&one(&facade, MESSAGE, "emailMessageId", "R1"), "emailFolderId"),
         inbox

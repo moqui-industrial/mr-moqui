@@ -584,26 +584,7 @@ fn load_by_name(shared: &Shared, name: &str) -> Option<Arc<ServiceDef>> {
         return None;
     }
     next.searched.insert(path);
-    // A service that implements one of a file not read yet failed to register: read that file, as Java looks
-    // the implemented service up by name, and repeat for what that file implements.
-    loop {
-        let missing: Vec<PathBuf> = next
-            .loaded
-            .defined
-            .values()
-            .flat_map(|def| def.implements.iter().map(|implement| implement.service.clone()))
-            .filter(|target| !next.services.contains_key(target))
-            .filter_map(|target| service_file_of(&target))
-            .filter(|file| !next.searched.contains(file) && !next.loaded.files.contains(&normalize(file)))
-            .collect();
-        let Some(file) = missing.into_iter().next() else {
-            break;
-        };
-        next.searched.insert(file.clone());
-        if let Err(err) = next.merge(std::slice::from_ref(&file)) {
-            tracing::warn!(error = %err, path = %file.display(), "could not read the service file for an implemented service");
-        }
-    }
+    next.merge_implemented();
     let found = next.services.get(name).cloned();
     replace(shared, next);
     found
@@ -767,14 +748,29 @@ pub fn lint(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
 ///
 /// Returns an error when a file cannot be read.
 pub fn check(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
-    let configured;
-    let paths = if paths.is_empty() {
-        configured = configured_paths()?;
-        &configured[..]
-    } else {
-        paths
-    };
-    Ok(build(paths)?.failures)
+    if paths.is_empty() {
+        return Ok(build(&configured_paths()?)?.failures);
+    }
+    // The files given, then the files of the services they implement, found by name as a server finds them (an
+    // interface of another file, such as the framework's EmailServices.xml): only the failures of the given files'
+    // services, and of the files themselves, are theirs to report.
+    let mut registry = build(paths)?;
+    let own = registry.failures.clone();
+    let names: Vec<String> = registry
+        .loaded
+        .defined
+        .keys()
+        .cloned()
+        .chain(registry.loaded.includes.iter().map(|(local, _)| local.clone()))
+        .collect();
+    registry.merge_implemented();
+    Ok(registry
+        .failures
+        .into_iter()
+        .filter(|failure| {
+            own.contains(failure) || names.iter().any(|name| failure.contains(&format!("service {name} ")))
+        })
+        .collect())
 }
 
 fn install(paths: &[PathBuf]) -> Result<(), Error> {
@@ -815,6 +811,29 @@ impl Registry {
         self.services = services;
         self.failures = failures;
         Ok(())
+    }
+
+    /// A service that implements one of a file not read yet failed to register: read that file, as Java looks the
+    /// implemented service up by name, and repeat for what that file implements. A file that cannot be read is logged.
+    fn merge_implemented(&mut self) {
+        loop {
+            let missing: Vec<PathBuf> = self
+                .loaded
+                .defined
+                .values()
+                .flat_map(|def| def.implements.iter().map(|implement| implement.service.clone()))
+                .filter(|target| !self.services.contains_key(target))
+                .filter_map(|target| service_file_of(&target))
+                .filter(|file| !self.searched.contains(file) && !self.loaded.files.contains(&normalize(file)))
+                .collect();
+            let Some(file) = missing.into_iter().next() else {
+                break;
+            };
+            self.searched.insert(file.clone());
+            if let Err(err) = self.merge(std::slice::from_ref(&file)) {
+                tracing::warn!(error = %err, path = %file.display(), "could not read the service file for an implemented service");
+            }
+        }
     }
 }
 
@@ -2003,6 +2022,38 @@ mod tests {
         );
         assert!(!super::is_registered("slow#Words"));
         assert!(super::find("zero#Timeout").is_some_and(|def| def.timeout.is_none()));
+    }
+
+    /// `moqui lint <file>`: a service implementing an interface of another file (the framework's EmailServices.xml)
+    /// resolves it by name as a server does, and only the file's own failures are reported, not those of the files
+    /// read for its interfaces; an interface that is nowhere is still a failure.
+    #[test]
+    fn check_of_one_file_resolves_interfaces_of_other_files() {
+        let ctx = crate::context::ExecutionContextFactory::test_context_in(
+            "",
+            crate::service::ServicePools::idle(),
+            crate::context::framework_dir(),
+        );
+        let _entered = ctx.enter();
+        let path = write_fixture(
+            "lint-interfaces",
+            r#"<services>
+                <service verb="process" noun="UnsubscribeEmail">
+                    <implements service="org.moqui.EmailServices.process#EmailEca"/>
+                    <actions><script>const subject = fields?.subject</script></actions>
+                </service>
+                <service verb="process" noun="Nothing">
+                    <implements service="org.moqui.EmailServices.no#SuchInterface"/>
+                </service>
+            </services>"#,
+        );
+        let failures = super::check(std::slice::from_ref(&path)).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].contains("process#Nothing implements unknown service org.moqui.EmailServices.no#SuchInterface"),
+            "{failures:?}"
+        );
     }
 
     fn write_fixture(name: &str, body: &str) -> PathBuf {

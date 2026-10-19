@@ -33,6 +33,10 @@
 //!    record refers to it).
 //! 5. The account's rules run on the new Inbox mail (`run#EmailRules`), then the changes queued meanwhile go out.
 //!
+//! The email-ECA rules (`*.emecas.xml`, as poll#EmailServer runs them) run once on each new message as it is stored in
+//! the Inbox, IMAP or POP3, in a transaction of their own, a failing rule logged ([`eca_due`] says which messages are new
+//! mail; [`super::implementation::run_stored_ecas`] is what any other fetch path calls).
+//!
 //! Failure tolerant per account, folder and message: a message that does not parse is logged by account, folder and
 //! UID and skipped; a folder that fails is logged and the others go on; a sign-in the server refuses marks the account
 //! EasAuthFailed with `lastSyncError` and ends only that account's sync, as does an OAuth sign-in whose refresh token
@@ -48,7 +52,7 @@ use moqui_lib::object::{to_plain_string, Value};
 
 use super::implementation::{
     connect_tcp, find_one, folder_kind, force_new, name_attribute, note_error, note_message, parse_port, require_host,
-    stamp_millis, use_tls, wrap_tls, Net, Pop3, StoreSettings,
+    run_stored_ecas, stamp_millis, use_tls, wrap_tls, Net, Pop3, StoreSettings, StoredMessage,
 };
 use super::store::{self, parse_message, update_fields, Placement, MESSAGE};
 use crate::context::ExecutionContext;
@@ -880,11 +884,19 @@ fn instance_name() -> String {
 }
 
 /// Take the account's sync lock for [`LEASE_MILLIS`], or renew the one this server holds. False when another sync has it.
+///
+/// The row is read `FOR UPDATE`, here and in [`release_lease`]: an update of a row read writes back each field read, so
+/// without the row lock two syncs could both read the lock free and both take it, and a lock taken or released could
+/// write back the status a sync running at the same time had just recorded (a failed sync's EasError read as EasActive
+/// again). With it a second claim waits for the first, then reads the row it wrote: taken, so busy.
 fn claim_lease(facade: &EntityFacade, account_id: &str, renew: bool) -> Result<bool, LibError> {
     let now = now_millis();
     let me = instance_name();
     force_new(facade, || {
-        let mut find = facade.find(ACCOUNT)?.eq("emailAccountId", Value::string(account_id));
+        let mut find = facade
+            .find(ACCOUNT)?
+            .eq("emailAccountId", Value::string(account_id))
+            .for_update(true);
         let free = Condition::or(vec![
             Condition::is_null("syncLockedUntil"),
             Condition::less("syncLockedUntil", stamp_millis(now)),
@@ -910,6 +922,7 @@ fn release_lease(facade: &EntityFacade, account_id: &str) {
         facade
             .find(ACCOUNT)?
             .eq("emailAccountId", Value::string(account_id))
+            .for_update(true)
             .update_all([
                 ("syncLockedUntil".to_string(), Value::Null),
                 ("syncLockedBy".to_string(), Value::Null),
@@ -2165,6 +2178,26 @@ fn sync_folder(
                         report.new_count += 1;
                         progress.fetched_one();
                         if folder.kind == "EfkInbox" {
+                            // a Message-ID new to the account (a copy or a move is not new mail)
+                            if eca_due(session.account, *internal) {
+                                run_stored_ecas(
+                                    session.facade,
+                                    &StoredMessage {
+                                        raw: &raw,
+                                        server_id: session
+                                            .account
+                                            .server
+                                            .as_ref()
+                                            .map_or("", |server| &server.server_id),
+                                        account_id: &session.account.id,
+                                        email_message_id: &id,
+                                        received_millis: *internal,
+                                        seen: flags.seen,
+                                        answered: flags.answered,
+                                        flagged: flags.flagged,
+                                    },
+                                );
+                            }
                             session.new_inbox_ids.push(id);
                         }
                     }
@@ -2524,6 +2557,21 @@ fn remove_vanished(session: &mut Session<'_>, report: &mut SyncReport) {
     session.vanished.clear();
 }
 
+/// How long before the account's last sync a message may have arrived and still be new mail for the email-ECA rules.
+const ECA_MARGIN_MILLIS: i64 = 24 * 60 * 60 * 1000;
+
+/// Whether the email-ECA rules run on a message just stored in the Inbox ([`run_stored_ecas`]), which happens once, as
+/// it is stored: only a message stored new (a Message-ID the account did not have: a copy or a move, and a folder read
+/// again after a UIDVALIDITY change, are not new mail), only once the account has synced before (its first sync is
+/// the mailbox's history), and only one that arrived (`arrived`: IMAP INTERNALDATE, POP3 the Date header) no earlier
+/// than a day before that sync, so the rest of a large first sync's backlog is history too.
+fn eca_due(account: &AccountInfo, arrived: Option<i64>) -> bool {
+    let Some(last) = account.last_sync_millis else {
+        return false;
+    };
+    arrived.is_none_or(|millis| millis >= last.saturating_sub(ECA_MARGIN_MILLIS))
+}
+
 /// The account's rules on its new Inbox mail; a rule that fails is the rules' to log.
 fn run_rules(account_id: &str, ids: &[String]) {
     if ids.is_empty() {
@@ -2663,6 +2711,22 @@ fn pop_sync(
             Ok(id) => {
                 report.new_count += 1;
                 progress.fetched_one();
+                // POP3 has no server date: when it was sent (the newest first, so a backlog is older mail)
+                if eca_due(account, parsed.sent_millis) {
+                    run_stored_ecas(
+                        facade,
+                        &StoredMessage {
+                            raw: &raw,
+                            server_id: &server.server_id,
+                            account_id: &account.id,
+                            email_message_id: &id,
+                            received_millis: None,
+                            seen: false,
+                            answered: false,
+                            flagged: false,
+                        },
+                    );
+                }
                 new_ids.push(id);
                 if server.store_delete {
                     if let Err(err) = pop.delete_number(number) {

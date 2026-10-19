@@ -50,11 +50,79 @@ test("a board has the known columns in order, then a column for each other value
     // a card moved to Approved, until the list loads again
     const moved = lv.boardColumns(items, board, known, { 1: { group: "EXST_APPROVED" } });
     assert.deepEqual(moved.map((column) => column.items.map((item) => item.row.exampleId)), [[], ["E1", "E3"], ["E2"], ["E4"], ["E5"]]);
-    // column-order picks the columns and their order; labels from the known columns, else the rows
+    // column-order picks the columns and their order; labels from the known columns, else the rows; a value outside the order
+    // takes the label and color the server sent for it (a status's description), not its id
     const ordered = lv.boardColumns(items, { groupField: "statusId", columnOrder: "EXST_DEFINED, OTHER" }, known, {});
-    assert.deepEqual(ordered.map((column) => column.value + ":" + column.label), ["EXST_DEFINED:Defined", "OTHER:Other one", "EXST_IN_DESIGN:EXST_IN_DESIGN", ":None"]);
+    assert.deepEqual(ordered.map((column) => column.value + ":" + column.label), ["EXST_DEFINED:Defined", "OTHER:Other one", "EXST_IN_DESIGN:In Design", ":None"]);
+    assert.equal(ordered[2].color, "grey-7");
     // no known columns: the values in the order of the rows
     assert.deepEqual(lv.boardColumns(items, { groupField: "statusId" }, null, {}).map((column) => column.value), ["EXST_DEFINED", "EXST_IN_DESIGN", "OTHER", ""]);
+});
+
+test("a click on a control of a card (a link, a button, a field, an in-place edit) is the control's, not the card's", () => {
+    // a minimal element: its tag, classes, attributes and parent, with closest and contains over that chain
+    const el = (tag, classes, attrs, parent) => {
+        const node = { tagName: tag.toUpperCase(), classList: classes || [], attrs: attrs || {}, parentElement: parent || null };
+        const matches = (at, selector) => selector.split(",").map((part) => part.trim()).some((part) => {
+            if (/^[a-z]+$/.test(part)) return at.tagName === part.toUpperCase();
+            if (part.startsWith(".")) return at.classList.includes(part.slice(1));
+            const attr = /^\[([a-z-]+)(?:='([^']*)')?\]$/.exec(part);
+            return !!attr && Object.prototype.hasOwnProperty.call(at.attrs, attr[1]) && (attr[2] === undefined || at.attrs[attr[1]] === attr[2]);
+        });
+        node.closest = (selector) => { for (let at = node; at; at = at.parentElement) if (matches(at, selector)) return at; return null; };
+        node.contains = (other) => { for (let at = other; at; at = at.parentElement) if (at === node) return true; return false; };
+        return node;
+    };
+    const board = el("div", ["m-board"]);
+    const card = el("div", ["m-board-card"], {}, board);
+    const body = el("div", ["m-card-field"], {}, card);
+    const editable = el("span", ["editable-label", "cursor-pointer"], {}, body);
+    const shown = el("span", [], {}, editable);
+    const plain = el("span", ["m-card-value"], {}, body);
+    const titleLink = el("a", ["m-link-text"], { href: "/x" }, el("div", ["m-card-title"], {}, card));
+    const chip = el("div", ["q-chip", "q-chip--clickable"], {}, body);
+    const marked = el("div", [], { "data-card-control": "" }, body);
+    assert.equal(lv.onControl(shown, card), true, "the text inside an in-place edit");
+    assert.equal(lv.onControl(editable, card), true);
+    assert.equal(lv.onControl(titleLink, card), true, "the title link follows itself");
+    assert.equal(lv.onControl(chip, card), true);
+    assert.equal(lv.onControl(marked, card), true);
+    assert.equal(lv.onControl(plain, card), false, "plain text opens the card");
+    assert.equal(lv.onControl(card, card), false);
+    // a control around the board is not the card's
+    board.parentElement = el("label", [], {}, null);
+    assert.equal(lv.onControl(plain, card), false);
+    assert.equal(lv.onControl(null, card), false);
+});
+
+test("range-find: the days each mode shows, the finds of those days, and the rows they answer as the calendar's items", () => {
+    const oct19 = lv.dayOf(2026, 10, 19);
+    // a Monday; the week from Sunday (0)
+    assert.deepEqual(lv.visibleDays("day", oct19, 0), { first: oct19, last: oct19 });
+    assert.deepEqual(lv.visibleDays("week", oct19, 0), { first: lv.dayOf(2026, 10, 18), last: lv.dayOf(2026, 10, 24) });
+    assert.deepEqual(lv.visibleDays("month", oct19, 0), { first: lv.dayOf(2026, 9, 27), last: lv.dayOf(2026, 10, 31) });
+    assert.deepEqual(lv.visibleDays("list", oct19, 0), { first: lv.dayOf(2026, 10, 1), last: lv.dayOf(2026, 10, 31) });
+    // a day wider on each side, in the user's zone, as epoch millis; with an end field what overlaps and what starts in the days
+    const days = { first: oct19, last: oct19 };
+    const from = String(lv.millis(oct19 - 1, 0, CHICAGO));
+    const thru = String(lv.millis(oct19 + 2, 0, CHICAGO) - 1);
+    assert.equal(from, String(Date.UTC(2026, 9, 18, 5)), "midnight in Chicago (CDT) the day before");
+    assert.deepEqual(lv.rangeFinds({ startField: "start", endField: "thru" }, days, CHICAGO), [
+        { pageNoLimit: "true", start_thru: thru, thru_from: from },
+        { pageNoLimit: "true", start_from: from, start_thru: thru }
+    ]);
+    assert.deepEqual(lv.rangeFinds({ startField: "start" }, days, CHICAGO), [{ pageNoLimit: "true", start_from: from, start_thru: thru }]);
+    // the rows of both finds once each; a row on the list's page is its item (its card slot), another gets an index of its own
+    const page = [{ index: 0, row: { taskId: "T1", name: "On the page", start: "1760882400000" } }];
+    const lists = [
+        [{ taskId: "T1", name: "On the page (as found)", start: 1760882400000 }, { taskId: "T7", name: "Next month", start: 1763560800000 }],
+        [{ taskId: "T7", name: "Next month", start: 1763560800000 }, { taskId: "T8", name: "No end" }, { _moquiRowType: "total" }]
+    ];
+    const items = lv.rangeItems(page, lists, ["taskId"]);
+    assert.deepEqual(items.map((item) => item.index + ":" + item.row.name), ["0:On the page", "100000:Next month", "100001:No end"]);
+    assert.equal(items[0], page[0]);
+    // without key fields a row is known by its values
+    assert.equal(lv.rangeItems([], [[{ a: 1 }, { a: 1 }, { a: 2 }]], []).length, 2);
 });
 
 test("a row's text is its display text, else its value; numbers read from text; key fields as parameters", () => {
