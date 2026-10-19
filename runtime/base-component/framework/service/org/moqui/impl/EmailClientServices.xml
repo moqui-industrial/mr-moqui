@@ -3544,7 +3544,8 @@ along with this software (see the LICENSE.md file). If not, see
             if (enabled && !bodyHtml) { ec.message.addError('The automatic reply needs a message'); return }
             const row = ec.entity.makeValue('moqui.basic.email.EmailOutOfOffice')
             row.setFields({emailAccountId: emailAccountId, enabled: enabled ? 'Y' : 'N', fromDate: fromDate, thruDate: thruDate, subject: subject,
-                bodyHtml: bodyHtml, internalBodyHtml: internalBodyHtml, replyOncePerDays: replyOncePerDays}, false, null, null)
+                bodyHtml: bodyHtml, internalBodyHtml: internalBodyHtml, replyOncePerDays: replyOncePerDays}, true, null, null)
+            // the whole reply is stored: a field left empty clears what was there
             row.createOrUpdate()
             // a new automatic reply goes to everyone again
             ec.entity.find('moqui.basic.email.EmailOutOfOfficeSent').condition('emailAccountId', emailAccountId).deleteAll()
