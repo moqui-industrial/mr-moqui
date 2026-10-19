@@ -1099,6 +1099,32 @@ fn wait_for(seen: &Arc<Mutex<Vec<serde_json::Value>>>, user: &str, count: usize,
     }
 }
 
+/// A factory that has begun to shut down sends no counts, though a socket listens: its database is closing.
+#[test]
+fn publish_sends_nothing_once_the_factory_shuts_down() {
+    let dir = tree("publish-closing");
+    let world = world(&dir);
+    let user = format!("closing{}", std::process::id());
+    world.user(&user, None);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let keep = Arc::clone(&seen);
+    let _subscription = crate::notify::subscribe(
+        crate::notify::NOTIFICATION_MESSAGE,
+        Arc::new(move |message| keep.lock().unwrap().push(message.body.clone())),
+    )
+    .unwrap();
+    let ctx = world.factory.new_context();
+    let _entered = ctx.enter();
+    let _authz = ctx.disable_authz();
+    assert!(!world.factory.is_shutting_down());
+    world.factory.shutdown();
+    assert!(world.factory.is_shutting_down());
+    let parameters = BTreeMap::from([("userIdList".to_string(), Value::string(&user))]);
+    crate::service::sync("org.moqui.impl.ShellServices.publish#ShellCounts", &parameters).unwrap();
+    assert_eq!(wait_for(&seen, &user, 1, Duration::from_millis(600)), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn publish_sends_the_counts_on_the_shell_counts_topic_once_per_window_and_after_the_commit() {
     let dir = tree("publish");

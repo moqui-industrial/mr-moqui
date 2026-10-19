@@ -8,7 +8,7 @@ let screens
 const galleryScreens = [
     ["Landing", "qvt"], ["List", "qvt"], ["Detail", "qvt"], ["Record360", "qvt"], ["Task", "qvt"],
     ["Board", "qvue"], ["Calendar", "qvue"], ["Split", "qvt"], ["Settings", "qvt"], ["Wizard", "qvt"],
-    ["Dialog", "qvt"], ["Report", "qvt"], ["Panel", "qvt"], ["Widgets", "qvt"], ["Editor", "qvt"], ["QuickNote", "qvt"],
+    ["Dialog", "qvt"], ["Report", "qvt"], ["Panel", "qvt"], ["Widgets", "qvt"], ["Editor", "qvt"], ["QuickNote", "qvt"], ["QuickTask", "qvue"],
     ["Chatter", "qvt"], ["RecordFiles", "qvt"], ["Message", "qvt"],
 ]
 
@@ -82,6 +82,7 @@ feature("the shell data has the gallery's providers, and its palette source find
         data.status == 200
         data.errorMessages.length == 0
         gallery.providers.quickCreate[0].url == "/qapps/gallery/QuickNote"
+        gallery.providers.quickCreate[1].url == "/qapps/gallery/QuickTask"
         gallery.providers.paletteActions[0].url == "/qapps/gallery/Widgets"
         gallery.providers.paletteSources[0].group == "GalleryEnumerations"
         gallery.providers.paletteSources[0].service === undefined

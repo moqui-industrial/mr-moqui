@@ -121,6 +121,17 @@ screen) with the extra path and query, and gives `callback` a component. It retu
 - A response with `Cache-Control: max-age` is kept by screen path in `moqui.componentCache` (50 entries). A merged response says
   `private, no-store` and is never kept. For a static template the cache holds the means to make a component, and each use makes its own, since
   each use fetches its own data.
+- **The best client mode.** A URL with no extension and no `renderModes` (what `m-dynamic-container` and `m-dynamic-dialog` load: a tray tab,
+  the quick-create dialog, a record panel, a screen's own container) is asked for as `.qvt` with `X-Moqui-Client-Modes: qvue,qjs`; the server
+  renders the first of those the target screen names in its `render-modes` instead, and says which in `X-Moqui-Qvt` (`qvue`, `qjs`), as the
+  router picks `.qvue` from the menu data. So a screen with `render-modes="qvue"` loads as qvue wherever it is loaded, and its theme value or
+  provider names it without `.qvue`; a screen whose modes are `all` or name neither stays qvt; a request without the header gets the mode of its
+  extension (a `.qvt` of a qvue-only screen is not found).
+- **A screen's own path and query: `inject: ["mScreen"]`.** Each `m-dynamic-container` and `m-dynamic-dialog` provides `mScreen` for the screen
+  it loaded, `{url, path, parameters, containerId}` (`path` without the query and the `.qvt`/`.qvue`/`.qjs`, `parameters` the query as an
+  object; `moqui.urlScreen`), and the root provides the page's (`currentPath`, `currentParameters`), as the public shell does for its route. A
+  `.qvue` screen reads its query and builds its transitions' URLs from it wherever it is (`mScreen.path + '/saveTask'`); the members are getters,
+  so a template or a watch on them follows a new load. `$root.currentParameters` stays the page's. The gallery's `QuickTask.qvue` uses it.
 
 ## The components the macros write
 
@@ -168,7 +179,7 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-form-list` | a list drawn by the client from rows it fetches, with sort, pages, selection (the `m-sel` column) and sub rows (see below); the page buttons are written again under a list of more than one page, after the table |
 | `m-form-paginate`, `m-form-go-page`, `m-form-column-config` | page buttons, jump to a page, the column picker |
 | `m-scope`, `m-static-form-list` | written by `ScreenQvtStatic.js` only: a scope over a form-single's map, and the form-list of a server-static screen (see Server-static screens) |
-| `m-text-line`, `m-text-area` | text input. `m-text-area` with `editor-type` `html` is `QEditor`, `md` is a text area with a Marked preview, and `rich` and `rich-light` are `m-rich-text` (with `mention-url` and `mention-parameters`, from the text-area's `mention-transition`) |
+| `m-text-line`, `m-text-area` | text input. `m-text-line` takes `autocomplete` (`off` by default; the `password` widget writes its `autocomplete` attribute, `new-password` unless it says `current-password`, so the browser does not fill the user's sign-in password into an app password or another user's new one). `m-text-area` with `editor-type` `html` is `QEditor`, `md` is a text area with a Marked preview, and `rich` and `rich-light` are `m-rich-text` (with `mention-url` and `mention-parameters`, from the text-area's `mention-transition`) |
 | `m-rich-text` | the Tiptap editor (see Rich text below): the `m-*` model contract (`v-model` or `model-value`, `name`, the change tint and field errors in an `m-form`, a hidden input), `light`, `placeholder`, `rows`, `enter` (`newline`, or `submit`: Enter submits the form and emits `submit`, Shift+Enter is a line break; Ctrl+Enter always submits), `mention-url`, `mention-parameters`, `plain` (`v-model:plain`, the plain-text toggle), `plain-toggle`, `autofocus`, `disable`, `readonly`; emits `mention` with the `{id, label}` picked |
 | `m-drop-down` | `options`, `options-url`, `options-parameters`, `depends-on`, `server-search`, `multiple`, `allow-empty`, `combo`, `submit-on-select`, `options-load-init` |
 | `m-date-time`, `m-date-period` | `QDate` and `QTime` in a popup; period and from-thru. In period mode the field is the base date (`_pdate`) and the period and offset selects (`_period`, `_poffset`) are in the menu of the `event_repeat` button in its append slot, which reads the choice ("Last Month") once made; the `date_range` button switches to from-thru (`_from`, `_thru`) |
@@ -177,7 +188,7 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-editable` | click to edit, `QPopupEdit`, `url`, `url-parameters`, `parameter-name`, `widget-type` (`textarea`, `text-line`, `select`, `date`, `date-time`), `load-url`, `options` (a select's `{value, label}` list, from the `option`, `list-options` and `entity-options` of the element; else what `load-url` answers: a list, or a map of key to label with `selected`, `moqui.editableOptions`), `value` (a select's current key; by default the option whose label is the text), `placeholder` (an empty text with `display-if-empty` shows it, so there is something to click). A select shows the chosen option's label after a save; a date edits in `QDate` (and `QTime`) as `yyyy-MM-dd` (`yyyy-MM-dd HH:mm`) |
 | `m-link` | a screen link: `href`, `load-id`, `confirmation`; an external `href` (another scheme or host, `moqui.isExternalLink`) is a plain anchor the browser follows. A `data-confirm` attribute on any button or link is asked first |
 | `m-container-box`, `m-box-body`, `m-container-dialog`, `m-dialog` | boxes and dialogs. `m-container-dialog` (`container-dialog`) registers with the root by its `id` while mounted (`addContainer`, taken back with `removeContainer` when unmounted), so a form's `background-hide-id` (`submit-hide-id`) and `$root.hideContainer(id)` close it; its `reload` and `load` do nothing (the content is the page's). `tooltip` (the `container-dialog` attribute) is a `q-tooltip` on its button, the slot button of a list cell too |
-| `m-dynamic-container`, `m-dynamic-dialog` | a screen loaded into a container, or a dialog, with `load`, `reload` and `hide`; the dialog's button takes `button-text`, `button-class`, `color` and `button-icon` (default `open_in_new`), as `m-container-dialog` does |
+| `m-dynamic-container`, `m-dynamic-dialog` | a screen loaded into a container, or a dialog, with `load`, `reload` and `hide`, in the screen's best client mode (Loading a screen); each provides `mScreen` (the loaded screen's `url`, `path` and `parameters`) to the screen; the container's `shellRefresh()` calls the screen's own `shellRefresh()` when it has one, else reloads; the dialog's button takes `button-text`, `button-class`, `color` and `button-icon` (default `open_in_new`), as `m-container-dialog` does |
 | `m-tree-top`, `m-tree-item` | tree: `items` is the node list or its URL (`<screen>/actions/<tree>`, posted `treeNodeId`, `treeNodeName`, `treeOpenPath`). A node's `children` is a list when it came inline (on `open-path`), `true` to load from the URL when the node is opened, `false` for a leaf |
 | `m-subscreens-tabs` (also `m-subscreens-menu`), `m-subscreens-active`, `m-subscreens-panel` | the subscreen menu and the place of the active subscreen |
 | `m-subscreens-wizard` | `subscreens-panel type="wizard"`: a header-only `q-stepper` with a step per subscreen of the menu data (titles, menu order; a done step's header goes back to it), the `m-subscreens-active` below it, and Back and Next (`finish-text` on the last step); `id`, `finish-text`, `next-text`, `back-text`. It provides `mWizard` to the step's forms; while the step form posts a spinner covers the step (see Layout panels below) |
@@ -204,7 +215,14 @@ The shell is a `q-layout` with a `q-header` (menu button, the launcher, the curr
 the `+` menu, the Today, Chat, Inbox and Notifications buttons, the documentation, the notify history when there is no Notifications tab, and
 the account menu: see Shell data and providers), a `q-drawer` with the screen menu (`QUASAR_LEFT_OPEN`; an overlay below 1024px), the page, and a `q-footer` with the
 theme's footer items. The `LoadingBar` plugin runs while the root's `loading` count is above zero. `config.quasar` (brand, notify, loadingBar) is the
-JSON of the theme's `STRT_QUASAR_CONFIG` resource, merged over the defaults.
+JSON of the theme's `STRT_QUASAR_CONFIG` resource, merged over the defaults. Quasar's `Notify`, `LoadingBar` and `Dialog` plugins are installed in
+the `/qapps` shell and in the public shell (`qvt.quasarPlugins`), so a `.qvue` screen confirms with
+`this.$q.dialog({title, message, cancel: true, persistent: true}).onOk(() => ...)` rather than `window.confirm` (`data-confirm` on a button stays
+the synchronous confirm).
+
+**Menus anchored to hidden elements.** A `q-menu` (or `q-popup-proxy`) whose target is an element with `visibility: hidden` does not open in
+Chrome: an anchor revealed on hover (a row's actions) is hidden with `opacity: 0` (and `pointer-events: none` until shown), not `visibility`.
+No `m-*` component anchors a menu that way.
 The shell gives Quasar a stand-in for `vue-router` (`$router.resolve`, `push`, `replace`, and `$route`), so `q-btn to="..."` and `q-item to="..."` navigate with `setUrl`.
 `moqui.webrootVue` is the root: `setUrl(url, bodyParameters)`, `setParameters(obj)`, `reloadContainer(id)`, `loadContainer(id, url)`,
 `hideContainer(id)`, `addNotify`, `getLinkPath`, the screen context: `setScreenContext(key, value)`, `removeScreenContext(key)`,
@@ -375,7 +393,10 @@ its first opening and then kept, so its state lasts across navigation. The root 
 `sessionStorage`, for a reload). Esc and the close button close it. On the notification socket, `shellCounts` sets the badges and reloads the
 open tab; `todayItems` reloads Today, a `chatRoom:` topic Chat, and `notifications` or an app's `notification-topic` Notifications. A reload keeps
 the tab's content until the new one is there (`m-dynamic-container.reload`). While the socket is down the counts are fetched every five
-minutes (`/shellCounts`) and the open tab reloaded.
+minutes (`/shellCounts`) and the open tab reloaded. **A tab's screen that refreshes itself**: when the component the tab loaded has a
+`shellRefresh()` method, the tray calls it instead of mounting the screen again (`m-dynamic-container.shellRefresh`), so what it shows stays (an
+open chat room, a half-typed text); a `.qvue` tray screen that listens to the chat store refreshes its lists there. A tab's screen loads in its
+best client mode, so a `STRT_TRAY_*` value names a `.qvue` screen without the extension.
 
 **Palette** (`m-shell-palette`, id `m-palette`): a `q-dialog` at the top, Ctrl+K or Cmd+K anywhere but in a rich-text editor (which keeps
 Ctrl+K). Groups (`moqui.shellPalette.groups`): Recent (the screens of this page before the current one) before any text; then Screens (the
@@ -597,7 +618,14 @@ time). Input after an idle beat past the auto-away minutes beats at once, so the
 
 **The account menu's status**: `m-user-status-menu` (the current status and its message, the four statuses, "Set a status message", "Clear status
 message") and `m-user-status-dialog` (emoji, text up to 100 characters, clear after: don't clear, 30 minutes, 1 hour, 4 hours, today, this
-week), outside the menu so it outlives it.
+week), outside the menu so it outlives it. The dialog lists the user's status presets above the fields (`moqui.chat.statusPresets`): the
+preference `CHAT_STATUS_PRESETS` (a JSON list of `{emoji, text, clearAfter}`, `clearAfter` minutes, `today`, `week` or `0` for never; a chat
+settings screen keeps it, BOSS's ChatSettings does) from `config.preferences`, else five defaults (`moqui.chat.defaultPresets`, localized); a
+preset fills the fields and Save sets it.
+
+**Chat preferences the server reads** (`ChatServices.xml`): `CHAT_NOTIFY_DEFAULT` (`all`, `mentions` or `none`) is the notification level a
+membership starts at, in `create#Room` and `add#Member` (not in a direct room, whose messages always count); `CHAT_NOTIFY_PREVIEW` `N` leaves
+the message text out of the user's `ChatMention` notifications (no `summary`, and the title is who mentioned them where).
 
 ## Server-static screens
 
@@ -622,6 +650,12 @@ screen package, `private, no-store`) and shows the render function over it.
   a relative path resolved against the screen's own path, as the server render resolves a link's url; an absolute path or an external URL as
   it is), `shown` (`visible-when`), `btnKind` and `btnText` (the color and classes of a link or menu button whose `btn-type` is an expression, as
   `ScreenQvt.js` writes them), `cols` (the classes of a `row-col` whose sizes are expressions).
+- **Mobile columns.** The template is the same for every request, so a form-list with `columns type="mobile"` holds a list for each column set,
+  `<template v-if="_uiType === 'mobile'">` and the default under `v-else`: the client shows the one of the `_uiType` its request carries
+  (`moqui.loadComponent` sends `mobile` below 600 px, and the screen package has the parameter), as the merged render picks it on the server.
+- **An editable select's lookups.** The options of an `editable` select's `list-options` and `entity-options` are in the package by its id
+  (`mqOpt_editable_{id}`; a form-single's in its `mqExtra_{form}`), and the template adds them to its `option` elements. It needs a plain id, and
+  not in a form-list row (the report notes `editable-options` there).
 - **`m-static-form-list`** fetches `<path>/actions/<name>` with the request's parameters and the page and sort it has changed (`setPageIndex`, `sortBy`,
   `orderBy`), draws `m-form-paginate` and `m-form-go-page`, the `header` slot (`sortBy`, `orderBy`, `action`, `orderByField`) and the `row` slot once for each row with
   the row on the scope of the screen (`rowIndex` is a name of it). The rows of each answer are new components (an `m-form` copies its

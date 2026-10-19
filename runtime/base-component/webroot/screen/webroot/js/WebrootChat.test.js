@@ -167,6 +167,28 @@ test("the clear-at choices and the idle time", () => {
     assert.equal(chat.dot("nope"), "");
 });
 
+test("the status dialog's presets: the user's CHAT_STATUS_PRESETS, else the defaults localized; a preset fills the dialog", () => {
+    const defaults = chat.statusPresets({}, (text) => "~" + text);
+    assert.equal(defaults.length, 5);
+    assert.deepEqual(defaults[0], { emoji: "📅", text: "~In a meeting", clearAfter: 60 });
+    assert.deepEqual(defaults.map((preset) => preset.clearAfter), [60, 30, "today", "today", 0]);
+    const kept = JSON.stringify([{ emoji: "🚀", text: "Shipping", clearAfter: "240" }, { text: "Lunch", clearAfter: "45" }, { emoji: "" , text: "" },
+        { emoji: "🌙", clearAfter: "week" }]);
+    // the user's own are as they wrote them (not localized); a clear-after that is not a choice of the dialog is never
+    assert.deepEqual(chat.statusPresets({ CHAT_STATUS_PRESETS: kept }, (text) => "~" + text), [
+        { emoji: "🚀", text: "Shipping", clearAfter: 240 }, { emoji: "", text: "Lunch", clearAfter: 0 }, { emoji: "🌙", text: "", clearAfter: "week" }]);
+    // an empty list is the user's choice; text that is not JSON is the defaults
+    assert.deepEqual(chat.statusPresets({ CHAT_STATUS_PRESETS: "[]" }), []);
+    assert.equal(chat.statusPresets({ CHAT_STATUS_PRESETS: "not json" }).length, 5);
+    assert.equal(chat.statusPresets({ CHAT_STATUS_PRESETS: JSON.stringify(new Array(20).fill({ text: "x" })) }).length, 12);
+    const dialog = moqui.qvtComponents["m-user-status-dialog"];
+    const self = Object.assign(dialog.data(), { clearOptions: chat.clearOptions({}) });
+    dialog.methods.usePreset.call(self, { emoji: "🚀", text: "Shipping", clearAfter: 240 });
+    assert.deepEqual([self.emoji, self.text, self.clear], ["🚀", "Shipping", 240]);
+    assert.equal(dialog.methods.clearLabel.call(self, 240), "4 hours");
+    assert.equal(dialog.methods.clearLabel.call(self, 0), "");
+});
+
 test("the tray's Chat tab reloads for an event no screen listens to, never for typing or a read marker", () => {
     assert.equal(chat.trayReloads(push("chatRoom:R1", { kind: "typing" })), false);
     assert.equal(chat.trayReloads(push("chatRoom:R1", { kind: "read" })), false);

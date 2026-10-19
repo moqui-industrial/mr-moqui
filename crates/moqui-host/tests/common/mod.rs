@@ -85,6 +85,8 @@ const WIDGETS: &str = r#"<screen require-authentication="false">
     </actions>
     <widgets>
         <label text="Gate widgets" type="h4"/>
+        <container-box id="GateClosedBox" initial="closed"><box-header title="Gate closed box"/>
+            <box-body><label text="Shown once opened" type="p"/></box-body></container-box>
         <editable id="GateEditable" text="Edit me" transition="saveValue" widget-type="text"/>
         <form-single name="NoteForm" transition="saveNote" background-submit="true" background-message="Note sent">
             <field name="note"><default-field title="Note"><text-line/></default-field></field>

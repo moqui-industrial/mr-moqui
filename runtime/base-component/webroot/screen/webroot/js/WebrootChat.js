@@ -31,6 +31,11 @@
             setStatus: "Set a status message", clearStatus: "Clear status message", statusText: "What's your status?", emoji: "Emoji",
             clearAfter: "Clear after", dontClear: "Don't clear", minutes30: "30 minutes", hour1: "1 hour", hours4: "4 hours", today: "Today",
             thisWeek: "This week", save: "Save", cancel: "Cancel", status: "Status" },
+        // The status presets until the user keeps their own (the preference CHAT_STATUS_PRESETS), as IronStone's chat settings
+        // start them: {emoji, text, clearAfter}, clearAfter minutes, today, week or 0 for never.
+        defaultPresets: [{ emoji: "📅", text: "In a meeting", clearAfter: "60" }, { emoji: "🚌", text: "Commuting", clearAfter: "30" },
+            { emoji: "🤒", text: "Out sick", clearAfter: "today" }, { emoji: "🏠", text: "Working remotely", clearAfter: "today" },
+            { emoji: "🌴", text: "On vacation", clearAfter: "0" }],
 
         // ---- the pure parts (WebrootChat.test.js) ----
 
@@ -42,6 +47,29 @@
             const text = Object.assign({}, chat.labels, labels);
             return [{ value: 0, label: text.dontClear }, { value: 30, label: text.minutes30 }, { value: 60, label: text.hour1 },
                 { value: 240, label: text.hours4 }, { value: "today", label: text.today }, { value: "week", label: text.thisWeek }];
+        },
+        // The status presets of the status dialog: the user's CHAT_STATUS_PRESETS preference (a JSON list of {emoji, text,
+        // clearAfter}, which a chat settings screen keeps), else the defaults, their text localized; at most 12, each with a
+        // text or an emoji, clearAfter as a value of clearOptions (0 never, minutes, today or week).
+        statusPresets(preferences, localize) {
+            let list = null;
+            const kept = preferences ? preferences.CHAT_STATUS_PRESETS : null;
+            if (kept !== null && kept !== undefined && String(kept).trim() !== "") {
+                try { list = JSON.parse(String(kept)); } catch (err) { list = null; }
+            }
+            const own = Array.isArray(list);
+            if (!own) list = chat.defaultPresets;
+            const clearOf = (value) => {
+                const text = String(value === null || value === undefined ? "0" : value).trim();
+                if (text === "today" || text === "week") return text;
+                const minutes = Number(text);
+                return [30, 60, 240].indexOf(minutes) >= 0 ? minutes : 0;
+            };
+            return list.filter((item) => item && (item.text || item.emoji)).slice(0, 12).map((item) => ({
+                emoji: String(item.emoji || ""),
+                text: own || !localize ? String(item.text || "") : localize(String(item.text || "")),
+                clearAfter: clearOf(item.clearAfter)
+            }));
         },
         // the time a clear-at choice comes to (epoch millis, in the browser's zone for today and the week), null for none
         clearAt(option, now) {
@@ -434,7 +462,14 @@
         computed: {
             labels() { return labelsOf(this); },
             open: { get() { return chat.state.statusDialog; }, set(value) { chat.state.statusDialog = !!value; } },
-            clearOptions() { return chat.clearOptions(this.labels); }
+            clearOptions() { return chat.clearOptions(this.labels); },
+            // read when the dialog opens: the preference may have changed since (X-Moqui-Preferences)
+            presets() {
+                if (!this.open) return [];
+                const config = (root.moqui && root.moqui.config) || {};
+                const l10n = root.moqui && root.moqui.l10n;
+                return chat.statusPresets(config.preferences, l10n && l10n.localize ? (text) => l10n.localize(text) : null);
+            }
         },
         watch: {
             open(value) {
@@ -446,6 +481,16 @@
             }
         },
         methods: {
+            // a preset fills the dialog; Save sets it
+            usePreset(preset) {
+                this.emoji = preset.emoji;
+                this.text = preset.text;
+                this.clear = preset.clearAfter;
+            },
+            clearLabel(value) {
+                const found = this.clearOptions.find((option) => option.value === value);
+                return found && value ? found.label : "";
+            },
             save() {
                 this.saving = true;
                 const params = { statusText: this.text, emoji: this.emoji };
@@ -459,6 +504,13 @@
                 '<q-card style="min-width:320px;max-width:96vw;">' +
                     '<q-card-section class="text-subtitle1">{{labels.setStatus}}</q-card-section>' +
                     '<q-card-section class="q-pt-none q-gutter-y-sm">' +
+                        '<q-list v-if="presets.length" dense class="m-status-presets">' +
+                            '<q-item v-for="(preset, index) in presets" :key="index" clickable dense :data-preset="index" @click="usePreset(preset)">' +
+                                '<q-item-section avatar style="min-width:28px;">{{preset.emoji}}</q-item-section>' +
+                                '<q-item-section>{{preset.text}}</q-item-section>' +
+                                '<q-item-section side class="text-caption">{{clearLabel(preset.clearAfter)}}</q-item-section>' +
+                            '</q-item>' +
+                        '</q-list>' +
                         '<div class="row no-wrap q-gutter-x-sm">' +
                             '<q-input v-model="emoji" dense outlined stack-label :label="labels.emoji" maxlength="16" style="width:84px;" name="emoji"></q-input>' +
                             '<q-input v-model="text" dense outlined stack-label autofocus class="col" :label="labels.statusText" maxlength="100" name="statusText" @keyup.enter="save"></q-input>' +

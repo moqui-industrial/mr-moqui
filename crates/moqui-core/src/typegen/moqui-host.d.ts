@@ -883,6 +883,10 @@ interface MoquiStringUtilities {
     encodeForXmlAttribute(text: unknown, addZeroWidthSpaces?: boolean): string;
     base64UrlEncode(text: string): string;
     base64UrlDecode(text: string): string;
+    /** Standard base64 of a text's UTF-8 bytes, or of a `Uint8Array` or `ArrayBuffer` as it is. */
+    base64Encode(value: string | Uint8Array | ArrayBuffer | null): string;
+    /** The bytes of standard base64 text; white space is skipped and the padding may be left out. Throws on other text. */
+    base64Decode(text: string): Uint8Array;
 }
 
 interface MoquiWebUtilities {

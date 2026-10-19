@@ -148,13 +148,14 @@ fn is_timestamp_text(value: &Value, java_type: &str) -> bool {
     matches!(value, Value::String(_)) && java_type.rsplit('.').next() == Some("Timestamp")
 }
 
-/// The text of `original` in the session locale. A message longer than 255 characters is an
-/// error, as in Java. With no `LocalizedMessage` row the text is returned as is, minus any
-/// `##` suffix used to tell two uses of the same words apart.
+/// The text of `original` in the session locale. With no `LocalizedMessage` row the text is returned as is, minus any
+/// `##` suffix used to tell two uses of the same words apart. A text longer than 255 characters cannot be a
+/// `LocalizedMessage.original`, so it is returned unchanged (logged at debug): a long paragraph a screen passes through
+/// `localize` shows as written, where Java threw.
 ///
 /// # Errors
 ///
-/// Returns an error for an `original` longer than 255 characters.
+/// Returns an error when the message cache fails.
 pub fn localize(original: &str) -> Result<String, Error> {
     localize_in(original, &locale())
 }
@@ -168,11 +169,10 @@ pub fn localize_in(original: &str, locale: &str) -> Result<String, Error> {
     if original.is_empty() {
         return Ok(String::new());
     }
-    if original.chars().count() > MAX_ORIGINAL {
-        return Err(Error::new(format!(
-            "Original String cannot be more than 255 characters long, passed in string was {} characters long",
-            original.chars().count()
-        )));
+    let length = original.chars().count();
+    if length > MAX_ORIGINAL {
+        tracing::debug!(length, "text of more than {MAX_ORIGINAL} characters is not localized");
+        return Ok(original.to_string());
     }
     let key = format!("{original}::{locale}");
     let cache = ExecutionContext::with_current(|ec| ec.factory().cache().get("l10n.message"))
@@ -577,12 +577,14 @@ mod tests {
     }
 
     #[test]
-    fn a_message_over_255_characters_is_an_error() {
+    fn a_text_over_255_characters_is_returned_as_it_is() {
         let context = entity_context();
         let _entered = context.enter();
-        assert!(localize(&"x".repeat(255)).is_ok());
-        let err = localize(&"x".repeat(256)).unwrap_err();
-        assert!(err.to_string().contains("255"), "{err}");
+        message(&context, &"x".repeat(255), "default", "two hundred fifty-five");
+        assert_eq!(localize(&"x".repeat(255)).unwrap(), "two hundred fifty-five");
+        let long = format!("{}##suffix", "y".repeat(300));
+        assert_eq!(localize(&long).unwrap(), long, "unchanged, the ## suffix too");
+        assert_eq!(localize_in(&"é".repeat(256), "fr").unwrap(), "é".repeat(256));
     }
 
     #[test]

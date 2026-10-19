@@ -332,7 +332,7 @@ sri.renderSection("Rows");
 {
     const $type = "default" || "default";
     sri.write("<m-container-box" + $v.A({id: null, type: $type, title: ec.resource.expand("Closed", ""),
-        "initial-open": "" === "closed" ? "false" : null}) + ">");
+        ":initial-open": "" === "closed" ? "false" : null}) + ">");
 }
 sri.write("<template v-slot:header>");
 sri.write("</template>");

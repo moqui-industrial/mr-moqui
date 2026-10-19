@@ -1,0 +1,52 @@
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- A quick-create kind and tray screen as a Vue component file, served by QuickTask.xml in the qvue render mode. Its query
+    (recordEntity, recordId from the screen context) and its own path (for the saveTask transition) come from inject mScreen,
+    which the container that loaded it provides (the page's root when it is the page); Discard asks with $q.dialog; the tray
+    calls shellRefresh() on a shellCounts push instead of mounting the screen again. -->
+<template><div class="m-gallery-quick-task">
+    <p class="m-muted q-mb-sm">A .qvue screen: it reads its query through inject mScreen, wherever it is loaded.</p>
+    <p v-if="mScreen.parameters.recordId" class="q-mb-sm">On {{mScreen.parameters.recordEntity}} {{mScreen.parameters.recordId}}</p>
+    <m-form name="GalleryTask" :action="mScreen.path + '/saveTask'" :fields-initial="initial" v-slot:default="formProps">
+        <m-text-line name="taskName" id="GalleryTask_taskName" label="Task" v-model="formProps.fields.taskName"></m-text-line>
+        <div class="row q-gutter-sm q-mt-xs">
+            <q-btn dense unelevated no-caps color="primary" type="submit" label="Save"></q-btn>
+            <q-btn dense unelevated no-caps class="m-btn-tonal" label="Discard" @click="discard"></q-btn>
+        </div>
+    </m-form>
+    <p class="text-caption m-muted q-mt-sm q-mb-none" id="GalleryTaskStatus">{{mScreen.path}} · refreshed {{refreshes}} · {{status}}</p>
+</div></template>
+
+<script>
+module.exports = {
+    inject: { mScreen: { default: null }, mSubmitHide: { default: null } },
+    data() { return { refreshes: 0, status: 'open' }; },
+    computed: {
+        initial() {
+            const parameters = this.mScreen ? this.mScreen.parameters : {};
+            return { recordEntity: parameters.recordEntity || '', recordId: parameters.recordId || '', taskName: '' };
+        }
+    },
+    methods: {
+        // the tray's refresh of its tab: in place, so what the user typed stays
+        shellRefresh() { this.refreshes += 1; },
+        discard() {
+            this.$q.dialog({ title: 'Discard the task?', message: 'Nothing is saved.', cancel: true, persistent: true }).onOk(() => {
+                this.status = 'discarded';
+                if (this.mSubmitHide) this.mSubmitHide.hide();
+            });
+        }
+    }
+};
+</script>

@@ -1625,6 +1625,22 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="errorList" type="List"/>
         </out-parameters>
     </service>
+    <service verb="export" noun="EmailMessage" type="rust" location="moqui_core::service::mail::export_message"
+            allow-remote="false">
+        <description>A stored message as an RFC 5322 file (.eml) to download, with its EmailMessageAttachment files (inline
+            ones by Content-ID beside the HTML): the mail client keeps no raw message, so the MIME is made again by the
+            send path's builder from the stored fields and headers, as the copy of sent mail appended to Sent (no Bcc). A
+            message of an account the user does not reach at read level is "not found"; one with no account only with
+            authorization disabled. A screen sends it with ec.web.sendTextResponse(out.mimeText, out.contentType,
+            out.fileName): the text is 7-bit, the same as mimeBytes.</description>
+        <in-parameters><parameter name="emailMessageId" required="true"/></in-parameters>
+        <out-parameters>
+            <parameter name="mimeBytes" type="byte[]"/>
+            <parameter name="mimeText"/>
+            <parameter name="fileName"><description>The subject made a file name, with .eml</description></parameter>
+            <parameter name="contentType"><description>message/rfc822</description></parameter>
+        </out-parameters>
+    </service>
     <service verb="publish" noun="AccountCounts">
         <description>Internal: send the shell counts of the users of these accounts (their owners and members), after a
             change of their unread mail. Failure tolerant: an error is logged, not returned.</description>

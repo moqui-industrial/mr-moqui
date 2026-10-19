@@ -28,7 +28,7 @@ The binary always links this crate. Its implementations are only used when the c
 | `MoquiConf.xml` | Selects the tool factory by the class the crate registers, `example::ExampleToolFactory`. |
 | `service/example/ExampleServices.xml` | The two rust service definitions, and XML Actions that keep the tool in a field and call it. |
 | `test/Example.spec.js` | Specs for each of these. |
-| `screen/Gallery.xml`, `screen/Gallery/*.xml`, `*.qvue` | The screen archetype gallery of the IronStone BOSS style guide (`runtime/component/ironstone-boss/plan/style-guide.md` §3, §4 and §10): one screen per archetype over framework data, mounted at `/qapps/gallery` by `MoquiConf.xml`; `Board` and `Calendar` are `.qvue` screens. |
+| `screen/Gallery.xml`, `screen/Gallery/*.xml`, `*.qvue` | The screen archetype gallery of the IronStone BOSS style guide (`runtime/component/ironstone-boss/plan/style-guide.md` §3, §4 and §10): one screen per archetype over framework data, mounted at `/qapps/gallery` by `MoquiConf.xml`; `Board` and `Calendar` are `.qvue` screens, and `QuickTask` a `.qvue` quick-create kind (its own query through `inject: ["mScreen"]`, a `$q.dialog` confirm, `shellRefresh()` in a tray tab). |
 | `data/ExampleSecurityData.xml` | Seed authorization: the gallery for the ADMIN group. |
 | `test/Gallery.spec.js` | Renders every gallery screen in its render mode through `ec.screen.makeTest()` (`./moq test example`). |
 | `test/gallery-shots.mjs` | Screenshots and text of `/qapps` screens through Chrome DevTools against a running server, for checking the gallery in light and dark and at phone width. |

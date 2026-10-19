@@ -410,7 +410,10 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
         return run_transition(factory, job, info);
     }
 
-    let mode = pick_render_mode(&facade, job, &info)?;
+    let picked = pick_render_mode(&facade, job, &info)?;
+    let client = client_mode(job.request, &info.target_screen, &picked);
+    let negotiated = client.is_some();
+    let mode = client.unwrap_or(picked);
     let target = Arc::clone(&info.target_screen);
     if !target.allows_render_mode(&mode) {
         return Err(Error::of_kind(
@@ -429,6 +432,9 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     let timeout = state.url_info.transaction_timeout;
     in_transaction(begin, timeout, || render_screens(&state, &facade))?;
     add_client_component_headers(&state);
+    if negotiated && web::output_sent() && web::output_status() == 200 {
+        web::add_header("X-Moqui-Qvt", state.render_mode.clone());
+    }
     add_server_static_header(&state);
     record_history(job, &state);
     Ok(())
@@ -450,6 +456,23 @@ fn count_content_hit(location: &str, parameters: &BTreeMap<String, Value>, start
             output_size,
         });
     });
+}
+
+/// The client mode a `.qvt` request takes instead, as the `/qapps` router picks one from the menu data: `moqui.loadComponent` sends
+/// `X-Moqui-Client-Modes: qvue,qjs` when it loads a screen whose render modes it does not know (an `m-dynamic-container` or
+/// `m-dynamic-dialog`, a tray tab, a quick-create kind), and the first of those the target screen names in its `render-modes` is
+/// rendered, with `X-Moqui-Qvt` saying which. A screen whose modes are `all` or name neither stays qvt, and a request without the
+/// header gets the mode of its extension.
+fn client_mode(request: &WebRequest, target: &ScreenDef, picked: &str) -> Option<String> {
+    if picked != "qvt" {
+        return None;
+    }
+    request
+        .header("X-Moqui-Client-Modes")?
+        .split(',')
+        .map(str::trim)
+        .find(|mode| matches!(*mode, "qvue" | "qjs") && target.render_modes.iter().any(|named| named == mode))
+        .map(str::to_string)
 }
 
 /// A screen that says `server-static` for a mode other than the qvt family gets the cache header, as in Java: it is right only for output
@@ -1378,11 +1401,7 @@ fn respond(
                     .or_insert_with(|| moqui_lib::object::to_plain_string(value));
             }
         }
-        let root = info
-            .path_defs
-            .first()
-            .map(|def| def.location.as_str())
-            .unwrap_or("");
+        let root = info.path_defs.first().map(|def| def.location.as_str()).unwrap_or("");
         let prepared = match resolve_screen_path(factory, root, &info.pre_transition_path, &url) {
             Ok(prepared) => prepared,
             Err(err) if err.kind() == ErrorKind::NotFound => {

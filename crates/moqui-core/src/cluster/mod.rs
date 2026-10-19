@@ -258,6 +258,11 @@ pub fn publish(facade: &EntityFacade, topic: &'static str, message: &TopicMessag
     Ok(())
 }
 
+/// Whether `facade`'s factory posts to cluster peers, whose sockets may have the users of a notification.
+pub(crate) fn is_linked(facade: &EntityFacade) -> bool {
+    linked_state(facade).is_some()
+}
+
 fn linked_state(facade: &EntityFacade) -> Option<Arc<ClusterState>> {
     facade.with_slot(ClusterLink::default, |link| link.0.upgrade())
 }

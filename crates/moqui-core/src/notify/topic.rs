@@ -140,6 +140,12 @@ pub fn subscribe(name: &str, listener: Listener) -> Result<Subscription, Error> 
     })
 }
 
+/// Whether anything listens to `name` in this process: the host's notification socket subscribes to
+/// [`NOTIFICATION_MESSAGE`] when it starts, so a command such as `moqui load` has no listener.
+pub fn has_listeners(name: &str) -> bool {
+    lock().topics.get(name).is_some_and(|slots| !slots.is_empty())
+}
+
 /// Deliver `message` to the topic's listeners on this thread, then return.
 ///
 /// A second publish of the same `message_id` on [`NOTIFICATION_MESSAGE`] does not call listeners.

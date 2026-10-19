@@ -641,6 +641,101 @@ fn the_token_command_returns_its_first_line_and_a_failure_throws() {
     assert!(err.message().contains("token command false failed"), "{err}");
 }
 
+/// get#UserWikiSpaces: each space the user may view once, though the space is joined to each user's grant; the user's own
+/// grant in it (none from another user's row), and the count of its pages the user may view.
+#[test]
+fn user_wiki_spaces_are_each_listed_once_with_their_page_count() {
+    let (facade, context) = setup();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    install(&["EntityServices.xml", "impl/WikiServices.xml"]);
+    for (space, restrict) in [("WOPEN", "N"), ("WSHUT", "Y"), ("WNONE", "Y")] {
+        seed(
+            &facade,
+            "moqui.resource.wiki.WikiSpace",
+            &[
+                ("wikiSpaceId", space),
+                ("description", space),
+                ("restrictView", restrict),
+            ],
+        );
+    }
+    for (space, user, admin, view) in [
+        ("WOPEN", "ada", "N", "Y"),
+        ("WOPEN", "bob", "Y", "Y"),
+        ("WOPEN", "cy", "N", "N"),
+        ("WSHUT", "ada", "Y", "N"),
+        ("WNONE", "bob", "N", "Y"),
+    ] {
+        seed(
+            &facade,
+            "moqui.resource.wiki.WikiSpaceUser",
+            &[
+                ("wikiSpaceId", space),
+                ("userId", user),
+                ("allowAdmin", admin),
+                ("allowView", view),
+            ],
+        );
+    }
+    for (page, space, restrict) in [
+        ("P1", "WOPEN", "N"),
+        ("P2", "WOPEN", ""),
+        ("P3", "WOPEN", "Y"),
+        ("P4", "WSHUT", "N"),
+    ] {
+        let mut pairs = vec![("wikiPageId", page), ("wikiSpaceId", space), ("pagePath", page)];
+        if !restrict.is_empty() {
+            pairs.push(("restrictView", restrict));
+        }
+        seed(&facade, "moqui.resource.wiki.WikiPage", &pairs);
+    }
+    // the restricted page: Ada may view it, Bob's row says no
+    for (user, view) in [("ada", "Y"), ("bob", "N")] {
+        seed(
+            &facade,
+            "moqui.resource.wiki.WikiPageUser",
+            &[("wikiPageId", "P3"), ("userId", user), ("allowView", view)],
+        );
+    }
+    let spaces = |user: &str| -> Vec<(String, String, String, String)> {
+        let out = crate::service::sync(
+            "org.moqui.impl.WikiServices.get#UserWikiSpaces",
+            &params(&[("userId", user)]),
+        )
+        .unwrap_or_else(|err| panic!("{err}; {}", errors(&context)));
+        assert_eq!(errors(&context), "");
+        let Some(Value::List(list)) = out.get("wikiSpaceAndUserList") else {
+            panic!("no list: {out:?}");
+        };
+        list.iter()
+            .map(|item| {
+                let Value::Map(map) = item else { panic!("{item:?}") };
+                let get = |name: &str| map.get(name).map(to_plain_string).unwrap_or_default();
+                (get("wikiSpaceId"), get("userId"), get("allowAdmin"), get("pageCount"))
+            })
+            .collect()
+    };
+    let row = |space: &str, user: &str, admin: &str, count: &str| {
+        (
+            space.to_string(),
+            user.to_string(),
+            admin.to_string(),
+            count.to_string(),
+        )
+    };
+    assert_eq!(
+        spaces("ada"),
+        [row("WOPEN", "ada", "N", "3"), row("WSHUT", "ada", "Y", "1")]
+    );
+    assert_eq!(
+        spaces("bob"),
+        [row("WNONE", "bob", "N", "0"), row("WOPEN", "bob", "Y", "2")]
+    );
+    // no grant of their own: the open space once, with no user fields
+    assert_eq!(spaces("dee"), [row("WOPEN", "", "", "2")]);
+}
+
 #[test]
 fn wiki_pages_keep_versions_and_move_clone_and_delete() {
     let (facade, context) = setup();

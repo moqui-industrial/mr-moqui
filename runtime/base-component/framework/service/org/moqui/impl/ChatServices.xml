@@ -42,8 +42,10 @@ along with this software (see the LICENSE.md file). If not, see
     A mention (<span data-mention-id="userId"> in a message, the m-rich-text mention) of a member, or of any user in a
     public room, is counted (ChatEventMention) and notified on the topic ChatMention (an app seeds the NotificationTopic;
     IronStone's Mantle does), with roomName, chatRoomId, eventSeq, authorUserId, authorName and summary in the message,
-    the room as its record, and roomUrl, when the caller gives one, as its link. A member whose notification level is
-    CnlNone is counted but not notified. Do not disturb changes nothing here: the client silences toasts and sounds.
+    the room as its record, and roomUrl, when the caller gives one, as its link (notify#Mention). A member whose notification
+    level is CnlNone is counted but not notified. A user whose preference CHAT_NOTIFY_PREVIEW is N gets no summary (no message
+    text in the notification). Do not disturb changes nothing here: the client silences toasts and sounds. A membership
+    starts at the user's preference CHAT_NOTIFY_DEFAULT (all, mentions or none) when set, but in a direct room.
 
     The agent entry point (for the Assist port, mr-moqui Phase 13): a room member with roleEnumId CmrAgent is a service
     user whose agentRef names a service; each message from another member is handed to it by deliver#AgentMessage, run
@@ -458,8 +460,9 @@ along with this software (see the LICENSE.md file). If not, see
             recordEntityName and recordId, one room per record: the existing one is answered and the user joins it if they
             may (a user must be able to see the record, check#RecordVisible, to make it). The maker is the owner (in a
             direct room every member is a member). visibilityEnumId follows the type (direct and private CrvMembers, public
-            CrvUsers, record CrvRecord); a record room may be CrvMembers. Each member's notification level starts at CnlAll,
-            CnlMentions in a public room. Each new member's room list hears of it on chatUser:userId.</description>
+            CrvUsers, record CrvRecord); a record room may be CrvMembers. Each member's notification level starts at the
+            member's own default, the preference CHAT_NOTIFY_DEFAULT (all, mentions or none), else CnlAll, CnlMentions in a
+            public room; in a direct room it is CnlAll. Each new member's room list hears of it on chatUser:userId.</description>
         <in-parameters>
             <parameter name="roomTypeEnumId" default-value="CrtPrivate"/>
             <parameter name="roomName"/>
@@ -497,7 +500,11 @@ along with this software (see the LICENSE.md file). If not, see
                 if (missing.length) { ec.message.addError(`User ${missing.join(', ')} not found`); return }
             }
             const now = ec.user.nowTimestamp
-            const levelFor = type === 'CrtPublic' ? 'CnlMentions' : 'CnlAll'
+            const roomLevel = type === 'CrtPublic' ? 'CnlMentions' : 'CnlAll'
+            // each member's own default level (CHAT_NOTIFY_DEFAULT), but in a direct room, whose messages always count
+            const ownLevels = type === 'CrtDirect' ? {} : ec.service.sync().name('org.moqui.impl.ChatServices.get#DefaultNotifyLevels')
+                    .parameter('userIdList', [userId].concat(others)).call().levelMap || {}
+            const levelFor = (memberId) => ownLevels[memberId] || roomLevel
             const pushRoom = (users, action) => users.forEach((user) => ec.service.sync().name('org.moqui.impl.ChatServices.push#Signal')
                     .parameters({topic: 'chatUser:' + user, userIdList: [user], message: {kind: 'room', action: action, chatRoomId: chatRoomId}}).call())
             let directKey = null
@@ -548,7 +555,7 @@ along with this software (see the LICENSE.md file). If not, see
                 const member = ec.entity.makeValue('moqui.chat.ChatRoomMember')
                 member.setFields({chatRoomId: chatRoomId, userId: memberId,
                     roleEnumId: type === 'CrtDirect' || memberId !== userId ? 'CmrMember' : 'CmrOwner', joinedDate: now, lastReadEventSeq: 0,
-                    notificationLevelEnumId: levelFor, isPinned: 'N', isMuted: 'N', addedByUserId: userId}, true, null, null)
+                    notificationLevelEnumId: levelFor(memberId), isPinned: 'N', isMuted: 'N', addedByUserId: userId}, true, null, null)
                 member.create()
             }
             if (type !== 'CrtDirect') {
@@ -559,6 +566,84 @@ along with this software (see the LICENSE.md file). If not, see
                 ec.entity.find('moqui.chat.ChatRoomMember').condition('chatRoomId', chatRoomId).updateAll({lastReadEventSeq: appended.eventSeq})
             }
             pushRoom(members, 'joined')
+        ]]></script></actions>
+    </service>
+
+    <service verb="get" noun="DefaultNotifyLevels" allow-remote="false">
+        <description>Internal: the default notification level of each user who set one, the preference CHAT_NOTIFY_DEFAULT (all,
+            mentions or none; another value or none is left out), as the notificationLevelEnumId a new membership starts
+            with (create#Room, add#Member). Read for users other than the current one, so from their UserPreference rows.</description>
+        <in-parameters><parameter name="userIdList" type="List" required="true"/></in-parameters>
+        <out-parameters><parameter name="levelMap" type="Map"><description>userId to CnlAll, CnlMentions or CnlNone</description></parameter></out-parameters>
+        <actions><script><![CDATA[
+            const LEVELS = {all: 'CnlAll', mentions: 'CnlMentions', none: 'CnlNone'}
+            levelMap = {}
+            const ids = Array.from(new Set(Array.from(userIdList || []).map((id) => String(id || '').trim()).filter((id) => id)))
+            if (!ids.length) return
+            for (const row of ec.entity.find('moqui.security.UserPreference').condition('userId', 'in', ids)
+                    .condition('preferenceKey', 'CHAT_NOTIFY_DEFAULT').disableAuthz().list()) {
+                const level = LEVELS[String(row.preferenceValue || '').trim()]
+                if (level) levelMap[row.userId] = level
+            }
+        ]]></script></actions>
+    </service>
+    <service verb="get" noun="NotifyPreviewUsers" allow-remote="false">
+        <description>Internal: of userIdList, those who show the text of a chat message in its notifications, and those who do
+            not: the preference CHAT_NOTIFY_PREVIEW of N leaves it out (the ChatMention notification says who mentioned them and
+            where, not what); Y or none shows it.</description>
+        <in-parameters><parameter name="userIdList" type="List" required="true"/></in-parameters>
+        <out-parameters>
+            <parameter name="previewUserIdList" type="List"/>
+            <parameter name="noPreviewUserIdList" type="List"/>
+        </out-parameters>
+        <actions><script><![CDATA[
+            const ids = Array.from(new Set(Array.from(userIdList || []).map((id) => String(id || '').trim()).filter((id) => id)))
+            const hidden = new Set()
+            if (ids.length) for (const row of ec.entity.find('moqui.security.UserPreference').condition('userId', 'in', ids)
+                    .condition('preferenceKey', 'CHAT_NOTIFY_PREVIEW').disableAuthz().list()) {
+                const value = String(row.preferenceValue || '').trim()
+                if (value === 'N' || value === 'false') hidden.add(row.userId)
+            }
+            previewUserIdList = ids.filter((id) => !hidden.has(id))
+            noPreviewUserIdList = ids.filter((id) => hidden.has(id))
+        ]]></script></actions>
+    </service>
+    <service verb="notify" noun="Mention" allow-remote="false">
+        <description>Internal: the ChatMention notification of a message to the users it mentions (send#Message, edit#Message):
+            reason mention, the room as its record, the room's link, and the message's first 120 characters as summary, which a
+            user whose CHAT_NOTIFY_PREVIEW is N does not get (their notification's title is who mentioned them where, without
+            the text). Failure tolerant: a notification that cannot be sent is logged.</description>
+        <in-parameters>
+            <parameter name="userIdList" type="List" required="true"/>
+            <parameter name="chatRoomId" required="true"/>
+            <parameter name="eventSeq" type="Long" required="true"/>
+            <parameter name="roomName" allow-html="any"/>
+            <parameter name="authorUserId"/>
+            <parameter name="authorName" allow-html="any"/>
+            <parameter name="bodyText" allow-html="any"/>
+            <parameter name="roomUrl"/>
+        </in-parameters>
+        <actions><script><![CDATA[
+            const groups = ec.service.sync().name('org.moqui.impl.ChatServices.get#NotifyPreviewUsers').parameter('userIdList', userIdList).call()
+            const text = String(bodyText || '')
+            const summary = text.length > 120 ? text.slice(0, 119) + '…' : text
+            const send = (users, withText) => {
+                if (!users || !users.length) return
+                try {
+                    const message = {roomName: roomName || chatRoomId, chatRoomId: chatRoomId, eventSeq: eventSeq, authorUserId: authorUserId,
+                        authorName: authorName || authorUserId}
+                    if (withText) message.summary = summary
+                    const nm = ec.makeNotificationMessage().topic('ChatMention').userIds(users).message(message).reason('mention')
+                        .record('moqui.chat.ChatRoom', chatRoomId).actorUserId(authorUserId)
+                    if (!withText) nm.title(ec.l10n.localize('${authorName} mentioned you in ${roomName}'))
+                    if (roomUrl) nm.link(roomUrl)
+                    nm.send()
+                } catch (err) {
+                    ec.logger.error(`Could not notify the mentions of chat message ${chatRoomId}::${eventSeq}: ${err && err.message ? err.message : err}`)
+                }
+            }
+            send(groups.previewUserIdList, true)
+            send(groups.noPreviewUserIdList, false)
         ]]></script></actions>
     </service>
 
@@ -627,8 +712,9 @@ along with this software (see the LICENSE.md file). If not, see
             may join (a public room, or a record room whose record they may see). A member adds others to a room that is
             not direct (a direct room's members are fixed: start another direct message) and not archived; a role other
             than member, or an agent's agentRef, takes a moderator (owner for CmrOwner). A user who left comes back. A new
-            member starts with everything before read. Each is a membership event; the added users' room lists hear of it
-            on chatUser:userId.</description>
+            member starts with everything before read, at their own default notification level (the preference
+            CHAT_NOTIFY_DEFAULT: all, mentions or none), else CnlAll, CnlMentions in a public room; one who comes back keeps
+            the level they had. Each is a membership event; the added users' room lists hear of it on chatUser:userId.</description>
         <in-parameters>
             <parameter name="chatRoomId" required="true"/>
             <parameter name="userId"/>
@@ -669,8 +755,11 @@ along with this software (see the LICENSE.md file). If not, see
             }
             const now = ec.user.nowTimestamp
             const lastSeq = Number(room.lastEventSeq || 0)
-            const level = room.roomTypeEnumId === 'CrtPublic' ? 'CnlMentions' : 'CnlAll'
+            const roomLevel = room.roomTypeEnumId === 'CrtPublic' ? 'CnlMentions' : 'CnlAll'
+            const ownLevels = room.roomTypeEnumId === 'CrtDirect' ? {} : ec.service.sync().name('org.moqui.impl.ChatServices.get#DefaultNotifyLevels')
+                    .parameter('userIdList', targets).call().levelMap || {}
             for (const target of targets) {
+                const level = ownLevels[target] || roomLevel
                 let row = ec.entity.find('moqui.chat.ChatRoomMember').condition('chatRoomId', chatRoomId).condition('userId', target).one()
                 if (row && !row.leftDate) continue
                 if (row) {
@@ -1117,19 +1206,9 @@ along with this software (see the LICENSE.md file). If not, see
                     mention.create()
                 }
                 const notify = mentionIds.filter((id) => !memberOf[id] || (memberOf[id].notificationLevelEnumId || 'CnlAll') !== 'CnlNone')
-                if (notify.length) {
-                    try {
-                        const roomName = room.roomName || event.senderName || chatRoomId
-                        const nm = ec.makeNotificationMessage().topic('ChatMention').userIds(notify).message({roomName: roomName,
-                            chatRoomId: chatRoomId, eventSeq: eventSeq, authorUserId: sender, authorName: event.senderName || sender,
-                            summary: bodyText.length > 120 ? bodyText.slice(0, 119) + '…' : bodyText}).reason('mention')
-                            .record('moqui.chat.ChatRoom', chatRoomId).actorUserId(sender)
-                        if (roomUrl) nm.link(roomUrl)
-                        nm.send()
-                    } catch (err) {
-                        ec.logger.error(`Could not notify the mentions of chat message ${chatRoomId}::${eventSeq}: ${err && err.message ? err.message : err}`)
-                    }
-                }
+                if (notify.length) ec.service.sync().name('org.moqui.impl.ChatServices.notify#Mention').parameters({userIdList: notify,
+                    chatRoomId: chatRoomId, eventSeq: eventSeq, roomName: room.roomName || event.senderName || chatRoomId, authorUserId: sender,
+                    authorName: event.senderName || sender, bodyText: bodyText, roomUrl: roomUrl || null}).call()
             }
             ec.service.sync().name('org.moqui.impl.ChatServices.index#ChatEvent').parameters({chatRoomId: chatRoomId, eventSeq: eventSeq}).call()
             // the counts of the members whose count it changes
@@ -1234,18 +1313,9 @@ along with this software (see the LICENSE.md file). If not, see
             for (const id of dropped) ec.entity.find('moqui.chat.ChatEventMention').condition('chatRoomId', chatRoomId)
                     .condition('eventSeq', eventSeq).condition('userId', id).deleteAll()
             const notify = added.filter((id) => !memberOf[id] || (memberOf[id].notificationLevelEnumId || 'CnlAll') !== 'CnlNone')
-            if (notify.length) {
-                try {
-                    const nm = ec.makeNotificationMessage().topic('ChatMention').userIds(notify).message({roomName: room.roomName || event.senderName || chatRoomId,
-                        chatRoomId: chatRoomId, eventSeq: eventSeq, authorUserId: me, authorName: event.senderName || me,
-                        summary: bodyText.length > 120 ? bodyText.slice(0, 119) + '…' : bodyText}).reason('mention')
-                        .record('moqui.chat.ChatRoom', chatRoomId).actorUserId(me)
-                    if (roomUrl) nm.link(roomUrl)
-                    nm.send()
-                } catch (err) {
-                    ec.logger.error(`Could not notify the mentions of chat message ${chatRoomId}::${eventSeq}: ${err && err.message ? err.message : err}`)
-                }
-            }
+            if (notify.length) ec.service.sync().name('org.moqui.impl.ChatServices.notify#Mention').parameters({userIdList: notify,
+                chatRoomId: chatRoomId, eventSeq: eventSeq, roomName: room.roomName || event.senderName || chatRoomId, authorUserId: me,
+                authorName: event.senderName || me, bodyText: bodyText, roomUrl: roomUrl || null}).call()
             ec.service.sync().name('org.moqui.impl.ChatServices.index#ChatEvent').parameters({chatRoomId: chatRoomId, eventSeq: eventSeq}).call()
             if (added.length || dropped.length) ec.service.sync().name('org.moqui.impl.ChatServices.publish#ChatCounts')
                     .parameter('userIdList', added.concat(dropped)).call()

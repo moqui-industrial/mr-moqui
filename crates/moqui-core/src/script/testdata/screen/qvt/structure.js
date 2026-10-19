@@ -14,7 +14,7 @@ sri.write("</div>\n");
 {
     const $type = "default" || "default";
     sri.write("<m-container-box" + $v.A({id: null, type: $type, title: ec.resource.expand("Header", ""),
-        "initial-open": "" === "closed" ? "false" : null}) + ">");
+        ":initial-open": "" === "closed" ? "false" : null}) + ">");
 }
 sri.write("<template v-slot:header>");
 $v.label({"name":"label","attrs":{"text":"Head"}});

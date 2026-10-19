@@ -95,6 +95,7 @@ mod tests {
             "moqui_core::service::images::image_writer_mime_types",
             "moqui_core::service::images::write_image_service",
             "moqui_core::service::mail::discover_server",
+            "moqui_core::service::mail::export_message",
             "moqui_core::service::mail::import_messages",
             "moqui_core::service::mail::poll_server",
             "moqui_core::service::mail::push_remote_changes",

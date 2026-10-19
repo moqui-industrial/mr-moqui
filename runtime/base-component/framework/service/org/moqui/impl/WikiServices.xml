@@ -2589,12 +2589,17 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
 
     <service verb="get" noun="UserWikiSpaces">
+        <description>The wiki spaces the user may view, each once, by wikiSpaceId: one not restricted, or restricted with the
+            user's own WikiSpaceUser allowing admin or view. A space's map has its fields and, from the user's own
+            WikiSpaceUser, userId, receiveNotifications, allowAdmin, allowView and allowUpdate (null without one: another user's
+            row says nothing of this user), and pageCount, the pages of the space the user may view as get#UserSpaceWikiPages
+            lists them.</description>
         <in-parameters><parameter name="userId"/></in-parameters>
         <out-parameters>
             <parameter name="wikiSpaceAndUserList" type="List"><parameter name="wikiSpaceAndUser" type="Map"/></parameter>
         </out-parameters>
         <actions>
-            <entity-find entity-name="moqui.resource.wiki.WikiSpaceAndUser" list="wikiSpaceAndUserList">
+            <entity-find entity-name="moqui.resource.wiki.WikiSpaceAndUser" list="wikiSpaceRowList">
                 <econditions combine="or">
                     <econdition field-name="restrictView" value="N"/>
                     <econdition field-name="restrictView" from="null"/>
@@ -2607,7 +2612,37 @@ along with this software (see the LICENSE.md file). If not, see
                         </econditions>
                     </econditions>
                 </econditions>
+                <order-by field-name="wikiSpaceId"/>
             </entity-find>
+            <script><![CDATA[
+                // a space is joined to every WikiSpaceUser row it has: keep it once, with the user's own row when there is one
+                const userFields = ['userId', 'receiveNotifications', 'allowAdmin', 'allowView', 'allowUpdate']
+                const own = (row) => userId != null && userId !== '' && row.userId === userId
+                const bySpace = new Map()
+                for (const row of wikiSpaceRowList) {
+                    const map = Object.assign({}, row.getMap ? row.getMap() : row)
+                    const mine = own(map)
+                    if (!mine) for (const name of userFields) map[name] = null
+                    const prior = bySpace.get(map.wikiSpaceId)
+                    if (!prior || (mine && !own(prior))) bySpace.set(map.wikiSpaceId, map)
+                }
+                wikiSpaceAndUserList = Array.from(bySpace.values())
+                const spaceIds = wikiSpaceAndUserList.map((space) => space.wikiSpaceId)
+                const pages = new Map()
+                if (spaceIds.length) {
+                    const cf = ec.entity.conditionFactory
+                    const viewable = cf.makeCondition([cf.makeCondition('restrictView', 'equals', 'N'), cf.makeCondition('restrictView', 'equals', null),
+                        cf.makeCondition([cf.makeCondition('userId', 'equals', userId || null), cf.makeCondition('restrictView', 'equals', 'Y'),
+                            cf.makeCondition('allowView', 'equals', 'Y')], 'and')], 'or')
+                    const pageRows = ec.entity.find('moqui.resource.wiki.WikiPageAndUser').condition('wikiSpaceId', 'in', spaceIds)
+                        .condition(viewable).selectField('wikiSpaceId').selectField('wikiPageId').list()
+                    for (const page of pageRows) {
+                        if (!pages.has(page.wikiSpaceId)) pages.set(page.wikiSpaceId, new Set())
+                        pages.get(page.wikiSpaceId).add(page.wikiPageId)
+                    }
+                }
+                for (const space of wikiSpaceAndUserList) space.pageCount = pages.has(space.wikiSpaceId) ? pages.get(space.wikiSpaceId).size : 0
+            ]]></script>
         </actions>
     </service>
     <service verb="get" noun="UserSpaceWikiPages">
