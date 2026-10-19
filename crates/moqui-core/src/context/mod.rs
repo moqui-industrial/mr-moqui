@@ -191,6 +191,28 @@ mod tests {
     }
 
     #[test]
+    fn instance_conf_in_the_runtime_wins_over_the_dev_conf() {
+        use std::ffi::OsStr;
+        let temp = TempRuntime::new("conf-instance");
+        let runtime = temp.path().to_path_buf();
+        std::fs::write(runtime.join("conf/MoquiDevConf.xml"), "<moqui-conf/>").unwrap();
+        std::fs::write(runtime.join("conf/MoquiProductionConf.xml"), "<moqui-conf/>").unwrap();
+        let instance = runtime.join("MoquiConf.xml");
+        std::fs::write(&instance, "<moqui-conf/>").unwrap();
+        assert_eq!(
+            super::conf::runtime_conf_from(&runtime, None).unwrap(),
+            Some(instance.clone())
+        );
+        assert_eq!(
+            super::conf::runtime_conf_from(&runtime, Some(OsStr::new(""))).unwrap(),
+            Some(instance)
+        );
+        let selected =
+            super::conf::runtime_conf_from(&runtime, Some(OsStr::new("conf/MoquiProductionConf.xml"))).unwrap();
+        assert_eq!(selected, Some(runtime.join("conf/MoquiProductionConf.xml")));
+    }
+
+    #[test]
     fn runtime_conf_property_wins_over_the_environment() {
         let _lock = crate::user::session::cookie_property_lock();
         let temp = TempRuntime::new("conf-property");

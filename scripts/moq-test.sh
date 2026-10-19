@@ -60,7 +60,7 @@ have() {
 R=$FIX/root
 mkdir -p "$R/target/lite" "$R/runtime/base-component/framework/data" "$R/runtime/base-component/framework/conf" \
     "$R/runtime/conf" "$R/runtime/component" \
-    "$R/runtime/db/install/18.6.0" "$R/runtime/log" "$R/runtime/tmp" "$R/runtime/opensearch/data/nodes" "$R/runtime/opensearch/logs"
+    "$R/runtime/install/postgres/18.6.0" "$R/runtime/db/install/18.6.0" "$R/runtime/log" "$R/runtime/tmp" "$R/runtime/opensearch/data/nodes" "$R/runtime/opensearch/logs"
 cp "$SRC/moq" "$R/moq"
 chmod +x "$R/moq"
 cat >"$R/target/lite/moqui" <<'EOF'
@@ -239,6 +239,7 @@ check "clean-db removed cluster" 1 '' -- test -e "$R/runtime/db/embedded"
 check "clean-db removed opensearch data" 1 '' -- test -e "$R/runtime/opensearch/data"
 check "clean-db removed opensearch logs" 1 '' -- test -e "$R/runtime/opensearch/logs/gc.log"
 check "clean-db kept install" 0 '' -- test -d "$R/runtime/db/install/18.6.0"
+check "clean-db kept runtime/install" 0 '' -- test -d "$R/runtime/install/postgres/18.6.0"
 check "clean-db kept instance_id" 0 '' -- test -f "$R/runtime/db/instance_id"
 check "reload-save" 0 'Restored t1' -- "$M" reload-save t1
 check "reload-save restored db" 0 'dump of' -- cat "$R/runtime/db/embedded/data/restored"
@@ -543,6 +544,90 @@ if have git && have zip && have unzip && have curl; then
     check "complete component-zip" 0 '^comp-a$' -- "$M" __complete 2 component-zip comp-a
 else
     skipped="$skipped zip"
+fi
+
+# ========== archive ==========
+
+if have zip && have unzip && have tar && have gzip; then
+    O=$FIX/out
+    mkdir -p "$O"
+    mkdir -p "$R/runtime/opensearch/logs" "$R/runtime/opensearch/data/nodes" "$R/runtime/tmp"
+    echo 'gc' >"$R/runtime/opensearch/logs/gc.log"
+    echo 'index' >"$R/runtime/opensearch/data/nodes/x"
+    echo 'scratch' >"$R/runtime/tmp/x"
+    echo 'secret=1' >"$R/runtime/.env"
+    echo '<moqui-conf dev-override=""/>' >"$R/runtime/MoquiConf.xml"
+    today=mr-moqui-$(date +%Y%m%d)
+    check "archive default name" 0 "Created $O/$today.zip .*expands to $today/" -- sh -c "cd '$O' && '$M' archive"
+    zip_list=$(unzip -l "$O/$today.zip")
+    if tar --help 2>&1 | grep -q BusyBox; then
+        check "archive --tgz refuses BusyBox tar" 1 'needs GNU or BSD tar' -- "$M" archive --tgz "$O/bb"
+        kinds=zip
+    else
+        check "archive --tgz" 0 "Created $O/$today.tgz" -- sh -c "cd '$O' && '$M' archive --tgz"
+        tgz_list=$(tar -tzf "$O/$today.tgz" | sed 's/^/ /')
+        kinds='zip tgz'
+    fi
+    for kind in $kinds; do
+        if [ "$kind" = zip ]; then list=$zip_list; else list=$tgz_list; fi
+        for want in "$today/moqui" "$today/MoquiConf.xml" "$today/README.txt" "$today/conf/MoquiDevConf.xml" \
+            "$today/base-component/" "$today/db/instance_id" "$today/.env" "$today/opensearch/data/nodes/x"; do
+            check "$kind has $want" 0 '' -- grep -qF " $want" <<<"$list"
+        done
+        for unwanted in "$today/runtime" "$today/log" "$today/tmp" "$today/save" "$today/install" db/install \
+            opensearch/logs/. '\.git/' '\.moq-archive'; do
+            lacks "$kind leaves out $unwanted" "$unwanted" -- printf '%s\n' "$list"
+        done
+        rm -rf "$O/x"
+        mkdir -p "$O/x"
+        if [ "$kind" = zip ]; then
+            (cd "$O/x" && unzip -q "$O/$today.zip")
+        else
+            tar -xzf "$O/$today.tgz" -C "$O/x"
+        fi
+        check "$kind binary is executable" 0 '' -- test -x "$O/x/$today/moqui"
+        check "$kind conf is the production conf, not the runtime's" 0 '' -- \
+            cmp "$O/x/$today/MoquiConf.xml" "$R/runtime/conf/MoquiProductionConf.xml"
+        check "$kind readme" 0 'keep this archive private' -- cat "$O/x/$today/README.txt"
+    done
+    rm -f "$R/runtime/MoquiConf.xml"
+    check "archive exists" 1 'there already; -f replaces it' -- sh -c "cd '$O' && '$M' archive"
+    check "archive -f" 0 'Created' -- sh -c "cd '$O' && '$M' archive -f"
+    check "archive name gets .zip" 0 "Created $O/one.zip" -- "$M" archive "$O/one"
+    check "archive name top dir" 0 ' one/moqui' -- unzip -l "$O/one.zip"
+    if [ "$kinds" != zip ]; then
+        check "archive --tgz name gets .tgz" 0 "Created $O/two.tgz" -- "$M" archive --tgz "$O/two"
+        check "archive .tar.gz name is a tgz" 0 ' three/moqui' -- \
+            sh -c "'$M' archive '$O/three.tar.gz' && tar -tzf '$O/three.tar.gz' | sed 's/^/ /'"
+    fi
+    check "archive --tgz with a .zip name" 1 'not four.zip' -- "$M" archive --tgz "$O/four.zip"
+    check "archive into a directory" 0 "Created $O/x/$today.zip" -- "$M" archive "$O/x/"
+    check "archive --with-save" 0 ' saved/save/t1/moqui.dump' -- sh -c "'$M' archive --with-save '$O/saved.zip' && unzip -l '$O/saved.zip'"
+    check "archive --conf" 0 'Created' -- "$M" archive -c conf/MoquiDevConf.xml "$O/dev.zip"
+    check "archive --no-data" 0 'Created' -- "$M" archive --no-data "$O/clean.zip"
+    list=$(unzip -l "$O/clean.zip")
+    for unwanted in clean/db clean/.env opensearch/data; do
+        lacks "archive --no-data leaves out $unwanted" "$unwanted" -- printf '%s\n' "$list"
+    done
+    check "archive refuses inside runtime" 1 'is inside runtime' -- "$M" archive "$R/runtime/x.zip"
+    check "archive bad name" 1 'may use only' -- "$M" archive "$O/a b.zip"
+    check "archive missing directory" 1 'no directory' -- "$M" archive "$O/nope/a.zip"
+    check "archive dry run" 0 'zip -qry .* dry/conf' -- dry "$M" archive "$O/dry"
+    check "archive dry run writes nothing" 1 '' -- test -e "$O/dry.zip"
+    check "archive dry run leaves no stage" 1 '' -- sh -c "ls -A '$O' | grep -q moq-archive"
+    mkdir -p "$R/runtime/db/embedded/data"
+    sleep 30 &
+    live=$!
+    echo "$live" >"$R/runtime/db/embedded/data/postmaster.pid"
+    check "archive refuses while running" 1 'is running \(pid' -- "$M" archive "$O/live.zip"
+    check "archive --no-data while running" 0 'Created' -- "$M" archive --no-data "$O/live.zip"
+    kill "$live" 2>/dev/null
+    wait "$live" 2>/dev/null
+    rm -f "$R/runtime/db/embedded/data/postmaster.pid"
+    check "alias add-runtime" 0 './moq archive' -- "$M" add-runtime --help
+    check "complete archive" 0 '^--tgz$' -- "$M" __complete 2 archive --t
+else
+    skipped="$skipped archive"
 fi
 
 printf '%d passed, %d failed%s (bash %s)\n' "$pass" "$fail" "${skipped:+, skipped:$skipped}" "$BASH_VERSION"

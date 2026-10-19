@@ -57,11 +57,16 @@ Server options
   moqui -p 8081 -D entity_ds_db_conf=postgres
 
 Environment
-  MOQUI_RUNTIME      Runtime directory (default: runtime)
+  MOQUI_RUNTIME      Runtime directory (default: the first with a base-component directory of
+                     runtime in the working directory, runtime beside this executable, and the
+                     directory of this executable)
   MOQUI_FRAMEWORK    Framework component (default: <runtime>/base-component/framework)
   MOQUI_CONF         Runtime conf merged over MoquiDefaultConf.xml, relative to the runtime
-                     directory or absolute. Unset uses conf/MoquiDevConf.xml when that file
-                     exists. runtime/.env is read after the conf merge and does not select it.
+                     directory or absolute. Unset uses MoquiConf.xml in the runtime directory,
+                     else conf/MoquiDevConf.xml, when that file exists. runtime/.env is read after
+                     the conf merge and does not select it.
+  MOQUI_INSTALL      Where the embedded Postgres is unpacked, in <dir>/postgres (default: install
+                     in the runtime directory)
   webapp_http_port   HTTP port (default 8080). webapp_https_listen_port defaults to 8443 and cluster_https_port
                      to 8444. webapp_https_port is the HTTPS port in generated URLs (empty is 443).
   entity_ds_db_conf  postgres, mysql, or mysql8 for an external server; otherwise embedded

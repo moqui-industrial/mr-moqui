@@ -80,14 +80,40 @@ has its own, so the artifacts of one never replace another's and switching packa
 ## Embedded Postgres archive
 
 The `embedded-postgres` feature embeds the theseus Postgres archive (the version `.cargo/config.toml` forces through
-`POSTGRESQL_VERSION`) and unpacks it once into `runtime/db/install/<version>`, shared by the entity, search and sim
-clusters. `crates/moqui-host/build.rs` stages it from `~/.theseus/postgresql/postgresql-<version>-<target>.tar.gz`, or
+`POSTGRESQL_VERSION`) and unpacks it once into `install/postgres/<version>` in the runtime directory (or under
+`MOQUI_INSTALL`), shared by the entity, search and sim clusters. An install an earlier build unpacked in
+`runtime/db/install` is moved there on the first start. `crates/moqui-host/build.rs` stages it from `~/.theseus/postgresql/postgresql-<version>-<target>.tar.gz`, or
 the file `MOQUI_PG_ARCHIVE` names, and downloads nothing. It refuses an archive that still holds `bin/psql` or a
 readline library (GPL, plans/archive/License-Review.md).
 
 `scripts/pg-payload.sh strip` downloads the archive when it is missing (checking its sha256) and repacks it without
 psql; `./moq build` runs it the first time. A plain `cargo build` of a package with embedded Postgres asks for it.
 `scripts/pg-payload.sh check` checks an archive, and every one staged under `target/`, for psql and readline.
+
+## Instance archive
+
+`./moq archive [file]` (with the package flags and `--build`) zips what one instance needs to run into `file`
+(default `mr-moqui-YYYYMMDD.zip`; `--tgz`, or a `.tgz` or `.tar.gz` name, writes a gzipped tar), which expands to a
+directory of the same name. That directory is a runtime directory with the binary in it:
+
+```
+mr-moqui-20261019/
+  moqui            the package's binary
+  MoquiConf.xml    runtime/conf/MoquiProductionConf.xml, or the --conf file
+  README.txt       how to run it, the package, the commit, and what went in
+  LICENSE.md
+  .env, base-component/, component/, conf/, db/, opensearch/, ...
+                   runtime/ without log/, tmp/, save/ (--with-save adds it), install/, db/install, .git,
+                   component target/
+  install/         not in the archive: the first start unpacks the embedded Postgres into install/postgres/
+```
+
+The binary takes the first directory with `base-component/` in it of: `runtime` in the working directory, `runtime`
+beside the binary, and the binary's own directory (links resolved), so `<dir>/moqui` runs from anywhere. With no
+`MOQUI_CONF`, it merges `<runtime>/MoquiConf.xml`, else `<runtime>/conf/MoquiDevConf.xml`. `--tgz` needs GNU or BSD tar.
+The embedded database, OpenSearch and Chromium go in when they are in `runtime/`, so the embedded Postgres must be
+stopped; `--no-data` leaves out the database, OpenSearch data, `.env` and `cert/` for a fresh instance. A binary runs
+on the OS and CPU it was built for.
 
 ## Checks
 

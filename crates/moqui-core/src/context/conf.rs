@@ -23,8 +23,9 @@ use super::error::Error;
 
 /// The runtime conf merged over the default, like Java's `moqui.conf`. A process property `MOQUI_CONF` names it,
 /// then the environment variable of the same name. Relative to the runtime directory or absolute, and a named file
-/// that is missing is an error. Unset or empty means `conf/MoquiDevConf.xml` when it exists. `runtime/.env` is applied
-/// after the conf merge, so it cannot select the conf.
+/// that is missing is an error. Unset or empty means the instance's `MoquiConf.xml` in the runtime directory (beside the
+/// binary in an archive from `./moq archive`) when it exists, else `conf/MoquiDevConf.xml` when that exists.
+/// `runtime/.env` is applied after the conf merge, so it cannot select the conf.
 pub(super) fn runtime_conf(runtime_dir: &Path) -> Result<Option<PathBuf>, Error> {
     let from_property = moqui_lib::env::get_property("MOQUI_CONF").map(std::ffi::OsString::from);
     let selected = from_property.or_else(|| std::env::var_os("MOQUI_CONF"));
@@ -41,7 +42,13 @@ pub(super) fn runtime_conf_from(runtime_dir: &Path, selected: Option<&OsStr>) ->
                 Err(Error::new(format!("MOQUI_CONF file {} not found", path.display())))
             }
         }
-        None => Ok(Some(runtime_dir.join("conf/MoquiDevConf.xml")).filter(|path| path.is_file())),
+        None => {
+            let instance = runtime_dir.join("MoquiConf.xml");
+            if instance.is_file() {
+                return Ok(Some(instance));
+            }
+            Ok(Some(runtime_dir.join("conf/MoquiDevConf.xml")).filter(|path| path.is_file()))
+        }
     }
 }
 

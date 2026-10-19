@@ -253,8 +253,6 @@ struct Template {
     companion: PathBuf,
     widgets: PathBuf,
     static_list: PathBuf,
-    /// The theseus install, unpacked once and shared by the runtime directory of every gate.
-    install: PathBuf,
     /// The stopped cluster directory after the loads: `data`, `pgpass` and the libxml2 shim.
     cluster: PathBuf,
 }
@@ -353,7 +351,6 @@ fn build_template() -> Template {
         companion: fixtures.join("GateCompanion.xml"),
         widgets: fixtures.join("GateWidgets.xml"),
         static_list: fixtures.join("GateStaticList.xml"),
-        install: done.join("install"),
         cluster: done.join("cluster"),
     };
     std::fs::write(&template.companion, COMPANION).unwrap();
@@ -370,7 +367,6 @@ fn build_template() -> Template {
         let runtime = building.join("runtime");
         std::fs::create_dir_all(&runtime).unwrap();
         seed(&runtime, &cluster_dir, &template, "");
-        std::fs::rename(runtime.join("db/install"), building.join("install")).unwrap();
         std::fs::remove_dir_all(&runtime).unwrap();
         std::fs::create_dir_all(building.join("cluster")).unwrap();
         copy_dir(&cluster_dir, &building.join("cluster"));
@@ -390,8 +386,9 @@ fn build_template() -> Template {
     template
 }
 
-/// Write the conf and the links of a runtime directory. `install` is shared, so the gate does not unpack Postgres again.
-fn prepare_runtime(runtime: &Path, fixtures: &Template, link_install: bool, extra_conf: &str) {
+/// Write the conf and the links of a runtime directory. The Postgres install is shared ([`temp_dir`]), so the gate does
+/// not unpack Postgres again.
+fn prepare_runtime(runtime: &Path, fixtures: &Template, extra_conf: &str) {
     std::fs::create_dir_all(runtime.join("conf")).unwrap();
     std::fs::write(
         runtime.join("conf/MoquiDevConf.xml"),
@@ -406,15 +403,11 @@ fn prepare_runtime(runtime: &Path, fixtures: &Template, link_install: bool, extr
     let base =
         std::fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component")).unwrap();
     std::os::unix::fs::symlink(&base, runtime.join("base-component")).unwrap();
-    if link_install {
-        std::fs::create_dir_all(runtime.join("db")).unwrap();
-        std::os::unix::fs::symlink(&fixtures.install, runtime.join("db/install")).unwrap();
-    }
 }
 
 /// Load the seed (the framework files and each component's `data` directory), the demo users, and the grants of the fixture.
 fn seed(runtime: &Path, cluster_dir: &Path, fixtures: &Template, extra_conf: &str) {
-    prepare_runtime(runtime, fixtures, false, extra_conf);
+    prepare_runtime(runtime, fixtures, extra_conf);
     let framework = repo_root().join("runtime/base-component/framework");
     let base = std::fs::canonicalize(repo_root().join("runtime/base-component")).unwrap();
     // The seed load reads the data directory of each component too: the default themes, the pagination text, the access to the
@@ -485,7 +478,7 @@ fn start_seeded(
     let cluster_guard = DirGuard(cluster_dir.clone());
     std::fs::create_dir_all(&runtime).unwrap();
     std::fs::create_dir_all(&cluster_dir).unwrap();
-    prepare_runtime(&runtime, template, true, extra_conf);
+    prepare_runtime(&runtime, template, extra_conf);
     copy_dir(&template.cluster, &cluster_dir);
     if static_fixture {
         let component = runtime.join("component/gate-static");
@@ -714,7 +707,10 @@ fn push_base64(out: &mut String, chunk: u32, count: usize) {
     }
 }
 
+/// A path under `/tmp` for a runtime or cluster directory. The runtimes of a test run share one Postgres install,
+/// unpacked once in `target/<profile>/moqui-test-install`, rather than each unpacking its own.
 pub fn temp_dir(prefix: &str) -> PathBuf {
+    share_install();
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -725,6 +721,18 @@ pub fn temp_dir(prefix: &str) -> PathBuf {
     } else {
         std::env::temp_dir().join(name)
     }
+}
+
+/// Points `MOQUI_INSTALL` at the install the test runs share.
+pub fn share_install() {
+    static SHARED: std::sync::Once = std::sync::Once::new();
+    SHARED.call_once(|| {
+        let exe = std::env::current_exe().unwrap();
+        // target/<profile>/deps/<test binary>
+        let profile_dir = exe.ancestors().nth(2).expect("target directory");
+        let install = profile_dir.join("moqui-test-install");
+        moqui_lib::env::set_property("MOQUI_INSTALL", install.display().to_string());
+    });
 }
 
 pub struct DirGuard(pub PathBuf);

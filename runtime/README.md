@@ -1,7 +1,9 @@
 # runtime
 
 The runtime directory holds everything that varies per instance. The binary finds it through `MOQUI_RUNTIME`
-(default `runtime`).
+(default `runtime` in the working directory, else `runtime` beside the binary, else the binary's own directory: the
+first with `base-component/` in it). `./moq archive` zips this directory, without `log/`, `tmp/`, `save/` and
+`install/`, with the binary and `MoquiConf.xml` in it.
 
 | Path | In git | Purpose |
 |---|---|---|
@@ -16,5 +18,7 @@ The runtime directory holds everything that varies per instance. The binary find
 | `tmp/` | no | Scratch files |
 | `txlog/` | no | Transaction logs |
 | `.env` | no | Generated secrets and local overrides |
+| `install/` | no | The embedded Postgres, unpacked from the binary on the first start (`MOQUI_INSTALL` moves it) |
+| `MoquiConf.xml` | no | The instance conf, merged over `MoquiDefaultConf.xml` when `MOQUI_CONF` is not set |
 
 Directories marked "no" are listed in `.gitignore` and are created when first needed.

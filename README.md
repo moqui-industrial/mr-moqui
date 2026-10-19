@@ -74,8 +74,9 @@ scripts/check-packages.sh              # clippy on each package's feature set
 cargo test -p moqui-host --test gate3 --test gate3_browser
 ```
 
-Run from the repo root (paths default to `MOQUI_RUNTIME=runtime`,
-`MOQUI_FRAMEWORK=<runtime>/base-component/framework`, embedded cluster in `runtime/db/embedded`).
+Run from the repo root (paths default to `MOQUI_RUNTIME=runtime`, or the binary's own directory when it is a runtime
+directory, `MOQUI_FRAMEWORK=<runtime>/base-component/framework`, embedded cluster in `runtime/db/embedded`, and the
+embedded Postgres unpacked into `runtime/install/postgres`, or under `MOQUI_INSTALL`).
 Setting `entity_ds_db_conf` to `postgres`, `mysql` or `mysql8`, with the other `entity_ds_*`
 properties, uses that server instead. The examples are in `runtime/conf/MoquiDevConf.xml`.
 
@@ -96,6 +97,7 @@ checkout on Linux or macOS. `./moq` with no arguments lists the tasks, and
 ./moq load                     # all data types; ./moq load seed seed-initial install
 ./moq test mantle-usl         # run a component's JavaScript specs; extra args go to moqui test (--spec, --db snapshot)
 ./moq save-db before-upgrade   # and later: ./moq reload-save before-upgrade
+./moq archive                  # mr-moqui-YYYYMMDD.zip (or --tgz): runtime/ without logs, with the binary in it
 ./moq git-status               # or any git command in every repo: ./moq git pull
 ./moq completion --install     # tab completion for bash or zsh
 ```
@@ -105,8 +107,8 @@ CREATE or UPDATE). It defaults to off, preserving Rust's UPDATE-first optimizati
 
 With no arguments the binary starts the HTTP server (HTTP on `8080` by default, HTTPS on `8443`, cluster
 HTTPS on `8444`) using `runtime/base-component/framework/conf/MoquiDefaultConf.xml` merged with the runtime conf:
-`runtime/conf/MoquiDevConf.xml` when present, or the file `MOQUI_CONF` names, relative to
-the runtime directory or absolute (`./moq run -c FILE` sets it). `MOQUI_CONF` comes from the
+the file `MOQUI_CONF` names, relative to the runtime directory or absolute (`./moq run -c FILE` sets it); else the
+instance's `runtime/MoquiConf.xml` when present; else `runtime/conf/MoquiDevConf.xml` when present. `MOQUI_CONF` comes from the
 environment, not `runtime/.env`, which is read after the conf merge. Without the script,
 `moqui help` lists the commands and `moqui help load` describes one:
 
@@ -132,12 +134,14 @@ set `webapp_https_port=8443`. Behind a reverse proxy on 443, leave it empty.
 The cluster listener's default port moved from `8443` to `8444` so the public HTTPS listener could have `8443`. Update
 firewall rules and port mappings for members that do not set `cluster_https_port`.
 
-For production packaging, deploy a package's binary (`target/release/moqui`, `target/enterprise/moqui` with external
-databases, or `target/lite/moqui`; [`docs/Packaging.md`](docs/Packaging.md)) together with the `runtime/`
-directory (the framework component is inside it) and run it from the directory that
-holds them (or point `MOQUI_RUNTIME` / `MOQUI_FRAMEWORK` at them), with
-`MOQUI_CONF=conf/MoquiProductionConf.xml`. From a checkout, `./moq run-production` does that
-with the Default binary, or another with `--release` or `--enterprise`. `moqui version` prints a binary's package and
+For production packaging, `./moq archive` (with `--release` or `--enterprise` for those packages;
+[`docs/Packaging.md`](docs/Packaging.md)) writes a zip, or with `--tgz` a gzipped tar, that expands to one directory:
+the contents of `runtime/` (the framework component is inside it) without its logs, scratch files, saves and unpacked
+Postgres, with the binary and `runtime/conf/MoquiProductionConf.xml` as `MoquiConf.xml` in it. The binary uses its own
+directory as the runtime when that has `base-component/`, and merges the `MoquiConf.xml` there, so it runs as
+`<dir>/moqui` from anywhere; `--no-data` leaves out the database and secrets. By hand: copy the binary into the runtime
+directory, with a `MoquiConf.xml` there or `MOQUI_CONF=conf/MoquiProductionConf.xml`. From a checkout, `./moq run-production` runs the Default binary with the
+production conf, or another with `--release` or `--enterprise`. `moqui version` prints a binary's package and
 features.
 
 ## AI/LLM Policy

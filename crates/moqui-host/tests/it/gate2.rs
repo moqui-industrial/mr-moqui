@@ -65,7 +65,7 @@ fn empty_db_startup_persists_audit_artifact_stack() {
     // Reopen the stopped database and query SQL directly: this must be persisted provenance,
     // not a value computed by an entity read or a stack supplied by the test.
     let mut options = StartOptions::new(20);
-    options.install_dir = Some(runtime.join("db/install"));
+    options.install_dir = Some(moqui_host::db::embedded::install_dir(&runtime));
     let (_cluster, driver) = EmbeddedCluster::start_with(&cluster_dir, &options).unwrap();
     let mut conn = driver.connect_postgres().unwrap();
     let audits = conn

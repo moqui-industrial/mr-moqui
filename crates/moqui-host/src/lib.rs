@@ -205,7 +205,8 @@ fn join_server(thread: std::thread::JoinHandle<Result<(), moqui_lib::error::Erro
     }
 }
 
-/// `pg_dump --format=custom` of the embedded `moqui` database at `dir`.
+/// `pg_dump --format=custom` of the embedded `moqui` database at `dir`, with the Postgres install of the runtime
+/// directory (`MOQUI_RUNTIME`).
 ///
 /// # Errors
 ///
@@ -215,10 +216,11 @@ pub fn save_db(
     dir: impl AsRef<std::path::Path>,
     dump: impl AsRef<std::path::Path>,
 ) -> Result<(), moqui_lib::error::Error> {
-    db::embedded::save_db(dir.as_ref(), dump.as_ref())
+    db::embedded::save_db(&runtime_framework_dirs().0, dir.as_ref(), dump.as_ref())
 }
 
-/// `pg_restore --format=custom` into the embedded `moqui` database at `dir`.
+/// `pg_restore --format=custom` into the embedded `moqui` database at `dir`, with the Postgres install of the runtime
+/// directory (`MOQUI_RUNTIME`).
 ///
 /// # Errors
 ///
@@ -228,7 +230,7 @@ pub fn load_save(
     dir: impl AsRef<std::path::Path>,
     dump: impl AsRef<std::path::Path>,
 ) -> Result<(), moqui_lib::error::Error> {
-    db::embedded::load_save(dir.as_ref(), dump.as_ref())
+    db::embedded::load_save(&runtime_framework_dirs().0, dir.as_ref(), dump.as_ref())
 }
 
 /// The process entry of a moqui binary: [`dispatch`] on the command line arguments, the line it returns printed, and
@@ -368,12 +370,31 @@ fn usage_error(args: &[String]) -> moqui_lib::error::Error {
     }
 }
 
-/// `MOQUI_RUNTIME`, default `runtime`, and `MOQUI_FRAMEWORK`, default `framework` beside the runtime. Like Moqui's
-/// `moqui.runtime`: an install runs from its own directory unless told otherwise.
+/// `MOQUI_RUNTIME`, default [`default_runtime_dir`], and `MOQUI_FRAMEWORK`, default `framework` beside the runtime.
+/// Like Moqui's `moqui.runtime`: an install runs from its own directory unless told otherwise.
 fn runtime_framework_dirs() -> (std::path::PathBuf, std::path::PathBuf) {
-    let runtime = std::env::var_os("MOQUI_RUNTIME").map_or_else(|| std::path::PathBuf::from("runtime"), Into::into);
+    let runtime = std::env::var_os("MOQUI_RUNTIME")
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(default_runtime_dir, Into::into);
     let framework = framework_from_env(&runtime);
     (runtime, framework)
+}
+
+/// The first runtime directory, one with `base-component` in it, of: `runtime` in the working directory, `runtime`
+/// beside the executable (links resolved), and the executable's own directory, so an archive from `./moq archive` (a
+/// runtime with the binary in it) runs as `/path/to/it/moqui` from anywhere. None: `runtime`, which boot reports.
+fn default_runtime_dir() -> std::path::PathBuf {
+    let exe = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+    runtime_dir_for(std::path::Path::new("runtime"), exe.as_deref())
+}
+
+fn runtime_dir_for(local: &std::path::Path, exe: Option<&std::path::Path>) -> std::path::PathBuf {
+    let exe_dir = exe.and_then(std::path::Path::parent);
+    std::iter::once(local.to_path_buf())
+        .chain(exe_dir.map(|dir| dir.join("runtime")))
+        .chain(exe_dir.map(std::path::Path::to_path_buf))
+        .find(|dir| dir.join("base-component").is_dir())
+        .unwrap_or_else(|| local.to_path_buf())
 }
 
 /// Create `dir` and its parents when missing.
@@ -672,7 +693,7 @@ fn load_embedded(
     let opened_at = std::time::Instant::now();
     let opened = crate::db::entity_db::transactional_conf(&factory).and_then(|conf| {
         let pool = load_pool(&conf.pool);
-        let install = crate::db::embedded::shared_install_dir(&runtime_dir.join("db"), cluster_dir);
+        let install = crate::db::embedded::shared_install_dir(&runtime_dir, cluster_dir);
         tracing::info!(
             "Opening DataSource transactional, database {}, max pool {}, cluster directory {}",
             conf.dialect,
@@ -974,7 +995,7 @@ fn boot_server_factory(
     let conf = crate::db::entity_db::transactional_conf(&factory)?;
     // `(request cap + service cap) * 2` must fit in `max - reserve`; check_serve_caps below says so.
     let pool = conf.pool.clone();
-    let install = crate::db::embedded::shared_install_dir(&runtime_dir.join("db"), &cluster_dir);
+    let install = crate::db::embedded::shared_install_dir(&runtime_dir, &cluster_dir);
     let db_started = std::time::Instant::now();
     tracing::info!(
         "Opening DataSource transactional, database {}, max pool {}, cluster directory {}",
@@ -2066,6 +2087,29 @@ pub(crate) mod xmlshim {
 #[cfg(test)]
 mod tests {
     use super::{dispatch, load_options, parse_load_args, should_load_data, startup_load_flags, LoadFlags};
+
+    #[test]
+    fn runtime_is_the_local_one_else_beside_or_around_the_executable() {
+        let root = std::env::temp_dir().join(format!("moqui-runtime-lookup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let local = root.join("work/runtime");
+        let archive = root.join("archive");
+        let beside = archive.join("runtime");
+        let exe = archive.join("moqui");
+        // A directory without base-component is not a runtime.
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::create_dir_all(&beside).unwrap();
+        assert_eq!(super::runtime_dir_for(&local, Some(&exe)), local);
+        // The archive layout: the binary sits in the runtime.
+        std::fs::create_dir_all(archive.join("base-component")).unwrap();
+        assert_eq!(super::runtime_dir_for(&local, Some(&exe)), archive);
+        assert_eq!(super::runtime_dir_for(&local, None), local);
+        std::fs::create_dir_all(beside.join("base-component")).unwrap();
+        assert_eq!(super::runtime_dir_for(&local, Some(&exe)), beside);
+        std::fs::create_dir_all(local.join("base-component")).unwrap();
+        assert_eq!(super::runtime_dir_for(&local, Some(&exe)), local);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn startup_load_honors_all_including_demo() {
