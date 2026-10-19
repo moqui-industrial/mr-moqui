@@ -111,18 +111,27 @@ impl HostUpload {
     }
 }
 
+/// The bytes behind a [`HostStream`], as a host value: a stream passed to a service (`upload#Resource` with
+/// `fileList: [ref.openStream()]`) or kept in the context stays the stream, as a Java `InputStream` would, instead of
+/// becoming an empty map that a write would store as the two bytes `{}`.
+pub(crate) struct StreamBytes {
+    pub(crate) bytes: Vec<u8>,
+}
+
 /// The bytes of an uploaded file or a resource, as the Java `InputStream` a script passes to `putStream`. A script
 /// cannot read it a byte at a time: it reads all of it as text or a `Uint8Array`, or writes it to a location.
 #[derive(Trace, JsLifetime)]
 #[rquickjs::class]
 pub(super) struct HostStream {
     #[qjs(skip_trace)]
-    bytes: Vec<u8>,
+    pub(super) inner: Arc<StreamBytes>,
 }
 
 impl HostStream {
     pub(super) fn new(bytes: Vec<u8>) -> Self {
-        Self { bytes }
+        Self {
+            inner: Arc::new(StreamBytes { bytes }),
+        }
     }
 }
 
@@ -133,20 +142,28 @@ impl HostStream {
 
     fn available<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
-            i64_to_js(&ctx, i64::try_from(self.bytes.len()).unwrap_or(i64::MAX))
+            i64_to_js(&ctx, i64::try_from(self.inner.bytes.len()).unwrap_or(i64::MAX))
+        })
+    }
+
+    /// The number of bytes, as an uploaded file's `size`, for a quota check.
+    #[qjs(get, rename = "size")]
+    fn size_property<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            i64_to_js(&ctx, i64::try_from(self.inner.bytes.len()).unwrap_or(i64::MAX))
         })
     }
 
     fn read_all_bytes<'js>(&self, ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
         host_guard(&ctx, || {
-            rquickjs::TypedArray::<u8>::new(ctx.clone(), self.bytes.clone()).map(rquickjs::TypedArray::into_value)
+            rquickjs::TypedArray::<u8>::new(ctx.clone(), self.inner.bytes.clone()).map(rquickjs::TypedArray::into_value)
         })
     }
 
     /// The bytes as text in `charset`, UTF-8 without one.
     fn get_text(&self, ctx: Ctx<'_>, charset: Opt<JsValue<'_>>) -> rquickjs::Result<String> {
         host_guard(&ctx, || {
-            decode_text(&self.bytes, charset_arg(&charset).as_deref())
+            decode_text(&self.inner.bytes, charset_arg(&charset).as_deref())
                 .map_err(|err| Exception::throw_message(&ctx, err.message()))
         })
     }
@@ -154,8 +171,10 @@ impl HostStream {
     /// Store the bytes at a location, as `putStream` of that location's reference does.
     fn write(&self, ctx: Ctx<'_>, location: String) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            with_ec(&ctx, |ec| ec.factory().resource().write_bytes(&location, &self.bytes))?
-                .map_err(|err| Exception::throw_message(&ctx, err.message()))
+            with_ec(&ctx, |ec| {
+                ec.factory().resource().write_bytes(&location, &self.inner.bytes)
+            })?
+            .map_err(|err| Exception::throw_message(&ctx, err.message()))
         })
     }
 }

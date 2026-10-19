@@ -123,24 +123,32 @@ fn with_resources<T>(
     with_ec(ctx, |ec| body(ec.factory().resource()))?.map_err(|err| throw_context(ctx, &err))
 }
 
-/// The bytes of a change's content as the script passed it: text, binary, or an uploaded file.
+/// The bytes of a change's content as the script passed it: text, binary, an uploaded file or a stream. Anything else
+/// (an object or a list, such as a stream that lost its bytes on the way) is refused, never written as its text.
 fn content_bytes(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<Vec<u8>> {
     if let Some(object) = value.as_object() {
         if let Some(class) = object.as_class::<HostUpload>() {
             return Ok(class.borrow().inner.bytes.clone());
         }
+        if let Some(class) = object.as_class::<super::upload::HostStream>() {
+            return Ok(class.borrow().inner.bytes.clone());
+        }
     }
+    let refused = || Exception::throw_message(ctx, "a file's content is text, bytes, an uploaded file or a stream");
     match js_to_host(ctx, value)? {
         Value::Null => Ok(Vec::new()),
         Value::Bytes(bytes) => Ok(bytes),
         Value::String(text) => Ok(text.into_bytes()),
-        Value::Object(object) => match object.downcast::<crate::web::multipart::UploadedFile>() {
-            Some(file) => Ok(file.bytes.clone()),
-            None => Err(Exception::throw_message(
-                ctx,
-                "a change's content is text, bytes or a file",
-            )),
-        },
+        Value::Object(object) => {
+            if let Some(file) = object.downcast::<crate::web::multipart::UploadedFile>() {
+                Ok(file.bytes.clone())
+            } else if let Some(stream) = object.downcast::<super::upload::StreamBytes>() {
+                Ok(stream.bytes.clone())
+            } else {
+                Err(refused())
+            }
+        }
+        Value::Map(_) | Value::List(_) => Err(refused()),
         other => Ok(moqui_lib::object::to_plain_string(&other).into_bytes()),
     }
 }

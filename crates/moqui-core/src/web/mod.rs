@@ -663,15 +663,21 @@ fn attachment_disposition(file_name: &str) -> String {
     format!("attachment; filename=\"{safe}\"; filename*=utf-8''{encoded}")
 }
 
-/// `ec.web.sendResourceResponse(location, inline)`: the bytes at a resource location with the type of its file name,
-/// shown inline or as an attachment. Nothing at the location, or a directory, is 404.
-pub(crate) fn send_resource_response(location: &str, inline: bool) {
-    let bytes = ExecutionContext::with_current(|ec| {
-        let resource = ec.factory().resource().get(location).ok()?;
-        if !resource.exists() {
-            return None;
+/// `ec.web.sendResourceResponse(location, inline, fileName)`: the bytes at a resource location (a `#versionName` suffix
+/// sends that version, on storage that keeps versions), with the type of its file name, shown inline or as an
+/// attachment named `file_name` (the location's last segment when none is given, so a zip or a copy kept under a random
+/// name downloads under its own name). Nothing at the location, a directory, or a version that is not there is 404.
+///
+/// Only an application's own files (`component://`, `classpath://`) shown inline may be kept by a shared cache, as Java
+/// sends every inline resource; anything else (a drive's or a record's file, a temporary zip) is `private, no-store`, so
+/// a proxy or a shared browser keeps no copy of what a user was allowed to read.
+pub(crate) fn send_resource_response(location: &str, inline: bool, file_name: Option<&str>) {
+    let bytes = ExecutionContext::with_current(|ec| match ec.factory().resource().location_bytes(location) {
+        Ok(found) => found,
+        Err(err) => {
+            tracing::warn!("Could not read the resource at {location}: {err}");
+            None
         }
-        resource.read_bytes().ok()
     })
     .flatten();
     let Some(bytes) = bytes else {
@@ -683,20 +689,29 @@ pub(crate) fn send_resource_response(location: &str, inline: bool) {
         );
         return;
     };
-    let file_name = location.trim_end_matches('/').rsplit('/').next().unwrap_or(location);
-    let mut headers = Vec::new();
-    if let Some(content_type) = moqui_lib::resource::content_type_for_name(file_name) {
-        headers.push(("Content-Type".to_string(), content_type.to_string()));
-    }
+    let base = location.split_once('#').map_or(location, |(base, _)| base);
+    let last = base.trim_end_matches('/').rsplit('/').next().unwrap_or(base);
+    let file_name = file_name.map(str::trim).filter(|name| !name.is_empty()).unwrap_or(last);
+    // a type the name does not tell is bytes to save, never sniffed as a page
+    let content_type = moqui_lib::resource::content_type_for_name(file_name)
+        .or_else(|| moqui_lib::resource::content_type_for_name(last))
+        .unwrap_or("application/octet-stream");
+    let mut headers = vec![("Content-Type".to_string(), content_type.to_string())];
+    let application_file = matches!(
+        base.split_once("://").map(|(scheme, _)| scheme),
+        Some("component" | "classpath")
+    );
     if inline {
         headers.push(("Content-Disposition".to_string(), "inline".to_string()));
-        headers.push((
-            "Cache-Control".to_string(),
-            "max-age=86400, must-revalidate, public".to_string(),
-        ));
     } else {
         headers.push(("Content-Disposition".to_string(), attachment_disposition(file_name)));
     }
+    let cache = if inline && application_file {
+        "max-age=86400, must-revalidate, public"
+    } else {
+        "private, no-store"
+    };
+    headers.push(("Cache-Control".to_string(), cache.to_string()));
     send_bytes_with_headers(200, headers, bytes);
 }
 

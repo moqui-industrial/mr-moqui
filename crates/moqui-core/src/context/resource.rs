@@ -752,6 +752,22 @@ impl ResourceFacade {
         self.get(location)?.read_text()
     }
 
+    /// The bytes of the file at a location, where a `#versionName` suffix reads that version on storage that keeps
+    /// versions (as [`Self::location_text`]; elsewhere the suffix is ignored). `None` when no file is there, or that
+    /// version is not: `openStream()` of such a reference and `ec.web.sendResourceResponse` read this.
+    pub fn location_bytes(&self, location: &str) -> Result<Option<Vec<u8>>, Error> {
+        if let Some((path, version_name)) = split_version(location) {
+            if self.supports_version(path) {
+                return self.read_version(path, version_name);
+            }
+        }
+        let resource = self.get(location)?;
+        if !resource.exists() || resource.is_directory() {
+            return Ok(None);
+        }
+        resource.read_bytes().map(Some)
+    }
+
     /// The line diff from version `lhs` to version `rhs` of a file; an empty name is the current text. A version that
     /// does not exist is an error naming it.
     pub fn version_diff(&self, location: &str, lhs: &str, rhs: &str) -> Result<TextDiff, Error> {

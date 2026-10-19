@@ -140,8 +140,11 @@ along with this software (see the LICENSE.md file). If not, see
         <description>Whether the current user may see a record, so they may read and join the room bound to it: the
             service the user's qapps theme names in STRT_RECORD_VISIBLE_SERVICE (found as the shell counts service is) is
             called as the user, with the caller's authorization and entity filters, with recordEntityName, recordId and
-            checkOnly true, and answers recordVisible. No such theme value: false (only members reach record rooms), logged
-            once. A service that fails or answers no recordVisible: false, logged once. Adds no error.</description>
+            checkOnly true, and answers recordVisible. No such theme value: false (only members reach record rooms, and only
+            managers a records drive's record folders, FileServices.check#RecordPaths), logged once. A service that fails or
+            answers no recordVisible: false, logged once. Adds no error. The hook runs in the caller's transaction, so it
+            sees records the caller made; with checkOnly it must answer without an error, which would mark that
+            transaction rollback-only (docs/Services.md).</description>
         <in-parameters>
             <parameter name="recordEntityName" required="true"/>
             <parameter name="recordId" required="true"/>

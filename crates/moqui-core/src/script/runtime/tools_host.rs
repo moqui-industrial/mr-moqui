@@ -386,8 +386,11 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
             getDirectoryEntries: () => host.resourceEntries(ref.location).map((child) => wrap("Resource", child)),
             // null for a file that is not there, as Java's (the stream is null)
             getInputStream: () => ref.openStream(),
+            // a reference of `location#versionName` reads that version, as getLocationText does
             getText: function (versionName) {
                 if (versionName) return host.resourceVersionText(ref.location, String(versionName));
+                if (ref.versionName && host.resourceSupportsVersion(ref.location))
+                    return host.resourceVersionText(ref.location, String(ref.versionName));
                 const info = host.resourceInfo(ref.location);
                 return info != null && info.exists && info.file ? host.resourceText(ref.location) : null;
             },
@@ -406,8 +409,11 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
                 else if (typeof stream.write === "function") stream.write(ref.location);
                 else host.resourcePutBytes(ref.location, stream);
             },
-            // `openStream()` and `getInputStream()`: the file's bytes as a stream; null for a file that is not there
+            // `openStream()` and `getInputStream()`: the file's bytes as a stream; null for a file that is not there. A
+            // reference of `location#versionName` streams that version (null when it is not there)
             openStream: function () {
+                if (ref.versionName && host.resourceSupportsVersion(ref.location))
+                    return host.resourceVersionStream(ref.location, String(ref.versionName));
                 const info = host.resourceInfo(ref.location);
                 return info != null && info.exists && info.file ? host.resourceStream(ref.location) : null;
             },
@@ -552,7 +558,14 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
         for (const childRef of matchingDirRef.getDirectoryEntries())
             walkFileTree(childRef, childPath, allChildFileFlatList, curChildResourceList);
     };
-    const makeRef = (location) => wrap("Resource", host.resourceInfo(location));
+    // `location#versionName` (a past version, as get#ResourceInfo of FileServices gives it): the reference of the file,
+    // with versionName, which getText() and openStream() read
+    const makeRef = (location) => {
+        const info = host.resourceInfo(location);
+        const hash = location.indexOf('#');
+        if (info != null && hash > 0 && hash + 1 < location.length) info.versionName = location.substring(hash + 1);
+        return wrap("Resource", info);
+    };
     // `ResourceReference.isTextFilename(filename)` (static): the file name's content type is text
     ec.resource.isTextFilename = (filename) => host.isTextFilename(filename == null ? "" : String(filename));
     globalThis.ResourceReference = { isTextFilename: ec.resource.isTextFilename };
@@ -1705,6 +1718,23 @@ fn resource_put_text(ctx: Ctx<'_>, location: String, text: String) -> rquickjs::
     put_resource_bytes(&ctx, &location, text.as_bytes())
 }
 
+/// The bytes of one version as a stream (`openStream` of a `location#versionName` reference), or null when that version
+/// is not there.
+fn resource_version_stream<'js>(
+    ctx: Ctx<'js>,
+    location: String,
+    version_name: String,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let bytes = with_resources(&ctx, |resources| resources.read_version(&location, &version_name))?;
+        match bytes {
+            Some(bytes) => Class::instance(ctx.clone(), super::upload::HostStream::new(bytes))
+                .and_then(|class| class.into_js(&ctx)),
+            None => Null.into_js(&ctx),
+        }
+    })
+}
+
 /// The file's bytes as a stream (`openStream`, `getInputStream`).
 fn resource_stream<'js>(ctx: Ctx<'js>, location: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
@@ -2511,6 +2541,7 @@ pub(super) fn install<'js>(
     method!("isRestrictedGenericEntity", is_restricted_generic_entity);
     method!("getAvailableTimeZones", get_available_time_zones);
     method!("resourceInfo", resource_info);
+    method!("resourceVersionStream", resource_version_stream);
     method!("restRootResources", rest_root_resources);
     method!("resolveRestService", resolve_rest_service);
     method!("transitionInfo", transition_info);

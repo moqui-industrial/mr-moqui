@@ -1540,7 +1540,8 @@ mod tests {
             sql.text,
             "SELECT * FROM ((SELECT 'TestDoc' AS document_id, 'test_doc' AS index_name, doc_id, body::text AS body, \
              (1 - (embedding <=> ?::halfvec(3)))::float8 AS score FROM \"search\".\"test_doc\" WHERE embedding IS NOT NULL \
-             AND embedding_model = ? AND COALESCE(\"f_level\" = ?, FALSE) ORDER BY embedding <=> ?::halfvec(3) LIMIT 10)) AS s \
+             AND embedding_model = ? AND COALESCE(COALESCE(\"f_level\" = ?, (body -> 'level') @> jsonb_build_array(?::text)), FALSE) \
+             ORDER BY embedding <=> ?::halfvec(3) LIMIT 10)) AS s \
              ORDER BY score DESC, document_id ASC, doc_id ASC LIMIT 10"
         );
         assert_eq!(sql.params[0], Value::string("[0.5,0.25,0]"));

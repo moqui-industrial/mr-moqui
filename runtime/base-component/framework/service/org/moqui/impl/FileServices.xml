@@ -22,8 +22,10 @@ along with this software (see the LICENSE.md file). If not, see
     row's permission: RdpView reads, RdpEdit also writes, uploads, moves, trashes and shares, RdpManage also changes the
     drive and its members. The owner manages. A user share (ResourceShare to the user, one of their groups, or their
     party) grants its permission on its path and everything under it; RspUpload only lets files be added. A mirror and an
-    archived drive are read only. A drive or path the user cannot reach is "not found". Screens read these records only
-    through these services.
+    archived drive are read only. On a records drive (RdkRecords) a user below the manage level reaches only the paths in
+    its folder map (ResourceDriveRecordFolder) that are in records the user may see, as the record visibility hook answers
+    (check#RecordPaths); the lists leave out the rest. A drive or path the user cannot reach is "not found". Screens read
+    these records only through these services.
 
     Paths are relative to the drive's root, '/'-separated, with no '.' or '..' segment; the empty path is the drive's top
     folder. Several files in one call are one change set (one commit on a git:// drive). One item that fails is reported
@@ -40,7 +42,14 @@ along with this software (see the LICENSE.md file). If not, see
             upload-only share); viaShareId when a share gave the level. drive is the drive's fields with its storage
             (folder, git-db, git-local, git-remote), readOnly, and its repository's kind, branch, head and fetch state.
             With no user and authorization disabled (a job), or internal with authorization disabled (a public link's
-            file drop, which checked its token), the level is manage.</description>
+            file drop, which checked its token), the level is manage.
+
+            A records drive (driveKindEnumId RdkRecords): below the manage level, a path (the drive's top included) must be
+            in the drive's folder map and in records the user may see (check#RecordPaths: the record visibility hook, each
+            record asked once per request; with no hook no record folder is reached), else the level is 0, as for a path
+            outside the drive; a share of the path does not pass it either. Another user's records are not asked (level 0
+            below manage). recordList is the records the path is in, innermost first (recordEntityName, idField, recordId,
+            folderPath of the record's own folder), for a manager too. Without a path the level is the drive's.</description>
         <in-parameters>
             <parameter name="driveId" required="true"/>
             <parameter name="path"/>
@@ -55,6 +64,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="canUpload" type="Boolean"/>
             <parameter name="viaShareId"/>
             <parameter name="drive" type="Map"/>
+            <parameter name="recordList" type="List"/>
         </out-parameters>
         <actions><script><![CDATA[
             const toMillis = (value) => {
@@ -66,6 +76,7 @@ along with this software (see the LICENSE.md file). If not, see
             }
             const clean = (text) => String(text == null ? '' : text).split('/').filter((part) => part && part !== '.').join('/')
             level = 0; permissionEnumId = null; isOwner = false; canWrite = false; canUpload = false; viaShareId = null; drive = null
+            recordList = []
             const currentUserId = ec.user.userId
             const authzOff = ec.artifactExecution.authzDisabled()
             if (!userId) userId = currentUserId
@@ -125,9 +136,108 @@ along with this software (see the LICENSE.md file). If not, see
                     }
                 }
             }
+            // a records drive: below the manage level the path must be in the folder map and in records the user may see
+            if (row.driveKindEnumId === 'RdkRecords' && path != null) {
+                const gated = level < 3 && (level > 0 || canUpload)
+                let info = null
+                if (!gated || userId === currentUserId) {
+                    info = (ec.service.sync().name('org.moqui.impl.FileServices.check#RecordPaths')
+                            .parameters({driveId: driveId, path: clean(path), checkVisible: gated}).call()?.pathInfoList || [])[0] || null
+                }
+                recordList = info ? Array.from(info.records || []) : []
+                if (gated && !(info && info.visible === true)) { level = 0; canUpload = false; viaShareId = null }
+            }
             permissionEnumId = [null, 'RdpView', 'RdpEdit', 'RdpManage'][level]
             canWrite = level >= 2 && !readOnly
             canUpload = !readOnly && (canWrite || canUpload)
+        ]]></script></actions>
+    </service>
+
+    <service verb="check" noun="RecordPaths" authenticate="false">
+        <description>For a records drive (driveKindEnumId RdkRecords), where each path (path, or pathList) is in its folder
+            map (its ResourceDriveRecordFolder rows) and whether the current user may see it. mapped: the drive's top, a
+            mapped folder, a step on the way to a pattern such as asset/*/maintenance, or anything below one; any other
+            path (the trash folder too) is not. records: the records the path is in, innermost first (each mapped folder
+            the path goes below names the record of its next segment: recordEntityName, idField, recordId, and folderPath,
+            the record's own folder). visible (with checkVisible, the default): mapped, and each of those records one the
+            user may see as the record visibility hook answers (org.moqui.impl.ChatServices.check#RecordVisible: the
+            service the user's theme names in STRT_RECORD_VISIBLE_SERVICE, called as the user with checkOnly; with no such
+            theme value no record is visible, logged once), each record asked once per execution context (one request).
+            With no user, only authorization disabled sees the records. It says nothing about membership: get#DriveAccess
+            calls it below the manage level, and so do the lists across a records drive. Another kind of drive: isRecords
+            false and each path visible; no drive: nothing visible.</description>
+        <in-parameters>
+            <parameter name="driveId" required="true"/>
+            <parameter name="path"/>
+            <parameter name="pathList" type="List"/>
+            <parameter name="checkVisible" type="Boolean" default="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="isRecords" type="Boolean"/>
+            <parameter name="pathInfoList" type="List"><description>{path, mapped, visible, records}, in the order given</description></parameter>
+            <parameter name="folderList" type="List"><description>The folder map: folderPath, recordEntityName, idField, label</description></parameter>
+        </out-parameters>
+        <actions><script><![CDATA[
+            const clean = (text) => String(text == null ? '' : text).split('/').filter((part) => part && part !== '.').join('/')
+            isRecords = false; pathInfoList = []; folderList = []
+            const paths = (pathList ? Array.from(pathList) : [path]).map((item) => String(item == null ? '' : item))
+            const drive = ec.entity.find('moqui.resource.ResourceDrive').condition('driveId', driveId).useCache(true).one()
+            if (drive == null || drive.driveKindEnumId !== 'RdkRecords') {
+                pathInfoList = paths.map((item) => ({path: clean(item), mapped: drive != null, visible: drive != null, records: []}))
+                return
+            }
+            isRecords = true
+            const folders = Array.from(ec.entity.find('moqui.resource.ResourceDriveRecordFolder').condition('driveId', driveId)
+                    .orderBy('sequenceNum').orderBy('folderPath').useCache(true).list())
+                    .map((row) => ({folderPath: clean(row.folderPath), recordEntityName: row.recordEntityName ?? null,
+                        idField: row.idField ?? null, label: row.label ?? null}))
+                    .filter((folder) => folder.folderPath)
+            folderList = folders.map((folder) => Object.assign({}, folder))
+            const userId = ec.user.userId
+            const everything = !userId && ec.artifactExecution.authzDisabled()
+            const shared = ec.context.sharedMap
+            const recordVisible = (entityName, recordId) => {
+                if (everything) return true
+                if (!userId || !entityName) return false
+                const key = `moqui.drive.recordVisible\n${userId}\n${entityName}\n${recordId}`
+                const known = shared[key]
+                if (known === true || known === false) return known
+                const out = ec.service.sync().name('org.moqui.impl.ChatServices.check#RecordVisible')
+                        .parameters({recordEntityName: entityName, recordId: recordId}).call()
+                const visible = out != null && out.recordVisible === true
+                shared[key] = visible
+                return visible
+            }
+            for (const raw of paths) {
+                // a . or .. segment is never in the map
+                const parts = raw.split('/').filter((part) => part)
+                const text = clean(raw)
+                const segments = text ? text.split('/') : []
+                let mapped = segments.length === 0 && !parts.includes('..')
+                const records = []
+                if (!parts.includes('..')) for (const folder of folders) {
+                    const pattern = folder.folderPath.split('/')
+                    const count = Math.min(pattern.length, segments.length)
+                    let matches = true
+                    for (let index = 0; index < count; index++) if (pattern[index] !== '*' && pattern[index] !== segments[index]) { matches = false; break }
+                    if (!matches) continue
+                    mapped = true
+                    if (segments.length > pattern.length && folder.recordEntityName) records.push({recordEntityName: folder.recordEntityName,
+                        idField: folder.idField, recordId: segments[pattern.length], folderPath: segments.slice(0, pattern.length + 1).join('/'),
+                        depth: pattern.length + 1})
+                }
+                // outermost first for the check (a record inside one the user may not see is not asked), innermost first out
+                records.sort((left, right) => left.depth - right.depth)
+                let visible = mapped
+                if (checkVisible !== false) for (const found of records) {
+                    if (!visible) break
+                    if (!recordVisible(found.recordEntityName, found.recordId)) visible = false
+                }
+                records.reverse()
+                pathInfoList.push({path: text, mapped: mapped, visible: visible,
+                    records: records.map((found) => ({recordEntityName: found.recordEntityName, idField: found.idField,
+                        recordId: found.recordId, folderPath: found.folderPath}))})
+            }
         ]]></script></actions>
     </service>
 
@@ -405,12 +515,15 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="get" noun="UserDrives">
         <description>The drives the current user may open: the personal drive (made on first use) first, then owned and
-            member drives by name, each with the user's level and permission, the bytes used (usedBytes, null when the
-            drive's storage cannot be read, which is logged), its quota, member count and storage. Archived drives only
-            with includeArchived.</description>
+            member drives by name, each with the user's level and permission, its quota, member count and storage.
+            Archived drives only with includeArchived. The bytes used (usedBytes) only with includeUsage, as sizing a drive
+            reads every file row or tree under it: null otherwise, for a records drive (a walk of every record's files)
+            unless includeRecordsUsage too, and when the drive's storage cannot be read (logged). A screen that shows the
+            usage of one drive asks get#DriveUsage when it shows it.</description>
         <in-parameters>
             <parameter name="includeArchived" type="Boolean" default="false"/>
-            <parameter name="includeUsage" type="Boolean" default="true"/>
+            <parameter name="includeUsage" type="Boolean" default="false"/>
+            <parameter name="includeRecordsUsage" type="Boolean" default="false"/>
         </in-parameters>
         <out-parameters>
             <parameter name="driveList" type="List"/>
@@ -437,7 +550,7 @@ along with this software (see the LICENSE.md file). If not, see
                 if (!access.drive || access.level < 1) continue
                 const drive = access.drive
                 let usedBytes = null
-                if (includeUsage) {
+                if (includeUsage && (drive.driveKindEnumId !== 'RdkRecords' || includeRecordsUsage)) {
                     try { usedBytes = ec.resource.getTreeSize(drive.rootLocation) }
                     catch (e) { ec.logger.warn(`Drive ${row.driveId} at ${drive.rootLocation} could not be sized: ${e}`) }
                 }
@@ -451,6 +564,36 @@ along with this software (see the LICENSE.md file). If not, see
                 if (left.isPersonal !== right.isPersonal) return left.isPersonal ? -1 : 1
                 return String(left.driveName || '').localeCompare(String(right.driveName || '')) || String(left.driveId).localeCompare(String(right.driveId))
             })
+        ]]></script></actions>
+    </service>
+
+    <service verb="get" noun="DriveUsage">
+        <description>The bytes the files of drives use, for a quota bar shown when it is needed rather than on every list:
+            driveId, or driveIdList. usageList has driveId, usedBytes (null when the storage cannot be read, which is
+            logged), quotaBytes and usedPercent (with a quota). View permission; a records drive (its total is a walk of
+            every record's files) for its managers only. A drive the user cannot reach is left out.</description>
+        <in-parameters>
+            <parameter name="driveId"/>
+            <parameter name="driveIdList" type="List"/>
+        </in-parameters>
+        <out-parameters><parameter name="usageList" type="List"/></out-parameters>
+        <actions><script><![CDATA[
+            usageList = []
+            const ids = Array.from(new Set((driveIdList ? Array.from(driveIdList) : (driveId ? [driveId] : [])).map((id) => String(id))))
+            let reached = 0
+            for (const id of ids) {
+                const access = ec.service.sync().name('org.moqui.impl.FileServices.get#DriveAccess').parameter('driveId', id).call()
+                if (!access.drive || access.level < 1) continue
+                reached++
+                if (access.drive.driveKindEnumId === 'RdkRecords' && access.level < 3) continue
+                let usedBytes = null
+                try { usedBytes = ec.resource.getTreeSize(access.drive.rootLocation) }
+                catch (e) { ec.logger.warn(`Drive ${id} at ${access.drive.rootLocation} could not be sized: ${e}`) }
+                const quota = access.drive.quotaBytes != null ? Number(access.drive.quotaBytes) : null
+                usageList.push({driveId: id, usedBytes: usedBytes, quotaBytes: quota,
+                    usedPercent: quota && usedBytes != null ? Math.min(100, Math.round(usedBytes * 100 / quota)) : null})
+            }
+            if (driveId && !driveIdList && !reached) ec.message.addError(ec.l10n.localize('Drive not found'))
         ]]></script></actions>
     </service>
 
@@ -514,21 +657,26 @@ along with this software (see the LICENSE.md file). If not, see
             index; on the database tree the file's current version), versionName and versionNote, shared, favorite (the
             current user's), tags, contentType and fileType; folders first, then by name. On a records drive the top
             level is its ResourceDriveRecordFolder map (label, recordEntityName), and the record folders below a mapped
-            folder carry recordEntityName, idField and recordId. The drive's hidden trash folder and .gitkeep files are
-            left out. View permission on the drive, or a share of the folder.</description>
+            folder carry recordEntityName, idField and recordId; below the manage level only what is in records the user
+            may see is listed (check#RecordPaths), and of the record folders of a mapped folder the newest recordLimit are
+            asked (moreRecordCount is how many more there are, neither asked nor listed: open a record's folder by its
+            path, or search). folder.recordList is the records the folder is in, innermost first. The drive's hidden trash
+            folder and .gitkeep files are left out. View permission on the drive, or a share of the folder.</description>
         <in-parameters>
             <parameter name="driveId" required="true"/>
             <parameter name="path"/>
+            <parameter name="recordLimit" type="Integer" default="200"/>
         </in-parameters>
         <out-parameters>
             <parameter name="fileList" type="List"/>
             <parameter name="folder" type="Map"/>
             <parameter name="drive" type="Map"/>
             <parameter name="breadcrumbList" type="List"/>
+            <parameter name="moreRecordCount" type="Integer"/>
         </out-parameters>
         <actions><script><![CDATA[
             const clean = (text) => String(text == null ? '' : text).split('/').filter((part) => part && part !== '.').join('/')
-            fileList = []; folder = null; drive = null; breadcrumbList = []
+            fileList = []; folder = null; drive = null; breadcrumbList = []; moreRecordCount = 0
             if (String(path || '').split('/').includes('..')) { ec.message.addError(ec.l10n.localize('Folder not found')); return }
             path = clean(path)
             const access = ec.service.sync().name('org.moqui.impl.FileServices.get#DriveAccess').parameters({driveId: driveId, path: path}).call()
@@ -540,7 +688,8 @@ along with this software (see the LICENSE.md file). If not, see
             const location = path ? `${root}/${path}` : root
             const userId = ec.user.userId
             folder = {driveId: driveId, path: path, name: path ? path.slice(path.lastIndexOf('/') + 1) : drive.driveName,
-                level: access.level, canWrite: access.canWrite, canUpload: access.canUpload, viaShareId: access.viaShareId ?? null}
+                level: access.level, canWrite: access.canWrite, canUpload: access.canUpload, viaShareId: access.viaShareId ?? null,
+                recordList: Array.from(access.recordList || [])}
             breadcrumbList.push({name: drive.driveName, path: ''})
             let crumb = ''
             for (const part of path ? path.split('/') : []) { crumb = crumb ? `${crumb}/${part}` : part; breadcrumbList.push({name: part, path: crumb}) }
@@ -581,6 +730,21 @@ along with this software (see the LICENSE.md file). If not, see
             }
             if (recordMatch && recordMatch.depth > 0) folder.record = {recordEntityName: recordMatch.mapped.recordEntityName ?? null,
                 idField: recordMatch.mapped.idField ?? null, recordId: segments[segments.length - recordMatch.depth]}
+            // below the manage level only what is in records the user may see; of a mapped folder's record folders the
+            // newest recordLimit are asked, so a folder of thousands of records is not a hook call for each
+            if (drive.driveKindEnumId === 'RdkRecords' && access.level < 3 && changes.length) {
+                let candidates = changes.slice()
+                if (recordMatch && recordMatch.depth === 0) {
+                    candidates.sort((left, right) => (right.date || 0) - (left.date || 0))
+                    const most = Math.max(1, Number(recordLimit) || 200)
+                    if (candidates.length > most) { moreRecordCount = candidates.length - most; candidates = candidates.slice(0, most) }
+                }
+                const checked = ec.service.sync().name('org.moqui.impl.FileServices.check#RecordPaths').parameters({driveId: driveId,
+                    pathList: candidates.map((change) => `${path}/${change.name}`)}).call()?.pathInfoList || []
+                const keep = new Set()
+                checked.forEach((info, index) => { if (info && info.visible === true) keep.add(candidates[index].name) })
+                changes = changes.filter((change) => keep.has(change.name))
+            }
             const paths = changes.map((change) => path ? `${path}/${change.name}` : change.name)
             const favorites = new Set(userId ? Array.from(ec.entity.find('moqui.resource.ResourceFavorite').condition('userId', userId)
                     .condition('driveId', driveId).list()).map((row) => row.path) : [])
@@ -639,8 +803,10 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="get" noun="ResourceInfo">
         <description>One file or folder of a drive with what list#Folder shows of it, its location (for a download through
-            the resource facade, with #versionName for a past version), and whether it may be compared (text). Records the
-            open in the user's recent files when opened is true. View permission on the drive, or a share of the path.</description>
+            the resource facade, with #versionName for a past version: getLocationReference(location).openStream() and
+            ec.web.sendResourceResponse read that version), and whether it may be compared (text). recordList: on a records
+            drive the records the path is in, innermost first. Records the open in the user's recent files when opened is
+            true. View permission on the drive, or a share of the path.</description>
         <in-parameters>
             <parameter name="driveId" required="true"/>
             <parameter name="path" required="true"/>
@@ -664,7 +830,8 @@ along with this software (see the LICENSE.md file). If not, see
             resource = {driveId: driveId, path: path, name: name, isDirectory: !change.isFile, size: change.size ?? null,
                 modified: change.date ?? null, modifiedByUserId: change.userId ?? null, versionName: change.versionName ?? null,
                 versionNote: change.note ?? null, contentType: contentType, location: versionName ? `${location}#${versionName}` : location,
-                isText: change.isFile && ec.resource.isTextFilename(name), canWrite: access.canWrite}
+                isText: change.isFile && ec.resource.isTextFilename(name), canWrite: access.canWrite,
+                recordList: Array.from(access.recordList || [])}
             if (opened && ec.user.userId) {
                 const recent = ec.entity.makeValue('moqui.resource.ResourceRecent')
                 recent.setFields({userId: ec.user.userId, driveId: driveId, path: path, lastOpenedDate: ec.user.nowTimestamp}, true, null, null)
@@ -679,7 +846,8 @@ along with this software (see the LICENSE.md file). If not, see
             presentation, video, audio, archive, folder, other), modifiedFrom and modifiedThru (milliseconds) or
             modifiedPeriod (day, week, month, year), tagId, and modifiedByUserId. Through the MoquiDriveFile search
             document when search is available (usedIndex true), else a walk of the folders that stops at 5000 entries per
-            drive. Newest first, at most limit.</description>
+            drive. On a records drive below the manage level only what is in records the user may see (check#RecordPaths;
+            the walk does not go into the others). Newest first, at most limit.</description>
         <in-parameters>
             <parameter name="text"/>
             <parameter name="driveId"/>
@@ -710,7 +878,7 @@ along with this software (see the LICENSE.md file). If not, see
                 const access = ec.service.sync().name('org.moqui.impl.FileServices.get#DriveAccess').parameters({driveId: driveId, path: path}).call()
                 if (!access.drive || access.level < 1) { ec.message.addError(ec.l10n.localize('Drive not found')); return }
                 if (path.split('/')[0] === '.trash' && !access.isOwner) return
-                drives[driveId] = access.drive
+                drives[driveId] = Object.assign({}, access.drive, {level: access.level})
             } else {
                 for (const drive of ec.service.sync().name('org.moqui.impl.FileServices.get#UserDrives').parameter('includeUsage', false).call().driveList)
                     drives[drive.driveId] = drive
@@ -747,6 +915,14 @@ along with this software (see the LICENSE.md file). If not, see
                 return true
             }
             const driveIds = Object.keys(drives)
+            // a records drive below the manage level: only the paths in records the user may see
+            const gated = new Set(driveIds.filter((id) => drives[id].driveKindEnumId === 'RdkRecords' && !(drives[id].level >= 3)))
+            const visibleOf = (id, paths) => {
+                if (!gated.has(id) || !paths.length) return paths.map(() => true)
+                const infos = ec.service.sync().name('org.moqui.impl.FileServices.check#RecordPaths')
+                        .parameters({driveId: id, pathList: paths}).call()?.pathInfoList || []
+                return paths.map((item, index) => infos[index] != null && infos[index].visible === true)
+            }
             let indexed = false
             try { indexed = driveIds.length > 0 && ec.search.isAvailable() && ec.search.indexExists({documentType: 'MoquiDriveFile'}) } catch (e) { indexed = false }
             if (indexed) {
@@ -761,16 +937,27 @@ along with this software (see the LICENSE.md file). If not, see
                     if (modifiedFrom != null) range.gte = new Date(modifiedFrom).toISOString()
                     if (modifiedThru != null) range.lt = new Date(modifiedThru).toISOString()
                     if (Object.keys(range).length) all.push({field: Object.assign({name: 'modifiedDate', op: 'range'}, range)})
-                    const found = ec.search.search({documentType: 'MoquiDriveFile', query: {bool: {all: all}}, limit: limit, sort: ['-modifiedDate']})
+                    // more hits when some may be in records the user may not see
+                    const asked = gated.size ? Math.min(limit * 4, 1000) : limit
+                    const found = ec.search.search({documentType: 'MoquiDriveFile', query: {bool: {all: all}}, limit: asked, sort: ['-modifiedDate']})
+                    const rows = []
                     for (const hit of found.hits || []) {
                         const body = hit.body || {}
                         const drive = drives[body.driveId]
                         if (!drive) continue
-                        resultList.push({driveId: body.driveId, driveName: drive.driveName, path: body.path, name: body.name,
+                        rows.push({driveId: body.driveId, driveName: drive.driveName, path: body.path, name: body.name,
                             isDirectory: body.isDirectory === 'Y', size: body.size ?? null,
                             modified: body.modifiedDate ? new Date(body.modifiedDate).getTime() : null,
                             modifiedByUserId: body.modifiedByUserId ?? null, contentType: body.contentType ?? null, fileType: body.fileType ?? null})
                     }
+                    const hidden = new Set()
+                    for (const id of gated) {
+                        const indexes = []
+                        rows.forEach((row, index) => { if (row.driveId === id) indexes.push(index) })
+                        const visible = visibleOf(id, indexes.map((index) => String(rows[index].path)))
+                        indexes.forEach((rowIndex, index) => { if (!visible[index]) hidden.add(rowIndex) })
+                    }
+                    resultList = rows.filter((row, index) => !hidden.has(index)).slice(0, limit)
                     usedIndex = true
                     return
                 } catch (e) {
@@ -786,6 +973,10 @@ along with this software (see the LICENSE.md file). If not, see
                     let changes
                     try { changes = ec.resource.getChildChanges(folder ? `${root}/${folder}` : root) }
                     catch (e) { if (folder) ec.logger.warn(`Drive ${id} folder ${folder} not searched: ${e}`); return }
+                    if (gated.has(id)) {
+                        const visible = visibleOf(id, changes.map((change) => folder ? `${folder}/${change.name}` : change.name))
+                        changes = changes.filter((change, index) => visible[index])
+                    }
                     for (const change of changes) {
                         if (visited++ >= 5000) return
                         if (!folder && change.name === '.trash') continue
@@ -826,11 +1017,11 @@ along with this software (see the LICENSE.md file). If not, see
                     .map((row) => ({driveId: row.driveId, path: row.path, opened: toMillis(row.lastOpenedDate), changed: toMillis(row.lastModifiedDate)}))
             rows.forEach((row) => { row.when = Math.max(row.opened || 0, row.changed || 0) })
             rows.sort((left, right) => right.when - left.when)
-            const accessByDrive = {}
+            // the access of each path: a share reaches its path only, and a records drive's paths are its records'
             for (const row of rows) {
                 if (resultList.length >= limit) break
-                const access = accessByDrive[row.driveId] || (accessByDrive[row.driveId] = ec.service.sync()
-                        .name('org.moqui.impl.FileServices.get#DriveAccess').parameters({driveId: row.driveId, path: row.path}).call())
+                const access = ec.service.sync().name('org.moqui.impl.FileServices.get#DriveAccess')
+                        .parameters({driveId: row.driveId, path: row.path}).call()
                 if (!access.drive || access.level < 1) continue
                 let change = null
                 try { change = ec.resource.getLastChange(`${access.drive.rootLocation.replace(/\/+$/, '')}/${row.path}`) } catch (e) { change = null }
@@ -845,8 +1036,9 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="upload" noun="Resource">
         <description>Upload files into a folder of a drive as one change set (one commit on a git drive) with an optional
-            version note: fileList (uploaded files) or file, each named by its file name, or by relativePathList (a folder
-            upload: the same order, paths under the folder). conflictPolicy for a name already there: replace (the storage
+            version note: fileList (uploaded files, or streams such as ref.openStream()) or file, each named by its file
+            name, or by relativePathList (a folder upload, or the names of streams: the same order, paths under the folder);
+            an item that is not a file or a stream fails. conflictPolicy for a name already there: replace (the storage
             keeps the replaced version), keepBoth (the new file gets "name (2).ext"), or skip. Refused whole when the drive
             would pass its quota. uploadedList has each file's name, path and outcome (created, replaced, renamed,
             skipped, failed with error). Edit permission, or an upload-only share (then names never replace).</description>
@@ -907,11 +1099,19 @@ along with this software (see the LICENSE.md file). If not, see
             const written = []
             let newBytes = 0
             let replacedBytes = 0
+            // an uploaded file, a stream (ref.openStream(), named by relativePathList), text or bytes; anything else (an
+            // object that is not a file) fails rather than being written as its text
+            const isContent = (item) => item != null && (typeof item === 'string' || item instanceof Uint8Array
+                    || typeof item.readAllBytes === 'function' || typeof item.getInputStream === 'function')
             files.forEach((upload, index) => {
                 const given = relativePathList && relativePathList[index] ? relativePathList[index] : (upload && (upload.fileName || upload.name))
                 const relative = clean(given)
                 if (!upload || !relative || String(given).split('/').includes('..')) {
                     uploadedList.push({name: given ?? null, path: null, outcome: 'failed', error: 'no file name'})
+                    return
+                }
+                if (!isContent(upload)) {
+                    uploadedList.push({name: given ?? null, path: null, outcome: 'failed', error: 'not a file or a stream'})
                     return
                 }
                 let full = path ? `${path}/${relative}` : relative
@@ -930,8 +1130,9 @@ along with this software (see the LICENSE.md file). If not, see
                     if (conflictPolicy === 'keepBoth') { name = freeName(folder, name); full = folder ? `${folder}/${name}` : name; outcome = 'renamed' }
                     else { outcome = 'replaced'; replacedBytes += existing.size || 0 }
                 }
-                entries[name] = {name: name, isFile: true, size: upload.size || 0}
-                newBytes += upload.size || 0
+                const size = typeof upload === 'string' || upload instanceof Uint8Array ? upload.length : (Number(upload.size) || 0)
+                entries[name] = {name: name, isFile: true, size: size}
+                newBytes += size
                 changeSet.write(full, upload)
                 const row = {name: name, path: full, outcome: outcome}
                 written.push(row)
@@ -1220,6 +1421,8 @@ along with this software (see the LICENSE.md file). If not, see
                     }
                 }
                 taken.add(target)
+                // a records drive below the manage level: the folders of records the user may not see stay behind
+                const gated = access.drive.driveKindEnumId === 'RdkRecords' && access.level < 3
                 const copyTree = (sourcePath, targetPath, isFile, depth) => {
                     if (isFile) {
                         const ref = ec.resource.getLocationReference(`${sourceRoot}/${sourcePath}`)
@@ -1228,7 +1431,12 @@ along with this software (see the LICENSE.md file). If not, see
                         return
                     }
                     if (depth > 32) return
-                    const children = ec.resource.getChildChanges(`${sourceRoot}/${sourcePath}`)
+                    let children = ec.resource.getChildChanges(`${sourceRoot}/${sourcePath}`)
+                    if (gated && children.length) {
+                        const infos = ec.service.sync().name('org.moqui.impl.FileServices.check#RecordPaths').parameters({driveId: driveId,
+                            pathList: children.map((child) => `${sourcePath}/${child.name}`)}).call()?.pathInfoList || []
+                        children = children.filter((child, index) => infos[index] != null && infos[index].visible === true)
+                    }
                     if (!children.length) changeSet.mkdir(targetPath)
                     for (const child of children) {
                         if (child.name === '.gitkeep') continue
@@ -1320,7 +1528,8 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
 
     <service verb="list" noun="Trash">
-        <description>The items in a drive's trash, newest first. View permission on the drive.</description>
+        <description>The items in a drive's trash, newest first; on a records drive below the manage level only those of
+            records the user may see. View permission on the drive.</description>
         <in-parameters><parameter name="driveId" required="true"/></in-parameters>
         <out-parameters><parameter name="trashList" type="List"/></out-parameters>
         <actions><script><![CDATA[
@@ -1334,7 +1543,13 @@ along with this software (see the LICENSE.md file). If not, see
             trashList = []
             const access = ec.service.sync().name('org.moqui.impl.FileServices.get#DriveAccess').parameter('driveId', driveId).call()
             if (!access.drive || access.level < 1) { ec.message.addError(ec.l10n.localize('Drive not found')); return }
-            for (const row of ec.entity.find('moqui.resource.ResourceTrash').condition('driveId', driveId).orderBy('-trashedDate').orderBy('-trashId').list()) {
+            let rows = Array.from(ec.entity.find('moqui.resource.ResourceTrash').condition('driveId', driveId).orderBy('-trashedDate').orderBy('-trashId').list())
+            if (access.drive.driveKindEnumId === 'RdkRecords' && access.level < 3 && rows.length) {
+                const infos = ec.service.sync().name('org.moqui.impl.FileServices.check#RecordPaths')
+                        .parameters({driveId: driveId, pathList: rows.map((row) => String(row.path))}).call()?.pathInfoList || []
+                rows = rows.filter((row, index) => infos[index] != null && infos[index].visible === true)
+            }
+            for (const row of rows) {
                 trashList.push({trashId: row.trashId, path: row.path, name: String(row.path).slice(String(row.path).lastIndexOf('/') + 1),
                     isDirectory: row.isDirectory === 'Y', trashedDate: toMillis(row.trashedDate), trashedByUserId: row.trashedByUserId ?? null,
                     size: row.size ?? null, versionName: row.versionName ?? null})
@@ -1738,10 +1953,10 @@ along with this software (see the LICENSE.md file). If not, see
         <actions><script><![CDATA[
             favoriteList = []
             if (!ec.user.userId) return
-            const accessByDrive = {}
+            // the access of each path: a share reaches its path only, and a records drive's paths are its records'
             for (const row of ec.entity.find('moqui.resource.ResourceFavorite').condition('userId', ec.user.userId).orderBy('-createdDate').list()) {
-                const access = accessByDrive[row.driveId] || (accessByDrive[row.driveId] = ec.service.sync()
-                        .name('org.moqui.impl.FileServices.get#DriveAccess').parameters({driveId: row.driveId, path: row.path}).call())
+                const access = ec.service.sync().name('org.moqui.impl.FileServices.get#DriveAccess')
+                        .parameters({driveId: row.driveId, path: row.path}).call()
                 if (!access.drive || access.level < 1) continue
                 const change = ec.resource.getLastChange(row.path ? `${access.drive.rootLocation.replace(/\/+$/, '')}/${row.path}` : access.drive.rootLocation)
                 if (change == null) continue
@@ -1820,8 +2035,10 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="download" noun="Zip">
         <description>A zip of files and folders of a drive (path, or pathList; the drive's top folder when neither),
-            written to runtime://tmp/drive-zip for the caller to send (zipLocation, zipFilename). A file that cannot be read
-            is left out and reported. View permission.</description>
+            written to runtime://tmp/drive-zip for the caller to send (zipLocation, zipFilename: send it with
+            ec.web.sendResourceResponse(zipLocation, false, zipFilename); clean#DriveTempFiles removes it after a day). A
+            file that cannot be read is left out and reported; on a records drive below the manage level the folders of
+            records the user may not see are left out. View permission.</description>
         <in-parameters>
             <parameter name="driveId" required="true"/>
             <parameter name="path"/>
@@ -1848,10 +2065,17 @@ along with this software (see the LICENSE.md file). If not, see
                 const change = ec.resource.getLastChange(item ? `${root}/${item}` : root)
                 if (change == null) { ec.message.addError(ec.l10n.localize('File not found')); return }
                 const base = item ? item.slice(item.lastIndexOf('/') + 1) : drive.driveName
+                const gated = drive.driveKindEnumId === 'RdkRecords' && access.level < 3
                 const walk = (sourcePath, zipPath, isFile, depth) => {
                     if (entries.length >= 20000 || depth > 32) return
                     if (isFile) { entries.push({path: zipPath, location: `${root}/${sourcePath}`}); return }
-                    for (const child of ec.resource.getChildChanges(sourcePath ? `${root}/${sourcePath}` : root)) {
+                    let children = ec.resource.getChildChanges(sourcePath ? `${root}/${sourcePath}` : root)
+                    if (gated && children.length) {
+                        const infos = ec.service.sync().name('org.moqui.impl.FileServices.check#RecordPaths').parameters({driveId: driveId,
+                            pathList: children.map((child) => sourcePath ? `${sourcePath}/${child.name}` : child.name)}).call()?.pathInfoList || []
+                        children = children.filter((child, index) => infos[index] != null && infos[index].visible === true)
+                    }
+                    for (const child of children) {
                         if (!sourcePath && child.name === '.trash') continue
                         if (child.name === '.gitkeep') continue
                         walk(sourcePath ? `${sourcePath}/${child.name}` : child.name, zipPath ? `${zipPath}/${child.name}` : child.name, child.isFile, depth + 1)
@@ -1871,7 +2095,8 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="get" noun="Activity">
         <description>What happened to a file or folder, newest first: its versions (on a git drive every commit under the
             path, with the paths it changed), its shares and links made and revoked, and trash. Each row: action (version,
-            share, link, revoke, trash), date, userId with userName, note, versionName, paths. View permission.</description>
+            share, link, revoke, trash), date, userId with userName, note, versionName, paths. On a records drive below the
+            manage level, a row with a path outside the records the user may see is left out. View permission.</description>
         <in-parameters>
             <parameter name="driveId" required="true"/>
             <parameter name="path"/>
@@ -1912,6 +2137,20 @@ along with this software (see the LICENSE.md file). If not, see
                 if (!under(trash.path)) continue
                 activityList.push({action: 'trash', date: toMillis(trash.trashedDate), userId: trash.trashedByUserId ?? null,
                     trashId: trash.trashId, paths: [trash.path]})
+            }
+            // a records drive below the manage level: the rows of what is in records the user may see (a version's paths
+            // are below the path on the database tree)
+            if (access.drive.driveKindEnumId === 'RdkRecords' && access.level < 3 && activityList.length) {
+                const pathsOf = (row) => {
+                    const given = Array.from(row.paths || []).map((item) => clean(item))
+                    if (row.action !== 'version') return given
+                    return given.length ? given.map((item) => (path ? `${path}/${item}` : item)) : [path]
+                }
+                const unique = Array.from(new Set(activityList.flatMap(pathsOf)))
+                const infos = unique.length ? ec.service.sync().name('org.moqui.impl.FileServices.check#RecordPaths')
+                        .parameters({driveId: driveId, pathList: unique}).call()?.pathInfoList || [] : []
+                const visible = new Set(unique.filter((item, index) => infos[index] != null && infos[index].visible === true))
+                activityList = activityList.filter((row) => pathsOf(row).every((item) => visible.has(item)))
             }
             const names = {}
             for (const row of activityList) {
@@ -1983,6 +2222,51 @@ along with this software (see the LICENSE.md file). If not, see
                 contentType = fileType || 'text/plain'
                 const full = ec.resource.getLocationReference(location).getText()
                 text = full == null ? null : String(full).slice(0, 4000)
+            }
+        ]]></script></actions>
+    </service>
+
+    <service verb="clean" noun="DriveTempFiles">
+        <description>Remove the temporary files of drives older than maxAgeHours (a day by default): the zips of
+            download#Zip and download#PublicShare (runtime://tmp/drive-zip), the exports export#Drive leaves there
+            (drive-export), the thumbnails of get#Preview (runtime://tmp/preview, made again when next asked for) and any
+            other runtime://tmp/drive-* folder an application keeps copies in, with the folders they leave empty. A file
+            that cannot be removed is logged and the others go on. The clean_DriveTempFiles_hourly ServiceJob runs it.</description>
+        <in-parameters><parameter name="maxAgeHours" type="Integer" default="24"/></in-parameters>
+        <out-parameters><parameter name="removedCount" type="Integer"/></out-parameters>
+        <actions><script><![CDATA[
+            removedCount = 0
+            const cutoff = Date.now() - Math.max(1, Number(maxAgeHours) || 24) * 3600000
+            const old = (ref) => ref.lastModified != null && Number(ref.lastModified) < cutoff
+            const tmp = ec.resource.getLocationReference('runtime://tmp')
+            if (!tmp.exists || !tmp.directory) return
+            // the old files under a folder, then the folder when nothing is left in it (a new, empty one stays); true when
+            // the folder went
+            const sweep = (ref, depth) => {
+                let left = 0
+                let removedHere = 0
+                for (const child of ref.getDirectoryEntries()) {
+                    if (child.directory) {
+                        if (depth < 16 && sweep(child, depth + 1)) { removedHere++; continue }
+                        left++
+                        continue
+                    }
+                    if (old(child)) {
+                        try { child.delete(); removedCount++; removedHere++; continue }
+                        catch (e) { ec.logger.warn(`Drive temporary file ${child.location} not removed: ${e}`) }
+                    }
+                    left++
+                }
+                if (depth > 0 && left === 0 && (removedHere > 0 || old(ref))) {
+                    try { ref.delete(); return true }
+                    catch (e) { ec.logger.warn(`Drive temporary folder ${ref.location} not removed: ${e}`) }
+                }
+                return false
+            }
+            for (const folder of tmp.getDirectoryEntries()) {
+                if (!folder.directory || !(folder.fileName === 'preview' || String(folder.fileName).startsWith('drive-'))) continue
+                try { sweep(folder, 0) }
+                catch (e) { ec.logger.warn(`Drive temporary folder ${folder.location} not cleaned: ${e}`) }
             }
         ]]></script></actions>
     </service>
@@ -2246,11 +2530,20 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="download" noun="PublicShare" authenticate="anonymous-all">
         <description>A file of a share to send (location, fileName, contentType), or for a folder (path empty: the whole
             share) a zip of it (location under runtime://tmp/drive-zip). The token is checked first, then the grant when
-            the link has a password. Refused for an upload-only link.</description>
+            the link has a password. Refused for an upload-only link.
+
+            The visitor of a public page has no user, and a file on the database tree is entity rows the visitor may not
+            read, so a token route's transition does not send the location itself: with sendResponse true this service
+            writes the response (ec.web.sendResourceResponse, named fileName, Cache-Control private), reading the file under
+            its own anonymous-all authorization after the token and grant checks. With inline true a picture (PNG, JPEG,
+            GIF, WebP, BMP) or a PDF is shown in the page; anything else is an attachment. Nothing is sent after an error:
+            the transition sends its own answer then.</description>
         <in-parameters>
             <parameter name="token" required="true"/>
             <parameter name="grant"/>
             <parameter name="path"/>
+            <parameter name="sendResponse" type="Boolean" default="false"/>
+            <parameter name="inline" type="Boolean" default="false"/>
         </in-parameters>
         <out-parameters>
             <parameter name="location"/>
@@ -2285,23 +2578,27 @@ along with this software (see the LICENSE.md file). If not, see
                 location = target
                 fileName = name
                 contentType = ec.resource.contentTypeOf(name) ?? 'application/octet-stream'
-                return
-            }
-            const entries = []
-            const walk = (folder, zipPath, depth) => {
-                if (entries.length >= 20000 || depth > 32) return
-                for (const child of ec.resource.getChildChanges(folder)) {
-                    if (child.name === '.gitkeep' || (folder === root && child.name === '.trash')) continue
-                    const childZip = zipPath ? `${zipPath}/${child.name}` : child.name
-                    if (child.isFile) entries.push({path: childZip, location: `${folder}/${child.name}`})
-                    else walk(`${folder}/${child.name}`, childZip, depth + 1)
+            } else {
+                const entries = []
+                const walk = (folder, zipPath, depth) => {
+                    if (entries.length >= 20000 || depth > 32) return
+                    for (const child of ec.resource.getChildChanges(folder)) {
+                        if (child.name === '.gitkeep' || (folder === root && child.name === '.trash')) continue
+                        const childZip = zipPath ? `${zipPath}/${child.name}` : child.name
+                        if (child.isFile) entries.push({path: childZip, location: `${folder}/${child.name}`})
+                        else walk(`${folder}/${child.name}`, childZip, depth + 1)
+                    }
                 }
+                walk(target, '', 0)
+                location = `runtime://tmp/drive-zip/${ec.user.randomString(16)}.zip`
+                ec.resource.writeZip(location, entries)
+                fileName = `${String(name).replace(/[\\/:*?"<>|]/g, '_')}.zip`
+                contentType = 'application/zip'
             }
-            walk(target, '', 0)
-            location = `runtime://tmp/drive-zip/${ec.user.randomString(16)}.zip`
-            ec.resource.writeZip(location, entries)
-            fileName = `${String(name).replace(/[\\/:*?"<>|]/g, '_')}.zip`
-            contentType = 'application/zip'
+            if (sendResponse === true && !ec.message.hasError()) {
+                const inlineOk = /^(image\/(png|jpeg|gif|webp|bmp)|application\/pdf)$/.test(String(contentType || ''))
+                ec.web.sendResourceResponse(location, inline === true && inlineOk, fileName)
+            }
         ]]></script></actions>
     </service>
 

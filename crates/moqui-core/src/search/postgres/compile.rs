@@ -611,9 +611,25 @@ impl<'a> Compiler<'a> {
     }
 
     fn field(&self, scope: &Scope<'a>, query: &FieldQuery) -> Result<Sql, Error> {
+        let list = self.root_list(scope, &query.name);
         self.on_field(scope, &query.name, |expr, field| {
-            field_leaf(&self.text.config, expr, field.kind, query)
+            let leaf = field_leaf(&self.text.config, expr, field.kind, query)?;
+            Ok(match list {
+                Some(list) if field.kind == FieldKind::Keyword && matches!(query.op, FieldOp::Eq | FieldOp::In) => {
+                    or_list_element(leaf, &list, query)
+                }
+                _ => leaf,
+            })
         })
+    }
+
+    /// The body value of a root field, for a document that holds a list there (a keyword field such as a document's
+    /// tag ids): the typed column of a list is null, so `eq` and `in` also look in the list, as an Elastic term query
+    /// matches any element of an array.
+    fn root_list(&self, scope: &Scope<'a>, name: &str) -> Option<String> {
+        let name = name.strip_suffix(".keyword").unwrap_or(name);
+        (matches!(scope, Scope::Root) && self.mapping.root.fields.contains_key(name))
+            .then(|| format!("(body -> {})", literal(name)))
     }
 
     /// The query whose `ts_rank` orders hits: the positive text clauses, OR-ed.
@@ -935,6 +951,32 @@ fn field_leaf(config: &str, expr: &str, kind: FieldKind, query: &FieldQuery) -> 
     })
 }
 
+/// `COALESCE(leaf, list @> [value] OR ...)`: the column's answer, or when the column is null (the document holds a list,
+/// or nothing) whether the list in the body has one of the values. A body value that is not a list contains no array, so
+/// a scalar never matches through this arm.
+fn or_list_element(leaf: Sql, list: &str, query: &FieldQuery) -> Sql {
+    let values: Vec<&Value> = match query.op {
+        FieldOp::In if !query.values.is_empty() => query.values.iter().collect(),
+        _ => vec![&query.value],
+    };
+    let values: Vec<&Value> = values.into_iter().filter(|value| !value.is_null()).collect();
+    if values.is_empty() {
+        return leaf;
+    }
+    let mut out = Sql::new("COALESCE(");
+    out.append(leaf);
+    out.push(", ");
+    for (index, value) in values.into_iter().enumerate() {
+        if index > 0 {
+            out.push(" OR ");
+        }
+        out.push(&format!("{list} @> jsonb_build_array("));
+        out.param(Value::String(to_plain_string(value))).push("::text)");
+    }
+    out.push(")");
+    out
+}
+
 fn compare(expr: &str, kind: FieldKind, op: &str, value: &Value) -> Sql {
     match typed_param(kind, value) {
         Some((param, cast)) => {
@@ -1132,6 +1174,33 @@ mod tests {
             .where_sql(&parse_query_string("placedDate:2026-01-05").unwrap())
             .unwrap();
         assert!(sql.text.contains(">= ?::timestamptz AND"), "{}", sql.text);
+    }
+
+    #[test]
+    fn a_term_on_a_root_keyword_field_also_matches_an_element_of_a_list_there() {
+        let mapping = party();
+        let sql = Compiler::new(&mapping)
+            .where_sql(&Query::eq("partyId", Value::string("T1")))
+            .unwrap();
+        assert_eq!(
+            sql.text,
+            "COALESCE(COALESCE(\"f_partyId\" = ?, (body -> 'partyId') @> jsonb_build_array(?::text)), FALSE)"
+        );
+        assert_eq!(sql.params, vec![Value::string("T1"), Value::string("T1")]);
+        let sql = Compiler::new(&mapping)
+            .where_sql(&Query::is_in("partyId", vec![Value::string("A"), Value::string("B")]))
+            .unwrap();
+        assert_eq!(
+            sql.text,
+            "COALESCE(COALESCE(\"f_partyId\" IN (?, ?), (body -> 'partyId') @> jsonb_build_array(?::text) OR \
+             (body -> 'partyId') @> jsonb_build_array(?::text)), FALSE)"
+        );
+        assert_eq!(sql.params.len(), 4);
+        // a dotted field is already any element of its child array; a range is not a term
+        let sql = Compiler::new(&mapping)
+            .where_sql(&Query::eq("roles.roleTypeId", Value::string("Customer")))
+            .unwrap();
+        assert!(!sql.text.contains("@>"), "{}", sql.text);
     }
 
     #[test]
