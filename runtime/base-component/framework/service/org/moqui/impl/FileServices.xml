@@ -657,10 +657,10 @@ along with this software (see the LICENSE.md file). If not, see
             index; on the database tree the file's current version), versionName and versionNote, shared, favorite (the
             current user's), tags, contentType and fileType; folders first, then by name. On a records drive the top
             level is its ResourceDriveRecordFolder map (label, recordEntityName), and the record folders below a mapped
-            folder carry recordEntityName, idField and recordId; below the manage level only what is in records the user
-            may see is listed (check#RecordPaths), and of the record folders of a mapped folder the newest recordLimit are
-            asked (moreRecordCount is how many more there are, neither asked nor listed: open a record's folder by its
-            path, or search). folder.recordList is the records the folder is in, innermost first. The drive's hidden trash
+            folder carry recordEntityName, idField and recordId; of the record folders of a mapped folder the newest
+            recordLimit are listed, at every level, a manager's too (moreRecordCount is how many more there are, neither
+            asked nor listed: open a record's folder by its path, or search), and below the manage level only those in
+            records the user may see (check#RecordPaths). folder.recordList is the records the folder is in, innermost first. The drive's hidden trash
             folder and .gitkeep files are left out. View permission on the drive, or a share of the folder.</description>
         <in-parameters>
             <parameter name="driveId" required="true"/>
@@ -730,15 +730,20 @@ along with this software (see the LICENSE.md file). If not, see
             }
             if (recordMatch && recordMatch.depth > 0) folder.record = {recordEntityName: recordMatch.mapped.recordEntityName ?? null,
                 idField: recordMatch.mapped.idField ?? null, recordId: segments[segments.length - recordMatch.depth]}
-            // below the manage level only what is in records the user may see; of a mapped folder's record folders the
-            // newest recordLimit are asked, so a folder of thousands of records is not a hook call for each
-            if (drive.driveKindEnumId === 'RdkRecords' && access.level < 3 && changes.length) {
-                let candidates = changes.slice()
-                if (recordMatch && recordMatch.depth === 0) {
-                    candidates.sort((left, right) => (right.date || 0) - (left.date || 0))
-                    const most = Math.max(1, Number(recordLimit) || 200)
-                    if (candidates.length > most) { moreRecordCount = candidates.length - most; candidates = candidates.slice(0, most) }
+            // of a mapped folder's record folders the newest recordLimit are listed, for a manager too, so a folder of
+            // thousands of records is neither thousands of rows nor a hook call for each; moreRecordCount the rest
+            if (drive.driveKindEnumId === 'RdkRecords' && recordMatch && recordMatch.depth === 0) {
+                const most = Math.max(1, Number(recordLimit) || 200)
+                if (changes.length > most) {
+                    const newest = new Set(changes.slice().sort((left, right) => (right.date || 0) - (left.date || 0))
+                            .slice(0, most).map((change) => change.name))
+                    moreRecordCount = changes.length - most
+                    changes = changes.filter((change) => newest.has(change.name))
                 }
+            }
+            // below the manage level only what is in records the user may see
+            if (drive.driveKindEnumId === 'RdkRecords' && access.level < 3 && changes.length) {
+                const candidates = changes.slice()
                 const checked = ec.service.sync().name('org.moqui.impl.FileServices.check#RecordPaths').parameters({driveId: driveId,
                     pathList: candidates.map((change) => `${path}/${change.name}`)}).call()?.pathInfoList || []
                 const keep = new Set()

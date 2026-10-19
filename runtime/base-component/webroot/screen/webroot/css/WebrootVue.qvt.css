@@ -525,7 +525,8 @@ form.q-form.m-status-form, .m-status-form { display: inline-flex; width: auto; }
 .m-markdown-body code { font-size:0.9em; padding:0.1em 0.35em; border-radius:4px; background:rgba(127,127,127,0.15); }
 .m-markdown-body pre { padding:10px 12px; border-radius:6px; overflow-x:auto; background:rgba(127,127,127,0.12); border:1px solid rgba(127,127,127,0.2); }
 .m-markdown-body pre code { padding:0; background:transparent; font-size:0.88em; }
-.m-markdown-body .m-md-table { margin:0 0 0.75em; overflow-x:auto; border-radius:4px; background:transparent; }
+/* the container (and its border) as wide as its table, at most the text's width, where a wider table scrolls */
+.m-markdown-body .m-md-table { margin:0 0 0.75em; overflow-x:auto; border-radius:4px; background:transparent; width:-moz-fit-content; width:fit-content; max-width:100%; }
 .m-markdown-body .m-md-table table { width:auto; border-collapse:collapse; }
 .m-markdown-body .m-md-table th, .m-markdown-body .m-md-table td { padding:4px 10px; border:1px solid rgba(127,127,127,0.3); text-align:left; }
 .m-markdown-body .m-md-table th { font-weight:500; background:rgba(127,127,127,0.1); }

@@ -67,7 +67,7 @@ pub use define::load_definitions;
 pub use define::{check, configured_service_files, lint};
 pub(crate) use define::{input_hints, input_js_rules, merge_param, VALIDATE_NUMBER, VALIDATE_NUMBER_INT};
 pub use eca::{run_data_file_service, run_matched_eca, schedule_feed_receive, search_not_up};
-pub use email_eca::run_email_rules;
+pub use email_eca::{email_rule_count, run_email_rule, run_email_rules};
 #[cfg(test)]
 #[cfg(test)]
 pub(crate) use jobs::send_job_error_notification;

@@ -31,7 +31,7 @@ pub use artifact::AuthzGuard;
 pub use cache::CacheFacade;
 pub use component::ComponentInfo;
 pub use conf::{load_merged_conf, merge_component_confs, merge_conf};
-pub use error::{DeniedArtifact, Error, ErrorKind};
+pub use error::{client_text, DeniedArtifact, Error, ErrorKind};
 pub use factory::{
     default_framework_dir, BootOptions, ContextGuard, ExecutionContext, ExecutionContextFactory, Executor,
 };

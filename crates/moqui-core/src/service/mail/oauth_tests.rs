@@ -1051,6 +1051,105 @@ fn pop3_signs_in_with_xoauth2_and_the_pop_scope() {
     assert!(log.iter().any(|line| line == "XOAUTH2 refused"), "{log:?}");
 }
 
+/// A new account from a sign-in with storeProtocol pop3: the sign-in asks for the POP scope, nothing is made until it
+/// succeeds (a grant without the POP scope makes nothing), and the account is on the provider's POP3 server, where the
+/// sync signs in with XOAUTH2. A provider with no POP server refuses it; an unknown protocol is refused.
+#[test]
+fn a_new_pop3_account_from_a_sign_in_is_made_on_the_providers_pop_server() {
+    const POP_SCOPE: &str = "https://mail.example.test/pop";
+    let _serial = serial();
+    let _lock = crate::user::session::cookie_property_lock();
+    let _properties = Properties::set();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    user(&facade, "alice");
+    login("alice");
+    let fake = FakeProvider::start(CLIENT, SECRET, REDIRECT);
+    let imap = FakeImap::start(&[]);
+    let smtp = FakeSmtp::start("alice@gmail.test");
+    let pop = FakePop::start();
+    lock(&pop.oauth).0 = "alice@gmail.test".to_string();
+    pop.add(
+        "u1",
+        "Message-ID: <np1@example.com>\nFrom: bob@example.com\nTo: alice@gmail.test\nSubject: One\nDate: Mon, 19 Oct 2026 10:00:00 +0000\n\nHi\n",
+    );
+    provider_row(&facade, "EopTest", &fake, (imap.port, smtp.port), true);
+    let start = |protocol: &str| {
+        vec![
+            ("oauthProviderEnumId", text("EopTest")),
+            ("emailAddress", text("alice@gmail.test")),
+            ("statusId", text("EasActive")),
+            ("storeProtocol", text(protocol)),
+        ]
+    };
+    // no POP server on the provider: refused before the popup opens
+    call("start#OAuthSignIn", &start("pop3"));
+    assert!(errors().contains("no POP server"), "a provider without popHost");
+    call("start#OAuthSignIn", &start("smtp"));
+    assert!(errors().contains("imap or pop3"));
+    update(
+        &facade,
+        PROVIDER,
+        ("oauthProviderEnumId", "EopTest"),
+        &[
+            ("popScope", text(POP_SCOPE)),
+            ("popHost", text("127.0.0.1")),
+            ("popPort", text(&pop.port.to_string())),
+            ("popProtocol", text("pop3")),
+        ],
+    );
+    let providers = ok("get#OAuthProviders", &[]);
+    let listed = format!("{providers:?}");
+    assert!(listed.contains(&pop.port.to_string()), "{listed}");
+    let accounts = || {
+        let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+        facade
+            .find(ACCOUNT)
+            .unwrap()
+            .eq("emailAddress", text("alice@gmail.test"))
+            .use_cache(false)
+            .list()
+            .unwrap()
+    };
+    let (started, _) = begin(&start("pop3"));
+    assert!(
+        started["scope"].split(' ').any(|scope| scope == POP_SCOPE),
+        "{started:?}"
+    );
+    assert!(accounts().is_empty(), "nothing is made before the sign-in");
+    // a grant without the POP scope is refused and makes nothing
+    let code = code_for(&fake, &started, claims(&started, "alice@gmail.test"), MAIL_SCOPE);
+    let refused = callback(&[("state", &started["state"]), ("code", &code)]);
+    assert_eq!(out_text(&refused, "errorCode"), "scopeNotGranted", "{refused:?}");
+    assert!(accounts().is_empty(), "a refused sign-in makes no account");
+    let (started, _) = begin(&start("pop3"));
+    let code = code_for(
+        &fake,
+        &started,
+        claims(&started, "alice@gmail.test"),
+        &format!("{MAIL_SCOPE} {POP_SCOPE}"),
+    );
+    let done = callback(&[("state", &started["state"]), ("code", &code)]);
+    assert_eq!(out_text(&done, "status"), "success", "{done:?}");
+    let account_id = out_text(&done, "emailAccountId");
+    assert_eq!(accounts().len(), 1);
+    let account = one(&facade, ACCOUNT, "emailAccountId", &account_id);
+    let server = one(&facade, SERVER, "emailServerId", &field(&account, "emailServerId"));
+    assert_eq!(field(&server, "storeProtocol"), "pop3");
+    assert_eq!(field(&server, "storeHost"), "127.0.0.1");
+    assert_eq!(field(&server, "storePort"), pop.port.to_string());
+    assert_eq!(field(&server, "smtpPort"), smtp.port.to_string());
+    assert_eq!(field(&server, "authTypeEnumId"), "EatOAuth2");
+    let access = lock(&fake.state).access_tokens.last().cloned().unwrap();
+    lock(&pop.oauth).1.push(access);
+    let synced = ok("sync#EmailAccount", &[("emailAccountId", text(&account_id))]);
+    assert_eq!(out_text(&synced, "outcome"), "synced", "{synced:?}");
+    assert_eq!(out_text(&synced, "newCount"), "1");
+    let log = lock(&pop.log).clone();
+    assert!(log.iter().any(|line| line == "XOAUTH2 ok"), "{log:?}");
+}
+
 /// Removing an account revokes its refresh token at the provider and deletes it here; not when another server here
 /// signs in as the same address (the provider revokes the whole grant); a provider with no revocation endpoint is not
 /// asked; signing out and going back to a password revoke too.

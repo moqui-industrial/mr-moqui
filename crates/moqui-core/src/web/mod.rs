@@ -1427,15 +1427,17 @@ pub(crate) fn is_production() -> bool {
 
 /// The text a client gets for `err` sent with `status`. In production a 500's detail, which can hold SQL, file paths,
 /// or script source, goes to the log under an error id, and the client gets only the id. Other statuses and other
-/// instances get the message; a 500 is logged there too, as Java's `MoquiServlet` logs every internal error.
+/// instances get the message; a 500 is logged there too, as Java's `MoquiServlet` logs every internal error. The
+/// message is its text only ([`crate::context::client_text`]): a script's stack and the Rust source location are in the
+/// log, not the answer.
 pub(crate) fn error_text(status: u16, err: &Error) -> String {
     if status != 500 {
-        err.message().to_string()
+        crate::context::client_text(err.message())
     } else if is_production() {
         format!("internal error, id {}", log_error_id(&err.diagnostic()))
     } else {
         tracing::error!("Internal error processing request: {}", err.diagnostic());
-        err.message().to_string()
+        crate::context::client_text(err.message())
     }
 }
 

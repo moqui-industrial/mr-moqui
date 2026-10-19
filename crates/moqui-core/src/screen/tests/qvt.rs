@@ -749,6 +749,20 @@ fn status_context() -> crate::context::ExecutionContext {
                 ],
             );
         }
+        // a flow of its own, which a board names with status-flow-id
+        row(
+            "moqui.basic.StatusFlow",
+            &[("statusFlowId", "FastSync"), ("description", "Fast")],
+        );
+        row(
+            "moqui.basic.StatusFlowTransition",
+            &[
+                ("statusFlowId", "FastSync"),
+                ("statusId", "EsNotStarted"),
+                ("toStatusId", "EsComplete"),
+                ("transitionName", "Done at once"),
+            ],
+        );
     }
     context
 }
@@ -1035,6 +1049,8 @@ fn form_list_views_and_the_markdown_view() {
         "'colors':{'todo':'info','doing':'warning'}",
         "'createTransition':'/newTask'",
         "'modes':['week','month','day','list']",
+        // range-find: the calendar asks the screen's form request for the rows of the dates it shows
+        "'rangeFind':true,'rangeUrl':'/actions/Tasks','listName':'taskList'",
         "<template v-slot:card_0><div class=\"m-card-head row no-wrap\"><div class=\"m-card-title\">",
         "<span class=\"m-card-label m-muted\">Owner</span>",
         "</m-list-views>",
@@ -1091,6 +1107,9 @@ fn a_status_board_has_the_columns_and_flow_of_the_status_type() {
         "'colors':{'EsNotStarted':'grey-7','EsRunning':'primary','EsComplete':'positive','EsOtherError':'negative'}",
         "'columnOrder':['EsComplete','EsRunning']",
         "'statusId':'EsRunning','statusId_display':'Running'",
+        // status-flow-id: that flow's transitions are the drag hints, not Default's
+        "'statusFlowId':'FastSync'",
+        "'flow':{'EsNotStarted':['EsComplete']}",
     ] {
         assert!(out.contains(expected), "{expected} in {out}");
     }

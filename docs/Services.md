@@ -10,6 +10,15 @@ throws, or an error left by a service it called) rolls back the transaction it r
 it began is rolled back, and one it joined (the caller's, as `transaction="use-or-begin"`, the default, joins) is marked
 rollback-only (`service/call.rs`).
 
+## What the client sees of a failure
+
+A service whose body fails (a script that throws, an error from Rust) puts the failure's message in `ec.message`, and so
+in the JSON answer of a transition, the errors saved for the next page and a toast: the message text only
+(`context::client_text`), never the script's stack, the generated line, the service it ran in or the Rust source location
+(`Rust: crates/...rs:line:col`). Those are in the server log, with the service's name (`Service ... failed: ...`). The
+same holds for a service a script calls that is not there, the error answer of a transition that fails, and the error
+page's message.
+
 Taking the messages back does not take the mark back. After
 
 ```js

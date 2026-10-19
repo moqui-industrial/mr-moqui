@@ -3784,6 +3784,18 @@
         // The columns of a board: the known columns in order (the status flow's, or column-order's, with their labels and colors),
         // then a column for each other value the rows have, in the order of the rows; each with its rows, count and sum. moved holds the
         // value of a card moved here, until the list loads again.
+        // The controls of a card whose click is their own, not the card's: links, buttons, form fields and labels, Quasar's buttons,
+        // fields, toggles and clickable chips, an in-place edit (m-editable), anything with a button-like role or marked data-card-control.
+        controlSelector: "a, button, input, select, textarea, label, summary, [contenteditable='true'], [contenteditable=''], [role='button'], " +
+            "[role='checkbox'], [role='switch'], [role='combobox'], [role='link'], [role='menuitem'], .q-btn, .q-field, .q-toggle, .q-checkbox, " +
+            ".q-radio, .q-chip--clickable, .editable-label, .q-popup-edit, [data-card-control]",
+        // whether a click on target (inside card) was on one of the card's controls
+        onControl(target, card) {
+            if (!target || typeof target.closest !== "function") return false;
+            const hit = target.closest(moqui.listViews.controlSelector);
+            if (!hit || hit === card) return false;
+            return !card || typeof card.contains !== "function" || card.contains(hit);
+        },
         boardColumns(items, board, known, moved) {
             const lv = moqui.listViews;
             const cfg = board || {};
@@ -3803,13 +3815,16 @@
                 columns.push(column);
                 return column;
             };
+            const knownOf = (value) => given.find((column) => lvText(column.value) === value);
             const order = lv.list(cfg.columnOrder);
-            if (order.length) order.forEach((value) => { const found = given.find((column) => lvText(column.value) === value); add(value, found && found.label, found && found.color); });
+            if (order.length) order.forEach((value) => { const found = knownOf(value); add(value, found && found.label, found && found.color); });
             else given.forEach((column) => add(column.value, column.label, column.color));
             (items || []).forEach((item) => {
                 const over = moved && moved[item.index];
                 const value = lvText(over && over.group !== undefined ? over.group : item.row[group]);
-                const column = byValue[value] || add(value, lv.text(item.row, group), "");
+                // a value outside column-order: the label and color the server sent for it (a status's description), else the row's text
+                const found = byValue[value] ? null : knownOf(value);
+                const column = byValue[value] || add(value, (found && found.label) || lv.text(item.row, group), (found && found.color) || "");
                 column.items.push(item);
                 column.count++;
                 if (cfg.sumField) column.sum += lv.number(item.row[cfg.sumField]);
@@ -3897,6 +3912,52 @@
             const month = months - year * 12 + 1;
             const length = lv.dayOf(month === 12 ? year + 1 : year, month === 12 ? 1 : month + 1, 1) - lv.dayOf(year, month, 1);
             return lv.dayOf(year, month, Math.min(p.d, length));
+        },
+        // The days a calendar mode shows ({first, last}): the month's weeks, the week, the day, or for the list (agenda) the anchor's month.
+        visibleDays(mode, anchor, firstDay) {
+            const lv = moqui.listViews;
+            if (mode === "week") { const start = lv.weekStart(anchor, firstDay); return { first: start, last: start + 6 }; }
+            if (mode === "day") return { first: anchor, last: anchor };
+            if (mode === "month") { const weeks = lv.monthWeeks(anchor, firstDay); return { first: weeks[0][0], last: weeks[weeks.length - 1][6] }; }
+            const p = lv.ymd(anchor);
+            return { first: lv.monthStart(anchor), last: lv.dayOf(p.m === 12 ? p.y + 1 : p.y, p.m === 12 ? 1 : p.m + 1, 1) - 1 };
+        },
+        // The finds of a calendar's dates (view-calendar range-find): the list's find with the start and end field range added
+        // ({field}_from and {field}_thru, as search-form-inputs reads them) and no paging, a day wider on each side (a date field
+        // reads a time stamp in UTC), as epoch millis. With an end field two: what overlaps the dates (starts before their end and ends
+        // after their start), and what starts in them (an event with no end); else what starts in them.
+        rangeFinds(cal, days, tz) {
+            const lv = moqui.listViews;
+            const from = String(lv.millis(days.first - 1, 0, tz));
+            const thru = String(lv.millis(days.last + 2, 0, tz) - 1);
+            const starts = { pageNoLimit: "true" };
+            starts[cal.startField + "_from"] = from;
+            starts[cal.startField + "_thru"] = thru;
+            if (!cal.endField) return [starts];
+            const overlaps = { pageNoLimit: "true" };
+            overlaps[cal.startField + "_thru"] = thru;
+            overlaps[cal.endField + "_from"] = from;
+            return [overlaps, starts];
+        },
+        // The rows of a range's finds as the calendar's items, each once (by its key fields, else all its values): a row on the list's
+        // page is that item (its index, so its card_{index} slot, and its values as the page has them), another is an item of its own
+        // with an index from 100000.
+        rangeItems(pageItems, lists, keyFields) {
+            const keys = moqui.listViews.list(keyFields);
+            const keyOf = (row) => JSON.stringify(keys.length ? keys.map((name) => lvText(row[name])) : row);
+            const page = {};
+            (pageItems || []).forEach((item) => { page[keyOf(item.row)] = item; });
+            const seen = new Set();
+            const out = [];
+            let next = 100000;
+            (lists || []).forEach((rows) => (Array.isArray(rows) ? rows : []).forEach((row) => {
+                if (!row || typeof row !== "object" || row._moquiRowType) return;
+                const key = keyOf(row);
+                if (seen.has(key)) return;
+                seen.add(key);
+                out.push(page[key] || { index: next++, row });
+            }));
+            return out;
         },
 
         // The events of a calendar: each row with a start, its title, color and resource; start and end are minutes from the epoch day 0 of
@@ -3992,7 +4053,7 @@
         data() {
             return { current: "list", uid: "mlv" + (++listViewsCount), moved: {}, dirty: false, info: null, infoKey: "", dragging: null, dragEnded: 0,
                 calMode: "", anchor: 0, drag: null, preview: null, selection: null, pop: { open: false, index: null, when: "" }, anchorRect: { left: 0, top: 0, width: 0, height: 0 },
-                create: { open: false, initial: {}, url: "", dateType: "date-time" }, hourPx: 44, nowAbs: 0 };
+                create: { open: false, initial: {}, url: "", dateType: "date-time" }, hourPx: 44, nowAbs: 0, range: { key: "", seq: 0, rows: null } };
         },
         template:
             '<div class="m-list-views" :id="id" :class="\'m-list-views--\' + current" :data-view="current">' +
@@ -4151,6 +4212,9 @@
             },
             flow() { return (this.board && this.board.flow) || (this.info && this.info.transitions) || null; },
             canMove() { return !!(this.calendar && this.calendar.transition); },
+            // the calendar's rows: those of the dates shown when it asks for them (range-find), else the list's page
+            rangeOn() { return !!(this.calendar && this.calendar.rangeFind && this.calendar.rangeUrl); },
+            calItems() { return this.rangeOn && this.range.rows ? this.range.rows : this.items; },
             // ---- calendar ----
             calendarColors() { return Object.assign({}, this.info && this.info.colors, this.calendar && this.calendar.colors); },
             events() {
@@ -4158,7 +4222,7 @@
                 const cfg = Object.assign({}, this.calendar, { colors: this.calendarColors });
                 const lv = moqui.listViews;
                 const resources = this.resourceLabels;
-                return lv.events(this.items, cfg, this.timeZone, this.moved, this.preview).map((ev) => Object.assign(ev, {
+                return lv.events(this.calItems, cfg, this.timeZone, this.moved, this.preview).map((ev) => Object.assign(ev, {
                     timeText: this.timeRange(ev), shortTime: ev.allDay ? "" : this.clock(ev.start - Math.floor(ev.start / 1440) * 1440),
                     resourceLabel: ev.resource !== null && ev.resource !== undefined ? (resources[ev.resource] || ev.resource) : ""
                 }));
@@ -4168,7 +4232,7 @@
                 const field = this.calendar && this.calendar.resourceField;
                 if (!field) return out;
                 (this.calendar.resources || []).forEach((res) => { out[lvText(res.value)] = res.label || lvText(res.value); });
-                this.items.forEach((item) => { const value = lvText(item.row[field]); if (value && !out[value]) out[value] = moqui.listViews.text(item.row, field); });
+                this.calItems.forEach((item) => { const value = lvText(item.row[field]); if (value && !out[value]) out[value] = moqui.listViews.text(item.row, field); });
                 return out;
             },
             modeOptions() {
@@ -4258,18 +4322,22 @@
                 return this.labels.agenda;
             },
             rowsKey() { try { return JSON.stringify(this.rows || []); } catch (err) { return String(Math.random()); } },
-            popRow() { const item = this.pop.index === null ? null : this.items.find((entry) => entry.index === this.pop.index); return item ? item.row : {}; },
+            popRow() {
+                if (this.pop.index === null) return {};
+                const item = this.calItems.find((entry) => entry.index === this.pop.index) || this.items.find((entry) => entry.index === this.pop.index);
+                return item ? item.row : {};
+            },
             selectionText() { return this.selection ? this.clock(this.selection.start) + " – " + this.clock(this.selection.end) : ""; },
             startName() { return this.calendar ? this.calendar.startParameter || this.calendar.startField : ""; },
             endName() { return this.calendar ? this.calendar.endParameter || this.calendar.endField : ""; }
         },
         watch: {
             current() { this.afterViewChange(); },
-            calMode() { this.saveCalendar(); this.$nextTick(this.scrollToMorning); },
-            anchor() { this.saveCalendar(); },
+            calMode() { this.saveCalendar(); this.$nextTick(this.scrollToMorning); this.loadRange(false); },
+            anchor() { this.saveCalendar(); this.loadRange(false); },
             // other rows (another page, a reload): the moves are in them now. The server-merged rows are a literal of the screen's template,
             // a new array whenever the screen draws again, so their text tells a change
-            rowsKey() { this.moved = {}; this.loadInfo(); }
+            rowsKey() { this.moved = {}; this.loadInfo(); this.loadRange(true); }
         },
         created() {
             const lv = moqui.listViews;
@@ -4319,7 +4387,36 @@
                 this.pop.open = false;
                 if (this.current === "board") this.$nextTick(this.bindSortables);
                 else this.unbindSortables();
-                if (this.current === "calendar") this.$nextTick(this.scrollToMorning);
+                if (this.current === "calendar") { this.$nextTick(this.scrollToMorning); this.loadRange(false); }
+            },
+            // range-find: the rows of the dates shown, asked of the screen's form request (the list's find with the start and end field range
+            // added, no paging, with the list's other parameters) when other dates show or the list changed; the last answer asked for wins,
+            // and until one comes (or when it fails) the list's page shows
+            loadRange(force) {
+                if (!this.rangeOn || this.current !== "calendar") return;
+                const lv = moqui.listViews;
+                const cal = this.calendar;
+                const shown = (this.mScreen && this.mScreen.parameters) || (this.$root && this.$root.currentParameters) || {};
+                const base = {};
+                const paging = ["pageIndex", "pageSize", "pageNoLimit", "moquiFormName", "moquiSessionToken", "lastStandalone", "renderMode", "view"];
+                Object.keys(shown).forEach((name) => { if (!paging.includes(name) && shown[name] !== null && shown[name] !== undefined) base[name] = shown[name]; });
+                const finds = lv.rangeFinds(cal, lv.visibleDays(this.calMode, this.anchor, this.firstDay), this.timeZone).map((find) => Object.assign({}, base, find));
+                const key = JSON.stringify([cal.rangeUrl, finds]);
+                if (!force && key === this.range.key) return;
+                const seq = this.range.seq + 1;
+                this.range = Object.assign({}, this.range, { key, seq });
+                const prefix = this.$root && this.$root.appRootPath ? this.$root.appRootPath : "";
+                const ask = (params) => moqui.request(prefix + cal.rangeUrl, { params }).then((result) => {
+                    const json = result.json && moqui.isPlainObject(result.json) ? result.json : {};
+                    const list = cal.listName && Array.isArray(json[cal.listName]) ? json[cal.listName] : Object.values(json).find(Array.isArray);
+                    return Array.isArray(list) ? list : [];
+                });
+                Promise.all(finds.map(ask)).then((lists) => {
+                    if (seq === this.range.seq) this.range = Object.assign({}, this.range, { rows: lv.rangeItems(this.items, lists, cal.keyFields) });
+                }, (err) => {
+                    if (seq === this.range.seq) this.range = Object.assign({}, this.range, { key: "" });
+                    moqui.handleAjaxError(err);
+                });
             },
             reloadRows() {
                 this.dirty = false;
@@ -4343,7 +4440,7 @@
                     if (wantColors) values.add(lvText(item.row[cal.colorField]));
                 });
                 values.delete("");
-                const params = { values: Array.from(values).join(","), statusTypeId: (board && board.statusTypeId) || "",
+                const params = { values: Array.from(values).join(","), statusTypeId: (board && board.statusTypeId) || "", statusFlowId: (board && board.statusFlowId) || "",
                     status: wantBoard ? (lv.isStatusField(board.groupField) || board.statusTypeId ? "true" : "false") : "true" };
                 const key = JSON.stringify(params);
                 if (key === this.infoKey) return;
@@ -4375,11 +4472,12 @@
                 if (!flow || !moqui.listViews.isStatusField(this.board.groupField)) return true;
                 return (flow[this.dragging.from] || []).includes(value);
             },
-            // a click on a card opens it: the link of its title (the first link of the card), unless the click was on a link or button or ended a drag
+            // a click on a card opens it: the link of its title (the first link of the card), unless the click was on a control of the
+            // card (a link, a button, a field, an in-place edit: moqui.listViews.onControl) or ended a drag
             openCard(event) {
                 if (Date.now() - this.dragEnded < 350) return;
                 const target = event.target;
-                if (target && target.closest && target.closest("a, button, input, .q-btn")) return;
+                if (moqui.listViews.onControl(target, event.currentTarget)) return;
                 const card = event.currentTarget;
                 const link = card && card.querySelector ? card.querySelector(".m-card-title a[href], a[href]") : null;
                 if (link) link.click();
@@ -4619,6 +4717,7 @@
             afterCreate() {
                 this.create = Object.assign({}, this.create, { open: false });
                 if (this.reload) this.reload();
+                this.loadRange(true);
             }
         }
     });

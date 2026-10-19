@@ -2824,6 +2824,40 @@ fn the_form_list_board_and_calendar_move_cards_and_events_in_chromium() {
     );
     assert_clean(&mut browser, "the list again");
 
+    // range-find: with a page of two rows the calendar still shows the month's examples, asked of the form request for the dates it
+    // shows (the find with the range added and no paging), while the list keeps its page of two
+    browser.navigate(&format!("{base}/qapps/gallery/Views?pageSize=2&view=calendar"));
+    browser.wait_for(
+        "the month with an example beyond the list's page",
+        &format!(
+            "!!document.querySelector('#ExampleList_views[data-view=calendar] .m-cal-month') && !!{} && !!{}",
+            chip("Retrospective"),
+            chip("Release")
+        ),
+        WAIT,
+    );
+    assert_eq!(
+        browser.eval("document.querySelectorAll('#ExampleList_views .m-list-views-list .tbody .tr').length"),
+        2,
+        "the list keeps its page"
+    );
+    // the next month asks again, for its own dates
+    browser.eval(FETCH_SPY);
+    browser.click(
+        "the next month",
+        "document.querySelector('#ExampleList_views .m-cal-next')",
+    );
+    let asked = fetched(&mut browser, "the next month's rows", "/actions/ExampleList");
+    assert_eq!(asked["status"], 200, "{asked}");
+    let asked_url = asked["url"].as_str().unwrap_or_default().to_string();
+    assert!(
+        asked_url.contains("pageNoLimit=true")
+            && asked_url.contains("exampleDate_")
+            && !asked_url.contains("pageSize="),
+        "{asked_url}"
+    );
+    assert_clean(&mut browser, "the calendar's range");
+
     // the markdown-view of the Widgets screen: Marked and DOMPurify load, the heading has its id, a table its container, a link to
     // another site opens in a new tab with noopener, and an app link (from the base path) goes through the shell
     browser.navigate(&format!("{base}/qapps/gallery/Widgets"));
@@ -2837,6 +2871,13 @@ fn the_form_list_board_and_calendar_move_cards_and_events_in_chromium() {
             !!md.querySelector('a[href=\"https://moqui.org\"][target=_blank][rel=\"noopener noreferrer\"]'), !!md.querySelector('pre code'), \
             !!md.querySelector('a[data-md-link][href=\"/qapps/gallery/List\"]')].join(','); })()"),
         "true,true,true,true"
+    );
+    // a table narrower than the text: its container (and the container's border) is as wide as the table, not the text
+    assert_eq!(
+        browser.eval("(() => { const md = document.getElementById('WidgetMarkdown'); const box = md.querySelector('.m-md-table'); \
+            const table = box.querySelector('table'); const boxWidth = box.getBoundingClientRect().width; \
+            return [Math.abs(boxWidth - table.getBoundingClientRect().width) <= 3, boxWidth < md.getBoundingClientRect().width - 40].join(','); })()"),
+        "true,true"
     );
     browser.click(
         "the app link",

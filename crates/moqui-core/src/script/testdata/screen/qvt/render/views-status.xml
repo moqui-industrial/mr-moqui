@@ -15,5 +15,9 @@
             <view-board group-field="statusId" column-order="EsComplete,EsRunning"/>
             <field name="syncId"><default-field><display/></default-field></field>
         </form-list>
+        <form-list name="Fast" list="syncList" skip-form="true" paginate="false">
+            <view-board group-field="statusId" status-flow-id="FastSync" transition="setStatus" key-fields="syncId"/>
+            <field name="syncId"><default-field><display/></default-field></field>
+        </form-list>
     </widgets>
 </screen>

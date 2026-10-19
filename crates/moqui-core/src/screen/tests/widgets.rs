@@ -639,3 +639,73 @@ fn a_dynamic_form_is_assembled_from_the_context_each_time_it_renders() {
     );
     assert_eq!(csv, "");
 }
+
+/// A section-include inside a section that is itself included from another file: what the inner include brings (its
+/// section's own nested sections and forms) is found from the screen that renders, as Java's recursive
+/// `pullSectionInclude` pulls it.
+#[test]
+fn a_section_include_inside_an_included_section_finds_the_nested_sections_of_what_it_includes() {
+    let context = ExecutionContextFactory::test_context();
+    let factory = context.factory();
+    let dir = std::env::temp_dir().join(format!("moqui-nested-include-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("Root")).unwrap();
+    std::fs::create_dir_all(dir.join("Parts")).unwrap();
+    let mid = dir.join("Parts/Mid.xml").to_string_lossy().into_owned();
+    let inner = dir.join("Parts/Inner.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        dir.join("Root.xml"),
+        "<screen require-authentication=\"false\"><widgets><subscreens-active/></widgets><subscreens default-item=\"Outer\"/></screen>",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Root/Outer.xml"),
+        format!(
+            "<screen require-authentication=\"false\"><actions><set field=\"who\" value=\"Ada\"/></actions><widgets>\
+             <section-include name=\"Mid\" location=\"{mid}\"/></widgets></screen>"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &mid,
+        format!(
+            "<screen require-authentication=\"false\"><widgets><section name=\"Mid\"><widgets><label text=\"mid WHO\"/>\
+             <section-include name=\"Inner\" location=\"{inner}\"/>\
+             <section-include location=\"{inner}#Other\"/></widgets></section></widgets></screen>"
+        )
+        .replace("WHO", "${who}"),
+    )
+    .unwrap();
+    std::fs::write(
+        &inner,
+        "<screen require-authentication=\"false\"><widgets>\
+         <section name=\"Inner\"><widgets><label text=\"inner ${who}\"/>\
+           <section name=\"InnerChild\"><widgets><label text=\"child ${who}\"/></widgets></section>\
+           <section-iterate name=\"InnerRows\" list=\"['a', 'b']\" entry=\"letter\"><widgets><label text=\"row ${letter}\"/></widgets></section-iterate>\
+           <form-single name=\"InnerForm\"><field name=\"note\"><default-field title=\"Inner note\"><display text=\"noted\"/></default-field></field></form-single>\
+         </widgets></section>\
+         <section name=\"Other\"><widgets><section name=\"OtherChild\"><widgets><label text=\"other child\"/></widgets></section></widgets></section>\
+         </widgets></screen>",
+    )
+    .unwrap();
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let output = make_render(factory)
+        .root_screen(root)
+        .screen_path("/Outer.text")
+        .render()
+        .unwrap();
+    let text = output.body_text();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!text.contains("No section with name"), "{text}");
+    for expected in [
+        "mid Ada",
+        "inner Ada",
+        "child Ada",
+        "row a",
+        "row b",
+        "Inner note",
+        "noted",
+        "other child",
+    ] {
+        assert!(text.contains(expected), "{expected} in {text}");
+    }
+}

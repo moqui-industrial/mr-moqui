@@ -106,6 +106,11 @@ pub(super) struct Provider {
     pub(super) store_port: String,
     /// imaps (the default) or imap.
     pub(super) store_protocol: String,
+    /// The POP3 server of an account made to read its mail over POP3; empty when the provider has none.
+    pub(super) pop_host: String,
+    pub(super) pop_port: String,
+    /// pop3s (the default) or pop3.
+    pub(super) pop_protocol: String,
     pub(super) smtp_host: String,
     pub(super) smtp_port: String,
     pub(super) smtp_ssl: String,
@@ -193,6 +198,12 @@ impl Provider {
             store_port: field_text(row, "storePort"),
             store_protocol: match field_text(row, "storeProtocol") {
                 protocol if protocol.is_empty() => "imaps".to_string(),
+                protocol => protocol,
+            },
+            pop_host: field_text(row, "popHost"),
+            pop_port: field_text(row, "popPort"),
+            pop_protocol: match field_text(row, "popProtocol") {
+                protocol if protocol.is_empty() => "pop3s".to_string(),
                 protocol => protocol,
             },
             smtp_host: field_text(row, "smtpHost"),
@@ -930,6 +941,19 @@ pub(super) fn start_sign_in(
             );
             return Ok(out);
         }
+        // the new account reads its mail over IMAP (the default) or POP3, on the provider's server of that kind
+        pending.pop = match param_text(parameters, "storeProtocol")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "" | "imap" | "imaps" => false,
+            "pop3" | "pop3s" | "pop" => true,
+            other => {
+                note_error(format!("A new account reads its mail over imap or pop3, not {other}"));
+                return Ok(out);
+            }
+        };
         pending.sync_window_days = window;
         pending.account_status = status;
         if provider_id.is_empty() {
@@ -996,6 +1020,13 @@ pub(super) fn start_sign_in(
     if !provider.configured() {
         note_error(format!(
             "Sign-in with {} is not set up on this server; use a password or an app password",
+            provider.name
+        ));
+        return Ok(out);
+    }
+    if pending.account.is_empty() && pending.pop && provider.pop_host.is_empty() {
+        note_error(format!(
+            "{} has no POP server set up here; read the mail over IMAP",
             provider.name
         ));
         return Ok(out);
@@ -1434,7 +1465,8 @@ fn sign_in_fields(provider: &Provider, tokens: &Tokens, address: &str) -> Vec<(&
     ]
 }
 
-fn provider_server_fields(provider: &Provider) -> Vec<(&'static str, Value)> {
+/// The provider's servers for an account's `EmailServer`: its IMAP server, or with `pop` its POP3 server, and SMTP.
+fn provider_server_fields(provider: &Provider, pop: bool) -> Vec<(&'static str, Value)> {
     let text = |value: &str| {
         if value.is_empty() {
             Value::Null
@@ -1442,16 +1474,17 @@ fn provider_server_fields(provider: &Provider) -> Vec<(&'static str, Value)> {
             Value::string(value)
         }
     };
+    let (store_host, store_port, store_protocol) = if pop {
+        (&provider.pop_host, &provider.pop_port, &provider.pop_protocol)
+    } else {
+        (&provider.store_host, &provider.store_port, &provider.store_protocol)
+    };
     vec![
-        ("storeHost", text(&provider.store_host)),
-        ("storePort", text(&provider.store_port)),
+        ("storeHost", text(store_host)),
+        ("storePort", text(store_port)),
         (
             "storeProtocol",
-            text(if provider.store_host.is_empty() {
-                ""
-            } else {
-                &provider.store_protocol
-            }),
+            text(if store_host.is_empty() { "" } else { store_protocol }),
         ),
         ("smtpHost", text(&provider.smtp_host)),
         ("smtpPort", text(&provider.smtp_port)),
@@ -1509,7 +1542,7 @@ fn store_on_account(
         if server_id.is_empty() {
             let mut server = facade.make_value(SERVER)?;
             server.set_sequenced_id_primary(facade)?;
-            for (name, value) in provider_server_fields(provider)
+            for (name, value) in provider_server_fields(provider, pending.pop)
                 .into_iter()
                 .chain(sign_in_fields(provider, tokens, address))
             {
@@ -1539,7 +1572,7 @@ fn store_on_account(
                 .as_ref()
                 .is_none_or(|row| field_text(row, "storeHost").is_empty() && field_text(row, "smtpHost").is_empty());
             if empty_hosts {
-                for (name, value) in provider_server_fields(provider) {
+                for (name, value) in provider_server_fields(provider, pending.pop) {
                     server.set(name, value);
                 }
             }
@@ -1597,7 +1630,8 @@ fn store_new_account(
         if !pending.display_name.is_empty() {
             parameters.insert("displayName".into(), Value::string(&pending.display_name));
         }
-        for (name, value) in provider_server_fields(provider) {
+        // on the provider's POP3 server when the sign-in was for a POP account (its scope was asked and granted)
+        for (name, value) in provider_server_fields(provider, pending.pop) {
             if !value.is_null() {
                 parameters.insert(name.to_string(), value);
             }
@@ -1846,6 +1880,19 @@ pub(super) fn providers_service(
             map.insert("addressDomainList".to_string(), text_list(&provider.address_domains));
             map.insert("hostSuffixList".to_string(), text_list(&provider.host_suffixes));
             map.insert("mxSuffixList".to_string(), text_list(&provider.mx_suffixes));
+            // the servers of an account made with it, IMAP or POP3, for the wizard to show or offer
+            for (name, value) in [
+                ("storeHost", &provider.store_host),
+                ("storePort", &provider.store_port),
+                ("storeProtocol", &provider.store_protocol),
+                ("popHost", &provider.pop_host),
+                ("popPort", &provider.pop_port),
+                ("popProtocol", &provider.pop_protocol),
+                ("smtpHost", &provider.smtp_host),
+                ("smtpPort", &provider.smtp_port),
+            ] {
+                map.insert(name.to_string(), Value::string(value));
+            }
             Value::Map(map)
         })
         .collect();

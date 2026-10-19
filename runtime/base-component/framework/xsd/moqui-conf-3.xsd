@@ -206,6 +206,12 @@ along with this software (see the LICENSE.md file). If not, see
                         <xs:attribute name="screen-location" type="xs:string" use="required"/>
                         <xs:attribute name="token-service" type="xs:string" use="required"/>
                         <xs:attribute name="title" type="xs:string"/>
+                        <xs:attribute name="post-transition" type="xs:string">
+                            <xs:annotation><xs:documentation>A transition of the screen that a POST to /name/token itself
+                                runs, after the token check, as a POST to /name/token/transition would: an RFC 8058
+                                one-click unsubscribe posts to the List-Unsubscribe URL, the page's own. The poster has no
+                                session token, so give the transition require-session-token="false". Without it a POST to
+                                /name/token is the public shell page.</xs:documentation></xs:annotation></xs:attribute>
                     </xs:complexType>
                 </xs:element>
                 <xs:element minOccurs="0" name="first-hit-in-visit"><xs:complexType><xs:sequence><xs:element ref="actions"/></xs:sequence></xs:complexType></xs:element>

@@ -1204,4 +1204,45 @@ fn a_token_route_renders_its_screen_in_the_public_shell_after_the_token_check() 
     // a path that is no token is not the route's
     let (status, _, _) = exchange(address, &http_request("GET", "/tk/x", &html, ""));
     assert_eq!(status, 404);
+
+    // a POST to the page's URL itself (an RFC 8058 one-click): with the route's post-transition, that transition runs
+    // after the token check; without one it is the shell page, as a GET is
+    let form = [("Content-Type", "application/x-www-form-urlencoded")];
+    let (status, _, posted) = exchange(
+        address,
+        &http_request(
+            "POST",
+            &format!("/tkp/{LINK_TOKEN}"),
+            &form,
+            "List-Unsubscribe=One-Click",
+        ),
+    );
+    assert_eq!(status, 200, "{posted}");
+    let posted: serde_json::Value = serde_json::from_str(&posted).unwrap_or_else(|err| panic!("{err}: {posted}"));
+    assert_eq!(posted["fileList"][0]["name"], "docs", "{posted}");
+    let (status, _, page) = exchange(address, &http_request("GET", &format!("/tkp/{LINK_TOKEN}"), &html, ""));
+    assert_eq!(status, 200, "{page}");
+    assert!(
+        page.contains("<div id=\"public-root\""),
+        "a GET is still the shell: {page}"
+    );
+    let (status, _, page) = exchange(
+        address,
+        &http_request(
+            "POST",
+            &format!("/tk/{LINK_TOKEN}"),
+            &form,
+            "List-Unsubscribe=One-Click",
+        ),
+    );
+    assert_eq!(status, 200, "{page}");
+    assert!(page.contains("<div id=\"public-root\""), "no post-transition: {page}");
+    for token in ["NoSuchToken000000000000", REVOKED_TOKEN] {
+        let (status, _, answer) = exchange(
+            address,
+            &http_request("POST", &format!("/tkp/{token}"), &form, "List-Unsubscribe=One-Click"),
+        );
+        assert_eq!(status, 404, "{answer}");
+        assert!(!answer.contains("docs"), "{answer}");
+    }
 }

@@ -525,7 +525,7 @@ pub fn sync_with(
             } else {
                 call_callbacks(&def.name, &cleaned, Err(err));
             }
-            if record_failure(err) {
+            if record_failure(&def.name, err) {
                 failure = None;
             }
         }
@@ -543,16 +543,18 @@ pub fn sync_with(
     Ok(project(&def, produced))
 }
 
-/// Java's `catch (Throwable t)`: the failure's message and each cause's are added to the message facade. Display here
-/// already writes the causes after the message, so the first error is the diagnostic, with the Rust origin, and a cause
-/// is added on its own only when no error so far shows its text. False with no execution context, where the error
-/// would be lost.
-fn record_failure(err: &LibError) -> bool {
-    let mut texts = vec![err.diagnostic()];
+/// Java's `catch (Throwable t)`: the failure's message and each cause's are added to the message facade, for the
+/// client to show: the message text only ([`crate::context::client_text`]), without the script's stack, the generated
+/// line or the Rust source location, which the server log has (the diagnostic, logged here). Display already writes the
+/// causes after the message, so a cause is added on its own only when no error so far shows its text. False with no
+/// execution context, where the error would be lost.
+fn record_failure(service: &str, err: &LibError) -> bool {
+    tracing::error!(service, "Service {service} failed: {}", err.diagnostic());
+    let mut texts = vec![crate::context::client_text(&err.to_string())];
     let mut source = std::error::Error::source(err);
     while let Some(cause) = source {
-        let text = cause.to_string();
-        if !texts.iter().any(|known| known.contains(&text)) {
+        let text = crate::context::client_text(&cause.to_string());
+        if !text.is_empty() && !texts.iter().any(|known| known.contains(&text)) {
             texts.push(text);
         }
         source = cause.source();
@@ -1817,10 +1819,21 @@ mod tests {
         let _entered = ctx.enter();
         let _authz = ctx.disable_authz();
         crate::service::lint(std::slice::from_ref(&path)).unwrap();
-        // As Java's, the failure is recorded in the message facade and the call returns its empty results.
-        let out = sync("locate#Failure", &BTreeMap::new()).expect("a body failure is recorded, not returned");
+        // As Java's, the failure is recorded in the message facade and the call returns its empty results. The facade
+        // has the message for the client; the server log has where it came from.
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let out =
+            tracing::subscriber::with_default(crate::testing::LogSubscriber(std::sync::Arc::clone(&lines)), || {
+                sync("locate#Failure", &BTreeMap::new())
+            })
+            .expect("a body failure is recorded, not returned");
         assert!(out.is_empty(), "{out:?}");
-        let diagnostic = ctx.message().errors().join("\n");
+        let errors = ctx.message().errors().join("\n");
+        assert_eq!(
+            errors,
+            "Error: component MissingDiagnostics is not registered for location component://MissingDiagnostics/screen/A.xml"
+        );
+        let diagnostic = lines.lock().unwrap().join("\n");
         assert!(
             diagnostic.contains(&format!("{}#actions-3-1.generated.js:", path.display())),
             "{diagnostic}"
@@ -2031,13 +2044,9 @@ mod tests {
         let _authz = ctx.disable_authz();
         let out = sync("break#Late", &BTreeMap::new()).expect("a body failure is recorded, not returned");
         assert!(out.is_empty(), "{out:?}");
+        // the message only: the generated line and the service it ran in are in the log (service_failures_identify_...)
         let errors = ctx.message().errors().to_vec();
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("late boom") && error.contains("in service break#Late")),
-            "{errors:?}"
-        );
+        assert_eq!(errors, ["Error: late boom"]);
         assert_eq!(ctx.message().messages(), ["cleanup {}"]);
         let heard = heard.0.lock().unwrap().clone();
         assert_eq!(heard.len(), 1, "{heard:?}");

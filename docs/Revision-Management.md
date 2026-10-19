@@ -346,3 +346,19 @@ under `/<name>/<token>/`. The screen's context has `token` and `tokenRoute` (`{n
 context}`); a request parameter of either name is replaced. A route named as a framework path (`apps`, `qapps`, `rest`,
 ...) is left out, and a component's route of the same name replaces an earlier one. The services a public screen calls
 check the token again. `runtime/base-component/example/screen/PublicLink.xml` is a minimal route screen.
+
+A `POST` to `/<name>/<token>` itself is the shell page, as a `GET` is, unless the route has a `post-transition`: then,
+after the token check, it runs that transition of the route's screen, as a `POST` to `/<name>/<token>/<transition>`
+would, and answers what the transition answers. That is what an RFC 8058 one-click unsubscribe needs: the mail provider
+posts `List-Unsubscribe=One-Click` to the `List-Unsubscribe` URL, which is the page a person opens to choose. The poster
+has no session, so the transition needs `require-session-token="false"` (the token in the path is its authority):
+
+```xml
+<token-route name="u" screen-location="component://my-app/screen/Unsubscribe.xml"
+        token-service="my.app.ConsentServices.check#UnsubscribeToken" post-transition="oneClick"/>
+<!-- in Unsubscribe.xml -->
+<transition name="oneClick" require-session-token="false">
+    <service-call name="my.app.ConsentServices.unsubscribe#ByToken" in-map="[token: token]"/>
+    <default-response type="none"/>
+</transition>
+```

@@ -253,6 +253,9 @@ along with this software (see the LICENSE.md file). If not, see
                     enumeration takes its description as the column label.</xs:documentation></xs:annotation></xs:attribute>
                 <xs:attribute name="status-type-id" type="xs:string"><xs:annotation><xs:documentation>The status type whose
                     statuses are the columns, when the rows may not show every status.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="status-flow-id" type="xs:string"><xs:annotation><xs:documentation>The status flow whose
+                    transitions tell a dragged card where it may go (the columns outlined and dimmed); Default when not given.
+                    Only the hints: the transition still decides, by the record's own flow.</xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
             <xs:element name="view-calendar" minOccurs="0"><xs:annotation><xs:documentation>
                 The list's rows on a calendar (IronStone style-guide §3.7, §8.2): month, week, day and list (agenda) modes over
@@ -290,6 +293,13 @@ along with this software (see the LICENSE.md file). If not, see
                     modes offered, the first shown first; on a phone day and list.</xs:documentation></xs:annotation></xs:attribute>
                 <xs:attribute name="card-fields" type="xs:string"><xs:annotation><xs:documentation>The fields of the card an event
                     shows when clicked; the view-board's card-fields by default.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="range-find" type="xs:boolean" default="false"><xs:annotation><xs:documentation>The calendar
+                    shows the rows of the dates it shows, not the list's page: as its dates change it asks the screen's form
+                    request (the actions transition, /actions/{form name}) for the list's find with the start-field and
+                    end-field range added ({field}_from and {field}_thru, which search-form-inputs reads) and no paging
+                    (pageNoLimit), with the list's other parameters (its filters). A list prepared by the screen's actions
+                    that reads none of these shows what it gives. The list and the board keep the list's page. A row that is
+                    not on the list's page shows the title and the card slot without the list's cells.</xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
 
         </xs:sequence>

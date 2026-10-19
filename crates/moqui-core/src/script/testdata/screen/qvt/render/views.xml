@@ -21,7 +21,7 @@
             <view-board group-field="stage" card-title-field="name" card-fields="owner,points" badge-field="points" sum-field="points"
                     transition="moveTask"/>
             <view-calendar start-field="start" end-field="thru" title-field="name" color-field="stage" color-map="todo:info,doing:warning"
-                    resource-field="room" transition="planTask" create-transition="newTask" modes="week,month,day,list"/>
+                    resource-field="room" transition="planTask" create-transition="newTask" modes="week,month,day,list" range-find="true"/>
             <hidden-parameters><parameter name="projectId" value="P9"/></hidden-parameters>
             <field name="taskId"><default-field><hidden/></default-field></field>
             <field name="name"><default-field title="Task"><link url="open" text="${name}" parameter-map="{taskId: taskId}"/></default-field></field>

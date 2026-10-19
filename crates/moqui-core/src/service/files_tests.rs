@@ -1521,6 +1521,17 @@ fn a_records_drive_shows_its_folder_map_and_only_the_records_a_user_may_see() {
     not_found("party/OPEN1/content_1/contract.pdf");
     login("alice");
     assert_eq!(list("party"), ["OPEN1", "SECRET1"]);
+    // a manager's list of a mapped folder is limited to the newest recordLimit record folders too, the rest counted
+    let managed = ok(
+        "list#Folder",
+        &[
+            ("driveId", text(&records)),
+            ("path", text("party")),
+            ("recordLimit", Value::I64(1)),
+        ],
+    );
+    assert_eq!(number(managed.get("moreRecordCount")), 1, "{managed:?}");
+    assert_eq!(maps(&managed, "fileList").len(), 1, "{managed:?}");
     assert_eq!(list("stray"), ["unmapped.txt"]);
     let secret = info("party/SECRET1/content_2/secret.pdf");
     let records_of = |out: &BTreeMap<String, Value>| -> Vec<String> {

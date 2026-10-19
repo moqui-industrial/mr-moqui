@@ -371,8 +371,10 @@ along with this software (see the LICENSE.md file). If not, see
                     const people = new Set(members.map((member) => member.userId))
                     if (account.ownerUserId) people.add(account.ownerUserId)
                     if (people.size > 1) {
-                        ec.message.addError(`Email account ${emailAccountId} is shared with ${people.size - 1} more ${people.size === 2 ? 'person' : 'people'}: ` +
-                                'remove them first, so one is left, to make it personal')
+                        ec.message.addError(people.size === 2
+                                ? ec.l10n.localize('This account is shared with 1 more person: remove them first, so only one is left, to make it personal')
+                                : ec.resource.expand('This account is shared with ${others} more people: remove them first, so only one is left, to make it personal',
+                                    '', {others: people.size - 1}))
                         return
                     }
                     if (!account.ownerUserId && people.size === 1) {
@@ -1740,7 +1742,12 @@ along with this software (see the LICENSE.md file). If not, see
             minutes) and its expunges (QRESYNC VANISHED, else by UID). A message is stored once, by folder and UID and
             by Message-ID across folders (a move keeps the row and its links); its files are DbResource files under
             dbresource://email/; it is threaded by In-Reply-To and References; received mail is ES_RECEIVED, the Sent
-            folder's ES_SENT. The rules run on the new Inbox mail. A POP3 account is fetch-only into the Inbox, by
+            folder's ES_SENT. The rules run on the new Inbox mail. The email-ECA rules (*.emecas.xml, as
+            poll#EmailServer runs them, with emailAccountId and emailMessageId of the stored row too) run once on each new
+            message as it is stored in the Inbox, each rule in its own transaction, a failing one logged: a Message-ID new
+            to the account (a copy or a move is not new mail), once the account has synced before (the first sync is the
+            mailbox's history), that arrived (IMAP INTERNALDATE, POP3 the Date header) no earlier than a day before the
+            last sync. A POP3 account is fetch-only into the Inbox, by
             UIDL. Each message, folder and account is on its own: one that fails is logged and the rest go on; a
             refused sign-in marks the account EasAuthFailed with lastSyncError. No two syncs of an account run at once
             (syncLockedUntil): a second one reports busy. pushOnly makes only the queued changes; inboxOnly reads the
@@ -1839,6 +1846,10 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="accountKindEnumId"/>
             <parameter name="syncWindowDays" type="Integer"><description>A new account's: default 365, 0 for all mail</description></parameter>
             <parameter name="statusId"><description>A new account's: EasPaused (the default) or EasActive (with a sync window)</description></parameter>
+            <parameter name="storeProtocol"><description>A new account's: imap (the default) reads its mail on the
+                provider's IMAP server, pop3 on its POP3 server (the provider's popHost; refused when it has none), and
+                the sign-in then also asks for the provider's popScope, which must be granted. The account is made only
+                when the sign-in succeeds. An existing account's server says which it is.</description></parameter>
             <parameter name="oauthProviderEnumId"/>
             <parameter name="allowAddressChange" type="Boolean" default="false"/>
         </in-parameters>
@@ -1914,7 +1925,9 @@ along with this software (see the LICENSE.md file). If not, see
             register at the providers. No secret is answered.</description>
         <out-parameters>
             <parameter name="providerList" type="List"><parameter name="provider" type="Map"><description>oauthProviderEnumId,
-                description, configured, addressDomainList, hostSuffixList, mxSuffixList</description></parameter></parameter>
+                description, configured, addressDomainList, hostSuffixList, mxSuffixList, and the servers of an account
+                made with it: storeHost, storePort, storeProtocol (IMAP), popHost, popPort, popProtocol (empty popHost:
+                no POP account), smtpHost, smtpPort</description></parameter></parameter>
             <parameter name="redirectUri"/>
         </out-parameters>
     </service>
@@ -3546,7 +3559,9 @@ along with this software (see the LICENSE.md file). If not, see
                     if (stop) break
                 }
                 if (any) matchedCount++
-                if (any && dryRun) matchList.push({emailMessageId: message.emailMessageId, subject: message.subject ?? null,
+                if (any && dryRun) matchList.push({emailMessageId: message.emailMessageId, store: 'email',
+                    threadId: message.rootEmailMessageId || message.emailMessageId, rootEmailMessageId: message.rootEmailMessageId || message.emailMessageId,
+                    emailAccountId: message.emailAccountId, emailFolderId: message.emailFolderId ?? null, subject: message.subject ?? null,
                     fromAddress: message.fromAddress ?? null, fromName: message.fromName ?? null, messageDate: toMillis(message.messageDate),
                     snippet: message.snippet ?? null, emailRuleIdList: hitRules.filter((ruleId) => ruleId != null)})
             }
@@ -3577,7 +3592,9 @@ along with this software (see the LICENSE.md file). If not, see
             emailFolderId, else the Inbox of emailAccountId, else of the rule's account. Read permission on the folder's
             account; drafts and the Outbox are left out. Nothing changes: no action runs and the rule's matchedCount stays
             (run#EmailRules with dryRun). matchList is each message it matches ({emailMessageId, subject, fromAddress,
-            fromName, messageDate, snippet}, newest first), with matchedCount and testedCount.</description>
+            fromName, messageDate, snippet}, newest first, with what opens it in the Inbox: store email, threadId and
+            rootEmailMessageId (its thread's root, as find#Messages answers them), emailAccountId and emailFolderId), with
+            matchedCount and testedCount.</description>
         <in-parameters>
             <parameter name="emailRuleId"/>
             <parameter name="emailAccountId"/>
@@ -3631,7 +3648,9 @@ along with this software (see the LICENSE.md file). If not, see
             const result = ec.service.sync().name('org.moqui.impl.EmailClientServices.run#EmailRules').parameters({emailFolderId: emailFolderId,
                 dryRun: true, conditionsJson: normal.conditionsJson, matchAllEnumId: match, limit: newest}).call()
             if (ec.message.hasError()) return
-            matchList = Array.from(result.matchList || []).map((found) => ({emailMessageId: found.emailMessageId, subject: found.subject ?? null,
+            matchList = Array.from(result.matchList || []).map((found) => ({emailMessageId: found.emailMessageId, store: found.store ?? 'email',
+                threadId: found.threadId ?? found.emailMessageId, rootEmailMessageId: found.rootEmailMessageId ?? found.emailMessageId,
+                emailAccountId: found.emailAccountId ?? null, emailFolderId: found.emailFolderId ?? null, subject: found.subject ?? null,
                 fromAddress: found.fromAddress ?? null, fromName: found.fromName ?? null, messageDate: found.messageDate ?? null,
                 snippet: found.snippet ?? null}))
             matchedCount = matchList.length

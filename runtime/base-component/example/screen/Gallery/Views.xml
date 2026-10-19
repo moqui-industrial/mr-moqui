@@ -85,7 +85,8 @@ along with this software (see the LICENSE.md file). If not, see
             <view-board group-field="statusId" card-title-field="exampleName" card-fields="exampleTypeEnumId,exampleDate" badge-field="exampleSize"
                     sum-field="exampleSize" sum-format="#,##0" transition="updateExampleStatus"/>
             <view-calendar start-field="exampleDate" end-field="exampleEndDate" title-field="exampleName" color-field="statusId" all-day-field="allDay"
-                    resource-field="exampleTypeEnumId" transition="updateExampleTimes" create-transition="createExample" card-fields="exampleTypeEnumId,exampleSize"/>
+                    resource-field="exampleTypeEnumId" transition="updateExampleTimes" create-transition="createExample" card-fields="exampleTypeEnumId,exampleSize"
+                    range-find="true"/>
 
             <field name="exampleId"><default-field><hidden/></default-field></field>
             <field name="exampleName"><header-field title="Name" show-order-by="true"><text-find size="20" hide-options="true"/></header-field>

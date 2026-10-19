@@ -406,3 +406,53 @@ test("oauthPopup reports a blocked window, a start that failed, and a URL that i
         win.restore();
     }
 });
+
+test("a notification listener unregisters by its handle or by topic and function, and the last one unsubscribes", () => {
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+    const sockets = [];
+    function FakeSocket(url) { this.url = url; this.readyState = 0; this.sent = []; sockets.push(this); }
+    FakeSocket.prototype.send = function (text) { this.sent.push(text); };
+    Object.assign(FakeSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+    Object.defineProperty(globalThis, "WebSocket", { value: FakeSocket, configurable: true, writable: true });
+    try {
+        const client = new moqui.NotificationClient("ws://erp.example.com/notws");
+        const seen = [];
+        const first = (message) => seen.push("first " + message.title);
+        const second = (message) => seen.push("second " + message.title);
+        const unregisterFirst = client.registerListener("orders", first);
+        client.registerListener("orders", second);
+        assert.equal(typeof unregisterFirst, "function");
+        const socket = sockets[0];
+        socket.readyState = 1;
+        socket.onopen();
+        assert.deepEqual(socket.sent, ["subscribe:orders"]);
+        const deliver = (title) => socket.onmessage({ data: JSON.stringify({ topic: "orders", title }) });
+        deliver("one");
+        assert.deepEqual(seen, ["first one", "second one"]);
+        // by the handle; a second call finds nothing
+        assert.equal(unregisterFirst(), true);
+        assert.equal(unregisterFirst(), false);
+        deliver("two");
+        assert.deepEqual(seen.slice(2), ["second two"]);
+        assert.deepEqual(socket.sent, ["subscribe:orders"], "the topic still has a listener");
+        // by topic and function: the last one gone, the socket stops asking for the topic
+        assert.equal(client.unregisterListener("orders", second), true);
+        assert.deepEqual(socket.sent, ["subscribe:orders", "unsubscribe:orders"]);
+        assert.equal(client.topicListeners.orders, undefined);
+        deliver("three");
+        assert.equal(seen.length, 3);
+        // a listener that unregisters itself while called: the others of the message still get it
+        const once = client.registerListener("ALL", (message) => { seen.push("once " + message.title); once(); });
+        client.registerListener("ALL", (message) => seen.push("all " + message.title));
+        deliver("four");
+        deliver("five");
+        assert.deepEqual(seen.slice(3), ["once four", "all four", "all five"]);
+        // the display listener (no callback) too
+        client.registerListener("alerts");
+        assert.equal(client.unregisterListener("alerts"), true);
+        assert.equal(client.unregisterListener("nothing", first), false);
+    } finally {
+        if (saved) Object.defineProperty(globalThis, "WebSocket", saved);
+        else delete globalThis.WebSocket;
+    }
+});

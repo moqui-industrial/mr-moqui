@@ -1699,9 +1699,65 @@ pub(super) fn poll_server(
 /// Runs the email ECA rules for one message in a new transaction. A rule that fails, or an error a rule leaves in the
 /// message facade, rolls it back; the errors are taken out of the facade and returned.
 fn receive(facade: &EntityFacade, message: &Inbound, server_id: &str) -> Result<(), Error> {
+    let fields = eca_fields(message, server_id);
+    in_eca_transaction(facade, || crate::service::run_email_rules(&fields))
+}
+
+/// A message the mail client's sync stored ([`run_stored_ecas`]).
+pub(super) struct StoredMessage<'a> {
+    /// The message as it came from the server.
+    pub(super) raw: &'a [u8],
+    pub(super) server_id: &'a str,
+    pub(super) account_id: &'a str,
+    /// The `EmailMessage` row it was stored as.
+    pub(super) email_message_id: &'a str,
+    /// When the server received it (IMAP INTERNALDATE); none for POP3.
+    pub(super) received_millis: Option<i64>,
+    pub(super) seen: bool,
+    pub(super) answered: bool,
+    pub(super) flagged: bool,
+}
+
+/// The email-ECA rules (`*.emecas.xml`) on a message the mail client's sync brought in (`sync#EmailAccount`, IMAP or
+/// POP3; any later fetch path calls this the same way), as poll#EmailServer runs them on a polled message: the same
+/// `fields`, `headers`, `bodyPartList`, `flags` and `message` from its text, with `emailAccountId` and `emailMessageId`
+/// of the row it was stored as. The message is kept either way, so each rule runs in a transaction of its own: one that
+/// fails is rolled back and logged with the account and the message, and the other rules and the sync go on. Nothing
+/// runs when no rule is installed.
+pub(super) fn run_stored_ecas(facade: &EntityFacade, stored: &StoredMessage<'_>) {
+    let count = crate::service::email_rule_count();
+    if count == 0 {
+        return;
+    }
+    let mut message = parse_rfc822(stored.raw);
+    message.seen = stored.seen;
+    message.flags.answered = stored.answered;
+    message.flags.flagged = stored.flagged;
+    if let Some(millis) = stored.received_millis {
+        message.received = stamp_millis(millis);
+    }
+    let mut fields = eca_fields(&message, stored.server_id);
+    fields.insert("emailAccountId".into(), Value::string(stored.account_id));
+    fields.insert("emailMessageId".into(), Value::string(stored.email_message_id));
+    for index in 0..count {
+        if let Err(err) = in_eca_transaction(facade, || crate::service::run_email_rule(index, &fields)) {
+            tracing::error!(
+                account = %stored.account_id,
+                "Email ECA rule {} failed for email message {} of account {}, skipped: {err}",
+                index + 1,
+                stored.email_message_id,
+                stored.account_id
+            );
+        }
+    }
+}
+
+/// `run` (email ECA rules) in a new transaction. A rule that fails, or an error a rule leaves in the message facade,
+/// rolls it back; the errors are taken out of the facade and returned.
+fn in_eca_transaction(facade: &EntityFacade, run: impl FnOnce() -> Result<(), Error>) -> Result<(), Error> {
     let mark = ExecutionContext::with_current(|ctx| ctx.message().error_mark()).unwrap_or_default();
     force_new(facade, || {
-        let ran = crate::service::run_email_rules(&eca_fields(message, server_id));
+        let ran = run();
         let mut errors =
             ExecutionContext::with_current(|ctx| ctx.message().take_errors_since(mark)).unwrap_or_default();
         if let Err(err) = ran {
