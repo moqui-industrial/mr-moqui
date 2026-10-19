@@ -746,6 +746,39 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     su.prettyToCamelCase = host.prettyToCamelCase;
     // `new URI(null, null, filename, null).toASCIIString()`: a path with the characters a URI does not allow escaped
     su.encodeAsciiFilename = (filename) => encodeURI(String(filename ?? ""));
+    // Java's `masker(mask, placeholder)`: a `MaskFormatter` whose value holds no literal characters, null for no mask
+    su.masker = (mask, placeholder) => (mask == null || String(mask) === "") ? null
+        : wrap("MaskFormatter", { mask: String(mask), placeholder: placeholder == null ? "" : String(placeholder) });
+    // `valueToString(value)`: each mask character takes the next value character (`#` digit, `U` and `L` a letter made
+    // upper or lower case, `A` letter or digit, `?` letter, `H` hex digit, `*` any), a literal is written as it is
+    // (`'` quotes the next one), and a value that runs out is filled with the placeholder. An invalid character throws.
+    wrappers.MaskFormatter = (data) => Object.assign(data, {
+        valueToString: (value) => {
+            const text = value == null ? "" : String(value), mask = data.mask, placeholder = data.placeholder;
+            const checks = { '#': /\p{Nd}/u, U: /\p{L}/u, L: /\p{L}/u, A: /[\p{L}\p{Nd}]/u, "?": /\p{L}/u, H: /[0-9a-fA-F]/, "*": /[^]/ };
+            let out = "", index = 0;
+            for (let i = 0; i < mask.length; i++) {
+                const kind = mask[i];
+                if (kind === "'") { if (++i < mask.length) out += mask[i]; continue; }
+                if (!checks[kind]) { out += kind; continue; }
+                if (index >= text.length) {
+                    out += placeholder.length > 1 ? (placeholder[index] ?? " ") : (placeholder || " ");
+                } else {
+                    const ch = text[index];
+                    if (!checks[kind].test(ch)) throw new Error(`Invalid character: ${ch}`);
+                    out += kind === "U" ? ch.toUpperCase() : kind === "L" ? ch.toLowerCase() : ch;
+                }
+                index++;
+            }
+            return out;
+        },
+        toString: () => data.mask,
+    });
+    // Java's `getYearList(years)`: this year and the ones after it, as text
+    su.getYearList = (years) => {
+        const start = new Date().getFullYear();
+        return Array.from({ length: Math.max(Number(years) || 0, 0) }, (_, i) => String(start + i));
+    };
     // Entities the generic tools (auto screens, data edit, data import) do not take from a request entity name
     wu.isRestrictedGenericEntity = host.isRestrictedGenericEntity;
 })"#;

@@ -47,6 +47,9 @@ pub struct BackupRequest {
     pub yearly: Option<u32>,
     /// Incrementals in one generation before the next one is a full. The full counts as one.
     pub full_every: u32,
+    /// `pg_basebackup --checkpoint=fast`: the backup starts after an immediate checkpoint, not the server's spread one,
+    /// which can take minutes on an idle server. Off by default, so a scheduled backup does not add an I/O burst.
+    pub fast_checkpoint: bool,
     pub timeout: Duration,
 }
 
@@ -467,6 +470,7 @@ mod tests {
             monthly,
             yearly,
             full_every: 7,
+            fast_checkpoint: false,
             timeout: Duration::from_secs(60),
         }
     }

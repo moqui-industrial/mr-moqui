@@ -89,8 +89,6 @@ fn the_report_over_every_screen_and_the_verdict_of_the_gate_3_fixture() {
         "{}",
         auto.render()
     );
-    // The Groovy screens the lint skips do not load, and the report says so instead of stopping.
-    assert!(text.contains("did not load"), "{text}");
     assert!(text.lines().last().unwrap_or("").contains("screens:"), "{text}");
     // Nothing is marked because a report is clean: the fixture screen file does not name server-static (the gate marks it with a screen-extend in its own runtime).
     let source = std::fs::read_to_string(

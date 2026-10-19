@@ -98,6 +98,9 @@ fn request_from(parameters: &BTreeMap<String, Value>) -> BackupRequest {
         monthly: count_param(parameters, "monthlyCount", 12),
         yearly: optional_count(parameters, "yearlyCount"),
         full_every: count_param(parameters, "fullEvery", 7),
+        fast_checkpoint: parameters
+            .get("fastCheckpoint")
+            .is_some_and(|value| matches!(basic_convert(value, "Boolean").value, Value::Bool(true))),
         timeout: Duration::from_secs(u64::from(minutes) * 60),
     }
 }

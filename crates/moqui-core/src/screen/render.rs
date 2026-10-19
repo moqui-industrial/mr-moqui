@@ -653,7 +653,12 @@ fn render_body(state: &RenderState) -> Result<(), Error> {
 }
 
 fn pick_render_mode(facade: &ScreenFacade, job: &Job<'_>, info: &ScreenUrlInfo) -> Result<String, Error> {
-    let parameter = text_of(job.parameters.get("renderMode"));
+    // A `?renderMode=` on the screen path counts as the parameter, as Java's ScreenTest puts the path's query in the
+    // request parameters.
+    let parameter = Some(text_of(job.parameters.get("renderMode")))
+        .filter(|text| !text.is_empty())
+        .or_else(|| info.inline_parameters.get("renderMode").cloned())
+        .unwrap_or_default();
     let chosen = job
         .render_mode
         .map(str::to_string)

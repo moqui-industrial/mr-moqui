@@ -161,6 +161,70 @@ impl ScreenTest {
         }
     }
 
+    /// Java's `getNoRequiredParameterPaths`: the paths below the base screen, in menu order, of every screen that has
+    /// no required parameter and is reached through screens that have none, skipping subscreens named in `skip` and
+    /// what is below them. A screen with a default subscreen is not listed itself, only what is below it. A subscreen
+    /// that does not load is logged and left out.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no root screen is set, or the root or a screen of the base path does not load.
+    pub fn no_required_parameter_paths(&self, skip: &std::collections::HashSet<String>) -> Result<Vec<String>, Error> {
+        let Some(root) = &self.root else {
+            return Err(Error::new("No rootScreen specified"));
+        };
+        let facade = super::cache::ScreenFacade::of(&self.factory);
+        let mut base = facade.screen_def(&self.factory, root)?;
+        for name in self.base_screen_path.split('/').filter(|name| !name.is_empty()) {
+            let Some(item) = base.subscreens.get(name) else {
+                return Err(Error::new(format!("no subscreen {name} under {}", base.location)));
+            };
+            let location = item.location.clone();
+            base = facade.screen_def(&self.factory, &location)?;
+        }
+        let mut paths = Vec::new();
+        self.nested_no_required_parameter_paths(&facade, &base, "", skip, &mut paths);
+        Ok(paths)
+    }
+
+    fn nested_no_required_parameter_paths(
+        &self,
+        facade: &super::cache::ScreenFacade,
+        screen: &super::definition::ScreenDef,
+        current: &str,
+        skip: &std::collections::HashSet<String>,
+        paths: &mut Vec<String>,
+    ) {
+        for item in screen.subscreens.sorted() {
+            if skip.contains(&item.name) {
+                continue;
+            }
+            let sub = match facade.screen_def(&self.factory, &item.location) {
+                Ok(sub) => sub,
+                Err(err) => {
+                    tracing::error!(
+                        "Error finding no parameter screens under {} for subscreen location {}: {err}",
+                        screen.location,
+                        item.location
+                    );
+                    continue;
+                }
+            };
+            if sub.parameters.iter().any(|parameter| parameter.required) {
+                continue;
+            }
+            let path = if current.is_empty() {
+                item.name.clone()
+            } else {
+                format!("{current}/{}", item.name)
+            };
+            if sub.subscreens.default_item.is_none() {
+                paths.push(path.clone());
+            }
+            self.nested_no_required_parameter_paths(facade, &sub, &path, skip, paths);
+        }
+    }
+
     /// Java's `ScreenTest.render(screenPath, parameters, requestMethod)`: render `path` under the base screen path
     /// with `method` (GET when `None`) as the current user. Errors are collected, not returned: one the render
     /// raised, the `ec.message` errors it added (taken off the context, as Java's render runs in its own), and error

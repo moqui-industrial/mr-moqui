@@ -10,7 +10,7 @@ The service is `org.moqui.impl.ServerServices.backup#EmbeddedDatabase`. `moqui-c
 
 `backupMode=dump` is the default. `pg_dump --format=custom` takes an MVCC snapshot (`ACCESS SHARE`) of the `moqui` database and writes one compressed file. Moqui stays up. Nothing about the postmaster configuration changes. Restore is `moqui load-save`.
 
-`backupMode=incremental` uses `pg_basebackup -X stream`. The first archive in a generation, and every `fullEvery` archive after that (default 7, and the full counts as one), is a full physical copy of the whole cluster. The runs between those are block incrementals (`pg_basebackup --incremental` against the prior full's `backup_manifest`, Postgres 17+). A full is checked with `pg_verifybackup` before it is published. The checkpoint is the server's default spread checkpoint.
+`backupMode=incremental` uses `pg_basebackup -X stream`. The first archive in a generation, and every `fullEvery` archive after that (default 7, and the full counts as one), is a full physical copy of the whole cluster. The runs between those are block incrementals (`pg_basebackup --incremental` against the prior full's `backup_manifest`, Postgres 17+). A full is checked with `pg_verifybackup` before it is published. The checkpoint is the server's default spread checkpoint, unless `fastCheckpoint` asks for an immediate one.
 
 A block incremental needs `summarize_wal=on`. That setting is applied on the entity cluster and on a dedicated search cluster the next time this process starts the postmaster. The sim overlay does not get it. `archive_mode` stays off: a failed `archive_command` fills `pg_wal` until the postmaster panics. When `SHOW summarize_wal` is still off, or the prior manifest or WAL summaries are missing, the job takes a full `pg_basebackup` and still succeeds. A `pg_hba.conf` refusal and a timeout do not fall back that way, because a full would fail the same way. The job reports a `pg_hba` refusal and leaves `pg_hba.conf` unchanged.
 
@@ -51,6 +51,7 @@ The new archive is published before anything is pruned. One rename or delete tha
 | `backupMode` | `dump` | `dump` or `incremental`. |
 | `backupDir` | empty | Empty is `runtime/db/backup`. |
 | `fullEvery` | 7 | Archives in one physical generation, including the full, before the next full. Dumps do not count. |
+| `fastCheckpoint` | false | `pg_basebackup --checkpoint=fast`: start after an immediate checkpoint instead of the spread one, which can take minutes. |
 | `timeoutMinutes` | 120 | Kills the tool's process group. The job's `transactionTimeout` of 7200 is recorded and does not bound the work: the service is `transaction="ignore"`. |
 | `systemMessageRemoteId` | `EmbeddedDbBackup` | The `SystemMessageRemote` for the mirror. |
 

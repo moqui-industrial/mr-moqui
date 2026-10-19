@@ -64,6 +64,9 @@ const BUILDER: &str = r#"(function (ec) {
                 Object.defineProperty(str, "jsonObject", { get: () => { try { return JSON.parse(r.output); } catch (e) { return null; } } });
                 return str;
             },
+            // the paths below the base screen of the screens with no required parameters, skipping the names given
+            getNoRequiredParameterPaths: (screensToSkip) => ec.screen.testNoRequiredParameterPaths(Object.assign({}, o,
+                { skip: Array.from(screensToSkip || [], String) })),
             renderAll: (screenPaths, parameters, requestMethod) => {
                 for (const screenPath of screenPaths) t.render(screenPath, parameters, requestMethod);
             },
@@ -263,11 +266,56 @@ fn screen_test_render<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Re
     })
 }
 
+/// `ec.screen.testNoRequiredParameterPaths({rootScreen, baseScreenPath, skip})`, the paths of
+/// [`crate::screen::ScreenTest::no_required_parameter_paths`].
+fn screen_test_no_required_parameter_paths<'js>(
+    ctx: Ctx<'js>,
+    options: JsValue<'js>,
+) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let Value::Map(options) = js_to_host(&ctx, &options)? else {
+            return Err(Exception::throw_message(
+                &ctx,
+                "ec.screen.testNoRequiredParameterPaths needs an options map",
+            ));
+        };
+        let text = |name: &str| {
+            options
+                .get(name)
+                .map(moqui_lib::object::to_plain_string)
+                .unwrap_or_default()
+        };
+        let skip = match options.get("skip") {
+            Some(Value::List(names)) => names.iter().map(moqui_lib::object::to_plain_string).collect(),
+            _ => std::collections::HashSet::new(),
+        };
+        let factory = with_ec(&ctx, |ec| Arc::clone(ec.factory()))?;
+        let mut test = crate::screen::ScreenTest::new(&factory).base_screen_path(text("baseScreenPath"));
+        if !text("rootScreen").is_empty() {
+            test = test.root_screen(text("rootScreen"));
+        }
+        let paths = test
+            .no_required_parameter_paths(&skip)
+            .map_err(|err| Exception::throw_message(&ctx, &err.to_string()))?;
+        host_to_js(&ctx, Value::List(paths.into_iter().map(Value::String).collect()))
+    })
+}
+
 pub(super) fn install<'js>(ctx: &Ctx<'js>, screen: &Object<'js>) -> Result<(), Error> {
     let render = caught(ctx, "screen.render", Function::new(ctx.clone(), screen_render))?;
     caught(ctx, "screen.render", screen.set("render", render))?;
     let test_render = caught(ctx, "screen.testRender", Function::new(ctx.clone(), screen_test_render))?;
     caught(ctx, "screen.testRender", screen.set("testRender", test_render))?;
+    let no_required = caught(
+        ctx,
+        "screen.testNoRequiredParameterPaths",
+        Function::new(ctx.clone(), screen_test_no_required_parameter_paths),
+    )?;
+    caught(
+        ctx,
+        "screen.testNoRequiredParameterPaths",
+        screen.set("testNoRequiredParameterPaths", no_required),
+    )?;
     let mime = caught(
         ctx,
         "screen.getMimeTypeByMode",

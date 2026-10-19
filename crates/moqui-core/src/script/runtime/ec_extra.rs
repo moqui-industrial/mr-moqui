@@ -817,6 +817,36 @@ fn collection_get_map_array_list_values<'js>(
     })
 }
 
+/// Java's `CollectionUtilities.flattenNestedMap`: the entries of a map, an entity value's fields among them, with each
+/// nested map's entries, and those of the maps in a nested list, put in its place. A later key replaces an earlier one.
+fn collection_flatten_nested_map<'js>(ctx: Ctx<'js>, map: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
+    fn flatten(value: &Value, out: &mut indexmap::IndexMap<String, Value>) {
+        let Some(entries) = super::values::value_map(value) else {
+            return;
+        };
+        for (key, item) in entries {
+            if super::values::value_map(&item).is_some() {
+                flatten(&item, out);
+            } else if let Some(items) = super::values::value_items(&item) {
+                for each in &items {
+                    flatten(each, out);
+                }
+            } else {
+                out.insert(key, item);
+            }
+        }
+    }
+    host_guard(&ctx, || {
+        let value = js_to_host(&ctx, &map)?;
+        if super::values::value_map(&value).is_none() {
+            return Null.into_js(&ctx);
+        }
+        let mut out = indexmap::IndexMap::new();
+        flatten(&value, &mut out);
+        collection_to_js(&ctx, Value::Map(out))
+    })
+}
+
 /// Fill `UserSecurityChecks`, the checks `Security.eecas.xml` runs before a write of a group membership or a
 /// permission grant. A denied check throws, so the write fails.
 pub(super) fn fill_security_checks<'js>(ctx: &Ctx<'js>, checks: &Object<'js>) -> Result<(), Error> {
@@ -907,6 +937,7 @@ pub(super) fn fill_helpers<'js>(
         "getMapArrayListValues",
         collection_get_map_array_list_values
     );
+    method!(collection_utilities, "flattenNestedMap", collection_flatten_nested_map);
     method!(web_utilities, "encodeHtml", web_encode_html);
     method!(web_utilities, "encodeHtmlJsSafe", web_encode_html_js_safe);
     method!(
@@ -1081,5 +1112,28 @@ mod tests {
         holds(
             r#"ec.entity.find("moqui.basic.EnumerationType").orderBy("-enumTypeId,^description").list().length === 0"#,
         );
+    }
+
+    #[test]
+    fn flatten_nested_map_mask_and_year_list_as_java() {
+        clear_context_stack();
+        // Nested maps and the maps in a nested list put their entries in place; a later key replaces an earlier one.
+        holds(
+            r#"JSON.stringify(CollectionUtilities.flattenNestedMap({a: 1, info: {b: 2, a: 3}, rows: [{c: 4}, 5], d: null}))
+                === '{"a":3,"b":2,"c":4,"d":null}'"#,
+        );
+        holds("CollectionUtilities.flattenNestedMap(null) === null");
+        // The GL account code mask: the value holds no literals, and a short value is filled with the placeholder.
+        holds("StringUtilities.masker('###-###-###', '0').valueToString('110000000') === '110-000-000'");
+        holds("StringUtilities.masker('###-###-###', '0').valueToString('1200') === '120-000-000'");
+        holds("StringUtilities.masker(\"UU-'#A\", null).valueToString('ab7') === 'AB-#7'");
+        holds("StringUtilities.masker('', '0') === null && StringUtilities.masker(null) === null");
+        holds("(() => { try { StringUtilities.masker('###', '0').valueToString('1x'); return false } catch (e) { return true } })()");
+        // The formatter keeps its method when it is a context value, as a screen's `<set>` makes it.
+        holds("(accountCodeFormatter = StringUtilities.masker('##-##', '0'), accountCodeFormatter.valueToString(12) === '12-00')");
+        holds(
+            "StringUtilities.getYearList(3).length === 3 && StringUtilities.getYearList(3)[0] === String(new Date().getFullYear())",
+        );
+        clear_context_stack();
     }
 }
