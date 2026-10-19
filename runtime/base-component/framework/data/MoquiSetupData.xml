@@ -114,6 +114,12 @@ along with this software (see the LICENSE.md file). If not, see
             serviceName="org.moqui.impl.NotificationServices.send#NotificationDigests" cronExpression="0 0 6 * * ?" paused="N">
         <parameters parameterName="hours" parameterValue="24"/>
     </moqui.service.job.ServiceJob>
+    <!-- The mail client (org.moqui.impl.EmailClientServices): scheduled sends and undo-send holds that are due, and
+         snoozed mail whose time has come. Each message is on its own; one that fails is logged and the rest go on. -->
+    <moqui.service.job.ServiceJob jobName="send_DueDrafts_frequent" description="Send scheduled and held email drafts that are due"
+            serviceName="org.moqui.impl.EmailClientServices.send#DueDrafts" cronExpression="0 * * * * ?" paused="N"/>
+    <moqui.service.job.ServiceJob jobName="return_SnoozedMessages_frequent" description="Bring back snoozed email whose time has come"
+            serviceName="org.moqui.impl.EmailClientServices.return#SnoozedMessages" cronExpression="0 * * * * ?" paused="N"/>
 
     <!-- Render ScheduledScreens -->
     <moqui.service.job.ServiceJob jobName="render_ScheduledScreens_frequent" description="Render Scheduled Screens"

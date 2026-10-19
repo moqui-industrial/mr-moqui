@@ -684,7 +684,9 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
         disableEntityEca: host.disableEntityEca, enableEntityEca: host.enableEntityEca,
         entityEcaDisabled: host.entityEcaDisabled, getStackNameString: host.stackNameString,
         // Java's: disable returns whether authorization was already disabled; it stays so until enable
-        disableAuthz: host.disableAuthz, enableAuthz: host.enableAuthz };
+        disableAuthz: host.disableAuthz, enableAuthz: host.enableAuthz,
+        // whether authorization is disabled now, changing nothing (disableAuthz to ask would hold a guard of its own)
+        authzDisabled: host.authzDisabled };
 
     // `Locale.getAvailableLocales()` with English display names. Java lists every JVM locale; the port has no locale
     // database, so this is a fixed list of the common ones.
@@ -2212,6 +2214,12 @@ fn enable_authz(ctx: Ctx<'_>) -> rquickjs::Result<()> {
     host_guard(&ctx, || with_ec(&ctx, ExecutionContext::script_enable_authz))
 }
 
+/// `ec.artifactExecution.authzDisabled()`: whether authorization is disabled for this execution context now, by a
+/// script or by Rust code (a call with `disableAuthz()`, a job), without changing it.
+fn authz_disabled(ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || with_ec(&ctx, ExecutionContext::authz_disabled))
+}
+
 fn shared_get<'js>(ctx: Ctx<'js>, key: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let found = with_ec(&ctx, |ec| ec.shared_map().get(&key).cloned())?;
@@ -2493,6 +2501,7 @@ pub(super) fn install<'js>(
     method!("enableEntityEca", enable_entity_eca);
     method!("disableAuthz", disable_authz);
     method!("enableAuthz", enable_authz);
+    method!("authzDisabled", authz_disabled);
     method!("entityEcaDisabled", entity_eca_disabled);
     method!("stackNameString", stack_name_string);
     method!("sharedGet", shared_get);

@@ -684,6 +684,8 @@ interface MoquiServerEc {
         /** Authorization is not checked for this execution context until `enableAuthz()`. Returns whether it was already disabled. */
         disableAuthz(): boolean;
         enableAuthz(): void;
+        /** Whether authorization is disabled now, by a script or by the caller (a call with `disableAuthz()`, a job); changes nothing. */
+        authzDisabled(): boolean;
     };
     /** A notification builder: `ec.makeNotificationMessage().topic("T").message({..}).userIds([..]).send()`. */
     makeNotificationMessage(): MoquiNotificationMessage;

@@ -53,6 +53,9 @@ const TEMPLATE: &str = "moqui.basic.email.EmailTemplate";
 const SERVER: &str = "moqui.basic.email.EmailServer";
 const MESSAGE: &str = "moqui.basic.email.EmailMessage";
 const ATTACHMENT: &str = "moqui.basic.email.EmailTemplateAttachment";
+const ACCOUNT: &str = "moqui.basic.email.EmailAccount";
+const IDENTITY: &str = "moqui.basic.email.EmailIdentity";
+const MESSAGE_ATTACHMENT: &str = "moqui.basic.email.EmailMessageAttachment";
 
 pub(super) fn send_template(
     parameters: &BTreeMap<String, Value>,
@@ -157,7 +160,10 @@ pub(super) fn send_template(
         body,
         body_text,
         attachments: Vec::new(),
+        inline: Vec::new(),
         message_id,
+        in_reply_to: String::new(),
+        references: String::new(),
     };
     if !filter_recipients(&mut letter, &field_text(&server, "allowedToDomains"), &email_message_id) {
         return Ok(ids(&email_message_id, ""));
@@ -176,6 +182,16 @@ pub(super) fn send_template(
     Ok(ids(&email_message_id, &letter.message_id))
 }
 
+/// `send#EmailMessage`: one stored message, through its `emailServerId`, else the server of its mail client account
+/// (`emailAccountId`), so a template's message and a client's draft each go out the way they came. A client message
+/// also brings its identity's reply-to, its `EmailMessageAttachment` files (inline ones by Content-ID) and its
+/// In-Reply-To and References headers. A delivery that fails is a message, not an error, as Java's, and its text is
+/// the `sendError` result, so the mail client can keep it for a retry.
+///
+/// A client message is the mail client's to keep in its own transaction: whatever stops it after the status checks
+/// (no address, no server, a host not allowed, an attachment that cannot be read, the delivery) is its `sendError`,
+/// not an error that would roll back the caller, and its Sent status is written in the caller's transaction, which
+/// holds its row, where a template's message is written in a new one as Java does.
 pub(super) fn send_message(
     parameters: &BTreeMap<String, Value>,
     facade: &EntityFacade,
@@ -194,42 +210,69 @@ pub(super) fn send_message(
     if status == "ES_CANCELLED" {
         return fail(format!("Email Message {email_message_id} is Cancelled"));
     }
+    let account_id = field_text(&message, "emailAccountId");
+    let client = !account_id.is_empty();
+    let refuse = |text: String| -> Result<BTreeMap<String, Value>, LibError> {
+        if client {
+            Ok(send_failed(&email_message_id, &Error::new(text)))
+        } else {
+            fail(text)
+        }
+    };
     let body = field_text(&message, "body");
     let body_text = field_text(&message, "bodyText");
     let from_address = field_text(&message, "fromAddress");
     let to_addresses = field_text(&message, "toAddresses");
     if body.is_empty() && body_text.is_empty() {
-        return fail(format!("Email Message {email_message_id} has no body"));
+        return refuse(format!("Email Message {email_message_id} has no body"));
     }
     if from_address.is_empty() {
-        return fail(format!("Email Message {email_message_id} has no from address"));
+        return refuse(format!("Email Message {email_message_id} has no from address"));
     }
     if to_addresses.is_empty() {
-        return fail(format!("Email Message {email_message_id} has no to address"));
+        return refuse(format!("Email Message {email_message_id} has no to address"));
     }
-    let server_id = field_text(&message, "emailServerId");
+    let mut server_id = field_text(&message, "emailServerId");
+    if server_id.is_empty() {
+        if let Some(account) = find_one(facade, ACCOUNT, "emailAccountId", &account_id)? {
+            server_id = field_text(&account, "emailServerId");
+        }
+    }
     let Some(server) = find_one(facade, SERVER, "emailServerId", &server_id)? else {
-        return fail(format!(
+        return refuse(format!(
             "No Email Server record found for Email Message {email_message_id}"
         ));
     };
     let host = field_text(&server, "smtpHost");
     if host.is_empty() {
         tracing::warn!(server = %server_id, message = %email_message_id, "SMTP Host is empty, not sending email");
+        if client {
+            return refuse(format!("Email server {server_id} has no SMTP host"));
+        }
         return Ok(ids(&email_message_id, ""));
     }
     if let Err(text) = require_host(&host) {
-        return fail(text);
+        return refuse(text.to_string());
     }
     let template_id = field_text(&message, "emailTemplateId");
     let template = find_one(facade, TEMPLATE, "emailTemplateId", &template_id)?;
-    let (reply_to, bounce) = match &template {
+    let (mut reply_to, bounce) = match &template {
         Some(row) => (field_text(row, "replyToAddresses"), field_text(row, "bounceAddress")),
         None => (String::new(), String::new()),
     };
+    if reply_to.is_empty() {
+        if let Some(identity) = find_one(
+            facade,
+            IDENTITY,
+            "emailIdentityId",
+            &field_text(&message, "emailIdentityId"),
+        )? {
+            reply_to = field_text(&identity, "replyToAddress");
+        }
+    }
     let message_id = match new_message_id(&from_address) {
         Ok(message_id) => message_id,
-        Err(text) => return fail(text),
+        Err(text) => return refuse(text.to_string()),
     };
     let mut letter = Letter {
         subject: field_text(&message, "subject"),
@@ -243,19 +286,94 @@ pub(super) fn send_message(
         body,
         body_text,
         attachments: Vec::new(),
+        inline: Vec::new(),
         message_id,
+        in_reply_to: field_text(&message, "inReplyTo"),
+        references: field_text(&message, "referencesHeader"),
     };
     if !filter_recipients(&mut letter, &field_text(&server, "allowedToDomains"), &email_message_id) {
+        if client {
+            return refuse(format!(
+                "No To address of email message {email_message_id} is in a domain email server {server_id} allows"
+            ));
+        }
         return Ok(ids(&email_message_id, ""));
+    }
+    if let Err(err) = stored_attachments(facade, &email_message_id, &mut letter) {
+        return Ok(send_failed(&email_message_id, &err));
     }
     if let Err(err) = deliver(&letter, &server) {
-        note_message(format!("Error sending email: {err}"));
-        return Ok(ids(&email_message_id, ""));
+        return Ok(send_failed(&email_message_id, &err));
     }
     if status == "ES_READY" || status == "ES_BOUNCED" {
-        update_sent(facade, &email_message_id, &letter.message_id)?;
+        if client {
+            mark_sent(facade, &email_message_id, &letter.message_id)?;
+        } else {
+            update_sent(facade, &email_message_id, &letter.message_id)?;
+        }
     }
     Ok(ids(&email_message_id, &letter.message_id))
+}
+
+/// A send that did not go out: the message Java adds, and the error as the `sendError` result.
+fn send_failed(email_message_id: &str, err: &Error) -> BTreeMap<String, Value> {
+    tracing::warn!(email_message = %email_message_id, error = %err, "Error sending email");
+    note_message(format!("Error sending email: {err}"));
+    let mut out = ids(email_message_id, "");
+    out.insert("sendError".into(), Value::string(err.message()));
+    out
+}
+
+/// The `EmailMessageAttachment` files of a message: an inline one with a Content-ID goes in the related part beside
+/// the HTML, the others are attachments. A file that cannot be read stops the send, so nothing goes out without it.
+fn stored_attachments(facade: &EntityFacade, email_message_id: &str, letter: &mut Letter) -> Result<(), Error> {
+    let rows = facade
+        .find(MESSAGE_ATTACHMENT)
+        .and_then(|find| {
+            find.eq("emailMessageId", Value::string(email_message_id))
+                .order_by("emailMessageAttachmentId", false)
+                .list()
+        })
+        .map_err(|err| Error::new(err.to_string()))?;
+    for row in rows.values() {
+        let location = field_text(row, "attachmentLocation");
+        let mut filename = field_text(row, "fileName");
+        if filename.is_empty() {
+            filename = location.rsplit('/').next().unwrap_or_default().to_string();
+        }
+        if location.is_empty() {
+            return Err(Error::new(format!("attachment {filename} has no location")));
+        }
+        let bytes = read_resource(&location)?;
+        let part = AttachmentBytes {
+            content_type: fallback_type(&field_text(row, "contentType"), &filename, "application/octet-stream"),
+            filename,
+            bytes,
+        };
+        let content_id = field_text(row, "contentId");
+        if field_text(row, "isInline") == "Y" && !content_id.is_empty() {
+            letter
+                .inline
+                .push((content_id.trim_matches(['<', '>']).to_string(), part));
+        } else {
+            letter.attachments.push(part);
+        }
+    }
+    Ok(())
+}
+
+/// The bytes at a resource location of any kind (a `dbresource://` file among them), through the resource facade.
+fn read_resource(location: &str) -> Result<Vec<u8>, Error> {
+    let found = ExecutionContext::with_current(|ctx| ctx.factory().resource().get(location))
+        .ok_or_else(|| Error::new("no execution context is entered"))?;
+    let reference =
+        found.map_err(|err| Error::new(format!("could not read attachment {location}: {}", err.message())))?;
+    if !reference.exists() {
+        return Err(Error::new(format!("attachment {location} is not there")));
+    }
+    reference
+        .read_bytes()
+        .map_err(|err| Error::new(format!("could not read attachment {location}: {}", err.message())))
 }
 
 struct Expanded {
@@ -487,16 +605,19 @@ fn update_ready(facade: &EntityFacade, id: &str, body: &str, body_text: &str) ->
 }
 
 fn update_sent(facade: &EntityFacade, id: &str, message_id: &str) -> Result<(), LibError> {
-    force_new(facade, || {
-        let _authz = ExecutionContext::with_current(|ctx| ctx.disable_authz());
-        let mut row = facade.make_value(MESSAGE)?;
-        set_text(&mut row, "emailMessageId", id);
-        set_text(&mut row, "statusId", "ES_SENT");
-        set_text(&mut row, "messageId", message_id);
-        row.set("sentDate", now_stamp());
-        row.update(facade)?;
-        Ok(())
-    })
+    force_new(facade, || mark_sent(facade, id, message_id))
+}
+
+/// The message Sent with its Message-ID, in the transaction in place.
+fn mark_sent(facade: &EntityFacade, id: &str, message_id: &str) -> Result<(), LibError> {
+    let _authz = ExecutionContext::with_current(|ctx| ctx.disable_authz());
+    let mut row = facade.make_value(MESSAGE)?;
+    set_text(&mut row, "emailMessageId", id);
+    set_text(&mut row, "statusId", "ES_SENT");
+    set_text(&mut row, "messageId", message_id);
+    row.set("sentDate", now_stamp());
+    row.update(facade)?;
+    Ok(())
 }
 
 fn force_new<T>(facade: &EntityFacade, body: impl FnOnce() -> Result<T, LibError>) -> Result<T, LibError> {
@@ -914,7 +1035,12 @@ struct Letter {
     body: String,
     body_text: String,
     attachments: Vec<AttachmentBytes>,
+    /// Parts the HTML refers to by `cid:`, each with its Content-ID.
+    inline: Vec<(String, AttachmentBytes)>,
     message_id: String,
+    /// The In-Reply-To and References headers of a reply, empty for none.
+    in_reply_to: String,
+    references: String,
 }
 
 fn deliver(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
@@ -926,43 +1052,33 @@ fn deliver(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
 }
 
 fn lettre_send(letter: &Letter, server: &EntityValue) -> Result<(), Error> {
+    let message = build_lettre(letter)?;
+    let transport = smtp_transport(server, None)?;
+    lettre::Transport::send(&transport, &message)
+        .map(|_| ())
+        .map_err(|err| Error::new(err.to_string()))
+}
+
+/// The SMTP transport of a server row, signing in when it has a `mailUsername`. `timeout` replaces lettre's default
+/// of a minute.
+fn smtp_transport(server: &EntityValue, timeout: Option<Duration>) -> Result<lettre::SmtpTransport, Error> {
     let host = field_text(server, "smtpHost");
     let port = parse_port(&field_text(server, "smtpPort"), 25)?;
-    let message = build_lettre(letter)?;
     let user = field_text(server, "mailUsername");
     let password = field_text(server, "mailPassword");
     // smtpSsl is TLS from the start. smtpStartTls upgrades when the server offers it, as Java's setStartTLSEnabled
     // (not required), so a server without STARTTLS still takes the mail. Both trust `email_tls_ca_file` too.
     use lettre::transport::smtp::client::Tls;
-    let transport = if field_text(server, "smtpSsl") == "Y" {
-        creds(
-            lettre::SmtpTransport::builder_dangerous(&host)
-                .port(port)
-                .tls(Tls::Wrapper(smtp_tls(&host)?)),
-            &user,
-            &password,
-        )
-        .build()
+    let mut builder = lettre::SmtpTransport::builder_dangerous(&host).port(port);
+    if field_text(server, "smtpSsl") == "Y" {
+        builder = builder.tls(Tls::Wrapper(smtp_tls(&host)?));
     } else if field_text(server, "smtpStartTls") == "Y" {
-        creds(
-            lettre::SmtpTransport::builder_dangerous(&host)
-                .port(port)
-                .tls(Tls::Opportunistic(smtp_tls(&host)?)),
-            &user,
-            &password,
-        )
-        .build()
-    } else {
-        creds(
-            lettre::SmtpTransport::builder_dangerous(&host).port(port),
-            &user,
-            &password,
-        )
-        .build()
-    };
-    lettre::Transport::send(&transport, &message)
-        .map(|_| ())
-        .map_err(|err| Error::new(err.to_string()))
+        builder = builder.tls(Tls::Opportunistic(smtp_tls(&host)?));
+    }
+    if timeout.is_some() {
+        builder = builder.timeout(timeout);
+    }
+    Ok(creds(builder, &user, &password).build())
 }
 
 fn creds(
@@ -988,6 +1104,12 @@ fn build_lettre(letter: &Letter) -> Result<lettre::Message, Error> {
     // As commons-email, which sets the header only for a subject that is not empty.
     if !letter.subject.is_empty() {
         builder = builder.subject(letter.subject.clone());
+    }
+    if !letter.in_reply_to.trim().is_empty() {
+        builder = builder.in_reply_to(letter.in_reply_to.trim().to_string());
+    }
+    if !letter.references.trim().is_empty() {
+        builder = builder.references(letter.references.split_whitespace().collect::<Vec<_>>().join(" "));
     }
     let mut recipients = Vec::new();
     for address in letter.to.iter().chain(letter.cc.iter()).chain(letter.bcc.iter()) {
@@ -1016,7 +1138,7 @@ fn build_lettre(letter: &Letter) -> Result<lettre::Message, Error> {
             lettre::address::Envelope::new(Some(sender), recipients).map_err(|err| Error::new(err.to_string()))?;
         builder = builder.envelope(envelope);
     }
-    let message = if letter.attachments.is_empty() {
+    let message = if letter.attachments.is_empty() && letter.inline.is_empty() {
         finish_body(builder, letter)?
     } else {
         builder
@@ -1048,15 +1170,18 @@ fn finish_body(builder: lettre::message::MessageBuilder, letter: &Letter) -> Res
 }
 
 fn with_attachments(letter: &Letter) -> Result<lettre::message::MultiPart, Error> {
-    let mut mixed = if !letter.body.is_empty() && !letter.body_text.is_empty() {
-        lettre::message::MultiPart::mixed().multipart(lettre::message::MultiPart::alternative_plain_html(
-            letter.body_text.clone(),
-            letter.body.clone(),
-        ))
-    } else if !letter.body.is_empty() {
-        lettre::message::MultiPart::mixed().singlepart(lettre::message::SinglePart::html(letter.body.clone()))
+    let mut mixed = if letter.inline.is_empty() {
+        with_body(lettre::message::MultiPart::mixed(), letter)
     } else {
-        lettre::message::MultiPart::mixed().singlepart(lettre::message::SinglePart::plain(letter.body_text.clone()))
+        // multipart/related: the body, then the parts it refers to by cid:
+        let mut related = with_body(lettre::message::MultiPart::related(), letter);
+        for (content_id, part) in &letter.inline {
+            related = related.singlepart(
+                lettre::message::Attachment::new_inline(content_id.clone())
+                    .body(part.bytes.clone(), content_type(&part.content_type)),
+            );
+        }
+        lettre::message::MultiPart::mixed().multipart(related)
     };
     for attachment in &letter.attachments {
         let part = lettre::message::Attachment::new(attachment.filename.clone())
@@ -1064,6 +1189,20 @@ fn with_attachments(letter: &Letter) -> Result<lettre::message::MultiPart, Error
         mixed = mixed.singlepart(part);
     }
     Ok(mixed)
+}
+
+/// `parts` with the body added: plain and HTML as alternatives when there are both.
+fn with_body(parts: lettre::message::MultiPartBuilder, letter: &Letter) -> lettre::message::MultiPart {
+    if !letter.body.is_empty() && !letter.body_text.is_empty() {
+        parts.multipart(lettre::message::MultiPart::alternative_plain_html(
+            letter.body_text.clone(),
+            letter.body.clone(),
+        ))
+    } else if !letter.body.is_empty() {
+        parts.singlepart(lettre::message::SinglePart::html(letter.body.clone()))
+    } else {
+        parts.singlepart(lettre::message::SinglePart::plain(letter.body_text.clone()))
+    }
 }
 
 fn content_type(name: &str) -> lettre::message::header::ContentType {
@@ -1371,6 +1510,209 @@ fn receive(facade: &EntityFacade, message: &Inbound, server_id: &str) -> Result<
         }
     })
     .map_err(|err| Error::new(err.message()))
+}
+
+/// `test#EmailServer`: whether a server's settings work, step by step, for the mail account wizard. SMTP connects,
+/// upgrades to TLS as configured and signs in (then QUIT); the store connects and signs in, and IMAP lists its folders
+/// with their special-use attributes and the folder kind each maps to. Each step is `{step, ok, message}`; a step that
+/// fails ends its protocol's steps, and the other protocol is still tried. Nothing is changed.
+pub(super) fn test_server(
+    parameters: &BTreeMap<String, Value>,
+    facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    if facade.sim_active() {
+        return fail("Email server test is disabled in LLM sim session");
+    }
+    let server_id = param_text(parameters, "emailServerId");
+    let Some(server) = find_one(facade, SERVER, "emailServerId", &server_id)? else {
+        return fail(format!("No EmailServer found for ID [{server_id}]"));
+    };
+    let wanted = |name: &str| match parameters.get(name) {
+        Some(Value::Bool(flag)) => *flag,
+        Some(value) if !is_empty(value) => {
+            !matches!(to_plain_string(value).to_ascii_lowercase().as_str(), "false" | "n")
+        }
+        _ => true,
+    };
+    let mut steps = Vec::new();
+    let mut folders = Vec::new();
+    if wanted("testSmtp") {
+        steps.push(smtp_step(&server));
+    }
+    if wanted("testStore") && !field_text(&server, "storeHost").is_empty() {
+        store_steps(&server, &mut steps, &mut folders);
+    }
+    let success = !steps.is_empty() && steps.iter().all(|step| step.1);
+    let mut out = BTreeMap::new();
+    out.insert(
+        "stepList".into(),
+        Value::List(
+            steps
+                .into_iter()
+                .map(|(step, ok, message)| {
+                    let mut map = IndexMap::new();
+                    map.insert("step".to_string(), Value::string(step));
+                    map.insert("ok".to_string(), Value::Bool(ok));
+                    map.insert("message".to_string(), Value::string(message));
+                    Value::Map(map)
+                })
+                .collect(),
+        ),
+    );
+    out.insert("folderList".into(), Value::List(folders));
+    out.insert("success".into(), Value::Bool(success));
+    Ok(out)
+}
+
+const TEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+fn smtp_step(server: &EntityValue) -> (&'static str, bool, String) {
+    let host = field_text(server, "smtpHost");
+    if host.is_empty() {
+        return ("smtp", false, "The server has no SMTP host".to_string());
+    }
+    let port = field_text(server, "smtpPort");
+    let place = if port.is_empty() {
+        host.clone()
+    } else {
+        format!("{host}:{port}")
+    };
+    let checked = require_host(&host)
+        .and_then(|()| smtp_transport(server, Some(TEST_TIMEOUT)))
+        .and_then(|transport| transport.test_connection().map_err(|err| Error::new(err.to_string())));
+    let signs_in = !field_text(server, "mailUsername").is_empty();
+    match checked {
+        Ok(true) if signs_in => ("smtp", true, format!("Connected to {place} and signed in")),
+        Ok(true) => ("smtp", true, format!("Connected to {place}")),
+        Ok(false) => ("smtp", false, format!("{place} closed the connection")),
+        Err(err) => ("smtp", false, format!("SMTP {place}: {err}")),
+    }
+}
+
+fn store_steps(server: &EntityValue, steps: &mut Vec<(&'static str, bool, String)>, folders: &mut Vec<Value>) {
+    let host = field_text(server, "storeHost");
+    let protocol = {
+        let given = field_text(server, "storeProtocol");
+        if given.is_empty() {
+            "imaps".to_string()
+        } else {
+            given
+        }
+    };
+    let pop = matches!(protocol.as_str(), "pop3" | "pop3s");
+    let port = match parse_port(&field_text(server, "storePort"), if pop { 995 } else { 993 }) {
+        Ok(port) => port,
+        Err(err) => {
+            steps.push(("storeLogin", false, err.to_string()));
+            return;
+        }
+    };
+    let place = format!("{host}:{port}");
+    if let Err(err) = require_host(&host) {
+        steps.push(("storeLogin", false, err.to_string()));
+        return;
+    }
+    let settings = StoreSettings {
+        host: host.clone(),
+        port,
+        user: field_text(server, "mailUsername"),
+        password: field_text(server, "mailPassword"),
+        protocol: protocol.clone(),
+        folder: "INBOX".to_string(),
+        skip_seen: false,
+        mark_seen: false,
+        delete: false,
+    };
+    if pop {
+        match Pop3::open(&settings).and_then(|mut pop3| pop3.close()) {
+            Ok(()) => steps.push(("storeLogin", true, format!("Signed in to POP3 {place}"))),
+            Err(err) => steps.push(("storeLogin", false, format!("POP3 {place}: {err}"))),
+        }
+        return;
+    }
+    if !matches!(protocol.as_str(), "imap" | "imaps") {
+        steps.push((
+            "storeLogin",
+            false,
+            format!("storeProtocol {protocol} is not supported"),
+        ));
+        return;
+    }
+    let session = connect_net(&host, port, use_tls(&protocol, port)).and_then(|net| {
+        let mut client = imap::Client::new(net);
+        client.read_greeting().map_err(|err| Error::new(err.to_string()))?;
+        client
+            .login(&settings.user, &settings.password)
+            .map_err(|(err, _)| Error::new(err.to_string()))
+    });
+    let mut session = match session {
+        Ok(session) => {
+            steps.push(("storeLogin", true, format!("Signed in to IMAP {place}")));
+            session
+        }
+        Err(err) => {
+            steps.push(("storeLogin", false, format!("IMAP {place}: {err}")));
+            return;
+        }
+    };
+    match session.list(Some(""), Some("*")) {
+        Ok(names) => {
+            for name in names.iter() {
+                let attributes: Vec<String> = name
+                    .attributes()
+                    .iter()
+                    .map(|attribute| name_attribute(&format!("{attribute:?}")))
+                    .collect();
+                let kind = folder_kind(name.name(), &attributes);
+                let mut map = IndexMap::new();
+                map.insert("folderPath".to_string(), Value::string(name.name()));
+                map.insert(
+                    "delimiter".to_string(),
+                    name.delimiter().map_or(Value::Null, Value::string),
+                );
+                map.insert(
+                    "attributeList".to_string(),
+                    Value::List(attributes.into_iter().map(Value::String).collect()),
+                );
+                map.insert("folderKindEnumId".to_string(), Value::string(kind));
+                folders.push(Value::Map(map));
+            }
+            steps.push(("storeList", true, format!("Found {} folders", folders.len())));
+        }
+        Err(err) => steps.push(("storeList", false, format!("IMAP LIST on {place}: {err}"))),
+    }
+    let _ = session.logout();
+}
+
+/// An IMAP LIST attribute as the server wrote it, such as `\\Sent`, from its `Debug` text: the imap crate does not
+/// export the attribute type.
+fn name_attribute(debug: &str) -> String {
+    if let Some(inner) = debug.strip_prefix("Extension(").and_then(|rest| rest.strip_suffix(')')) {
+        return inner.trim_matches('"').replace("\\\\", "\\");
+    }
+    match debug {
+        "NoInferiors" => "\\Noinferiors".to_string(),
+        "NoSelect" => "\\Noselect".to_string(),
+        other => format!("\\{other}"),
+    }
+}
+
+/// The `EmailFolderKind` a folder maps to: INBOX, then its special-use attribute (RFC 6154), else EfkOther.
+fn folder_kind(path: &str, attributes: &[String]) -> &'static str {
+    if path.eq_ignore_ascii_case("INBOX") {
+        return "EfkInbox";
+    }
+    for attribute in attributes {
+        match attribute.to_ascii_lowercase().as_str() {
+            "\\sent" => return "EfkSent",
+            "\\drafts" => return "EfkDrafts",
+            "\\trash" => return "EfkTrash",
+            "\\junk" => return "EfkJunk",
+            "\\archive" => return "EfkArchive",
+            _ => {}
+        }
+    }
+    "EfkOther"
 }
 
 struct StoreSettings {

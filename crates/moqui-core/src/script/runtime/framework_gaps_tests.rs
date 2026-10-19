@@ -472,8 +472,8 @@ fn like_ignore_case_and_where_conditions_reach_the_sql() {
         .factory()
         .set_entity(crate::testing::open_with_tape(std::sync::Arc::clone(&tape)));
     let _entered = context.enter();
-    // the in-memory database cannot run the where text, so that find fails after the statement is written; the two
-    // ignore-case finds have their own patterns, so the second is not the first's cached count
+    // the in-memory database cannot run the where condition, so that find fails after the statement is written; the
+    // two patterns differ so the second count is not the first one's from the cache
     for expression in [
         r#"ec.entity.find("moqui.basic.Enumeration").condition(ec.entity.conditionFactory.makeCondition("description", "like", "FIR%").ignoreCase()).count()"#,
         r#"ec.entity.find("moqui.basic.Enumeration").condition(ec.entity.conditionFactory.makeCondition("description", "like", "SEC%", false, true)).count()"#,

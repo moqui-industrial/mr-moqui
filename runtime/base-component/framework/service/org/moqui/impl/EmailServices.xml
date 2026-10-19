@@ -16,7 +16,8 @@ along with this software (see the LICENSE.md file). If not, see
 
     <!-- send#Email and send#EmailTemplate are moqui_core::service::mail::send_template.
          send#EmailMessage is moqui_core::service::mail::send_message.
-         poll#EmailServer is moqui_core::service::mail::poll_server. -->
+         poll#EmailServer is moqui_core::service::mail::poll_server.
+         test#EmailServer is moqui_core::service::mail::test_server. -->
     <service verb="send" noun="Email" type="rust" location="moqui_core::service::mail::send_template" allow-remote="false">
         <implements service="org.moqui.EmailServices.send#EmailTemplate"/>
         <in-parameters>
@@ -35,7 +36,39 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
     </service>
     <service verb="send" noun="EmailMessage" type="rust" location="moqui_core::service::mail::send_message">
+        <description>Send a stored EmailMessage that is not a draft. The server is the message's emailServerId, else the
+            EmailServer of its mail client account (emailAccountId). A message of the mail client also brings its
+            identity's reply-to address, its EmailMessageAttachment files (inline ones by Content-ID, in a related part)
+            and its In-Reply-To and References headers (inReplyTo, referencesHeader). A Ready or Bounced message becomes
+            Sent with its new messageId. A delivery that fails is a message, not an error, as in Java, and its text is
+            sendError. A client message (one with an emailAccountId) is the mail client's to keep: what stops it after the
+            status checks is its sendError, not an error, and its Sent status is written in the caller's transaction
+            (a template's message in a new one, as in Java).</description>
         <in-parameters><parameter name="emailMessageId" required="true"/></in-parameters>
+        <out-parameters>
+            <parameter name="emailMessageId"/>
+            <parameter name="messageId"><description>The Message-ID it went out with; empty when nothing was sent</description></parameter>
+            <parameter name="sendError"><description>Why the delivery failed</description></parameter>
+        </out-parameters>
+    </service>
+    <service verb="test" noun="EmailServer" type="rust" location="moqui_core::service::mail::test_server"
+            transaction="ignore" allow-remote="false">
+        <description>Whether a server's settings work, for the mail account wizard; nothing is changed. SMTP connects,
+            upgrades to TLS as configured and signs in; the store (when it has a storeHost) connects and signs in, and IMAP
+            lists its folders. Each step is {step (smtp, storeLogin, storeList), ok, message}. folderList has each IMAP
+            folder's {folderPath, delimiter, attributeList, folderKindEnumId}: INBOX, else its special-use attribute
+            (\Sent, \Drafts, \Trash, \Junk, \Archive), else EfkOther. Use org.moqui.impl.EmailClientServices.test#EmailAccount,
+            which checks the user may manage the account.</description>
+        <in-parameters>
+            <parameter name="emailServerId" required="true"/>
+            <parameter name="testSmtp" type="Boolean" default="true"/>
+            <parameter name="testStore" type="Boolean" default="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="success" type="Boolean"/>
+            <parameter name="stepList" type="List"><parameter name="step" type="Map"/></parameter>
+            <parameter name="folderList" type="List"><parameter name="folder" type="Map"/></parameter>
+        </out-parameters>
     </service>
 
     <service verb="poll" noun="EmailServer" type="rust" location="moqui_core::service::mail::poll_server"
