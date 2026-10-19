@@ -198,6 +198,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rich] -->\n"
             }
         }]
     ], {
+    "views": null,
     "hasFirst": false,
     "hasSecond": false,
     "hasLast": false,
@@ -334,6 +335,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Multi] -->\n
             }
         }]
     ], {
+    "views": null,
     "hasFirst": false,
     "hasSecond": false,
     "hasLast": false,
@@ -407,6 +409,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Edge] -->\n"
             }
         }]
     ], {
+    "views": null,
     "hasFirst": true,
     "hasSecond": false,
     "hasLast": true,

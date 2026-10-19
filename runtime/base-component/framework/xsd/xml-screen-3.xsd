@@ -1130,6 +1130,28 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="style" type="xs:string"/>
     </xs:complexType></xs:element>
 
+    <xs:element name="markdown-view" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        Markdown text shown as HTML, such as a description or a wiki page: in qvt an m-markdown, which renders it with Marked
+        (GitHub flavored) and cleans it with DOMPurify in the browser, gives each heading an id from its text, resolves a
+        relative link from base-path, opens a link to another site in a new tab and follows an application link in the shell,
+        with tables and code blocks that read in dark mode; bound over the screen's data in a server-static screen. In html
+        and the text modes the text as it is. The attributes may hold ${} expressions.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="id" type="xs:string"/>
+        <xs:attribute name="text" type="xs:string" use="required"><xs:annotation><xs:documentation>The markdown, such as
+            ${wikiPage.text}. Raw HTML in it is cleaned; nothing in it runs.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="base-path" type="xs:string"><xs:annotation><xs:documentation>The path a relative link is
+            resolved from, a directory: a/b from /apps/wiki/Space is /apps/wiki/Space/a/b.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="heading-prefix" type="xs:string" default="md-"><xs:annotation><xs:documentation>The start of
+            each heading's id.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="strip-title" type="xs:string"><xs:annotation><xs:documentation>A first heading with this text
+            is left out (the screen shows the title already).</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="wiki-links" type="boolean" default="false"><xs:annotation><xs:documentation>[[path]] and
+            [[path|text]] are links to wiki:path.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="condition" type="xs:string"/>
+        <xs:attribute name="style" type="xs:string"/>
+    </xs:complexType></xs:element>
+
     <!-- ================ Status ================ -->
     <xs:element name="status-bar" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
         The status of a record in its flow, for the title row of a detail screen (IronStone style-guide §3.3, §5.2, §8.2): a

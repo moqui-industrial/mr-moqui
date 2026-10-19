@@ -114,6 +114,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Selectable] 
             }
         }]
     ], {
+    "views": null,
     "hasFirst": true,
     "hasSecond": false,
     "hasLast": true,
@@ -231,6 +232,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Everyone] --
             }
         }]
     ], {
+    "views": null,
     "hasFirst": false,
     "hasSecond": false,
     "hasLast": false,

@@ -397,6 +397,139 @@ span.hover-image-container:hover img.hover-image { display: initial; margin: 10p
 .body--dark .m-wizard-nav { border-top-color:rgba(255,255,255,0.14); }
 .m-stack-crumbs { font-size:0.95rem; }
 
+/* form-list views (style-guide §3.6, §3.7, §8.2; m-list-views): the view switch above the list; in the board and calendar the list's
+   rows are hidden, and its nav row and a head with find fields stay, so the filters, saved finds and pages still apply */
+.m-list-views { min-width:0; }
+.m-list-views-bar { margin:4px 0 -4px; }
+.m-list-views--board .m-list-views-list .tbody, .m-list-views--calendar .m-list-views-list .tbody { display:none; }
+.m-list-views--board .m-list-views-list .thead:not(:has(.form-header-field)),
+    .m-list-views--calendar .m-list-views-list .thead:not(:has(.form-header-field)) { display:none; }
+.m-list-views--board .m-list-views-list .q-table__container, .m-list-views--calendar .m-list-views-list .q-table__container { margin-bottom:4px; }
+.m-list-views--board .m-list-views-list .table ~ .form-list-nav-row, .m-list-views--calendar .m-list-views-list .table ~ .form-list-nav-row { display:none; }
+.m-list-views--board .m-list-views-list .q-table__container:not(:has(.form-list-nav-row)):not(:has(.form-header-field)),
+    .m-list-views--calendar .m-list-views-list .q-table__container:not(:has(.form-list-nav-row)):not(:has(.form-header-field)) { display:none; }
+/* the board: columns that scroll sideways, each a tinted panel of cards; a column a dragged card may go to is outlined, one the status
+   flow does not lead to is dimmed */
+.m-board { gap:8px; overflow-x:auto; padding:4px 2px 8px; align-items:stretch; scroll-snap-type:x proximity; }
+.m-board-col { flex:0 0 272px; max-width:320px; min-height:160px; border-radius:6px; padding:6px; background:rgba(0,0,0,0.035);
+    border:1px solid transparent; scroll-snap-align:start; }
+.body--dark .m-board-col { background:rgba(255,255,255,0.05); }
+.m-board-col--target { border-color:var(--q-primary); }
+.m-board-col--blocked { opacity:0.55; }
+.m-board-col-head { padding:2px 4px 6px; min-height:28px; font-weight:500; }
+.m-board-col-dot { width:8px; height:8px; border-radius:50%; margin-right:6px; flex:none; }
+.m-board-col-label { min-width:0; }
+.m-board-col-sum { font-size:12px; margin-left:6px; white-space:nowrap; }
+.m-board-cards { min-height:48px; display:flex; flex-direction:column; gap:6px; }
+.m-board-card { border-radius:6px; padding:8px 10px; background:#fff; border:1px solid rgba(0,0,0,0.12); cursor:pointer; touch-action:manipulation; }
+.body--dark .m-board-card { background:var(--q-dark); border-color:rgba(255,255,255,0.16); }
+.m-board-card:hover { border-color:rgba(0,0,0,0.28); }
+.body--dark .m-board-card:hover { border-color:rgba(255,255,255,0.34); }
+.m-board-card--ghost { opacity:0.35; }
+.m-board-card--drag, .m-board-card--chosen.sortable-fallback { box-shadow:0 4px 12px rgba(0,0,0,0.25); transform:rotate(1.5deg); }
+.m-board-empty { font-size:12px; text-align:center; padding:12px 4px; }
+.m-board-col > .m-board-empty { order:1; }
+.m-board-col > .m-board-cards { order:2; }
+.m-board--dragging .m-board-card { cursor:grabbing; }
+/* a card: the title (the title field's cell, whose link opens the record), a tinted badge, then two to four fields with their labels */
+.m-card-head { gap:6px; align-items:flex-start; }
+.m-card-title { font-weight:500; min-width:0; flex:1 1 auto; word-break:break-word; line-height:1.3; }
+.m-card-title .q-link, .m-card-title .m-link-text { color:inherit; }
+.m-card-badge { flex:none; font-size:11px; line-height:18px; padding:0 6px; border-radius:9px; color:var(--q-primary);
+    background:color-mix(in srgb, var(--q-primary) 12%, transparent); white-space:nowrap; }
+.m-card-badge:empty { display:none; }
+.m-card-field { font-size:12px; line-height:1.45; display:flex; gap:6px; min-width:0; margin-top:2px; }
+.m-card-label { flex:none; }
+.m-card-value { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.m-card-value .form-group, .m-card-title .form-group, .m-card-badge .form-group { display:inline; margin:0; padding:0; }
+/* the calendar: month cells with chips, the time grid of week and day (an hour line every hourPx, the now line), the agenda */
+.m-calendar { margin-top:4px; }
+.m-calendar-bar { gap:4px; margin-bottom:6px; min-height:36px; }
+.m-calendar--dragging, .m-calendar--dragging * { user-select:none; cursor:grabbing !important; }
+.m-cal-month, .m-cal-grid { user-select:none; }
+.m-cal-dow { border-bottom:1px solid rgba(0,0,0,0.12); padding:4px 0; }
+.body--dark .m-cal-dow { border-bottom-color:rgba(255,255,255,0.16); }
+.m-cal-week + .m-cal-week { border-top:1px solid rgba(0,0,0,0.08); }
+.body--dark .m-cal-week + .m-cal-week { border-top-color:rgba(255,255,255,0.12); }
+.m-cal-cell { min-width:0; min-height:96px; padding:2px 3px 4px; cursor:default; }
+.m-cal-cell + .m-cal-cell { border-left:1px solid rgba(0,0,0,0.08); }
+.body--dark .m-cal-cell + .m-cal-cell { border-left-color:rgba(255,255,255,0.12); }
+.m-cal-cell--out { background:rgba(0,0,0,0.025); }
+.body--dark .m-cal-cell--out { background:rgba(255,255,255,0.03); }
+.m-cal-cell--sel { background:color-mix(in srgb, var(--q-primary) 10%, transparent); }
+.m-cal-daynum { font-size:12px; padding:0 2px 2px; }
+.m-cal-daynum span { cursor:pointer; display:inline-block; min-width:22px; text-align:center; border-radius:11px; line-height:22px; }
+.m-cal-today { background:var(--q-primary); color:#fff; }
+.m-cal-chip { font-size:12px; line-height:18px; padding:0 4px; border-radius:4px; margin-top:2px; cursor:pointer; touch-action:none; }
+.m-cal-chip:not(.m-cal-chip--filled):hover { background:rgba(0,0,0,0.06); }
+.body--dark .m-cal-chip:not(.m-cal-chip--filled):hover { background:rgba(255,255,255,0.08); }
+.m-cal-chip-time { opacity:0.75; }
+.m-cal-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; vertical-align:baseline; }
+.m-cal-more { font-size:12px; padding:0 4px; cursor:pointer; }
+.m-cal-head { border-bottom:1px solid rgba(0,0,0,0.12); }
+.body--dark .m-cal-head { border-bottom-color:rgba(255,255,255,0.16); }
+.m-cal-head-cell { padding:4px 2px; min-width:0; cursor:pointer; }
+.m-cal-head-label { font-size:16px; line-height:22px; }
+.m-cal-head-cell--today .m-cal-head-label { color:var(--q-primary); font-weight:500; }
+.m-cal-gutter { width:56px; flex:none; text-align:right; padding-right:6px; }
+.m-cal-allday { border-bottom:1px solid rgba(0,0,0,0.12); min-height:26px; }
+.body--dark .m-cal-allday { border-bottom-color:rgba(255,255,255,0.16); }
+.m-cal-allday .m-cal-gutter { padding-top:4px; }
+.m-cal-allday-cell { min-width:0; padding:2px; }
+.m-cal-allday-cell + .m-cal-allday-cell { border-left:1px solid rgba(0,0,0,0.08); }
+.body--dark .m-cal-allday-cell + .m-cal-allday-cell { border-left-color:rgba(255,255,255,0.12); }
+.m-cal-scroll { height:min(620px, 65vh); overflow-y:auto; position:relative; scrollbar-gutter:stable; }
+/* the head and the all-day row keep the room of the hours' scrollbar, so their columns are the grid's */
+.m-cal-head, .m-cal-allday { overflow-y:hidden; scrollbar-gutter:stable; }
+.m-cal-hours { position:relative; }
+.m-cal-hour-label { position:absolute; left:0; right:6px; }
+.m-cal-col { position:relative; min-width:0; border-left:1px solid rgba(0,0,0,0.08);
+    background-image:linear-gradient(to bottom, rgba(0,0,0,0.08) 1px, transparent 1px); }
+.body--dark .m-cal-col { border-left-color:rgba(255,255,255,0.12); background-image:linear-gradient(to bottom, rgba(255,255,255,0.1) 1px, transparent 1px); }
+.m-cal-event { position:absolute; border-radius:4px; padding:1px 4px; overflow:hidden; font-size:12px; line-height:1.25; cursor:pointer; touch-action:none;
+    box-shadow:0 0 0 1px rgba(255,255,255,0.6); z-index:1; }
+.body--dark .m-cal-event { box-shadow:0 0 0 1px rgba(0,0,0,0.5); }
+.m-cal-event--moving { opacity:0.85; box-shadow:0 4px 12px rgba(0,0,0,0.3); z-index:3; }
+.m-cal-event-title { font-weight:500; }
+.m-cal-event-time { opacity:0.9; }
+.m-cal-resize { position:absolute; left:0; right:0; bottom:0; height:7px; cursor:ns-resize; }
+.m-cal-selection { position:absolute; left:1px; right:3px; border-radius:4px; background:var(--q-primary); color:#fff; opacity:0.8; font-size:12px; padding:1px 4px;
+    pointer-events:none; z-index:2; }
+.m-cal-now { position:absolute; left:0; right:0; height:2px; background:var(--q-negative); z-index:2; pointer-events:none; }
+.m-cal-agenda-day { padding-bottom:2px; }
+.m-cal-agenda-time { width:150px; flex:none; }
+.m-cal-agenda-dot { min-width:18px !important; padding-right:4px; }
+.m-cal-anchor { position:fixed; pointer-events:none; opacity:0; }
+.m-cal-pop-body { min-width:240px; max-width:360px; }
+@media (max-width:599.98px) {
+    .m-board-col { flex-basis:82vw; }
+    .m-cal-cell { min-height:56px; }
+    .m-cal-gutter { width:40px; }
+    .m-cal-agenda-time { width:74px; }
+}
+
+/* m-markdown: markdown text as the page's text, tables and code blocks tinted from the text color so they read in light and dark */
+.m-markdown { min-width:0; overflow-wrap:break-word; line-height:1.55; }
+.m-markdown-plain { white-space:pre-wrap; }
+.m-markdown-body > :first-child { margin-top:0; }
+.m-markdown-body h1 { font-size:1.6rem; line-height:1.25; font-weight:500; margin:0.9em 0 0.4em; }
+.m-markdown-body h2 { font-size:1.3rem; line-height:1.3; font-weight:500; margin:0.9em 0 0.4em; }
+.m-markdown-body h3 { font-size:1.1rem; line-height:1.35; font-weight:500; margin:0.8em 0 0.3em; }
+.m-markdown-body h4, .m-markdown-body h5, .m-markdown-body h6 { font-size:1rem; font-weight:500; margin:0.8em 0 0.3em; }
+.m-markdown-body p, .m-markdown-body ul, .m-markdown-body ol, .m-markdown-body blockquote, .m-markdown-body pre { margin:0 0 0.75em; }
+.m-markdown-body ul, .m-markdown-body ol { padding-left:1.5em; }
+.m-markdown-body a { color:var(--q-primary); }
+.m-markdown-body img { max-width:100%; height:auto; }
+.m-markdown-body hr { border:none; border-top:1px solid rgba(127,127,127,0.35); margin:1em 0; }
+.m-markdown-body blockquote { border-left:3px solid rgba(127,127,127,0.4); padding:0.1em 0 0.1em 0.9em; opacity:0.9; }
+.m-markdown-body code { font-size:0.9em; padding:0.1em 0.35em; border-radius:4px; background:rgba(127,127,127,0.15); }
+.m-markdown-body pre { padding:10px 12px; border-radius:6px; overflow-x:auto; background:rgba(127,127,127,0.12); border:1px solid rgba(127,127,127,0.2); }
+.m-markdown-body pre code { padding:0; background:transparent; font-size:0.88em; }
+.m-markdown-body .m-md-table { margin:0 0 0.75em; overflow-x:auto; border-radius:4px; background:transparent; }
+.m-markdown-body .m-md-table table { width:auto; border-collapse:collapse; }
+.m-markdown-body .m-md-table th, .m-markdown-body .m-md-table td { padding:4px 10px; border:1px solid rgba(127,127,127,0.3); text-align:left; }
+.m-markdown-body .m-md-table th { font-weight:500; background:rgba(127,127,127,0.1); }
+
 /* SHELL_DENSITY compact (moqui.applyDensity puts m-density-compact on the body): less space around the page, the boxes, the list
    rows, the fields and the menu items; comfortable is the rest of this sheet as it is */
 body.m-density-compact { font-size:13px; }

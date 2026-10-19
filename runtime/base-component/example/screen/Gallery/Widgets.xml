@@ -70,6 +70,7 @@ along with this software (see the LICENSE.md file). If not, see
 
     <actions>
         <set field="editableText" from="'Click this text to edit it in place'"/>
+        <set field="markdownText" value="## Markdown view&#10;&#10;Text from **markdown**, rendered by Marked and cleaned by DOMPurify: the heading has an id, [the List archetype](List) is a link of this app (from the base path), [moqui.org](https://moqui.org) opens in a new tab.&#10;&#10;| Element | Renders as |&#10;|---|---|&#10;| markdown-view | m-markdown |&#10;| html-view | m-html-view |&#10;&#10;```xml&#10;&lt;markdown-view text=&quot;pageText&quot; base-path=&quot;/qapps/wiki&quot;/&gt;&#10;```&#10;&#10;&gt; A quote, and `inline code` that keeps its tint in dark mode."/>
         <set field="editableKind" value="b"/>
         <set field="editableDue" value="2026-10-19"/>
         <set field="chip" from="chip || 'all'"/>
@@ -230,6 +231,11 @@ along with this software (see the LICENSE.md file). If not, see
                     <label type="span" text="grey-7 muted" style="text-grey-7"/>
                 </container>
             </row-col></container-row>
+        </box-body></container-box>
+
+        <!-- markdown -->
+        <container-box><box-header title="Markdown (markdown-view, m-markdown)"/><box-body>
+            <markdown-view id="WidgetMarkdown" text="${markdownText}" base-path="/qapps/gallery"/>
         </box-body></container-box>
 
         <!-- 4. list -->

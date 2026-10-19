@@ -9,7 +9,7 @@ const galleryScreens = [
     ["Landing", "qvt"], ["List", "qvt"], ["Detail", "qvt"], ["Record360", "qvt"], ["Task", "qvt"],
     ["Board", "qvue"], ["Calendar", "qvue"], ["Split", "qvt"], ["Settings", "qvt"], ["Wizard", "qvt"],
     ["Dialog", "qvt"], ["Report", "qvt"], ["Panel", "qvt"], ["Widgets", "qvt"], ["Editor", "qvt"], ["QuickNote", "qvt"], ["QuickTask", "qvue"],
-    ["Chatter", "qvt"], ["RecordFiles", "qvt"], ["Message", "qvt"],
+    ["Chatter", "qvt"], ["RecordFiles", "qvt"], ["Message", "qvt"], ["Views", "qvt"],
 ]
 
 spec({
@@ -262,5 +262,61 @@ feature("the Widgets list cells keep their row after a section, and chips and ed
         str.output.includes('widget-type="date"')
         str.output.includes('id="ApprovalNote_1"') && str.output.includes('placeholder="Click to edit"')
         str.output.includes('<div class="q-px-xs col-md-6 col-sm-12 col-xs-12">')
+    },
+})
+
+// The List views screen (style-guide §8.2): one form-list of the example records as a board by status (every Example status in
+// its flow's order, with labels, colors and the flow) and a calendar; its transitions move a status through the flow (a move
+// the flow does not allow is refused with the entity-auto message), move an example's times and create one.
+feature("the Views board and calendar show the examples, and their transitions move a status, refuse one and move times", {
+    // the refused move leaves its error in the messages
+    allowMessageErrors: true,
+    expect() {
+        const gallery = () => ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt")
+        const str = gallery().render("Views", { lastStandalone: "-2" }, null)
+        const tag = (str.output.match(/<m-list-views id="ExampleList_views"[^>]*>/) || [""])[0]
+        const cards = str.output.match(/<template v-slot:card_\d+>/g) || []
+        const before = ec.entity.find("moqui.example.Example").condition("exampleId", "EX_102").one()
+        const moved = gallery().render("Views/updateExampleStatus", { exampleId: "EX_102", statusId: "EXST_APPROVED" }, "post")
+        const afterMove = ec.entity.find("moqui.example.Example").condition("exampleId", "EX_102").useCache(false).one()
+        const refused = gallery().render("Views/updateExampleStatus", { exampleId: "EX_100", statusId: "EXST_COMPLETE" }, "post")
+        const afterRefused = ec.entity.find("moqui.example.Example").condition("exampleId", "EX_100").useCache(false).one()
+        const start = Date.UTC(2026, 9, 21, 15, 0)
+        const timed = gallery().render("Views/updateExampleTimes", { exampleId: "EX_103", exampleDate: String(start), exampleEndDate: String(start + 3600000),
+            exampleTypeEnumId: "EXT_REAL_WORLD" }, "post")
+        const afterTimes = ec.entity.find("moqui.example.Example").condition("exampleId", "EX_103").useCache(false).one()
+        const created = gallery().render("Views/createExample", { exampleName: "Spec example", exampleDate: "2026-10-24 09:00", exampleEndDate: "2026-10-24 10:00" }, "post")
+        const made = ec.entity.find("moqui.example.Example").condition("exampleName", "Spec example").useCache(false).list()
+        const webroot = ec.screen.makeTest().rootScreen("component://webroot/screen/webroot.xml")
+        const info = JSON.parse(webroot.render("listViewColumns", { values: "EXST_DEFINED,EXT_MADE_UP", status: "true" }, null).output)
+        str.status == 200
+        str.errorMessages.length == 0
+        tag.includes(":views=\"['board','list','calendar']\"")
+        tag.includes("'groupField':'statusId'")
+        tag.includes("{'value':'EXST_IN_DESIGN','label':'In Design','color':'grey-7'},{'value':'EXST_DEFINED','label':'Defined','color':'info'}")
+        tag.includes("{'value':'EXST_CANCELLED','label':'Cancelled','color':'negative'}")
+        tag.includes("'flow':{'EXST_APPROVED':['EXST_CANCELLED','EXST_IMPLEMENTED']")
+        tag.includes("/Views/updateExampleStatus'")
+        tag.includes("/Views/createExample'")
+        tag.includes("'colors':{'EXST_")
+        tag.includes("'exampleTypeEnumId':'EXT_REAL_WORLD','exampleTypeEnumId_display':'Real World'")
+        cards.length >= 11
+        before.statusId == "EXST_DEFINED"
+        moved.errorMessages.length == 0
+        afterMove.statusId == "EXST_APPROVED"
+        refused.errorMessages.some((message) => message.includes("Status change not allowed from In Design to Complete"))
+        afterRefused.statusId == "EXST_IN_DESIGN"
+        timed.errorMessages.length == 0
+        Number(afterTimes.exampleDate) == start || String(afterTimes.exampleDate) == String(start)
+        afterTimes.exampleTypeEnumId == "EXT_REAL_WORLD"
+        created.errorMessages.length == 0
+        made.length == 1 && made[0].statusId == "EXST_IN_DESIGN" && made[0].allDay == "N"
+        info.columns.map((column) => column.value).join(",") == "EXST_IN_DESIGN,EXST_DEFINED,EXST_APPROVED,EXST_IMPLEMENTED,EXST_TESTED,EXST_COMPLETE,EXST_CANCELLED,EXT_MADE_UP"
+        info.columns[7].label == "Made Up" && info.columns[7].color == null
+        info.transitions.EXST_IN_DESIGN.join(",") == "EXST_CANCELLED,EXST_DEFINED"
+        info.colors.EXST_COMPLETE == "positive"
+    },
+    cleanup() {
+        ec.entity.find("moqui.example.Example").condition("exampleName", "Spec example").deleteAll()
     },
 })

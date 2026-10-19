@@ -891,3 +891,84 @@ fn a_status_bar_shows_the_stages_and_the_transitions_of_the_flow() {
     let text = render("text", &[]);
     assert!(text.contains("Status: Running"), "{text}");
 }
+
+/// The views of a form-list (style-guide §8.2: `views`, `view-board`, `view-calendar`): an m-list-views around the list with the
+/// fields the views read as plain values and their display text, the board's and calendar's settings (the transitions with
+/// their parameters and the list's hidden-parameters, the key fields, the colors of color-map), and a card_{index} slot per row
+/// written as the list writes the cells, outside the row's form; markdown-view is an m-markdown with its text as an attribute
+/// value. html shows the list and the markdown as text.
+#[test]
+fn form_list_views_and_the_markdown_view() {
+    let out = check("views", &[]);
+    for expected in [
+        r##"<m-markdown id="Notes" text="# Notes {{x}}"##,
+        r#"base-path="/apps/wiki" strip-title="Notes" :wiki-links="true" class="q-mt-sm"></m-markdown>"#,
+        r#"<m-list-views id="Tasks_views" form-name="Tasks""#,
+        r#":views="['board','list','calendar']""#,
+        "'groupField':'stage','titleField':'name','sumField':'points'",
+        "'keyFields':['taskId']",
+        "'transition':'/moveTask','parameters':{'projectId':'P9'}",
+        r#"form-location="/#Tasks""#,
+        "'colors':{'todo':'info','doing':'warning'}",
+        "'createTransition':'/newTask'",
+        "'modes':['week','month','day','list']",
+        "<template v-slot:card_0><div class=\"m-card-head row no-wrap\"><div class=\"m-card-title\">",
+        "<span class=\"m-card-label m-muted\">Owner</span>",
+        "</m-list-views>",
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    // the rows: plain values with the display text where it differs (a status label, the formatted number), no request text compiled
+    assert!(out.contains("'stage':'todo','stage_display':'To do'"), "{out}");
+    assert!(out.contains("'points':3,'points_display':'3.0'"), "{out}");
+    assert!(
+        out.contains("class=\"m-link-text\">Write &#123;&#123;spec}}</a>"),
+        "{out}"
+    );
+    // a list without a transition: no moves, its key the title field; a card per row, outside any row form
+    assert!(
+        out.contains(r#"<m-list-views id="Plain_views" form-name="Plain""#),
+        "{out}"
+    );
+    assert_eq!(out.matches("<template v-slot:card_").count(), 6, "{out}");
+    let html = render_mode("views", "", "html", &[]);
+    assert!(
+        !html.contains("m-list-views") && html.contains("Write {{spec}}"),
+        "{html}"
+    );
+    assert!(
+        html.contains(r##"<div id="Notes" class="markdown-view q-mt-sm" style="white-space:pre-wrap"># Notes {{x}}"##),
+        "{html}"
+    );
+    let text = render_mode("views", "", "text", &[]);
+    assert!(text.contains("See [the spec](spec/One)"), "{text}");
+}
+
+/// A board by status writes the columns get#ListViewColumns answers: every status of the type of the rows' statuses in sequence
+/// order with its label and color, then a value that is no status, and the flow's transitions between them; a calendar colored
+/// by a status gets the status colors; column-order with a status asks for its labels too.
+#[test]
+fn a_status_board_has_the_columns_and_flow_of_the_status_type() {
+    let context = status_context();
+    let _entered = context.enter();
+    let out = make_render(context.factory())
+        .root_screen(render_dir().join("views-status.xml").to_string_lossy().into_owned())
+        .screen_path("")
+        .render_mode("qvt")
+        .render()
+        .unwrap_or_else(|err| panic!("views-status: {err}"))
+        .body_text();
+    assert_compiles(&["views-status".to_string()], std::slice::from_ref(&out));
+    for expected in [
+        "'columns':[{'value':'EsNotStarted','label':'Not Started','color':'grey-7'},{'value':'EsRunning','label':'Running','color':'primary'},\
+         {'value':'EsComplete','label':'Complete','color':'positive'},{'value':'EsOtherError','label':'Other Error','color':'negative'},\
+         {'value':'ZZ_UNKNOWN','label':'ZZ_UNKNOWN','color':''}]",
+        "'flow':{'EsComplete':['EsRunning'],'EsNotStarted':['EsRunning'],'EsOtherError':['EsRunning'],'EsRunning':['EsComplete','EsNotStarted','EsOtherError']}",
+        "'keyFields':['syncId']",
+        "'colors':{'EsNotStarted':'grey-7','EsRunning':'primary','EsComplete':'positive','EsOtherError':'negative'}",
+        "'columnOrder':['EsComplete','EsRunning']",
+        "'statusId':'EsRunning','statusId_display':'Running'",
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+}

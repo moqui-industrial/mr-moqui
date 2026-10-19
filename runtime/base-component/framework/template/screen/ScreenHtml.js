@@ -1497,6 +1497,14 @@
                 sandbox: "allow-popups allow-popups-to-escape-sandbox", referrerpolicy: "no-referrer", srcdoc: doc }) + "></iframe>\n");
         };
 
+        // markdown-view: the page has no markdown renderer, so the markdown as it is, escaped, its lines kept. Nothing for a false condition.
+        const markdownView = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const text = xn(at(n, "text"));
+            if (!text || text === "null") return;
+            w("<div" + A({ id: nodeId(n) || null, class: cls("markdown-view", xn(at(n, "style")) || null), style: "white-space:pre-wrap" }) + ">" + e(text.trim()) + "</div>\n");
+        };
+
         const h = {
             reset, enter, leave, e, lib, fid, fnm,
             textLine, textArea, password, file, hidden, reset_, submit, dateTime, dateFind, datePeriod, rangeFind, textFind,
@@ -1508,7 +1516,7 @@
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
             labelCols: (value) => { st.labelCols = value || ""; },
-            numberCard, chatter, recordFiles, splitOpen, splitMain, htmlView, statusBar
+            numberCard, chatter, recordFiles, splitOpen, splitMain, htmlView, markdownView, statusBar
         };
         Object.defineProperty(globalThis, "$mqHtml", { value: h, configurable: true });
     };
@@ -1767,6 +1775,13 @@
         `.replace(/\n$/, "");
     };
 
+    // A form-list for the runtime: its attributes and its hidden-parameters, which every form of the list posts
+    // (sri.getFormHiddenParameters reads them from the literal).
+    const listLit = (node) => {
+        const hidden = child(node, "hidden-parameters");
+        return hidden ? `{"name":${lit(node.name)},"attrs":${JSON.stringify(node.attrs || {})},"children":[${childLit(hidden)}]}` : bareLit(node);
+    };
+
     const formListMacro = stmt((node) => {
         const fields = childrenNamed(node, "field");
         const columns = S.formListColumns(node);
@@ -1816,7 +1831,7 @@
             if (sri.doBoundaryComments()) sri.write(${lit(`<!-- BEGIN form-list[@name=${attr(node, "name")}] -->\n`)});
             {
                 const $info = sri.openFormList(${lit(attr(node, "name"))});
-                $h.formList($info, ${bareLit(node)}, [
+                $h.formList($info, ${listLit(node)}, [
                     ${cols}
                 ], ${cfg});
             }
@@ -1998,6 +2013,7 @@
         "chatter": widget("chatter", false),
         "record-files": widget("recordFiles", false),
         "html-view": widget("htmlView", false),
+        "markdown-view": widget("markdownView", false),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

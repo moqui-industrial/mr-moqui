@@ -32,15 +32,11 @@ along with this software (see the LICENSE.md file). If not, see
         <actions><message>Gallery: cloning ${enumId} is a no-op; nothing is written.</message></actions>
         <default-response url="."/>
     </transition>
-    <transition name="switchView">
-        <actions><message>The ${view} view is not built yet: form-list views (style guide §8) will switch the same rows and filters to a board or a calendar.</message></actions>
-        <default-response url="."/>
-    </transition>
 
     <widgets>
         <container-box type="info"><box-header title="Archetype 3.2 List"/><box-body>
             <label type="p" text="The find and list screen over one record type, here Enumeration with its type through display-entity: the identifier first as a text link to the Detail, a chip for the state, Find Options for the rest of the filters, saved finds, the column picker, paging with a page size, exports, row selection with one bulk action in the header menu, two row actions, and New as a dialog. Nothing posted here is written."/>
-            <label type="p" text="Fallbacks for §8: the state chip is a tonal anchor-button link (Enumeration has no status, so the state is derived per row) until the m-tonal status chip exists; the two inline finds are a form-single above the table because header-dialog moves every header-field into Find Options; the view switch is a button-menu where only List works until views exists."/>
+            <label type="p" text="Fallbacks for §8: the state chip is a tonal anchor-button link (Enumeration has no status, so the state is derived per row) until the m-tonal status chip exists; the two inline finds are a form-single above the table because header-dialog moves every header-field into Find Options; the view switch is a button-menu to the Views screen, where one form-list of example records has the board and calendar views of §8.2 (Enumeration has no status flow or times to show them on)."/>
         </box-body></container-box>
 
         <!-- title row: the title, the view switch and New -->
@@ -49,8 +45,8 @@ along with this software (see the LICENSE.md file). If not, see
             <container style="col"/>
             <button-menu text="View: list" icon="fa fa-list">
                 <link url="." text="List" link-type="anchor"/>
-                <link url="switchView" text="Board" link-type="hidden-form-link" parameter-map="{view:'board'}"/>
-                <link url="switchView" text="Calendar" link-type="hidden-form-link" parameter-map="{view:'calendar'}"/>
+                <link url="../Views" text="Board" link-type="anchor" parameter-map="{view:'board'}"/>
+                <link url="../Views" text="Calendar" link-type="anchor" parameter-map="{view:'calendar'}"/>
             </button-menu>
             <container-dialog id="NewEnumDialog" button-text="New enumeration" width="600">
                 <form-single name="NewEnumForm" transition="createEnum" focus-field="description">
