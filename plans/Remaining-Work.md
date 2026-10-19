@@ -54,6 +54,16 @@ The gallery (`runtime/base-component/example/screen/Gallery/`, [style-guide §10
 | Entity | `moqui.basic.EnumerationAndType` (alias-all view) returns a null `lastUpdatedStamp`; check the alias-all handling of the stamp fields against Java | gallery finding F23, unverified |
 | REST | The ADMIN demo user gets 403 on `/rest/e1/moqui.basic.EnumerationType` (`AT_ENTITY … view`); check the REST entity authorization seed | gallery finding F27, unverified |
 
+## Found during the IronStone build (2026-10-19)
+
+Found while building the suite shell and the Mantle services of ironstone-boss `plan/impl-drawers-commons.md`; not fixed yet.
+
+| Area | Item | Source |
+|---|---|---|
+| Search | The Postgres backend cannot compare a date inside a child list: `index#DataDocuments` (a JavaScript service) gets timestamps as epoch-millis text (`script/runtime/convert.rs` `temporal_text`), and `search/postgres/compile.rs` (`element_value` → `ts_expr`) casts that text to `timestamptz` for range and exists, which fails with "date/time field value out of range". Root date fields are typed columns and work. Fix by converting child-list values to the mapped type when indexing, or by reading all-digit text as epoch millis in `ts_expr`; then `search#Universal` can limit to current party rows (its TODO, `parties.partyThruDate`) | mr-mantle-usl `UniversalSearch.spec.js` |
+| Scripts | A condition object from `ec.entity.conditionFactory` made in a `<script>` and given to a later `<entity-find>` through `<econdition-object field>` is not applied (the find returns unfiltered rows): the context does not keep a condition object (`script/runtime/convert.rs` has no case for it) | mr-mantle-usl `ContactListServices.xml` (worked around with an id list) |
+| Shell | The breadcrumbs under `/qapps` still start with "Applications" and repeat the app title the header shows (style-guide §2.2: the path from the app root) | ironstone-boss impl M1 |
+
 ## Parity gap review
 
 The entity and service modules (Parity-Mapping's Entity and Service sections) were reviewed phase by phase against their Java sources on 2026-10-16: [EntityService-Parity-Review](archive/EntityService-Parity-Review.md), 8 phases, with the accepted differences in [Parity-Diffs](Parity-Diffs.md). The rest of [Parity-Mapping](Parity-Mapping.md) (moqui-lib, moqui-db, context and resources, user and session, transactions and drivers, script and templates, screens and macros, web and the HTTP host, search, notifications and cluster, mail and the tool components, tooling, browser host) has had no phase review yet; the threads to carry through one are [Parity-Mapping, Cross-cutting threads](Parity-Mapping.md#cross-cutting-threads).
