@@ -40,7 +40,8 @@ pub(crate) struct CommitInfo {
     pub id: ObjectId,
     pub tree: ObjectId,
     pub parents: Vec<ObjectId>,
-    /// Committer time, seconds since the epoch.
+    /// Author time, seconds since the epoch: when the change was written, as `git log` shows it. The committer time
+    /// is the same for a commit made here, and later for a version replayed with its own date.
     pub seconds: i64,
     pub message: String,
 }
@@ -66,6 +67,21 @@ pub(crate) struct Author {
     pub name: String,
     pub email: String,
     pub user_id: Option<String>,
+    /// The signature's time, seconds since the epoch; now when empty.
+    pub seconds: Option<i64>,
+}
+
+impl Author {
+    fn signature(&self) -> gix::actor::Signature {
+        gix::actor::Signature {
+            name: self.name.as_str().into(),
+            email: self.email.as_str().into(),
+            time: match self.seconds {
+                Some(seconds) => gix::date::Time::new(seconds, 0),
+                None => gix::date::Time::now_local_or_utc(),
+            },
+        }
+    }
 }
 
 fn missing(id: &ObjectId) -> Error {
@@ -93,9 +109,10 @@ pub(crate) fn read_commit(store: &dyn GitStore, id: &ObjectId) -> Result<CommitI
     let commit =
         gix::objs::CommitRef::from_bytes(&data, HASH).map_err(|err| Error::new(format!("git commit {id}: {err}")))?;
     let seconds = commit
-        .committer()
+        .author()
         .ok()
         .and_then(|signature| signature.time().ok())
+        .or_else(|| commit.committer().ok().and_then(|signature| signature.time().ok()))
         .map_or(0, |time| time.seconds);
     Ok(CommitInfo {
         id: *id,
@@ -226,10 +243,24 @@ pub(crate) fn apply_edits(store: &dyn GitStore, root: Option<&ObjectId>, edits: 
 /// Commit `edits` on `branch`. `edits` is called with the head commit (or `None` on an empty branch) and answers the
 /// changes and the message, or `None` for nothing to commit; it is called again on a fresh head if another writer
 /// moves the branch first. The new commit's id, or `None` when there was nothing to commit or the tree is unchanged.
+/// The provider commits through [`commit_as`], with the current user as committer.
+#[cfg(test)]
 pub(crate) fn commit(
     store: &dyn GitStore,
     branch: &str,
     author: &Author,
+    edits: impl FnMut(Option<&CommitInfo>) -> Result<Option<(Vec<Edit>, String)>, Error>,
+) -> Result<Option<ObjectId>, Error> {
+    commit_as(store, branch, author, author, edits)
+}
+
+/// [`commit`] with a committer apart from the author: a version written by someone else at another time (the author,
+/// whose `user_id` is the `Moqui-User-Id` trailer) committed now by the current user.
+pub(crate) fn commit_as(
+    store: &dyn GitStore,
+    branch: &str,
+    author: &Author,
+    committer: &Author,
     mut edits: impl FnMut(Option<&CommitInfo>) -> Result<Option<(Vec<Edit>, String)>, Error>,
 ) -> Result<Option<ObjectId>, Error> {
     let name = branch_ref(branch);
@@ -242,11 +273,6 @@ pub(crate) fn commit(
         if head.as_ref().is_some_and(|head| head.tree == tree) {
             return Ok(None);
         }
-        let signature = gix::actor::Signature {
-            name: author.name.as_str().into(),
-            email: author.email.as_str().into(),
-            time: gix::date::Time::now_local_or_utc(),
-        };
         let mut message = message.trim_end().to_string();
         message.push('\n');
         if let Some(user_id) = &author.user_id {
@@ -258,8 +284,8 @@ pub(crate) fn commit(
         let commit = gix::objs::Commit {
             tree,
             parents: head.as_ref().map(|head| head.id).into_iter().collect(),
-            author: signature.clone(),
-            committer: signature,
+            author: author.signature(),
+            committer: committer.signature(),
             encoding: None,
             message: message.into(),
             extra_headers: Vec::new(),
@@ -376,6 +402,7 @@ mod tests {
             name: "Test User".to_string(),
             email: "test@example.com".to_string(),
             user_id: Some("EX_JOHN_DOE".to_string()),
+            seconds: None,
         }
     }
 

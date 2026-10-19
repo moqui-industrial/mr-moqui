@@ -349,14 +349,99 @@ along with this software (see the LICENSE.md file). If not, see
         <relationship type="one" related="moqui.resource.wiki.WikiPage" short-alias="page"/>
     </entity>
     <entity entity-name="WikiPageHistory" package="moqui.resource.wiki" use="nontransactional" cache="never">
+        <description>Who saved each version of a page (versionName) and the page's moves (oldPagePath, with oldWikiSpaceId
+            when it came from another space). The versions themselves are the page file's: history rows on the database
+            tree, commits on git. A move that replayed the history into other storage renames versionName to the copy's.</description>
         <field name="wikiPageId" type="id" is-pk="true"/>
         <field name="historySeqId" type="id" is-pk="true"/>
         <field name="oldPagePath" type="text-medium"/>
+        <field name="oldWikiSpaceId" type="id"><description>For a move from another space, the space it came from</description></field>
         <field name="userId" type="id"/>
         <field name="changeDateTime" type="date-time"/>
         <field name="versionName" type="text-short"/>
+        <field name="versionNote" type="text-medium"><description>The note given with the save or move (the version's
+            own note is kept with the version too: the commit message, or DbResourceFile.versionNote)</description></field>
         <relationship type="one" related="moqui.resource.wiki.WikiPage" short-alias="page"/>
         <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
+    </entity>
+    <entity entity-name="WikiPageLink" package="moqui.resource.wiki" use="nontransactional" cache="never">
+        <description>A link in a page's text to another wiki page, indexed by update#WikiPage from the page's markdown (or
+            HTML) each time its text is written: the target as written (linkTarget), the space and path it names
+            (toWikiSpaceId, toPagePath; a relative path from the page's own place), and toWikiPageId when a page is there by
+            that path or a WikiPageAlias (a moved page leaves an alias at its old path, so a link to it keeps working).
+            A link to a page not made yet has no toWikiPageId until that page is made. Read by get#WikiPageBacklinks and
+            get#WikiPageLinks.</description>
+        <field name="wikiPageId" type="id" is-pk="true"/>
+        <field name="linkSeqId" type="id" is-pk="true"/>
+        <field name="toWikiSpaceId" type="id"/>
+        <field name="toPagePath" type="text-medium"/>
+        <field name="toWikiPageId" type="id"/>
+        <field name="linkText" type="text-medium"/>
+        <field name="linkTarget" type="text-medium"><description>The target as written in the text</description></field>
+        <relationship type="one" related="moqui.resource.wiki.WikiPage" short-alias="page"/>
+        <relationship type="one-nofk" title="To" related="moqui.resource.wiki.WikiPage" short-alias="toPage">
+            <key-map field-name="toWikiPageId" related="wikiPageId"/></relationship>
+        <index name="WIKILINK_TO"><index-field name="toWikiPageId"/></index>
+        <index name="WIKILINK_TOPATH"><index-field name="toWikiSpaceId"/><index-field name="toPagePath"/></index>
+    </entity>
+    <entity entity-name="WikiPageReview" package="moqui.resource.wiki" use="nontransactional" cache="never">
+        <description>A request that a user review a version of a page before it is published, and the decision: requested,
+            then approved (which publishes the version unless told not to), changes requested (with a note back) or
+            cancelled. One row per reviewer; with no reviewerUserId any user who may update the page may decide it. The
+            reviewer is notified on topic WikiPageReview, an approval the tray decides (approve#WikiPageReview,
+            refuse#WikiPageReview); the requester on WikiPageReviewDecision. Services: org.moqui.impl.WikiServices
+            request#WikiPageReview, decide#WikiPageReview, cancel#WikiPageReview, find#WikiPageReviews.</description>
+        <field name="wikiPageReviewId" type="id" is-pk="true"/>
+        <field name="wikiPageId" type="id"/>
+        <field name="versionName" type="text-short"><description>The version to review: a version name or a commit id</description></field>
+        <field name="baseVersionName" type="text-short"><description>The version published when the review was asked,
+            the left side of its compare; empty for a page never published</description></field>
+        <field name="statusId" type="id"/>
+        <field name="requestedByUserId" type="id"/>
+        <field name="reviewerUserId" type="id"/>
+        <field name="requestedDate" type="date-time"/>
+        <field name="dueDate" type="date-time"/>
+        <field name="note" type="text-long"><description>The requester's note</description></field>
+        <field name="decidedByUserId" type="id"/>
+        <field name="decidedDate" type="date-time"/>
+        <field name="decisionNote" type="text-long"><description>The reviewer's note with the decision: the changes asked for</description></field>
+        <field name="notificationMessageId" type="id"><description>The reviewer's notification, marked viewed by the decision</description></field>
+        <relationship type="one" related="moqui.resource.wiki.WikiPage" short-alias="page"/>
+        <relationship type="one" title="WikiPageReview" related="moqui.basic.StatusItem" short-alias="status"/>
+        <relationship type="one-nofk" title="RequestedBy" related="moqui.security.UserAccount" short-alias="requestedBy">
+            <key-map field-name="requestedByUserId" related="userId"/></relationship>
+        <relationship type="one-nofk" title="Reviewer" related="moqui.security.UserAccount" short-alias="reviewer">
+            <key-map field-name="reviewerUserId" related="userId"/></relationship>
+        <relationship type="one-nofk" title="DecidedBy" related="moqui.security.UserAccount" short-alias="decidedBy">
+            <key-map field-name="decidedByUserId" related="userId"/></relationship>
+        <relationship type="one-nofk" related="moqui.security.user.NotificationMessage" short-alias="notification"/>
+        <index name="WIKIREV_PAGE"><index-field name="wikiPageId"/></index>
+        <index name="WIKIREV_REVIEWER"><index-field name="reviewerUserId"/><index-field name="statusId"/></index>
+        <index name="WIKIREV_REQUESTER"><index-field name="requestedByUserId"/></index>
+        <seed-data>
+            <moqui.basic.StatusType statusTypeId="WikiPageReview" description="Wiki Page Review"/>
+            <moqui.basic.StatusItem statusId="WprRequested" statusTypeId="WikiPageReview" statusCode="requested" sequenceNum="1" description="Requested"/>
+            <moqui.basic.StatusItem statusId="WprApproved" statusTypeId="WikiPageReview" statusCode="approved" sequenceNum="2" description="Approved"/>
+            <moqui.basic.StatusItem statusId="WprChangesRequested" statusTypeId="WikiPageReview" statusCode="changes" sequenceNum="3" description="Changes Requested"/>
+            <moqui.basic.StatusItem statusId="WprCancelled" statusTypeId="WikiPageReview" statusCode="cancelled" sequenceNum="4" description="Cancelled"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="WprRequested" toStatusId="WprApproved" transitionName="Approve"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="WprRequested" toStatusId="WprChangesRequested" transitionName="Request Changes"/>
+            <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="WprRequested" toStatusId="WprCancelled" transitionName="Cancel"/>
+
+            <!-- a page to review, an approval the tray decides (R23): wikiPageReviewId, wikiPageId, wikiSpaceId, pagePath,
+                pageName, versionName, authorUserId, authorName, note, dueDate; on the record WikiPageReview. The email
+                template is the app's to set (Mantle's setup data sets NOTIFICATION). -->
+            <moqui.security.user.NotificationTopic topic="WikiPageReview" description="Page to Review" typeString="info"
+                    showAlert="Y" persistOnSend="Y" receiveNotifications="Y" isPrivate="Y"
+                    titleTemplate="${authorName} asked you to review ${pageName}" linkTemplate=""
+                    approveServiceName="org.moqui.impl.WikiServices.approve#WikiPageReview"
+                    refuseServiceName="org.moqui.impl.WikiServices.refuse#WikiPageReview" refuseReasonRequired="Y"/>
+            <!-- the decision, to the requester: wikiPageReviewId, wikiPageId, wikiSpaceId, pagePath, pageName, versionName,
+                reviewerUserId, reviewerName, decision (approved or changes), decisionText, decisionNote -->
+            <moqui.security.user.NotificationTopic topic="WikiPageReviewDecision" description="Review of Your Page" typeString="info"
+                    showAlert="Y" persistOnSend="Y" receiveNotifications="Y" isPrivate="Y"
+                    titleTemplate="${reviewerName} ${decisionText} ${pageName}" linkTemplate=""/>
+        </seed-data>
     </entity>
     <entity entity-name="WikiPageUser" package="moqui.resource.wiki" use="nontransactional">
         <field name="wikiPageId" type="id" is-pk="true"/>

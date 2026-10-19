@@ -29,8 +29,11 @@ mod changes;
 use changes::db_file_size;
 #[cfg(feature = "git")]
 pub(crate) use changes::millis_of;
+pub(crate) use changes::version_author;
 pub(crate) use changes::{apply_changes_each, last_change_by_stat, tree_size_by_walk};
-pub use changes::{ChangeLogEntry, ChangeSetOutcome, ResourceChange, ResourceChangeInfo};
+pub use changes::{
+    with_version_author, ChangeLogEntry, ChangeSetOutcome, ResourceChange, ResourceChangeInfo, VersionAuthor,
+};
 
 /// One version of a file, as Java's `ResourceReference.Version`: a `dbresource` history row, or a commit of a `git`
 /// file. `version_date` is a Timestamp value. `note` is what was written with the version: the commit message (without

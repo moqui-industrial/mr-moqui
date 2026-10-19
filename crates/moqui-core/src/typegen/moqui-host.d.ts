@@ -425,6 +425,8 @@ interface MoquiChangeSet {
     delete(path: string): MoquiChangeSet;
     move(from: string, to: string): MoquiChangeSet;
     mkdir(path: string): MoquiChangeSet;
+    /** The versions written are by userId at date (a timestamp or milliseconds); the committer stays the current user. */
+    author(userId: string | null, date?: unknown): MoquiChangeSet;
     size(): number;
     commit(message?: string | null): { versionName: string | null; applied: string[]; failures: { path: string; error: string }[] };
 }

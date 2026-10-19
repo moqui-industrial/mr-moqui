@@ -42,9 +42,10 @@ pub use message::{ErrorMark, MessageFacade, ValidationError};
 pub(crate) use resource::millis_of;
 pub(crate) use resource::split_version;
 pub(crate) use resource::{apply_changes_each, last_change_by_stat, tree_size_by_walk};
+pub(crate) use resource::version_author;
 pub use resource::{
-    ChangeLogEntry, ChangeSetOutcome, ResourceChange, ResourceChangeInfo, ResourceEntry, ResourceFacade, ResourceRef,
-    ResourceStat, ResourceVersion,
+    with_version_author, ChangeLogEntry, ChangeSetOutcome, ResourceChange, ResourceChangeInfo, ResourceEntry,
+    ResourceFacade, ResourceRef, ResourceStat, ResourceVersion, VersionAuthor,
 };
 
 #[cfg(test)]

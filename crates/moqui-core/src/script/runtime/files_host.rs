@@ -18,6 +18,7 @@
 //!
 //! ```text
 //! ec.resource.makeChangeSet(root)          -> builder: write(path, content), delete(path), move(from, to), mkdir(path),
+//!                                             author(userId, date): the versions are by that user at that date,
 //!                                             commit(message) -> {versionName, applied, failures: [{path, error}]}
 //! ref.putText(text, note), ref.putBytes(bytes, note), ref.putStream(stream, note): a version with a note
 //! ec.resource.putContent(location, content, note)  content: text, Uint8Array, an uploaded file or a stream
@@ -36,7 +37,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
 use super::*;
-use crate::context::ResourceChange;
+use crate::context::{ResourceChange, VersionAuthor};
 
 const FILES_JS: &str = r#"(function (ec, host) {
     // the bytes of a change: text, a Uint8Array or ArrayBuffer, an uploaded file (it stays the file), or a stream
@@ -49,14 +50,24 @@ const FILES_JS: &str = r#"(function (ec, host) {
     ec.resource.makeChangeSet = function (root) {
         if (root == null || String(root) === "") throw new Error("makeChangeSet needs a root location");
         const changes = [];
+        let author = null;
         const builder = {
             root: String(root),
             write(path, value) { changes.push({ op: "write", path: String(path), content: content(value) }); return builder; },
             delete(path) { changes.push({ op: "delete", path: String(path) }); return builder; },
             move(from, to) { changes.push({ op: "move", from: String(from), to: String(to) }); return builder; },
             mkdir(path) { changes.push({ op: "mkdir", path: String(path) }); return builder; },
+            // the versions this change set writes are by userId at date (a timestamp or milliseconds), not the current
+            // user now: for a version copied with its history; on git the committer stays the current user
+            author(userId, date) {
+                author = { userId: userId == null || userId === "" ? null : String(userId),
+                    date: date == null || date === "" ? null : date };
+                return builder;
+            },
             size() { return changes.length; },
-            commit(message) { return host.filesApplyChangeSet(builder.root, changes, message == null ? null : String(message)); }
+            commit(message) {
+                return host.filesApplyChangeSet(builder.root, changes, message == null ? null : String(message), author);
+            }
         };
         return builder;
     };
@@ -142,12 +153,44 @@ fn text_field(ctx: &Ctx<'_>, object: &Object<'_>, name: &str) -> rquickjs::Resul
     }
 }
 
+/// The `author(userId, date)` of a change set builder as a version author: the date a timestamp or milliseconds.
+fn version_author_of(ctx: &Ctx<'_>, value: Option<&JsValue<'_>>) -> rquickjs::Result<Option<VersionAuthor>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Value::Map(map) = js_to_host(ctx, value)? else {
+        return Ok(None);
+    };
+    let user_id = map
+        .get("userId")
+        .filter(|value| !matches!(value, Value::Null))
+        .map(moqui_lib::object::to_plain_string)
+        .filter(|user_id| !user_id.is_empty());
+    let date = match map.get("date") {
+        None | Some(Value::Null) => None,
+        Some(Value::I64(millis)) => Some(*millis),
+        #[allow(clippy::cast_possible_truncation)]
+        Some(Value::F64(millis)) if millis.is_finite() => Some(*millis as i64),
+        Some(other) => match moqui_lib::object::basic_convert(other, "Timestamp").value {
+            Value::Timestamp(stamp) => Some(stamp.as_millisecond()),
+            _ => {
+                return Err(Exception::throw_message(
+                    ctx,
+                    "a change set author's date is a timestamp or milliseconds",
+                ))
+            }
+        },
+    };
+    Ok((user_id.is_some() || date.is_some()).then_some(VersionAuthor { user_id, date }))
+}
+
 /// `commit(message)` of a change set builder: `{versionName, applied, failures: [{path, error}]}`.
 fn files_apply_change_set<'js>(
     ctx: Ctx<'js>,
     root: String,
     list: rquickjs::Array<'js>,
     message: Opt<JsValue<'js>>,
+    author: Opt<JsValue<'js>>,
 ) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let mut changes = Vec::with_capacity(list.len());
@@ -182,8 +225,11 @@ fn files_apply_change_set<'js>(
             },
             None => None,
         };
+        let author = version_author_of(&ctx, author.0.as_ref())?;
         let outcome = with_resources(&ctx, |resources| {
-            resources.apply_change_set(&root, &changes, message.as_deref())
+            crate::context::with_version_author(author, || {
+                resources.apply_change_set(&root, &changes, message.as_deref())
+            })
         })?;
         let mut map = indexmap::IndexMap::new();
         map.insert(

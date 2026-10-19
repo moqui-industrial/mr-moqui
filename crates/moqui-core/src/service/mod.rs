@@ -26,6 +26,8 @@ mod elfinder;
 mod email_eca;
 #[cfg(all(test, feature = "git"))]
 mod files_tests;
+#[cfg(all(test, feature = "git"))]
+mod wiki_tests;
 #[cfg(feature = "git")]
 mod git;
 mod images;

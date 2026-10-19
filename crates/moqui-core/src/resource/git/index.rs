@@ -366,6 +366,7 @@ mod tests {
             name: user.to_string(),
             email: format!("{user}@example.com"),
             user_id: Some(user.to_string()),
+            seconds: None,
         }
     }
 

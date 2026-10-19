@@ -258,7 +258,11 @@ impl GitProvider {
 
     /// The current user as a commit author: the `UserAccount` name and email, else the username, else `moqui`.
     fn author(&self) -> Author {
-        let user_id = crate::user::current_user_id().ok().flatten();
+        self.author_of(crate::user::current_user_id().ok().flatten(), true)
+    }
+
+    /// A user as a commit author, by their `UserAccount`; `current` falls back to the current username.
+    fn author_of(&self, user_id: Option<String>, current: bool) -> Author {
         let account = user_id.as_ref().and_then(|user_id| {
             let entity = self.entity().ok()?;
             entity
@@ -270,7 +274,13 @@ impl GitProvider {
                 .flatten()
         });
         let field = |name: &str| account.as_ref().and_then(|row| text(row.get(name)));
-        let username = field("username").or_else(|| crate::user::current_username().ok().flatten());
+        let username = field("username").or_else(|| {
+            if current {
+                crate::user::current_username().ok().flatten()
+            } else {
+                user_id.clone()
+            }
+        });
         Author {
             name: field("userFullName")
                 .or_else(|| username.clone())
@@ -278,6 +288,23 @@ impl GitProvider {
             email: field("emailAddress")
                 .unwrap_or_else(|| format!("{}@localhost", username.as_deref().unwrap_or("moqui"))),
             user_id,
+            seconds: None,
+        }
+    }
+
+    /// The author of the commits a write makes now: the version author set around the write
+    /// ([`crate::context::with_version_author`]), with its date, else the committer (the current user).
+    fn version_author(&self, committer: &Author) -> Author {
+        match crate::context::version_author() {
+            Some(set) => {
+                let mut author = match set.user_id {
+                    Some(user_id) => self.author_of(Some(user_id), false),
+                    None => committer.clone(),
+                };
+                author.seconds = set.date.map(|millis| millis.div_euclid(1000));
+                author
+            }
+            None => committer.clone(),
         }
     }
 
@@ -298,7 +325,9 @@ impl GitProvider {
         edits: impl FnMut(Option<&ops::CommitInfo>) -> Result<Option<(Vec<Edit>, String)>, Error>,
     ) -> Result<Option<ObjectId>, Error> {
         let _turn = moqui_lib::sync::lock(&repo.lock);
-        let made = ops::commit(repo.store.as_ref(), &repo.definition.branch, &self.author(), edits)?;
+        let committer = self.author();
+        let author = self.version_author(&committer);
+        let made = ops::commit_as(repo.store.as_ref(), &repo.definition.branch, &author, &committer, edits)?;
         if let Some(id) = made {
             self.remember_head(&repo.definition.id, Some(id), None);
         }
