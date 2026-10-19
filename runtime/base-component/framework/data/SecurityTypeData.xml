@@ -59,6 +59,19 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="SSH_SFTP" fromDate="0"/>
     <moqui.security.UserPermission userPermissionId="SSH_SHELL" description="SSH: admin command shell"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN_ADV" userPermissionId="SSH_SHELL" fromDate="0"/>
+    <!-- git-upload-pack and git-receive-pack over SSH (git clone ssh://...); AT_GIT_REPOSITORY still gates each
+        repository. Grant it to the groups of developers. A user with only this permission logs in by key
+        (UserSshKey) unless ssh_git_password_auth is true. -->
+    <moqui.security.UserPermission userPermissionId="SSH_GIT" description="SSH: git clone, fetch and push"/>
+    <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="SSH_GIT" fromDate="0"/>
+    <!-- Git repositories (AT_GIT_REPOSITORY): view to clone, fetch and read; create and update to push new refs and
+        fast-forwards; delete to force a push or delete a ref. Admins get all; grant others through ArtifactAuthz on
+        this group, or on a group of their own with the repositoryId (or a pattern) as the artifact name. -->
+    <moqui.security.ArtifactGroup artifactGroupId="GitRepositories" description="All git repositories"/>
+    <moqui.security.ArtifactGroupMember artifactGroupId="GitRepositories" artifactName=".*" nameIsPattern="Y"
+            artifactTypeEnumId="AT_GIT_REPOSITORY" inheritAuthz="N"/>
+    <moqui.security.ArtifactAuthz artifactAuthzId="GitRepositoriesADMIN" userGroupId="ADMIN"
+            artifactGroupId="GitRepositories" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
     <moqui.security.UserPermission userPermissionId="SERVICE_LOAD_RUNNER" description="Tools: Service LoadRunner"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN_ADV" userPermissionId="SERVICE_LOAD_RUNNER" fromDate="0"/>
 </entity-facade-xml>

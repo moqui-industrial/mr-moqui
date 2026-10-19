@@ -35,6 +35,7 @@ use moqui_core::web::{WebRequest, WebResponse};
 use moqui_lib::error::Error;
 use tokio::net::TcpListener;
 use tower::ServiceExt as _;
+use tower_http::compression::Predicate as _;
 
 use crate::{notws, search_proxy};
 
@@ -100,7 +101,7 @@ pub(crate) struct ListenReport {
 
 /// Marks a request that arrived over this process's own TLS listener.
 #[derive(Clone, Copy)]
-struct TlsConnection;
+pub(crate) struct TlsConnection;
 
 /// Bind `bind` (and the HTTPS address when there is one), publish the local addresses, and serve until `stop` is
 /// dropped or a ctrl-c arrives.
@@ -147,7 +148,7 @@ pub(crate) async fn listen(
         .map(|secure| format!(", HTTPS on {secure}"))
         .unwrap_or_default();
     tracing::info!(
-        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, /notws, /elastic, /kibana and the screen dispatcher"
+        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, /notws, /elastic, /kibana, /git and the screen dispatcher"
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let limits = ListenLimits::from_properties();
@@ -163,8 +164,14 @@ pub(crate) async fn listen(
         .route("/kibana", any(search_proxy::kibana))
         .route("/kibana/", any(search_proxy::kibana))
         .route("/kibana/{*rest}", any(search_proxy::kibana))
+        .route("/git/{*rest}", any(crate::git_http::handle))
         .fallback(dispatch_screen)
-        .layer(tower_http::compression::CompressionLayer::new())
+        // git packs are compressed already, and a git client asks for gzip anyway
+        .layer(tower_http::compression::CompressionLayer::new().compress_when(
+            tower_http::compression::predicate::DefaultPredicate::new().and(
+                tower_http::compression::predicate::NotForContentType::const_new("application/x-git-"),
+            ),
+        ))
         .with_state(Arc::new(HttpState {
             factory,
             shutdown: shutdown_rx.clone(),
@@ -300,7 +307,10 @@ async fn run_connection<S>(
         if secure {
             request.extensions_mut().insert(TlsConnection);
         }
-        let deadline = limits.request.filter(|_| request.uri().path() != "/notws");
+        // a websocket, and a git clone or push (which has its own idle timeout), run as long as they need
+        let deadline = limits
+            .request
+            .filter(|_| request.uri().path() != "/notws" && !request.uri().path().starts_with("/git/"));
         let call = router.clone().oneshot(request);
         async move {
             match deadline {
@@ -592,7 +602,7 @@ impl RequestLog {
 
 /// `X-Forwarded-Proto` is believed only when `webapp_client_ip_header` marks a reverse proxy in front.
 /// A direct client could otherwise force `Secure` cookies and HSTS.
-fn forwarded_https(headers: &axum::http::HeaderMap) -> bool {
+pub(crate) fn forwarded_https(headers: &axum::http::HeaderMap) -> bool {
     if moqui_lib::env::get_prop_or_env("webapp_client_ip_header").is_empty() {
         return false;
     }

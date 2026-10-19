@@ -71,7 +71,8 @@ along with this software (see the LICENSE.md file). If not, see
             fetches this repository when this long has passed since the last fetch; never when empty</description></field>
         <field name="lastFetchDate" type="date-time"/>
         <field name="lastFetchError" type="text-long"/>
-        <field name="headCommitId" type="text-short"><description>The branch head after the last write or fetch</description></field>
+        <field name="headCommitId" type="text-short"><description>The branch head after the last write, push or fetch</description></field>
+        <field name="lastUpdateDate" type="date-time"><description>When a write, push or fetch last changed a ref</description></field>
         <relationship type="many" related="moqui.resource.GitRef" short-alias="refs"><key-map field-name="repositoryId"/></relationship>
     </entity>
     <entity entity-name="GitObject" package="moqui.resource" use="nontransactional" cache="never">

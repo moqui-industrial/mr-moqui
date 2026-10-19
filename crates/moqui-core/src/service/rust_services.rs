@@ -126,6 +126,12 @@ mod tests {
                 "moqui_core::service::git::export_repository",
                 "moqui_core::service::git::fetch_all_repositories",
                 "moqui_core::service::git::fetch_repository",
+                "moqui_core::service::git::get_blob",
+                "moqui_core::service::git::get_clone_urls",
+                "moqui_core::service::git::get_commit",
+                "moqui_core::service::git::get_commit_diff",
+                "moqui_core::service::git::get_log",
+                "moqui_core::service::git::get_refs",
                 "moqui_core::service::git::import_repository",
                 "moqui_core::service::git::init_repository",
             ]);

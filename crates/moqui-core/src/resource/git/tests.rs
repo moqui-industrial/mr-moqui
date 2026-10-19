@@ -19,7 +19,9 @@ use std::path::{Path, PathBuf};
 
 use moqui_lib::object::Value;
 
-use super::store::GitStore;
+use gix::objs::Kind;
+
+use super::store::{GitStore, MemoryStore, RefEdit, RefOutcome};
 use super::{fs, ops};
 use crate::context::{ExecutionContext, ExecutionContextFactory, ResourceFacade};
 use crate::entity::{EntityFacade, EntityValue};
@@ -286,6 +288,32 @@ fn a_remote_repository_is_a_read_only_mirror_kept_by_fetch() {
     );
     assert_eq!(resources.version_history("git://mirror/doc.md").unwrap().len(), 2);
 
+    // every branch and tag is mirrored, and one deleted at the source is deleted in the mirror
+    let source_store = fs::FsStore::open(&source).unwrap();
+    let head_id = gix::ObjectId::from_hex(newer.as_bytes()).unwrap();
+    for name in ["refs/heads/feature", "refs/tags/v1.0"] {
+        assert!(source_store.compare_and_set_ref(name, None, head_id).unwrap());
+    }
+    provider.fetch("mirror").unwrap();
+    let mirrored = |prefix: &str| fs::FsStore::open(&mirror).unwrap().list_refs(prefix).unwrap();
+    assert_eq!(
+        mirrored("refs/"),
+        [
+            ("refs/heads/feature".to_string(), head_id),
+            ("refs/heads/main".to_string(), head_id),
+            ("refs/tags/v1.0".to_string(), head_id)
+        ]
+    );
+    assert_eq!(
+        source_store
+            .update_refs(&[super::store::RefEdit { name: "refs/heads/feature".into(), expected: Some(head_id), new: None }], true)
+            .unwrap(),
+        [RefOutcome::Updated]
+    );
+    provider.fetch("mirror").unwrap();
+    assert_eq!(mirrored("refs/heads/"), [("refs/heads/main".to_string(), head_id)]);
+    assert_eq!(mirrored("refs/tags/").len(), 1);
+
     fixture.entity.set_sim_active(true);
     let err = provider.fetch("mirror").unwrap_err();
     fixture.entity.set_sim_active(false);
@@ -294,6 +322,62 @@ fn a_remote_repository_is_a_read_only_mirror_kept_by_fetch() {
     define(&fixture.entity, "imported", "db", None, Some(&url));
     let (imported, _) = provider.import("imported", None).unwrap();
     assert_eq!(imported, newer);
+}
+
+#[test]
+fn refs_logs_commits_and_diffs_read_any_revision() {
+    let fixture = fixture("browse");
+    let _entered = fixture.context.enter();
+    define(&fixture.entity, "code", "db", None, None);
+    let resources = fixture.context.factory().resource();
+    let provider = resources.git().expect("git provider").clone();
+    resources.write_bytes("git://code/src/a.rs", b"fn a() {}\n").unwrap();
+    resources.write_bytes("git://code/README.md", b"# Code\n").unwrap();
+    resources.write_bytes("git://code/src/a.rs", b"fn a() {\n    b();\n}\n").unwrap();
+    let head = provider.resolve_commit("code", "").unwrap().expect("a head");
+    let store = super::db::DbStore::new(fixture.entity.clone(), "code");
+    assert!(store.compare_and_set_ref("refs/tags/v1", None, head).unwrap());
+
+    let refs = provider.refs("code", "refs/").unwrap();
+    assert_eq!(refs.branch, "main");
+    assert_eq!(refs.head, Some(head));
+    let names: Vec<(&str, super::browse::RefKind)> = refs.refs.iter().map(|info| (info.name.as_str(), info.kind)).collect();
+    assert_eq!(
+        names,
+        [("refs/heads/main", super::browse::RefKind::Branch), ("refs/tags/v1", super::browse::RefKind::Tag)]
+    );
+    assert_eq!(refs.refs[1].commit.as_ref().map(|commit| commit.id), Some(head));
+
+    let log = provider.log("code", "", &[], None, 50).unwrap();
+    let summaries: Vec<&str> = log.commits.iter().map(|commit| commit.summary()).collect();
+    assert_eq!(summaries, ["Update src/a.rs", "Create README.md", "Create src/a.rs"]);
+    assert!(!log.more);
+    let page = provider.log("code", "v1", &[], None, 1).unwrap();
+    assert_eq!(page.commits.len(), 1);
+    assert!(page.more);
+    let next = provider
+        .log("code", "v1", &[], Some(&page.commits[0].id.to_string()[..10]), 1)
+        .unwrap();
+    assert_eq!(next.commits[0].summary(), "Create README.md");
+    let path = vec!["src".to_string(), "a.rs".to_string()];
+    let of_path = provider.log("code", "", &path, None, 50).unwrap();
+    assert_eq!(of_path.commits.len(), 2, "only the commits that changed src/a.rs");
+
+    let short = &head.to_string()[..8];
+    let (commit, changes) = provider.commit_changes("code", short).unwrap().expect("the head");
+    assert_eq!(commit.id, head);
+    assert!(commit.author.email.contains('@'), "{:?}", commit.author);
+    assert_eq!(commit.committer, commit.author);
+    let paths: Vec<&str> = changes.iter().map(|change| change.path.as_str()).collect();
+    assert_eq!(paths, ["src/a.rs"]);
+    let diffs = provider.commit_diffs("code", "HEAD", None).unwrap().unwrap();
+    let diff = diffs[0].1.diff.as_ref().expect("a text diff");
+    assert_eq!((diff.stats.insertions, diff.stats.deletions), (3, 1));
+    assert_eq!(
+        provider.blob_at("code", "v1", &["README.md".to_string()]).unwrap(),
+        Some(b"# Code\n".to_vec())
+    );
+    assert_eq!(provider.resolve_commit("code", "no-such-branch").unwrap(), None);
 }
 
 #[test]
@@ -315,6 +399,98 @@ fn locations_name_their_repository_and_refuse_odd_paths() {
     define(&fixture.entity, "plain", "db", None, None);
     let err = resources.rename("git://plain/a", "git://odd/a").unwrap_err();
     assert!(err.to_string().contains("between git repositories"), "{err}");
+}
+
+fn edit(name: &str, expected: Option<gix::ObjectId>, new: Option<gix::ObjectId>) -> RefEdit {
+    RefEdit {
+        name: name.to_string(),
+        expected,
+        new,
+    }
+}
+
+/// Ref updates, ref listing and batch object operations, the same on each kind of store.
+fn store_scenario(store: &dyn GitStore) {
+    use RefOutcome::{Aborted, Stale, Updated};
+    let a = store.write(Kind::Blob, b"a").unwrap();
+    let b = store.write(Kind::Blob, b"b").unwrap();
+    let c = store.write(Kind::Blob, b"c").unwrap();
+    let main = "refs/heads/main";
+    let tag = "refs/tags/v1_0";
+    assert_eq!(
+        store
+            .update_refs(&[edit(tag, None, Some(b)), edit(main, None, Some(a))], true)
+            .unwrap(),
+        [Updated, Updated]
+    );
+    let all = |prefix: &str| store.list_refs(prefix).unwrap();
+    assert_eq!(all("refs/"), [(main.to_string(), a), (tag.to_string(), b)]);
+    assert_eq!(all("refs/tags/"), [(tag.to_string(), b)]);
+    assert_eq!(all("refs/tags/v1_"), [(tag.to_string(), b)], "an underscore is not a wildcard");
+    assert!(all("refs/tags/v1x").is_empty());
+
+    // one stale edit in an atomic update: nothing changes
+    let mixed = [edit(main, Some(a), Some(c)), edit(tag, Some(c), Some(a))];
+    assert_eq!(store.update_refs(&mixed, true).unwrap(), [Aborted, Stale]);
+    assert_eq!(store.read_ref(main).unwrap(), Some(a));
+    // the same edits one by one: the good one is made
+    assert_eq!(store.update_refs(&mixed, false).unwrap(), [Updated, Stale]);
+    assert_eq!(store.read_ref(main).unwrap(), Some(c));
+    // a create of a ref that is there, a delete of one that is not
+    assert_eq!(store.update_refs(&[edit(main, None, Some(a))], true).unwrap(), [Stale]);
+    assert_eq!(
+        store.update_refs(&[edit("refs/heads/gone", Some(a), None)], true).unwrap(),
+        [Stale]
+    );
+    assert_eq!(store.update_refs(&[edit(tag, Some(b), None)], true).unwrap(), [Updated]);
+    assert_eq!(all("refs/"), [(main.to_string(), c)]);
+    assert!(store.compare_and_set_ref(main, Some(c), a).unwrap());
+    assert!(!store.compare_and_set_ref(main, Some(c), b).unwrap());
+
+    let hex = a.to_string();
+    assert_eq!(store.find_prefix(&hex[..8], 5).unwrap(), [a]);
+    assert!(store.find_prefix("zz", 5).unwrap().is_empty());
+    let unknown = gix::ObjectId::from_hex(b"0123456789012345678901234567890123456789").unwrap();
+    let present = store.contains_many(&[a, unknown, c]).unwrap();
+    assert_eq!(present, [a, c].into_iter().collect());
+    let mut objects = [
+        Ok((Kind::Blob, b"a".to_vec())),
+        Ok((Kind::Blob, b"new 1".to_vec())),
+        Ok((Kind::Blob, b"new 2".to_vec())),
+        Ok((Kind::Blob, b"new 1".to_vec())),
+    ]
+    .into_iter();
+    assert_eq!(store.write_batch(&mut objects).unwrap(), 2, "two new objects, one repeated");
+    let new = super::store::object_id(Kind::Blob, b"new 2").unwrap();
+    assert_eq!(store.find(&new).unwrap().map(|(_, data)| data), Some(b"new 2".to_vec()));
+}
+
+#[test]
+fn ref_updates_and_batches_are_the_same_on_each_store() {
+    store_scenario(&MemoryStore::default());
+    let fixture = fixture("stores");
+    let _entered = fixture.context.enter();
+    let path = fixture.dir.join("store.git");
+    let fs_store = fs::FsStore::init(&path, "main").unwrap();
+    store_scenario(&fs_store);
+    store_scenario(&super::db::DbStore::new(fixture.entity.clone(), "stores"));
+
+    // a delete of a packed ref (git pack-refs moves loose refs into packed-refs)
+    let packed = fixture.dir.join("packed.git");
+    let store = fs::FsStore::init(&packed, "main").unwrap();
+    let a = store.write(Kind::Blob, b"a").unwrap();
+    assert!(store.compare_and_set_ref("refs/tags/old", None, a).unwrap());
+    if git(&["--git-dir", &packed.to_string_lossy(), "pack-refs", "--all"]).is_some() {
+        assert!(!packed.join("refs/tags/old").exists(), "packed");
+        let store = fs::FsStore::open(&packed).unwrap();
+        assert_eq!(store.list_refs("refs/tags/").unwrap(), [("refs/tags/old".to_string(), a)]);
+        assert_eq!(
+            store.update_refs(&[edit("refs/tags/old", Some(a), None)], true).unwrap(),
+            [RefOutcome::Updated]
+        );
+        assert!(store.list_refs("refs/").unwrap().is_empty());
+        assert_eq!(fs::FsStore::open(&packed).unwrap().read_ref("refs/tags/old").unwrap(), None);
+    }
 }
 
 /// The output of the git command line, or `None` when git is not installed.

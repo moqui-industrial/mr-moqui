@@ -290,8 +290,10 @@ async fn accept_loop(
             cluster: false,
             can_sftp: false,
             can_shell: false,
+            can_git: false,
             channels: HashMap::new(),
             ptys: HashSet::new(),
+            git_protocol: HashMap::new(),
         };
         let config = Arc::clone(&config);
         let mut stop = shutdown.clone();
@@ -336,24 +338,49 @@ struct Connection {
     cluster: bool,
     can_sftp: bool,
     can_shell: bool,
+    /// `git-upload-pack` and `git-receive-pack` (`SSH_GIT`); each repository is still checked.
+    can_git: bool,
     channels: HashMap<ChannelId, Channel<Msg>>,
     ptys: HashSet<ChannelId>,
+    /// `GIT_PROTOCOL` of each channel's `env` request.
+    git_protocol: HashMap<ChannelId, String>,
 }
 
-/// The two SSH permissions of the user now logged in.
-fn ssh_permissions() -> Result<(bool, bool), CoreError> {
-    Ok((
-        moqui_core::user::has_permission("SSH_SFTP")?,
-        moqui_core::user::has_permission("SSH_SHELL")?,
-    ))
+/// The SSH permissions of the user now logged in.
+#[derive(Clone, Copy, Debug)]
+struct Permissions {
+    sftp: bool,
+    shell: bool,
+    git: bool,
+}
+
+fn ssh_permissions() -> Result<Permissions, CoreError> {
+    Ok(Permissions {
+        sftp: moqui_core::user::has_permission("SSH_SFTP")?,
+        shell: moqui_core::user::has_permission("SSH_SHELL")?,
+        git: moqui_core::user::has_permission("SSH_GIT")?,
+    })
 }
 
 impl Connection {
-    fn accept(&mut self, username: &str, permissions: (bool, bool)) -> Auth {
-        let (sftp, shell) = permissions;
-        if !sftp && !shell {
+    /// Let the user in when a permission allows something. A user who may only use git logs in by key, unless
+    /// `ssh_git_password_auth` is true: git hosting opens the server to every developer, and keys are not guessed.
+    fn accept(&mut self, username: &str, permissions: Permissions, by_password: bool) -> Auth {
+        let Permissions { sftp, shell, git } = permissions;
+        if !sftp && !shell && !git {
             tracing::warn!(
-                "SSH login of {username} from {}: no SSH_SFTP or SSH_SHELL permission",
+                "SSH login of {username} from {}: no SSH_SFTP, SSH_SHELL or SSH_GIT permission",
+                self.peer
+            );
+            return Auth::reject();
+        }
+        if !sftp
+            && !shell
+            && by_password
+            && moqui_lib::env::get_prop_or_env("ssh_git_password_auth").trim() != "true"
+        {
+            tracing::warn!(
+                "SSH password login of {username} from {} refused: git over SSH takes a key (ssh_git_password_auth)",
                 self.peer
             );
             return Auth::reject();
@@ -370,6 +397,7 @@ impl Connection {
         self.username = Some(username.to_string());
         self.can_sftp = sftp;
         self.can_shell = shell;
+        self.can_git = git;
         Auth::Accept
     }
 }
@@ -388,7 +416,7 @@ impl russh::server::Handler for Connection {
         })
         .await;
         match checked {
-            Ok(permissions) => Ok(self.accept(user, permissions)),
+            Ok(permissions) => Ok(self.accept(user, permissions, true)),
             Err(err) => {
                 tracing::warn!(
                     "SSH password login of {user} from {} failed: {}",
@@ -435,7 +463,7 @@ impl russh::server::Handler for Connection {
         })
         .await;
         match checked {
-            Ok(permissions) => Ok(self.accept(user, permissions)),
+            Ok(permissions) => Ok(self.accept(user, permissions, false)),
             Err(err) => {
                 tracing::warn!("SSH key login of {user} from {} failed: {}", self.peer, err.message());
                 Ok(Auth::reject())
@@ -518,6 +546,26 @@ impl russh::server::Handler for Connection {
             tokio::spawn(super::cluster::serve_channel(open.into_stream(), factory, posts, topic));
             return Ok(());
         }
+        let line = String::from_utf8_lossy(data).into_owned();
+        if moqui_core::resource::git::server::parse_ssh_command(&line).is_some() {
+            let (Some(username), true) = (self.username.clone(), self.can_git) else {
+                return session.channel_failure(channel);
+            };
+            let Some(open) = self.channels.remove(&channel) else {
+                return session.channel_failure(channel);
+            };
+            session.channel_success(channel)?;
+            tokio::spawn(super::git::serve_channel(
+                open,
+                channel,
+                session.handle(),
+                std::sync::Weak::clone(&self.shared.factory),
+                username,
+                line,
+                self.git_protocol.remove(&channel),
+            ));
+            return Ok(());
+        }
         let (Some(username), true) = (self.username.clone(), self.can_shell) else {
             return session.channel_failure(channel);
         };
@@ -525,7 +573,6 @@ impl russh::server::Handler for Connection {
             return session.channel_failure(channel);
         };
         session.channel_success(channel)?;
-        let line = String::from_utf8_lossy(data).into_owned();
         let factory = std::sync::Weak::clone(&self.shared.factory);
         let handle = session.handle();
         let newline = if self.ptys.contains(&channel) { "\r\n" } else { "\n" };
@@ -543,6 +590,22 @@ impl russh::server::Handler for Connection {
             let _ = handle.close(channel).await;
         });
         Ok(())
+    }
+
+    /// `GIT_PROTOCOL` (protocol v2 for git) is kept for the channel's exec; other variables are refused, as
+    /// OpenSSH's default `AcceptEnv` does.
+    async fn env_request(
+        &mut self,
+        channel: ChannelId,
+        variable_name: &str,
+        variable_value: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if variable_name == "GIT_PROTOCOL" && self.username.is_some() {
+            self.git_protocol.insert(channel, variable_value.to_string());
+            return session.channel_success(channel);
+        }
+        session.channel_failure(channel)
     }
 
     async fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Self::Error> {

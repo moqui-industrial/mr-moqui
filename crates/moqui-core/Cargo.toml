@@ -53,6 +53,8 @@ zip = { workspace = true }
 image = { workspace = true }
 similar = { workspace = true }
 gix = { workspace = true, optional = true }
+gix-pack = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
 
 # No prebuilt QuickJS bindings ship for this target. bindgen needs libclang and the emsdk sysroot;
 # scripts/wasm-env.sh sets both.
@@ -70,7 +72,7 @@ http = ["moqui-lib/http"]
 # Generated self-signed cluster certificate.
 cluster-tls = ["dep:rcgen"]
 # git:// resource locations and org.moqui.impl.GitServices (gitoxide; fetch over HTTPS needs `http`).
-git = ["dep:gix", "http"]
+git = ["dep:gix", "dep:gix-pack", "dep:flate2", "http"]
 
 [lints]
 workspace = true

@@ -281,6 +281,164 @@ pub(crate) fn commit(
     )))
 }
 
+/// A person and time on a commit or tag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Signature {
+    pub name: String,
+    pub email: String,
+    /// Seconds since the epoch.
+    pub seconds: i64,
+    /// The time zone offset, in seconds east of UTC.
+    pub offset: i32,
+}
+
+impl Signature {
+    fn of(signature: gix::actor::SignatureRef<'_>) -> Self {
+        let time = signature.time().unwrap_or_default();
+        Self {
+            name: signature.name.trim().to_str_lossy().into_owned(),
+            email: signature.email.trim().to_str_lossy().into_owned(),
+            seconds: time.seconds,
+            offset: time.offset,
+        }
+    }
+
+    fn unknown() -> Self {
+        Self {
+            name: String::new(),
+            email: String::new(),
+            seconds: 0,
+            offset: 0,
+        }
+    }
+}
+
+/// Everything a commit says, for logs, the commit view and gitECA rules.
+#[derive(Clone, Debug)]
+pub(crate) struct CommitDetails {
+    pub id: ObjectId,
+    pub tree: ObjectId,
+    pub parents: Vec<ObjectId>,
+    pub author: Signature,
+    pub committer: Signature,
+    pub message: String,
+}
+
+impl CommitDetails {
+    /// The first line of the message.
+    pub(crate) fn summary(&self) -> &str {
+        self.message.lines().next().unwrap_or("").trim()
+    }
+
+    /// The `Name: value` lines of the message's last paragraph, when every line of it is one (a continuation line
+    /// that starts with a space or tab is joined to the one before), as git reads trailers. The subject alone is not a
+    /// trailer block.
+    pub(crate) fn trailers(&self) -> Vec<(String, String)> {
+        trailers(&self.message)
+    }
+}
+
+/// The trailers of a commit or tag message: see [`CommitDetails::trailers`].
+pub(crate) fn trailers(message: &str) -> Vec<(String, String)> {
+    let paragraphs: Vec<&str> = message
+        .trim()
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|paragraph| !paragraph.is_empty())
+        .collect();
+    if paragraphs.len() < 2 {
+        return Vec::new();
+    }
+    let mut found: Vec<(String, String)> = Vec::new();
+    for line in paragraphs[paragraphs.len() - 1].lines() {
+        if line.starts_with([' ', '\t']) {
+            match found.last_mut() {
+                Some((_, value)) => {
+                    value.push(' ');
+                    value.push_str(line.trim());
+                    continue;
+                }
+                None => return Vec::new(),
+            }
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            return Vec::new();
+        };
+        if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
+            return Vec::new();
+        }
+        found.push((name.to_string(), value.trim().to_string()));
+    }
+    found
+}
+
+pub(crate) fn commit_details(store: &dyn GitStore, id: &ObjectId) -> Result<CommitDetails, Error> {
+    let data = object(store, id, Kind::Commit)?;
+    let commit =
+        gix::objs::CommitRef::from_bytes(&data, HASH).map_err(|err| Error::new(format!("git commit {id}: {err}")))?;
+    Ok(CommitDetails {
+        id: *id,
+        tree: commit.tree(),
+        parents: commit.parents().collect(),
+        author: commit.author().map_or_else(|_| Signature::unknown(), Signature::of),
+        committer: commit.committer().map_or_else(|_| Signature::unknown(), Signature::of),
+        message: commit.message.to_str_lossy().into_owned(),
+    })
+}
+
+/// An annotated tag object.
+#[derive(Clone, Debug)]
+pub(crate) struct TagDetails {
+    pub name: String,
+    pub target: ObjectId,
+    pub target_kind: Kind,
+    pub tagger: Option<Signature>,
+    pub message: String,
+}
+
+pub(crate) fn tag_details(store: &dyn GitStore, id: &ObjectId) -> Result<TagDetails, Error> {
+    let data = object(store, id, Kind::Tag)?;
+    let tag = gix::objs::TagRef::from_bytes(&data, HASH).map_err(|err| Error::new(format!("git tag {id}: {err}")))?;
+    Ok(TagDetails {
+        name: tag.name.to_str_lossy().into_owned(),
+        target: tag.target(),
+        target_kind: tag.target_kind,
+        tagger: tag.tagger().ok().flatten().map(Signature::of),
+        message: tag.message.to_str_lossy().into_owned(),
+    })
+}
+
+/// The object `revision` names in a repository whose default branch is `branch`: empty or `HEAD` for that branch's
+/// head, a full ref name, a branch or tag name, a full object id, or a unique prefix of at least 4 hex digits.
+/// `None` when it names nothing; an ambiguous prefix is an error.
+pub(crate) fn resolve_revision(store: &dyn GitStore, branch: &str, revision: &str) -> Result<Option<ObjectId>, Error> {
+    let revision = revision.trim();
+    if revision.is_empty() || revision == "HEAD" {
+        return store.read_ref(&branch_ref(branch));
+    }
+    if revision.len() == 40 {
+        if let Ok(id) = ObjectId::from_hex(revision.as_bytes()) {
+            return Ok(store.object_size(&id)?.map(|_| id));
+        }
+    }
+    let names = if revision.starts_with("refs/") {
+        vec![revision.to_string()]
+    } else {
+        vec![branch_ref(revision), format!("refs/tags/{revision}")]
+    };
+    for name in names {
+        if let Some(id) = store.read_ref(&name)? {
+            return Ok(Some(id));
+        }
+    }
+    let found = store.find_prefix(revision, 2)?;
+    match found.as_slice() {
+        [] => Ok(None),
+        [id] => Ok(Some(*id)),
+        _ => Err(Error::new(format!("{revision} names more than one object; give more digits"))),
+    }
+}
+
 /// The `Moqui-User-Id` trailer of a commit message.
 pub(crate) fn user_of(message: &str) -> Option<String> {
     message
@@ -523,6 +681,21 @@ mod tests {
             .map(|entry| entry.name)
             .collect();
         assert_eq!(names, ["a.txt", "b.txt", "c.txt"]);
+    }
+
+    #[test]
+    fn trailers_are_the_last_paragraph_when_every_line_is_one() {
+        let found = trailers("Fix login\n\nLonger text.\n\nTask: PROJ-100023\nSigned-off-by: A <a@b.c>\n  continued\n");
+        assert_eq!(
+            found,
+            [
+                ("Task".to_string(), "PROJ-100023".to_string()),
+                ("Signed-off-by".to_string(), "A <a@b.c> continued".to_string())
+            ]
+        );
+        assert!(trailers("Task: only a subject\n").is_empty());
+        assert!(trailers("Subject\n\nTask: X\nnot a trailer\n").is_empty());
+        assert!(trailers("Subject\n\nSee: http://x\n").len() == 1);
     }
 
     #[test]

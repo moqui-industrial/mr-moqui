@@ -1,0 +1,213 @@
+/*
+ * This software is in the public domain under CC0 1.0 Universal plus a
+ * Grant of Patent License.
+ *
+ * To the extent possible under law, the author(s) have dedicated all
+ * copyright and related and neighboring rights to this software to the
+ * public domain worldwide. This software is distributed without any
+ * warranty.
+ *
+ * You should have received a copy of the CC0 Public Domain Dedication
+ * along with this software (see the LICENSE.md file). If not, see
+ * <http://creativecommons.org/publicdomain/zero/1.0/>.
+ */
+
+//! git's smart HTTP protocol at `/git/<repositoryId>.git/...`: `GET info/refs?service=git-upload-pack` (or
+//! `git-receive-pack`) and `POST git-upload-pack` / `git-receive-pack`. The dumb protocol is not served. The request
+//! body streams into, and the response streams out of, a job of the git pool that runs
+//! `moqui_core::resource::git::server::serve_http`, so a clone or push is not held in memory, takes no request worker
+//! from the screens, and is exempt from `webapp_request_timeout` (a gap of `git_idle_timeout`, 120 seconds, in the
+//! request body ends it). Bodies are limited by `git_max_request` (64 MB, upload-pack) and `git_max_push_size` (2 GB).
+//! Credentials are taken only over HTTPS (the listener, or `X-Forwarded-Proto` behind the proxy that
+//! `webapp_client_ip_header` names), from loopback, or with `git_allow_http=true`.
+
+use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Duration;
+
+use axum::extract::{ConnectInfo, Request, State};
+use axum::response::Response;
+use bytes::Bytes;
+use hyper::body::{Body as _, Frame};
+use moqui_core::resource::git::server::{self, GitHttpRequest, GitService, HttpResponder};
+use tokio::sync::{mpsc, oneshot};
+
+use crate::git_bridge::{ChannelReader, ChannelWriter, Chunk, QUEUED};
+use crate::http::{forwarded_https, plain, HttpState, TlsConnection};
+
+const DEFAULT_MAX_REQUEST: u64 = 64 * 1024 * 1024;
+const DEFAULT_MAX_PUSH: u64 = 2 * 1024 * 1024 * 1024;
+const DEFAULT_IDLE: Duration = Duration::from_secs(120);
+
+fn property(name: &str) -> String {
+    moqui_lib::env::get_prop_or_env(name).trim().to_string()
+}
+
+fn size_property(name: &str, default: u64) -> u64 {
+    property(name).parse().ok().filter(|size| *size > 0).unwrap_or(default)
+}
+
+/// The response body: chunks from the job until it drops its writer.
+struct ChannelBody(mpsc::Receiver<Chunk>);
+
+impl hyper::body::Body for ChannelBody {
+    type Data = Bytes;
+    type Error = std::io::Error;
+
+    fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        self.0.poll_recv(cx).map(|chunk| chunk.map(|chunk| chunk.map(Frame::data)))
+    }
+}
+
+/// A response's status and headers.
+type Head = (u16, Vec<(String, String)>);
+
+/// The job's side of the response: the status and headers once, then the body.
+struct Responder {
+    head: Option<oneshot::Sender<Head>>,
+    body: ChannelWriter,
+}
+
+impl HttpResponder for Responder {
+    fn head(&mut self, status: u16, headers: &[(&str, String)]) -> std::io::Result<()> {
+        let head = self
+            .head
+            .take()
+            .ok_or_else(|| std::io::Error::other("the response head was already sent"))?;
+        let headers = headers
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), value.clone()))
+            .collect();
+        head.send((status, headers))
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the git client went away"))
+    }
+
+    fn body(&mut self) -> &mut dyn std::io::Write {
+        &mut self.body
+    }
+}
+
+/// Copy the request body into `tx`: past `limit` bytes, or after `idle` with nothing, the job reads an error.
+async fn feed(mut body: axum::body::Body, tx: mpsc::Sender<Chunk>, limit: u64, idle: Duration) {
+    let mut total: u64 = 0;
+    loop {
+        let frame = tokio::time::timeout(idle, std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))).await;
+        let chunk = match frame {
+            Err(_) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the git request body stalled")),
+            Ok(None) => return,
+            Ok(Some(Err(err))) => Err(std::io::Error::other(format!("reading the git request: {err}"))),
+            Ok(Some(Ok(frame))) => match frame.into_data() {
+                Ok(data) => {
+                    total += data.len() as u64;
+                    if total > limit {
+                        Err(std::io::Error::other(format!("the git request is over {limit} bytes")))
+                    } else {
+                        Ok(data)
+                    }
+                }
+                // trailers
+                Err(_) => continue,
+            },
+        };
+        let failed = chunk.is_err();
+        if tx.send(chunk).await.is_err() || failed {
+            return;
+        }
+    }
+}
+
+/// `/git/{*rest}`.
+pub(crate) async fn handle(
+    State(state): State<Arc<HttpState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request,
+) -> Response {
+    let over_tls = request.extensions().get::<TlsConnection>().is_some();
+    let (parts, body) = request.into_parts();
+    let path = parts.uri.path().strip_prefix("/git/").unwrap_or("");
+    let (repository, tail) = match path.find(".git/") {
+        Some(at) => (&path[..at], &path[at + 5..]),
+        None => path.split_once('/').unwrap_or((path, "")),
+    };
+    let query = parts.uri.query().unwrap_or("");
+    let (service, advertise) = match (parts.method.as_str(), tail) {
+        ("GET", "info/refs") => (
+            query
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("service="))
+                .and_then(GitService::from_name),
+            true,
+        ),
+        ("POST", name) => (GitService::from_name(name), false),
+        _ => (None, false),
+    };
+    let (Some(service), Some(repository)) = (service, server::repository_of(repository)) else {
+        return plain(404, "not a git smart HTTP request (the dumb protocol is not served)");
+    };
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+    };
+    let limit = match (advertise, service) {
+        (true, _) => 0,
+        (false, GitService::UploadPack) => size_property("git_max_request", DEFAULT_MAX_REQUEST),
+        (false, GitService::ReceivePack) => size_property("git_max_push_size", DEFAULT_MAX_PUSH),
+    };
+    if header("content-length")
+        .and_then(|length| length.parse::<u64>().ok())
+        .is_some_and(|length| length > limit)
+    {
+        return plain(413, &format!("the git request is over {limit} bytes"));
+    }
+    let secure =
+        over_tls || forwarded_https(&parts.headers) || peer.ip().is_loopback() || property("git_allow_http") == "true";
+    let git_request = GitHttpRequest {
+        repository,
+        service,
+        advertise,
+        git_protocol: header("git-protocol"),
+        gzip: header("content-encoding").is_some_and(|encoding| encoding.eq_ignore_ascii_case("gzip")),
+        authorization: header("authorization"),
+        api_key: header("api_key").or_else(|| header("login_key")),
+        secure,
+        client_ip: peer.ip().to_string(),
+    };
+    let idle = property("git_idle_timeout")
+        .parse::<u64>()
+        .ok()
+        .filter(|seconds| *seconds > 0)
+        .map_or(DEFAULT_IDLE, Duration::from_secs);
+    let (body_tx, body_rx) = mpsc::channel(QUEUED);
+    let (out_tx, out_rx) = mpsc::channel(QUEUED);
+    let (head_tx, head_rx) = oneshot::channel();
+    let factory = Arc::clone(&state.factory);
+    let submitted = server::pool(&factory).try_submit(Arc::clone(&factory), move || {
+        let mut reader = ChannelReader::new(body_rx);
+        let mut responder = Responder {
+            head: Some(head_tx),
+            body: ChannelWriter::new(out_tx),
+        };
+        server::serve_http(&git_request, &mut reader, &mut responder);
+        let _ = std::io::Write::flush(&mut responder.body);
+        Ok(())
+    });
+    if submitted.is_err() {
+        return plain(503, "the git server is busy; try again");
+    }
+    tokio::spawn(feed(body, body_tx, limit, idle));
+    let Ok((status, headers)) = head_rx.await else {
+        return plain(500, "the git request ended without a response");
+    };
+    let mut response = Response::builder().status(status);
+    for (name, value) in headers {
+        response = response.header(name, value);
+    }
+    response
+        .body(axum::body::Body::new(ChannelBody(out_rx)))
+        .unwrap_or_else(|_| plain(500, "a git response header was not valid"))
+}

@@ -173,6 +173,12 @@ gix = { version = "0.89", default-features = false, features = [
     "blocking-network-client",
     "blocking-http-transport-reqwest-rust-tls",
 ] }
+# The pack writer (data::output, the `generate` feature) and a delta-base cache for the git server
+# (crates/moqui-core/src/resource/git/server): gix reaches gix-pack without either. The version moves with gix's.
+gix-pack = { version = "0.76", default-features = false, features = ["generate", "pack-cache-lru-dynamic"] }
+# gzip request bodies of the git server (git compresses an upload-pack request over 1 KB). Already in the graph
+# through russh and zip; the miniz_oxide backend.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 
 # --- moqui-host ---
 # rt-multi-thread is for axum. postgres::Client builds its own current_thread runtime.

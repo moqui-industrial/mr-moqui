@@ -42,6 +42,9 @@ pub mod usage;
 mod cluster_edge;
 mod cluster_notify;
 
+mod git_bridge;
+#[cfg(feature = "axum")]
+mod git_http;
 #[cfg(feature = "axum")]
 mod http;
 #[cfg(feature = "axum")]

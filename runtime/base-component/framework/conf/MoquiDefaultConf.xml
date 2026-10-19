@@ -92,6 +92,30 @@
     <default-property name="ssh_sftp_root" value="runtime://sftp"/>
     <default-property name="ssh_sftp_max_file" value="268435456"/>
     <default-property name="ssh_max_sessions" value="8"/>
+    <!-- A user with only SSH_GIT (git over SSH) may log in by password too; by key only when false. -->
+    <default-property name="ssh_git_password_auth" value="false"/>
+
+    <!--
+        The git server: clone, fetch and push of GitRepository repositories at <git_public_url>/git/<repositoryId>.git
+        (smart HTTP) and over the SSH server (SSH_GIT), checked against AT_GIT_REPOSITORY (docs/Git-Hosting.md).
+        git_public_url is the base URL clone URLs show; from the webapp host and port when empty. ssh_public_host and
+        ssh_public_port are the SSH host and port clone URLs show; webapp_http_host and ssh_port when empty.
+        git_max_concurrent clones and pushes run at once, on threads of their own, with git_max_queued waiting.
+        git_max_request bytes of an upload-pack request, git_max_push_size bytes of a push, git_max_object_size bytes
+        of one pushed object; git_idle_timeout seconds of silence in a request body end it. git_pack_threads (all
+        cores when empty) compress and index packs. Credentials over plain HTTP are refused unless git_allow_http.
+    -->
+    <default-property name="git_public_url" value=""/>
+    <default-property name="ssh_public_host" value=""/>
+    <default-property name="ssh_public_port" value=""/>
+    <default-property name="git_max_concurrent" value="4"/>
+    <default-property name="git_max_queued" value="16"/>
+    <default-property name="git_max_request" value="67108864"/>
+    <default-property name="git_max_push_size" value="2147483648"/>
+    <default-property name="git_max_object_size" value="536870912"/>
+    <default-property name="git_idle_timeout" value="120"/>
+    <default-property name="git_pack_threads" value=""/>
+    <default-property name="git_allow_http" value="false"/>
 
     <!-- Properties for the primary (transactional group) datasource -->
     <default-property name="entity_ds_db_conf" value="h2"/>
@@ -414,6 +438,9 @@
         <!-- NOTE: entity tarpit disabled by default for performance and tracking overhead reasons -->
         <artifact-execution type="AT_ENTITY" authz-enabled="true" tarpit-enabled="false"/>
         <artifact-execution type="AT_LLM" authz-enabled="true" tarpit-enabled="true"/>
+        <!-- Clone, fetch and push of git repositories (GitRepository.repositoryId), and the get#Git* services. The git
+            server refuses to serve when this is not enabled. -->
+        <artifact-execution type="AT_GIT_REPOSITORY" authz-enabled="true" tarpit-enabled="false"/>
         <!-- The Java enabled a type with no entry here; this one is listed because a missing entry is disabled here.
             The service REST API checks the path of each request (MOQUI_API for /moqui). -->
         <artifact-execution type="AT_REST_PATH" authz-enabled="true" tarpit-enabled="true"/>
