@@ -182,8 +182,34 @@ fn repositories_are_cloned_and_pushed_over_http_and_ssh() {
             &[("repositoryId", Value::string("hosted"))],
         );
         assert!(urls.get("httpsUrl").and_then(Value::as_str).is_some_and(|url| url.ends_with("/git/hosted.git")));
+
+        // a collection of the database repository (nothing is old enough to delete; the rows are repacked), then
+        // every row decodes, and it still clones
+        let (gc, errors) = sync(
+            "org.moqui.impl.GitServices.gc#GitRepositories",
+            &[("repositoryId", Value::string("hosted-db"))],
+        );
+        assert!(errors.is_empty(), "{errors}");
+        let Some(Value::List(results)) = gc.get("results") else {
+            panic!("{gc:?}")
+        };
+        let Value::Map(result) = &results[0] else {
+            panic!("{results:?}")
+        };
+        assert_eq!(result.get("deletedCount"), Some(&Value::I64(0)), "{result:?}");
+        let (fsck, errors) = sync(
+            "org.moqui.impl.GitServices.fsck#GitRepository",
+            &[("repositoryId", Value::string("hosted-db"))],
+        );
+        assert!(errors.is_empty(), "{errors}");
+        assert!(matches!(fsck.get("checkedCount"), Some(Value::I64(count)) if *count > 5), "{fsck:?}");
         moqui_core::user::logout().unwrap();
     }
+    let after_gc = work.join("hosted-db-after-gc");
+    let url = format!("http://john.doe:moqui@127.0.0.1:{}/git/hosted-db.git", http.port());
+    git_ok(&work, &home, None, &["clone", &url, &after_gc.to_string_lossy()]);
+    let fsck = git_ok(&after_gc, &home, None, &["fsck", "--strict", "--full"]);
+    assert!(!fsck.contains("error"), "{fsck}");
 
     // SSH with john.doe's key, protocol v0 and v2
     if !git_available("ssh") {

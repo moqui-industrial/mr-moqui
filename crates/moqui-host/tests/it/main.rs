@@ -37,6 +37,7 @@ mod gate1;
 mod gate2;
 mod git_hosting;
 mod git_resources;
+mod git_storage;
 mod load_feed;
 mod notws;
 mod opensearch_start;
