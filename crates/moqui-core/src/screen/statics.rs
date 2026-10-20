@@ -901,11 +901,9 @@ fn screen_wants_pass_through(
         }
     }
     for section in def.sections.values() {
-        for fragment in [&section.widgets, &section.fail_widgets] {
-            if let Some(fragment) = fragment {
-                if node_wants_pass_through(state, &fragment.node()?, depth, seen)? {
-                    return Ok(true);
-                }
+        for fragment in [&section.widgets, &section.fail_widgets].into_iter().flatten() {
+            if node_wants_pass_through(state, &fragment.node()?, depth, seen)? {
+                return Ok(true);
             }
         }
     }

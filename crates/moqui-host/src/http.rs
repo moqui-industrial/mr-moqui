@@ -1155,7 +1155,7 @@ mod tests {
         use moqui_lib::object::Value;
         use tower::ServiceExt as _;
 
-        let _hold = crate::logging::begin_http_capture();
+        let _hold = crate::logging::begin_http_capture().await;
         let app = Router::new()
             .route("/health", get(|| async { "ok" }))
             .route(

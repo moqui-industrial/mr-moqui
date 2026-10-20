@@ -408,7 +408,7 @@ fn a_screen_request_records_the_session_the_visitor_and_the_user() {
     }
 
     let _lock = crate::user::session::cookie_property_lock();
-    moqui_lib::env::set_property("session_cookie_key", &STANDARD.encode([0x09_u8; 32]));
+    moqui_lib::env::set_property("session_cookie_key", STANDARD.encode([0x09_u8; 32]));
     let _clear = ClearKey;
     let context = ExecutionContextFactory::test_context();
     let entered = context.enter();
@@ -850,8 +850,10 @@ fn a_field_set_follows_the_xsd_rule() {
     let ctx = world.factory.new_context();
     let _entered = ctx.enter();
     let set = |attrs: &[(&str, &str)]| {
-        let mut node = crate::screen::sri::NodeLit::default();
-        node.name = "set".to_string();
+        let mut node = crate::screen::sri::NodeLit {
+            name: "set".to_string(),
+            ..Default::default()
+        };
         for (key, value) in attrs {
             node.attrs.insert((*key).to_string(), (*value).to_string());
         }

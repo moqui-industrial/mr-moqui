@@ -39,7 +39,7 @@ use std::io::IsTerminal;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use moqui_core::context::ExecutionContextFactory;
@@ -211,9 +211,10 @@ pub fn queue_http_request(entry: Document) {
 }
 
 /// Keep HTTP log entries until [`take_http_capture`]. A test holds the result across the requests.
+/// The lock is a Tokio mutex, so that hold may cross `.await`.
 #[cfg(test)]
-pub(crate) fn begin_http_capture() -> MutexGuard<'static, ()> {
-    let guard = lock(&HTTP_TEST);
+pub(crate) async fn begin_http_capture() -> tokio::sync::MutexGuard<'static, ()> {
+    let guard = HTTP_TEST.lock().await;
     *lock(&HTTP_CAPTURE) = Some(Vec::new());
     guard
 }
@@ -225,7 +226,7 @@ pub(crate) fn take_http_capture() -> Vec<Document> {
 }
 
 #[cfg(test)]
-static HTTP_TEST: Mutex<()> = Mutex::new(());
+static HTTP_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The first queued application-log entry whose message contains `part`.
 #[cfg(test)]
