@@ -256,6 +256,19 @@
         };
 
         const textArea = (n) => {
+            const editor = at(n, "editor-type");
+            // rich and rich-light have no Tiptap here: the note is the cleaned HTML, edited in the div. moqui-html.js copies
+            // it into the hidden input. editor-type html and md, and a text-area with no editor type, stay a textarea.
+            if (editor === "rich" || editor === "rich-light") {
+                const html = StringUtilities.cleanHtml(String(sri.getFieldValueString(n) || ""));
+                const readOnly = at(n, "read-only") === "true";
+                w("<div" + A({
+                    id: fid(n), class: "m-rich-text-content", contenteditable: readOnly ? null : "true",
+                    "data-rich-text": readOnly ? null : "true"
+                }) + ">" + html + "</div>");
+                if (!readOnly) w("<input" + A({ type: "hidden", name: fnm(n), value: html, form: owner() }) + ">");
+                return;
+            }
             w("<textarea" + A({
                 name: fnm(n), id: fid(n), cols: at(n, "cols") || null, rows: at(n, "rows") || "3", "data-wide": at(n, "cols") ? null : true,
                 readonly: at(n, "read-only") === "true", maxlength: at(n, "maxlength") || null, title: tip(n), form: owner()

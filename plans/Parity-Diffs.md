@@ -208,6 +208,7 @@ IronStone impl-drawers-commons M3: what the safe HTML cleaning keeps for the qvt
 | Area | Difference | Rationale / where documented |
 |---|---|---|
 | `allow-html="safe"` | The cleaning keeps `data-mention-id`, `data-record-entity` and `data-record-id` on a `span`, beside ammonia's default allow-list (Java's Jsoup safelist drops every `data-` attribute). Tables are in that default list | The mention `<span data-mention-id="id">@Label</span>` and the record link `<span data-record-entity="entity" data-record-id="id">#Label</span>` of the qvt rich-text editor, so a cleaned note still says whom it mentions and which record it points at; the values are escaped text. A record span is not a mention. Doc comment at `safe_html` in `service/validate.rs`, test `the_rich_text_editor_output_survives_the_safe_cleaning` |
+| inline picture | A picture pasted, dropped or chosen is stored as the original bytes at `dbresource://moqui/rich-text/<32 hex>.<ext>` and the note keeps `<img src="/richTextImage/<id>">`. The id is 32 lowercase hex digits. A signed-in user who has it can GET the file; there is no list and no delete. A `data:` URL is not stored. An svg, a file that does not decode, and a file over 8 MiB are refused | `upload#RichTextImage` and `get#RichTextImage` in `ResourceServices.xml` (bodies in `service/images.rs`); `POST` and `GET richTextImage` on `webroot.xml`. Test `upload_rich_text_image` |
 
 ## Layout panels and the calendar and contact tools (2026-10-19)
 

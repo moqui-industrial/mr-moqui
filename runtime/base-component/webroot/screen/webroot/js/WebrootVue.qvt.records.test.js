@@ -101,6 +101,43 @@ test("HTML of plain text is a paragraph for each run of lines, escaped, and goes
     assert.equal(rich.toPlain(rich.fromPlain(text)), text);
 });
 
+test("plain text that was not edited comes back as the original HTML", () => {
+    const original = "<p>Hello <strong>world</strong> <span data-mention-id=\"john.doe\">@John Doe</span></p>" +
+        "<p>See <span data-record-entity=\"mantle.order.OrderHeader\" data-record-id=\"100050\">#SO100050</span></p>" +
+        "<table><thead><tr><th>Name</th><th>Qty</th></tr></thead><tbody><tr><td>Bolt</td><td>2</td></tr></tbody></table>" +
+        "<p><img src=\"/a.png\" alt=\"a chart\"></p>";
+    assert.equal(rich.fromPlainKeeping(rich.toPlain(original), original), original);
+    assert.equal(rich.fromPlainKeeping(rich.toPlain(original).replace(/\n/g, "\r\n"), original), original);
+});
+
+test("an edit puts a mention, a record link and a table back, and leaves the rest as plain paragraphs", () => {
+    const original = "<p>Hello <strong>world</strong> <span data-mention-id=\"john.doe\">@John Doe</span></p>" +
+        "<p>See <span data-record-entity=\"mantle.order.OrderHeader\" data-record-id=\"100050\">#SO100050</span> " +
+        "and <span data-record-id=\"100050\">#again</span></p>" +
+        "<table><thead><tr><th>Name</th><th>Qty</th></tr></thead><tbody><tr><td>Bolt</td><td>2</td></tr><tr><td>Nut</td><td>4</td></tr></tbody></table>" +
+        "<p><img src=\"/a.png\" alt=\"a chart\"></p>";
+    const plain = rich.toPlain(original).replace("Hello world", "Hello there");
+    const kept = rich.fromPlainKeeping(plain, original);
+    assert.ok(kept.includes("Hello there"));
+    assert.ok(kept.includes('<span data-mention-id="john.doe">@John Doe</span>'));
+    assert.ok(kept.includes('<span data-record-entity="mantle.order.OrderHeader" data-record-id="100050">#SO100050</span>'));
+    assert.ok(kept.includes('<span data-record-id="100050">#again</span>'));
+    assert.ok(kept.includes("<th>Name</th>"));
+    assert.ok(kept.includes("<td>Bolt</td>"));
+    assert.ok(!kept.includes("<strong>"));
+    assert.ok(!kept.includes("<img"));
+    assert.equal(rich.fromPlainKeeping(plain.replace("@John Doe", "Jane"), original).includes("data-mention-id"), false);
+});
+
+test("a second chip with the same label is put back at the next copy", () => {
+    const original = '<p><span data-mention-id="a">@Ann</span> and <span data-mention-id="b">@Ann</span></p>';
+    const kept = rich.fromPlainKeeping(rich.toPlain(original) + "!", original);
+    const first = kept.indexOf('data-mention-id="a"');
+    const second = kept.indexOf('data-mention-id="b"');
+    assert.ok(first >= 0 && second > first);
+    assert.equal(rich.toPlain(original), "@Ann and @Ann");
+});
+
 test("the editor opens HTML as it is and text without markup as its paragraphs", () => {
     assert.equal(rich.toHtml("<p>x</p>"), "<p>x</p>");
     assert.equal(rich.toHtml("a < b\n\nc"), "<p>a &lt; b</p><p>c</p>");

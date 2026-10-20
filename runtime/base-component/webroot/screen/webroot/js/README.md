@@ -467,7 +467,7 @@ else nothing; the other modes write nothing.
 
 **Rich text** (`m-rich-text`). Tiptap 3 (`libs/tiptap/tiptap.min.js`, the global `Tiptap`, built by `libs/refresh.mjs`), loaded
 once for the page when the first editor mounts. The full toolbar has the paragraph style (paragraph, headings 1 to 3), bold,
-italic, strike, the two lists, link and image (an address asked in a line under the toolbar; Ctrl+K for a link), table (insert a
+italic, strike, the two lists, link and image (an address asked in a line under the toolbar, and a file button; Ctrl+K for a link), table (insert a
 3 by 3 with a header row, add or delete a row or column, delete the table), code, code block,
 quote, undo, redo and the plain-text toggle; `light` has bold, italic, link, list and code, for notes and chat. Markdown-style typing
 (`**bold**`, `- `, `> `, `` ` ``) works in both. The value is HTML, `""` for an empty document, made only of what a service
@@ -489,12 +489,29 @@ the `mention-parameters`, 150 ms after typing stops, and takes a JSON list of `{
 `name` for label, an optional `image` for the avatar, or the list under `options`, `optionList`, `mentions` or `rows`); the first ten
 are offered, up and down arrows move, Enter or Tab or a click picks. **The record search** is the same for `#` when `record-url` is
 set (light and full): a row may be `{id, label, entity}`, and `recordId` is preferred over `id`, `recordEntityName` over nothing.
-**The plain-text toggle** turns the value into plain text (`moqui.richText.toPlain`: blocks
-apart by a blank line, list items with `- ` or their number, quotes with `> `, a link as its text and address, a table as
-`cell | cell` with a line of dashes under a header row) and back into
-paragraphs (`fromPlain`); a mention becomes its `@Label` text and a record link its `#Label` text. A host that sends mail as text reads `v-model:plain`. When the
-library does not load, the field is `m-text-area` with `editor-type="html"`. The pure parts are `moqui.richText` (`mentionHtml`,
-`mentions`, `recordHtml`, `records`, `isEmpty`, `value`, `toPlain`, `fromPlain`, `mentionItems`, `linkHref`, `toolbar`), tested in
+**Images.** Paste and drop (light and full) and the full toolbar's File button upload the file to `POST /richTextImage`
+(`contentFile`) and insert `<img src="(the url)" alt="(the file name)">`. A pasted `data:` image is uploaded the same way.
+The server keeps the original bytes of a png, gif, jpeg or webp at `dbresource://moqui/rich-text/<32 hex>.<ext>` and returns
+`/richTextImage/<id>` (no extension; the id is the capability). A signed-in `GET /richTextImage/<id>` sends the file. An svg, a
+file that does not decode, and a file over 8 MiB are refused; the editor then says the image was not saved and inserts nothing.
+The address field stays for an `http`, `https` or path `src`.
+
+**The plain-text toggle** shows `moqui.richText.toPlain` in the textarea (blocks apart by a blank line, list items with `- ` or
+their number, quotes with `> `, a link as its text and address, a table as `cell | cell` with a line of dashes under a header
+row, a mention as `@Label`, a record link as `#Label`, an image as its alt text) and keeps the HTML in the model. While that
+plain text is still `toPlain` of the HTML, turning the toggle off restores the HTML (`fromPlainKeeping`), including bold, lists,
+links and images. An edit is `fromPlain`, then each mention, record link and table whose own plain text is still there is put
+back, in order; a second chip with the same label takes the next copy. After an edit, bold, lists, links and images follow
+`fromPlain`. `v-model:plain` stays a boolean. A mail host reads the plain string from the component's `plainValue()`; the
+posted body stays the HTML.
+
+When the library does not load, or the editor's start throws, the field is `m-text-area` with `editor-type="html"` and a
+control that tries the editor again. An editor that does load starts the ones still waiting. In the html render mode (no
+Tiptap), `editor-type` `rich` and `rich-light` are a `contenteditable` div of the cleaned HTML (`m-rich-text-content`,
+`data-rich-text`) and a hidden input that `moqui-html.js` fills from the div on input and on submit. There is no toolbar and
+no upload there. `editor-type` `html` and `md`, and a text-area with no editor type, stay a textarea. A service that saves the
+field still needs `allow-html="safe"`. The pure parts are `moqui.richText` (`mentionHtml`,
+`mentions`, `recordHtml`, `records`, `isEmpty`, `value`, `toPlain`, `fromPlain`, `fromPlainKeeping`, `mentionItems`, `linkHref`, `toolbar`), tested in
 `WebrootVue.qvt.records.test.js`. In XML: `text-area editor-type="rich"` or `"rich-light"` with `mention-transition` and `record-transition`.
 
 **Record cards** (`m-record-card`). The card JSON a `card-url` answers, or the `card` prop (BOSS answers it from
