@@ -456,6 +456,31 @@ fn script_send_json_response_writes_the_web_slot() {
 }
 
 #[test]
+fn script_send_error_follows_accept() {
+    let context = ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    let _web = crate::web::install(BTreeMap::new());
+    let mut request = WebRequest::new("GET", "/apps/ship");
+    request.set_header("accept", "application/json");
+    crate::web::set_request_info(&request);
+    crate::script::run_script("ec.web.sendError(404, 'No labelUrl', null)").unwrap();
+    let (status, headers, body, sent) = crate::web::take_output();
+    assert!(sent);
+    assert_eq!(status, 404);
+    assert_eq!(
+        headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.as_str()),
+        Some("application/json;charset=UTF-8")
+    );
+    assert_eq!(
+        String::from_utf8(body).unwrap(),
+        "{'message':'No labelUrl','errorName':'Not Found','error':404,'path':'/apps/ship'}"
+    );
+}
+
+#[test]
 fn entity_json_has_the_primary_key_and_the_service_document_lists_enum_types() {
     let world = World::open("");
     world.load_service_rest();

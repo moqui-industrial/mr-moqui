@@ -169,6 +169,10 @@ impl Aggregation {
                             out.shift_remove(&field.name);
                         } else if field.function == Some(Function::Count) {
                             out.insert(field.name.clone(), Value::I32(1));
+                        } else if field.function == Some(Function::Avg) {
+                            // Later rows read `{name}Count` and `{name}Total`. Seeding them here keeps the
+                            // first value in the average. Copying the raw value leaves those counters empty.
+                            apply_function(Function::Avg, &mut out, &field.name, &value);
                         } else {
                             out.insert(field.name.clone(), value.clone());
                         }
@@ -412,6 +416,31 @@ mod tests {
         assert_eq!(totals.get("qty"), Some(&Value::I32(3)));
         assert_eq!(out[2].get("_moquiRowType"), Some(&Value::string("total")));
         assert_eq!(out[2].get("amount"), Some(&d("6.75")));
+    }
+
+    /// The first row of a group is part of an average. 10, 20, 30 is 20 with a count of 3.
+    #[test]
+    fn a_group_average_counts_the_first_row() {
+        let node = form(
+            r#"<form-list name="F" list="l">
+                <field name="party" aggregate="group-by"/>
+                <field name="n" aggregate="avg"/>
+            </form-list>"#,
+        );
+        let aggregation = Aggregation::of(&node).unwrap().unwrap();
+        let d = |number: i32| Value::Decimal(Decimal::from(number));
+        let rows = vec![
+            row(&[("party", Value::string("A")), ("n", d(10))]),
+            row(&[("party", Value::string("A")), ("n", d(20))]),
+            row(&[("party", Value::string("A")), ("n", d(30))]),
+        ];
+        let out = aggregation.apply(rows, |row, name| row.get(name).cloned().unwrap_or(Value::Null));
+        assert_eq!(out.len(), 1, "{out:?}");
+        let Value::Decimal(average) = out[0].get("n").unwrap() else {
+            panic!("{out:?}")
+        };
+        assert!(moqui_lib::object::decimal_eq(*average, Decimal::from(20)), "{average}");
+        assert_eq!(out[0].get("nCount"), Some(&d(3)));
     }
 
     #[test]

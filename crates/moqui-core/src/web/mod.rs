@@ -18,7 +18,7 @@
 //! A request-pool worker reuses its thread, so a leaked slot would leak into the next request.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -100,6 +100,14 @@ impl WebRequest {
     }
 }
 
+/// Session, visitor, and username for one HTTP log entry. Not response headers.
+#[derive(Clone, Debug, Default)]
+pub struct HttpLogIdentity {
+    pub session: Option<String>,
+    pub visitor_id: Option<String>,
+    pub remote_user: Option<String>,
+}
+
 /// One HTTP response. Repeated names are separate headers, so `Set-Cookie` can appear twice. A large body is a
 /// [`ResponseStream`] the host reads a window at a time as the client takes it, and `body` is empty.
 #[derive(Clone, Debug)]
@@ -108,6 +116,8 @@ pub struct WebResponse {
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     pub stream: Option<ResponseStream>,
+    /// Filled while the session is still bound. Empty when the request never bound one.
+    pub http_log: HttpLogIdentity,
 }
 
 /// `length` bytes of `source` from `offset`: the body of a response too large to hold.
@@ -134,6 +144,7 @@ impl WebResponse {
             headers: Vec::new(),
             body: body.into(),
             stream: None,
+            http_log: HttpLogIdentity::default(),
         }
     }
 
@@ -179,6 +190,10 @@ struct WebSlot {
     locale: Option<String>,
     /// Scheme, host, and context path that links start with. Empty for a path-only link.
     base_url: String,
+    /// The request path, Java's `getPathInfo`, for `sendError`.
+    path: String,
+    /// The `Accept` header, for `sendError`.
+    accept: String,
     sent: bool,
     status: u16,
     headers: Vec<(String, String)>,
@@ -226,6 +241,8 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             client_ip: String::new(),
             locale: None,
             base_url,
+            path: String::new(),
+            accept: String::new(),
             changed_preferences: BTreeMap::new(),
             sent: false,
             status: 200,
@@ -353,6 +370,8 @@ pub(crate) fn set_request_info(request: &WebRequest) {
         if let Some(web) = slot.borrow_mut().as_mut() {
             web.request_url = url;
             web.referrer = referrer;
+            web.path = request.path.clone();
+            web.accept = request.header("accept").unwrap_or("").to_string();
             web.request_details = details;
             web.query_names = request.query.iter().map(|(name, _)| name.clone()).collect();
             web.client_ip = client_ip(request);
@@ -679,6 +698,90 @@ pub(crate) fn send_json_response(value: Value) {
         return;
     }
     send_bytes(status, "application/json", query_rest::encode_json(&value).into_bytes());
+}
+
+/// `ec.web.sendError(errorCode, message, throwable)`, as Java's `WebFacadeImpl.sendError`.
+///
+/// `text/html` in `Accept` writes the small HTML page, `application/json` or `text/json` writes Java's
+/// single-quoted body, and anything else is `text/plain`. An empty message uses the throwable's message,
+/// then the name of the code. The path is the request path.
+pub(crate) fn send_error(error_code: u16, message: &str, throwable_message: Option<&str>) {
+    let name = error_code_name(error_code);
+    let message = if !message.is_empty() {
+        message.to_string()
+    } else if let Some(from_throwable) = throwable_message.filter(|text| !text.is_empty()) {
+        from_throwable.to_string()
+    } else {
+        name.to_string()
+    };
+    let path = request_path();
+    let accept = request_accept();
+    let (content_type, body) = if accept.contains("text/html") {
+        let mut body = format!(
+            "<html><head><meta http-equiv=\"Content-Type\" content=\"text/html;charset=utf-8\"/><title>Error {error_code} {name}</title></head><body>\n<h2>Error {error_code} {name}</h2>\n<p>Problem accessing {}</p>\n",
+            crate::screen::sri::encode_html(&path)
+        );
+        if !message.is_empty() {
+            body.push_str(&format!(
+                "<p>Reason: {}</p>\n",
+                crate::screen::sri::encode_html(&message)
+            ));
+        }
+        body.push_str("</body></html>\n");
+        ("text/html;charset=UTF-8", body)
+    } else if accept.contains("application/json") || accept.contains("text/json") {
+        let body = format!(
+            "{{'message':'{}','errorName':'{name}','error':{error_code},'path':'{}'}}",
+            json_quote_as_string(&message),
+            json_quote_as_string(&path)
+        );
+        ("application/json;charset=UTF-8", body)
+    } else {
+        ("text/plain;charset=UTF-8", format!("{error_code} {message} {path}"))
+    };
+    send_bytes_with_headers(
+        error_code,
+        vec![("Content-Type".to_string(), content_type.to_string())],
+        body.into_bytes(),
+    );
+}
+
+fn error_code_name(code: u16) -> &'static str {
+    match code {
+        401 => "Authentication Required",
+        403 => "Access Forbidden",
+        404 => "Not Found",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        _ => "",
+    }
+}
+
+/// Jackson `JsonStringEncoder.quoteAsString`: the escapes inside the quotes, without the quotes.
+fn json_quote_as_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{000c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            ch if (ch as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => out.push(ch),
+        }
+    }
+    out
+}
+
+fn request_path() -> String {
+    WEB.with(|slot| slot.borrow().as_ref().map(|web| web.path.clone()).unwrap_or_default())
+}
+
+fn request_accept() -> String {
+    WEB.with(|slot| slot.borrow().as_ref().map(|web| web.accept.clone()).unwrap_or_default())
 }
 
 /// `{"errorCode","errors"}` as JSON.
@@ -1125,7 +1228,9 @@ fn upload_executable_allowed() -> bool {
     moqui_lib::env::get_prop_or_env("webapp_upload_executable_allow") == "true"
 }
 
-/// Query, then form, then a JSON object. A JSON list is not merged into the map.
+/// Query, then a form body. A JSON object fills a name only when those did not already set it.
+/// A multipart text field is not added onto a name the query already has. A JSON list is not merged
+/// into the map. A repeated name inside the query, or inside the form body, stays a list.
 pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> {
     if request.body.len() > body_limit(request) {
         return Err(BodyError::TooLarge);
@@ -1141,7 +1246,14 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
             None => multipart::parse(request.header("content-type").unwrap_or(""), &request.body)
                 .map_err(|err| BodyError::Multipart(err.to_string()))?,
         };
-        pairs.extend(parsed.fields);
+        // The query wins. A multipart text field of a name the query already set is left out,
+        // so the parameter stays the query value and does not become a list of both.
+        let query_names: HashSet<&str> = request.query.iter().map(|(name, _)| name.as_str()).collect();
+        for (name, value) in parsed.fields {
+            if !query_names.contains(name.as_str()) {
+                pairs.push((name, value));
+            }
+        }
         if !upload_executable_allowed() {
             if let Some(file) = parsed.files.iter().find(|file| file.is_executable()) {
                 return Err(BodyError::Executable(file.file_name.clone()));
@@ -1197,7 +1309,8 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
         match crate::service::parse_json(&text) {
             Ok(Value::Map(map)) => {
                 for (key, value) in map {
-                    parameters.insert(key, value);
+                    // A name the query already set stays. This body is JSON, not a form.
+                    parameters.entry(key).or_insert(value);
                 }
             }
             Ok(Value::List(items)) => {
@@ -1238,6 +1351,13 @@ fn pairs_to_parameters(pairs: Vec<(String, String)>) -> BTreeMap<String, Value> 
             (key, value)
         })
         .collect()
+}
+
+/// Multipart files fill names the query and the form body did not already set.
+pub(crate) fn overlay_multipart(parameters: &mut BTreeMap<String, Value>, files: &BTreeMap<String, Value>) {
+    for (name, value) in files {
+        parameters.entry(name.clone()).or_insert_with(|| value.clone());
+    }
 }
 
 /// Split `a=1&b=2` into decoded pairs.
@@ -1638,6 +1758,66 @@ mod tests {
     use moqui_lib::object::Value;
 
     #[test]
+    fn send_error_follows_accept() {
+        let sent = |accept: &str| {
+            let _web = super::install(std::collections::BTreeMap::new());
+            let mut request = super::WebRequest::new("GET", "/apps/ship");
+            if !accept.is_empty() {
+                request.set_header("accept", accept);
+            }
+            super::set_request_info(&request);
+            super::send_error(404, "No labelUrl", None);
+            let (status, headers, body, sent) = super::take_output();
+            assert!(sent);
+            assert_eq!(status, 404);
+            (
+                headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or_default(),
+                String::from_utf8(body).unwrap(),
+            )
+        };
+        let (html_type, html) = sent("text/html");
+        assert_eq!(html_type, "text/html;charset=UTF-8");
+        assert_eq!(
+            html,
+            "<html><head><meta http-equiv=\"Content-Type\" content=\"text/html;charset=utf-8\"/><title>Error 404 Not Found</title></head><body>\n<h2>Error 404 Not Found</h2>\n<p>Problem accessing /apps/ship</p>\n<p>Reason: No labelUrl</p>\n</body></html>\n"
+        );
+        let (json_type, json) = sent("application/json");
+        assert_eq!(json_type, "application/json;charset=UTF-8");
+        assert_eq!(
+            json,
+            "{'message':'No labelUrl','errorName':'Not Found','error':404,'path':'/apps/ship'}"
+        );
+        let (plain_type, plain) = sent("");
+        assert_eq!(plain_type, "text/plain;charset=UTF-8");
+        assert_eq!(plain, "404 No labelUrl /apps/ship");
+
+        let _web = super::install(std::collections::BTreeMap::new());
+        let mut request = super::WebRequest::new("GET", "/a<b");
+        request.set_header("accept", "text/html, application/json");
+        super::set_request_info(&request);
+        super::send_error(404, "say \"hi\" <tag>", None);
+        let (_, _, body, _) = super::take_output();
+        let html = String::from_utf8(body).unwrap();
+        assert!(html.contains("<p>Problem accessing /a&lt;b</p>"), "{html}");
+        assert!(html.contains("<p>Reason: say &quot;hi&quot; &lt;tag&gt;</p>"), "{html}");
+
+        let _web = super::install(std::collections::BTreeMap::new());
+        let mut request = super::WebRequest::new("GET", "/apps/ship");
+        request.set_header("accept", "application/json");
+        super::set_request_info(&request);
+        super::send_error(500, "", Some("boom\n\"x\""));
+        let (_, _, body, _) = super::take_output();
+        assert_eq!(
+            String::from_utf8(body).unwrap(),
+            "{'message':'boom\\n\\\"x\\\"','errorName':'Internal Server Error','error':500,'path':'/apps/ship'}"
+        );
+    }
+
+    #[test]
     fn request_details_leave_out_credential_parameters() {
         let parameters = [("orderId", "O1"), ("password", "hunter2"), ("api_key", "k-1")]
             .into_iter()
@@ -1647,6 +1827,69 @@ mod tests {
         let details = super::request_details();
         assert!(details.contains("Parameter: orderId = O1"), "{details}");
         assert!(!details.contains("hunter2") && !details.contains("k-1"), "{details}");
+    }
+
+    /// The query wins over a JSON field and over a multipart field. A repeated name in the query,
+    /// or in the form body, stays a list.
+    #[test]
+    fn the_query_wins_over_json_and_multipart() {
+        let body = |request: &super::WebRequest| match super::parse_body(request) {
+            Ok(parsed) => parsed,
+            Err(_) => panic!("body refused"),
+        };
+        let mut json = super::WebRequest::new("POST", "/x");
+        json.query.push(("orderId".to_string(), "1".to_string()));
+        json.set_header("content-type", "application/json");
+        json.body = br#"{"orderId":2,"note":"n"}"#.to_vec();
+        let parsed = body(&json);
+        assert_eq!(parsed.parameters.get("orderId"), Some(&Value::string("1")));
+        assert_eq!(parsed.parameters.get("note"), Some(&Value::string("n")));
+
+        let mut form = super::WebRequest::new("POST", "/x");
+        form.query.push(("a".to_string(), "1".to_string()));
+        form.query.push(("a".to_string(), "2".to_string()));
+        form.set_header("content-type", "application/x-www-form-urlencoded");
+        form.body = b"a=3&b=4".to_vec();
+        let parsed = body(&form);
+        assert_eq!(
+            parsed.parameters.get("a"),
+            Some(&Value::List(vec![
+                Value::string("1"),
+                Value::string("2"),
+                Value::string("3")
+            ]))
+        );
+        assert_eq!(parsed.parameters.get("b"), Some(&Value::string("4")));
+
+        let mut upload = super::WebRequest::new("POST", "/x");
+        upload.query.push(("name".to_string(), "x".to_string()));
+        upload.query.push(("q".to_string(), "1".to_string()));
+        upload.query.push(("q".to_string(), "2".to_string()));
+        upload.set_header("content-type", "multipart/form-data; boundary=XyZ");
+        upload.body = b"\
+--XyZ\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nfrom-body\r\n\
+--XyZ\r\nContent-Disposition: form-data; name=\"other\"\r\n\r\ny\r\n\
+--XyZ\r\nContent-Disposition: form-data; name=\"q\"\r\n\r\nfrom-body\r\n\
+--XyZ\r\nContent-Disposition: form-data; name=\"name\"; filename=\"a.bin\"\r\nContent-Type: application/octet-stream\r\n\r\nxyz\r\n\
+--XyZ\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"b.bin\"\r\nContent-Type: application/octet-stream\r\n\r\nxyz\r\n\
+--XyZ--\r\n"
+            .to_vec();
+        let parsed = body(&upload);
+        assert_eq!(parsed.parameters.get("name"), Some(&Value::string("x")));
+        assert_eq!(parsed.parameters.get("other"), Some(&Value::string("y")));
+        assert_eq!(
+            parsed.parameters.get("q"),
+            Some(&Value::List(vec![Value::string("1"), Value::string("2")]))
+        );
+        let mut parameters = parsed.parameters.clone();
+        super::overlay_multipart(&mut parameters, &parsed.multipart);
+        assert_eq!(parameters.get("name"), Some(&Value::string("x")));
+        assert!(
+            parameters
+                .get("doc")
+                .is_some_and(|value| matches!(value, Value::Object(_))),
+            "{parameters:?}"
+        );
     }
 
     #[test]

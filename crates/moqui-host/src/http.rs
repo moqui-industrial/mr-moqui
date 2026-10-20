@@ -23,7 +23,9 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::body::HttpBody as _;
 use axum::extract::{ConnectInfo, Request, State};
+use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::{any, get};
 use axum::Router;
@@ -151,6 +153,18 @@ pub(crate) struct ListenReport {
 #[derive(Clone, Copy)]
 pub(crate) struct TlsConnection;
 
+/// The request is HTTPS: the listener is TLS, or a trusted proxy sent `X-Forwarded-Proto: https`.
+#[derive(Clone, Copy)]
+struct HttpsRequest;
+
+/// Session, visitor, and username copied from [`moqui_core::web::HttpLogIdentity`] onto the axum response.
+#[derive(Clone)]
+struct LoggedIdentity {
+    session: Option<String>,
+    visitor_id: Option<String>,
+    remote_user: Option<String>,
+}
+
 /// Bind `bind` (and the HTTPS address when there is one), publish the local addresses, and serve until `stop` is
 /// dropped or a ctrl-c arrives.
 pub(crate) async fn listen(
@@ -219,6 +233,7 @@ pub(crate) async fn listen(
     let app = app.route("/git/{*rest}", any(crate::git_http::handle));
     let app = app
         .fallback(dispatch_screen)
+        .layer(axum::middleware::from_fn(log_http))
         .layer(tower_http::compression::CompressionLayer::new().compress_when(Compressible))
         .with_state(Arc::new(HttpState {
             factory,
@@ -407,6 +422,9 @@ where
         if secure {
             request.extensions_mut().insert(TlsConnection);
         }
+        if secure || forwarded_https(request.headers(), remote.ip(), guard.conf.addressing()) {
+            request.extensions_mut().insert(HttpsRequest);
+        }
         let uri_length = request.uri().path_and_query().map_or(0, |whole| whole.as_str().len());
         let refused = if uri_length > limits.max_uri {
             Some(plain(414, "the request URI is too long"))
@@ -545,8 +563,6 @@ async fn dispatch_screen(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     request: Request,
 ) -> Response {
-    let started = std::time::Instant::now();
-    let started_millis = crate::logging::now_millis();
     let over_tls = request.extensions().get::<TlsConnection>().is_some();
     let client = request
         .extensions()
@@ -582,18 +598,6 @@ async fn dispatch_screen(
         };
         web.body = bytes.to_vec();
     }
-    let log = RequestLog {
-        started_millis,
-        client_ip: client.to_string(),
-        method: parts.method.as_str().to_string(),
-        https: web.https,
-        host: web.header("host").unwrap_or("").to_string(),
-        path: parts.uri.path().to_string(),
-        query: parts.uri.query().unwrap_or("").to_string(),
-        version: parts.version,
-        referrer: web.header("referer").unwrap_or("").to_string(),
-        agent: web.header("user-agent").unwrap_or("").to_string(),
-    };
     let factory = Arc::clone(&state.factory);
     let job_factory = Arc::clone(&factory);
     let serve_factory = Arc::clone(&factory);
@@ -637,10 +641,7 @@ async fn dispatch_screen(
         None => result.await,
     };
     match result {
-        Ok(Some(response)) => {
-            log.queue(&response, started.elapsed());
-            from_web(&state.factory, response)
-        }
+        Ok(Some(response)) => from_web(&state.factory, response),
         Ok(None) => state.guard.unavailable("the server is busy; try again"),
         Err(_) => plain(500, "request worker stopped"),
     }
@@ -776,7 +777,7 @@ struct RequestLog {
 }
 
 impl RequestLog {
-    fn queue(self, response: &WebResponse, elapsed: std::time::Duration) {
+    fn queue(self, response: &Response, identity: Option<&LoggedIdentity>, elapsed: std::time::Duration) {
         use moqui_lib::object::Value;
 
         let millis = i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX);
@@ -788,10 +789,17 @@ impl RequestLog {
             _ => 1.1,
         };
         let content_type = response
-            .headers
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-            .map(|(_, value)| value.clone());
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let bytes = response
+            .headers()
+            .get(axum::http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .or_else(|| response.body().size_hint().exact())
+            .unwrap_or(0);
         let mut entry = moqui_core::entity::document::Document::new();
         entry.insert("@timestamp".into(), Value::I64(self.started_millis));
         entry.insert("remote_ip".into(), Value::String(self.client_ip));
@@ -810,21 +818,78 @@ impl RequestLog {
             entry.insert("request_query".into(), Value::String(self.query));
         }
         entry.insert("http_version".into(), Value::F64(version));
-        entry.insert("response".into(), Value::I64(i64::from(response.status)));
+        entry.insert("response".into(), Value::I64(i64::from(response.status().as_u16())));
         entry.insert("time_initial_ms".into(), Value::I64(millis));
         entry.insert("time_final_ms".into(), Value::I64(millis));
-        entry.insert(
-            "bytes".into(),
-            Value::I64(i64::try_from(response.body_len()).unwrap_or(i64::MAX)),
-        );
+        entry.insert("bytes".into(), Value::I64(i64::try_from(bytes).unwrap_or(i64::MAX)));
         if !self.referrer.is_empty() {
             entry.insert("referrer".into(), Value::String(self.referrer));
         }
         if !self.agent.is_empty() {
             entry.insert("agent".into(), Value::String(self.agent));
         }
+        if let Some(identity) = identity {
+            if let Some(session) = identity.session.clone() {
+                entry.insert("session".into(), Value::String(session));
+            }
+            if let Some(visitor_id) = identity.visitor_id.clone() {
+                entry.insert("visitor_id".into(), Value::String(visitor_id));
+            }
+            if let Some(remote_user) = identity.remote_user.clone() {
+                entry.insert("remote_user".into(), Value::String(remote_user));
+            }
+        }
         crate::logging::queue_http_request(entry);
     }
+}
+
+/// One `moqui_http_log` entry for every route, including a refusal before the screen worker.
+async fn log_http(request: Request, next: Next) -> Response {
+    let started = std::time::Instant::now();
+    let started_millis = crate::logging::now_millis();
+    let method = request.method().as_str().to_string();
+    let https = request.extensions().get::<HttpsRequest>().is_some();
+    let client_ip = request
+        .extensions()
+        .get::<ClientAddr>()
+        .map(|client| client.0.to_string())
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|peer| peer.0.ip().to_string())
+        })
+        .unwrap_or_default();
+    let host = request_header(request.headers(), "host");
+    let path = request.uri().path().to_string();
+    let query = request.uri().query().unwrap_or("").to_string();
+    let version = request.version();
+    let referrer = request_header(request.headers(), "referer");
+    let agent = request_header(request.headers(), "user-agent");
+    let response = next.run(request).await;
+    let identity = response.extensions().get::<LoggedIdentity>().cloned();
+    RequestLog {
+        started_millis,
+        client_ip,
+        method,
+        https,
+        host,
+        path,
+        query,
+        version,
+        referrer,
+        agent,
+    }
+    .queue(&response, identity.as_ref(), started.elapsed());
+    response
+}
+
+fn request_header(headers: &axum::http::HeaderMap, name: &str) -> String {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// `X-Forwarded-Proto` is believed only when `client-ip-header` marks a reverse proxy in front, and `peer` is one of
@@ -894,6 +959,7 @@ fn status_allowed(ip: &str) -> bool {
 }
 
 fn from_web(factory: &Arc<moqui_core::context::ExecutionContextFactory>, response: WebResponse) -> Response {
+    let http_log = response.http_log.clone();
     let mut builder = Response::builder().status(response.status);
     for (name, value) in response.headers {
         builder = builder.header(name, value);
@@ -902,9 +968,17 @@ fn from_web(factory: &Arc<moqui_core::context::ExecutionContextFactory>, respons
         Some(stream) => crate::source_body::body(Arc::clone(factory), stream),
         None => axum::body::Body::from(response.body),
     };
-    builder
+    let mut built = builder
         .body(body)
-        .unwrap_or_else(|_| plain(500, "could not build the response"))
+        .unwrap_or_else(|_| plain(500, "could not build the response"));
+    if http_log.session.is_some() || http_log.visitor_id.is_some() || http_log.remote_user.is_some() {
+        built.extensions_mut().insert(LoggedIdentity {
+            session: http_log.session,
+            visitor_id: http_log.visitor_id,
+            remote_user: http_log.remote_user,
+        });
+    }
+    built
 }
 
 /// The responses worth compressing: text (and JSON, JavaScript, XML, SVG, WebAssembly) over 32 bytes, not a range
@@ -1074,6 +1148,55 @@ mod tests {
             .expect("the listener did not close the connection")
             .unwrap();
         String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    #[tokio::test]
+    async fn a_screen_request_is_logged_with_its_user_and_health_without_one() {
+        use moqui_lib::object::Value;
+        use tower::ServiceExt as _;
+
+        let _hold = crate::logging::begin_http_capture().await;
+        let app = Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .route(
+                "/screen",
+                get(|| async {
+                    let mut response = axum::response::Response::new(axum::body::Body::from("hi"));
+                    response.extensions_mut().insert(super::LoggedIdentity {
+                        session: Some("session-1".to_string()),
+                        visitor_id: Some("visitor-1".to_string()),
+                        remote_user: Some("ada".to_string()),
+                    });
+                    response
+                }),
+            )
+            .layer(axum::middleware::from_fn(super::log_http));
+        let screen = Request::builder()
+            .uri("/screen?tab=1")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        app.clone().oneshot(screen).await.unwrap();
+        let health = Request::builder()
+            .uri("/health")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        app.oneshot(health).await.unwrap();
+        let entries = crate::logging::take_http_capture();
+        let screen = entries
+            .iter()
+            .find(|entry| entry.get("request_path").and_then(Value::as_str) == Some("/screen"))
+            .expect("screen request was not logged");
+        assert_eq!(screen.get("session").and_then(Value::as_str), Some("session-1"));
+        assert_eq!(screen.get("visitor_id").and_then(Value::as_str), Some("visitor-1"));
+        assert_eq!(screen.get("remote_user").and_then(Value::as_str), Some("ada"));
+        assert_eq!(screen.get("request_query").and_then(Value::as_str), Some("tab=1"));
+        let health = entries
+            .iter()
+            .find(|entry| entry.get("request_path").and_then(Value::as_str) == Some("/health"))
+            .expect("health request was not logged");
+        assert!(health.get("session").is_none(), "{health:?}");
+        assert!(health.get("visitor_id").is_none(), "{health:?}");
+        assert!(health.get("remote_user").is_none(), "{health:?}");
     }
 
     #[tokio::test]

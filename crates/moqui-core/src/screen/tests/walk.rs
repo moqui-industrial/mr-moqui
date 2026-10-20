@@ -557,6 +557,35 @@ fn a_missing_screen_url_is_a_hash() {
     assert!(screen.is_screen_url());
 }
 
+/// A plain URL is the text as written. `path()` is empty. The base is not prefixed.
+#[test]
+fn a_plain_url_is_not_prefixed_and_has_no_path() {
+    let mailto = crate::screen::urls::UrlInstance {
+        plain: Some("mailto:someone@example.com".to_string()),
+        base: "http://host".to_string(),
+        exists: true,
+        ..crate::screen::urls::UrlInstance::default()
+    };
+    assert_eq!(mailto.url(), "mailto:someone@example.com");
+    assert_eq!(mailto.path(), "");
+    let path = crate::screen::urls::UrlInstance {
+        plain: Some("/some/path".to_string()),
+        base: "http://host/".to_string(),
+        exists: true,
+        ..crate::screen::urls::UrlInstance::default()
+    };
+    assert_eq!(path.url(), "/some/path");
+    assert_eq!(path.path(), "");
+    let screen = crate::screen::urls::UrlInstance {
+        names: vec!["Sub".to_string()],
+        base: "http://host".to_string(),
+        exists: true,
+        ..crate::screen::urls::UrlInstance::default()
+    };
+    assert_eq!(screen.url(), "http://host/Sub");
+    assert_eq!(screen.path(), "/Sub");
+}
+
 #[test]
 fn the_host_header_selects_the_root_screen() {
     let tree = Tree::new("host");

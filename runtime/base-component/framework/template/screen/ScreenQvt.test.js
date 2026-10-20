@@ -169,6 +169,8 @@ test('server-static forms also separate Saved Finds from Find Options', () => {
     context.$mqQvtS.formList({ attrs: { name: 'PaymentList', list: 'payments', 'saved-finds': 'true', 'header-dialog': 'true' }, children: [] }, [], []);
     assert.match(dialog(html, 'PaymentList_sfdialog'), /icon="find_in_page"/);
     assert.match(dialog(html, 'PaymentList_sfdialog'), /Save New Find/);
+    assert.match(dialog(html, 'PaymentList_sfdialog'), /nv\.findUrl\('_clear'\)/);
+    assert.match(dialog(html, 'PaymentList_sfdialog'), /Clear Current Find/);
     assert.doesNotMatch(dialog(html, 'PaymentList_hdialog'), /Save New Find|_NewFind/);
 });
 
@@ -203,7 +205,8 @@ test('existing saved find actions stay in the Saved Finds dialog', () => {
     }] });
     const saved = dialog(html, 'PaymentList_sfdialog');
     assert.ok(saved);
-    for (const label of ['My payments', 'Update to Current', 'Make Default', 'Delete']) {
+    for (const label of ['My payments', 'Update to Current', 'Make Default', 'Delete', 'Clear Current Find']) {
         assert.ok(saved.includes(label), label);
     }
+    assert.match(saved, /href="\/qapps\/FindPayment\?formListFindId=_clear"/);
 });

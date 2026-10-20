@@ -328,7 +328,10 @@ pub fn context_value(from: &str, value: &str) -> Result<Value, Error> {
     Ok(Value::string(""))
 }
 
-/// `sri.setInContext(setNode)`: a `set` element run in the context.
+/// `sri.setInContext(setNode)`: a `<set>` under a field. `set-if-empty="false"` skips a null or empty
+/// new value; otherwise the field is assigned, including an empty value. `value` and `default-value`
+/// go through [`script::expand`], which does not localize. That is the XSD rule `XmlActions.js`
+/// already uses. Java's `setInContext` tests the raw attribute string, so `"false"` is truthy there.
 ///
 /// # Errors
 ///
@@ -338,25 +341,33 @@ pub fn set_in_context(set: &NodeLit) -> Result<(), Error> {
     if field.is_empty() {
         return Ok(());
     }
-    let current = script::context_value(field);
-    let skip = set.attr("set-if-empty") == "false" && current.as_ref().is_some_and(|value| !is_empty(value));
-    if skip {
-        return Ok(());
-    }
     let mut value = if !set.attr("from").is_empty() {
         script::eval_value(set.attr("from"))?
-    } else if !set.attr("value").is_empty() {
-        Value::String(script::expand_localized(set.attr("value"))?)
+    } else if let Some(text) = set.attrs.get("value") {
+        Value::String(script::expand(text)?)
     } else {
         Value::Null
     };
-    if is_empty(&value) && !set.attr("default-value").is_empty() {
-        value = Value::String(script::expand_localized(set.attr("default-value"))?);
+    if null_or_empty_string(&value) && !set.attr("default-value").is_empty() {
+        value = Value::String(script::expand(set.attr("default-value"))?);
     }
     if !set.attr("type").is_empty() {
         value = l10n::basic_convert(&value, set.attr("type")).value;
     }
+    // After the default and the type conversion, so a default that fills an empty value is kept.
+    if set.attr("set-if-empty") == "false" && null_or_empty_string(&value) {
+        return Ok(());
+    }
     script::set_context_name(field, value)
+}
+
+/// Null or `""`. A `0`, `false`, or empty list is a value, as `XmlActions.js` checks `!= null && !== ""`.
+fn null_or_empty_string(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::String(text) => text.is_empty(),
+        _ => false,
+    }
 }
 
 // ---- validation ----

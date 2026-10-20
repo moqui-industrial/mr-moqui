@@ -878,6 +878,8 @@ pub(super) struct EntityShape {
     pub description_field: String,
     /// A view alias's `default-display`, by alias name.
     pub default_display: HashMap<String, bool>,
+    /// A view alias's `function`, by alias name. Empty for an entity that is not a view.
+    pub alias_function: HashMap<String, String>,
     /// The view's `pq-expression` aliases with `default-display="true"`, which the auto fields show after the others.
     pub pq_display: Vec<String>,
 }
@@ -982,6 +984,11 @@ fn entity_shape_of(entity: &EntityDefinition) -> EntityShape {
         .iter()
         .filter_map(|alias| alias.default_display.map(|display| (alias.name.clone(), display)))
         .collect();
+    let alias_function = entity
+        .aliases
+        .iter()
+        .filter_map(|alias| alias.function.clone().map(|function| (alias.name.clone(), function)))
+        .collect();
     let pq_display = entity
         .pq_aliases
         .iter()
@@ -1000,6 +1007,7 @@ fn entity_shape_of(entity: &EntityDefinition) -> EntityShape {
         one_relations,
         description_field,
         default_display,
+        alias_function,
         pq_display,
     }
 }
@@ -1171,7 +1179,15 @@ fn add_auto_entity_field(
             } else if entity_type.starts_with("number-") || entity_type.starts_with("currency-") {
                 header_field.append("range-find").set_attribute("size", "10");
                 field.set_attribute("align", "right");
-                field.set_attribute("show-total", "sum");
+                // A view alias's `function` of min, max, or avg is the total. Anything else, and an
+                // entity that is not a view, totals with sum.
+                let total = shape
+                    .alias_function
+                    .get(field_name)
+                    .map(|function| function.to_ascii_lowercase())
+                    .filter(|function| matches!(function.as_str(), "min" | "max" | "avg"))
+                    .unwrap_or_else(|| "sum".to_string());
+                field.set_attribute("show-total", total);
             } else if let Some(relation) = relation {
                 add_entity_field_drop_down(relation, &header_field);
             } else {
@@ -1666,6 +1682,53 @@ mod tests {
         };
         assert!(field("note").first_named("default-field").is_some());
         assert!(field("code").first_named("default-field").is_none());
+    }
+
+    /// A find-display number totals with the view alias function when that is min, max, or avg.
+    /// An alias with no function, and a field of an entity that is not a view, stay sum.
+    #[test]
+    fn a_view_alias_function_sets_the_find_display_total() {
+        let conf = parse(
+            r#"<database-list>
+                <dictionary-type type="id" java-type="java.lang.String" default-sql-type="VARCHAR(40)"/>
+                <dictionary-type type="number-decimal" java-type="java.math.BigDecimal" default-sql-type="NUMERIC(26,6)"/>
+            </database-list>"#,
+        );
+        let entities = parse(
+            r#"<entities>
+                <entity entity-name="Line" package="t" no-update-stamp="true">
+                    <field name="lineId" type="id" is-pk="true"/>
+                    <field name="qty" type="number-decimal"/>
+                    <field name="low" type="number-decimal"/>
+                    <field name="counted" type="number-decimal"/>
+                </entity>
+                <view-entity entity-name="LineView" package="t">
+                    <member-entity entity-alias="L" entity-name="t.Line"/>
+                    <alias name="lineId" entity-alias="L"/>
+                    <alias name="qty" entity-alias="L"/>
+                    <alias name="low" entity-alias="L" function="min"/>
+                    <alias name="counted" entity-alias="L" function="count"/>
+                </view-entity></entities>"#,
+        );
+        let model = EntityModel::load(&conf, &[entities]).unwrap();
+        let total = |form: &MNode, name: &str| {
+            form.children_named("field")
+                .into_iter()
+                .find(|field| field.attribute("name").as_deref() == Some(name))
+                .and_then(|field| field.attribute("show-total"))
+        };
+        let view = read_entity_shape(&model, "t.LineView").unwrap();
+        let form = parse(r#"<form-list name="L"/>"#);
+        add_entity_fields(&view, "all", "find-display", &[], &form, "L");
+        assert_eq!(total(&form, "low").as_deref(), Some("min"));
+        assert_eq!(total(&form, "qty").as_deref(), Some("sum"));
+        assert_eq!(total(&form, "counted").as_deref(), Some("sum"));
+        let entity = read_entity_shape(&model, "t.Line").unwrap();
+        assert!(entity.alias_function.is_empty());
+        let plain = parse(r#"<form-list name="L"/>"#);
+        add_entity_fields(&entity, "nonpk", "find-display", &[], &plain, "L");
+        assert_eq!(total(&plain, "qty").as_deref(), Some("sum"));
+        assert_eq!(total(&plain, "low").as_deref(), Some("sum"));
     }
 
     /// As Java's `addEntityFields`: a view's `pq-expression` alias with `default-display="true"` is a display field

@@ -250,10 +250,13 @@ pub struct TransitionDef {
     pub parameters: Vec<ParameterDef>,
     pub path_parameters: Vec<String>,
     pub condition: Option<Condition>,
-    /// The `service-call` shortcut first, then `actions`.
+    /// The `service-call` shortcut, compiled on its own. Its script returns when the call leaves an
+    /// error, and that return must not skip [`Self::actions`].
+    pub service_actions: Option<Actions>,
+    /// The transition's `<actions>`. They run even when there is already an error.
     pub actions: Option<Actions>,
-    /// Set when the transition has actions that did not compile. The screen still loads, and
-    /// running the transition fails with this message.
+    /// Set when either part did not compile. The screen still loads, and running the transition
+    /// fails with this message before either part runs.
     pub actions_error: Option<String>,
     pub single_service: Option<String>,
     pub conditional_responses: Vec<ResponseDef>,
@@ -272,6 +275,16 @@ pub enum Implicit {
     FormSelectColumns,
     FormSaveFind,
     ScreenDoc,
+}
+
+/// The children as one `<actions>` script. An empty list is still a script: an `<actions>` element
+/// with nothing in it is a transition that has actions.
+fn compile_actions(children: Vec<MNode>, label: &str) -> Result<Actions, String> {
+    let wrapper = MNode::new("actions");
+    for child in children {
+        wrapper.append_node(child);
+    }
+    Actions::from_xml(wrapper.write_string(), label).map_err(|err| err.message().to_string())
 }
 
 impl TransitionDef {
@@ -297,6 +310,7 @@ impl TransitionDef {
             parameters: Vec::new(),
             path_parameters: Vec::new(),
             condition: None,
+            service_actions: None,
             actions: None,
             actions_error: None,
             single_service: None,
@@ -324,10 +338,16 @@ impl TransitionDef {
             .map(|text| text.to_ascii_lowercase())
             .filter(|text| !text.is_empty())
             .unwrap_or_else(|| "any".to_string());
-        let mut children = Vec::new();
         let mut single_service = None;
+        let mut service_actions = None;
+        let mut actions = None;
+        let mut actions_error = None;
+        let mut has_actions = false;
         // The service-call shortcut defaults in-map, out-map, and multi as the Java screen does.
+        // It is compiled apart from `<actions>`: the generated call returns on an error, and that
+        // return would skip the actions if they were one script (ScreenDefinition.groovy).
         if let Some(call) = node.first_named("service-call") {
+            has_actions = true;
             let call = call.deep_copy();
             for (key, value) in [("in-map", "true"), ("out-map", "context")] {
                 if call.attribute(key).is_none_or(|text| text.is_empty()) {
@@ -340,35 +360,29 @@ impl TransitionDef {
                 call.set_attribute("multi", "parameter");
             }
             single_service = call.attribute("name").filter(|text| !text.is_empty());
-            children.push(call);
-        }
-        let mut has_actions = !children.is_empty();
-        if let Some(actions) = node.first_named("actions") {
-            has_actions = true;
-            children.extend(actions.children().iter().map(MNode::deep_copy));
-        }
-        let mut actions_error = None;
-        let actions = if has_actions {
-            let wrapper = MNode::new("actions");
-            for child in children {
-                wrapper.append_node(child);
+            match compile_actions(vec![call], &label) {
+                Ok(compiled) => service_actions = Some(compiled),
+                Err(message) => actions_error = Some(message),
             }
-            match Actions::from_xml(wrapper.write_string(), &label) {
-                Ok(actions) => Some(actions),
-                Err(err) => {
-                    actions_error = Some(err.message().to_string());
-                    None
+        }
+        if let Some(actions_node) = node.first_named("actions") {
+            has_actions = true;
+            if actions_error.is_none() {
+                let children = actions_node.children().iter().map(MNode::deep_copy).collect();
+                match compile_actions(children, &label) {
+                    Ok(compiled) => actions = Some(compiled),
+                    Err(message) => {
+                        actions_error = Some(message);
+                        service_actions = None;
+                    }
                 }
             }
-        } else {
-            None
-        };
+        }
         let condition = match node.first_named("condition") {
             Some(condition) => Condition::from_element(&condition, &format!("{label} condition"))?,
             None => None,
         };
-        let runs_something = has_actions;
-        let read_only = !runs_something || node.attribute("read-only").as_deref() == Some("true");
+        let read_only = !has_actions || node.attribute("read-only").as_deref() == Some("true");
         let authz_explicit = node.attribute("authz-action").is_some_and(|text| !text.is_empty());
         let authz_action = match node.attribute("authz-action").filter(|text| !text.is_empty()) {
             Some(action) => action,
@@ -405,6 +419,7 @@ impl TransitionDef {
                 .filter(|text| !text.is_empty())
                 .collect(),
             condition,
+            service_actions,
             actions,
             actions_error,
             single_service,

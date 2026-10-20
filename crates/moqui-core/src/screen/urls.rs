@@ -65,23 +65,25 @@ impl UrlInstance {
     }
 
     /// The path with no host. A screen that does not exist is `#`, as Java's `getUrlWithBase`.
+    /// A plain URL has no screen path, so this is empty, as Java's `getPath`.
     pub fn path(&self) -> String {
         if self.missing() {
             return "#".to_string();
         }
         match &self.plain {
-            Some(plain) => plain.clone(),
+            Some(_) => String::new(),
             None => encode_path(&self.names),
         }
     }
 
+    /// The URL. A plain value is returned as written, including `mailto:` and a path that starts
+    /// with `/`. The base is not prefixed. A screen path is the base plus the encoded names.
     pub fn url(&self) -> String {
         if self.missing() {
             return "#".to_string();
         }
         match &self.plain {
-            Some(plain) if plain.contains("://") || plain.starts_with("//") => plain.clone(),
-            Some(plain) => format!("{}{plain}", self.base.trim_end_matches('/')),
+            Some(plain) => plain.clone(),
             None => format!("{}{}", self.base.trim_end_matches('/'), encode_path(&self.names)),
         }
     }
@@ -668,6 +670,7 @@ pub fn make_url_by_type(
 fn is_transition_alias(transition: &TransitionDef) -> bool {
     let response = &transition.default_response;
     transition.condition.is_none()
+        && transition.service_actions.is_none()
         && transition.actions.is_none()
         && transition.actions_error.is_none()
         && transition.single_service.is_none()
@@ -786,6 +789,10 @@ fn resolve_path(state: &RenderState, from: &[String], url: &str) -> Result<super
 }
 
 /// `sri.isAnchorLink(linkNode, urlInstance)`.
+///
+/// `read-only="true"` overrides `hasActions()`: a transition that has actions and says it is
+/// read-only is a GET anchor. Java's html macros (`DefaultScreenMacros.html.ftl` `linkFormLink`
+/// and `linkFormForm`) follow `hasActions` and POST that transition. Parity-Diffs P3-03.
 pub fn is_anchor_link(link: &NodeLit, url: &UrlInstance) -> bool {
     let link_type = link.attr("link-type");
     let url_type = link.attr("url-type");

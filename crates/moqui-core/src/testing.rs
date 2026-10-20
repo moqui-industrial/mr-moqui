@@ -264,8 +264,18 @@ struct MemConn {
     tape: Option<Arc<Mutex<Vec<String>>>>,
     local: Option<Tables>,
     dirty: BTreeSet<String>,
+    /// Writes of this transaction, in order. Commit replays them onto the rows committed so far.
+    changes: Vec<Change>,
     /// The rows of the open stream not read yet. The select runs whole when the stream opens.
     stream: Option<std::collections::VecDeque<DbRow>>,
+}
+
+/// One write. `key` is the WHERE equality columns, when every comparison in the condition is an equality.
+struct Change {
+    table: String,
+    old: Option<Row>,
+    new: Option<Row>,
+    key: Option<Vec<String>>,
 }
 
 struct NoCancel;
@@ -283,6 +293,7 @@ impl DbDriver for MemDriver {
             tape: self.tape.clone(),
             local: None,
             dirty: BTreeSet::new(),
+            changes: Vec::new(),
             stream: None,
         }))
     }
@@ -325,6 +336,7 @@ impl DbConnection for MemConn {
             let committed = lock(&self.store).clone();
             self.local = Some(committed);
             self.dirty.clear();
+            self.changes.clear();
         }
         Ok(())
     }
@@ -334,10 +346,19 @@ impl DbConnection for MemConn {
             return Ok(());
         };
         let dirty = std::mem::take(&mut self.dirty);
+        let changes = std::mem::take(&mut self.changes);
         let mut committed = lock(&self.store);
         for table in dirty {
-            let rows = local.get(&table).cloned().unwrap_or_default();
-            committed.insert(table, rows);
+            let current = committed.get(&table).cloned().unwrap_or_default();
+            // A sequence is one row per name. Two refills of the same name keep the higher number.
+            let merged = if table == "sequence_value_item" {
+                let after = local.get(&table).cloned().unwrap_or_default();
+                merge_sequence_rows(&after, current)
+            } else {
+                let mine: Vec<&Change> = changes.iter().filter(|change| change.table == table).collect();
+                apply_changes(current, &mine)
+            };
+            committed.insert(table, merged);
         }
         Ok(())
     }
@@ -345,6 +366,7 @@ impl DbConnection for MemConn {
     fn rollback(&mut self) -> Result<(), Error> {
         self.local = None;
         self.dirty.clear();
+        self.changes.clear();
         Ok(())
     }
 
@@ -486,8 +508,14 @@ impl MemConn {
                         return Ok((0, Vec::new()));
                     }
                 }
-                rows.push(row);
+                rows.push(row.clone());
                 self.put_table(&table, rows);
+                self.record(Change {
+                    table,
+                    old: None,
+                    new: Some(row),
+                    key: None,
+                });
                 Ok((1, Vec::new()))
             }
             Stmt::Update { table, columns, pred } => {
@@ -502,31 +530,53 @@ impl MemConn {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let start = columns.len();
+                let key = equality_key(&pred);
                 let mut rows = self.read_table(&table);
                 let mut count = 0_u64;
+                let mut edits = Vec::new();
                 for row in &mut rows {
                     if keep(&pred, row, params, start)? {
+                        let old = row.clone();
                         for (column, value) in columns.iter().zip(&values) {
                             row.insert(column.clone(), value.clone());
                         }
+                        edits.push((old, row.clone()));
                         count += 1;
                     }
                 }
                 self.put_table(&table, rows);
+                for (old, new) in edits {
+                    self.record(Change {
+                        table: table.clone(),
+                        old: Some(old),
+                        new: Some(new),
+                        key: key.clone(),
+                    });
+                }
                 Ok((count, Vec::new()))
             }
             Stmt::Delete { table, pred } => {
+                let key = equality_key(&pred);
                 let rows = self.read_table(&table);
                 let mut kept = Vec::new();
-                let mut count = 0_u64;
+                let mut removed = Vec::new();
                 for row in rows {
                     if keep(&pred, &row, params, 0)? {
-                        count += 1;
+                        removed.push(row);
                     } else {
                         kept.push(row);
                     }
                 }
                 self.put_table(&table, kept);
+                let count = u64::try_from(removed.len()).unwrap_or(u64::MAX);
+                for old in removed {
+                    self.record(Change {
+                        table: table.clone(),
+                        old: Some(old),
+                        new: None,
+                        key: key.clone(),
+                    });
+                }
                 Ok((count, Vec::new()))
             }
             Stmt::Select(query) => self.exec_select(&query, params),
@@ -636,12 +686,120 @@ impl MemConn {
     }
 
     fn put_table(&mut self, table: &str, rows: Vec<Row>) {
-        if let Some(local) = self.local.as_mut() {
-            local.insert(table.to_string(), rows);
-            self.dirty.insert(table.to_string());
+        if self.local.is_none() {
+            lock(&self.store).insert(table.to_string(), rows);
             return;
         }
-        lock(&self.store).insert(table.to_string(), rows);
+        if let Some(local) = self.local.as_mut() {
+            local.insert(table.to_string(), rows);
+        }
+        self.dirty.insert(table.to_string());
+    }
+
+    /// An autocommit write already replaced the table. A transaction replays the change at commit.
+    fn record(&mut self, change: Change) {
+        if self.local.is_some() {
+            self.changes.push(change);
+        }
+    }
+}
+
+/// Replay this transaction's writes onto the rows committed so far.
+///
+/// Replacing the whole table dropped another transaction's rows: both had copied the table, and the
+/// later commit put the earlier copy back. A write finds its row by the equality columns of its WHERE,
+/// so an update of one row keeps a concurrent update of another, and a delete removes the row even when
+/// someone else has changed its other columns.
+fn apply_changes(mut current: Vec<Row>, changes: &[&Change]) -> Vec<Row> {
+    for change in changes {
+        match (&change.old, &change.new) {
+            (None, Some(new)) => current.push(new.clone()),
+            (Some(old), None) => remove_keyed(&mut current, old, change.key.as_deref()),
+            (Some(old), Some(new)) => update_keyed(&mut current, old, new, change.key.as_deref()),
+            (None, None) => {}
+        }
+    }
+    current
+}
+
+/// The one committed row whose equality columns match `old`, or none when that is not unique.
+fn key_index(current: &[Row], old: &Row, key: Option<&[String]>) -> Option<usize> {
+    let key = key?;
+    let mut found = None;
+    for (index, row) in current.iter().enumerate() {
+        if key.iter().all(|column| row.get(column) == old.get(column)) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(index);
+        }
+    }
+    found
+}
+
+fn remove_keyed(current: &mut Vec<Row>, old: &Row, key: Option<&[String]>) {
+    let index = key_index(current, old, key).or_else(|| current.iter().position(|row| row == old));
+    if let Some(index) = index {
+        current.remove(index);
+    }
+}
+
+fn update_keyed(current: &mut [Row], old: &Row, new: &Row, key: Option<&[String]>) {
+    let index = key_index(current, old, key).or_else(|| current.iter().position(|row| row == old));
+    let Some(index) = index else {
+        return;
+    };
+    let row = &mut current[index];
+    for (column, value) in new {
+        if old.get(column) != Some(value) {
+            row.insert(column.clone(), value.clone());
+        }
+    }
+}
+
+/// Sequence rows are one per `seq_name`. A concurrent refill keeps the higher `seq_num`.
+fn merge_sequence_rows(after: &[Row], mut current: Vec<Row>) -> Vec<Row> {
+    for row in after {
+        let Some(name) = row.get("seq_name") else {
+            continue;
+        };
+        if let Some(existing) = current.iter_mut().find(|item| item.get("seq_name") == Some(name)) {
+            let ours = row.get("seq_num").and_then(|value| as_i64(value).ok()).unwrap_or(0);
+            let theirs = existing
+                .get("seq_num")
+                .and_then(|value| as_i64(value).ok())
+                .unwrap_or(0);
+            if ours >= theirs {
+                *existing = row.clone();
+            }
+        } else {
+            current.push(row.clone());
+        }
+    }
+    current
+}
+
+/// The columns of a condition that is only `column = ?` joined by AND. Anything else has no key.
+fn equality_key(pred: &Option<Pred>) -> Option<Vec<String>> {
+    let mut fields = Vec::new();
+    if !equality_fields(pred.as_ref()?, &mut fields) || fields.is_empty() {
+        return None;
+    }
+    Some(fields)
+}
+
+fn equality_fields(pred: &Pred, fields: &mut Vec<String>) -> bool {
+    match pred {
+        Pred::Cmp {
+            field,
+            op: Op::Eq,
+            upper: false,
+        } => {
+            fields.push(field.clone());
+            true
+        }
+        Pred::And(parts) => parts.iter().all(|part| equality_fields(part, fields)),
+        _ => false,
     }
 }
 
@@ -1429,5 +1587,189 @@ impl Cur<'_> {
     fn fail(&self, message: &str) -> Error {
         let rest: String = self.sql[self.i..].chars().take(160).collect();
         Error::new(format!("{message} at '{rest}'"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn memory() -> MemDriver {
+        MemDriver {
+            store: Arc::new(Mutex::new(BTreeMap::new())),
+            tape: None,
+        }
+    }
+
+    fn cell(row: &DbRow, name: &str) -> String {
+        row.get(name)
+            .map(moqui_lib::object::to_plain_string)
+            .unwrap_or_default()
+    }
+
+    /// Two open transactions each change a different row. The later commit has to keep the earlier one.
+    #[test]
+    fn a_later_commit_keeps_the_other_transactions_row() {
+        let driver = memory();
+        let mut seed = driver.connect().unwrap();
+        seed.execute(
+            "INSERT INTO \"message\" (\"id\", \"status\") VALUES (?, ?)",
+            &[Value::string("out"), Value::string("sending")],
+        )
+        .unwrap();
+        seed.execute(
+            "INSERT INTO \"message\" (\"id\", \"status\") VALUES (?, ?)",
+            &[Value::string("in"), Value::string("received")],
+        )
+        .unwrap();
+        drop(seed);
+
+        let mut sent = driver.connect().unwrap();
+        let mut consuming = driver.connect().unwrap();
+        sent.begin().unwrap();
+        consuming.begin().unwrap();
+        assert_eq!(
+            sent.execute(
+                "UPDATE \"message\" SET \"status\" = ? WHERE \"id\" = ?",
+                &[Value::string("sent"), Value::string("out")],
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            consuming
+                .execute(
+                    "UPDATE \"message\" SET \"status\" = ? WHERE \"id\" = ?",
+                    &[Value::string("consuming"), Value::string("in")],
+                )
+                .unwrap(),
+            1
+        );
+        // The consume commits second. Its snapshot still has the outgoing row as sending.
+        sent.commit().unwrap();
+        consuming.commit().unwrap();
+
+        let mut check = driver.connect().unwrap();
+        let rows = check.query("SELECT \"id\", \"status\" FROM \"message\"", &[]).unwrap();
+        let mut found: Vec<(String, String)> = rows.iter().map(|row| (cell(row, "id"), cell(row, "status"))).collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                ("in".to_string(), "consuming".to_string()),
+                ("out".to_string(), "sent".to_string()),
+            ]
+        );
+    }
+
+    /// Both transactions updated the one row from the same snapshot. The later commit writes its columns onto that row.
+    #[test]
+    fn a_later_update_of_the_same_row_overlays_the_columns_it_changed() {
+        let driver = memory();
+        let mut seed = driver.connect().unwrap();
+        seed.execute(
+            "INSERT INTO \"message\" (\"id\", \"status\") VALUES (?, ?)",
+            &[Value::string("out"), Value::string("produced")],
+        )
+        .unwrap();
+        drop(seed);
+
+        let mut sending = driver.connect().unwrap();
+        let mut error = driver.connect().unwrap();
+        sending.begin().unwrap();
+        error.begin().unwrap();
+        sending
+            .execute(
+                "UPDATE \"message\" SET \"status\" = ? WHERE \"id\" = ?",
+                &[Value::string("sending"), Value::string("out")],
+            )
+            .unwrap();
+        error
+            .execute(
+                "UPDATE \"message\" SET \"status\" = ? WHERE \"id\" = ?",
+                &[Value::string("error"), Value::string("out")],
+            )
+            .unwrap();
+        sending.commit().unwrap();
+        error.commit().unwrap();
+
+        let mut check = driver.connect().unwrap();
+        let rows = check.query("SELECT \"id\", \"status\" FROM \"message\"", &[]).unwrap();
+        let found: Vec<String> = rows.iter().map(|row| cell(row, "status")).collect();
+        assert_eq!(found, vec!["error".to_string()]);
+    }
+
+    /// Two refills of one sequence name stay one row, and the higher number wins.
+    #[test]
+    fn concurrent_sequence_refills_keep_one_row_and_the_higher_number() {
+        let driver = memory();
+        let mut seed = driver.connect().unwrap();
+        seed.execute(
+            "INSERT INTO \"sequence_value_item\" (\"seq_name\", \"seq_num\") VALUES (?, ?)",
+            &[Value::string("order"), Value::I64(100)],
+        )
+        .unwrap();
+        drop(seed);
+
+        let mut low = driver.connect().unwrap();
+        let mut high = driver.connect().unwrap();
+        low.begin().unwrap();
+        high.begin().unwrap();
+        low.execute(
+            "UPDATE \"sequence_value_item\" SET \"seq_num\" = ? WHERE \"seq_name\" = ?",
+            &[Value::I64(150), Value::string("order")],
+        )
+        .unwrap();
+        high.execute(
+            "UPDATE \"sequence_value_item\" SET \"seq_num\" = ? WHERE \"seq_name\" = ?",
+            &[Value::I64(250), Value::string("order")],
+        )
+        .unwrap();
+        low.commit().unwrap();
+        high.commit().unwrap();
+
+        let mut check = driver.connect().unwrap();
+        let rows = check
+            .query("SELECT \"seq_name\", \"seq_num\" FROM \"sequence_value_item\"", &[])
+            .unwrap();
+        let found: Vec<String> = rows.iter().map(|row| cell(row, "seq_num")).collect();
+        assert_eq!(found, vec!["250".to_string()]);
+    }
+
+    /// The delete started from the row as it was, then another transaction changed that row and committed.
+    /// The delete still removes it.
+    #[test]
+    fn a_delete_removes_the_row_a_committed_update_had_changed() {
+        let driver = memory();
+        let mut seed = driver.connect().unwrap();
+        seed.execute(
+            "INSERT INTO \"message\" (\"id\", \"status\") VALUES (?, ?)",
+            &[Value::string("srv"), Value::string("token")],
+        )
+        .unwrap();
+        drop(seed);
+
+        let mut delete = driver.connect().unwrap();
+        delete.begin().unwrap();
+        let mut revise = driver.connect().unwrap();
+        revise.begin().unwrap();
+        revise
+            .execute(
+                "UPDATE \"message\" SET \"status\" = ? WHERE \"id\" = ?",
+                &[Value::string("cleared"), Value::string("srv")],
+            )
+            .unwrap();
+        revise.commit().unwrap();
+        assert_eq!(
+            delete
+                .execute("DELETE FROM \"message\" WHERE \"id\" = ?", &[Value::string("srv")])
+                .unwrap(),
+            1
+        );
+        delete.commit().unwrap();
+
+        let mut check = driver.connect().unwrap();
+        let rows = check.query("SELECT \"id\", \"status\" FROM \"message\"", &[]).unwrap();
+        assert!(rows.is_empty());
     }
 }

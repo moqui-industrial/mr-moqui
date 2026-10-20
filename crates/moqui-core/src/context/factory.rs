@@ -1259,9 +1259,10 @@ impl Drop for PropertyRollback {
     }
 }
 
-#[cfg(test)]
 impl ExecutionContextFactory {
-    pub(crate) fn test_context() -> ExecutionContext {
+    /// A context with no database. Tests use it when they only need an entered context.
+    #[doc(hidden)]
+    pub fn test_context() -> ExecutionContext {
         Self::test_context_with_conf("")
     }
 

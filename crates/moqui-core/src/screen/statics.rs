@@ -20,6 +20,7 @@
 //! `unsafe-eval`. The script puts the render function in `moqui.qvtStatic[path]`, the client loads it with a script
 //! element and fills it from `GET {screen}/actions` and `GET {screen}/actions/{formName}`.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use indexmap::IndexMap;
@@ -821,6 +822,19 @@ fn screen_package(state: &RenderState, def: &Arc<ScreenDef>) -> Result<(), Error
             package.remove(&format!("{}{suffix}", instance.list_name));
         }
     }
+    // Request data, so it stays in the package. The template reads it only where an element asks for it.
+    if wants_pass_through(state, def) {
+        match super::urls::current_url(state) {
+            Ok(url) => {
+                let mut map = serde_json::Map::new();
+                for (name, value) in url.pass_through_parameters() {
+                    map.insert(name, serde_json::Value::String(value));
+                }
+                package.insert("mqPassThrough".to_string(), serde_json::Value::Object(map));
+            }
+            Err(err) => tracing::warn!("pass-through of {}: {err}", def.location),
+        }
+    }
     let mut body = serde_json::Value::Object(package);
     web::strip_credential_parameters(&mut body);
     send_json(&body, Vec::new());
@@ -839,6 +853,95 @@ const PAGE_HEADERS: [&str; 6] = [
 
 /// The names a header field of a form-list reads from the request: its value and the find parameters that go with it.
 pub(crate) const HEADER_SUFFIXES: [&str; 8] = ["", "_op", "_not", "_ic", "_from", "_thru", "_poffset", "_period"];
+
+/// Whether the template has a form or a link with `pass-through-parameters="true"`, including an inlined include-screen.
+/// A screen that does not use the attribute does not get the package key. A failed lookup is logged and skipped.
+fn wants_pass_through(state: &RenderState, def: &Arc<ScreenDef>) -> bool {
+    let mut seen = BTreeSet::new();
+    match screen_wants_pass_through(state, def, 0, &mut seen) {
+        Ok(found) => found,
+        Err(err) => {
+            tracing::warn!("pass-through of {}: {err}", def.location);
+            false
+        }
+    }
+}
+
+fn screen_wants_pass_through(
+    state: &RenderState,
+    def: &Arc<ScreenDef>,
+    depth: usize,
+    seen: &mut BTreeSet<String>,
+) -> Result<bool, Error> {
+    if depth > MAX_WALK_DEPTH || !seen.insert(def.location.clone()) {
+        return Ok(false);
+    }
+    for definition in def.forms.values() {
+        // The form element and each screen-extend of it. A parse failure is logged and that fragment is skipped.
+        let mut nodes = Vec::new();
+        match definition.node.node() {
+            Ok(node) => nodes.push(node),
+            Err(err) => tracing::warn!("pass-through form {}: {err}", definition.name),
+        }
+        for extension in &definition.extensions {
+            match extension.node() {
+                Ok(node) => nodes.push(node),
+                Err(err) => tracing::warn!("pass-through form {} extension: {err}", definition.name),
+            }
+        }
+        for node in &nodes {
+            if node_wants_pass_through(state, node, depth, seen)? {
+                return Ok(true);
+            }
+        }
+    }
+    if let Some(widgets) = &def.root.widgets {
+        if node_wants_pass_through(state, &widgets.node()?, depth, seen)? {
+            return Ok(true);
+        }
+    }
+    for section in def.sections.values() {
+        for fragment in [&section.widgets, &section.fail_widgets].into_iter().flatten() {
+            if node_wants_pass_through(state, &fragment.node()?, depth, seen)? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn node_wants_pass_through(
+    state: &RenderState,
+    node: &MNode,
+    depth: usize,
+    seen: &mut BTreeSet<String>,
+) -> Result<bool, Error> {
+    if depth > MAX_WALK_DEPTH {
+        return Ok(false);
+    }
+    if node.attribute("pass-through-parameters").as_deref() == Some("true") {
+        return Ok(true);
+    }
+    if node.name() == "include-screen" {
+        let location = node.attribute("location").unwrap_or_default();
+        if !location.is_empty() && !location.contains("${") {
+            match state.facade.screen_def(&state.factory, &location) {
+                Ok(other) => {
+                    if screen_wants_pass_through(state, &other, depth + 1, seen)? {
+                        return Ok(true);
+                    }
+                }
+                Err(err) => tracing::warn!("include-screen {location}: {err}"),
+            }
+        }
+    }
+    for child in node.children() {
+        if node_wants_pass_through(state, &child, depth, seen)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
 
 /// `GET {screen}/actions/{formName}`.
 fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result<(), Error> {

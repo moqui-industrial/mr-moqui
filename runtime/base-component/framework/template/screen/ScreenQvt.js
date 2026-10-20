@@ -1250,11 +1250,13 @@
                 // The user's saved finds: a link that applies one, and buttons that update it to the current parameters,
                 // make it the screen's default or no longer, or delete it.
                 const finds = sri.getUserFormListFinds(at(n, "name"));
+                const base = sri.getScreenUrlInstance().path;
+                // Clear Current Find goes to the screen with formListFindId=_clear, which drops an applied find and does not put the user default back.
+                w('<q-list dense separator class="q-my-sm">');
+                w("<q-item><q-item-section><m-link" + A({ href: base + "?formListFindId=_clear" }) + ">" + t(L("Clear Current Find")) + "</m-link></q-item-section></q-item>");
                 if (finds.length) {
                     const activeId = ctx("formListFindId") || "";
                     const defaultId = sri.getUserDefaultFormListFindId() || "";
-                    const base = sri.getScreenUrlInstance().path;
-                    w('<q-list dense separator class="q-my-sm">');
                     finds.forEach((find) => {
                         const id = find.formListFind.formListFindId;
                         const label = (find.description || id) + (id === defaultId ? " (" + L("Default") + ")" : "");
@@ -1267,8 +1269,8 @@
                             (find.isByUserId === "true" ? button("DeleteFind", L("Delete"), "negative") : "") +
                             "</m-form></q-item-section></q-item>");
                     });
-                    w("</q-list>");
                 }
+                w("</q-list>");
                 if (Object.keys(params).length) {
                     w("<m-form" + A({
                         class: "form-inline", id: formId + "_NewFind", action: saveUrl, "v-slot:default": "formProps",
@@ -2443,6 +2445,7 @@
         }
     `);
 
+    // A button-menu item does not use v-close-popup: that closes an enclosing dialog as well as the menu.
     const buttonMenuMacro = stmt((node) => {
         const condition = attr(node, "condition");
         const image = child(node, "image");
@@ -2463,7 +2466,7 @@
                     // as Java: the image child in the place of the text
                     ${image ? image.source : "sri.write($text);"}
                     sri.write(($badge ? "<q-badge class=\\"on-right\\" transparent>" + $v.t($badge) + "</q-badge>" : "") + "</template><q-list>");
-                    ${linkItems.map((kid) => condGuard(attr(kid, "condition"), `sri.write("<q-item clickable v-close-popup><q-item-section>");\n${kid.source}sri.write("</q-item-section></q-item>");\n`)).join("")}
+                    ${linkItems.map((kid) => condGuard(attr(kid, "condition"), `sri.write("<q-item clickable><q-item-section>");\n${kid.source}sri.write("</q-item-section></q-item>");\n`)).join("")}
                     sri.write("</q-list></q-btn-dropdown>\\n");
                 }
             }

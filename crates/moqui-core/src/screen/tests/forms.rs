@@ -717,6 +717,37 @@ fn an_aggregated_form_list_groups_rows_with_sub_rows_and_totals() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A group average includes the first row. 10, 20 and 30 show as 20, and the count field shows 3.
+#[test]
+fn an_average_form_list_includes_the_first_row() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-average-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("Form.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        &root,
+        r#"<screen require-authentication="false">
+    <actions>
+        <script>rows = [{g:'A', n:10}, {g:'A', n:20}, {g:'A', n:30}]</script>
+    </actions>
+    <widgets>
+        <form-list name="Avg" list="rows">
+            <field name="g" aggregate="group-by"><default-field><display/></default-field></field>
+            <field name="n" aggregate="avg"><default-field><display/></default-field></field>
+            <field name="nCount"><default-field><display/></default-field></field>
+        </form-list>
+    </widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    let html = serve_at(&world.factory, request("GET", "/"), &root).body_text();
+    assert_eq!(html.matches(">A<").count(), 1, "{html}");
+    assert!(html.contains(">20<") || html.contains(">20.0000000000<"), "{html}");
+    assert!(html.contains(">3<"), "{html}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A rendered form-list records `_formListRendered` and adds its row count on the shared map, after aggregation.
 /// `noResultsAbort` reads those with property access: a count of 0 aborts, and a missing rendered flag does not.
 #[test]

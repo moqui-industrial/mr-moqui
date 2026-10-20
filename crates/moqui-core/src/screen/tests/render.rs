@@ -394,6 +394,40 @@ fn a_screen_that_requires_authentication_is_401_for_nobody_and_200_for_a_user() 
     assert!(output.body_text().contains("secure"), "{}", output.body_text());
 }
 
+/// The HTTP log reads the bound session after the screen runs: session id, visitor, and username.
+#[test]
+fn a_screen_request_records_the_session_the_visitor_and_the_user() {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+
+    struct ClearKey;
+    impl Drop for ClearKey {
+        fn drop(&mut self) {
+            moqui_lib::env::clear_property("session_cookie_key");
+        }
+    }
+
+    let _lock = crate::user::session::cookie_property_lock();
+    moqui_lib::env::set_property("session_cookie_key", STANDARD.encode([0x09_u8; 32]));
+    let _clear = ClearKey;
+    let context = ExecutionContextFactory::test_context();
+    let entered = context.enter();
+    let guard = crate::user::bind(context.factory(), None, None, false).expect("bind");
+    crate::user::session::set_user("user-1", "ada");
+    crate::user::session::set_visit("visit-1", "visitor-1");
+    let session_id = guard.session_id();
+    let header = crate::user::format_session_cookie(&session_id, false).expect("cookie");
+    let cookie = header.split(';').next().expect("cookie pair").to_string();
+    drop(guard);
+    drop(entered);
+    let mut request = request("GET", "/");
+    request.set_header("cookie", &cookie);
+    let response = serve_at(context.factory(), request, &fixture_root());
+    assert_eq!(response.http_log.session.as_deref(), Some(session_id.as_str()));
+    assert_eq!(response.http_log.visitor_id.as_deref(), Some("visitor-1"));
+    assert_eq!(response.http_log.remote_user.as_deref(), Some("ada"));
+}
+
 #[test]
 fn an_unknown_path_is_404_over_http_and_a_not_found_error_from_make_render() {
     let context = ExecutionContextFactory::test_context();
@@ -459,6 +493,56 @@ fn a_page_asked_for_before_login_is_where_screen_last_goes_back_to() {
     again.session_cookie = Some(session);
     let response = serve_at(&world.factory, again, &root);
     assert_eq!(location_of_response(&response), Some("/".to_string()));
+}
+
+/// `save-current-screen` stores the transition path and the request parameters for the next
+/// `screen-last`. It does not add a screen-history line.
+#[test]
+fn a_save_current_screen_is_where_screen_last_goes() {
+    let context = ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    let dir = std::env::temp_dir().join(format!("moqui-screen-last-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Last")).unwrap();
+    std::fs::write(
+        dir.join("Last.xml"),
+        r#"<screen require-authentication="false">
+            <transition name="saveHere">
+                <default-response url="Kept" save-current-screen="true"/>
+            </transition>
+            <transition name="goLast"><default-response type="screen-last"/></transition>
+            <subscreens default-item="Kept"/>
+            <widgets/>
+        </screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Last/Kept.xml"),
+        r#"<screen require-authentication="false"><widgets/></screen>"#,
+    )
+    .unwrap();
+    let root = dir.join("Last.xml").to_string_lossy().into_owned();
+    let saved = make_render(context.factory())
+        .root_screen(root.clone())
+        .screen_path("/saveHere")
+        .parameters(parameters(&[("tab", "two"), ("password", "secret")]))
+        .render()
+        .unwrap();
+    assert_eq!(location_of(&saved), Some("/Kept"));
+    assert!(
+        crate::user::screen_history().unwrap().is_empty(),
+        "{:?}",
+        crate::user::screen_history()
+    );
+    let back = make_render(context.factory())
+        .root_screen(root)
+        .screen_path("/goLast")
+        .render()
+        .unwrap();
+    let location = location_of(&back).unwrap_or("");
+    assert_eq!(location, "/saveHere?tab=two", "{location}");
+    assert!(!location.contains("secret"), "{location}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn with_query(mut request: crate::web::WebRequest, name: &str, value: &str) -> crate::web::WebRequest {
@@ -658,6 +742,139 @@ fn the_error_response_is_used_when_the_actions_leave_errors() {
     assert_eq!(location_of(&fine), Some("/Sub"));
 }
 
+/// An error already on the list, or a validation error, skips the service-call and still runs `<actions>`.
+/// An error the service itself adds does not skip the actions. With neither, the service runs and then the actions.
+#[test]
+fn a_transition_runs_its_actions_when_there_is_already_an_error() {
+    let world = World::open("");
+    let dir = std::env::temp_dir().join(format!("moqui-screen-transition-split-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Split")).unwrap();
+    let services = dir.join("SplitServices.xml");
+    std::fs::write(
+        &services,
+        r#"<services>
+            <service verb="mark" noun="Ran" authenticate="false">
+                <out-parameters><parameter name="y"/></out-parameters>
+                <actions><set field="y" value="svc"/></actions>
+            </service>
+            <service verb="fail" noun="Marked" authenticate="false">
+                <out-parameters><parameter name="y"/></out-parameters>
+                <actions><set field="y" value="svc"/><message error="true">boom</message></actions>
+            </service>
+        </services>"#,
+    )
+    .unwrap();
+    let actions = r#"<actions>
+            <set field="order" value="actions"/>
+            <if condition="y == 'svc'"><then><set field="order" value="service-then-actions"/></then></if>
+        </actions>
+        <default-response url="Ok"><parameter name="order" from="order"/></default-response>
+        <error-response url="Err"><parameter name="order" from="order"/></error-response>"#;
+    std::fs::write(
+        dir.join("Split.xml"),
+        format!(
+            r#"<screen require-authentication="false">
+            <always-actions>
+                <if condition="priorError"><then><script>ec.message.addError('prior')</script></then></if>
+                <if condition="priorValidation"><then><script>ec.message.addValidationError('Form', 'field', 'svc', 'bad field')</script></then></if>
+            </always-actions>
+            <transition name="go"><service-call name="mark#Ran"/>{actions}</transition>
+            <transition name="failGo"><service-call name="fail#Marked"/>{actions}</transition>
+            <widgets/>
+        </screen>"#
+        ),
+    )
+    .unwrap();
+    for name in ["Ok", "Err"] {
+        std::fs::write(
+            dir.join(format!("Split/{name}.xml")),
+            r#"<screen require-authentication="false"><widgets/></screen>"#,
+        )
+        .unwrap();
+    }
+    {
+        let ctx = world.factory.new_context();
+        let _entered = ctx.enter();
+        let failures = crate::service::lint(std::slice::from_ref(&services)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+    let root = dir.join("Split.xml").to_string_lossy().into_owned();
+    let facade = ScreenFacade::of(&world.factory);
+    let def = facade.screen_def(&world.factory, &root).unwrap();
+    let go = def.transition("go", None).unwrap();
+    let service_xml = go.service_actions.as_ref().unwrap().xml.to_string();
+    let action_xml = go.actions.as_ref().unwrap().xml.to_string();
+    assert!(
+        service_xml.contains("service-call") && !action_xml.contains("service-call"),
+        "{service_xml}\n{action_xml}"
+    );
+
+    let run = |path: &str, prior_error: bool, prior_validation: bool| {
+        let mut parameters = BTreeMap::new();
+        if prior_error {
+            parameters.insert("priorError".to_string(), Value::string("true"));
+        }
+        if prior_validation {
+            parameters.insert("priorValidation".to_string(), Value::string("true"));
+        }
+        make_render(&world.factory)
+            .root_screen(root.clone())
+            .screen_path(path)
+            .parameters(parameters)
+            .render()
+            .unwrap()
+    };
+    // An error already on the list: the service does not run, the actions do, and the error response is chosen.
+    assert_eq!(location_of(&run("/go", true, false)), Some("/Err?order=actions"));
+    // A validation error already on the facade does the same.
+    assert_eq!(location_of(&run("/go", false, true)), Some("/Err?order=actions"));
+    // The service itself adds an error: its result is visible, and the actions still run.
+    assert_eq!(
+        location_of(&run("/failGo", false, false)),
+        Some("/Err?order=service-then-actions")
+    );
+    // No error: the service runs, then the actions, and the default response is the one chosen.
+    assert_eq!(
+        location_of(&run("/go", false, false)),
+        Some("/Ok?order=service-then-actions")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A field `<set>` follows the XSD: `set-if-empty="false"` skips a null or empty new value, and any other
+/// value is assigned, including an empty one. `value` is not localized.
+#[test]
+fn a_field_set_follows_the_xsd_rule() {
+    let world = World::open("");
+    let ctx = world.factory.new_context();
+    let _entered = ctx.enter();
+    let set = |attrs: &[(&str, &str)]| {
+        let mut node = crate::screen::sri::NodeLit {
+            name: "set".to_string(),
+            ..Default::default()
+        };
+        for (key, value) in attrs {
+            node.attrs.insert((*key).to_string(), (*value).to_string());
+        }
+        crate::screen::sri::set_in_context(&node).unwrap();
+    };
+    let text = |name: &str| crate::script::context_value(name).map(|value| moqui_lib::object::to_plain_string(&value));
+
+    crate::script::set_context_name("status", Value::string("old")).unwrap();
+    set(&[("field", "status"), ("value", ""), ("set-if-empty", "false")]);
+    assert_eq!(text("status").as_deref(), Some("old"));
+
+    set(&[("field", "status"), ("value", "new"), ("set-if-empty", "false")]);
+    assert_eq!(text("status").as_deref(), Some("new"));
+
+    set(&[("field", "status"), ("value", "")]);
+    assert_eq!(text("status").as_deref(), Some(""));
+
+    set(&[("field", "label"), ("value", "Status##keep")]);
+    assert_eq!(text("label").as_deref(), Some("Status##keep"));
+}
+
 #[test]
 fn a_transition_rejects_the_wrong_method_and_a_missing_required_parameter() {
     let context = ExecutionContextFactory::test_context();
@@ -683,10 +900,11 @@ fn the_definition_model_holds_what_the_xml_declares() {
     assert!(root.always_actions.is_some() && root.pre_actions.is_some() && root.root.actions.is_some());
     assert_eq!(root.subscreens.default_item.as_deref(), Some("Home"));
 
-    // The service-call shortcut becomes the first action with the defaults the Java screen sets.
+    // The service-call shortcut is its own script, with the defaults the Java screen sets.
     let service = root.transition("service", None).unwrap();
     assert_eq!(service.single_service.as_deref(), Some("moqui.Missing.noop"));
-    let xml = &service.actions.as_ref().unwrap().xml;
+    let xml = &service.service_actions.as_ref().unwrap().xml;
+    assert!(service.actions.is_none(), "{xml}");
     assert!(
         xml.contains("in-map=\"true\"") && xml.contains("multi=\"parameter\""),
         "{xml}"
