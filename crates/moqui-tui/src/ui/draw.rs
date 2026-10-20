@@ -1,0 +1,1149 @@
+/*
+ * This software is in the public domain under CC0 1.0 Universal plus a
+ * Grant of Patent License.
+ *
+ * To the extent possible under law, the author(s) have dedicated all
+ * copyright and related and neighboring rights to this software to the
+ * public domain worldwide. This software is distributed without any
+ * warranty.
+ *
+ * You should have received a copy of the CC0 Public Domain Dedication
+ * along with this software (see the LICENSE.md file). If not, see
+ * <http://creativecommons.org/publicdomain/zero/1.0/>.
+ */
+
+//! The frame of section 1.2 and the canvas: the title line, the drawer, the levels, the message line and the key line.
+//! Every widget follows the vocabulary of section 1.4, and every color cue has a glyph or text beside it.
+
+use std::cell::Cell as Shared;
+
+use revue::layout::Rect;
+use revue::widget::RenderContext;
+
+use crate::forms::FocusKind;
+use crate::keys::Action;
+use crate::layout::{
+    display_width, dotted_label, frame_with, layout_levels, truncate_width, Breakpoints, FormLine, Frame, Inline,
+    LabelMode, LaidBox, LaidField, LaidList, LaidOut, Piece,
+};
+use crate::model::{Cell, Node, Widget};
+use crate::session::{drawer_rows, Session};
+use crate::theme::{Glyph, Role, Theme};
+
+use super::overlays;
+use super::paint::{Look, Painter, Spots};
+
+/// Draw the whole screen.
+pub fn draw(
+    session: &Session,
+    theme: &Theme,
+    breakpoints: &Breakpoints,
+    scroll: &Shared<usize>,
+    clock: Option<&str>,
+    log: Option<&std::collections::VecDeque<String>>,
+    ctx: &mut RenderContext,
+) {
+    let width = ctx.area.width;
+    let height = ctx.area.height;
+    if width < 10 || height < 3 {
+        return;
+    }
+    let framed = frame_with(width, breakpoints, session.drawer_choice());
+    let roomy = height >= 10;
+    let (body_top, mut body_bottom) = if roomy {
+        (2, height - 3)
+    } else {
+        (1, height.saturating_sub(2))
+    };
+    // The log pane: a bottom split of 10 rows over the message line (section 1.2).
+    let pane = log
+        .filter(|_| body_bottom > body_top + 14)
+        .map(|lines| (body_bottom - 10, lines));
+    if let Some((top, _)) = pane {
+        body_bottom = top;
+    }
+    let mut spots = Spots::new();
+    let mut paint = Painter {
+        ctx,
+        theme,
+        top: body_top,
+        bottom: body_bottom,
+        scroll: 0,
+        left: 0,
+        right: width,
+        spots: &mut spots,
+    };
+    title_line(&mut paint, session, &framed, clock);
+    if roomy {
+        rule(&mut paint, 1, width, &framed, Joint::Top);
+        rule(&mut paint, height - 3, width, &framed, Joint::Bottom);
+    }
+    let canvas_x = framed.drawer;
+    let laid = layout_levels(session.nav().models(), framed.canvas.saturating_sub(2), breakpoints);
+    let body_rows = usize::from(body_bottom.saturating_sub(body_top));
+    let target = focus_rows(&laid, session);
+    let mut top = scroll.get().min(laid.height().saturating_sub(1));
+    if let Some((y, h)) = target {
+        if y < top {
+            top = y;
+        } else if y + h > top + body_rows {
+            top = (y + h).saturating_sub(body_rows);
+        }
+    }
+    scroll.set(top);
+    paint.scroll = top;
+    paint.left = canvas_x + 1;
+    paint.right = width.saturating_sub(1).max(canvas_x + 2);
+    let mut y = 0;
+    for piece in &laid.pieces {
+        draw_piece(&mut paint, session, piece, canvas_x + 1, y);
+        y += piece.height();
+    }
+    paint.left = 0;
+    paint.right = width;
+    if let Some((top, lines)) = pane {
+        log_pane(&mut paint, top, top + 10, width, lines);
+    }
+    if framed.drawer > 0 || session.drawer_focus().is_some() {
+        drawer(&mut paint, session, &framed, body_top, body_bottom);
+    }
+    if height >= 2 {
+        message_line(&mut paint, session, height - 2, width);
+        key_line(&mut paint, session, height - 1, width);
+    }
+    let canvas = Rect::new(canvas_x, body_top, framed.canvas, body_bottom - body_top);
+    overlays::draw(&mut paint, session, breakpoints, canvas, framed.class);
+}
+
+#[derive(Clone, Copy)]
+enum Joint {
+    Top,
+    Bottom,
+}
+
+fn rule(paint: &mut Painter, row: u16, width: u16, framed: &Frame, joint: Joint) {
+    let line = paint.theme.glyph(Glyph::Rule).repeat(usize::from(width));
+    paint.fixed(0, row, &line, Look::role(Role::Border), usize::from(width));
+    if framed.drawer > 0 {
+        let mark = match (paint.theme.ascii, joint) {
+            (true, _) => "+",
+            (false, Joint::Top) => "┬",
+            (false, Joint::Bottom) => "┴",
+        };
+        paint.fixed(framed.drawer.saturating_sub(1), row, mark, Look::role(Role::Border), 1);
+    }
+}
+
+/// `≡ Gallery ▸ Detail · Enumeration` on the left; the user, the clock and the spinner on the right.
+fn title_line(paint: &mut Painter, session: &Session, framed: &Frame, clock: Option<&str>) {
+    let width = usize::from(framed.terminal);
+    let crumb = format!(" {} ", paint.theme.glyph(Glyph::Crumb));
+    let mut names: Vec<String> = session.model().screen.path_list.iter().skip(1).cloned().collect();
+    if names.is_empty() {
+        names = session
+            .path()
+            .split('/')
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    let title = &session.model().screen.title;
+    if !title.is_empty() && names.last().is_none_or(|last| last != title) {
+        names.push(title.clone());
+    }
+    let mut left = String::from(" ");
+    if framed.drawer == 0 {
+        left.push_str(paint.theme.glyph(Glyph::Menu));
+        left.push(' ');
+    }
+    left.push_str(&names.join(&crumb));
+    let mut right = String::new();
+    if session.is_busy() {
+        right.push_str(spinner(paint.theme.ascii));
+        right.push_str("  ");
+    }
+    if !session.shell().user.is_empty() {
+        right.push_str(&session.shell().user);
+        right.push_str("  ");
+    }
+    match clock {
+        Some(clock) => right.push_str(clock),
+        None => right.push_str(&jiff::Zoned::now().strftime("%a %H:%M").to_string()),
+    }
+    right.push(' ');
+    let room = width.saturating_sub(display_width(&right) + 1);
+    paint.fixed(0, 0, &truncate_width(&left, room), Look::role(Role::Text).bold(), room);
+    let x = u16::try_from(width.saturating_sub(display_width(&right))).unwrap_or(0);
+    paint.fixed(x, 0, &right, Look::role(Role::Muted), display_width(&right));
+}
+
+fn spinner(ascii: bool) -> &'static str {
+    let frames: &[&str] = if ascii {
+        &["|", "/", "-", "\\"]
+    } else {
+        &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    };
+    let tick = usize::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_millis() / 100)
+            .unwrap_or(0)
+            % 64,
+    )
+    .unwrap_or(0);
+    frames[tick % frames.len()]
+}
+
+/// The app menu tree: `▾` items with their screens, `▶` the screen shown.
+fn drawer(paint: &mut Painter, session: &Session, framed: &Frame, top: u16, bottom: u16) {
+    let width = if framed.drawer > 0 {
+        framed.drawer
+    } else {
+        26.min(framed.terminal)
+    };
+    let rows = drawer_rows(session.menu());
+    let focus = session.drawer_focus();
+    for row in top..bottom {
+        paint.fill_row(0, row, usize::from(width), Look::default());
+        let side = if paint.theme.ascii { "|" } else { "│" };
+        paint.fixed(width.saturating_sub(1), row, side, Look::role(Role::Border), 1);
+    }
+    let paths = session.paths();
+    for (at, (title, url, depth)) in rows.iter().enumerate() {
+        let Some(row) = top
+            .checked_add(u16::try_from(at).unwrap_or(u16::MAX))
+            .filter(|row| *row < bottom)
+        else {
+            break;
+        };
+        let path = url.split('?').next().unwrap_or(url);
+        let active = paths
+            .iter()
+            .any(|shown| *shown == path || shown.starts_with(&format!("{path}/")));
+        let mark = match (*depth, active) {
+            (0, _) => paint.theme.glyph(Glyph::Open),
+            (_, true) => paint.theme.glyph(Glyph::Active),
+            _ => " ",
+        };
+        let text = format!(" {}{mark} {title}", "  ".repeat(*depth));
+        let look = if active {
+            Look::role(Role::Primary).bold()
+        } else {
+            Look::role(Role::Text)
+        };
+        paint.fixed(
+            0,
+            row,
+            &text,
+            look.focused(focus == Some(at)),
+            usize::from(width.saturating_sub(1)),
+        );
+    }
+}
+
+/// The newest log lines, warnings and errors in their colors.
+fn log_pane(paint: &mut Painter, top: u16, bottom: u16, width: u16, lines: &std::collections::VecDeque<String>) {
+    let title = format!("{} Log · Alt+L closes ", paint.theme.glyph(Glyph::Rule));
+    let rule = format!("{title}{}", paint.theme.glyph(Glyph::Rule).repeat(usize::from(width)));
+    paint.fixed(0, top, &rule, Look::role(Role::Border), usize::from(width));
+    let rows = usize::from(bottom - top - 1);
+    for (at, line) in lines.iter().skip(lines.len().saturating_sub(rows)).enumerate() {
+        let row = top + 1 + u16::try_from(at).unwrap_or(0);
+        paint.fill_row(0, row, usize::from(width), Look::default());
+        let look = if line.contains(" ERROR ") {
+            Look::role(Role::Negative)
+        } else if line.contains(" WARN ") {
+            Look::role(Role::Warning)
+        } else {
+            Look::role(Role::Muted)
+        };
+        paint.fixed(1, row, line, look, usize::from(width.saturating_sub(1)));
+    }
+}
+
+fn message_line(paint: &mut Painter, session: &Session, row: u16, width: u16) {
+    let mark = session
+        .focus()
+        .and_then(|item| session.mark(&item.key))
+        .map(str::to_string);
+    let (text, look) = if !session.message().is_empty() {
+        let look = if session.message_is_error() {
+            Look::role(Role::Negative).bold()
+        } else {
+            Look::role(Role::Positive)
+        };
+        let lead = if session.message_is_error() { "! " } else { "" };
+        (format!(" {lead}{}", session.message()), look)
+    } else if let Some(mark) = mark {
+        (format!(" ! {mark}"), Look::role(Role::Negative))
+    } else {
+        // The focused field's full title, which the label may have cut, and its tooltip.
+        let hint = session
+            .focus()
+            .and_then(|item| session.index().fields.get(&item.node))
+            .map(|field| {
+                if field.tooltip.is_empty() {
+                    field.title.clone()
+                } else {
+                    format!("{} · {}", field.title, field.tooltip)
+                }
+            })
+            .unwrap_or_default();
+        (format!(" {hint}"), Look::role(Role::Muted))
+    };
+    paint.fixed(0, row, &text, look, usize::from(width));
+}
+
+/// The keys that apply to the focused element, then the global ones, cut to the width (section 1.2).
+fn key_line(paint: &mut Painter, session: &Session, row: u16, width: u16) {
+    let keys = session.keys();
+    let mut actions = vec![Action::Help];
+    match session.focus_kind() {
+        Some(FocusKind::Text) => {
+            if matches!(
+                session.field_widget(session.focus_id()),
+                Some(Widget::DateTime { .. } | Widget::DateFind { .. } | Widget::TextFind { .. })
+            ) {
+                actions.push(Action::Prompt);
+            }
+            actions.push(Action::Submit);
+        }
+        Some(FocusKind::DropDown | FocusKind::Check) => actions.push(Action::Prompt),
+        Some(FocusKind::List) => {
+            actions.extend([Action::PageNext, Action::Sort, Action::Find]);
+            if session
+                .list(session.focus_id())
+                .is_some_and(|list| list.row_selection.is_some())
+            {
+                actions.push(Action::Select);
+            }
+        }
+        _ => {}
+    }
+    actions.extend([
+        Action::Back,
+        Action::Refresh,
+        Action::Drawer,
+        Action::Cancel,
+        Action::NumberLinks,
+        Action::Quit,
+    ]);
+    let mut line = String::new();
+    for action in actions {
+        let Some(hint) = keys.hint(action) else {
+            continue;
+        };
+        if display_width(&line) + display_width(&hint) + 2 > usize::from(width) {
+            break;
+        }
+        line.push(' ');
+        line.push_str(&hint);
+        line.push(' ');
+    }
+    paint.fixed(0, row, &line, Look::role(Role::Muted), usize::from(width));
+}
+
+// ---- the focus row, for scrolling ----
+
+fn focus_rows(laid: &LaidOut, session: &Session) -> Option<(usize, usize)> {
+    let item = session.focus()?;
+    let mut y = 0;
+    for piece in &laid.pieces {
+        if let Some(found) = find_in(piece, &item.node, session, y) {
+            return Some(found);
+        }
+        y += piece.height();
+    }
+    None
+}
+
+fn find_in(piece: &Piece, id: &str, session: &Session, y: usize) -> Option<(usize, usize)> {
+    match piece {
+        Piece::Stack(pieces) => {
+            let mut at = y;
+            for piece in pieces {
+                if let Some(found) = find_in(piece, id, session, at) {
+                    return Some(found);
+                }
+                at += piece.height();
+            }
+            None
+        }
+        Piece::Row(placed) => placed.iter().find_map(|item| find_in(&item.piece, id, session, y)),
+        Piece::Box(laid) => {
+            let mut at = y + 1 + usize::from(!laid.toolbar.is_empty());
+            if laid.toolbar.iter().any(|item| item.id() == id) {
+                return Some((y, 2));
+            }
+            for piece in &laid.body {
+                if let Some(found) = find_in(piece, id, session, at) {
+                    return Some(found);
+                }
+                at += piece.height();
+            }
+            None
+        }
+        Piece::Form(form) => {
+            let mut at = y;
+            for line in &form.lines {
+                let height = match line {
+                    FormLine::Field(field) => field.height(),
+                    FormLine::Cells(cells) => cells.iter().map(|(_, f)| f.height()).max().unwrap_or(1),
+                    FormLine::Text(text) => text.lines.len(),
+                    FormLine::Buttons(_) | FormLine::Group(_) => 1,
+                };
+                let found = match line {
+                    FormLine::Field(field) => field.id == id,
+                    FormLine::Cells(cells) => cells.iter().any(|(_, field)| field.id == id),
+                    FormLine::Buttons(items) => items.iter().any(|item| item.id() == id),
+                    FormLine::Text(_) | FormLine::Group(_) => false,
+                };
+                if found {
+                    return Some((at, height));
+                }
+                at += height;
+            }
+            None
+        }
+        Piece::Inline(items) => items.iter().any(|item| item.id() == id).then_some((y, 1)),
+        Piece::List(list) if list.id == id => {
+            let row = session.row_at(id);
+            // The header with the first row, else the row.
+            Some(if row == 0 { (y, 3) } else { (y + 2 + row, 1) })
+        }
+        _ => None,
+    }
+}
+
+// ---- pieces ----
+
+pub fn draw_piece(paint: &mut Painter, session: &Session, piece: &Piece, x: u16, y: usize) {
+    match piece {
+        Piece::Stack(pieces) => {
+            let mut at = y;
+            for piece in pieces {
+                draw_piece(paint, session, piece, x, at);
+                at += piece.height();
+            }
+        }
+        Piece::Row(placed) => {
+            for item in placed {
+                draw_piece(paint, session, &item.piece, x + item.x, y);
+            }
+        }
+        Piece::Box(laid) => draw_box(paint, session, laid, x, y, piece.height()),
+        Piece::Form(form) => {
+            let mut at = y;
+            for line in &form.lines {
+                at += draw_form_line(paint, session, line, x, at);
+            }
+        }
+        Piece::Inline(items) => {
+            draw_inline(paint, session, items, x, y);
+        }
+        Piece::Text(text) => {
+            let look = text_look(&text.style);
+            for (at, line) in text.lines.iter().enumerate() {
+                let line = if text.style == "image" {
+                    format!("{} {line}", paint.theme.glyph(Glyph::Image))
+                } else {
+                    line.clone()
+                };
+                paint.text(x, y + at, &line, look, usize::from(paint.right.saturating_sub(x)));
+            }
+        }
+        Piece::List(list) => draw_list(paint, session, list, x, y),
+        Piece::Tabs(tabs) => {
+            let mut col = x;
+            for (at, (title, active)) in tabs.items.iter().enumerate() {
+                let text = format!("{}:{title}", at + 1);
+                let look = if *active {
+                    Look::role(Role::Primary).bold().reverse()
+                } else {
+                    Look::role(Role::Text)
+                };
+                let used = paint.text(col, y, &text, look, usize::from(paint.right.saturating_sub(col)));
+                col = col.saturating_add(u16::try_from(used + 2).unwrap_or(u16::MAX));
+            }
+        }
+        Piece::Placeholder { text, url, .. } => {
+            let line = format!(
+                "{} {} has a browser-only part{}",
+                paint.theme.glyph(Glyph::Image),
+                if text.is_empty() { "This screen" } else { text },
+                if url.is_empty() {
+                    String::new()
+                } else {
+                    " · o=Open in browser".to_string()
+                }
+            );
+            paint.text(
+                x,
+                y,
+                &line,
+                Look::role(Role::Muted).italic(),
+                usize::from(paint.right.saturating_sub(x)),
+            );
+        }
+        Piece::Error { text, .. } => {
+            paint.text(
+                x,
+                y,
+                &format!("! {text}"),
+                Look::role(Role::Negative),
+                usize::from(paint.right.saturating_sub(x)),
+            );
+        }
+    }
+}
+
+fn text_look(style: &str) -> Look {
+    match style {
+        "h1" => Look::role(Role::Text).bold().underline(),
+        "h2" | "h3" => Look::role(Role::Text).bold(),
+        "h4" | "h5" | "h6" | "strong" => Look::role(Role::Text).bold(),
+        "pre" | "code" => Look::role(Role::Info),
+        "quote" => Look::role(Role::Muted).italic(),
+        "i" | "em" => Look::role(Role::Text).italic(),
+        "rule" => Look::role(Role::Border),
+        _ => Look::role(Role::Text),
+    }
+}
+
+fn draw_box(paint: &mut Painter, session: &Session, laid: &LaidBox, x: u16, y: usize, height: usize) {
+    let edge = Role::of_type(&laid.kind);
+    let title = if laid.title.is_empty() {
+        String::new()
+    } else {
+        format!(" {} ", laid.title)
+    };
+    paint.frame(x, y, laid.w, height, &title, edge);
+    let inner_x = x + 2;
+    let mut at = y + 1;
+    if !laid.toolbar.is_empty() {
+        draw_inline(paint, session, &laid.toolbar, inner_x, at);
+        at += 1;
+    }
+    let right = paint.right;
+    paint.right = (x + laid.w).saturating_sub(1).min(right);
+    for piece in &laid.body {
+        draw_piece(paint, session, piece, inner_x, at);
+        at += piece.height();
+    }
+    paint.right = right;
+}
+
+fn draw_form_line(paint: &mut Painter, session: &Session, line: &FormLine, x: u16, y: usize) -> usize {
+    match line {
+        FormLine::Field(field) => draw_field(paint, session, field, x, y),
+        FormLine::Cells(cells) => cells
+            .iter()
+            .map(|(cell_x, field)| draw_field(paint, session, field, x + cell_x, y))
+            .max()
+            .unwrap_or(1),
+        FormLine::Buttons(items) => {
+            draw_inline(paint, session, items, x, y);
+            1
+        }
+        FormLine::Group(title) => {
+            paint.text(
+                x,
+                y,
+                title,
+                Look::role(Role::Text).bold(),
+                usize::from(paint.right.saturating_sub(x)),
+            );
+            1
+        }
+        FormLine::Text(text) => {
+            for (at, row) in text.lines.iter().enumerate() {
+                paint.text(
+                    x,
+                    y + at,
+                    row,
+                    text_look(&text.style),
+                    usize::from(paint.right.saturating_sub(x)),
+                );
+            }
+            text.lines.len()
+        }
+    }
+}
+
+/// One field: its label (dot leaders, `*` when required), then its value in the widget's look. Returns its rows.
+fn draw_field(paint: &mut Painter, session: &Session, field: &LaidField, x: u16, y: usize) -> usize {
+    let Some(info) = session.index().fields.get(&field.id) else {
+        return 0;
+    };
+    if !session.visible(&field.id) {
+        // A hidden field keeps its rows so the layout does not jump while typing; it is blank.
+        return field.height();
+    }
+    let focused_node = session.focus().is_some_and(|item| item.node == field.id);
+    let required = if info.required { "* " } else { "" };
+    let (value_x, value_y) = match field.mode {
+        LabelMode::Beside => {
+            let label = dotted_label(&format!("{required}{}", field.title), field.label_width + 2);
+            let label_look = if focused_node {
+                Look::role(Role::Text).bold()
+            } else {
+                Look::role(Role::Text)
+            };
+            paint.text(x, y, &label, label_look, field.label_width + 2);
+            paint.text(
+                x + u16::try_from(field.label_width + 2).unwrap_or(0),
+                y,
+                ":",
+                Look::role(Role::Muted),
+                1,
+            );
+            (x + u16::try_from(field.label_width + 4).unwrap_or(0), y)
+        }
+        LabelMode::Above => {
+            paint.text(
+                x,
+                y,
+                &format!("{required}{}", field.title),
+                Look::role(Role::Text).bold(),
+                usize::from(paint.right.saturating_sub(x)),
+            );
+            (x + 2, y + 1)
+        }
+    };
+    paint.spot(&field.id, value_x, value_y);
+    draw_value(paint, session, field, &info.widget, value_x, value_y);
+    field.height()
+}
+
+fn draw_value(paint: &mut Painter, session: &Session, field: &LaidField, widget: &Widget, x: u16, y: usize) {
+    let id = &field.id;
+    let width = field.value_width.max(4);
+    let focus_key = session.focus_id();
+    let after = |paint: &mut Painter, used: usize, key: &str| {
+        let mut col = x + u16::try_from(used).unwrap_or(0);
+        if session.is_dirty(key) {
+            col += u16::try_from(paint.text(col, y, paint.theme.glyph(Glyph::Changed), Look::role(Role::Changed), 1))
+                .unwrap_or(0);
+        }
+        if session.mark(key).is_some() {
+            paint.text(
+                col,
+                y,
+                paint.theme.glyph(Glyph::Error),
+                Look::role(Role::Negative).bold(),
+                1,
+            );
+        }
+    };
+    match widget {
+        Widget::TextLine { input_type, .. } => {
+            let used = input(paint, session, id, x, y, width, input_type == "number", false);
+            after(paint, used, id);
+        }
+        Widget::Password {} => {
+            let used = input(paint, session, id, x, y, width, false, true);
+            after(paint, used, id);
+        }
+        Widget::DateTime { .. } => {
+            let used = input(paint, session, id, x, y, width, false, false);
+            after(paint, used, id);
+            if focus_key == id.as_str() {
+                paint.text(
+                    x + u16::try_from(used + 2).unwrap_or(0),
+                    y,
+                    "F4",
+                    Look::role(Role::Muted),
+                    2,
+                );
+            }
+        }
+        Widget::TextFind { .. } => {
+            let used = input(paint, session, id, x, y, width.saturating_sub(10), false, false);
+            after(paint, used, id);
+            let op = session.buffer(&format!("{id}#op"));
+            let not = session.buffer(&format!("{id}#not")) == "Y";
+            if op != "contains" || not {
+                let chip = format!("{}{op}", if not { "not " } else { "" });
+                paint.text(
+                    x + u16::try_from(used + 2).unwrap_or(0),
+                    y,
+                    &chip,
+                    Look::role(Role::Info),
+                    12,
+                );
+            }
+        }
+        Widget::DateFind { .. } | Widget::RangeFind { .. } | Widget::DatePeriod { .. } => {
+            let half = width.saturating_sub(3) / 2;
+            let from = format!("{id}#from");
+            let thru = format!("{id}#thru");
+            let used = input(paint, session, &from, x, y, half, false, false);
+            after(paint, used, &from);
+            let thru_x = x + u16::try_from(half + 3).unwrap_or(0);
+            paint.text(
+                x + u16::try_from(half + 1).unwrap_or(0),
+                y,
+                "–",
+                Look::role(Role::Muted),
+                1,
+            );
+            paint.spot(&thru, thru_x, y);
+            let used = input(paint, session, &thru, thru_x, y, half, false, false);
+            after(paint, used + usize::from(thru_x - x), &thru);
+        }
+        Widget::TextArea { read_only, .. } => {
+            let text = session.buffer(id);
+            let lines: Vec<&str> = text.split('\n').collect();
+            let focused = focus_key == id.as_str();
+            let (cursor_row, cursor_col) = crate::edit::row_col(text, session.cursor(id));
+            let room = usize::from(paint.right.saturating_sub(x)).saturating_sub(3);
+            for row in 0..field.rows {
+                let line = lines.get(row).copied().unwrap_or("");
+                let bar = if paint.theme.ascii { "|" } else { "│" };
+                paint.text(x, y + row, bar, Look::role(Role::Field), 1);
+                let look = if *read_only {
+                    Look::role(Role::Text)
+                } else {
+                    Look::role(Role::Field)
+                };
+                paint.text(x + 1, y + row, &truncate_width(line, room), look, room);
+                if focused && row == cursor_row {
+                    let ch = line.chars().nth(cursor_col).unwrap_or(' ').to_string();
+                    let cx = x
+                        + 1
+                        + u16::try_from(display_width(&line.chars().take(cursor_col).collect::<String>())).unwrap_or(0);
+                    paint.text(cx, y + row, &ch, Look::role(Role::Focus).reverse(), 1);
+                }
+            }
+            after(paint, 1, id);
+        }
+        Widget::DropDown { options, multiple, .. } => {
+            let value = session.buffer(id);
+            let label = if *multiple {
+                value
+                    .split(',')
+                    .filter(|part| !part.is_empty())
+                    .map(|part| label_of(options, part))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                label_of(options, value)
+            };
+            let inner = width.saturating_sub(4);
+            let shown = format!(
+                "[{:<inner$} {}]",
+                truncate_width(&label, inner),
+                paint.theme.glyph(Glyph::DropDown)
+            );
+            let focused = focus_key == id.as_str();
+            let used = paint.text(x, y, &shown, Look::role(Role::Field).focused(focused), width);
+            after(paint, used, id);
+        }
+        Widget::Check { options, .. } => {
+            let value = session.buffer(id);
+            let focused = focus_key == id.as_str();
+            let mut col = x;
+            for choice in options {
+                let on = value.split(',').any(|part| part == choice.value);
+                let mark = if on { "[x]" } else { "[ ]" };
+                let text = if options.len() == 1 && choice.label.is_empty() {
+                    mark.to_string()
+                } else {
+                    format!("{mark} {}", choice.label)
+                };
+                let used = paint.text(
+                    col,
+                    y,
+                    &text,
+                    Look::role(Role::Field).focused(focused),
+                    usize::from(paint.right.saturating_sub(col)),
+                );
+                col += u16::try_from(used + 2).unwrap_or(0);
+            }
+            after(paint, usize::from(col - x).saturating_sub(2), id);
+        }
+        Widget::Radio { options, .. } => {
+            let value = session.buffer(id);
+            let focused = focus_key == id.as_str();
+            let mut col = x;
+            for choice in options {
+                let on = choice.value == value;
+                let dot = if paint.theme.ascii { "*" } else { "•" };
+                let text = format!("({}) {}", if on { dot } else { " " }, choice.label);
+                let used = paint.text(
+                    col,
+                    y,
+                    &text,
+                    Look::role(Role::Field).focused(focused && on),
+                    usize::from(paint.right.saturating_sub(col)),
+                );
+                col += u16::try_from(used + 2).unwrap_or(0);
+            }
+        }
+        Widget::Display { text, .. } => {
+            let room = usize::from(paint.right.saturating_sub(x));
+            for (at, line) in crate::layout::wrap(text, room).iter().enumerate().take(field.rows) {
+                paint.text(x, y + at, line, Look::role(Role::Text), room);
+            }
+        }
+        Widget::Label { text, style } => {
+            paint.text(x, y, text, text_look(style), usize::from(paint.right.saturating_sub(x)));
+        }
+        Widget::Image { alt, .. } => {
+            let text = format!("{} {alt}", paint.theme.glyph(Glyph::Image));
+            paint.text(
+                x,
+                y,
+                &text,
+                Look::role(Role::Muted),
+                usize::from(paint.right.saturating_sub(x)),
+            );
+        }
+        Widget::File { .. } => {
+            paint.text(
+                x,
+                y,
+                "[ choose… ]  upload in the browser",
+                Look::role(Role::Muted),
+                usize::from(paint.right.saturating_sub(x)),
+            );
+        }
+        Widget::Hidden { .. } | Widget::Submit { .. } | Widget::Reset { .. } => {}
+    }
+}
+
+fn label_of(options: &[crate::model::Choice], value: &str) -> String {
+    options
+        .iter()
+        .find(|choice| choice.value == value)
+        .map_or_else(|| value.to_string(), |choice| choice.label.clone())
+}
+
+/// `[value____]` in the field color; focused, reverse video with the cursor cell marked. A number is right-aligned and
+/// a password shows dots. Returns the columns used.
+#[expect(clippy::too_many_arguments)]
+fn input(
+    paint: &mut Painter,
+    session: &Session,
+    key: &str,
+    x: u16,
+    y: usize,
+    width: usize,
+    right: bool,
+    secret: bool,
+) -> usize {
+    let inner = width.saturating_sub(2).max(1);
+    let raw = session.buffer(key);
+    let text: String = if secret {
+        let dot = if paint.theme.ascii { '*' } else { '•' };
+        std::iter::repeat_n(dot, raw.chars().count()).collect()
+    } else {
+        raw.to_string()
+    };
+    let focused = session.focus_id() == key;
+    let chars: Vec<char> = text.chars().collect();
+    let cursor = session.cursor(key).min(chars.len());
+    // Keep the cursor inside the field: drop columns from the left until the text before it, and the cursor cell, fit.
+    let mut start = 0;
+    if focused {
+        let width_of = |from: usize| {
+            chars[from..cursor]
+                .iter()
+                .map(|ch| crate::layout::char_width(*ch))
+                .sum::<usize>()
+                + 1
+        };
+        while start < cursor && width_of(start) > inner {
+            start += 1;
+        }
+    }
+    let visible: String = chars[start..].iter().collect();
+    let shown = truncate_width(&visible, inner);
+    let pad = inner.saturating_sub(display_width(&shown));
+    let body = if right && !focused {
+        format!("{}{shown}", " ".repeat(pad))
+    } else {
+        format!("{shown}{}", "_".repeat(pad))
+    };
+    let look = Look::role(Role::Field).focused(focused);
+    paint.text(x, y, "[", look, 1);
+    paint.text(x + 1, y, &body, look, inner);
+    paint.text(x + 1 + u16::try_from(inner).unwrap_or(0), y, "]", look, 1);
+    if focused {
+        // The cursor cell: the focus color, not reversed, inside the reversed field.
+        let before: String = chars[start..cursor].iter().collect();
+        let cx = x + 1 + u16::try_from(display_width(&before)).unwrap_or(0);
+        let under = chars.get(cursor).map_or_else(|| " ".to_string(), char::to_string);
+        if usize::from(cx - x) <= inner {
+            paint.text(cx, y, &under, Look::role(Role::Focus), 1);
+        }
+    }
+    inner + 2
+}
+
+/// Links and buttons on one line, two columns apart.
+fn draw_inline(paint: &mut Painter, session: &Session, items: &[Inline], x: u16, y: usize) {
+    let mut col = x;
+    for item in items {
+        let focused = session.focus_id() == item.id();
+        let number = session
+            .link_number(item.id())
+            .map(|n| format!("[{n}]"))
+            .unwrap_or_default();
+        let (text, look) = match item {
+            Inline::Link {
+                text, btn_type, button, ..
+            } => {
+                let role = Role::of_type(btn_type).unwrap_or(Role::Primary);
+                if *button {
+                    (format!("{number}[ {text} ]"), Look::role(role))
+                } else {
+                    (format!("{number}{text}"), Look::role(Role::Primary).underline())
+                }
+            }
+            Inline::Button { id, text, primary } => {
+                let dirty = session
+                    .index()
+                    .form_of(id)
+                    .is_some_and(|form| session.form_dirty(&form.id));
+                if *primary {
+                    // Dim while the form is unchanged, strong once a field changes (the outline-until-changed rule).
+                    let look = if dirty {
+                        Look::role(Role::Primary).bold()
+                    } else {
+                        Look::role(Role::Primary).dim()
+                    };
+                    (format!("< {text} >"), look)
+                } else {
+                    (format!("[ {text} ]"), Look::role(Role::Secondary))
+                }
+            }
+            Inline::Dialog { text, .. } => (format!("{number}[ {text}… ]"), Look::role(Role::Secondary)),
+        };
+        paint.spot(item.id(), col, y);
+        let url = match item {
+            Inline::Link { id, .. } => session
+                .index()
+                .links
+                .get(id)
+                .map(|link| link.url.clone())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        let room = usize::from(paint.right.saturating_sub(col));
+        let used = if super::paint::safe_link(&url) {
+            paint.link_text(col, y, &text, look.focused(focused), room, &url)
+        } else {
+            paint.text(col, y, &text, look.focused(focused), room)
+        };
+        col = col.saturating_add(u16::try_from(used + 2).unwrap_or(u16::MAX));
+    }
+}
+
+/// A list: header with sort marks, rule, rows with the current row's `▌` and the selection column, the first column
+/// fixed while the rest scroll sideways, and the paging footer.
+fn draw_list(paint: &mut Painter, session: &Session, laid: &LaidList, x: u16, y: usize) {
+    let Some(list) = session.list(&laid.id) else {
+        return;
+    };
+    let focused = session.focus_id() == laid.id;
+    let current = session.row_at(&laid.id);
+    let selected = session.selected(&laid.id);
+    let room = usize::from(paint.right.saturating_sub(x));
+    let scroll = session.hscroll(&laid.id).min(laid.columns.len().saturating_sub(1));
+    // The columns shown: the first, then from the scrolled one on.
+    let mut shown: Vec<usize> = Vec::new();
+    if !laid.columns.is_empty() {
+        shown.push(0);
+        shown.extend((1 + scroll)..laid.columns.len());
+    }
+    let gutter = 2 + if laid.selection { 4 } else { 0 };
+    let mut used = gutter;
+    let mut fits = Vec::new();
+    for at in &shown {
+        let width = laid.columns[*at].width;
+        if used + width > room && !fits.is_empty() {
+            break;
+        }
+        used += width + 1;
+        fits.push(*at);
+    }
+    let more_right = fits.last().is_some_and(|last| *last + 1 < laid.columns.len());
+    let total = if list.paging.count > 0 {
+        list.paging.count as usize
+    } else {
+        list.rows.len()
+    };
+    // Header.
+    let order = session.order_by();
+    let mut col = x + u16::try_from(gutter).unwrap_or(0);
+    for at in &fits {
+        let column = &laid.columns[*at];
+        let source = &list.columns[*at];
+        let mut title = column.title.clone();
+        if !source.order_by.is_empty() {
+            let bare = source.order_by.trim_start_matches('^');
+            if order.trim_start_matches('^') == bare {
+                title.push_str(paint.theme.glyph(Glyph::Up));
+            } else if order
+                .strip_prefix('-')
+                .is_some_and(|name| name.trim_start_matches('^') == bare)
+            {
+                title.push_str(paint.theme.glyph(Glyph::Down));
+            }
+        }
+        let text = fit(&title, column.width, column.right);
+        paint.text(col, y, &text, Look::role(Role::Text).bold(), column.width);
+        col += u16::try_from(column.width + 1).unwrap_or(0);
+    }
+    if scroll > 0 {
+        paint.text(x, y, paint.theme.glyph(Glyph::ScrollLeft), Look::role(Role::Muted), 1);
+    }
+    if more_right {
+        let edge = x + u16::try_from(room.saturating_sub(1)).unwrap_or(0);
+        paint.text(
+            edge,
+            y,
+            paint.theme.glyph(Glyph::ScrollRight),
+            Look::role(Role::Muted),
+            1,
+        );
+    }
+    let rule_width = used.min(room);
+    paint.text(
+        x,
+        y + 1,
+        &paint.theme.glyph(Glyph::Rule).repeat(rule_width),
+        Look::role(Role::Border),
+        rule_width,
+    );
+    // Rows.
+    if list.rows.is_empty() {
+        paint.text(x + 2, y + 2, "No rows match", Look::role(Role::Muted).italic(), room);
+    }
+    for (at, row) in list.rows.iter().enumerate() {
+        let row_y = y + 2 + at;
+        let is_current = focused && at == current;
+        if is_current {
+            paint.text(
+                x,
+                row_y,
+                paint.theme.glyph(Glyph::Row),
+                Look::role(Role::Primary).bold(),
+                1,
+            );
+        }
+        let mut col = x + 2;
+        if laid.selection {
+            let id = if row.select_id.is_empty() {
+                &row.id
+            } else {
+                &row.select_id
+            };
+            let on = selected.is_some_and(|set| set.contains(id));
+            paint.text(col, row_y, if on { "[x]" } else { "[ ]" }, Look::role(Role::Field), 3);
+            col += 4;
+        }
+        let look = if is_current {
+            Look::role(Role::Text).on(Role::Selection)
+        } else {
+            Look::role(Role::Text)
+        };
+        for column_at in &fits {
+            let column = &laid.columns[*column_at];
+            let cell = row.cells.get(*column_at);
+            let (text, link) = match cell {
+                Some(Cell::Node(node)) => match node.as_ref() {
+                    Node::Link { id, text, .. } => {
+                        let number = session.link_number(id).map(|n| format!("[{n}]")).unwrap_or_default();
+                        (format!("{number}{text}"), true)
+                    }
+                    other => (cell_text(other), false),
+                },
+                Some(Cell::Text(text)) => (text.clone(), false),
+                None => (String::new(), false),
+            };
+            let cell_look = if link {
+                Look::role(Role::Primary).underline()
+            } else {
+                look
+            };
+            let cell_look = if is_current {
+                cell_look.on(Role::Selection)
+            } else {
+                cell_look
+            };
+            paint.text(
+                col,
+                row_y,
+                &fit(&text, column.width, column.right),
+                cell_look,
+                column.width,
+            );
+            col += u16::try_from(column.width + 1).unwrap_or(0);
+        }
+    }
+    // Footer: `Rows 21–40 of 312 · Page 2/16`.
+    let footer_y = y + 2 + list.rows.len().max(1);
+    let page = session.page_index(&laid.id) + 1;
+    let pages = session.page_count(&laid.id);
+    let low = list
+        .paging
+        .range_low
+        .map_or_else(|| (page - 1) * list.paging.size.max(1) as usize + 1, |low| low as usize);
+    let high = list
+        .paging
+        .range_high
+        .map_or(low + list.rows.len().saturating_sub(1), |high| high as usize);
+    let footer = if list.rows.is_empty() {
+        format!("Rows 0 of {total}")
+    } else {
+        format!("Rows {low}–{high} of {total} · Page {page}/{pages}")
+    };
+    paint.text(x + 2, footer_y, &footer, Look::role(Role::Muted), room);
+    if let Some(find) = filter_summary(session, list) {
+        let col = x + 2 + u16::try_from(display_width(&footer) + 3).unwrap_or(0);
+        paint.text(
+            col,
+            footer_y,
+            &find,
+            Look::role(Role::Info),
+            room.saturating_sub(usize::from(col - x)),
+        );
+    }
+}
+
+/// `Status = Approved` for each header field with a value, as qvt's filter summary.
+fn filter_summary(session: &Session, list: &crate::model::FormList) -> Option<String> {
+    let mut parts = Vec::new();
+    crate::model::walk(&list.header_fields, &mut |node| {
+        if let Node::Field { id, title, .. } = node {
+            let value = session.buffer(id);
+            let from = session.buffer(&format!("{id}#from"));
+            let thru = session.buffer(&format!("{id}#thru"));
+            if !value.is_empty() {
+                parts.push(format!("{title} = {value}"));
+            } else if !from.is_empty() || !thru.is_empty() {
+                parts.push(format!("{title} {from}–{thru}"));
+            }
+        }
+    });
+    (!parts.is_empty()).then(|| format!("Find: {}", parts.join(", ")))
+}
+
+fn cell_text(node: &Node) -> String {
+    match node {
+        Node::Text { text, .. } => text.clone(),
+        _ => String::new(),
+    }
+}
+
+fn fit(text: &str, width: usize, right: bool) -> String {
+    let shown = truncate_width(text, width);
+    let pad = width.saturating_sub(display_width(&shown));
+    if right {
+        format!("{}{shown}", " ".repeat(pad))
+    } else {
+        format!("{shown}{}", " ".repeat(pad))
+    }
+}

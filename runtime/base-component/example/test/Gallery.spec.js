@@ -49,6 +49,36 @@ feature("gallery screen #name renders in #mode without errors", {
     },
 })
 
+// Every gallery screen is also a terminal screen (plans/Screen-TUI-Impl.md 2.8): its tui render is one JSON document, and
+// no section of it failed. A qvue screen with no tui text yet answers its placeholder, which is not an error.
+const tuiErrors = (nodes, found) => {
+    for (const node of nodes || []) {
+        if (!node || typeof node !== "object") continue
+        if (node.t === "error") found.push(node.text)
+        tuiErrors(node.c, found)
+        if (node.t === "formList") {
+            tuiErrors(node.headerFields, found)
+            for (const row of node.rows || []) tuiErrors(row.cells, found)
+        }
+    }
+    return found
+}
+
+feature("gallery screen #name renders in tui as one document without errors", {
+    where: galleryScreens.map(([name]) => ({ name })),
+    expect({ name }) {
+        const test = ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("tui")
+        const str = test.render(name, {}, null)
+        const doc = JSON.parse(str.output)
+        const errors = tuiErrors(doc.c, [])
+        if (errors.length) log.warn(`Gallery ${name} tui errors: ${errors.join(" | ")}`)
+        str.status == 200
+        doc.v == 1
+        errors.length == 0
+        str.errorMessages.length == 0
+    },
+})
+
 // The Landing counters are number cards in a dashboard, each a link into the List with its type filter.
 feature("the Landing counters are number cards in a dashboard that link to the filtered list", {
     expect() {

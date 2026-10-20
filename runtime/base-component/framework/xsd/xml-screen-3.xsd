@@ -108,7 +108,7 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:annotation><xs:documentation>
                 The render mode(s) this screen supports. Can be any valid render mode. The default value of "all" will allow all
                 render modes, so specify one or more specific render modes to limit how the screen may be rendered. Default supported
-                modes include: text, html, html-print (alias xsl-fo), xml, csv, qvt, qjs and qvue. Values can be comma separated to apply to multiple render modes.
+                modes include: text, html, html-print (alias xsl-fo), xml, csv, qvt, qjs, qvue and tui. Values can be comma separated to apply to multiple render modes.
             </xs:documentation></xs:annotation>
         </xs:attribute>
         <xs:attribute name="server-static" type="xs:string">
@@ -116,7 +116,7 @@ along with this software (see the LICENSE.md file). If not, see
                 The render modes where the results of this screen are always the same and the screen render results may be cached (on server and/or client).
                 This applies to all screens that are designed for client rendering when the screen is written to fully support it (filling in data with additional requests).
                 Placeholder screens are automatically server static, ie with just subscreens-panel, subscreens-active, and subscreens-menu elements.
-                Can be any valid render mode. Default supported modes include: text, html, html-print (alias xsl-fo), xml, csv, qvt, qjs and qvue.
+                Can be any valid render mode. Default supported modes include: text, html, html-print (alias xsl-fo), xml, csv, qvt, qjs, qvue and tui.
                 Values can be comma separated to apply to multiple render modes. A value of "all" will apply to all render modes.
             </xs:documentation></xs:annotation>
         </xs:attribute>
@@ -1312,9 +1312,14 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:extension base="xs:string">
                 <xs:attribute name="type" type="xs:string" default="any">
                     <xs:annotation><xs:documentation>
-                        Can be any valid render mode. Default supported modes include: text, html, html-print (alias xsl-fo), xml, and csv.
+                        Can be any valid render mode. Default supported modes include: text, html, html-print (alias xsl-fo), xml, csv, qvt, qjs, qvue, and tui.
                         Values can be comma separated to apply to multiple render modes.
                         A value of "any" will cause it to be used if no other element matches the current output type.
+                        A screen that goes custom in one render mode is written again for each other mode it should work in:
+                        a text of type qvt (or a qvue screen) gets a text of type tui beside it for the terminal client, whose
+                        content is the JSON of one node or an array of nodes of the tui screen model, every value through
+                        JSON.stringify. Without one the terminal shows a placeholder with the browser address
+                        (docs/TUI.md; moqui lint --screens lists them).
                     </xs:documentation></xs:annotation>
                 </xs:attribute>
                 <xs:attribute name="location" type="xs:string">

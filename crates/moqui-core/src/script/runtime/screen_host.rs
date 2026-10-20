@@ -243,6 +243,15 @@ fn sri_render_text(ctx: Ctx<'_>, location: String, template: Opt<String>) -> rqu
     })
 }
 
+/// `sri.renderTextValue(location, template)`: the rendered text of a location, returned rather than written.
+fn sri_render_text_value(ctx: Ctx<'_>, location: String, template: Opt<String>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        with_render(&ctx, true, |state| {
+            logic::render_text_value(state, &location, text_arg(&template))
+        })
+    })
+}
+
 /// `sri.renderInlineText(body)`: a `<text template="true">` body as a trusted fancy template.
 fn sri_render_inline_text(ctx: Ctx<'_>, body: String) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
@@ -296,6 +305,30 @@ fn sri_base_link_url(ctx: Ctx<'_>, url: Opt<JsValue<'_>>) -> rquickjs::Result<()
             *state.base_link_url.borrow_mut() = url.filter(|url| !url.is_empty());
             Ok(())
         })
+    })
+}
+
+/// `sri.setFocusField(id)`: the envelope focus, the first id a form asks for. Later calls leave it.
+fn sri_set_focus_field(ctx: Ctx<'_>, id: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        with_render(&ctx, false, |state| {
+            logic::set_focus_field(state, &id);
+            Ok(())
+        })
+    })
+}
+
+/// `sri.htmlText(html)`: the JSON text of the blocks and numbered links of an `html` tui node.
+fn sri_html_text(ctx: Ctx<'_>, html: String) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        Ok(crate::screen::html_text::html_text(&html).to_json().to_string())
+    })
+}
+
+/// `sri.uniqueId(id)`: a tui node id no earlier node of the document has.
+fn sri_unique_id(ctx: Ctx<'_>, id: String) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        with_render(&ctx, false, |state| Ok(logic::unique_id(state, &id)))
     })
 }
 
@@ -712,11 +745,37 @@ fn sri_get_field_validation<'js>(ctx: Ctx<'js>, sub: JsValue<'js>) -> rquickjs::
 fn sri_get_field_validation_js_rules<'js>(ctx: Ctx<'js>, sub: JsValue<'js>) -> rquickjs::Result<Array<'js>> {
     host_guard(&ctx, || {
         let sub = lit(&ctx, &sub)?;
-        let rules = with_render(&ctx, false, |_| logic::field_validation_js_rules(&sub))?;
+        let rules = with_render(&ctx, false, |_| logic::field_validation_rules(&sub))?;
         let out = Array::new(ctx.clone())?;
-        for (index, (expr, message)) in rules.into_iter().enumerate() {
+        for (index, (rule, message)) in rules.into_iter().enumerate() {
             let object = Object::new(ctx.clone())?;
-            object.set("expr", expr)?;
+            object.set("expr", rule.js())?;
+            object.set("message", message)?;
+            out.set(index, object)?;
+        }
+        Ok(out)
+    })
+}
+
+/// `getFieldValidationRules(sub)`: the same checks as data, `[{kind, ..., message}]`, for a client that does not run
+/// JavaScript (tui).
+fn sri_get_field_validation_rules<'js>(ctx: Ctx<'js>, sub: JsValue<'js>) -> rquickjs::Result<Array<'js>> {
+    host_guard(&ctx, || {
+        let sub = lit(&ctx, &sub)?;
+        let rules = with_render(&ctx, false, |_| logic::field_validation_rules(&sub))?;
+        let out = Array::new(ctx.clone())?;
+        for (index, (rule, message)) in rules.into_iter().enumerate() {
+            let object = Object::new(ctx.clone())?;
+            // A rule's JSON is one flat object of strings, booleans and nulls.
+            if let serde_json::Value::Object(fields) = rule.json() {
+                for (key, value) in fields {
+                    match value {
+                        serde_json::Value::String(text) => object.set(key, text)?,
+                        serde_json::Value::Bool(flag) => object.set(key, flag)?,
+                        _ => {}
+                    }
+                }
+            }
             object.set("message", message)?;
             out.set(index, object)?;
         }
@@ -1008,6 +1067,9 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("sendRedirectAndStopRender", sri_send_redirect_and_stop_render);
     method!("baseLinkUrl", sri_base_link_url);
     method!("getBaseLinkUrl", sri_get_base_link_url);
+    method!("setFocusField", sri_set_focus_field);
+    method!("uniqueId", sri_unique_id);
+    method!("htmlText", sri_html_text);
     method!("write", sri_write);
     method!("renderSection", sri_render_section);
     method!("renderSectionInclude", sri_render_section_include);
@@ -1016,6 +1078,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("renderDynamicForm", sri_render_dynamic_form);
     method!("renderUserColumnsForm", sri_render_user_columns_form);
     method!("renderText", sri_render_text);
+    method!("renderTextValue", sri_render_text_value);
     method!("renderInlineText", sri_render_inline_text);
     method!("doBoundaryComments", sri_do_boundary_comments);
     method!("getRenderMode", sri_get_render_mode);
@@ -1058,6 +1121,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getSectionIncludedNode", sri_get_section_included_node);
     method!("getFieldValidation", sri_get_field_validation);
     method!("getFieldValidationJsRules", sri_get_field_validation_js_rules);
+    method!("getFieldValidationRules", sri_get_field_validation_rules);
     method!("getFieldTransitionValue", sri_get_field_transition_value);
     method!("getMenuItems", sri_get_menu_items);
     method!("getMenuData", sri_get_menu_data);

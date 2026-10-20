@@ -562,6 +562,15 @@ fn a_form_builds_its_fields_from_a_service() {
         qvt.contains("$mq.isStringInteger(value)") && qvt.contains("Please enter a valid whole number"),
         "{qvt}"
     );
+    // tui sends the same rules as data, and the required parameter as `required`
+    let mut get = request("GET", "/");
+    get.query.push(("renderMode".into(), "tui".into()));
+    let tui = serve_at(&world.factory, get, &root).body_text();
+    assert!(
+        tui.contains(r#""rules":[{"kind":"integer","message":"Please enter a valid whole number"}]"#),
+        "{tui}"
+    );
+    assert!(tui.contains(r#""name":"title","required":true"#), "{tui}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

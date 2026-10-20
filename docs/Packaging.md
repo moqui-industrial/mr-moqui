@@ -19,7 +19,7 @@ Plain `cargo build -p moqui`, `cargo test` and `cargo lint` use the Maximal feat
 
 The framework features are in `crates/moqui-core`; the host features, and the packages, are in `crates/moqui-host`;
 `crates/moqui` (and the crate `./moq build` generates in `target/moqui-app` for add-on component crates) forwards the
-package features `lite`, `enterprise` and `maximal`.
+package features `lite`, `enterprise` and `maximal`, and `inbound-smtp` and `tui` for a lite build that wants one.
 
 | Feature | Crate | What it gates | Default | Enterprise | Maximal |
 |---|---|---|---|---|---|
@@ -31,6 +31,7 @@ package features `lite`, `enterprise` and `maximal`.
 | `ssh` | host | The SFTP client, the built-in SSH server (SFTP, admin shell, git over SSH), the SSH cluster channel | | yes | yes |
 | `sso` | host | OIDC and OAuth 2 logins (`org.moqui.sso.AuthServices`) | | yes | yes |
 | `print` | host | Network printing over IPP (`moqui-cups`) | | yes | yes |
+| `tui` | host | `moqui tui`, the terminal client of the `tui` render mode, on Revue ([TUI](TUI.md)); lite leaves it out, so a lite server is used from another build's client | | yes | yes |
 | `inbound-smtp` | host | The SMTP listener for hosted and shared mail accounts behind the edge gateway ([Mail-Inbound](Mail-Inbound.md); includes `imap`); it starts only when `smtp_listen_port` is set | | yes | yes |
 | `smtp` | core | Outbound mail: `send#EmailMessage`, `send#EmailTemplate`, password reset and notification mail | yes | yes | yes |
 | `imap` | core | Inbound mail: `poll#EmailServer`, the mail client's sync, IDLE, rules and import (includes `smtp`) | | yes | yes |

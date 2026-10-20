@@ -373,42 +373,109 @@ const MSG_DIGITS: &str = "Please enter only numbers (digits)";
 const MSG_LETTERS: &str = "Please enter only letters";
 const MSG_EMAIL: &str = "Please enter a valid email address";
 const MSG_URL: &str = "Please enter a valid URL";
-// The browser checks of a field. The helpers are called as `$mq`, the name the server-static qvt scope
-// has and the name the merged qvt mode's browser global has, so one rule text works in both modes.
-pub(crate) const VALIDATE_NUMBER: &str = "!value || $mq.isStringNumber(value)";
-pub(crate) const VALIDATE_NUMBER_INT: &str = "!value || $mq.isStringInteger(value)";
-const VALIDATE_EMAIL: &str = r#"!value || /^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/.test(value)"#;
-const VALIDATE_URL: &str = r"!value || /((([A-Za-z]{3,9}:(?:\/\/)?)(?:[\-;:&=\+\$,\w]+@)?[A-Za-z0-9\.\-]+|(?:www\.|[\-;:&=\+\$,\w]+@)[A-Za-z0-9\.\-]+)((?:\/[\+~%\/\.\w\-_]*)?\??(?:[\-\+=&;%@\.\w_]*)#?(?:[\.\!\/\\\w]*))?)/.test(value)";
+const PATTERN_DIGITS: &str = r"^\d*$";
+const PATTERN_LETTERS: &str = "^[a-zA-Z]*$";
+const PATTERN_EMAIL: &str = r#"^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$"#;
+const PATTERN_URL: &str = r"((([A-Za-z]{3,9}:(?:\/\/)?)(?:[\-;:&=\+\$,\w]+@)?[A-Za-z0-9\.\-]+|(?:www\.|[\-;:&=\+\$,\w]+@)[A-Za-z0-9\.\-]+)((?:\/[\+~%\/\.\w\-_]*)?\??(?:[\-\+=&;%@\.\w_]*)#?(?:[\.\!\/\\\w]*))?)";
 
-/// `FormInstance.getFieldValidationJsRules` for a service parameter: `(expression over value, message)` for each rule the
-/// browser checks, the messages not localized yet. None when the service or parameter is not there.
-pub(crate) fn input_js_rules(service: &str, parameter: &str) -> Option<Vec<(String, String)>> {
+/// A check of a field's value made before a submit. qvt writes it as a JavaScript expression over `value`
+/// ([`ClientRule::js`]); tui sends it as data ([`ClientRule::json`]) that the terminal client checks itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ClientRule {
+    Required,
+    Number,
+    Integer,
+    /// A JavaScript regular expression that must match somewhere in a value that is not empty.
+    Pattern(String),
+    /// A number between the bounds that are set.
+    Range {
+        min: Option<String>,
+        min_eq: bool,
+        max: Option<String>,
+        max_eq: bool,
+    },
+}
+
+impl ClientRule {
+    /// The rule as qvt checks it. The helpers are called as `$mq`, the name the server-static qvt scope has and the
+    /// name the merged qvt mode's browser global has, so one rule text works in both modes.
+    pub(crate) fn js(&self) -> String {
+        match self {
+            Self::Required => "!!value".to_string(),
+            Self::Number => "!value || $mq.isStringNumber(value)".to_string(),
+            Self::Integer => "!value || $mq.isStringInteger(value)".to_string(),
+            Self::Pattern(pattern) => format!("!value || /{pattern}/.test(value)"),
+            Self::Range {
+                min,
+                min_eq,
+                max,
+                max_eq,
+            } => {
+                let mut compare = String::new();
+                if let Some(min) = min {
+                    compare.push_str(&format!(
+                        " && $mq.parseNumber(value) {} {min}",
+                        if *min_eq { ">=" } else { ">" }
+                    ));
+                }
+                if let Some(max) = max {
+                    compare.push_str(&format!(
+                        " && $mq.parseNumber(value) {} {max}",
+                        if *max_eq { "<=" } else { "<" }
+                    ));
+                }
+                format!("!value || (!Number.isNaN($mq.parseNumber(value)){compare})")
+            }
+        }
+    }
+
+    /// The rule as tui sends it: `{kind}` with `pattern`, or `min`/`minEq`/`max`/`maxEq` for a range.
+    pub(crate) fn json(&self) -> serde_json::Value {
+        match self {
+            Self::Required => serde_json::json!({"kind": "required"}),
+            Self::Number => serde_json::json!({"kind": "number"}),
+            Self::Integer => serde_json::json!({"kind": "integer"}),
+            Self::Pattern(pattern) => serde_json::json!({"kind": "pattern", "pattern": pattern}),
+            Self::Range {
+                min,
+                min_eq,
+                max,
+                max_eq,
+            } => serde_json::json!({"kind": "range", "min": min, "minEq": min_eq, "max": max, "maxEq": max_eq}),
+        }
+    }
+}
+
+/// `FormInstance.getFieldValidationJsRules` for a service parameter: each rule the browser checks with its message,
+/// not localized yet. None when the service or parameter is not there.
+pub(crate) fn input_rules(service: &str, parameter: &str) -> Option<Vec<(ClientRule, String)>> {
     let def = find(service)?;
     let param = def.in_params.iter().find(|param| param.name == parameter)?;
-    let mut rules: Vec<(String, String)> = Vec::new();
-    let mut push = |expr: &str, message: &str| rules.push((expr.to_string(), message.to_string()));
+    let mut rules: Vec<(ClientRule, String)> = Vec::new();
+    let mut push = |rule: ClientRule, message: &str| rules.push((rule, message.to_string()));
+    let pattern = |text: &str| ClientRule::Pattern(text.to_string());
     if param.required == Required::True {
-        push("!!value", MSG_REQUIRED);
+        push(ClientRule::Required, MSG_REQUIRED);
     }
     let mut found_number = false;
     for check in &param.checks {
         match check {
             Check::NumberInteger if !found_number => {
-                push(VALIDATE_NUMBER_INT, MSG_NUMBER_INT);
+                push(ClientRule::Integer, MSG_NUMBER_INT);
                 found_number = true;
             }
             Check::NumberDecimal if !found_number => {
-                push(VALIDATE_NUMBER, MSG_NUMBER);
+                push(ClientRule::Number, MSG_NUMBER);
                 found_number = true;
             }
             Check::TextDigits if !found_number => {
-                push(r"!value || /^\d*$/.test(value)", MSG_DIGITS);
+                push(pattern(PATTERN_DIGITS), MSG_DIGITS);
                 found_number = true;
             }
-            Check::TextLetters => push("!value || /^[a-zA-Z]*$/.test(value)", MSG_LETTERS),
-            Check::TextEmail => push(VALIDATE_EMAIL, MSG_EMAIL),
-            Check::TextUrl => push(VALIDATE_URL, MSG_URL),
-            Check::Matches { regexp, message } => push(&format!("!value || /{regexp}/.test(value)"), message),
+            Check::TextLetters => push(pattern(PATTERN_LETTERS), MSG_LETTERS),
+            Check::TextEmail => push(pattern(PATTERN_EMAIL), MSG_EMAIL),
+            Check::TextUrl => push(pattern(PATTERN_URL), MSG_URL),
+            Check::Matches { regexp, message } => push(pattern(regexp), message),
             Check::NumberRange {
                 min,
                 min_eq,
@@ -416,32 +483,24 @@ pub(crate) fn input_js_rules(service: &str, parameter: &str) -> Option<Vec<(Stri
                 max_eq,
                 message,
             } => {
-                let mut compare = String::new();
-                if let Some(min) = min.as_deref().filter(|text| !text.is_empty()) {
-                    compare.push_str(&format!(
-                        " && $mq.parseNumber(value) {} {min}",
-                        if *min_eq { ">=" } else { ">" }
-                    ));
-                }
-                if let Some(max) = max.as_deref().filter(|text| !text.is_empty()) {
-                    compare.push_str(&format!(
-                        " && $mq.parseNumber(value) {} {max}",
-                        if *max_eq { "<=" } else { "<" }
-                    ));
-                }
-                let message = message.clone().filter(|text| !text.is_empty()).unwrap_or_else(|| {
-                    match (
-                        min.as_deref().filter(|t| !t.is_empty()),
-                        max.as_deref().filter(|t| !t.is_empty()),
-                    ) {
+                let min = min.clone().filter(|text| !text.is_empty());
+                let max = max.clone().filter(|text| !text.is_empty());
+                let message = message
+                    .clone()
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_else(|| match (&min, &max) {
                         (Some(min), Some(max)) => format!("Enter a number between {min} and {max}"),
                         (Some(min), None) => format!("Enter a number greater than {min}"),
                         (None, Some(max)) => format!("Enter a number less than {max}"),
                         (None, None) => MSG_NUMBER.to_string(),
-                    }
-                });
+                    });
                 push(
-                    &format!("!value || (!Number.isNaN($mq.parseNumber(value)){compare})"),
+                    ClientRule::Range {
+                        min,
+                        min_eq: *min_eq,
+                        max,
+                        max_eq: *max_eq,
+                    },
                     &message,
                 );
             }
@@ -454,12 +513,12 @@ pub(crate) fn input_js_rules(service: &str, parameter: &str) -> Option<Vec<(Stri
             .iter()
             .any(|suffix| java_type.ends_with(suffix))
         {
-            push(VALIDATE_NUMBER_INT, MSG_NUMBER_INT);
+            push(ClientRule::Integer, MSG_NUMBER_INT);
         } else if ["BigDecimal", "Double", "Float", "Number"]
             .iter()
             .any(|suffix| java_type.ends_with(suffix))
         {
-            push(VALIDATE_NUMBER, MSG_NUMBER);
+            push(ClientRule::Number, MSG_NUMBER);
         }
     }
     Some(rules)

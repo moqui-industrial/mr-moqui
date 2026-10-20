@@ -568,7 +568,7 @@ fn a_qvt_render_error_is_logged_and_written_in_its_place() {
     assert!(!section.contains("inside"), "{section}");
     assert!(
         whole.contains(&format!("Error rendering screen [{whole_location}]")),
-        "{whole}"
+        "whole={whole:?}"
     );
     assert!(!whole.contains("first") && !whole.contains("{{"), "{whole}");
     assert!(whole.contains("a &#123;&#123; brace }}"), "{whole}");

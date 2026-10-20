@@ -3996,6 +3996,7 @@ dependencies = [
  "gix",
  "gix-pack",
  "hmac 0.12.1",
+ "html5ever",
  "image",
  "imap",
  "indexmap",
@@ -4007,6 +4008,7 @@ dependencies = [
  "memchr",
  "moqui-db",
  "moqui-lib",
+ "moqui-tui",
  "oxc_ast",
  "oxc_parser",
  "oxc_span",
@@ -4056,6 +4058,7 @@ dependencies = [
  "jiff",
  "moqui-core",
  "moqui-lib",
+ "moqui-tui",
  "mysql",
  "p256",
  "postgres",
@@ -4104,6 +4107,8 @@ dependencies = [
 name = "moqui-tui"
 version = "0.1.0"
 dependencies = [
+ "jiff",
+ "regex",
  "revue",
  "serde",
  "serde_json",

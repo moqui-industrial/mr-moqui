@@ -735,11 +735,61 @@ pub fn shell_data(state: &RenderState) -> Result<Option<Value>, Error> {
     let mut out = Item::new();
     out.insert("apps".to_string(), Value::List(apps));
     out.insert("shell".to_string(), shell.shell_values(&theme));
+    out.insert("tui".to_string(), tui_values(&theme));
     out.insert(
         "counts".to_string(),
         crate::service::shell::shell_counts(&user_id).map_or(Value::Null, Value::Map),
     );
     Ok(Some(Value::Map(out)))
+}
+
+/// The `tui` theme values for the terminal client: `breakpoints` (name to columns), `colors` (role to color) and `keys`
+/// (action to chords), each from the `name = value` rows of its resource type in sequence; a later row of a name wins.
+/// A row that does not read is logged and left out, so the client keeps its default.
+fn tui_values(theme: &str) -> Value {
+    let rows = |resource_type: &str| match sri::theme_resource_values(theme, resource_type) {
+        Ok(values) => values,
+        Err(err) => {
+            tracing::error!("Could not read {resource_type} of theme {theme} for the shell: {err}");
+            Vec::new()
+        }
+    };
+    let pairs = |resource_type: &str| {
+        rows(resource_type)
+            .into_iter()
+            .filter_map(|row| match row.split_once('=') {
+                Some((name, value)) if !name.trim().is_empty() && !value.trim().is_empty() => {
+                    Some((name.trim().to_string(), value.trim().to_string()))
+                }
+                _ => {
+                    tracing::warn!("Theme {theme} {resource_type} value [{row}] is not name = value; it is left out");
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut breakpoints = Item::new();
+    for (name, value) in pairs("STRT_TUI_BREAKPOINTS") {
+        match value.parse::<i64>() {
+            Ok(columns) if columns > 0 => {
+                breakpoints.insert(name, Value::I64(columns));
+            }
+            _ => tracing::warn!("Theme {theme} TUI breakpoint {name} = {value} is not a column count; it is left out"),
+        }
+    }
+    let map = |resource_type: &str| {
+        Value::Map(
+            pairs(resource_type)
+                .into_iter()
+                .map(|(name, value)| (name, Value::string(value)))
+                .collect(),
+        )
+    };
+    let mut out = Item::new();
+    out.insert("breakpoints".to_string(), Value::Map(breakpoints));
+    out.insert("colors".to_string(), map("STRT_TUI_COLORS"));
+    out.insert("keys".to_string(), map("STRT_TUI_KEYS"));
+    Value::Map(out)
 }
 
 /// The provider kinds of [`shell_providers`]: the keys of an app's `providers` in the shell data.

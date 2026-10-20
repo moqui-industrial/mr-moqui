@@ -85,6 +85,18 @@ pub fn install() {
 /// [`install`], with stderr limited to `console` and above while the log files still get every line at
 /// `moqui_log_level`: `moqui test` keeps its report readable this way.
 pub fn install_with_console(console: Option<Level>) {
+    install_subscriber(Some(console));
+}
+
+/// [`install`] with nothing on stderr: `moqui tui` draws on the terminal, and any stderr line would tear the screen. The
+/// log files and the [`tap`]s get every line. It has to be the first install of the process.
+pub fn install_without_console() {
+    install_subscriber(None);
+}
+
+/// `console` is None for no stderr, `Some(None)` for every line at `moqui_log_level`, `Some(Some(level))` for that level
+/// and above.
+fn install_subscriber(console: Option<Option<Level>>) {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(|| {
         let level = match moqui_lib::env::get_prop_or_env("moqui_log_level")
@@ -105,10 +117,34 @@ pub fn install_with_console(console: Option<Level>) {
         );
         let _ = tracing::subscriber::set_global_default(LineSubscriber {
             level,
-            console: console.unwrap_or(level),
+            console: console.map(|console| console.unwrap_or(level)),
             next_span: AtomicU64::new(1),
             color,
         });
+    });
+}
+
+/// The receivers of [`tap`]. A full one drops lines rather than block the thread that logs; a dropped one is removed.
+static TAPS: Mutex<Vec<std::sync::mpsc::SyncSender<String>>> = Mutex::new(Vec::new());
+
+/// Every log line from now on, as the files get it, on a channel that holds up to `capacity` lines: the TUI's log pane.
+/// The subscriber has no layers, so this is a third sink beside stderr and the files.
+pub fn tap(capacity: usize) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(capacity.max(1));
+    TAPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(tx);
+    rx
+}
+
+fn feed_taps(line: &str) {
+    let mut taps = TAPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if taps.is_empty() {
+        return;
+    }
+    taps.retain(|tap| {
+        !matches!(
+            tap.try_send(line.to_string()),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_))
+        )
     });
 }
 
@@ -543,8 +579,8 @@ pub fn host_name() -> &'static str {
 
 struct LineSubscriber {
     level: Level,
-    /// The lowest level written to stderr; the files take every line at `level`.
-    console: Level,
+    /// The lowest level written to stderr, or None for no stderr; the files take every line at `level`.
+    console: Option<Level>,
     next_span: AtomicU64,
     /// Stderr uses the colored console header. Decided once in [`install`].
     color: bool,
@@ -582,10 +618,12 @@ impl Subscriber for LineSubscriber {
             message: &fields.message,
             extra: &fields.extra,
         };
-        if level <= self.console {
+        if self.console.is_some_and(|console| level <= console) {
             let _ = writeln!(std::io::stderr(), "{}", console_line(&text, self.color));
         }
-        write_file_line(level, &plain_line(&text));
+        let plain = plain_line(&text);
+        feed_taps(&plain);
+        write_file_line(level, &plain);
 
         // Queued from the start, so the boot lines ship once search attaches.
         if level == Level::DEBUG || level == Level::TRACE || IN_SHIPPER.with(Cell::get) {

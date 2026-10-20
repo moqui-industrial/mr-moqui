@@ -36,6 +36,7 @@ oxc_parser = { workspace = true }
 oxc_ast = { workspace = true }
 oxc_span = { workspace = true }
 ammonia = { workspace = true }
+html5ever = { workspace = true }
 croner = { workspace = true }
 indexmap = { workspace = true }
 jiff = { workspace = true }
@@ -87,6 +88,10 @@ git = ["dep:gix", "dep:gix-pack", "dep:flate2", "http"]
 image = ["dep:image"]
 # The xlsx render mode and org.moqui.impl.SpreadsheetServices.
 xlsx = ["dep:rust_xlsxwriter", "dep:calamine"]
+
+[dev-dependencies]
+# Model types only. Revue stays behind moqui-tui's ui feature, which this does not turn on.
+moqui-tui = { workspace = true, default-features = false, features = ["model"] }
 
 [lints]
 workspace = true

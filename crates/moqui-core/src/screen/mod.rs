@@ -24,6 +24,7 @@ mod definition;
 mod dispatch;
 pub(crate) mod form;
 pub(crate) mod generate;
+pub(crate) mod html_text;
 pub mod info;
 pub(crate) mod menu;
 mod pdf;
@@ -277,6 +278,7 @@ fn dispatch_request(
         header_authenticated,
         render_mode: fop_path.map(|_| "xsl-fo"),
         enforce_request_checks: true,
+        history: true,
         new_session,
         started: Instant::now(),
     };
@@ -447,6 +449,7 @@ fn error_page(
         header_authenticated: true,
         render_mode: Some("html"),
         enforce_request_checks: false,
+        history: false,
         new_session: false,
         started: Instant::now(),
     };

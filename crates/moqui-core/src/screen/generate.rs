@@ -43,7 +43,7 @@ const SCREEN_SUPPORT: &str =
     include_str!("../../../../runtime/base-component/framework/template/screen/ScreenSupport.js");
 
 /// The mode modules built into the binary, by file name.
-const MODE_MODULES: [(&str, &str); 9] = [
+const MODE_MODULES: [(&str, &str); 10] = [
     (
         "ScreenText.js",
         include_str!("../../../../runtime/base-component/framework/template/screen/ScreenText.js"),
@@ -79,6 +79,10 @@ const MODE_MODULES: [(&str, &str); 9] = [
     (
         "ScreenXlsx.js",
         include_str!("../../../../runtime/base-component/framework/template/screen/ScreenXlsx.js"),
+    ),
+    (
+        "ScreenTui.js",
+        include_str!("../../../../runtime/base-component/framework/template/screen/ScreenTui.js"),
     ),
 ];
 
@@ -526,6 +530,7 @@ pub fn generate_xml(mode: &str, xml: &str, debug_comments: bool) -> Result<Strin
         "qvt" => "ScreenQvt.js",
         "qvt-static" => "ScreenQvtStatic.js",
         "qjs" | "qvue" => "ScreenPlain.js",
+        "tui" => "ScreenTui.js",
         other => return Err(Error::new(format!("no built-in macro module for render mode {other}"))),
     };
     let source = MODE_MODULES
@@ -556,6 +561,7 @@ pub fn generate_unit_source(mode: &str, xml: &str) -> Result<String, Error> {
         "qvt" => "ScreenQvt.js",
         "qvt-static" => "ScreenQvtStatic.js",
         "qjs" | "qvue" => "ScreenPlain.js",
+        "tui" => "ScreenTui.js",
         _ => "ScreenXml.js",
     };
     let source = MODE_MODULES

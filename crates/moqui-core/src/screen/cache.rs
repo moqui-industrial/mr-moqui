@@ -90,6 +90,33 @@ pub(super) fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
+/// How a render mode writes a failed section, and whether the finished level is a JSON document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputKind {
+    /// Escaped text written where the section was.
+    Text,
+    /// Same failure text as [`OutputKind::Text`]. A mode the conf adds with an HTML mime type.
+    Html,
+    /// A Vue template. What the failed section wrote is dropped, and a brace in the message is a character reference.
+    Vue,
+    /// One JSON array. A failed section is an `error` node, and the level is wrapped in an envelope.
+    Json,
+}
+
+impl OutputKind {
+    /// A mode that is not built in. `application/json` is [`OutputKind::Json`], `text/html` is [`OutputKind::Html`].
+    pub fn from_mime(mime: &str) -> Self {
+        let mime = mime.split(';').next().unwrap_or(mime).trim();
+        if mime.eq_ignore_ascii_case("application/json") {
+            Self::Json
+        } else if mime.eq_ignore_ascii_case("text/html") {
+            Self::Html
+        } else {
+            Self::Text
+        }
+    }
+}
+
 /// `screen-text-output`: how one render mode is sent and which macro module writes it.
 #[derive(Clone, Debug)]
 pub struct TextOutput {
@@ -98,6 +125,7 @@ pub struct TextOutput {
     pub always_standalone: bool,
     /// A `screen-output` mode: the macro module fills a document the render sends as bytes, such as `xlsx`.
     pub binary: bool,
+    pub kind: OutputKind,
 }
 
 /// One `subscreens-item` from a conf `screen-facade/screen` element.
@@ -140,15 +168,22 @@ const BUILT_IN_BINARY_MODES: [(&str, &str, &str); 1] = [(
     "ScreenXlsx.js",
 )];
 
-const BUILT_IN_MODES: [(&str, &str, &str, bool); 8] = [
-    ("html", "text/html", "ScreenHtml.js", false),
-    ("text", "text/plain", "ScreenText.js", false),
-    ("csv", "text/csv", "ScreenCsv.js", true),
-    ("xml", "text/xml", "ScreenXml.js", false),
-    ("html-print", "text/html", "ScreenHtmlPrint.js", true),
-    ("qvt", "text/html", "ScreenQvt.js", true),
-    ("qjs", "application/javascript", "ScreenPlain.js", true),
-    ("qvue", "text/html", "ScreenPlain.js", true),
+const BUILT_IN_MODES: [(&str, &str, &str, bool, OutputKind); 9] = [
+    ("html", "text/html", "ScreenHtml.js", false, OutputKind::Html),
+    ("text", "text/plain", "ScreenText.js", false, OutputKind::Text),
+    ("csv", "text/csv", "ScreenCsv.js", true, OutputKind::Text),
+    ("xml", "text/xml", "ScreenXml.js", false, OutputKind::Text),
+    ("html-print", "text/html", "ScreenHtmlPrint.js", true, OutputKind::Html),
+    ("qvt", "text/html", "ScreenQvt.js", true, OutputKind::Vue),
+    (
+        "qjs",
+        "application/javascript",
+        "ScreenPlain.js",
+        true,
+        OutputKind::Text,
+    ),
+    ("qvue", "text/html", "ScreenPlain.js", true, OutputKind::Text),
+    ("tui", "application/json", "ScreenTui.js", true, OutputKind::Json),
 ];
 
 /// The render mode name the macros see: `xsl-fo` is `html-print`.
@@ -169,7 +204,7 @@ impl ScreenConf {
             default_autocomplete_rows: 20,
             ..Self::default()
         };
-        for (mode, mime, module, standalone) in BUILT_IN_MODES {
+        for (mode, mime, module, standalone, kind) in BUILT_IN_MODES {
             conf.text_output.insert(
                 mode.to_string(),
                 TextOutput {
@@ -177,6 +212,7 @@ impl ScreenConf {
                     macro_template_location: format!("framework/template/screen/{module}"),
                     always_standalone: standalone,
                     binary: false,
+                    kind,
                 },
             );
         }
@@ -188,6 +224,7 @@ impl ScreenConf {
                     macro_template_location: format!("framework/template/screen/{module}"),
                     always_standalone: true,
                     binary: true,
+                    kind: OutputKind::Text,
                 },
             );
         }
@@ -225,14 +262,20 @@ impl ScreenConf {
             // `xsl-fo` is the print mode, so its entry configures `html-print`.
             let kind = canonical_render_mode(&kind).to_string();
             let existing = conf.text_output.get(&kind).cloned();
+            let mime_type = output
+                .attribute("mime-type")
+                .filter(|text| !text.is_empty())
+                .or_else(|| existing.as_ref().map(|found| found.mime_type.clone()))
+                .unwrap_or_else(|| "text/html".to_string());
+            // A built-in keeps its kind when the conf entry does not say. A new mode follows the mime type.
+            let output_kind = existing
+                .as_ref()
+                .map(|found| found.kind)
+                .unwrap_or_else(|| OutputKind::from_mime(&mime_type));
             conf.text_output.insert(
                 kind,
                 TextOutput {
-                    mime_type: output
-                        .attribute("mime-type")
-                        .filter(|text| !text.is_empty())
-                        .or_else(|| existing.as_ref().map(|found| found.mime_type.clone()))
-                        .unwrap_or_else(|| "text/html".to_string()),
+                    mime_type,
                     macro_template_location: output
                         .attribute("macro-template-location")
                         .filter(|text| !text.is_empty())
@@ -241,6 +284,7 @@ impl ScreenConf {
                     always_standalone: output.attribute("always-standalone").as_deref() == Some("true"),
                     // `widget-render-class` names a Java class; the type picks the module here.
                     binary,
+                    kind: output_kind,
                 },
             );
         }
@@ -408,6 +452,12 @@ impl ScreenFacade {
 
     pub fn is_always_standalone(&self, mode: &str) -> bool {
         self.text_output(mode).is_some_and(|output| output.always_standalone)
+    }
+
+    pub fn output_kind(&self, mode: &str) -> OutputKind {
+        self.text_output(mode)
+            .map(|output| output.kind)
+            .unwrap_or(OutputKind::Text)
     }
 
     /// The definition at `location`, from the cache when no source file has changed.
