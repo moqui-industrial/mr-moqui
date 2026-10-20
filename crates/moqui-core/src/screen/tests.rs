@@ -111,6 +111,19 @@ impl World {
         }
     }
 
+    /// The two `REST_SCHEMA` rows in `MoquiSetupData.xml`: the permission, and the `ADMIN` grant.
+    fn grant_rest_schema(&self) {
+        let mut permission = self.facade.make_value("moqui.security.UserPermission").unwrap();
+        permission.set("userPermissionId", Value::string("REST_SCHEMA"));
+        permission.set("description", Value::string("REST schema dumps"));
+        permission.create(&self.facade).unwrap();
+        let mut grant = self.facade.make_value("moqui.security.UserGroupPermission").unwrap();
+        grant.set("userGroupId", Value::string("ADMIN"));
+        grant.set("userPermissionId", Value::string("REST_SCHEMA"));
+        grant.set("fromDate", stamp());
+        grant.create(&self.facade).unwrap();
+    }
+
     fn allow_entity(&self, group: &str) {
         let mut member = self.facade.make_value("moqui.security.ArtifactGroupMember").unwrap();
         member.set("artifactGroupId", Value::string("ENUM_TYPE"));
@@ -446,7 +459,8 @@ fn script_send_json_response_writes_the_web_slot() {
 fn entity_json_has_the_primary_key_and_the_service_document_lists_enum_types() {
     let world = World::open("");
     world.load_service_rest();
-    world.user("admin", None);
+    world.user("admin", Some("ADMIN"));
+    world.grant_rest_schema();
     let root = webroot().to_string_lossy().into_owned();
 
     let anonymous = serve_at(
@@ -500,6 +514,56 @@ fn entity_json_has_the_primary_key_and_the_service_document_lists_enum_types() {
     yaml.set_header("authorization", basic("admin"));
     let response = serve_at(&world.factory, yaml, &root);
     assert_eq!(response.status, 404, "{}", response.body_text());
+}
+
+/// The schema documents need the `REST_SCHEMA` permission, as Java's `RestSchemaUtil.requireSchemaAccess`
+/// does: a user without it is refused with 403, and nobody with 401.
+#[test]
+fn the_rest_schema_documents_need_the_rest_schema_permission() {
+    let world = World::open("");
+    world.load_service_rest();
+    world.user("admin", None);
+    let root = webroot().to_string_lossy().into_owned();
+
+    let anonymous = serve_at(
+        &world.factory,
+        request("GET", "/rest/entity.json/moqui.basic.EnumerationType"),
+        &root,
+    );
+    assert_eq!(anonymous.status, 401, "{}", anonymous.body_text());
+
+    let mut entity = request("GET", "/rest/entity.json/moqui.basic.EnumerationType");
+    entity.set_header("authorization", basic("admin"));
+    let response = serve_at(&world.factory, entity, &root);
+    assert_eq!(response.status, 403, "{}", response.body_text());
+    assert!(
+        response.body_text().contains("Not authorized for REST schema"),
+        "{}",
+        response.body_text()
+    );
+
+    for path in [
+        "/rest/master.json/moqui.basic.Enumeration",
+        "/rest/service.swagger/moqui.json",
+    ] {
+        let mut document = request("GET", path);
+        document.set_header("authorization", basic("admin"));
+        let response = serve_at(&world.factory, document, &root);
+        assert_eq!(response.status, 403, "{path}: {}", response.body_text());
+    }
+
+    // admin in ADMIN, and the REST_SCHEMA grant: the document is served.
+    let mut member = world.facade.make_value("moqui.security.UserGroupMember").unwrap();
+    member.set("userId", Value::string("admin"));
+    member.set("userGroupId", Value::string("ADMIN"));
+    member.set("fromDate", stamp());
+    member.create(&world.facade).unwrap();
+    world.grant_rest_schema();
+    let mut allowed = request("GET", "/rest/entity.json/moqui.basic.EnumerationType");
+    allowed.set_header("authorization", basic("admin"));
+    let response = serve_at(&world.factory, allowed, &root);
+    assert_eq!(response.status, 200, "{}", response.body_text());
+    assert!(response.body_text().contains("enumTypeId"), "{}", response.body_text());
 }
 
 #[test]

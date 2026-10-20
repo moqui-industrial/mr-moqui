@@ -124,6 +124,19 @@ From [EntityService-Parity-Review](archive/EntityService-Parity-Review.md), phas
 | P8c-13 | system message | Replay-cache TTL check on received messages (Rust-only) | Hardening; `service/system_sync/message.rs:430-446` |
 | P8c-15 | elFinder | Symlink-to-directory deleted as a link; Java follows and deletes contents | Comment `service/elfinder.rs:426-431` |
 
+## Screen and web review (2026-10-20)
+
+From [ScreenWeb-Parity-Review](ScreenWeb-Parity-Review.md): the screen and web parts of the framework
+(`crates/moqui-core/src/screen/`, `crates/moqui-core/src/web/`, the screen macro modules under
+`runtime/base-component/framework/template/screen/`, and the HTTP host in `crates/moqui-host/src/`).
+The three High findings of that review, and P8-02, are fixed; these are the differences the fixes
+keep on purpose.
+
+| ID | Area | Difference | Rationale / where documented |
+|---|---|---|---|
+| P5-01 | qvt rules | The browser rule text calls the client helpers as `$mq.isStringNumber`, `$mq.isStringInteger` and `$mq.parseNumber`, where Java writes `$root.moqui.isStringNumber` and the rest | `$mq` is the name the server-static qvt scope has (its host) and the Vue global property `app.config.globalProperties.$mq` the merged mode sets, so one rule text works in both qvt modes; Java has no server-static mode. Doc comment at `VALIDATE_NUMBER` in `service/define.rs` and at `qvt.start` in the client |
+| P8-01 | redirect | A redirect target that is not a path of this site and not an `http(s)` URL — a protocol-relative one, or another scheme — goes to the root, in the `Location` of a redirect and in the `redirectUrl` of a JSON answer; Java sends it as it is in both. After an `http(s)` URL is reduced, a path that is not a single slash, including one that starts with `//` or contains `\`, becomes `/` too | Stricter: a redirect cannot leave the site through a scheme the port does not expect, or through a path a browser reads as another host. Java's `sendHttpRedirect` sends the other schemes as they are, and its servlet `sendRedirect` absolutizes `//` onto this host. Doc comment at `http_redirect_location` in `screen/render.rs` |
+
 ## Code quality review (2026-10-15)
 
 Behaviour changes made when the [Code-Quality-Review](archive/Code-Quality-Review.md#behaviour-changes) findings were fixed, where the result differs from Java on purpose. The review's "Java-parity design points" (REST `pageNoLimit`, item-by-item JSON-list commits, the implicit `actions` transition's whole context, attachments by any locatable file) were kept as Java has them and are not differences.

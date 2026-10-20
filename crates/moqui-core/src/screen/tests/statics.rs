@@ -72,6 +72,29 @@ fn header<'a>(output: &'a RenderOutput, name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no {name} in {:?}", output.headers))
 }
 
+/// The service the number fields of the `Number` screen name, for the browser rules of a number field.
+fn number_service() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/screen/testdata/Static/service/NumberService.xml")
+}
+
+/// A number field's browser rule calls a name of the scope, not a browser global: the server compiles the
+/// template with Vue's `prefixIdentifiers`, so a free identifier becomes `_ctx.<name>` and the scope has to
+/// have it. The scope has `$mq` and `ec`; it has no `moqui`.
+#[test]
+fn a_number_field_rule_calls_the_scope_and_not_a_browser_global() {
+    let context = ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    let failures = crate::service::lint(&[number_service()]).unwrap();
+    assert!(failures.is_empty(), "{failures:?}");
+    let output = render(context.factory(), "/Number.qvt", &[]);
+    assert_eq!(output.status, 200, "{}", output.body_text());
+    let script = output.body_text();
+    assert!(!script.contains("_ctx.moqui"), "{script}");
+    assert!(script.contains("_ctx.$mq.isStringNumber(value)"), "{script}");
+    // the message is localized in the browser, through the restricted host of the scope
+    assert!(script.contains("_ctx.ec.l10n.localize"), "{script}");
+}
+
 #[test]
 fn the_template_holds_no_request_data_and_compiles_without_with() {
     let context = ExecutionContextFactory::test_context();

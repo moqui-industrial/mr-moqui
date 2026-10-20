@@ -367,7 +367,7 @@
         const ruleList = (n, check) => {
             const rules = [];
             if (at(n, "rules")) rules.push(at(n, "rules"));
-            if (check.number) rules.push("value => !value || moqui.isStringNumber(value) || ec.l10n.localize('Please enter a valid number')");
+            if (check.number) rules.push("value => !value || $mq.isStringNumber(value) || ec.l10n.localize('Please enter a valid number')");
             if (check.digits) rules.push("value => !value || /^\\d*$/.test(value) || ec.l10n.localize('Please enter only digits')");
             return rules.length ? "[" + rules.join(",") + "]" : null;
         };

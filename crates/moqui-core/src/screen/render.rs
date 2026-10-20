@@ -341,7 +341,9 @@ pub fn with_current_render<R>(body: impl FnOnce(&RenderState) -> R) -> Option<R>
 }
 
 /// `sri.sendRedirectAndStopRender`: redirect and skip the screen. A standalone mode, which a
-/// client router fetches, gets 205 and `X-Redirect-To` instead of a 302.
+/// client router fetches, gets 205 and `X-Redirect-To` instead of a 302. Both answers go through
+/// the same location rule, including when no execution context is entered: then there is no
+/// `http-host`, so an `http(s)` URL is still reduced.
 pub fn send_redirect_and_stop_render(url: &str) {
     let base = web::base_url();
     let location = if url.starts_with('/') && !url.starts_with("//") {
@@ -354,11 +356,163 @@ pub fn send_redirect_and_stop_render(url: &str) {
         state.always_standalone
     })
     .unwrap_or(false);
+    let factory = ExecutionContext::with_current(|ec| std::sync::Arc::clone(ec.factory()));
+    let location = match factory.as_deref() {
+        Some(factory) => http_redirect_location(factory, &location),
+        None => redirect_location(&location, true),
+    };
     if standalone {
         web::send_reset_content(&location);
     } else {
         web::send_redirect(&with_query(location, &BTreeMap::new()));
     }
+}
+
+/// Java's `ScreenRenderImpl.sendHttpRedirect`: the `Location` of a screen redirect.
+///
+/// The location is sanitized (Java's `WebUtilities.sanitizeRedirectLocation`: no CR, LF or NUL, so a
+/// value cannot split the header). An `http(s)` target is reduced to its path and query when the webapp
+/// names no `http-host` (the default). That path is kept only when it starts with a single `/` and holds
+/// no `\`, so `//phish` and `/\evil.com` become `/`. A URL Java's `URI.create` rejects — a space, or
+/// another character outside the URI set — becomes `/` too, as Java's catch does. With an `http-host`
+/// the absolute target is sent, as Java sends it.
+///
+/// A target that is not a path of this site and not an `http(s)` URL — a protocol-relative one, or another
+/// scheme — goes to the root. Java sends those as they are; the port does not, and the difference is
+/// recorded in `plans/Parity-Diffs.md`.
+pub(super) fn http_redirect_location(factory: &ExecutionContextFactory, location: &str) -> String {
+    let reduce = factory.webapp_setting(WEBAPP, "http-host").is_empty();
+    redirect_location(location, reduce)
+}
+
+/// [`http_redirect_location`] with the host decision already made. `reduce_http` is true when the webapp
+/// names no `http-host`, and when no execution context is entered.
+fn redirect_location(location: &str, reduce_http: bool) -> String {
+    let mut clean = String::with_capacity(location.len());
+    for ch in location.chars() {
+        if ch != '\r' && ch != '\n' && ch != '\0' {
+            clean.push(ch);
+        }
+    }
+    let clean = clean.trim();
+    if clean.is_empty() {
+        return "/".to_string();
+    }
+    if clean.starts_with("http://") || clean.starts_with("https://") {
+        if reduce_http {
+            if !uri_create_accepts(clean) {
+                return "/".to_string();
+            }
+            return site_path(url_path_and_query(clean));
+        }
+        return clean.to_string();
+    }
+    if clean.starts_with("//") || has_scheme(clean) {
+        return "/".to_string();
+    }
+    clean.to_string()
+}
+
+/// A reduced `http(s)` target stays only when its path starts with a single `/` and holds no backslash.
+/// `//phish` is another host once a browser sees it, and so is `/\evil.com`.
+fn site_path(path_and_query: String) -> String {
+    let path = path_and_query
+        .split_once('?')
+        .map_or(path_and_query.as_str(), |(path, _)| path);
+    if path.starts_with('/') && !path.starts_with("//") && !path.contains('\\') {
+        path_and_query
+    } else {
+        "/".to_string()
+    }
+}
+
+/// Whether Java's `URI.create` accepts `url`. The legal set is Java's unreserved, reserved and `#`,
+/// plus a `%` escape and a non-ASCII character that is not a space or a control.
+fn uri_create_accepts(url: &str) -> bool {
+    let mut chars = url.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            match (chars.next(), chars.next()) {
+                (Some(high), Some(low)) if high.is_ascii_hexdigit() && low.is_ascii_hexdigit() => {}
+                _ => return false,
+            }
+            continue;
+        }
+        if !uri_char(ch) {
+            return false;
+        }
+    }
+    true
+}
+
+fn uri_char(ch: char) -> bool {
+    if ch.is_ascii_alphanumeric() {
+        return true;
+    }
+    if matches!(
+        ch,
+        '-' | '_'
+            | '.'
+            | '!'
+            | '~'
+            | '*'
+            | '\''
+            | '('
+            | ')'
+            | ','
+            | ';'
+            | ':'
+            | '$'
+            | '&'
+            | '+'
+            | '='
+            | '?'
+            | '/'
+            | '['
+            | ']'
+            | '@'
+            | '#'
+    ) {
+        return true;
+    }
+    !ch.is_ascii() && !ch.is_control() && !ch.is_whitespace()
+}
+
+/// The path and query of an `http(s)` URL, or `/` when it has no path: Java's `URI` and its
+/// `getRawPath` and `getRawQuery`.
+fn url_path_and_query(url: &str) -> String {
+    let after = url.split_once("://").map_or("", |(_, rest)| rest);
+    let end = after.find(['/', '?', '#']).unwrap_or(after.len());
+    let rest = &after[end..];
+    let (path, query) = match rest.split_once('?') {
+        Some((path, query)) => (path, Some(query.split('#').next().unwrap_or(""))),
+        None => (rest.split('#').next().unwrap_or(""), None),
+    };
+    let path = if path.is_empty() {
+        "/".to_string()
+    } else {
+        path.to_string()
+    };
+    match query {
+        Some(query) if !query.is_empty() => format!("{path}?{query}"),
+        _ => path,
+    }
+}
+
+/// Whether a location names a scheme, as `URI.create` reads one: letters, then letters, digits, `+`, `-`
+/// and `.`, then a colon.
+fn has_scheme(location: &str) -> bool {
+    let Some((name, _)) = location.split_once(':') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '+' || ch == '-' || ch == '.')
 }
 
 /// `ec.web.saveScreenLastInfo`: remember `path`, or the screen being rendered, with the request parameters, for a
@@ -388,7 +542,8 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     let info = ScreenUrlInfo::parse(factory, job.root, job.path, last_standalone)?;
     let facade = ScreenFacade::of(factory);
     check_web_settings(&info)?;
-    if job.enforce_request_checks && (redirect_to_https(factory, job, &info) || redirect_to_login(job, &info)?) {
+    if job.enforce_request_checks && (redirect_to_https(factory, job, &info) || redirect_to_login(factory, job, &info)?)
+    {
         return Ok(());
     }
     check_authentication(&info)?;
@@ -795,7 +950,7 @@ fn redirect_to_https(factory: &ExecutionContextFactory, job: &Job<'_>, info: &Sc
 /// A browser page that needs a user, asked for with none, saves itself as the screen to come back to and redirects
 /// to the last `login-path` of the path, `/Login` by default (Java's `checkWebappSettings`). A fragment, which a client
 /// fetches with `lastStandalone`, and a transition get the 401 instead.
-fn redirect_to_login(job: &Job<'_>, info: &ScreenUrlInfo) -> Result<bool, Error> {
+fn redirect_to_login(factory: &ExecutionContextFactory, job: &Job<'_>, info: &ScreenUrlInfo) -> Result<bool, Error> {
     if info.file_resource.is_some()
         || super::statics::report_active()
         || user::current_username()?.is_some()
@@ -829,7 +984,7 @@ fn redirect_to_login(job: &Job<'_>, info: &ScreenUrlInfo) -> Result<bool, Error>
         web::base_url().trim_end_matches('/'),
         login_path.trim_start_matches('/')
     );
-    web::send_redirect(&location);
+    web::send_redirect(&http_redirect_location(factory, &location));
     Ok(true)
 }
 
@@ -1438,9 +1593,10 @@ fn respond(
                 // A missing `//` path is `#`, as Java's getUrlWithBase when the target does not exist.
                 let location = "#".to_string();
                 if json {
-                    send_json_redirect(None, &location, &parameters);
+                    send_json_redirect(None, &http_redirect_location(factory, &location), &parameters);
                 } else {
-                    web::send_redirect(&with_query(location, &parameters));
+                    let location = with_query(location, &parameters);
+                    web::send_redirect(&http_redirect_location(factory, &location));
                 }
                 return Ok(());
             }
@@ -1461,9 +1617,12 @@ fn respond(
         location
     };
     if json {
-        send_json_redirect(screen_path, &location, &parameters);
+        // The client follows the URL in the JSON, so it is held to the same rule as the Location of a
+        // redirect: a target that is not a path of this site goes to the root.
+        send_json_redirect(screen_path, &http_redirect_location(factory, &location), &parameters);
     } else {
-        web::send_redirect(&with_query(location, &parameters));
+        let location = with_query(location, &parameters);
+        web::send_redirect(&http_redirect_location(factory, &location));
     }
     Ok(())
 }

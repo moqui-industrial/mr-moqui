@@ -1,8 +1,8 @@
 # Screen and Web Parity Review
 
-Status: the nine phases were worked on 2026-10-19 and 2026-10-20. 100 findings are open, 3 of
-them High, and nothing is fixed yet. The shape follows
-[EntityService-Parity-Review](archive/EntityService-Parity-Review.md).
+Status: the nine phases were worked on 2026-10-19 and 2026-10-20. 96 findings are open and none is
+High: the three High findings (P5-01, P7-01, P8-01) and P8-02 were fixed on 2026-10-20. The shape
+follows [EntityService-Parity-Review](archive/EntityService-Parity-Review.md).
 
 Scope: the screen and web parts of the framework — `crates/moqui-core/src/screen/`,
 `crates/moqui-core/src/web/`, the screen macro modules under
@@ -39,7 +39,8 @@ with `framework/` or `runtime/`. Line numbers are as of 2026-10-19.
 
 ## Summary
 
-All nine phases were worked on 2026-10-19. 100 findings are open, 3 of them High.
+All nine phases were worked on 2026-10-19. 100 findings were found; the three High ones and P8-02
+were fixed on 2026-10-20, so 96 are open and none is High.
 
 | Phase | Open | High | Unclear |
 |---|---|---|---|
@@ -47,29 +48,31 @@ All nine phases were worked on 2026-10-19. 100 findings are open, 3 of them High
 | 2 Screen render / SRI surface | 13 | — | 1 |
 | 3 Macro libraries: html, csv, text, xml, plain | 6 | — | 2 |
 | 4 qvt render mode | 9 | — | — |
-| 5 Server-static qvt | 9 | 1 | 1 |
+| 5 Server-static qvt | 8 | — | 1 |
 | 6 Print and spreadsheet | 6 | — | 5 |
-| 7 Screen URLs / tree / menu / static files / facade | 11 | 1 | 8 |
-| 8 Web facade | 19 | 1 | 3 |
+| 7 Screen URLs / tree / menu / static files / facade | 10 | — | 8 |
+| 8 Web facade | 17 | — | 3 |
 | 9 HTTP host and web app endpoints | 15 | — | 3 |
-| **Total** | **100** | **3** | **27** |
+| **Total** | **96** | **0** | **27** |
 
-Severity: 3 High, 49 Med, 48 Low. Intentional: 73 plain divergences (`No`) and 27 that look
-deliberate but are not recorded in [Parity-Diffs](Parity-Diffs.md) (`Unclear`); the 27 are the ones
-that need a decision from the port owner before they are fixed.
+Severity of the open findings: 48 Med and 48 Low; the three that were High, and the Med that was
+fixed with them, are gone. Intentional: 69 plain divergences (`No`) and 27 that look deliberate but
+are not recorded in
+[Parity-Diffs](Parity-Diffs.md) (`Unclear`); the 27 are the ones that need a decision from the port
+owner before they are fixed.
 
 Two findings were removed on verification: **P2-01** was a duplicate of **P1-04** (the same code
 path, found from two phases), and **P4-01** was invalid (see
 [Verification pass](#verification-pass)). The numbers keep their original values, so the gaps in the
 numbering are expected.
 
-### The three High findings
+### The findings that were High, and are fixed
 
-| ID | Area | What it is |
-|---|---|---|
-| P5-01 | Server-static qvt | The static template's number rule calls a free identifier `moqui`; the server compiles the template with Vue's `prefixIdentifiers`, which rewrites it to `_ctx.moqui`, which is undefined — the rule throws on every non-empty value and the form never submits |
-| P7-01 | Screen schema | The REST schema documents (`entity.json`, `master.json`, `service.swagger`) are served to any logged-in user; Java refuses with 403 without the `REST_SCHEMA` permission |
-| P8-01 | Web facade | An absolute redirect target is sent as the `Location`; Java reduces an `http(s)` target to its path when the webapp has no `http-host` (the default), so Java has no open redirect there and the port does |
+| ID | Area | What it was | Fixed |
+|---|---|---|---|
+| P5-01 | Server-static qvt | The static template's number rule called a free identifier `moqui`; the server compiles the template with Vue's `prefixIdentifiers`, which rewrote it to `_ctx.moqui`, which is undefined — the rule threw on every non-empty value and the form never submitted | 2026-10-20: the rule calls `$mq`, the name the static scope has and the Vue global property `app.config.globalProperties.$mq`, so one rule text works in both qvt modes |
+| P7-01 | Screen schema | The REST schema documents (`entity.json`, `master.json`, `service.swagger`) were served to any logged-in user; Java refuses with 403 without the `REST_SCHEMA` permission | 2026-10-20: the permission is asked for, as Java does |
+| P8-01 | Web facade | An absolute redirect target was sent as the `Location`; Java reduces an `http(s)` target to its path when the webapp has no `http-host` (the default), so Java has no open redirect there and the port did | 2026-10-20: Java's rule is in `http_redirect_location`, and a target that is not a path of this site goes to the root |
 
 ## Verification pass
 
@@ -88,6 +91,10 @@ and a sample of the Med findings were re-derived from the Java source, not taken
 
 The remaining findings are cited with a file and a line on both sides and were not re-checked
 one by one. A reader who wants the same assurance on a Med finding can follow the citation.
+
+The three High findings and P8-02 were fixed on 2026-10-20, on the strength of this pass: the
+permission check, Java's redirect rule and the `$mq` rule text. The fixes are in
+[Parity-Diffs](../plans/Parity-Diffs.md) where they differ from Java on purpose.
 
 ---
 
@@ -1448,16 +1455,16 @@ counterpart for the static mode: Java's `server-static` was only a `Cache-Contro
 comparison is "does the static form still deliver what the merged qvt mode delivers, and is every
 gap recorded".
 
-Worked 2026-10-19: nine findings — one High (the static template's number rule calls the
+Worked 2026-10-19: nine findings, one of them High and fixed on 2026-10-20 (the static template's number rule calls the
 global `moqui`, which the server's `prefixIdentifiers` compile rewrites to `_ctx.moqui`), four
 features the merged mode has and the static module drops without a note (the form's
 `<hidden-parameters>`, the `validate-service` JS rules, `pass-through-parameters`, the disabled
 state of a form the user may not use), one report gap (a "clean" verdict that never ran the full
-check), and three smaller ones (the screen history, `all-checked`, `hideNav`).
+check), and three smaller ones (the screen history, `all-checked`, `hideNav`). P5-01 fixed 2026-10-20: the rule calls `$mq`, the name the static
+scope has and the Vue global property `app.config.globalProperties.$mq`, so one rule text works in both qvt modes.
 
 | ID | Rust/JS location | Java/XML location | Divergence | Severity | Intentional? |
 |---|---|---|---|---|---|
-| P5-01 | `runtime/base-component/framework/template/screen/ScreenQvtStatic.js:370` | `ScreenQvt.js:258` (the same rule, but the browser compiles it) | The static template writes `moqui.isStringNumber(value)` into a `:rules` array; the server compiles the template with `prefixIdentifiers: true` (`vue_check.rs:136`), which rewrites the free identifier `moqui` to `_ctx.moqui`, and the static scope has no `moqui` — the rule throws a TypeError on every non-empty value and the form never submits | High | No |
 | P5-02 | `ScreenQvtStatic.js:1249` (row form), `:1095` (form-single) | `ScreenQvt.js:383,396,407`; Java `ScreenRenderImpl.groovy:1716,2134,2154,2176` | The merged mode puts the form's `<hidden-parameters>` into the fields-initial of every row form, of the header find form and of a single form; the static module builds its fields-initial without them, so no row action of a static form-list posts them | Med | No |
 | P5-03 | `ScreenQvtStatic.js:367-373` | `ScreenQvt.js:253-261`; Java `ScreenForm.groovy:1557` | The merged mode adds `sri.getFieldValidationJsRules(sub)` (the `validate-service` parameter's browser checks, and the whole-number check of a numeric `validate-entity` field) to the `:rules` of a field; the static module keeps only the `number`/`digits` classes it reads from `getFieldValidation` | Med | No |
 | P5-04 | `ScreenQvtStatic.js:283-287` (the state), `:533,653` | `ScreenQvt.js:180,449,528,1071,1419`; Java `ScreenRenderImpl.groovy:2441` | The merged mode sets `st.disabled` from the transition's `disableLink` and disables every widget and the submit button of a form or list the user may not use; the static module has no `disabled` state, so the same form is rendered editable and the user only learns of the refusal from the server | Med | Unclear |
@@ -1466,52 +1473,6 @@ check), and three smaller ones (the screen history, `all-checked`, `hideNav`).
 | P5-07 | `crates/moqui-core/src/screen/render.rs:442-444` (against `:548-577`) | Java `ScreenRenderImpl.groovy:982` (`saveScreenHistory`) | The static path returns from the render before `record_history`, so a server-static screen is never pushed onto the user's screen history; the merged qvt screen is | Med | No |
 | P5-08 | `ScreenQvtStatic.js:428-429` | `ScreenQvt.js:311,680-684`; Java `ScreenRenderImpl.groovy:1909` | A `check` widget with `all-checked="true"` starts with every option checked in the merged mode; the static module seeds the field with the field's own value, so the group starts empty | Med | No |
 | P5-09 | `ScreenQvtStatic.js:1042-1064`, `:1513-1514` | `ScreenQvt.js:997,1012,1168,1176`; Java `DefaultScreenMacros.qvt.ftl:32,713` | The merged mode reads the `hideNav` context flag and writes no subscreen tabs and no form-list nav row when it is set; the static module reads it nowhere, so both appear | Low | No |
-
-#### P5-01 — the static template's number rule calls a global the server compile turns into `_ctx.moqui`
-
-`ScreenQvtStatic.js:370` writes the number rule of a field into the template:
-
-```js
-if (check.number) rules.push("value => !value || moqui.isStringNumber(value) || ec.l10n.localize('Please enter a valid number')");
-```
-
-`check.number` comes from `sri.getFieldValidation(sub)`, which adds the `number` class for a
-`validate-entity` field whose entity type is numeric (`crates/moqui-core/src/screen/sri/fields.rs:396-401`)
-and for a `validate-service` parameter of a numeric Java type (`crates/moqui-core/src/service/define.rs:497-512`).
-
-The static template is not compiled in the browser. `statics.rs:344` calls
-`vue_check::compile_render`, which runs the vendored Vue compiler with `prefixIdentifiers: true`
-(`vue_check.rs:136`). With that option Vue rewrites every free identifier in a template expression to
-`_ctx.<name>`, except the ones on its global list (`Infinity`, `Math`, `Number`, `String`, `JSON`,
-`encodeURIComponent`, … — `compiler-dom.cjs.js`, `isGloballyAllowed`). `moqui` is not on that list.
-Compiling the rule with the vendored bundle gives:
-
-```js
-rules: [value => !value || _ctx.moqui.isStringNumber(value) || 'bad']
-```
-
-The scope the static template is rendered against is `qvt.makeScope(pkg, fallback, host)`
-(`WebrootVue.qvt.js:702-705`), whose host is `{ ec, $mq, StringUtilities }` and whose fallback proxy
-answers only names that begin with `$`. `_ctx.moqui` is therefore `undefined`, and
-`undefined.isStringNumber` throws a `TypeError` the moment the field holds a non-empty value.
-
-The rule runs inside Quasar's `q-input` validation, which the form's submit awaits
-(`WebrootVue.qvt.js:1678`: `this.$refs.qForm.validate().then((success) => { if (success) this.submitGo(); })`).
-A rule that throws rejects that promise, so the `.then` never runs: **the form cannot be submitted
-at all**. The user types a number, clicks Save, and nothing happens except an uncaught error in the
-console. The merged qvt mode is unaffected: `ScreenQvt.js:258` writes the same expression, but that
-template is compiled in the browser by the full build, where the expression sits in a `with(this)`
-block and `moqui` falls through to the client global.
-
-The fix is small: the rule must not name a global. Either move the check into the scope helpers
-(`$mq.isStringNumber`, added to `qvt.helpers` in `WebrootVue.qvt.js`) or write the check as a
-regex over the value the way the digits rule already does (`:371`). The same fix has to be applied
-to any other global the static module names in a template expression — today `moqui` is the only
-one (`rg "moqui\." ScreenQvtStatic.js` finds this line and a comment), but nothing in the pipeline
-stops the next one from appearing: `static_ast.rs` walks the expressions for `ec`, `sri`, `context`,
-`decimal`, `utilities` and `server-global` (`SERVER_GLOBALS` at `static_ast.rs:68` lists `System`,
-`Thread`, `Packages`, `java`, `groovy`, `javax` — not `moqui`), and the Vue check
-(`vue_check.rs:121-161`) only proves that the template *compiles*, never that it *runs*.
 
 #### P5-02 — the static form-list drops the form's `<hidden-parameters>`
 
@@ -1566,12 +1527,12 @@ with `text-email`, `text-url`, `text-letters`, `text-digits` or a `matches` patt
 The user sees a field that accepts what it should refuse. The server still validates and still
 refuses the save, so nothing is written that should not be — but the error arrives as a server
 message after the submit instead of as a field error while typing, which is what the merged mode
-does. It is also the second half of P5-01: the one rule the static module does keep for a number
-field is the broken one.
+does. It was also the second half of P5-01: the one rule the static module did keep for a number
+field was the broken one (fixed on 2026-10-20, the rule now calls the scope's `$mq`).
 
 The fix is to call `sri.getFieldValidationJsRules` in the static module as well and write its rules
 into the template — the same way the merged mode does — and to make sure the expressions they use
-name only scope helpers (see P5-01).
+name only scope helpers (the rule text the server writes does: `$mq.isStringNumber` and the rest).
 
 #### P5-04 — a form or list the user may not use is rendered enabled in the static mode
 
@@ -1633,7 +1594,7 @@ such a screen as *clean* and prints "verdict clean".
 So the tool the owner is told to run before marking a screen prints exactly the verdict the plan
 says is the gate, on a report that never evaluated a single widget expression. The screen's
 `ec.entity.find` in a label is caught by the AST walk, but a widget expression that only fails at
-run time (P5-01's `_ctx.moqui` is a compile-clean, run-time-broken case) is not, because the full
+run time (P5-01's `_ctx.moqui` was a compile-clean, run-time-broken case) is not, because the full
 check is the half that runs the expressions.
 
 The fix is to make `is_clean()` require `full_check` (and have the lint command say so in its
@@ -1898,9 +1859,11 @@ ignores the webapp's `response-header` conf, and the file set, the cache check i
 query parameters, the plain URL type, the `skip-actions` render-mode attribute, the schema media type and the
 method-specific transition lookup each decide differently.
 
+P7-01 fixed 2026-10-20: the schema documents ask for the `REST_SCHEMA` permission, as Java's
+`RestSchemaUtil.requireSchemaAccess` does.
+
 | ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
 |---|---|---|---|---|---|
-| P7-01 | `moqui-core/src/screen/schema.rs:60-70` | `util/RestSchemaUtil.groovy:570-582` | The schema documents (`entity.json`, `master.json`, `service.swagger`) are served to any logged-in user; Java refuses with 403 when the user has no `REST_SCHEMA` permission | High | No |
 | P7-02 | `moqui-core/src/screen/urls.rs:181-213` | `screen/ScreenUrlInfo.groovy:281-354` | The link permission check never enforces the last screen's own view permission when the path ends on a transition, and does not enforce the transition's authorization for a screen with `require-authentication="false"` | Med | No |
 | P7-03 | `moqui-core/src/screen/static_files.rs:41-42`, `:233-243` | `screen/ScreenRenderImpl.groovy:666-720`, `framework/src/main/resources/MoquiDefaultConf.xml:305-311` | The file response's `Cache-Control` is hardcoded (1 hour, or 1 year for a versioned file); Java takes it from the webapp's `screen-resource-text` / `screen-resource-binary` / `screen-resource-template` response header (24 hours by default) | Med | Unclear |
 | P7-04 | `moqui-core/src/screen/static_files.rs:29-39`, `:78-85`, `moqui-core/src/screen/render.rs:397-410` | `screen/ScreenUrlInfo.groovy:575-581`, `screen/ScreenRenderImpl.groovy:656-712` | The file branch serves a narrower set: a non-screen `.xml` (and `.properties`, `.sql`, `.groovy`) is refused, and a template file (`.md`, `.html.fancy`) under a screen without `include-child-content` is sent raw instead of being rendered | Low | Unclear |
@@ -1911,29 +1874,6 @@ method-specific transition lookup each decide differently.
 | P7-09 | `moqui-core/src/screen/cache.rs:221-245` | `screen/ScreenFacadeImpl.groovy:86`, `:232`, `screen/ScreenSection.groovy:141-152` | The `skip-actions` attribute of a `screen-text-output` / `screen-output` is not read; a render mode that says it runs no section actions runs them | Low | No |
 | P7-10 | `moqui-core/src/screen/schema.rs:33-39` | `util/RestSchemaUtil.groovy:630`, `:657` | The schema document is sent as `application/json` with the message facade's messages merged into it; Java sends `application/schema+json` as a file named `<entity>.schema.json` | Low | Unclear |
 | P7-11 | `moqui-core/src/screen/urls.rs:62-65`, `moqui-core/src/screen/definition.rs:692-712` | `screen/ScreenDefinition.groovy:503-517` | A URL instance finds a method-specific transition without a request method; Java's `getTransitionItem(name, method)` only matches the transition of that method | Low | Unclear |
-
-#### P7-01 — The schema documents are served to every logged-in user
-
-Java's schema handlers start with `RestSchemaUtil.requireSchemaAccess` (`util/RestSchemaUtil.groovy:570-582`): a
-request with no user is refused with 401, and a user without the `REST_SCHEMA` permission is refused with 403
-("Not authorized for REST schema"). The permission is seeded for the `ADMIN` group only
-(`runtime/base-component/framework/data/MoquiSetupData.xml:183-184`), and the Java security surface lists
-`/rest/entity.json`, `master.*`, `service.swagger` and `.raml` as "login + `REST_SCHEMA` permission (ADMIN seed)".
-
-The port's `logged_in` helper (`moqui-core/src/screen/schema.rs:60-70`) checks only that there is a user: the
-`login_error` of the request and then `user::current_username()`. The permission is never asked for, so
-`entity_json` (`:25-40`) and `service_swagger` (`:42-58`) answer with the document for any signed-in user. The
-`rest.xml` screen is `require-authentication="false"`, and the transition's own frame is pushed with the
-authorization not required (`moqui-core/src/screen/render.rs:1042-1047`), so nothing else stops the request.
-
-What a user sees: an ordinary signed-in user (a customer, a partner) can read `/rest/entity.json` and
-`/rest/master.json` and get the full entity model — every entity, every field, every relationship — where Java
-answers 403. The `REST_SCHEMA` permission the deployment seeded for `ADMIN` has no effect on these documents, so
-the screen model is exposed to users the deployment did not intend to give it to. The same gap covers
-`service.swagger`.
-
-The fix is one check in `logged_in`: `if !user::has_permission("REST_SCHEMA")? { web::send_json_error(403,
-"Not authorized for REST schema"); return Ok(false); }` after the user check, as Java does.
 
 #### P7-02 — The link permission check does not enforce the transition's authorization
 
@@ -2207,9 +2147,9 @@ and `disable_link`.
 
 #### Open questions
 
-- Should the `REST_SCHEMA` permission (P7-01) also be required for the other REST documents the port serves, and
-  is the permission the right gate for a screen-served document at all, or should the document move under a
-  screen that carries the authorization?
+- ~~Should the `REST_SCHEMA` permission also be required for the other REST documents the port serves?~~ —
+  answered on 2026-10-20: no, the schema documents only, as Java's `requireSchemaAccess` guards. The
+  entity REST endpoints keep the entity's own authorization.
 - Should the file response take its `Cache-Control` from the webapp's conf (P7-03), and with it the other
   `response-header` types the port hardcodes? That is one change in one place for all of them, and it belongs with
   the web phase.
@@ -2228,10 +2168,12 @@ Worked 2026-10-19: the facade surface was enumerated method by method (every pub
 `WebFacade` and `WebFacadeImpl` against the port's `web` module and its script facade); 19 findings —
 1 High (an open redirect the port's redirect helper allows where Java refuses the target), 11 Med, 7 Low.
 
+P8-01 and P8-02 fixed 2026-10-20: Java's `sendHttpRedirect` rule is in `http_redirect_location` in
+`screen/render.rs` — the location is sanitized, an `http(s)` target is its path and query when the
+webapp names no `http-host`, and a target that is not a path of this site goes to the root.
+
 | ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
 |---|---|---|---|---|---|
-| P8-01 | `web/mod.rs:844` (`send_redirect`) | `ScreenRenderImpl.groovy:228-251` (`sendHttpRedirect`), `WebFacadeImpl.groovy:90` | The port sends an absolute redirect target as the `Location`; Java reduces an `http(s)` target to its path when the webapp has no `http-host` (the default), so Java has no open redirect there and the port does | High | No |
-| P8-02 | `web/mod.rs:844` (`send_redirect`) | `WebUtilities.java:456-466` (`sanitizeRedirectLocation`) | The port does not drop CR/LF/NUL from a redirect location; Java does, so a location with a line break is a 500 in the port and a redirect in Java | Med | No |
 | P8-03 | `web/mod.rs:1161-1187` (`parse_body`) | `WebFacadeImpl.groovy:400-422` (`getRequestParameters`), `ContextStack.getByString` | The request body wins over the query string in the port (a JSON field overwrites a query parameter; a multipart field becomes a second value of a query parameter); in Java the servlet parameters are pushed above the JSON and multipart maps, so the query value wins | Med | No |
 | P8-04 | `web/mod.rs:1196` (`pairs_to_parameters`), `multipart.rs:570` | `WebUtilities.java:148-158`, `WebFacadeImpl.groovy:225` | A single non-breaking space (`\u00a0`) is Java's "no parameter" value and becomes `null`; the port keeps the text, in a query value and in a multipart field alike | Med | No |
 | P8-05 | `web/mod.rs:1447-1453` (`finish_response`) | `MoquiServlet.groovy:226-232` (`handleCors`) | An origin that is not allowed is answered 401 "Origin not allowed" in Java and the request is not run; the port runs the request and only leaves the CORS headers off | Med | No |
@@ -2249,39 +2191,6 @@ Worked 2026-10-19: the facade surface was enumerated method by method (every pub
 | P8-17 | `web/mod.rs:302-316` (`full_url`) | `WebFacadeImpl.groovy:357-365` (`getRequestUrl`) | The port rebuilds the URL from the decoded query pairs, so a value with a space is not encoded again, and it keeps the `Host` header's `:port` where Java drops `:80` and `:443` | Low | No |
 | P8-18 | `web/mod.rs:764-774` (`send_resource_response`) | `WebFacadeImpl.groovy:823-834`, `MoquiDefaultConf.xml:305` | Java caches every inline resource response publicly for a day; the port does that only for the app's own files (`component://`, `classpath://`) and answers `private, no-store` for the rest | Low | Unclear |
 | P8-19 | `web/mod.rs:1516-1525` (`strip_credential_parameters`) | `WebUtilities.java:731-740` (`stripCredentialParameters`) | The port strips the credential names at every depth of a JSON value; Java strips only the top level of the parameter map | Low | Unclear |
-
-#### P8-01 — An absolute redirect target is sent as it is (open redirect)
-
-`web::send_redirect` (`web/mod.rs:844`) writes the location it is given into the `Location` header and
-nothing else. Java's counterpart for a screen redirect is `ScreenRenderImpl.sendHttpRedirect`
-(`ScreenRenderImpl.groovy:228-251`): it sanitizes the location and, when the webapp has no `http-host`
-configured (the default: `webapp_http_host` is empty in `MoquiDefaultConf.xml:19`), it rewrites an
-`http://` or `https://` target to its path and query, so the browser stays on this site. Only a target
-that is not absolute (or one that starts with `/` and not `//`) is sent as a `Location`; anything else
-goes through `response.sendRedirect`.
-
-The port has no such rule. `screen/render.rs:1421-1422` takes a response URL that starts with `http:`
-or `https:` (or one with `url-type="plain"`) as it is and hands it to `web::send_redirect`, so a screen
-whose response URL is expanded from a request parameter sends the client to that URL. A user sees a
-login or a confirmation page that bounces them to a site of the attacker's choosing, which is the
-classic open-redirect phishing shape; Java refuses the same target and goes to the path.
-
-The fix is the Java rule in the port's redirect helper: with no `http-host` configured, take the path
-and query of an absolute target and send that; keep the absolute target only when the webapp names a
-host (or when the target is the same origin, as `web::is_same_origin_redirect` decides).
-
-#### P8-02 — The redirect location is not sanitized
-
-Java's `WebUtilities.sanitizeRedirectLocation` (`WebUtilities.java:456-466`) drops CR, LF and NUL from
-a redirect location so that `sendRedirect` cannot split headers, and falls back to `"/"` when nothing
-is left. The port has no counterpart: `web::send_redirect` writes the location as it is
-(`web/mod.rs:855`).
-
-A location that carries a line break can only come from a screen that expands a request value into a
-response URL, so this is the same shape as P8-01. The `http` crate refuses a header value with a CR or
-LF, so the port's response builder fails and the client gets a 500 "could not build the response"
-(`moqui-host/src/http.rs:896-908`) instead of the redirect Java sends. Dropping CR, LF and NUL in
-`send_redirect` (as Java does) is a two-line fix.
 
 #### P8-03 — The request body wins over the query string
 
@@ -2615,9 +2524,10 @@ Other checks of this phase:
 
 #### Open questions
 
-- Should the port refuse an absolute redirect target the way Java does when the webapp names no
-  `http-host` (P8-01)? The port has no `http-host` in its redirect path at all, and the answer
-  changes what a screen with a `url-type="plain"` response may do.
+- ~~Should the port refuse an absolute redirect target the way Java does when the webapp names no
+  `http-host`?~~ — answered on 2026-10-20: yes, and more: a target that is not a path of this site
+  goes to the root. The difference from Java is in
+  [Parity-Diffs](Parity-Diffs.md#screen-and-web-review-2026-10-20).
 - Should the CORS settings, the session-token setting and the executable-upload setting be read from
   the webapp element of the conf (P8-06)? The factory can read them
   (`ExecutionContextFactory::webapp_setting`), but the CORS headers themselves are hard-coded in
@@ -2994,10 +2904,10 @@ screen-and-web half of [Parity-Mapping, Cross-cutting threads](Parity-Mapping.md
    webapp element's settings), P7-03 (the `screen-resource-*` response headers) and P8-06 (the CORS,
    session-token and upload settings) are all the same thing: the port merges the Java webapp conf
    and then reads only part of it. One pass over the `<webapp>` element would close six findings.
-2. **The redirect path.** P8-01 (an absolute target goes out as it is), P8-02 (no
-   `sanitizeRedirectLocation`), P7-02 (the link permission check) and P7-08 (a plain `url-type` is
-   prefixed with the base URL) are one area: where a location comes from and what may be done with
-   it. This is the one thread with a security finding on it.
+2. **The redirect path.** P8-01 and P8-02 are fixed (2026-10-20: Java's `sendHttpRedirect` rule is
+   in `http_redirect_location`). P7-02 (the link permission check) and P7-08 (a plain `url-type` is
+   prefixed with the base URL) are what is left of the thread: where a location comes from and what
+   may be done with it.
 3. **The render-mode policy.** P2-08 (a mode the screen does not name is refused), P3-01 (an
    element no mode names fails the render), P6-06 (a direct `.xsl-fo` request answers HTML) and
    P7-09 (`skip-actions` is not read) are the port's render-mode rules meeting Java's, which has
@@ -3036,12 +2946,13 @@ screen-and-web half of [Parity-Mapping, Cross-cutting threads](Parity-Mapping.md
 
 ## Next steps
 
-1. Decide the three High findings: P5-01 (the static qvt's number rule), P7-01 (the `REST_SCHEMA`
-   permission) and P8-01 (the redirect target). Each is a small change with a test.
+1. ~~Decide the three High findings~~ — done on 2026-10-20: P5-01, P7-01 and P8-01 are fixed, with
+   P8-02. The plan and the record of the decisions are in
+   [ScreenWeb-High-Findings](ScreenWeb-High-Findings.md).
 2. Sort the 27 `Unclear` findings into "deliberate, record it in Parity-Diffs" and "a gap". The
    `Unclear` ones are the ones that will otherwise be re-found.
-3. Work the cross-cutting threads above, in the order given: the webapp conf, the redirect path, the
-   render-mode policy.
+3. Work the cross-cutting threads above, in the order given. P8-01 and P8-02 are in; P7-02 and
+   P7-08 remain on the redirect path. The webapp conf and the render-mode policy follow.
 4. When the findings are fixed, move the accepted differences into
    [Parity-Diffs](Parity-Diffs.md) with their `P<N>-<n>` IDs, leave a pointer here, and archive
    this file under `plans/archive/` the way

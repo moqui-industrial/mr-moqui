@@ -21,9 +21,13 @@ use crate::user;
 use crate::web;
 
 const SCHEMA_AUTH: &str = "Authentication required for REST schema";
+const SCHEMA_FORBIDDEN: &str = "Not authorized for REST schema";
+/// The permission the schema documents need: Java's `RestSchemaUtil.requireSchemaAccess` asks for
+/// `REST_SCHEMA`, and the port's seed data grants it to `ADMIN`.
+const SCHEMA_PERMISSION: &str = "REST_SCHEMA";
 
 pub(crate) fn entity_json(call: &Call<'_>, master: bool) -> Result<bool, Error> {
-    if !logged_in(call.login_error)? {
+    if !require_schema_access(call.login_error)? {
         return Ok(true);
     }
     if yaml(call.extra) {
@@ -40,7 +44,7 @@ pub(crate) fn entity_json(call: &Call<'_>, master: bool) -> Result<bool, Error> 
 }
 
 pub(crate) fn service_swagger(call: &Call<'_>) -> Result<bool, Error> {
-    if !logged_in(call.login_error)? {
+    if !require_schema_access(call.login_error)? {
         return Ok(true);
     }
     if yaml(call.extra) {
@@ -57,13 +61,19 @@ pub(crate) fn service_swagger(call: &Call<'_>) -> Result<bool, Error> {
     Ok(true)
 }
 
-fn logged_in(login_error: Option<&str>) -> Result<bool, Error> {
+/// Java's `RestSchemaUtil.requireSchemaAccess`: a user, and the `REST_SCHEMA` permission.
+/// `has_permission` asks even when artifact authorization is off, as Java always asks.
+fn require_schema_access(login_error: Option<&str>) -> Result<bool, Error> {
     if let Some(error) = login_error {
         web::send_json_error(401, error);
         return Ok(false);
     }
     if user::current_username()?.is_none() {
         web::send_json_error(401, SCHEMA_AUTH);
+        return Ok(false);
+    }
+    if !user::has_permission(SCHEMA_PERMISSION)? {
+        web::send_json_error(403, SCHEMA_FORBIDDEN);
         return Ok(false);
     }
     Ok(true)

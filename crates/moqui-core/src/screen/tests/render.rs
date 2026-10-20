@@ -47,7 +47,6 @@ fn trace_of(output: &RenderOutput) -> Vec<String> {
 fn location_of(output: &RenderOutput) -> Option<&str> {
     output.header("Location")
 }
-
 fn parameters(pairs: &[(&str, &str)]) -> BTreeMap<String, Value> {
     pairs
         .iter()
@@ -216,7 +215,10 @@ fn make_render_without_a_socket_sends_status_content_type_and_an_empty_body() {
 
 #[test]
 fn make_render_fills_parameters_session_and_base_url_from_maps() {
-    let context = ExecutionContextFactory::test_context();
+    // A webapp that names a host, so a redirect keeps the absolute URL, as Java's sendHttpRedirect does.
+    let context = ExecutionContextFactory::test_context_with_conf(
+        "<moqui-conf><webapp-list><webapp name=\"webroot\" http-host=\"app.example\"/></webapp-list></moqui-conf>",
+    );
     let output = make_render(context.factory())
         .root_screen(fixture_root())
         .screen_path("/echo")
@@ -237,6 +239,133 @@ fn make_render_fills_parameters_session_and_base_url_from_maps() {
         .unwrap();
     assert_eq!(redirect.status, 302);
     assert_eq!(location_of(&redirect), Some("https://app.example/Sub"));
+}
+
+/// Java's `sendHttpRedirect`: a redirect stays on this site. An `http(s)` target is its path and query
+/// when the webapp names no `http-host`, and a target that is not a path of this site goes to the root.
+#[test]
+fn a_redirect_location_stays_on_this_site() {
+    let context = ExecutionContextFactory::test_context();
+    let location = |target: &str| super::super::render::http_redirect_location(context.factory(), target);
+
+    // No http-host: an absolute target is its path, so the browser stays here.
+    assert_eq!(location("https://evil.example/steal"), "/steal");
+    assert_eq!(location("https://evil.example"), "/");
+    assert_eq!(location("https://evil.example/steal?x=1"), "/steal?x=1");
+    assert_eq!(location("http://evil.example/steal"), "/steal");
+    // A path of this site is as it is.
+    assert_eq!(location("/Sub/Deep"), "/Sub/Deep");
+    assert_eq!(location("Sub/Deep"), "Sub/Deep");
+    // A reduced path that is not a single slash, or that holds a backslash, is the root. A URL
+    // Java's URI.create rejects is the root too.
+    assert_eq!(location("https://evil.example//phish"), "/");
+    assert_eq!(location("https://evil.example/\\evil.com"), "/");
+    assert_eq!(location("https://evil.example/a b"), "/");
+    // A target that is not a path of this site goes to the root, where Java sends it as it is.
+    assert_eq!(location("//evil.example/steal"), "/");
+    assert_eq!(location("javascript:alert(1)"), "/");
+    assert_eq!(location("mailto:someone@example.com"), "/");
+    // A line break cannot split the header.
+    assert_eq!(location("/Sub\r\nX-Evil: 1"), "/SubX-Evil: 1");
+    assert_eq!(location("/Sub\0"), "/Sub");
+    // An empty location is the root.
+    assert_eq!(location("  "), "/");
+
+    // With an http-host the absolute target is sent, as Java sends it.
+    let named = ExecutionContextFactory::test_context_with_conf(
+        "<moqui-conf><webapp-list><webapp name=\"webroot\" http-host=\"app.example\"/></webapp-list></moqui-conf>",
+    );
+    assert_eq!(
+        super::super::render::http_redirect_location(named.factory(), "https://evil.example/steal"),
+        "https://evil.example/steal"
+    );
+}
+
+/// A screen whose response is an absolute URL redirects to its path, as Java's `sendHttpRedirect` does
+/// when the webapp names no `http-host`.
+#[test]
+fn a_screen_that_answers_with_an_absolute_url_redirects_to_its_path() {
+    let context = ExecutionContextFactory::test_context();
+    let redirect = make_render(context.factory())
+        .root_screen(fixture_root())
+        .screen_path("/goExternal")
+        .render()
+        .unwrap();
+    assert_eq!(redirect.status, 302);
+    assert_eq!(location_of(&redirect), Some("/steal"));
+
+    // The same screen path, for a URL whose path is protocol-relative after the host is dropped.
+    let phish = make_render(context.factory())
+        .root_screen(fixture_root())
+        .screen_path("/goPhish")
+        .render()
+        .unwrap();
+    assert_eq!(phish.status, 302);
+    assert_eq!(location_of(&phish), Some("/"));
+}
+
+/// A qvt screen is always standalone, so `sri.sendRedirectAndStopRender` answers 205. The
+/// `X-Redirect-To` value is held to the same rule as a `Location`.
+#[test]
+fn a_standalone_redirect_stays_on_this_site() {
+    let dir = std::env::temp_dir().join(format!("moqui-screen-redirect-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Root")).unwrap();
+    std::fs::write(
+        dir.join("Root.xml"),
+        r#"<screen require-authentication="false"><widgets><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Root/Hop.xml"),
+        r#"<screen require-authentication="false">
+            <always-actions><script>sri.sendRedirectAndStopRender('https://evil.example//phish')</script></always-actions>
+            <widgets><label text="no"/></widgets>
+        </screen>"#,
+    )
+    .unwrap();
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let world = World::open("");
+    let response = serve_at(&world.factory, request("GET", "/Hop.qvt"), &root);
+    assert_eq!(response.status, 205, "{}", response.body_text());
+    assert_eq!(super::header_value(&response, "X-Redirect-To").as_deref(), Some("/"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// No execution context: the location is still sanitized and an off-site `http(s)` URL still collapses.
+#[test]
+fn a_redirect_with_no_context_is_still_held_to_this_site() {
+    assert!(
+        !crate::context::ExecutionContext::is_entered(),
+        "this thread already has a context, so the no-factory path is not what runs"
+    );
+    let held = |url: &str| {
+        let _web = crate::web::install(BTreeMap::new());
+        crate::screen::send_redirect_and_stop_render(url);
+        let (status, headers, _, sent) = crate::web::take_output();
+        assert!(sent, "{url}");
+        assert_eq!(status, 302, "{url}");
+        headers
+            .into_iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("Location"))
+            .map(|(_, value)| value)
+            .unwrap_or_default()
+    };
+    assert_eq!(held("https://evil.example//phish\r\n\0"), "/");
+    assert_eq!(held("https://evil.example/steal?x=1"), "/steal?x=1");
+    assert_eq!(held("https://evil.example/a b"), "/");
+}
+
+/// A JSON answer carries the URL the client follows, so it is held to the same rule as the `Location`
+/// of a redirect: a target that is not a path of this site goes to the root.
+#[test]
+fn a_json_redirect_holds_the_url_to_this_site_too() {
+    let context = ExecutionContextFactory::test_context();
+    let mut request = request("GET", "/goExternal");
+    request.set_header("accept", "application/json");
+    let response = serve_at(context.factory(), request, &fixture_root());
+    let text = response.body_text();
+    assert!(text.contains("\"redirectUrl\" : \"/steal\""), "{text}");
 }
 
 #[test]

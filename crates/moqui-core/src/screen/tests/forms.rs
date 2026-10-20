@@ -557,7 +557,7 @@ fn a_form_builds_its_fields_from_a_service() {
     get.query.push(("renderMode".into(), "qvt".into()));
     let qvt = serve_at(&world.factory, get, &root).body_text();
     assert!(
-        qvt.contains("moqui.isStringInteger(value)") && qvt.contains("Please enter a valid whole number"),
+        qvt.contains("$mq.isStringInteger(value)") && qvt.contains("Please enter a valid whole number"),
         "{qvt}"
     );
     let _ = std::fs::remove_dir_all(&dir);

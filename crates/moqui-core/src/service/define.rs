@@ -373,8 +373,10 @@ const MSG_DIGITS: &str = "Please enter only numbers (digits)";
 const MSG_LETTERS: &str = "Please enter only letters";
 const MSG_EMAIL: &str = "Please enter a valid email address";
 const MSG_URL: &str = "Please enter a valid URL";
-pub(crate) const VALIDATE_NUMBER: &str = "!value || moqui.isStringNumber(value)";
-pub(crate) const VALIDATE_NUMBER_INT: &str = "!value || moqui.isStringInteger(value)";
+// The browser checks of a field. The helpers are called as `$mq`, the name the server-static qvt scope
+// has and the name the merged qvt mode's browser global has, so one rule text works in both modes.
+pub(crate) const VALIDATE_NUMBER: &str = "!value || $mq.isStringNumber(value)";
+pub(crate) const VALIDATE_NUMBER_INT: &str = "!value || $mq.isStringInteger(value)";
 const VALIDATE_EMAIL: &str = r#"!value || /^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/.test(value)"#;
 const VALIDATE_URL: &str = r"!value || /((([A-Za-z]{3,9}:(?:\/\/)?)(?:[\-;:&=\+\$,\w]+@)?[A-Za-z0-9\.\-]+|(?:www\.|[\-;:&=\+\$,\w]+@)[A-Za-z0-9\.\-]+)((?:\/[\+~%\/\.\w\-_]*)?\??(?:[\-\+=&;%@\.\w_]*)#?(?:[\.\!\/\\\w]*))?)/.test(value)";
 
@@ -417,13 +419,13 @@ pub(crate) fn input_js_rules(service: &str, parameter: &str) -> Option<Vec<(Stri
                 let mut compare = String::new();
                 if let Some(min) = min.as_deref().filter(|text| !text.is_empty()) {
                     compare.push_str(&format!(
-                        " && moqui.parseNumber(value) {} {min}",
+                        " && $mq.parseNumber(value) {} {min}",
                         if *min_eq { ">=" } else { ">" }
                     ));
                 }
                 if let Some(max) = max.as_deref().filter(|text| !text.is_empty()) {
                     compare.push_str(&format!(
-                        " && moqui.parseNumber(value) {} {max}",
+                        " && $mq.parseNumber(value) {} {max}",
                         if *max_eq { "<=" } else { "<" }
                     ));
                 }
@@ -439,7 +441,7 @@ pub(crate) fn input_js_rules(service: &str, parameter: &str) -> Option<Vec<(Stri
                     }
                 });
                 push(
-                    &format!("!value || (!Number.isNaN(moqui.parseNumber(value)){compare})"),
+                    &format!("!value || (!Number.isNaN($mq.parseNumber(value)){compare})"),
                     &message,
                 );
             }

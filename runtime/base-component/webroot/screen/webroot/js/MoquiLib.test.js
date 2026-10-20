@@ -93,6 +93,10 @@ test("number text checks and parsing", () => {
     assert.equal(moqui.parseNumber("1,234.5"), 1234.5);
 });
 
+test("the $mq global is the library, for the field rules the server writes", () => {
+    assert.equal(globalThis.$mq, moqui);
+});
+
 test("LruMap keeps the most recently used entries", () => {
     const map = new moqui.LruMap(2);
     map.put("a", 1);

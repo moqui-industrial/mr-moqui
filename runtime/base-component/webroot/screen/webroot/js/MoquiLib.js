@@ -9,6 +9,10 @@
     "use strict";
     const node = typeof module === "object" && module.exports;
     const moqui = node ? {} : (root.moqui = root.moqui || {});
+    // $mq is the name the server's field rules use ($mq.isStringNumber and the rest). Scripts see this
+    // page global. A merged qvt template does not: Vue resolves $mq on app.config.globalProperties,
+    // which qvt.start sets. A server-static template resolves it on the scope host.
+    root.$mq = moqui;
     factory(root, moqui);
     if (node) module.exports = moqui;
 })(globalThis, function (root, moqui) {

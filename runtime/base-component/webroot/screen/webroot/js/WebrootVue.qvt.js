@@ -469,6 +469,12 @@
         str: (value) => (value === null || value === undefined ? "" : String(value)),
         dflt: (value, fallback) => (value === null || value === undefined || value === "" ? fallback : value),
         nul: (value) => (value === undefined || value === "" ? null : value),
+        // The number checks of a field's browser rules, the same the server writes into the rule text
+        // ($mq.isStringNumber and the rest). They are the client's own, so the locale separators are
+        // the user's.
+        isStringNumber: (value) => moqui.isStringNumber(value),
+        isStringInteger: (value) => moqui.isStringInteger(value),
+        parseNumber: (value) => moqui.parseNumber(value),
         // The current value of a drop-down, check or radio: a list for several, else the first of a comma list, as the server reads it.
         cur: (value, multiple, none) => {
             let text = value === null || value === undefined || value === "" ? (none === undefined || none === null ? "" : String(none)) : value;
@@ -7310,6 +7316,8 @@
         app.use(root.Quasar, quasarOptions);
         Object.keys(qvt.components).forEach((name) => app.component(name, qvt.components[name]));
         app.config.globalProperties.moqui = moqui;
+        // Field rules call $mq. The browser compiler reads this, not the page global.
+        app.config.globalProperties.$mq = moqui;
         app.config.globalProperties.window = root;
         app.config.globalProperties.$router = qvt.makeRouter();
         Object.defineProperty(app.config.globalProperties, "$route", { get: () => (moqui.webrootVue ? moqui.webrootVue.getRoute() : { matched: [], params: {} }) });
