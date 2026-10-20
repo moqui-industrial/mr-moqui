@@ -67,6 +67,10 @@ along with this software (see the LICENSE.md file). If not, see
             serviceName="org.moqui.impl.ServiceServices.clean#ServiceJobRun" cronExpression="0 0 2 * * ?" paused="N">
         <parameters parameterName="daysToKeep" parameterValue="30"/>
     </moqui.service.job.ServiceJob>
+    <moqui.service.job.ServiceJob jobName="clean_GitUpdates_daily" description="Clean done GitUpdate rows past 90 days"
+            serviceName="org.moqui.impl.GitServices.clean#GitUpdates" cronExpression="0 0 2 * * ?" paused="N">
+        <parameters parameterName="daysToKeep" parameterValue="90"/>
+    </moqui.service.job.ServiceJob>
 
     <!-- Paused. Set paused to N to run. The counts are how many archives to keep. With this nightly cron, 7 dailies
          is 7 nights. Yearly stays unlimited until yearlyCount is set. plans/PostgresBackup.md -->

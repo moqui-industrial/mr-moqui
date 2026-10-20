@@ -2378,9 +2378,11 @@
             label: String, name: String, id: String, disable: Boolean, onSelectGoTo: String },
         emits: ["update:modelValue"],
         data() { return { curOptions: this.options, allOptions: this.options, lastSearch: null, loading: false }; },
+        // Selected text stays visible. fill-input hid a set value, so hide-selected is only for multiple
+        // (Java WebrootVue.qvt.js m-drop-down).
         template:
             '<q-select ref="qSelect" :model-value="modelValue" @update:model-value="handleInput"' +
-                    ' dense outlined options-dense use-input :use-chips="multiple" :fill-input="!multiple" :hide-selected="!multiple" :name="name" :for="id" :form="form"' +
+                    ' dense outlined options-dense use-input :use-chips="multiple" :hide-selected="multiple" :name="name" :for="id" :form="form"' +
                     ' :input-debounce="serverSearch ? serverDelay : 100" @filter="filterFn" :clearable="allowEmpty||multiple" :disable="disable"' +
                     ' :multiple="multiple" :emit-value="!onSelectGoTo" map-options behavior="menu" :new-value-mode="combo ? \'add-unique\' : undefined"' +
                     ' :rules="[val => allowEmpty||multiple||combo||val===\'\'||(val&&val.length)||\'Please select an option\']"' +

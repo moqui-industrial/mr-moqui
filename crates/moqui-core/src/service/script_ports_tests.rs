@@ -1115,3 +1115,91 @@ fn a_users_notes_space_is_made_on_first_use_and_kept() {
     let made = ensure(&[("userId", "OTHER")]);
     assert_eq!(text(&made, "created"), "true");
 }
+
+/// `clean#GitUpdates` removes done and none rows older than the window, and their refs, and leaves the rest.
+/// One row whose delete fails is logged and skipped.
+#[cfg(feature = "git")]
+#[test]
+fn old_done_git_updates_are_removed_and_one_failure_does_not_stop_the_rest() {
+    let facade = crate::testing::open_with(
+        &crate::testing::framework_dir(),
+        crate::testing::Options {
+            entity_eca: true,
+            data_feed: false,
+            tape: None,
+        },
+    );
+    facade.assume_db_tables();
+    let context = ExecutionContextFactory::test_context_in(
+        "",
+        ServicePools::bounded(1, 4),
+        crate::context::framework_dir(),
+    );
+    context.factory().set_entity(facade.clone());
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    install(&["impl/GitServices.xml"]);
+    crate::entity::load_feed::add_eca_rules(
+        &facade,
+        r#"<eecas><eeca id="FailGitUpdate" entity="moqui.resource.GitUpdate" on-delete="true" run-before="true">
+            <condition><expression>updateId == 'FAIL'</expression></condition>
+            <actions><script>throw new Error("forced")</script></actions>
+        </eeca></eecas>"#,
+    )
+    .unwrap();
+    let ago = |days: i64| {
+        let millis = jiff::Timestamp::now().as_millisecond() - days * 86_400_000;
+        moqui_lib::object::basic_convert(&Value::I64(millis), "java.sql.Timestamp").value
+    };
+    let row = |id: &str, status: &str, when: Value| {
+        let mut update = facade.make_value("moqui.resource.GitUpdate").unwrap();
+        update.set("updateId", Value::string(id));
+        update.set("ecaStatus", Value::string(status));
+        update.set("updateDate", when);
+        update.set("source", Value::string("write"));
+        update.create(&facade).unwrap();
+    };
+    let git_ref = |id: &str| {
+        let mut reference = facade.make_value("moqui.resource.GitUpdateRef").unwrap();
+        reference.set("updateId", Value::string(id));
+        reference.set("refName", Value::string("refs/heads/main"));
+        reference.create(&facade).unwrap();
+    };
+    row("OLD_DONE", "done", ago(200));
+    git_ref("OLD_DONE");
+    row("OLD_NONE", "none", ago(200));
+    row("OLD_PENDING", "pending", ago(200));
+    row("OLD_FAILED", "failed", ago(200));
+    row("OLD_RUNNING", "running", ago(200));
+    row("OLD_RECORDING", "recording", ago(200));
+    row("NEW_DONE", "done", ago(1));
+    git_ref("NEW_DONE");
+    row("FAIL", "done", ago(200));
+    let out = crate::service::sync("org.moqui.impl.GitServices.clean#GitUpdates", &params(&[])).unwrap();
+    assert_eq!(errors(&context), "", "{out:?}");
+    assert_eq!(text(&out, "recordsRemoved"), "2", "{out:?}");
+    let present = |id: &str| {
+        facade
+            .find("moqui.resource.GitUpdate")
+            .unwrap()
+            .eq("updateId", Value::string(id))
+            .one()
+            .unwrap()
+            .is_some()
+    };
+    let refs = |id: &str| {
+        facade
+            .find("moqui.resource.GitUpdateRef")
+            .unwrap()
+            .eq("updateId", Value::string(id))
+            .list()
+            .unwrap()
+            .len()
+    };
+    assert!(!present("OLD_DONE") && refs("OLD_DONE") == 0);
+    assert!(!present("OLD_NONE"));
+    for kept in ["OLD_PENDING", "OLD_FAILED", "OLD_RUNNING", "OLD_RECORDING", "NEW_DONE", "FAIL"] {
+        assert!(present(kept), "{kept}");
+    }
+    assert_eq!(refs("NEW_DONE"), 1);
+}

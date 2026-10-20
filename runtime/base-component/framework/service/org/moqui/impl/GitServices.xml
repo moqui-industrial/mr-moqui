@@ -236,4 +236,34 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="failedCount" type="Integer"/>
         </out-parameters>
     </service>
+
+    <!-- The push log and the git:// writes a gitECA rule listens to. recording, pending, running and failed stay. -->
+    <service verb="clean" noun="GitUpdates" authenticate="false" transaction-timeout="600">
+        <description>Delete GitUpdate rows in ecaStatus done or none whose updateDate is older than daysToKeep
+            (for the clean_GitUpdates_daily ServiceJob). A row's GitUpdateRef rows go first. A row that cannot
+            be removed is logged and the others still go.</description>
+        <in-parameters><parameter name="daysToKeep" type="Integer" default="90"/></in-parameters>
+        <out-parameters><parameter name="recordsRemoved" type="Long"/></out-parameters>
+        <actions>
+            <script><![CDATA[
+                const basisTimestamp = new Date(ec.user.timestampMillis(ec.user.nowTimestamp) - daysToKeep * 86400000).toISOString()
+                let removed = 0
+                const updates = ec.entity.find("moqui.resource.GitUpdate")
+                        .condition(ec.entity.conditionFactory.makeCondition("updateDate", "<", basisTimestamp))
+                        .disableAuthz().list()
+                for (const update of updates) {
+                    if (update.ecaStatus !== "done" && update.ecaStatus !== "none") continue
+                    try {
+                        ec.entity.find("moqui.resource.GitUpdateRef").condition("updateId", update.updateId).disableAuthz().deleteAll()
+                        ec.entity.find("moqui.resource.GitUpdate").condition("updateId", update.updateId).disableAuthz().deleteAll()
+                        removed++
+                    } catch (err) {
+                        ec.logger.log("error", "GitUpdate " + update.updateId + " was not removed: " + err)
+                    }
+                }
+                recordsRemoved = removed
+            ]]></script>
+            <log level="info" message="Removed ${recordsRemoved} GitUpdate records."/>
+        </actions>
+    </service>
 </services>
