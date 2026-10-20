@@ -74,14 +74,24 @@ fn a_screen_of_host_decimals_renders_without_value_of() {
     assert!(body.contains("under"), "{body}");
     assert!(!body.contains("TIME SHOWN") && !body.contains("COST SHOWN"), "{body}");
     assert!(!body.contains("valueOf"), "{body}");
-    assert!(context.message().errors().is_empty(), "{:?}", context.message().errors());
+    assert!(
+        context.message().errors().is_empty(),
+        "{:?}",
+        context.message().errors()
+    );
     let summary = std::fs::read_to_string(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../runtime/component/MrSimpleScreens/screen/SimpleScreens/Project/ProjectSummary.xml"),
     )
     .unwrap();
-    assert!(!summary.contains("Percent/100"), "a percent is still divided as a decimal");
-    assert!(!summary.contains("condition=\"project.total"), "a budget condition is still the decimal");
+    assert!(
+        !summary.contains("Percent/100"),
+        "a percent is still divided as a decimal"
+    );
+    assert!(
+        !summary.contains("condition=\"project.total"),
+        "a budget condition is still the decimal"
+    );
     assert!(summary.contains("toNumber(pstats.clientBudgetEstimateDiff)"));
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -654,8 +654,8 @@ fn fop_sends_the_print_document_of_the_screen_as_pdf() {
 }
 
 mod authc;
-mod files;
 mod decimal;
+mod files;
 mod forms;
 mod golden;
 mod html;

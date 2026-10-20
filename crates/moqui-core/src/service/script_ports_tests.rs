@@ -1130,11 +1130,8 @@ fn old_done_git_updates_are_removed_and_one_failure_does_not_stop_the_rest() {
         },
     );
     facade.assume_db_tables();
-    let context = ExecutionContextFactory::test_context_in(
-        "",
-        ServicePools::bounded(1, 4),
-        crate::context::framework_dir(),
-    );
+    let context =
+        ExecutionContextFactory::test_context_in("", ServicePools::bounded(1, 4), crate::context::framework_dir());
     context.factory().set_entity(facade.clone());
     let _entered = context.enter();
     let _authz = context.disable_authz();
@@ -1198,7 +1195,14 @@ fn old_done_git_updates_are_removed_and_one_failure_does_not_stop_the_rest() {
     };
     assert!(!present("OLD_DONE") && refs("OLD_DONE") == 0);
     assert!(!present("OLD_NONE"));
-    for kept in ["OLD_PENDING", "OLD_FAILED", "OLD_RUNNING", "OLD_RECORDING", "NEW_DONE", "FAIL"] {
+    for kept in [
+        "OLD_PENDING",
+        "OLD_FAILED",
+        "OLD_RUNNING",
+        "OLD_RECORDING",
+        "NEW_DONE",
+        "FAIL",
+    ] {
         assert!(present(kept), "{kept}");
     }
     assert_eq!(refs("NEW_DONE"), 1);
