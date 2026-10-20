@@ -169,6 +169,9 @@ along with this software (see the LICENSE.md file). If not, see
             <!-- Mail (org.moqui.impl.EmailClientServices.filter#ContactAddresses): which senders are a user's contacts, for an
                 automatic reply to contacts only; the email_contact_service property wins over it -->
             <moqui.basic.Enumeration description="Email Contact Service (service name, called with userId and emailAddressList, answers contactAddressList)" enumId="STRT_EMAIL_CONTACT_SERVICE" enumTypeId="ScreenThemeResourceType"/>
+            <!-- m-avatar with a user id and no image: a URL whose text contains ${userId} (replaced in the browser, not
+                expanded on the server). Empty means initials. The image answer 404 also leaves the initials. -->
+            <moqui.basic.Enumeration description="Avatar URL template (${userId} replaced in the browser)" enumId="STRT_AVATAR_URL" enumTypeId="ScreenThemeResourceType"/>
         </seed-data>
     </entity>
     <entity entity-name="ScreenThemeIcon" package="moqui.screen" use="configuration" cache="true">

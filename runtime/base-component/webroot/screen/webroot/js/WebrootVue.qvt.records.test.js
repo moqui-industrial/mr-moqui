@@ -149,6 +149,13 @@ test("an avatar's initials are the first and last word's first letters, and its 
     assert.equal(moqui.avatar.initials(null), "");
     assert.equal(moqui.avatar.color("Ada Lovelace"), moqui.avatar.color("Ada Lovelace"));
     assert.match(moqui.avatar.color("x"), /^[a-z-]+$/);
+    const template = "/qapps/Commons/Settings/Account/userPhoto?userId=${userId}";
+    assert.equal(moqui.avatar.imageUrl("john.doe", template), "/qapps/Commons/Settings/Account/userPhoto?userId=john.doe");
+    assert.equal(moqui.avatar.imageUrl("a b&c", template), "/qapps/Commons/Settings/Account/userPhoto?userId=a%20b%26c");
+    assert.equal(moqui.avatar.imageUrl("john.doe", ""), "");
+    assert.equal(moqui.avatar.imageUrl("john.doe", "/photo"), "");
+    assert.equal(moqui.avatar.imageUrl("", template), "");
+    assert.equal(moqui.avatar.imageUrl(null, template), "");
 });
 
 test("a record card is read from the card JSON: title, type, status, two fields with a value, the link", () => {

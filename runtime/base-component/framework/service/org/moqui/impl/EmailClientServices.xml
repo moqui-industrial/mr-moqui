@@ -627,11 +627,19 @@ along with this software (see the LICENSE.md file). If not, see
                     folderUnread[row.emailFolderId] = (folderUnread[row.emailFolderId] || 0) + 1
                 }
             }
+            // the Internal account has labels and no folders
+            if (internalEmailAccountId) {
+                for (const label of ec.entity.find('moqui.basic.email.EmailLabel').condition('emailAccountId', internalEmailAccountId)
+                        .orderBy('sequenceNum,labelName').list()) {
+                    (labelsByAccount[label.emailAccountId] ||= []).push({emailLabelId: label.emailLabelId, labelName: label.labelName ?? null,
+                        color: label.color ?? null, sequenceNum: label.sequenceNum ?? null})
+                }
+            }
             for (const account of access.accountList) {
                 const item = Object.assign({}, account)
                 if (account.isInternal) {
                     Object.assign(item, {unreadCount: null, draftCount: 0, outboxCount: 0, outboxErrorCount: 0,
-                        folderList: [], labelList: [], identityList: []})
+                        folderList: [], labelList: labelsByAccount[account.emailAccountId] || [], identityList: []})
                     accountList.push(item)
                     continue
                 }
@@ -888,7 +896,8 @@ along with this software (see the LICENSE.md file). If not, see
     </service>
 
     <service verb="create" noun="EmailLabel">
-        <description>A label of an account (manage permission); the name is unique in the account.</description>
+        <description>A label of an account, including the Internal account (manage permission); the name is unique in the
+            account. An internal message is labeled with it through mantle.party.communication.CommunicationEventPartyLabel.</description>
         <in-parameters>
             <parameter name="emailAccountId" required="true"/>
             <parameter name="labelName" required="true"/>
@@ -902,7 +911,6 @@ along with this software (see the LICENSE.md file). If not, see
             if (ec.message.hasError()) return
             if (!(access.level >= 1)) { ec.message.addError(`Email account ${emailAccountId} not found`); return }
             if (access.level < 3) { ec.message.addError(`You may not add labels to email account ${emailAccountId}`); return }
-            if (access.account.isInternal) { ec.message.addError('Internal messages are labeled by the app that keeps them'); return }
             labelName = String(labelName).trim()
             if (!labelName) { ec.message.addError('A label needs a name'); return }
             if (ec.entity.find('moqui.basic.email.EmailLabel').condition('emailAccountId', emailAccountId).list()

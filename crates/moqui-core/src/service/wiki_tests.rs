@@ -15,7 +15,8 @@
 //! `org.moqui.impl.WikiServices` for knowledge and notes (IronStone M9): version notes on both storages with history,
 //! compare and restore; the links of a page's text and its backlinks across a rename, an alias and a page taking a
 //! path; a move into a git space that replays the history with each version's author and date, and one on the
-//! database tree that keeps its history rows; spaces made and cloned on a git repository; the review flow with its
+//! database tree that keeps its history rows; spaces made and cloned on a git repository; a page cloned under a new
+//! name with the pages under it, its attachments on the new path and its aliases; the review flow with its
 //! notifications and the tray's approve and refuse; search and page lists that leave out what a user may not view; a
 //! page written and read at its exact path, never over a page of the same name elsewhere; the writes and reads by the
 //! access rule with its admin overrides; and a delete that takes the page's rows.
@@ -809,6 +810,195 @@ fn spaces_are_made_and_cloned_on_a_git_repository_with_or_without_history() {
             .collect::<Vec<_>>()
     };
     assert!(roots.contains(&"CP2".to_string()), "{roots:?}");
+}
+
+/// clone#WikiPage names the copy, copies the pages under it when asked, writes attachments on the new path, and
+/// copies aliases unless told not to. clone#WikiSpace leaves both off the call, so a child page and an alias still come.
+#[test]
+fn a_page_is_cloned_under_a_new_name_with_its_children_attachments_and_aliases() {
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    users(&facade);
+    login("alice");
+    space("CLN", &[]);
+    let guide = save("CLN", "Guide", "# Guide\n", None);
+    save("CLN", "Guide/Chapter", "chapter\n", None);
+    save("CLN", "Guide/Chapter/Section", "section\n", None);
+    save("CLN", "GuideExtra", "not a child\n", None);
+    ctx.factory()
+        .resource()
+        .write_bytes(
+            "dbresource://WikiSpace/CLN/Guide/_attachments/notes.txt",
+            b"attached note\n",
+        )
+        .unwrap();
+    row(
+        &facade,
+        "moqui.resource.wiki.WikiPageAlias",
+        &[
+            ("wikiSpaceId", text("CLN")),
+            ("aliasPath", text("OldGuide")),
+            ("wikiPageId", text(&guide)),
+        ],
+    );
+
+    space("CLD", &[]);
+    save("CLD", "Shelf", "# Shelf\n", None);
+    let cloned = ok(
+        "clone#WikiPage",
+        &[
+            ("baseWikiSpaceId", text("CLN")),
+            ("wikiSpaceId", text("CLD")),
+            ("pagePath", text("Guide")),
+            ("parentPath", text("Shelf")),
+            ("pageName", text("Handbook")),
+            ("withChildren", Value::Bool(true)),
+        ],
+    );
+    assert_eq!(out_text(&cloned, "pagePath"), "Shelf/Handbook");
+    let handbook = one(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        &[("wikiSpaceId", "CLD"), ("pagePath", "Shelf/Handbook")],
+    );
+    assert_eq!(value_of(&handbook, "wikiPageId"), out_text(&cloned, "wikiPageId"));
+    assert_ne!(value_of(&handbook, "wikiPageId"), guide);
+    assert!(one(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        &[("wikiSpaceId", "CLD"), ("pagePath", "Shelf/Guide")]
+    )
+    .is_none());
+    assert!(one(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        &[("wikiSpaceId", "CLD"), ("pagePath", "Guide")]
+    )
+    .is_none());
+    assert!(one(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        &[("wikiSpaceId", "CLD"), ("pagePath", "Shelf/Handbook/Chapter")]
+    )
+    .is_some());
+    assert!(one(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        &[("wikiSpaceId", "CLD"), ("pagePath", "Shelf/Handbook/Chapter/Section")]
+    )
+    .is_some());
+    assert!(one(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        &[("wikiSpaceId", "CLD"), ("pagePath", "GuideExtra")]
+    )
+    .is_none());
+    assert_eq!(
+        location_text(&ctx, "dbresource://WikiSpace/CLD/Shelf/Handbook.md"),
+        "# Guide\n"
+    );
+    assert_eq!(
+        location_text(&ctx, "dbresource://WikiSpace/CLD/Shelf/Handbook/Chapter.md"),
+        "chapter\n"
+    );
+
+    let attachment = ok(
+        "get#WikiPageAttachment",
+        &[
+            ("wikiSpaceId", text("CLD")),
+            ("pagePath", text("Shelf/Handbook")),
+            ("filename", text("notes.txt")),
+        ],
+    );
+    let Some(Value::Map(reference)) = attachment.get("attachmentReference") else {
+        panic!("no attachment reference: {attachment:?}");
+    };
+    let new_attachment = "dbresource://WikiSpace/CLD/Shelf/Handbook/_attachments/notes.txt";
+    assert_eq!(field(reference, "location"), new_attachment);
+    assert_eq!(location_text(&ctx, new_attachment), "attached note\n");
+    assert!(!exists(&ctx, "dbresource://WikiSpace/CLD/Guide/_attachments/notes.txt"));
+    assert!(!exists(
+        &ctx,
+        "dbresource://WikiSpace/CLD/Shelf/Guide/_attachments/notes.txt"
+    ));
+    assert_eq!(
+        location_text(&ctx, "dbresource://WikiSpace/CLN/Guide/_attachments/notes.txt"),
+        "attached note\n",
+        "the source file stays"
+    );
+    assert_eq!(
+        value_of(
+            &one(
+                &facade,
+                "moqui.resource.wiki.WikiPageAlias",
+                &[("wikiSpaceId", "CLD"), ("aliasPath", "OldGuide")]
+            ),
+            "wikiPageId"
+        ),
+        out_text(&cloned, "wikiPageId"),
+        "the alias is copied when copyAliases is omitted"
+    );
+
+    space("CLA", &[]);
+    ok(
+        "clone#WikiPage",
+        &[
+            ("baseWikiSpaceId", text("CLN")),
+            ("wikiSpaceId", text("CLA")),
+            ("pagePath", text("Guide")),
+            ("copyAliases", Value::Bool(false)),
+        ],
+    );
+    assert!(one(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        &[("wikiSpaceId", "CLA"), ("pagePath", "Guide")]
+    )
+    .is_some());
+    assert!(one(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        &[("wikiSpaceId", "CLA"), ("pagePath", "Guide/Chapter")]
+    )
+    .is_none());
+    assert!(one(
+        &facade,
+        "moqui.resource.wiki.WikiPageAlias",
+        &[("wikiSpaceId", "CLA"), ("aliasPath", "OldGuide")]
+    )
+    .is_none());
+
+    ok(
+        "clone#WikiSpace",
+        &[("baseWikiSpaceId", text("CLN")), ("wikiSpaceId", text("CLS"))],
+    );
+    let copied = one(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        &[("wikiSpaceId", "CLS"), ("pagePath", "Guide")],
+    );
+    assert!(one(
+        &facade,
+        "moqui.resource.wiki.WikiPage",
+        &[("wikiSpaceId", "CLS"), ("pagePath", "Guide/Chapter")]
+    )
+    .is_some());
+    assert_eq!(
+        value_of(
+            &one(
+                &facade,
+                "moqui.resource.wiki.WikiPageAlias",
+                &[("wikiSpaceId", "CLS"), ("aliasPath", "OldGuide")]
+            ),
+            "wikiPageId"
+        ),
+        value_of(&copied, "wikiPageId")
+    );
+    assert_eq!(
+        location_text(&ctx, "dbresource://WikiSpace/CLS/Guide/_attachments/notes.txt"),
+        "attached note\n"
+    );
 }
 
 #[test]

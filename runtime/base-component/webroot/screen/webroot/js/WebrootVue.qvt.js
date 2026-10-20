@@ -5074,6 +5074,14 @@
             let hash = 0;
             for (const ch of String(name || "")) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
             return colors[hash % colors.length];
+        },
+        // the face image of a user id, from the theme's STRT_AVATAR_URL (qvt.config.avatarUrl). The template must contain
+        // ${userId}. Empty without a template or a user id, so the initials show. A 404 still falls back to initials.
+        imageUrl(userId, template) {
+            const id = String(userId || "").trim();
+            const text = String(template || "");
+            if (!id || text.indexOf("${userId}") < 0) return "";
+            return text.split("${userId}").join(encodeURIComponent(id));
         }
     };
     component("m-avatar", {
@@ -5083,7 +5091,13 @@
         data() { return { failedImage: "" }; },
         computed: {
             shownPresence() { return this.presence || (this.userId && moqui.chat ? moqui.chat.presenceOf(this.userId) : ""); },
-            showImage() { return !!this.image && this.failedImage !== this.image; },
+            // an image given on the component, else the theme's face-image URL for user-id (none: the initials)
+            resolvedImage() {
+                if (this.image) return this.image;
+                const config = (typeof qvt !== "undefined" && qvt && qvt.config) || moqui.config || {};
+                return moqui.avatar.imageUrl(this.userId, config.avatarUrl);
+            },
+            showImage() { return !!this.resolvedImage && this.failedImage !== this.resolvedImage; },
             initials() { return moqui.avatar.initials(this.name); },
             background() { return this.showImage ? undefined : this.color || moqui.avatar.color(this.name); }
         },
@@ -5092,7 +5106,7 @@
         template:
             '<q-avatar class="m-avatar" :size="size" :color="background" :text-color="showImage ? undefined : textColor" :square="square" :rounded="rounded"' +
                     ' :aria-label="name || undefined">' +
-                '<img v-if="showImage" :src="image" :alt="name || \'\'" @error="failedImage = image">' +
+                '<img v-if="showImage" :src="resolvedImage" :alt="name || \'\'" @error="failedImage = resolvedImage">' +
                 '<span v-else-if="initials" class="m-avatar-initials">{{initials}}</span>' +
                 '<q-icon v-else name="sym_o_person"></q-icon>' +
                 '<span v-if="shownPresence" class="m-avatar-presence" :class="\'m-presence-\' + shownPresence" :title="shownPresence"></span>' +

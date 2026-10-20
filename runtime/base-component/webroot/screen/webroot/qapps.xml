@@ -69,6 +69,8 @@ along with this software (see the LICENSE.md file). If not, see
         const density = (ec.user.userId && ec.user.getPreference('SHELL_DENSITY')) === 'compact' ? 'compact' : 'comfortable'
         const logoList = sri.getThemeValues('STRT_HEADER_LOGO')
         const titleList = sri.getThemeValues('STRT_HEADER_TITLE')
+        // STRT_AVATAR_URL is a template with the characters ${userId}. Do not expand it here: the browser replaces the user id.
+        const avatarList = sri.getThemeValues('STRT_AVATAR_URL')
         // The Quasar configuration of the theme (brand colors, notify, loadingBar) as JSON in a STRT_QUASAR_CONFIG resource; a bad one is logged and skipped.
         let quasarConfig = null
         for (const text of sri.getThemeValues('STRT_QUASAR_CONFIG')) {
@@ -85,6 +87,7 @@ along with this software (see the LICENSE.md file). If not, see
             qz: { enabled: qzEnabled },
             userAccount: { partyId: account.partyId || '', emailAddress: account.emailAddress || '', userFullName: account.userFullName || '' },
             preferences: preferences, moquiVersion: ec.factory.moquiVersion, quasar: quasarConfig,
+            avatarUrl: avatarList.length ? String(avatarList[0]) : '',
             qvt: { build: staticOnly ? 'runtime' : 'compiler', handles: staticOnly ? ['static-template'] : ['merged-fragment', 'static-template'] },
             // the shell (m-qapps-root): the theme's logo, title and footer, the logout URL, and its labels in the user's language
             shell: { logoUrl: logoList.length ? sri.buildUrl(logoList[0]).url : '', title: titleList.length ? ec.resource.expand(titleList[0], '') : '',
