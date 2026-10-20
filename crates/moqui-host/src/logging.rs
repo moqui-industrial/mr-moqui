@@ -39,7 +39,7 @@ use std::io::IsTerminal;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use moqui_core::context::ExecutionContextFactory;
@@ -60,6 +60,9 @@ const POLL: Duration = Duration::from_millis(100);
 
 static APP_QUEUE: Mutex<VecDeque<Document>> = Mutex::new(VecDeque::new());
 static HTTP_QUEUE: Mutex<VecDeque<Document>> = Mutex::new(VecDeque::new());
+/// Set by a test that wants the HTTP entries [`queue_http_request`] would ship.
+#[cfg(test)]
+static HTTP_CAPTURE: Mutex<Option<Vec<Document>>> = Mutex::new(None);
 static SHIPPING: AtomicBool = AtomicBool::new(false);
 static STOP_SHIPPING: AtomicBool = AtomicBool::new(false);
 static SHIPPER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
@@ -198,9 +201,43 @@ pub fn flush(facade: &moqui_core::search::SearchFacade) {
 
 /// Queue one HTTP request for `moqui_http_log`. Nothing is queued unless shipping has started.
 pub fn queue_http_request(entry: Document) {
+    #[cfg(test)]
+    if let Some(captured) = lock(&HTTP_CAPTURE).as_mut() {
+        captured.push(entry.clone());
+    }
     if SHIPPING.load(Ordering::Relaxed) {
         push(&HTTP_QUEUE, entry);
     }
+}
+
+/// Keep HTTP log entries until [`take_http_capture`]. A test holds the result across the requests.
+#[cfg(test)]
+pub(crate) fn begin_http_capture() -> MutexGuard<'static, ()> {
+    let guard = lock(&HTTP_TEST);
+    *lock(&HTTP_CAPTURE) = Some(Vec::new());
+    guard
+}
+
+/// The entries queued since [`begin_http_capture`], and capture turns off.
+#[cfg(test)]
+pub(crate) fn take_http_capture() -> Vec<Document> {
+    lock(&HTTP_CAPTURE).take().unwrap_or_default()
+}
+
+#[cfg(test)]
+static HTTP_TEST: Mutex<()> = Mutex::new(());
+
+/// The first queued application-log entry whose message contains `part`.
+#[cfg(test)]
+pub(crate) fn take_app_log(part: &str) -> Option<Document> {
+    let mut queue = lock(&APP_QUEUE);
+    let index = queue.iter().position(|entry| {
+        entry
+            .get("message")
+            .and_then(moqui_lib::object::Value::as_str)
+            .is_some_and(|text| text.contains(part))
+    })?;
+    queue.remove(index)
 }
 
 fn push(queue: &Mutex<VecDeque<Document>>, entry: Document) {
@@ -561,6 +598,20 @@ impl Subscriber for LineSubscriber {
         entry.insert("logger_name".into(), Value::string(metadata.target()));
         entry.insert("message".into(), Value::String(fields.message));
         entry.insert("source_host".into(), Value::string(host_name()));
+        if let Some((user_id, visitor_id)) = moqui_core::user::current_log_actor() {
+            if let Some(user_id) = user_id {
+                entry.insert("user_id".into(), Value::String(user_id));
+            }
+            if let Some(visitor_id) = visitor_id {
+                entry.insert("visitor_id".into(), Value::String(visitor_id));
+            }
+        }
+        if let Some((name, message)) = fields.error {
+            let mut thrown = Document::new();
+            thrown.insert("name".into(), Value::string(name));
+            thrown.insert("message".into(), Value::string(message));
+            entry.insert("thrown".into(), Value::Map(thrown));
+        }
         if !fields.extra.is_empty() {
             let mdc = fields
                 .extra
@@ -589,14 +640,26 @@ fn thread_number(thread: &std::thread::Thread) -> i64 {
 #[derive(Default)]
 struct Fields {
     message: String,
+    /// `name` and `message` of a field named `error`. It stays out of `mdc`.
+    error: Option<(String, String)>,
     extra: Vec<(String, String)>,
+}
+
+impl Fields {
+    fn record_error_field(&mut self, field: &Field, name: &str, message: String) -> bool {
+        if field.name() != "error" {
+            return false;
+        }
+        self.error = Some((name.to_string(), message));
+        true
+    }
 }
 
 impl Visit for Fields {
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
             self.message = value.to_string();
-        } else {
+        } else if !self.record_error_field(field, "error", value.to_string()) {
             self.extra.push((field.name().to_string(), value.to_string()));
         }
     }
@@ -604,8 +667,14 @@ impl Visit for Fields {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
             self.message = format!("{value:?}");
-        } else {
+        } else if !self.record_error_field(field, "error", format!("{value:?}")) {
             self.extra.push((field.name().to_string(), format!("{value:?}")));
+        }
+    }
+
+    fn record_error(&mut self, field: &Field, value: &(dyn std::error::Error + 'static)) {
+        if !self.record_error_field(field, "error", value.to_string()) {
+            self.extra.push((field.name().to_string(), value.to_string()));
         }
     }
 }
@@ -744,6 +813,33 @@ fn append_extra(out: &mut String, extra: &[(String, String)], color: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_app_log_carries_the_user_the_visitor_and_the_thrown_message() {
+        install();
+        let bare = format!("log-bare-{}", std::process::id());
+        tracing::error!("{bare}");
+        let entry = take_app_log(&bare).expect("the subscriber did not queue the line");
+        assert!(
+            entry.get("user_id").is_none() && entry.get("visitor_id").is_none(),
+            "{entry:?}"
+        );
+
+        let context = moqui_core::context::ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        moqui_core::user::set_current_log_actor("user-1", "visitor-1");
+        let marked = format!("log-actor-{}", std::process::id());
+        tracing::error!(error = "disk full", "{marked}");
+        let entry = take_app_log(&marked).expect("the subscriber did not queue the line");
+        assert_eq!(entry.get("user_id").and_then(Value::as_str), Some("user-1"));
+        assert_eq!(entry.get("visitor_id").and_then(Value::as_str), Some("visitor-1"));
+        let thrown = match entry.get("thrown") {
+            Some(Value::Map(map)) => map,
+            other => panic!("thrown missing: {other:?}"),
+        };
+        assert_eq!(thrown.get("message").and_then(Value::as_str), Some("disk full"));
+        assert!(entry.get("mdc").is_none(), "{entry:?}");
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("moqui-logging-{name}-{}", std::process::id()));

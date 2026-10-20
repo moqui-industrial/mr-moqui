@@ -753,6 +753,38 @@ pub fn visitor_id() -> Result<Option<String>, Error> {
     Ok(with_session(|session| session.visitor_id.clone()))
 }
 
+/// User id and visitor id of the entered context, for `moqui_logs`. `None` when no context is entered.
+pub fn current_log_actor() -> Option<(Option<String>, Option<String>)> {
+    ExecutionContext::with_current(|ec| {
+        let session = ec.session();
+        (session.user_id.clone(), session.visitor_id.clone())
+    })
+}
+
+/// Session id, visitor id, and username of the bound session, for `moqui_http_log`. All three are
+/// absent when no context is entered or no session is bound. The username is absent when nobody is logged in.
+pub fn http_log_identity() -> (Option<String>, Option<String>, Option<String>) {
+    ExecutionContext::with_current(|ec| {
+        let session = ec.session();
+        if session.bound_id.is_none() {
+            return (None, None, None);
+        }
+        (
+            session.bound_id.clone(),
+            session.visitor_id.clone(),
+            session.username.clone(),
+        )
+    })
+    .unwrap_or((None, None, None))
+}
+
+/// The user and visitor [`current_log_actor`] reads. The username stored with the user id is the same text.
+#[doc(hidden)]
+pub fn set_current_log_actor(user_id: &str, visitor_id: &str) {
+    set_user(user_id, user_id);
+    set_visit("log-visit", visitor_id);
+}
+
 pub fn locale() -> Result<Option<String>, Error> {
     Ok(with_session(|session| session.locale.clone()))
 }

@@ -250,13 +250,45 @@
         // with a value, as the server writes them.
         const allParams = (n, extra, target) => {
             const given = targetOf(n, target);
-            return "$mq.merge(" + (given ? "$mq.given(" + given + ")," : "") + mapOf(n) + "," + paramsOf(n, extra) + ")";
+            const pass = passThroughOf(n);
+            return "$mq.merge(" + (given ? "$mq.given(" + given + ")," : "") + mapOf(n) + "," + paramsOf(n, extra) + (pass ? "," + pass : "") + ")";
         };
         // A path with the query string the parameters make. The query leaves out a parameter with no value.
+        // $mq.url lets the parameter object win over the map, so pass-through is merged into the parameters.
         const urlOf = (n, path, extra, target) => {
             const given = targetOf(n, target);
             const map = given ? "$mq.merge(" + given + "," + mapOf(n) + ")" : mapOf(n);
-            return "$mq.url(" + sq(path) + "," + paramsOf(n, extra) + "," + map + ")";
+            return "$mq.url(" + sq(path) + "," + linkParams(n, extra) + "," + map + ")";
+        };
+        // The screen package's pass-through map, when this element asks for it. Later maps win in $mq.merge.
+        const passThroughOf = (n) => (at(n, "pass-through-parameters") === "true" ? "(" + scopeRef("mqPassThrough") + "||{})" : null);
+        const linkParams = (n, extra) => {
+            const own = paramsOf(n, extra);
+            const pass = passThroughOf(n);
+            return pass ? "$mq.merge(" + own + "," + pass + ")" : own;
+        };
+        // One parameter as an expression: its value, else its from, else the name on the scope.
+        const paramExpr = (p) => {
+            const name = at(p, "name");
+            if (at(p, "value")) return exp(at(p, "value"), p, "value", true);
+            return at(p, "from") ? X(at(p, "from"), p, "from") : scopeRef(name);
+        };
+        // The form's hidden-parameters as an object expression, or null. Read while the template is written, not from the render context.
+        const hiddenEntries = (n) => {
+            const holder = first(n, "hidden-parameters");
+            if (!holder) return null;
+            const params = [];
+            kids(holder, "parameter").forEach((p) => {
+                const name = at(p, "name");
+                if (name) params.push(sq(name) + ":" + paramExpr(p));
+            });
+            return params.length ? "{" + params.join(",") + "}" : null;
+        };
+        // Later objects win, so field values and the form's own names override hidden parameters, which override pass-through.
+        const layeredInitial = (parts) => {
+            const present = parts.filter((part) => part);
+            if (present.length <= 1) return present[0] || "{}";
+            return "$mq.merge(" + present.join(",") + ")";
         };
 
         // The query string of a link's url as the entries it adds (expressions by name), and the path without it, so the
@@ -364,11 +396,14 @@
             const has = (name) => v.classes.indexOf(name) >= 0;
             return { required: has("required"), email: has("email"), url: has("url"), number: has("number"), digits: has("digits"), v };
         };
-        const ruleList = (n, check) => {
+        // The host's rules, as ScreenQvt.js rulesOf writes them. The message is already localized. A class-derived
+        // number or digits rule would be a second check of the same field, so those are not added here.
+        const ruleList = (n, _check) => {
             const rules = [];
             if (at(n, "rules")) rules.push(at(n, "rules"));
-            if (check.number) rules.push("value => !value || $mq.isStringNumber(value) || ec.l10n.localize('Please enter a valid number')");
-            if (check.digits) rules.push("value => !value || /^\\d*$/.test(value) || ec.l10n.localize('Please enter only digits')");
+            const sub = n.parent;
+            const js = at(sub, "validate-service") || at(sub, "validate-entity") ? sri.getFieldValidationJsRules(hostLit(sub)) : [];
+            (js || []).forEach((rule) => { if (rule.expr !== "!!value") rules.push("value => (" + rule.expr + ") || " + sq(rule.message)); });
             return rules.length ? "[" + rules.join(",") + "]" : null;
         };
         const quasarMask = (mask) => mask.replace(/9/g, "#").replace(/a/g, "S").replace(/\*/g, "N");
@@ -426,7 +461,9 @@
             } else if (kind === "text-line" || kind === "text-area" || kind === "lookup" || kind === "hidden") {
                 out.push([name, "$mq.str(" + base + ")"]);
             } else if (kind === "check") {
-                out.push([name, "$mq.cur(" + baseValue(field, "") + ",true," + (at(widget, "no-current-selected-key") ? exp(at(widget, "no-current-selected-key"), widget, "no-current-selected-key", false) : "''") + ")"]);
+                // all-checked seeds every option key, ignoring the field's current value, as the merged mode does.
+                if (at(widget, "all-checked") === "true") out.push([name, "(" + optionsExpr(widget) + ").map((item) => item.value)"]);
+                else out.push([name, "$mq.cur(" + baseValue(field, "") + ",true," + (at(widget, "no-current-selected-key") ? exp(at(widget, "no-current-selected-key"), widget, "no-current-selected-key", false) : "''") + ")"]);
             } else if (kind === "radio") {
                 out.push([name, "$mq.cur(" + baseValue(field, "") + ",false," + (at(widget, "no-current-selected-key") ? exp(at(widget, "no-current-selected-key"), widget, "no-current-selected-key", false) : "''") + ")"]);
             } else if (kind === "date-time") {
@@ -878,7 +915,7 @@
         const urlOfPath = (n, pathExpr, extra, target) => {
             const given = targetOf(n, target);
             const map = given ? "$mq.merge(" + given + "," + mapOf(n) + ")" : mapOf(n);
-            return "$mq.url(" + pathExpr + "," + paramsOf(n, extra) + "," + map + ")";
+            return "$mq.url(" + pathExpr + "," + linkParams(n, extra) + "," + map + ")";
         };
 
         // The way a link is written: a screen link, a plain link, or a form that posts a transition.
@@ -888,6 +925,7 @@
             const found = urlType === "transition" || urlType === "screen" ? sri.staticUrl(query.path, urlType) : null;
             const img = first(n, "image");
             const linkType = at(n, "link-type");
+            // read-only="true" overrides hasActions: the target is a GET anchor (Parity-Diffs P3-03).
             const anchor = linkType === "anchor" || linkType === "anchor-button" ||
                 ((!linkType || linkType === "auto") && ((urlType && urlType !== "transition") || (found ? found.readOnly : true)));
             const style = at(n, "style") || null;
@@ -1064,12 +1102,15 @@
                 w("<m-subscreens-stack" + A(out) + "></m-subscreens-stack>");
                 return;
             }
-            w("<div" + A({ id: at(n, "id") ? at(n, "id") + "-tabpanel" : null }) + "><m-subscreens-tabs></m-subscreens-tabs><m-subscreens-active></m-subscreens-active></div>");
+            w("<div" + A({ id: at(n, "id") ? at(n, "id") + "-tabpanel" : null }) + ">" + navGuard("<m-subscreens-tabs></m-subscreens-tabs>") + "<m-subscreens-active></m-subscreens-active></div>");
         };
         const subscreensTabs = (n) => {
             if (at(n, "type") === "popup") return;
-            w("<m-subscreens-tabs></m-subscreens-tabs>");
+            w(navGuard("<m-subscreens-tabs></m-subscreens-tabs>"));
         };
+        // hideNav is a context value, so the cached template compares it in the browser. "true" hides the nav.
+        const navShown = () => scopeRef("hideNav") + "!=='true'";
+        const navGuard = (inner) => '<template v-if="' + e(navShown()) + '">' + inner + "</template>";
 
         // ---- conditions and loops ----
 
@@ -1100,7 +1141,7 @@
             const tag = isForm ? "m-form" : "m-form-link";
             const map = at(n, "map") || "fieldValues";
             const fields = kids(n, "field");
-            const initial = initialOf(fields, "r", [["moquiFormName", sq(at(n, "name"))]]);
+            const initial = layeredInitial([passThroughOf(n), hiddenEntries(n), initialOf(fields, "r", [["moquiFormName", sq(at(n, "name"))]])]);
             const attrs = {
                 name: at(n, "name"), id: at(n, "name"), action: found.path, method: isForm && found.method === "get" ? "GET" : null, "read-only": isForm && found.readOnly ? true : null,
                 "focus-field": at(n, "focus-field") || null, "exclude-empty-fields": at(n, "exclude-empty-fields") === "true" ? true : null,
@@ -1210,7 +1251,11 @@
             // A form that posts every row: the component makes one m-form, and each row's values start it under name_rowIndex.
             const columnsMode = at(n, "select-columns") === "true";
             st.columnsMode = columnsMode;
-            if (multi || columnsMode) attrs[":row-initial"] = "(_ctx) => (" + initialOf(kids(n, "field"), "r", []) + ")";
+            // A multi form suffixes every key of row-initial, so hidden parameters are a separate map posted once, unsuffixed.
+            const hidden = hiddenEntries(n);
+            const rowFields = initialOf(kids(n, "field"), "r", []);
+            if (multi || columnsMode) attrs[":row-initial"] = "(_ctx) => (" + (multi ? rowFields : layeredInitial([hidden, rowFields])) + ")";
+            if (multi && hidden) attrs[":hidden-initial"] = "(_ctx) => (" + hidden + ")";
             if (columnsMode) {
                 // The column picker: the component lays out the columns, the template's or the user's, from a slot for each field.
                 attrs[":default-columns"] = js_(cols.map((fields) => fields.map((field) => at(field, "name"))));
@@ -1220,7 +1265,7 @@
                 if (cfg.subFields && cfg.subFields.length) attrs[":sub-fields"] = js_(cfg.subFields);
                 attrs["form-location"] = name;
                 const headerFields = kids(n, "field").filter((f) => { const sub = first(f, "header-field"); return sub && sub.children.filter((x) => x.name !== "set").length; });
-                if (headerFields.length && at(n, "header-dialog") !== "true") attrs[":header-initial"] = "(_ctx, hs) => (" + initialOf(headerFields, "header-field", [["orderByField", "hs.orderByField"]]) + ")";
+                if (headerFields.length && at(n, "header-dialog") !== "true") attrs[":header-initial"] = "(_ctx, hs) => (" + layeredInitial([hidden, initialOf(headerFields, "header-field", [["orderByField", "hs.orderByField"]])]) + ")";
             }
             if (cfg.selection) {
                 attrs["selection-id-field"] = cfg.selection.idField;
@@ -1232,7 +1277,7 @@
                 attrs[":special-rows"] = "{" + kinds.map((kind) => {
                     const { tag, transition } = cfg.special[kind];
                     const action = transition ? sq(sri.staticUrl(transition, "transition").path) : "null";
-                    return kind + ":{action:" + action + ",initial:(_ctx) => (" + initialOf(kids(n, "field"), tag, []) + ")}";
+                    return kind + ":{action:" + action + ",initial:(_ctx) => (" + layeredInitial([hidden, initialOf(kids(n, "field"), tag, [])]) + ")}";
                 }).join(",") + "}";
             }
             if (at(n, "saved-finds") === "true") {
@@ -1254,7 +1299,7 @@
             st.owner = "";
             // The rows of a multi form bind to the one m-form of the list; formProps in the row scope maps a name to name_rowIndex.
             if (st.multi) return false;
-            const initial = initialOf(fields, "r", [["moquiFormName", sq(name)], ["pageIndex", "$mq.str(" + scopeRef("pageIndex") + "||0)"]]);
+            const initial = layeredInitial([hiddenEntries(n), initialOf(fields, "r", [["moquiFormName", sq(name)], ["pageIndex", "$mq.str(" + scopeRef("pageIndex") + "||0)"]])]);
             w("<m-form" + A({ ":name": sq(name + "_") + "+rowIndex", ":id": sq(name + "_") + "+rowIndex", action: opened.found.path, ":fields-initial": initial, "v-slot:default": "formProps" }) + ">");
             return true;
         };
@@ -1318,7 +1363,8 @@
             }
             return out + "</template><q-list>";
         };
-        const buttonMenuItem = (kid) => "<q-item clickable v-close-popup" + (at(kid, "condition") ? ' v-if="' + e(X(at(kid, "condition"), kid, "condition")) + '"' : "") + "><q-item-section>";
+        // A button-menu item does not use v-close-popup: that closes an enclosing dialog as well as the menu.
+        const buttonMenuItem = (kid) => "<q-item clickable" + (at(kid, "condition") ? ' v-if="' + e(X(at(kid, "condition"), kid, "condition")) + '"' : "") + "><q-item-section>";
         const buttonMenuClose = (n) => "</q-list></q-btn-dropdown>" + (at(n, "condition") ? "</template>" : "") + "\n";
 
         // An XML condition element as one expression, as XmlActions.js writes it for an if: and, or and not join their parts, an expression
@@ -1521,7 +1567,9 @@
         const navSlot = (n, cols, headerFields, flags) => {
             if (!(flags.headerDialog || flags.savedFinds || flags.csv || flags.xlsx || flags.text || flags.pdf || flags.columns)) return;
             const name = at(n, "name");
+            // The slot template is a direct child of the component. v-if wraps its contents, and the component also skips the whole nav row when hideNav is true.
             w('<template v-slot:nav="nv">');
+            w('<template v-if="' + e(navShown()) + '">');
             const tool = (icon, text) => '<q-btn dense unelevated no-caps class="m-btn-tonal" icon="' + icon + '"' + A({ ":label": loc(text) }) + "></q-btn>";
             if (flags.headerDialog) {
                 w("<m-container-dialog" + A({ id: name + "_hdialog", ":title": loc("Find Options") }) + "><template v-slot:button>" + tool("search", "Find Options") + "</template>");
@@ -1548,11 +1596,12 @@
                 if (flags.pdf) w(exportItem("nv.printUrl()", "Print", "_blank"));
                 w("</q-list></q-btn-dropdown>");
             }
-            w("</template>");
+            w("</template></template>");
         };
         const savedFindsBody = (name) => {
             const button = (buttonName, text, extra) => '<q-btn dense flat no-caps size="sm" type="submit"' + A(Object.assign({ name: buttonName, value: buttonName ? "Y" : null, ":label": loc(text) }, extra || {})) + "></q-btn>";
-            w('<q-list dense separator class="q-my-sm" v-if="nv.finds.length">');
+            w('<q-list dense separator class="q-my-sm">');
+            w('<q-item><q-item-section><m-link :href="nv.findUrl(\'_clear\')"><span v-text="' + e(loc("Clear Current Find")) + '"></span></m-link></q-item-section></q-item>');
             w('<q-item v-for="mqFind in nv.finds" :key="mqFind.formListFindId" :active="mqFind.formListFindId === nv.activeFindId">');
             w('<q-item-section><m-link :href="nv.findUrl(mqFind.formListFindId)"><span v-text="(mqFind.description || mqFind.formListFindId) + (mqFind.formListFindId === nv.defaultFindId ? \' (\' + ' + e(loc("Default")) + ' + \')\' : \'\')"></span></m-link></q-item-section>');
             w('<q-item-section side><m-form class="form-inline" :action="nv.saveFindAction" :fields-initial="nv.findFields(mqFind.formListFindId)">');
@@ -1579,7 +1628,7 @@
             st.fieldForm = name + "_header";
             st.inForm = true;
             st.inRow = false;
-            w("<m-form-link" + A({ name: name + "_header", id: name + "_header", ":action": "nv.findAction", ":fields-initial": initialOf(headerFields, "header-field", [["orderByField", "nv.orderByField"]]), "v-slot:default": "formProps" }) + ">");
+            w("<m-form-link" + A({ name: name + "_header", id: name + "_header", ":action": "nv.findAction", ":fields-initial": layeredInitial([hiddenEntries(n), initialOf(headerFields, "header-field", [["orderByField", "nv.orderByField"]])]), "v-slot:default": "formProps" }) + ">");
             w('<div class="q-mx-sm"><q-btn dense unelevated no-caps class="m-btn-tonal" name="clearParameters" @click.prevent="formProps.clearForm"' + A({ ":label": loc("Clear Parameters") }) + "></q-btn>");
             w("<m-drop-down" + A({ name: "orderByField", id: name + "_header_orderByField", ":label": loc("Order By"), multiple: true, "allow-empty": true, ":options": "[" + orderOptions.join(",") + "]", "v-model": "formProps.fields.orderByField" }) + "></m-drop-down></div>");
             cols.flat().forEach((f) => {
@@ -1858,7 +1907,7 @@
                     st.owner = name + "_header";
                     st.fieldForm = name + "_header";
                     st.inForm = true;
-                    w("<m-form-link" + A({ name: name + "_header", id: name + "_header", ":action": "hs.action", ":fields-initial": initialOf(headerFields, "header-field", [["orderByField", "hs.orderByField"]]), "v-slot:default": "formProps" }) + ">");
+                    w("<m-form-link" + A({ name: name + "_header", id: name + "_header", ":action": "hs.action", ":fields-initial": layeredInitial([hiddenEntries(n), initialOf(headerFields, "header-field", [["orderByField", "hs.orderByField"]])]), "v-slot:default": "formProps" }) + ">");
                     cols.forEach((col) => headerCell(col, cfg));
                     w("</m-form-link>");
                     pop();

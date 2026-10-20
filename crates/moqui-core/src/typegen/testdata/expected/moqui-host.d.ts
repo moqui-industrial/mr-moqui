@@ -529,6 +529,8 @@ interface MoquiWebFacade {
     readonly errorParameters: MoquiMap | null;
     sendJsonResponse(value: unknown): void;
     sendJsonError(status: number, message: string, error?: unknown): void;
+    /** HTML, Java's single-quoted JSON, or plain text, from `Accept`. */
+    sendError(errorCode: number, message?: string | null, throwable?: { message?: string } | null): void;
     /** text/plain by default; a file name sends the text as an attachment of that name. */
     sendTextResponse(text: string | null, contentType?: string | null, filename?: string | null): void;
     /** The bytes at a resource location, inline or (the default) as an attachment. 404 when nothing is there. */

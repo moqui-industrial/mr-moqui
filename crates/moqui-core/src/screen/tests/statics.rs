@@ -91,7 +91,11 @@ fn a_number_field_rule_calls_the_scope_and_not_a_browser_global() {
     let script = output.body_text();
     assert!(!script.contains("_ctx.moqui"), "{script}");
     assert!(script.contains("_ctx.$mq.isStringNumber(value)"), "{script}");
-    // the message is localized in the browser, through the restricted host of the scope
+    // count is an integer parameter, so its rule is the integer check, and the class-derived digits rule is not added beside it
+    assert!(script.contains("_ctx.$mq.isStringInteger(value)"), "{script}");
+    assert!(!script.contains("d*$"), "{script}");
+    // the rule message is the host's localized string, quoted into the template; labels still localize in the browser
+    assert!(script.contains("Please enter a valid whole number"), "{script}");
     assert!(script.contains("_ctx.ec.l10n.localize"), "{script}");
 }
 
@@ -521,14 +525,173 @@ fn report(
 #[test]
 fn a_screen_with_nothing_for_the_browser_to_refuse_has_a_clean_report() {
     let context = ExecutionContextFactory::test_context();
-    let report = report(context.factory(), "Clean", false);
-    assert!(report.is_clean(), "{}", report.render());
+    let half = report(context.factory(), "Clean", false);
+    assert!(!half.is_clean(), "{}", half.render());
     assert!(
-        report.marked && report.eligible && report.template_bytes > 0,
+        half.marked && half.eligible && half.template_bytes > 0 && !half.full_check,
         "{}",
-        report.render()
+        half.render()
     );
-    assert!(report.render().contains("verdict clean"), "{}", report.render());
+    assert!(half.render().contains("verdict static half only"), "{}", half.render());
+    assert!(!half.render().contains("verdict clean"), "{}", half.render());
+    let full = report(context.factory(), "Clean", true);
+    assert!(full.is_clean() && full.full_check, "{}", full.render());
+    assert!(full.render().contains("verdict clean"), "{}", full.render());
+}
+
+/// Hidden parameters, pass-through, and all-checked are expressions over the scope. The package holds the pass-through
+/// map, including when it is empty, and a credential name inside it is stripped. A screen that does not use the attribute
+/// does not get the key.
+#[test]
+fn hidden_parameters_pass_through_and_all_checked_read_the_scope() {
+    let context = ExecutionContextFactory::test_context();
+    let factory = context.factory();
+    let output = render(factory, "/Pass.qvt", &[]);
+    assert_eq!(output.status, 200, "{}", output.body_text());
+    assert_eq!(header(&output, "X-Moqui-Qvt"), "static-template");
+    let html = html_of(factory, "Pass", "/Pass");
+    assert!(
+        html.contains("$mq.merge(($scope['mqPassThrough']||{}),{'partyId':$scope['partyId'],'fromStatus':(statusId)},"),
+        "{html}"
+    );
+    assert!(html.contains("'moquiFormName':'EditForm'"), "{html}");
+    assert!(
+        html.contains("([{value:'A',label:ec.l10n.localize('A')},{value:'B',label:ec.l10n.localize('B')}]).map((item) =&gt; item.value)"),
+        "{html}"
+    );
+    assert!(
+        html.contains(":hidden-initial=\"(_ctx) =&gt; ({'partyId':$scope['partyId']})\""),
+        "{html}"
+    );
+    assert!(
+        html.contains(":row-initial=\"(_ctx) =&gt; ({'rowId':$mq.str($scope['rowId'])})\""),
+        "{html}"
+    );
+    assert!(
+        html.contains("$mq.merge({'partyId':$scope['partyId']},{'rowId':$mq.str($scope['rowId']),'moquiFormName':'SingleRows','pageIndex':$mq.str($scope['pageIndex']||0)})"),
+        "{html}"
+    );
+    assert!(
+        html.contains("$mq.merge({'partyId':$scope['partyId']},{'rowId':$mq.str($scope['rowId']),'rowId_op':($scope['rowId_op']||'contains')"),
+        "{html}"
+    );
+    // url="." of the transition is this screen, so the path is /Pass. Pass-through is the parameter
+    // argument of $mq.url, which wins over the screen parameters in the map argument.
+    assert!(
+        html.contains("$mq.url('/Pass',$mq.merge({},($scope['mqPassThrough']||{})),"),
+        "{html}"
+    );
+    let plain_at = html.find("Plain").expect("plain link");
+    let plain_href = &html[html[..plain_at].rfind("<m-link").expect("plain m-link")..plain_at];
+    assert!(
+        plain_href.contains("$mq.url('/Pass',{},") && !plain_href.contains("mqPassThrough"),
+        "{plain_href}"
+    );
+    // the row form's initial is not the pass-through map, and the multi row-initial does not carry the hidden name
+    let row_initial = html
+        .split(":row-initial=\"")
+        .nth(1)
+        .unwrap_or("")
+        .split('"')
+        .next()
+        .unwrap_or("");
+    assert!(
+        !row_initial.contains("partyId") && !row_initial.contains("mqPassThrough"),
+        "{row_initial}"
+    );
+
+    let empty = json_of(&render(factory, "/Pass/actions", &[]));
+    assert_eq!(empty["mqPassThrough"], serde_json::json!({}), "{empty}");
+    let filled = json_of(&render(
+        factory,
+        "/Pass/actions",
+        &[("partyId", "P1"), ("password", "secret"), ("moquiSessionToken", "tok")],
+    ));
+    assert_eq!(filled["mqPassThrough"]["partyId"], "P1", "{filled}");
+    assert!(filled["mqPassThrough"].get("password").is_none(), "{filled}");
+    assert!(filled["mqPassThrough"].get("moquiSessionToken").is_none(), "{filled}");
+    assert!(filled.get("password").is_none(), "{filled}");
+    let clean = json_of(&render(factory, "/Clean/actions", &[]));
+    assert!(clean.get("mqPassThrough").is_none(), "{clean}");
+}
+
+/// A link in an included screen is enough for the package key. The including screen's own widgets do not use the attribute.
+#[test]
+fn pass_through_on_an_included_screen_is_on_the_package() {
+    let context = ExecutionContextFactory::test_context();
+    let factory = context.factory();
+    let dir = std::env::temp_dir().join(format!("moqui-static-pass-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Root")).unwrap();
+    let part = dir.join("Part.xml");
+    let part_location = part.to_string_lossy().into_owned();
+    std::fs::write(
+        &part,
+        r#"<screen require-authentication="false">
+            <parameter name="partyId"/>
+            <transition name="go"><default-response url="."/></transition>
+            <widgets><link url="go" text="Included" pass-through-parameters="true"/></widgets>
+        </screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Root.xml"),
+        "<screen require-authentication=\"false\"><widgets><subscreens-active/></widgets><subscreens default-item=\"Holder\"/></screen>",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Root/Holder.xml"),
+        format!(
+            "<screen require-authentication=\"false\" server-static=\"qvt\"><parameter name=\"partyId\"/>\
+             <widgets><include-screen location=\"{}\"/><label text=\"holder\"/></widgets></screen>",
+            part_location
+        ),
+    )
+    .unwrap();
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let package = make_render(factory)
+        .root_screen(root)
+        .screen_path("/Holder/actions")
+        .parameters({
+            let mut map = BTreeMap::new();
+            map.insert("partyId".to_string(), Value::string("P9"));
+            map
+        })
+        .render()
+        .unwrap();
+    assert_eq!(package.status, 200, "{}", package.body_text());
+    let json = json_of(&package);
+    assert_eq!(json["mqPassThrough"]["partyId"], "P9", "{json}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A static send is the screen the user got, so it is recorded. `make_render` does not enforce request checks, so it does not.
+#[test]
+fn a_static_screen_is_recorded_in_the_screen_history() {
+    // World sets the session cookie key and holds its lock. A second lock on this thread would deadlock.
+    // The cookie that comes back starts a visit, which needs an entity facade. The in-memory one is enough.
+    let world = super::World::open("");
+    let mut request = crate::web::WebRequest::new("GET", "/Clean.qvt");
+    request.peer_ip = "127.0.0.1".to_string();
+    request.query.push(("keep".to_string(), "1".to_string()));
+    let response = crate::screen::serve_at(&world.factory, request, &root());
+    assert_eq!(response.status, 200, "{}", response.body_text());
+    assert_eq!(response.header("X-Moqui-Qvt"), Some("static-template"));
+    let cookie = response.header("Set-Cookie").expect("session cookie");
+    let value = cookie
+        .split(';')
+        .next()
+        .expect("pair")
+        .split_once('=')
+        .expect("value")
+        .1;
+    let context = world.factory.new_context();
+    let entered = context.enter();
+    let guard = crate::user::bind(&world.factory, Some(value), None, false).expect("bind");
+    let history = crate::user::screen_history().expect("history");
+    drop(guard);
+    drop(entered);
+    assert_eq!(history, vec!["/Clean?keep=1".to_string()], "{history:?}");
 }
 
 #[test]

@@ -130,10 +130,12 @@ From [ScreenWeb-Parity-Review](ScreenWeb-Parity-Review.md): the screen and web p
 (`crates/moqui-core/src/screen/`, `crates/moqui-core/src/web/`, the screen macro modules under
 `runtime/base-component/framework/template/screen/`, and the HTTP host in `crates/moqui-host/src/`).
 The three High findings of that review, and P8-02, are fixed; these are the differences the fixes
-keep on purpose.
+keep on purpose. P3-03 is the rule that `read-only="true"` overrides `hasActions()` so the target
+is a GET; Java's html macros do not follow it.
 
 | ID | Area | Difference | Rationale / where documented |
 |---|---|---|---|
+| P3-03 | screen link | A link to a transition with `read-only="true"` is a GET anchor even when the transition has `<actions>` or `<service-call>` (`is_anchor_link`, `screen/urls.rs`); Java's html macros POST that transition because they follow `hasActions` (`DefaultScreenMacros.html.ftl` `linkFormLink` and `linkFormForm`). Java's qvt macros use `isReadOnly` and already match | `read-only` overrides `hasActions` and the target is a GET. Changing Moqui Java is the later fix. Showing that GET target as a link rather than a button is accepted for now. Doc comment at `is_anchor_link` |
 | P5-01 | qvt rules | The browser rule text calls the client helpers as `$mq.isStringNumber`, `$mq.isStringInteger` and `$mq.parseNumber`, where Java writes `$root.moqui.isStringNumber` and the rest | `$mq` is the name the server-static qvt scope has (its host) and the Vue global property `app.config.globalProperties.$mq` the merged mode sets, so one rule text works in both qvt modes; Java has no server-static mode. Doc comment at `VALIDATE_NUMBER` in `service/define.rs` and at `qvt.start` in the client |
 | P8-01 | redirect | A redirect target that is not a path of this site and not an `http(s)` URL — a protocol-relative one, or another scheme — goes to the root, in the `Location` of a redirect and in the `redirectUrl` of a JSON answer; Java sends it as it is in both. After an `http(s)` URL is reduced, a path that is not a single slash, including one that starts with `//` or contains `\`, becomes `/` too | Stricter: a redirect cannot leave the site through a scheme the port does not expect, or through a path a browser reads as another host. Java's `sendHttpRedirect` sends the other schemes as they are, and its servlet `sendRedirect` absolutizes `//` onto this host. Doc comment at `http_redirect_location` in `screen/render.rs` |
 

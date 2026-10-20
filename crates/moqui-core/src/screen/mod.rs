@@ -119,7 +119,8 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
     let context = (!crate::context::ExecutionContext::is_entered()).then(|| factory.new_context());
     let _entered = context.as_ref().map(|context| context.enter());
     let mut parameters = parsed.parameters;
-    parameters.extend(parsed.multipart.clone());
+    // Files fill names the query and the form body left empty. `multiPartParameters` stays the file map.
+    web::overlay_multipart(&mut parameters, &parsed.multipart);
     let response = match handle(
         factory,
         &request,
@@ -159,7 +160,9 @@ fn handle(
     )?;
     let token_before = peek_token();
     if let Err(err) = user::session::remember_client_ip(&web::client_ip(request)) {
-        return Ok(web::json_error(500, &web::error_text(500, &err)));
+        let mut response = web::json_error(500, &web::error_text(500, &err));
+        stamp_http_log(&mut response);
+        return Ok(response);
     }
     // What the last response saved for this request sits under the request's own parameters.
     let saved = user::session::take_saved_parameters();
@@ -206,8 +209,19 @@ fn handle(
             .headers
             .push(("X-Moqui-Preferences".to_string(), web::preferences_header(&changed)));
     }
+    stamp_http_log(&mut response);
     drop(guard);
     Ok(response)
+}
+
+/// The HTTP log's session, visitor, and username. Read before the session guard drops.
+fn stamp_http_log(response: &mut WebResponse) {
+    let (session, visitor_id, remote_user) = user::http_log_identity();
+    response.http_log = web::HttpLogIdentity {
+        session,
+        visitor_id,
+        remote_user,
+    };
 }
 
 fn dispatch_request(
@@ -310,6 +324,7 @@ fn dispatch_request(
         headers,
         body,
         stream,
+        http_log: web::HttpLogIdentity::default(),
     })
 }
 
@@ -331,6 +346,7 @@ fn fop_response() -> Result<WebResponse, Error> {
             headers,
             body,
             stream,
+            http_log: web::HttpLogIdentity::default(),
         });
     }
     let bytes = PdfRenderer::render(&String::from_utf8_lossy(&body))?;
@@ -350,6 +366,7 @@ fn fop_response() -> Result<WebResponse, Error> {
         headers,
         body: bytes,
         stream: None,
+        http_log: web::HttpLogIdentity::default(),
     })
 }
 
@@ -445,6 +462,7 @@ fn error_page(
         headers,
         body,
         stream,
+        http_log: web::HttpLogIdentity::default(),
     })
 }
 

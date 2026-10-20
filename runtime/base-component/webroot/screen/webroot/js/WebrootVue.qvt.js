@@ -784,7 +784,7 @@
         name: "mStaticFormList",
         inject: { mqScope: { default: null }, mqScreen: { default: null } },
         props: { name: { type: String, required: true }, id: String, action: String, listName: String, multi: Boolean, skipForm: Boolean, skipHeader: Boolean,
-            rowInitial: Function, formLocation: String, findAction: String, defaultColumns: Array, columnFields: Array, columnsAction: String,
+            rowInitial: Function, hiddenInitial: Function, formLocation: String, findAction: String, defaultColumns: Array, columnFields: Array, columnsAction: String,
             headerInitial: Function, subFields: Array, specialRows: Object, selectionIdField: String, selectionParameter: String, selectionListMode: Boolean,
             views: [Array, String], board: Object, calendar: Object, viewsLocation: String },
         data() { return { pkg: null, searchObj: {}, loading: false, generation: 0 }; },
@@ -879,7 +879,9 @@
             },
             // The fields of a form that posts every row: each row's starting values under name_rowIndex, as the server-merged form has them.
             multiFields(formScope) {
-                const out = { moquiFormName: this.name, _isMulti: "true", pageIndex: String((this.pkg && this.pkg.pageIndex) || 0) };
+                // Hidden parameters are posted once, unsuffixed. Row values are name_rowIndex, so they are not this map.
+                const hidden = this.hiddenInitial ? (this.hiddenInitial(formScope) || {}) : {};
+                const out = Object.assign({}, hidden, { moquiFormName: this.name, _isMulti: "true", pageIndex: String((this.pkg && this.pkg.pageIndex) || 0) });
                 const order = this.searchObj.orderByField || (this.pkg && this.pkg.orderByField);
                 if (order) out.orderByField = String(order);
                 if (!this.rowInitial) return out;
@@ -1015,7 +1017,9 @@
             ]);
             return table;
             };
-            const nav = h("div", { class: "form-list-nav-row row items-center" }, [
+            // hideNav is on the screen package. It hides the tools and the page buttons, as the merged nav row does.
+            const hideNav = !!(this.mqScope && this.mqScope.hideNav === "true");
+            const nav = hideNav ? null : h("div", { class: "form-list-nav-row row items-center" }, [
                 slots.nav ? h("div", { class: "row items-center q-gutter-xs" }, slots.nav(this.navProps())) : null,
                 h(V.resolveComponent("q-space")),
                 h(V.resolveComponent("m-form-paginate"), { paginate: this.paginate, formList: this }),
@@ -1028,7 +1032,7 @@
                 }, { default: (sel) => [build(sel)] })
                 : build(null);
             // the page buttons again under a list of more than one page, after the table so they are not a row of its first column
-            const bottomNav = this.paginate && this.paginate.pageMaxIndex > 0 && !this.skipHeader
+            const bottomNav = !hideNav && this.paginate && this.paginate.pageMaxIndex > 0 && !this.skipHeader
                 ? h("div", { class: "form-list-nav-row row items-center" }, [
                     h(V.resolveComponent("q-space")),
                     h(V.resolveComponent("m-form-go-page"), { idVal: this.idVal, formList: this }),

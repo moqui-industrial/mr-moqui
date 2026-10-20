@@ -2,9 +2,9 @@
 
 Status: the nine phases were worked on 2026-10-19. The three High findings from that pass (P5-01,
 P7-01, P8-01) and P8-02 were fixed on 2026-10-20. A second pass the same day re-checked the
-load-bearing findings against the current code. 83 findings stay open. None is High. The five
+load-bearing findings against the current code. 63 findings stay open. None is High. The five
 rows under [Fix these first](#fix-these-first) (P9-08, P1-01, P2-07, P1-06, P1-02) were fixed on
-2026-10-20. Five more rows from the first pass are
+2026-10-20, and P3-03, P4-02, P4-04, P8-07, P1-04, P2-06, P2-02, P2-03, P1-03, P8-03, P7-08, P9-09, P9-10, P5-02, P5-03, P5-05, P5-06, P5-07, P5-08 and P5-09 were closed the same day. Five more rows from the first pass are
 closed on this pass (P1-09, P1-12, P2-14, P4-08, P5-04): the claimed behavior is not what the code
 does, or a plan already records the decision. The shape follows
 [EntityService-Parity-Review](archive/EntityService-Parity-Review.md). Where this file's phase
@@ -47,24 +47,25 @@ with `framework/` or `runtime/`. Line numbers are as of 2026-10-19.
 
 All nine phases were worked on 2026-10-19. 100 findings were found; the three High ones and P8-02
 were fixed on 2026-10-20. The second pass closed eight more rows, and the five under Fix these
-first were fixed the same day, so 83 are open. None is High. Severity in this table is the second
+first were fixed the same day. P3-03, P4-02, P4-04, P8-07, P1-04, P2-06, P2-02, P2-03, P1-03, P8-03, P7-08, P9-09, P9-10, P5-02, P5-03, P5-05, P5-06, P5-07, P5-08 and P5-09 were closed the same day, so 63 are
+open. None is High. Severity in this table is the second
 pass. A phase narrative that still says Med is the first
 pass.
 
 | Phase | Open | High | Unclear |
 |---|---|---|---|
-| 1 Screen definition / form model | 7 | — | — |
-| 2 Screen render / SRI surface | 10 | — | — |
-| 3 Macro libraries: html, csv, text, xml, plain | 6 | — | 1 |
-| 4 qvt render mode | 8 | — | — |
-| 5 Server-static qvt | 7 | — | — |
+| 1 Screen definition / form model | 5 | — | — |
+| 2 Screen render / SRI surface | 7 | — | — |
+| 3 Macro libraries: html, csv, text, xml, plain | 5 | — | 1 |
+| 4 qvt render mode | 6 | — | — |
+| 5 Server-static qvt | 0 | — | — |
 | 6 Print and spreadsheet | 6 | — | 4 |
-| 7 Screen URLs / tree / menu / static files / facade | 10 | — | 5 |
-| 8 Web facade | 17 | — | — |
-| 9 HTTP host and web app endpoints | 12 | — | 1 |
-| **Total** | **83** | **—** | **11** |
+| 7 Screen URLs / tree / menu / static files / facade | 9 | — | 5 |
+| 8 Web facade | 15 | — | — |
+| 9 HTTP host and web app endpoints | 10 | — | 1 |
+| **Total** | **63** | **—** | **11** |
 
-Severity of the open findings: 0 High, 11 Med and 72 Low. The first pass had 48 Med and 48 Low and
+Severity of the open findings: 0 High, 3 Med and 60 Low. The first pass had 48 Med and 48 Low and
 called 27 of them `Unclear`. Sixteen of those are now decided or closed. The 11 that remain
 `Unclear` still need a decision before anyone changes that code: P3-01, P6-02, P6-03, P6-04, P6-06,
 P7-03, P7-06, P7-07, P7-10, P7-11, P9-15. Thirteen open rows are deliberate and should be recorded
@@ -153,75 +154,57 @@ The rest of the Med rows are real and rarer, or they wait on a flag that no ship
 
 ### Real, and not first
 
-- **P1-04 (Med).** The port merges the `service-call` and the `<actions>` and skips the whole blob
-  when the error list is already non-empty (`screen/render.rs` around `run_transition_actions`).
-  Java skips only the service-call and always runs the actions. The narrative's validation
-  sentence is backwards. `has_error()` (`service/util.rs`) is the error list only, so a validation
-  error already on the facade does not skip the port, while Java's `hasError()` includes
-  validation errors and skips the service-call. A validation error the service itself adds is
-  inside the blob, after the check, so both the service and the actions still run. The skip shows
-  when an error is already on the list before the transition (an earlier screen, or always-actions).
-- **P2-06 (Med).** Three rules exist, and the actions runner is already the one to keep.
-  `XmlActions.js` follows the XSD: `set-if-empty="false"` skips a null or empty new value. Service
-  and screen-action `<set>` elements go through that runner. `sri.set_in_context`
-  (`screen/sri/fields.rs`) is only a `<set>` directly under a field sub-node: it skips when the
-  attribute is `"false"` and the field is already non-empty, then always assigns, including an
-  empty value, and it localizes `value` and `default-value`. Java's `setInContext` is
-  `if (tempValue || setIfEmpty)` on the raw attribute string, so the string `"false"` is truthy
-  and the Java screen path does not implement the XSD either. Unify the field `<set>` on the XSD
-  rule the next time that function is touched. Do not copy the Groovy string test.
-- **P8-07 (Med).** `ec.web.sendError` is not on the script web facade. `DataSnapshot.xml` was
-  switched to `sendJsonError`. `ShipmentTransitions.xml` still calls `sendError` for a missing
-  label or invoice URL, so that edge answers a script error where Java sends the HTML error page.
-- **P9-09 and P9-10 (Med).** The HTTP log has no session, visitor or user and skips the non-screen
-  routes. The event log has no user, visitor or thrown. Both are operator-facing. They do not
-  change a screen.
-- **P3-03 (Low), and it is shipped.** A transition with actions and `read-only="true"` is a GET
-  anchor here and a POST button in Java's html macros. Java's macros key off `hasActions`; the
-  port keys off `read_only`. `downloadContent` on payment, party, invoice, shipment and product
-  content is that shape. The transition is read-only, so this is the method of the control, not a
-  write reached by GET.
+- **P1-04 (Med).** Closed. The service-call and the `<actions>` are separate scripts. The
+  service-call runs only when there is no error and no validation error. The actions always run.
+  The error response, saved error parameters, and the screen transaction use that same check.
+  `has_error()` and `ec.message.hasError` stay the error list only.
+- **P2-06 (Med).** Closed. `sri.set_in_context` follows the XSD. `set-if-empty="false"` skips a
+  null or empty new value, and any other new value is assigned, including an empty one.
+  `value` and `default-value` expand without localization. `XmlActions.js` was already that rule.
+  Java's Groovy string test was not copied.
+- **P8-07 (Med).** Closed. `ec.web.sendError` writes the HTML page, Java's single-quoted JSON
+  body, or `text/plain`, from `Accept`. `DataSnapshot.xml` stays on `sendJsonError`.
+  `ShipmentTransitions.xml` still calls `sendError`.
+- **P9-09 and P9-10 (Med).** Closed. `log_http` writes every router request, including one
+  refused before the screen worker. `stamp_http_log` calls `http_log_identity` before the session
+  guard drops, and `from_web` carries the session id, visitor id, and username. A route that never
+  binds a session omits those three. `current_log_actor` puts the current user id and visitor id
+  on the app-log document. A field named `error` becomes `thrown` as `{name, message}`.
+- **P3-03 (Low).** Closed. Accepted difference, [Parity-Diffs](Parity-Diffs.md) P3-03.
+  `read-only="true"` overrides `hasActions()` and the target is a GET. The port already does this.
+  Java's html macros POST that transition. Changing Moqui Java is the later fix. Showing the GET
+  target as a link is accepted for now.
 
-**P4-02 is Low.** The server clears on `formListFindId=_clear` and does not reapply the user
-default (`saved_finds.rs`). No qvt module writes `_clear`. Reset to Default posts the screen path
-plus the hidden parameters, and `m-form-link` replaces the current search, so an applied
-non-default find drops out. The narrative says the find id stays in the URL. It does not. An empty
-id still loads `FormListFindUserDefault`, so a user who has a default cannot get the unfiltered
-list from the dialog. The finds themselves are listed in the Saved Finds dialog; the missing piece
-is the clear, not the list.
+**P4-02 is Low.** Closed. The Saved Finds dialog of both qvt modules has a Clear Current Find link
+to `formListFindId=_clear`. The server already honors that and does not put the user default back.
+An empty id still loads `FormListFindUserDefault`.
 
-**P4-04 is Low.** `v-close-popup` on a `button-menu` item is real, and Java's macro comment says
-the attribute closes an enclosing dialog as well as the menu. Shipped menus (the EditParty box
-toolbar, the Gallery menus) sit outside any enclosing `container-dialog`. EditParty's dialog is a
-child of the menu. Nothing shipped closes the wrong dialog.
+**P4-04 is Low.** Closed. A `button-menu` item is no longer wrapped in `v-close-popup`. The export
+and page-size items in the nav row keep it.
 
-**P2-02, P2-03 and P1-03 are Low.** `save-current-screen` pushes history instead of calling
-`saveScreenLastInfo`, and nothing in `runtime/` sets the attribute. A group average drops the first
-value and is one short on the count (10, 20, 30 becomes 25 with count 2); Java throws on the
-second row of the group. No `aggregate` in `runtime/` is `avg`. An auto find-display number always
-gets `show-total="sum"`; Java uses `min`, `max` or `avg` when the view alias says so, and that
-alias is the only caller.
+**P2-02, P2-03 and P1-03 are Low.** Closed. `save-current-screen` calls `save_screen_last` with the
+transition path and the plain request parameters. Screen history stays `record_history`. A group
+average includes every row (10, 20, 30 is 20 with count 3). Java still throws on the second row of
+an average. An auto find-display number uses `min`, `max`, or `avg` when the view alias says so,
+and `sum` otherwise.
 
-**P8-03 is Low.** A JSON field does overwrite a query parameter, and a repeated multipart name
-becomes a list, while Java lets the query win. Service REST and entity REST take the id from the
-path and write it over that clash, which is what Java does too. The wrong-record story in the
-narrative needs the id to be absent from the path and present, with two different values, in the
-query and the body.
+**P8-03 is Low.** Closed. A query name and a form-body name stay. A JSON field fills a name only
+when it is absent. Multipart text is not added onto a query name, and a multipart file fills a name
+the query and the form body left empty. A repeated name in the query or the form body stays a list.
 
-**P7-08 is Low.** `url()` prefixes `base` unless the text contains `://` or starts with `//`, so a
-`mailto:` is prefixed only when a base is set. Ordinary requests install an empty base. A non-empty
-base comes from `makeRender` and from email. No shipped screen link is `mailto:`.
+**P7-08 is Low.** Closed. `url()` returns a plain URL as written, including `mailto:` and a path
+that starts with `/`. `path()` is empty for a plain URL. `screen_only_path` still returns the plain
+text.
 
-The server-static cluster stays, and it is not first. Nothing in `runtime/` is
-`server-static="qvt"`. **P5-02**, **P5-03** and **P5-05** stay Med: hidden parameters, the letters
-and regexp validation rules, and `pass-through-parameters` are absent from the static module, and
-the server still validates. **P5-06**, **P5-07** and **P5-08** are Low. `is_clean` ignores
-`full_check`, and the plan already names the lint command as the static half. Eligible qvt returns
-before `record_history`; the only eligible responses in `runtime/` are placeholder shells
-auto-marked `all`. Login return uses `save_screen_last` before the render. The static check widget
-seeds `$mq.cur` rather than every option. **P5-04** is closed: `QvtServerStatic.md` already says
-this pass does not bake `disableLink` into the template and the server rejects the request. Fix
-the cluster before that flag becomes the default. The screens that name `vue,qvue` are a separate
+The server-static cluster is closed on 2026-10-20. Nothing in `runtime/` is
+`server-static="qvt"`, and that flag stays opt-in. **P5-02** reads `<hidden-parameters>` in
+`hiddenEntries` and folds them in with `layeredInitial`. **P5-03** `ruleList` calls
+`sri.getFieldValidationJsRules` and does not add a second number rule. **P5-05** puts
+`mqPassThrough` on the screen package when a form or a link asks for it, and strips a credential
+name inside the map. **P5-06** `is_clean` requires `full_check`, and the static half says
+`static half only`. **P5-07** calls `record_history` after a static send. **P5-08** seeds
+`all-checked` from the option values. **P5-09** hides the subscreen tabs and the form-list nav
+when `hideNav` is `"true"`. **P5-04** stays closed. The screens that name `vue,qvue` are a separate
 note under P2-08 below.
 
 ### Closed or downgraded
@@ -333,8 +316,8 @@ transition contract, the dynamic form's saved-find key, and six smaller ones.
 |---|---|---|---|---|---|
 | P1-01 | `screen/form.rs:1088-1097`, `:1099-1109`, `:1118-1141` | `ScreenForm.groovy:770-792`, `:832-840`, `:854-857`, `:903-908`, `:944-986` | Closed. An auto foreign key with 1 to 200 related rows is a drop-down on edit, find, and the find-display header. Display stays display-entity | — | closed |
 | P1-02 | `screen/form.rs:1078-1080` | `ScreenForm.groovy:819-821` | Closed. An auto edit field named `fromDate` gets `default-value` `${ec.l10n.format(ec.user.nowTimestamp, 'yyyy-MM-dd HH:mm')}` | — | closed |
-| P1-03 | `screen/form.rs:1127-1131` | `ScreenForm.groovy:893-901` | `show-total` is always `sum`; Java uses the `function` of the field (a view alias's `min`/`max`/`avg`) | Low | No |
-| P1-04 | `screen/render.rs:1135-1138` (with `screen/definition.rs:327-365`) | `ScreenDefinition.groovy:1000-1008` | A transition's `actions` do not run when there is an error; Java runs the service-call only without an error, but always runs the actions | Med | No |
+| P1-03 | `screen/form.rs` `entity_shape_of`, find-display number branch | `ScreenForm.groovy:893-901` | Closed. A view alias function of `min`, `max`, or `avg` is the find-display `show-total`. Anything else, and an entity that is not a view, totals with `sum` | — | closed |
+| P1-04 | `screen/render.rs` `run_transition_steps` (with `screen/definition.rs` `TransitionDef::of`) | `ScreenDefinition.groovy:1000-1008` | Closed. The service-call runs only when there is no error and no validation error. The `<actions>` always run | — | closed |
 | P1-05 | `screen/definition.rs:281-296` | `ScreenDefinition.groovy:1109-1138` | The implicit `formSaveFind` and `formSelectColumns` take only a POST with a session token; Java takes any method and no token | Med | Yes |
 | P1-06 | `screen/saved_finds.rs:111-124` | `ScreenForm.groovy:278-297` | Closed. A dynamic saved find is keyed by `formLocationExtension`, else the auto service name, else the auto entity name, and the saved-find macros post that location | — | closed |
 | P1-07 | `screen/saved_finds.rs:588-599` | `ScreenForm.groovy:2400` | The scheduled email subject escapes `${` in the find's description; Java expands it (template injection) | Low | Yes |
@@ -383,6 +366,8 @@ nothing until they do.
 
 #### P1-03 — The aggregate total of a form-list is always the sum
 
+Closed on 2026-10-20. `EntityShape.alias_function` carries a view alias's `function`. A find-display number or currency field sets `show-total` to `min`, `max`, or `avg` when that function says so, and to `sum` otherwise.
+
 For a number or currency field of an auto-generated form-list, Java sets the field's `show-total`
 to the `function` attribute of the field node when it is `min`, `max` or `avg`, and to `sum`
 otherwise (`ScreenForm.groovy:893-901`). For a view entity that node is the alias, so an alias
@@ -396,6 +381,8 @@ aggregate. The fix is to pass the alias's `function` through `EntityShape` to
 `add_auto_entity_field`.
 
 #### P1-04 — A transition's actions are skipped when there is an error
+
+Closed on 2026-10-20. The service-call and the `<actions>` are compiled and run separately. The service-call runs only when the message facade has neither an error nor a validation error. The actions always run. The error response, saved error parameters, and the screen transaction use that same check. `service/util.rs::has_error` and `ec.message.hasError` are unchanged.
 
 Java runs the transition's `service-call` only when the message facade has no error, but it always
 runs the transition's `actions`; the Java comment says so explicitly ("prior code also required
@@ -700,11 +687,11 @@ smaller ones; the sri surface itself is complete.
 
 | ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
 |---|---|---|---|---|---|
-| P2-02 | `screen/render.rs:1340-1342` | `ScreenRenderImpl.groovy:519-523` | `save-current-screen="true"` pushes the screen onto the screen history; Java saves it as the `screen-last` target with its parameters | Low | No |
-| P2-03 | `screen/aggregate.rs:156-198`, `:304-330` | `AggregationUtil.java:212-234`, `:339-359` | The average of a group leaves out its first row and its count is one short; Java throws a `NullPointerException` on the second row of the group and the render fails | Low | No |
+| P2-02 | `screen/render.rs` `respond` | `ScreenRenderImpl.groovy:519-523` | Closed. `save-current-screen="true"` calls `save_screen_last` with the transition path and the plain request parameters. Screen history stays `record_history` | — | closed |
+| P2-03 | `screen/aggregate.rs` `Aggregation::apply` | `AggregationUtil.java:212-234`, `:339-359` | Closed. The first row of an average seeds the count and the total, so every row is in the average. Java still throws on the second row | — | closed |
 | P2-04 | `screen/aggregate.rs:143-147` | `AggregationUtil.java:202-210`, `ScreenForm.groovy:2038` | The group key uses the group-by field even when the field is not displayed or hidden; Java leaves it out of the key, so all rows fall in one group | Low | No |
 | P2-05 | `screen/aggregate.rs:86-104` | `ScreenForm.groovy:1403-1407`, `:46-50` | An `aggregate` or `show-total` that is not a function name is logged and ignored; Java's `AggregateFunction.valueOf` throws and the screen fails to load | Low | No |
-| P2-06 | `screen/sri/fields.rs:336-360` | `ScreenRenderImpl.groovy:1459-1465`, `ResourceFacadeImpl.groovy:439-451` | `sri.setInContext` skips a set when the field already has a value, always sets an empty value, and localizes the `value` and `default-value`; Java sets a truthy value, keeps the old value otherwise, and expands without l10n | Med | No |
+| P2-06 | `screen/sri/fields.rs` `set_in_context` | `ScreenRenderImpl.groovy:1459-1465`, `ResourceFacadeImpl.groovy:439-451` | Closed. A field `<set>` follows the XSD: `set-if-empty="false"` skips a null or empty new value, otherwise the value is assigned, and `value` and `default-value` are not localized | — | closed |
 | P2-07 | `screen/sri/forms.rs:194-257` | `ScreenForm.groovy:2131-2138` | Closed. A rendered form-list sets shared `_formListRendered` and adds its row count to `_formListResultCount`, so an empty list aborts a scheduled find with `noResultsAbort` | — | closed |
 | P2-08 | `screen/render.rs:432-437` | `ScreenDefinition.groovy:212`, `ScreenUrlInfo.groovy:500` | Closed. Already recorded as Parity-Diffs P8b-09. The port 404s a mode the screen does not list; Java only reports the list. Gallery Board, Calendar, QuickTask and Service Load Runner name only `vue`/`qvue`, so html and qvt 404 there | — | closed |
 | P2-09 | `screen/render.rs:560-565` | `WebFacadeImpl.groovy:262-273` | The sign-in pages are left out of the screen history; Java puts every screen there | Low | No |
@@ -722,6 +709,8 @@ counts only the error list — is in P1-04.
 
 #### P2-02 — `save-current-screen` saves the wrong thing
 
+Closed on 2026-10-20. `respond` calls `save_screen_last` with `full_path_url()` and the plain request parameters. `record_history` is unchanged.
+
 A response with `save-current-screen="true"` calls `user::session::push_screen_history` in the port
 (`screen/render.rs:1340-1342`). Java calls `saveScreenLastInfo(screenPath, null)`
 (`ScreenRenderImpl.groovy:519-523`), which puts the path in `moqui.screen.last.path` and the request parameters in
@@ -736,6 +725,8 @@ to call `user::session::save_screen_last(path, &parameters)` (the same call `red
 `screen/render.rs:816`) instead of pushing the history.
 
 #### P2-03 — The average of a group leaves out its first row
+
+Closed on 2026-10-20. The first row of a non-sub-list average calls `apply_function`, so the count and the total include that row. Java still throws on the second row.
 
 `Aggregation::apply` handles the first row of a group apart (`screen/aggregate.rs:156-198`): a field with a function other than
 `count` is copied into the row as it is, so an `aggregate="avg"` field gets the row's value and **no** `nCount` and `nTotal`
@@ -782,6 +773,8 @@ so this is a case where the port is more forgiving than the Java it copies. It s
 deliberate difference.
 
 #### P2-06 — `sri.setInContext` decides differently from Java in three ways
+
+Closed on 2026-10-20. `set_in_context` follows the XSD. `set-if-empty="false"` skips a null or empty new value. Any other new value is assigned, including an empty one that clears the field. `value` and `default-value` use `script::expand`, which does not localize. Java's `if (tempValue || setIfEmpty)` was not copied.
 
 `sri.setInContext` is the `set` element of a field's sub-node (`ScreenRenderImpl.groovy:1459-1465` calls
 `ResourceFacadeImpl.setInContext`). The port's version (`screen/sri/fields.rs:336-360`) differs from Java's
@@ -993,7 +986,7 @@ width, Java's `100 / percentTotal` divides by zero and the port returns the fixe
   the end marked `_moquiRowType: "total"` in both (`AggregationUtil.java:145-150`; the port at `screen/aggregate.rs:244-248`), the
   sub-list of a group is the list of the original rows with the sub-list totals last in both
   (`AggregationUtil.java:134-144`; the port at `screen/aggregate.rs:234-243`), and `count`, `min`, `max`, `sum`, `first` and `last`
-  behave the same over the rows of a group (apart from the average, P2-03). The row actions and the `from` expressions of the
+  behave the same over the rows of a group. The port's average includes every row (P2-03 closed); Java still throws on the second row of an average. The row actions and the `from` expressions of the
   fields run per row with the entry, the index and the has-next in the context under the same names in both
   (`AggregationUtil.java:175-198`; the port at `screen/sri/forms.rs:216-247`).
 - **The form-list column widths.** `formListColumnCharWidths` reads the same `print-width` and `print-width-type` of each field
@@ -1020,9 +1013,9 @@ width, Java's `100 / percentTotal` divides by zero and the port returns the fixe
   and Service Load Runner name only `vue` or `qvue`, so an html or qvt request 404s. That is a
   screen-XML edit, not a reason to drop the check. The old citation `screen/render.rs:432-437` has
   drifted; the refusal is the `NotFound` just after `pick_render_mode`.
-- ~~Which rule for the `set` element's `set-if-empty`?~~ Answered for the actions runner: keep the
-  XSD rule `XmlActions.js` already uses. `sri.set_in_context` is only a `<set>` under a field
-  (P2-06). Unify that function on the same rule. Do not copy Java's Groovy string test.
+- ~~Which rule for the `set` element's `set-if-empty`?~~ Answered on 2026-10-20. `sri.set_in_context`
+  follows the XSD rule `XmlActions.js` already uses. `set-if-empty="false"` skips a null or empty
+  new value. Java's Groovy string test was not copied.
 - `_formListRendered` and `_formListResultCount` should be set by the form-list render (P2-07). The
   comment in `ScreenServices.xml` is a workaround for the gap, and `noResultsAbort="Y"` still sends
   an empty list.
@@ -1045,7 +1038,7 @@ export modes ignore the typed columns, and the html display lost its value class
 |---|---|---|---|---|---|
 | P3-01 | `ScreenSupport.js:31-55`, `crates/moqui-core/src/script/walker.rs:161`, `screen/generate.rs:500` | `DefaultScreenMacros.html.ftl:17`, `DefaultScreenMacros.csv.ftl:23`, `DefaultScreenMacros.text.ftl:30`, `DefaultScreenMacros.xml.ftl:16`, `DefaultScreenMacros.plain.ftl:16` | An element no mode names is an error ("no screen macro in html, element X") and fails the render; Java's `@element` fallback writes a placeholder and the rest of the page renders | Med | Unclear |
 | P3-02 | `ScreenHtml.js:978-981` | `DefaultScreenMacros.html.ftl:1114-1160`, `:1286-1289` | The `show-pdf-button` is a plain link to `html-print`; Java opens a "Generate PDF" dialog with a page-layout choice (10 layouts) and a file name, so the page layout cannot be chosen from the screen | Low | Yes |
-| P3-03 | `screen/urls.rs:788-796`, `ScreenHtml.js:562`, `:576-597` | `DefaultScreenMacros.html.ftl:421-423`, `:456-458`, `ScreenUrlInfo.groovy:993` | A link is an anchor when the URL is read-only; Java makes it an anchor when the transition has no actions, so a transition with actions and `read-only="true"` is a GET link here and a POST button in Java | Low | No |
+| P3-03 | `screen/urls.rs` `is_anchor_link` | `DefaultScreenMacros.html.ftl:421-423`, `:456-458` | Closed. Accepted difference, Parity-Diffs P3-03. `read-only="true"` overrides `hasActions()` and the target is a GET. Java's html macros POST that transition | — | closed |
 | P3-04 | `ScreenCsv.js:94-98`, `ScreenText.js:175`, `ScreenXml.js:71` (with `ScreenSupport.js:148-156`) | `DefaultScreenMacros.csv.ftl:147`, `DefaultScreenMacros.text.ftl:124`, `:240`, `DefaultScreenMacros.xml.ftl:102` | The csv, text and xml modes evaluate a field's `hide` as a condition; Java compares it with the literal `"true"`, so a field hidden by an expression is dropped from the export here and kept in Java | Low | Yes |
 | P3-05 | `ScreenCsv.js:92`, `ScreenText.js:185`, `ScreenXml.js:71` | `DefaultScreenMacros.csv.ftl:97`, `DefaultScreenMacros.text.ftl:167`, `DefaultScreenMacros.xml.ftl:68`, `ScreenForm.groovy:1743-1780` | The csv, text and xml modes always use the untyped columns; Java's form-list column info picks the `columns type="…"` set that matches the request's `_uiType` | Low | No |
 | P3-06 | `ScreenHtml.js:497-499` | `DefaultScreenMacros.html.ftl:1960` | The display span has no field-value class; Java writes `sri.getFieldValueClass(...)` (the value's type name) on it | Low | No |
@@ -1110,6 +1103,8 @@ names the download). The html-print pipeline itself is a redesign (README redesi
 supported by the mode, so the missing piece is only the dialog.
 
 #### P3-03 — An anchor link is decided by read-only, not by actions
+
+Closed on 2026-10-20. Accepted difference, Parity-Diffs P3-03. `read-only="true"` overrides `hasActions()` and the target is a GET. The port already does this. Java's html macros follow `hasActions` and POST that transition. Changing Moqui Java is the later fix. Showing the GET target as a link is accepted for now.
 
 Java writes a link as an anchor (a plain GET link) when it is `link-type="anchor"` or
 `"anchor-button"`, or when it has no `link-type` (or `auto`) and either the `url-type` is not
@@ -1363,14 +1358,14 @@ Worked 2026-10-19: 9 findings (0 High, 3 Med, 6 Low) — P4-01 was found here an
 verification (the port's `A()` helper escapes every attribute value, which is the `?xml` of the FreeMarker
 macro, so the qvt `editable` widget matches Java; the `#### P4-01` section is gone and the number is a gap).
 All 80 FreeMarker macros of the qvt FTL have a port equivalent, so the component set
-is complete. The first pass called three of these Med. The second pass leaves eight open, all Low:
-P4-08 is closed, and P4-03 is the print redesign.
+is complete. The first pass called three of these Med. The second pass left eight open, all Low.
+P4-02 and P4-04 were closed on 2026-10-20, so six stay open. P4-08 is closed, and P4-03 is the print redesign.
 
 | ID | JS location | Java/XML location | Divergence | Severity | Intentional? |
 |---|---|---|---|---|---|
-| P4-02 | `ScreenQvt.js:1241-1278` | `DefaultScreenMacros.qvt.ftl:716-741` | No qvt module writes `formListFindId=_clear`. Reset drops a non-default find. An empty id reloads the user's default, so a user who has a default cannot get the unfiltered list | Low | No |
+| P4-02 | `ScreenQvt.js` `savedFindsDialogBody`, `ScreenQvtStatic.js` `savedFindsBody` | `DefaultScreenMacros.qvt.ftl:727` | Closed. The Saved Finds dialog links to `formListFindId=_clear`. An empty id still loads the user's default | — | closed |
 | P4-03 | `ScreenQvt.js:1204-1216` | `DefaultScreenMacros.qvt.ftl:977-1016` | `show-pdf-button` writes a Print item that opens `html-print`. Java wrote a page-layout dialog that posted to `/fop`. `/fop` still makes a PDF, and `?layoutMaster=` still selects a page. This is the print redesign | Low | Yes |
-| P4-04 | `ScreenQvt.js:2463` | `DefaultScreenMacros.qvt.ftl:411,425` | A `button-menu` item is wrapped in `v-close-popup`, which closes an enclosing `m-container-dialog` as well as the menu; Java writes the item without it, on purpose | Low | No |
+| P4-04 | `ScreenQvt.js` `buttonMenuMacro`, `ScreenQvtStatic.js` `buttonMenuItem` | `DefaultScreenMacros.qvt.ftl:411,425` | Closed. A `button-menu` item is not wrapped in `v-close-popup`. The export and page-size items keep it | — | closed |
 | P4-05 | `ScreenQvt.js:1241-1278` | `DefaultScreenMacros.qvt.ftl:840-856` | The Saved Finds dialog has no schedule action (the mode and cron drop-downs and the Schedule button Java writes for the active find) | Low | No |
 | P4-06 | `ScreenQvt.js:1393-1620` | `DefaultScreenMacros.qvt.ftl:1471-1473` | A form-list's `focus-field` is ignored; Java writes a script that focuses that field of the first row | Low | No |
 | P4-07 | `ScreenQvt.js:1548` | `DefaultScreenMacros.qvt.ftl:1349` | A row-selection check box calls `clickCheckbox` with an empty event, so the shift-click range selection of Java is lost | Low | No |
@@ -1380,6 +1375,8 @@ P4-08 is closed, and P4-03 is the print redesign.
 
 
 #### P4-02 — No way to clear the current saved find
+
+Closed on 2026-10-20. The Saved Finds dialog of `ScreenQvt.js` and `ScreenQvtStatic.js` has a Clear Current Find link to `path + "?formListFindId=_clear"`. An empty id still loads the user default.
 
 Java's list nav row has a "Select Find" drop-down (`DefaultScreenMacros.qvt.ftl:716-741`) that lists the
 user's finds and, at the top, a "Clear Current Find" link that goes to the screen with
@@ -1424,6 +1421,8 @@ FOP dialog. `/fop/<path>` already returns a PDF, and `layoutMaster` is still rea
 renderer.
 
 #### P4-04 — A button-menu item closes the dialog it is in
+
+Closed on 2026-10-20. `buttonMenuMacro` and `buttonMenuItem` write the item without `v-close-popup`. The export and page-size items keep it.
 
 Java writes the items of a `button-menu` as plain `<q-item><q-item-section>` and says why
 (`DefaultScreenMacros.qvt.ftl:411`): "do not use auto-close or v-close-popup because it closes dialogs as
@@ -1689,16 +1688,18 @@ scope has and the Vue global property `app.config.globalProperties.$mq`, so one 
 
 | ID | Rust/JS location | Java/XML location | Divergence | Severity | Intentional? |
 |---|---|---|---|---|---|
-| P5-02 | `ScreenQvtStatic.js:1249` (row form), `:1095` (form-single) | `ScreenQvt.js:383,396,407`; Java `ScreenRenderImpl.groovy:1716,2134,2154,2176` | The merged mode puts the form's `<hidden-parameters>` into the fields-initial of every row form, of the header find form and of a single form; the static module builds its fields-initial without them, so no row action of a static form-list posts them | Med | No |
-| P5-03 | `ScreenQvtStatic.js:367-373` | `ScreenQvt.js:253-261`; Java `ScreenForm.groovy:1557` | The merged mode adds `sri.getFieldValidationJsRules(sub)` (the `validate-service` parameter's browser checks, and the whole-number check of a numeric `validate-entity` field) to the `:rules` of a field; the static module keeps only the `number`/`digits` classes it reads from `getFieldValidation` | Med | No |
+| P5-02 | `ScreenQvtStatic.js` `hiddenEntries`, `layeredInitial` | `ScreenQvt.js:383,396,407`; Java `ScreenRenderImpl.groovy:1716,2134,2154,2176` | Closed. Hidden parameters are expressions over the scope, folded into the form-single, the header find form and each row form ahead of the field values. A multi list posts them once through `:hidden-initial` | — | closed |
+| P5-03 | `ScreenQvtStatic.js` `ruleList` | `ScreenQvt.js:253-261`; Java `ScreenForm.groovy:1557` | Closed. `ruleList` calls `sri.getFieldValidationJsRules` and quotes the host's message. A number field does not also get the class-derived digits rule | — | closed |
 | P5-04 | `ScreenQvtStatic.js:283-287` (the state), `:533,653` | `ScreenQvt.js:180,449,528,1071,1419`; Java `ScreenRenderImpl.groovy:2441` | Closed. `QvtServerStatic.md` already records that the template does not bake in `disableLink` and the server rejects the request. The form-wide disabled state is that same decision | — | closed |
-| P5-05 | `ScreenQvtStatic.js:1095`, `:918` (a link) | `ScreenQvt.js:388,796`; Java `ScreenRenderImpl.groovy:1696` | The merged mode seeds a form with `pass-through-parameters="true"` from the screen URL's pass-through map, and adds them to a link's URL; the static module reads neither attribute, so the form and the link lose those parameters | Med | No |
-| P5-06 | `crates/moqui-core/src/screen/statics/report.rs:73-75`, `:576-604`; `crates/moqui-host/src/qvt_report.rs:112-123` | `plans/archive/QvtServerStatic.md:140` | `StaticReport::is_clean()` ignores `full_check`, and `moqui lint --screens --qvt-static` runs the static half only (`full = false`), so the report prints "verdict clean" for a screen whose widget expressions were never evaluated against the wrapped `ec` — the clean the plan asks for before a screen is marked | Low | No |
-| P5-07 | `crates/moqui-core/src/screen/render.rs:442-444` (against `:548-577`) | Java `ScreenRenderImpl.groovy:982` (`saveScreenHistory`) | The static path returns from the render before `record_history`, so a server-static screen is never pushed onto the user's screen history; the merged qvt screen is | Low | No |
-| P5-08 | `ScreenQvtStatic.js:428-429` | `ScreenQvt.js:311,680-684`; Java `ScreenRenderImpl.groovy:1909` | A `check` widget with `all-checked="true"` starts with every option checked in the merged mode; the static module seeds the field with the field's own value, so the group starts empty | Low | No |
-| P5-09 | `ScreenQvtStatic.js:1042-1064`, `:1513-1514` | `ScreenQvt.js:997,1012,1168,1176`; Java `DefaultScreenMacros.qvt.ftl:32,713` | The merged mode reads the `hideNav` context flag and writes no subscreen tabs and no form-list nav row when it is set; the static module reads it nowhere, so both appear | Low | No |
+| P5-05 | `ScreenQvtStatic.js` `passThroughOf`; `screen/statics.rs` `wants_pass_through` | `ScreenQvt.js:388,796`; Java `ScreenRenderImpl.groovy:1696` | Closed. A form or a link with `pass-through-parameters="true"` puts `mqPassThrough` on the screen package. The form-single and the link read it. A credential name inside the map is stripped | — | closed |
+| P5-06 | `screen/statics/report.rs` `StaticReport::is_clean`; `moqui-host/src/qvt_report.rs` `render_reports` | `plans/archive/QvtServerStatic.md:140` | Closed. `is_clean` requires `full_check`. An eligible screen with no violations and no full check says `verdict static half only` | — | closed |
+| P5-07 | `screen/render.rs` `serve_template`, then `record_history` | Java `ScreenRenderImpl.groovy:982` (`saveScreenHistory`) | Closed. A successful static send records the screen before returning. The merged path still records once | — | closed |
+| P5-08 | `ScreenQvtStatic.js` `entriesOf` | `ScreenQvt.js:311,680-684`; Java `ScreenRenderImpl.groovy:1909` | Closed. `all-checked="true"` seeds the field from the option values | — | closed |
+| P5-09 | `ScreenQvtStatic.js` `navGuard`, `navSlot`; `WebrootVue.qvt.js` `m-static-form-list` | `ScreenQvt.js:997,1012,1168,1176`; Java `DefaultScreenMacros.qvt.ftl:32,713` | Closed. `hideNav === "true"` hides the subscreen tabs, the form-list nav slot and the list's page row | — | closed |
 
 #### P5-02 — the static form-list drops the form's `<hidden-parameters>`
+
+Closed on 2026-10-20. `hiddenEntries` reads each hidden parameter as an expression over the scope. `layeredInitial` puts that object ahead of the field values on the form-single, the header find form and each row form. A multi form-list posts the hidden names once through `:hidden-initial`, unsuffixed.
 
 The merged mode reads the form's hidden parameters and puts them into the fields-initial of every
 form it writes: `ScreenQvt.js:383` (`const hiddenParams = (n) => sri.getFormHiddenParameters(n)`),
@@ -1735,6 +1736,8 @@ context values, so they belong in the package) and to fold them into the templat
 `:fields-initial`, or to have the client post them with the row form.
 
 #### P5-03 — the static mode drops the `validate-service` and `validate-entity` browser rules
+
+Closed on 2026-10-20. `ruleList` calls `sri.getFieldValidationJsRules` and quotes the message the host already localized. The class-derived `number` and `digits` lines are not added, so a number field has one rule.
 
 `ScreenQvt.js:253-261` builds a field's `:rules` from three sources: the widget's own `rules`
 attribute, and `sri.getFieldValidationJsRules(sub)` — the browser checks of the field's
@@ -1783,6 +1786,8 @@ plan next to the link case.
 
 #### P5-05 — `pass-through-parameters` is dropped from forms and links
 
+Closed on 2026-10-20. `wants_pass_through` walks the screen, its forms and an `include-screen`. When something asks for the attribute, the screen package carries `mqPassThrough`, including an empty map, and `strip_credential_parameters` still runs. The form-single and the link read that key. A screen that does not use the attribute does not get it. Form-list rows do not.
+
 `ScreenQvt.js:388` seeds a form-single with the screen URL's pass-through parameter map when the
 form says `pass-through-parameters="true"`, and `:796` adds the same map to a link's URL. Java does
 the same for the form (`ScreenRenderImpl.groovy:1696`).
@@ -1799,6 +1804,8 @@ either fails on a missing required parameter or works on the wrong scope. Nothin
 notices.
 
 #### P5-06 — the report's "clean" verdict does not mean the plan's "clean"
+
+Closed on 2026-10-20. `StaticReport::is_clean` requires `full_check`. Eligible, no violations, and no full check is `verdict static half only`. `render_reports` counts that case on its own in the summary line.
 
 The plan splits the check in two (plans/archive/QvtServerStatic.md:140): "**Report.** `moqui lint
 --screens --qvt-static [report-file]` runs the static half (eligibility, the `oxc_parser` walk of
@@ -1830,6 +1837,8 @@ decision has to change.
 
 #### P5-07 — a server-static screen is not recorded in the user's screen history
 
+Closed on 2026-10-20. When `serve_template` returns true, `record_history` runs and then the request returns. A template that was not sent still falls through to the merged render, which records once later. `make_render` does not enforce request checks, so it still does not record.
+
 `render.rs:441-444` serves the static template and returns:
 
 ```rust
@@ -1854,6 +1863,8 @@ The fix is to call `record_history` before the early return, or to move it above
 
 #### P5-08 — `all-checked` on a `check` widget is dropped
 
+Closed on 2026-10-20. `entriesOf` seeds `all-checked="true"` from the widget's options, mapped to each option's value, instead of from the field's current value.
+
 `ScreenQvt.js:311` seeds a `check` field with every option key when the widget says
 `all-checked="true"`; `:680-684` does the same for the widget's own model value. Java does the same
 (`ScreenRenderImpl.groovy:1909`).
@@ -1865,6 +1876,8 @@ the merged one, and the value posted on save differs (`runtime/component/MrSimpl
 is an example of the attribute in the tree).
 
 #### P5-09 — `hideNav` is not honored in the static mode
+
+Closed on 2026-10-20. The comparison is `$scope['hideNav']!=='true'`, the same test the merged mode uses. `navGuard` wraps the subscreen tabs and the default tab panel. The form-list nav slot puts that test on the slot's contents, because a slot template has to be a direct child of the component. `m-static-form-list` also skips the whole top nav and the bottom page row when the flag is `"true"`.
 
 The merged module reads the `hideNav` context flag in four places: the subscreen menu
 (`ScreenQvt.js:997`), the tab panel (`:1012`), the form-list's bottom nav (`:1168`) and its nav row
@@ -1976,14 +1989,13 @@ static mode, which the screen asked to hide.
   data was not prepared. Does the port want the section condition evaluated once (on the server,
   with the branch baked into the package) instead of twice?
 - **Should the compatibility report know what the static module drops?** The report checks the
-  expressions, the notes, the actions and the definition, but not the features the static
-  transcription does not carry (P5-02, P5-03, P5-05, P5-08, P5-09). A "clean" report therefore
-  means "the expressions are safe", not "the static mode delivers what the merged mode delivers".
-  A list of the features the static module does not implement, checked by the report, would make
-  the report mean what the plan says it means.
-- **Should `moqui lint --screens --qvt-static` run the full check?** It needs a database and real
-  data, which is why it does not today; the alternative is to have the lint command print the
-  static half's verdict under a name that cannot be read as the plan's "clean" (see P5-06).
+  expressions, the notes, the actions and the definition. P5-02, P5-03, P5-05, P5-08 and P5-09
+  were closed on 2026-10-20, so the static module now carries hidden parameters, the host
+  validation rules, pass-through, `all-checked` and `hideNav`. A "clean" report still means the
+  expressions are safe and the full check ran (P5-06), not that every merged-mode feature is present.
+- **Should `moqui lint --screens --qvt-static` run the full check?** Closed on 2026-10-20 as the
+  alternative named here. The lint command still runs the static half. `is_clean` requires
+  `full_check`, and the summary says `static half only` for an eligible screen with no violations.
 
 ## Phase 6 — Print and spreadsheet
 
@@ -2095,7 +2107,7 @@ P7-01 fixed 2026-10-20: the schema documents ask for the `REST_SCHEMA` permissio
 | P7-05 | `moqui-core/src/screen/cache.rs:481-503`, `:612-623` | `screen/ScreenFacadeImpl.groovy:160-209` | A changed screen file is picked up at most once per `screen_check_interval_ms` (2 s by default) and never in production; Java reloads it on the next request | Low | Yes |
 | P7-06 | `moqui-core/src/screen/tree.rs:146-161` | `screen/ScreenTree.groovy:61-72` | A request with no `treeNodeId` gets the tree's root sub-nodes; Java gets the sub-nodes of the first `tree-node` in the definition | Low | Unclear |
 | P7-07 | `moqui-core/src/screen/url.rs:519-525` | `screen/ScreenUrlInfo.groovy:872-883` | A `?` parameter whose value holds an `=` (or is empty) is kept; Java's `split("=")` drops the pair | Low | Unclear |
-| P7-08 | `moqui-core/src/screen/urls.rs:78-99` | `screen/ScreenUrlInfo.groovy:361-393` | A plain `url-type` is prefixed with the base URL (a `mailto:` is mangled) and `path()` returns the plain text, where Java returns the plain URL as it is and an empty path | Low | No |
+| P7-08 | `screen/urls.rs` `UrlInstance::url`, `path` | `screen/ScreenUrlInfo.groovy:361-393` | Closed. A plain URL is returned as written, and `path()` is empty. `screen_only_path` still returns the plain text | — | closed |
 | P7-09 | `moqui-core/src/screen/cache.rs:221-245` | `screen/ScreenFacadeImpl.groovy:86`, `:232`, `screen/ScreenSection.groovy:141-152` | The `skip-actions` attribute of a `screen-text-output` / `screen-output` is not read; a render mode that says it runs no section actions runs them | Low | No |
 | P7-10 | `moqui-core/src/screen/schema.rs:33-39` | `util/RestSchemaUtil.groovy:630`, `:657` | The schema document is sent as `application/json` with the message facade's messages merged into it; Java sends `application/schema+json` as a file named `<entity>.schema.json` | Low | Unclear |
 | P7-11 | `moqui-core/src/screen/urls.rs:62-65`, `moqui-core/src/screen/definition.rs:692-712` | `screen/ScreenDefinition.groovy:503-517` | A URL instance finds a method-specific transition without a request method; Java's `getTransitionItem(name, method)` only matches the transition of that method | Low | Unclear |
@@ -2215,6 +2227,8 @@ screen in the port and is silently dropped in Java. The port's behavior is the u
 two halves of the convention disagree and that neither is recorded in Parity-Diffs.
 
 #### P7-08 — A plain URL type is prefixed with the base URL
+
+Closed on 2026-10-20. `url()` returns the plain text, including `mailto:` and a path that starts with `/`. `path()` is empty. `screen_only_path` still returns the plain text.
 
 Java's plain-URL stub returns the URL as it is: `getBaseUrl` returns `plainUrl` when it is set
 (`screen/ScreenUrlInfo.groovy:361-377`) and `getUrlWithBase` then appends the (empty) path list
@@ -2400,11 +2414,11 @@ webapp names no `http-host`, and a target that is not a path of this site goes t
 
 | ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
 |---|---|---|---|---|---|
-| P8-03 | `web/mod.rs:1161-1187` (`parse_body`) | `WebFacadeImpl.groovy:400-422` (`getRequestParameters`), `ContextStack.getByString` | The request body wins over the query string in the port (a JSON field overwrites a query parameter; a multipart field becomes a second value of a query parameter); in Java the servlet parameters are pushed above the JSON and multipart maps, so the query value wins | Low | No |
+| P8-03 | `web/mod.rs` `parse_body`, `overlay_multipart` | `WebFacadeImpl.groovy:400-422` (`getRequestParameters`), `ContextStack.getByString` | Closed. The query and the form body win over JSON and multipart. A repeated name in the query or the form body stays a list | — | closed |
 | P8-04 | `web/mod.rs:1196` (`pairs_to_parameters`), `multipart.rs:570` | `WebUtilities.java:148-158`, `WebFacadeImpl.groovy:225` | A single non-breaking space (`\u00a0`) is Java's "no parameter" value and becomes `null`; the port keeps the text, in a query value and in a multipart field alike | Low | No |
 | P8-05 | `web/mod.rs:1447-1453` (`finish_response`) | `MoquiServlet.groovy:226-232` (`handleCors`) | An origin that is not allowed is answered 401 "Origin not allowed" in Java and the request is not run; the port runs the request and only leaves the CORS headers off | Low | No |
 | P8-06 | `web/mod.rs:1371-1389` | `ExecutionContextFactoryImpl.groovy:1866-1872` | `require-session-token`, `handle-cors`, `allow-origins` and `upload-executable-allow` are read from the properties only; Java reads the webapp element's attribute (which defaults to the property) | Low | No |
-| P8-07 | `script/runtime/facades.rs:683-955` (no `sendError`) | `WebFacade.java:90`, `WebFacadeImpl.groovy:883-941` | `ec.web.sendError(code, message, throwable)` is not ported; the port's own `Tools/Entity/DataSnapshot.xml` uses `sendJsonError` instead, so a browser gets a JSON body where Java sends an HTML error page | Med | No |
+| P8-07 | `web/mod.rs` `send_error`, `script/runtime/facades.rs` `sendError` | `WebFacade.java:90`, `WebFacadeImpl.groovy:883-941` | Closed. `ec.web.sendError` writes the HTML page, the single-quoted JSON body, or `text/plain`, from `Accept`. `DataSnapshot.xml` stays on `sendJsonError` | — | closed |
 | P8-08 | `script/runtime/facades.rs:932-941` (`getWebappRootUrl`), `web/mod.rs:501` | `WebFacadeImpl.groovy:543-580` | The port answers the webapp root URL with the render's base URL, which is empty for a real request; Java answers the full URL (`requireFullUrl`) or the context path | Low | No |
 | P8-09 | `web/mod.rs:674-689` (`send_text_response_with`) | `WebFacadeImpl.groovy:773-784` (`sendTextResponseInternal`) | When the message facade has an error, Java sends the errors text with a 500; the port sends the text with a 200 | Low | No |
 | P8-10 | `web/mod.rs:245-252` (`parameters`), `script/runtime/facades.rs:776-779` | `WebFacadeImpl.groovy:372-391` (`getParameters`) | Java's `ec.web.parameters` is the live `ContextStack` (the request parameters over the session and application attributes, writable); the port hands a copy of the request parameters, so a session value read through it is gone and a write to it is lost | Low | No |
@@ -2419,6 +2433,8 @@ webapp names no `http-host`, and a target that is not a path of this site goes t
 | P8-19 | `web/mod.rs:1516-1525` (`strip_credential_parameters`) | `WebUtilities.java:731-740` (`stripCredentialParameters`) | The port strips the credential names at every depth of a JSON value; Java strips only the top level of the parameter map | Low | Yes |
 
 #### P8-03 — The request body wins over the query string
+
+Closed on 2026-10-20. A JSON field fills a name only when it is absent. Multipart text is not added onto a query name. `overlay_multipart` fills a file name the query and the form body left empty. The multipart map itself is unchanged.
 
 Java's `getRequestParameters` (`WebFacadeImpl.groovy:400-422`) pushes the maps in this order:
 saved parameters, multipart parameters, JSON parameters, the declared path parameters, the servlet's
@@ -2482,6 +2498,8 @@ stop the CORS headers, `require-session-token="false"` still refuses a POST with
 `client-ip-header`.
 
 #### P8-07 — `ec.web.sendError` is not ported
+
+Closed on 2026-10-20. `ec.web.sendError` writes the status and the body `Accept` asks for. `DataSnapshot.xml` stays on `sendJsonError`.
 
 `WebFacade.sendError(int, String, Throwable)` (`WebFacade.java:90`) sends an error with the shape the
 `Accept` header asks for: an HTML page for a browser, a JSON body with `message`, `errorName`, `error`
@@ -2643,7 +2661,7 @@ The facade surface, method by method. Java's `WebFacade` interface and the publi
 | `getParameters` | `web::parameters()`, `ec.web.parameters` | present, but a copy (P8-10) |
 | `getRequest` | — | the servlet type; out of scope |
 | `getRequestAttributes` | — | the port has no request attributes; the only Java uses of them are `moquiRequestStartTime`, `moqui.webapp.httpHost`, `moqui.session.token.created` and `moqui.login.error`, which the port keeps elsewhere (the request start time in the render, the http host in the conf, the new session in the response headers, the login error in the render job) |
-| `getRequestParameters` | `web::parameters()`, `ec.web.requestParameters` | the same set of names; the precedence differs (P8-03) |
+| `getRequestParameters` | `web::parameters()`, `ec.web.requestParameters` | the same set of names; the query and the form body win over JSON and multipart (P8-03 closed) |
 | `getSecureRequestParameters` | `web::secure_parameters()` | the same rule: the names in the query string are left out, the body, the multipart and the JSON fields stay (`web/mod.rs:375-385`); the SQL runner reads it (`script/runtime/tools_host.rs:1602`) |
 | `getHostName(boolean)` | `web::host_name()`, `ec.web.getHostName` | the host of the `Host` header; Java adds the server port when asked and the port does not add the default 80 or 443 (Low, same shape as P8-17) |
 | `getPathInfo`, `getPathInfoList` | `screen/url.rs` | the port splits the path itself; the decoded segments are the same list |
@@ -2664,7 +2682,7 @@ The facade surface, method by method. Java's `WebFacade` interface and the publi
 | `sendJsonError(int, String, Throwable)` | `ec.web.sendJsonError` | the same `{"errorCode","errors"}` body and status; the throwable is not used in either |
 | `sendTextResponse(String)` / `(String, String, String)` | `ec.web.sendTextResponse` | the same content type and the same attachment disposition with the ASCII file name; the port adds `;charset=UTF-8` where Java does not, sends no `Content-Disposition: inline` when there is no file name (Java sends one), and it does not have Java's error rule (P8-09) |
 | `sendResourceResponse(String)` / `(String, boolean)` | `ec.web.sendResourceResponse(location, inline, fileName)` | the same 404 for a location that is not there, the same content type from the file name, the same inline and attachment dispositions; the port adds a file name argument and its own cache rule (P8-18) |
-| `sendError(int, String, Throwable)` | — | missing (P8-07) |
+| `sendError(int, String, Throwable)` | `ec.web.sendError` | the same three bodies from `Accept` (P8-07 closed). `DataSnapshot.xml` stays on `sendJsonError` |
 | `handleJsonRpcServiceCall` | — | excluded on purpose (JSON-RPC) |
 | `handleEntityRestCall` | `screen/dispatch.rs` (`e1`, `v1`, `m1`) | the same: the JSON parse error is a 400, no user is a 401, `X-HTTP-Method-Override` on a POST, the JSON list of objects is a batch, the page and run-time headers |
 | `handleServiceRestCall` | `screen/dispatch.rs` (`s1`) | the same: the login error is a 401, the other errors a 500, the JSON parse error a 400, the batch list |
@@ -2708,8 +2726,7 @@ Other checks of this phase:
 - `WebMediaTypeException` (`WebMediaTypeException.java:20-23`): the port has no exception type of its
   own for this; the executable upload is refused with a 415 and the same message
   (`screen/mod.rs:114-116`), which is the status Java's `MoquiServlet` gives it
-  (`MoquiServlet.groovy:135-137`). The body shape differs, because the port has no `sendError`
-  (P8-07).
+  (`MoquiServlet.groovy:135-137`). The body shape differs: this path uses `early_error`, not `sendError`.
 - `WebUtilities.encodeHtmlJsSafe` and `fieldValuesEncodeHtmlJsSafe`
   (`WebUtilities.java:179-264` against `script/runtime/ec_extra.rs:610-658`): the same escapes, with
   the backslash and the U+2028/U+2029 escapes added, and a null argument is empty text in both.
@@ -2788,8 +2805,8 @@ the auth filter rules, the websocket endpoint, the log filters and the startup; 
 | P9-06 | `moqui-core/src/screen/mod.rs:107-109` | `MoquiServlet.groovy:52-178` | Every `OPTIONS` request answers 204 with an empty body, before the path is resolved; Java renders the screen (200) or answers 404 for a path that does not exist, and a CORS preflight answers 200 | Low | No |
 | P9-07 | `moqui-core/src/user/authz.rs:518-523`, `moqui-core/src/screen/mod.rs:270-282` | `MoquiServlet.groovy:130-134` | The tarpit answer is 429 with the seconds in the message text, but no `Retry-After` header; Java adds the header | Low | No |
 | P9-08 | `moqui-core/src/screen/render.rs:1324-1347` (`insecure_transition`) | `ScreenRenderImpl.groovy:443-457` | Closed. A transition with actions is refused when the URL has a query parameter other than `lastStandalone` or `renderMode`, or a `~name=value` path parameter. An omitted method stays `any` | — | closed |
-| P9-09 | `moqui-host/src/http.rs:585-596,763-828` | `ElasticRequestLogFilter.groovy:91-120,153-159`, `MoquiDefaultConf.xml:243-246` | The `moqui_http_log` entry has no `session`, `visitor_id` or `remote_user`, and only the screen requests are logged; Java's filter is on `/*` and logs every request with those fields | Med | No |
-| P9-10 | `moqui-host/src/logging.rs:556-572` | `ElasticSearchLogger.groovy:100-116` | The `moqui_logs` event has no `user_id` and no `visitor_id` (the MDC fields) and no `thrown`; the port's own mapping declares `user_id` and `visitor_id` | Med | No |
+| P9-09 | `moqui-host/src/http.rs` `log_http`, `from_web`; `screen/mod.rs` `stamp_http_log`; `user/session.rs` `http_log_identity` | `ElasticRequestLogFilter.groovy:91-120,153-159`, `MoquiDefaultConf.xml:243-246` | Closed. Every router request is logged. `stamp_http_log` copies the bound session id, visitor id, and username. A route with no session omits the three fields | — | closed |
+| P9-10 | `moqui-host/src/logging.rs` `current_log_actor`, `Fields.error` | `ElasticSearchLogger.groovy:100-116` | Closed. An app-log event copies the current user id and visitor id. A field named `error` is stored as `thrown` with `name` and `message` | — | closed |
 | P9-11 | `moqui-host/src/search_proxy.rs:138-144` | `MoquiDefaultConf.xml:289-295` (Jetty `ProxyServlet$Transparent`, `prefix=/kibana`) | The `/kibana` proxy keeps the `/kibana` prefix in the path it forwards; Jetty strips the prefix, so Java sends `/app/dashboards` and the port sends `/kibana/app/dashboards` | Low | No |
 | P9-12 | `moqui-host/src/logging.rs:436-441` | `log4j2.xml:27-28` | The error log file is `moqui-error.log`; Java's is `error.log` | Low | No |
 | P9-13 | `moqui-core/src/web/mod.rs:1429-1455` | `MoquiDefaultConf.xml:324` | The `X-XSS-Protection: 1; mode=block` header of a screen render is not sent | Low | No |
@@ -2943,6 +2960,8 @@ Java. The fix is to refuse the transition when `inline_parameters` is not empty,
 
 #### P9-09 — The HTTP request log has no session, visitor or user, and misses the other routes
 
+Closed on 2026-10-20. `log_http` writes every request that reaches the router, including one refused before the screen worker. `stamp_http_log` calls `http_log_identity` before the session guard drops. `from_web` copies the session id, visitor id, and username onto the response. A route that never binds a session omits those three fields.
+
 Java's `ElasticRequestLogFilter` is registered on `/*` (`MoquiDefaultConf.xml:243-246`), so it sees
 every request the container serves, and each entry carries `remote_user`, `session` (the HTTP
 session id) and `visitor_id` (`ElasticRequestLogFilter.groovy:153-159`; the mapping is at `:80-88`).
@@ -2959,6 +2978,8 @@ proxy or websocket traffic. The fix is to fill the three fields from the bound s
 the entry for every route, not only the screen ones.
 
 #### P9-10 — The application log event has no user, visitor or throwable
+
+Closed on 2026-10-20. `current_log_actor` copies the current context's user id and visitor id onto the app-log document. A field named `error` is stored as `thrown` with `name` and `message` only.
 
 Java's `ElasticSearchLogger` writes the MDC's `moqui_userId` and `moqui_visitorId` as `user_id`
 and `visitor_id` and the exception as `thrown`
@@ -3157,14 +3178,14 @@ are the screen-and-web half of
    auto screens, Entity Data Edit and Service Run) and P1-02 (an auto `fromDate` has no default)
    are the form-model gaps. P1-06 is the saved-find gap a user hits: View Report and View Data
    Document share one list. P2-07 is the scheduled-find gap: an empty list still sends. P1-05,
-   P1-07 and P1-08 are the H14 hardening and should be recorded, not reverted. P4-02 is only the
-   user-default coming back after Reset. P4-05 is the missing schedule button; My Account still
+   P1-07 and P1-08 are the H14 hardening and should be recorded, not reverted. P4-02 is closed: the
+   Saved Finds dialog links to `formListFindId=_clear`. P4-05 is the missing schedule button; My Account still
    schedules. P1-12 is closed.
-3. **Server-static qvt, before the default flips.** Nothing in `runtime/` is
-   `server-static="qvt"`. P5-02, P5-03 and P5-05 are the Med drift (hidden parameters, the letters
-   and regexp rules, pass-through parameters). P5-06, P5-07 and P5-08 are Low. P5-04 is already in
-   `QvtServerStatic.md`. The four screens that name only `vue` or `qvue` 404 on html and qvt; that
-   is screen XML, and the render-modes check itself stays (Parity-Diffs P8b-09).
+3. **Server-static qvt, before the default flips.** Closed on 2026-10-20: P5-02, P5-03, P5-05,
+   P5-06, P5-07, P5-08 and P5-09. Nothing in `runtime/` is `server-static="qvt"`, and the default
+   stays opt-in. P5-04 is already in `QvtServerStatic.md`. The four screens that name only `vue`
+   or `qvue` 404 on html and qvt; that is screen XML, and the render-modes check itself stays
+   (Parity-Diffs P8b-09).
 4. **The webapp conf is not one pass that closes six findings.** The live `<error-screen>` paths
    match the hardcoded ones (P9-01). The lifecycle examples are inside a comment (P9-02). There is
    no servlet container, so reading `<servlet>` would not load a Java class (P9-03). P9-05 is
@@ -3198,15 +3219,16 @@ are the screen-and-web half of
    P8-02. The plan and the record of the decisions are in
    [ScreenWeb-High-Findings](ScreenWeb-High-Findings.md). No High finding is open.
 2. ~~Fix the five rows under [Fix these first](#fix-these-first)~~ — done on 2026-10-20: P9-08,
-   P1-01, P2-07, P1-06 and P1-02. P1-04 and P2-06 are real and rarer; do them with that form work,
-   and keep the XSD rule for `set-if-empty`.
+   P1-01, P2-07, P1-06 and P1-02. P1-04 and P2-06 were closed on 2026-10-20. The field `<set>`
+   follows the XSD rule for `set-if-empty`.
 3. Record the deliberate rows in [Parity-Diffs](Parity-Diffs.md) and do not revert them. The list
    is under [Record these](#record-these-and-do-not-revert-them). P2-08 and P5-04 are already
    recorded.
 4. The eleven `Unclear` rows still need a decision before that code changes: P3-01, P6-02, P6-03,
    P6-04, P6-06, P7-03, P7-06, P7-07, P7-10, P7-11, P9-15.
-5. Fix the server-static drift (P5-02, P5-03, P5-05, then the Low rows) before any screen is marked
-   `server-static="qvt"`. The four `vue`/`qvue` screens can be edited whenever those files are next
-   touched.
+5. ~~Fix the server-static drift (P5-02, P5-03, P5-05, then the Low rows) before any screen is marked
+   `server-static="qvt"`~~ — done on 2026-10-20: P5-02, P5-03, P5-05, P5-06, P5-07, P5-08 and P5-09.
+   Nothing in `runtime/` is marked, and the default stays opt-in. The four `vue`/`qvue` screens can
+   be edited whenever those files are next touched.
 6. When the findings are fixed, leave a pointer here and archive this file under `plans/archive/`
    the way [EntityService-Parity-Review](archive/EntityService-Parity-Review.md) was archived.

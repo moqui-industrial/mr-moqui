@@ -41,7 +41,6 @@ use super::dispatch;
 use super::url::{encode_path, parse_last_standalone, resolve_screen_path, ScreenUrlInfo};
 use crate::context::{Error, ErrorKind, ExecutionContext, ExecutionContextFactory};
 use crate::script::{self, ContextFrame};
-use crate::service::util::has_error;
 use crate::user;
 use crate::web::{self, WebRequest};
 
@@ -594,7 +593,9 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     let state = Rc::new(RenderState::new(factory, &facade, info, mode, content_type, encoding));
     let _active = ActiveGuard::install(Rc::clone(&state));
     // A screen marked server-static for qvt is sent as a template that holds no request data, from the cache.
+    // Record history after the send: a later failure must not record a screen the user did not get.
     if state.render_mode == "qvt" && super::statics::serve_template(&state, job.request, job.path)? {
+        record_history(job, &state);
         return Ok(());
     }
     let begin = state.url_info.begin_transaction;
@@ -1287,10 +1288,16 @@ fn run_transition_steps(
         return Err(Error::new(message.clone()));
     }
     reject_html_for_entity_auto(transition);
-    if let Some(actions) = &transition.actions {
-        if !has_error() {
+    // The service-call runs only when there is no error and no validation error. `<actions>` always
+    // run, so they can handle an error (ScreenDefinition.groovy). The two are separate scripts, so
+    // the call's `if (ec.message.hasError()) return` cannot skip the actions.
+    if let Some(actions) = &transition.service_actions {
+        if !screen_has_error() {
             run_transition_actions(actions)?;
         }
+    }
+    if let Some(actions) = &transition.actions {
+        run_transition_actions(actions)?;
     }
     let response = pick_response(transition)?;
     hit.count(response_type(response));
@@ -1311,7 +1318,8 @@ pub(super) fn transition_authz_action(transition: &TransitionDef) -> String {
 /// Whether a transition runs something that can change data, as Java's `hasActionsOrSingleService`: its actions (or
 /// actions that did not compile), or the implicit saved find and column transitions, which write rows.
 fn runs_actions(transition: &TransitionDef) -> bool {
-    transition.actions.is_some()
+    transition.service_actions.is_some()
+        || transition.actions.is_some()
         || transition.actions_error.is_some()
         || matches!(
             transition.implicit,
@@ -1445,10 +1453,20 @@ fn run_transition_actions(actions: &Actions) -> Result<(), Error> {
     script::run_actions(&actions.xml)
 }
 
+/// Java's `messageFacade.hasError()` on the screen path: the error list or a validation error.
+/// `service::util::has_error` and the script's `ec.message.hasError` stay the error list only.
+fn screen_has_error() -> bool {
+    ExecutionContext::with_current(|ctx| {
+        let messages = ctx.message();
+        !messages.errors().is_empty() || !messages.validation_errors().is_empty()
+    })
+    .unwrap_or(false)
+}
+
 /// The error response when there are errors, else the last conditional response that holds (Java checks them all
 /// and keeps the last), else the default response.
 fn pick_response(transition: &TransitionDef) -> Result<&ResponseDef, Error> {
-    if has_error() {
+    if screen_has_error() {
         if let Some(response) = &transition.error_response {
             return Ok(response);
         }
@@ -1497,13 +1515,16 @@ fn respond(
     json: bool,
 ) -> Result<(), Error> {
     if response.save_current_screen {
-        user::session::push_screen_history(&info.full_path_url());
+        // Java's `saveScreenLastInfo(full path, null)`: the target a later `screen-last` returns to,
+        // with the request parameters. Screen history is a different list (`record_history`).
+        let path = info.full_path_url();
+        user::session::save_screen_last(&path, &plain_request_parameters());
     }
     if response.kind == ResponseKind::None {
         if response.save_parameters {
             save_parameters();
         }
-        if has_error() {
+        if screen_has_error() {
             save_error_parameters();
         }
         return Ok(());
@@ -1515,7 +1536,7 @@ fn respond(
     if !json {
         save_messages();
     }
-    if has_error() {
+    if screen_has_error() {
         save_error_parameters();
     }
     let mut url = script::expand(&response.url)?;
@@ -1909,7 +1930,7 @@ fn in_transaction<T>(begin: bool, timeout: Option<i64>, body: impl FnOnce() -> R
     let outcome = tx.run(crate::transaction::TransactionAttribute::UseOrBegin, timeout, || {
         let _deadline = script::DeadlineGuard::new(tx.time_remaining());
         kept = Some(body()?);
-        if has_error() {
+        if screen_has_error() {
             rolled_back = true;
             tx.set_rollback_only("Errors running screen actions")?;
         }

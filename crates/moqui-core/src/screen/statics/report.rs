@@ -69,9 +69,10 @@ pub struct StaticReport {
 }
 
 impl StaticReport {
-    /// No violation, and the screen can be a template.
+    /// No violation, the screen can be a template, and the full check (the html render with the wrapped `ec`) ran.
+    /// Eligible with no violations and `full_check` false is the static half, not clean.
     pub fn is_clean(&self) -> bool {
-        self.eligible && self.violations.is_empty()
+        self.eligible && self.violations.is_empty() && self.full_check
     }
 
     /// The kinds of the violations, sorted and without repeats.
@@ -89,6 +90,8 @@ impl StaticReport {
         let _ = writeln!(out, "  mode {}", self.mode);
         let verdict = if self.is_clean() {
             "clean"
+        } else if self.eligible && self.violations.is_empty() {
+            "static half only"
         } else if self.eligible {
             "violations"
         } else {

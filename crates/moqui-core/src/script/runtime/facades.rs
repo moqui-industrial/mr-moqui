@@ -711,6 +711,39 @@ impl HostWeb {
         })
     }
 
+    /// `sendError(errorCode, message, throwable)`: the HTML, single-quoted JSON, or plain body `Accept` asks for.
+    fn send_error<'js>(
+        &self,
+        ctx: Ctx<'js>,
+        status: i32,
+        message: Opt<JsValue<'js>>,
+        throwable: Opt<JsValue<'js>>,
+    ) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            let text_of = |value: &Opt<JsValue<'js>>| -> String {
+                let Some(value) = value.0.as_ref() else {
+                    return String::new();
+                };
+                if value.is_null() || value.is_undefined() {
+                    return String::new();
+                }
+                if let Some(text) = value.as_string().and_then(|text| text.to_string().ok()) {
+                    return text;
+                }
+                value
+                    .as_object()
+                    .and_then(|object| object.get::<_, rquickjs::String>("message").ok())
+                    .and_then(|text| text.to_string().ok())
+                    .unwrap_or_default()
+            };
+            let message = text_of(&message);
+            let throwable = text_of(&throwable);
+            let status = u16::try_from(status).unwrap_or(500);
+            crate::web::send_error(status, &message, (!throwable.is_empty()).then_some(throwable.as_str()));
+            Ok(())
+        })
+    }
+
     /// The QZ Tray signature of `message`, as `text/plain`. See `apps.xml` transition `qzSign`.
     fn send_qz_signed_response(&self, ctx: Ctx<'_>, message: String) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
