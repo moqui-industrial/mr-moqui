@@ -888,7 +888,7 @@
                   ], 8, ["id"]))
             }
         } },
-        "m-drop-down": { hash: "5e94df8d", make: function (Vue) {
+        "m-drop-down": { hash: "461ba4ae", make: function (Vue) {
             const { toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, createVNode: _createVNode, renderSlot: _renderSlot, mergeProps: _mergeProps, createSlots: _createSlots } = Vue
 
             return function render(_ctx, _cache) {
@@ -906,8 +906,7 @@
                 "options-dense": "",
                 "use-input": "",
                 "use-chips": _ctx.multiple,
-                "fill-input": !_ctx.multiple,
-                "hide-selected": !_ctx.multiple,
+                "hide-selected": _ctx.multiple,
                 name: _ctx.name,
                 for: _ctx.id,
                 form: _ctx.form,
@@ -963,7 +962,7 @@
                       key: "0"
                     }
                   : undefined
-              ]), 1040, ["model-value", "onUpdate:modelValue", "use-chips", "fill-input", "hide-selected", "name", "for", "form", "input-debounce", "onFilter", "clearable", "disable", "multiple", "emit-value", "new-value-mode", "rules", "label", "loading", "bg-color", "options"]))
+              ]), 1040, ["model-value", "onUpdate:modelValue", "use-chips", "hide-selected", "name", "for", "form", "input-debounce", "onFilter", "clearable", "disable", "multiple", "emit-value", "new-value-mode", "rules", "label", "loading", "bg-color", "options"]))
             }
         } },
         "m-dynamic-container": { hash: "70ca5338", make: function (Vue) {
@@ -3960,10 +3959,11 @@
                 : _createCommentVNode("", true)
             }
         } },
-        "m-rich-text": { hash: "feecdfb9", make: function (Vue) {
-            const { resolveComponent: _resolveComponent, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createElementBlock: _createElementBlock, renderList: _renderList, Fragment: _Fragment, createTextVNode: _createTextVNode, withCtx: _withCtx, createVNode: _createVNode, resolveDirective: _resolveDirective, withDirectives: _withDirectives, withModifiers: _withModifiers, normalizeClass: _normalizeClass, withKeys: _withKeys, normalizeStyle: _normalizeStyle, vShow: _vShow, createElementVNode: _createElementVNode, Teleport: _Teleport } = Vue
+        "m-rich-text": { hash: "c46ac17d", make: function (Vue) {
+            const { resolveComponent: _resolveComponent, createVNode: _createVNode, createElementVNode: _createElementVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, renderList: _renderList, Fragment: _Fragment, createBlock: _createBlock, createTextVNode: _createTextVNode, withCtx: _withCtx, resolveDirective: _resolveDirective, withDirectives: _withDirectives, withModifiers: _withModifiers, normalizeClass: _normalizeClass, withKeys: _withKeys, normalizeStyle: _normalizeStyle, vShow: _vShow, Teleport: _Teleport } = Vue
 
             return function render(_ctx, _cache) {
+              const _component_q_btn = _resolveComponent("q-btn")
               const _component_m_text_area = _resolveComponent("m-text-area")
               const _component_q_separator = _resolveComponent("q-separator")
               const _component_q_item_section = _resolveComponent("q-item-section")
@@ -3971,7 +3971,6 @@
               const _component_q_list = _resolveComponent("q-list")
               const _component_q_btn_dropdown = _resolveComponent("q-btn-dropdown")
               const _component_q_tooltip = _resolveComponent("q-tooltip")
-              const _component_q_btn = _resolveComponent("q-btn")
               const _component_q_input = _resolveComponent("q-input")
               const _component_m_avatar = _resolveComponent("m-avatar")
               const _directive_close_popup = _resolveDirective("close-popup")
@@ -3981,19 +3980,30 @@
                 "data-state": _ctx.state
               }, [
                 (_ctx.state === 'failed')
-                  ? (_openBlock(), _createBlock(_component_m_text_area, {
-                      key: 0,
-                      "editor-type": "html",
-                      "model-value": _ctx.local,
-                      "onUpdate:modelValue": _ctx.onInput,
-                      name: _ctx.name,
-                      id: _ctx.id,
-                      label: _ctx.label,
-                      form: _ctx.form,
-                      disable: _ctx.disable,
-                      readonly: _ctx.readonly,
-                      tooltip: _ctx.tooltip
-                    }, null, 8, ["model-value", "onUpdate:modelValue", "name", "id", "label", "form", "disable", "readonly", "tooltip"]))
+                  ? (_openBlock(), _createElementBlock("div", { key: 0 }, [
+                      _createElementVNode("div", { class: "row items-center q-mb-xs" }, [
+                        _createVNode(_component_q_btn, {
+                          dense: "",
+                          flat: "",
+                          "no-caps": "",
+                          icon: "sym_o_refresh",
+                          label: _ctx.t('Try the editor again'),
+                          onClick: _ctx.retryEditor
+                        }, null, 8, ["label", "onClick"])
+                      ]),
+                      _createVNode(_component_m_text_area, {
+                        "editor-type": "html",
+                        "model-value": _ctx.local,
+                        "onUpdate:modelValue": _ctx.onInput,
+                        name: _ctx.name,
+                        id: _ctx.id,
+                        label: _ctx.label,
+                        form: _ctx.form,
+                        disable: _ctx.disable,
+                        readonly: _ctx.readonly,
+                        tooltip: _ctx.tooltip
+                      }, null, 8, ["model-value", "onUpdate:modelValue", "name", "id", "label", "form", "disable", "readonly", "tooltip"])
+                    ]))
                   : (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
                       (_ctx.label)
                         ? (_openBlock(), _createElementBlock("div", {
@@ -4129,6 +4139,13 @@
                               }), 128))
                             ]))
                           : _createCommentVNode("", true),
+                        _createElementVNode("input", {
+                          ref: "imageFile",
+                          type: "file",
+                          accept: "image/png,image/gif,image/jpeg,image/webp",
+                          style: {"display":"none"},
+                          onChange: _ctx.onImageFile
+                        }, null, 40, ["onChange"]),
                         (_ctx.asking)
                           ? (_openBlock(), _createElementBlock("div", {
                               key: 1,
@@ -4149,6 +4166,17 @@
                                   _withKeys(_withModifiers($event => (_ctx.asking = null), ["prevent","stop"]), ["esc"])
                                 ]
                               }, null, 8, ["modelValue", "onUpdate:modelValue", "placeholder", "aria-label", "onKeydown"]),
+                              (_ctx.asking === 'image')
+                                ? (_openBlock(), _createBlock(_component_q_btn, {
+                                    key: 0,
+                                    dense: "",
+                                    flat: "",
+                                    "no-caps": "",
+                                    icon: "sym_o_upload",
+                                    label: _ctx.t('File'),
+                                    onClick: _ctx.pickImage
+                                  }, null, 8, ["label", "onClick"]))
+                                : _createCommentVNode("", true),
                               _createVNode(_component_q_btn, {
                                 dense: "",
                                 unelevated: "",
@@ -4159,7 +4187,7 @@
                               }, null, 8, ["label", "onClick"]),
                               (_ctx.asking === 'link' && _ctx.active.link)
                                 ? (_openBlock(), _createBlock(_component_q_btn, {
-                                    key: 0,
+                                    key: 1,
                                     dense: "",
                                     flat: "",
                                     "no-caps": "",
@@ -4184,13 +4212,13 @@
                               id: _ctx.id ? _ctx.id + '_plain' : null,
                               class: "m-rich-text-plain",
                               style: _normalizeStyle({minHeight: _ctx.minHeight}),
-                              value: _ctx.local,
+                              value: _ctx.plainText,
                               readonly: _ctx.readonly,
                               disabled: _ctx.disable,
-                              onInput: $event => (_ctx.onInput($event.target.value)),
+                              onInput: $event => (_ctx.onPlainInput($event.target.value)),
                               onKeydown: _ctx.plainKey,
-                              onFocus: $event => (_ctx.focused = true),
-                              onBlur: $event => (_ctx.focused = false)
+                              onFocus: $event => {_ctx.plainFocused = true; _ctx.focused = true},
+                              onBlur: $event => {_ctx.plainFocused = false; _ctx.focused = false}
                             }, null, 44, ["id", "value", "readonly", "disabled", "onInput", "onKeydown", "onFocus", "onBlur"]))
                           : _createCommentVNode("", true),
                         _withDirectives(_createElementVNode("div", {

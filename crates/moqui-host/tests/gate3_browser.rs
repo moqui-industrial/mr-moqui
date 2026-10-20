@@ -1539,7 +1539,7 @@ fn qapps_fixture(browser: &mut Browser, base: &str, gate: &common::Gate, descrip
         WAIT,
     );
     browser.eval(FETCH_SPY);
-    // a single m-drop-down shows its option's label as the value of its input (fill-input), which innerText leaves out
+    // a single m-drop-down shows the selected option's label in the page (hide-selected is only for multiple)
     let text = browser.eval(
         "document.body.innerText + '\\n' + Array.from(document.querySelectorAll('input')).map((el) => el.value).join('\\n')",
     );

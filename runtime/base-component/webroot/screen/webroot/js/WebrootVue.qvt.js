@@ -2384,9 +2384,11 @@
             label: String, name: String, id: String, disable: Boolean, onSelectGoTo: String },
         emits: ["update:modelValue"],
         data() { return { curOptions: this.options, allOptions: this.options, lastSearch: null, loading: false }; },
+        // Selected text stays visible. fill-input hid a set value, so hide-selected is only for multiple
+        // (Java WebrootVue.qvt.js m-drop-down).
         template:
             '<q-select ref="qSelect" :model-value="modelValue" @update:model-value="handleInput"' +
-                    ' dense outlined options-dense use-input :use-chips="multiple" :fill-input="!multiple" :hide-selected="!multiple" :name="name" :for="id" :form="form"' +
+                    ' dense outlined options-dense use-input :use-chips="multiple" :hide-selected="multiple" :name="name" :for="id" :form="form"' +
                     ' :input-debounce="serverSearch ? serverDelay : 100" @filter="filterFn" :clearable="allowEmpty||multiple" :disable="disable"' +
                     ' :multiple="multiple" :emit-value="!onSelectGoTo" map-options behavior="menu" :new-value-mode="combo ? \'add-unique\' : undefined"' +
                     ' :rules="[val => allowEmpty||multiple||combo||val===\'\'||(val&&val.length)||\'Please select an option\']"' +
@@ -2924,6 +2926,34 @@
             if (!value) return "";
             return value.split(/\n[ \t]*\n+/).map((para) => "<p>" + para.split("\n").map(htmlEscape).join("<br>") + "</p>").join("");
         },
+        // The plain-text toggle's way back. When plain is toPlain(originalHtml), the original comes back whole (formatting,
+        // images, chips, tables). An edit is fromPlain, then each mention, record link and table of the original, in order,
+        // replaces the first remaining copy of its own plain text. A second chip with the same label takes the next copy.
+        // A piece whose text was deleted stays gone. Bold, lists, links and images follow fromPlain once the text changed.
+        fromPlainKeeping(plain, originalHtml) {
+            const original = String(originalHtml || "");
+            const normalized = String(plain || "").replace(/\r\n?/g, "\n").replace(/[ \t]+$/gm, "").replace(/^\n+|\s+$/g, "");
+            if (normalized === moqui.richText.toPlain(original)) return original;
+            let html = moqui.richText.fromPlain(normalized);
+            const pieces = [];
+            const re = /<table\b[^>]*>[\s\S]*?<\/table>|<span\b[^>]*\bdata-mention-id\b[^>]*>[\s\S]*?<\/span>|<span\b[^>]*\bdata-record-id\b[^>]*>[\s\S]*?<\/span>/gi;
+            let found;
+            while ((found = re.exec(original))) pieces.push(found[0]);
+            let from = 0;
+            pieces.forEach((fragment) => {
+                const token = moqui.richText.toPlain(fragment);
+                if (!token) return;
+                const needle = token.split("\n").map(htmlEscape).join("<br>");
+                const wrapped = "<p>" + needle + "</p>";
+                let at = html.indexOf(wrapped, from);
+                let length = wrapped.length;
+                if (at < 0) { at = html.indexOf(needle, from); length = needle.length; }
+                if (at < 0) return;
+                html = html.slice(0, at) + fragment + html.slice(at + length);
+                from = at + fragment.length;
+            });
+            return html;
+        },
         // The rows of a mention or record search answer: a list (or a map with it in options, optionList, mentions or rows) of
         // {id, label}, value and title or name also read, a plain string as both. A record row prefers recordId, and keeps
         // entity (or recordEntityName) when the row has one. At most limit (10), each id once.
@@ -3062,14 +3092,41 @@
     // errors inside an m-form, a hidden input for a form that reads the DOM): Tiptap from /libs/tiptap, loaded when the first
     // editor mounts. The value is HTML ("" when empty). light is the compact toolbar; enter="submit" makes Enter submit the
     // form (and emit submit) with Shift+Enter a line break; Ctrl+Enter always submits; mention-url is searched with term for
-    // the @ list and record-url for the # list (only when that URL is set, on light and full); the plain-text toggle
-    // (v-model:plain) turns the value into plain text and back. When the library does not
-    // load, the field is the html editor of m-text-area.
+    // the @ list and record-url for the # list (only when that URL is set, on light and full). The plain-text toggle
+    // (v-model:plain, a boolean) shows toPlain in the textarea and keeps the HTML in the model (fromPlainKeeping on each
+    // edit, so a save while the toggle is on still stores HTML). Paste, drop and the full toolbar's file button upload an
+    // image to /richTextImage and insert the returned address; a data: image is uploaded the same way. When the library
+    // does not load, the field is the html editor of m-text-area, with a control that tries the editor again; a later
+    // editor that does load starts the ones still waiting.
     let richTextCount = 0;
-    // one load of the library for the page, so every editor gets its answer; after a failure the next editor tries again
+    // one load of the library for the page; a failure clears it so the next try starts again
     let tiptapLoad = null;
     const loadTiptap = () => tiptapLoad || (tiptapLoad = moqui.loadScript("/libs/tiptap/tiptap.min.js", null, () => !!root.Tiptap)
         .catch((error) => { tiptapLoad = null; throw error; }));
+    // editors whose load or start failed, so a later success (or Try the editor again) can start them
+    const failedRichTexts = [];
+    const dropFailed = (vm) => {
+        const index = failedRichTexts.indexOf(vm);
+        if (index >= 0) failedRichTexts.splice(index, 1);
+    };
+    const rememberFailed = (vm) => { if (failedRichTexts.indexOf(vm) < 0) failedRichTexts.push(vm); };
+    const wakeFailed = () => {
+        failedRichTexts.slice().forEach((other) => {
+            if (!other || other.unmountedNow || other.state !== "failed" || !root.Tiptap) return;
+            other.state = "loading";
+            other.$nextTick(() => {
+                if (other.unmountedNow || other.state !== "loading" || !root.Tiptap) return;
+                try {
+                    other.start();
+                    dropFailed(other);
+                } catch (err) {
+                    console.error("m-rich-text: the editor did not start, the html editor stands in: " + err);
+                    other.state = "failed";
+                    rememberFailed(other);
+                }
+            });
+        });
+    };
     component("m-rich-text", {
         name: "mRichText",
         mixins: [fieldMixin, localValueMixin],
@@ -3079,13 +3136,17 @@
         emits: ["update:modelValue", "update:plain", "submit", "mention"],
         data() {
             richTextCount += 1;
-            return { state: "loading", isPlain: this.plain, focused: false, active: {}, blockLabel: "Paragraph", asking: null, askValue: "",
+            return { state: "loading", isPlain: this.plain, focused: false, plainFocused: false, htmlBeforePlain: "", plainText: "",
+                active: {}, blockLabel: "Paragraph", asking: null, askValue: "",
                 mention: { open: false, items: [], index: 0, loading: false }, uid: "m-rich-text-" + richTextCount };
         },
         template:
             '<div class="m-rich-text" :class="{\'m-rich-text-light\': light, \'m-rich-text-focused\': focused}" :data-state="state">' +
-                '<m-text-area v-if="state === \'failed\'" editor-type="html" :model-value="local" @update:model-value="onInput" :name="name" :id="id"' +
-                    ' :label="label" :form="form" :disable="disable" :readonly="readonly" :tooltip="tooltip"></m-text-area>' +
+                '<div v-if="state === \'failed\'">' +
+                    '<div class="row items-center q-mb-xs"><q-btn dense flat no-caps icon="sym_o_refresh" :label="t(\'Try the editor again\')" @click="retryEditor"></q-btn></div>' +
+                    '<m-text-area editor-type="html" :model-value="local" @update:model-value="onInput" :name="name" :id="id"' +
+                        ' :label="label" :form="form" :disable="disable" :readonly="readonly" :tooltip="tooltip"></m-text-area>' +
+                '</div>' +
                 '<template v-else>' +
                     '<div v-if="label" class="text-caption m-muted m-rich-text-label">{{label}}</div>' +
                     '<div class="m-rich-text-box" :class="[bg ? \'bg-\' + bg : \'\', errorAttrs.error ? \'m-rich-text-error\' : \'\']">' +
@@ -3113,16 +3174,18 @@
                                     '<q-tooltip>{{t(button.label)}}</q-tooltip></q-btn>' +
                             '</template>' +
                         '</div>' +
+                        '<input ref="imageFile" type="file" accept="image/png,image/gif,image/jpeg,image/webp" style="display:none" @change="onImageFile">' +
                         '<div v-if="asking" class="m-rich-text-ask row items-center no-wrap q-px-sm q-py-xs q-gutter-x-xs">' +
                             '<q-input ref="askInput" dense outlined hide-bottom-space class="col" v-model="askValue" :placeholder="asking === \'image\' ? \'https://\u2026/picture.png\' : \'https://\u2026\'"' +
                                 ' :aria-label="t(asking === \'image\' ? \'Image address\' : \'Link address\')" @keydown.enter.prevent="applyAsk" @keydown.esc.prevent.stop="asking = null"></q-input>' +
+                            '<q-btn v-if="asking === \'image\'" dense flat no-caps icon="sym_o_upload" :label="t(\'File\')" @click="pickImage"></q-btn>' +
                             '<q-btn dense unelevated no-caps class="m-btn-tonal" :label="t(\'Apply\')" @click="applyAsk"></q-btn>' +
                             '<q-btn v-if="asking === \'link\' && active.link" dense flat no-caps :label="t(\'Remove\')" @click="removeLink"></q-btn>' +
                             '<q-btn dense flat round size="sm" icon="sym_o_close" :aria-label="t(\'Close\')" @click="asking = null"></q-btn>' +
                         '</div>' +
-                        '<textarea v-if="isPlain" :id="id ? id + \'_plain\' : null" class="m-rich-text-plain" :style="{minHeight: minHeight}" :value="local"' +
-                            ' :readonly="readonly" :disabled="disable" @input="onInput($event.target.value)" @keydown="plainKey"' +
-                            ' @focus="focused = true" @blur="focused = false"></textarea>' +
+                        '<textarea v-if="isPlain" :id="id ? id + \'_plain\' : null" class="m-rich-text-plain" :style="{minHeight: minHeight}" :value="plainText"' +
+                            ' :readonly="readonly" :disabled="disable" @input="onPlainInput($event.target.value)" @keydown="plainKey"' +
+                            ' @focus="plainFocused = true; focused = true" @blur="plainFocused = false; focused = false"></textarea>' +
                         '<div v-show="!isPlain" ref="content" class="m-rich-text-content" :style="{minHeight: minHeight}" @click="focusEnd"></div>' +
                         '<div v-if="state === \'loading\'" class="m-rich-text-loading m-muted text-caption q-px-sm">{{t(\'Loading the editor\')}}</div>' +
                     '</div>' +
@@ -3156,8 +3219,19 @@
         },
         watch: {
             modelValue(value) {
+                if (this.isPlain) {
+                    // the textarea is the plain text; do not rewrite it from the model while it is focused
+                    if (this.plainFocused) return;
+                    const html = value || "";
+                    const kept = moqui.richText.fromPlainKeeping(this.plainText, this.htmlBeforePlain);
+                    if (html !== kept && html !== moqui.richText.value(kept)) {
+                        this.htmlBeforePlain = html;
+                        this.plainText = moqui.richText.toPlain(html);
+                    }
+                    return;
+                }
                 const editor = this.editor;
-                if (!editor || this.isPlain) return;
+                if (!editor) return;
                 if ((value || "") !== moqui.richText.value(editor.getHTML())) editor.commands.setContent(moqui.richText.toHtml(value), { emitUpdate: false });
             },
             plain(value) { if (value !== this.isPlain) this.togglePlain(); },
@@ -3167,14 +3241,28 @@
             t(text) { return moqui.l10n && moqui.l10n.localize ? moqui.l10n.localize(text) : text; },
             start() {
                 const T = root.Tiptap;
+                if (this.editor) { this.editor.destroy(); this.editor = null; }
+                const vm = this;
                 this.editor = markRaw(new T.Editor({
                     element: this.$refs.content,
                     extensions: richTextExtensions(T, this),
                     content: moqui.richText.toHtml(this.local),
                     editable: this.canEdit,
                     autofocus: this.autofocus ? "end" : false,
-                    editorProps: { attributes: Object.assign({ class: "m-rich-text-editor", role: "textbox", "aria-multiline": "true" },
-                        this.id ? { id: this.id } : {}, this.label ? { "aria-label": this.label } : {}) },
+                    editorProps: {
+                        attributes: Object.assign({ class: "m-rich-text-editor", role: "textbox", "aria-multiline": "true" },
+                            this.id ? { id: this.id } : {}, this.label ? { "aria-label": this.label } : {}),
+                        handlePaste(_view, event) {
+                            if (!vm.takeImages(event.clipboardData)) return false;
+                            event.preventDefault();
+                            return true;
+                        },
+                        handleDrop(_view, event) {
+                            if (!vm.takeImages(event.dataTransfer)) return false;
+                            event.preventDefault();
+                            return true;
+                        }
+                    },
                     onUpdate: ({ editor }) => {
                         if (this.isPlain) return;
                         const html = moqui.richText.value(editor.getHTML());
@@ -3244,17 +3332,103 @@
             togglePlain() {
                 const editor = this.editor;
                 if (!this.isPlain) {
+                    this.htmlBeforePlain = this.local || "";
+                    this.plainText = moqui.richText.toPlain(this.local);
                     this.isPlain = true;
-                    this.onInput(moqui.richText.toPlain(this.local));
                 } else {
-                    const html = moqui.richText.fromPlain(this.local);
+                    const html = moqui.richText.fromPlainKeeping(this.plainText, this.htmlBeforePlain);
                     this.isPlain = false;
                     if (editor) {
                         editor.commands.setContent(html, { emitUpdate: false });
                         this.onInput(moqui.richText.value(editor.getHTML()));
-                    } else this.onInput(html);
+                    } else this.onInput(moqui.richText.value(html));
                 }
                 this.$emit("update:plain", this.isPlain);
+            },
+            // each edit writes the kept HTML into the model; the textarea stays the plain text
+            onPlainInput(value) {
+                this.plainText = value;
+                this.onInput(moqui.richText.value(moqui.richText.fromPlainKeeping(value, this.htmlBeforePlain)));
+            },
+            // the plain string on screen, for a mail part; the model stays the HTML
+            plainValue() { return this.isPlain ? this.plainText : moqui.richText.toPlain(this.local); },
+            pickImage() { if (this.$refs.imageFile) this.$refs.imageFile.click(); },
+            onImageFile(event) {
+                const file = event.target.files && event.target.files[0];
+                event.target.value = "";
+                this.asking = null;
+                if (file) this.uploadImage(file);
+            },
+            // paste or drop of an image file, or a data: image, uploads and inserts nothing of the original
+            takeImages(data) {
+                if (!data || !this.editable || this.isPlain) return false;
+                const files = [];
+                const list = data.files || [];
+                for (let i = 0; i < list.length; i++) if (list[i] && /^image\//i.test(list[i].type || "")) files.push(list[i]);
+                if (!files.length && data.items) {
+                    for (let i = 0; i < data.items.length; i++) {
+                        const item = data.items[i];
+                        if (item.kind === "file" && /^image\//i.test(item.type || "")) {
+                            const file = item.getAsFile && item.getAsFile();
+                            if (file) files.push(file);
+                        }
+                    }
+                }
+                if (!files.length) {
+                    const html = data.getData ? (data.getData("text/html") || "") : "";
+                    const match = /src\s*=\s*["'](data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+)["']/i.exec(html);
+                    const text = !match && data.getData ? String(data.getData("text/plain") || "").trim() : "";
+                    const url = match ? match[1] : (/^data:image\/[a-z0-9.+-]+;base64,/i.test(text) ? text : "");
+                    const file = url ? this.fileFromDataUrl(url) : null;
+                    if (file) files.push(file);
+                }
+                if (!files.length) return false;
+                files.forEach((file) => this.uploadImage(file));
+                return true;
+            },
+            fileFromDataUrl(url) {
+                const match = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)$/i.exec(String(url || "").replace(/\s/g, ""));
+                if (!match || typeof root.atob !== "function") return null;
+                let binary;
+                try { binary = root.atob(match[2]); } catch (err) { return null; }
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                const subtype = match[1].slice(6).toLowerCase();
+                const ext = subtype === "jpeg" ? "jpg" : subtype === "svg+xml" ? "svg" : (subtype.replace(/[^a-z0-9]/g, "") || "img");
+                try { return new File([bytes], "image." + ext, { type: match[1].toLowerCase() }); } catch (err) { return null; }
+            },
+            uploadImage(file) {
+                if (!file || !this.editor) { moqui.notifyMessages(null, this.t("The image was not saved")); return; }
+                const body = new FormData();
+                body.append("contentFile", file, file.name || "image.png");
+                const alt = file.name || "";
+                moqui.request("/richTextImage", { method: "POST", params: body }).then((result) => {
+                    const url = result.json && result.json.url;
+                    if (!url || !this.editor) { moqui.notifyMessages(null, this.t("The image was not saved")); return; }
+                    this.editor.chain().focus().setImage({ src: url, alt: alt }).run();
+                }, () => { moqui.notifyMessages(null, this.t("The image was not saved")); });
+            },
+            retryEditor() {
+                this.state = "loading";
+                this.$nextTick(() => {
+                    loadTiptap().then(() => {
+                        if (this.unmountedNow) return;
+                        try {
+                            this.start();
+                            dropFailed(this);
+                            wakeFailed();
+                        } catch (err) {
+                            console.error("m-rich-text: the editor did not start, the html editor stands in: " + err);
+                            this.state = "failed";
+                            rememberFailed(this);
+                        }
+                    }, (err) => {
+                        if (this.unmountedNow) return;
+                        console.error("m-rich-text: Tiptap did not load, the html editor stands in: " + err);
+                        this.state = "failed";
+                        rememberFailed(this);
+                    });
+                });
             },
             plainKey(event) {
                 if (event.key !== "Enter" || event.isComposing) return;
@@ -3331,23 +3505,34 @@
                 this.$emit("mention", item);
             }
         },
+        created() {
+            if (this.isPlain) {
+                this.htmlBeforePlain = this.local || "";
+                this.plainText = moqui.richText.toPlain(this.local);
+            }
+        },
         mounted() {
             loadTiptap().then(() => {
                 if (this.unmountedNow) return;
                 try {
                     this.start();
+                    dropFailed(this);
+                    wakeFailed();
                 } catch (err) {
                     console.error("m-rich-text: the editor did not start, the html editor stands in: " + err);
                     this.state = "failed";
+                    rememberFailed(this);
                 }
             }, (err) => {
                 if (this.unmountedNow) return;
                 console.error("m-rich-text: Tiptap did not load, the html editor stands in: " + err);
                 this.state = "failed";
+                rememberFailed(this);
             });
         },
         beforeUnmount() {
             this.unmountedNow = true;
+            dropFailed(this);
             if (this.mentionUnmount) { this.mentionUnmount(); this.mentionUnmount = null; }
             if (this.editor) { this.editor.destroy(); this.editor = null; }
         }
