@@ -6186,9 +6186,23 @@
         "                <q-btn flat no-caps dense icon=\"sym_o_apps\" :label=\"labels.allApplications\" v-close-popup @click=\"setUrl(linkBasePath + '/AppList')\"></q-btn>\n" +
         "            </div></q-menu>\n" +
         "        </q-btn>\n" +
-        // the current app's title; the theme's title outside an app (the AppList)
+        // the current app's title; the theme's title outside an app (the AppList). In an app the title opens the menu of the
+        // app root's subscreens (the top-level screens): the menu the app-root breadcrumb had before the trail started below it.
         // (below 600 px the launcher stands for it: the title is hidden, style-guide §2.2 and §7)
-        "        <q-toolbar-title v-if=\"headerTitle\" shrink class=\"gt-xs text-subtitle1 text-weight-medium q-pr-sm\">{{headerTitle}}</q-toolbar-title>\n" +
+        "        <q-btn v-if=\"appScreenMenu\" flat dense no-caps id=\"m-app-screens\" class=\"gt-xs m-app-screens text-subtitle1 text-weight-medium\">\n" +
+        "            {{headerTitle}}<q-icon name=\"arrow_drop_down\" size=\"xs\"></q-icon>\n" +
+        "            <q-menu anchor=\"bottom left\" self=\"top left\"><q-list dense style=\"min-width:200px;\">\n" +
+        "                <q-item v-for=\"subscreen in appScreenMenu.subscreens\" :key=\"subscreen.name\" clickable v-close-popup :active=\"subscreen.active\" active-class=\"text-primary text-weight-medium\" :to=\"subscreen.pathWithParams\">\n" +
+        "                    <q-item-section avatar>\n" +
+        "                        <m-menu-icon v-if=\"subscreen.image && subscreen.imageType === 'icon'\" :name=\"subscreen.image\" size=\"xs\"></m-menu-icon>\n" +
+        "                        <img v-else-if=\"subscreen.image\" :src=\"subscreen.image\" :alt=\"subscreen.title\" width=\"18\" class=\"invertible\">\n" +
+        "                        <q-icon v-else name=\"chevron_right\" size=\"xs\"></q-icon>\n" +
+        "                    </q-item-section>\n" +
+        "                    <q-item-section>{{subscreen.title}}</q-item-section>\n" +
+        "                </q-item>\n" +
+        "            </q-list></q-menu>\n" +
+        "        </q-btn>\n" +
+        "        <q-toolbar-title v-else-if=\"headerTitle\" shrink class=\"gt-xs text-subtitle1 text-weight-medium q-pr-sm\">{{headerTitle}}</q-toolbar-title>\n" +
         // the screen path from the app root: not the apps root, nor the app root whose title the header shows (style-guide §2.2)
         "        <q-breadcrumbs id=\"m-breadcrumbs\" class=\"gt-xs\" gutter=\"xs\" separator-color=\"grey-5\" active-color=\"grey-8\">\n" +
         "            <template v-for=\"(navMenuItem, menuIndex) in navMenuList\" :key=\"navMenuItem.path || menuIndex\"><template v-if=\"menuIndex >= breadcrumbStart\">\n" +
@@ -6840,6 +6854,15 @@
             // the first menu entry the breadcrumbs show: past the apps root, and past the current app's root, whose title is in the
             // header (outside an app, as on the AppList, the trail starts below the apps root)
             breadcrumbStart() { return this.basePathSize + (this.currentApp ? 1 : 0); },
+            // the app root's menu entry, the one breadcrumbStart skips: its subscreens are the app's top-level screens, and the
+            // header title opens that menu. Null outside an app, while the menu data is still loading, and when the app root is
+            // its own tab, wizard or stack menu (hasTabMenu) or has no subscreens.
+            appScreenMenu() {
+                if (!this.currentApp) return null;
+                const item = this.navMenuList[this.basePathSize];
+                if (!item || item.hasTabMenu || !(item.subscreens && item.subscreens.length)) return null;
+                return item;
+            },
             ScreenTitle() { return this.navMenuList.length > 0 ? this.navMenuList[this.navMenuList.length - 1].title : ""; },
             // The record of the latest m-screen-context (a record needs an entity and an id), apart from the rest of the screen
             // context so the + menu does not follow every field of every form.

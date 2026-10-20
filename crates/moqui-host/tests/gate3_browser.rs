@@ -321,6 +321,17 @@ fn the_suite_shell_palette_quick_create_and_keys_work_in_chromium() {
     browser.press("Escape");
     browser.wait_for("the launcher closed", "!document.querySelector('.m-launcher')", WAIT);
 
+    // the app title opens the menu of the app's top-level screens, the menu the app-root breadcrumb had
+    browser.click("the app screens", "document.getElementById('m-app-screens')");
+    browser.wait_for(
+        "the top-level screens",
+        "!!document.querySelector('.q-menu') && document.querySelector('.q-menu').innerText.indexOf('Detail') >= 0 \
+         && document.querySelector('.q-menu').innerText.indexOf('Widgets') >= 0",
+        WAIT,
+    );
+    browser.press("Escape");
+    browser.wait_for("the app screens closed", "!document.querySelector('.q-menu')", WAIT);
+
     // Ctrl+K: the palette with its input focused; a screen by its title
     ctrl_k(&mut browser);
     browser.wait_for(

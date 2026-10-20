@@ -217,7 +217,7 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 list under the name of the form and `Count`, `PageIndex`, `PageSize`, `PageMaxIndex`, `PageRangeLow`, `PageRangeHigh` keys. The server-merged
 macros write the rows themselves; this component is for the screens that fetch.
 
-The shell is a `q-layout` with a `q-header` (menu button, the launcher, the current app's title, the screen path as `q-breadcrumbs`, Search,
+The shell is a `q-layout` with a `q-header` (menu button, the launcher, the current app's title, which in an app opens the menu of the app root's subscreens, the screen path as `q-breadcrumbs`, Search,
 the `+` menu, the Today, Chat, Inbox and Notifications buttons, the documentation, the notify history when there is no Notifications tab, and
 the account menu: see Shell data and providers), a `q-drawer` with the screen menu (`QUASAR_LEFT_OPEN`; an overlay below 1024px), the page, and a `q-footer` with the
 theme's footer items. The `LoadingBar` plugin runs while the root's `loading` count is above zero. `config.quasar` (brand, notify, loadingBar) is the

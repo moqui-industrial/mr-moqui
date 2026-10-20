@@ -2727,7 +2727,7 @@
               }, 8, ["href", "class"]))
             }
         } },
-        "m-qapps-root": { hash: "f304ab9b", make: function (Vue) {
+        "m-qapps-root": { hash: "db50297e", make: function (Vue) {
             const { resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, renderList: _renderList, Fragment: _Fragment, createElementVNode: _createElementVNode, normalizeClass: _normalizeClass, resolveDirective: _resolveDirective, withDirectives: _withDirectives, resolveDynamicComponent: _resolveDynamicComponent, withModifiers: _withModifiers } = Vue
 
             return function render(_ctx, _cache) {
@@ -2737,11 +2737,11 @@
               const _component_m_menu_icon = _resolveComponent("m-menu-icon")
               const _component_q_separator = _resolveComponent("q-separator")
               const _component_q_menu = _resolveComponent("q-menu")
-              const _component_q_toolbar_title = _resolveComponent("q-toolbar-title")
-              const _component_q_breadcrumbs_el = _resolveComponent("q-breadcrumbs-el")
               const _component_q_item_section = _resolveComponent("q-item-section")
               const _component_q_item = _resolveComponent("q-item")
               const _component_q_list = _resolveComponent("q-list")
+              const _component_q_toolbar_title = _resolveComponent("q-toolbar-title")
+              const _component_q_breadcrumbs_el = _resolveComponent("q-breadcrumbs-el")
               const _component_q_breadcrumbs = _resolveComponent("q-breadcrumbs")
               const _component_q_space = _resolveComponent("q-space")
               const _component_q_badge = _resolveComponent("q-badge")
@@ -2878,18 +2878,97 @@
                               ]),
                               _: 1
                             }, 8, ["aria-label"]),
-                            (_ctx.headerTitle)
-                              ? (_openBlock(), _createBlock(_component_q_toolbar_title, {
+                            (_ctx.appScreenMenu)
+                              ? (_openBlock(), _createBlock(_component_q_btn, {
                                   key: 0,
-                                  shrink: "",
-                                  class: "gt-xs text-subtitle1 text-weight-medium q-pr-sm"
+                                  flat: "",
+                                  dense: "",
+                                  "no-caps": "",
+                                  id: "m-app-screens",
+                                  class: "gt-xs m-app-screens text-subtitle1 text-weight-medium"
                                 }, {
                                   default: _withCtx(() => [
-                                    _createTextVNode(_toDisplayString(_ctx.headerTitle), 1)
+                                    _createTextVNode(_toDisplayString(_ctx.headerTitle), 1),
+                                    _createVNode(_component_q_icon, {
+                                      name: "arrow_drop_down",
+                                      size: "xs"
+                                    }),
+                                    _createVNode(_component_q_menu, {
+                                      anchor: "bottom left",
+                                      self: "top left"
+                                    }, {
+                                      default: _withCtx(() => [
+                                        _createVNode(_component_q_list, {
+                                          dense: "",
+                                          style: {"min-width":"200px"}
+                                        }, {
+                                          default: _withCtx(() => [
+                                            (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.appScreenMenu.subscreens, (subscreen) => {
+                                              return _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                                                key: subscreen.name,
+                                                clickable: "",
+                                                active: subscreen.active,
+                                                "active-class": "text-primary text-weight-medium",
+                                                to: subscreen.pathWithParams
+                                              }, {
+                                                default: _withCtx(() => [
+                                                  _createVNode(_component_q_item_section, { avatar: "" }, {
+                                                    default: _withCtx(() => [
+                                                      (subscreen.image && subscreen.imageType === 'icon')
+                                                        ? (_openBlock(), _createBlock(_component_m_menu_icon, {
+                                                            key: 0,
+                                                            name: subscreen.image,
+                                                            size: "xs"
+                                                          }, null, 8, ["name"]))
+                                                        : (subscreen.image)
+                                                          ? (_openBlock(), _createElementBlock("img", {
+                                                              key: 1,
+                                                              src: subscreen.image,
+                                                              alt: subscreen.title,
+                                                              width: "18",
+                                                              class: "invertible"
+                                                            }, null, 8, ["src", "alt"]))
+                                                          : (_openBlock(), _createBlock(_component_q_icon, {
+                                                              key: 2,
+                                                              name: "chevron_right",
+                                                              size: "xs"
+                                                            }))
+                                                    ]),
+                                                    _: 2
+                                                  }, 1024),
+                                                  _createVNode(_component_q_item_section, null, {
+                                                    default: _withCtx(() => [
+                                                      _createTextVNode(_toDisplayString(subscreen.title), 1)
+                                                    ]),
+                                                    _: 2
+                                                  }, 1024)
+                                                ]),
+                                                _: 2
+                                              }, 1032, ["active", "to"])), [
+                                                [_directive_close_popup]
+                                              ])
+                                            }), 128))
+                                          ]),
+                                          _: 1
+                                        })
+                                      ]),
+                                      _: 1
+                                    })
                                   ]),
                                   _: 1
                                 }))
-                              : _createCommentVNode("", true),
+                              : (_ctx.headerTitle)
+                                ? (_openBlock(), _createBlock(_component_q_toolbar_title, {
+                                    key: 1,
+                                    shrink: "",
+                                    class: "gt-xs text-subtitle1 text-weight-medium q-pr-sm"
+                                  }, {
+                                    default: _withCtx(() => [
+                                      _createTextVNode(_toDisplayString(_ctx.headerTitle), 1)
+                                    ]),
+                                    _: 1
+                                  }))
+                                : _createCommentVNode("", true),
                             _createVNode(_component_q_breadcrumbs, {
                               id: "m-breadcrumbs",
                               class: "gt-xs",
@@ -3026,7 +3105,7 @@
                             }, 8, ["round", "label", "onClick"]),
                             (_ctx.quickCreateItems.length)
                               ? (_openBlock(), _createBlock(_component_q_btn, {
-                                  key: 1,
+                                  key: 2,
                                   flat: "",
                                   round: "",
                                   dense: "",
@@ -3132,7 +3211,7 @@
                             (_openBlock(), _createBlock(_resolveDynamicComponent(_ctx.qzVue), { ref: "qzVue" }, null, 512)),
                             (_ctx.documentMenuList.length)
                               ? (_openBlock(), _createBlock(_component_q_btn, {
-                                  key: 2,
+                                  key: 3,
                                   flat: "",
                                   round: "",
                                   dense: "",
@@ -3186,7 +3265,7 @@
                             }), 256)),
                             (!_ctx.shellValues.trayNotifications)
                               ? (_openBlock(), _createBlock(_component_q_btn, {
-                                  key: 3,
+                                  key: 4,
                                   flat: "",
                                   round: "",
                                   dense: "",

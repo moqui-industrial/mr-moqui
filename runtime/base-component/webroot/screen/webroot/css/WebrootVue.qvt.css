@@ -40,6 +40,9 @@ body.test.body--dark #top { background:#1b3a1b!important; }
 .q-drawer .q-item__section--side { padding-right:4px; } /* orig 16px */
 .q-drawer .q-expansion-item__content .q-item { padding-left:8px; }
 
+/* the app title as the menu of the app's top-level screens: the same size as the toolbar title, not a toolbar button */
+.q-btn.m-app-screens { min-height:0; padding:0 8px 0 0; }
+.q-btn.m-app-screens .q-icon { font-size:18px; }
 /* the suite shell (IronStone style-guide 2.2, 2.4): the launcher grid, the key hint, the palette and the tray panel */
 .m-launcher-grid { display:grid; grid-template-columns:repeat(3, 112px); gap:6px; }
 @media (max-width: 599.98px) { .m-launcher-grid { grid-template-columns:repeat(3, minmax(0, 1fr)); width:calc(100vw - 40px); } }
