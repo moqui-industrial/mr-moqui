@@ -2320,10 +2320,9 @@
         emits: ["update:modelValue"],
         data() { return { curDisplay: this.display, loading: false }; },
         template:
-            '<q-field v-if="labelWrapper" dense borderless readonly stack-label hide-bottom-space :label="label" :loading="loading" class="m-display-field">' +
-                '<template v-slot:control><div class="self-center full-width no-outline" :id="id" tabindex="-1">{{displayValue}}</div></template>' +
+            '<q-input v-if="labelWrapper" dense outlined readonly stack-label autogrow :model-value="displayValue" :label="label" :for="id" :name="name" :loading="loading">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
-            '</q-field>' +
+            '</q-input>' +
             '<span v-else :id="id">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip><slot></slot>' +
                 '{{displayValue}}' +
