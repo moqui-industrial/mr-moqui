@@ -664,14 +664,7 @@
             so that the extension becomes a default extension and doesn't have to be in the URL -->
         <template-renderer extension="html" class="org.moqui.impl.context.renderer.NoTemplateRenderer"/>
 
-        <!-- this is just an example, always use the ScriptRunner interface instead of javax.script because javax.script
-            does not support compiling class scripts and running methods within the class, but Groovy does
-        <script-runner extension=".groovy" engine="groovy"/>
-        -->
-        <script-runner extension=".groovy" class="org.moqui.impl.context.runner.GroovyScriptRunner"/>
         <script-runner extension=".xml" class="org.moqui.impl.context.runner.XmlActionsScriptRunner"/>
-
-        <!-- the javascript engine (Rhino) is built into Java starting with version 6, so we can support it without extra libs -->
         <script-runner extension=".js" engine="javascript"/>
     </resource-facade>
 
@@ -1039,63 +1032,6 @@
 
             <inline-jdbc><xa-properties serverName="${entity_ds_host}" databaseName="${entity_ds_database}" dateFormat="iso"
                     user="${entity_ds_user}" password="${entity_ds_password}" cursorHold="false" threadUsed="false"/></inline-jdbc>
-        </database>
-        <!--
-        * Derby:
-        <datasource group-name="transactional" database-conf-name="derby" schema-name="MOQUI">
-            <inline-jdbc><xa-properties databaseName="${moqui_runtime}/db/derby/moqui" createDatabase="create"/></inline-jdbc>
-        </datasource>
-        <datasource group-name="transactional" database-conf-name="derby" schema-name="MOQUI">
-            <inline-jdbc jdbc-uri="jdbc:derby:moqui;create=true" jdbc-username="moqui" jdbc-password="moqui"/>
-        </datasource>
-        -->
-        <database name="derby" fts-style="none" use-pk-constraint-names="false" use-indexes-unique="false" default-isolation-level="ReadCommitted"
-                default-jdbc-driver="org.apache.derby.jdbc.EmbeddedDriver"
-                default-xa-ds-class="org.apache.derby.jdbc.EmbeddedXADataSource">
-            <!-- default-test-query="???" maybe like SELECT 1 FROM SEQUENCE_VALUE_ITEM WHERE 1=0 -->
-            <inline-jdbc><xa-properties databaseName="${moqui_runtime}/db/derby/${entity_ds_database}" createDatabase="create"/></inline-jdbc>
-        </database>
-        <!--
-        * H2 Database:
-        * NOTE: With this embedded H2 setup you can connect remotely using "jdbc:h2:tcp://localhost:9092/moqui"
-
-        <datasource group-name="transactional" database-conf-name="h2" schema-name="">
-            <inline-jdbc><xa-properties url="jdbc:h2:${moqui_runtime}/db/h2/moqui;lock_timeout=30000" user="sa" password=""/></inline-jdbc>
-        </datasource>
-        <datasource group-name="transactional" database-conf-name="h2" schema-name="">
-            <inline-jdbc jdbc-uri="jdbc:h2:${moqui_runtime}/db/h2/moqui;lock_timeout=30000" jdbc-username="sa" jdbc-password="sa"/>
-        </datasource>
-        -->
-        <database name="h2" fts-style="h2-native" fts-config="english" use-pk-constraint-names="false" use-indexes-unique="true" add-unique-as="true" default-isolation-level="ReadCommitted"
-                default-jdbc-driver="org.h2.Driver" default-xa-ds-class="org.h2.jdbcx.JdbcDataSource"
-                default-start-server-args="-tcpPort 9092 -ifExists -baseDir ${moqui_runtime}/db/h2">
-            <!-- 'VALUE' is a reserved word in H2 starting with version 2.0.202 -->
-            <name-replace original="VALUE" replace="THE_VALUE"/>
-            <inline-jdbc><xa-properties url="${entity_ds_url}" user="${entity_ds_user}" password="${entity_ds_password}"/></inline-jdbc>
-        </database>
-        <!-- TODO: add configuration examples -->
-        <database name="hsql" fts-style="none" lb-name="hsqldb" use-fk-initially-deferred="false" join-style="ansi-no-parenthesis"
-                default-isolation-level="ReadUncommitted" default-jdbc-driver="org.hsqldb.jdbcDriver"
-                default-test-query="SELECT 1 FROM SEQUENCE_VALUE_ITEM WHERE 1=0">
-            <database-type type="id" sql-type="VARCHAR"/>
-            <database-type type="id-long" sql-type="VARCHAR"/>
-
-            <database-type type="number-integer" sql-type="BIGINT"/>
-            <database-type type="number-decimal" sql-type="DOUBLE"/>
-            <database-type type="number-float" sql-type="DOUBLE"/>
-
-            <database-type type="currency-amount" sql-type="DOUBLE"/>
-            <database-type type="currency-precise" sql-type="DOUBLE"/>
-
-            <database-type type="text-indicator" sql-type="CHAR"/>
-            <database-type type="text-short" sql-type="VARCHAR"/>
-            <database-type type="text-medium" sql-type="VARCHAR"/>
-            <database-type type="text-intermediate" sql-type="VARCHAR"/>
-            <database-type type="text-long" sql-type="VARCHAR"/>
-            <database-type type="text-very-long" sql-type="VARCHAR"/>
-            <database-type type="text-fts" sql-type="VARCHAR"/>
-
-            <database-type type="binary-very-long" sql-type="OBJECT" sql-type-alias="OTHER"/>
         </database>
         <!--
         * MS SQL Server:

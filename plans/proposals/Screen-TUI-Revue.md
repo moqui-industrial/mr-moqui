@@ -10,6 +10,8 @@ The pattern mirrors what Moqui already does for its Vue apps: the server renders
 
 The existing `text` render mode stays as is. It is for column-printed output; `tui` is for interactive use.
 
+*Style Note*: This should borrow from the UI design of the old school green screen Cobol/RPG/etc business applications with no-nonsense layouts, keyboard shortcuts, and full use and navigability by keyboard. It should also have flavors of the Lynx browser added for links and other browser-based elements. That said, we lean mostly on what Revue offers.
+
 ## Why Revue
 
 Revue is the only Rust TUI framework found that ships forms, tables, routing and styling together, which covers most of what Moqui screens need without assembling a widget stack by hand.
@@ -100,5 +102,3 @@ Four phases, each ending in something usable; no dates set yet.
 - [Revue repository](https://github.com/hawk90/revue)
 - [rat-salsa (fallback widget set)](https://github.com/thscharler/rat-salsa)
 - [Ratatui 0.30 highlights](https://ratatui.rs/highlights/v030/)
-
-
