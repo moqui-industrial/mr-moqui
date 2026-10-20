@@ -20,8 +20,8 @@ Most of these are beyond what the proposal settles.
 | # | Decision | Why |
 | --- | --- | --- |
 | D1 | `tui` is a JS macro module, `ScreenTui.js`. It is registered like the other modes and emits JSON through `sri.write`. There is no Rust model builder. | Every mode is built this way (`crates/moqui-core/src/screen/generate.rs:46` `MODE_MODULES`). The JS macro walk already handles field chains, conditional fields, layouts and form assembly (`ScreenSupport.js`), and a module can be overridden from a resource (`generate.rs:445` `mode_source`). |
-| D2 | `tui` is **always-standalone**: each screen level is its own request, as in `qvt`. | This is the qvt protocol (`runtime/base-component/webroot/screen/webroot/js/README.md:130`, "A level is its own screen"). The client reloads only from the first level that changed. Parent levels such as a record header above tabs stay as they are. Pre-actions start at index 2, as qvt's do (`crates/moqui-core/src/screen/render.rs:579`). |
-| D3 | The client is a new crate, `crates/moqui-tui`. Its `model` module has no Revue import and is usable alone through a `model` feature. Revue sits behind the `ui` module. | This is the proposal's single adapter layer. It also lets `moqui-core` tests deserialize the model without pulling in Revue. A Ratatui client stays possible. |
+| D2 | `tui` is **always-standalone**: each screen level is its own request, as in `qvt`. | This is the qvt protocol (`runtime/base-component/webroot/screen/webroot/js/README.md:130`, "A level is its own screen"). The client reloads only from the first level that changed. Parent levels such as a record header above tabs stay as they are. Pre-actions start at index 2, as qvt's do (`crates/moqui-core/src/screen/render.rs:781-784`). |
+| D3 | The client is a new crate, `crates/moqui-tui`. Its `model` module has no Revue import and is usable alone through a `model` feature. Revue is an optional dependency behind the `ui` feature (3.1). | This is the proposal's single adapter layer. It also lets `moqui-core` tests deserialize the model without pulling in Revue. A Ratatui client stays possible. |
 | D4 | `moqui-tui` does no I/O of its own. It defines a `ScreenLink` trait, and `moqui-host` implements it (in-process and HTTP) behind a new `tui` feature. | `crates/moqui-host/Cargo.toml:9` says only `moqui-host` may depend on Tokio, axum, russh and the like. Revue is used with `default-features = false`, so its `async` feature does not pull in Tokio. |
 | D5 | Revue is a **render pipeline and widget kit**, not the app framework. The interpreter owns focus, key routing, navigation and the form state. | Revue routes no keys to widgets. The app does that (`docs/refactor/findings-event-dispatch.md`, and `src/core/app/event_loop.rs:171`). Its three focus systems are not connected. `Form`/`FormFieldWidget` only render (`src/widget/form/form/mod.rs`). None of the examples uses its routers. |
 | D6 | The SSH and browser channels run a **custom event loop on Revue's generic `Terminal<W>`**, in process, one per session. A child process on a pseudo-terminal is the fallback if the Phase 1 spike fails. | `App::run` is tied to the process: it hardcodes stdout and crossterm's `poll`/`read` (`event_loop.rs:76,94`), installs signal handlers (`src/core/app/signals.rs`) and installs a global panic hook (`src/runtime/render/terminal/panic_hook.rs:76`). None of that can run per session in a server. `Terminal<W: Write>` itself is generic (`src/runtime/render/terminal/core.rs:23`), and `PipelineHarness` already drives the real draw path into memory (`src/testing/pipeline.rs:42`). |
@@ -45,7 +45,7 @@ Most of these are beyond what the proposal settles.
 
 ### 1.2 The frame
 
-The frame has the same regions as the qvt shell (`m-qapps-root`, `WebrootVue.qvt.js:6492`; style guide §2.1). Each is mapped to terminal rows and columns.
+The frame has the same regions as the qvt shell (`m-qapps-root`, `WebrootVue.qvt.js:6498`; style guide §2.1). Each is mapped to terminal rows and columns.
 
 | Region | Terminal form | qvt counterpart |
 | --- | --- | --- |
@@ -56,7 +56,7 @@ The frame has the same regions as the qvt shell (`m-qapps-root`, `WebrootVue.qvt
 | Key line (row −1) | The function keys that apply to the focused element, then the global ones, cut to the width. Revue's `StatusBar` with `KeyHint`s (`src/widget/feedback/statusbar/`). | none (green-screen convention) |
 | Overlays | Palette, dialogs, drop-down lists, help, confirmations, toasts | `m-shell-palette`, `m-dialog`, `q-menu` |
 | Log pane (local only) | A bottom split of 10 rows, toggled with Alt+L | none |
-| Tray | Today / Chat / Notifications as a right panel 48 columns wide when the canvas would stay ≥120, otherwise a modal | `m-shell-tray` |
+| Tray | Today / Chat / Notifications as a right panel 48 columns wide when the canvas left beside it is still ≥120 (1.3), otherwise a modal | `m-shell-tray` |
 
 The frame at 180 columns, drawer docked, with a canvas of 153 columns (md, two columns). Links are numbered (`#` on).
 
@@ -149,12 +149,13 @@ The client measures the canvas on every `Event::Resize`. Revue has no CSS media 
 | xs | < 80 | < 600 px | Labels sit above values. The `columns type="mobile"` set is used (the client sends `_uiType=mobile`, as qvt does at `WebrootVue.qvt.js:277`; `ScreenSupport.js:290`). Dialogs are full screen. The title line shows the screen title and counts only. |
 | sm | 80–119 | 600–1023 | One column of boxes. A `field-row` keeps up to 2 cells side by side. Dialogs are 90% wide. |
 | md | 120–179 | 1024–1439 | **Two columns**: `row-col md`/`lg` sizes apply. A `field-row` keeps up to 4 cells. A `container-split` shows side and main together. |
-| lg | 180–239 | 1440–1919 | As md, plus three columns where `row-col lg="4"` asks for them, and the tray docks beside the canvas. |
+| lg | 180–239 | 1440–1919 | As md, plus three columns where `row-col lg="4"` asks for them. |
 | xl | ≥ 240 | ≥ 1920 | As lg |
 
 Rules:
 
 - **Docking the drawer.** The drawer docks only when the canvas left over is still at least 120 columns, which with the 26-column drawer means a terminal of 150 columns or more. So docking never pushes a screen from md down to sm. F9 toggles it at any width, and the choice is kept as a user preference (the `QUASAR_LEFT_OPEN` counterpart, `TUI_DRAWER_OPEN`).
+- **Docking the tray.** The same rule: the 48-column tray docks only when the canvas left beside it is still at least 120 columns, so from a canvas of 168. The width class is always that of the canvas left over. So docking the tray on a canvas of 180–227 moves the screen from lg to md, and a three-column `row-col lg="4"` row shows two columns while the tray is open. Neither panel ever pushes a screen below md.
 - **`row-col`.** The 12-column grid works as `colOpen` does (`runtime/base-component/framework/template/screen/ScreenQvt.js:1107-1122`). When a smaller class has no size, it is 12. A column's width is the canvas width × n/12, less a one-column gutter. A box narrower than 40 columns falls to the next row rather than squeezing.
 - **`field-row`.** This is width-driven rather than the fixed qvt rule (`ScreenQvt.js:2033`). Cells stay side by side while each cell gets at least the form's label width plus 24 columns. Otherwise they stack.
 - **Labels.** Each form column pads its labels to the longest title in that column, capped at 24 columns (18 in sm), with dot leaders as in the mockup. A longer title ends in `…`, and its full text is on the key line while the field has focus.
@@ -229,7 +230,7 @@ This is one scheme for every screen. It is documented in a new `docs/TUI.md` and
 | Ctrl+L | Redraw | |
 | Ctrl+Q | Quit, after asking if any form has changed | |
 
-Revue's `KeyMap` and its chord parser (`src/utils/keymap/mod.rs:97`, `parse.rs:12`) hold the table. The layered priority pattern of `src/state/patterns/keys.rs:130` (modal, then confirm, then popup, then view) is the dispatch order.
+Revue's `KeymapConfig` and its chord parser (`src/utils/keymap/mod.rs:97`, `parse.rs:12`) hold the table. The layered priority pattern of `src/state/patterns/keys.rs:130` (modal, then confirm, then popup, then view) is the dispatch order.
 
 **Bindings are per theme (D11).** The table above is the built-in default. A theme may override entries by action name through the `tui` theme values (section 2.6), as chord strings in Revue's syntax, for example `back = "f3 | alt+left"`. The client merges the theme's entries over the default when the shell data loads. An entry that does not parse, or that names an unknown action, is logged and skipped, and the default for that action stays.
 
@@ -248,14 +249,14 @@ There is a TUI variant for each element the qvt mode writes. The qvt sources are
 | Breadcrumbs | Title line. A crumb with siblings opens a menu on Enter when the title line has focus (F9 then Up). | `Breadcrumb` | |
 | `subscreens-panel type="tab"`, `m-subscreens-tabs` | Tab bar `1:Detail  2:Items …`, active tab reversed, then the active level | `Tabs` (bar only) | Shown only with more than one tab, as in qvt |
 | `subscreens-panel type="popup"` | Nothing in the canvas; the siblings are in the drawer and the breadcrumb menu | | |
-| `subscreens-panel type="wizard"` | Step header `Step 2 of 4 · Options  ● ● ○ ○`, Back and Next buttons, PgDn = Next after the step form submits | `Stepper` | Follows the `m-subscreens-wizard` submit protocol (`WebrootVue.qvt.js:3653`) |
+| `subscreens-panel type="wizard"` | Step header `Step 2 of 4 · Options  ● ● ○ ○`, Back and Next buttons, PgDn = Next after the step form submits | `Stepper` | Follows the `m-subscreens-wizard` submit protocol (`WebrootVue.qvt.js:3659`) |
 | `subscreens-panel type="stack"` | Breadcrumb stack over the active level. F3 pops. | `Breadcrumb` | |
 | `button-menu` | `[ More ▾ ]`; Enter or F10 opens a menu list with badges | `ContextMenu` (`src/widget/feedback/menu/`) | |
 | `tree` | Indented tree. Right expands (children fetched), Left collapses, Enter follows the node link. | `Tree` (`src/widget/data/tree/`) | Revue's tree has no lazy-load hook. The own wrapper fills children when the fetch returns. |
 | Palette (`m-shell-palette`) | Top overlay with an input and grouped results | `CommandPalette` | Results from `shellSearch` (`shell.rs:952`) |
 | Quick create (`m-shell-quick-create`) | F6 menu, then the create form in a dialog | `ContextMenu`, own dialog | Providers from `shell_providers` (`shell.rs:767`) |
 | Counters | Title line `Today 3  Chat 1  Notif 2` | | Read from `shellCounts` at each navigation and every 60 s (Phase 4: push) |
-| Tray (`m-shell-tray`) | Right panel at lg and up, a modal below. Tabs Today, Chat, Notifications. | `TabView` | Its screens are theme values. A `.qvue` tray screen needs its `tui` text (D10). |
+| Tray (`m-shell-tray`) | Right panel when the canvas left beside it is still md (1.3), a modal otherwise. Tabs Today, Chat, Notifications. | `TabView` | Its screens are theme values. A `.qvue` tray screen needs its `tui` text (D10). |
 | Keys overlay (`m-shell-keys`) | F1 | `Modal` | |
 | Account menu | Palette group "Account": status, preferences, log out | | |
 
@@ -267,15 +268,15 @@ There is a TUI variant for each element the qvt mode writes. The qvt sources are
 | `container-row` / `row-col` | 12-column grid, by width class (section 1.3) | `Grid` with `TrackSize::Fr` (`src/widget/layout/grid/types.rs:7`) | CSS `grid-*` properties are parsed but not applied (`docs/guides/styling.md:182-200`), so the layout is built in code |
 | `container-box` (+ header, toolbar, body) | Bordered box, title in the edge, toolbar right-aligned on the first line, type as a heavy left edge. Collapsible with Enter on the title; `initial=closed` starts collapsed. | `Border` (`src/widget/layout/border/mod.rs`) | |
 | `container-panel` | Fixed side columns (`size` px ÷ 8), the center between them. Stacked below md. | `hstack` with `child_sized` | qvt never stacks panels; the TUI does, since a terminal cannot scroll the page sideways |
-| `container-split` | Side and main from md, side width px ÷ 8. Below md: the side list, then main with F3 back. The selected id stays in the parameters. | `SplitView` (`src/widget/layout/split_view/`) | `m-container-split` (`WebrootVue.qvt.js:3795`) |
+| `container-split` | Side and main from md, side width px ÷ 8. Below md: the side list, then main with F3 back. The selected id stays in the parameters. | `SplitView` (`src/widget/layout/split_view/`) | `m-container-split` (`WebrootVue.qvt.js:3801`) |
 | `container-dialog` | Button, then a centered modal with a title and a scrolling body. The body is in the model and hidden until opened. | `Modal` (`src/widget/feedback/modal/`), `show_with_focus_trap` | Full screen at xs, as qvt is below `sm` |
 | `dynamic-dialog` | Button, then a modal whose body is a TUI render of the transition URL | `Modal` + a nested level | `submit-reload-id`/`submit-hide-id` reload or close by id, as in `m-form` |
 | `dynamic-container` | A nested level loaded by URL, reloadable by id | | |
 | `section`, `section-iterate`, `section-include` | Resolved on the server; the client sees only the output | | `section-iterate paginate` gets the list paging footer |
 | `include-screen` | Inline, as the server renders it | | |
 | `dashboard` | Grid of cards, columns = canvas ÷ (`min-width` px ÷ 8) | `Grid` | |
-| `number-card` | Small box: title in the edge, value bold, delta `▲ 12%` in the good/bad color, Enter follows its link | `Border` + `Text` | `m-number-card` (`WebrootVue.qvt.js:5249`) |
-| `status-bar` | `● Placed ─ ● Approved ─ ○ Shipped`, then the transition buttons, each its own form | own `StatusFlow` | `m-status-bar` (`WebrootVue.qvt.js:3982`) |
+| `number-card` | Small box: title in the edge, value bold, delta `▲ 12%` in the good/bad color, Enter follows its link | `Border` + `Text` | `m-number-card` (`WebrootVue.qvt.js:5255`) |
+| `status-bar` | `● Placed ─ ● Approved ─ ○ Shipped`, then the transition buttons, each its own form | own `StatusFlow` | `m-status-bar` (`WebrootVue.qvt.js:3988`) |
 | `context` | Not drawn. Kept as the screen context for quick create and the palette, as `m-screen-context` does. | | |
 
 #### `form-single`
@@ -299,19 +300,19 @@ There is a TUI variant for each element the qvt mode writes. The qvt sources are
 | --- | --- | --- |
 | Table | Header row, rule, rows, totals. Numbers right-aligned. First column fixed when scrolling sideways. | Revue `DataGrid` (`src/widget/data/datagrid/`): in-memory rows, virtual scroll of visible rows (`core.rs:301`), frozen columns, column types. The client fills it one server page at a time and turns its local sort and filter off. |
 | Paging (`paginate`, `show-page-size`, `show-all-button`) | Footer `Rows 21–40 of 312 · Page 2/16`; F7/F8; `g` on the footer for a page number | Paging and sort are re-requests of the level with `pageIndex`, `pageSize` and `orderByField`, so the URL holds the state, as in Lynx |
-| `header-field` find | `f` opens the Find dialog: a form of the header fields. A filter summary line appears above the table (`Status = Approved ×`) with a Clear link. | An inline filter row is too tight in a terminal, so the dialog is always used, as `header-dialog="true"` does in qvt. The summary follows qvt's (`ScreenQvt.js:1226-1240`). |
+| `header-field` find | `f` opens the Find dialog: a form of the header fields. A filter summary line appears above the table (`Status = Approved ×`) with a Clear link. | An inline filter row is too tight in a terminal, so the dialog is always used, as `header-dialog="true"` does in qvt. The summary follows qvt's (`ScreenQvt.js:1229-1240`). |
 | Sort (`show-order-by`) | `s` on the focused column; `▲`/`▼` on the title | |
-| `row-selection`, `multi` | Selection column `[ ]`. Space toggles, Shift+Up/Down extend, `*` selects all. F10 lists the actions; each opens its dialog or form with the selected ids. | `m-checkbox-set` semantics (`WebrootVue.qvt.js:1601`) |
+| `row-selection`, `multi` | Selection column `[ ]`. Space toggles, Shift+Up/Down extend, `*` selects all. F10 lists the actions; each opens its dialog or form with the selected ids. | `m-checkbox-set` semantics (`WebrootVue.qvt.js:1607`) |
 | Per-row links | Text links in the cell. Enter on the row follows the first. | |
 | Row forms (each row its own `m-form`) | A row is a focus group. Editing a cell marks the row changed. Enter submits that row. | |
 | `multi="true"` editable rows | Inline cell editing on the focused row. Ctrl+S submits all changed rows as the multi form (`_rowSubmit_N`, `field_N`). | `DataGrid` `editable` (`input/editing.rs`) has no validation callback, so the own wrapper owns the edit buffer and validation. Fallback is the proposal's row edit modal. |
-| `editable` cell (`m-editable`) | Enter opens a one-field popup and saves to the editable URL | `WebrootVue.qvt.js:1370` |
+| `editable` cell (`m-editable`) | Enter opens a one-field popup and saves to the editable URL | `WebrootVue.qvt.js:1376` |
 | `first-row-field`, `second-row-field`, `last-row-field` | A create row above the rows (`a` focuses it), totals and last row below | |
 | `columns` / `form-list-column` | Several fields stacked in one cell (multi-line rows) | `DataGrid` rows are one line, so stacked columns need the own row renderer. Phase 3. |
 | `select-columns` | Columns dialog: a check list; Alt+Up/Down reorders | `SelectionList` (`src/widget/input/input_widgets/selection_list/`) |
 | `saved-finds` | Saved Finds dialog, and pinned finds in the drawer | |
 | Exports (`show-csv-button`, xlsx, text, pdf) | Local and remote: saved to the downloads directory, path on the message line. SSH and browser: "View as text" only, the `text` render mode in a pager. | No file leaves the server through an SSH TUI session |
-| `views` (board, calendar) | Board: groups as columns at lg and up (cards with title, fields and badge), otherwise a grouped list. `m` moves a card to another group through the board transition. Calendar: an agenda list by day; month grid at lg. | Phase 4. `m-list-views` (`WebrootVue.qvt.js:4362`) |
+| `views` (board, calendar) | Board: groups as columns at lg and up (cards with title, fields and badge), otherwise a grouped list. `m` moves a card to another group through the board transition. Calendar: an agenda list by day; month grid at lg. | Phase 4. `m-list-views` (`WebrootVue.qvt.js:4368`) |
 | Empty list | Header kept, one row "No orders match · Clear filters" or "No orders yet · New" | style guide §6 |
 
 #### Fields
@@ -388,7 +389,7 @@ $node({t: "section", id: "s3"}, () => sri.renderSection("OrderHeader"));
 
 A unit that writes nothing must still write `[]`. The golden fixtures cover an empty section, a failing section, and a section inside a `section-iterate`.
 
-**Nuance: errors inside a section.** `guarded` (`crates/moqui-core/src/screen/sri/sections.rs:44`) writes an error as HTML text where the section would have been. For qvt it first truncates what the failed section wrote (`web::truncate_output`). For `tui` it must also truncate and then write `[{"t":"error","text":…}]`, so the document stays valid JSON. `render_single` (`sections.rs:292`), which writes action errors in place of the widgets, needs the same treatment. Rather than another string test on the mode name, `TextOutput` (`cache.rs:94`) gets an output kind (text, html, json). `guarded` and `render_single` pick the error form from that kind.
+**Nuance: errors inside a section.** `guarded` (`crates/moqui-core/src/screen/sri/sections.rs:44`) writes an error as HTML text where the section would have been. For qvt it first truncates what the failed section wrote (`web::truncate_output`). For `tui` it must also truncate and then write `[{"t":"error","text":…}]`, so the document stays valid JSON. `render_single` (`sections.rs:292`), which writes action errors in place of the widgets, needs the same treatment. Rather than another string test on the mode name, `TextOutput` (`cache.rs:95`) gets an output kind (text, html, json). `guarded` and `render_single` pick the error form from that kind.
 
 **Ids.** Every node that holds state gets an `id` that is stable across renders, so the client keeps focus, scroll, collapsed state and unsent edits:
 
@@ -399,7 +400,7 @@ A unit that writes nothing must still write `[]`. The golden fixtures cover an e
 
 ### 2.3 The model
 
-The response is one JSON object. `run_job` writes the envelope around the level's widgets when the mode's output kind is json (in `render_body`, `render.rs:687`).
+The response is one JSON object. `run_job` writes the envelope around the level's widgets when the mode's output kind is json (in `render_body`, `render.rs:842`).
 
 | Envelope key | Content | Source |
 | --- | --- | --- |
@@ -435,11 +436,11 @@ The schema is written once, as the serde types in `crates/moqui-tui/src/model/`.
 ### 2.5 Transitions and responses
 
 - A form submit, a transition link or a row action is a request to the transition URL with `Accept: application/json`.
-- `run_transition` (`render.rs:951`) and `wants_json` (`render.rs:1277`) already answer with `send_json_redirect` (`render.rs:1481`): `screenUrl`, `screenPathList`, `messageInfos`, `validationErrors`, `currentParameters`.
+- `run_transition` (`render.rs:1106`) and `wants_json` (`render.rs:1432`) already answer with `send_json_redirect` (`render.rs:1640`): `screenUrl`, `screenPathList`, `messageInfos`, `validationErrors`, `currentParameters`.
 - The client shows the messages, marks the fields, and then navigates to `screenUrl` in `tui`, or reloads or hides the container named by `background-reload-id`/`background-hide-id`.
 - Transitions that answer through `ec.web.sendJsonResponse` (`web/mod.rs:611`) give `messages`/`errors`, used as-is. A `type="none"` response gives nothing, as in Java.
 - Downloads (exports, `transition` responses with a file) come back as the body with its content type. The client saves them to disk in local and remote mode, and refuses them over SSH.
-- **CSRF.** The HTTP link authenticates with the `login_key` header, which skips the session-token check (`render.rs:1778` `csrf_rejected`, `crates/moqui-core/src/screen/mod.rs:485` `authenticate`). The in-process link renders without `enforce_request_checks`, as the SSH shell does today.
+- **CSRF.** The HTTP link authenticates with the `login_key` header, which skips the session-token check (`render.rs:1937` `csrf_rejected`, `crates/moqui-core/src/screen/mod.rs:485` `authenticate`). The in-process link renders without `enforce_request_checks`, as the SSH shell does today.
 
 ### 2.6 Shell data
 
@@ -449,7 +450,11 @@ The client uses the endpoints the qvt shell uses, unchanged:
 - `shellData` and `shellSearch` (`webroot.xml:50,59`) for the apps, providers and the palette;
 - `shellCounts` for the badges (`crates/moqui-core/src/service/shell.rs:97`).
 
-The one addition is a `tui` value in the theme of the shell data: breakpoints, drawer width, color roles and the key binding overrides (D11). So the settings of sections 1.3 to 1.5 live with the theme. They are `ScreenThemeResource` values of new resource types `STRT_TUI_BREAKPOINTS`, `STRT_TUI_COLORS` and `STRT_TUI_KEYS`. These are Enumeration rows beside `STRT_TRAY_TODAY` in `runtime/base-component/framework/entity/ScreenEntities.xml:157`, and are read by `get_theme_values` (`crates/moqui-core/src/screen/sri/theme.rs:158`) as the qvt shell's values are. `STRT_TUI_KEYS` holds one `action = chords` entry per value.
+The one addition is a `tui` value in the theme of the shell data: breakpoints, drawer width, color roles and the key binding overrides (D11). So the settings of sections 1.3 to 1.5 live with the theme. They are `ScreenThemeResource` values of new resource types `STRT_TUI_BREAKPOINTS`, `STRT_TUI_COLORS` and `STRT_TUI_KEYS`. These are Enumeration rows beside `STRT_TRAY_TODAY` in `runtime/base-component/framework/entity/ScreenEntities.xml:157`.
+
+They are read in `shell_data` (`crates/moqui-core/src/screen/shell.rs:712`) from the user's qapps theme, which is how the shell's other values are read: `sri::user_theme_id` with `QUASAR_THEME_TYPE`, falling back to `DEFAULT_QUASAR`. They are not read through `get_theme_values` (`sri/theme.rs:158`). That function takes the theme type from the request's render defs, and `/shellData` is a `webroot.xml` transition with none, so it would fall back to `STT_INTERNAL` and never find them.
+
+`STRT_TUI_KEYS` holds one `action = chords` entry per value. `Shell::theme_value` (`shell.rs:404`) keeps only the first value, which is right for the one-value types but would drop every key override but one. So the keys are read with `sri::theme_resource_values` (`sri/theme.rs:135`), which returns all of them in sequence.
 
 ### 2.7 Security
 
@@ -461,7 +466,7 @@ The one addition is a `tui` value in the theme of the shell data: breakpoints, d
 ### 2.8 Server tests
 
 - `crates/moqui-core/src/screen/tests/golden.rs`: a `tui` entry for each fixture in `FIXTURES`, with expected units in `crates/moqui-core/src/script/testdata/screen/tui/`. The existing checks (repeatable, parses, no globals) apply.
-- A new `crates/moqui-core/src/screen/tests/tui.rs`: renders fixtures to JSON and compares with `testdata/screen/tui/render/*.json`, with `UPDATE_GOLDEN=1` like the others. Every output is also deserialized into the `moqui-tui` model types (dev-dependency with only the `model` feature). The fixtures are the Render fixtures of `tests/widgets.rs` plus cases for an empty section, a failing section, iterate, a dialog, depends-on and a multi list.
+- A new `crates/moqui-core/src/screen/tests/tui.rs`: renders fixtures to JSON and compares with `testdata/screen/tui/render/*.json`, with `UPDATE_GOLDEN=1` like the others. Every output is also deserialized into the `moqui-tui` model types (dev-dependency with `default-features = false` and only the `model` feature, 3.1). The fixtures are the Render fixtures of `tests/widgets.rs` plus cases for an empty section, a failing section, iterate, a dialog, depends-on and a multi list.
 - `runtime/base-component/example/test/Gallery.spec.js`: render every Gallery screen in `tui` as well, so every widget in the gallery (`Gallery/Widgets.xml` above all) produces a valid model. Run with `./moq test example`.
 - Fragment fixtures: a valid `tui` text, one that is not JSON (an `error` node, the rest of the page intact), an `any` text alone, and a `qvt` text alone (the placeholder).
 - A render test that a password value and a credential parameter never appear in the JSON, and one that a value holding `\u001b]52;…` comes out without the control bytes.
@@ -495,7 +500,7 @@ Nuance: a bare expansion in JSON is an injection, just as a bare `${}` in qvt te
 
 **Components.**
 
-- **The registry.** A `component` node names a client widget registered in `moqui-tui`. The registry uses `inventory`, as native components do: `inventory::collect!` in `moqui-tui`, `inventory::submit!` in a component crate (`crates/moqui-core/src/native.rs:23,42`). A registration gives a name, a constructor from `props` plus a `ScreenLink` and the screen's base path, and the widget's key help for F1.
+- **The registry.** A `component` node names a client widget registered in `moqui-tui`. The registry uses `inventory`, as native components do: `inventory::collect!` in `moqui-tui`, `inventory::submit!` in a component crate (`crates/moqui-core/src/native.rs:42,23`). A registration gives a name, a constructor from `props` plus a `ScreenLink` and the screen's base path, and the widget's key help for F1.
 - **The framework set** lives in `moqui-tui/src/ui/components/`. It starts with what the Gallery and the qvt texts in the framework need: `board`, `calendar` (agenda list, and a month grid from lg), `chart`, `diagram` and `timeline`.
 - **Add-on components.** An add-on crate (BOSS, for its chat, inbox and chatter) registers its own behind a `tui` feature of its crate. The generated app crate in `moq` forwards `tui` to every component crate that declares the feature, as it forwards the package features.
 - **Data.** A component gets its data from the screen's own transitions through the link's JSON call, the same `sendJsonResponse` transitions its `.qvue` twin calls. That is what keeps the two variants to presentation only.
@@ -536,7 +541,8 @@ Nuance: a bare expansion in JSON is an injection, just as a bare `${}` in qvt te
 
 **Dependencies.**
 
-- `revue = { version = "=3.10.1", default-features = false, features = ["markdown"] }`. The version is exact, as the proposal says to pin it, and is upgraded deliberately.
+- `revue = { version = "=3.10.1", default-features = false, features = ["markdown"], optional = true }`. The version is exact, as the proposal says to pin it, and is upgraded deliberately.
+- **Features.** `model` has no dependencies beyond serde. `ui` (default on, and it implies `model`) enables `dep:revue` and gates the `ui`, `keys`, `theme`, `run` and `logpane` modules. `link`, `nav`, `state` and `layout` build with `model` alone. `moqui-core` takes `moqui-tui` with `default-features = false, features = ["model"]`, so its test build never compiles Revue or crossterm (D3).
 - `serde`, `serde_json`, `jiff` and `unicode-width` are already in the workspace.
 - `regex` (already in the lock) checks the client rules.
 - No Tokio, no reqwest (D4).
@@ -560,7 +566,7 @@ Each key event goes through the layers in order: modal, then confirm, then open 
 
 ### 3.4 Layout
 
-`layout` turns the model plus the width class into a tree of Revue `Stack`/`Grid`/`Border` nodes with fixed cell sizes. Revue's CSS applies width/height/margin/gap but not padding, flex or grid properties (`docs/guides/styling.md:182-200`), so all layout is computed in code. CSS is used for colors and borders only, through `AppBuilder::css` (`builder.rs:226`), with the role styles generated from `theme`. A resize recomputes the class and the layout. The model is not re-requested, except when a list's page size or `_uiType` changes.
+`layout` turns the model plus the width class into a tree of boxes with fixed cell sizes, with no Revue import. `ui` builds the Revue `Stack`/`Grid`/`Border` nodes from that tree. Revue's CSS applies width/height/margin/gap but not padding, flex or grid properties (`docs/guides/styling.md:182-200`), so all layout is computed in code. CSS is used for colors and borders only, through `AppBuilder::css` (`builder.rs:226`), with the role styles generated from `theme`. A resize recomputes the class and the layout. The model is not re-requested, except when a list's page size or `_uiType` changes.
 
 ### 3.5 Event loops
 
@@ -573,7 +579,14 @@ Each key event goes through the layers in order: modal, then confirm, then open 
 - the initial size;
 - a resize signal.
 
-It must not touch the process terminal. It skips `Terminal::init`'s raw mode and terminal size query, the signal handlers and the panic hook. It writes the alternate screen, cursor and mouse-mode sequences itself. Input bytes go through a small ANSI decoder into Revue `Event`s: keys with modifiers, SGR mouse, bracketed paste, focus. The decoder is either an own parser over the `vte` crate, or crossterm's parser if the spike finds a public entry. The loop blocks on "input bytes, resize or request done" rather than polling, so an idle session costs nothing.
+It must not touch the process terminal. It skips `Terminal::init`'s raw mode and terminal size query, the signal handlers and the panic hook. It writes the alternate screen, cursor and mouse-mode sequences itself. Input bytes go through a small ANSI decoder into Revue `Event`s: keys with modifiers, SGR mouse, bracketed paste, focus. The decoder is either an own parser over the `vte` crate, or crossterm's parser if the spike finds a public entry. The loop blocks on "input bytes, resize, request done or the next deadline" rather than polling. The deadline is the earliest of the timed things the local loop gets from its 16 ms tick:
+
+- the success message's 3 s expiry (1.7);
+- the 60 s counter read (1.6);
+- the title-line clock's next minute;
+- the spinner's next frame while a request runs.
+
+So an idle session wakes about once a minute, and SSH and browser sessions behave as local mode does.
 
 **Drawing.** The loop needs the same draw path `App::run` uses: DOM, CSS, layout, diff and dirty-rect output. Today that path is reachable from outside the crate only through `PipelineHarness` (`src/testing/pipeline.rs:42`, `send`/`send_with` at :252), which draws into a `Vec<u8>`. The spike (Phase 1) settles which of three routes the loop uses:
 
@@ -586,6 +599,7 @@ It must not touch the process terminal. It skips `Terminal::init`'s raw mode and
 Every `ScreenLink` call runs off the UI thread. The local loop uses Revue's `WorkerHandle::spawn_blocking` (`src/state/worker/handle.rs:41`), which needs no `async` feature. The session loop uses the host's request pool through the in-process link. Results come back on a channel, and the loop marks the state dirty and redraws.
 
 - **Superseding requests.** A request carries a sequence number per purpose (level, options for field X, suggestions), and a late answer to a superseded request is dropped. So fast typing in an autocomplete, or paging twice, shows only the last answer.
+- **One in flight per purpose.** Dropping late answers is not enough on its own, since every request sent still holds a worker and a queue slot. The host's request pool is shared with HTTP: 8 workers and a queue of 64 by default (`crates/moqui-core/src/service/request_pool.rs:30-31`), and it refuses work with "request queue is full" once the queue is full. A held PgDn or F5 at key-repeat speed would fill it and refuse browser users. So each purpose has at most one request in flight and holds only the newest pending one, sent when the running one returns. The requests in between are never sent.
 - **Request errors.** A network or 5xx error is a message-line error and leaves the screen as it was. A 401 opens the login dialog (1.7).
 
 ### 3.7 Own widgets
@@ -639,35 +653,53 @@ It would be an own widget over `TextArea`, or a contribution to Revue's `RichTex
 
 - **CLI.**
   - A match arm in `dispatch` (`crates/moqui-host/src/lib.rs:281`).
-  - The name in `usage_error` (`lib.rs:380`) and in `is_known_command` (`crates/moqui-host/src/usage.rs:307`). Without the last, `moqui tui --server=https://…` is taken for server options, because it holds `=` (`usage.rs:299`).
+  - The name in `usage_error` (`lib.rs:380`) and in `is_known_command` (`crates/moqui-host/src/usage.rs:307`). Without the last, `moqui tui --server=https://…` is taken for server options, because it holds `=` (`looks_like_server_option`, `usage.rs:326`).
   - Help text in `usage.rs` beside the other commands.
-- **Start.** `start_server` (`lib.rs:196`) boots the runtime in the background, as the HTTP server does, and returns a `Server` whose `factory()` the in-process link uses. Dropping it shuts down on exit. Before the boot, logging is installed with the console off (`logging::install_with_console(None)`, `crates/moqui-host/src/logging.rs:84`), since any stderr line would tear the screen. The log files are written as usual.
+- **Start.** A new `start_local` in `lib.rs` boots the runtime with no listeners. It returns a handle whose `factory()` the in-process link uses, and dropping it shuts down on exit.
+  - `start_server` (`lib.rs:196`) cannot do this. It always binds the plain HTTP listener and the cluster listener (`serve_thread`, `lib.rs:885`), and `boot_server_factory` (`lib.rs:985`) itself starts the SSH server, the cluster edge listener (8444 by default) and the SMTP listener. On a machine where a server already runs, the TUI would fail on a port before it reached the DB lock check below.
+  - So `boot_server_factory` takes a choice of listeners. With none, it skips those three, and `start_local` binds no HTTP port.
+  - On drop, the handle does what `serve_thread` does after its listener stops (`lib.rs:942-960`): flush the artifact hits and the sessions, and stop log shipping. Then it drops the process.
+  - `--serve` uses `start_server_in` with the configured address instead.
+- **Logging.** Before the boot, logging is installed with stderr off, since any stderr line would tear the screen.
+  - `install_with_console(None)` (`crates/moqui-host/src/logging.rs:84`) does the opposite. `None` means stderr gets every line at `moqui_log_level` (`logging.rs:105`), and no `Level` turns stderr off, since `event` writes whenever `level <= console` (`logging.rs:546`).
+  - So `logging.rs` gets `install_without_console()`. Its `LineSubscriber` holds `console: Option<Level>`, and `event` skips stderr when it is `None`.
+  - It has to be the first install in the process, because the `OnceLock` makes any later install a no-op.
+  - The log files are written as usual, and the log pane below shows the lines.
 - **Log pane.** `LineSubscriber::event` (`logging.rs:506,528`) gets a third sink: a static list of bounded channels that `logging::tap()` registers. `moqui-tui` gets the receiver. The subscriber is hand-written and has no layers, and `tracing-subscriber` is not in the lock, so this is a tap rather than a layer, as the proposal assumed.
 - **Login.** The TUI's login dialog, through `login_user`. On an instance whose purpose is dev, `--user <name>` logs in without a password, as the test fixtures do.
 - **Flags.** `--path <screen path>` for the first screen, `--ascii`, `--no-color`, and the HTTP/SSH listeners off by default (`--serve` turns them on, so a developer can have the browser beside the TUI).
-- **Port in use.** If the runtime directory is already served by a running instance (the DB lock), the command says so and suggests `--server`.
+- **Already running.** If the runtime directory is already served by a running instance (the DB lock), the command says so and suggests `--server`.
 
 ### 4.2 SSH `apps`
 
-- **Command and permission.** `apps` is a new command in `crates/moqui-host/src/ssh/shell.rs`, in the `match` and the `HELP` text. It is also the whole session for a user who has the new `SSH_APPS` permission but not `SSH_SHELL`. `SSH_APPS` is a `UserPermission` in `runtime/base-component/framework/data/SecurityTypeData.xml:58-61` beside `SSH_SFTP`/`SSH_SHELL`, granted to `ADMIN` by default. It gives no rights beyond opening the TUI: every screen is still checked as that user. `ssh_permissions` and `Connection::accept` (`crates/moqui-host/src/ssh/server.rs:360,371`) read it. `ssh -t host apps` works through `exec_request` (`server.rs:526`) when a pty was requested.
+- **Command and permission.** `apps` is a new command in `crates/moqui-host/src/ssh/shell.rs`, in the `match` and the `HELP` text. It is also the whole session for a user who has the new `SSH_APPS` permission but not `SSH_SHELL`. `SSH_APPS` is a `UserPermission` in `runtime/base-component/framework/data/SecurityTypeData.xml:58-61` beside `SSH_SFTP`/`SSH_SHELL`, granted to `ADMIN` by default. It gives no rights beyond opening the TUI: every screen is still checked as that user.
+- **Where the permission is checked.** `ADMIN` has `SSH_SFTP` and `SSH_GIT`, but `SSH_SHELL` only through `ADMIN_ADV`. So the typical user of `apps` has no shell, and every place that gates on the shell today needs to know about `apps`:
+  - `Permissions` and `ssh_permissions` (`crates/moqui-host/src/ssh/server.rs:360`) get `apps`, and `Connection` gets `can_apps`.
+  - `Connection::accept` (`server.rs:371`) lets in a user who has only `apps`. It also leaves such a user out of the git-only rule at `server.rs:380`, which refuses password logins for anyone without SFTP or SHELL.
+  - `shell_request` (`server.rs:613`) accepts `can_apps`. When `can_shell` is false it starts `apps` directly rather than the `moqui>` prompt.
+  - `exec_request` (`server.rs:571`) accepts `can_apps` for the command `apps` alone, so `ssh -t host apps` works when a pty was requested. Other commands still need `can_shell`.
 - **Pty.** `pty_request` (`server.rs:489`) keeps only that a pty was asked for and drops the size and `TERM`. It must store `term`, columns and rows on the `Connection`. A `window_change_request` handler is added (there is none today) and forwards the size to the session loop. Without a pty, `apps` refuses with a one-line message.
 - **Stream.** The session takes over the channel stream that `interactive` (`server.rs:691`) reads line by line today. That loop drops escape bytes, so `apps` hands the stream to `run_session` and gets it back on exit, returning to the `moqui>` prompt when the user came from the shell.
-- **Sessions.** One `run_session` per channel, on its own thread (the loop is synchronous). Requests go through `on_pool` with `internal_login_user` per request, as the shell's commands do. `ssh_max_sessions` (`server.rs:142`) already bounds the count.
+- **Sessions.** One `run_session` per channel, on its own thread (the loop is synchronous). Requests go through `on_pool` with `internal_login_user` per request, as the shell's commands do.
+- **Session limit.** `ssh_max_sessions` (`server.rs:142`) does not bound the threads. It counts logged-in connections (`log_in`, `server.rs:219`), and `channel_open_session` (`server.rs:473`) accepts any number of channels on one connection. So one login could open hundreds of `apps` channels, each a thread, or a process under route 3.
+  - A new `tui_max_sessions` property bounds the live `run_session`s, in total and per user, with small defaults.
+  - SSH channels and `/termws` sockets (4.4) take slots from the same count, and a slot is freed when its session ends.
+  - Over the limit, `apps` refuses with a one-line message, and the socket closes with a reason.
 - **Downloads and uploads** are off over SSH (1.6, `file` and exports). The log pane is off, unless the user has the permission to read logs, in which case it shows only lines at WARN and above. The proposal leaves this to permissions, and it is Phase 4.
 
 ### 4.3 Remote client (`moqui tui --server <url>`)
 
 - **Link.** The HTTP link lives in `moqui-host`, which already depends on blocking `reqwest` (workspace `Cargo.toml:78`). It sends:
-  - `GET <url><path>?renderMode=tui` for a level (`pick_render_mode`, `render.rs:708`, reads the `renderMode` parameter);
+  - `GET <url><path>?renderMode=tui` for a level (`pick_render_mode`, `render.rs:863`, reads the `renderMode` parameter);
   - transitions with `Accept: application/json`;
   - the `login_key` header (`crates/moqui-core/src/user/login.rs:348` `apply_header_keys`).
 - **No runtime.** The remote client boots no factory. It runs `run_local` with the HTTP link only. A client-only build (`--no-default-features --features tui-client`) needs no database or server pieces; the gating of `moqui-host`'s modules allows it (`lib.rs:23,28-66`).
-- **Login.** The client prompts for username and password (and OTP through `sendOtp`/`verifyOtp`, `crates/moqui-core/src/screen/dispatch.rs:49-60`). It posts them once to the `login` REST transition, then asks for a login key (`get_login_key`, `user/login.rs:305`, with the `login-key` expiry of `user/policy.rs:63-68`). The key is stored in `~/.config/moqui/tui/<host>.toml`, mode 0600, with its expiry, and the password is forgotten. `--forget` removes it. A missing server-side transition to mint a key is the one server addition this needs, if `login` does not already return one.
+- **Login.** The client prompts for username and password (and OTP through `sendOtp`/`verifyOtp`, `crates/moqui-core/src/screen/dispatch.rs:54-55`). It posts them once to the `login` REST transition, then asks for a login key (`get_login_key`, `user/login.rs:305`, with the `login-key` expiry of `login_key_expire_hours`, `user/policy.rs:67`). The key is stored in `~/.config/moqui/tui/<host>.toml`, mode 0600, with its expiry, and the password is forgotten. `--forget` removes it. A missing server-side transition to mint a key is the one server addition this needs, if `login` does not already return one.
 - **Downloads** go to `~/Downloads` (or `XDG_DOWNLOAD_DIR`). The file picker browses the user's machine, and uploads are multipart posts.
 
 ### 4.4 Browser terminal (if wanted)
 
-- **Server.** A `/termws` WebSocket route beside `/notws` (`crates/moqui-host/src/http.rs:211`), exempt from the request timeout as `/notws` is (`http.rs:429`). It is authenticated by the session cookie as `notws::upgrade` is (`crates/moqui-host/src/notws.rs:85`), and needs `SSH_APPS`-equivalent permission (the same permission, renamed `TERMINAL_APPS` if the SSH name reads wrong). Its bytes feed `run_session` exactly as SSH does.
+- **Server.** A `/termws` WebSocket route beside `/notws` (`crates/moqui-host/src/http.rs:211`), exempt from the request timeout as `/notws` is (`http.rs:429`). It is authenticated by the session cookie as `notws::upgrade` is (`crates/moqui-host/src/notws.rs:85`), and needs `SSH_APPS`-equivalent permission (the same permission, renamed `TERMINAL_APPS` if the SSH name reads wrong). Its bytes feed `run_session` exactly as SSH does. Because it is exempt from the request deadline, each socket takes a slot of `tui_max_sessions` (4.2) before its session starts.
 - **Page.** A small page with xterm.js, vendored through `libs/refresh.mjs` with a manifest line and a license review entry (MIT).
 - **Placement.** Phase 4, only on demand, as the proposal says.
 
@@ -709,7 +741,7 @@ These are the proposal's four phases, each ending in something usable. No dates 
 
 ### Phase 3 — Shell and dynamics: a full admin task over SSH
 
-1. **SSH.** `apps` over SSH with the chosen session route, `SSH_APPS`, pty size, window change, and the guard against downloads and uploads.
+1. **SSH.** `apps` over SSH with the chosen session route, `SSH_APPS` at every gate of 4.2, `tui_max_sessions`, pty size, window change, and the guard against downloads and uploads.
 2. **Dynamics.** Autocomplete, `depends-on` everywhere, `dynamic-dialog`/`dynamic-container` with reload and hide ids, `editable`, multi lists with inline editing, stacked columns, row actions, saved finds and the columns dialog.
 3. **Shell.** Palette, quick create, counters, tray (as a modal), help with screen documents, message history.
 4. **Structure.** Trees, wizard and stack panels, `container-split`, `status-bar`, `number-card` and `dashboard`.
@@ -736,11 +768,11 @@ These are the proposal's four phases, each ending in something usable. No dates 
 | Model round trip | Every server golden from 2.8 deserializes and re-serializes equal | `moqui-core` render tests |
 | Layout | `layout` computed for fixture models at 72/100/120/153/180/240 columns, asserted as a text outline of boxes and widths | `crates/moqui-tui/tests/layout.rs` |
 | Snapshots | `PipelineHarness` draws fixture models at 72×24, 100×40, 180×50. The screen text is compared with checked-in files, rewritten with `UPDATE_GOLDEN=1` as in the rest of the repository (not Revue's `REVUE_UPDATE_SNAPSHOTS`). One set uses ASCII and no color. | `crates/moqui-tui/tests/snapshots/` |
-| Key flows | `FakeLink` records requests. Scripted keys check focus order, Enter submit, F4 prompt, F7/F8 paging, Esc and dirty-leave, palette, numbered links, and that a superseded answer is dropped. | `crates/moqui-tui/tests/keys.rs` |
+| Key flows | `FakeLink` records requests. Scripted keys check focus order, Enter submit, F4 prompt, F7/F8 paging, Esc and dirty-leave, palette, numbered links, that a superseded answer is dropped, and that a held PgDn sends at most one request in flight and one pending. | `crates/moqui-tui/tests/keys.rs` |
 | Input decoder | Byte sequences of xterm, kitty, tmux and the Linux console to events, paste with newlines, split sequences across reads | unit tests in `run` |
 | Sanitizing | Control and bidi characters in every string field of a model are not drawn | unit test |
 | In-process link | A real factory: login, render, submit with a validation error, options, 401 | `crates/moqui-host/tests/it/tui.rs` |
-| SSH | pty request with size, `apps` start, window change to a new size, exit back to the prompt, `SSH_APPS` refused without permission | extend `crates/moqui-host/tests/it/ssh.rs` |
+| SSH | pty request with size, `apps` start, window change to a new size, exit back to the prompt, `SSH_APPS` refused without permission. A user with `SSH_APPS` but no `SSH_SHELL` logs in by password and lands in `apps` from `ssh user@host` and from `ssh -t host apps`. Channels past `tui_max_sessions` are refused. | extend `crates/moqui-host/tests/it/ssh.rs` |
 | Gallery | Every Gallery screen at 180×50 as a snapshot in the example component's tests, with a fixed date, so a style change shows in the diff as the screenshots do for qvt. Board and Calendar through their components. | `runtime/base-component/example/test/` |
 | Components | Each framework component drawn from fixture props at two widths, its keys, and the unknown-name placeholder | `crates/moqui-tui/tests/components.rs` |
 | Theme keys | `STRT_TUI_KEYS` overrides merge, a bad entry is skipped and logged, a binding of Esc/Enter/Tab is refused, F1 and the key line show the merged keys | `crates/moqui-tui/tests/keys.rs` |
@@ -762,7 +794,7 @@ These update the proposal's list with what the survey found.
 | Large lists | **Answered:** `DataGrid` and `Table` draw only visible rows. Server paging stays, with the page sized to the screen. |
 | Key routing | Revue does not route keys. The interpreter does (D5), which the JSON model needs anyway. |
 | Paste | Not enabled by Revue. Enabled by our loops (3.3). |
-| Idle cost | Revue ticks every 16 ms. The session loop blocks instead (3.5). |
+| Idle cost | Revue ticks every 16 ms. The session loop blocks until input or its next deadline, about once a minute when idle (3.5). |
 | `.qvue` screens and inline `qvt` | **Decided (D10):** each gets a `tui` implementation, and until then a placeholder with a browser link (2.9). For the BOSS Comms Inbox (a `.qvue`) to work as an email client in the terminal, BOSS writes its `tui` texts and its components (message list, reader, compose on the 3.8 editor) behind its crate's `tui` feature. |
 | Custom components in a remote client | A `tui-client` binary has only the components it was built with. Shown as placeholders, and listed by `=` (2.9). |
 | Security over SSH | Per-request login as the user, `SSH_APPS`, no file transfer, sanitized output (2.7, 4.2). |
