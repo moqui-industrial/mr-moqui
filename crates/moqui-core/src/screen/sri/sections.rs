@@ -154,13 +154,18 @@ fn render_def(state: &RenderState, runner: &dyn Runner, def: &Arc<ScreenDef>, is
 pub fn render_section(state: &RenderState, runner: &dyn Runner, name: &str) -> Result<(), Error> {
     let def = active_def(state);
     let label = format!("section [{name}] in screen [{}]", def.location);
+    json_value(state, || {
+        guarded(state, &label, || render_section_of(state, runner, &def, name))
+    })
+}
+
+/// In a JSON document a nested render is the value of its parent's `"c"`, so one that writes nothing (an empty
+/// section, a stopped screen, a screen with no widgets) writes `[]`.
+fn json_value(state: &RenderState, body: impl FnOnce() -> Result<(), Error>) -> Result<(), Error> {
     let before = (state.output_kind == OutputKind::Json).then(|| web::output_body_len().unwrap_or(0));
-    guarded(state, &label, || render_section_of(state, runner, &def, name))?;
-    // A section that writes nothing is still an array, so the parent can put it in `"c"`.
-    if let Some(before) = before {
-        if web::output_body_len().unwrap_or(0) == before {
-            write(state, "[]");
-        }
+    body()?;
+    if before.is_some_and(|before| web::output_body_len().unwrap_or(0) == before) {
+        write(state, "[]");
     }
     Ok(())
 }
@@ -197,14 +202,16 @@ pub fn render_section_include(state: &RenderState, runner: &dyn Runner, include:
     if location.contains("${") || name.contains("${") {
         let def = active_def(state);
         let label = format!("section include [{location}#{name}] in screen [{}]", def.location);
-        return guarded(state, &label, || {
-            let location = script::expand(location)?;
-            let name = script::expand(name)?;
-            let other = state.facade.screen_def(&state.factory, &location)?;
-            let previous = state.override_def.replace(Some(Arc::clone(&other)));
-            let result = render_section_of(state, runner, &other, &name);
-            state.override_def.replace(previous);
-            result
+        return json_value(state, || {
+            guarded(state, &label, || {
+                let location = script::expand(location)?;
+                let name = script::expand(name)?;
+                let other = state.facade.screen_def(&state.factory, &location)?;
+                let previous = state.override_def.replace(Some(Arc::clone(&other)));
+                let result = render_section_of(state, runner, &other, &name);
+                state.override_def.replace(previous);
+                result
+            })
         });
     }
     let name = match (name.is_empty(), location.split_once('#')) {
@@ -369,53 +376,32 @@ fn iterate_section(
 }
 
 /// One iteration wrote `[inner]` or `[]`. Fold it into the array this loop opened: drop an empty array, and put a
-/// comma before the next inner value.
+/// comma before the next inner value. Bytes that are not an array would break the document, so they are logged and
+/// become one error node.
 fn splice_json_array_item(start: usize, have_item: bool) -> bool {
-    let tail = web::with_body(|body| {
-        if start > body.len() {
-            Vec::new()
-        } else {
-            body[start..].to_vec()
+    let tail = web::with_body(|body| body.get(start..).map(<[u8]>::to_vec).unwrap_or_default());
+    let trimmed = tail.trim_ascii();
+    let error;
+    let inner = match trimmed.strip_prefix(b"[").and_then(|rest| rest.strip_suffix(b"]")) {
+        Some(inner) => inner.trim_ascii(),
+        None if trimmed.is_empty() => trimmed,
+        None => {
+            tracing::error!("A section-iterate entry did not render a JSON array");
+            error = json_error_array("a section-iterate entry did not render as JSON");
+            &error.as_bytes()[1..error.len() - 1]
         }
-    });
-    let trimmed = trim_ascii(&tail);
-    if trimmed.is_empty() || trimmed == b"[]" {
+    };
+    if inner.is_empty() {
         web::truncate_output(start);
         return have_item;
     }
-    if trimmed.first() == Some(&b'[') && trimmed.last() == Some(&b']') && trimmed.len() >= 2 {
-        let inner = &trimmed[1..trimmed.len() - 1];
-        if inner.is_empty() {
-            web::truncate_output(start);
-            return have_item;
-        }
-        let mut next = Vec::with_capacity(inner.len() + usize::from(have_item));
-        if have_item {
-            next.push(b',');
-        }
-        next.extend_from_slice(inner);
-        web::rewrite_tail(start, &next);
-        return true;
-    }
+    let mut next = Vec::with_capacity(inner.len() + usize::from(have_item));
     if have_item {
-        let mut next = Vec::with_capacity(tail.len() + 1);
         next.push(b',');
-        next.extend_from_slice(&tail);
-        web::rewrite_tail(start, &next);
     }
+    next.extend_from_slice(inner);
+    web::rewrite_tail(start, &next);
     true
-}
-
-fn trim_ascii(bytes: &[u8]) -> &[u8] {
-    let start = bytes
-        .iter()
-        .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|byte| !byte.is_ascii_whitespace())
-        .map_or(start, |index| index + 1);
-    &bytes[start..end]
 }
 
 fn render_single(
@@ -469,6 +455,10 @@ fn render_single(
 ///
 /// Returns a security error, and the error of a subscreen that is not available.
 pub fn render_subscreen(state: &RenderState, runner: &dyn Runner) -> Result<(), Error> {
+    json_value(state, || render_next_screen(state, runner))
+}
+
+fn render_next_screen(state: &RenderState, runner: &dyn Runner) -> Result<(), Error> {
     let defs = &state.url_info.path_defs;
     let index = state.screen_path_index.get();
     if index + 1 >= defs.len() {
@@ -550,10 +540,12 @@ pub fn render_include_screen(
 ) -> Result<(), Error> {
     let _frame = (!share_scope).then(ContextFrame::push);
     let previous = state.override_def.borrow().clone();
-    let result = guarded(state, &format!("screen [{location}]"), || {
-        let def = state.facade.screen_def(&state.factory, location)?;
-        *state.override_def.borrow_mut() = Some(Arc::clone(&def));
-        render_def(state, runner, &def, false)
+    let result = json_value(state, || {
+        guarded(state, &format!("screen [{location}]"), || {
+            let def = state.facade.screen_def(&state.factory, location)?;
+            *state.override_def.borrow_mut() = Some(Arc::clone(&def));
+            render_def(state, runner, &def, false)
+        })
     });
     *state.override_def.borrow_mut() = previous;
     result
@@ -568,6 +560,21 @@ pub fn render_include_screen(
 ///
 /// Returns an error when the file cannot be read, is a FreeMarker template, or fails to render.
 pub fn render_text(state: &RenderState, location: &str, template: &str) -> Result<String, Error> {
+    if template == "false" {
+        return render_text_value(state, location, template);
+    }
+    let rendered = render_text_value(state, location, template)?;
+    write(state, &rendered);
+    Ok(String::new())
+}
+
+/// `sri.renderTextValue(location, template)`: as [`render_text`], but the rendered text is returned rather than
+/// written. The tui mode checks a text as JSON before it writes it.
+///
+/// # Errors
+///
+/// As [`render_text`].
+pub fn render_text_value(state: &RenderState, location: &str, template: &str) -> Result<String, Error> {
     if location.is_empty() || location == "null" {
         tracing::warn!(
             "Not rendering text in screen [{}], location was empty",
@@ -588,12 +595,8 @@ pub fn render_text(state: &RenderState, location: &str, template: &str) -> Resul
     }
     // As Java's renderText: the renderer of the location's extension, else of the `template` value as an extension,
     // else the file's text as it is, so a .js or .css file is not run as a template.
-    let rendered = {
-        let _frame = ContextFrame::push();
-        registry.render_location_default(&state.factory, location, None, template)
-    };
-    write(state, &rendered?);
-    Ok(String::new())
+    let _frame = ContextFrame::push();
+    registry.render_location_default(&state.factory, location, None, template)
 }
 
 pub fn append_to_after_screen_writer(state: &RenderState, text: &str) {

@@ -1,5 +1,5 @@
-$openChildren({t:"dialog",id:"New",title:"Create",button:ec.resource.expand("New ${kind}")});
-$emit({t:"text",id:"widgets/New/label",text:ec.resource.expand("in dialog")});
+$openChildren({t:"dialog",id:$uid("New"),title:ec.resource.expand("Create"),button:ec.resource.expand("New ${kind}")});
+$emit({t:"text",id:$uid("widgets/New/label"),text:ec.resource.expand("in dialog")});
 sri.pushSingleFormMapContext(fieldValues);
 try {
     const $hidden = [];
@@ -17,17 +17,24 @@ try {
 $transitionUrl = $made ? ($made.url || "") : "";
 const $focusName = ec.resource.expand("name", "");
 if ($focusName && $focusName !== "null") sri.setFocusField("NewForm" + "." + $focusName);
-$openChildren({t:"form",id:"NewForm",name:"NewForm",kind:"single",transitionUrl:$transitionUrl,method:"post",hidden:$hidden,submitMessage:ec.resource.expand("Saved"),backgroundReloadId:"",backgroundHideId:"New"});
+$openChildren({t:"form",id:$uid("NewForm"),name:"NewForm",kind:"single",transitionUrl:$transitionUrl,method:"post",hidden:$hidden,submitMessage:ec.resource.expand("Saved"),backgroundReloadId:"",backgroundHideId:"New"});
     $emit((() => {
             let $required = false;
             const $max = 0;
             const $hint = sri.getFieldValidation({"name":"default-field","attrs":{"title":"Name"},"parent":{"name":"field","attrs":{"name":"name"},"parent":{"name":"form-single","attrs":{"name":"NewForm","transition":"create","focus-field":"name","background-hide-id":"New","submit-message":"Saved"},"parent":{"name":"container-dialog","attrs":{"id":"New","button-text":"New ${kind}","title":"Create"},"parent":{"name":"widgets","attrs":{}}}}}});
             if ($hint && String($hint.classes || "").split(/\s+/).indexOf("required") >= 0) $required = true;
-            const $rules = sri.getFieldValidationJsRules({"name":"default-field","attrs":{"title":"Name"},"parent":{"name":"field","attrs":{"name":"name"},"parent":{"name":"form-single","attrs":{"name":"NewForm","transition":"create","focus-field":"name","background-hide-id":"New","submit-message":"Saved"},"parent":{"name":"container-dialog","attrs":{"id":"New","button-text":"New ${kind}","title":"Create"},"parent":{"name":"widgets","attrs":{}}}}}}) || [];
-            for (let $ri = 0; $ri < $rules.length; $ri++) if ($rules[$ri] && $rules[$ri].expr === "!!value") $required = true;
-            const $field = {t:"field",id:"NewForm.name",name:"name",title:String(ec.l10n.localize("Name") || ""),w:{kind:"textLine",value:String(sri.getFieldValueString({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Name"},"parent":{"name":"field","attrs":{"name":"name"},"parent":{"name":"form-single","attrs":{"name":"NewForm","transition":"create","focus-field":"name","background-hide-id":"New","submit-message":"Saved"},"parent":{"name":"container-dialog","attrs":{"id":"New","button-text":"New ${kind}","title":"Create"},"parent":{"name":"widgets","attrs":{}}}}}}}) || "" || "")}};
+            const $rules = [];
+            const $found = sri.getFieldValidationRules({"name":"default-field","attrs":{"title":"Name"},"parent":{"name":"field","attrs":{"name":"name"},"parent":{"name":"form-single","attrs":{"name":"NewForm","transition":"create","focus-field":"name","background-hide-id":"New","submit-message":"Saved"},"parent":{"name":"container-dialog","attrs":{"id":"New","button-text":"New ${kind}","title":"Create"},"parent":{"name":"widgets","attrs":{}}}}}}) || [];
+            for (let $ri = 0; $ri < $found.length; $ri++) {
+                if ($found[$ri].kind === "required") $required = true;
+                else $rules.push($found[$ri]);
+            }
+            const $field = {t:"field",id:$uid("NewForm.name"),name:"name",title:String(ec.l10n.localize("Name") || ""),w:{kind:"textLine",value:String(sri.getFieldValueString({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Name"},"parent":{"name":"field","attrs":{"name":"name"},"parent":{"name":"form-single","attrs":{"name":"NewForm","transition":"create","focus-field":"name","background-hide-id":"New","submit-message":"Saved"},"parent":{"name":"container-dialog","attrs":{"id":"New","button-text":"New ${kind}","title":"Create"},"parent":{"name":"widgets","attrs":{}}}}}}}) || "" || "")}};
             if ($required) $field.required = true;
             if ($max > 0) $field.maxlength = $max;
+            if ($rules.length) $field.rules = $rules;
+            
+            
             return $field;
         })());
 $closeChildren();

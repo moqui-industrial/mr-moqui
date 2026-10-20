@@ -17,7 +17,7 @@ default = ["maximal"]
 # Default package (`./moq build`): the web server on embedded Postgres, PDF, and outbound mail.
 lite = ["axum", "embedded-postgres", "pdf", "smtp"]
 # Enterprise package (`./moq build --enterprise`): everything, with the databases external.
-enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx", "ssh", "sso", "print", "inbound-smtp"]
+enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx", "ssh", "sso", "print", "inbound-smtp", "tui"]
 # Maximal package (`./moq build --release`, and the debug build): everything, Postgres embedded.
 maximal = ["enterprise", "embedded-postgres"]
 
@@ -43,8 +43,8 @@ imap = ["moqui-core/imap"]
 git = ["moqui-core/git"]
 image = ["moqui-core/image"]
 xlsx = ["moqui-core/xlsx"]
-# The screen client. Off the default packages: `moqui` defaults to maximal, and `cargo check -p moqui` must not
-# compile Revue. Turn it on for the scripted screens: `cargo test -p moqui-host --features tui --test tui_screens`.
+# The terminal client (`moqui tui`, plans/Screen-TUI-Impl.md 4.6): in enterprise and maximal, so it compiles Revue;
+# lite, the small server build, leaves it out, and a lite user runs the client from another build.
 tui = ["dep:moqui-tui"]
 
 [dependencies]
@@ -52,7 +52,7 @@ tui = ["dep:moqui-tui"]
 # certificate; the other core features follow the host's own.
 moqui-core = { workspace = true, features = ["http", "cluster-tls"] }
 moqui-lib = { workspace = true, features = ["http"] }
-# `ui` pulls Revue. The feature above is what links it, and it is not in lite, enterprise, or maximal.
+# `ui` pulls Revue. The `tui` feature above links it; lite leaves it out.
 moqui-tui = { workspace = true, optional = true, features = ["ui"] }
 tracing = { workspace = true }
 # Log line and log entry timestamps (crates/moqui-host/src/logging.rs). Already in the graph under moqui-lib.
@@ -116,7 +116,8 @@ test = false
 name = "gate3_browser"
 test = false
 
-# Scripted Gallery and Party screens. Revue is behind the `tui` feature, so a default `cargo test` does not build it.
+# Scripted Gallery and Party screens on embedded Postgres, run by scripts/check-packages.sh:
+# `cargo test -p moqui-host --test tui_screens`.
 [[test]]
 name = "tui_screens"
 required-features = ["tui"]

@@ -12,10 +12,11 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Scripted Gallery and Party screens through the in-process client.
+//! Scripted Gallery and Party screens through the in-process client: the Phase 2 Exit of plans/Screen-TUI-Impl.md.
 //!
-//! One server: every Gallery screen renders a model, then the keyboard flows on Gallery List and SimpleScreens Party.
-//! Mantle is linked into this runtime only.
+//! One server: every Gallery screen renders a model with no error node in it, a login through the dialog, then the
+//! keyboard flows on Gallery List (find, page, sort, open, a dialog submit) and on SimpleScreens Party, a Mantle app
+//! (dependent drop-downs, create, edit and save a person, read back). Mantle is linked into this runtime only.
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
@@ -29,7 +30,7 @@ use std::sync::Arc;
 use moqui_core::context::ExecutionContextFactory;
 use moqui_host::tui::HostLink;
 use moqui_lib::object::Value;
-use moqui_tui::{frame, outline, AppView, FormList, Key, KeyPress, Node, ScreenLink, ScreenModel};
+use moqui_tui::{frame, outline, AppView, FormList, Key, KeyPress, Node, Overlay, ScreenLink, ScreenModel, Session};
 
 const GALLERY: &[&str] = &[
     "Landing",
@@ -67,10 +68,47 @@ fn gallery_and_party_screens() {
     let gate = start_gate();
     let factory = Arc::clone(gate.server.factory());
     grant_gate(&factory);
-    let link = HostLink::new(factory, "john.doe");
+    log_in_through_the_dialog(&factory);
+    let link = HostLink::as_user(factory, "john.doe");
     render_gallery(&link);
     drive_gallery(&link);
     drive_party(&link);
+}
+
+/// A link with no user answers 401 to every call, so the client opens its login dialog; a wrong password stays there,
+/// and the right one asks for the screen again.
+fn log_in_through_the_dialog(factory: &Arc<ExecutionContextFactory>) {
+    let link = HostLink::new(Arc::clone(factory));
+    let mut view = AppView::with_session(Session::start("/apps/gallery/List"), link);
+    view.run_requests();
+    assert!(
+        matches!(view.session().top_overlay(), Some(Overlay::Login(_))),
+        "{:?} {}",
+        view.session().overlays(),
+        view.session().message()
+    );
+    type_text(&mut view, "john.doe");
+    view.on_key(&press(Key::Tab));
+    type_text(&mut view, "wrong");
+    view.on_key(&press(Key::Enter));
+    let Some(Overlay::Login(login)) = view.session().top_overlay() else {
+        panic!("a wrong password keeps the dialog: {:?}", view.session().overlays());
+    };
+    assert!(!login.error.is_empty());
+    type_text(&mut view, "moqui");
+    view.on_key(&press(Key::Enter));
+    assert!(
+        view.session().top_overlay().is_none(),
+        "{:?}",
+        view.session().overlays()
+    );
+    assert!(
+        view.session().path().ends_with("/gallery/List"),
+        "{}",
+        view.session().path()
+    );
+    assert_eq!(view.session().shell().user, "john.doe");
+    assert!(!view.session().menu().is_empty(), "the drawer of the gallery");
 }
 
 fn start_gate() -> common::Gate {
@@ -96,7 +134,7 @@ fn render_gallery(link: &HostLink) {
         match link.level(&path, &std::collections::BTreeMap::new()) {
             Ok(model) => {
                 if let Some(text) = lone_error(&model) {
-                    failures.push(format!("{path} rendered only an error: {text}"));
+                    failures.push(format!("{path} rendered an error: {text}"));
                 }
             }
             Err(err) => failures.push(format!("{path}: {err}")),
@@ -105,11 +143,15 @@ fn render_gallery(link: &HostLink) {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-fn lone_error(model: &ScreenModel) -> Option<&str> {
-    match model.c.as_slice() {
-        [Node::Error { text, .. }] => Some(text.as_str()),
-        _ => None,
-    }
+/// The first error node anywhere in the document.
+fn lone_error(model: &ScreenModel) -> Option<String> {
+    let mut found = None;
+    moqui_tui::walk(&model.c, &mut |node| {
+        if let Node::Error { text, .. } = node {
+            found.get_or_insert_with(|| text.clone());
+        }
+    });
+    found
 }
 
 fn drive_gallery(link: &HostLink) {
@@ -132,12 +174,27 @@ fn drive_gallery(link: &HostLink) {
 
 fn find_enumerations(view: &mut AppView<HostLink>) {
     focus(view, "EnumFind.description");
-    type_text(view, "e");
+    type_text(view, "Screen");
     view.on_key(&press(Key::Enter));
     assert!(
         view.session().path().contains("gallery/List"),
         "{}",
         view.session().message()
+    );
+    assert_eq!(
+        view.session().parameters().get("description").map(String::as_str),
+        Some("Screen"),
+        "{:?}",
+        view.session().parameters()
+    );
+    let rows = view.session().list_page("EnumList");
+    assert!(!rows.is_empty(), "the find matched nothing");
+    assert!(
+        rows.iter().all(|row| row
+            .cells
+            .iter()
+            .any(|cell| cell.text().to_lowercase().contains("screen"))),
+        "a row without the find text"
     );
 }
 
@@ -155,29 +212,32 @@ fn page_enumerations(view: &mut AppView<HostLink>) {
     view.on_key(&press(Key::F(8)));
     assert_eq!(view.session().page_index("EnumList"), 1, "{}", view.session().message());
     assert_ne!(before, first_cell(view), "page did not change the first row");
+    // Tall enough that the footer is on screen with the header above it.
+    let wide = view.screen_text(180, 120);
+    assert!(wide.contains("Page 2/"), "{wide}");
+    let narrow = view.screen_text(100, 120);
+    assert!(narrow.contains("Page 2/"), "{narrow}");
 }
 
 fn sort_enumerations(view: &mut AppView<HostLink>) {
     focus(view, "EnumList");
     view.on_key(&press(Key::Char('s')));
-    let order = view
-        .session()
-        .model()
-        .parameters
-        .get("orderByField")
-        .cloned()
-        .unwrap_or_default();
-    assert_eq!(order, "enumId", "{}", view.session().message());
+    assert_eq!(view.session().order_by(), "enumId", "{}", view.session().message());
+    assert_eq!(
+        view.session().page_index("EnumList"),
+        0,
+        "a sort starts at the first page"
+    );
 }
 
 fn toggle_find(view: &mut AppView<HostLink>) {
     focus(view, "EnumList");
     view.on_key(&press(Key::Char('f')));
-    assert!(view.session().find_open());
+    assert_eq!(view.session().find_open(), Some("EnumList"));
     let text = view.screen_text(100, 40);
-    assert!(text.contains("Find"), "{text}");
+    assert!(text.contains(" Find "), "{text}");
     view.on_key(&press(Key::Escape));
-    assert!(!view.session().find_open());
+    assert_eq!(view.session().find_open(), None);
 }
 
 fn open_detail(view: &mut AppView<HostLink>) {
@@ -219,27 +279,31 @@ fn drive_party(link: &HostLink) {
     let mut view = open_screen(link, "/apps/SimpleScreens/Party/FindParty");
     paint_frame(&mut view);
     assert_stacked(view.session().model(), frame(180).canvas);
-    let note = note_search(&mut view);
-    eprintln!("party search: {note}");
-    // A search that the index cannot answer replaces the screen with an error. Open the find again.
+    note_search(&mut view);
     view = open_screen(link, "/apps/SimpleScreens/Party/FindParty");
     check_country_states(&mut view);
     create_person(&mut view, link);
 }
 
-fn note_search(view: &mut AppView<HostLink>) -> String {
-    if !focus_at(view, "OuterSearchForm.anyField") {
-        return format!("field missing at {}", view.session().focus_id());
-    }
+/// A search the index cannot answer leaves the screen with its message, not a crash.
+fn note_search(view: &mut AppView<HostLink>) {
+    assert!(
+        focus_at(view, "OuterSearchForm.anyField"),
+        "field missing at {}",
+        view.session().focus_id()
+    );
     type_text(view, "zzznomatch");
     view.on_key(&press(Key::Enter));
-    let error = lone_error(view.session().model()).unwrap_or("");
-    format!(
-        "path {} message {} error {}",
-        view.session().path(),
-        view.session().message(),
-        error
-    )
+    assert!(view.session().path().contains("FindParty"), "{}", view.session().path());
+    assert_eq!(
+        view.session().parameters().get("anyField").map(String::as_str),
+        Some("zzznomatch")
+    );
+    let shown = view.session().list_page("PartyListForm").len();
+    assert!(
+        shown == 0 || lone_error(view.session().model()).is_some() || !view.session().message().is_empty(),
+        "{shown} rows for a search that matches nothing"
+    );
 }
 
 fn check_country_states(view: &mut AppView<HostLink>) {
@@ -253,11 +317,16 @@ fn check_country_states(view: &mut AppView<HostLink>) {
     assert_ne!(view.session().buffer("CreatePersonCustForm.stateProvinceGeoId"), "CA");
     focus(view, "CreatePersonCustForm.stateProvinceGeoId");
     view.on_key(&press(Key::F(4)));
-    let choices = view.session().focused_choices();
+    let choices = view.session().dropdown_choices();
     assert!(choices.iter().any(|choice| choice.value == "ON"), "{choices:?}");
     assert!(choices.iter().all(|choice| choice.value != "CA"), "{choices:?}");
     view.on_key(&press(Key::Escape));
     view.on_key(&press(Key::Escape));
+    // The dialog's edits ask before they go.
+    if view.session().confirm_choice().is_some() {
+        view.on_key(&press(Key::Char('d')));
+        view.on_key(&press(Key::Escape));
+    }
     assert!(
         view.session().dialogs_open().is_empty(),
         "{:?}",
@@ -268,57 +337,73 @@ fn check_country_states(view: &mut AppView<HostLink>) {
 fn create_person(view: &mut AppView<HostLink>, link: &HostLink) {
     focus(view, "CreatePersonDialog");
     view.on_key(&press(Key::Enter));
+    // An empty required name is marked here, and nothing is sent.
+    focus(view, "CreatePersonForm.firstName");
+    view.on_key(&press(Key::Enter));
+    let marked = view.session().marks().keys().cloned().collect::<Vec<_>>();
+    assert!(!marked.is_empty(), "no mark for the empty required names");
+    assert!(view.session().message_is_error(), "{}", view.session().message());
     focus(view, "CreatePersonForm.firstName");
     type_text(view, "Tui");
     view.on_key(&press(Key::Tab));
     assert_eq!(view.session().focus_id(), "CreatePersonForm.lastName");
     type_text(view, "Gate");
     view.on_key(&press(Key::Enter));
-    // The country test leaves another form dirty, so the redirect asks before it leaves.
-    if view.session().confirm_choice().is_some() {
-        // Down moves the confirm. Right would type into the text field.
-        view.on_key(&press(Key::Down));
-        view.on_key(&press(Key::Enter));
-    }
     assert!(
         view.session().path().contains("/EditParty"),
         "{} {}",
         view.session().path(),
         view.session().message()
     );
-    require_menu(view, link);
+    let party_id = view
+        .session()
+        .parameters()
+        .get("partyId")
+        .cloned()
+        .unwrap_or_else(|| panic!("no partyId in {:?}", view.session().parameters()));
     paint_frame(view);
     assert_side_by_side(view.session().model(), frame(180).canvas);
     assert_stacked(view.session().model(), frame(100).canvas);
     focus(view, "EditPersonForm.firstName");
     type_text(view, "x");
     view.on_key(&press(Key::Enter));
-    let saved = view.session().buffer("EditPersonForm.firstName").contains('x')
-        || !view.session().message().is_empty()
-        || view.session().mark("EditPersonForm.firstName").is_some();
     assert!(
-        saved,
-        "buffer {} message {} focus {}",
-        view.session().buffer("EditPersonForm.firstName"),
+        !view.session().message_is_error(),
+        "save failed: {} mark {:?}",
         view.session().message(),
-        view.session().focus_id()
+        view.session().mark("EditPersonForm.firstName")
     );
+    assert!(!view.session().any_dirty(), "the save left edits");
+    // Read the record back from the server: the edit was saved.
+    let again = link
+        .level(
+            "/apps/SimpleScreens/Party/EditParty",
+            &std::collections::BTreeMap::from([("partyId".to_string(), party_id)]),
+        )
+        .expect("EditParty again");
+    let mut first_name = String::new();
+    moqui_tui::walk(&again.c, &mut |node| {
+        if let Node::Field { id, w, .. } = node {
+            if id == "EditPersonForm.firstName" {
+                first_name = w.value().to_string();
+            }
+        }
+    });
+    assert_eq!(first_name, "Tuix");
 }
 
+/// The screen at `path` as the client opens it: the shell data (drawer, theme) and the level.
 fn open_screen(link: &HostLink, path: &str) -> AppView<HostLink> {
-    let model = link
-        .level(path, &std::collections::BTreeMap::new())
-        .unwrap_or_else(|err| panic!("{path}: {err}"));
-    let mut view = AppView::new(model, link.clone());
-    require_menu(&mut view, link);
+    let mut view = AppView::with_session(Session::start(path), link.clone());
+    view.run_requests();
+    assert!(
+        view.session().path().ends_with(path.rsplit('/').next().unwrap_or(path)),
+        "{path}: {} {}",
+        view.session().path(),
+        view.session().message()
+    );
+    assert!(!view.session().menu().is_empty(), "menu {path}");
     view
-}
-
-fn require_menu(view: &mut AppView<HostLink>, link: &HostLink) {
-    let path = view.session().path().to_string();
-    let menu = link.menu(&path).unwrap_or_else(|err| panic!("menu {path}: {err}"));
-    assert!(!menu.is_empty(), "menu {path}");
-    view.session_mut().set_menu(menu);
 }
 
 fn paint_frame(view: &mut AppView<HostLink>) {
@@ -381,9 +466,8 @@ fn type_text(view: &mut AppView<HostLink>, text: &str) {
 
 fn choose_value(view: &mut AppView<HostLink>, value: &str) {
     view.on_key(&press(Key::F(4)));
-    let choices = view.session().focused_choices();
-    let current = view.session().buffer(view.session().focus_id()).to_string();
-    let from = choices.iter().position(|choice| choice.value == current).unwrap_or(0);
+    let choices = view.session().dropdown_choices();
+    let at = view.session().dropdown().map_or(0, |drop| drop.at);
     let Some(to) = choices.iter().position(|choice| choice.value == value) else {
         let shown: Vec<_> = choices.iter().take(8).map(|choice| choice.value.as_str()).collect();
         panic!(
@@ -392,8 +476,8 @@ fn choose_value(view: &mut AppView<HostLink>, value: &str) {
             field_debug(view)
         );
     };
-    let key = if to >= from { Key::Down } else { Key::Up };
-    for _ in 0..from.abs_diff(to) {
+    let key = if to >= at { Key::Down } else { Key::Up };
+    for _ in 0..at.abs_diff(to) {
         view.on_key(&press(key.clone()));
     }
     view.on_key(&press(Key::Enter));

@@ -21,6 +21,9 @@
 
     const { attr, has, jsString, child, childrenNamed, stmt } = T;
 
+    // Field and parameter names never written, compared without case: CREDENTIAL_PARAMETER_NAMES in
+    // crates/moqui-core/src/web/mod.rs. Field names are checked as the code is made, hidden parameter names as it runs.
+    const SECRET = new Set(["password", "oldpassword", "newpassword", "newpasswordverify", "currentpassword", "resetpassword", "authpassword", "api_key", "login_key", "passwordsalt", "passwordhashtype", "passwordbase64", "passwordverify"]);
     const prelude = `
 let $comma = false;
 const $stack = [];
@@ -45,7 +48,7 @@ const $scrub = (value) => {
         for (const key of Object.keys(value)) {
             if (!first) out += ",";
             first = false;
-            out += JSON.stringify(key) + ":" + $scrub(value[key]);
+            out += JSON.stringify($clean(key)) + ":" + $scrub(value[key]);
         }
         return out + "}";
     }
@@ -69,16 +72,18 @@ const $whole = (value) => {
     const n = Number(value);
     return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
 };
-const $secret = new Set(["password", "oldpassword", "newpassword", "newpasswordverify", "currentpassword", "resetpassword", "authpassword", "api_key", "login_key", "passwordsalt", "passwordhashtype", "passwordbase64", "passwordverify"]);
+const $uid = (id) => sri.uniqueId(String(id));
+const $secret = new Set(${JSON.stringify([...SECRET])});
 sri.write("[");
 `;
     const epilogue = `
 sri.write("]");
 `;
 
-    const SECRET = new Set(["password", "oldpassword", "newpassword", "newpasswordverify", "currentpassword", "resetpassword", "authpassword", "api_key", "login_key", "passwordsalt", "passwordhashtype", "passwordbase64", "passwordverify"]);
     const typeNames = (type) => (type || "").split(",").map((name) => name.trim()).filter((name) => name);
     const exprOf = (text) => (text && String(text).includes("${") ? S.expandExpr(text) : jsString(text || ""));
+    // A title as the other modes show it: expanded and localized.
+    const titleOf = (text) => (text ? S.expandExpr(text) : '""');
     const guarded = (node, code) => {
         const condition = attr(node, "condition");
         if (!condition || !code) return code;
@@ -140,23 +145,6 @@ sri.write("]");
         if (widget.name === "check") return S.expandNoL10nExpr(attr(widget, "no-current-selected-key"));
         return jsString(attr(widget, "no-current-selected-key"));
     };
-    const parameterNames = (dynamic) => {
-        const names = [];
-        const add = (name) => { if (name && !names.includes(name)) names.push(name); };
-        childrenNamed(dynamic, "depends-on").forEach((dep) => add(attr(dep, "field")));
-        const map = attr(dynamic, "parameter-map");
-        if (map) {
-            const re = /([A-Za-z_][A-Za-z0-9_]*)\s*:/g;
-            let found = re.exec(map);
-            while (found) {
-                if (found[1] !== "context") add(found[1]);
-                found = re.exec(map);
-            }
-        }
-        if (attr(dynamic, "server-search") === "true") add("term");
-        return names;
-    };
-
     const screenUrlExpr = `(() => { const $info = sri.getScreenUrlInfo(); const $names = $info && $info.fullPathNameList; if ($names && $names.length) return "/" + $names.join("/"); const $screen = sri.getActiveScreenDef(); return ($screen && $screen.location) || ""; })()`;
 
     const linkIdExpr = (node, inList) => {
@@ -176,10 +164,15 @@ sri.write("]");
             let $text = ${S.linkTextExpr(node)};
             if ($text == null || $text === "null") $text = "";
             const $made = sri.makeUrlByType(${jsString(attr(node, "url") || "")}, ${jsString(attr(node, "url-type") || "transition")}, ${S.nodeLit(node, true)}, ${jsString(attr(node, "expand-transition-url") || "true")});
-            const $link = {t:"link",id:${linkIdExpr(node, inList)},text:String($text),url:$made ? ($made.url || "") : ""};
+            const $link = {t:"link",id:$uid(${linkIdExpr(node, inList)}),text:String($text),url:$made ? ($made.getUrlWithParams() || "") : ""};
+            if ($made && $made.getDisableLink()) $link.disabled = true;
             ${kind ? `$link.kind = ${jsString(kind)};` : ""}
+            ${attr(node, "btn-type") ? `$link.btnType = ${jsString(attr(node, "btn-type"))};` : ""}
+            ${attr(node, "icon") ? `$link.icon = ${jsString(attr(node, "icon"))};` : ""}
+            ${attr(node, "badge") ? `$link.badge = String(${S.expandNoL10nExpr(attr(node, "badge"))} || "");` : ""}
+            ${attr(node, "tooltip") ? `$link.tooltip = String(${S.expandExpr(attr(node, "tooltip"))} || "");` : ""}
             ${kind === "hidden-form-link" ? `$link.method = "post";` : ""}
-            ${confirm ? `$link.confirm = String(${exprOf(confirm)} || "");` : ""}
+            ${confirm ? `$link.confirm = String(${titleOf(confirm)} || "");` : ""}
             return $link;
         })()`;
     };
@@ -194,16 +187,26 @@ sri.write("]");
         if ($value && !$options.some(($opt) => $opt.value === $value)) $options.push({value:$value,label:$value});
         return {kind:${jsString(kind)},value:$value,options:$options};
     })()`;
+    // As qvt's remote options: the URL without its query, its fixed parameters, and {parameter: field} for depends-on.
     const dynamicOptions = (widget) => {
         const dynamic = child(widget, "dynamic-options");
-        const depends = childrenNamed(dynamic, "depends-on").map((dep) => attr(dep, "field")).filter(Boolean);
+        const depends = {};
+        childrenNamed(dynamic, "depends-on").forEach((dep) => {
+            const field = attr(dep, "field");
+            if (field) depends[attr(dep, "parameter") || field] = field;
+        });
         const labelField = attr(dynamic, "label-field") || "label";
         return `(() => {
             const $value = String(${valueCall(widget)} || "");
-            const $made = sri.makeUrlByType(${jsString(attr(dynamic, "transition") || "")}, "transition", ${S.nodeLit(dynamic, true)}, "true");
+            const $made = sri.makeUrlByType(${jsString(attr(dynamic, "transition") || "")}, "transition", ${S.nodeLit(dynamic, true)}, "false");
             const $optionsUrl = $made ? ($made.url || "") : "";
             const $depends = ${JSON.stringify(depends)};
-            const $params = ${JSON.stringify(parameterNames(dynamic))};
+            const $params = {};
+            const $map = $made ? ($made.getParameterMap() || {}) : {};
+            for (const $key of Object.keys($map)) {
+                const $fixed = $map[$key];
+                if ($depends[$key] === undefined && $fixed != null && $fixed !== "") $params[$key] = String($fixed);
+            }
             let $label = $value;
             if ($value) {
                 const $found = sri.getFieldTransitionValue(${jsString(attr(dynamic, "transition") || "")}, ${S.nodeLit(dynamic, true)}, $value, ${jsString(labelField)}, false);
@@ -211,11 +214,16 @@ sri.write("]");
             }
             const $w = {kind:"dropDown",value:$value,options:$value ? [{value:$value,label:$label}] : []};
             if ($optionsUrl) $w.optionsUrl = $optionsUrl;
-            if ($depends.length) $w.dependsOn = $depends;
-            if ($params.length) $w.optionsParameters = $params;
-            return $w;
+            if (Object.keys($depends).length) $w.dependsOn = $depends;
+            if (Object.keys($params).length) $w.optionsParameters = $params;
+            ${attr(dynamic, "server-search") === "true" ? "$w.serverSearch = true;\n            " : ""}return $w;
         })()`;
     };
+    // A find value from the request: `name` plus a suffix (`_from`, `_op`), else the default, as qvt's fields-initial.
+    const findValue = (field, suffix, fallback) =>
+        `(() => { const $v = ec.context.get(${jsString((attr(field, "name") || "") + suffix)}); return $v == null || $v === "" || $v === "null" ? String(${fallback || '""'}) : String($v); })()`;
+    const dateDefault = (widget) => (attr(widget, "type") === "time" ? "HH:mm" : attr(widget, "type") === "date" ? "yyyy-MM-dd" : "yyyy-MM-dd HH:mm");
+    const flag = (widget, name) => attr(widget, name) === "true";
     const widgetExpr = (widget) => {
         const field = fieldNodeOf(widget);
         const secret = field && SECRET.has((attr(field, "name") || "").toLowerCase());
@@ -225,43 +233,100 @@ sri.write("]");
             const kind = widget.name === "text-find" ? "textFind" : widget.name === "hidden" ? "hidden" : "textLine";
             return `{kind:${jsString(kind)},value:""}`;
         }
-        if (widget.name === "text-line" || widget.name === "text-area") {
-            return `{kind:"textLine",value:String(${valueCall(widget)} || "")}`;
+        if (widget.name === "text-line") {
+            const extra = [
+                attr(widget, "input-type") ? `inputType:${jsString(attr(widget, "input-type"))}` : "",
+                attr(widget, "mask") ? `mask:${jsString(attr(widget, "mask"))}` : "",
+                /^\d+$/.test(attr(widget, "size")) ? `size:${attr(widget, "size")}` : ""
+            ].filter(Boolean).map((part) => "," + part).join("");
+            return `{kind:"textLine",value:String(${valueCall(widget)} || "")${extra}}`;
         }
-        if (widget.name === "text-find") return `{kind:"textFind",value:String(${valueCall(widget)} || "")}`;
-        if (widget.name === "drop-down") return child(widget, "dynamic-options") ? dynamicOptions(widget) : inlineOptions(widget, "dropDown");
+        if (widget.name === "text-area") {
+            // D12: rich text is shown, never posted, so the stored HTML is not overwritten from the terminal.
+            const editor = attr(widget, "editor-type");
+            const readOnly = flag(widget, "read-only") || ["html", "rich", "rich-light"].includes(editor);
+            const rows = /^\d+$/.test(attr(widget, "rows")) ? attr(widget, "rows") : "0";
+            return `{kind:"textArea",value:String(${valueCall(widget)} || ""),rows:${rows},editorType:${jsString(editor)}${readOnly ? ",readOnly:true" : ""}}`;
+        }
+        if (widget.name === "text-find") {
+            const ignoreCase = !attr(widget, "ignore-case") || flag(widget, "ignore-case");
+            return `{kind:"textFind",value:String(${valueCall(widget)} || ""),op:${findValue(field, "_op", jsString(attr(widget, "default-operator") || "contains"))},not:${findValue(field, "_not", '"N"')} === "Y",ic:${findValue(field, "_ic", jsString(ignoreCase ? "Y" : "N"))} === "Y"${flag(widget, "hide-options") ? ",hideOptions:true" : ""}}`;
+        }
+        if (widget.name === "drop-down") {
+            const base = child(widget, "dynamic-options") ? dynamicOptions(widget) : inlineOptions(widget, "dropDown");
+            const flags = [
+                ["allow-multiple", "multiple"], ["combo-box", "combo"], ["submit-on-select", "submitOnSelect"], ["show-not", "showNot"]
+            ].filter(([name]) => attr(widget, name) === "true").map(([, key]) => `$w.${key} = true;`);
+            if (attr(widget, "allow-empty") === "true") flags.push("$w.allowEmpty = true;");
+            if (attr(widget, "show-not") === "true") flags.push(`$w.not = ${findValue(field, "_not", '"N"')} === "Y";`);
+            if (!flags.length) return base;
+            return `(() => { const $w = ${base}; ${flags.join(" ")} return $w; })()`;
+        }
         if (widget.name === "radio") return inlineOptions(widget, "radio");
-        if (widget.name === "check") return `{kind:"check",value:String(${valueCall(widget)} || "")}`;
+        if (widget.name === "check") return inlineOptions(widget, "check");
         if (widget.name === "date-time") {
-            return `{kind:"dateTime",value:String(sri.getFieldValueString(${S.fieldLit(widget)}, ${jsString(attr(widget, "default-value"))}, ${jsString(S.dateTimeFormat(widget))}, ${jsString(attr(widget, "type") || "date-time")}) || ""),format:${jsString(S.dateTimeFormat(widget))}}`;
+            const type = attr(widget, "type") || "date-time";
+            return `{kind:"dateTime",value:String(sri.getFieldValueString(${S.fieldLit(widget)}, ${jsString(attr(widget, "default-value"))}, ${jsString(S.dateTimeFormat(widget))}, ${jsString(type)}) || ""),type:${jsString(type)},format:${jsString(S.dateTimeFormat(widget))}}`;
         }
-        if (widget.name === "display") return `{kind:"display",text:String(${S.displayValueExpr(widget)} || "")}`;
-        if (widget.name === "display-entity") return `{kind:"display",text:String(sri.getFieldEntityValue(${S.nodeLit(widget, false)}) || "")}`;
+        if (widget.name === "date-find") {
+            const format = dateDefault(widget);
+            const formatted = (suffix, fallback) => `(() => { const $raw = ${findValue(field, suffix, jsString(fallback))}; if (!$raw) return ""; try { return String(ec.l10n.format($raw, ${jsString(format)})); } catch ($err) { return $raw; } })()`;
+            return `{kind:"dateFind",type:${jsString(attr(widget, "type") || "timestamp")},format:${jsString(format)},from:${formatted("_from", attr(widget, "default-value-from"))},thru:${formatted("_thru", attr(widget, "default-value-thru"))}}`;
+        }
+        if (widget.name === "date-period") {
+            return `{kind:"datePeriod",period:${findValue(field, "_period")}.toLowerCase(),poffset:${findValue(field, "_poffset")},pdate:${findValue(field, "_pdate")},from:${findValue(field, "_from")},thru:${findValue(field, "_thru")},allowEmpty:${attr(widget, "allow-empty") !== "false"},time:${flag(widget, "time")}}`;
+        }
+        if (widget.name === "range-find") {
+            return `{kind:"rangeFind",from:${findValue(field, "_from", jsString(attr(widget, "default-value-from")))},thru:${findValue(field, "_thru", jsString(attr(widget, "default-value-thru")))}}`;
+        }
+        if (widget.name === "file") return `{kind:"file"${flag(widget, "multiple") ? ",multiple:true" : ""}${attr(widget, "accept") ? `,accept:${jsString(attr(widget, "accept"))}` : ""}}`;
+        if (widget.name === "display" || widget.name === "display-entity") {
+            const text = widget.name === "display" ? S.displayValueExpr(widget) : `sri.getFieldEntityValue(${S.nodeLit(widget, false)})`;
+            // also-hidden (the default) posts the plain value with the form, as qvt's display does.
+            const alsoHidden = !attr(widget, "also-hidden") || flag(widget, "also-hidden");
+            return `{kind:"display",text:String(${text} || "")${alsoHidden ? `,value:String(sri.getFieldValuePlainString(${S.fieldLit(widget)}, "") || "")` : ""}}`;
+        }
         if (widget.name === "hidden") return `{kind:"hidden",value:String(${valueCall(widget)} || "")}`;
         if (widget.name === "submit" || widget.name === "reset") {
-            return `{kind:${jsString(widget.name)},text:String(${S.localizedTitle(widget.parent)} || "")}`;
+            return `{kind:${jsString(widget.name)},text:String(${S.localizedTitle(widget.parent)} || "")${widget.name === "submit" && attr(widget, "confirmation") ? `,confirm:String(${titleOf(attr(widget, "confirmation"))} || "")` : ""}}`;
+        }
+        if (widget.name === "label") {
+            return `{kind:"label",text:String(${S.expandExpr(attr(widget, "text") || "")} || ""),style:${jsString(attr(widget, "type") || "span")}}`;
+        }
+        if (widget.name === "image") {
+            return `{kind:"image",alt:String(${S.expandExpr(attr(widget, "alt") || "")} || ""),url:String(${S.expandNoL10nExpr(attr(widget, "url") || "")} || "")}`;
         }
         return "";
     };
     const fieldObject = (field, sub, widget) => {
         const w = widgetExpr(widget);
         if (!w) return "";
+        const when = child(sub, "visible-when");
         const required = attr(field, "required") === "true" || attr(sub, "required") === "true";
         return `(() => {
             let $required = ${required ? "true" : "false"};
             const $max = ${maxlengthOf(sub, widget)};
             const $hint = sri.getFieldValidation(${S.nodeLit(sub, false)});
             if ($hint && String($hint.classes || "").split(/\\s+/).indexOf("required") >= 0) $required = true;
-            const $rules = sri.getFieldValidationJsRules(${S.nodeLit(sub, false)}) || [];
-            for (let $ri = 0; $ri < $rules.length; $ri++) if ($rules[$ri] && $rules[$ri].expr === "!!value") $required = true;
-            const $field = {t:"field",id:${jsString(fieldIdOf(field))},name:${jsString(attr(field, "name") || "field")},title:String(${S.localizedTitle(sub)} || ""),w:${w}};
+            const $rules = [];
+            const $found = sri.getFieldValidationRules(${S.nodeLit(sub, false)}) || [];
+            for (let $ri = 0; $ri < $found.length; $ri++) {
+                if ($found[$ri].kind === "required") $required = true;
+                else $rules.push($found[$ri]);
+            }
+            const $field = {t:"field",id:$uid(${jsString(fieldIdOf(field))}),name:${jsString(attr(field, "name") || "field")},title:String(${S.localizedTitle(sub)} || ""),w:${w}};
             if ($required) $field.required = true;
             if ($max > 0) $field.maxlength = $max;
+            if ($rules.length) $field.rules = $rules;
+            ${attr(sub, "tooltip") ? `$field.tooltip = String(${S.expandExpr(attr(sub, "tooltip"))} || "");` : ""}
+            ${when ? `$field.visibleWhen = {field:${jsString(attr(when, "field"))},value:String(${exprOf(attr(when, "value"))} || "")};` : ""}
             return $field;
         })()`;
     };
+    // Children of a field sub-node that are not drawn: set, ignored, and the visible-when rule the field carries.
+    const notWidget = (widget) => widget.name === "set" || widget.name === "ignored" || widget.name === "visible-when";
     const placeholderEmit = (id, text, url) =>
-        `$emit({t:"placeholder",id:${jsString(id)},text:${jsString(text)}${url ? `,url:${url}` : ""}});\n`;
+        `$emit({t:"placeholder",id:$uid(${jsString(id)}),text:${jsString(text)}${url ? `,url:${url}` : ""}});\n`;
     const emitWidget = (field, sub, widget) => {
         if (widget.name === "link") return linkStatement(widget, false);
         const expr = fieldObject(field, sub, widget);
@@ -271,7 +336,7 @@ sri.write("]");
     const emitSub = (field, sub) => {
         let code = S.setCode(sub);
         sub.children.forEach((widget) => {
-            if (widget.name === "set" || widget.name === "ignored") return;
+            if (notWidget(widget)) return;
             code += emitWidget(field, sub, widget);
         });
         return code;
@@ -305,13 +370,13 @@ sri.write("]");
                     });
                 } else if (kid.name === "field-row" || kid.name === "field-row-big" || kid.name === "field-col-row") {
                     const inner = walk(kid);
-                    code += `$openChildren({t:"row",id:${jsString(formNameOf(form) + ".l" + seq++)}});\n${inner}$closeChildren();\n`;
+                    code += `$openChildren({t:"row",id:$uid(${jsString(formNameOf(form) + ".l" + seq++)})});\n${inner}$closeChildren();\n`;
                 } else if (kid.name === "field-col") {
                     const inner = walk(kid);
-                    code += `$openChildren({t:"col",id:${jsString(formNameOf(form) + ".l" + seq++)},xs:${jsString(attr(kid, "xs"))},sm:${jsString(attr(kid, "sm"))},md:${jsString(attr(kid, "md"))},lg:${jsString(attr(kid, "lg"))}});\n${inner}$closeChildren();\n`;
+                    code += `$openChildren({t:"col",id:$uid(${jsString(formNameOf(form) + ".l" + seq++)}),xs:${jsString(attr(kid, "xs"))},sm:${jsString(attr(kid, "sm"))},md:${jsString(attr(kid, "md"))},lg:${jsString(attr(kid, "lg"))}});\n${inner}$closeChildren();\n`;
                 } else if (kid.name === "field-group" || kid.name === "field-accordion") {
                     const inner = walk(kid);
-                    code += `$openChildren({t:"box",id:${jsString(formNameOf(form) + ".l" + seq++)},title:${exprOf(attr(kid, "title"))},type:${jsString(kid.name)}});\n${inner}$closeChildren();\n`;
+                    code += `$openChildren({t:"box",id:$uid(${jsString(formNameOf(form) + ".l" + seq++)}),title:${titleOf(attr(kid, "title"))},type:${jsString(kid.name)}});\n${inner}$closeChildren();\n`;
                 }
             });
             return code;
@@ -366,7 +431,7 @@ sri.write("]");
                 const body = S.fieldChain(field, (sub) => {
                     let inner = S.setCode(sub);
                     sub.children.forEach((widget) => {
-                        if (widget.name === "set" || widget.name === "ignored") return;
+                        if (notWidget(widget)) return;
                         inner += `$piece = ${cellText(widget)};\n`;
                         inner += `if ($piece && typeof $piece === "object") $cell = $piece;\n`;
                         inner += `else if ($piece != null && String($piece) !== "" && typeof $cell !== "object") $cell = $cell ? ($cell + " " + $piece) : String($piece);\n`;
@@ -386,7 +451,7 @@ sri.write("]");
             if (!sub || attr(field, "hide") === "true") return;
             code += S.setCode(sub);
             sub.children.forEach((widget) => {
-                if (widget.name === "set" || widget.name === "ignored") return;
+                if (notWidget(widget)) return;
                 if (widget.name === "link") {
                     code += `$headerFields.push(${linkExpr(widget, false)});\n`;
                     return;
@@ -394,7 +459,7 @@ sri.write("]");
                 const expr = fieldObject(field, sub, widget);
                 code += expr
                     ? `$headerFields.push(${expr});\n`
-                    : `$headerFields.push({t:"placeholder",id:${jsString(fieldIdOf(field) + "." + widget.name)},text:${jsString(widget.name)}});\n`;
+                    : `$headerFields.push({t:"placeholder",id:$uid(${jsString(fieldIdOf(field) + "." + widget.name)}),text:${jsString(widget.name)}});\n`;
             });
         });
         return code;
@@ -426,7 +491,7 @@ try {
         $hidden.push({name:String($key),value:String($value)});
     }
     let $transitionUrl = "";
-    ${transitionCode}${focusCode}$openChildren({t:"form",id:${jsString(id)},name:${jsString(name)},kind:"single",transitionUrl:$transitionUrl,method:${jsString(transition ? "post" : "")},hidden:$hidden,submitMessage:${attr(node, "submit-message") ? S.expandExpr(attr(node, "submit-message")) : '""'},backgroundReloadId:${exprOf(attr(node, "background-reload-id") || "")},backgroundHideId:${exprOf(attr(node, "background-hide-id") || "")}});
+    ${transitionCode}${focusCode}$openChildren({t:"form",id:$uid(${jsString(id)}),name:${jsString(name)},kind:"single",transitionUrl:$transitionUrl,method:${jsString(transition ? "post" : "")},hidden:$hidden,submitMessage:${attr(node, "submit-message") ? S.expandExpr(attr(node, "submit-message")) : '""'},backgroundReloadId:${exprOf(attr(node, "background-reload-id") || "")},backgroundHideId:${exprOf(attr(node, "background-hide-id") || "")}});
     ${body}$closeChildren();
 } finally {
     sri.popContext();
@@ -434,6 +499,14 @@ try {
 `;
     });
 
+    // A column of numbers: a currency or number-formatted display, or a number input.
+    const numeric = (field) => {
+        const sub = child(field, "default-field");
+        if (!sub) return false;
+        return sub.children.some((widget) =>
+            (widget.name === "display" && (attr(widget, "currency-unit-field") || /[#0]/.test(attr(widget, "format")))) ||
+            (widget.name === "text-line" && attr(widget, "input-type") === "number"));
+    };
     const formList = stmt((node) => {
         const name = formNameOf(node);
         const id = attr(node, "id") || name;
@@ -454,12 +527,18 @@ try {
             const sortField = column.find((field) => showOrderBy(field) === "true" || showOrderBy(field) === "case-insensitive");
             const orderBy = sortField ? (showOrderBy(sortField) === "case-insensitive" ? "^" : "") + attr(sortField, "name") : "";
             const orderCode = orderBy ? `,orderBy:${jsString(orderBy)}` : "";
-            return `$columns.push({title:[${parts.join(",")}].filter(($part) => $part).join(" / ")${orderCode}});\n`;
+            // The client sizes columns from print-width as the text mode does, against the canvas it has.
+            const sized = column.find((field) => attr(field, "print-width"));
+            const widthCode = sized ? `,printWidth:${jsString(attr(sized, "print-width"))},printWidthType:${jsString(attr(sized, "print-width-type") || "characters")}` : "";
+            const alignCode = column.some(numeric) ? `,align:"right"` : "";
+            return `$columns.push({title:[${parts.join(",")}].filter(($part) => $part).join(" / ")${orderCode}${widthCode}${alignCode}});\n`;
         }).join("");
         const rowKey = idField
             ? `String(sri.getNamedValuePlain(${jsString(idField)}, ${S.nodeLit(node, false)}) || $index)`
             : "String($index)";
         const pageName = (suffix) => (listKey ? jsString(listKey + suffix) : '""');
+        const selection = child(node, "row-selection");
+        const selectIdField = selection ? attr(selection, "id-field") : "";
         return `{
     const $info = sri.openFormList(${jsString(name)});
     try {
@@ -471,7 +550,10 @@ try {
             try {
                 const $rowKey = ${rowKey};
                 const $cells = [];
-                ${columnCells(columns)}$rows.push({cells:$cells});
+                ${columnCells(columns)}const $row = {id:$rowKey,cells:$cells};
+                ${selectIdField ? `const $selectId = ec.context.get(${jsString(selectIdField)});
+                if ($selectId != null && $selectId !== "") $row.selectId = String($selectId);
+                ` : ""}$rows.push($row);
             } finally {
                 sri.endFormListRow();
             }
@@ -483,7 +565,14 @@ try {
         const $total = ${pageName("Count")} ? ec.context.get(${pageName("Count")}) : null;
         const $count = $total == null || $total === "" ? $info.count : $whole($total);
         const $size = $pageSize > 0 ? $pageSize : $info.count;
-        $emit({t:"formList",id:${jsString(id)},name:${jsString(name)},columns:$columns,rows:$rows,paging:{index:$pageIndex,size:$size,count:$count},headerFields:$headerFields});
+        const $paging = {index:$pageIndex,size:$size,count:$count};
+        for (const [$key, $suffix] of [["maxIndex", "PageMaxIndex"], ["rangeLow", "PageRangeLow"], ["rangeHigh", "PageRangeHigh"]]) {
+            const $value = ${listKey ? `ec.context.get(${jsString(listKey)} + $suffix)` : "null"};
+            if ($value != null && $value !== "") $paging[$key] = $whole($value);
+        }
+        const $list = {t:"formList",id:$uid(${jsString(id)}),name:${jsString(name)},columns:$columns,rows:$rows,paging:$paging,headerFields:$headerFields};
+        ${selection ? `$list.rowSelection = {idField:${jsString(selectIdField)},parameter:${jsString(attr(selection, "parameter") || selectIdField)}${attr(selection, "list-mode") ? `,listMode:${jsString(attr(selection, "list-mode"))}` : ""}};
+        ` : ""}$emit($list);
     } finally {
         sri.safeCloseList($info);
     }
@@ -493,38 +582,52 @@ try {
 
     const rawText = (node) => {
         if (attr(node, "location")) {
-            return `sri.renderText(${S.expandNoL10nExpr(attr(node, "location"))}, ${jsString(attr(node, "template") || "true")})`;
+            return `sri.renderTextValue(${S.expandNoL10nExpr(attr(node, "location"))}, ${jsString(attr(node, "template") || "true")})`;
         }
         const inline = node.text || "";
         const template = attr(node, "template");
         return !template || template === "true" ? `sri.renderInlineText(${jsString(inline)})` : jsString(inline);
     };
+    // A tui text is one node or an array of nodes. Text that is not JSON, or JSON of another shape, becomes an
+    // error node naming the screen and the text, and the rest of the page is kept.
     const tuiText = (node) => {
         if (!attr(node, "location") && !(node.text || "").trim()) return "";
-        const where = `String((sri.getActiveScreenDef() && sri.getActiveScreenDef().location) || "") + " " + ${jsString(attr(node, "location") || "inline")} + " is not JSON"`;
+        const where = `String((sri.getActiveScreenDef() && sri.getActiveScreenDef().location) || "") + " " + ${jsString(attr(node, "location") || "inline")}`;
         return `{
     const $rawValue = ${rawText(node)};
     const $raw = String($rawValue == null ? "" : $rawValue);
-    let $parsed = null;
-    try { $parsed = JSON.parse($raw); } catch ($parseError) { $parsed = null; }
-    if (Array.isArray($parsed)) $emit({t:"fragment",id:${jsString(idOf(node))},c:$parsed});
-    else $emit({t:"error",id:${jsString(idOf(node))},text:${where}});
+    let $parsed;
+    let $problem = "";
+    try { $parsed = JSON.parse($raw); } catch ($parseError) { $problem = " is not JSON: " + $parseError.message; }
+    if (!$problem && $parsed && typeof $parsed === "object" && !Array.isArray($parsed)) $parsed = [$parsed];
+    if (!$problem && !(Array.isArray($parsed) && $parsed.every(($item) => $item && typeof $item === "object" && !Array.isArray($item) && typeof $item.t === "string"))) {
+        $problem = " is not a node or an array of nodes";
+    }
+    if ($problem) {
+        const $text = ${where} + $problem;
+        ec.logger.warn("tui text in " + $text);
+        $emit({t:"error",id:$uid(${jsString(idOf(node))}),text:$text});
+    } else {
+        $emit({t:"fragment",id:$uid(${jsString(idOf(node))}),c:$parsed});
+    }
 }
 `;
     };
+    // HTML as blocks and numbered links (sri.htmlText); text without markup is the same blocks.
+    const htmlNode = (idExpr, htmlExpr) => `$emit(Object.assign({t:"html",id:$uid(${idExpr})}, JSON.parse(sri.htmlText(String(${htmlExpr} == null ? "" : ${htmlExpr})))));\n`;
+    // An `any` text is written for the browser, so it is read as HTML.
     const anyText = (node) => {
         if (!attr(node, "location") && !(node.text || "").trim()) return "";
         return `{
     const $rawValue = ${rawText(node)};
-    $emit({t:"text",id:${jsString(idOf(node))},text:${S.htmlViewTextFn}(String($rawValue == null ? "" : $rawValue), "")});
-}
+    ${htmlNode(jsString(idOf(node)), "$rawValue")}}
 `;
     };
     const textCode = (node) => {
         const type = attr(node, "type");
         if (typeNames(type).includes("tui")) return tuiText(node);
         if (!type || type === "any") return anyText(node);
-        return `$emit({t:"placeholder",id:${jsString(idOf(node))},text:"text",url:${screenUrlExpr}});\n`;
+        return `$emit({t:"placeholder",id:$uid(${jsString(idOf(node))}),text:"text",url:${screenUrlExpr}});\n`;
     };
     const menuItems = `const $menu = sri.getMenuItems() || [];
         const $items = [];
@@ -535,16 +638,31 @@ try {
 `;
 
     const pass = stmt((node, children) => children);
+    // A box toolbar, a panel side, a split side: a region node in place, so the client keeps where its nodes go.
+    const regionCode = (owner, kid, name, extra) => kid && kid.source
+        ? `$openChildren({t:"region",id:$uid(${jsString(idOf(owner) + "." + name)}),name:${jsString(name)}${extra || ""}});\n${kid.source}$closeChildren();\n`
+        : "";
+    const sizeOf = (kid, name) => (kid && /^\d+$/.test(attr(kid, name)) ? `,size:${attr(kid, name)}` : "");
     const group = (type, extra) => stmt((node, children) =>
-        `$openChildren({t:${jsString(type)},id:${jsString(idOf(node))}${extra ? extra(node) : ""}});\n${children}$closeChildren();\n`);
+        `$openChildren({t:${jsString(type)},id:$uid(${jsString(idOf(node))})${extra ? extra(node) : ""}});\n${children}$closeChildren();\n`);
 
     const overrides = {
         "screen": pass,
         "widgets": pass,
         "fail-widgets": pass,
         "dynamic-form": pass,
+        // The user's columns form is a nested unit, so it and the form's own code both sit in one fragment's "c".
         "form-list-user-columns": stmt((node, children) =>
-            `if (!sri.renderUserColumnsForm(${jsString(attr(node, "name") || "list")})) {\n${children}}\n`),
+            `$openRender({t:"fragment",id:$uid(${jsString((attr(node, "name") || "list") + ".columns")})});
+if (!sri.renderUserColumnsForm(${jsString(attr(node, "name") || "list")})) {
+    sri.write("[");
+    $stack.push($comma);
+    $comma = false;
+    ${children}sri.write("]");
+    $comma = $stack.pop();
+}
+$closeRender();
+`),
         "box-header": pass,
         "box-toolbar": pass,
         "box-body": pass,
@@ -572,57 +690,69 @@ try {
         "fields-not-referenced": pass,
         "subscreens-menu": pass,
         "container": group("container"),
-        "container-box": group("box", (node) => {
+        "container-box": stmt((node) => {
             const header = child(node, "box-header");
             const title = header ? attr(header, "title") : "";
-            return `,title:${exprOf(title)},type:${jsString(attr(node, "type"))},initial:${jsString(attr(node, "initial"))}`;
+            const body = node.children.filter((kid) => kid.name !== "box-toolbar").map((kid) => kid.source || "").join("");
+            return `$openChildren({t:"box",id:$uid(${jsString(idOf(node))}),title:${titleOf(title)},type:${jsString(attr(node, "type"))},initial:${jsString(attr(node, "initial"))}});
+${regionCode(node, child(node, "box-toolbar"), "toolbar")}${body}$closeChildren();
+`;
         }),
         "container-row": group("row"),
         "row-col": group("col", (node) =>
             `,xs:${jsString(attr(node, "xs"))},sm:${jsString(attr(node, "sm"))},md:${jsString(attr(node, "md"))},lg:${jsString(attr(node, "lg"))}`),
-        "container-panel": group("panel"),
+        "container-panel": stmt((node) => {
+            const regions = ["header", "left", "center", "right", "footer"].map((name) => {
+                const kid = child(node, "panel-" + name);
+                return regionCode(node, kid, name, name === "left" || name === "right" ? sizeOf(kid, "size") : "");
+            }).join("");
+            return `$openChildren({t:"panel",id:$uid(${jsString(idOf(node))})});\n${regions}$closeChildren();\n`;
+        }),
         "container-dialog": stmt((node, children) => {
             const button = attr(node, "button-text") || "";
             const title = attr(node, "title") || button;
-            return guarded(node, `$openChildren({t:"dialog",id:${jsString(idOf(node))},title:${exprOf(title)},button:${exprOf(button)}});\n${children}$closeChildren();\n`);
+            return guarded(node, `$openChildren({t:"dialog",id:$uid(${jsString(idOf(node))}),title:${titleOf(title)},button:${titleOf(button)}});\n${children}$closeChildren();\n`);
         }),
-        "container-split": group("split"),
+        "container-split": stmt((node) => {
+            const width = /^\d+$/.test(attr(node, "side-width")) ? `,sideWidth:${attr(node, "side-width")}` : "";
+            const regions = regionCode(node, child(node, "split-side"), "side") + regionCode(node, child(node, "split-main"), "main");
+            return `$openChildren({t:"split",id:$uid(${jsString(idOf(node))})${width}${attr(node, "select-parameter") ? `,selectParameter:${jsString(attr(node, "select-parameter"))}` : ""}});\n${regions}$closeChildren();\n`;
+        }),
         "dashboard": group("dashboard"),
         "section": stmt((node) =>
-            `$openRender({t:"section",id:${jsString(idOf(node))},name:${jsString(attr(node, "name") || "")}});\nsri.renderSection(${jsString(attr(node, "name") || "")});\n$closeRender();\n`),
+            `$openRender({t:"section",id:$uid(${jsString(idOf(node))}),name:${jsString(attr(node, "name") || "")}});\nsri.renderSection(${jsString(attr(node, "name") || "")});\n$closeRender();\n`),
         "section-iterate": stmt((node) =>
-            `$openRender({t:"section",id:${jsString(idOf(node))},name:${jsString(attr(node, "name") || "")},iterate:true});\nsri.renderSection(${jsString(attr(node, "name") || "")});\n$closeRender();\n`),
+            `$openRender({t:"section",id:$uid(${jsString(idOf(node))}),name:${jsString(attr(node, "name") || "")},iterate:true});\nsri.renderSection(${jsString(attr(node, "name") || "")});\n$closeRender();\n`),
         "section-include": stmt((node) =>
-            `$openRender({t:"section",id:${jsString(idOf(node))},name:${jsString(attr(node, "name") || "")}});\nsri.renderSectionInclude(${S.bareLit(node)});\n$closeRender();\n`),
+            `$openRender({t:"section",id:$uid(${jsString(idOf(node))}),name:${jsString(attr(node, "name") || "")}});\nsri.renderSectionInclude(${S.bareLit(node)});\n$closeRender();\n`),
         "subscreens-active": stmt((node) =>
-            `$openRender({t:"active",id:${jsString(attr(node, "id") || "subscreens")}});\nsri.renderSubscreen();\n$closeRender();\n`),
+            `$openRender({t:"active",id:$uid(${jsString(attr(node, "id") || "subscreens")})});\nsri.renderSubscreen();\n$closeRender();\n`),
         "subscreens-panel": stmt((node) => {
             const type = attr(node, "type") || "tab";
             const id = attr(node, "id") || "subscreens";
-            if (type === "popup") return "";
             if (type === "wizard" || type === "stack") {
                 return `{
-                    ${menuItems}let $step = ${exprOf(attr(node, "title") || "")};
+                    ${menuItems}let $step = ${titleOf(attr(node, "title"))};
                     for (let $si = 0; $si < $items.length; $si++) if ($items[$si].active && $items[$si].title) $step = $items[$si].title;
-                    $emit({t:"text",id:${jsString(id + "-step")},text:String($step || "")});
-                    $openRender({t:"active",id:${jsString(id)}});
+                    $emit({t:"text",id:$uid(${jsString(id + "-step")}),text:String($step || "")});
+                    $openRender({t:"active",id:$uid(${jsString(id)})});
                     sri.renderSubscreen();
                     $closeRender();
                 }
 `;
             }
             return `{
-                ${menuItems}$openRender({t:"subscreens",id:${jsString(id)},kind:${jsString(type)},items:$items});
+                ${menuItems}$openRender({t:"subscreens",id:$uid(${jsString(id)}),kind:${jsString(type)},items:$items});
                 sri.renderSubscreen();
                 $closeRender();
             }
 `;
         }),
         "include-screen": stmt((node) =>
-            `$openRender({t:"section",id:${jsString(attr(node, "location") || "include")},name:"include"});\nsri.renderIncludeScreen(${jsString(attr(node, "location"))}, ${jsString(attr(node, "share-scope"))});\n$closeRender();\n`),
+            `$openRender({t:"section",id:$uid(${jsString(attr(node, "location") || "include")}),name:"include"});\nsri.renderIncludeScreen(${jsString(attr(node, "location"))}, ${jsString(attr(node, "share-scope"))});\n$closeRender();\n`),
         "render-dynamic-form": stmt((node) => {
             const name = attr(node, "name") || "form";
-            return `$openRender({t:"fragment",id:${jsString(name)}});\nsri.renderDynamicForm(${jsString(name)});\n$closeRender();\n`;
+            return `$openRender({t:"fragment",id:$uid(${jsString(name)})});\nsri.renderDynamicForm(${jsString(name)});\n$closeRender();\n`;
         }),
         "render-mode": stmt((node) => {
             const texts = childrenNamed(node, "text");
@@ -630,11 +760,11 @@ try {
             if (tui) return textCode(tui);
             const any = texts.find((kid) => !attr(kid, "type") || attr(kid, "type") === "any");
             if (any) return textCode(any);
-            return `$emit({t:"placeholder",id:${jsString(idOf(node))},text:"render-mode",url:${screenUrlExpr}});\n`;
+            return `$emit({t:"placeholder",id:$uid(${jsString(idOf(node))}),text:"render-mode",url:${screenUrlExpr}});\n`;
         }),
         "text": stmt((node) => textCode(node)),
         "label": stmt((node) => guarded(node,
-            `$emit({t:"text",id:${jsString(idOf(node))},text:${S.expandExpr(attr(node, "text") || "")}});\n`)),
+            `$emit({t:"text",id:$uid(${jsString(idOf(node))}),text:${S.expandExpr(attr(node, "text") || "")}${attr(node, "type") && attr(node, "type") !== "span" ? `,style:${jsString(attr(node, "type"))}` : ""}});\n`)),
         "link": stmt((node) => {
             if (fieldNodeOf(node) && formNodeOf(node)) return "";
             return linkStatement(node, inHeader(node) ? false : formNodeOf(node) && formNodeOf(node).name === "form-list");
@@ -642,37 +772,58 @@ try {
         "form-single": formSingle,
         "form-list": formList,
         "number-card": stmt((node) => guarded(node,
-            `$emit({t:"numberCard",id:${jsString(idOf(node))},title:String(${S.expandExpr(attr(node, "title") || "")} || ""),value:String(${S.expandNoL10nExpr(attr(node, "value") || "")} || ""),url:String(${S.expandNoL10nExpr(attr(node, "url") || "")} || "")});\n`)),
+            `$emit({t:"numberCard",id:$uid(${jsString(idOf(node))}),title:String(${S.expandExpr(attr(node, "title") || "")} || ""),value:String(${S.expandNoL10nExpr(attr(node, "value") || "")} || ""),url:String(${S.expandNoL10nExpr(attr(node, "url") || "")} || "")});\n`)),
         "dynamic-dialog": stmt((node) => guarded(node, `{
     const $made = sri.makeUrlByType(${jsString(attr(node, "transition") || "")}, "transition", ${S.nodeLit(node, false)}, "true");
-    $emit({t:"dynamicDialog",id:${jsString(idOf(node))},url:$made ? ($made.url || "") : "",button:String(${S.expandExpr(attr(node, "button-text") || "")} || "")});
+    $emit({t:"dynamicDialog",id:$uid(${jsString(idOf(node))}),url:$made ? ($made.getUrlWithParams() || "") : "",button:String(${S.expandExpr(attr(node, "button-text") || "")} || "")});
 }
 `)),
         "dynamic-container": stmt((node) => `{
     const $made = sri.makeUrlByType(${jsString(attr(node, "transition") || "")}, "transition", ${S.nodeLit(node, false)}, "true");
-    $emit({t:"dynamicContainer",id:${jsString(idOf(node))},url:$made ? ($made.url || "") : ""});
+    $emit({t:"dynamicContainer",id:$uid(${jsString(idOf(node))}),url:$made ? ($made.addParameter("_dynamic_container_id", ${jsString(idOf(node))}).getUrlWithParams() || "") : ""});
 }
 `),
         "image": stmt((node) =>
-            `$emit({t:"image",id:${jsString(idOf(node))},alt:String(${S.expandExpr(attr(node, "alt") || "")} || ""),url:String(${S.expandNoL10nExpr(attr(node, "url") || "")} || "")});\n`),
+            `$emit({t:"image",id:$uid(${jsString(idOf(node))}),alt:String(${S.expandExpr(attr(node, "alt") || "")} || ""),url:String(${S.expandNoL10nExpr(attr(node, "url") || "")} || "")});\n`),
         "markdown-view": stmt((node) => guarded(node,
-            `$emit({t:"markdown",id:${jsString(idOf(node))},text:String(${S.markdownTextExpr(node)} || "")});\n`)),
+            `$emit({t:"markdown",id:$uid(${jsString(idOf(node))}),text:String(${S.markdownTextExpr(node)} || "")});\n`)),
         "status-bar": stmt((node) => guarded(node,
-            `$emit({t:"statusBar",id:${jsString(idOf(node))},text:String(${S.statusTextExpr(node)} || "")});\n`)),
-        "html-view": stmt((node) => guarded(node,
-            `$emit({t:"text",id:${jsString(idOf(node))},text:String(${S.htmlViewTextExpr(node)} || "")});\n`)),
+            `$emit({t:"statusBar",id:$uid(${jsString(idOf(node))}),text:String(${S.statusTextExpr(node)} || "")});\n`)),
+        // The text when there is one, else the HTML, as the text modes read an html-view.
+        "html-view": stmt((node) => guarded(node, `{
+    const $text = ec.resource.expandNoL10n(${jsString(attr(node, "text") || "")});
+    if ($text && $text !== "null") $emit({t:"text",id:$uid(${jsString(idOf(node))}),text:String($text).trim()});
+    else {
+        const $html = ec.resource.expandNoL10n(${jsString(attr(node, "html") || "")});
+        ${htmlNode(jsString(idOf(node)), "($html === \"null\" ? \"\" : $html)")}    }
+}
+`)),
         "button-menu": stmt((node) =>
-            `$emit({t:"buttonMenu",id:${jsString(idOf(node))},text:String(${S.expandExpr(attr(node, "text") || "")} || "")});\n`),
-        "tree": stmt((node) => `$emit({t:"tree",id:${jsString(attr(node, "id") || attr(node, "name") || "tree")}});\n`),
+            `$emit({t:"buttonMenu",id:$uid(${jsString(idOf(node))}),text:String(${S.expandExpr(attr(node, "text") || "")} || "")});\n`),
+        "tree": stmt((node) => `$emit({t:"tree",id:$uid(${jsString(attr(node, "id") || attr(node, "name") || "tree")})});\n`),
         "include-content": stmt((node) =>
-            `$emit({t:"placeholder",id:${jsString(idOf(node))},text:"include-content",url:String(${S.expandNoL10nExpr(attr(node, "location") || "")} || "")});\n`)
+            `$emit({t:"placeholder",id:$uid(${jsString(idOf(node))}),text:"include-content",url:String(${S.expandNoL10nExpr(attr(node, "location") || "")} || "")});\n`)
     };
 
-    const macros = {};
-    S.allElements.forEach((name) => {
-        macros[name] = stmt((node) => placeholderEmit(idOf(node), node.name));
+    // Elements a form, link or list macro reads for itself, and elements the terminal does not draw (context).
+    const formInternals = [
+        "check", "date-find", "date-period", "date-time", "display", "display-entity", "drop-down", "dynamic-options",
+        "editable", "file", "hidden", "ignored", "lookup", "password", "radio", "range-find", "reset", "submit",
+        "text-area", "text-find", "text-line", "entity-options", "list-options", "option", "depends-on", "field-layout",
+        "field-ref", "form-list-column", "columns", "column", "auto-fields-entity", "auto-fields-service",
+        "auto-widget-entity", "auto-widget-service", "exclude", "entity-find", "entity-find-one", "set",
+        "hidden-parameters", "row-selection", "row-actions", "visible-when", "editable-load", "action", "first-row",
+        "second-row", "last-row", "parameter", "dialog", "tree-node", "tree-sub-node", "view-board", "view-calendar",
+        "context"
+    ];
+    // Drawn as a placeholder with the browser link until a later phase gives them a terminal view.
+    const later = ["chatter", "record-files"];
+    const macros = Object.assign({}, T.noops(formInternals), overrides);
+    later.forEach((name) => {
+        macros[name] = stmt((node) => placeholderEmit(idOf(node), node.name, screenUrlExpr));
     });
-    Object.assign(macros, overrides);
+    const unnamed = S.allElements.filter((name) => !macros[name]);
+    if (unnamed.length) throw new Error("ScreenTui.js names no macro for " + unnamed.join(", "));
 
     return { macros, opaque: S.opaqueElements, prelude, epilogue };
 })

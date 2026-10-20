@@ -70,7 +70,7 @@ pub use call::{
 };
 pub use define::load_definitions;
 pub use define::{check, configured_service_files, lint};
-pub(crate) use define::{input_hints, input_js_rules, merge_param, VALIDATE_NUMBER, VALIDATE_NUMBER_INT};
+pub(crate) use define::{input_hints, input_rules, merge_param, ClientRule};
 pub use eca::{run_data_file_service, run_matched_eca, schedule_feed_receive, search_not_up};
 pub use email_eca::{email_rule_count, run_email_rule, run_email_rules};
 pub(crate) use jobs::job_time_zone;

@@ -12,13 +12,15 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Terminal client for the `tui` screen model.
+//! The terminal client of the `tui` render mode (plans/Screen-TUI-Impl.md section 3).
 //!
-//! The `model` feature is serde types, layout, and key decoding. Revue is behind `ui`.
-//! This crate does no server I/O. Phase 1 is a spike: two hand-built Gallery fixtures
-//! and a decision on how an SSH session can draw without owning the process terminal.
+//! It does no I/O of its own (D4): the session queues calls, and the host's [`ScreenLink`] answers them. The `model`
+//! feature is everything but the Revue view: the model, the link, navigation, state, layout, keys and theme, which
+//! `moqui-core`'s tests use without compiling Revue (D3). The `ui` feature adds the Revue view and the local loop.
 
 mod decode;
+mod edit;
+mod forms;
 mod keys;
 mod layout;
 mod link;
@@ -26,25 +28,30 @@ mod model;
 mod nav;
 mod session;
 mod state;
+mod theme;
 #[cfg(feature = "ui")]
 mod ui;
 
 pub use decode::{Decoded, Decoder};
-pub use keys::{merge_keys, Action, Key, KeyMap, KeyPress, MergeSkip};
+pub use edit::{row_col, Edited, Limits};
+pub use forms::{FieldInfo, FocusItem, FocusKind, FormInfo, Index, LinkInfo, Scope, TabInfo};
+pub use keys::{merge_keys, Action, Key, KeyMap, KeyPress, MergeSkip, ACTIONS};
 pub use layout::{
-    display_width, dotted_label, frame, label_column_width, layout, outline, Frame, LabelMode, LaidOut, WidthClass,
+    display_width, dotted_label, frame, frame_with, label_column_width, layout, layout_levels, layout_nodes, outline,
+    outline_of, truncate_width, width_class, wrap, Breakpoints, Frame, LabelMode, LaidOut, Piece, WidthClass,
     DRAWER_DOCK_AT, DRAWER_WIDTH, PAGE_ROWS,
 };
 pub use link::{
-    gallery_link, FakeLink, LinkCall, LinkError, ScreenLink, TransitionOutcome, GALLERY_DETAIL_JSON,
-    GALLERY_DETAIL_PATH, GALLERY_LIST_JSON, GALLERY_LIST_PATH,
+    gallery_link, row_link, FakeLink, LinkCall, LinkError, MenuItem, Reply, ScreenLink, ShellInfo, TransitionOutcome,
+    GALLERY_DETAIL_JSON, GALLERY_DETAIL_PATH, GALLERY_LIST_JSON, GALLERY_LIST_PATH,
 };
 pub use model::{
-    Cell, Choice, Column, FormList, Messages, ModelError, Node, Paging, ScreenMeta, ScreenModel, ValidationError,
-    Widget,
+    clean_text, walk, Cell, Choice, Column, FormList, HtmlBlock, HtmlLink, ListRow, Messages, ModelError, Node, Paging,
+    RowSelection, Rule, ScreenMeta, ScreenModel, ValidationError, VisibleWhen, Widget, MODEL_VERSION,
 };
-pub use nav::Nav;
-pub use session::{MenuItem, Session};
-pub use state::{Confirm, OptionLane, OptionRequest};
+pub use nav::{decode as decode_query, level_path, query_parameters, Location, Nav, LEVEL_FLOOR};
+pub use session::{drawer_rows, DropDown, Login, Message, Overlay, Picker, Session};
+pub use state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, Then};
+pub use theme::{Depth, Glyph, Role, Theme};
 #[cfg(feature = "ui")]
-pub use ui::{render_text, run_key_session, run_local, run_session, AppView, DrawProbe};
+pub use ui::{from_revue, render_text, run_local, snapshot, AppView, LocalOptions};

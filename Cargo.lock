@@ -3996,6 +3996,7 @@ dependencies = [
  "gix",
  "gix-pack",
  "hmac 0.12.1",
+ "html5ever",
  "image",
  "imap",
  "indexmap",
@@ -4106,6 +4107,8 @@ dependencies = [
 name = "moqui-tui"
 version = "0.1.0"
 dependencies = [
+ "jiff",
+ "regex",
  "revue",
  "serde",
  "serde_json",

@@ -44,6 +44,8 @@ pub mod sso;
 pub mod test_cmd;
 #[cfg(feature = "tui")]
 pub mod tui;
+#[cfg(feature = "tui")]
+mod tui_cmd;
 pub mod types;
 pub mod usage;
 
@@ -217,6 +219,72 @@ pub fn start_server(
     }
 }
 
+/// A runtime booted with no listeners, for `moqui tui` (plans/Screen-TUI-Impl.md 4.1). Drop it to flush what is only in
+/// memory (artifact hits, sessions), stop log shipping and close the database, as a server does when it stops.
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+#[must_use = "dropping the runtime shuts it down"]
+pub struct LocalRuntime {
+    process: Option<ServeProcess>,
+}
+
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+impl LocalRuntime {
+    /// The booted factory.
+    ///
+    /// # Panics
+    ///
+    /// Never: the process holds its factory until the runtime is dropped.
+    #[must_use]
+    pub fn factory(&self) -> &std::sync::Arc<moqui_core::context::ExecutionContextFactory> {
+        self.process
+            .as_ref()
+            .and_then(|process| process.factory.as_ref())
+            .expect("a local runtime holds its factory")
+    }
+}
+
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+impl Drop for LocalRuntime {
+    fn drop(&mut self) {
+        if let Some(factory) = self.process.as_ref().and_then(|process| process.factory.as_ref()) {
+            // As the server after its listener stops: hits and sessions are only in memory until written.
+            if let Err(err) = factory.flush_artifact_hits() {
+                tracing::warn!("Artifact hit flush failed: {err}");
+            }
+            if let Err(err) = factory.flush_sessions() {
+                tracing::warn!("Session flush failed: {err}");
+            }
+        }
+        logging::stop_shipping();
+        self.process.take();
+    }
+}
+
+/// Boot the runtime at `runtime_dir` against the embedded cluster at `cluster_dir` with no listeners: no HTTP, SSH,
+/// cluster or SMTP port, and no cluster membership. An empty database loads its seed data as a server's first start does.
+///
+/// # Errors
+///
+/// Returns an error when the boot fails.
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+pub fn start_local(
+    runtime_dir: impl AsRef<std::path::Path>,
+    framework_dir: impl AsRef<std::path::Path>,
+    cluster_dir: impl AsRef<std::path::Path>,
+) -> Result<LocalRuntime, moqui_lib::error::Error> {
+    let process = boot_server_factory(
+        runtime_dir.as_ref(),
+        framework_dir.as_ref(),
+        cluster_dir.as_ref(),
+        true,
+        Listeners::None,
+    )?;
+    if process.factory.is_none() {
+        return Err(moqui_lib::error::Error::new("the local runtime has no factory"));
+    }
+    Ok(LocalRuntime { process: Some(process) })
+}
+
 fn join_server(thread: std::thread::JoinHandle<Result<(), moqui_lib::error::Error>>) {
     match thread.join() {
         Ok(Ok(())) => {}
@@ -309,6 +377,20 @@ where
             println!("{}", version_text());
             Ok(None)
         }
+        [command, rest @ ..] if command == "tui" => {
+            #[cfg(feature = "tui")]
+            {
+                tui_cmd::run(&tui_cmd::parse(rest)?)?;
+                Ok(None)
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                let _ = rest;
+                Err(moqui_lib::error::Error::new(
+                    "moqui tui: this build has no terminal client (the tui feature; the enterprise and maximal packages have it)",
+                ))
+            }
+        }
         [command, rest @ ..] if command == "types" => {
             dispatch_types(rest)?;
             Ok(None)
@@ -381,7 +463,7 @@ where
 /// A known command with the wrong arguments names that command. Anything else is an unknown command.
 fn usage_error(args: &[String]) -> moqui_lib::error::Error {
     match args.first().map(String::as_str) {
-        Some(name @ ("save-db" | "load-save" | "lint" | "convert" | "types" | "load" | "test" | "version")) => {
+        Some(name @ ("save-db" | "load-save" | "lint" | "convert" | "types" | "load" | "test" | "tui" | "version")) => {
             usage::command_usage(name)
         }
         Some("--version") => usage::command_usage("version"),
@@ -980,7 +1062,16 @@ fn boot_server(
     framework_dir: &std::path::Path,
     cluster_dir: &std::path::Path,
 ) -> Result<ServeProcess, moqui_lib::error::Error> {
-    boot_server_factory(runtime_dir, framework_dir, cluster_dir, true)
+    boot_server_factory(runtime_dir, framework_dir, cluster_dir, true, Listeners::All)
+}
+
+/// What a boot opens to the network. `moqui tui` on its own runtime opens nothing: no HTTP, SSH, cluster or SMTP port,
+/// and it joins no cluster, so it starts where a server already holds those ports and stays a tool of one user.
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Listeners {
+    All,
+    None,
 }
 
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
@@ -989,6 +1080,7 @@ fn boot_server_factory(
     framework_dir: &std::path::Path,
     cluster_dir: &std::path::Path,
     check_empty_db: bool,
+    listeners: Listeners,
 ) -> Result<ServeProcess, moqui_lib::error::Error> {
     use std::sync::Arc;
 
@@ -1100,7 +1192,7 @@ fn boot_server_factory(
         drop(sim);
         drop(db);
         // As Java's dynamicInit, construct a fresh factory without running checkEmptyDb again.
-        return boot_server_factory(&runtime_dir, &framework_dir, &cluster_dir, false);
+        return boot_server_factory(&runtime_dir, &framework_dir, &cluster_dir, false, listeners);
     }
     moqui_core::service::check_serve_caps(&factory).map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     factory
@@ -1109,6 +1201,26 @@ fn boot_server_factory(
     tracing::info!("Request pool started");
     // Empty cluster_https_port listens on 8444. 0 is ephemeral for tests.
     moqui_core::notify::install();
+    if listeners == Listeners::None {
+        tracing::info!(
+            "Moqui Framework initialized in {:.3} seconds, with no listeners",
+            boot_started.elapsed().as_secs_f64()
+        );
+        return Ok(ServeProcess {
+            runtime: None,
+            pdf: Some(pdf),
+            smtpd: None,
+            #[cfg(feature = "ssh")]
+            sshd: None,
+            cluster_edge: None,
+            notify_listener: None,
+            factory: Some(factory),
+            search,
+            facade: Some(facade),
+            sim: Some(sim),
+            db: Some(db),
+        });
+    }
     // The SSH server binds before the member row is written: with cluster_transport=ssh the row carries its address
     // and host key.
     let cluster_posts = Arc::new(std::sync::Mutex::new(Vec::new()));

@@ -774,6 +774,44 @@ screen package, `private, no-store`) and shows the render function over it.
   the row on the scope of the screen (`rowIndex` is a name of it). The rows of each answer are new components (an `m-form` copies its
 `fields-initial` once), so another page or order is not patched into the rows of the last one.
 
+## The tui screen model
+
+`plans/Screen-TUI-Impl.md` is the plan and [docs/TUI.md](../../../../../../docs/TUI.md) the guide. The `tui` render mode (`ScreenTui.js`) is
+not for this shell: it answers one JSON document per screen level for the terminal client in `crates/moqui-tui`, whose serde
+types (`src/model.rs`) are the schema. It is always standalone: `<path>?renderMode=tui` renders the last level, and `<path>.tui` renders the
+level at the path itself (no walk down the default subscreens), which is how the client asks for the parents above the leaf.
+
+- **The envelope.** `{v: 1, screen: {path, pathList, title, renderModes, standalone}, parameters, messages: {info, errors,
+  validationErrors: [{form, field, message}]}, focus, c}`. `parameters` are the request's, credential names stripped; `messages` the flash of
+  the last transition; `focus` the first `focus-field` as `form.field`; `c` the level's nodes. A client refuses a `v` it does not know.
+- **Nodes** carry `t` and an `id`. Ids are stable across renders and unique in the document: an element's own id or name, else its element
+  path, with `~2`, `~3` for a repeat (an iterated section, a section included twice). Structure: `section`, `container`, `box` (`title`, `type`;
+  a `region` named `toolbar` first in `c`), `row` and `col` (`xs` to `lg` spans), `panel` (`region`s `header`, `left`, `center`, `right`,
+  `footer`, a side's `size` in px), `split` (`sideWidth`, `region`s `side` and `main`), `dialog` (`title`, `button`, its body in `c`),
+  `dynamicDialog` and `dynamicContainer` (`url`), `dashboard`, `subscreens` (`kind` tab, popup, wizard or stack; `items` of `{title, url, active}`;
+  the active level in `c`), `active`. Content: `text` (`style` h1 to h6, pre...), `image`, `markdown`, `html` (`blocks` of `{kind, text,
+  depth, marker}` and `links` of `{text, url}`, the n-th link written `[n]` in the text), `numberCard`, `statusBar`, `tree`, `placeholder`
+  (`text`, the browser `url`), `error`. A `fragment` holds the nodes of a `text type="tui"`. A client draws a `t` it does not know as a placeholder.
+- **Actions.** `link`: `text`, `url` with its parameters, `kind` (the `link-type`), `method`, `confirm`, `btnType`, `icon` (a Material Symbols
+  name), `badge`, `tooltip`, `disabled`. A hidden-form link posts.
+- **Forms.** `form`: `name`, `kind`, `transitionUrl` (empty for a find form, which asks for the screen again with its fields), `method`, `hidden`
+  `[{name, value}]` (credential names left out), `submitMessage`, `backgroundReloadId`, `backgroundHideId`, its fields and layout rows in `c`.
+  `formList`: `columns` `[{title, orderBy, printWidth, printWidthType, align}]`, `rows` `[{id, selectId, cells}]` (a cell is text or one node),
+  `paging` `{index, size, count, maxIndex, rangeLow, rangeHigh}`, `headerFields` (the find dialog), `rowSelection` `{idField, parameter, listMode}`.
+- **Fields.** `field`: `name`, `title`, `required`, `maxlength`, `rules` (`{kind: number | integer | pattern | range, pattern, min, minEq, max,
+  maxEq, message}`, from `sri.getFieldValidationRules`; a JavaScript pattern a client cannot read is the server's to check), `tooltip`,
+  `visibleWhen` `{field, value}`, and one widget `w` by `kind`: `textLine` (`inputType`, `mask`, `size`), `textArea` (`rows`, `editorType`,
+  `readOnly` for html and rich: never posted), `password` (no value, ever), `dropDown` (`options` `[{value, label}]`, or `optionsUrl` with
+  `optionsParameters` (fixed) and `dependsOn` `{parameter: field}`, the transition answering a list or `{options: [...]}`; `multiple`, `combo`,
+  `allowEmpty`, `submitOnSelect`, `showNot`, `serverSearch`), `dateTime` (`type`, `format`, a Java pattern), `dateFind`, `datePeriod` and
+  `rangeFind` (posting `name_from` and `name_thru`), `textFind` (`op`, `not`, `ic`, posting `name_op`, `name_not` and `name_ic`), `check` and
+  `radio` (`options`), `file`, `display` (`text`, and `value` when also-hidden posts it), `hidden`, `submit` (`confirm`), `reset`, `label`, `image`.
+- **Safety.** Every string of the document is stripped of C0 and C1 controls but tab and newline on the server, and again, with the bidi
+  overrides, by the client before it draws (D9).
+- **Answers to the client's calls** are the shell's: a transition with `Accept: application/json` answers `screenUrl`, `messageInfos` and
+  `validationErrors` (or `sendJsonResponse`'s `messages` and `errors`); a 401 asks for a login. The shell data's `tui` key carries the theme's
+  `breakpoints`, `colors` and `keys` (the `STRT_TUI_*` resource types).
+
 ## Not here
 
 The Assist panel (`js/assist`, the chat and canvas, `confAssist`) is not ported: it needs the vendored Chart.js, Marked, DOMPurify and highlight.js paths

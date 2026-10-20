@@ -17,9 +17,7 @@
 //! `gallery --size 72|100|180` prints one frame from an in-memory terminal
 //! (72×24, 100×40, or 180×50). Without `--size` the screen runs on this terminal.
 
-use std::collections::BTreeMap;
-
-use moqui_tui::{gallery_link, render_text, run_local, ScreenLink, GALLERY_LIST_PATH};
+use moqui_tui::{gallery_link, run_local, snapshot, LocalOptions, Theme, GALLERY_LIST_PATH};
 
 fn main() {
     let mut columns = None;
@@ -40,19 +38,19 @@ fn main() {
         }
     }
     let link = gallery_link();
+    let theme = Theme::detect(&|name| std::env::var(name).ok(), false, false);
     if let Some(columns) = columns {
         let (width, height) = frame(columns);
-        let model = match link.level(&path, &BTreeMap::new()) {
-            Ok(model) => model,
-            Err(err) => {
-                eprintln!("{err}");
-                std::process::exit(1);
-            }
-        };
-        println!("{}", render_text(&model, &link, width, height));
+        println!("{}", snapshot(link, &path, width, height, theme));
         return;
     }
-    if let Err(err) = run_local(link, &path) {
+    let options = LocalOptions {
+        path,
+        theme,
+        notes: None,
+        log: None,
+    };
+    if let Err(err) = run_local(link, options) {
         eprintln!("{err}");
         std::process::exit(1);
     }

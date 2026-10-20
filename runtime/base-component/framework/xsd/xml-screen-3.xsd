@@ -1315,6 +1315,11 @@ along with this software (see the LICENSE.md file). If not, see
                         Can be any valid render mode. Default supported modes include: text, html, html-print (alias xsl-fo), xml, csv, qvt, qjs, qvue, and tui.
                         Values can be comma separated to apply to multiple render modes.
                         A value of "any" will cause it to be used if no other element matches the current output type.
+                        A screen that goes custom in one render mode is written again for each other mode it should work in:
+                        a text of type qvt (or a qvue screen) gets a text of type tui beside it for the terminal client, whose
+                        content is the JSON of one node or an array of nodes of the tui screen model, every value through
+                        JSON.stringify. Without one the terminal shows a placeholder with the browser address
+                        (docs/TUI.md; moqui lint --screens lists them).
                     </xs:documentation></xs:annotation>
                 </xs:attribute>
                 <xs:attribute name="location" type="xs:string">

@@ -328,6 +328,12 @@ fn world_with(dir: &std::path::Path, conf: &str) -> World {
     theme_value(&world, "DEFAULT_QUASAR", 2, "STRT_TRAY_CHAT", "secret");
     theme_value(&world, "DEFAULT_QUASAR", 3, "STRT_QUICK_CREATE", "open/QuickCreate");
     theme_value(&world, "DEFAULT_QUASAR", 4, "STRT_CHATTER_SCREEN", "Chatter");
+    theme_value(&world, "DEFAULT_QUASAR", 6, "STRT_TUI_BREAKPOINTS", "md = 110");
+    theme_value(&world, "DEFAULT_QUASAR", 7, "STRT_TUI_BREAKPOINTS", "lg = wide");
+    theme_value(&world, "DEFAULT_QUASAR", 8, "STRT_TUI_COLORS", "primary = #1976d2");
+    theme_value(&world, "DEFAULT_QUASAR", 9, "STRT_TUI_KEYS", "back = f3 | alt+left");
+    theme_value(&world, "DEFAULT_QUASAR", 10, "STRT_TUI_KEYS", "refresh = f5");
+    theme_value(&world, "DEFAULT_QUASAR", 11, "STRT_TUI_KEYS", "no equals sign");
     theme_value(
         &world,
         "DEFAULT_QUASAR",
@@ -530,7 +536,18 @@ fn shell_data_lists_the_apps_the_user_may_open_with_their_menus_providers_theme_
             "mailScreen": null, "messagesScreen": null, "chatterScreen": "Chatter", "recordFilesScreen": null})
     );
     assert_eq!(data["counts"], json!({"today": 3, "chat": 1, "user": "plain"}));
+    // the tui values: every key row, and the rows that do not read are left out and logged
+    assert_eq!(
+        data["tui"],
+        json!({"breakpoints": {"md": 110}, "colors": {"primary": "#1976d2"},
+            "keys": {"back": "f3 | alt+left", "refresh": "f5"}})
+    );
     let text = logged(&lines);
+    assert!(
+        text.contains("TUI breakpoint lg = wide is not a column count"),
+        "{text}"
+    );
+    assert!(text.contains("[no equals sign] is not name = value"), "{text}");
     let broken = dir.join("Apps/Broken.xml").to_string_lossy().into_owned();
     assert!(
         text.contains(&format!("Leaving app broken [{broken}] out of the shell")),

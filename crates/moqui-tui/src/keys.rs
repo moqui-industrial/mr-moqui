@@ -12,9 +12,12 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Key names and the default keymap. Theme overrides merge on top. Esc, Enter, and Tab stay fixed.
+//! Key names, the actions of plans/Screen-TUI-Impl.md 1.5 and the default keymap. A theme's `STRT_TUI_KEYS` rows merge
+//! on top (D11). Esc, Enter and Tab stay bound to what they do whatever a theme says, so no theme can leave a user stuck
+//! in a dialog. Single-letter keys act only when focus is not in a text field; the session sends typing to the field
+//! before it looks here.
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
     Char(char),
     Enter,
@@ -34,7 +37,7 @@ pub enum Key {
     F(u8),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct KeyPress {
     pub key: Key,
     pub alt: bool,
@@ -58,42 +61,176 @@ impl KeyPress {
             ..Self::plain(key)
         }
     }
+
+    pub fn with_ctrl(key: Key) -> Self {
+        Self {
+            ctrl: true,
+            ..Self::plain(key)
+        }
+    }
+
+    /// No modifier, or only Shift on a character (which is in the character itself).
+    pub fn is_plain(&self) -> bool {
+        !self.alt && !self.ctrl
+    }
+
+    /// The chord as the key line and help show it: `F3`, `Alt+Left`, `Ctrl+S`, `Space`, `/`.
+    pub fn label(&self) -> String {
+        let mut out = String::new();
+        if self.ctrl {
+            out.push_str("Ctrl+");
+        }
+        if self.alt {
+            out.push_str("Alt+");
+        }
+        if self.shift && !matches!(self.key, Key::Char(_) | Key::BackTab) {
+            out.push_str("Shift+");
+        }
+        let name = match &self.key {
+            Key::Char(' ') => "Space".to_string(),
+            Key::Char(ch) if self.ctrl || self.alt => ch.to_ascii_uppercase().to_string(),
+            Key::Char(ch) => ch.to_string(),
+            Key::Enter => "Enter".to_string(),
+            Key::Escape => "Esc".to_string(),
+            Key::Tab => "Tab".to_string(),
+            Key::BackTab => "Shift+Tab".to_string(),
+            Key::Backspace => "Backspace".to_string(),
+            Key::Delete => "Del".to_string(),
+            Key::Up => "Up".to_string(),
+            Key::Down => "Down".to_string(),
+            Key::Left => "Left".to_string(),
+            Key::Right => "Right".to_string(),
+            Key::Home => "Home".to_string(),
+            Key::End => "End".to_string(),
+            Key::PageUp => "PgUp".to_string(),
+            Key::PageDown => "PgDn".to_string(),
+            Key::F(n) => format!("F{n}"),
+        };
+        out.push_str(&name);
+        out
+    }
 }
 
-/// Actions the default map binds. Palette, quick create, numbering, and on-screen find are absent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a key does. The theme names are in [`Action::name`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
     Next,
     Prev,
     Activate,
     Back,
     Cancel,
+    Help,
     Prompt,
-    Reload,
+    Refresh,
     PagePrev,
     PageNext,
-    Sort,
+    Drawer,
+    Submit,
+    Select,
+    SelectAll,
     Find,
+    Sort,
+    NumberLinks,
+    Info,
+    OpenBrowser,
+    Redraw,
+    /// The log pane of a local session.
+    Log,
     Quit,
+    /// Subscreen tab 1 to 9.
+    Tab(u8),
 }
 
+/// Every action, in the order the help lists them.
+pub const ACTIONS: [Action; 22] = [
+    Action::Help,
+    Action::Next,
+    Action::Prev,
+    Action::Activate,
+    Action::Submit,
+    Action::Back,
+    Action::Cancel,
+    Action::Prompt,
+    Action::Refresh,
+    Action::PagePrev,
+    Action::PageNext,
+    Action::Drawer,
+    Action::Find,
+    Action::Sort,
+    Action::Select,
+    Action::SelectAll,
+    Action::NumberLinks,
+    Action::Info,
+    Action::OpenBrowser,
+    Action::Redraw,
+    Action::Log,
+    Action::Quit,
+];
+
 impl Action {
-    fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "next" => Self::Next,
-            "prev" => Self::Prev,
-            "activate" => Self::Activate,
-            "back" => Self::Back,
-            "cancel" => Self::Cancel,
-            "prompt" => Self::Prompt,
-            "reload" => Self::Reload,
-            "page-prev" => Self::PagePrev,
-            "page-next" => Self::PageNext,
-            "sort" => Self::Sort,
-            "find" => Self::Find,
-            "quit" => Self::Quit,
-            _ => return None,
-        })
+    /// The name a theme's `STRT_TUI_KEYS` row uses: `back = f3 | alt+left`.
+    pub fn name(self) -> String {
+        match self {
+            Self::Next => "next".into(),
+            Self::Prev => "prev".into(),
+            Self::Activate => "activate".into(),
+            Self::Back => "back".into(),
+            Self::Cancel => "cancel".into(),
+            Self::Help => "help".into(),
+            Self::Prompt => "prompt".into(),
+            Self::Refresh => "refresh".into(),
+            Self::PagePrev => "page-prev".into(),
+            Self::PageNext => "page-next".into(),
+            Self::Drawer => "drawer".into(),
+            Self::Submit => "submit".into(),
+            Self::Select => "select".into(),
+            Self::SelectAll => "select-all".into(),
+            Self::Find => "find".into(),
+            Self::Sort => "sort".into(),
+            Self::NumberLinks => "number-links".into(),
+            Self::Info => "info".into(),
+            Self::OpenBrowser => "open-browser".into(),
+            Self::Redraw => "redraw".into(),
+            Self::Log => "log".into(),
+            Self::Quit => "quit".into(),
+            Self::Tab(n) => format!("tab-{n}"),
+        }
+    }
+
+    /// The word on the key line and in the help.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Next => "Next",
+            Self::Prev => "Previous",
+            Self::Activate => "Follow",
+            Self::Back => "Back",
+            Self::Cancel => "Cancel",
+            Self::Help => "Help",
+            Self::Prompt => "Prompt",
+            Self::Refresh => "Refresh",
+            Self::PagePrev => "Page up",
+            Self::PageNext => "Page down",
+            Self::Drawer => "Menu",
+            Self::Submit => "Save",
+            Self::Select => "Select",
+            Self::SelectAll => "Select all",
+            Self::Find => "Find",
+            Self::Sort => "Sort",
+            Self::NumberLinks => "Number links",
+            Self::Info => "Info",
+            Self::OpenBrowser => "Open in browser",
+            Self::Redraw => "Redraw",
+            Self::Log => "Log",
+            Self::Quit => "Quit",
+            Self::Tab(_) => "Tab",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        if let Some(n) = name.strip_prefix("tab-") {
+            return n.parse::<u8>().ok().filter(|n| (1..=9).contains(n)).map(Self::Tab);
+        }
+        ACTIONS.into_iter().find(|action| action.name() == name)
     }
 }
 
@@ -103,30 +240,53 @@ pub struct KeyMap {
 }
 
 impl KeyMap {
+    /// The scheme of section 1.5 as far as Phase 2 goes. The palette, go to, quick create, screen find, message history
+    /// and log pane come with Phase 3.
     pub fn baseline() -> Self {
-        Self {
-            bindings: vec![
-                (KeyPress::plain(Key::Tab), Action::Next),
-                (KeyPress::plain(Key::Down), Action::Next),
-                (KeyPress::plain(Key::BackTab), Action::Prev),
-                (KeyPress::plain(Key::Up), Action::Prev),
-                (KeyPress::plain(Key::Enter), Action::Activate),
-                (KeyPress::plain(Key::Right), Action::Activate),
-                (KeyPress::plain(Key::Left), Action::Back),
-                (KeyPress::plain(Key::F(3)), Action::Back),
-                (KeyPress::plain(Key::Escape), Action::Cancel),
-                (KeyPress::plain(Key::F(12)), Action::Cancel),
-                (KeyPress::plain(Key::F(4)), Action::Prompt),
-                (KeyPress::plain(Key::F(5)), Action::Reload),
-                (KeyPress::plain(Key::F(7)), Action::PagePrev),
-                (KeyPress::plain(Key::PageUp), Action::PagePrev),
-                (KeyPress::plain(Key::F(8)), Action::PageNext),
-                (KeyPress::plain(Key::PageDown), Action::PageNext),
-                (KeyPress::plain(Key::Char('s')), Action::Sort),
-                (KeyPress::plain(Key::Char('f')), Action::Find),
-                (KeyPress::plain(Key::Char('q')), Action::Quit),
-            ],
+        let plain = KeyPress::plain;
+        let ch = |c| KeyPress::plain(Key::Char(c));
+        let mut bindings = vec![
+            (plain(Key::Tab), Action::Next),
+            (plain(Key::Down), Action::Next),
+            (plain(Key::BackTab), Action::Prev),
+            (plain(Key::Up), Action::Prev),
+            (plain(Key::Enter), Action::Activate),
+            (plain(Key::Right), Action::Activate),
+            (plain(Key::F(3)), Action::Back),
+            (KeyPress::with_alt(Key::Left), Action::Back),
+            (plain(Key::Left), Action::Back),
+            (plain(Key::Backspace), Action::Back),
+            (plain(Key::Escape), Action::Cancel),
+            (plain(Key::F(12)), Action::Cancel),
+            (plain(Key::F(1)), Action::Help),
+            (ch('?'), Action::Help),
+            (plain(Key::F(4)), Action::Prompt),
+            (plain(Key::F(5)), Action::Refresh),
+            (KeyPress::with_ctrl(Key::Char('r')), Action::Refresh),
+            (plain(Key::F(7)), Action::PagePrev),
+            (plain(Key::PageUp), Action::PagePrev),
+            (plain(Key::F(8)), Action::PageNext),
+            (plain(Key::PageDown), Action::PageNext),
+            (plain(Key::F(9)), Action::Drawer),
+            (KeyPress::with_alt(Key::Enter), Action::Submit),
+            (KeyPress::with_ctrl(Key::Char('s')), Action::Submit),
+            (ch(' '), Action::Select),
+            (ch('*'), Action::SelectAll),
+            (ch('f'), Action::Find),
+            (ch('s'), Action::Sort),
+            (ch('#'), Action::NumberLinks),
+            (ch('='), Action::Info),
+            (ch('o'), Action::OpenBrowser),
+            (KeyPress::with_ctrl(Key::Char('l')), Action::Redraw),
+            (KeyPress::with_alt(Key::Char('l')), Action::Log),
+            (KeyPress::with_ctrl(Key::Char('q')), Action::Quit),
+        ];
+        for n in 1..=9u8 {
+            let digit = char::from(b'0' + n);
+            bindings.push((KeyPress::with_alt(Key::Char(digit)), Action::Tab(n)));
+            bindings.push((ch(digit), Action::Tab(n)));
         }
+        Self { bindings }
     }
 
     pub fn action(&self, press: &KeyPress) -> Option<Action> {
@@ -136,8 +296,26 @@ impl KeyMap {
             .map(|(_, action)| *action)
     }
 
+    /// The chords of `action`, in the order they were bound.
+    pub fn chords(&self, action: Action) -> Vec<&KeyPress> {
+        self.bindings
+            .iter()
+            .filter(|(_, bound)| *bound == action)
+            .map(|(press, _)| press)
+            .collect()
+    }
+
+    /// `F3=Back`: the first chord of `action`, or nothing when it has none.
+    pub fn hint(&self, action: Action) -> Option<String> {
+        self.chords(action)
+            .first()
+            .map(|press| format!("{}={}", press.label(), action.title()))
+    }
+
+    /// Unbind `action` except on the fixed keys.
     fn retain_action(&mut self, action: Action) {
-        self.bindings.retain(|(_, bound)| *bound != action);
+        self.bindings
+            .retain(|(press, bound)| *bound != action || fixed_key(press));
     }
 
     fn bind(&mut self, press: KeyPress, action: Action) {
@@ -154,48 +332,47 @@ pub struct MergeSkip {
     pub reason: &'static str,
 }
 
-/// Theme rows replace the default chords of a known action. A bad chord or an unknown action is
-/// skipped. A chord of Esc, Enter, or Tab is refused, and that action keeps its default.
+impl std::fmt::Display for MergeSkip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "key binding {} = {} skipped: {}",
+            self.action, self.chord, self.reason
+        )
+    }
+}
+
+/// Theme rows replace the default chords of a known action. A bad chord or an unknown action is skipped. A chord of Esc,
+/// Enter or Tab is refused, and that action keeps its default; an action bound to one of those keys keeps it.
 pub fn merge_keys(base: &KeyMap, overrides: &[(&str, &str)]) -> (KeyMap, Vec<MergeSkip>) {
     let mut map = base.clone();
     let mut skipped = Vec::new();
     for (action_name, chords) in overrides {
-        let Some(action) = Action::parse(action_name) else {
-            skipped.push(MergeSkip {
-                action: (*action_name).to_string(),
-                chord: (*chords).to_string(),
-                reason: "unknown action",
-            });
+        let skip = |chord: &str, reason| MergeSkip {
+            action: (*action_name).to_string(),
+            chord: chord.to_string(),
+            reason,
+        };
+        let Some(action) = Action::parse(action_name.trim()) else {
+            skipped.push(skip(chords, "unknown action"));
             continue;
         };
         let mut parsed = Vec::new();
         let mut bad = false;
-        for chord in chords.split('|') {
-            let chord = chord.trim();
-            if chord.is_empty() {
-                continue;
-            }
+        for chord in chords.split('|').map(str::trim).filter(|chord| !chord.is_empty()) {
             match parse_chord(chord) {
                 Some(press) if fixed_key(&press) => {
-                    skipped.push(MergeSkip {
-                        action: (*action_name).to_string(),
-                        chord: chord.to_string(),
-                        reason: "fixed key",
-                    });
+                    skipped.push(skip(chord, "fixed key"));
                     bad = true;
                 }
                 Some(press) => parsed.push(press),
                 None => {
-                    skipped.push(MergeSkip {
-                        action: (*action_name).to_string(),
-                        chord: chord.to_string(),
-                        reason: "bad chord",
-                    });
+                    skipped.push(skip(chord, "bad chord"));
                     bad = true;
                 }
             }
         }
-        if bad {
+        if bad || parsed.is_empty() {
             continue;
         }
         map.retain_action(action);
@@ -207,7 +384,7 @@ pub fn merge_keys(base: &KeyMap, overrides: &[(&str, &str)]) -> (KeyMap, Vec<Mer
 }
 
 fn fixed_key(press: &KeyPress) -> bool {
-    matches!(press.key, Key::Escape | Key::Enter | Key::Tab | Key::BackTab)
+    matches!(press.key, Key::Escape | Key::Enter | Key::Tab | Key::BackTab) && !press.alt && !press.ctrl
 }
 
 fn parse_chord(chord: &str) -> Option<KeyPress> {
@@ -215,7 +392,13 @@ fn parse_chord(chord: &str) -> Option<KeyPress> {
     let mut ctrl = false;
     let mut shift = false;
     let mut key = None;
-    for part in chord.split('+') {
+    // `alt++` is Alt with the plus key; split on the `+` between names only.
+    let mut parts: Vec<&str> = chord.split('+').collect();
+    if chord.ends_with("++") {
+        parts.truncate(parts.len().saturating_sub(2));
+        parts.push("+");
+    }
+    for part in parts {
         let part = part.trim();
         if part.is_empty() {
             return None;
@@ -241,7 +424,7 @@ fn parse_chord(chord: &str) -> Option<KeyPress> {
 }
 
 fn parse_key(name: &str) -> Option<Key> {
-    if name.len() == 1 {
+    if name.chars().count() == 1 {
         return name.chars().next().map(Key::Char);
     }
     Some(match name {
@@ -250,7 +433,8 @@ fn parse_key(name: &str) -> Option<Key> {
         "tab" => Key::Tab,
         "backtab" => Key::BackTab,
         "backspace" => Key::Backspace,
-        "delete" => Key::Delete,
+        "delete" | "del" => Key::Delete,
+        "space" => Key::Char(' '),
         "up" => Key::Up,
         "down" => Key::Down,
         "left" => Key::Left,

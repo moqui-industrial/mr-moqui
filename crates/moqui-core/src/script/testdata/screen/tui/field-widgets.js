@@ -11,18 +11,25 @@ try {
         $hidden.push({name:String($key),value:String($value)});
     }
     let $transitionUrl = "";
-    $openChildren({t:"form",id:"AllFields",name:"AllFields",kind:"single",transitionUrl:$transitionUrl,method:"",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
-    $openChildren({t:"row",id:"AllFields.l0"});
+    $openChildren({t:"form",id:$uid("AllFields"),name:"AllFields",kind:"single",transitionUrl:$transitionUrl,method:"",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
+    $openChildren({t:"row",id:$uid("AllFields.l0")});
 $emit((() => {
             let $required = false;
             const $max = 0;
             const $hint = sri.getFieldValidation({"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"firstName"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"},"parent":{"name":"widgets","attrs":{}}}}});
             if ($hint && String($hint.classes || "").split(/\s+/).indexOf("required") >= 0) $required = true;
-            const $rules = sri.getFieldValidationJsRules({"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"firstName"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"},"parent":{"name":"widgets","attrs":{}}}}}) || [];
-            for (let $ri = 0; $ri < $rules.length; $ri++) if ($rules[$ri] && $rules[$ri].expr === "!!value") $required = true;
-            const $field = {t:"field",id:"AllFields.firstName",name:"firstName",title:String(ec.l10n.localize("First Name") || ""),w:{kind:"textLine",value:String(sri.getFieldValueString({"name":"text-line","attrs":{"size":"20"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"firstName"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"},"parent":{"name":"widgets","attrs":{}}}}}}) || "" || "")}};
+            const $rules = [];
+            const $found = sri.getFieldValidationRules({"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"firstName"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"},"parent":{"name":"widgets","attrs":{}}}}}) || [];
+            for (let $ri = 0; $ri < $found.length; $ri++) {
+                if ($found[$ri].kind === "required") $required = true;
+                else $rules.push($found[$ri]);
+            }
+            const $field = {t:"field",id:$uid("AllFields.firstName"),name:"firstName",title:String(ec.l10n.localize("First Name") || ""),w:{kind:"textLine",value:String(sri.getFieldValueString({"name":"text-line","attrs":{"size":"20"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"firstName"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"},"parent":{"name":"widgets","attrs":{}}}}}}) || "" || ""),size:20}};
             if ($required) $field.required = true;
             if ($max > 0) $field.maxlength = $max;
+            if ($rules.length) $field.rules = $rules;
+            
+            
             return $field;
         })());
 $emit((() => {
@@ -30,11 +37,18 @@ $emit((() => {
             const $max = 0;
             const $hint = sri.getFieldValidation({"name":"default-field","attrs":{"title":"About"},"parent":{"name":"field","attrs":{"name":"bio"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"},"parent":{"name":"widgets","attrs":{}}}}});
             if ($hint && String($hint.classes || "").split(/\s+/).indexOf("required") >= 0) $required = true;
-            const $rules = sri.getFieldValidationJsRules({"name":"default-field","attrs":{"title":"About"},"parent":{"name":"field","attrs":{"name":"bio"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"},"parent":{"name":"widgets","attrs":{}}}}}) || [];
-            for (let $ri = 0; $ri < $rules.length; $ri++) if ($rules[$ri] && $rules[$ri].expr === "!!value") $required = true;
-            const $field = {t:"field",id:"AllFields.bio",name:"bio",title:String(ec.l10n.localize("About") || ""),w:{kind:"textLine",value:String(sri.getFieldValueString({"name":"text-area","attrs":{"rows":"3"},"parent":{"name":"default-field","attrs":{"title":"About"},"parent":{"name":"field","attrs":{"name":"bio"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"},"parent":{"name":"widgets","attrs":{}}}}}}) || "" || "")}};
+            const $rules = [];
+            const $found = sri.getFieldValidationRules({"name":"default-field","attrs":{"title":"About"},"parent":{"name":"field","attrs":{"name":"bio"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"},"parent":{"name":"widgets","attrs":{}}}}}) || [];
+            for (let $ri = 0; $ri < $found.length; $ri++) {
+                if ($found[$ri].kind === "required") $required = true;
+                else $rules.push($found[$ri]);
+            }
+            const $field = {t:"field",id:$uid("AllFields.bio"),name:"bio",title:String(ec.l10n.localize("About") || ""),w:{kind:"textArea",value:String(sri.getFieldValueString({"name":"text-area","attrs":{"rows":"3"},"parent":{"name":"default-field","attrs":{"title":"About"},"parent":{"name":"field","attrs":{"name":"bio"},"parent":{"name":"form-single","attrs":{"name":"AllFields","map":"fv"},"parent":{"name":"widgets","attrs":{}}}}}}) || "" || ""),rows:3,editorType:""}};
             if ($required) $field.required = true;
             if ($max > 0) $field.maxlength = $max;
+            if ($rules.length) $field.rules = $rules;
+            
+            
             return $field;
         })());
 $closeChildren();

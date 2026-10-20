@@ -1,6 +1,6 @@
 # Screen TUI implementation plan
 
-Oct 20, 2026 · Plan only; no code yet. This plan implements [proposals/Screen-TUI-Revue.md](proposals/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
+Oct 20, 2026 · Phases 1 and 2 built (findings under each in section 5); Phase 3 is next. This plan implements [proposals/Screen-TUI-Revue.md](proposals/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
 
 The proposal sets the architecture: a `tui` render mode emits a JSON screen model, and one Revue client interprets it and reaches the server over several channels. This plan adds four things:
 
@@ -50,7 +50,7 @@ The frame has the same regions as the qvt shell (`m-qapps-root`, `WebrootVue.qvt
 | Region | Terminal form | qvt counterpart |
 | --- | --- | --- |
 | Title line (row 1) | `≡` when the drawer is hidden, then app ▸ breadcrumbs ▸ screen title on the left. On the right: counts (Today, Chat, Notif), user, clock, and a busy spinner while a request runs. | `q-header`: launcher, app title, breadcrumbs, counters, account |
-| Drawer | Left, 26 columns. The app menu tree (two levels under the app root), pinned saved finds, then Settings and Home. Docked from 150 terminal columns, an overlay (F9) below that. | `q-drawer` 260 px, `m-menu-nav-item` |
+| Drawer | Left, 26 columns. The app menu tree (two levels under the app root), pinned saved finds, then Settings and Home. Docked from 146 terminal columns, an overlay (F9) below that. | `q-drawer` 260 px, `m-menu-nav-item` |
 | Canvas | The screen levels, stacked from the app root down. It scrolls vertically. A form-list can scroll horizontally on its own. | `q-page` > `m-subscreens-active` |
 | Message line (row −2) | The last message. An error stays until Esc or the next action. Alt+M opens the history (last 25). | `$q.notify` and `notifyHistoryList` |
 | Key line (row −1) | The function keys that apply to the focused element, then the global ones, cut to the width. Revue's `StatusBar` with `KeyHint`s (`src/widget/feedback/statusbar/`). | none (green-screen convention) |
@@ -154,7 +154,7 @@ The client measures the canvas on every `Event::Resize`. Revue has no CSS media 
 
 Rules:
 
-- **Docking the drawer.** The drawer docks only when the canvas left over is still at least 120 columns, which with the 26-column drawer means a terminal of 150 columns or more. So docking never pushes a screen from md down to sm. F9 toggles it at any width, and the choice is kept as a user preference (the `QUASAR_LEFT_OPEN` counterpart, `TUI_DRAWER_OPEN`).
+- **Docking the drawer.** The drawer docks only when the canvas left over is still at least 120 columns, which with the 26-column drawer means a terminal of 146 columns or more. So docking never pushes a screen from md down to sm. F9 toggles it at any width, and the choice is kept as a user preference (the `QUASAR_LEFT_OPEN` counterpart, `TUI_DRAWER_OPEN`).
 - **Docking the tray.** The same rule: the 48-column tray docks only when the canvas left beside it is still at least 120 columns, so from a canvas of 168. The width class is always that of the canvas left over. So docking the tray on a canvas of 180–227 moves the screen from lg to md, and a three-column `row-col lg="4"` row shows two columns while the tray is open. Neither panel ever pushes a screen below md.
 - **`row-col`.** The 12-column grid works as `colOpen` does (`runtime/base-component/framework/template/screen/ScreenQvt.js:1107-1122`). When a smaller class has no size, it is 12. A column's width is the canvas width × n/12, less a one-column gutter. A box narrower than 40 columns falls to the next row rather than squeezing.
 - **`field-row`.** This is width-driven rather than the fixed qvt rule (`ScreenQvt.js:2033`). Cells stay side by side while each cell gets at least the form's label width plus 24 columns. Otherwise they stack.
@@ -752,6 +752,60 @@ Recorded 2026-10-20. Decision: **go**. Route 3 is available without carrying a f
 4. **Docs.** `docs/TUI.md` first version: start, keys, widths.
 
 **Exit:** in the example app and one Mantle app, a user finds, opens, edits and saves records, uses dialogs and dependent drop-downs, and pages lists, all by keyboard, at 100 and 180 columns. Every Gallery screen renders a valid model.
+
+#### Phase 2 findings
+
+Recorded 2026-10-20, after a review of the first Phase 2 commit against this section and a second pass that closed the gaps it found.
+
+**Exit evidence.** `crates/moqui-host/tests/tui_screens.rs` (run by `scripts/check-packages.sh`) drives the in-process link on embedded Postgres with Mantle and SimpleScreens. It logs in through the client's dialog after a 401 (a wrong password stays), and renders all 21 Gallery screens with no error node anywhere in their documents. On Gallery List it finds, pages (the footer drawn at 100 and 180 columns), sorts, opens the detail and submits a dialog. On SimpleScreens Party it uses the dependent country and state drop-downs, gets a client mark for an empty required name, creates a person, edits and saves, and reads the record back from the server. `Gallery.spec.js` renders every Gallery screen in `tui` too (`./moq test example`, 53 features).
+
+**Server.** The review found three bugs, all fixed with render tests in `screen/tests/tui.rs`:
+
+- URLs dropped their parameters: links use `getUrlWithParams`, and options send their fixed parameters and `{parameter: field}` for `depends-on`, as qvt's do.
+- A `text` from a location was written straight into the JSON: it now comes back through `sri.renderTextValue` and is checked first.
+- Several nested renders could leave `"c":}`, which sent the whole page to one error node: `json_value` writes `[]` for a render that wrote nothing.
+
+Other server changes:
+
+- Node ids are unique through `sri.uniqueId` (`id~2` for a repeat).
+- Validation rules come as data (`ClientRule`, `sri.getFieldValidationRules`), since the client does not run JavaScript.
+- HTML is converted by `screen/html_text.rs` on the html5ever tokenizer.
+- The theme's `tui` values are in the shell data (`STRT_TUI_BREAKPOINTS`, `STRT_TUI_COLORS`, `STRT_TUI_KEYS`).
+- The two lint findings are in `moqui lint --screens`. The worklist on this date is 87 screens: 44 in ironstone-boss, 24 in MrSimpleScreens, 11 in example, 7 in tools and 1 in webroot. No `tui` text has an unsafe `${`.
+- `make_render` gained `history(true)`, so TUI visits go on the screen history.
+
+**Client structure.** `crates/moqui-tui` was rewritten after the review:
+
+- The session is sans-IO. Keys queue `LinkCall`s; the loop runs them on worker threads and hands the answers back. Per-purpose `Lanes` keep one request in flight and only the newest waiting (3.6).
+- The modules are `forms` (an index of the levels, posting and client checks), `edit` (the line editor: cursor, `maxlength`, mask), `state`, `keys`, `nav` (parent levels by `.tui` path), `layout` (a measured piece tree), `theme` and `ui`.
+- The session tests run without Revue.
+
+**The draw layer, a deviation from 3.2 and 3.7 to note.** The view draws through Revue's pipeline: `RenderContext` cells in theme roles, Revue's `Border` for every frame, OSC 8 hyperlinks through the buffer's registry, `PipelineHarness` for snapshots, and `App::run` for the local loop. The own widgets are draw functions in `ui/draw.rs` and `ui/overlays.rs` (field input, labels, lists, the drop-down, the date picker) rather than wrappers over Revue's `Input`, `OptionList`, `DateTimePicker` and `DataGrid`. The survey's gaps decided that:
+
+- `Input` takes no cursor from outside and no length or mask.
+- The others hold state the session already owns.
+
+Revue always writes RGB escapes, so the 16 and 256 color depths only choose nearer colors.
+
+**Packaging.** `tui` is in `enterprise` and `maximal` as 4.6 says (so `cargo check -p moqui` compiles Revue), not in `lite`. The generated app crate forwards it.
+
+**Smaller decisions.**
+
+- The drawer docks from 146 columns, which is the 120-column rule; the text said 150.
+- Mouse capture is off: no mouse handling yet.
+- The cursor is drawn as a cell. A view cannot move the terminal cursor.
+- Calls run as the user through `internal_login_user` per request, the pattern of 2.7.
+- The login dialog takes no second factor: such an account is told to use the browser.
+- `moqui tui` refuses to start when the runtime's HTTP port answers, and does not suggest `--server`, which is Phase 4.
+- The core render tests assert on the documents rather than keep `render/*.json` goldens.
+
+**Left for Phase 3, or open:**
+
+- Saved finds, Settings and Home in the drawer.
+- F9's choice kept as the `TUI_DRAWER_OPEN` preference.
+- The Markdown preview on F4.
+- Row actions on the selected rows.
+- A host test of an options transition that fails (the session shows the error, and the host logs it).
 
 ### Phase 3 — Shell and dynamics: a full admin task over SSH
 

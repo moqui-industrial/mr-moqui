@@ -12,318 +12,239 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Scripted keys, painted Gallery frames, and the in-memory draw probe.
+//! The Revue view through its real draw pipeline: the Gallery fixtures at 72x24, 100x40 and 180x50 (and an ASCII,
+//! monochrome set), the frame, the overlays, and drawing that follows the keys.
 //!
 //! `UPDATE_GOLDEN=1` rewrites `tests/snapshots/`.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use moqui_tui::{
-    gallery_link, render_text, run_key_session, AppView, Key, KeyPress, MenuItem, Node, ScreenLink, ScreenModel,
-    Session, GALLERY_DETAIL_PATH, GALLERY_LIST_JSON, GALLERY_LIST_PATH,
+    gallery_link, AppView, FakeLink, Key, KeyPress, MenuItem, ScreenLink, ScreenModel, Session, ShellInfo, Theme,
+    GALLERY_DETAIL_PATH, GALLERY_LIST_PATH,
 };
 
 fn press(view: &mut AppView, key: Key) -> bool {
     view.on_key(&KeyPress::plain(key))
 }
 
-fn list_view() -> (AppView, moqui_tui::FakeLink) {
+fn view_of(model: ScreenModel, link: FakeLink) -> AppView {
+    let mut view = AppView::new(model, link);
+    view.set_clock("Tue 14:32");
+    view
+}
+
+fn list_view() -> AppView {
     let link = gallery_link();
-    let model = link
-        .level(GALLERY_LIST_PATH, &std::collections::BTreeMap::new())
-        .unwrap();
-    (AppView::new(model, link.clone()), link)
+    let model = link.level(GALLERY_LIST_PATH, &BTreeMap::new()).unwrap();
+    view_of(model, link)
+}
+
+fn ascii() -> Theme {
+    Theme::detect(&|name| (name == "NO_COLOR").then(|| "1".to_string()), true, false)
 }
 
 #[test]
-fn session_pages_and_a_screen_link_loads_detail() {
+fn gallery_snapshots() {
     let link = gallery_link();
-    let mut session = Session::new(
-        link.level(GALLERY_LIST_PATH, &std::collections::BTreeMap::new())
-            .unwrap(),
-    );
-    assert_eq!(session.focus_id(), "enumTypeId");
-    assert!(session.on_key(&KeyPress::plain(Key::Char('q')), &link));
-
-    let mut session = Session::new(
-        link.level(GALLERY_LIST_PATH, &std::collections::BTreeMap::new())
-            .unwrap(),
-    );
-    session.on_key(&KeyPress::plain(Key::Tab), &link);
-    assert_eq!(session.focus_id(), "description");
-    assert!(!session.on_key(&KeyPress::plain(Key::Char('q')), &link));
-    assert_eq!(session.buffer("description"), "q");
-    session.on_key(&KeyPress::plain(Key::F(8)), &link);
-    assert_eq!(session.page_index("EnumList"), 1);
-    assert_eq!(session.list_page("EnumList")[0].cells[0].text(), "ENUM_10");
-    session.on_key(&KeyPress::plain(Key::F(7)), &link);
-    assert_eq!(session.page_index("EnumList"), 0);
-    assert_eq!(session.list_page("EnumList")[0].cells[0].text(), "ENUM_00");
-
-    let mut session = Session::new(
-        link.level(GALLERY_LIST_PATH, &std::collections::BTreeMap::new())
-            .unwrap(),
-    );
-    for _ in 0..4 {
-        session.on_key(&KeyPress::plain(Key::Tab), &link);
+    for (name, path, width, height, plain) in [
+        ("list-72x24", GALLERY_LIST_PATH, 72u16, 24u16, false),
+        ("list-100x40", GALLERY_LIST_PATH, 100, 40, false),
+        ("list-180x50", GALLERY_LIST_PATH, 180, 50, false),
+        ("detail-72x24", GALLERY_DETAIL_PATH, 72, 24, false),
+        ("detail-100x40", GALLERY_DETAIL_PATH, 100, 40, false),
+        ("detail-180x50", GALLERY_DETAIL_PATH, 180, 50, false),
+        ("list-100x40-ascii", GALLERY_LIST_PATH, 100, 40, true),
+        ("detail-180x50-ascii", GALLERY_DETAIL_PATH, 180, 50, true),
+    ] {
+        let mut view = view_of(link.level(path, &BTreeMap::new()).unwrap(), link.clone());
+        if plain {
+            view.set_theme(ascii());
+        }
+        let text = view.screen_text(width, height);
+        if plain {
+            assert!(
+                !text.contains('─') && !text.contains('▾') && !text.contains('≡'),
+                "{name}: {text}"
+            );
+        }
+        golden(name, &text);
     }
-    assert_eq!(session.focus_id(), "openDetail");
-    session.on_key(&KeyPress::plain(Key::Enter), &link);
-    assert_eq!(session.path(), GALLERY_DETAIL_PATH);
-    assert_eq!(session.focus_id(), "updated");
 }
 
 #[test]
-fn app_view_types_through_input_and_picks_from_the_option_list() {
-    let (mut view, _) = list_view();
-    press(&mut view, Key::Enter);
-    assert!(view.session().dropdown_open());
-    press(&mut view, Key::Down);
-    let open = view.screen_text(100, 40);
-    assert!(open.contains("Screen Theme Type"), "{open}");
-    press(&mut view, Key::Enter);
-    assert!(!view.session().dropdown_open());
-    assert_eq!(view.session().buffer("enumTypeId"), "ScreenThemeType");
-    let text = view.screen_text(100, 40);
-    assert!(text.contains("Screen Theme Type"), "{text}");
-
-    press(&mut view, Key::Tab);
-    assert_eq!(view.session().focus_id(), "description");
-    press(&mut view, Key::Char('a'));
-    press(&mut view, Key::Backspace);
-    press(&mut view, Key::Char('z'));
-    assert_eq!(view.session().buffer("description"), "z");
-    assert!(!press(&mut view, Key::Char('q')));
-    assert_eq!(view.session().buffer("description"), "zq");
-}
-
-#[test]
-fn three_tabs_then_enter_opens_detail_from_the_view() {
-    let (mut view, _) = list_view();
+fn a_painted_list_keeps_unicode_pages_and_caps_a_long_description() {
+    let mut view = list_view();
+    let wide = view.screen_text(180, 50);
+    assert!(wide.contains("東京"), "{wide}");
+    assert!(wide.contains("🎉"), "{wide}");
+    assert!(wide.contains("Description text that should be capped …"), "{wide}");
+    assert!(wide.contains("Rows 1–10 of 20 · Page 1/2"), "{wide}");
+    // Labels with spaced leaders, as in the mockups.
+    assert!(wide.contains("Type . . . . : ["), "{wide}");
+    assert!(wide.contains("Description  : ["), "{wide}");
     for _ in 0..3 {
         press(&mut view, Key::Tab);
     }
-    assert_eq!(view.session().focus_id(), "EnumList");
-    press(&mut view, Key::Enter);
-    assert_eq!(view.session().path(), GALLERY_DETAIL_PATH);
+    press(&mut view, Key::F(8));
+    let next = view.screen_text(180, 50);
+    assert!(next.contains("ENUM_10"), "{next}");
+    assert!(next.contains("Rows 11–20 of 20 · Page 2/2"), "{next}");
+    // The list wider than 72 scrolls: the first column stays, the rest move, with the marks.
+    let narrow = view.screen_text(72, 24);
+    assert!(narrow.contains('▸'), "{narrow}");
+    view.on_key(&KeyPress {
+        key: Key::Right,
+        shift: true,
+        alt: false,
+        ctrl: false,
+    });
+    let scrolled = view.screen_text(72, 24);
+    assert!(scrolled.contains('◂'), "{scrolled}");
+    assert!(scrolled.contains("ENUM_10"), "{scrolled}");
 }
 
 #[test]
-fn painted_list_keeps_unicode_and_caps_the_long_description() {
-    let link = gallery_link();
-    let model = ScreenModel::from_json(GALLERY_LIST_JSON).unwrap();
-    let Node::FormList { list } = &model.c[1] else {
-        panic!("form list");
-    };
-    let long = list.rows[3].cells[1].text();
-    assert_eq!(long.chars().count(), 45);
-    let wide = render_text(&model, &link, 100, 40);
-    assert!(wide.contains("東京"), "{wide}");
-    assert!(wide.contains("🎉"), "{wide}");
-    // Revue's draw skips zero-width joiners, so the painted family is three emoji.
-    assert!(wide.contains("👨👩👧"), "{wide}");
-    assert!(!wide.contains('\u{200D}'), "{wide}");
-    assert!(!wide.contains('\0'), "{wide}");
-    assert!(wide.contains('…'), "{wide}");
-    assert!(!wide.contains(long), "{wide}");
-    assert!(wide.contains("Page 1/2"), "{wide}");
-    assert!(wide.contains("> Type"), "{wide}");
-    assert!(wide.starts_with("≡ Gallery ▸ List ▸ Enumerations\n"), "{wide}");
-    assert!(wide.lines().any(|line| line.contains("F3=Back")), "{wide}");
-    assert!(!wide.contains('│'), "{wide}");
-
-    let narrow = render_text(&model, &link, 72, 24);
-    assert!(narrow.lines().any(|line| line.ends_with('>')), "{narrow}");
-
-    let detail = link
-        .level(GALLERY_DETAIL_PATH, &std::collections::BTreeMap::new())
-        .unwrap();
-    let stacked = render_text(&detail, &link, 72, 24);
-    assert!(stacked.contains("+ Record\n"), "{stacked}");
-    assert!(
-        !stacked
-            .lines()
-            .any(|line| line.contains("+ Record") && line.contains("+ Type")),
-        "{stacked}"
-    );
-    let medium = render_text(&detail, &link, 100, 40);
-    assert!(
-        !medium
-            .lines()
-            .any(|line| line.contains("+ Record") && line.contains("+ Type")),
-        "{medium}"
-    );
-    let detail_text = render_text(&detail, &link, 180, 50);
-    assert!(
-        detail_text
-            .lines()
-            .any(|line| line.contains("+ Record") && line.contains("+ Type")),
-        "{detail_text}"
-    );
-    // draw_text skips the combining acute, same as it skips a ZWJ.
-    assert!(detail_text.contains("cafe"), "{detail_text}");
-    assert!(!detail_text.contains('\u{0301}'), "{detail_text}");
-    assert!(detail_text.contains("STT_INTERNAL"), "{detail_text}");
-    assert!(detail_text.contains("+ Record"), "{detail_text}");
-    assert!(detail_text.contains("+ Type"), "{detail_text}");
-}
-
-#[test]
-fn pipeline_harness_bytes_only_grow() {
-    let link = gallery_link();
-    let model = link
-        .level(GALLERY_LIST_PATH, &std::collections::BTreeMap::new())
-        .unwrap();
-    let mut once = Vec::new();
-    let first = run_key_session(&model, &link, &[], (180, 50), &mut once);
-    assert!(first.harness_len > 0, "a frame writes terminal bytes");
-    assert_eq!(first.harness_len, first.copied_len);
-    assert_eq!(first.copied_len, once.len());
-    assert_eq!(first.frames, 1);
-
-    let keys = [KeyPress::plain(Key::Tab), KeyPress::plain(Key::Char('a'))];
-    let mut grown_out = Vec::new();
-    let grown = run_key_session(&model, &link, &keys, (180, 50), &mut grown_out);
-    assert!(
-        grown.harness_len > first.harness_len,
-        "the harness keeps earlier frames: {} then {}",
-        first.harness_len,
-        grown.harness_len
-    );
-    assert_eq!(grown.harness_len, grown.copied_len);
-    assert_eq!(grown.copied_len, grown_out.len());
-    assert_eq!(grown.frames, 3);
-    println!(
-        "route2 frames={} bytes={} ms={}",
-        grown.frames, grown.harness_len, grown.millis
-    );
+fn typing_shows_in_the_field_with_its_change_mark() {
+    let mut view = list_view();
+    press(&mut view, Key::Tab);
+    for ch in "Enum".chars() {
+        press(&mut view, Key::Char(ch));
+    }
+    let text = view.screen_text(100, 40);
+    assert!(text.contains("[Enum"), "{text}");
+    assert!(text.contains("]•"), "{text}");
 }
 
 const DIALOG_JSON: &str = r#"{
   "v": 1,
   "screen": { "path": "/dialog", "title": "Dialog" },
   "c": [
-    {
-      "t": "dialog",
-      "id": "New",
-      "title": "New enumeration",
-      "button": "New",
-      "c": [
-        {
-          "t": "form",
-          "id": "NewForm",
-          "name": "NewForm",
-          "transitionUrl": "/new",
-          "c": [
-            {
-              "t": "field",
-              "id": "NewForm.name",
-              "name": "name",
-              "title": "Name",
-              "required": true,
-              "w": { "kind": "textLine", "value": "" }
-            }
-          ]
-        }
-      ]
-    }
+    { "t": "dialog", "id": "New", "title": "New enumeration", "button": "New", "c": [
+      { "t": "form", "id": "NewForm", "name": "NewForm", "transitionUrl": "/new", "c": [
+        { "t": "field", "id": "NewForm.name", "name": "name", "title": "Name", "required": true,
+          "w": { "kind": "textLine", "value": "" } },
+        { "t": "field", "id": "NewForm.go", "name": "go", "title": "Create", "w": { "kind": "submit", "text": "Create" } }
+      ]}
+    ]}
   ]
 }"#;
 
 #[test]
 fn an_open_dialog_and_a_validation_mark_are_on_the_frame() {
-    let link = moqui_tui::FakeLink::from_json(&[DIALOG_JSON]).unwrap();
-    let model = ScreenModel::from_json(DIALOG_JSON).unwrap();
-    let mut view = AppView::new(model, link);
+    let link = FakeLink::from_json(&[DIALOG_JSON]).unwrap();
+    let mut view = view_of(ScreenModel::from_json(DIALOG_JSON).unwrap(), link);
+    let closed = view.screen_text(100, 40);
+    assert!(closed.contains("[ New… ]"), "{closed}");
     press(&mut view, Key::Enter);
-    assert_eq!(view.session().dialogs_open(), &["New".to_string()]);
+    assert_eq!(view.session().dialogs_open(), ["New"]);
+    assert_eq!(view.session().focus_id(), "NewForm.name");
     let dialog = view.screen_text(100, 40);
-    assert!(dialog.contains("+ New enumeration"), "{dialog}");
-    assert!(dialog.contains("Name"), "{dialog}");
+    assert!(dialog.contains("New enumeration"), "{dialog}");
+    assert!(dialog.contains("* Name"), "{dialog}");
     golden("dialog-100x40", &dialog);
-
-    let (edit, edit_link) = validation_view();
-    let mut view = edit;
     press(&mut view, Key::Enter);
-    assert_eq!(view.session().mark("Edit.name"), Some("required"));
+    assert_eq!(view.session().mark("NewForm.name"), Some("A value is required"));
     let marked = view.screen_text(100, 40);
-    assert!(marked.contains("! required"), "{marked}");
-    assert!(marked.lines().any(|line| line == "required"), "{marked}");
-    let _ = edit_link;
+    assert!(marked.contains("! A value is required"), "{marked}");
+    assert!(marked.contains("]!"), "{marked}");
     golden("validation-100x40", &marked);
+    // Esc closes the dialog; focus is back on its button.
+    press(&mut view, Key::Escape);
+    press(&mut view, Key::Escape);
+    assert!(view.session().dialogs_open().is_empty());
+    assert_eq!(view.session().focus_id(), "New");
 }
 
-#[test]
-fn a_docked_drawer_shows_two_menu_levels_and_a_busy_mark() {
-    let (mut view, _) = list_view();
-    view.session_mut().set_menu(vec![MenuItem {
+fn menu() -> Vec<MenuItem> {
+    vec![MenuItem {
         title: "Gallery".to_string(),
         url: "/Gallery".to_string(),
-        children: vec![MenuItem {
-            title: "List".to_string(),
-            url: GALLERY_LIST_PATH.to_string(),
-            children: Vec::new(),
-        }],
-    }]);
-    view.session_mut().set_busy(true);
-    let wide = view.screen_text(180, 40);
-    assert!(wide.contains("Gallery ▸ List ▸ Enumerations *"), "{wide}");
-    assert!(wide.contains("▾ Gallery"), "{wide}");
-    assert!(wide.contains("▶ List"), "{wide}");
-    assert!(wide.contains('│'), "{wide}");
-    let narrow = view.screen_text(100, 40);
-    assert!(narrow.starts_with('≡'), "{narrow}");
-    assert!(!narrow.contains("▾ Gallery"), "{narrow}");
-}
-
-fn validation_view() -> (AppView, moqui_tui::FakeLink) {
-    const EDIT: &str = r#"{
-      "v": 1,
-      "screen": { "path": "/edit", "title": "Edit" },
-      "c": [
-        {
-          "t": "form",
-          "id": "Edit",
-          "name": "Edit",
-          "transitionUrl": "/edit/update",
-          "c": [
-            {
-              "t": "field",
-              "id": "Edit.name",
-              "name": "name",
-              "title": "Name",
-              "required": true,
-              "w": { "kind": "textLine", "value": "" }
-            }
-          ]
-        }
-      ]
-    }"#;
-    let link = moqui_tui::FakeLink::from_json(&[EDIT]).unwrap();
-    let model = ScreenModel::from_json(EDIT).unwrap();
-    (AppView::new(model, link.clone()), link)
+        children: vec![
+            MenuItem {
+                title: "List".to_string(),
+                url: GALLERY_LIST_PATH.to_string(),
+                children: Vec::new(),
+            },
+            MenuItem {
+                title: "Detail".to_string(),
+                url: GALLERY_DETAIL_PATH.to_string(),
+                children: Vec::new(),
+            },
+        ],
+    }]
 }
 
 #[test]
-fn gallery_snapshots() {
-    let link = gallery_link();
-    let list = link
-        .level(GALLERY_LIST_PATH, &std::collections::BTreeMap::new())
-        .unwrap();
-    let detail = link
-        .level(GALLERY_DETAIL_PATH, &std::collections::BTreeMap::new())
-        .unwrap();
-    let frames = [
-        ("list-72x24", &list, 72u16, 24u16),
-        ("list-100x40", &list, 100, 40),
-        ("list-180x50", &list, 180, 50),
-        ("detail-72x24", &detail, 72, 24),
-        ("detail-100x40", &detail, 100, 40),
-        ("detail-180x50", &detail, 180, 50),
-    ];
-    for (name, model, width, height) in frames {
-        golden(name, &render_text(model, &link, width, height));
-    }
+fn the_drawer_docks_when_wide_and_f9_shows_and_focuses_it() {
+    let mut view = list_view();
+    view.session_mut().set_menu(menu());
+    let wide = view.screen_text(180, 40);
+    assert!(wide.contains("▾ Gallery"), "{wide}");
+    assert!(wide.contains("▶ List"), "{wide}");
+    assert!(wide.contains("┬"), "{wide}");
+    let narrow = view.screen_text(100, 40);
+    assert!(narrow.starts_with(" ≡"), "{narrow}");
+    assert!(!narrow.contains("▾ Gallery"), "{narrow}");
+    press(&mut view, Key::F(9));
+    let shown = view.screen_text(100, 40);
+    assert!(shown.contains("▾ Gallery"), "{shown}");
+    press(&mut view, Key::Down);
+    press(&mut view, Key::Down);
+    press(&mut view, Key::Enter);
+    assert_eq!(view.session().path(), GALLERY_DETAIL_PATH);
+}
+
+#[test]
+fn the_drop_down_list_opens_under_its_field() {
+    let mut view = list_view();
+    press(&mut view, Key::F(4));
+    let text = view.screen_text(100, 40);
+    assert!(text.contains("Screen Theme Type"), "{text}");
+    assert!(text.contains("(none)"), "{text}");
+    press(&mut view, Key::Down);
+    press(&mut view, Key::Enter);
+    let picked = view.screen_text(100, 40);
+    assert!(picked.contains("[Screen Theme Type"), "{picked}");
+}
+
+#[test]
+fn the_leave_confirmation_and_the_help_show_over_the_screen() {
+    let mut view = list_view();
+    press(&mut view, Key::Tab);
+    press(&mut view, Key::Char('z'));
+    view.on_key(&KeyPress::with_ctrl(Key::Char('q')));
+    let ask = view.screen_text(100, 40);
+    assert!(ask.contains("Leave without saving"), "{ask}");
+    assert!(ask.contains("< Stay >"), "{ask}");
+    press(&mut view, Key::Escape);
+    // F1 lists the keymap the theme left: here back is on F2.
+    let link = view.link().clone();
+    link.answer_shell(ShellInfo {
+        keys: BTreeMap::from([("back".to_string(), "f2".to_string())]),
+        ..ShellInfo::default()
+    });
+    let mut themed = AppView::with_session(Session::start(GALLERY_LIST_PATH), link);
+    themed.set_clock("Tue 14:32");
+    themed.run_requests();
+    press(&mut themed, Key::F(1));
+    let help = themed.screen_text(100, 40);
+    assert!(help.contains("Back             F2"), "{help}");
+    assert!(!help.contains("F3"), "{help}");
+    press(&mut themed, Key::Escape);
+    let line = themed.screen_text(100, 40);
+    assert!(line.contains("F2=Back"), "{line}");
+}
+
+#[test]
+fn control_characters_in_a_value_never_reach_the_terminal() {
+    let json = "{\"v\":1,\"screen\":{\"path\":\"/x\",\"title\":\"X\"},\"c\":[{\"t\":\"text\",\"id\":\"t\",\"text\":\"a\\u001b]52;c;Zm9v\\u0007b\\u202Ec\"}]}";
+    let link = FakeLink::from_json(&[json]).unwrap();
+    let mut view = view_of(ScreenModel::from_json(json).unwrap(), link);
+    let text = view.screen_text(80, 20);
+    assert!(text.contains("a]52;c;Zm9vbc"), "{text}");
+    assert!(!text.contains('\u{1b}') && !text.contains('\u{202e}'), "{text}");
 }
 
 fn golden(name: &str, actual: &str) {

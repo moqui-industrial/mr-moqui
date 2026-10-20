@@ -77,8 +77,36 @@ fn unknown_fields_are_ignored_and_a_new_version_is_refused() {
     let err = ScreenModel::from_json(r#"{"v":2,"screen":{"path":"/t","title":""},"c":[]}"#).unwrap_err();
     assert_eq!(err, ModelError::Version(2));
 
-    let unknown = ScreenModel::from_json(r#"{"v":1,"screen":{"path":"/t"},"c":[{"t":"nope","id":"x"}]}"#);
-    assert!(unknown.is_err(), "{unknown:?}");
+    // A node or widget this client does not know is a placeholder, so one new type does not lose the page.
+    let unknown = ScreenModel::from_json(
+        r#"{"v":1,"screen":{"path":"/t"},"c":[{"t":"nope","id":"x"},
+            {"t":"field","id":"f","name":"f","w":{"kind":"colorPicker","value":"red"}}]}"#,
+    )
+    .unwrap();
+    assert!(
+        matches!(&unknown.c[0], Node::Placeholder { id, text, .. } if id == "x" && text == "nope"),
+        "{unknown:?}"
+    );
+    assert!(
+        matches!(&unknown.c[1], Node::Field { w: moqui_tui::Widget::Display { text, .. }, .. } if text == "[colorPicker]"),
+        "{unknown:?}"
+    );
+}
+
+/// D9: control and bidi characters in any string of a document, keys included, are gone before anything draws.
+#[test]
+fn control_and_bidi_characters_never_reach_the_screen() {
+    let text = "{\"v\":1,\"screen\":{\"path\":\"/t\",\"title\":\"a\\u001b]52;c;x\\u0007b\"},\
+        \"parameters\":{\"k\\u001b\":\"\\u202Eevil\\u2066\"},\
+        \"c\":[{\"t\":\"text\",\"id\":\"t\",\"text\":\"line\\none\\ttab\\u0085\\u009b31m\"}]}";
+    let model = ScreenModel::from_json(text).unwrap_or_else(|err| panic!("{err}"));
+    assert_eq!(model.screen.title, "a]52;c;xb");
+    assert_eq!(model.parameters.get("k").map(String::as_str), Some("evil"));
+    let Node::Text { text, .. } = &model.c[0] else {
+        panic!("{model:?}");
+    };
+    assert_eq!(text, "line\none\ttab31m");
+    assert_eq!(moqui_tui::clean_text("ok\u{1b}[2J"), "ok[2J");
 }
 
 #[test]
@@ -99,7 +127,7 @@ fn exit_nodes_parse_and_a_password_keeps_no_value() {
                 {"t":"form","id":"F","name":"F","c":[
                     {"t":"field","id":"F.pw","name":"pw","w":{"kind":"password","value":"s3cret"}},
                     {"t":"field","id":"F.st","name":"st","w":{"kind":"dropDown","value":"","optionsUrl":"/states",
-                        "dependsOn":["country"],"optionsParameters":["countryGeoId"]}}
+                        "dependsOn":{"countryGeoId":"country"},"optionsParameters":{"geoTypeEnumId":"GEOT_STATE"}}}
                 ]}
             ]},
             {"t":"subscreens","id":"tabs","kind":"tab","items":[{"title":"Find","url":"/find","active":true}]}

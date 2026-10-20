@@ -86,6 +86,7 @@ pub struct ScreenRender {
     render_mode: Option<String>,
     /// Request headers the render sees, such as `X-Moqui-Client-Modes`.
     headers: Vec<(String, String)>,
+    history: bool,
 }
 
 /// A render that needs no socket. Set the root screen and path, then call [`ScreenRender::render`].
@@ -100,10 +101,19 @@ pub fn make_render(factory: &Arc<ExecutionContextFactory>) -> ScreenRender {
         base_url: String::new(),
         render_mode: None,
         headers: Vec::new(),
+        history: false,
     }
 }
 
 impl ScreenRender {
+    /// Put the screen on the user's screen history, as a browser request does. A render with no socket otherwise does
+    /// not: a job or a test is not a visit. The terminal client asks for it.
+    #[must_use]
+    pub fn history(mut self, history: bool) -> Self {
+        self.history = history;
+        self
+    }
+
     /// Location of the root screen. The default is `webroot.xml`.
     #[must_use]
     pub fn root_screen(mut self, location: impl Into<String>) -> Self {
@@ -188,6 +198,7 @@ impl ScreenRender {
             header_authenticated: true,
             render_mode: self.render_mode.as_deref(),
             enforce_request_checks: false,
+            history: self.history,
             new_session: false,
             started: Instant::now(),
         };
@@ -214,6 +225,8 @@ pub(crate) struct Job<'a> {
     pub render_mode: Option<&'a str>,
     /// False for a render with no socket: no session-token check.
     pub enforce_request_checks: bool,
+    /// Record the screen history although the request checks are off (the terminal client).
+    pub history: bool,
     /// The session began with this request, so its token cannot have been sent yet (Java's `moqui.session.token.created`).
     pub new_session: bool,
     pub started: Instant,
@@ -259,6 +272,11 @@ pub struct RenderState {
     pub base_link_url: RefCell<Option<String>>,
     /// The first form focus id of this render (`form.field`). Empty until a form macro sets it.
     pub focus: RefCell<String>,
+    /// Node ids `sri.uniqueId` has given out in this document, and the next suffix to try for each id asked for.
+    pub node_ids: RefCell<(
+        std::collections::HashSet<String>,
+        std::collections::HashMap<String, usize>,
+    )>,
     /// Keys `sri.once` has seen, so a mode writes its document wrapper only for the outermost screen.
     pub once: RefCell<std::collections::HashSet<String>>,
     /// The theme of this render and its resource values by type, found once as Java's `curThemeId`.
@@ -312,6 +330,7 @@ impl RenderState {
             dynamic_forms: RefCell::new(std::collections::HashMap::new()),
             base_link_url: RefCell::new(None),
             focus: RefCell::new(String::new()),
+            node_ids: RefCell::default(),
             once: RefCell::new(std::collections::HashSet::new()),
             theme_id: RefCell::new(None),
             theme_values: RefCell::new(std::collections::HashMap::new()),
@@ -545,18 +564,24 @@ fn plain_request_parameters() -> BTreeMap<String, String> {
 /// Resolve and run one job. Anything written is in the thread's web slot.
 pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> Result<(), Error> {
     let facade = ScreenFacade::of(factory);
-    // `tui` is always standalone. A render-mode argument or a `renderMode` request parameter has no
-    // path extension, so the walk would otherwise render the webroot shell, whose html text is not a JSON array.
+    // An always-standalone JSON mode (`tui`) renders only the last level. Without a `lastStandalone` the walk would
+    // otherwise render the webroot shell, whose html text is not a JSON array. The mode may come from the
+    // render-mode argument or a `renderMode` parameter, known now, or from the path's query or extension, known once
+    // the path is parsed.
+    let standalone_json = |mode: Option<String>| {
+        mode.is_some_and(|mode| {
+            let mode = canonical_render_mode(&mode);
+            facade.is_always_standalone(mode) && facade.output_kind(mode) == OutputKind::Json
+        })
+    };
     let mut last_standalone = parse_last_standalone(&text_of(job.parameters.get("lastStandalone")), 0);
-    let asked_mode = job
-        .render_mode
-        .map(str::to_string)
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| text_of(job.parameters.get("renderMode")));
-    if last_standalone == 0 && asked_mode == "tui" && facade.is_always_standalone("tui") {
+    if last_standalone == 0 && standalone_json(requested_mode(job, None)) {
         last_standalone = 1;
     }
-    let info = ScreenUrlInfo::parse(factory, job.root, job.path, last_standalone)?;
+    let mut info = ScreenUrlInfo::parse(factory, job.root, job.path, last_standalone)?;
+    if last_standalone == 0 && standalone_json(requested_mode(job, Some(&info))) {
+        info = ScreenUrlInfo::parse(factory, job.root, job.path, 1)?;
+    }
     check_web_settings(&info)?;
     if job.enforce_request_checks && (redirect_to_https(factory, job, &info) || redirect_to_login(factory, job, &info)?)
     {
@@ -602,7 +627,7 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     let rendered = mode_screen(&info, &mode);
     if !rendered.allows_render_mode(&mode) {
         // A qvue-only screen still answers tui: one placeholder, so the screen list stays a document.
-        if mode == "tui" {
+        if facade.output_kind(&mode) == OutputKind::Json {
             return tui_unsupported_screen(&info);
         }
         return Err(Error::of_kind(
@@ -724,7 +749,7 @@ fn add_client_component_headers(state: &RenderState) {
 /// render with no socket. A qvt screen the `/qapps` shell loads counts, as Java counted the vapps fetches.
 fn record_history(job: &Job<'_>, state: &RenderState) {
     let target = &state.url_info.target_screen;
-    if !job.enforce_request_checks
+    if !(job.enforce_request_checks || job.history)
         || !job.method.eq_ignore_ascii_case("get")
         || state.url_info.last_standalone < 0
         || target.standalone
@@ -887,27 +912,8 @@ fn render_body(state: &RenderState) -> Result<(), Error> {
 
 /// A screen whose `render-modes` omit `tui`. The document is one placeholder, not an error page.
 fn tui_unsupported_screen(info: &ScreenUrlInfo) -> Result<(), Error> {
-    let path = if info.full_path.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{}", info.full_path.join("/"))
-    };
-    let title = {
-        let title = info.target_screen.default_menu_title.clone();
-        if title.is_empty() {
-            info.target_screen.screen_name.clone()
-        } else {
-            title
-        }
-    };
-    let body = serde_json::json!({
-        "v": 1,
-        "screen": { "path": path, "pathList": info.full_path, "title": title, "standalone": 0 },
-        "parameters": {},
-        "messages": { "info": [], "errors": [], "validationErrors": [] },
-        "focus": "",
-        "c": [{ "t": "placeholder", "text": "render-mode", "url": path }],
-    });
+    let placeholder = serde_json::json!([{ "t": "placeholder", "text": "render-mode", "url": screen_path(info) }]);
+    let body = json_envelope(info, placeholder, serde_json::json!({}), "", empty_messages());
     web::send_bytes_with_headers(
         200,
         vec![("Content-Type".to_string(), "application/json".to_string())],
@@ -923,60 +929,81 @@ fn wrap_json_envelope(state: &RenderState) {
         web::start_output(200, &super::sri::content_type_header(state));
     }
     let raw = web::with_body(<[u8]>::to_vec);
-    let nodes = json_root_array(&raw);
-    let info = &state.url_info;
-    let path = if info.full_path.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{}", info.full_path.join("/"))
-    };
-    let title = {
-        let title = info.target_screen.default_menu_title.clone();
-        if title.is_empty() {
-            info.target_screen.screen_name.clone()
-        } else {
-            title
-        }
-    };
-    let standalone = i64::try_from(info.path_defs.len().saturating_sub(1)).unwrap_or(0);
-    let focus = super::sri::strip_controls(&state.focus.borrow());
-    let envelope = serde_json::json!({
-        "v": 1,
-        "screen": {
-            "path": path,
-            "pathList": info.full_path,
-            "title": super::sri::strip_controls(&title),
-            "standalone": standalone,
-        },
-        "parameters": envelope_parameters(),
-        "messages": envelope_messages(),
-        "focus": focus,
-        "c": nodes,
-    });
+    let nodes = json_root_array(&raw, &state.url_info);
+    let envelope = json_envelope(
+        &state.url_info,
+        nodes,
+        envelope_parameters(),
+        &state.focus.borrow(),
+        envelope_messages(),
+    );
     web::replace_body(envelope.to_string().into_bytes());
 }
 
-fn json_root_array(raw: &[u8]) -> serde_json::Value {
-    let trimmed = trim_ascii(raw);
+/// The `tui` envelope of section 2.3 of the plan. Every string from the request or the screen is stripped of
+/// controls; the nodes were stripped as they were written.
+fn json_envelope(
+    info: &ScreenUrlInfo,
+    nodes: serde_json::Value,
+    parameters: serde_json::Value,
+    focus: &str,
+    messages: serde_json::Value,
+) -> serde_json::Value {
+    let strip = super::sri::strip_controls;
+    let target = &info.target_screen;
+    let title = if target.default_menu_title.is_empty() {
+        &target.screen_name
+    } else {
+        &target.default_menu_title
+    };
+    let path_list: Vec<String> = info.full_path.iter().map(|name| strip(name)).collect();
+    let render_modes: Vec<String> = target.render_modes.iter().map(|mode| strip(mode)).collect();
+    serde_json::json!({
+        "v": 1,
+        "screen": {
+            "path": strip(&screen_path(info)),
+            "pathList": path_list,
+            "title": strip(title),
+            "renderModes": render_modes,
+            "standalone": info.render_path_difference,
+        },
+        "parameters": parameters,
+        "messages": messages,
+        "focus": strip(focus),
+        "c": nodes,
+    })
+}
+
+fn screen_path(info: &ScreenUrlInfo) -> String {
+    if info.full_path.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", info.full_path.join("/"))
+    }
+}
+
+fn empty_messages() -> serde_json::Value {
+    serde_json::json!({ "info": [], "errors": [], "validationErrors": [] })
+}
+
+/// The root array a level wrote. Bytes that are not one JSON array are logged and become one error node, so the
+/// client still gets a document.
+fn json_root_array(raw: &[u8], info: &ScreenUrlInfo) -> serde_json::Value {
+    let trimmed = raw.trim_ascii();
     if trimmed.is_empty() {
         return serde_json::Value::Array(Vec::new());
     }
     match serde_json::from_slice::<serde_json::Value>(trimmed) {
         Ok(value) if value.is_array() => value,
-        _ => serde_json::json!([{"t":"error","text":"the screen did not render as JSON"}]),
+        Ok(_) => {
+            tracing::error!("Screen {} did not render a JSON array", screen_path(info));
+            serde_json::json!([{"t":"error","text":"the screen did not render as JSON"}])
+        }
+        Err(err) => {
+            tracing::error!("Screen {} did not render as JSON: {err}", screen_path(info));
+            serde_json::json!([{"t":"error","text":"the screen did not render as JSON"}])
+        }
     }
-}
-
-fn trim_ascii(bytes: &[u8]) -> &[u8] {
-    let start = bytes
-        .iter()
-        .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|byte| !byte.is_ascii_whitespace())
-        .map_or(start, |index| index + 1);
-    &bytes[start..end]
 }
 
 fn envelope_parameters() -> serde_json::Value {
@@ -986,7 +1013,7 @@ fn envelope_parameters() -> serde_json::Value {
             continue;
         }
         let text = super::sri::strip_controls(&moqui_lib::object::to_plain_string(&value));
-        map.insert(name, serde_json::Value::String(text));
+        map.insert(super::sri::strip_controls(&name), serde_json::Value::String(text));
     }
     map.remove("moquiSessionToken");
     let mut value = serde_json::Value::Object(map);
@@ -1039,19 +1066,7 @@ fn envelope_messages() -> serde_json::Value {
 }
 
 fn pick_render_mode(facade: &ScreenFacade, job: &Job<'_>, info: &ScreenUrlInfo) -> Result<String, Error> {
-    // A `?renderMode=` on the screen path counts as the parameter, as Java's ScreenTest puts the path's query in the
-    // request parameters.
-    let parameter = Some(text_of(job.parameters.get("renderMode")))
-        .filter(|text| !text.is_empty())
-        .or_else(|| info.inline_parameters.get("renderMode").cloned())
-        .unwrap_or_default();
-    let chosen = job
-        .render_mode
-        .map(str::to_string)
-        .filter(|text| !text.is_empty())
-        .or_else(|| Some(parameter).filter(|text| !text.is_empty()))
-        .or_else(|| info.target_render_mode.clone())
-        .unwrap_or_else(|| DEFAULT_MODE.to_string());
+    let chosen = requested_mode(job, Some(info)).unwrap_or_else(|| DEFAULT_MODE.to_string());
     if !facade.is_render_mode_valid(&chosen) {
         return Err(Error::of_kind(
             ErrorKind::NotFound,
@@ -1059,6 +1074,22 @@ fn pick_render_mode(facade: &ScreenFacade, job: &Job<'_>, info: &ScreenUrlInfo) 
         ));
     }
     Ok(canonical_render_mode(&chosen).to_string())
+}
+
+/// The mode a request asks for, not yet checked: the render-mode argument, then a `renderMode` parameter, then the
+/// path's extension. A `?renderMode=` on the screen path counts as the parameter, as Java's ScreenTest puts the path's
+/// query in the request parameters. With no parsed path, only the first two.
+fn requested_mode(job: &Job<'_>, info: Option<&ScreenUrlInfo>) -> Option<String> {
+    let present = |text: &String| !text.is_empty();
+    job.render_mode
+        .map(str::to_string)
+        .filter(present)
+        .or_else(|| Some(text_of(job.parameters.get("renderMode"))).filter(present))
+        .or_else(|| {
+            info.and_then(|info| info.inline_parameters.get("renderMode").cloned())
+                .filter(present)
+        })
+        .or_else(|| info.and_then(|info| info.target_render_mode.clone()))
 }
 
 /// Content type and encoding. A `web-settings` mime type on a screen in the render path wins over

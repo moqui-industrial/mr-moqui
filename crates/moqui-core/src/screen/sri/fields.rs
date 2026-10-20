@@ -414,13 +414,13 @@ pub fn field_validation(sub: &NodeLit) -> Result<FieldValidation, Error> {
     Ok(out)
 }
 
-/// `getFieldValidationJsRules` for a field sub-node: the browser checks of its `validate-service` parameter, or for a
-/// numeric `validate-entity` field, each `(expression over value, localized message)`.
+/// `getFieldValidationJsRules` for a field sub-node, as rules: the checks of its `validate-service` parameter, or for a
+/// numeric `validate-entity` field, each with its localized message. qvt writes each with [`crate::service::ClientRule::js`].
 ///
 /// # Errors
 ///
 /// Returns an error when the named entity does not exist.
-pub fn field_validation_js_rules(sub: &NodeLit) -> Result<Vec<(String, String)>, Error> {
+pub fn field_validation_rules(sub: &NodeLit) -> Result<Vec<(crate::service::ClientRule, String)>, Error> {
     let field_name = sub.parent.as_ref().map_or("", |field| field.attr("name"));
     let service = sub.attr("validate-service");
     let entity = sub.attr("validate-entity");
@@ -429,7 +429,7 @@ pub fn field_validation_js_rules(sub: &NodeLit) -> Result<Vec<(String, String)>,
             "" => field_name,
             other => other,
         };
-        crate::service::input_js_rules(service, parameter).unwrap_or_default()
+        crate::service::input_rules(service, parameter).unwrap_or_default()
     } else if !entity.is_empty() {
         let name = match sub.attr("validate-field") {
             "" => field_name,
@@ -440,12 +440,12 @@ pub fn field_validation_js_rules(sub: &NodeLit) -> Result<Vec<(String, String)>,
             Some((_, kind, _)) if kind.starts_with("number-") || kind.starts_with("currency-") => {
                 if kind.ends_with("integer") {
                     vec![(
-                        crate::service::VALIDATE_NUMBER_INT.to_string(),
+                        crate::service::ClientRule::Integer,
                         "Please enter a valid whole number".to_string(),
                     )]
                 } else {
                     vec![(
-                        crate::service::VALIDATE_NUMBER.to_string(),
+                        crate::service::ClientRule::Number,
                         "Please enter a valid number".to_string(),
                     )]
                 }
@@ -457,6 +457,6 @@ pub fn field_validation_js_rules(sub: &NodeLit) -> Result<Vec<(String, String)>,
     };
     Ok(rules
         .into_iter()
-        .map(|(expr, message)| (expr, l10n::localize(&message).unwrap_or(message)))
+        .map(|(rule, message)| (rule, l10n::localize(&message).unwrap_or(message)))
         .collect())
 }

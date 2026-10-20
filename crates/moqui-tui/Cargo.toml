@@ -8,12 +8,14 @@ publish.workspace = true
 
 [features]
 default = ["ui"]
-# Serde model, link, layout, and the input decoder. No Revue.
+# The model, link, navigation, state, layout, keys, theme and the input decoder. No Revue.
 model = []
 # Revue interpreter, local event loop, and the in-memory session draw.
 ui = ["model", "dep:revue"]
 
 [dependencies]
+jiff = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 revue = { workspace = true, optional = true, default-features = false, features = ["markdown"] }
@@ -26,4 +28,8 @@ workspace = true
 
 [[example]]
 name = "gallery"
+required-features = ["ui"]
+
+[[test]]
+name = "screens"
 required-features = ["ui"]

@@ -15,8 +15,7 @@ maximal = ["moqui-host/maximal"]
 # The SMTP listener for hosted and shared mail accounts (docs/Mail-Inbound.md), in Enterprise and Maximal; for a
 # Default build `./moq build -- --features inbound-smtp`.
 inbound-smtp = ["moqui-host/inbound-smtp"]
-# The screen client. Not part of lite, enterprise, or maximal: those builds stay free of Revue, because `moqui`
-# defaults to maximal and `cargo check -p moqui` must not compile it.
+# The terminal client (`moqui tui`), in enterprise and maximal; for a lite build `./moq build -- --features tui`.
 tui = ["moqui-host/tui"]
 
 [dependencies]
