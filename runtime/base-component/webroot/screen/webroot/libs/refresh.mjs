@@ -73,6 +73,10 @@ function TIPTAP_DEPS() {
     '@tiptap/extension-paragraph': '3.31.4',
     '@tiptap/extension-placeholder': '3.31.4',
     '@tiptap/extension-strike': '3.31.4',
+    '@tiptap/extension-table': '3.31.4',
+    '@tiptap/extension-table-cell': '3.31.4',
+    '@tiptap/extension-table-header': '3.31.4',
+    '@tiptap/extension-table-row': '3.31.4',
     '@tiptap/extension-text': '3.31.4',
     '@tiptap/extension-underline': '3.31.4',
     '@tiptap/extensions': '3.31.4',
@@ -108,6 +112,8 @@ export { default as Link } from '@tiptap/extension-link';
 export { default as Image } from '@tiptap/extension-image';
 export { default as Mention } from '@tiptap/extension-mention';
 export { default as Placeholder } from '@tiptap/extension-placeholder';
+export { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
+export { PluginKey } from '@tiptap/pm/state';
 `;
 
 const HLJS_LANGS = ['bash', 'css', 'diff', 'groovy', 'java', 'javascript', 'json', 'markdown', 'plaintext',
@@ -259,7 +265,8 @@ SIL Open Font License 1.1 (the fonts): the full text is in licenses/OFL-1.1.txt,
     // ships ES modules), so this is a bundle of the packages in TIPTAP_DEPS with ProseMirror in it.
     id: 'tiptap', name: 'Tiptap (with ProseMirror, bundled)', npm: '@tiptap/core', version: '3.31.4', license: 'MIT',
     licenseNote: 'Bundles @tiptap/core, starter-kit (and the extensions it includes), extension-link, extension-image, ' +
-      'extension-mention, extension-placeholder, extensions, suggestion and pm 3.31.4, the prosemirror-* packages, ' +
+      'extension-mention, extension-placeholder, extension-table, extension-table-row, extension-table-cell, ' +
+      'extension-table-header, extensions, suggestion and pm 3.31.4, the prosemirror-* packages, ' +
       '@floating-ui/*, linkifyjs, orderedmap, rope-sequence and w3c-keyname: all MIT. Each license text is below once, ' +
       'with the packages it is the license of.',
     copy: [],
@@ -267,7 +274,7 @@ SIL Open Font License 1.1 (the fonts): the full text is in licenses/OFL-1.1.txt,
     noticeDedupe: true,
     build: 'esbuild --bundle --minify --format=iife --global-name=Tiptap --platform=browser --target=es2020 ' +
       '--legal-comments=none of an entry that exports Editor, Extension, Node, Mark, mergeAttributes, StarterKit, Link, ' +
-      'Image, Mention and Placeholder. Exposes the global Tiptap.',
+      'Image, Mention, Placeholder, Table, TableRow, TableCell, TableHeader and PluginKey. Exposes the global Tiptap.',
     produce: (ctx) => [['tiptap/tiptap.min.js', ctx.esbuildTiptap()]],
   },
   {
@@ -404,10 +411,19 @@ export const atob = typeof globalThis.atob === 'function' ? globalThis.atob.bind
     });
   }
 
-  // Verbatim license texts that the packages do not carry.
+  // Verbatim license texts that the packages do not carry. The hosts sometimes do not answer; these texts
+  // do not change with a library pin, so a failed download keeps the copy already in the tree.
   const lt = [];
   for (const { path, url } of LICENSE_TEXTS) {
-    const buf = Buffer.from(run('curl', ['-fsSL', url]), 'utf8');
+    let buf;
+    try {
+      buf = Buffer.from(run('curl', ['-fsSL', '--max-time', '20', url]), 'utf8');
+    } catch (err) {
+      const kept = join(here, path);
+      if (!existsSync(kept)) throw err;
+      console.error(`could not download ${url}; keeping the copy at ${path}`);
+      buf = readFileSync(kept);
+    }
     outputs.set(path, buf);
     lt.push({ path, from: url, size: buf.length, sha256: sha256(buf) });
   }

@@ -2552,13 +2552,13 @@
 
     // A text area. editor-type html is the Quasar editor (QEditor); md is a text area with a preview drawn by Marked (and
     // sanitized by DOMPurify), both lazy. The html editor simplifies markup it does not understand. rich and rich-light are the
-    // Tiptap editor m-rich-text (full and light), its mentions over mention-url.
+    // Tiptap editor m-rich-text (full and light), its mentions over mention-url and its record links over record-url.
     component("m-text-area", {
         name: "mTextArea",
         mixins: [fieldMixin, localValueMixin],
         props: { modelValue: String, name: String, id: String, label: String, editorType: String, rows: { type: String, default: "3" }, cols: String,
             readonly: Boolean, autogrow: Boolean, maxlength: String, disable: Boolean, form: String, tooltip: String, mentionUrl: String,
-            mentionParameters: Object },
+            mentionParameters: Object, recordUrl: String, recordParameters: Object },
         emits: ["update:modelValue"],
         data() {
             return { preview: false, previewHtml: "", toolbar: [["bold", "italic", "strike", "underline"], ["unordered", "ordered", "outdent", "indent"],
@@ -2567,7 +2567,7 @@
         template:
             '<m-rich-text v-if="editorType === \'rich\' || editorType === \'rich-light\'" :light="editorType === \'rich-light\'" :model-value="local"' +
                 ' @update:model-value="onInput" :name="name" :id="id" :label="label" :form="form" :disable="disable" :readonly="readonly" :tooltip="tooltip"' +
-                ' :rows="rows" :mention-url="mentionUrl" :mention-parameters="mentionParameters"></m-rich-text>' +
+                ' :rows="rows" :mention-url="mentionUrl" :mention-parameters="mentionParameters" :record-url="recordUrl" :record-parameters="recordParameters"></m-rich-text>' +
             '<div v-else-if="editorType === \'html\'" class="m-text-area-editor">' +
                 '<div v-if="label" class="text-caption text-grey-7">{{label}}</div>' +
                 '<q-editor :model-value="local" @update:model-value="onInput" :toolbar="toolbar" dense min-height="12rem" :readonly="readonly" :disable="disable"></q-editor>' +
@@ -2727,11 +2727,12 @@
 
     /* ========== rich text: m-rich-text (Tiptap, lazy) ========== */
 
-    // The pure part of m-rich-text, tested under Node (WebrootVue.qvt.records.test.js): the HTML of a mention and the mentions
-    // in a text, the editor's empty value, plain text from its HTML and HTML from plain text (the plain-text toggle), and the
-    // answer of a mention search. The editor writes only what allow-html="safe" keeps (js/README.md, Rich text): p, h1-h3, strong,
-    // em, s, u, code, pre, blockquote, ul, ol (start), li, br, hr, a (href, title), img (src, alt, title) and the mention
-    // <span data-mention-id="id">@Label</span>.
+    // The pure part of m-rich-text, tested under Node (WebrootVue.qvt.records.test.js): the HTML of a mention and a record link
+    // and the ones in a text, the editor's empty value, plain text from its HTML and HTML from plain text (the plain-text toggle),
+    // and the answer of a mention or record search. The editor writes only what allow-html="safe" keeps (js/README.md, Rich text):
+    // p, h1-h3, strong, em, s, u, code, pre, blockquote, ul, ol (start), li, br, hr, a (href, title), img (src, alt, title),
+    // table, thead, tbody, tr, th, td (colspan, rowspan), the mention <span data-mention-id="id">@Label</span> and the record
+    // <span data-record-entity="entity" data-record-id="id">#Label</span>.
     const htmlEscape = (text) => String(text === null || text === undefined ? "" : text).replace(/[&<>"']/g,
         (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
     const htmlEntities = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" };
@@ -2766,10 +2767,28 @@
             }
             return out;
         },
+        // a record link as the editor writes it: the entity and id in data attributes, the label shown after the #
+        recordHtml(entity, id, label) {
+            return '<span data-record-entity="' + htmlEscape(entity) + '" data-record-id="' + htmlEscape(id) + '">#' + htmlEscape(label || id) + "</span>";
+        },
+        // the record links in an HTML text, each id once, in order: [{entity, id, label}]; the span text already has the #
+        records(html) {
+            const out = [];
+            const seen = {};
+            const re = /<span\b([^>]*)>([\s\S]*?)<\/span>/gi;
+            let match;
+            while ((match = re.exec(String(html || "")))) {
+                const id = tagAttr(match[1], "data-record-id");
+                if (id === null || id === "" || seen[id]) continue;
+                seen[id] = true;
+                out.push({ entity: tagAttr(match[1], "data-record-entity") || "", id, label: htmlDecode(match[2].replace(/<[^>]*>/g, "")).replace(/^#/, "") });
+            }
+            return out;
+        },
         // nothing but empty paragraphs, breaks and spaces (Tiptap's empty document is <p></p>)
         isEmpty(html) {
             const text = String(html || "");
-            if (/<(img|hr)\b/i.test(text) || /data-mention-id/i.test(text)) return false;
+            if (/<(img|hr|table)\b/i.test(text) || /data-mention-id|data-record-id/i.test(text)) return false;
             return htmlDecode(text.replace(/<[^>]*>/g, "")).replace(/[\s\u00a0]+/g, "") === "";
         },
         // the value of the field for the editor's HTML: empty for an empty document, so a required check and the change tint see it
@@ -2782,7 +2801,8 @@
         },
         // Plain text of the editor's HTML (the plain-text toggle, a plain mail part): paragraphs and blocks apart by a blank
         // line, list items on lines of their own with "- " or their number, a quote's lines after "> ", a link as its text and
-        // (its address) when they differ, an image as its alt text, a mention as @Label, entities decoded.
+        // (its address) when they differ, an image as its alt text, a mention as @Label, a record link as #Label (the span
+        // text already has the hash), a table as cells joined by " | " with a dashed underline under a header row, entities decoded.
         toPlain(html) {
             const out = [];
             const lists = [];
@@ -2792,6 +2812,7 @@
             let lineStart = true;
             let prefix = "";
             const links = [];
+            let table = null;
             const owe = (count) => { if (out.length) breaks = Math.max(breaks, count); };
             const put = (text) => {
                 if (!text) return;
@@ -2810,6 +2831,10 @@
                 if (token.startsWith("<!--")) return;
                 const tagMatch = /^<(\/?)([a-zA-Z0-9]+)/.exec(token);
                 if (!tagMatch) {
+                    if (table) {
+                        if (table.inCell) table.cell += htmlDecode(token).replace(/[\s\u00a0]+/g, " ");
+                        return;
+                    }
                     let text = htmlDecode(token);
                     if (!pre) text = text.replace(/[\s\u00a0]+/g, (space) => (space.indexOf("\u00a0") >= 0 ? "\u00a0" : " "));
                     if (pre) {
@@ -2819,6 +2844,42 @@
                 }
                 const closing = tagMatch[1] === "/";
                 const tag = tagMatch[2].toLowerCase();
+                if (tag === "table") {
+                    if (!closing && !table) {
+                        owe(2);
+                        table = { rows: [], cells: null, cell: "", inCell: false, header: false };
+                    } else if (closing && table) {
+                        if (table.inCell && table.cells) table.cells.push(table.cell.replace(/[\s\u00a0]+/g, " ").trim());
+                        if (table.cells) table.rows.push({ cells: table.cells, header: table.header });
+                        const lines = [];
+                        table.rows.forEach((row) => {
+                            lines.push(row.cells.join(" | "));
+                            if (row.header) lines.push(row.cells.map((cell) => "-".repeat(Math.max(3, cell.length))).join(" | "));
+                        });
+                        lines.forEach((line, index) => { if (index) owe(1); put(line); });
+                        owe(2);
+                        table = null;
+                    }
+                    return;
+                }
+                if (table) {
+                    if (tag === "tr") {
+                        if (!closing) { table.cells = []; table.header = false; table.inCell = false; table.cell = ""; }
+                        else if (table.cells) {
+                            if (table.inCell) { table.cells.push(table.cell.replace(/[\s\u00a0]+/g, " ").trim()); table.inCell = false; }
+                            table.rows.push({ cells: table.cells, header: table.header });
+                            table.cells = null;
+                        }
+                    } else if (tag === "td" || tag === "th") {
+                        if (!closing) { table.inCell = true; table.cell = ""; if (tag === "th") table.header = true; }
+                        else if (table.inCell && table.cells) {
+                            table.cells.push(table.cell.replace(/[\s\u00a0]+/g, " ").trim());
+                            table.inCell = false;
+                            table.cell = "";
+                        }
+                    } else if (tag === "br" && table.inCell) table.cell += " ";
+                    return;
+                }
                 const inList = lists.length > 0;
                 if (/^(p|div|h[1-6])$/.test(tag)) owe(inList ? 1 : 2);
                 else if (tag === "br") { if (out.length) breaks = Math.max(breaks, 1); }
@@ -2857,20 +2918,25 @@
             if (!value) return "";
             return value.split(/\n[ \t]*\n+/).map((para) => "<p>" + para.split("\n").map(htmlEscape).join("<br>") + "</p>").join("");
         },
-        // The rows of a mention search answer: a list (or a map with it in options, mentions or rows) of {id, label}, value and
-        // title or name also read, a plain string as both; at most limit (10), each id once.
+        // The rows of a mention or record search answer: a list (or a map with it in options, optionList, mentions or rows) of
+        // {id, label}, value and title or name also read, a plain string as both. A record row prefers recordId, and keeps
+        // entity (or recordEntityName) when the row has one. At most limit (10), each id once.
         mentionItems(answer, limit) {
-            const list = Array.isArray(answer) ? answer : moqui.isPlainObject(answer) ? (answer.options || answer.mentions || answer.rows || []) : [];
+            const list = Array.isArray(answer) ? answer : moqui.isPlainObject(answer) ? (answer.options || answer.optionList || answer.mentions || answer.rows || []) : [];
             const out = [];
             const seen = {};
             list.forEach((row) => {
                 if (out.length >= (limit || 10)) return;
                 const item = moqui.isPlainObject(row) ? row : { id: row, label: row };
-                const id = item.id !== undefined && item.id !== null ? item.id : item.value;
+                const recordId = item.recordId;
+                const id = recordId !== undefined && recordId !== null && recordId !== "" ? recordId : (item.id !== undefined && item.id !== null ? item.id : item.value);
                 if (id === undefined || id === null || id === "" || seen[id]) return;
                 seen[id] = true;
                 const label = item.label || item.title || item.name || id;
-                out.push({ id: String(id), label: String(label), image: item.image || null });
+                const found = { id: String(id), label: String(label), image: item.image || null };
+                const entity = item.entity || item.recordEntityName;
+                if (entity) found.entity = String(entity);
+                out.push(found);
             });
             return out;
         },
@@ -2893,7 +2959,7 @@
             const list = [button("block", "sym_o_title", "Paragraph style"), sep("s1"),
                 button("bold", "sym_o_format_bold", "Bold"), button("italic", "sym_o_format_italic", "Italic"), button("strike", "sym_o_strikethrough_s", "Strikethrough"), sep("s2"),
                 button("bulletList", "sym_o_format_list_bulleted", "Bulleted list"), button("orderedList", "sym_o_format_list_numbered", "Numbered list"), sep("s3"),
-                button("link", "sym_o_link", "Link"), button("image", "sym_o_image", "Image"), button("code", "sym_o_code", "Code"),
+                button("link", "sym_o_link", "Link"), button("image", "sym_o_image", "Image"), button("table", "sym_o_table", "Table"), button("code", "sym_o_code", "Code"),
                 button("codeBlock", "sym_o_code_blocks", "Code block"), button("blockquote", "sym_o_format_quote", "Quote"), sep("s4"),
                 button("undo", "sym_o_undo", "Undo"), button("redo", "sym_o_redo", "Redo")];
             if (plainToggle) list.push(sep("s5"), button("plain", "sym_o_text_fields", "Plain text"));
@@ -2903,7 +2969,8 @@
 
     // The editor's extensions: StarterKit (paragraphs, headings 1 to 3, bold, italic, strike, underline, code, code blocks,
     // quotes, lists, rules, breaks, history), Link (no target, class or rel of its own: the safe cleaning adds rel), Image by
-    // URL (no data: URLs), the placeholder, the mention when the editor has a mention URL, and the keys of the component.
+    // URL (no data: URLs), the placeholder, a table (full editor only), the mention when the editor has a mention URL, the
+    // record link when it has a record URL, and the keys of the component.
     const richTextExtensions = (T, vm) => {
         const list = [
             T.StarterKit.configure({ heading: { levels: [1, 2, 3] }, link: false, codeBlock: { HTMLAttributes: { class: null } } }),
@@ -2927,6 +2994,9 @@
                 }
             })
         ];
+        if (!vm.light && T.Table && T.TableRow && T.TableCell && T.TableHeader) {
+            list.push(T.Table.configure({ resizable: false }), T.TableRow, T.TableHeader, T.TableCell);
+        }
         if (vm.mentionUrl) {
             const Mention = T.Mention.extend({
                 // the mention in the HTML: <span data-mention-id="id">@Label</span>, and nothing the safe cleaning drops
@@ -2944,6 +3014,41 @@
                 suggestion: { char: "@", debounce: 150, items: ({ query, signal }) => vm.searchMentions(query, signal), render: () => vm.mentionRenderer() }
             }));
         }
+        if (vm.recordUrl) {
+            const RecordMention = T.Mention.extend({
+                name: "recordMention",
+                // a record link, not a person: <span data-record-entity="entity" data-record-id="id">#Label</span>
+                addAttributes() {
+                    return {
+                        id: { default: null, parseHTML: (el) => el.getAttribute("data-record-id"), renderHTML: () => ({}) },
+                        entity: { default: null, parseHTML: (el) => el.getAttribute("data-record-entity"), renderHTML: () => ({}) },
+                        label: { default: null, parseHTML: (el) => (el.textContent || "").replace(/^#/, ""), renderHTML: () => ({}) },
+                        mentionSuggestionChar: { default: "#", parseHTML: () => "#", renderHTML: () => ({}) }
+                    };
+                },
+                parseHTML() { return [{ tag: "span[data-record-id]" }]; },
+                renderHTML({ node }) {
+                    const attrs = { "data-record-id": node.attrs.id };
+                    if (node.attrs.entity) attrs["data-record-entity"] = node.attrs.entity;
+                    return ["span", attrs, "#" + (node.attrs.label || node.attrs.id || "")];
+                }
+            });
+            list.push(RecordMention.configure({
+                suggestion: {
+                    char: "#",
+                    pluginKey: T.PluginKey ? new T.PluginKey("recordSuggestion") : undefined,
+                    debounce: 150,
+                    items: ({ query, signal }) => vm.searchRecords(query, signal),
+                    render: () => vm.mentionRenderer(),
+                    command: ({ editor, range, props }) => {
+                        editor.chain().focus().insertContentAt(range, [
+                            { type: "recordMention", attrs: { id: props.id, label: props.label, entity: props.entity || null } },
+                            { type: "text", text: " " }
+                        ]).run();
+                    }
+                }
+            }));
+        }
         return list;
     };
 
@@ -2951,7 +3056,8 @@
     // errors inside an m-form, a hidden input for a form that reads the DOM): Tiptap from /libs/tiptap, loaded when the first
     // editor mounts. The value is HTML ("" when empty). light is the compact toolbar; enter="submit" makes Enter submit the
     // form (and emit submit) with Shift+Enter a line break; Ctrl+Enter always submits; mention-url is searched with term for
-    // the @ list; the plain-text toggle (v-model:plain) turns the value into plain text and back. When the library does not
+    // the @ list and record-url for the # list (only when that URL is set, on light and full); the plain-text toggle
+    // (v-model:plain) turns the value into plain text and back. When the library does not
     // load, the field is the html editor of m-text-area.
     let richTextCount = 0;
     // one load of the library for the page, so every editor gets its answer; after a failure the next editor tries again
@@ -2963,7 +3069,7 @@
         mixins: [fieldMixin, localValueMixin],
         props: { modelValue: String, name: String, id: String, label: String, form: String, disable: Boolean, readonly: Boolean, tooltip: String,
             light: Boolean, placeholder: String, rows: [String, Number], enter: { type: String, default: "newline" }, mentionUrl: String,
-            mentionParameters: Object, plain: Boolean, plainToggle: { type: Boolean, default: true }, autofocus: Boolean },
+            mentionParameters: Object, recordUrl: String, recordParameters: Object, plain: Boolean, plainToggle: { type: Boolean, default: true }, autofocus: Boolean },
         emits: ["update:modelValue", "update:plain", "submit", "mention"],
         data() {
             richTextCount += 1;
@@ -2985,6 +3091,13 @@
                                     '<q-list dense>' +
                                         '<q-item v-for="block in blocks" :key="block.key" clickable v-close-popup @click="run(block.key)" :active="blockLabel === block.label">' +
                                             '<q-item-section>{{t(block.label)}}</q-item-section></q-item>' +
+                                    '</q-list>' +
+                                '</q-btn-dropdown>' +
+                                '<q-btn-dropdown v-else-if="button.key === \'table\'" flat dense size="sm" icon="sym_o_table" :disable="!editable || isPlain"' +
+                                        ' class="m-rich-text-table" content-class="m-rich-text-menu" :aria-label="t(\'Table\')" @mousedown.prevent>' +
+                                    '<q-list dense>' +
+                                        '<q-item v-for="item in tableItems" :key="item.key" clickable v-close-popup @click="run(item.key)">' +
+                                            '<q-item-section>{{t(item.label)}}</q-item-section></q-item>' +
                                     '</q-list>' +
                                 '</q-btn-dropdown>' +
                                 '<q-btn v-else flat dense size="sm" :icon="button.icon" :data-command="button.key" :aria-label="t(button.label)"' +
@@ -3026,6 +3139,8 @@
         computed: {
             buttons() { return moqui.richText.toolbar(this.light, this.plainToggle && !this.light); },
             blocks() { return [{ key: "paragraph", label: "Paragraph" }, { key: "h1", label: "Heading 1" }, { key: "h2", label: "Heading 2" }, { key: "h3", label: "Heading 3" }]; },
+            tableItems() { return [{ key: "insertTable", label: "Insert table" }, { key: "addRowAfter", label: "Add row" }, { key: "addColumnAfter", label: "Add column" },
+                { key: "deleteRow", label: "Delete row" }, { key: "deleteColumn", label: "Delete column" }, { key: "deleteTable", label: "Delete table" }]; },
             canEdit() { return !this.disable && !this.readonly; },
             editable() { return this.state === "ready" && this.canEdit; },
             minHeight() {
@@ -3085,7 +3200,10 @@
                     bold: () => chain.toggleBold(), italic: () => chain.toggleItalic(), strike: () => chain.toggleStrike(), code: () => chain.toggleCode(),
                     bulletList: () => chain.toggleBulletList(), orderedList: () => chain.toggleOrderedList(), codeBlock: () => chain.toggleCodeBlock(),
                     blockquote: () => chain.toggleBlockquote(), undo: () => chain.undo(), redo: () => chain.redo(), paragraph: () => chain.setParagraph(),
-                    h1: () => chain.toggleHeading({ level: 1 }), h2: () => chain.toggleHeading({ level: 2 }), h3: () => chain.toggleHeading({ level: 3 })
+                    h1: () => chain.toggleHeading({ level: 1 }), h2: () => chain.toggleHeading({ level: 2 }), h3: () => chain.toggleHeading({ level: 3 }),
+                    insertTable: () => chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }), addRowAfter: () => chain.addRowAfter(),
+                    addColumnAfter: () => chain.addColumnAfter(), deleteRow: () => chain.deleteRow(), deleteColumn: () => chain.deleteColumn(),
+                    deleteTable: () => chain.deleteTable()
                 };
                 if (commands[key]) commands[key]().run();
             },
@@ -3153,6 +3271,15 @@
                         return [];
                     });
             },
+            searchRecords(query, signal) {
+                if (!this.recordUrl) return Promise.resolve([]);
+                const params = Object.assign({}, this.recordParameters, { term: query || "" });
+                return moqui.request(this.recordUrl, { params, signal }).then((result) => moqui.richText.mentionItems(result.json),
+                    (err) => {
+                        if (!err || !err.aborted) console.info("m-rich-text: the record search " + this.recordUrl + " failed, status " + (err && err.status));
+                        return [];
+                    });
+            },
             // the renderer of the suggestion plugin: the list is this component's (teleported to the body), placed by the plugin
             mentionRenderer() {
                 const vm = this;
@@ -3192,7 +3319,9 @@
             pickMention(index) {
                 const item = this.mention.items[index];
                 if (!item || !this.mentionProps) return;
-                this.mentionProps.command({ id: item.id, label: item.label });
+                const picked = { id: item.id, label: item.label };
+                if (item.entity) picked.entity = item.entity;
+                this.mentionProps.command(picked);
                 this.$emit("mention", item);
             }
         },

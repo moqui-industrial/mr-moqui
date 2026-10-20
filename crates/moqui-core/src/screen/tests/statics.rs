@@ -367,7 +367,7 @@ fn the_screen_context_is_bound_over_the_scope_in_a_static_template() {
 }
 
 /// The record panels of a server-static screen are bound over the scope (R18): the record id and the hints are expressions of
-/// the screen's data, a condition a v-if, and nothing is expanded on the server; a rich editor's mention transition is its path.
+/// the screen's data, a condition a v-if, and nothing is expanded on the server; a rich editor's mention and record transitions are its paths.
 #[test]
 fn the_record_panels_are_bound_over_the_scope_in_a_static_template() {
     let (html, _) = static_fixture("records");
@@ -377,6 +377,7 @@ fn the_record_panels_are_bound_over_the_scope_in_a_static_template() {
         r#"<m-record-files record-entity="mantle.work.effort.WorkEffort" :record-id="ec.resource.expandNoL10n('${taskId}',{'taskId':()=&gt;(taskId)})" class="q-mt-sm"></m-record-files>"#,
         r#"editor-type="rich-light""#,
         r#"mention-url="/mentions""#,
+        r#"record-url="/records""#,
     ] {
         assert!(html.contains(expected), "{expected} in {html}");
     }

@@ -442,6 +442,15 @@ impl HostUser {
         host_guard(&ctx, || Ok(session_time_zone_name()))
     }
 
+    /// The machine's time zone, the zone a ServiceJob cron is read in. A digest whose account has no
+    /// `UserAccount.timeZone` sets the session to this so the hour is the machine's. Not the server zone.
+    #[qjs(get, rename = "machineTimeZone")]
+    fn machine_time_zone(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
+        host_guard(&ctx, || {
+            Ok(crate::service::job_time_zone().iana_name().unwrap_or("UTC").to_string())
+        })
+    }
+
     fn get_time_zone(&self, ctx: Ctx<'_>) -> rquickjs::Result<String> {
         host_guard(&ctx, || Ok(session_time_zone_name()))
     }

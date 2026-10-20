@@ -122,10 +122,12 @@ along with this software (see the LICENSE.md file). If not, see
         <parameters parameterName="emailServerId" parameterValue="SYSTEM"/>
     </moqui.service.job.ServiceJob>
 
-    <!-- The daily notification digest: one email per user of the unviewed notifications on the topics they get as a digest
-         (NotificationTopicUser.digest, NotificationTopic.digestDefault); with no such topic or user it sends nothing -->
-    <moqui.service.job.ServiceJob jobName="send_NotificationDigests_daily" description="Send the daily notification digests"
-            serviceName="org.moqui.impl.NotificationServices.send#NotificationDigests" cronExpression="0 0 6 * * ?" paused="N">
+    <!-- The notification digest: one email per user of the unviewed notifications on the topics they get as a digest
+         (NotificationTopicUser.digest, NotificationTopic.digestDefault); with no such topic or user it sends nothing.
+         Hourly at minute 0 so each user is checked in their hour (NOTIFICATION_DIGEST_HOUR, default 6) in their zone.
+         A database loaded with the old cron 0 0 6 * * ? keeps that row until it is updated; startup does not rewrite it. -->
+    <moqui.service.job.ServiceJob jobName="send_NotificationDigests_daily" description="Send each user's notification digest at their hour"
+            serviceName="org.moqui.impl.NotificationServices.send#NotificationDigests" cronExpression="0 0 * * * ?" paused="N">
         <parameters parameterName="hours" parameterValue="24"/>
     </moqui.service.job.ServiceJob>
     <!-- The mail client (org.moqui.impl.EmailClientServices): scheduled sends and undo-send holds that are due, and

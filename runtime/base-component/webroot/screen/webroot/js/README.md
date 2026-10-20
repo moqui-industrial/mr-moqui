@@ -183,8 +183,8 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-form-list` | a list drawn by the client from rows it fetches, with sort, pages, selection (the `m-sel` column) and sub rows (see below); the page buttons are written again under a list of more than one page, after the table |
 | `m-form-paginate`, `m-form-go-page`, `m-form-column-config` | page buttons, jump to a page, the column picker |
 | `m-scope`, `m-static-form-list` | written by `ScreenQvtStatic.js` only: a scope over a form-single's map, and the form-list of a server-static screen (see Server-static screens) |
-| `m-text-line`, `m-text-area` | text input. `m-text-line` takes `autocomplete` (`off` by default; the `password` widget writes its `autocomplete` attribute, `new-password` unless it says `current-password`, so the browser does not fill the user's sign-in password into an app password or another user's new one). `m-text-area` with `editor-type` `html` is `QEditor`, `md` is a text area with a Marked preview, and `rich` and `rich-light` are `m-rich-text` (with `mention-url` and `mention-parameters`, from the text-area's `mention-transition`) |
-| `m-rich-text` | the Tiptap editor (see Rich text below): the `m-*` model contract (`v-model` or `model-value`, `name`, the change tint and field errors in an `m-form`, a hidden input), `light`, `placeholder`, `rows`, `enter` (`newline`, or `submit`: Enter submits the form and emits `submit`, Shift+Enter is a line break; Ctrl+Enter always submits), `mention-url`, `mention-parameters`, `plain` (`v-model:plain`, the plain-text toggle), `plain-toggle`, `autofocus`, `disable`, `readonly`; emits `mention` with the `{id, label}` picked |
+| `m-text-line`, `m-text-area` | text input. `m-text-line` takes `autocomplete` (`off` by default; the `password` widget writes its `autocomplete` attribute, `new-password` unless it says `current-password`, so the browser does not fill the user's sign-in password into an app password or another user's new one). `m-text-area` with `editor-type` `html` is `QEditor`, `md` is a text area with a Marked preview, and `rich` and `rich-light` are `m-rich-text` (with `mention-url` and `mention-parameters` from `mention-transition`, and `record-url` and `record-parameters` from `record-transition`) |
+| `m-rich-text` | the Tiptap editor (see Rich text below): the `m-*` model contract (`v-model` or `model-value`, `name`, the change tint and field errors in an `m-form`, a hidden input), `light`, `placeholder`, `rows`, `enter` (`newline`, or `submit`: Enter submits the form and emits `submit`, Shift+Enter is a line break; Ctrl+Enter always submits), `mention-url`, `mention-parameters`, `record-url`, `record-parameters`, `plain` (`v-model:plain`, the plain-text toggle), `plain-toggle`, `autofocus`, `disable`, `readonly`; emits `mention` with the `{id, label}` picked |
 | `m-drop-down` | `options`, `options-url`, `options-parameters`, `depends-on`, `server-search`, `multiple`, `allow-empty`, `combo`, `submit-on-select`, `options-load-init` |
 | `m-date-time`, `m-date-period` | `QDate` and `QTime` in a popup; period and from-thru. In period mode the field is the base date (`_pdate`) and the period and offset selects (`_period`, `_poffset`) are in the menu of the `event_repeat` button in its append slot, which reads the choice ("Last Month") once made; the `date_range` button switches to from-thru (`_from`, `_thru`) |
 | `m-display` | text or a read-only field (`label-wrapper`), `display`, `value-url` |
@@ -467,28 +467,35 @@ else nothing; the other modes write nothing.
 
 **Rich text** (`m-rich-text`). Tiptap 3 (`libs/tiptap/tiptap.min.js`, the global `Tiptap`, built by `libs/refresh.mjs`), loaded
 once for the page when the first editor mounts. The full toolbar has the paragraph style (paragraph, headings 1 to 3), bold,
-italic, strike, the two lists, link and image (an address asked in a line under the toolbar; Ctrl+K for a link), code, code block,
+italic, strike, the two lists, link and image (an address asked in a line under the toolbar; Ctrl+K for a link), table (insert a
+3 by 3 with a header row, add or delete a row or column, delete the table), code, code block,
 quote, undo, redo and the plain-text toggle; `light` has bold, italic, link, list and code, for notes and chat. Markdown-style typing
 (`**bold**`, `- `, `> `, `` ` ``) works in both. The value is HTML, `""` for an empty document, made only of what a service
-parameter with `allow-html="safe"` keeps (`crates/moqui-core/src/service/validate.rs`, ammonia's defaults plus `data-mention-id`):
+parameter with `allow-html="safe"` keeps (`crates/moqui-core/src/service/validate.rs`, ammonia's defaults, which include tables,
+plus `data-mention-id`, `data-record-entity` and `data-record-id` on a span):
 `p`, `h1`-`h3`, `strong`, `em`, `s`, `u`, `code`, `pre`, `blockquote`, `ul`, `ol` (`start`), `li`, `br`, `hr`, `a` (`href`, `title`;
 no `target` or `class`, and the cleaning adds `rel="noopener noreferrer"`), `img` (`src` http, https or a path, `alt`, `title`; no
-`data:`) and the mention:
+`data:`), `table`, `thead`, `tbody`, `tr`, `th`, `td` (`colspan`, `rowspan`), the mention and the record link:
 
 ```html
 <span data-mention-id="EX_JOHN_DOE">@John Doe</span>
+<span data-record-entity="mantle.order.OrderHeader" data-record-id="100050">#SO100050</span>
 ```
 
-The id is what the mention search answered, for the server to notify (`example.ExampleServices.clean#GalleryNote` reads them back);
-the label is shown. **The mention search**: typing `@` asks `mention-url` (GET) with `term` (the text after the @, maybe empty) and
+The mention id is what the mention search answered, for the server to notify (`example.ExampleServices.clean#GalleryNote` reads them
+back); the label is shown. A record link is not a mention: it carries the entity and the id, and nothing is notified for it.
+**The mention search**: typing `@` asks `mention-url` (GET) with `term` (the text after the @, maybe empty) and
 the `mention-parameters`, 150 ms after typing stops, and takes a JSON list of `{id, label}` (also `value` for id, `title` or
-`name` for label, an optional `image` for the avatar, or the list under `options`); the first ten are offered, up and down arrows
-move, Enter or Tab or a click picks. **The plain-text toggle** turns the value into plain text (`moqui.richText.toPlain`: blocks
-apart by a blank line, list items with `- ` or their number, quotes with `> `, a link as its text and address) and back into
-paragraphs (`fromPlain`); a mention becomes its `@Label` text. A host that sends mail as text reads `v-model:plain`. When the
+`name` for label, an optional `image` for the avatar, or the list under `options`, `optionList`, `mentions` or `rows`); the first ten
+are offered, up and down arrows move, Enter or Tab or a click picks. **The record search** is the same for `#` when `record-url` is
+set (light and full): a row may be `{id, label, entity}`, and `recordId` is preferred over `id`, `recordEntityName` over nothing.
+**The plain-text toggle** turns the value into plain text (`moqui.richText.toPlain`: blocks
+apart by a blank line, list items with `- ` or their number, quotes with `> `, a link as its text and address, a table as
+`cell | cell` with a line of dashes under a header row) and back into
+paragraphs (`fromPlain`); a mention becomes its `@Label` text and a record link its `#Label` text. A host that sends mail as text reads `v-model:plain`. When the
 library does not load, the field is `m-text-area` with `editor-type="html"`. The pure parts are `moqui.richText` (`mentionHtml`,
-`mentions`, `isEmpty`, `value`, `toPlain`, `fromPlain`, `mentionItems`, `linkHref`, `toolbar`), tested in
-`WebrootVue.qvt.records.test.js`. In XML: `text-area editor-type="rich"` or `"rich-light"` with `mention-transition`.
+`mentions`, `recordHtml`, `records`, `isEmpty`, `value`, `toPlain`, `fromPlain`, `mentionItems`, `linkHref`, `toolbar`), tested in
+`WebrootVue.qvt.records.test.js`. In XML: `text-area editor-type="rich"` or `"rich-light"` with `mention-transition` and `record-transition`.
 
 **Record cards** (`m-record-card`). The card JSON a `card-url` answers, or the `card` prop (BOSS answers it from
 `mantle.GeneralServices.lookup#ById`):

@@ -332,7 +332,11 @@ form.q-form.m-status-form, .m-status-form { display: inline-flex; width: auto; }
 .m-rich-text-content img { max-width:100%; height:auto; }
 .m-rich-text-content img.ProseMirror-selectednode { outline:2px solid var(--q-primary); }
 .m-rich-text-content hr { border:none; border-top:1px solid rgba(0,0,0,0.2); margin:0.75em 0; }
-.m-rich-text-content [data-mention-id], .m-rich-text-content .suggestion { color:var(--q-primary); border-radius:3px; padding:0 2px;
+.m-rich-text-content table { border-collapse:collapse; width:100%; margin:0.5em 0; }
+.m-rich-text-content th, .m-rich-text-content td { border:1px solid rgba(0,0,0,0.2); padding:2px 6px; vertical-align:top; }
+.m-rich-text-content th { font-weight:500; }
+.body--dark .m-rich-text-content th, .body--dark .m-rich-text-content td { border-color:rgba(255,255,255,0.24); }
+.m-rich-text-content [data-mention-id], .m-rich-text-content [data-record-id], .m-rich-text-content .suggestion { color:var(--q-primary); border-radius:3px; padding:0 2px;
     background:color-mix(in srgb, var(--q-primary) 12%, transparent); }
 .m-rich-text-content p.is-editor-empty:first-child::before { content:attr(data-placeholder); float:left; height:0; pointer-events:none; opacity:0.5; }
 .m-rich-text-plain { display:block; width:100%; border:none; outline:none; resize:vertical; padding:6px 10px; background:transparent; color:inherit; font:inherit; }

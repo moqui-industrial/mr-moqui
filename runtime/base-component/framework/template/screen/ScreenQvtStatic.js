@@ -551,13 +551,21 @@
             });
             labelAttr(n, out);
             if (at(n, "editor-type")) plainAttr(out, "editor-type", at(n, "editor-type"), n);
-            // the mentions of a rich editor search the mention-transition, as ScreenQvt.js writes it
-            if (at(n, "mention-transition") && (isDynamic(at(n, "editor-type") || "") || /^rich/.test(at(n, "editor-type") || ""))) {
+            // the mentions and record links of a rich editor search their transitions, as ScreenQvt.js writes them
+            const richEditor = isDynamic(at(n, "editor-type") || "") || /^rich/.test(at(n, "editor-type") || "");
+            if (at(n, "mention-transition") && richEditor) {
                 const found = sri.staticUrl(at(n, "mention-transition"), "transition");
                 if (found) {
                     out["mention-url"] = found.path;
                     out[":mention-parameters"] = allParams(n);
                 } else note("mention-transition", n, at(n, "mention-transition"));
+            }
+            if (at(n, "record-transition") && richEditor) {
+                const found = sri.staticUrl(at(n, "record-transition"), "transition");
+                if (found) {
+                    out["record-url"] = found.path;
+                    out[":record-parameters"] = allParams(n);
+                } else note("record-transition", n, at(n, "record-transition"));
             }
             tipOf(n, out);
             Object.assign(out, bindOnly(n, field, "$mq.str(" + baseValue(field, at(n, "default-value")) + ")"));

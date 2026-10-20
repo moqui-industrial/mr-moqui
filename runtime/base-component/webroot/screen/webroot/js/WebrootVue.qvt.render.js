@@ -6,7 +6,7 @@
 (function (moqui) {
     "use strict";
     moqui.qvtRenders = {
-        "m-avatar": { hash: "ad2eb49a", make: function (Vue) {
+        "m-avatar": { hash: "71857812", make: function (Vue) {
             const { openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, resolveComponent: _resolveComponent, createBlock: _createBlock, normalizeClass: _normalizeClass, createTextVNode: _createTextVNode, withCtx: _withCtx } = Vue
 
             return function render(_ctx, _cache) {
@@ -27,9 +27,9 @@
                   (_ctx.showImage)
                     ? (_openBlock(), _createElementBlock("img", {
                         key: 0,
-                        src: _ctx.image,
+                        src: _ctx.resolvedImage,
                         alt: _ctx.name || '',
-                        onError: $event => (_ctx.failedImage = _ctx.image)
+                        onError: $event => (_ctx.failedImage = _ctx.resolvedImage)
                       }, null, 40, ["src", "alt", "onError"]))
                     : (_ctx.initials)
                       ? (_openBlock(), _createElementBlock("span", {
@@ -3960,7 +3960,7 @@
                 : _createCommentVNode("", true)
             }
         } },
-        "m-rich-text": { hash: "57823d0d", make: function (Vue) {
+        "m-rich-text": { hash: "feecdfb9", make: function (Vue) {
             const { resolveComponent: _resolveComponent, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createElementBlock: _createElementBlock, renderList: _renderList, Fragment: _Fragment, createTextVNode: _createTextVNode, withCtx: _withCtx, createVNode: _createVNode, resolveDirective: _resolveDirective, withDirectives: _withDirectives, withModifiers: _withModifiers, normalizeClass: _normalizeClass, withKeys: _withKeys, normalizeStyle: _normalizeStyle, vShow: _vShow, createElementVNode: _createElementVNode, Teleport: _Teleport } = Vue
 
             return function render(_ctx, _cache) {
@@ -4060,30 +4060,71 @@
                                           ]),
                                           _: 1
                                         }, 8, ["label", "disable"]))
-                                      : (_openBlock(), _createBlock(_component_q_btn, {
-                                          key: 2,
-                                          flat: "",
-                                          dense: "",
-                                          size: "sm",
-                                          icon: button.icon,
-                                          "data-command": button.key,
-                                          "aria-label": _ctx.t(button.label),
-                                          color: (button.key === 'plain' ? _ctx.isPlain : _ctx.active[button.key]) ? 'primary' : undefined,
-                                          class: _normalizeClass({'m-rich-text-on': button.key === 'plain' ? _ctx.isPlain : _ctx.active[button.key]}),
-                                          disable: button.key === 'plain' ? (_ctx.disable || _ctx.state !== 'ready') : (!_ctx.editable || _ctx.isPlain),
-                                          onMousedown: _withModifiers(() => {}, ["prevent"]),
-                                          onClick: $event => (_ctx.run(button.key))
-                                        }, {
-                                          default: _withCtx(() => [
-                                            _createVNode(_component_q_tooltip, null, {
-                                              default: _withCtx(() => [
-                                                _createTextVNode(_toDisplayString(_ctx.t(button.label)), 1)
-                                              ]),
-                                              _: 2
-                                            }, 1024)
-                                          ]),
-                                          _: 2
-                                        }, 1032, ["icon", "data-command", "aria-label", "color", "class", "disable", "onMousedown", "onClick"]))
+                                      : (button.key === 'table')
+                                        ? (_openBlock(), _createBlock(_component_q_btn_dropdown, {
+                                            key: 2,
+                                            flat: "",
+                                            dense: "",
+                                            size: "sm",
+                                            icon: "sym_o_table",
+                                            disable: !_ctx.editable || _ctx.isPlain,
+                                            class: "m-rich-text-table",
+                                            "content-class": "m-rich-text-menu",
+                                            "aria-label": _ctx.t('Table'),
+                                            onMousedown: _withModifiers(() => {}, ["prevent"])
+                                          }, {
+                                            default: _withCtx(() => [
+                                              _createVNode(_component_q_list, { dense: "" }, {
+                                                default: _withCtx(() => [
+                                                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.tableItems, (item) => {
+                                                    return _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                                                      key: item.key,
+                                                      clickable: "",
+                                                      onClick: $event => (_ctx.run(item.key))
+                                                    }, {
+                                                      default: _withCtx(() => [
+                                                        _createVNode(_component_q_item_section, null, {
+                                                          default: _withCtx(() => [
+                                                            _createTextVNode(_toDisplayString(_ctx.t(item.label)), 1)
+                                                          ]),
+                                                          _: 2
+                                                        }, 1024)
+                                                      ]),
+                                                      _: 2
+                                                    }, 1032, ["onClick"])), [
+                                                      [_directive_close_popup]
+                                                    ])
+                                                  }), 128))
+                                                ]),
+                                                _: 1
+                                              })
+                                            ]),
+                                            _: 1
+                                          }, 8, ["disable", "aria-label", "onMousedown"]))
+                                        : (_openBlock(), _createBlock(_component_q_btn, {
+                                            key: 3,
+                                            flat: "",
+                                            dense: "",
+                                            size: "sm",
+                                            icon: button.icon,
+                                            "data-command": button.key,
+                                            "aria-label": _ctx.t(button.label),
+                                            color: (button.key === 'plain' ? _ctx.isPlain : _ctx.active[button.key]) ? 'primary' : undefined,
+                                            class: _normalizeClass({'m-rich-text-on': button.key === 'plain' ? _ctx.isPlain : _ctx.active[button.key]}),
+                                            disable: button.key === 'plain' ? (_ctx.disable || _ctx.state !== 'ready') : (!_ctx.editable || _ctx.isPlain),
+                                            onMousedown: _withModifiers(() => {}, ["prevent"]),
+                                            onClick: $event => (_ctx.run(button.key))
+                                          }, {
+                                            default: _withCtx(() => [
+                                              _createVNode(_component_q_tooltip, null, {
+                                                default: _withCtx(() => [
+                                                  _createTextVNode(_toDisplayString(_ctx.t(button.label)), 1)
+                                                ]),
+                                                _: 2
+                                              }, 1024)
+                                            ]),
+                                            _: 2
+                                          }, 1032, ["icon", "data-command", "aria-label", "color", "class", "disable", "onMousedown", "onClick"]))
                                 ], 64))
                               }), 128))
                             ]))
@@ -4941,7 +4982,7 @@
               ], 8, ["id", "data-step", "data-step-form", "data-forms"]))
             }
         } },
-        "m-text-area": { hash: "c00bcdbf", make: function (Vue) {
+        "m-text-area": { hash: "e5ced575", make: function (Vue) {
             const { resolveComponent: _resolveComponent, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createElementBlock: _createElementBlock, createVNode: _createVNode, createElementVNode: _createElementVNode, createTextVNode: _createTextVNode, withCtx: _withCtx, mergeProps: _mergeProps } = Vue
 
             return function render(_ctx, _cache) {
@@ -4966,8 +5007,10 @@
                     tooltip: _ctx.tooltip,
                     rows: _ctx.rows,
                     "mention-url": _ctx.mentionUrl,
-                    "mention-parameters": _ctx.mentionParameters
-                  }, null, 8, ["light", "model-value", "onUpdate:modelValue", "name", "id", "label", "form", "disable", "readonly", "tooltip", "rows", "mention-url", "mention-parameters"]))
+                    "mention-parameters": _ctx.mentionParameters,
+                    "record-url": _ctx.recordUrl,
+                    "record-parameters": _ctx.recordParameters
+                  }, null, 8, ["light", "model-value", "onUpdate:modelValue", "name", "id", "label", "form", "disable", "readonly", "tooltip", "rows", "mention-url", "mention-parameters", "record-url", "record-parameters"]))
                 : (_ctx.editorType === 'html')
                   ? (_openBlock(), _createElementBlock("div", {
                       key: 1,

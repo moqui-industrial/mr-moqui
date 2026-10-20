@@ -216,8 +216,8 @@ fn a_dashboard_lays_out_number_cards() {
 
 /// `chatter` and `record-files` are an m-chatter and an m-record-files with the request's record and hints (an expression that
 /// comes to nothing left out, a false condition nothing): the client finds the theme's subscreen of the current app root. A
-/// text-area with editor-type rich or rich-light is an m-text-area with that editor type and the mention transition's URL,
-/// which a plain text-area leaves out. The html mode writes no link without a theme value, and the text modes nothing.
+/// text-area with editor-type rich or rich-light is an m-text-area with that editor type and the mention or record
+/// transition's URL, which a plain text-area leaves out. The html mode writes no link without a theme value, and the text modes nothing.
 #[test]
 fn the_record_panels_and_the_rich_text_editors() {
     let out = check("records", &[]);
@@ -228,11 +228,13 @@ fn the_record_panels_and_the_rich_text_editors() {
         r#"editor-type="rich-light""#,
         r#"mention-url="/mentions""#,
         r#"editor-type="rich" rows="6""#,
+        r#"record-url="/records""#,
     ] {
         assert!(out.contains(expected), "{expected} in {out}");
     }
     assert_eq!(out.matches("<m-chatter").count(), 2, "{out}");
     assert_eq!(out.matches("mention-url").count(), 1, "{out}");
+    assert_eq!(out.matches("record-url").count(), 1, "{out}");
     for mode in ["html", "text", "csv", "xml"] {
         let context = ExecutionContextFactory::test_context();
         let output = make_render(context.factory())

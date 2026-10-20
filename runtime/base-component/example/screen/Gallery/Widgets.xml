@@ -47,6 +47,16 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
         <default-response type="none"/>
     </transition>
+    <!-- the # record links of the rich editors: a fixed list, the shape a record search answers ({id, label, entity}) -->
+    <transition name="recordSearch" read-only="true">
+        <actions><script><![CDATA[
+            ec.web.sendJsonResponse([
+                {id: '100050', label: 'SO100050', entity: 'mantle.order.OrderHeader'},
+                {id: '100051', label: 'SO100051', entity: 'mantle.order.OrderHeader'}
+            ])
+        ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
     <!-- the @ mentions of the rich editors: users whose name or username has the term, answered as [{id, label}] -->
     <transition name="mentionSearch" read-only="true">
         <actions>
@@ -107,9 +117,9 @@ along with this software (see the LICENSE.md file). If not, see
                 <field name="textArea"><default-field title="text-area"><text-area rows="2"/></default-field></field>
                 <field name="textMd"><default-field title="text-area editor-type=md"><text-area rows="3" editor-type="md"/></default-field></field>
                 <field name="textRich"><default-field title="text-area editor-type=rich mention-transition">
-                    <text-area rows="5" editor-type="rich" mention-transition="mentionSearch"/></default-field></field>
+                    <text-area rows="5" editor-type="rich" mention-transition="mentionSearch" record-transition="recordSearch"/></default-field></field>
                 <field name="textRichLight"><default-field title="text-area editor-type=rich-light">
-                    <text-area rows="2" editor-type="rich-light" mention-transition="mentionSearch"/></default-field></field>
+                    <text-area rows="2" editor-type="rich-light" mention-transition="mentionSearch" record-transition="recordSearch"/></default-field></field>
                 <field name="ddEntity"><default-field title="drop-down entity-options">
                     <drop-down allow-empty="true"><entity-options key="${enumTypeId}" text="${description} [${enumTypeId}]">
                         <entity-find entity-name="moqui.basic.EnumerationType" cache="true"><order-by field-name="description"/></entity-find>

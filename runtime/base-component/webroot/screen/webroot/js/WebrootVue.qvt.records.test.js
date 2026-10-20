@@ -29,10 +29,29 @@ test("the empty document is the empty value; an image, a rule or a mention is no
         assert.equal(rich.isEmpty(empty), true, String(empty));
         assert.equal(rich.value(empty), "", String(empty));
     }
-    for (const full of ["<p>x</p>", '<p><img src="/a.png"></p>', "<hr>", '<p><span data-mention-id="a">@A</span></p>']) {
+    for (const full of ["<p>x</p>", '<p><img src="/a.png"></p>', "<hr>", '<p><span data-mention-id="a">@A</span></p>',
+        "<table><tr><td></td></tr></table>", '<p><span data-record-id="1">#SO</span></p>']) {
         assert.equal(rich.isEmpty(full), false, full);
         assert.equal(rich.value(full), full);
     }
+});
+
+test("a record link is a span with its entity and id, and the links of a text are read back once each", () => {
+    assert.equal(rich.recordHtml("mantle.order.OrderHeader", "100050", "SO100050"),
+        '<span data-record-entity="mantle.order.OrderHeader" data-record-id="100050">#SO100050</span>');
+    assert.equal(rich.recordHtml('a"<b>', "1", "A & B"),
+        '<span data-record-entity="a&quot;&lt;b&gt;" data-record-id="1">#A &amp; B</span>');
+    const html = '<p>See <span data-record-entity="mantle.order.OrderHeader" data-record-id="100050">#SO100050</span> ' +
+        'and <span data-record-id="100050">#again</span> <span data-mention-id="ann">@Ann</span></p>';
+    assert.deepEqual(rich.records(html), [{ entity: "mantle.order.OrderHeader", id: "100050", label: "SO100050" }]);
+    assert.deepEqual(rich.mentions(html), [{ id: "ann", label: "Ann" }]);
+    assert.equal(rich.toPlain(html), "See #SO100050 and #again @Ann");
+});
+
+test("plain text of a table is its cells joined, with a dashed line under a header row", () => {
+    const html = "<p>Before</p><table><thead><tr><th>Name</th><th>Qty</th></tr></thead><tbody>" +
+        "<tr><td>Bolt</td><td>2</td></tr><tr><td>Nut</td><td colspan=\"2\">4</td></tr></tbody></table><p>After</p>";
+    assert.equal(rich.toPlain(html), ["Before", "", "Name | Qty", "---- | ---", "Bolt | 2", "Nut | 4", "", "After"].join("\n"));
 });
 
 test("plain text of the editor's HTML keeps paragraphs, lists, quotes, links, code and mentions", () => {
@@ -98,6 +117,11 @@ test("a mention search answer is read as a list of id and label, each id once, a
     assert.deepEqual(rich.mentionItems(null), []);
     assert.equal(rich.mentionItems(Array.from({ length: 30 }, (x, i) => ({ id: "u" + i }))).length, 10);
     assert.equal(rich.mentionItems(Array.from({ length: 30 }, (x, i) => ({ id: "u" + i })), 3).length, 3);
+    assert.deepEqual(rich.mentionItems({ optionList: [{ value: "mantle.order.OrderHeader|100050", label: "Order · SO100050",
+        recordEntityName: "mantle.order.OrderHeader", recordId: "100050", id: "ignored" }] }),
+        [{ id: "100050", label: "Order · SO100050", image: null, entity: "mantle.order.OrderHeader" }]);
+    assert.deepEqual(rich.mentionItems([{ id: "100050", label: "SO100050", entity: "mantle.order.OrderHeader" }]),
+        [{ id: "100050", label: "SO100050", image: null, entity: "mantle.order.OrderHeader" }]);
 });
 
 test("a typed link gets a scheme: https for a host, mailto for an address, as it is with one", () => {
@@ -112,8 +136,9 @@ test("a typed link gets a scheme: https for a host, mailto for an address, as it
 test("the light toolbar is bold, italic, link, list and code; the full one has the plain-text toggle last", () => {
     assert.deepEqual(rich.toolbar(true).map((button) => button.key), ["bold", "italic", "link", "bulletList", "code"]);
     const full = rich.toolbar(false, true).filter((button) => !button.separator).map((button) => button.key);
-    assert.deepEqual(full, ["block", "bold", "italic", "strike", "bulletList", "orderedList", "link", "image", "code", "codeBlock",
+    assert.deepEqual(full, ["block", "bold", "italic", "strike", "bulletList", "orderedList", "link", "image", "table", "code", "codeBlock",
         "blockquote", "undo", "redo", "plain"]);
+    assert.ok(!rich.toolbar(true).some((button) => button.key === "table"));
     assert.ok(!rich.toolbar(false, false).some((button) => button.key === "plain"));
 });
 
