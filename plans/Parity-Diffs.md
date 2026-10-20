@@ -2,6 +2,8 @@
 
 Companion to [Parity-Mapping](Parity-Mapping.md). Where that file says which Java, Groovy, XML and FreeMarker source each Rust module was ported from, this one records the behaviour differences inside those ported features that are deliberate: each has a rationale and a comment in the code that records it. Revisit a row only if its rationale changes. This is not a worklist.
 
+*IMPORTANT* This is documentation, not specification. All differences here are subject to change (each could go back to matching Moqui Java, or could get more different).
+
 What is not here:
 
 - **Whole features that are not ported** (JSON-RPC, Groovy runners, Hazelcast, Shiro, FreeMarker and the rest): [Parity-Mapping, Excluded on purpose](Parity-Mapping.md#excluded-on-purpose).
