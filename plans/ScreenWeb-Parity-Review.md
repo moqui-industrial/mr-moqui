@@ -2,8 +2,9 @@
 
 Status: the nine phases were worked on 2026-10-19. The three High findings from that pass (P5-01,
 P7-01, P8-01) and P8-02 were fixed on 2026-10-20. A second pass the same day re-checked the
-load-bearing findings against the current code. 88 findings stay open. One is High (P9-08, a write
-transition reached by GET with `~name=value` parameters). Five more rows from the first pass are
+load-bearing findings against the current code. 83 findings stay open. None is High. The five
+rows under [Fix these first](#fix-these-first) (P9-08, P1-01, P2-07, P1-06, P1-02) were fixed on
+2026-10-20. Five more rows from the first pass are
 closed on this pass (P1-09, P1-12, P2-14, P4-08, P5-04): the claimed behavior is not what the code
 does, or a plan already records the decision. The shape follows
 [EntityService-Parity-Review](archive/EntityService-Parity-Review.md). Where this file's phase
@@ -45,24 +46,25 @@ with `framework/` or `runtime/`. Line numbers are as of 2026-10-19.
 ## Summary
 
 All nine phases were worked on 2026-10-19. 100 findings were found; the three High ones and P8-02
-were fixed on 2026-10-20. The second pass closed eight more rows, so 88 are open. One of those is
-High. Severity in this table is the second pass. A phase narrative that still says Med is the first
+were fixed on 2026-10-20. The second pass closed eight more rows, and the five under Fix these
+first were fixed the same day, so 83 are open. None is High. Severity in this table is the second
+pass. A phase narrative that still says Med is the first
 pass.
 
 | Phase | Open | High | Unclear |
 |---|---|---|---|
-| 1 Screen definition / form model | 10 | — | — |
-| 2 Screen render / SRI surface | 11 | — | — |
+| 1 Screen definition / form model | 7 | — | — |
+| 2 Screen render / SRI surface | 10 | — | — |
 | 3 Macro libraries: html, csv, text, xml, plain | 6 | — | 1 |
 | 4 qvt render mode | 8 | — | — |
 | 5 Server-static qvt | 7 | — | — |
 | 6 Print and spreadsheet | 6 | — | 4 |
 | 7 Screen URLs / tree / menu / static files / facade | 10 | — | 5 |
 | 8 Web facade | 17 | — | — |
-| 9 HTTP host and web app endpoints | 13 | 1 | 1 |
-| **Total** | **88** | **1** | **11** |
+| 9 HTTP host and web app endpoints | 12 | — | 1 |
+| **Total** | **83** | **—** | **11** |
 
-Severity of the open findings: 1 High, 15 Med and 72 Low. The first pass had 48 Med and 48 Low and
+Severity of the open findings: 0 High, 11 Med and 72 Low. The first pass had 48 Med and 48 Low and
 called 27 of them `Unclear`. Sixteen of those are now decided or closed. The 11 that remain
 `Unclear` still need a decision before anyone changes that code: P3-01, P6-02, P6-03, P6-04, P6-06,
 P7-03, P7-06, P7-07, P7-10, P7-11, P9-15. Thirteen open rows are deliberate and should be recorded
@@ -121,10 +123,10 @@ the old lines are now a different function.
 
 ### Fix these first
 
-These are the open rows a user hits on an ordinary screen. The rest of the Med rows are real and
-rarer, or they wait on a flag that no shipped screen sets.
+These five were fixed on 2026-10-20. They were the open rows a user hits on an ordinary screen.
+The rest of the Med rows are real and rarer, or they wait on a flag that no shipped screen sets.
 
-1. **P9-08 (High).** A transition whose method is omitted is `any`, so a GET runs it. The session
+1. **P9-08 (High).** Closed. A transition whose method is omitted is `any`, so a GET runs it. The session
    token is required only for POST, PUT, PATCH and DELETE. `SameSite=Lax` sends the session cookie
    on a top-level GET, which is what a clicked link is. Java refuses a non-read-only transition
    that has actions when the URL has a query string or a `~name=value` path parameter. The port
@@ -132,20 +134,20 @@ rarer, or they wait on a flag that no shipped screen sets.
    `inline_parameters`. A link to `/Some/update/~orderId=1` runs the write here and is refused in
    Java. `insecure_transition` is `screen/render.rs:1324-1347`. The table's old lines (`1167-1193`)
    are a different function now.
-2. **P1-01 (Med).** Confirmed, and shipped. `one_relations` is used for `display` and `find-display`
+2. **P1-01 (Med).** Closed. Confirmed, and shipped. `one_relations` is used for `display` and `find-display`
    only. The edit and find branches still append `text-line` and `text-find` (`screen/form.rs`,
    `add_auto_entity_field`). The `drop-down` in that function is the Y/N indicator, not the
    related-entity picker. Auto screens, Entity Data Edit and Service Run therefore give a status
    or enum foreign key as a text box.
-3. **P2-07 (Med).** Confirmed, and shipped. The form-list render never writes `_formListRendered`
+3. **P2-07 (Med).** Closed. Confirmed, and shipped. The form-list render never writes `_formListRendered`
    or `_formListResultCount`. `ScreenServices.xml` says so, and a scheduled find stores
    `noResultsAbort="Y"`, so an empty list still sends. My Account scheduled finds hit this.
-4. **P1-06 (Med).** Confirmed, and shipped. `saved_find_location` appends only the context's
+4. **P1-06 (Med).** Closed. Confirmed, and shipped. `saved_find_location` appends only the context's
    `formLocationExtension`. Java also appends the `auto-fields-service` or `auto-fields-entity`
    name, and the macros post that full location. `ViewReport.xml` and `ViewDataDocument.xml` are
    `dynamic="true"` and `saved-finds="true"`, so every report on that screen shares one saved-find
    list and one column choice.
-5. **P1-02 (Med).** Confirmed, and shipped. An auto date field becomes `date-time` with only
+5. **P1-02 (Med).** Closed. Confirmed, and shipped. An auto date field becomes `date-time` with only
    `type`. Java adds `default-value` `${ec.l10n.format(ec.user.nowTimestamp, 'yyyy-MM-dd HH:mm')}`
    when the name is `fromDate`. Create and update on an auto edit form start with an empty from-date.
 
@@ -329,12 +331,12 @@ transition contract, the dynamic form's saved-find key, and six smaller ones.
 
 | ID | Rust location | Java/XML location | Divergence | Severity | Intentional? |
 |---|---|---|---|---|---|
-| P1-01 | `screen/form.rs:1088-1097`, `:1099-1109`, `:1118-1141` | `ScreenForm.groovy:770-792`, `:832-840`, `:854-857`, `:903-908`, `:944-986` | An auto field whose column is the one key of a `one` relationship is a `text-line`/`text-find` in the port; Java makes it a drop-down of the related entity's records | Med | No |
-| P1-02 | `screen/form.rs:1078-1080` | `ScreenForm.groovy:819-821` | The auto `fromDate` field has no `default-value` (today); Java sets it | Med | No |
+| P1-01 | `screen/form.rs:1088-1097`, `:1099-1109`, `:1118-1141` | `ScreenForm.groovy:770-792`, `:832-840`, `:854-857`, `:903-908`, `:944-986` | Closed. An auto foreign key with 1 to 200 related rows is a drop-down on edit, find, and the find-display header. Display stays display-entity | — | closed |
+| P1-02 | `screen/form.rs:1078-1080` | `ScreenForm.groovy:819-821` | Closed. An auto edit field named `fromDate` gets `default-value` `${ec.l10n.format(ec.user.nowTimestamp, 'yyyy-MM-dd HH:mm')}` | — | closed |
 | P1-03 | `screen/form.rs:1127-1131` | `ScreenForm.groovy:893-901` | `show-total` is always `sum`; Java uses the `function` of the field (a view alias's `min`/`max`/`avg`) | Low | No |
 | P1-04 | `screen/render.rs:1135-1138` (with `screen/definition.rs:327-365`) | `ScreenDefinition.groovy:1000-1008` | A transition's `actions` do not run when there is an error; Java runs the service-call only without an error, but always runs the actions | Med | No |
 | P1-05 | `screen/definition.rs:281-296` | `ScreenDefinition.groovy:1109-1138` | The implicit `formSaveFind` and `formSelectColumns` take only a POST with a session token; Java takes any method and no token | Med | Yes |
-| P1-06 | `screen/saved_finds.rs:111-124` | `ScreenForm.groovy:278-297` | A dynamic form's saved finds are not keyed by the entity or service the form is for; Java adds the extension from `auto-fields-service`/`auto-fields-entity` | Med | No |
+| P1-06 | `screen/saved_finds.rs:111-124` | `ScreenForm.groovy:278-297` | Closed. A dynamic saved find is keyed by `formLocationExtension`, else the auto service name, else the auto entity name, and the saved-find macros post that location | — | closed |
 | P1-07 | `screen/saved_finds.rs:588-599` | `ScreenForm.groovy:2400` | The scheduled email subject escapes `${` in the find's description; Java expands it (template injection) | Low | Yes |
 | P1-08 | `screen/saved_finds.rs:548-563`, `:617-633` | `ScreenForm.groovy:2389-2410`, `:2446-2461` | `ScheduleFind` and `MakeDefault` refuse a find the user does not own; Java allows any find id | Low | Yes |
 | P1-09 | `screen/form.rs:132-197` | `ScreenForm.groovy:2033-2139` | Closed. A saved column set rebuilds the form, and `form-select-fields` comes from those columns (`screen/sri/forms.rs`). The comment in `form.rs` is stale. The static data request still selects the definition's columns, and no screen is `server-static="qvt"` | — | closed |
@@ -343,6 +345,8 @@ transition contract, the dynamic form's saved-find key, and six smaller ones.
 | P1-12 | `screen/form.rs:729-735` | `ScreenForm.groovy:1160-1182` | Closed. No shipped field inside a `field-layout` sets `layoutSequenceNum`. DbForm fields are ordered by that column in both | — | closed |
 
 #### P1-01 — An auto field of a related entity is a text box, not a drop-down
+
+Closed on 2026-10-20. An auto foreign key with 1 to 200 related rows is a drop-down on edit, find, and the find-display header.
 
 `add_auto_entity_field` in `screen/form.rs` finds the `one` relationship a field is the single key
 of (`shape.one_relations`, read from the entity model at `screen/form.rs:936-946`), but it only uses
@@ -365,6 +369,8 @@ relationship's related entity, its key field and its description field in `Entit
 two are there) and the `drop-down`/`entity-options`/`entity-find` widget it builds.
 
 #### P1-02 — The auto `fromDate` field has no default value
+
+Closed on 2026-10-20. An auto edit field named `fromDate` gets `default-value` `${ec.l10n.format(ec.user.nowTimestamp, 'yyyy-MM-dd HH:mm')}`.
 
 Java's `addAutoEntityField` writes a `date-time` widget for a date or time field and, when the
 field is named `fromDate`, gives it the default value
@@ -428,6 +434,8 @@ Parity-Diffs does not carry the row, so it is reported here as an open question 
 accepted difference.
 
 #### P1-06 — A dynamic form's saved finds are not keyed by the entity or service
+
+Closed on 2026-10-20. The key is `formLocationExtension`, else the first auto service name, else the first auto entity name, and the saved-find macros post it.
 
 Java's `getSavedFindFullLocation` (`ScreenForm.groovy:278-297`) builds the key of a dynamic form's
 saved finds as the form location plus `#` and an extension: the context's `formLocationExtension`
@@ -697,7 +705,7 @@ smaller ones; the sri surface itself is complete.
 | P2-04 | `screen/aggregate.rs:143-147` | `AggregationUtil.java:202-210`, `ScreenForm.groovy:2038` | The group key uses the group-by field even when the field is not displayed or hidden; Java leaves it out of the key, so all rows fall in one group | Low | No |
 | P2-05 | `screen/aggregate.rs:86-104` | `ScreenForm.groovy:1403-1407`, `:46-50` | An `aggregate` or `show-total` that is not a function name is logged and ignored; Java's `AggregateFunction.valueOf` throws and the screen fails to load | Low | No |
 | P2-06 | `screen/sri/fields.rs:336-360` | `ScreenRenderImpl.groovy:1459-1465`, `ResourceFacadeImpl.groovy:439-451` | `sri.setInContext` skips a set when the field already has a value, always sets an empty value, and localizes the `value` and `default-value`; Java sets a truthy value, keeps the old value otherwise, and expands without l10n | Med | No |
-| P2-07 | `screen/sri/forms.rs:194-257` | `ScreenForm.groovy:2131-2138` | The form-list render does not put `_formListRendered` and `_formListResultCount` in the shared context map | Med | No |
+| P2-07 | `screen/sri/forms.rs:194-257` | `ScreenForm.groovy:2131-2138` | Closed. A rendered form-list sets shared `_formListRendered` and adds its row count to `_formListResultCount`, so an empty list aborts a scheduled find with `noResultsAbort` | — | closed |
 | P2-08 | `screen/render.rs:432-437` | `ScreenDefinition.groovy:212`, `ScreenUrlInfo.groovy:500` | Closed. Already recorded as Parity-Diffs P8b-09. The port 404s a mode the screen does not list; Java only reports the list. Gallery Board, Calendar, QuickTask and Service Load Runner name only `vue`/`qvue`, so html and qvt 404 there | — | closed |
 | P2-09 | `screen/render.rs:560-565` | `WebFacadeImpl.groovy:262-273` | The sign-in pages are left out of the screen history; Java puts every screen there | Low | No |
 | P2-10 | `screen/render.rs:191`, `:969-978` | `ScreenRenderImpl.groovy:443-476`, `WebFacadeStub.groovy:126` | A render with no socket (the `make_render` / `ScreenTest` seam) skips the session-token and the insecure-request checks; Java's stub goes through them | Low | No |
@@ -795,6 +803,8 @@ The port's own actions runner (`runtime/base-component/framework/template/XmlAct
 Java's, or the XSD's — and using it in all three places is the fix.
 
 #### P2-07 — The form-list does not set `_formListRendered` and `_formListResultCount`
+
+Closed on 2026-10-20. A rendered form-list sets those two shared-map values, and an empty list counts as zero so `noResultsAbort` stops the send.
 
 Java's `getListObject` puts `_formListRendered` and `_formListResultCount` in the shared context map after the list is built
 (`ScreenForm.groovy:2131-2138`), so that code running later can tell that a list was rendered and how many rows it had. The
@@ -2777,7 +2787,7 @@ the auth filter rules, the websocket endpoint, the log filters and the startup; 
 | P9-05 | `moqui-core/src/web/mod.rs:1378-1389,1371-1376,1095-1097` | `ExecutionContextFactoryImpl.groovy:1857-1874`, `MoquiDefaultConf.xml:220-224` | Closed. Duplicate of P8-06 | — | closed |
 | P9-06 | `moqui-core/src/screen/mod.rs:107-109` | `MoquiServlet.groovy:52-178` | Every `OPTIONS` request answers 204 with an empty body, before the path is resolved; Java renders the screen (200) or answers 404 for a path that does not exist, and a CORS preflight answers 200 | Low | No |
 | P9-07 | `moqui-core/src/user/authz.rs:518-523`, `moqui-core/src/screen/mod.rs:270-282` | `MoquiServlet.groovy:130-134` | The tarpit answer is 429 with the seconds in the message text, but no `Retry-After` header; Java adds the header | Low | No |
-| P9-08 | `moqui-core/src/screen/render.rs:1324-1347` (`insecure_transition`) | `ScreenRenderImpl.groovy:443-457` | A transition that writes may take its `~name=value` parameters from the URL; Java refuses such a transition outright (a `BaseArtifactException`) because URL parameters are not protected | High | No |
+| P9-08 | `moqui-core/src/screen/render.rs:1324-1347` (`insecure_transition`) | `ScreenRenderImpl.groovy:443-457` | Closed. A transition with actions is refused when the URL has a query parameter other than `lastStandalone` or `renderMode`, or a `~name=value` path parameter. An omitted method stays `any` | — | closed |
 | P9-09 | `moqui-host/src/http.rs:585-596,763-828` | `ElasticRequestLogFilter.groovy:91-120,153-159`, `MoquiDefaultConf.xml:243-246` | The `moqui_http_log` entry has no `session`, `visitor_id` or `remote_user`, and only the screen requests are logged; Java's filter is on `/*` and logs every request with those fields | Med | No |
 | P9-10 | `moqui-host/src/logging.rs:556-572` | `ElasticSearchLogger.groovy:100-116` | The `moqui_logs` event has no `user_id` and no `visitor_id` (the MDC fields) and no `thrown`; the port's own mapping declares `user_id` and `visitor_id` | Med | No |
 | P9-11 | `moqui-host/src/search_proxy.rs:138-144` | `MoquiDefaultConf.xml:289-295` (Jetty `ProxyServlet$Transparent`, `prefix=/kibana`) | The `/kibana` proxy keeps the `/kibana` prefix in the path it forwards; Jetty strips the prefix, so Java sends `/app/dashboards` and the port sends `/kibana/app/dashboards` | Low | No |
@@ -2913,6 +2923,8 @@ message. The fix is to carry the retry seconds on the error and add the header f
 guard already does for its own rate limits (`moqui-host/src/guard.rs:707,837-841`).
 
 #### P9-08 — A write transition may take its parameters from the URL
+
+Closed on 2026-10-20. A transition with actions is refused when the URL has a query parameter other than `lastStandalone` or `renderMode`, or a `~name=value` path parameter. An omitted method stays `any`.
 
 Java refuses to run a transition that has actions (or a single service) and is not `read-only`
 when the request is not secure while https is enabled, **or** when the URL carries a query string,
@@ -3184,10 +3196,10 @@ are the screen-and-web half of
 
 1. ~~Decide the three High findings~~ — done on 2026-10-20: P5-01, P7-01 and P8-01 are fixed, with
    P8-02. The plan and the record of the decisions are in
-   [ScreenWeb-High-Findings](ScreenWeb-High-Findings.md). The open High finding is P9-08.
-2. Fix the five rows under [Fix these first](#fix-these-first): P9-08, then P1-01, P2-07, P1-06
-   and P1-02. P1-04 and P2-06 are real and rarer; do them with that form work, and keep the XSD
-   rule for `set-if-empty`.
+   [ScreenWeb-High-Findings](ScreenWeb-High-Findings.md). No High finding is open.
+2. ~~Fix the five rows under [Fix these first](#fix-these-first)~~ — done on 2026-10-20: P9-08,
+   P1-01, P2-07, P1-06 and P1-02. P1-04 and P2-06 are real and rarer; do them with that form work,
+   and keep the XSD rule for `set-if-empty`.
 3. Record the deliberate rows in [Parity-Diffs](Parity-Diffs.md) and do not revert them. The list
    is under [Record these](#record-these-and-do-not-revert-them). P2-08 and P5-04 are already
    recorded.

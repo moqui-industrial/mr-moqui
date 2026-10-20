@@ -35,6 +35,10 @@
         <error-response url="/Home"/>
         <default-response url="Sub"/>
     </transition>
+    <transition name="readTx" read-only="true">
+        <actions><script>trace.push('readTx')</script></actions>
+        <default-response url="Sub"/>
+    </transition>
     <transition name="byId" method="get">
         <path-parameter name="itemId"/>
         <actions><script>ec.web.sendJsonResponse({id: itemId, trace: trace})</script></actions>

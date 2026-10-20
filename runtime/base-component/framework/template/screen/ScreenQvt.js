@@ -1258,7 +1258,7 @@
                     finds.forEach((find) => {
                         const id = find.formListFind.formListFindId;
                         const label = (find.description || id) + (id === defaultId ? " (" + L("Default") + ")" : "");
-                        const fields = Object.assign({ formLocation: at(n, "name"), formListFindId: id }, params);
+                        const fields = Object.assign({ formLocation: sri.getSavedFindFullLocation(at(n, "name")), formListFindId: id }, params);
                         const button = (name, text, color) => '<q-btn dense flat no-caps size="sm"' + A({ type: "submit", name, value: name ? "Y" : null, color: color || null, label: text }) + "></q-btn>";
                         w("<q-item" + A({ active: id === activeId ? true : null }) + "><q-item-section><m-link" + A({ href: base + "?formListFindId=" + encodeURIComponent(id) }) + ">" + t(label) + "</m-link></q-item-section>" +
                             "<q-item-section side><m-form" + A({ class: "form-inline", action: saveUrl, ":fields-initial": js_(fields) }) + ">" +
@@ -1272,7 +1272,7 @@
                 if (Object.keys(params).length) {
                     w("<m-form" + A({
                         class: "form-inline", id: formId + "_NewFind", action: saveUrl, "v-slot:default": "formProps",
-                        ":fields-initial": js_(Object.assign({ formLocation: at(n, "name"), _findDescription: "" }, params))
+                        ":fields-initial": js_(Object.assign({ formLocation: sri.getSavedFindFullLocation(at(n, "name")), _findDescription: "" }, params))
                     }) + '><div class="big-row"><div class="q-my-auto big-row-item"><m-text-line' + A({
                         "v-model": "formProps.fields._findDescription", name: "_findDescription", id: formId + "_NewFind_description", label: L("Description"), size: "30", required: true
                     }) + '></m-text-line></div><div class="big-row-item"><q-btn dense unelevated no-caps color="primary" type="submit" label="' + e(L("Save New Find")) + '"></q-btn></div></div></m-form>');

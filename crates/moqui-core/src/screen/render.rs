@@ -1122,7 +1122,7 @@ fn run_transition(
         return Ok(());
     };
     if job.enforce_request_checks {
-        if let Some(reason) = insecure_transition(factory, job, &transition) {
+        if let Some(reason) = insecure_transition(factory, job, &transition, &info.inline_parameters) {
             web::send_json_error(400, reason);
             return Ok(());
         }
@@ -1321,10 +1321,12 @@ fn runs_actions(transition: &TransitionDef) -> bool {
 
 /// A transition that writes is refused from a request that is not encrypted when https is on, or that carries its
 /// parameters in the URL, where they are not protected (Java's ScreenRenderImpl). A read-only one is not.
+/// `inline_parameters` are the `/~name=value/` segments. A `path-parameter` extra path is not one of those.
 fn insecure_transition(
     factory: &ExecutionContextFactory,
     job: &Job<'_>,
     transition: &TransitionDef,
+    inline_parameters: &BTreeMap<String, String>,
 ) -> Option<&'static str> {
     if transition.read_only || !runs_actions(transition) {
         return None;
@@ -1339,7 +1341,9 @@ fn insecure_transition(
         .query
         .iter()
         .any(|(name, _)| !matches!(name.as_str(), "lastStandalone" | "renderMode"));
-    if query {
+    // Java also refuses when `getPathInfoParameterMap` is non-empty. `lastStandalone` and `renderMode` stay
+    // allowed on the query: screen links put them there for CSV, XLS, print, and text export.
+    if query || !inline_parameters.is_empty() {
         return Some(
             "Cannot run screen transition with actions with URL parameters; send them in the body of a form or declare the transition read-only",
         );

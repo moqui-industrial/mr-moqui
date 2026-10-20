@@ -29,8 +29,9 @@
 //    is not posted as name_ac.
 //  - A form-list with sub-list fields (aggregate="sub-list") draws them in a table under each main row, and its
 //    show-total row is the last row, with data-total. The saved finds and
-//    column dialogs post to the implicit formSaveFind and formSelectColumns transitions, with the form's name as
-//    formLocation (the server makes the full location of it).
+//    column dialogs post to the implicit formSaveFind and formSelectColumns transitions. Saved finds post
+//    sri.getSavedFindFullLocation (the form location, plus #entity or #service when the form is dynamic). The column
+//    dialog posts the form's name; the server strips a '#' and keeps columns on the bare location.
 //  - lookup is a text line. The Java macros had it commented out.
 //  - A show-pdf-button is a link to the html-print version of the page.
 (function (T, S) {
@@ -1020,7 +1021,7 @@
                         const id = find.formListFind.formListFindId;
                         const label = (find.description || id) + (id === defaultId ? " (" + L("Default") + ")" : "");
                         w("<li" + A({ "data-active": id === activeId ? "" : null }) + "><a" + A({ href: base + "?formListFindId=" + encodeURIComponent(id) }) + ">" + e(label) + "</a>" +
-                            "<form" + A({ method: "post", action: saveUrl }) + ">" + hiddenInput("moquiSessionToken", token()) + hiddenInput("formLocation", at(n, "name")) +
+                            "<form" + A({ method: "post", action: saveUrl }) + ">" + hiddenInput("moquiSessionToken", token()) + hiddenInput("formLocation", sri.getSavedFindFullLocation(at(n, "name"))) +
                             hiddenInput("formListFindId", id) + Object.keys(params).map((key) => hiddenInput(key, params[key])).join("") +
                             (find.isByUserId === "true" && Object.keys(params).length ? '<button type="submit" data-btn="default">' + e(L("Update to Current")) + "</button>" : "") +
                             (id === defaultId ? '<button type="submit" name="ClearDefault" value="Y" data-btn="default">' + e(L("Clear Default")) + "</button>"
@@ -1031,7 +1032,7 @@
                     w("</ul>");
                 }
                 if (Object.keys(params).length) {
-                    w("<form" + A({ id: formId + "_NewFind", method: "post", action: saveUrl }) + ">" + hiddenInput("moquiSessionToken", token()) + hiddenInput("formLocation", at(n, "name")) +
+                    w("<form" + A({ id: formId + "_NewFind", method: "post", action: saveUrl }) + ">" + hiddenInput("moquiSessionToken", token()) + hiddenInput("formLocation", sri.getSavedFindFullLocation(at(n, "name"))) +
                         Object.keys(params).map((key) => hiddenInput(key, params[key])).join("") +
                         "<input" + A({ type: "text", name: "_findDescription", size: 40, placeholder: L("Description"), "aria-label": L("Description") }) + "><button type=\"submit\" data-btn=\"primary\">" + e(L("Save New Find")) + "</button></form>");
                 } else w("<p>" + e(L("No find parameters, choose some to save a new find or update existing")) + "</p>");

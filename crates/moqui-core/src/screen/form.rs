@@ -484,11 +484,13 @@ fn assemble_node(
         merge_form_nodes(&assembled, &found, true, true);
     }
     let is_list = base.name() == "form-list";
+    // Attributes are copied onto `assembled` after the auto fields, so the form name is read from the source node.
+    let form_name = base.attribute("name").unwrap_or_default();
     for sub in base.children() {
         match sub.name().as_str() {
             "field" => {
                 let copy = sub.deep_copy();
-                expand_field_node(factory, &assembled, &copy)?;
+                expand_field_node(factory, &assembled, &copy, &form_name)?;
                 merge_field_node(&assembled, &copy, false);
             }
             "auto-fields-entity" => {
@@ -515,7 +517,7 @@ fn assemble_node(
                     .attribute("field-type")
                     .filter(|text| !text.is_empty())
                     .unwrap_or_else(|| "find-display".to_string());
-                let displayed = add_entity_fields(&shape, &include, &field_type, &excludes, &assembled);
+                let displayed = add_entity_fields(&shape, &include, &field_type, &excludes, &assembled, &form_name);
                 if is_list && sub.attribute("auto-columns").as_deref() != Some("false") {
                     column_info.push((entity_name, displayed));
                 }
@@ -544,10 +546,10 @@ fn assemble_node(
                         .attribute("include")
                         .filter(|text| !text.is_empty())
                         .unwrap_or_else(|| "in".to_string());
-                    add_service_fields(&service, &include, &field_type, &excludes, &assembled);
+                    add_service_fields(&service, &include, &field_type, &excludes, &assembled, &form_name);
                 } else if let Some(entity_name) = crate::service::call::entity_auto_noun(&service_name) {
                     let shape = entity_shape(&entity_name)?;
-                    let displayed = add_entity_fields(&shape, "all", &field_type, &[], &assembled);
+                    let displayed = add_entity_fields(&shape, "all", &field_type, &[], &assembled, &form_name);
                     if is_list {
                         column_info.push((entity_name, displayed));
                     }
@@ -735,7 +737,12 @@ fn add_field_to_layout(form: &MNode, field: &MNode) {
 }
 
 /// Replace `widget-template-include` and `auto-widget-entity` in the sub-nodes of a field.
-fn expand_field_node(factory: &ExecutionContextFactory, form: &MNode, field: &MNode) -> Result<(), Error> {
+fn expand_field_node(
+    factory: &ExecutionContextFactory,
+    form: &MNode,
+    field: &MNode,
+    form_name: &str,
+) -> Result<(), Error> {
     for sub in field.children() {
         if !matches!(
             sub.name().as_str(),
@@ -748,7 +755,7 @@ fn expand_field_node(factory: &ExecutionContextFactory, form: &MNode, field: &MN
         ) {
             continue;
         }
-        expand_field_sub_node(factory, form, field, &sub)?;
+        expand_field_sub_node(factory, form, field, &sub, form_name)?;
     }
     Ok(())
 }
@@ -758,6 +765,7 @@ fn expand_field_sub_node(
     form: &MNode,
     field: &MNode,
     sub: &MNode,
+    form_name: &str,
 ) -> Result<(), Error> {
     let Some(widget) = sub.first_child() else {
         return Ok(());
@@ -803,7 +811,7 @@ fn expand_field_sub_node(
                 .filter(|text| !text.is_empty())
                 .unwrap_or_else(|| "find-display".to_string());
             sub.clear_children();
-            add_auto_entity_field(&shape, &field_name, &field_type, field, Some(sub), form);
+            add_auto_entity_field(&shape, &field_name, &field_type, field, Some(sub), form, form_name);
         }
         "auto-widget-service" => {
             let service_name = widget.attribute("service-name").unwrap_or_default();
@@ -825,18 +833,18 @@ fn expand_field_sub_node(
                     .ok_or_else(|| {
                         Error::new(format!(
                             "Cound not find parameter [{parameter_name}] in service [{service_name}] referred to in auto-widget-service of form [{}]",
-                            form.attribute("name").unwrap_or_default()
+                            form_name
                         ))
                     })?;
                 let noun = entity_shape(&service.noun).ok();
-                add_auto_service_field(noun.as_deref(), parameter, &field_type, field, sub, form);
+                add_auto_service_field(noun.as_deref(), parameter, &field_type, field, sub, form, form_name);
             } else if let Some(entity_name) = crate::service::call::entity_auto_noun(&service_name) {
                 let shape = entity_shape(&entity_name)?;
-                add_auto_entity_field(&shape, &parameter_name, &field_type, field, Some(sub), form);
+                add_auto_entity_field(&shape, &parameter_name, &field_type, field, Some(sub), form, form_name);
             } else {
                 return Err(Error::new(format!(
                     "Cound not find service [{service_name}] or entity noun referred to in auto-widget-service of form [{}]",
-                    form.attribute("name").unwrap_or_default()
+                    form_name
                 )));
             }
         }
@@ -845,14 +853,28 @@ fn expand_field_sub_node(
     Ok(())
 }
 
+/// A type-`one` relationship with a single key that is not an auto-reverse. The first one for a field wins.
+pub(super) struct OneRelation {
+    /// The field on this entity.
+    field: String,
+    /// The related entity's full name.
+    related: String,
+    /// The key field on the related entity.
+    related_key: String,
+    /// The relationship `title`. Enumeration and StatusItem drop-downs filter by it.
+    title: Option<String>,
+}
+
 /// What the form builder needs of an entity definition.
 pub(super) struct EntityShape {
     pub full_name: String,
+    /// The entity name without its package, which `getPrettyName` splits.
+    pub entity_name: String,
     /// Name, type, and whether it is a primary key, in definition order.
     pub fields: Vec<(String, String, bool)>,
     pub pk_fields: Vec<String>,
-    /// Related `one` entities reached by a single key field: the field, the related entity, its key field.
-    pub one_relations: Vec<(String, String, String)>,
+    /// Related `one` entities reached by a single key field.
+    pub one_relations: Vec<OneRelation>,
     pub description_field: String,
     /// A view alias's `default-display`, by alias name.
     pub default_display: HashMap<String, bool>,
@@ -942,7 +964,12 @@ fn entity_shape_of(entity: &EntityDefinition) -> EntityShape {
             continue;
         }
         let (field, related_key) = relationship.key_pairs[0].clone();
-        one_relations.push((field, relationship.related.clone(), related_key));
+        one_relations.push(OneRelation {
+            field,
+            related: relationship.related.clone(),
+            related_key,
+            title: relationship.title.clone(),
+        });
     }
     let description_field = fields
         .iter()
@@ -963,6 +990,7 @@ fn entity_shape_of(entity: &EntityDefinition) -> EntityShape {
         .collect();
     EntityShape {
         full_name: entity.full_name.clone(),
+        entity_name: entity.entity_name.clone(),
         pk_fields: fields
             .iter()
             .filter(|(_, _, is_pk)| *is_pk)
@@ -982,6 +1010,7 @@ fn add_entity_fields(
     field_type: &str,
     excludes: &[String],
     form: &MNode,
+    form_name: &str,
 ) -> Vec<String> {
     let mut displayed = Vec::new();
     let want_pk = include == "all" || include == "pk";
@@ -1012,7 +1041,7 @@ fn add_entity_fields(
             sub.set_attribute("validate-field", name.clone());
             sub
         });
-        add_auto_entity_field(shape, name, field_type, &field, sub.as_ref(), form);
+        add_auto_entity_field(shape, name, field_type, &field, sub.as_ref(), form, form_name);
         merge_field_node(form, &field, false);
     }
     // As Java, a `pq-expression` alias with `default-display="true"` is a display field whatever `include`, the
@@ -1023,7 +1052,7 @@ fn add_entity_fields(
         let sub = field.append("default-field");
         sub.set_attribute("validate-entity", shape.full_name.clone());
         sub.set_attribute("validate-field", name.clone());
-        add_auto_entity_field(shape, name, "display", &field, Some(&sub), form);
+        add_auto_entity_field(shape, name, "display", &field, Some(&sub), form, form_name);
         merge_field_node(form, &field, false);
     }
     displayed
@@ -1036,13 +1065,14 @@ fn add_auto_entity_field(
     field: &MNode,
     sub: Option<&MNode>,
     form: &MNode,
+    form_name: &str,
 ) {
     let entity_type = shape
         .fields
         .iter()
         .find(|(name, _, _)| name == field_name)
         .map_or("text-long", |(_, field_type, _)| field_type.as_str());
-    let relation = shape.one_relations.iter().find(|(key, _, _)| key == field_name);
+    let relation = shape.one_relations.iter().find(|relation| relation.field == field_name);
     let is_list = form.name() == "form-list";
     let header = |order: &str| {
         if is_list && field.first_named("header-field").is_none() {
@@ -1050,69 +1080,83 @@ fn add_auto_entity_field(
             header.set_attribute("show-order-by", order);
         }
     };
-    let display_entity = |target: &MNode, relation: &(String, String, String)| {
+    let display_entity = |target: &MNode, relation: &OneRelation| {
         // The text is over the related entity's value, so it is that entity's description field (Java's
         // `getDefaultDescriptionField` of the related definition), not the form entity's.
-        let description = entity_shape(&relation.1)
+        let description = entity_shape(&relation.related)
             .map(|related| related.description_field.clone())
             .unwrap_or_default();
         let text = if description.is_empty() {
-            format!("[${{{}}}]", relation.2)
+            format!("[${{{}}}]", relation.related_key)
         } else {
-            format!("${{{description} || ''}} [${{{}}}]", relation.2)
+            format!("${{{description} || ''}} [${{{}}}]", relation.related_key)
         };
         let node = target.append("display-entity");
-        node.set_attribute("entity-name", relation.1.clone());
+        node.set_attribute("entity-name", relation.related.clone());
         node.set_attribute("text", text);
     };
     match field_type {
         "edit" => {
+            // lastUpdatedStamp stays hidden. The Edit link below still applies when it is also a relationship key.
             if field_name == "lastUpdatedStamp" {
                 if let Some(sub) = sub {
                     sub.append("hidden");
                 }
-                return;
-            }
-            header("true");
-            let Some(sub) = sub else { return };
-            if entity_type.starts_with("date") || entity_type.starts_with("time") {
-                let node = sub.append("date-time");
-                node.set_attribute("type", entity_type);
-            } else if matches!(entity_type, "text-long" | "text-very-long" | "text-fts") {
-                sub.append("text-area");
-            } else if entity_type == "text-indicator" {
-                let drop = sub.append("drop-down");
-                drop.set_attribute("allow-empty", "true");
-                drop.append("option").set_attribute("key", "Y");
-                drop.append("option").set_attribute("key", "N");
-            } else if entity_type == "binary-very-long" {
-                sub.append("display");
             } else {
-                let size = if entity_type.starts_with("number-") || entity_type.starts_with("currency-") {
-                    "10"
-                } else {
-                    "30"
-                };
-                sub.append("text-line").set_attribute("size", size);
+                header("true");
+                if let Some(sub) = sub {
+                    if entity_type.starts_with("date") || entity_type.starts_with("time") {
+                        let node = sub.append("date-time");
+                        node.set_attribute("type", entity_type);
+                        if field_name == "fromDate" {
+                            node.set_attribute(
+                                "default-value",
+                                "${ec.l10n.format(ec.user.nowTimestamp, 'yyyy-MM-dd HH:mm')}",
+                            );
+                        }
+                    } else if matches!(entity_type, "text-long" | "text-very-long" | "text-fts") {
+                        sub.append("text-area");
+                    } else if entity_type == "text-indicator" {
+                        let drop = sub.append("drop-down");
+                        drop.set_attribute("allow-empty", "true");
+                        drop.append("option").set_attribute("key", "Y");
+                        drop.append("option").set_attribute("key", "N");
+                    } else if entity_type == "binary-very-long" {
+                        sub.append("display");
+                    } else if let Some(relation) = relation {
+                        add_entity_field_drop_down(relation, sub);
+                    } else {
+                        let size = if entity_type.starts_with("number-") || entity_type.starts_with("currency-") {
+                            "10"
+                        } else {
+                            "30"
+                        };
+                        sub.append("text-line").set_attribute("size", size);
+                    }
+                }
             }
         }
         "find" => {
             header("case-insensitive");
-            let Some(sub) = sub else { return };
-            if entity_type.starts_with("date") || entity_type.starts_with("time") {
-                sub.append("date-find").set_attribute("type", entity_type);
-            } else if entity_type.starts_with("number-") || entity_type.starts_with("currency-") {
-                sub.append("range-find");
-            } else {
-                sub.append("text-find");
+            if let Some(sub) = sub {
+                if entity_type.starts_with("date") || entity_type.starts_with("time") {
+                    sub.append("date-find").set_attribute("type", entity_type);
+                } else if entity_type.starts_with("number-") || entity_type.starts_with("currency-") {
+                    sub.append("range-find");
+                } else if let Some(relation) = relation {
+                    add_entity_field_drop_down(relation, sub);
+                } else {
+                    sub.append("text-find");
+                }
             }
         }
         "display" => {
             header("case-insensitive");
-            let Some(sub) = sub else { return };
-            match relation {
-                Some(relation) => display_entity(sub, relation),
-                None => display_with_format(sub, entity_type),
+            if let Some(sub) = sub {
+                match relation {
+                    Some(relation) => display_entity(sub, relation),
+                    None => display_with_format(sub, entity_type),
+                }
             }
         }
         "find-display" => {
@@ -1128,16 +1172,19 @@ fn add_auto_entity_field(
                 header_field.append("range-find").set_attribute("size", "10");
                 field.set_attribute("align", "right");
                 field.set_attribute("show-total", "sum");
+            } else if let Some(relation) = relation {
+                add_entity_field_drop_down(relation, &header_field);
             } else {
                 let find = header_field.append("text-find");
                 find.set_attribute("size", "30");
                 find.set_attribute("default-operator", "begins");
                 find.set_attribute("ignore-case", "false");
             }
-            let Some(sub) = sub else { return };
-            match relation {
-                Some(relation) => display_entity(sub, relation),
-                None => display_with_format(sub, entity_type),
+            if let Some(sub) = sub {
+                match relation {
+                    Some(relation) => display_entity(sub, relation),
+                    None => display_with_format(sub, entity_type),
+                }
             }
         }
         "hidden" => {
@@ -1147,6 +1194,107 @@ fn add_auto_entity_field(
         }
         _ => {}
     }
+    if form_name == "UpdateMasterEntityValue" {
+        if let (Some(relation), Some(sub)) = (relation, sub) {
+            add_master_edit_link(relation, sub);
+        }
+    }
+}
+
+/// `addEntityFieldDropDown`: a related entity with 1 to 200 rows is a drop-down, and any other count is a text line
+/// with no size. Enumeration and StatusItem are counted only for the relationship title.
+fn add_entity_field_drop_down(relation: &OneRelation, sub: &MNode) {
+    let Ok(related) = entity_shape(&relation.related) else {
+        sub.append("text-line");
+        return;
+    };
+    let condition_field = match related.full_name.as_str() {
+        "moqui.basic.Enumeration" => Some("enumTypeId"),
+        "moqui.basic.StatusItem" => Some("statusTypeId"),
+        _ => None,
+    };
+    let count = related_record_count(&related.full_name, condition_field, relation.title.as_deref());
+    let count = match count {
+        Ok(count) => count,
+        Err(err) => {
+            tracing::error!(
+                entity = %related.full_name,
+                field = %relation.field,
+                "auto field drop-down count failed, using a text line: {err}"
+            );
+            sub.append("text-line");
+            return;
+        }
+    };
+    if !(1..=200).contains(&count) {
+        sub.append("text-line");
+        return;
+    }
+    let drop = sub.append("drop-down");
+    drop.set_attribute("allow-empty", "true");
+    drop.set_attribute("style", "");
+    let options = drop.append("entity-options");
+    let find = options.append("entity-find");
+    find.set_attribute("entity-name", related.full_name.clone());
+    find.set_attribute("offset", "0");
+    find.set_attribute("limit", "200");
+    if let Some(field) = condition_field {
+        let condition = find.append("econdition");
+        condition.set_attribute("field-name", field);
+        condition.set_attribute("value", relation.title.clone().unwrap_or_default());
+    }
+    if !related.description_field.is_empty() {
+        // Java writes Groovy `?:`. Option text is expanded as JavaScript, so this is `||`, the same
+        // substitution `display-entity` already uses.
+        options.set_attribute(
+            "text",
+            format!(
+                "${{{} || ''}} [${{{}}}]",
+                related.description_field, relation.related_key
+            ),
+        );
+        let order = find.append("order-by");
+        order.set_attribute("field-name", related.description_field.clone());
+    }
+}
+
+/// Count rows with authorization off and without forcing the cache, so the entity's own cache flag applies.
+fn related_record_count(entity_name: &str, field: Option<&str>, title: Option<&str>) -> Result<i64, Error> {
+    ExecutionContext::with_current(|ec| {
+        let facade = ec
+            .factory()
+            .entity()
+            .ok_or_else(|| Error::new("no entity facade is installed"))?;
+        let mut find = facade.find(entity_name).map_err(Error::from)?.disable_authz();
+        if let Some(field) = field {
+            let value = match title {
+                Some(title) => Value::string(title),
+                None => Value::Null,
+            };
+            find = find.eq(field, value);
+        }
+        find.count().map_err(Error::from)
+    })
+    .unwrap_or_else(|| Err(Error::new("no execution context is entered")))
+}
+
+/// The Edit link Java adds on `UpdateMasterEntityValue` for a field that points at one related entity.
+fn add_master_edit_link(relation: &OneRelation, sub: &MNode) {
+    let Ok(related) = entity_shape(&relation.related) else {
+        return;
+    };
+    let pretty = crate::entity::info::pretty_name(&related.entity_name, None, None);
+    let link = sub.append("link");
+    link.set_attribute("url", "edit");
+    link.set_attribute("text", format!("Edit {pretty} [${{fieldValues.{}}}]", relation.field));
+    link.set_attribute("condition", relation.field.clone());
+    link.set_attribute("link-type", "anchor");
+    let entity = link.append("parameter");
+    entity.set_attribute("name", "aen");
+    entity.set_attribute("value", relation.related.clone());
+    let key = link.append("parameter");
+    key.set_attribute("name", relation.related_key.clone());
+    key.set_attribute("from", format!("fieldValues.{}", relation.field));
 }
 
 /// `setSubFieldValidateAttrs`: when the form's transition calls one service, each field that is one of its in-parameters
@@ -1192,6 +1340,7 @@ fn add_service_fields(
     field_type: &str,
     excludes: &[String],
     form: &MNode,
+    form_name: &str,
 ) {
     let noun = entity_shape(&service.noun).ok();
     let mut parameters: Vec<&crate::service::define::ParamDef> = Vec::new();
@@ -1210,7 +1359,7 @@ fn add_service_fields(
         let sub = field.append("default-field");
         sub.set_attribute("validate-service", service.name.clone());
         sub.set_attribute("validate-parameter", parameter.name.clone());
-        add_auto_service_field(noun.as_deref(), parameter, field_type, &field, &sub, form);
+        add_auto_service_field(noun.as_deref(), parameter, field_type, &field, &sub, form, form_name);
         merge_field_node(form, &field, false);
     }
 }
@@ -1223,6 +1372,7 @@ fn add_auto_service_field(
     field: &MNode,
     sub: &MNode,
     form: &MNode,
+    form_name: &str,
 ) {
     let own = parameter
         .entity_name
@@ -1232,7 +1382,7 @@ fn add_auto_service_field(
     let field_name = parameter.field_name.clone().unwrap_or_else(|| parameter.name.clone());
     if let Some(shape) = shape {
         if shape.fields.iter().any(|(name, _, _)| *name == field_name) {
-            add_auto_entity_field(shape, &field_name, field_type, field, Some(sub), form);
+            add_auto_entity_field(shape, &field_name, field_type, field, Some(sub), form, form_name);
             return;
         }
     }
@@ -1506,7 +1656,7 @@ mod tests {
         let shape = read_entity_shape(&model, "t.ItemView").unwrap();
         assert_eq!(shape.pk_fields, ["itemId"]);
         let form = parse(r#"<form-list name="L" list="items"/>"#);
-        let shown = add_entity_fields(&shape, "all", "display", &[], &form);
+        let shown = add_entity_fields(&shape, "all", "display", &[], &form, "L");
         assert_eq!(shown, ["itemId", "note", "code"]);
         let field = |name: &str| {
             form.children_named("field")
@@ -1543,7 +1693,7 @@ mod tests {
         let shape = read_entity_shape(&model, "t.ItemView").unwrap();
         assert_eq!(shape.pq_display, ["label"]);
         let form = parse(r#"<form-single name="S"/>"#);
-        let shown = add_entity_fields(&shape, "pk", "edit", &["label".to_string()], &form);
+        let shown = add_entity_fields(&shape, "pk", "edit", &["label".to_string()], &form, "S");
         assert_eq!(shown, ["itemId"]);
         let names: Vec<String> = form
             .children_named("field")
@@ -1598,7 +1748,7 @@ mod tests {
         assert_eq!(shape.full_name, "DataDocument.FormDoc");
         assert_eq!(shape.pq_display, ["shout"]);
         let form = parse(r#"<form-list name="L"/>"#);
-        let shown = add_entity_fields(&shape, "all", "display", &[], &form);
+        let shown = add_entity_fields(&shape, "all", "display", &[], &form, "L");
         assert_eq!(shown, ["enumId", "description"]);
         let fields = form.children_named("field");
         let names: Vec<String> = fields.iter().filter_map(|field| field.attribute("name")).collect();

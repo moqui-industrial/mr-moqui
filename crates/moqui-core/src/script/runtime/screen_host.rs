@@ -613,6 +613,14 @@ fn sri_get_form_instance<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<O
     })
 }
 
+/// `sri.getSavedFindFullLocation(formName)`: `{screen}.form_list${name}`, plus `#entity` or `#service` when dynamic.
+fn sri_get_saved_find_full_location<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
+    host_guard(&ctx, || {
+        let location = with_render(&ctx, false, |state| logic::saved_find_full_location(state, &name))?;
+        host_to_js(&ctx, Value::String(location))
+    })
+}
+
 /// `sri.getUserFormListFinds(formName)`: the saved finds of the user and the user's groups for a form of the screen.
 fn sri_get_user_form_list_finds<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
@@ -1037,6 +1045,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getFormNode", sri_get_form_node);
     method!("getFormInstance", sri_get_form_instance);
     method!("getFormHiddenParameters", sri_get_form_hidden_parameters);
+    method!("getSavedFindFullLocation", sri_get_saved_find_full_location);
     method!("getUserFormListFinds", sri_get_user_form_list_finds);
     method!("getUserDefaultFormListFindId", sri_get_user_default_form_list_find_id);
     method!("appendToAfterScreenWriter", sri_append_to_after_screen_writer);

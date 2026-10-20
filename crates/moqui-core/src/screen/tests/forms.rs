@@ -552,6 +552,8 @@ fn a_form_builds_its_fields_from_a_service() {
     );
     // a date find from auto-widget-service
     assert!(html.contains("name=\"when_from\""), "{html}");
+    // `when` is a service timestamp, not an entity field named fromDate, so it has no auto default.
+    assert!(!html.contains("ec.user.nowTimestamp"), "{html}");
     // qvt checks the Integer parameter as a whole number, from getFieldValidationJsRules
     let mut get = request("GET", "/");
     get.query.push(("renderMode".into(), "qvt".into()));
@@ -712,6 +714,111 @@ fn an_aggregated_form_list_groups_rows_with_sub_rows_and_totals() {
     assert_eq!(qvt.matches("tr sub-header").count(), 1, "{qvt}");
     assert!(qvt.matches("tr sub-rows").count() > 1, "{qvt}");
     super::qvt::assert_compiles(&["aggregate".to_string()], &[qvt]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A rendered form-list records `_formListRendered` and adds its row count on the shared map, after aggregation.
+/// `noResultsAbort` reads those with property access: a count of 0 aborts, and a missing rendered flag does not.
+#[test]
+fn a_rendered_form_list_counts_its_rows_on_the_shared_map() {
+    use indexmap::IndexMap;
+    use moqui_lib::object::Value;
+
+    let dir = std::env::temp_dir().join(format!("moqui-forms-list-count-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let lists = dir.join("Lists.xml");
+    std::fs::write(
+        &lists,
+        r#"<screen require-authentication="false">
+    <actions><script><![CDATA[
+        none = []
+        two = [{id:'a'},{id:'b'}]
+        four = [{id:'c'},{id:'d'},{id:'e'},{id:'f'}]
+    ]]></script></actions>
+    <widgets>
+        <form-list name="None" list="none"><field name="id"><default-field><display/></default-field></field></form-list>
+        <form-list name="Two" list="two"><field name="id"><default-field><display/></default-field></field></form-list>
+        <form-list name="Four" list="four"><field name="id"><default-field><display/></default-field></field></form-list>
+    </widgets></screen>"#,
+    )
+    .unwrap();
+    let empty = dir.join("Empty.xml");
+    std::fs::write(
+        &empty,
+        r#"<screen require-authentication="false">
+    <actions><script>none = []</script></actions>
+    <widgets>
+        <form-list name="None" list="none"><field name="id"><default-field><display/></default-field></field></form-list>
+    </widgets></screen>"#,
+    )
+    .unwrap();
+    let groups = dir.join("Groups.xml");
+    std::fs::write(
+        &groups,
+        r#"<screen require-authentication="false">
+    <actions><script>lines = [{party:'Acme', amount:2}, {party:'Zed', amount:5}, {party:'Acme', amount:3}]</script></actions>
+    <widgets>
+        <form-list name="Groups" list="lines">
+            <field name="party" aggregate="group-by"><default-field><display/></default-field></field>
+            <field name="amount" aggregate="sum"><default-field><display/></default-field></field>
+        </form-list>
+    </widgets></screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    let render = |path: &str| {
+        let ctx = world.factory.new_context();
+        let _entered = ctx.enter();
+        let page = serve_at(&world.factory, request("GET", "/"), path);
+        assert_eq!(page.status, 200, "{}", page.body_text());
+        let shared = ctx.shared_map();
+        (
+            shared.get("_formListRendered").cloned(),
+            shared.get("_formListResultCount").cloned(),
+        )
+    };
+    assert_eq!(
+        render(&empty.to_string_lossy()),
+        (Some(Value::Bool(true)), Some(Value::I64(0)))
+    );
+    assert_eq!(
+        render(&lists.to_string_lossy()),
+        (Some(Value::Bool(true)), Some(Value::I64(6)))
+    );
+    // Three source rows in two groups. The count is the rows after aggregation.
+    assert_eq!(
+        render(&groups.to_string_lossy()),
+        (Some(Value::Bool(true)), Some(Value::I64(2)))
+    );
+
+    let ctx = world.factory.new_context();
+    let _entered = ctx.enter();
+    let _ = serve_at(&world.factory, request("GET", "/"), &lists.to_string_lossy());
+    // A bare name does not see the shared map.
+    assert!(!crate::script::eval_condition("_formListRendered").unwrap());
+    assert!(crate::script::eval_condition("ec.context.sharedMap._formListRendered").unwrap());
+    let send = "attachmentInfo != null && (screenScheduled.noResultsAbort != 'Y' || !ec.context.sharedMap._formListRendered || ec.context.sharedMap._formListResultCount)";
+    let mut scheduled = IndexMap::new();
+    scheduled.insert("noResultsAbort".into(), Value::string("Y"));
+    crate::script::set_context_name("screenScheduled", Value::Map(scheduled)).unwrap();
+    crate::script::set_context_name("attachmentInfo", Value::Map(IndexMap::new())).unwrap();
+    assert!(crate::script::eval_condition(send).unwrap(), "a count of 6 still sends");
+    ctx.shared_map().insert("_formListResultCount".into(), Value::I64(0));
+    assert!(!crate::script::eval_condition(send).unwrap(), "a count of 0 aborts");
+    ctx.shared_map().shift_remove("_formListRendered");
+    assert!(
+        crate::script::eval_condition(send).unwrap(),
+        "no rendered flag does not abort"
+    );
+    ctx.shared_map().insert("_formListRendered".into(), Value::Bool(true));
+    let mut allow = IndexMap::new();
+    allow.insert("noResultsAbort".into(), Value::string("N"));
+    crate::script::set_context_name("screenScheduled", Value::Map(allow)).unwrap();
+    assert!(
+        crate::script::eval_condition(send).unwrap(),
+        "noResultsAbort other than Y sends"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1060,5 +1167,262 @@ fn a_refused_transitions_errors_carry_no_rust_source_location() {
         assert!(!text.contains("crates/") && !text.contains("Rust:"), "{path}: {text}");
         assert!(!text.contains(".rs:"), "{path}: {text}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An auto foreign key with 1 to 200 related rows is a drop-down. `fromDate` on an edit defaults to now.
+/// Zero rows and more than 200 are a text line with no size. Display stays `display-entity`.
+#[test]
+fn an_auto_foreign_key_is_a_drop_down_and_from_date_defaults_to_now() {
+    use moqui_lib::node::MNode;
+    use moqui_lib::object::Value;
+
+    let dir = std::env::temp_dir().join(format!("moqui-forms-auto-fk-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let services = dir.join("AutoServices.xml");
+    std::fs::write(
+        &services,
+        r#"<services>
+    <service verb="save" noun="Source" authenticate="false">
+        <in-parameters>
+            <parameter name="dataSourceTypeEnumId" entity-name="moqui.basic.DataSource"/>
+            <parameter name="when" type="Timestamp"/>
+            <parameter name="memberFrom" type="Timestamp" entity-name="moqui.security.UserGroupMember" field-name="fromDate"/>
+        </in-parameters>
+    </service>
+</services>"#,
+    )
+    .unwrap();
+    let widget = |field: &str, entity: &str, kind: &str| {
+        format!(
+            r#"<field name="{field}"><default-field><auto-widget-entity entity-name="{entity}" field-type="{kind}"/></default-field></field>"#
+        )
+    };
+    let screen = format!(
+        r#"<screen require-authentication="false"><widgets>
+        <form-single name="MemberEdit"><auto-fields-entity entity-name="moqui.security.UserGroupMember" field-type="edit"/></form-single>
+        <form-single name="MemberFind"><auto-fields-entity entity-name="moqui.security.UserGroupMember" field-type="find"/></form-single>
+        <form-single name="EnumDisplay">{display}</form-single>
+        <form-single name="EnumEdit">{edit}{indicator}</form-single>
+        <form-single name="EnumFind">{find}</form-single>
+        <form-list name="EnumHeader" list="rows">{header}</form-list>
+        <form-single name="UpdateMasterEntityValue">{edit}</form-single>
+        <form-single name="PlainEdit">{edit}</form-single>
+        <form-single name="SourceEdit">{source}</form-single>
+        <form-single name="ManyTypes">{edit}</form-single>
+        <form-single name="Run"><auto-fields-service service-name="save#Source" field-type="edit"/></form-single>
+    </widgets></screen>"#,
+        display = widget("enumTypeId", "moqui.basic.Enumeration", "display"),
+        edit = widget("enumTypeId", "moqui.basic.Enumeration", "edit"),
+        indicator = widget("optionIndicator", "moqui.basic.Enumeration", "edit"),
+        find = widget("enumTypeId", "moqui.basic.Enumeration", "find"),
+        header = widget("enumTypeId", "moqui.basic.Enumeration", "find-display"),
+        source = widget("dataSourceTypeEnumId", "moqui.basic.DataSource", "edit"),
+    );
+    std::fs::write(dir.join("Auto.xml"), screen).unwrap();
+    let root = dir.join("Auto.xml").to_string_lossy().into_owned();
+    let world = World::open("");
+    let ctx = world.factory.new_context();
+    let _entered = ctx.enter();
+    let failures = crate::service::lint(std::slice::from_ref(&services)).unwrap();
+    assert!(failures.is_empty(), "{failures:?}");
+
+    let assembled = |name: &str| {
+        let facade = crate::screen::ScreenFacade::of(&world.factory);
+        let def = facade.screen_def(&world.factory, &root).unwrap();
+        let form = crate::screen::form::assemble(&facade, &world.factory, &def, name).unwrap();
+        MNode::parse_text(name, &form.xml).unwrap()
+    };
+    let field_of = |form: &MNode, name: &str| {
+        form.children_named("field")
+            .into_iter()
+            .find(|field| field.attribute("name").as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("{name} in {}", form.write_string()))
+    };
+    let sub_of = |form: &MNode, name: &str, sub: &str| {
+        field_of(form, name)
+            .first_named(sub)
+            .unwrap_or_else(|| panic!("{sub} of {name} in {}", form.write_string()))
+    };
+
+    let member = assembled("MemberEdit");
+    let group = sub_of(&member, "userGroupId", "default-field");
+    let line = group.first_named("text-line").expect("no related rows is a text line");
+    assert!(line.attribute("size").is_none(), "{}", line.write_string());
+    assert!(group.first_named("drop-down").is_none());
+    let from = sub_of(&member, "fromDate", "default-field")
+        .first_named("date-time")
+        .unwrap();
+    assert_eq!(
+        from.attribute("default-value").as_deref(),
+        Some("${ec.l10n.format(ec.user.nowTimestamp, 'yyyy-MM-dd HH:mm')}")
+    );
+    let thru = sub_of(&member, "thruDate", "default-field")
+        .first_named("date-time")
+        .unwrap();
+    assert!(thru.attribute("default-value").is_none(), "{}", thru.write_string());
+    let member_find = assembled("MemberFind");
+    let found = sub_of(&member_find, "fromDate", "default-field")
+        .first_named("date-find")
+        .unwrap();
+    assert!(found.attribute("default-value").is_none(), "{}", found.write_string());
+
+    let insert = |entity: &str, pairs: &[(&str, &str)]| {
+        let mut row = world.facade.make_value(entity).unwrap();
+        for (name, value) in pairs {
+            row.set(*name, Value::string(*value));
+        }
+        row.create(&world.facade).unwrap();
+    };
+    for index in 1..=2 {
+        insert(
+            "moqui.basic.EnumerationType",
+            &[("enumTypeId", &format!("T{index}")), ("description", "Type")],
+        );
+    }
+    let edited = assembled("EnumEdit");
+    let drop = sub_of(&edited, "enumTypeId", "default-field")
+        .first_named("drop-down")
+        .expect("1 to 200 related rows is a drop-down");
+    assert_eq!(drop.attribute("allow-empty").as_deref(), Some("true"));
+    let options = drop.first_named("entity-options").unwrap();
+    assert_eq!(
+        options.attribute("text").as_deref(),
+        Some("${description || ''} [${enumTypeId}]")
+    );
+    let find = options.first_named("entity-find").unwrap();
+    assert_eq!(
+        find.attribute("entity-name").as_deref(),
+        Some("moqui.basic.EnumerationType")
+    );
+    assert_eq!(find.attribute("limit").as_deref(), Some("200"));
+    assert_eq!(
+        find.first_named("order-by").unwrap().attribute("field-name").as_deref(),
+        Some("description")
+    );
+    let indicator = sub_of(&edited, "optionIndicator", "default-field")
+        .first_named("drop-down")
+        .unwrap();
+    let keys: Vec<String> = indicator
+        .children_named("option")
+        .iter()
+        .filter_map(|option| option.attribute("key"))
+        .collect();
+    assert_eq!(keys, ["Y", "N"]);
+    assert!(indicator.first_named("entity-options").is_none());
+
+    let find_form = assembled("EnumFind");
+    assert!(sub_of(&find_form, "enumTypeId", "default-field")
+        .first_named("drop-down")
+        .is_some());
+    let header = assembled("EnumHeader");
+    assert!(sub_of(&header, "enumTypeId", "header-field")
+        .first_named("drop-down")
+        .is_some());
+    assert!(sub_of(&header, "enumTypeId", "default-field")
+        .first_named("display-entity")
+        .is_some());
+    let display = assembled("EnumDisplay");
+    assert!(sub_of(&display, "enumTypeId", "default-field")
+        .first_named("display-entity")
+        .is_some());
+    assert!(sub_of(&display, "enumTypeId", "default-field")
+        .first_named("drop-down")
+        .is_none());
+
+    let master = assembled("UpdateMasterEntityValue");
+    let link = sub_of(&master, "enumTypeId", "default-field")
+        .first_named("link")
+        .expect("UpdateMasterEntityValue adds an edit link");
+    assert_eq!(link.attribute("url").as_deref(), Some("edit"));
+    assert_eq!(
+        link.attribute("text").as_deref(),
+        Some("Edit Enumeration Type [${fieldValues.enumTypeId}]")
+    );
+    assert_eq!(link.attribute("condition").as_deref(), Some("enumTypeId"));
+    assert_eq!(link.attribute("link-type").as_deref(), Some("anchor"));
+    let parameters = link.children_named("parameter");
+    assert_eq!(parameters[0].attribute("name").as_deref(), Some("aen"));
+    assert_eq!(
+        parameters[0].attribute("value").as_deref(),
+        Some("moqui.basic.EnumerationType")
+    );
+    assert_eq!(parameters[1].attribute("name").as_deref(), Some("enumTypeId"));
+    assert_eq!(
+        parameters[1].attribute("from").as_deref(),
+        Some("fieldValues.enumTypeId")
+    );
+    assert!(sub_of(&assembled("PlainEdit"), "enumTypeId", "default-field")
+        .first_named("link")
+        .is_none());
+
+    for index in 0..201 {
+        insert(
+            "moqui.basic.Enumeration",
+            &[
+                ("enumId", &format!("Other{index}")),
+                ("enumTypeId", "OtherType"),
+                ("description", "Other"),
+            ],
+        );
+    }
+    insert(
+        "moqui.basic.Enumeration",
+        &[
+            ("enumId", "Wanted"),
+            ("enumTypeId", "DataSourceType"),
+            ("description", "Wanted"),
+        ],
+    );
+    let source = assembled("SourceEdit");
+    let source_drop = sub_of(&source, "dataSourceTypeEnumId", "default-field")
+        .first_named("drop-down")
+        .expect("the title filter keeps the count inside 1..=200");
+    let source_find = source_drop
+        .first_named("entity-options")
+        .unwrap()
+        .first_named("entity-find")
+        .unwrap();
+    let condition = source_find.first_named("econdition").unwrap();
+    assert_eq!(condition.attribute("field-name").as_deref(), Some("enumTypeId"));
+    assert_eq!(condition.attribute("value").as_deref(), Some("DataSourceType"));
+    assert_eq!(
+        source_find.attribute("entity-name").as_deref(),
+        Some("moqui.basic.Enumeration")
+    );
+
+    for index in 3..=201 {
+        insert(
+            "moqui.basic.EnumerationType",
+            &[("enumTypeId", &format!("T{index}")), ("description", "Type")],
+        );
+    }
+    let many = assembled("ManyTypes");
+    let many_line = sub_of(&many, "enumTypeId", "default-field")
+        .first_named("text-line")
+        .expect("more than 200 related rows is a text line");
+    assert!(many_line.attribute("size").is_none(), "{}", many_line.write_string());
+    assert!(sub_of(&many, "enumTypeId", "default-field")
+        .first_named("drop-down")
+        .is_none());
+
+    let run = assembled("Run");
+    assert!(sub_of(&run, "dataSourceTypeEnumId", "default-field")
+        .first_named("drop-down")
+        .is_some());
+    assert!(sub_of(&run, "when", "default-field")
+        .first_named("date-time")
+        .unwrap()
+        .attribute("default-value")
+        .is_none());
+    assert_eq!(
+        sub_of(&run, "memberFrom", "default-field")
+            .first_named("date-time")
+            .unwrap()
+            .attribute("default-value")
+            .as_deref(),
+        Some("${ec.l10n.format(ec.user.nowTimestamp, 'yyyy-MM-dd HH:mm')}")
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

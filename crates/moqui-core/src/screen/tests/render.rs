@@ -1151,17 +1151,49 @@ fn a_transition_link_carries_its_service_keys_and_a_failed_condition_disables_it
 #[test]
 fn a_transition_that_writes_refuses_parameters_in_the_url() {
     let world = World::open("");
+    let root = fixture_root();
     let mut posted = request("POST", "/okTx");
     posted.query.push(("x".to_string(), "1".to_string()));
-    let response = serve_at(&world.factory, posted, &fixture_root());
+    let response = serve_at(&world.factory, posted, &root);
     assert_eq!(response.status, 400, "{}", response.body_text());
     assert!(
         response.body_text().contains("URL parameters"),
         "{}",
         response.body_text()
     );
-    // A read-only transition takes them.
+    // A `~name=value` segment is a URL parameter too. The action does not run, so this is not the redirect to Sub.
+    for method in ["GET", "POST"] {
+        let response = serve_at(&world.factory, request(method, "/okTx/~orderId=1"), &root);
+        assert_eq!(response.status, 400, "{method} {}", response.body_text());
+        assert!(
+            response.body_text().contains("URL parameters"),
+            "{method} {}",
+            response.body_text()
+        );
+        assert!(response.header("Location").is_none(), "{method}");
+    }
+    // A path-parameter extra path is not a `~name=value` parameter.
+    let by_id = serve_at(&world.factory, request("GET", "/byId/7"), &root);
+    assert_eq!(by_id.status, 200, "{}", by_id.body_text());
+    assert!(by_id.body_text().contains("\"id\" : \"7\""), "{}", by_id.body_text());
+    // A read-only transition with actions still takes a tilde parameter.
+    let read_tilde = serve_at(&world.factory, request("GET", "/readTx/~orderId=1"), &root);
+    assert_eq!(read_tilde.status, 302, "{}", read_tilde.body_text());
+    assert_eq!(location_of_response(&read_tilde).as_deref(), Some("/Sub"));
+    // A read-only transition takes a query parameter.
     let mut read = request("GET", "/goUrl");
     read.query.push(("x".to_string(), "1".to_string()));
-    assert_eq!(serve_at(&world.factory, read, &fixture_root()).status, 302);
+    assert_eq!(serve_at(&world.factory, read, &root).status, 302);
+    // CSV, XLS, print, and text-export links put these two names on the query. Any other name is still refused.
+    let mut allowed = request("GET", "/okTx");
+    allowed.query.push(("lastStandalone".to_string(), "1".to_string()));
+    allowed.query.push(("renderMode".to_string(), "csv".to_string()));
+    let allowed = serve_at(&world.factory, allowed, &root);
+    assert_eq!(allowed.status, 302, "{}", allowed.body_text());
+    assert_eq!(location_of_response(&allowed).as_deref(), Some("/Sub"));
+    let mut mixed = request("GET", "/okTx");
+    mixed.query.push(("lastStandalone".to_string(), "1".to_string()));
+    mixed.query.push(("x".to_string(), "1".to_string()));
+    let mixed = serve_at(&world.factory, mixed, &root);
+    assert_eq!(mixed.status, 400, "{}", mixed.body_text());
 }

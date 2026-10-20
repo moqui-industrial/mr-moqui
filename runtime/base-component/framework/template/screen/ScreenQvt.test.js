@@ -22,6 +22,7 @@ function renderList({ saved = true, header = true, denied = false, hideNav = fal
             getScreenUrlInstance: url, getCurrentScreenUrl: url,
             getFormHiddenParameters: () => hidden, getFormListHeaderValues: () => ({}),
             getUserFormListFinds: () => finds, getUserDefaultFormListFindId: () => '',
+            getSavedFindFullLocation: (name) => '/qapps/FindPayment.xml.form_list$' + name,
             pushSingleFormMapContext() {}, popContext() {}, safeCloseList() {}
         },
         ec: {
@@ -138,6 +139,7 @@ test('saved finds have a separate named dialog, not inside Find Options', () => 
     assert.ok(saved);
     assert.match(saved, /icon="find_in_page" label="Saved Finds"/);
     assert.match(saved, /label="Save New Find"/);
+    assert.match(saved, /\/qapps\/FindPayment\.xml\.form_list\$PaymentList/);
     const find = dialog(html, 'PaymentList_hdialog');
     assert.match(find, /label="Find Options"/);
     assert.match(find, /label="Clear Parameters"/);

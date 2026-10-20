@@ -22,10 +22,12 @@
 //! - the columns of a form-list from the active saved find's `FormConfig`, else the user's, else a group's.
 //!
 //! A form location is Java's: the screen location, `.form_list$` or `.form_single$`, and the form name, so saved finds
-//! and column configurations written by the Java framework still apply. A posted `formLocation` that is only a form
-//! name (what the macros send) is taken as a form of the screen the transition is on.
+//! and column configurations written by the Java framework still apply. A dynamic form's saved finds also take `#`
+//! and the entity or service. A posted `formLocation` that is only a form name (what the column dialog sends) is
+//! taken as a form of the screen the transition is on.
 
 use indexmap::IndexMap;
+use moqui_lib::node::MNode;
 use moqui_lib::object::Value;
 
 use crate::context::{Error, ExecutionContext};
@@ -108,18 +110,57 @@ pub(crate) fn form_location(screen_location: &str, list: bool, form_name: &str) 
     )
 }
 
-/// The location a dynamic form's saved finds are kept under: the form location and the context's `formLocationExtension`,
-/// as `getSavedFindFullLocation`.
-pub(crate) fn saved_find_location(location: &str, dynamic: bool) -> String {
-    let extension = if dynamic {
-        context_text("formLocationExtension")
-    } else {
-        String::new()
-    };
+/// The location a dynamic form's saved finds are kept under, as `getSavedFindFullLocation`.
+///
+/// `form` is the source form: assembly consumes `auto-fields-service` and `auto-fields-entity`. The extension is the
+/// context's `formLocationExtension`, else the first auto service name, else the first auto entity name. That is
+/// Java's order. The assembler prefers the expanded name and falls back to the context; this key does not. Blank and
+/// the literal `null` are missing, as the assembler treats them.
+pub(crate) fn saved_find_location(location: &str, dynamic: bool, form: &MNode) -> String {
+    if !dynamic {
+        return location.to_string();
+    }
+    let extension = form_location_extension(form);
     if extension.is_empty() {
         location.to_string()
     } else {
         format!("{location}#{extension}")
+    }
+}
+
+/// The `#` suffix of a dynamic saved find. Empty when none of the three sources has one.
+fn form_location_extension(form: &MNode) -> String {
+    if let Some(text) = present_extension(context_text("formLocationExtension")) {
+        return text;
+    }
+    for (element, attribute) in [
+        ("auto-fields-service", "service-name"),
+        ("auto-fields-entity", "entity-name"),
+    ] {
+        let Some(node) = form.first_named(element) else {
+            continue;
+        };
+        let raw = node.attribute(attribute).unwrap_or_default();
+        let expanded = match script::expand(&raw) {
+            Ok(text) => text,
+            Err(err) => {
+                tracing::warn!(error = %err, "saved find location extension did not expand");
+                String::new()
+            }
+        };
+        if let Some(text) = present_extension(expanded) {
+            return text;
+        }
+    }
+    String::new()
+}
+
+fn present_extension(text: String) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() || text == "null" {
+        None
+    } else {
+        Some(text.to_string())
     }
 }
 
@@ -405,8 +446,21 @@ fn find_fields(form: &moqui_lib::node::MNode) -> Vec<IndexMap<String, Value>> {
     out
 }
 
+/// The source form, which still has its `auto-fields-*` elements, and whether it is dynamic.
+/// `None` when the screen has no form of that name.
+fn source_form(screen_location: &str, form_name: &str) -> Result<Option<(bool, MNode)>, Error> {
+    let factory = ExecutionContext::with_current(|ec| std::sync::Arc::clone(ec.factory()))
+        .ok_or_else(|| Error::new("no execution context"))?;
+    let screens = super::ScreenFacade::of(&factory);
+    let def = screens.screen_def(&factory, screen_location)?;
+    let Some(form) = def.forms.get(form_name) else {
+        return Ok(None);
+    };
+    Ok(Some((form.dynamic, form.node.node()?)))
+}
+
 /// The assembled form a saved find is for, from the screen at `screen_location`.
-fn assembled_form(screen_location: &str, form_name: &str) -> Result<moqui_lib::node::MNode, Error> {
+fn assembled_form(screen_location: &str, form_name: &str) -> Result<MNode, Error> {
     let factory = ExecutionContext::with_current(|ec| std::sync::Arc::clone(ec.factory()))
         .ok_or_else(|| Error::new("no execution context"))?;
     let screens = super::ScreenFacade::of(&factory);
@@ -483,13 +537,29 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
         add_error("No form location specified, cannot process saved find");
         return Ok(None);
     }
-    let Some((location, screen_location, form_name, extension)) = split_form_location(&posted, transition_screen)
+    let Some((mut location, screen_location, form_name, mut extension)) =
+        split_form_location(&posted, transition_screen)
     else {
         add_error("Form location invalid, cannot process saved find");
         return Ok(None);
     };
+    // A posted '#' is the key. A bare name, or a full location with no '#', still keys a dynamic form by its entity
+    // or service, so a post that sends only the form name does not land in the shared list.
+    if extension.is_empty() {
+        if let Some((dynamic, node)) = source_form(&screen_location, &form_name)? {
+            if dynamic {
+                let derived = saved_find_location(&location, true, &node);
+                if let Some((base, ext)) = derived.rsplit_once('#') {
+                    if !base.is_empty() && !ext.is_empty() {
+                        extension = ext.to_string();
+                        location = derived;
+                    }
+                }
+            }
+        }
+    }
     if !extension.is_empty() {
-        script::set_context_name("formLocationExtension", Value::string(extension))?;
+        script::set_context_name("formLocationExtension", Value::string(&extension))?;
     }
 
     if context_has("MakeDefault") {

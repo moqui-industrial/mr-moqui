@@ -48,8 +48,8 @@ pub use fields::{
 };
 pub use forms::{
     close_form_list, form_list_sub_row_count, get_form, open_form_list, push_single_form_map_context,
-    render_dynamic_form, render_user_columns_form, start_form_list_row, start_form_list_sub_row,
-    user_default_form_list_find_id, user_form_list_finds,
+    render_dynamic_form, render_user_columns_form, saved_find_full_location, start_form_list_row,
+    start_form_list_sub_row, user_default_form_list_find_id, user_form_list_finds,
 };
 pub(super) use forms::{form_list_row_frame, form_list_sub_row_frame, single_form_map_frame};
 pub use layout::form_list_column_char_widths;
