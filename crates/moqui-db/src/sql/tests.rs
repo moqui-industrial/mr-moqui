@@ -602,7 +602,8 @@ fn fts_ddl_is_javas_generated_column_and_named_index() {
     );
     let table = create_table(&fts, &model, postgres).unwrap();
     assert!(table.ends_with(&pg.join(";\n")), "{table}");
-    assert!(fts_index_sql(&fts, body, dialects.get("h2").unwrap())
+    // A style other than postgres-tsvector and mysql-fulltext adds no index of its own.
+    assert!(fts_index_sql(&fts, body, dialects.get("sqlite").unwrap())
         .unwrap()
         .is_empty());
 
