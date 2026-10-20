@@ -6,7 +6,8 @@
 # postgresql_embedded 0.21 / sqlx 0.9 require Rust 1.94. mysql_common 0.37
 # pulls uuid 1.28, which requires Rust 1.89. This file does not set
 # rust-version, so `cargo metadata` and `cargo tree` still run on older cargo.
-# `cargo check -p moqui` needs Rust 1.94.
+# `cargo check -p moqui` needs Rust 1.94. A full workspace check also builds
+# `moqui-tui`, and Revue 3.x requires Rust 1.95.
 
 [workspace]
 resolver = "2"
@@ -17,6 +18,7 @@ members = [
     "crates/moqui-host",
     "crates/moqui-browser",
     "crates/moqui",
+    "crates/moqui-tui",
     # Component crates kept with the framework. The default binary links them; see crates/moqui/src/main.rs.
     "runtime/base-component/example",
 ]
@@ -52,6 +54,10 @@ moqui-core = { path = "crates/moqui-core", default-features = false }
 moqui-host = { path = "crates/moqui-host", default-features = false }
 # Component crates kept in runtime/base-component, linked by crates/moqui.
 example = { path = "runtime/base-component/example" }
+moqui-tui = { path = "crates/moqui-tui" }
+# Exact pin. default-features off so `async` (tokio) and `config` stay out.
+# moqui-tui turns on `markdown` only. Rust 1.95. Not a dependency of `moqui`.
+revue = { version = "=3.10.1", default-features = false }
 
 # --- moqui-lib ---
 jiff = "0.2"
