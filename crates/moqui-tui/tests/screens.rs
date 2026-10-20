@@ -19,8 +19,8 @@
 use std::path::PathBuf;
 
 use moqui_tui::{
-    gallery_link, render_text, run_key_session, AppView, Key, KeyPress, Node, ScreenLink, ScreenModel, Session,
-    GALLERY_DETAIL_PATH, GALLERY_LIST_JSON, GALLERY_LIST_PATH,
+    gallery_link, render_text, run_key_session, AppView, Key, KeyPress, MenuItem, Node, ScreenLink, ScreenModel,
+    Session, GALLERY_DETAIL_PATH, GALLERY_LIST_JSON, GALLERY_LIST_PATH,
 };
 
 fn press(view: &mut AppView, key: Key) -> bool {
@@ -29,18 +29,26 @@ fn press(view: &mut AppView, key: Key) -> bool {
 
 fn list_view() -> (AppView, moqui_tui::FakeLink) {
     let link = gallery_link();
-    let model = link.level(GALLERY_LIST_PATH).unwrap();
+    let model = link
+        .level(GALLERY_LIST_PATH, &std::collections::BTreeMap::new())
+        .unwrap();
     (AppView::new(model, link.clone()), link)
 }
 
 #[test]
 fn session_pages_and_a_screen_link_loads_detail() {
     let link = gallery_link();
-    let mut session = Session::new(link.level(GALLERY_LIST_PATH).unwrap());
+    let mut session = Session::new(
+        link.level(GALLERY_LIST_PATH, &std::collections::BTreeMap::new())
+            .unwrap(),
+    );
     assert_eq!(session.focus_id(), "enumTypeId");
     assert!(session.on_key(&KeyPress::plain(Key::Char('q')), &link));
 
-    let mut session = Session::new(link.level(GALLERY_LIST_PATH).unwrap());
+    let mut session = Session::new(
+        link.level(GALLERY_LIST_PATH, &std::collections::BTreeMap::new())
+            .unwrap(),
+    );
     session.on_key(&KeyPress::plain(Key::Tab), &link);
     assert_eq!(session.focus_id(), "description");
     assert!(!session.on_key(&KeyPress::plain(Key::Char('q')), &link));
@@ -52,8 +60,11 @@ fn session_pages_and_a_screen_link_loads_detail() {
     assert_eq!(session.page_index("EnumList"), 0);
     assert_eq!(session.list_page("EnumList")[0].cells[0].text(), "ENUM_00");
 
-    let mut session = Session::new(link.level(GALLERY_LIST_PATH).unwrap());
-    for _ in 0..3 {
+    let mut session = Session::new(
+        link.level(GALLERY_LIST_PATH, &std::collections::BTreeMap::new())
+            .unwrap(),
+    );
+    for _ in 0..4 {
         session.on_key(&KeyPress::plain(Key::Tab), &link);
     }
     assert_eq!(session.focus_id(), "openDetail");
@@ -92,7 +103,7 @@ fn three_tabs_then_enter_opens_detail_from_the_view() {
     for _ in 0..3 {
         press(&mut view, Key::Tab);
     }
-    assert_eq!(view.session().focus_id(), "openDetail");
+    assert_eq!(view.session().focus_id(), "EnumList");
     press(&mut view, Key::Enter);
     assert_eq!(view.session().path(), GALLERY_DETAIL_PATH);
 }
@@ -116,12 +127,17 @@ fn painted_list_keeps_unicode_and_caps_the_long_description() {
     assert!(wide.contains('…'), "{wide}");
     assert!(!wide.contains(long), "{wide}");
     assert!(wide.contains("Page 1/2"), "{wide}");
-    assert!(wide.contains("focus enumTypeId"), "{wide}");
+    assert!(wide.contains("> Type"), "{wide}");
+    assert!(wide.starts_with("≡ Gallery ▸ List ▸ Enumerations\n"), "{wide}");
+    assert!(wide.lines().any(|line| line.contains("F3=Back")), "{wide}");
+    assert!(!wide.contains('│'), "{wide}");
 
     let narrow = render_text(&model, &link, 72, 24);
     assert!(narrow.lines().any(|line| line.ends_with('>')), "{narrow}");
 
-    let detail = link.level(GALLERY_DETAIL_PATH).unwrap();
+    let detail = link
+        .level(GALLERY_DETAIL_PATH, &std::collections::BTreeMap::new())
+        .unwrap();
     let stacked = render_text(&detail, &link, 72, 24);
     assert!(stacked.contains("+ Record\n"), "{stacked}");
     assert!(
@@ -155,7 +171,9 @@ fn painted_list_keeps_unicode_and_caps_the_long_description() {
 #[test]
 fn pipeline_harness_bytes_only_grow() {
     let link = gallery_link();
-    let model = link.level(GALLERY_LIST_PATH).unwrap();
+    let model = link
+        .level(GALLERY_LIST_PATH, &std::collections::BTreeMap::new())
+        .unwrap();
     let mut once = Vec::new();
     let first = run_key_session(&model, &link, &[], (180, 50), &mut once);
     assert!(first.harness_len > 0, "a frame writes terminal bytes");
@@ -181,11 +199,120 @@ fn pipeline_harness_bytes_only_grow() {
     );
 }
 
+const DIALOG_JSON: &str = r#"{
+  "v": 1,
+  "screen": { "path": "/dialog", "title": "Dialog" },
+  "c": [
+    {
+      "t": "dialog",
+      "id": "New",
+      "title": "New enumeration",
+      "button": "New",
+      "c": [
+        {
+          "t": "form",
+          "id": "NewForm",
+          "name": "NewForm",
+          "transitionUrl": "/new",
+          "c": [
+            {
+              "t": "field",
+              "id": "NewForm.name",
+              "name": "name",
+              "title": "Name",
+              "required": true,
+              "w": { "kind": "textLine", "value": "" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}"#;
+
+#[test]
+fn an_open_dialog_and_a_validation_mark_are_on_the_frame() {
+    let link = moqui_tui::FakeLink::from_json(&[DIALOG_JSON]).unwrap();
+    let model = ScreenModel::from_json(DIALOG_JSON).unwrap();
+    let mut view = AppView::new(model, link);
+    press(&mut view, Key::Enter);
+    assert_eq!(view.session().dialogs_open(), &["New".to_string()]);
+    let dialog = view.screen_text(100, 40);
+    assert!(dialog.contains("+ New enumeration"), "{dialog}");
+    assert!(dialog.contains("Name"), "{dialog}");
+    golden("dialog-100x40", &dialog);
+
+    let (edit, edit_link) = validation_view();
+    let mut view = edit;
+    press(&mut view, Key::Enter);
+    assert_eq!(view.session().mark("Edit.name"), Some("required"));
+    let marked = view.screen_text(100, 40);
+    assert!(marked.contains("! required"), "{marked}");
+    assert!(marked.lines().any(|line| line == "required"), "{marked}");
+    let _ = edit_link;
+    golden("validation-100x40", &marked);
+}
+
+#[test]
+fn a_docked_drawer_shows_two_menu_levels_and_a_busy_mark() {
+    let (mut view, _) = list_view();
+    view.session_mut().set_menu(vec![MenuItem {
+        title: "Gallery".to_string(),
+        url: "/Gallery".to_string(),
+        children: vec![MenuItem {
+            title: "List".to_string(),
+            url: GALLERY_LIST_PATH.to_string(),
+            children: Vec::new(),
+        }],
+    }]);
+    view.session_mut().set_busy(true);
+    let wide = view.screen_text(180, 40);
+    assert!(wide.contains("Gallery ▸ List ▸ Enumerations *"), "{wide}");
+    assert!(wide.contains("▾ Gallery"), "{wide}");
+    assert!(wide.contains("▶ List"), "{wide}");
+    assert!(wide.contains('│'), "{wide}");
+    let narrow = view.screen_text(100, 40);
+    assert!(narrow.starts_with('≡'), "{narrow}");
+    assert!(!narrow.contains("▾ Gallery"), "{narrow}");
+}
+
+fn validation_view() -> (AppView, moqui_tui::FakeLink) {
+    const EDIT: &str = r#"{
+      "v": 1,
+      "screen": { "path": "/edit", "title": "Edit" },
+      "c": [
+        {
+          "t": "form",
+          "id": "Edit",
+          "name": "Edit",
+          "transitionUrl": "/edit/update",
+          "c": [
+            {
+              "t": "field",
+              "id": "Edit.name",
+              "name": "name",
+              "title": "Name",
+              "required": true,
+              "w": { "kind": "textLine", "value": "" }
+            }
+          ]
+        }
+      ]
+    }"#;
+    let link = moqui_tui::FakeLink::from_json(&[EDIT]).unwrap();
+    let model = ScreenModel::from_json(EDIT).unwrap();
+    (AppView::new(model, link.clone()), link)
+}
+
 #[test]
 fn gallery_snapshots() {
     let link = gallery_link();
-    let list = link.level(GALLERY_LIST_PATH).unwrap();
-    let detail = link.level(GALLERY_DETAIL_PATH).unwrap();
+    let list = link
+        .level(GALLERY_LIST_PATH, &std::collections::BTreeMap::new())
+        .unwrap();
+    let detail = link
+        .level(GALLERY_DETAIL_PATH, &std::collections::BTreeMap::new())
+        .unwrap();
     let frames = [
         ("list-72x24", &list, 72u16, 24u16),
         ("list-100x40", &list, 100, 40),

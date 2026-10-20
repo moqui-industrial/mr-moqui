@@ -63,13 +63,16 @@
       "name": "EnumList",
       "columns": [
         {
-          "title": "Identifier"
+          "title": "Identifier",
+          "orderBy": "enumId"
         },
         {
-          "title": "Description"
+          "title": "Description",
+          "orderBy": "description"
         },
         {
-          "title": "Code"
+          "title": "Code",
+          "orderBy": "enumCode"
         },
         {
           "title": "Note"

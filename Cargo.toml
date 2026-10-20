@@ -54,7 +54,8 @@ moqui-core = { path = "crates/moqui-core", default-features = false }
 moqui-host = { path = "crates/moqui-host", default-features = false }
 # Component crates kept in runtime/base-component, linked by crates/moqui.
 example = { path = "runtime/base-component/example" }
-moqui-tui = { path = "crates/moqui-tui" }
+# default-features off so a model-only user (moqui-core tests) does not compile Revue.
+moqui-tui = { path = "crates/moqui-tui", default-features = false }
 # Exact pin. default-features off so `async` (tokio) and `config` stay out.
 # moqui-tui turns on `markdown` only. Rust 1.95. Not a dependency of `moqui`.
 revue = { version = "=3.10.1", default-features = false }

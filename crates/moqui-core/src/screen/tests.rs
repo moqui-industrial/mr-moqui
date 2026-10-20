@@ -668,10 +668,25 @@ mod render;
 mod saved_finds;
 mod shell;
 mod statics;
+mod tui;
 mod walk;
 mod widgets;
 
 /// The fixture screen tree under `testdata`, as a root screen location.
 fn fixture_root() -> String {
     format!("{}/src/screen/testdata/Root.xml", env!("CARGO_MANIFEST_DIR"))
+}
+
+#[test]
+fn a_render_mode_parameter_of_tui_renders_standalone_json() {
+    let world = World::open("");
+    let root = webroot().to_string_lossy().into_owned();
+    let mut asked = request("GET", "/Login");
+    asked.query.push(("renderMode".to_string(), "tui".to_string()));
+    let response = serve_at(&world.factory, asked, &root);
+    let text = response.body_text();
+    assert_eq!(response.status, 200, "{text}");
+    // Without standalone the webroot shell renders, and its html is not JSON.
+    let doc: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|err| panic!("{err}: {text}"));
+    assert!(!text.contains("did not render as JSON"), "{doc}");
 }

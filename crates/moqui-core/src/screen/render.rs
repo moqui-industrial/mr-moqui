@@ -32,7 +32,7 @@ use std::time::Instant;
 use moqui_lib::codec::constant_time_eq;
 use moqui_lib::object::Value;
 
-use super::cache::{canonical_render_mode, ScreenFacade};
+use super::cache::{canonical_render_mode, OutputKind, ScreenFacade};
 use super::definition::{
     Actions, Authentication, Condition, ParameterDef, ResponseDef, ResponseKind, ScreenDef, TransitionDef,
     CONDITION_FIELD,
@@ -231,6 +231,8 @@ pub struct RenderState {
     pub character_encoding: String,
     /// The mode's `screen-text-output` says it is always standalone.
     pub always_standalone: bool,
+    /// How this mode writes a failed section, and whether the level is a JSON envelope.
+    pub output_kind: OutputKind,
     /// A `screen-output` mode: text writes are dropped and the document below is the response.
     pub binary: bool,
     /// The workbook of the `xlsx` mode.
@@ -256,6 +258,8 @@ pub struct RenderState {
     /// `ScreenRenderImpl.baseLinkUrl`; `None` is the current screen's path. Nothing in the port reads it yet: Java
     /// rewrites the relative links of rendered markdown with it, and the port's markdown leaves them as written.
     pub base_link_url: RefCell<Option<String>>,
+    /// The first form focus id of this render (`form.field`). Empty until a form macro sets it.
+    pub focus: RefCell<String>,
     /// Keys `sri.once` has seen, so a mode writes its document wrapper only for the outermost screen.
     pub once: RefCell<std::collections::HashSet<String>>,
     /// The theme of this render and its resource values by type, found once as Java's `curThemeId`.
@@ -273,6 +277,7 @@ impl RenderState {
         character_encoding: String,
     ) -> Self {
         let always_standalone = facade.is_always_standalone(&mode);
+        let output_kind = facade.output_kind(&mode);
         let binary = facade.is_render_mode_binary(&mode);
         let macro_location = info
             .path_defs
@@ -294,6 +299,7 @@ impl RenderState {
             content_type,
             character_encoding,
             always_standalone,
+            output_kind,
             binary,
             xlsx: RefCell::new(super::xlsx::XlsxBook::default()),
             macro_location,
@@ -306,6 +312,7 @@ impl RenderState {
             form_lists: RefCell::new(Vec::new()),
             dynamic_forms: RefCell::new(std::collections::HashMap::new()),
             base_link_url: RefCell::new(None),
+            focus: RefCell::new(String::new()),
             once: RefCell::new(std::collections::HashSet::new()),
             theme_id: RefCell::new(None),
             theme_values: RefCell::new(std::collections::HashMap::new()),
@@ -538,9 +545,19 @@ fn plain_request_parameters() -> BTreeMap<String, String> {
 
 /// Resolve and run one job. Anything written is in the thread's web slot.
 pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> Result<(), Error> {
-    let last_standalone = parse_last_standalone(&text_of(job.parameters.get("lastStandalone")), 0);
-    let info = ScreenUrlInfo::parse(factory, job.root, job.path, last_standalone)?;
     let facade = ScreenFacade::of(factory);
+    // `tui` is always standalone. A render-mode argument or a `renderMode` request parameter has no
+    // path extension, so the walk would otherwise render the webroot shell, whose html text is not a JSON array.
+    let mut last_standalone = parse_last_standalone(&text_of(job.parameters.get("lastStandalone")), 0);
+    let asked_mode = job
+        .render_mode
+        .map(str::to_string)
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| text_of(job.parameters.get("renderMode")));
+    if last_standalone == 0 && asked_mode == "tui" && facade.is_always_standalone("tui") {
+        last_standalone = 1;
+    }
+    let info = ScreenUrlInfo::parse(factory, job.root, job.path, last_standalone)?;
     check_web_settings(&info)?;
     if job.enforce_request_checks && (redirect_to_https(factory, job, &info) || redirect_to_login(factory, job, &info)?)
     {
@@ -585,6 +602,10 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     let mode = client.unwrap_or(picked);
     let rendered = mode_screen(&info, &mode);
     if !rendered.allows_render_mode(&mode) {
+        // A qvue-only screen still answers tui: one placeholder, so the screen list stays a document.
+        if mode == "tui" {
+            return tui_unsupported_screen(&info);
+        }
         return Err(Error::of_kind(
             ErrorKind::NotFound,
             format!("render mode {mode} is not supported by {}", rendered.location),
@@ -854,10 +875,166 @@ fn render_body(state: &RenderState) -> Result<(), Error> {
         return Ok(());
     }
     super::sri::flush_end_text(state);
+    if state.output_kind == OutputKind::Json && !state.dont_do_render.get() {
+        wrap_json_envelope(state);
+    }
     if !web::output_sent() && !state.dont_do_render.get() {
         web::start_output(200, &super::sri::content_type_header(state));
     }
     Ok(())
+}
+
+/// A screen whose `render-modes` omit `tui`. The document is one placeholder, not an error page.
+fn tui_unsupported_screen(info: &ScreenUrlInfo) -> Result<(), Error> {
+    let path = if info.full_path.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", info.full_path.join("/"))
+    };
+    let title = {
+        let title = info.target_screen.default_menu_title.clone();
+        if title.is_empty() {
+            info.target_screen.screen_name.clone()
+        } else {
+            title
+        }
+    };
+    let body = serde_json::json!({
+        "v": 1,
+        "screen": { "path": path, "pathList": info.full_path, "title": title, "standalone": 0 },
+        "parameters": {},
+        "messages": { "info": [], "errors": [], "validationErrors": [] },
+        "focus": "",
+        "c": [{ "t": "placeholder", "text": "render-mode", "url": path }],
+    });
+    web::send_bytes_with_headers(
+        200,
+        vec![("Content-Type".to_string(), "application/json".to_string())],
+        body.to_string().into_bytes(),
+    );
+    Ok(())
+}
+
+/// The outermost `tui` render: the root array becomes `c` of one envelope. A nested unit writes its own array
+/// and does not come through here.
+fn wrap_json_envelope(state: &RenderState) {
+    if !web::output_sent() {
+        web::start_output(200, &super::sri::content_type_header(state));
+    }
+    let raw = web::with_body(<[u8]>::to_vec);
+    let nodes = json_root_array(&raw);
+    let info = &state.url_info;
+    let path = if info.full_path.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", info.full_path.join("/"))
+    };
+    let title = {
+        let title = info.target_screen.default_menu_title.clone();
+        if title.is_empty() {
+            info.target_screen.screen_name.clone()
+        } else {
+            title
+        }
+    };
+    let standalone = i64::try_from(info.path_defs.len().saturating_sub(1)).unwrap_or(0);
+    let focus = super::sri::strip_controls(&state.focus.borrow());
+    let envelope = serde_json::json!({
+        "v": 1,
+        "screen": {
+            "path": path,
+            "pathList": info.full_path,
+            "title": super::sri::strip_controls(&title),
+            "standalone": standalone,
+        },
+        "parameters": envelope_parameters(),
+        "messages": envelope_messages(),
+        "focus": focus,
+        "c": nodes,
+    });
+    web::replace_body(envelope.to_string().into_bytes());
+}
+
+fn json_root_array(raw: &[u8]) -> serde_json::Value {
+    let trimmed = trim_ascii(raw);
+    if trimmed.is_empty() {
+        return serde_json::Value::Array(Vec::new());
+    }
+    match serde_json::from_slice::<serde_json::Value>(trimmed) {
+        Ok(value) if value.is_array() => value,
+        _ => serde_json::json!([{"t":"error","text":"the screen did not render as JSON"}]),
+    }
+}
+
+fn trim_ascii(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map_or(start, |index| index + 1);
+    &bytes[start..end]
+}
+
+fn envelope_parameters() -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (name, value) in web::parameters() {
+        if matches!(value, Value::Object(_)) {
+            continue;
+        }
+        let text = super::sri::strip_controls(&moqui_lib::object::to_plain_string(&value));
+        map.insert(name, serde_json::Value::String(text));
+    }
+    map.remove("moquiSessionToken");
+    let mut value = serde_json::Value::Object(map);
+    web::strip_credential_parameters(&mut value);
+    value
+}
+
+fn envelope_messages() -> serde_json::Value {
+    let (info, errors, validation) = ExecutionContext::with_current(|ec| {
+        let facade = ec.message();
+        let mut info = Vec::new();
+        let mut errors = Vec::new();
+        for (index, text) in facade.messages().iter().enumerate() {
+            let cleaned = super::sri::strip_controls(text);
+            if matches!(facade.message_type(index), "danger" | "error") {
+                errors.push(cleaned);
+            } else {
+                info.push(cleaned);
+            }
+        }
+        let validation_text: Vec<String> = facade
+            .validation_errors()
+            .iter()
+            .map(|error| error.message.clone())
+            .collect();
+        for error in facade.errors() {
+            if !validation_text.iter().any(|message| message == error) {
+                errors.push(super::sri::strip_controls(error));
+            }
+        }
+        let validation: Vec<serde_json::Value> = facade
+            .validation_errors()
+            .iter()
+            .map(|error| {
+                serde_json::json!({
+                    "form": super::sri::strip_controls(&error.form),
+                    "field": super::sri::strip_controls(&error.field),
+                    "message": super::sri::strip_controls(&error.message),
+                })
+            })
+            .collect();
+        (info, errors, validation)
+    })
+    .unwrap_or_default();
+    serde_json::json!({
+        "info": info,
+        "errors": errors,
+        "validationErrors": validation,
+    })
 }
 
 fn pick_render_mode(facade: &ScreenFacade, job: &Job<'_>, info: &ScreenUrlInfo) -> Result<String, Error> {

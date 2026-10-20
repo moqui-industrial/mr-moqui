@@ -18,6 +18,7 @@
 //! A date is the date string in an `Input`. Layout comes from [`crate::layout`],
 //! which does not import Revue.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Instant;
 
@@ -30,21 +31,24 @@ use revue::widget::{Input, OptionItem, OptionList, View};
 
 use crate::display_width;
 use crate::keys::{Key, KeyPress};
-use crate::layout::{layout, list_column_widths, truncate_width, Block, BoxChild, LabelMode, LaidField};
+use crate::layout::{
+    dotted_label, frame, label_column_width, layout, list_column_widths, truncate_width, Block, BoxChild, Frame,
+    LabelMode, LaidField, WidthClass,
+};
 use crate::link::{FakeLink, ScreenLink};
-use crate::model::{Node, ScreenModel, Widget};
-use crate::session::Session;
+use crate::model::{walk, Node, ScreenModel, Widget};
+use crate::session::{FocusKind, Session};
 
-pub struct AppView {
+pub struct AppView<L: ScreenLink = FakeLink> {
     session: Session,
-    link: FakeLink,
+    link: L,
     live_id: Option<String>,
     live: Option<Input>,
     dropdown: Option<OptionList>,
 }
 
-impl AppView {
-    pub fn new(model: ScreenModel, link: FakeLink) -> Self {
+impl<L: ScreenLink> AppView<L> {
+    pub fn new(model: ScreenModel, link: L) -> Self {
         Self {
             session: Session::new(model),
             link,
@@ -56,6 +60,10 @@ impl AppView {
 
     pub fn session(&self) -> &Session {
         &self.session
+    }
+
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
     }
 
     pub fn prepare(&mut self) {
@@ -114,6 +122,7 @@ impl AppView {
         let text = input.text().to_string();
         let id = self.session.focus_id().to_string();
         self.session.set_buffer(&id, text);
+        self.session.changed(&id, &self.link);
         true
     }
 
@@ -137,6 +146,7 @@ impl AppView {
                 let id = self.session.focus_id().to_string();
                 if let Some(value) = chosen {
                     self.session.set_buffer(&id, value);
+                    self.session.changed(&id, &self.link);
                 }
                 self.session.close_dropdown();
                 self.dropdown = None;
@@ -196,11 +206,11 @@ impl AppView {
     }
 }
 
-impl View for AppView {
+impl<L: ScreenLink> View for AppView<L> {
     fn render(&self, ctx: &mut revue::widget::RenderContext) {
         let width = ctx.area.width;
         let height = ctx.area.height;
-        let lines = screen_lines(&self.session, width);
+        let lines = frame_lines(&self.session, width, height);
         for (index, line) in lines.iter().enumerate() {
             if index as u16 >= height {
                 break;
@@ -210,7 +220,7 @@ impl View for AppView {
         // Input edits the buffer. The line already shows that buffer. Painting the
         // widget on top of the brackets leaves the closing bracket behind.
         if let Some(list) = &self.dropdown {
-            if let Some((x, y)) = dropdown_spot(&self.session, width) {
+            if let Some((x, y)) = dropdown_spot(&self.session, width, height) {
                 let rows = u16::try_from(self.session.focused_choices().len().max(1)).unwrap_or(1);
                 ctx.render_child(list, Rect::new(x, y, 32, rows));
             }
@@ -223,7 +233,7 @@ pub fn render_text(model: &ScreenModel, link: &FakeLink, width: u16, height: u16
 }
 
 pub fn run_local(link: FakeLink, path: &str) -> revue::Result<()> {
-    let model = link.level(path).unwrap_or_else(|err| panic!("{err}"));
+    let model = link.level(path, &BTreeMap::new()).unwrap_or_else(|err| panic!("{err}"));
     let mut view = AppView::new(model, link);
     view.prepare();
     App::builder()
@@ -363,50 +373,177 @@ pub fn run_key_session<W: Write>(
     run_session(model, link, &events, size, out)
 }
 
-fn screen_lines(session: &Session, canvas: u16) -> Vec<String> {
-    let laid = layout(&session.model, canvas);
-    let mut lines = vec![session.model.screen.title.clone()];
-    for block in &laid.blocks {
-        match block {
-            Block::Boxes(boxes) => {
-                if boxes.iter().any(|box_| box_.x > 0) {
-                    lines.extend(merge_boxes(session, boxes));
-                } else {
-                    for box_ in boxes {
-                        lines.extend(one_box(session, box_));
-                    }
-                }
-            }
-            Block::Form(form) => {
-                for field in &form.fields {
-                    lines.extend(field_lines(session, field, canvas));
-                }
-            }
-            Block::List(list) => lines.extend(list_lines(session, &list.id, canvas)),
-            Block::Link(link) => {
-                let mark = if session.focus_id() == link.id { ">" } else { " " };
-                lines.push(format!("{mark} {}", link.text));
-            }
-            Block::Text(text) => lines.push(text.clone()),
+fn frame_lines(session: &Session, width: u16, height: u16) -> Vec<String> {
+    let framed = frame(width);
+    let chrome = if height > 2 { 2 } else { 0 };
+    let body_rows = usize::from(height).saturating_sub(1 + chrome);
+    let mut body = canvas_body(session, framed.canvas);
+    if session.find_open() {
+        let mut find = header_find_lines(session, framed);
+        find.append(&mut body);
+        body = find;
+    }
+    if body.len() < body_rows {
+        body.resize(body_rows, String::new());
+    }
+    paint_overlays(session, &mut body, framed.canvas, framed.class);
+    body.truncate(body_rows);
+    let menu = menu_lines(session);
+    let mut rows = vec![title_line(session, framed, width)];
+    for (index, canvas_line) in body.into_iter().enumerate() {
+        let line = join_drawer(framed, &menu, index, &canvas_line);
+        rows.push(truncate_width(&line, usize::from(width)));
+    }
+    if chrome == 2 {
+        rows.push(truncate_width(&message_line(session), usize::from(width)));
+        rows.push(truncate_width(&key_line(session), usize::from(width)));
+    }
+    rows
+}
+
+fn title_line(session: &Session, framed: Frame, width: u16) -> String {
+    let mut parts = Vec::new();
+    for segment in session.path().split('/').filter(|segment| !segment.is_empty()) {
+        parts.push(segment.to_string());
+    }
+    let title = &session.model().screen.title;
+    if !title.is_empty() && parts.last().is_none_or(|last| last != title) {
+        parts.push(title.clone());
+    }
+    let mut line = String::new();
+    if framed.drawer == 0 {
+        line.push_str("≡ ");
+    }
+    line.push_str(&parts.join(" ▸ "));
+    if session.is_busy() {
+        line.push_str(" *");
+    }
+    truncate_width(&line, usize::from(width))
+}
+
+fn message_line(session: &Session) -> String {
+    if !session.message().is_empty() {
+        return session.message().to_string();
+    }
+    session.mark(session.focus_id()).unwrap_or("").to_string()
+}
+
+fn key_line(session: &Session) -> String {
+    let mut parts = vec!["F3=Back", "F4=Prompt", "F5=Reload", "F7=Page", "F8=Page", "F12=Cancel"];
+    if session.focus_kind() == Some(FocusKind::List) {
+        parts.push("s=Sort");
+        parts.push("f=Find");
+    }
+    if !session.focused_is_text() {
+        parts.push("q=Quit");
+    }
+    parts.join("  ")
+}
+
+fn join_drawer(framed: Frame, menu: &[String], row: usize, canvas_line: &str) -> String {
+    if framed.drawer == 0 {
+        return canvas_line.to_string();
+    }
+    let room = usize::from(framed.drawer.saturating_sub(1));
+    let text = menu.get(row).map(String::as_str).unwrap_or("");
+    let fitted = truncate_width(text, room);
+    let pad = room.saturating_sub(display_width(&fitted));
+    format!("{fitted}{}│{canvas_line}", " ".repeat(pad))
+}
+
+fn menu_lines(session: &Session) -> Vec<String> {
+    let mut lines = Vec::new();
+    for item in session.menu() {
+        lines.push(format!("▾ {}", item.title));
+        for child in &item.children {
+            let active = session.path() == child.url || session.paths().iter().any(|path| *path == child.url);
+            let mark = if active { "▶" } else { " " };
+            lines.push(format!("  {mark} {}", child.title));
         }
+    }
+    lines
+}
+
+fn canvas_body(session: &Session, canvas: u16) -> Vec<String> {
+    let laid = layout(session.model(), canvas);
+    let class = laid.class;
+    let mut lines = Vec::new();
+    for block in &laid.blocks {
+        lines.extend(block_lines(session, block, canvas, class));
     }
     if let Some(list_id) = first_list_id(session) {
         let page = session.page_index(&list_id) + 1;
         let count = session.page_count(&list_id);
         lines.push(format!("Page {page}/{count}"));
     }
-    lines.push(format!("focus {}", session.focus_id()));
     lines
         .into_iter()
         .map(|line| truncate_width(&line, usize::from(canvas)))
         .collect()
 }
 
-fn one_box(session: &Session, box_: &crate::layout::LaidBox) -> Vec<String> {
+fn block_lines(session: &Session, block: &Block, canvas: u16, class: WidthClass) -> Vec<String> {
+    match block {
+        Block::Boxes(boxes) => {
+            if boxes.iter().any(|box_| box_.x > 0) {
+                merge_boxes(session, boxes, class)
+            } else {
+                boxes.iter().flat_map(|box_| one_box(session, box_, class)).collect()
+            }
+        }
+        Block::Columns(columns) => column_lines(session, columns, class),
+        Block::Form(form) => form_lines(session, &form.fields, canvas, class),
+        Block::List(list) => list_lines(session, &list.id, canvas),
+        Block::Link(link) => {
+            let mark = if session.focus_id() == link.id { ">" } else { " " };
+            vec![format!("{mark} {}", link.text)]
+        }
+        Block::Text(text) => vec![text.clone()],
+    }
+}
+
+fn column_lines(session: &Session, columns: &[crate::layout::LaidColumn], class: WidthClass) -> Vec<String> {
+    let rendered: Vec<(u16, Vec<String>)> = columns
+        .iter()
+        .map(|column| {
+            let mut lines = Vec::new();
+            for block in &column.blocks {
+                lines.extend(block_lines(session, block, column.w, class));
+            }
+            (column.x, lines)
+        })
+        .collect();
+    let height = rendered.iter().map(|(_, lines)| lines.len()).max().unwrap_or(0);
+    let mut rows = Vec::new();
+    for index in 0..height {
+        let mut row = String::new();
+        for (x, lines) in &rendered {
+            let pad = usize::from(*x).saturating_sub(display_width(&row));
+            row.push_str(&" ".repeat(pad));
+            if let Some(line) = lines.get(index) {
+                row.push_str(line);
+            }
+        }
+        rows.push(row);
+    }
+    rows
+}
+
+fn form_lines(session: &Session, fields: &[LaidField], width: u16, class: WidthClass) -> Vec<String> {
+    let labels = label_width(fields, class);
+    fields
+        .iter()
+        .flat_map(|field| field_lines(session, field, width, labels))
+        .collect()
+}
+
+fn one_box(session: &Session, box_: &crate::layout::LaidBox, class: WidthClass) -> Vec<String> {
+    let fields = box_fields(box_);
+    let labels = label_width(&fields, class);
     let mut lines = vec![format!("+ {} ", box_.title)];
     for child in &box_.children {
         match child {
-            BoxChild::Field(field) => lines.extend(field_lines(session, field, box_.w)),
+            BoxChild::Field(field) => lines.extend(field_lines(session, field, box_.w, labels)),
             BoxChild::Link(link) => lines.push(link.text.clone()),
             BoxChild::Text(text) => lines.push(text.clone()),
         }
@@ -417,8 +554,23 @@ fn one_box(session: &Session, box_: &crate::layout::LaidBox) -> Vec<String> {
         .collect()
 }
 
-fn merge_boxes(session: &Session, boxes: &[crate::layout::LaidBox]) -> Vec<String> {
-    let rendered: Vec<Vec<String>> = boxes.iter().map(|box_| one_box(session, box_)).collect();
+fn box_fields(box_: &crate::layout::LaidBox) -> Vec<LaidField> {
+    box_.children
+        .iter()
+        .filter_map(|child| match child {
+            BoxChild::Field(field) => Some(field.clone()),
+            BoxChild::Link(_) | BoxChild::Text(_) => None,
+        })
+        .collect()
+}
+
+fn label_width(fields: &[LaidField], class: WidthClass) -> usize {
+    let titles: Vec<&str> = fields.iter().map(|field| field.title.as_str()).collect();
+    label_column_width(&titles, class)
+}
+
+fn merge_boxes(session: &Session, boxes: &[crate::layout::LaidBox], class: WidthClass) -> Vec<String> {
+    let rendered: Vec<Vec<String>> = boxes.iter().map(|box_| one_box(session, box_, class)).collect();
     let height = rendered.iter().map(Vec::len).max().unwrap_or(0);
     let mut rows = Vec::new();
     for index in 0..height {
@@ -435,12 +587,19 @@ fn merge_boxes(session: &Session, boxes: &[crate::layout::LaidBox]) -> Vec<Strin
     rows
 }
 
-fn field_lines(session: &Session, field: &LaidField, width: u16) -> Vec<String> {
+fn field_lines(session: &Session, field: &LaidField, width: u16, label_width: usize) -> Vec<String> {
     let shown = field_shown(session, &field.id);
-    let mark = if session.focus_id() == field.id { ">" } else { " " };
+    let focus = if session.focus_id() == field.id { ">" } else { " " };
+    let complaint = session
+        .mark(&field.id)
+        .map(|text| format!("  ! {text}"))
+        .unwrap_or_default();
     match field.mode {
-        LabelMode::Above => vec![format!("{mark} {}", field.title), format!("  {shown}")],
-        LabelMode::Beside => vec![format!("{mark} {} {shown}", field.title)],
+        LabelMode::Above => vec![format!("{focus} {}", field.title), format!("  {shown}{complaint}")],
+        LabelMode::Beside => {
+            let label = dotted_label(&field.title, label_width);
+            vec![format!("{focus} {label} {shown}{complaint}")]
+        }
     }
     .into_iter()
     .map(|line| truncate_width(&line, usize::from(width.max(1))))
@@ -454,6 +613,7 @@ fn field_shown(session: &Session, id: &str) -> String {
     match widget {
         Widget::Display { text } => text.clone(),
         Widget::Submit { text } => format!("< {text} >"),
+        Widget::Password {} => format!("[{}]", "*".repeat(session.buffer(id).chars().count())),
         Widget::DropDown { options, .. } => {
             let value = session.buffer(id);
             let label = options
@@ -464,14 +624,12 @@ fn field_shown(session: &Session, id: &str) -> String {
             let label = if label.is_empty() { " " } else { label };
             format!("[{label} ▾]")
         }
-        Widget::TextLine { .. } | Widget::DateTime { .. } => {
-            format!("[{}]", session.buffer(id))
-        }
+        _ => format!("[{}]", session.buffer(id)),
     }
 }
 
 fn list_lines(session: &Session, list_id: &str, canvas: u16) -> Vec<String> {
-    let widths = list_column_widths(&session.model, canvas, list_id);
+    let widths = list_column_widths(session.model(), canvas, list_id);
     let titles = list_titles(session, list_id);
     if titles.is_empty() {
         return Vec::new();
@@ -502,10 +660,25 @@ fn list_lines(session: &Session, list_id: &str, canvas: u16) -> Vec<String> {
 
 fn list_titles(session: &Session, list_id: &str) -> Vec<String> {
     let mut titles = Vec::new();
-    crate::model::walk(&session.model.c, &mut |node| {
+    crate::model::walk(&session.model().c, &mut |node| {
         if let Node::FormList { list } = node {
             if list.id == list_id {
-                titles = list.columns.iter().map(|column| column.title.clone()).collect();
+                let order = session.order_by();
+                titles = list
+                    .columns
+                    .iter()
+                    .map(|column| {
+                        if column.order_by.is_empty() {
+                            column.title.clone()
+                        } else if order == column.order_by {
+                            format!("{} ▲", column.title)
+                        } else if order.strip_prefix('-') == Some(column.order_by.as_str()) {
+                            format!("{} ▼", column.title)
+                        } else {
+                            column.title.clone()
+                        }
+                    })
+                    .collect();
             }
         }
     });
@@ -514,7 +687,7 @@ fn list_titles(session: &Session, list_id: &str) -> Vec<String> {
 
 fn first_list_id(session: &Session) -> Option<String> {
     let mut id = None;
-    crate::model::walk(&session.model.c, &mut |node| {
+    crate::model::walk(&session.model().c, &mut |node| {
         if id.is_none() {
             if let Node::FormList { list } = node {
                 id = Some(list.id.clone());
@@ -530,16 +703,16 @@ fn fit_cell(text: &str, width: usize) -> String {
     format!("{fitted}{}", " ".repeat(pad))
 }
 
-fn dropdown_spot(session: &Session, canvas: u16) -> Option<(u16, u16)> {
+fn dropdown_spot(session: &Session, width: u16, height: u16) -> Option<(u16, u16)> {
     if !session.dropdown_open() {
         return None;
     }
-    spot_of(session, canvas, session.focus_id()).map(|(x, y)| (x, y.saturating_add(1)))
+    spot_of(session, width, height, session.focus_id()).map(|(x, y)| (x, y.saturating_add(1)))
 }
 
 /// Column where the focused value starts, and its row.
-fn spot_of(session: &Session, canvas: u16, id: &str) -> Option<(u16, u16)> {
-    let lines = screen_lines(session, canvas);
+fn spot_of(session: &Session, width: u16, height: u16, id: &str) -> Option<(u16, u16)> {
+    let lines = frame_lines(session, width, height);
     let needle = field_shown(session, id);
     for (index, line) in lines.iter().enumerate() {
         if let Some(at) = line.find(&needle) {
@@ -548,6 +721,157 @@ fn spot_of(session: &Session, canvas: u16, id: &str) -> Option<(u16, u16)> {
         }
     }
     None
+}
+
+fn header_find_lines(session: &Session, framed: Frame) -> Vec<String> {
+    let mut fields = Vec::new();
+    walk(&session.model().c, &mut |node| {
+        if let Node::FormList { list } = node {
+            for field in &list.header_fields {
+                if let Node::Field { id, title, .. } = field {
+                    fields.push(LaidField {
+                        id: id.clone(),
+                        title: title.clone(),
+                        mode: if framed.class == WidthClass::Xs {
+                            LabelMode::Above
+                        } else {
+                            LabelMode::Beside
+                        },
+                    });
+                }
+            }
+        }
+    });
+    if fields.is_empty() {
+        return vec!["Find".to_string()];
+    }
+    let mut lines = vec!["+ Find ".to_string()];
+    lines.extend(form_lines(session, &fields, framed.canvas, framed.class));
+    lines
+}
+
+fn paint_overlays(session: &Session, body: &mut [String], canvas: u16, class: WidthClass) {
+    if let Some(lines) = dialog_lines(session, canvas, class) {
+        center_overlay(body, &lines, class, canvas);
+    }
+    if let Some(choice) = session.confirm_choice() {
+        let row = ["Stay", "Discard", "Save"]
+            .into_iter()
+            .map(|name| {
+                if name == choice {
+                    format!("> {name}")
+                } else {
+                    format!("  {name}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        center_overlay(body, &["+ Leave?".to_string(), row], class, canvas);
+    }
+}
+
+fn dialog_lines(session: &Session, canvas: u16, class: WidthClass) -> Option<Vec<String>> {
+    let id = session.dialogs_open().last()?.clone();
+    let mut found = None;
+    walk(&session.model().c, &mut |node| {
+        if let Node::Dialog { id: dialog_id, .. } = node {
+            if dialog_id == &id {
+                found = Some(node.clone());
+            }
+        }
+    });
+    let Node::Dialog { title, c, .. } = found? else {
+        return None;
+    };
+    let inner = if class == WidthClass::Xs {
+        canvas.saturating_sub(2)
+    } else {
+        canvas.saturating_mul(9) / 10
+    };
+    let mut lines = vec![format!("+ {title}")];
+    lines.extend(plain_nodes(session, &c, inner, class));
+    Some(lines)
+}
+
+fn plain_nodes(session: &Session, nodes: &[Node], width: u16, class: WidthClass) -> Vec<String> {
+    let mut lines = Vec::new();
+    for node in nodes {
+        match node {
+            Node::Field { id, title, .. } => {
+                let field = LaidField {
+                    id: id.clone(),
+                    title: title.clone(),
+                    mode: if class == WidthClass::Xs {
+                        LabelMode::Above
+                    } else {
+                        LabelMode::Beside
+                    },
+                };
+                lines.extend(field_lines(
+                    session,
+                    &field,
+                    width,
+                    label_width(std::slice::from_ref(&field), class),
+                ));
+            }
+            Node::Text { text, .. } => lines.push(text.clone()),
+            other => lines.extend(plain_nodes(session, other.children(), width, class)),
+        }
+    }
+    lines
+}
+
+fn center_overlay(body: &mut [String], lines: &[String], class: WidthClass, canvas: u16) {
+    if body.is_empty() || lines.is_empty() {
+        return;
+    }
+    let widest = lines.iter().map(|line| display_width(line)).max().unwrap_or(0);
+    let canvas = usize::from(canvas);
+    let x = if class == WidthClass::Xs {
+        0
+    } else {
+        canvas.saturating_sub(widest) / 2
+    };
+    let y = if class == WidthClass::Xs {
+        0
+    } else {
+        body.len().saturating_sub(lines.len()) / 2
+    };
+    for (index, line) in lines.iter().enumerate() {
+        let Some(row) = body.get_mut(y + index) else {
+            break;
+        };
+        stamp(row, x, line);
+    }
+}
+
+fn stamp(line: &mut String, col: usize, text: &str) {
+    let mut head = String::new();
+    let mut width = 0;
+    for ch in line.chars() {
+        let next = display_width(&ch.to_string());
+        if width + next > col {
+            break;
+        }
+        head.push(ch);
+        width += next;
+    }
+    if width < col {
+        head.push_str(&" ".repeat(col - width));
+    }
+    head.push_str(text);
+    let skip = col + display_width(text);
+    let mut seen = 0;
+    let mut tail = String::new();
+    for ch in line.chars() {
+        let next = display_width(&ch.to_string());
+        if seen >= skip {
+            tail.push(ch);
+        }
+        seen += next;
+    }
+    head.push_str(&tail);
+    *line = head;
 }
 
 #[cfg(test)]

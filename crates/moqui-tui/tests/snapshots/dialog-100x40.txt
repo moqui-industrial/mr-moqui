@@ -1,0 +1,40 @@
+≡ dialog ▸ Dialog
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                         + New enumeration
+                                           Name []
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+F3=Back  F4=Prompt  F5=Reload  F7=Page  F8=Page  F12=Cancel  q=Quit

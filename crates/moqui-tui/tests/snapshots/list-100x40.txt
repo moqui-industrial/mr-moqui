@@ -1,7 +1,7 @@
-Enumerations
-> Type [  ▾]
+≡ Gallery ▸ List ▸ Enumerations
+> Type....... [  ▾]
   Description []
-  Find < Find >
+  Find....... < Find >
 Identifier Description                              Code            Note
 ENUM_00    Enumeration 00                           ScreenThemeType 東京
 ENUM_01    Enumeration 01                           CODE            🎉
@@ -15,4 +15,26 @@ ENUM_08    Enumeration 08                           CODE
 ENUM_09    Enumeration 09                           CODE
   Open detail
 Page 1/2
-focus enumTypeId
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+F3=Back  F4=Prompt  F5=Reload  F7=Page  F8=Page  F12=Cancel  q=Quit

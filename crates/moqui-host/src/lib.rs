@@ -42,6 +42,8 @@ pub mod ssh;
 pub mod sso;
 #[cfg(feature = "embedded-postgres")]
 pub mod test_cmd;
+#[cfg(feature = "tui")]
+pub mod tui;
 pub mod types;
 pub mod usage;
 

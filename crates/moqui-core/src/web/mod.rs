@@ -545,6 +545,35 @@ pub(crate) fn truncate_output(len: usize) {
     });
 }
 
+/// Read the body so far. The closure must not write the response: the slot is borrowed while it runs.
+pub(crate) fn with_body<R>(read: impl FnOnce(&[u8]) -> R) -> R {
+    WEB.with(|slot| {
+        let borrowed = slot.borrow();
+        let bytes = borrowed.as_ref().map(|web| web.body.as_slice()).unwrap_or(b"");
+        read(bytes)
+    })
+}
+
+/// Replace the body from `start` to the end. Headers and the sent flag stay.
+pub(crate) fn rewrite_tail(start: usize, bytes: &[u8]) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            let start = start.min(web.body.len());
+            web.body.truncate(start);
+            web.body.extend_from_slice(bytes);
+        }
+    });
+}
+
+/// Replace the whole body. Headers and the sent flag stay.
+pub(crate) fn replace_body(body: Vec<u8>) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.body = body;
+        }
+    });
+}
+
 /// Note a user preference this request set (`ec.user.setPreference`), for the response to tell the client. Nothing
 /// outside a web request.
 pub(crate) fn note_changed_preference(key: &str, value: Option<&str>) {

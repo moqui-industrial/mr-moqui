@@ -299,6 +299,16 @@ fn sri_base_link_url(ctx: Ctx<'_>, url: Opt<JsValue<'_>>) -> rquickjs::Result<()
     })
 }
 
+/// `sri.setFocusField(id)`: the envelope focus, the first id a form asks for. Later calls leave it.
+fn sri_set_focus_field(ctx: Ctx<'_>, id: String) -> rquickjs::Result<()> {
+    host_guard(&ctx, || {
+        with_render(&ctx, false, |state| {
+            logic::set_focus_field(state, &id);
+            Ok(())
+        })
+    })
+}
+
 /// The base URL `sri.baseLinkUrl` set, or null.
 fn sri_get_base_link_url<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
@@ -1008,6 +1018,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("sendRedirectAndStopRender", sri_send_redirect_and_stop_render);
     method!("baseLinkUrl", sri_base_link_url);
     method!("getBaseLinkUrl", sri_get_base_link_url);
+    method!("setFocusField", sri_set_focus_field);
     method!("write", sri_write);
     method!("renderSection", sri_render_section);
     method!("renderSectionInclude", sri_render_section_include);

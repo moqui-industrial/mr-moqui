@@ -1,0 +1,54 @@
+$emit({t:"text",id:"widgets/label",text:ec.resource.expand("Title ${name}")});
+$openChildren({t:"container",id:"Box1"});
+$emit({t:"text",id:"widgets/Box1/label",text:ec.resource.expand("inside")});
+$openChildren({t:"row",id:"widgets/Box1/container-row"});
+$openChildren({t:"col",id:"widgets/Box1/container-row/row-col[0]",xs:"",sm:"",md:"",lg:"6"});
+$emit({t:"text",id:"widgets/Box1/container-row/row-col[0]/label",text:ec.resource.expand("left")});
+$closeChildren();
+$openChildren({t:"col",id:"widgets/Box1/container-row/row-col[1]",xs:"",sm:"",md:"",lg:"6"});
+$emit({t:"text",id:"widgets/Box1/container-row/row-col[1]/label",text:ec.resource.expand("right")});
+$closeChildren();
+$closeChildren();
+$closeChildren();
+$openChildren({t:"box",id:"widgets/container-box",title:"Header",type:"",initial:""});
+$emit({t:"text",id:"widgets/container-box/box-header/label",text:ec.resource.expand("Head")});
+$emit({t:"text",id:"widgets/container-box/box-toolbar/label",text:ec.resource.expand("toolbar")});
+$emit({t:"text",id:"widgets/container-box/box-body/label",text:ec.resource.expand("Body")});
+$emit({t:"text",id:"widgets/container-box/box-body-nopad/label",text:ec.resource.expand("Nopad")});
+$closeChildren();
+$openChildren({t:"panel",id:"widgets/container-panel"});
+$emit({t:"text",id:"widgets/container-panel/panel-header/label",text:ec.resource.expand("ph")});
+$emit({t:"text",id:"widgets/container-panel/panel-left/label",text:ec.resource.expand("pl")});
+$emit({t:"text",id:"widgets/container-panel/panel-center/label",text:ec.resource.expand("pc")});
+$emit({t:"text",id:"widgets/container-panel/panel-right/label",text:ec.resource.expand("pr")});
+$emit({t:"text",id:"widgets/container-panel/panel-footer/label",text:ec.resource.expand("pf")});
+$closeChildren();
+$openChildren({t:"dialog",id:"D1",title:ec.resource.expand("Open ${name}"),button:ec.resource.expand("Open ${name}")});
+$emit({t:"text",id:"widgets/D1/label",text:ec.resource.expand("in dialog")});
+$closeChildren();
+$openRender({t:"section",id:"First",name:"First"});
+sri.renderSection("First");
+$closeRender();
+$openRender({t:"section",id:"Each",name:"Each",iterate:true});
+sri.renderSection("Each");
+$closeRender();
+$openRender({t:"section",id:"First",name:"First"});
+sri.renderSectionInclude({"name":"section-include","attrs":{"name":"First"}});
+$closeRender();
+$openRender({t:"active",id:"subscreens"});
+sri.renderSubscreen();
+$closeRender();
+{
+                const $menu = sri.getMenuItems() || [];
+        const $items = [];
+        for (let $mi = 0; $mi < $menu.length; $mi++) {
+            const $item = $menu[$mi];
+            $items.push({title:$item.title || "",url:$item.url || "",active:!!$item.inPath});
+        }
+$openRender({t:"subscreens",id:"subscreens",kind:"tab",items:$items});
+                sri.renderSubscreen();
+                $closeRender();
+            }
+$openRender({t:"section",id:"component://x/screen/Other.xml",name:"include"});
+sri.renderIncludeScreen("component://x/screen/Other.xml", "true");
+$closeRender();

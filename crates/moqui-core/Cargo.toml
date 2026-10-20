@@ -88,5 +88,9 @@ image = ["dep:image"]
 # The xlsx render mode and org.moqui.impl.SpreadsheetServices.
 xlsx = ["dep:rust_xlsxwriter", "dep:calamine"]
 
+[dev-dependencies]
+# Model types only. Revue stays behind moqui-tui's ui feature, which this does not turn on.
+moqui-tui = { workspace = true, default-features = false, features = ["model"] }
+
 [lints]
 workspace = true

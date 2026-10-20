@@ -14,9 +14,9 @@
 
 //! Width classes and box placement from section 1.3, for the canvas only.
 //!
-//! No drawer, so the canvas width is the terminal width. The spike page size is
-//! [`PAGE_ROWS`] (the bottom of the 10..=100 range) so the Gallery list stays two pages
-//! on a tall screen. Sizing the page to the visible rows is Phase 2.
+//! [`frame`] docks a 26-column drawer when the terminal is at least 150 columns, and the
+//! width class is the leftover canvas. [`PAGE_ROWS`] is only the fallback when a list
+//! document has no page size. The server sends `pageIndex`; the client does not resize it.
 
 use crate::model::{walk, Node, ScreenModel};
 
@@ -68,6 +68,61 @@ impl LabelMode {
     }
 }
 
+/// Terminal width at which the drawer docks. The leftover canvas is then at least 120.
+pub const DRAWER_DOCK_AT: u16 = 150;
+
+/// Columns the docked drawer takes.
+pub const DRAWER_WIDTH: u16 = 26;
+
+/// Drawer and the canvas the width class is computed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Frame {
+    pub terminal: u16,
+    pub drawer: u16,
+    pub canvas: u16,
+    pub class: WidthClass,
+}
+
+pub fn frame(terminal: u16) -> Frame {
+    let drawer = if terminal >= DRAWER_DOCK_AT { DRAWER_WIDTH } else { 0 };
+    let canvas = terminal.saturating_sub(drawer);
+    Frame {
+        terminal,
+        drawer,
+        canvas,
+        class: width_class(canvas),
+    }
+}
+
+/// Beside-label column. `xs` is 0 because the label sits above the value. `sm` caps at 18, other classes at 24.
+pub fn label_column_width(titles: &[&str], class: WidthClass) -> usize {
+    if class == WidthClass::Xs {
+        return 0;
+    }
+    let cap = if class == WidthClass::Sm {
+        LABEL_CAP_SM
+    } else {
+        LABEL_CAP
+    };
+    titles
+        .iter()
+        .map(|title| display_width(title).min(cap))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Title padded with dot leaders out to `width` columns. A width of 0 returns the title.
+pub fn dotted_label(title: &str, width: usize) -> String {
+    if width == 0 {
+        return title.to_string();
+    }
+    let shown = truncate_width(title, width);
+    let gap = width.saturating_sub(display_width(&shown));
+    let mut out = shown;
+    out.push_str(&".".repeat(gap));
+    out
+}
+
 pub fn width_class(canvas: u16) -> WidthClass {
     match canvas {
         0..=79 => WidthClass::Xs,
@@ -89,10 +144,20 @@ pub struct LaidOut {
 pub enum Block {
     /// Consecutive boxes, side by side when the class and the 40-column rule allow it.
     Boxes(Vec<LaidBox>),
+    /// Columns of a `container-row`, side by side when a column starts past x 0.
+    Columns(Vec<LaidColumn>),
     Form(LaidForm),
     List(LaidList),
     Link(LaidLink),
     Text(String),
+}
+
+/// One column of a row. `blocks` were placed at the parent width class, in `w` columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaidColumn {
+    pub x: u16,
+    pub w: u16,
+    pub blocks: Vec<Block>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,42 +224,63 @@ pub fn layout(model: &ScreenModel, canvas: u16) -> LaidOut {
 pub fn outline(model: &ScreenModel, canvas: u16) -> String {
     let laid = layout(model, canvas);
     let mut out = format!("class={} canvas={canvas}\n", laid.class.name());
-    for block in &laid.blocks {
-        match block {
-            Block::Boxes(boxes) => {
-                if boxes.len() > 1 && boxes.iter().any(|box_| box_.x > 0) {
-                    out.push_str("row\n");
-                }
-                for box_ in boxes {
-                    out.push_str(&format!("box {} x={} w={}\n", box_.title, box_.x, box_.w));
-                    for child in &box_.children {
-                        push_child(&mut out, child, "  ");
-                    }
-                }
-            }
-            Block::Form(form) => {
-                out.push_str(&format!("form {}\n", form.name));
-                for field in &form.fields {
-                    out.push_str(&format!("  field {} {}\n", field.title, field.mode.name()));
-                }
-            }
-            Block::List(list) => {
-                out.push_str(&format!(
-                    "list {} scroll={}\n",
-                    list.name,
-                    if list.scroll { "true" } else { "false" }
-                ));
-                for col in &list.columns {
-                    let fixed = if col.fixed { " fixed" } else { "" };
-                    out.push_str(&format!("  col {} w={}{fixed}\n", col.title, col.width));
-                }
-                out.push_str(&format!("  page_rows={}\n", list.page_rows));
-            }
-            Block::Link(link) => out.push_str(&format!("link {}\n", link.text)),
-            Block::Text(text) => out.push_str(&format!("text {text}\n")),
-        }
-    }
+    write_blocks(&mut out, &laid.blocks, "");
     out
+}
+
+fn write_blocks(out: &mut String, blocks: &[Block], indent: &str) {
+    for block in blocks {
+        write_block(out, block, indent);
+    }
+}
+
+fn write_block(out: &mut String, block: &Block, indent: &str) {
+    match block {
+        Block::Boxes(boxes) => {
+            if boxes.len() > 1 && boxes.iter().any(|box_| box_.x > 0) {
+                out.push_str(indent);
+                out.push_str("row\n");
+            }
+            for box_ in boxes {
+                out.push_str(&format!("{indent}box {} x={} w={}\n", box_.title, box_.x, box_.w));
+                let child_indent = format!("{indent}  ");
+                for child in &box_.children {
+                    push_child(out, child, &child_indent);
+                }
+            }
+        }
+        Block::Columns(columns) => {
+            if columns.iter().any(|column| column.x > 0) {
+                out.push_str(indent);
+                out.push_str("row\n");
+            }
+            let nested = format!("{indent}  ");
+            for column in columns {
+                out.push_str(&format!("{indent}col x={} w={}\n", column.x, column.w));
+                write_blocks(out, &column.blocks, &nested);
+            }
+        }
+        Block::Form(form) => {
+            out.push_str(&format!("{indent}form {}\n", form.name));
+            for field in &form.fields {
+                out.push_str(&format!("{indent}  field {} {}\n", field.title, field.mode.name()));
+            }
+        }
+        Block::List(list) => {
+            out.push_str(&format!(
+                "{indent}list {} scroll={}\n",
+                list.name,
+                if list.scroll { "true" } else { "false" }
+            ));
+            for col in &list.columns {
+                let fixed = if col.fixed { " fixed" } else { "" };
+                out.push_str(&format!("{indent}  col {} w={}{fixed}\n", col.title, col.width));
+            }
+            out.push_str(&format!("{indent}  page_rows={}\n", list.page_rows));
+        }
+        Block::Link(link) => out.push_str(&format!("{indent}link {}\n", link.text)),
+        Block::Text(text) => out.push_str(&format!("{indent}text {text}\n")),
+    }
 }
 
 fn push_child(out: &mut String, child: &BoxChild, indent: &str) {
@@ -217,14 +303,168 @@ fn place_nodes(nodes: &[Node], class: WidthClass, canvas: u16) -> Vec<Block> {
                 index += 1;
             }
             blocks.push(Block::Boxes(place_boxes(&nodes[start..index], class, canvas)));
-        } else {
-            if let Some(block) = place_one(&nodes[index], class, canvas) {
-                blocks.push(block);
-            }
-            index += 1;
+            continue;
         }
+        if let Node::Row { c, .. } = &nodes[index] {
+            blocks.extend(place_row(c, class, canvas));
+        } else if let Some(children) = transparent(&nodes[index]) {
+            blocks.extend(place_nodes(children, class, canvas));
+        } else if let Some(block) = place_one(&nodes[index], class, canvas) {
+            blocks.push(block);
+        }
+        index += 1;
     }
     blocks
+}
+
+/// Section, container, and the other wrappers that are not themselves drawn.
+fn transparent(node: &Node) -> Option<&[Node]> {
+    match node {
+        Node::Section { c, .. }
+        | Node::Container { c, .. }
+        | Node::Fragment { c, .. }
+        | Node::Active { c, .. }
+        | Node::Subscreen { c, .. }
+        | Node::Panel { c, .. }
+        | Node::Split { c, .. }
+        | Node::Dashboard { c, .. }
+        | Node::ButtonMenu { c, .. }
+        | Node::Col { c, .. } => Some(c),
+        _ => None,
+    }
+}
+
+fn place_row(children: &[Node], class: WidthClass, canvas: u16) -> Vec<Block> {
+    let columns: Vec<&Node> = children
+        .iter()
+        .filter(|node| matches!(node, Node::Col { .. }))
+        .collect();
+    let (spans, bodies): (Vec<Option<u16>>, Vec<&[Node]>) = if columns.is_empty() {
+        (vec![None], vec![children])
+    } else {
+        (
+            columns.iter().map(|node| span_at(node, class)).collect(),
+            columns.iter().map(|node| node.children()).collect(),
+        )
+    };
+    let mut blocks = Vec::new();
+    for line in span_lines(&spans) {
+        blocks.extend(place_line(&spans[line.clone()], &bodies[line], class, canvas));
+    }
+    blocks
+}
+
+/// Splits the columns into lines as Bootstrap wraps them: a column whose span would take its line
+/// past 12 starts the next line.
+fn span_lines(spans: &[Option<u16>]) -> Vec<std::ops::Range<usize>> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut used = 0u16;
+    for (index, span) in spans.iter().enumerate() {
+        let span = span.unwrap_or(0).min(12);
+        if index > start && used + span > 12 {
+            lines.push(start..index);
+            start = index;
+            used = 0;
+        }
+        used += span;
+    }
+    lines.push(start..spans.len());
+    lines
+}
+
+fn place_line(spans: &[Option<u16>], bodies: &[&[Node]], class: WidthClass, canvas: u16) -> Vec<Block> {
+    let slots = column_slots(spans, class, canvas);
+    if slots.iter().all(|(x, _)| *x == 0) {
+        let mut blocks = Vec::new();
+        for body in bodies {
+            blocks.extend(place_nodes(body, class, canvas));
+        }
+        return blocks;
+    }
+    let laid = slots
+        .into_iter()
+        .zip(bodies)
+        .map(|((x, w), body)| LaidColumn {
+            x,
+            w,
+            blocks: place_nodes(body, class, w),
+        })
+        .collect();
+    vec![Block::Columns(laid)]
+}
+
+fn span_at(node: &Node, class: WidthClass) -> Option<u16> {
+    let Node::Col { xs, sm, md, lg, .. } = node else {
+        return None;
+    };
+    let text = match class {
+        WidthClass::Xs => xs.as_str(),
+        WidthClass::Sm => filled(sm).unwrap_or(xs),
+        WidthClass::Md => filled(md).or_else(|| filled(sm)).unwrap_or(xs),
+        WidthClass::Lg | WidthClass::Xl => filled(lg).or_else(|| filled(md)).or_else(|| filled(sm)).unwrap_or(xs),
+    };
+    let span = text.parse::<u16>().ok()?;
+    (span > 0).then_some(span)
+}
+
+fn filled(text: &str) -> Option<&str> {
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn column_slots(spans: &[Option<u16>], class: WidthClass, canvas: u16) -> Vec<(u16, u16)> {
+    let count = spans.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    if class.stacks_boxes() {
+        return vec![(0, canvas); count];
+    }
+    if spans.iter().all(Option::is_none) {
+        return box_slots(count, class, canvas);
+    }
+    let widths = span_widths(spans, canvas);
+    if widths.iter().any(|width| *width < BOX_MIN) {
+        return vec![(0, canvas); count];
+    }
+    let mut slots = Vec::with_capacity(count);
+    let mut x = 0u16;
+    for width in widths {
+        slots.push((x, width));
+        x = x.saturating_add(width).saturating_add(1);
+    }
+    slots
+}
+
+fn span_widths(spans: &[Option<u16>], canvas: u16) -> Vec<u16> {
+    let count = u16::try_from(spans.len()).unwrap_or(u16::MAX);
+    let inner = canvas.saturating_sub(count.saturating_sub(1));
+    let specified: u32 = spans.iter().copied().flatten().map(u32::from).sum();
+    let flex_count = u16::try_from(spans.iter().filter(|span| span.is_none()).count()).unwrap_or(0);
+    let specified_width = inner.saturating_mul(u16::try_from(specified.min(12)).unwrap_or(12)) / 12;
+    let flex_total = inner.saturating_sub(specified_width);
+    let flex_share = flex_total.checked_div(flex_count).unwrap_or(0);
+    let mut flex_used = 0u16;
+    let mut flex_seen = 0u16;
+    spans
+        .iter()
+        .map(|span| match span {
+            Some(span) => inner.saturating_mul((*span).min(12)) / 12,
+            None => {
+                flex_seen += 1;
+                if flex_seen == flex_count {
+                    flex_total.saturating_sub(flex_used)
+                } else {
+                    flex_used = flex_used.saturating_add(flex_share);
+                    flex_share
+                }
+            }
+        })
+        .collect()
 }
 
 fn place_one(node: &Node, class: WidthClass, canvas: u16) -> Option<Block> {
@@ -241,7 +481,7 @@ fn place_one(node: &Node, class: WidthClass, canvas: u16) -> Option<Block> {
             text: text.clone(),
         })),
         Node::Text { text, .. } => Some(Block::Text(text.clone())),
-        Node::Field { .. } | Node::Box { .. } => None,
+        _ => None,
     }
 }
 
@@ -251,7 +491,7 @@ fn place_boxes(nodes: &[Node], class: WidthClass, canvas: u16) -> Vec<LaidBox> {
         .iter()
         .zip(slots)
         .filter_map(|(node, (x, w))| {
-            let Node::Box { id, title, c } = node else {
+            let Node::Box { id, title, c, .. } = node else {
                 return None;
             };
             Some(LaidBox {
@@ -302,7 +542,7 @@ fn box_children(nodes: &[Node], class: WidthClass, canvas: u16) -> Vec<BoxChild>
                 text: text.clone(),
             })),
             Node::Text { text, .. } => children.push(BoxChild::Text(text.clone())),
-            Node::Form { .. } | Node::FormList { .. } | Node::Box { .. } => {}
+            _ => {}
         }
     }
     children
@@ -427,12 +667,64 @@ pub fn truncate_width(text: &str, max: usize) -> String {
 /// Column widths the painter uses, looked up from a laid-out list.
 #[cfg_attr(not(feature = "ui"), allow(dead_code))]
 pub fn list_column_widths(model: &ScreenModel, canvas: u16, list_id: &str) -> Vec<usize> {
-    layout(model, canvas)
-        .blocks
-        .into_iter()
-        .find_map(|block| match block {
-            Block::List(list) if list.id == list_id => Some(list.columns.into_iter().map(|col| col.width).collect()),
-            _ => None,
-        })
-        .unwrap_or_default()
+    list_widths(&layout(model, canvas).blocks, list_id).unwrap_or_default()
+}
+
+fn list_widths(blocks: &[Block], list_id: &str) -> Option<Vec<usize>> {
+    for block in blocks {
+        match block {
+            Block::List(list) if list.id == list_id => {
+                return Some(list.columns.iter().map(|col| col.width).collect());
+            }
+            Block::Columns(columns) => {
+                for column in columns {
+                    if let Some(found) = list_widths(&column.blocks, list_id) {
+                        return Some(found);
+                    }
+                }
+            }
+            Block::Boxes(_) | Block::Form(_) | Block::List(_) | Block::Link(_) | Block::Text(_) => {}
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::outline;
+    use crate::model::ScreenModel;
+
+    const ROW: &str = r#"{"v":1,"screen":{"path":"/row","title":"Row"},"c":[{"t":"row","id":"r","c":[
+        {"t":"col","id":"a","lg":"6","c":[{"t":"box","id":"ba","title":"Left","c":[]}]},
+        {"t":"col","id":"b","lg":"6","c":[{"t":"box","id":"bb","title":"Right","c":[]}]}
+    ]}]}"#;
+
+    /// Distinct `col x=` values. A list header is `col Title`, which does not match.
+    fn column_xs(text: &str) -> Vec<u16> {
+        let mut xs = Vec::new();
+        for line in text.lines() {
+            let Some(rest) = line.trim().strip_prefix("col x=") else {
+                continue;
+            };
+            let Some(token) = rest.split_whitespace().next() else {
+                continue;
+            };
+            let Ok(x) = token.parse::<u16>() else {
+                continue;
+            };
+            if !xs.contains(&x) {
+                xs.push(x);
+            }
+        }
+        xs
+    }
+
+    #[test]
+    fn a_row_of_two_lg_columns_sits_side_by_side_at_md_and_stacks_at_sm() {
+        let model = ScreenModel::from_json(ROW).unwrap();
+        let wide = outline(&model, 154);
+        assert!(column_xs(&wide).len() >= 2, "{wide}");
+        let narrow = outline(&model, 100);
+        assert!(column_xs(&narrow).len() < 2, "{narrow}");
+    }
 }

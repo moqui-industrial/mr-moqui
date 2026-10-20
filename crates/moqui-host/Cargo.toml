@@ -43,12 +43,17 @@ imap = ["moqui-core/imap"]
 git = ["moqui-core/git"]
 image = ["moqui-core/image"]
 xlsx = ["moqui-core/xlsx"]
+# The screen client. Off the default packages: `moqui` defaults to maximal, and `cargo check -p moqui` must not
+# compile Revue. Turn it on for the scripted screens: `cargo test -p moqui-host --features tui --test tui_screens`.
+tui = ["dep:moqui-tui"]
 
 [dependencies]
 # The workspace entry has default features off (moqui-browser). The host always has HTTP and the cluster
 # certificate; the other core features follow the host's own.
 moqui-core = { workspace = true, features = ["http", "cluster-tls"] }
 moqui-lib = { workspace = true, features = ["http"] }
+# `ui` pulls Revue. The feature above is what links it, and it is not in lite, enterprise, or maximal.
+moqui-tui = { workspace = true, optional = true, features = ["ui"] }
 tracing = { workspace = true }
 # Log line and log entry timestamps (crates/moqui-host/src/logging.rs). Already in the graph under moqui-lib.
 jiff = { workspace = true }
@@ -109,4 +114,10 @@ test = false
 
 [[test]]
 name = "gate3_browser"
+test = false
+
+# Scripted Gallery and Party screens. Revue is behind the `tui` feature, so a default `cargo test` does not build it.
+[[test]]
+name = "tui_screens"
+required-features = ["tui"]
 test = false

@@ -1,8 +1,50 @@
-Enumeration Detail
-+ Record                                                                                  + Type
-  Enum ID STT_INTERNAL                                                                      Type Screen Theme Type
-> Updated [2026-10-20]                                                                      Code STT
-  Status [Running ▾]                                                                        Sample 東京 🎉
-  Enumeration description… cafe
-  Back to list
-focus updated
+Gallery ▸ Detail ▸ Enumeration Detail
+                         │+ Record                                                                     + Type
+                         │  Enum ID................. STT_INTERNAL                                        Type.. Screen Theme Type
+                         │> Updated................. [2026-10-20]                                        Code.. STT
+                         │  Status.................. [Running ▾]                                         Sample 東京 🎉
+                         │  Enumeration description… cafe
+                         │  Back to list
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+
+F3=Back  F4=Prompt  F5=Reload  F7=Page  F8=Page  F12=Cancel

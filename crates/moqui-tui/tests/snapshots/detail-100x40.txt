@@ -1,12 +1,40 @@
-Enumeration Detail
+≡ Gallery ▸ Detail ▸ Enumeration Detail
 + Record
-  Enum ID STT_INTERNAL
-> Updated [2026-10-20]
-  Status [Running ▾]
+  Enum ID........... STT_INTERNAL
+> Updated........... [2026-10-20]
+  Status............ [Running ▾]
   Enumeration descr… cafe
 + Type
-  Type Screen Theme Type
-  Code STT
+  Type.. Screen Theme Type
+  Code.. STT
   Sample 東京 🎉
   Back to list
-focus updated
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+F3=Back  F4=Prompt  F5=Reload  F7=Page  F8=Page  F12=Cancel

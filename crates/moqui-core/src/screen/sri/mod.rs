@@ -29,6 +29,8 @@ mod options;
 mod sections;
 mod theme;
 
+pub(in crate::screen) use sections::strip_controls;
+
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -63,6 +65,18 @@ pub use sections::{
 pub(super) use sections::{is_security, iteration_entries, paginate_items};
 pub use theme::{get_theme_icon_class, get_theme_values};
 pub(crate) use theme::{theme_resource_values, user_theme_id, DEFAULT_QUASAR_THEME, QUASAR_THEME_TYPE};
+
+/// The first focus id wins. A tui form macro calls this with `form.field` from the form's `focus-field`.
+pub fn set_focus_field(state: &RenderState, id: &str) {
+    let mut slot = state.focus.borrow_mut();
+    if !slot.is_empty() {
+        return;
+    }
+    let clean = strip_controls(id);
+    if !clean.is_empty() {
+        *slot = clean;
+    }
+}
 
 /// Generates and runs the code of a section on the script runtime that is running the render.
 pub trait Runner {

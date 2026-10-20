@@ -691,6 +691,9 @@
                 macro-template-location="framework/template/screen/ScreenPlain.js"/>
         <screen-text-output type="qvue" mime-type="text/html" always-standalone="true"
                 macro-template-location="framework/template/screen/ScreenPlain.js"/>
+        <!-- tui is the terminal document: one JSON screen model -->
+        <screen-text-output type="tui" mime-type="application/json" always-standalone="true"
+                macro-template-location="framework/template/screen/ScreenTui.js"/>
 
         <!-- xlsx is a binary mode (the moqui-poi port): the module fills a workbook with a sheet for each form-list -->
         <screen-output type="xlsx" mime-type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
