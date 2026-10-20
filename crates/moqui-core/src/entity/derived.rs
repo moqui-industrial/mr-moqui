@@ -125,6 +125,12 @@ pub(crate) fn note_write(facade: &EntityFacade, full_name: &str) {
     }
 }
 
+/// Counts the drops. A cache of something read from a definition by name keeps the count it was filled at and starts
+/// over when it changes, as a DB view entity or a data document may be built again under the same name.
+pub(crate) fn generation(facade: &EntityFacade) -> u64 {
+    facade.inner.derived.generation.load(Ordering::Acquire)
+}
+
 /// Drop every built definition, as the tools screens' `clearEntityDefinitionFromCache` (Java drops the one named).
 pub(crate) fn clear(facade: &EntityFacade) {
     let derived = &facade.inner.derived;

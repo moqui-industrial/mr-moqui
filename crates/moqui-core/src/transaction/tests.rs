@@ -12,6 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -33,6 +34,7 @@ struct Shared {
     next_id: AtomicU64,
     cancels: Mutex<Vec<Arc<AtomicBool>>>,
     cancellers: AtomicUsize,
+    closed: Mutex<HashSet<i64>>,
 }
 
 struct FakeDriver {
@@ -60,8 +62,13 @@ impl FakeDriver {
                 next_id: AtomicU64::new(1),
                 cancels: Mutex::new(Vec::new()),
                 cancellers: AtomicUsize::new(0),
+                closed: Mutex::new(HashSet::new()),
             }),
         })
+    }
+
+    fn close(&self, id: i64) {
+        self.shared.closed.lock().expect("closed").insert(id);
     }
 
     fn connects(&self) -> usize {
@@ -115,6 +122,14 @@ impl DbCancel for FlagCancel {
 }
 
 impl DbConnection for FakeConn {
+    fn is_closed(&self) -> bool {
+        self.shared
+            .closed
+            .lock()
+            .expect("closed")
+            .contains(&i64::try_from(self.id).unwrap_or(i64::MAX))
+    }
+
     fn execute(&mut self, sql: &str, _params: &[Value]) -> Result<u64, Error> {
         self.touch(sql)?;
         Ok(1)
@@ -232,6 +247,8 @@ fn small() -> PoolConfig {
         max: 8,
         reserve: 2,
         acquire_timeout: Duration::from_secs(2),
+        // The suite's older cases check out twice and expect the test query. Zero keeps that.
+        test_after_idle: Duration::ZERO,
         ..Default::default()
     }
 }
@@ -635,6 +652,69 @@ fn idle_checkout_runs_the_configured_test_query() {
     assert_eq!(driver.event_count("sql:SELECT 42"), 0);
     mgr.with_connection(|_| Ok(())).expect("reuse");
     assert_eq!(driver.event_count("sql:SELECT 42"), 1);
+    assert_eq!(driver.event_count("sql:SELECT 1"), 0);
+}
+
+#[test]
+fn a_connection_returned_recently_skips_the_test_query() {
+    let config = PoolConfig {
+        test_after_idle: Duration::from_secs(60),
+        ..small()
+    };
+    let (mgr, driver) = harness(config);
+    let _clean = Clean(&mgr);
+    mgr.with_connection(|_| Ok(())).expect("connect");
+    mgr.with_connection(|_| Ok(())).expect("reuse");
+    assert_eq!(driver.connects(), 1);
+    assert_eq!(driver.event_count("sql:SELECT 1"), 0);
+
+    let later = PoolConfig {
+        test_after_idle: Duration::from_millis(20),
+        ..small()
+    };
+    let (mgr, driver) = harness(later);
+    let _clean = Clean(&mgr);
+    mgr.with_connection(|_| Ok(())).expect("connect");
+    std::thread::sleep(Duration::from_millis(40));
+    mgr.with_connection(|_| Ok(())).expect("reuse after the window");
+    assert_eq!(driver.event_count("sql:SELECT 1"), 1);
+}
+
+#[test]
+fn a_connection_handed_out_without_a_test_counts_as_checked_out() {
+    let config = PoolConfig {
+        test_after_idle: Duration::from_secs(60),
+        ..small()
+    };
+    let (mgr, driver) = harness(config);
+    let _clean = Clean(&mgr);
+    mgr.with_connection(|_| Ok(())).expect("connect");
+    assert!(mgr.begin(None).expect("begin"));
+    mgr.with_connection(|_| Ok(())).expect("enlist the idle client untested");
+    assert_eq!(driver.event_count("sql:SELECT 1"), 0);
+    assert_eq!(mgr.stats().checked_out, 1);
+    assert_eq!(mgr.stats().checkouts, 2);
+    mgr.commit().expect("commit");
+    assert_eq!(mgr.stats().checked_out, 0);
+    assert_eq!(mgr.stats().ordinary_idle, 1);
+}
+
+#[test]
+fn a_closed_idle_connection_is_discarded_without_a_test_query() {
+    let config = PoolConfig {
+        test_after_idle: Duration::from_secs(60),
+        ..small()
+    };
+    let (mgr, driver) = harness(config);
+    let _clean = Clean(&mgr);
+    let id = mgr.with_connection(conn_id).expect("connect");
+    driver.close(id);
+    mgr.with_connection(|_| Ok(())).expect("replace");
+    assert_eq!(
+        driver.connects(),
+        2,
+        "the closed client was dropped and a new one opened"
+    );
     assert_eq!(driver.event_count("sql:SELECT 1"), 0);
 }
 

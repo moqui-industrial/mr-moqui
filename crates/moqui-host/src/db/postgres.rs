@@ -338,6 +338,10 @@ mod driver {
     }
 
     impl DbConnection for PostgresConn {
+        fn is_closed(&self) -> bool {
+            self.client.is_closed()
+        }
+
         fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
             let bound = bind(params)?;
             let refs = param_refs(&bound);

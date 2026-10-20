@@ -52,7 +52,7 @@ impl Drop for RawReadGuard {
     }
 }
 
-fn raw_read() -> bool {
+pub(crate) fn raw_read() -> bool {
     RAW_READ.with(Cell::get)
 }
 

@@ -274,6 +274,10 @@ pub(crate) fn note_write(
     pk_fields: &[String],
     values: &std::collections::BTreeMap<String, Value>,
 ) -> Result<(), Error> {
+    // No peer and no local listener: there is no one to tell, so the message (a UUID and a JSON body) is not built.
+    if !is_linked(facade) && !notify::has_listeners(ENTITY_CACHE_INVALIDATE) {
+        return Ok(());
+    }
     let message = TopicMessage {
         origin_id: notify::origin_id().to_string(),
         message_id: crate::entity::uuid_v4().map_err(Error::from)?,

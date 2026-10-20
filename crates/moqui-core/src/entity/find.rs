@@ -381,7 +381,7 @@ impl EntityFind {
         if list.len() > 1 {
             tracing::trace!(entity = %entity_name, rows = list.len(), "found more than one result for find one");
         }
-        Ok(list.values().first().cloned())
+        Ok(list.into_values().into_iter().next())
     }
 
     /// A primary key field compared to null or an empty value, as Java's `hasEmptyPk`.
@@ -673,7 +673,21 @@ impl EntityFind {
                         .filter(|field| wanted(&field.name))
                         .map(|field| FieldRef::new(&field.name))
                         .collect();
-                    let statement = select_with(entity, dialect, &fields, condition.as_ref(), &order, page, &options)?;
+                    let statement = if let Some(pk) =
+                        lone_pk_equals(entity, condition.as_ref(), &order, page, &options, &select_fields)
+                    {
+                        let key = format!("{}|{}|select-pk", entity.full_name, dialect.name);
+                        let facade = self.facade.clone();
+                        let sql = super::sql_cache::cached(&facade, &key, || {
+                            Ok(select_with(entity, dialect, &fields, condition.as_ref(), &order, page, &options)?.sql)
+                        })?;
+                        moqui_db::sql::Statement {
+                            sql: sql.to_string(),
+                            params: vec![pk.clone()],
+                        }
+                    } else {
+                        select_with(entity, dialect, &fields, condition.as_ref(), &order, page, &options)?
+                    };
                     (statement, entity_columns(entity, model))
                 };
                 if count_only {
@@ -769,12 +783,49 @@ impl ConditionValues for FindValues {
     }
 }
 
-/// The localized fields of `entity_name`, for the values a find of it returns.
+/// The localized fields of `entity_name`, built once per entity and then shared. A raw read sees the stored values
+/// and does not fill the cache.
 fn find_l10n(facade: &EntityFacade, entity_name: &str) -> Option<Arc<field_rw::L10nTargets>> {
-    facade
+    if field_rw::raw_read() {
+        return None;
+    }
+    // Read before the definition, so a view built again meanwhile is not kept under the older count.
+    let generation = super::derived::generation(facade);
+    let known = facade.with_slot(L10nCache::default, |cache| cache.get(entity_name, generation));
+    if let Some(known) = known {
+        return known;
+    }
+    let built = facade
         .with_entity(entity_name, |entity, _, _| Ok(field_rw::l10n_targets(facade, entity)))
         .ok()
-        .flatten()
+        .flatten();
+    facade.with_slot(L10nCache::default, |cache| cache.insert(entity_name, generation, built.clone()));
+    built
+}
+
+#[derive(Default)]
+struct L10nCache {
+    /// [`super::derived::generation`] when these were read. A view built at runtime may change under its name.
+    generation: u64,
+    /// `None` means the entity was checked and has no localized fields.
+    by_entity: std::collections::HashMap<String, Option<Arc<field_rw::L10nTargets>>>,
+}
+
+impl L10nCache {
+    fn get(&mut self, entity_name: &str, generation: u64) -> Option<Option<Arc<field_rw::L10nTargets>>> {
+        if self.generation != generation {
+            self.by_entity.clear();
+            self.generation = generation;
+            return None;
+        }
+        self.by_entity.get(entity_name).cloned()
+    }
+
+    fn insert(&mut self, entity_name: &str, generation: u64, targets: Option<Arc<field_rw::L10nTargets>>) {
+        if self.generation == generation {
+            self.by_entity.insert(entity_name.to_string(), targets);
+        }
+    }
 }
 
 /// The number a count query returned.
@@ -787,6 +838,43 @@ fn count_of(rows: &[DbRow]) -> Result<i64, Error> {
     match basic_convert(&value, "Long").value {
         Value::I64(number) => Ok(number),
         other => Err(Error::new(format!("count returned {other:?}"))),
+    }
+}
+
+/// A find of every column by the single primary key, with no order or page. Its SQL does not change with the key, which
+/// is bound as given; text for a key that is not text is left to the full render, which converts it.
+fn lone_pk_equals<'a>(
+    entity: &moqui_db::model::EntityDefinition,
+    condition: Option<&'a Condition>,
+    order: &[OrderBy],
+    page: LimitOffset,
+    options: &SelectOptions,
+    select_fields: &[String],
+) -> Option<&'a Value> {
+    if !select_fields.is_empty()
+        || !order.is_empty()
+        || page.is_set()
+        || options.distinct
+        || options.for_update
+        || options.having.is_some()
+    {
+        return None;
+    }
+    let pk = entity.pk_field_names();
+    let [name] = pk.as_slice() else {
+        return None;
+    };
+    match condition {
+        Some(Condition::Equals(field, value))
+            if field.entity_alias.is_none()
+                && field.expr.is_none()
+                && field.name == *name
+                && !value.is_null()
+                && (!matches!(value, Value::String(_)) || entity.field(name).is_some_and(|field| field.is_text())) =>
+        {
+            Some(value)
+        }
+        _ => None,
     }
 }
 

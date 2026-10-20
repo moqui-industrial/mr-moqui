@@ -594,7 +594,7 @@ fn write_chunk(facade: &EntityFacade, chunk: &[(&str, BTreeMap<String, Value>)])
             value.set(name.clone(), field.clone());
         }
         value.set_sequenced_id_primary(facade)?;
-        let plain = facade.normalize_values(entity_name, value.fields(), false)?;
+        let plain = facade.normalize_values(entity_name, value.fields().clone(), false)?;
         let names: Vec<&str> = plain.keys().map(String::as_str).collect();
         let sql = facade.with_entity(entity_name, |entity, dialect, _| sql_insert(entity, dialect, &names))?;
         statements.push((sql, plain.into_values().collect::<Vec<_>>()));

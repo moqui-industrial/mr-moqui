@@ -39,6 +39,7 @@ mod search_form;
 mod sequence;
 mod share;
 mod sim_view;
+mod sql_cache;
 mod value;
 
 pub(crate) use cache::screen_config_generation;

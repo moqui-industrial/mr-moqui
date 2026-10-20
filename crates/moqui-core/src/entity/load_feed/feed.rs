@@ -47,8 +47,8 @@ pub(super) struct Touch {
     entity_name: String,
     operation: String,
     /// The written values. The feed reads keys from them, and a related delete walks back to the
-    /// primary entity from them. `None` falls back to the Postgres `xmin` probe.
-    fields: Option<BTreeMap<String, Value>>,
+    /// primary entity from them. `None` falls back to the Postgres `xmin` probe. Shared with the write's other hooks.
+    fields: Option<Arc<BTreeMap<String, Value>>>,
     /// For an update of a feed entity, the row as it was before, so an update that changes no document field is
     /// not fed (Java's `oldValues`). `None` feeds the update.
     old: Option<BTreeMap<String, Value>>,
@@ -83,7 +83,7 @@ pub(crate) fn note_touch(
     facade: &EntityFacade,
     entity_name: &str,
     operation: &str,
-    fields: Option<&BTreeMap<String, Value>>,
+    fields: Option<&Arc<BTreeMap<String, Value>>>,
     old: Option<BTreeMap<String, Value>>,
 ) {
     let Some(tx) = facade.transactions_for(entity_name).ok() else {
@@ -230,7 +230,7 @@ fn insert_pending(
     // a document decides between index and delete.
     let mut resolved: indexmap::IndexMap<(String, String), (String, &'static str)> = indexmap::IndexMap::new();
     for touch in &touches {
-        let Some(fields) = &touch.fields else {
+        let Some(fields) = touch.fields.as_deref() else {
             continue;
         };
         for hit in targets.iter().filter(|target| target.entity_name == touch.entity_name) {
@@ -1067,7 +1067,7 @@ mod filter_tests {
         let touch = |operation: &str, fields: BTreeMap<String, Value>, old: Option<BTreeMap<String, Value>>| Touch {
             entity_name: "E".to_string(),
             operation: operation.to_string(),
-            fields: Some(fields),
+            fields: Some(std::sync::Arc::new(fields)),
             old,
         };
         let feeds = |touch: &Touch| touch_feeds(&target, touch, touch.fields.as_ref().unwrap());

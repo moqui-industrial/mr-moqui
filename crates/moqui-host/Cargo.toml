@@ -110,3 +110,9 @@ test = false
 [[test]]
 name = "gate3_browser"
 test = false
+
+# Opt-in entity facade timings. Not linked by a default `cargo test`.
+# CARGO_PROFILE_RELEASE_DEBUG=1 cargo test --release -p moqui-host --test entity_speed -- --ignored --nocapture
+[[test]]
+name = "entity_speed"
+test = false

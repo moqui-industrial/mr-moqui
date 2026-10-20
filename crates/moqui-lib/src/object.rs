@@ -498,6 +498,17 @@ fn simple_type_name(java_type: &str) -> &str {
     }
 }
 
+/// Whether `value` is already the Java type `java_type` names (`java.lang.String`, `String`, and so on).
+///
+/// A null value and an empty type name count as already converted: there is nothing to coerce.
+#[must_use]
+pub fn is_java_type(value: &Value, java_type: &str) -> bool {
+    if value.is_null() || java_type.is_empty() {
+        return true;
+    }
+    matches_target(value, simple_type_name(java_type))
+}
+
 fn matches_target(value: &Value, target: &str) -> bool {
     matches!(
         (value, target),
