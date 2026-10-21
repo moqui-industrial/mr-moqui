@@ -1472,3 +1472,36 @@ fn a_screen_document_for_the_terminal_is_an_html_node() {
     assert_eq!(missing.status, 404, "{}", missing.body_text());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A link to a transition, asked for as a `tui` level (Tools' Run Job), answers its redirect as JSON with the messages
+/// the transition left: the terminal's next request has no session to keep them in for the screen it goes to.
+#[test]
+fn a_transition_asked_for_in_tui_answers_its_redirect_as_json() {
+    let dir = std::env::temp_dir().join(format!("moqui-tui-redirect-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Root.xml"),
+        r#"<screen require-authentication="false">
+            <transition name="runIt"><actions><script>ec.message.addMessage("Ran it")</script></actions>
+                <default-response url="."><parameter name="thing" value="one"/></default-response></transition>
+            <widgets><label text="Root"/></widgets></screen>"#,
+    )
+    .unwrap();
+    let context = ExecutionContextFactory::test_context();
+    let output = make_render(context.factory())
+        .root_screen(dir.join("Root.xml").to_string_lossy().into_owned())
+        .screen_path("runIt")
+        .render_mode("tui")
+        .render()
+        .unwrap_or_else(|err| panic!("{err}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let body = output.body_text();
+    assert!(!(300..400).contains(&output.status), "{} {body}", output.status);
+    let doc: Json = serde_json::from_str(&body).unwrap_or_else(|err| panic!("{err}: {body}"));
+    assert!(
+        doc["screenUrl"].as_str().is_some_and(|url| url.contains("thing=one")),
+        "{body}"
+    );
+    assert!(body.contains("Ran it"), "{body}");
+}

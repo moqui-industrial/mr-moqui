@@ -45,7 +45,9 @@ image = ["moqui-core/image"]
 xlsx = ["moqui-core/xlsx"]
 # The terminal client (`moqui tui`, plans/Screen-TUI-Impl.md 4.6): in every package, so it compiles Revue; lite has it
 # for a quick terminal loop while developing and testing.
-tui = ["dep:moqui-tui"]
+# Its remote client (`moqui tui --server`) takes pushed notifications from `/notws` over tungstenite, with the web's
+# root certificates for https.
+tui = ["dep:moqui-tui", "dep:tungstenite", "dep:webpki-roots"]
 
 [dependencies]
 # The workspace entry has default features off (moqui-browser). The host always has HTTP and the cluster
@@ -54,6 +56,7 @@ moqui-core = { workspace = true, features = ["http", "cluster-tls"] }
 moqui-lib = { workspace = true, features = ["http"] }
 # `ui` pulls Revue. The `tui` feature above links it.
 moqui-tui = { workspace = true, optional = true, features = ["ui"] }
+tungstenite = { version = "0.29", default-features = false, features = ["handshake"], optional = true }
 tracing = { workspace = true }
 # Log line and log entry timestamps (crates/moqui-host/src/logging.rs). Already in the graph under moqui-lib.
 jiff = { workspace = true }

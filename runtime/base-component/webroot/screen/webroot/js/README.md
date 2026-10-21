@@ -812,7 +812,9 @@ level at the path itself (no walk down the default subscreens), which is how the
   each row is its own form with its row's `hidden`, or with `multi` one form of every row, its fields named `name_N` and its submit buttons in
   `buttons`. Its tools: `savedFinds` `{saveUrl, formLocation, parameters, clearUrl, finds: [{id, name, url, active, default, mine}]}`,
   `selectColumns` `{url, formLocation, parameters, shown: [[{name, title}]], hidden}` (saved as `columnsTree`), `exports` `[{kind, label,
-  url}]`.
+  url}]`. A list with `views` has `views` `{kinds, chosen, key, board, calendar}`: the kinds in the form's order, the one to show (a `view`
+  parameter, else the `LIST_VIEW_` preference `key`, else the first), and the props of the `board` and `calendar` components with the page's
+  rows inline (`groups` from `get#ListViewColumns`, a row's card fields as their cell text and its first link as `_open`).
 - **Fields.** `field`: `name`, `title`, `required`, `maxlength`, `rules` (`{kind: number | integer | pattern | range, pattern, min, minEq, max,
   maxEq, message}`, from `sri.getFieldValidationRules`; a JavaScript pattern a client cannot read is the server's to check), `tooltip`,
   `visibleWhen` `{field, value}`, and one widget `w` by `kind`: `textLine` (`inputType`, `mask`, `size`, `prefix`, `disabled`, and a

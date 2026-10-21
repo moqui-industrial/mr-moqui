@@ -65,21 +65,31 @@ pub struct Agent<L: ScreenLink> {
     rows: u16,
     json: bool,
     closed: bool,
+    /// Notifications the link pushed since the last command, applied before the next answer.
+    pushes: std::sync::mpsc::Receiver<crate::link::Push>,
+    _subscription: Option<crate::link::Subscription>,
 }
 
 impl<L: ScreenLink> Agent<L> {
     /// A session on `path`, drawn at `columns` by `rows`, settled.
     pub fn open(link: L, path: &str, columns: u16, rows: u16) -> Self {
+        let (push_tx, pushes) = std::sync::mpsc::channel();
+        let subscription = link.subscribe(std::sync::Arc::new(move |push| {
+            let _ = push_tx.send(push);
+        }));
         let mut view = AppView::with_session(Session::start(path), link);
         // Plain text is all an agent reads; the theme only has to keep the focus in reverse video.
         view.set_theme(Theme::default());
         view.session_mut().resize(columns, rows);
+        view.session_mut().set_pushed(subscription.is_some());
         let mut agent = Self {
             view,
             columns,
             rows,
             json: false,
             closed: false,
+            pushes,
+            _subscription: subscription,
         };
         agent.settle();
         agent
@@ -125,6 +135,9 @@ impl<L: ScreenLink> Agent<L> {
             .to_string();
         if self.closed {
             return self.answer(Err("the session is closed".to_string()), json);
+        }
+        while let Ok(push) = self.pushes.try_recv() {
+            self.view.session_mut().on_push(&push);
         }
         let result = match command {
             "look" => Ok(()),

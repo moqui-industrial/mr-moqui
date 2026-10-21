@@ -217,6 +217,8 @@ sri.write("]");
         }
         return jsString(idOf(node));
     };
+    // A link to a transition that runs actions posts, as qvt's m-form and Java's hidden form do: the server refuses its
+    // parameters on a GET url.
     const linkExpr = (node, inList) => {
         const kind = attr(node, "link-type") || "";
         const confirm = attr(node, "confirmation") || "";
@@ -232,6 +234,8 @@ sri.write("]");
             ${attr(node, "badge") ? `$link.badge = String(${S.expandNoL10nExpr(attr(node, "badge"))} || "");` : ""}
             ${attr(node, "tooltip") ? `$link.tooltip = String(${S.expandExpr(attr(node, "tooltip"))} || "");` : ""}
             ${kind === "hidden-form-link" ? `$link.method = "post";` : ""}
+            if ($made && !$link.method && $made.isTransition() && !sri.isAnchorLink(${S.nodeLit(node, true)}, $made)
+                && $made.getTransitionMethod() !== "get") $link.method = "post";
             ${confirm ? `$link.confirm = String(${titleOf(confirm)} || "");` : ""}
             return $link;
         })()`;
@@ -902,13 +906,107 @@ try {
             : "String($index)";
         const pageName = (suffix) => (listKey ? jsString(listKey + suffix) : '""');
         const selectIdField = selection ? attr(selection, "id-field") : "";
+        // The list views (views, view-board, view-calendar; style-guide §8.2), as qvt's m-list-views reads them: the
+        // client draws the chosen one with its board or calendar component, from the page's rows as props.
+        const viewBoard = child(node, "view-board");
+        const viewCalendar = child(node, "view-calendar");
+        const namesOf = (text) => String(text || "").split(",").map((part) => part.trim()).filter((part) => part);
+        const viewKinds = (() => {
+            const known = { list: true, board: !!viewBoard, calendar: !!viewCalendar };
+            const named = namesOf(attr(node, "views")).filter((kind, index, all) => known[kind] && all.indexOf(kind) === index);
+            return named.length ? named : ["list"].concat(viewBoard ? ["board"] : [], viewCalendar ? ["calendar"] : []);
+        })();
+        const hasViews = viewKinds.length > 1;
+        const vb = (name) => (viewBoard ? attr(viewBoard, name) : "");
+        const vc = (name) => (viewCalendar ? attr(viewCalendar, name) : "");
+        const fieldByName = {};
+        fields.forEach((field) => { fieldByName[attr(field, "name")] = field; });
+        const firstShown = fields.find((field) => !S.listFieldHiddenWidget(field));
+        const viewTitle = vb("card-title-field") || vc("title-field") || (firstShown ? attr(firstShown, "name") : "");
+        const hiddenKeys = fields.filter((field) => { const dflt = child(field, "default-field"); return dflt && child(dflt, "hidden"); })
+            .map((field) => attr(field, "name"));
+        const viewKey = (el) => namesOf(el ? attr(el, "key-fields") : "")[0] || hiddenKeys[0] || selectIdField || viewTitle;
+        // A field's text as the list shows it: its default widget's cell text, a link's text, else the plain value.
+        const viewText = (name) => {
+            const field = fieldByName[name];
+            const dflt = field ? child(field, "default-field") : null;
+            const widget = dflt ? dflt.children.find((kid) => kid.name && kid.name !== "hidden" && kid.name !== "ignored") : null;
+            if (!widget) return `String(ec.context.get(${jsString(name)}) ?? "")`;
+            if (widget.name === "link") return `String(${S.linkTextExpr(widget)} ?? "")`;
+            return `String(${cellText(widget)} ?? "")`;
+        };
+        const boardFields = namesOf(vb("card-fields"));
+        const calendarFields = namesOf(vc("card-fields"));
+        const viewRowCode = hasViews ? `{
+                    const $value = ($name) => { const $v = ec.context.get($name); return $v == null ? "" : String($v); };
+                    const $stamp = ($name) => { const $v = ec.context.get($name); return $v == null || $v === "" ? "" : String(ec.l10n.format($v, "yyyy-MM-dd HH:mm") || ""); };
+                    const $v = {id:$value(${jsString(viewKey(viewBoard || viewCalendar))}) || $rowKey,title:${viewText(viewTitle)},_open:$firstLink($cells)};
+                    ${viewBoard ? `$v.group = $value(${jsString(vb("group-field"))});
+                    $v.groupText = ${viewText(vb("group-field"))};
+                    ${boardFields.map((name, index) => `$v.f${index} = ${viewText(name)};
+                    `).join("")}${vb("badge-field") ? `$v.badge = ${viewText(vb("badge-field"))};
+                    ` : ""}` : ""}${viewCalendar ? `$v.start = $stamp(${jsString(vc("start-field"))});
+                    $v.end = $stamp(${jsString(vc("end-field"))});
+                    ${calendarFields.map((name, index) => `$v.c${index} = ${viewText(name)};
+                    `).join("")}` : ""}$viewRows.push($v);
+                }
+            ` : "";
+        const boardFieldNames = JSON.stringify(boardFields.map((name, index) => "f" + index).concat(vb("badge-field") ? ["badge"] : []));
+        const viewsBlock = hasViews ? `try {
+            let $formKey = String(sri.getScreenUrlInstance().path || "");
+            for (const $root of ["/apps", "/qapps"]) {
+                if ($formKey === $root || $formKey.startsWith($root + "/")) { $formKey = $formKey.slice($root.length); break; }
+            }
+            $formKey += "#" + ${jsString(formName)};
+            const $prefKey = "LIST_VIEW_" + $formKey;
+            const $kinds = ${JSON.stringify(viewKinds)};
+            const $asked = String(ec.context.get("view") || "");
+            const $kept = String(ec.user.getPreference($prefKey) || "");
+            $list.views = {kinds:$kinds,key:$prefKey,chosen:$kinds.includes($asked) ? $asked : ($kinds.includes($kept) ? $kept : $kinds[0])};
+            ${viewBoard ? `{
+                const $group = ${jsString(vb("group-field"))};
+                const $statusTypeId = ${jsString(vb("status-type-id"))};
+                const $order = ${JSON.stringify(namesOf(vb("column-order")))};
+                const $isStatus = !!$statusTypeId || /^statusId$|StatusId$/.test($group);
+                let $groups = [];
+                if ($isStatus || $order.length) {
+                    const $values = $order.concat($viewRows.map(($row) => $row.group)).filter(($g, $i, $all) => $g && $all.indexOf($g) === $i);
+                    const $out = ec.service.sync().name("org.moqui.impl.StatusServices.get#ListViewColumns").parameters({
+                        values:$values,statusTypeId:$statusTypeId || null,status:$isStatus,statusFlowId:${jsString(vb("status-flow-id"))} || null
+                    }).disableAuthz().call() || {};
+                    $groups = Array.from($out.columns || []).map(($c) => ({value:String($c.value),label:String($c.label || $c.value),color:$c.color ? String($c.color) : ""}));
+                }
+                if (!$groups.length) {
+                    for (const $row of $viewRows) {
+                        if ($row.group && !$groups.some(($g) => $g.value === $row.group)) $groups.push({value:$row.group,label:$row.groupText || $row.group,color:""});
+                    }
+                }
+                const $move = ${vb("transition") ? `sri.makeUrlByType(${jsString(vb("transition"))}, "transition", null, "false")` : "null"};
+                $list.views.board = {groups:$groups,rows:$viewRows,groupId:"value",groupLabel:"label",groupColor:"color",groupOf:"group",id:"id",title:"title",
+                    fields:${boardFieldNames},open:"{_open}",move:$move && !$move.getDisableLink() ? ($move.getUrlWithParams() || "") : "",
+                    moveId:${jsString(viewKey(viewBoard))},moveGroup:${jsString(vb("parameter-name") || vb("group-field"))}};
+            }
+            ` : ""}${viewCalendar ? `$list.views.calendar = {events:$viewRows.filter(($row) => $row.start),start:"start",end:"end",title:"title"};
+            ` : ""}
+        } catch ($err) {
+            ${fail("views")}
+        }
+        ` : "";
         return `{
     const $info = sri.openFormList(${jsString(name)});
     try {
         ${setChoice}${formCode}const $columns = [];
         ${bySet(titles)}const $headerFields = [];
         ${headerFields(node)}const $rows = [];
-        for (let $index = 0; $index < $info.count; $index++) {
+        ${hasViews ? `const $viewRows = [];
+        const $firstLink = ($cells) => {
+            for (const $cell of $cells || []) {
+                if (Array.isArray($cell)) { const $in = $firstLink($cell); if ($in) return $in; }
+                else if ($cell && typeof $cell === "object" && $cell.t === "link" && $cell.url && !$cell.disabled) return String($cell.url);
+            }
+            return "";
+        };
+        ` : ""}for (let $index = 0; $index < $info.count; $index++) {
             sri.startFormListRow($info, $index);
             try {
                 const $rowKey = ${rowKey};
@@ -917,7 +1015,7 @@ try {
                 ${rowHiddenBlock}${selectIdField ? `const $selectId = ec.context.get(${jsString(selectIdField)});
                 if ($selectId != null && $selectId !== "") $row.selectId = String($selectId);
                 ` : ""}$rows.push($row);
-            } finally {
+            ${viewRowCode}} finally {
                 sri.endFormListRow();
             }
         }
@@ -935,7 +1033,7 @@ try {
         }
         const $list = {t:"formList",id:$uid(${jsString(id)}),name:${jsString(name)},columns:$columns,rows:$rows,paging:$paging,headerFields:$headerFields};
         ${selection ? `$list.rowSelection = {idField:${jsString(selectIdField)},parameter:${jsString(attr(selection, "parameter") || selectIdField)}${attr(selection, "list-mode") ? `,listMode:${jsString(attr(selection, "list-mode"))}` : ""}};
-        ` : ""}${listFormBlock}${savedFindsBlock}${selectColumnsBlock}${exportsBlock}$emit($list);
+        ` : ""}${listFormBlock}${savedFindsBlock}${selectColumnsBlock}${exportsBlock}${viewsBlock}$emit($list);
 ${actionDialogs ? "        " + actionDialogs : ""}    } finally {
         sri.safeCloseList($info);
     }

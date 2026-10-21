@@ -144,6 +144,15 @@ impl Theme {
         }
     }
 
+    /// The built-in pair for a dark or light background, keeping this theme's depth and ASCII choice.
+    pub fn with_background(&self, dark: bool) -> Self {
+        Self {
+            depth: self.depth,
+            ascii: self.ascii,
+            ..Self::built_in(dark)
+        }
+    }
+
     /// The theme for this terminal: `NO_COLOR` is monochrome, `COLORTERM` says true color, `TERM` 256 colors; `linux`
     /// and `vt100` (or `--ascii`) draw in ASCII.
     pub fn detect(env: &dyn Fn(&str) -> Option<String>, ascii: bool, no_color: bool) -> Self {
@@ -162,10 +171,18 @@ impl Theme {
         theme
     }
 
-    /// The server theme's colors over the built-in ones. A value that is not a color is left out, with the reason.
+    /// The server theme's colors over the built-in ones. A name may start `dark.` or `light.` to apply on that background
+    /// only, and wins over the same role without one. A value that is not a color is left out, with the reason.
     pub fn merge_colors(&mut self, colors: &BTreeMap<String, String>) -> Vec<String> {
         let mut skipped = Vec::new();
-        for (name, value) in colors {
+        let this = if self.dark { "dark." } else { "light." };
+        let plain = colors
+            .iter()
+            .filter(|(name, _)| !name.starts_with("dark.") && !name.starts_with("light."));
+        let chosen = colors
+            .iter()
+            .filter_map(|(name, value)| name.strip_prefix(this).map(|bare| (bare, value)));
+        for (name, value) in plain.map(|(name, value)| (name.as_str(), value)).chain(chosen) {
             let role = Role::ALL.into_iter().find(|role| role.name() == name);
             match (role, parse_color(value)) {
                 (Some(role), Some(rgb)) => {
@@ -356,6 +373,7 @@ fn nearest_256(rgb: Rgb) -> Rgb {
 
 /// The SGR parameters that set a color at this depth: `38;2;r;g;b`, `38;5;n` from the cube, or `3n`/`9n` from the 16
 /// (`4n`/`10n` for a background). None in monochrome. A session over SSH writes these itself (`ui/encode.rs`).
+#[cfg_attr(not(feature = "ui"), allow(dead_code))] // the encoder of the session loop is its only caller
 pub fn sgr_color(depth: Depth, rgb: Rgb, background: bool) -> Option<String> {
     let (true_color, base) = if background { (48, 40) } else { (38, 30) };
     match depth {
@@ -421,5 +439,25 @@ mod tests {
         ]));
         assert_eq!(theme.color(Role::Primary), Some(Rgb(0x12, 0x34, 0x56)));
         assert_eq!(skipped.len(), 2, "{skipped:?}");
+    }
+
+    #[test]
+    fn a_dark_or_light_color_wins_on_its_background_only() {
+        let colors = BTreeMap::from([
+            ("primary".to_string(), "#111111".to_string()),
+            ("dark.primary".to_string(), "#222222".to_string()),
+            ("light.info".to_string(), "#333333".to_string()),
+        ]);
+        let mut dark = Theme::built_in(true);
+        assert!(dark.merge_colors(&colors).is_empty());
+        assert_eq!(dark.color(Role::Primary), Some(Rgb(0x22, 0x22, 0x22)));
+        assert_eq!(dark.color(Role::Info), Theme::built_in(true).color(Role::Info));
+        let mut light = Theme::built_in(false);
+        assert!(light.merge_colors(&colors).is_empty());
+        assert_eq!(light.color(Role::Primary), Some(Rgb(0x11, 0x11, 0x11)));
+        assert_eq!(light.color(Role::Info), Some(Rgb(0x33, 0x33, 0x33)));
+        let mut mono = Theme::built_in(true).with_background(false);
+        mono.depth = Depth::Mono;
+        assert!(!mono.dark && mono.color(Role::Primary).is_none());
     }
 }

@@ -72,13 +72,20 @@ impl Term {
                 Some(']') => {
                     let mut body = String::new();
                     while let Some(next) = chars.next() {
+                        if next == '\x07' {
+                            break;
+                        }
                         if next == '\x1b' && chars.peek() == Some(&'\\') {
                             chars.next();
                             break;
                         }
                         body.push(next);
                     }
-                    let url = body.strip_prefix("8;;").expect("only OSC 8 is written");
+                    // The background query (OSC 11) draws nothing.
+                    if body == "11;?" {
+                        continue;
+                    }
+                    let url = body.strip_prefix("8;;").expect("only OSC 8 and 11 are written");
                     self.link = (!url.is_empty()).then(|| url.to_string());
                 }
                 other => panic!("unexpected escape {other:?}"),
@@ -211,6 +218,22 @@ fn colors_follow_the_terminal_depth() {
     assert!(!has(&mono, "38;") && !has(&mono, "48;"));
 }
 
+/// ASCII (`--ascii`, `TERM=linux`) writes no byte above 0x7F: borders, glyphs and marks all have stand-ins.
+#[test]
+fn ascii_writes_only_ascii() {
+    let mut view = list_view();
+    let mut theme = view.theme().clone();
+    theme.ascii = true;
+    view.set_theme(theme);
+    let bytes = frame(&mut Screen::new(100, 40, Depth::Mono), &view);
+    // The list's own data has CJK and emoji, which stay as the server sent them; no mark of the client's is left.
+    let wide: String = String::from_utf8_lossy(&bytes)
+        .chars()
+        .filter(|ch| !ch.is_ascii() && !"東京🎉👨👩👧".contains(*ch))
+        .collect();
+    assert!(wide.is_empty(), "{wide:?}");
+}
+
 #[test]
 fn a_wide_glyph_is_written_once_and_links_by_url() {
     let model = ScreenModel::from_json(
@@ -283,6 +306,10 @@ struct Running {
 }
 
 fn start(link: FakeLink, path: &str, columns: u16, rows: u16) -> Running {
+    start_with(link, path, columns, rows, false)
+}
+
+fn start_with(link: FakeLink, path: &str, columns: u16, rows: u16, log: bool) -> Running {
     let (tx, rx) = mpsc::channel();
     let replies = tx.clone();
     let out = Shared::default();
@@ -293,9 +320,25 @@ fn start(link: FakeLink, path: &str, columns: u16, rows: u16) -> Running {
         columns,
         rows,
         notes: None,
+        log,
     };
     let done = thread::spawn(move || run_session(link, options, &rx, &replies, &mut writer));
     Running { tx, out, done }
+}
+
+/// The caller's log lines (an SSH user who may read the log) show in the pane Alt+L opens.
+#[test]
+fn the_log_pane_shows_the_lines_the_caller_sends() {
+    let running = start_with(gallery_link(), GALLERY_LIST_PATH, 100, 40, true);
+    running.out.wait_for("Open detail", 100, 40);
+    running
+        .tx
+        .send(SessionEvent::Log("2026-10-21 02:44:00.000 WARN  [x] a::b - A warning for the pane".to_string()))
+        .unwrap();
+    running.tx.send(SessionEvent::Input(b"\x1bl".to_vec())).unwrap();
+    running.out.wait_for("A warning for the pane", 100, 40);
+    running.tx.send(SessionEvent::Close).unwrap();
+    running.done.join().unwrap().unwrap();
 }
 
 #[test]

@@ -124,27 +124,37 @@ fn install_subscriber(console: Option<Option<Level>>) {
     });
 }
 
-/// The receivers of [`tap`]. A full one drops lines rather than block the thread that logs; a dropped one is removed.
-static TAPS: Mutex<Vec<std::sync::mpsc::SyncSender<String>>> = Mutex::new(Vec::new());
+/// The receivers of [`tap`], each with the least level it takes. A full one drops lines rather than block the thread
+/// that logs; a dropped one is removed.
+static TAPS: Mutex<Vec<(std::sync::mpsc::SyncSender<String>, Level)>> = Mutex::new(Vec::new());
 
 /// Every log line from now on, as the files get it, on a channel that holds up to `capacity` lines: the TUI's log pane.
 /// The subscriber has no layers, so this is a third sink beside stderr and the files.
 pub fn tap(capacity: usize) -> std::sync::mpsc::Receiver<String> {
+    tap_at(capacity, Level::TRACE)
+}
+
+/// [`tap`] with only the lines at `least` and above: WARN and ERROR for the log pane of an SSH session.
+pub fn tap_at(capacity: usize, least: Level) -> std::sync::mpsc::Receiver<String> {
     let (tx, rx) = std::sync::mpsc::sync_channel(capacity.max(1));
-    TAPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(tx);
+    TAPS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push((tx, least));
     rx
 }
 
-fn feed_taps(line: &str) {
+fn feed_taps(level: Level, line: &str) {
     let mut taps = TAPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if taps.is_empty() {
         return;
     }
-    taps.retain(|tap| {
-        !matches!(
-            tap.try_send(line.to_string()),
-            Err(std::sync::mpsc::TrySendError::Disconnected(_))
-        )
+    // A Level orders by verbosity: ERROR is the least, so a line goes to a tap whose least level it is at or under.
+    taps.retain(|(tap, least)| {
+        level > *least
+            || !matches!(
+                tap.try_send(line.to_string()),
+                Err(std::sync::mpsc::TrySendError::Disconnected(_))
+            )
     });
 }
 
@@ -622,7 +632,7 @@ impl Subscriber for LineSubscriber {
             let _ = writeln!(std::io::stderr(), "{}", console_line(&text, self.color));
         }
         let plain = plain_line(&text);
-        feed_taps(&plain);
+        feed_taps(level, &plain);
         write_file_line(level, &plain);
 
         // Queued from the start, so the boot lines ship once search attaches.
@@ -852,6 +862,17 @@ fn append_extra(out: &mut String, extra: &[(String, String)], color: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tap_takes_the_lines_at_its_level_and_above() {
+        let warnings = tap_at(8, Level::WARN);
+        let all = tap(8);
+        feed_taps(Level::INFO, "an info line");
+        feed_taps(Level::WARN, "a warning");
+        feed_taps(Level::ERROR, "an error");
+        assert_eq!(warnings.try_iter().collect::<Vec<_>>(), ["a warning", "an error"]);
+        assert_eq!(all.try_iter().count(), 3);
+    }
 
     #[test]
     fn an_app_log_carries_the_user_the_visitor_and_the_thrown_message() {

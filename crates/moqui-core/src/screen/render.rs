@@ -1158,7 +1158,8 @@ fn redirect_to_https(factory: &ExecutionContextFactory, job: &Job<'_>, info: &Sc
 
 /// A browser page that needs a user, asked for with none, saves itself as the screen to come back to and redirects
 /// to the last `login-path` of the path, `/Login` by default (Java's `checkWebappSettings`). A fragment, which a client
-/// fetches with `lastStandalone`, and a transition get the 401 instead.
+/// fetches with `lastStandalone`, a transition, and a `tui` request (the terminal client shows its own login dialog) get
+/// the 401 instead.
 fn redirect_to_login(factory: &ExecutionContextFactory, job: &Job<'_>, info: &ScreenUrlInfo) -> Result<bool, Error> {
     if info.file_resource.is_some()
         || super::statics::report_active()
@@ -1179,7 +1180,10 @@ fn redirect_to_login(factory: &ExecutionContextFactory, job: &Job<'_>, info: &Sc
     };
     user::session::save_screen_last(&path, &plain_request_parameters());
     save_messages();
-    if info.last_standalone != 0 || info.target_transition_name.is_some() {
+    if info.last_standalone != 0
+        || info.target_transition_name.is_some()
+        || requested_mode(job, Some(info)).as_deref() == Some("tui")
+    {
         return Ok(false);
     }
     let login_path = info
@@ -1665,8 +1669,12 @@ fn response_type(response: &ResponseDef) -> &'static str {
 
 /// A transition asked for with `.json` or by a client that accepts JSON (the qvt `m-form`) answers a redirect as JSON, as Java's
 /// `sendJsonRedirect`.
+/// A `.json` transition, an `Accept: application/json` request, or a `tui` one: the terminal client asks for each screen
+/// as its own request with no session between them, so a link to a transition (`runJob`) gets its redirect as JSON,
+/// messages and all, rather than a Location whose flash messages the next request would never see.
 fn wants_json(job: &Job<'_>, info: &ScreenUrlInfo) -> bool {
     info.target_transition_extension.as_deref() == Some("json")
+        || requested_mode(job, Some(info)).as_deref() == Some("tui")
         || job
             .request
             .header("accept")

@@ -74,11 +74,110 @@ fn gallery_and_party_screens() {
     log_in_through_the_dialog(&factory);
     let link = HostLink::as_user(&factory, "john.doe");
     render_gallery(&link);
+    snapshot_gallery(&link);
     drive_gallery(&link);
     drive_party(&link);
     drive_components(&link);
     drive_shell(&link);
     drive_tools(&link);
+    drive_push(&factory, &link);
+    drive_views(&factory, &link);
+}
+
+/// The Gallery's Views list: its board first (`views="board,list,calendar"`), then `v` to the list and the calendar,
+/// and back to the board, where a card moves to the next status through the board's transition.
+fn drive_views(factory: &Arc<ExecutionContextFactory>, link: &HostLink) {
+    {
+        let context = factory.new_context();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        let facade = factory.entity().expect("entity facade");
+        for (id, name, status, date) in [
+            ("TUI_EX1", "Board card one", "EXST_IN_DESIGN", "2026-10-19 09:00:00"),
+            ("TUI_EX2", "Board card two", "EXST_DEFINED", "2026-10-20 14:00:00"),
+        ] {
+            let mut example = facade.make_value("moqui.example.Example").expect("Example");
+            example.set("exampleId", Value::string(id));
+            example.set("exampleName", Value::string(name));
+            example.set("statusId", Value::string(status));
+            example.set("exampleTypeEnumId", Value::string("EXT_MADE_UP"));
+            example.set("exampleDate", Value::string(date));
+            example.create(&facade).expect(id);
+        }
+    }
+    let mut view = open_screen(link, "/apps/gallery/Views");
+    let board = "ExampleList~board";
+    assert!(
+        view.session().index().components.contains_key(board),
+        "{:?}",
+        view.session().index().components.keys().collect::<Vec<_>>()
+    );
+    let text = view.screen_text(180, 50);
+    assert!(text.contains("Board card one") && text.contains("Defined"), "{text}");
+    focus(&mut view, board);
+    view.on_key(&press(Key::Char('v')));
+    assert!(view.session().list("ExampleList").is_some(), "the list again");
+    assert_eq!(view.session().focus_id(), "ExampleList");
+    view.on_key(&press(Key::Char('v')));
+    assert!(view.session().index().components.contains_key("ExampleList~calendar"));
+    let text = view.screen_text(180, 50);
+    assert!(
+        text.contains("October 2026") && text.contains("Board card two"),
+        "{text}"
+    );
+    view.on_key(&press(Key::Char('v')));
+    view.run_requests();
+    assert_eq!(view.session().focus_id(), board);
+    // m, then Right to the next column, then Enter: the card's status moves as the browser's drag does.
+    view.on_key(&press(Key::Char('m')));
+    view.on_key(&press(Key::Right));
+    view.on_key(&press(Key::Enter));
+    view.run_requests();
+    assert!(lone_error(view.session().model()).is_none());
+    let moved = view.screen_text(180, 50);
+    assert!(
+        moved.contains("In Design · 0") && moved.contains("Defined · 2"),
+        "{moved}"
+    );
+    assert!(
+        view.session().index().components.contains_key(board),
+        "the board stays after the move: {}",
+        view.session().message()
+    );
+}
+
+/// A notification for the user reaches an open view by the topic in this process: its title on the message line, and
+/// the counters read again at once rather than in a minute.
+fn drive_push(factory: &Arc<moqui_core::context::ExecutionContextFactory>, link: &HostLink) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let subscription = link
+        .subscribe(Arc::new(move |push| {
+            let _ = tx.send(push);
+        }))
+        .expect("the in-process link pushes");
+    let mut view = open_screen(link, "/apps/system/ThreadList");
+    view.session_mut().set_pushed(true);
+    let ctx = factory.new_context();
+    let entered = ctx.enter();
+    let authz = ctx.disable_authz();
+    let mut note = moqui_core::notify::NotificationMessage::new();
+    note.topic("TuiPush")
+        .user_id("EX_JOHN_DOE")
+        .title("Pushed to the terminal")
+        .persist(false)
+        .message_json("{}")
+        .send()
+        .unwrap();
+    drop(authz);
+    drop(entered);
+    let push = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the push for john.doe");
+    assert_eq!(push.title, "Pushed to the terminal");
+    view.session_mut().on_push(&push);
+    assert_eq!(view.session().message(), "Pushed to the terminal");
+    view.run_requests();
+    drop(subscription);
 }
 
 /// The Gallery's Board and Calendar are `.qvue` screens with `tui` twins: their components get their data from the
@@ -289,6 +388,22 @@ fn drive_tools(link: &HostLink) {
         view.session().path()
     );
     assert!(lone_error(view.session().model()).is_none());
+    // A link to a transition that leaves a message: the message comes with the screen the transition goes back to.
+    let mut view = AppView::with_session(
+        Session::start("/apps/system/ThreadList/interruptThread?threadName=nobody"),
+        link.clone(),
+    );
+    view.run_requests();
+    assert!(
+        view.session().path().ends_with("ThreadList"),
+        "{}",
+        view.session().path()
+    );
+    assert!(
+        view.session().message().contains("not interrupted"),
+        "{}",
+        view.session().message()
+    );
 }
 
 fn link_with_text(view: &AppView<HostLink>, text: &str) -> String {
@@ -367,6 +482,113 @@ fn render_gallery(link: &HostLink) {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Every Gallery screen at 180x50 as text, compared with its golden in `tests/tui_snapshots/` (`UPDATE_GOLDEN=1`
+/// rewrites them), so a change of look shows in the diff as the screenshots do for qvt. List, Detail and Widgets also in
+/// ASCII; and every screen in monochrome writes no color. The clock is fixed, and the date of today, which some
+/// screens show, is written as `<today>`; the Calendar, whose events are days of this month, has no golden.
+fn snapshot_gallery(link: &HostLink) {
+    let today = jiff::Zoned::now().date();
+    let stamps = [
+        today.strftime("%Y-%m-%d").to_string(),
+        today.strftime("%a %b %-d").to_string(),
+        today.strftime("%B %Y").to_string(),
+    ];
+    let mut failures = Vec::new();
+    for name in GALLERY {
+        let path = format!("/apps/gallery/{name}");
+        let mut view = AppView::with_session(Session::start(&path), link.clone());
+        view.run_requests();
+        view.set_clock("Tue 14:32");
+        // The Calendar's events are days of this month, so it has no golden; drive_components reads it.
+        let text = masked(&view.screen_text(180, 50), &stamps);
+        if *name != "Calendar" {
+            if let Err(err) = golden(&format!("gallery-{name}-180x50"), &text) {
+                failures.push(err);
+            }
+        }
+        let mut bytes = Vec::new();
+        moqui_tui::Screen::new(180, 50, moqui_tui::Depth::Mono)
+            .draw(&view, &mut bytes)
+            .unwrap();
+        // The parameters of each SGR (`ESC [ … m`); a cursor move (`ESC [ 38 ; 1 H`) is not one.
+        let written = String::from_utf8_lossy(&bytes);
+        let colored = written.split("\x1b[").skip(1).any(|part| {
+            let end = part
+                .find(|ch: char| ('\x40'..='\x7e').contains(&ch))
+                .unwrap_or(part.len());
+            part[end..].starts_with('m')
+                && part[..end]
+                    .split(';')
+                    .any(|p| matches!(p, "38" | "48") || p.starts_with('3') && p.len() == 2 && p != "39")
+        });
+        if colored {
+            failures.push(format!("{path} wrote a color in monochrome"));
+        }
+        if ["List", "Detail", "Widgets"].contains(name) {
+            let mut theme = view.theme().clone();
+            theme.ascii = true;
+            view.set_theme(theme);
+            let text = masked(&view.screen_text(180, 50), &stamps);
+            if let Err(err) = golden(&format!("gallery-{name}-180x50-ascii"), &text) {
+                failures.push(err);
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Today's date as `<today>`, and a time after it (`<today> 02:46`, a record stamped while the data loaded) as `hh:mm`.
+fn masked(text: &str, stamps: &[String]) -> String {
+    let mut text = text.to_string();
+    for stamp in stamps {
+        text = text.replace(stamp.as_str(), "<today>");
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("<today> ") {
+        let (head, tail) = rest.split_at(at + "<today> ".len());
+        out.push_str(head);
+        let time = tail.as_bytes();
+        if time.len() >= 5 && time[2] == b':' && [0, 1, 3, 4].iter().all(|i| time[*i].is_ascii_digit()) {
+            out.push_str("hh:mm");
+            rest = &tail[5..];
+        } else {
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The text against its golden file, or why not.
+fn golden(name: &str, actual: &str) -> Result<(), String> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/tui_snapshots")
+        .join(format!("{name}.txt"));
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::create_dir_all(path.parent().expect("snapshots dir")).unwrap();
+        std::fs::write(&path, actual).unwrap();
+        return Ok(());
+    }
+    let expected =
+        std::fs::read_to_string(&path).map_err(|err| format!("read {}: {err}. Set UPDATE_GOLDEN=1", path.display()))?;
+    if expected == actual {
+        return Ok(());
+    }
+    let first = expected
+        .lines()
+        .zip(actual.lines())
+        .position(|(a, b)| a != b)
+        .unwrap_or(0);
+    Err(format!(
+        "{} differs from line {}:\n- {}\n+ {}",
+        path.display(),
+        first + 1,
+        expected.lines().nth(first).unwrap_or(""),
+        actual.lines().nth(first).unwrap_or("")
+    ))
 }
 
 /// The first error node anywhere in the document.
@@ -634,10 +856,8 @@ fn open_screen(link: &HostLink, path: &str) -> AppView<HostLink> {
 
 fn paint_frame(view: &mut AppView<HostLink>) {
     let narrow = view.screen_text(100, 40);
-    assert!(
-        narrow.contains(view.session().path().rsplit('/').next().unwrap_or("")),
-        "{narrow}"
-    );
+    let leaf = view.session().crumbs().last().cloned().unwrap_or_default();
+    assert!(narrow.contains(&leaf), "{leaf}: {narrow}");
     let wide = view.screen_text(180, 50);
     assert!(wide.contains('│'), "{wide}");
     let title = drawer_title(view);

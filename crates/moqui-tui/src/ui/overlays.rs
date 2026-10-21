@@ -117,18 +117,21 @@ pub fn draw(paint: &mut Painter, session: &Session, breakpoints: &Breakpoints, c
                     ConfirmKind::Leave => "Leave without saving the changes?".to_string(),
                     ConfirmKind::Ask(text) => text.clone(),
                 };
-                let choices: Vec<String> = confirm
-                    .choices()
-                    .iter()
-                    .map(|choice| {
-                        if *choice == confirm.choice() {
-                            format!("< {choice} >")
-                        } else {
-                            format!("[ {choice} ]")
-                        }
-                    })
-                    .collect();
-                small_box(paint, canvas, "Confirm", &[text, String::new(), choices.join("  ")]);
+                // The choices as buttons, the chosen one reversed as a focused button is everywhere else.
+                let choices: Vec<String> = confirm.choices().iter().map(|choice| format!("[ {choice} ]")).collect();
+                let row = choices.join("  ");
+                let rect = small_box(paint, canvas, "Confirm", &[text, String::new(), row]);
+                let y = rect.y + 3;
+                if y + 1 < rect.y + rect.height {
+                    let mut x = rect.x + 2;
+                    let right = rect.x + rect.width.saturating_sub(2);
+                    for (choice, button) in confirm.choices().iter().zip(&choices) {
+                        let room = usize::from(right.saturating_sub(x));
+                        let look = Look::role(Role::Primary).focused(*choice == confirm.choice());
+                        paint.fixed(x, y, button, look, room);
+                        x = x.saturating_add(u16::try_from(display_width(button) + 2).unwrap_or(u16::MAX));
+                    }
+                }
             }
             Overlay::Help => help(paint, session, canvas),
             Overlay::Info => {
@@ -227,8 +230,8 @@ fn body_box(
     (paint.top, paint.bottom, paint.scroll, paint.left, paint.right) = saved;
 }
 
-/// A small centered box of text lines.
-fn small_box(paint: &mut Painter, canvas: Rect, title: &str, lines: &[String]) {
+/// A small centered box of text lines; answers where it is.
+fn small_box(paint: &mut Painter, canvas: Rect, title: &str, lines: &[String]) -> Rect {
     let widest = lines
         .iter()
         .map(|line| display_width(line))
@@ -257,6 +260,7 @@ fn small_box(paint: &mut Painter, canvas: Rect, title: &str, lines: &[String]) {
         };
         paint.fixed(rect.x + 2, row, line, look, usize::from(width.saturating_sub(4)));
     }
+    rect
 }
 
 /// The open drop-down: its entries under the field, the typed filter at the top, the highlighted one reversed.
@@ -402,6 +406,18 @@ fn help(paint: &mut Painter, session: &Session, canvas: Rect) {
         .focus()
         .and_then(|item| session.index().components.get(&item.key))
         .and_then(|info| crate::components::find(&info.name));
+    if session.focus().is_some_and(|item| session.markdown_field(&item.key)) {
+        lines.push("This Markdown field:".to_string());
+        for (key, what) in [
+            ("F4", "preview, and the source again"),
+            ("Alt+B", "bold the word at the cursor"),
+            ("Alt+I", "italic"),
+            ("Alt+K", "link: [word](), the url next"),
+        ] {
+            lines.push(format!("  {key:<14} {what}"));
+        }
+        lines.push(String::new());
+    }
     if let Some(component) = component {
         lines.push(format!("This {}:", component.name()));
         for (key, what) in component.help() {

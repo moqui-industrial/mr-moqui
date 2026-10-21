@@ -208,8 +208,10 @@ const SEND_CODE: &str = "org.moqui.impl.UserServices.send#ExternalAuthcCode";
 const CODE_NOT_VALID: &str = "Authentication code is not valid";
 
 /// A user who needs a second factor gets the factor info back instead of a login, unless a valid
-/// `code` came with the password.
+/// `code` came with the password. With `createLoginKey=true` a login also answers a new `loginKey` for the
+/// `login_key` header (an addition to Java's: the terminal client keeps a key, never the password).
 fn login(call: &Call<'_>) -> Result<bool, Error> {
+    let key = truthy(call.parameters.get("createLoginKey"));
     let username = text_param(call.parameters, "username");
     let password = text_param(call.parameters, "password");
     if let Err(err) = login_user(&username, &password) {
@@ -219,7 +221,7 @@ fn login(call: &Call<'_>) -> Result<bool, Error> {
     }
     if !user::session::session_attribute_flag(user::AUTHC_FACTOR_REQUIRED) {
         let logged_in = user::current_username()?.is_some();
-        send_logged_in(logged_in);
+        send_logged_in(logged_in, key && logged_in);
         return Ok(true);
     }
     let code = text_param(call.parameters, "code");
@@ -230,7 +232,7 @@ fn login(call: &Call<'_>) -> Result<bool, Error> {
         if truthy(validated.get("verified")) {
             let verified_user = text_param(&validated, "username");
             user::internal_login_user(&verified_user)?;
-            send_logged_in(true);
+            send_logged_in(true, key);
             return Ok(true);
         }
         add_message(CODE_NOT_VALID);
@@ -281,7 +283,7 @@ fn verify_otp(call: &Call<'_>) -> Result<bool, Error> {
             false
         }
     };
-    send_logged_in(logged_in);
+    send_logged_in(logged_in, false);
     Ok(true)
 }
 
@@ -301,9 +303,19 @@ fn call_user_service(name: &str, pairs: &[(&str, &str)]) -> Result<Option<BTreeM
     Ok(Some(result?))
 }
 
-fn send_logged_in(logged_in: bool) {
+/// `{loggedIn}`, and with `key` a new login key for the user (`get_login_key`, at the conf's expiry); a key that could
+/// not be made is logged and left out, and the login stands.
+fn send_logged_in(logged_in: bool, key: bool) {
     let mut map = indexmap::IndexMap::new();
     map.insert("loggedIn".to_string(), Value::Bool(logged_in));
+    if key {
+        match user::get_login_key(None) {
+            Ok(login_key) => {
+                map.insert("loginKey".to_string(), Value::string(login_key));
+            }
+            Err(err) => tracing::error!("Login key for the REST login not made: {err}"),
+        }
+    }
     web::send_json_response(Value::Map(map));
 }
 

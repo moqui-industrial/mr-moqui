@@ -49,6 +49,8 @@ pub use structure::{TreeNode, TreeState};
 const HISTORY: usize = 25;
 /// The counters are read again this often while nothing pushes them (section 1.6).
 const COUNTS_SECONDS: u64 = 60;
+/// While the link pushes, the counters are still read this often, in case a push was missed.
+const PUSHED_COUNTS_SECONDS: u64 = 600;
 /// Typing in a server-search drop-down or the palette waits this long before it asks.
 const SEARCH_MILLIS: u64 = 300;
 
@@ -175,6 +177,12 @@ pub struct Session {
     key_skips: Vec<MergeSkip>,
     shell: ShellInfo,
     numbering: bool,
+    /// The link pushes notifications, so the counters are read on a push rather than each minute.
+    pushed: bool,
+    /// The view each list with views shows (`v`), by list id, once the user chose one.
+    views: BTreeMap<String, String>,
+    /// A list put aside while its board or calendar shows, by list id.
+    view_lists: BTreeMap<String, Node>,
     typed_number: String,
     drawer: Option<bool>,
     /// The screen asked for last, asked for again after a login.
@@ -183,6 +191,8 @@ pub struct Session {
     open: Option<String>,
     redraw: bool,
     log_open: bool,
+    /// The log pane is offered: always in local mode, over SSH to a user who may view the System app.
+    log_offered: bool,
     page_rows: Option<usize>,
     mobile: bool,
     timers: BTreeMap<Timer, Instant>,
@@ -239,6 +249,9 @@ impl Session {
             key_skips: Vec::new(),
             shell: ShellInfo::default(),
             numbering: false,
+            pushed: false,
+            views: BTreeMap::new(),
+            view_lists: BTreeMap::new(),
             typed_number: String::new(),
             drawer: None,
             last_location: None,
@@ -246,6 +259,7 @@ impl Session {
             open: None,
             redraw: false,
             log_open: false,
+            log_offered: true,
             page_rows: None,
             mobile: false,
             timers: BTreeMap::new(),
@@ -437,8 +451,8 @@ impl Session {
         }
     }
 
-    /// The screen's place, `Gallery`, `Detail`, then its title when that is not the last name: the title line's
-    /// breadcrumb before it is cut to the width.
+    /// The screen's place, `Gallery ▸ Detail`, with the leaf's title in place of its name (`JobRuns ▸ Job Run Detail`,
+    /// not `JobRunDetail ▸ Job Run Detail`): the title line's breadcrumb before it is cut to the width.
     pub fn crumbs(&self) -> Vec<String> {
         let mut names: Vec<String> = self.model().screen.path_list.iter().skip(1).cloned().collect();
         if names.is_empty() {
@@ -450,7 +464,8 @@ impl Session {
                 .collect();
         }
         let title = &self.model().screen.title;
-        if !title.is_empty() && names.last().is_none_or(|last| last != title) {
+        if !title.is_empty() {
+            names.pop();
             names.push(title.clone());
         }
         names
@@ -745,6 +760,12 @@ impl Session {
     }
 
     /// Alt+L showed the log pane.
+    /// Whether Alt+L opens the log pane here; a session loop without a log says no.
+    pub fn set_log_offered(&mut self, offered: bool) {
+        self.log_offered = offered;
+        self.log_open &= offered;
+    }
+
     pub fn log_open(&self) -> bool {
         self.log_open
     }
@@ -757,6 +778,11 @@ impl Session {
     pub fn field_widget(&self, id: &str) -> Option<&Widget> {
         let node = id.split('#').next().unwrap_or(id);
         self.index.fields.get(node).map(|field| &field.widget)
+    }
+
+    /// An `editor-type="md"` text area: its source is drawn styled, and Alt+B, Alt+I and Alt+K wrap the word at the cursor.
+    pub fn markdown_field(&self, id: &str) -> bool {
+        matches!(self.field_widget(id), Some(Widget::TextArea { editor_type, .. }) if editor_type == "md")
     }
 
     /// A Markdown text area shows its preview rather than its source.
@@ -932,6 +958,22 @@ impl Session {
             return false;
         };
         match item.kind {
+            FocusKind::Text
+                if press.alt
+                    && !press.ctrl
+                    && matches!(press.key, Key::Char('b' | 'i' | 'k'))
+                    && self.markdown_field(&item.key)
+                    && !self.previewing(&item.key) =>
+            {
+                let Key::Char(kind) = press.key else {
+                    return false;
+                };
+                let (text, cursor) = crate::markdown::wrap_word(self.buffer(&item.key), self.cursor(&item.key), kind);
+                self.edits.set(&item.key, text);
+                self.cursors.insert(item.key.clone(), cursor);
+                self.after_edit(&item.key);
+                true
+            }
             FocusKind::Text => {
                 let limits = self.limits(&item.key);
                 let mut text = self.buffer(&item.key).to_string();
@@ -1046,6 +1088,7 @@ impl Session {
             Action::SelectAll => self.select_all(),
             Action::Find => self.open_find(),
             Action::Sort => self.cycle_sort(),
+            Action::View => self.cycle_view(),
             Action::NumberLinks => {
                 self.numbering = !self.numbering;
                 self.typed_number.clear();
@@ -1056,7 +1099,8 @@ impl Session {
                 self.open = Some(url);
             }
             Action::Redraw => self.redraw = true,
-            Action::Log => self.log_open = !self.log_open,
+            Action::Log if self.log_offered => self.log_open = !self.log_open,
+            Action::Log => self.set_message("The log is not offered in this session.".to_string(), false),
             Action::Quit => {
                 if self.edits.any_dirty() {
                     self.overlays.push(Overlay::Confirm(Confirm::leave(Then::Quit)));
@@ -1416,7 +1460,7 @@ impl Session {
         }
         if !shell.counts.is_empty() {
             self.counts.clone_from(&shell.counts);
-            self.set_timer(Timer::Counts, Instant::now() + Duration::from_secs(COUNTS_SECONDS));
+            self.set_timer(Timer::Counts, Instant::now() + self.counts_every());
         }
         self.shell = shell;
     }
@@ -1481,6 +1525,7 @@ impl Session {
     /// The model changed: index it, take the values it sends, and rebuild the focus. With `keep`, edits that are still
     /// dirty stay.
     fn reindex(&mut self, keep: bool) {
+        self.apply_views();
         self.index = Index::with_extras(self.nav.models(), &self.extras);
         self.edits.load(self.index.initial_values(), keep);
         let lists: Vec<(String, usize)> = self

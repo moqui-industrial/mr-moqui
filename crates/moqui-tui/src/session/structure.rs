@@ -131,6 +131,10 @@ fn tree_key(tree: &str, node: &str) -> String {
 }
 
 impl Shown for Session {
+    fn link_number(&self, id: &str) -> Option<usize> {
+        Session::link_number(self, id)
+    }
+
     fn collapsed(&self, id: &str, initial: &str) -> bool {
         self.collapsed.get(id).copied().unwrap_or(initial == "closed")
     }

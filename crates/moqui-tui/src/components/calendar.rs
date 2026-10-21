@@ -33,6 +33,8 @@ pub struct Calendar;
 
 struct Event {
     id: String,
+    /// The event's own screen, when the data gives one (`_open`, a list view's row link).
+    open: String,
     day: Option<Date>,
     start: String,
     end: String,
@@ -47,6 +49,7 @@ fn events(props: &Value, state: &ComponentState) -> Vec<Event> {
             let start = text_of(event.get(prop(props, "start", "start")));
             Event {
                 id: text_of(event.get("id")),
+                open: text_of(event.get("_open")),
                 day: start.get(..10).and_then(|day| day.parse::<Date>().ok()),
                 end: text_of(event.get(prop(props, "end", "end"))),
                 title: text_of(event.get(prop(props, "title", "title"))),
@@ -59,7 +62,8 @@ fn events(props: &Value, state: &ComponentState) -> Vec<Event> {
     out
 }
 
-/// The month shown: the state's parameter, else the data's, else this month.
+/// The month shown: the state's parameter, else the data's, else that of the first event (a list view's events come
+/// with the props), else this month.
 fn month(props: &Value, state: &ComponentState) -> Date {
     let name = prop(props, "month", "month");
     let text = state
@@ -67,6 +71,13 @@ fn month(props: &Value, state: &ComponentState) -> Date {
         .get(name)
         .cloned()
         .or_else(|| state.data.as_ref().map(|data| text_of(data.get(name))))
+        .filter(|text| !text.is_empty())
+        .or_else(|| {
+            events(props, state)
+                .first()
+                .and_then(|event| event.start.get(..7))
+                .map(str::to_string)
+        })
         .unwrap_or_default();
     format!("{text}-01")
         .parse::<Date>()
@@ -210,6 +221,9 @@ impl Component for Calendar {
             Key::Char('t') if press.is_plain() => return to_month(state, jiff::Zoned::now().date().first_of_month()),
             Key::Enter => {
                 let event = all.get(state.at)?;
+                if !event.open.is_empty() {
+                    return Some(vec![Act::Follow(event.open.clone())]);
+                }
                 let open = prop(props, "open", "");
                 if open.is_empty() {
                     return Some(vec![Act::Message(format!("{} {}", event.start, event.title))]);

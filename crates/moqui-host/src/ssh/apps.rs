@@ -161,6 +161,31 @@ impl Write for ChannelWriter {
     }
 }
 
+/// Log lines an SSH session's pane holds while it is closed.
+const LOG_LINES: usize = 500;
+
+/// Whether `username` may view the System app (`component://tools/screen/System.xml`, which its Log Viewer inherits),
+/// checked on the request pool as that user. A check that fails is a no.
+async fn may_read_log(factory: &Weak<ExecutionContextFactory>, username: &str) -> bool {
+    let Some(factory) = factory.upgrade() else {
+        return false;
+    };
+    let username = username.to_string();
+    let checked = tokio::task::spawn_blocking(move || {
+        let owner = Arc::clone(&factory);
+        let rx = factory
+            .request_pool()
+            .try_submit(owner, move || {
+                moqui_core::user::internal_login_user(&username)?;
+                Ok(moqui_core::user::authorize("AT_XML_SCREEN", "component://tools/screen/System.xml", "view").is_ok())
+            })
+            .ok()?;
+        rx.recv().ok()?.ok()
+    })
+    .await;
+    checked.ok().flatten().unwrap_or(false)
+}
+
 /// Run the client on `stream` until the user quits or the channel closes. A refusal (the session limits) is
 /// written to the stream as one line. Returns the exit status.
 pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, apps: &mut Apps, newline: &str) -> u32 {
@@ -174,6 +199,22 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, app
     };
     let (columns, rows) = *apps.size.borrow_and_update();
     let (events, inbox) = mpsc::channel::<SessionEvent>();
+    // The log pane, WARN and ERROR only, for a user who may view the System app, whose Log Viewer reads the same log.
+    let log = may_read_log(&apps.factory, &apps.username).await;
+    if log {
+        let lines = crate::logging::tap_at(LOG_LINES, tracing::Level::WARN);
+        let to_session = events.clone();
+        let _ = std::thread::Builder::new()
+            .name(format!("ssh-apps-log-{}", apps.username))
+            .spawn(move || {
+                // Ends when the session's inbox is gone, at the next line after it.
+                while let Ok(line) = lines.recv() {
+                    if to_session.send(SessionEvent::Log(line)).is_err() {
+                        break;
+                    }
+                }
+            });
+    }
     let (out, mut frames) = tokio_mpsc::unbounded_channel::<Vec<u8>>();
     let (finished, ended) = oneshot::channel();
     let options = SessionOptions {
@@ -182,6 +223,7 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, app
         columns: columns.max(20),
         rows: rows.max(10),
         notes: Some(|note| tracing::warn!("terminal theme: {note}")),
+        log,
     };
     let link = HostLink::weak_as_user(Weak::clone(&apps.factory), apps.username.clone());
     let replies = events.clone();

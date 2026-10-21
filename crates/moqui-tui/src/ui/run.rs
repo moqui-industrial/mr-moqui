@@ -26,7 +26,7 @@ use revue::core::app::App;
 use revue::event::{Event, Key as RevueKey, KeyEvent};
 
 use crate::keys::{Key, KeyPress};
-use crate::link::{RawBody, Reply, ScreenLink};
+use crate::link::{Push, RawBody, Reply, ScreenLink};
 use crate::session::Session;
 use crate::theme::Theme;
 
@@ -64,6 +64,11 @@ pub fn run_local<L: ScreenLink + 'static>(link: L, options: LocalOptions) -> rev
     let _ = out.write_all(b"\x1b[?2004h");
     let _ = out.flush();
     send(&mut view, &link, &done_tx);
+    let (push_tx, push_rx) = mpsc::channel::<Push>();
+    let subscription = link.subscribe(Arc::new(move |push| {
+        let _ = push_tx.send(push);
+    }));
+    view.session_mut().set_pushed(subscription.is_some());
     // The title line's clock moves once a minute; nothing else redraws an idle screen.
     let mut minute = jiff::Zoned::now().minute();
     let result = App::builder()
@@ -90,6 +95,10 @@ pub fn run_local<L: ScreenLink + 'static>(link: L, options: LocalOptions) -> rev
                     let mut any = false;
                     while let Ok((id, reply)) = done_rx.try_recv() {
                         view.session_mut().on_reply(id, reply);
+                        any = true;
+                    }
+                    while let Ok(push) = push_rx.try_recv() {
+                        view.session_mut().on_push(&push);
                         any = true;
                     }
                     if let Some(log) = &log {

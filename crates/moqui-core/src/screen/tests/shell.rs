@@ -334,6 +334,14 @@ fn world_with(dir: &std::path::Path, conf: &str) -> World {
     theme_value(&world, "DEFAULT_QUASAR", 9, "STRT_TUI_KEYS", "back = f3 | alt+left");
     theme_value(&world, "DEFAULT_QUASAR", 10, "STRT_TUI_KEYS", "refresh = f5");
     theme_value(&world, "DEFAULT_QUASAR", 11, "STRT_TUI_KEYS", "no equals sign");
+    // The browser's brand colors are the terminal's too, under its own colors.
+    theme_value(
+        &world,
+        "DEFAULT_QUASAR",
+        12,
+        "STRT_QUASAR_CONFIG",
+        r##"{"brand":{"primary":"#1565c0","negative":"#c10015","dark":"#1d1d1d"},"notify":{}}"##,
+    );
     theme_value(
         &world,
         "DEFAULT_QUASAR",
@@ -539,7 +547,7 @@ fn shell_data_lists_the_apps_the_user_may_open_with_their_menus_providers_theme_
     // the tui values: every key row, and the rows that do not read are left out and logged
     assert_eq!(
         data["tui"],
-        json!({"breakpoints": {"md": 110}, "colors": {"primary": "#1976d2"},
+        json!({"breakpoints": {"md": 110}, "colors": {"primary": "#1976d2", "negative": "#c10015"},
             "keys": {"back": "f3 | alt+left", "refresh": "f5"}, "drawerOpen": null})
     );
     let text = logged(&lines);
