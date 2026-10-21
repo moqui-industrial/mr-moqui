@@ -1214,8 +1214,9 @@
                     textDialog(n, cfg);
                 }
                 if (pdf) {
-                    const print = sri.getScreenUrlInstance().cloneUrlInstance().addParameter("renderMode", "html-print").addParameter("pageNoLimit", "true");
-                    out += exportItem(print.getUrlWithParams(), L("Print"), "_blank");
+                    // the page as a PDF: /fop renders the screen at the rest of the path as html-print and sends the PDF
+                    const print = sri.getScreenUrlInstance().cloneUrlInstance().removeParameter("renderMode").removeParameter("lastStandalone").addParameter("pageNoLimit", "true");
+                    out += exportItem("/fop" + print.pathWithParams, L("Print"), "_blank");
                 }
                 out += "</q-list></q-btn-dropdown>";
             }

@@ -31,7 +31,6 @@ pub(crate) use parse::check_program;
 pub use parse::parse_js;
 #[cfg(test)]
 pub(crate) use runtime::script_time_remaining;
-#[cfg(test)]
 pub(crate) use runtime::with_ctx as walker_context;
 pub use runtime::{
     clear_context_stack, context_value, eval_map, eval_value, expand, push_context_frame, run_script,

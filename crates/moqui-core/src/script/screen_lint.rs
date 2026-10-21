@@ -16,7 +16,7 @@
 //! and the Groovy idioms that survive are classified per file. This is the pre-scan for the screen
 //! trees. FreeMarker bodies of `<text template="true">` are listed and not parsed.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -258,6 +258,8 @@ pub struct FileReport {
     pub tui_missing: Vec<(u32, String)>,
     /// `tui` text bodies with a `${` that is not inside `JSON.stringify(`, which can write a value that breaks the JSON.
     pub tui_unsafe: Vec<u32>,
+    /// Elements of a screen's widgets that no macro names, often a typo: a render logs each and writes a placeholder.
+    pub unknown_elements: Vec<(u32, String)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -295,6 +297,12 @@ impl ScreenLintReport {
                         site.attribute
                     ));
                 }
+            }
+            for (line, name) in &file.unknown_elements {
+                out.push(format!(
+                    "{}:{line} {name}: no screen macro names this element, so it renders as a placeholder",
+                    file.path.display()
+                ));
             }
             for (line, error) in file.generated_errors.iter().chain(&file.template_errors) {
                 out.push(format!("{}:{line} {error}", file.path.display()));
@@ -495,6 +503,7 @@ pub fn lint_screens(roots: &[PathBuf]) -> Result<ScreenLintReport, Error> {
     paths.sort();
     paths.dedup();
     let mut report = ScreenLintReport::default();
+    let (names, opaque) = crate::screen::generate::widget_vocabulary()?;
     for path in paths {
         if let Some((_, reason)) = KNOWN_EXCLUSIONS.iter().find(|(suffix, _)| path.ends_with(suffix)) {
             report.excluded.push((path, reason));
@@ -510,6 +519,7 @@ pub fn lint_screens(roots: &[PathBuf]) -> Result<ScreenLintReport, Error> {
             ..FileReport::default()
         };
         scan_node(&root, false, &mut file);
+        scan_widgets(&root, &names, &opaque, &mut file);
         super::lint_hazards::refine(&root, &mut file);
         if root.name() == "screen" {
             scan_tui(&root, &mut file);
@@ -714,6 +724,32 @@ fn scan_node(node: &MNode, in_actions: bool, file: &mut FileReport) {
     scan_body(node, &name, file);
     for child in node.children() {
         scan_node(&child, in_actions || action_root || name == "condition", file);
+    }
+}
+
+/// The elements of each `widgets`, `fail-widgets` and `widget-template` that the html macros do not name, walked as the
+/// generator walks them: a subtree a macro reads for itself (`opaque`) is not looked into, and its own `widgets` are
+/// found on their own.
+fn scan_widgets(node: &MNode, names: &HashSet<String>, opaque: &HashSet<String>, file: &mut FileReport) {
+    fn walk(node: &MNode, names: &HashSet<String>, opaque: &HashSet<String>, file: &mut FileReport) {
+        for child in node.children() {
+            let name = child.name();
+            // form assembly replaces it with the template's widgets before anything is generated
+            if name == "widget-template-include" {
+                continue;
+            }
+            if !names.contains(&name) {
+                file.unknown_elements.push((child.line(), name));
+            } else if !opaque.contains(&name) {
+                walk(&child, names, opaque, file);
+            }
+        }
+    }
+    if matches!(node.name().as_str(), "widgets" | "fail-widgets" | "widget-template") {
+        walk(node, names, opaque, file);
+    }
+    for child in node.children() {
+        scan_widgets(&child, names, opaque, file);
     }
 }
 
@@ -1607,6 +1643,28 @@ mod tests {
             crate::script::template::check_template(&source)
                 .unwrap_or_else(|err| panic!("{}: {}", file.display(), err.message()));
         }
+    }
+
+    /// A render logs an element no macro names and writes a placeholder; the lint fails on it, as it is most often a
+    /// typo. A subtree a macro reads for itself and a widget-template-include are not looked into.
+    #[test]
+    fn an_element_no_screen_macro_names_is_a_failure() {
+        let dir = write_screen(
+            "unknown-element",
+            r#"<widgets><container><lable text="typo"/></container>
+            <form-single name="F"><field name="a"><default-field><display/></default-field></field>
+            <field-layout><field-ref name="a"/></field-layout></form-single>
+            <section name="S"><widgets><no-such-widget/></widgets></section></widgets>"#,
+        );
+        let report = lint_screens(std::slice::from_ref(&dir)).unwrap();
+        let failures = report.failures();
+        assert_eq!(failures.len(), 2, "{failures:?}");
+        assert!(
+            failures[0].contains("lable: no screen macro names this element"),
+            "{failures:?}"
+        );
+        assert!(failures[1].contains("no-such-widget"), "{failures:?}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -2298,6 +2298,8 @@
     const noteMacro = (kind, what) => stmt((node) => `sri.staticNote(${lit(kind)}, ${lit(node.name)}, ${lit(what + " " + (attr(node, "name") || attr(node, "location")) + " was not resolved")});\n`);
 
     const macros = Object.assign({}, noops(S.allElements), noops(["condition", "actions"]), {
+        // an element no macro names: the walker logs it and writes Java's placeholder, as the merged qvt does
+        "@element": stmt((node) => S.unknownElementCode(MODE, node.name)),
         "screen": stmt((node, children) => children),
         "widgets": widgetsMacro,
         "fail-widgets": widgetsMacro,

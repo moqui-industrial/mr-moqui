@@ -34,6 +34,8 @@ History:
 - **2026-10-21, second batch fixed and recorded.** The 15 Low Fix rows are fixed (`f9ee72a`, `8840941`,
   `54f4a3b`). The 24 Record rows are in [Parity-Diffs](Parity-Diffs.md#screen-and-web-review-2026-10-20), with the
   follow-up corrections to `Parity-Mapping.md`. What is open is the [Decide](#decide) list.
+- **2026-10-21, first decisions.** P3-01 follows the failure-tolerance rule; Print goes to `/fop`; `.md` files stay
+  unblocked; a bad `show-total` is logged.
 
 The review asks **"is the feature there?"**, not "is this line the same?". The port replaces
 FreeMarker macros with JavaScript modules, Groovy with Rust and the servlet API with axum, so the
@@ -47,8 +49,8 @@ line numbers, because the line numbers drift.
 
 | Disposition | Rows |
 |---|---|
-| [Fixed on 2026-10-21](#fixed-on-2026-10-21) | 19: P8-20, P4-05, P2-04, P7-02 (a); then P7-03 with P9-13, P8-06, P8-04, P4-09, P3-06, P9-01, P9-11, P8-09, P8-12, P8-17, P9-07, P7-10, P6-03, P8-11 |
-| [Decide](#decide) | 9, still open: P3-01, P8-05, P9-02, P9-03, P7-11, P7-09, P8-08, P3-05, P6-04 |
+| [Fixed on 2026-10-21](#fixed-on-2026-10-21) | 20: P8-20, P4-05, P2-04, P7-02 (a); then P7-03 with P9-13, P8-06, P8-04, P4-09, P3-06, P9-01, P9-11, P8-09, P8-12, P8-17, P9-07, P7-10, P6-03, P8-11; then P3-01 (decided) |
+| [Decide](#decide) | 8, still open: P8-05, P9-02, P9-03, P7-11, P7-09, P8-08, P3-05, P6-04 |
 | [Recorded in Parity-Diffs](#recorded-in-parity-diffs) | 24: P1-05, P1-07, P1-08, P2-05, P2-09, P2-10, P2-11, P2-15, P3-02, P4-03, P6-01, P6-02, P6-06, P7-02 (b), P7-04, P7-07, P8-13, P8-14, P8-18, P8-19, P9-06, P9-12, P9-14, P9-15 |
 | [Dropped](#dropped-on-the-third-pass) | 14: P1-10, P1-11, P2-12, P2-13, P3-04, P4-06, P4-07, P4-10, P6-05, P7-05, P7-06, P8-10, P8-15, P8-16 |
 
@@ -113,16 +115,20 @@ Second batch (`f9ee72a` conf and host, `8840941` request parsing, `54f4a3b` macr
 - **P6-03.** An untitled xlsx column is headed by `StringUtilities.camelCaseToPretty` at render time. Only the xlsx
   header uses it in Java; the other modes keep the split on capitals that their FTL has.
 
+Decided and done:
+
+- **P3-01.** An element no macro names no longer fails the render. The walker logs it ("No screen macro in html,
+  element for X") and calls the module's `@element` macro, as FreeMarker's `@element` does: html and qvt write Java's
+  `<p>=== Doing nothing for element X, not yet implemented. ===</p>`, xml writes it as a comment, and the other
+  modes write nothing. The element's children are not rendered, as Java's macro does not recurse; the rest of the
+  screen is. XML actions keep the strict error. `moqui lint --screens` fails on such an element, using the html
+  module's own macro names, so a typo is still caught before it ships (no shipped screen has one).
+
 ## Decide
 
 Each of these needs an owner call before the code changes. Each question ends with this pass's
 recommendation.
 
-- **P3-01.** An element no macro module names fails the render ("no screen macro in html, element
-  X"). In a subscreen or section, `guarded` replaces only that screen's body with the error text.
-  Java writes a placeholder and renders the rest. *Recommend* following the
-  [failure-tolerance rule](../AGENTS.md): log the element name, write the placeholder, and render
-  the rest. Keep the strict error in `moqui lint --screens`, where it catches typos.
 - **P8-05.** An origin that is not allowed is answered 401 in Java before the request runs. The
   port runs the request and leaves out the CORS headers. Browsers are protected anyway: the
   cookie is `SameSite=Lax`, and `csrf_rejected` asks for a token even on a cookieless Basic-auth
@@ -164,9 +170,9 @@ The rows the review found deliberate, or a harmless superset, are in
 [Parity-Diffs](Parity-Diffs.md#screen-and-web-review-2026-10-20) with their reasons, recorded 2026-10-21: P1-05,
 P1-07, P1-08, P2-05, P2-09, P2-10, P2-11, P2-15, P3-02 with P4-03, P6-01, P6-02, P6-06, P7-02 (b), P7-04, P7-07,
 P8-13, P8-14, P8-18, P8-19, P9-06, P9-12, P9-14 and P9-15, and the second batch's two kept differences (P7-03's
-versioned files, P7-10's inline schema). Do not revert them. Two ideas in these rows are left for an owner: point
-the Print item at `/fop/<path>` for a real PDF (P3-02), and block `.md` files under a screen (P7-04). A bad
-`show-total` is still dropped without a log line (P2-05).
+versioned files, P7-10's inline schema). Do not revert them. Decided 2026-10-21: the Print item goes straight to
+`/fop/<path>` for a real PDF, with no page-layout dialog (P3-02, P4-03), and `.md` files under a screen stay unblocked,
+since screens read them directly (P7-04). A bad `show-total` is now logged as a bad `aggregate` is (P2-05).
 
 ## Dropped on the third pass
 
@@ -224,8 +230,8 @@ Compared `ScreenSupport.js`, `ScreenHtml.js`, `ScreenCsv.js`, `ScreenText.js`, `
 
 | ID | Port | Java | Divergence | Sev | Disposition |
 |---|---|---|---|---|---|
-| P3-01 | `script/walker.rs` (the "no screen macro" error), `guarded` (`screen/sri/sections.rs`) | `@element` fallback in each `DefaultScreenMacros.*.ftl` | An element no mode names is an error. Inside a subscreen or section, `guarded` puts the error text in place of that screen's body. In the root screen the request fails. Java writes a placeholder and renders the rest. No shipped screen uses an unknown element. `screen/tests/modules.rs` locks in the current rule | Low | Decide |
-| P3-02 | `ScreenHtml.js` (`show-pdf-button`) | `DefaultScreenMacros.html.ftl` PDF dialog | A Print link to `html-print&pageNoLimit=true`. Java opens a "Generate PDF" dialog with `layoutMaster` and `saveFilename` that posts to `/fop`. The one shipped use is `ArtifactHitSummary.xml` | Low | Recorded |
+| P3-01 | `script/walker.rs` (the "no screen macro" error), `guarded` (`screen/sri/sections.rs`) | `@element` fallback in each `DefaultScreenMacros.*.ftl` | An element no mode names is an error. Inside a subscreen or section, `guarded` puts the error text in place of that screen's body. In the root screen the request fails. Java writes a placeholder and renders the rest. No shipped screen uses an unknown element. `screen/tests/modules.rs` locks in the current rule | Low | Fixed 2026-10-21 (decided) |
+| P3-02 | `ScreenHtml.js` (`show-pdf-button`) | `DefaultScreenMacros.html.ftl` PDF dialog | A Print link straight to `/fop/<path>?pageNoLimit=true` (the PDF; before 2026-10-21 it was `html-print`). Java opens a "Generate PDF" dialog with `layoutMaster` and `saveFilename` that posts to `/fop`. The one shipped use is `ArtifactHitSummary.xml` | Low | Recorded (decided: no dialog) |
 | P3-05 | `S.formListColumns(node)` in `ScreenCsv.js`, `ScreenText.js`, `ScreenXml.js`, `ScreenXlsx.js`, `ScreenHtmlPrint.js` | `ScreenForm.makeFormListColumnInfo` | The export modes always use the untyped `columns`. Java picks the `columns type=` that matches `_uiType`. Only html, qvt, qvt-static and tui read `_uiType` | Low | Decide |
 | P3-06 | `ScreenHtml.js` `display`, `display-entity` | `DefaultScreenMacros.html.ftl` `display` (`sri.getFieldValueClass`) | No value-type class on the display span. Java's `webroot-layout.css` right-aligns `td .BigDecimal` and `td .currency`, and the port's html list cells do not. The html display also drops Java's `text-center`/`text-right` align classes, because the cell takes the `align` | Low | Fixed 2026-10-21 |
 
@@ -236,7 +242,7 @@ Compared `ScreenQvt.js` (and `WebrootVue.qvt.js` where the contract turned on it
 
 | ID | Port | Java | Divergence | Sev | Disposition |
 |---|---|---|---|---|---|
-| P4-03 | `ScreenQvt.js` export menu | `DefaultScreenMacros.qvt.ftl` PDF dialog | Same as P3-02 in qvt: a Print item to `html-print`, not a dialog that posts to `/fop`. `/fop` still makes a PDF, and `?layoutMaster=` still selects a page | Low | Recorded |
+| P4-03 | `ScreenQvt.js` export menu | `DefaultScreenMacros.qvt.ftl` PDF dialog | Same as P3-02 in qvt, server-static qvt and tui: a Print item straight to `/fop/<path>`, not a dialog that posts to it. `?layoutMaster=` still selects a page on the URL | Low | Recorded (decided: no dialog) |
 | P4-05 | Saved Finds dialog in `ScreenQvt.js` and `ScreenQvtStatic.js` | `DefaultScreenMacros.qvt.ftl` active-find block | No Mode/Schedule drop-downs and no Schedule button. Nothing else in the UI posts `ScheduleFind`, so no user can create a scheduled find. My Account and BOSS only edit existing ones | Med | Fixed 2026-10-21 |
 | P4-09 | `valueText` in `ScreenQvt.js` | `DefaultScreenMacros.qvt.ftl` `widgetTextValue` | `display` and `display-entity` are in the no-display list. Java took them out on purpose (an FTL comment says so). Java shows the field's value (not `@text`) and a display-entity's entity text, so Find Payment's `eitherPaymentMethodId` was missing; Find Invoice's constant status text has no value in either | Low | Fixed 2026-10-21 |
 
@@ -275,7 +281,7 @@ Compared `screen/url.rs`, `screen/urls.rs`, `screen/tree.rs`, `screen/menu.rs`,
 |---|---|---|---|---|---|
 | P7-02 | `UrlInstance::permitted` (`screen/urls.rs`) | `ScreenUrlInfo.isPermitted` | (a) There is no `AT_SERVICE` check of a non-read-only transition's single service, so a user without the service permission sees an enabled link that fails when clicked. (b) The check follows the transition run, which is looser than `isPermitted`. It also skips the last screen's own view check when the path ends on a transition. Not a bypass: the request path matches Java's run | Low-Med | Fixed (a) 2026-10-21, Recorded (b) |
 | P7-03 | `static_files.rs` (`LONG_CACHE`, `REVALIDATE_CACHE`), `finish_response`, `apply_cors`, `send_resource_response`; `merge_response_headers` (`context/conf.rs`) | `WebappInfo.addHeaders` from `ScreenRenderImpl` and `WebFacadeImpl` | The conf's `<response-header>` entries (`screen-resource-*`, `web-resource-inline`, `screen-render`, `cors-*`) are merged and never applied. The port's conf now ships the full list. File `Cache-Control` is 1 hour, or 1 year `immutable` for a versioned file, where the conf says 24 hours | Low | Fixed 2026-10-21 |
-| P7-04 | `BLOCKED_EXTENSIONS` (`screen/static_files.rs`), file branch (`screen/render.rs`) | `ScreenUrlInfo` file lookup, `ScreenRenderImpl` file branch | Non-screen `.xml`, `.properties`, `.sql`, `.groovy`, `.ftl` and `.html.fancy` files are refused with a 404. Java serves the plain ones and renders the templates through `screen-resource-template`. A `.md` under a screen without `include-child-content` is sent raw, where Java renders it. `screen/tests/files.rs` locks in the list | Low | Recorded |
+| P7-04 | `BLOCKED_EXTENSIONS` (`screen/static_files.rs`), file branch (`screen/render.rs`) | `ScreenUrlInfo` file lookup, `ScreenRenderImpl` file branch | Non-screen `.xml`, `.properties`, `.sql`, `.groovy`, `.ftl` and `.html.fancy` files are refused with a 404. Java serves the plain ones and renders the templates through `screen-resource-template`. A `.md` under a screen without `include-child-content` is sent raw, where Java renders it. `screen/tests/files.rs` locks in the list | Low | Recorded (decided: `.md` stays unblocked) |
 | P7-07 | `?` tail via `web::form_pairs` (`screen/url.rs`) | `ScreenUrlInfo` `split("=")` | A pair whose value holds `=` or is empty is kept. Java keeps only exactly-two-part pairs. No shipped `url=` has either | Low | Recorded |
 | P7-09 | `TextOutput` (`screen/cache.rs`) | `ScreenSection.renderSingle`, `ScreenRenderImpl` (required parameters) | `skip-actions` is not read. No conf sets it. The port's `moqui-conf-3.xsd` still declares it | Low | Decide (remove from the XSD) |
 | P7-10 | `entity_json` → `send_json_response` (`screen/schema.rs`) | `RestSchemaUtil` `sendTextResponse(..., "application/schema+json", "<name>.schema.json")` | The schema is `application/json` with the facade's `messages` merged in, and it has no attachment name. Only the curl examples in `rest.xml` use it | Low | Fixed 2026-10-21 |

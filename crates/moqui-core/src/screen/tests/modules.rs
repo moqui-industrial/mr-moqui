@@ -194,7 +194,7 @@ fn a_mode_module_at_a_real_file_replaces_the_built_in_one() {
 }
 
 #[test]
-fn an_unknown_element_a_bad_expression_and_a_missing_module_are_clear_errors() {
+fn an_unknown_element_is_a_placeholder_and_a_bad_expression_and_a_missing_module_are_clear_errors() {
     let dir = std::env::temp_dir().join(format!("moqui-macro-errors-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let write = |name: &str, widgets: &str| {
@@ -217,14 +217,25 @@ fn an_unknown_element_a_bad_expression_and_a_missing_module_are_clear_errors() {
             .render()
     };
 
-    let unknown = render(write("Unknown.xml", "<label text=\"a\"/><no-such-widget/>"), "text").unwrap_err();
-    assert!(
-        unknown
-            .message()
-            .contains("no screen macro in text, element for no-such-widget"),
-        "{unknown}"
+    // An element no macro names is logged and renders as Java's @element does: html shows its placeholder and drops its
+    // children, text writes nothing, and the rest of the screen renders (the failure-tolerance rule).
+    let unknown = write(
+        "Unknown.xml",
+        "<label text=\"before\"/><no-such-widget><label text=\"inside\"/></no-such-widget><label text=\"after\"/>",
     );
-    assert!(unknown.message().contains("Unknown.xml"), "{unknown}");
+    let text = render(unknown.clone(), "text").unwrap().body_text();
+    assert!(
+        text.contains("before") && text.contains("after") && !text.contains("inside"),
+        "{text}"
+    );
+    let qvt = render(unknown.clone(), "qvt").unwrap().body_text();
+    assert!(qvt.contains("=== Doing nothing for element no-such-widget"), "{qvt}");
+    let html = render(unknown, "html").unwrap().body_text();
+    assert!(
+        html.contains("<p>=== Doing nothing for element no-such-widget, not yet implemented. ===</p>"),
+        "{html}"
+    );
+    assert!(html.contains("after") && !html.contains("inside"), "{html}");
 
     let bad = render(
         write(
