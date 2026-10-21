@@ -775,10 +775,14 @@ impl ExecutionContext {
         sub_type: Option<&str>,
         parameters: Option<&std::collections::BTreeMap<String, moqui_lib::object::Value>>,
     ) {
-        let artifact_type = self.state.artifacts.borrow().top_type();
-        let keep = artifact_type.is_some_and(|name| self.state.factory.hits.counts(&name));
+        let keep = self
+            .state
+            .artifacts
+            .borrow()
+            .top_type()
+            .is_some_and(|name| self.state.factory.hits.counts(name));
         if let Some(hit) = self.state.artifacts.borrow_mut().top_hit_mut() {
-            hit.sub_type = sub_type.map(str::to_string);
+            hit.sub_type = sub_type.map(super::artifact::known);
             hit.parameters = parameters.filter(|_| keep).cloned();
         }
     }

@@ -14,6 +14,7 @@
 
 //! One entity record and a list of records.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -212,10 +213,10 @@ impl EntityValue {
         })
     }
 
-    /// A value read from the database or the entity cache.
-    pub(crate) fn from_fields(entity_name: String, fields: BTreeMap<String, Value>) -> Self {
+    /// A value read from the database or the entity cache. The rows of one read share `entity_name`.
+    pub(crate) fn from_fields(entity_name: Arc<str>, fields: BTreeMap<String, Value>) -> Self {
         Self {
-            entity_name: Arc::from(entity_name),
+            entity_name,
             fields: Arc::new(fields),
             l10n: None,
             l10n_memo: L10nMemo::default(),
@@ -952,9 +953,12 @@ impl EntityFacade {
             None => load_feed::match_rules_with(self, entity_name, seal_operation),
         };
         let eca = crate::user::context_entered();
+        // The rules of each phase, so a write with none copies no values for them.
+        let eca_before = eca && rules.iter().any(|rule| rule.run_before);
+        let eca_after = eca && rules.iter().any(|rule| !rule.run_before);
         let mut plain = plain;
         let mut modified = modified.cloned();
-        if eca {
+        if eca_before {
             let before = plain.clone();
             crate::service::run_matched_eca(self, entity_name, seal_operation, true, &rules, &mut plain, None)?;
             // A run-before rule may have set fields (`entityValue` or `set-results`): convert them as a write would.
@@ -978,25 +982,27 @@ impl EntityFacade {
         } else {
             None
         };
-        // The cache, the transaction frame and the data feed share one copy.
-        let cache_values = Arc::new(plain.clone());
+        // The cache, the transaction frame and the data feed share these, and a write with no column filter or
+        // encrypted field binds from them too.
+        let cache_values = Arc::new(plain);
         // As Java binds only the fields an update changes, only those and the key are sealed and written: a stored field
         // that could not be decrypted is not written back, and one another transaction changed since the value was read
         // is left as it wrote it.
-        let plain = match &write_columns {
-            Some(columns) => self.with_entity(entity_name, |entity, _, _| {
-                Ok(plain
-                    .into_iter()
-                    .filter(|(name, _)| columns.contains(name) || entity.field(name).is_some_and(|field| field.is_pk))
+        let plain: Cow<'_, BTreeMap<String, Value>> = match &write_columns {
+            Some(columns) => Cow::Owned(self.with_entity(entity_name, |entity, _, _| {
+                Ok(cache_values
+                    .iter()
+                    .filter(|(name, _)| columns.contains(*name) || entity.field(name).is_some_and(|field| field.is_pk))
+                    .map(|(name, value)| (name.clone(), value.clone()))
                     .collect::<BTreeMap<_, _>>())
-            })?,
-            None => plain,
+            })?),
+            None => Cow::Borrowed(&*cache_values),
         };
         let mut affected = 1;
         if cache::gate_write(self, entity_name, operation, &plain)? == WriteGate::Handled {
             load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values), None);
         } else {
-            let mut after_values = eca.then(|| (*cache_values).clone());
+            let mut after_values = eca_after.then(|| (*cache_values).clone());
             // An after rule with `get-original-value` on an update or delete gets the row as it was before the write.
             let pre_row = if eca
                 && (operation == "update" || operation == "delete")
@@ -1245,16 +1251,16 @@ impl EntityFacade {
     }
 
     /// `stored` is the row an update read first, which its audit log compares with.
-    fn seal_values(
+    fn seal_values<'a>(
         &self,
         entity_name: &str,
         operation: &str,
-        values: BTreeMap<String, Value>,
+        values: Cow<'a, BTreeMap<String, Value>>,
         stored: Option<&BTreeMap<String, Value>>,
-    ) -> Result<BTreeMap<String, Value>, Error> {
+    ) -> Result<Cow<'a, BTreeMap<String, Value>>, Error> {
         let facade = self.clone();
         self.with_entity(entity_name, |entity, _, _| {
-            field_rw::before_write_known(&facade, entity, operation, values, stored)
+            field_rw::before_write_shared(&facade, entity, operation, values, stored)
         })
     }
 

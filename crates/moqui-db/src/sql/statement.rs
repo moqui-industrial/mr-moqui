@@ -172,8 +172,8 @@ pub fn select_with(
     });
     // A distinct select can only be ordered by what it selects, so the order-by fields are selected too, as Java's
     // EntityFindBase adds them.
-    let mut selected: Vec<FieldRef> = fields.to_vec();
-    if options.distinct && !selected.is_empty() {
+    if options.distinct && !fields.is_empty() {
+        let mut selected: Vec<FieldRef> = fields.to_vec();
         for order in order_by {
             if order.field.expr.is_none()
                 && order.field.entity_alias.is_none()
@@ -182,10 +182,59 @@ pub fn select_with(
                 selected.push(FieldRef::new(&order.field.name));
             }
         }
+        out.push(&select_list(entity, dialect, &selected));
+    } else {
+        out.push(&select_list(entity, dialect, fields));
     }
-    out.push(&select_list(entity, dialect, &selected));
     out.push(" FROM ");
     out.push(&quote_ident(dialect, &entity.table_name));
+    select_tail(out, entity, dialect, condition, order_by, page, options)
+}
+
+/// `SELECT <fields> FROM <table>` of a select that is not distinct, the part of [`select_with`] that does not change
+/// with the condition. Empty `fields` selects every field. For [`select_with_head`].
+pub fn select_head(entity: &EntityDefinition, dialect: &Dialect, fields: &[FieldRef]) -> String {
+    let mut head = String::from("SELECT ");
+    head.push_str(&select_list(entity, dialect, fields));
+    head.push_str(" FROM ");
+    head.push_str(&quote_ident(dialect, &entity.table_name));
+    head
+}
+
+/// [`select_with`] after a [`select_head`] of the same entity and dialect, so a find that renders the same columns again
+/// does not render them again. Not for a distinct select, whose head can change with the order.
+pub fn select_with_head(
+    head: &str,
+    entity: &EntityDefinition,
+    dialect: &Dialect,
+    condition: Option<&Condition>,
+    order_by: &[OrderBy],
+    page: LimitOffset,
+    options: &SelectOptions,
+) -> Result<Statement, Error> {
+    if options.distinct {
+        return Err(Error::new("a select head is not distinct; use select_with"));
+    }
+    if options.having.is_some() {
+        return Err(Error::new(format!(
+            "{} has no aggregate fields, so a having condition has nothing to apply to",
+            entity.full_name
+        )));
+    }
+    let mut out = Writer::new(dialect);
+    out.push(head);
+    select_tail(out, entity, dialect, condition, order_by, page, options)
+}
+
+fn select_tail(
+    mut out: Writer<'_>,
+    entity: &EntityDefinition,
+    dialect: &Dialect,
+    condition: Option<&Condition>,
+    order_by: &[OrderBy],
+    page: LimitOffset,
+    options: &SelectOptions,
+) -> Result<Statement, Error> {
     where_clause(&mut out, entity, condition)?;
     let columns = |field: &FieldRef| Ok(entity_column(entity, dialect, field));
     out.order_by(order_by, page.is_set(), &columns)?;

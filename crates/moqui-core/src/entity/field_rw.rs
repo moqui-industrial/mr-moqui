@@ -79,6 +79,22 @@ pub(crate) fn before_write_known(
     encrypt_fields(facade, entity, values)
 }
 
+/// [`before_write_known`] for values a caller keeps: borrowed back when no field is encrypted, so a write of an entity
+/// with no encrypted field does not copy them.
+pub(crate) fn before_write_shared<'a>(
+    facade: &EntityFacade,
+    entity: &EntityDefinition,
+    operation: &str,
+    values: std::borrow::Cow<'a, BTreeMap<String, Value>>,
+    stored: Option<&BTreeMap<String, Value>>,
+) -> Result<std::borrow::Cow<'a, BTreeMap<String, Value>>, Error> {
+    audit_log(facade, entity, operation, &values, stored)?;
+    if !has_encrypted(entity) {
+        return Ok(values);
+    }
+    encrypt_fields(facade, entity, values.into_owned()).map(std::borrow::Cow::Owned)
+}
+
 /// Encrypt a row read from the database for a copy of it, with no audit: nothing about it changed.
 pub(crate) fn seal_stored(
     facade: &EntityFacade,

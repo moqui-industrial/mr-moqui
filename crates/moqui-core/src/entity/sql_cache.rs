@@ -17,13 +17,72 @@
 //! A hit returns the text from the first render. Parameters are bound by the caller, so a different
 //! primary key does not need a new string. The cap drops the oldest shapes when a varying column list
 //! would otherwise grow the map without limit.
+//!
+//! [`read_shape`] keeps what every find of all of a plain entity's fields shares. Only file entities are plain (the
+//! definitions built at runtime are views), so a shape does not go stale.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use moqui_db::dialect::Dialect;
+use moqui_db::model::EntityDefinition;
 use moqui_lib::error::Error;
 
 use super::facade::EntityFacade;
+
+/// A find of every field of a plain entity, in one dialect.
+pub(crate) struct ReadShape {
+    dialect: String,
+    /// Field name and Java type, the columns a row is read with.
+    pub(crate) columns: Arc<[(String, String)]>,
+    /// `SELECT <every column> FROM <table>`, for [`moqui_db::sql::select_with_head`].
+    pub(crate) head: String,
+    /// The select by the single primary key, rendered by the first such find.
+    select_pk: OnceLock<Arc<str>>,
+}
+
+impl ReadShape {
+    pub(crate) fn select_pk(&self, render: impl FnOnce() -> Result<String, Error>) -> Result<&str, Error> {
+        if let Some(sql) = self.select_pk.get() {
+            return Ok(sql);
+        }
+        let sql: Arc<str> = Arc::from(render()?);
+        Ok(self.select_pk.get_or_init(|| sql))
+    }
+}
+
+#[derive(Default)]
+struct ReadShapes {
+    by_entity: HashMap<String, Arc<ReadShape>>,
+}
+
+/// The shape of `entity`, a plain entity, built on its first find.
+pub(crate) fn read_shape(facade: &EntityFacade, entity: &EntityDefinition, dialect: &Dialect) -> Arc<ReadShape> {
+    let known = facade.with_slot(ReadShapes::default, |shapes| {
+        shapes
+            .by_entity
+            .get(&entity.full_name)
+            .filter(|shape| shape.dialect == dialect.name)
+            .cloned()
+    });
+    if let Some(shape) = known {
+        return shape;
+    }
+    let shape = Arc::new(ReadShape {
+        dialect: dialect.name.clone(),
+        columns: entity
+            .fields
+            .iter()
+            .map(|field| (field.name.clone(), field.java_type.clone()))
+            .collect(),
+        head: moqui_db::sql::select_head(entity, dialect, &[]),
+        select_pk: OnceLock::new(),
+    });
+    facade.with_slot(ReadShapes::default, |shapes| {
+        shapes.by_entity.insert(entity.full_name.clone(), Arc::clone(&shape));
+    });
+    shape
+}
 
 const CAP: usize = 256;
 

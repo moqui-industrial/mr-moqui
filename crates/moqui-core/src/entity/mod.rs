@@ -43,6 +43,7 @@ mod sql_cache;
 mod value;
 
 pub(crate) use cache::screen_config_generation;
+pub(crate) use derived::{generation as definition_generation, ByDefinition};
 pub use data_writer::{DataFileType, EntityDataWriter};
 pub use dbresource::{DbResourceChild, DbResourceInfo, DbResourceStat, DbResourceVersion};
 pub use etl::EtlLoader;

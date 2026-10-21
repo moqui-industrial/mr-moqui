@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Entity facade timings, called directly. No screen, no QuickJS, no service layer.
+//! Entity facade timings and allocations, called directly. No screen, no QuickJS, no service layer.
 //!
 //! Out of the default `cargo test` link, and ignored so naming the binary does not start a postmaster.
 //! Run it optimized. A dev-profile binary is a different program.
@@ -22,7 +22,8 @@
 //! ```
 //!
 //! `ENTITY_SPEED_CALLS` is the loop size (default 1000). `ENTITY_SPEED_BATCHES` is how many timed
-//! batches to keep (default 5). The printed per-call figures use the upper median batch.
+//! batches to keep (default 5). The printed per-call figures use the upper median batch; see `speed/mod.rs` for the
+//! allocation columns. The rows a create keeps in the test's own list count as kept.
 //!
 //! There is no `ExecutionContext`, so artifact authorization and hit counting do not run. `fsync` and
 //! synchronous commit stay on. The pool is one ordinary connection and one reserve connection (sequence
@@ -36,10 +37,12 @@
 
 #![cfg(all(unix, feature = "embedded-postgres"))]
 
+mod speed;
+
 use std::hint::black_box;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use moqui_core::driver::DbDriver;
 use moqui_core::entity::{EntityFacade, EntityValue};
@@ -49,18 +52,14 @@ use moqui_host::db::entity_facade::open_entity_facade;
 use moqui_lib::cache::{CacheConfig, MCache};
 use moqui_lib::object::Value;
 
+use speed::{env_usize, DirGuard, Rows};
+
 const ENUM: &str = "moqui.basic.Enumeration";
 const ENUM_TYPE: &str = "moqui.basic.EnumerationType";
 const TEST: &str = "moqui.test.TestEntity";
 const WARMUP: usize = 32;
-
-struct DirGuard(PathBuf);
-
-impl Drop for DirGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+/// Rows of `TestEntity` the list and iterator rows read, each call.
+const LIST_ROWS: usize = 100;
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -70,25 +69,14 @@ enum Mode {
     Autocommit,
 }
 
-struct Row {
-    operation: String,
-    calls: u64,
-    batches: Vec<Duration>,
-}
-
 #[test]
 #[ignore = "entity timings: cargo test --release -p moqui-host --test entity_speed -- --ignored --nocapture"]
 fn entity_facade_speed() {
-    if cfg!(debug_assertions) {
-        eprintln!(
-            "entity_speed: this binary has debug assertions, so it is not a release profile. \
-             The numbers are not comparable to ./moq build."
-        );
-    }
+    speed::warn_if_debug("entity_speed");
     let calls = env_usize("ENTITY_SPEED_CALLS", 1000);
     let batches = env_usize("ENTITY_SPEED_BATCHES", 5);
 
-    let dir = temp_dir();
+    let dir = speed::temp_dir("entity-speed");
     let _guard = DirGuard(dir.clone());
     let (cluster, driver) = EmbeddedCluster::start(&dir, 20).expect("start embedded Postgres");
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
@@ -104,7 +92,8 @@ fn entity_facade_speed() {
     println!();
     println!(
         "entity facade, {calls} calls x {batches} batches, warmup {WARMUP}. \
-         Pool is 1 ordinary + 1 reserve. No ExecutionContext."
+         Pool is 1 ordinary + 1 reserve. No ExecutionContext. Lists read {LIST_ROWS} rows, {} calls.",
+        list_calls(calls)
     );
     run_mode(&facade, &cache, &now, Mode::Transaction, calls, batches);
     run_mode(&facade, &cache, &now, Mode::Autocommit, calls, batches);
@@ -126,13 +115,18 @@ fn run_mode(
         Mode::Autocommit => "autocommit (each call checks out and commits; a just-returned connection skips SELECT 1)",
     };
     println!("\n== {label}");
-    one_batch(facade, cache, now, mode, WARMUP, 0, None);
-    let mut rows = Vec::new();
+    let mut rows = Rows::default();
+    one_batch(facade, cache, now, mode, WARMUP, 0, &mut rows);
+    rows.record = true;
     for batch in 1..=batches {
         eprintln!("  batch {batch}/{batches}");
-        one_batch(facade, cache, now, mode, calls, batch, Some(&mut rows));
+        one_batch(facade, cache, now, mode, calls, batch, &mut rows);
     }
-    print_rows(&rows);
+    rows.print();
+}
+
+fn list_calls(calls: usize) -> usize {
+    (calls / 10).max(1)
 }
 
 fn one_batch(
@@ -142,7 +136,7 @@ fn one_batch(
     mode: Mode,
     calls: usize,
     batch: usize,
-    mut record: Option<&mut Vec<Row>>,
+    rows: &mut Rows,
 ) {
     if matches!(mode, Mode::Transaction) {
         facade.begin(TEST, None).expect("begin");
@@ -150,203 +144,118 @@ fn one_batch(
         let _ = find_one(facade, "_NA_", false);
     }
 
-    note(
-        &mut record,
-        "build Enumeration find",
-        calls,
-        time(|| {
-            for i in 0..calls {
-                let find = facade
-                    .find(ENUM)
-                    .expect("find")
-                    .eq("enumId", Value::string(format!("_NA_{i}")));
-                black_box(find);
-            }
-        }),
-    );
+    rows.run("build Enumeration find", calls, || {
+        for i in 0..calls {
+            let find = facade
+                .find(ENUM)
+                .expect("find")
+                .eq("enumId", Value::string(format!("_NA_{i}")));
+            black_box(find);
+        }
+    });
 
-    let keys = note_keys(
-        &mut record,
-        "MCache put",
-        calls,
-        time_keys(calls, |i| {
-            let key = format!("speed-{batch}-{i}");
+    let keys: Vec<String> = (0..calls).map(|i| format!("speed-{batch}-{i}")).collect();
+    rows.run("MCache put", calls, || {
+        for key in &keys {
             cache.put(key.clone(), "_NA_".to_string()).expect("cache put");
-            key
-        }),
-    );
-    note(
-        &mut record,
-        "MCache get",
-        calls,
-        time(|| {
-            for key in &keys {
-                black_box(cache.get(key).expect("cache get"));
-            }
-        }),
-    );
+        }
+    });
+    rows.run("MCache get", calls, || {
+        for key in &keys {
+            black_box(cache.get(key).expect("cache get"));
+        }
+    });
 
-    note(
-        &mut record,
-        "one PK Enumeration, entity cache",
-        calls,
-        time(|| {
-            for _ in 0..calls {
-                black_box(find_one(facade, "_NA_", true));
+    rows.run("one PK Enumeration, entity cache", calls, || {
+        for _ in 0..calls {
+            black_box(find_one(facade, "_NA_", true));
+        }
+    });
+    rows.run("list Enumeration by type, entity cache", calls, || {
+        for _ in 0..calls {
+            black_box(find_list(facade, true));
+        }
+    });
+    rows.run("one PK Enumeration, database", calls, || {
+        for _ in 0..calls {
+            black_box(find_one(facade, "_NA_", false));
+        }
+    });
+    rows.run("list Enumeration by type, database", calls, || {
+        for _ in 0..calls {
+            black_box(find_list(facade, false));
+        }
+    });
+    rows.run("count Enumeration by type, database", calls, || {
+        for _ in 0..calls {
+            let count = facade
+                .find(ENUM)
+                .expect("count find")
+                .eq("enumTypeId", Value::string("EntitySyncArtifactAppl"))
+                .use_cache(false)
+                .count()
+                .expect("count");
+            assert_eq!(count, 2);
+        }
+    });
+    let lists = list_calls(calls);
+    rows.run(&format!("list {LIST_ROWS} TestEntity rows, database"), lists, || {
+        for _ in 0..lists {
+            let list = list_test_rows(facade).list().expect("list rows");
+            assert_eq!(list.len(), LIST_ROWS);
+            black_box(list);
+        }
+    });
+    // A cursor needs a transaction, as in Java.
+    if matches!(mode, Mode::Transaction) {
+        rows.run(&format!("iterate {LIST_ROWS} TestEntity rows, database"), lists, || {
+            for _ in 0..lists {
+                let mut iterator = list_test_rows(facade).iterator().expect("iterator");
+                let mut seen = 0;
+                while let Some(value) = iterator.next_value().expect("next value") {
+                    black_box(value);
+                    seen += 1;
+                }
+                iterator.close().expect("close iterator");
+                assert_eq!(seen, LIST_ROWS);
             }
-        }),
-    );
-    note(
-        &mut record,
-        "list Enumeration by type, entity cache",
-        calls,
-        time(|| {
-            for _ in 0..calls {
-                black_box(find_list(facade, true));
-            }
-        }),
-    );
-    note(
-        &mut record,
-        "one PK Enumeration, database",
-        calls,
-        time(|| {
-            for _ in 0..calls {
-                black_box(find_one(facade, "_NA_", false));
-            }
-        }),
-    );
-    note(
-        &mut record,
-        "list Enumeration by type, database",
-        calls,
-        time(|| {
-            for _ in 0..calls {
-                black_box(find_list(facade, false));
-            }
-        }),
-    );
+        });
+    }
 
-    let mut sequenced = Vec::with_capacity(calls);
-    note(
-        &mut record,
-        "create TestEntity, sequenced id",
-        calls,
-        time(|| {
-            for i in 0..calls {
-                sequenced.push(create_sequenced(facade, i, now));
-            }
-        }),
-    );
-    let mut preset = Vec::with_capacity(calls);
-    note(
-        &mut record,
-        "create TestEntity, preset id",
-        calls,
-        time(|| {
-            for i in 0..calls {
-                preset.push(create_preset(facade, batch, i, now));
-            }
-        }),
-    );
+    let mut sequenced = rows.run("create TestEntity, sequenced id", calls, || {
+        (0..calls).map(|i| create_sequenced(facade, i, now)).collect::<Vec<_>>()
+    });
+    let mut preset = rows.run("create TestEntity, preset id", calls, || {
+        (0..calls).map(|i| create_preset(facade, batch, i, now)).collect::<Vec<_>>()
+    });
     let written = sequenced.len() + preset.len();
-    note(
-        &mut record,
-        "update TestEntity",
-        written,
-        time(|| {
-            for value in sequenced.iter_mut().chain(preset.iter_mut()) {
-                value.set("testMedium", Value::string("Updated"));
-                value.update(facade).expect("update");
-            }
-        }),
-    );
-    note(
-        &mut record,
-        "delete TestEntity",
-        written,
-        time(|| {
-            for value in sequenced.iter().chain(preset.iter()) {
-                value.delete(facade).expect("delete");
-            }
-        }),
-    );
+    rows.run("update TestEntity", written, || {
+        for value in sequenced.iter_mut().chain(preset.iter_mut()) {
+            value.set("testMedium", Value::string("Updated"));
+            value.update(facade).expect("update");
+        }
+    });
+    rows.run("update TestEntity, nothing changed", written, || {
+        for value in sequenced.iter().chain(preset.iter()) {
+            value.update(facade).expect("update unchanged");
+        }
+    });
+    rows.run("create_or_update TestEntity, existing", calls, || {
+        for value in &mut sequenced {
+            value.set("testLong", Value::string("Stored"));
+            value.create_or_update(facade).expect("create or update");
+        }
+    });
+    rows.run("delete TestEntity", written, || {
+        for value in sequenced.iter().chain(preset.iter()) {
+            value.delete(facade).expect("delete");
+        }
+    });
 
     if matches!(mode, Mode::Transaction) {
-        note(
-            &mut record,
-            "commit whole batch",
-            1,
-            time(|| {
-                facade.commit(TEST).expect("commit");
-            }),
-        );
-    }
-}
-
-fn note(record: &mut Option<&mut Vec<Row>>, operation: &str, calls: usize, elapsed: Duration) {
-    let Some(rows) = record else {
-        return;
-    };
-    if let Some(row) = rows.iter_mut().find(|row| row.operation == operation) {
-        row.batches.push(elapsed);
-        return;
-    }
-    rows.push(Row {
-        operation: operation.to_string(),
-        calls: u64::try_from(calls).unwrap_or(u64::MAX),
-        batches: vec![elapsed],
-    });
-}
-
-fn note_keys(
-    record: &mut Option<&mut Vec<Row>>,
-    operation: &str,
-    calls: usize,
-    timed: (Duration, Vec<String>),
-) -> Vec<String> {
-    note(record, operation, calls, timed.0);
-    timed.1
-}
-
-fn time(body: impl FnOnce()) -> Duration {
-    let started = Instant::now();
-    body();
-    started.elapsed()
-}
-
-fn time_keys(calls: usize, mut body: impl FnMut(usize) -> String) -> (Duration, Vec<String>) {
-    let mut keys = Vec::with_capacity(calls);
-    let started = Instant::now();
-    for i in 0..calls {
-        keys.push(body(i));
-    }
-    (started.elapsed(), keys)
-}
-
-fn print_rows(rows: &[Row]) {
-    println!(
-        "  {:<44} {:>8} {:>10} {:>10} {:>12} {:>16}",
-        "operation", "calls", "median ms", "us/call", "calls/s", "min-max ms"
-    );
-    for row in rows {
-        let mut batches = row.batches.clone();
-        batches.sort();
-        let median = batches[batches.len() / 2];
-        let seconds = median.as_secs_f64();
-        let calls = row.calls as f64;
-        let per_call_us = if calls == 0.0 { 0.0 } else { seconds * 1.0e6 / calls };
-        let per_second = if seconds == 0.0 { 0.0 } else { calls / seconds };
-        println!(
-            "  {:<44} {:>8} {:>10.3} {:>10.1} {:>12.0} {:>7.3}-{:<7.3}",
-            row.operation,
-            row.calls,
-            seconds * 1.0e3,
-            per_call_us,
-            per_second,
-            batches[0].as_secs_f64() * 1.0e3,
-            batches.last().unwrap_or(&median).as_secs_f64() * 1.0e3,
-        );
+        rows.run("commit whole batch", 1, || {
+            facade.commit(TEST).expect("commit");
+        });
     }
 }
 
@@ -371,6 +280,14 @@ fn find_list(facade: &EntityFacade, cache: bool) -> usize {
         .expect("enumeration list");
     assert_eq!(list.len(), 2, "EntitySyncArtifactAppl rows");
     list.len()
+}
+
+fn list_test_rows(facade: &EntityFacade) -> moqui_core::entity::EntityFind {
+    facade
+        .find(TEST)
+        .expect("test list")
+        .eq("testIndicator", Value::string("L"))
+        .use_cache(false)
 }
 
 fn create_sequenced(facade: &EntityFacade, index: usize, now: &Value) -> EntityValue {
@@ -412,6 +329,14 @@ fn seed(facade: &EntityFacade) {
     enumeration(facade, "_NA_", "_NA_", "Not Applicable");
     enumeration(facade, "EsaaInclude", "EntitySyncArtifactAppl", "Include");
     enumeration(facade, "EsaaExclude", "EntitySyncArtifactAppl", "Exclude");
+    let now = Value::Timestamp(jiff::Timestamp::now());
+    for index in 0..LIST_ROWS {
+        let mut row = facade.make_value(TEST).expect("make list row");
+        row.set("testId", Value::string(format!("list-{index}")));
+        fill(&mut row, index, &now);
+        row.set("testIndicator", Value::string("L"));
+        row.create(facade).expect("create list row");
+    }
     facade.commit(ENUM).expect("commit seed");
     let _ = find_one(facade, "_NA_", false);
     assert_eq!(find_list(facade, false), 2);
@@ -440,20 +365,4 @@ fn pool() -> PoolConfig {
         acquire_timeout: Duration::from_secs(30),
         ..Default::default()
     }
-}
-
-fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|text| text.parse().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
-}
-
-fn temp_dir() -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    PathBuf::from("/tmp").join(format!("entity-speed-{}-{nanos}", std::process::id()))
 }

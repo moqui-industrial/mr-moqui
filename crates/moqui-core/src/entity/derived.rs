@@ -131,6 +131,41 @@ pub(crate) fn generation(facade: &EntityFacade) -> u64 {
     facade.inner.derived.generation.load(Ordering::Acquire)
 }
 
+/// Something read from a definition, kept by the name it was looked up by until the definitions built at runtime are
+/// dropped ([`generation`] changes). For a facade slot.
+pub(crate) struct ByDefinition<T> {
+    generation: u64,
+    by_name: HashMap<String, T>,
+}
+
+impl<T> Default for ByDefinition<T> {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            by_name: HashMap::new(),
+        }
+    }
+}
+
+impl<T: Clone> ByDefinition<T> {
+    /// What was kept for `name` at `generation`. A newer generation drops everything kept before it.
+    pub(crate) fn get(&mut self, name: &str, generation: u64) -> Option<T> {
+        if self.generation != generation {
+            self.by_name.clear();
+            self.generation = generation;
+            return None;
+        }
+        self.by_name.get(name).cloned()
+    }
+
+    /// Keep `value`, read at `generation` (read before the definition was), unless the definitions changed since.
+    pub(crate) fn insert(&mut self, name: &str, generation: u64, value: T) {
+        if self.generation == generation {
+            self.by_name.insert(name.to_string(), value);
+        }
+    }
+}
+
 /// Drop every built definition, as the tools screens' `clearEntityDefinitionFromCache` (Java drops the one named).
 pub(crate) fn clear(facade: &EntityFacade) {
     let derived = &facade.inner.derived;

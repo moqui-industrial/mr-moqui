@@ -406,12 +406,12 @@ pub fn after_count(facade: &EntityFacade, lookup: &FindLookup, count: i64) -> Re
         return Ok(());
     }
     let key = owned_lookup_key(lookup);
-    let name = meta.full_name;
+    let name = &meta.full_name;
     let cache = facade.with_slot(OneCaches::default, |caches| {
         caches
             .counts
             .entry(name.clone())
-            .or_insert_with(|| count_cache(&name))
+            .or_insert_with(|| count_cache(name))
             .clone()
     });
     cache.put(
@@ -433,12 +433,12 @@ pub fn after_find(facade: &EntityFacade, lookup: &FindLookup, rows: &EntityList)
         return Ok(());
     }
     let key = owned_lookup_key(lookup);
-    let name = meta.full_name;
+    let name = &meta.full_name;
     let cache = facade.with_slot(OneCaches::default, |caches| {
         caches
             .lists
             .entry(name.clone())
-            .or_insert_with(|| list_cache(&name))
+            .or_insert_with(|| list_cache(name))
             .clone()
     });
     cache.put(
@@ -592,7 +592,8 @@ fn evict(
             cache.clear()?;
         }
     }
-    for view in views_using(facade, &meta.full_name).iter() {
+    let views = views_by_member(facade);
+    for view in views.get(&meta.full_name).into_iter().flatten() {
         clear_named(facade, view)?;
     }
     Ok(())
@@ -713,10 +714,10 @@ fn judge(condition: &Condition, values: &BTreeMap<String, Value>) -> Option<bool
     }
 }
 
-/// The view entities that have `full_name` as a member, at any depth.
-fn views_using(facade: &EntityFacade, full_name: &str) -> Vec<String> {
+/// Each entity to the view entities that have it as a member, at any depth.
+fn views_by_member(facade: &EntityFacade) -> Arc<HashMap<String, Vec<String>>> {
     let known = facade.with_slot(OneCaches::default, |caches| caches.views_by_member.clone());
-    let map = match known {
+    match known {
         Some(map) => map,
         None => {
             let map = Arc::new(build_views_by_member(facade));
@@ -725,8 +726,7 @@ fn views_using(facade: &EntityFacade, full_name: &str) -> Vec<String> {
             });
             map
         }
-    };
-    map.get(full_name).cloned().unwrap_or_default()
+    }
 }
 
 fn build_views_by_member(facade: &EntityFacade) -> HashMap<String, Vec<String>> {
@@ -1423,6 +1423,10 @@ fn overlay_rows(
         SimView::empty()
     };
     if !sim.affects() {
+        // Nothing held and no overlay: the database answers alone.
+        if holds.is_empty() {
+            return Ok(None);
+        }
         // A find by the whole primary key sees only the held rows of that key.
         if let Some(pk) = pinned_pk(condition, &meta.pk_fields) {
             holds.retain(|held| held.pk == pk);
@@ -1465,9 +1469,10 @@ fn overlay_rows(
     if !order.is_empty() {
         sort_rows(&mut rows, order);
     }
+    let name: Arc<str> = Arc::from(meta.full_name.as_str());
     let values = rows
         .into_iter()
-        .map(|row| EntityValue::from_fields(meta.full_name.clone(), row.fields))
+        .map(|row| EntityValue::from_fields(Arc::clone(&name), row.fields))
         .collect();
     Ok(Some(values))
 }
@@ -1581,7 +1586,7 @@ fn load_plain(
     } else {
         query_tx(&plan.tx, &plan.sql, &plan.params)?
     };
-    rows_plain(facade, &meta.full_name, &plan.columns, &db_rows)
+    rows_plain(facade, &meta.full_name, &plan.columns, db_rows)
 }
 
 fn load_by_pk(
@@ -1602,7 +1607,7 @@ fn load_by_pk(
         })
     })?;
     let db_rows = query_tx(&plan.tx, &plan.sql, &plan.params)?;
-    let mut plain = rows_plain(&owner, entity_name, &plan.columns, &db_rows)?;
+    let mut plain = rows_plain(&owner, entity_name, &plan.columns, db_rows)?;
     Ok(plain.pop())
 }
 
@@ -1638,7 +1643,7 @@ fn rows_plain(
     facade: &EntityFacade,
     entity_name: &str,
     columns: &[(String, String)],
-    rows: &[DbRow],
+    rows: Vec<DbRow>,
 ) -> Result<Vec<BTreeMap<String, Value>>, Error> {
     let owner = facade.clone();
     facade.with_entity(entity_name, |entity, _, _| {
@@ -1792,8 +1797,16 @@ fn seal(
     })
 }
 
-fn read_meta(facade: &EntityFacade, entity_name: &str) -> Result<ReadMeta, Error> {
-    facade.with_entity(entity_name, |entity, _, _| {
+/// The cache facts of each entity looked up, by the name it was looked up by.
+type ReadMetas = super::derived::ByDefinition<Arc<ReadMeta>>;
+
+/// Read once per entity name: every find and write asks.
+fn read_meta(facade: &EntityFacade, entity_name: &str) -> Result<Arc<ReadMeta>, Error> {
+    let generation = super::derived::generation(facade);
+    if let Some(meta) = facade.with_slot(ReadMetas::default, |metas| metas.get(entity_name, generation)) {
+        return Ok(meta);
+    }
+    let meta = Arc::new(facade.with_entity(entity_name, |entity, _, _| {
         Ok(ReadMeta {
             full_name: entity.full_name.clone(),
             is_view: entity.is_view,
@@ -1801,7 +1814,9 @@ fn read_meta(facade: &EntityFacade, entity_name: &str) -> Result<ReadMeta, Error
             cache_never: entity.cache == "never",
             pk_fields: entity.pk_field_names().into_iter().map(str::to_string).collect(),
         })
-    })
+    })?);
+    facade.with_slot(ReadMetas::default, |metas| metas.insert(entity_name, generation, Arc::clone(&meta)));
+    Ok(meta)
 }
 
 fn identity(entity: &EntityDefinition, values: &BTreeMap<String, Value>) -> Result<String, Error> {
