@@ -385,7 +385,15 @@ impl HostUser {
     }
 
     /// False with no error when the password was right and a second factor is still needed.
-    fn login_user(&self, ctx: Ctx<'_>, username: String, password: String) -> rquickjs::Result<bool> {
+    /// A null or missing username or password is an empty one, a failed login as Java's: false and the message.
+    fn login_user(
+        &self,
+        ctx: Ctx<'_>,
+        username: Opt<Option<String>>,
+        password: Opt<Option<String>>,
+    ) -> rquickjs::Result<bool> {
+        let username = username.0.flatten().unwrap_or_default();
+        let password = password.0.flatten().unwrap_or_default();
         host_guard(&ctx, || match crate::user::login_user(&username, &password) {
             Ok(()) => Ok(!crate::user::session::session_attribute_flag(
                 crate::user::AUTHC_FACTOR_REQUIRED,

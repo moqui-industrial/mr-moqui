@@ -82,6 +82,11 @@ impl Drop for LocalLogin {
 /// The password check and login of [`login_user`]. True when the session id should rotate: the password was right
 /// and the session did not already hold this user. Credentials that are not valid are noted for the web protection.
 fn password_login(username: &str, password: &str) -> Result<bool, Error> {
+    // A blank form tried no password, so it is not a failure web protection counts.
+    if username.is_empty() || password.is_empty() {
+        clear_pre_authc();
+        return Err(Error::new(INVALID_LOGIN));
+    }
     noting_invalid(check_password_login(username, password))
 }
 

@@ -499,7 +499,8 @@ interface MoquiUserFacade {
     getVisit(): MoquiMap | null;
     /** End another session of the signed-in user by its visit (`org.moqui.impl.UserServices.end#UserVisit`); the web sessions ended. */
     endVisit(visitId: string): number;
-    loginUser(username: string, password: string): boolean;
+    /** A null or empty username or password fails as a wrong one does: false, with the message in ec.message. */
+    loginUser(username: string | null, password: string | null): boolean;
     internalLoginUser(username: string): boolean;
     logoutUser(): boolean;
 }

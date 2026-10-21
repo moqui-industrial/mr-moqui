@@ -503,6 +503,36 @@ fn the_webapp_conf_sets_the_response_headers_and_cors() {
     );
 }
 
+/// A login form posted with no username or password fails as a wrong password does, back to the Login screen with the
+/// message, not a 500 from `loginUser(null, null)`; and it tried no password, so web protection does not count it.
+#[test]
+fn a_blank_login_is_a_failed_login_not_an_error() {
+    let world = World::open_in_framework("");
+    let root = webroot().to_string_lossy().into_owned();
+    let _ = crate::web::take_auth_failure();
+    let response = serve_at(&world.factory, request("POST", "/Login/login"), &root);
+    assert_ne!(response.status, 500, "{}", response.body_text());
+    assert!(!crate::web::take_auth_failure(), "a blank form is not a failed guess");
+    // over JSON the answer is the failed transition's, the same as for a wrong password
+    let json = |body: &[u8]| {
+        let mut call = request("POST", "/Login/login");
+        call.set_header("accept", "application/json");
+        call.set_header("content-type", "application/json");
+        call.body = body.to_vec();
+        serve_at(&world.factory, call, &root)
+    };
+    let blank = json(br#"{"username": null}"#);
+    let wrong = json(br#"{"username": "nobody", "password": "wrong"}"#);
+    assert_eq!(blank.status, wrong.status, "{}", blank.body_text());
+    assert!(
+        blank
+            .body_text()
+            .contains("\"errors\" : \"The username or password is not valid\""),
+        "{}",
+        blank.body_text()
+    );
+}
+
 /// As `MoquiServlet.handleCors`: a request from an origin CORS does not allow is answered 401 before it runs; an
 /// allowed origin, the request's own host and no origin at all go on.
 #[test]
