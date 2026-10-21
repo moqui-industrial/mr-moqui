@@ -742,6 +742,16 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="always-standalone" type="boolean" default="false"/>
         <xs:attribute name="skip-actions" type="boolean" default="false"/>
         <xs:attribute name="macro-template-location" type="xs:string" use="required"/>
+        <xs:attribute name="output-kind"><xs:annotation><xs:documentation>
+            How a failed section is written, and whether the finished level is one JSON document: text and html write
+            the escaped message where the section was, vue drops what the section wrote and escapes braces in the
+            message, json writes an error node. Empty follows mime-type: application/json is json, text/html is html,
+            anything else text. No Java counterpart.</xs:documentation></xs:annotation>
+            <xs:simpleType><xs:restriction base="xs:token">
+                <xs:enumeration value="text"/><xs:enumeration value="html"/>
+                <xs:enumeration value="vue"/><xs:enumeration value="json"/>
+            </xs:restriction></xs:simpleType>
+        </xs:attribute>
     </xs:complexType></xs:element>
     <xs:element name="screen-output"><xs:complexType>
         <xs:attribute name="type" type="xs:string" use="required"><xs:annotation>
@@ -752,7 +762,17 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="skip-actions" type="boolean" default="false"/>
         <xs:attribute name="macro-template-location" type="xs:string"><xs:annotation><xs:documentation>
             The JavaScript macro module that fills the document of this binary mode, such as
-            framework/template/screen/ScreenXlsx.js for xlsx. A built-in mode has one by default.</xs:documentation></xs:annotation></xs:attribute>
+            framework/template/screen/ScreenXlsx.js for xlsx.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="output-kind"><xs:annotation><xs:documentation>
+            How a failed section is written, and whether the finished level is one JSON document: text and html write
+            the escaped message where the section was, vue drops what the section wrote and escapes braces in the
+            message, json writes an error node. Empty follows mime-type: application/json is json, text/html is html,
+            anything else text. No Java counterpart.</xs:documentation></xs:annotation>
+            <xs:simpleType><xs:restriction base="xs:token">
+                <xs:enumeration value="text"/><xs:enumeration value="html"/>
+                <xs:enumeration value="vue"/><xs:enumeration value="json"/>
+            </xs:restriction></xs:simpleType>
+        </xs:attribute>
         <xs:attribute name="widget-render-class" type="xs:string"><xs:annotation><xs:documentation>
             The Java ScreenWidgetRender class. Read and not used: the type selects the built-in module.</xs:documentation></xs:annotation></xs:attribute>
     </xs:complexType></xs:element>

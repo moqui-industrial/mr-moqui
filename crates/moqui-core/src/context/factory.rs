@@ -1355,6 +1355,9 @@ impl ExecutionContextFactory {
             .ok()
             .filter(|root| root.name() == "moqui-conf")
             .unwrap_or_else(|| MNode::parse_text("test", "<moqui-conf/>").expect("conf"));
+        with_default_screen_outputs(&conf);
+        let conf_text = conf.write_string();
+        let conf_text = conf_text.as_str();
         let entity = Arc::new(RwLock::new(None));
         let runtime_dir = PathBuf::from(".");
         let executor = if pools.is_inline() {
@@ -1399,6 +1402,45 @@ impl ExecutionContextFactory {
         factory.pools.attach(&factory);
         install_hit_flush(&factory);
         factory.new_context()
+    }
+}
+
+/// Put the render modes of `MoquiDefaultConf.xml` into a test conf, as a boot merges them, before the test's own
+/// `screen-text-output` and `screen-output` entries so one of those still replaces a default of the same type.
+fn with_default_screen_outputs(conf: &MNode) {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../runtime/base-component/framework/conf/MoquiDefaultConf.xml"
+    );
+    let defaults = match MNode::parse_file(path) {
+        Ok(root) => root.first_named("screen-facade"),
+        Err(error) => {
+            tracing::warn!("No default render modes for the test conf, {path} did not load: {error}");
+            return;
+        }
+    };
+    let Some(defaults) = defaults else {
+        return;
+    };
+    let facade = conf.first_named("screen-facade").unwrap_or_else(|| {
+        let facade = MNode::new("screen-facade");
+        conf.append_node(facade.clone());
+        facade
+    });
+    let given: Vec<String> = ["screen-text-output", "screen-output"]
+        .into_iter()
+        .flat_map(|name| facade.children_named(name))
+        .filter_map(|output| output.attribute("type"))
+        .collect();
+    let mut index = 0;
+    for name in ["screen-text-output", "screen-output"] {
+        for output in defaults.children_named(name) {
+            if output.attribute("type").is_some_and(|kind| given.contains(&kind)) {
+                continue;
+            }
+            facade.insert_node(index, output.deep_copy());
+            index += 1;
+        }
     }
 }
 
