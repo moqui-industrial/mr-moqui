@@ -15,14 +15,14 @@
 //! `PdfRenderer`'s engine: one long-lived headless Chromium, driven over the DevTools Protocol
 //! (`plans/archive/Architecture-Proposal.md`, Tool components and print).
 //!
-//! The binary is `pdf_chromium_path`, else the one `./moq chromium-download` put in `runtime/chromium`, else `chromium`
+//! The binary is the conf's `screen-facade` `pdf` `chromium-path` (`pdf_chromium_path`), else the one `./moq chromium-download` put in `runtime/chromium`, else `chromium`
 //! then `chromium-browser` on the `PATH`; early in startup [`find_chromium`] logs every one it finds and the one it
 //! uses. It is not vendored. When none is found the server still starts and PDF reports that it is not available. The browser starts on the first render and is kept; when it exits, the next
 //! render starts it again.
 //!
 //! Each document gets its own page: the `html-print` text becomes the content of `about:blank`, every request the page
 //! makes is failed (the document reaches no network, no server, and no session), `Page.printToPDF` runs with the
-//! document's `@page` size, and the page closes. `pdf_page_limit` pages print at once and `pdf_timeout` seconds bound
+//! document's `@page` size, and the page closes. `pdf` `page-limit` pages print at once and `timeout` seconds bound
 //! each one. The caller's thread blocks on the edge runtime until the bytes come back.
 //!
 //! The protocol client is [`cdp`], on `tokio-tungstenite`. `chromiumoxide` was the planned crate, but it parses
@@ -62,7 +62,8 @@ struct Found {
     chrome: bool,
 }
 
-/// Look at every place a Chromium may be, log each one found, and choose one: `pdf_chromium_path` when it names a file,
+/// Look at every place a Chromium may be, log each one found, and choose one: `configured` (the `pdf` `chromium-path`,
+/// `pdf_chromium_path`) when it names a file,
 /// else the first Chromium of [`downloaded_chromium`], `chromium` then `chromium-browser` on the `PATH`, and on macOS
 /// `/Applications/Chromium.app`. Google Chrome is logged when it is found but is used only when `pdf_chromium_path`
 /// names it.
@@ -70,11 +71,11 @@ struct Found {
 /// # Errors
 ///
 /// Returns the reason PDF is not available, already logged, when no Chromium is chosen.
-pub fn find_chromium(runtime_dir: &Path) -> Result<PathBuf, String> {
-    let configured = moqui_lib::env::get_prop_or_env("pdf_chromium_path");
+pub fn find_chromium(runtime_dir: &Path, configured: &str) -> Result<PathBuf, String> {
+    let configured = configured.trim();
     let mut found = Vec::new();
     if !configured.is_empty() {
-        let path = PathBuf::from(&configured);
+        let path = PathBuf::from(configured);
         if path.is_file() {
             found.push(Found {
                 place: "pdf_chromium_path".to_string(),
@@ -208,15 +209,22 @@ fn check_apparmor_profile(binary: &Path) {
     }
 }
 
-/// Find the binary and install the engine into core, or install the reason PDF is not available. The returned guard
-/// removes the engine and stops the browser when it drops.
+/// Find the binary and install the engine into core, or install the reason PDF is not available. The settings are the
+/// conf's `screen-facade` `pdf` element. The returned guard removes the engine and stops the browser when it drops.
 #[must_use = "dropping the guard stops the PDF browser"]
-pub fn install(runtime_dir: &Path) -> PdfGuard {
-    match find_chromium(runtime_dir) {
+pub fn install(factory: &moqui_core::context::ExecutionContextFactory) -> PdfGuard {
+    let runtime_dir = factory.runtime_dir();
+    let mut configured = factory.conf_setting("screen-facade/pdf", "chromium-path");
+    if configured.is_empty() {
+        configured = moqui_lib::env::get_prop_or_env("pdf_chromium_path");
+    }
+    match find_chromium(runtime_dir, &configured) {
         Ok(binary) => {
             let temp_dir = runtime_dir.join("tmp");
             remove_orphan_profiles(&temp_dir);
-            let engine = Arc::new(ChromiumPdf::new(binary, temp_dir));
+            let pages = factory.conf_number("screen-facade/pdf", "page-limit", PAGE_LIMIT).max(1);
+            let timeout = factory.conf_number("screen-facade/pdf", "timeout", TIMEOUT_SECONDS).max(1);
+            let engine = Arc::new(ChromiumPdf::with_limits(binary, temp_dir, pages, timeout));
             moqui_core::screen::install_pdf_engine(engine.clone());
             PdfGuard { engine: Some(engine) }
         }
@@ -300,11 +308,16 @@ struct Live {
 }
 
 impl ChromiumPdf {
-    /// An engine for `binary` whose profiles go under `temp_dir`. Nothing starts until the first render.
+    /// An engine for `binary` whose profiles go under `temp_dir`, with the default limits. Nothing starts until the
+    /// first render.
     #[must_use]
     pub fn new(binary: PathBuf, temp_dir: PathBuf) -> Self {
-        let pages = positive_property("pdf_page_limit", PAGE_LIMIT);
-        let timeout = positive_property("pdf_timeout", TIMEOUT_SECONDS);
+        Self::with_limits(binary, temp_dir, PAGE_LIMIT, TIMEOUT_SECONDS)
+    }
+
+    /// [`Self::new`] with `pages` printing at once and `timeout` seconds for one document.
+    #[must_use]
+    pub fn with_limits(binary: PathBuf, temp_dir: PathBuf, pages: u64, timeout: u64) -> Self {
         Self {
             inner: Arc::new(Inner {
                 binary,
@@ -621,15 +634,6 @@ pub fn devtools_url(profile: &Path, child: &mut Child, wait: Duration) -> Result
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-
-fn positive_property(name: &str, default: u64) -> u64 {
-    moqui_lib::env::get_prop_or_env(name)
-        .trim()
-        .parse::<u64>()
-        .ok()
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
 }
 
 #[cfg(test)]

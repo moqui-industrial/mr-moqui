@@ -106,15 +106,20 @@ pub(crate) fn assert_sealed_permission_grant(facade: &EntityFacade, user_permiss
 }
 
 fn privileged_groups() -> BTreeSet<String> {
-    csv_ids("user_privileged_groups", DEFAULT_PRIVILEGED_GROUPS)
+    csv_ids("privileged-groups", DEFAULT_PRIVILEGED_GROUPS)
 }
 
 fn sealed_permissions() -> BTreeSet<String> {
-    csv_ids("user_sealed_permissions", DEFAULT_SEALED_PERMISSIONS)
+    csv_ids("sealed-permissions", DEFAULT_SEALED_PERMISSIONS)
 }
 
-fn csv_ids(property: &str, default_ids: &str) -> BTreeSet<String> {
-    let loaded = moqui_lib::env::get_prop_or_env(property);
+/// The ids in the `user-facade` `authz` attribute `name` of the current factory's conf, or in `default_ids` when it is
+/// empty or there is no current context.
+fn csv_ids(name: &str, default_ids: &str) -> BTreeSet<String> {
+    let loaded = ExecutionContext::with_current(|ctx| ctx.factory().user_facade_attr("authz", name))
+        .flatten()
+        .map(|raw| moqui_lib::env::expand(&raw).unwrap_or(raw))
+        .unwrap_or_default();
     let source = if loaded.is_empty() {
         default_ids
     } else {

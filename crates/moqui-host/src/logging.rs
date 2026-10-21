@@ -21,7 +21,7 @@
 //! artifact hits are counted when a frame pops, not here.
 //!
 //! [`attach_files`] opens `moqui.log` and `moqui-error.log` once the runtime directory and the
-//! default properties are known, writes the lines logged before that, and rolls the files over by
+//! conf's `logging` element are known, writes the lines logged before that, and rolls the files over by
 //! size and by day. Those files stay the plain line, with no color and no console header. Without
 //! it lines go to stderr only.
 //!
@@ -497,26 +497,27 @@ fn write_file_line(level: Level, line: &str) {
     }
 }
 
-/// Open the log files named by `moqui_log_dir` (a path, or a `runtime://` location; empty means no files),
-/// `moqui_log_max_size_mb` and `moqui_log_max_files`, and write the lines logged so far. The first call
-/// decides; later calls change nothing. Returns the directory when files are being written.
-pub fn attach_files(runtime_dir: &Path) -> Option<PathBuf> {
+/// Open the log files of the conf's `logging` element: `dir` (`moqui_log_dir`, a path or a `runtime://` location;
+/// empty means no files), `max-size-mb` and `max-files`; with no factory yet, `moqui_log_dir` and the defaults. Write
+/// the lines logged so far. The first call decides; later calls change nothing. Returns the directory when files are
+/// being written.
+pub fn attach_files(
+    runtime_dir: &Path,
+    factory: Option<&moqui_core::context::ExecutionContextFactory>,
+) -> Option<PathBuf> {
     let mut state = lock(&FILES);
     let FileState::Pending(pending) = &mut *state else {
         return None;
     };
     let pending = std::mem::take(pending);
-    let dir = file_dir(runtime_dir, &moqui_lib::env::get_prop_or_env("moqui_log_dir"));
-    let max_mb = moqui_lib::env::get_prop_or_env("moqui_log_max_size_mb")
-        .trim()
-        .parse::<u64>()
-        .ok()
-        .filter(|mb| *mb > 0)
-        .unwrap_or(100);
-    let max_files = moqui_lib::env::get_prop_or_env("moqui_log_max_files")
-        .trim()
-        .parse::<usize>()
-        .unwrap_or(30);
+    let setting = |name: &str| factory.map(|factory| factory.conf_setting("logging", name)).unwrap_or_default();
+    let mut configured_dir = setting("dir");
+    if configured_dir.is_empty() {
+        configured_dir = moqui_lib::env::get_prop_or_env("moqui_log_dir");
+    }
+    let dir = file_dir(runtime_dir, &configured_dir);
+    let max_mb = setting("max-size-mb").parse::<u64>().ok().filter(|mb| *mb > 0).unwrap_or(100);
+    let max_files = setting("max-files").parse::<usize>().unwrap_or(30);
     let opened = dir.as_ref().and_then(|dir| {
         let sinks = std::fs::create_dir_all(dir).and_then(|()| {
             Ok(FileSinks {

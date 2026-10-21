@@ -41,7 +41,7 @@ use crate::service::git_eca::{self, GitEvent, GitEventKey, RuleOutcome};
 pub(crate) const GIT_UPDATE: &str = "moqui.resource.GitUpdate";
 pub(crate) const GIT_UPDATE_REF: &str = "moqui.resource.GitUpdateRef";
 
-/// The most commits one change raises commit events for (`git_eca_max_commits`); a first push of a long history
+/// The most commits one change raises commit events for (`git-server` `eca-max-commits`); a first push of a long history
 /// stops there, with a warning.
 const DEFAULT_MAX_COMMITS: usize = 10_000;
 
@@ -50,11 +50,9 @@ const STALE_RECORDING_MILLIS: i64 = 2 * 60 * 1000;
 /// A run that has not finished for this long is run again.
 const STALE_RUNNING_MILLIS: i64 = 30 * 60 * 1000;
 
+/// The conf's `git-server` `eca-max-commits`, else [`DEFAULT_MAX_COMMITS`].
 fn max_commits() -> usize {
-    moqui_lib::env::get_prop_or_env("git_eca_max_commits")
-        .trim()
-        .parse()
-        .ok()
+    Some(super::number_setting("eca-max-commits", DEFAULT_MAX_COMMITS))
         .filter(|max| *max > 0)
         .unwrap_or(DEFAULT_MAX_COMMITS)
 }
@@ -603,7 +601,7 @@ impl GitProvider {
                 if count + commits.len() > limit {
                     tracing::warn!(
                         repository = %repository_id,
-                        "a change brings more than {limit} new commits (git_eca_max_commits); commit events stop there"
+                        "a change brings more than {limit} new commits (git-server eca-max-commits); commit events stop there"
                     );
                     commits.truncate(limit - count);
                 }

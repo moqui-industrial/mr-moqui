@@ -701,7 +701,7 @@ fn a_db_repository_keeps_pushed_deltas_and_sends_them_back() {
         );
         store.stamp_all(jiff::Timestamp::now().as_millisecond() - 30 * 24 * 60 * 60 * 1000);
         let mut options =
-            crate::resource::git::gc::GcOptions::from_properties(false, std::time::Duration::from_secs(120));
+            crate::resource::git::gc::GcOptions::from_conf(false, std::time::Duration::from_secs(120));
         options.reflog_millis = 0;
         // the updates of the pushes are older than the window, and done
         let _authz = fixture.context.disable_authz();
@@ -825,7 +825,7 @@ fn large_objects_are_content_blobs_streamed_in_and_out() {
             .update_all([("ecaStatus".to_string(), Value::string("done"))])
             .unwrap();
         let mut options =
-            crate::resource::git::gc::GcOptions::from_properties(false, std::time::Duration::from_secs(120));
+            crate::resource::git::gc::GcOptions::from_conf(false, std::time::Duration::from_secs(120));
         options.reflog_millis = 0;
         let outcome = provider.gc(Some(id), &options).unwrap();
         let report = outcome[0].1.as_ref().unwrap();

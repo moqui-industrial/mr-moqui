@@ -32,6 +32,12 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:element minOccurs="0" ref="service-facade"/>
                 <xs:element minOccurs="0" ref="search-facade"/>
                 <xs:element minOccurs="0" ref="llm-facade"/>
+                <xs:element minOccurs="0" ref="email-client"/>
+                <xs:element minOccurs="0" ref="ssh-server"/>
+                <xs:element minOccurs="0" ref="terminal"/>
+                <xs:element minOccurs="0" ref="git-server"/>
+                <xs:element minOccurs="0" ref="smtp-server"/>
+                <xs:element minOccurs="0" ref="logging"/>
                 <xs:element minOccurs="0" ref="entity-facade"/>
                 <xs:element minOccurs="0" ref="database-list"/>
                 <xs:element minOccurs="0" ref="repository-list"/>
@@ -262,20 +268,29 @@ along with this software (see the LICENSE.md file). If not, see
                     <xs:attribute name="enabled" type="boolean" default="true"/>
                 </xs:complexType></xs:element>
                 <xs:element minOccurs="0" name="session-config"><xs:complexType>
-                    <xs:attribute name="timeout" type="xs:nonNegativeInteger" use="required"/>
+                    <xs:attribute name="timeout" type="non-neg-int-expandable" use="required"><xs:annotation><xs:documentation>
+                        Minutes without a request before a web session expires; 0 never expires.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="flush" type="xs:string" default="eventual"><xs:annotation><xs:documentation>
+                        eventual writes a changed session after the response; guarantee writes it before. No Java
+                        counterpart.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="max" type="non-neg-int-expandable" default="10000"><xs:annotation><xs:documentation>
+                        Most web sessions kept in memory. Over it, the sessions used longest ago are written and dropped,
+                        and reload from HttpSession when they come back. 0 keeps every session. No Java counterpart.
+                    </xs:documentation></xs:annotation></xs:attribute>
                 </xs:complexType></xs:element>
                 <xs:element minOccurs="0" maxOccurs="unbounded" name="endpoint">
                     <xs:annotation><xs:documentation>Add a WebSocket Endpoint</xs:documentation></xs:annotation>
                     <xs:complexType>
                         <xs:attribute name="path" type="xs:string" use="required"><xs:annotation><xs:documentation>
                             The path for the endpoint, relative to webapp, must start with forward slash ('/')</xs:documentation></xs:annotation></xs:attribute>
-                        <xs:attribute name="class" type="xs:string" use="required"><xs:annotation><xs:documentation>
-                            Must extend javax.websocket.Endpoint. For Moqui-specific features including setting up an ExecutionContext
+                        <xs:attribute name="class" type="xs:string"><xs:annotation><xs:documentation>
+                            In Rust the host serves /notws and /termws itself and this is not used. Java: must extend javax.websocket.Endpoint. For Moqui-specific features including setting up an ExecutionContext
                             extend org.moqui.impl.webapp.MoquiAbstractEndpoint. Even if not using MoquiAbstractEndpoint it will try
                             to add the following ServerEndpointConfig user properties: handshakeRequest, httpSession,
                             executionContextFactory, and maxIdleTimeout (set to value of @timeout).</xs:documentation></xs:annotation></xs:attribute>
-                        <xs:attribute name="timeout" type="xs:integer"/>
-                        <xs:attribute name="enabled" type="boolean" default="true"/>
+                        <xs:attribute name="timeout" type="xs:integer"><xs:annotation><xs:documentation>
+                            Milliseconds with nothing from the client before the socket closes.</xs:documentation></xs:annotation></xs:attribute>
+                        <xs:attribute name="enabled" type="boolean-expandable" default="true"/>
                     </xs:complexType>
                 </xs:element>
                 <xs:element minOccurs="0" maxOccurs="unbounded" name="response-header"><xs:complexType>
@@ -332,6 +347,13 @@ along with this software (see the LICENSE.md file). If not, see
                 client-ip-header and X-Forwarded-Proto are believed only from these. When one or more are set the
                 per-client parts of web-protection are on by default. Empty, the header is believed from any peer
                 (first hop), as before. No Java counterpart.
+            </xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="status-ips" type="xs:string"><xs:annotation><xs:documentation>
+                Comma separated addresses that may read /health and /metrics, besides loopback. No Java counterpart.
+            </xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="transfer-workers" type="non-neg-int-expandable" default="16"><xs:annotation><xs:documentation>
+                A file response over 256 KiB streams, read a window at a time as the client takes it; at most this many
+                reads of files in the database run at once. No Java counterpart.
             </xs:documentation></xs:annotation></xs:attribute>
         </xs:complexType>
     </xs:element>
@@ -490,7 +512,21 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:element minOccurs="0" ref="password"/>
                 <xs:element minOccurs="0" ref="login-key"/>
                 <xs:element minOccurs="0" ref="login"/>
+                <xs:element minOccurs="0" ref="authz"/>
             </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+    <xs:element name="authz">
+        <xs:annotation><xs:documentation>Grants that only a holder may make. No Java counterpart.</xs:documentation></xs:annotation>
+        <xs:complexType>
+            <xs:attribute name="privileged-groups" type="xs:string" default="ADMIN,ADMIN_ADV"><xs:annotation><xs:documentation>
+                Comma separated UserGroup IDs. UserGroupMember create, update and delete for these groups is allowed
+                only if the caller is already a member (seed/install and disableAuthz skip the check).
+            </xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="sealed-permissions" type="xs:string"><xs:annotation><xs:documentation>
+                Comma separated UserPermission IDs. UserGroupPermission create, update and delete for these IDs is
+                allowed only if the caller already has that permission.
+            </xs:documentation></xs:annotation></xs:attribute>
         </xs:complexType>
     </xs:element>
     <xs:element name="password">
@@ -607,6 +643,14 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="xsl-fo-handler-factory" type="xs:string"><xs:annotation><xs:documentation>
                 Name of the ToolFactory to use for XSL-FO transformation in the ResourceFacade.xslFoTransform() method.
             </xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="blob-chunk-size" type="non-neg-int-expandable" default="1048576"><xs:annotation><xs:documentation>Bytes per ContentBlobChunk row of a content blob (moqui.resource.ContentBlob). No Java counterpart.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="blob-gc-prune-days" type="non-neg-int-expandable" default="14"><xs:annotation><xs:documentation>How many days a content blob nothing refers to is kept (gc#ContentBlobs). No Java counterpart.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="dbresource-blob-threshold" type="non-neg-int-expandable" default="65536"><xs:annotation><xs:documentation>A dbresource file over this many bytes is a content blob (stored once, streamed), not fileData. No Java counterpart.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="image-max-concurrent" type="non-neg-int-expandable" default="2"><xs:annotation><xs:documentation>Image conversions (convert#Image) that may run at once; a decoded image may take hundreds of MB. No Java counterpart.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="script-timeout" type="xs:string"><xs:annotation><xs:documentation>Seconds a script may run when no transaction limits it (a widget condition, a
+                transaction="ignore" service), on every thread; a transaction's own timeout replaces it, and 0 is no
+                limit. Empty, a script on a request worker is limited to the webapp's request-timeout and one on a
+                service, job or scheduler thread is not limited, as in Java.</xs:documentation></xs:annotation></xs:attribute>
         </xs:complexType>
     </xs:element>
     <xs:element name="resource-reference">
@@ -650,6 +694,18 @@ along with this software (see the LICENSE.md file). If not, see
     <xs:element name="screen-facade">
         <xs:complexType>
             <xs:sequence>
+                <xs:element minOccurs="0" name="pdf"><xs:complexType>
+                    <xs:annotation><xs:documentation>PDF, the html-print render through headless Chromium. No Java
+                        counterpart.</xs:documentation></xs:annotation>
+                    <xs:attribute name="chromium-path" type="xs:string"><xs:annotation><xs:documentation>
+                        The Chromium executable; empty, or a path that names no file, looks in runtime/chromium (from
+                        ./moq chromium-download), then for chromium, then chromium-browser, on the PATH.
+                    </xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="page-limit" type="non-neg-int-expandable" default="4"><xs:annotation><xs:documentation>
+                        The pages that print at once.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="timeout" type="non-neg-int-expandable" default="60"><xs:annotation><xs:documentation>
+                        The seconds one document may take.</xs:documentation></xs:annotation></xs:attribute>
+                </xs:complexType></xs:element>
                 <xs:element minOccurs="0" maxOccurs="unbounded" ref="screen-text-output"/>
                 <xs:element minOccurs="0" maxOccurs="unbounded" ref="screen-output"/>
                 <xs:element minOccurs="0" maxOccurs="unbounded" name="screen"><xs:complexType>
@@ -672,6 +728,10 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="boundary-comments" default="false" type="boolean"/>
             <xs:attribute name="default-paginate-rows" type="xs:string" default="20"/>
             <xs:attribute name="default-autocomplete-rows" type="xs:string" default="10"/>
+            <xs:attribute name="check-interval-ms" type="xs:string"><xs:annotation><xs:documentation>
+                How often a screen file is checked for changes, in milliseconds; empty is never when instance_purpose is
+                production and two seconds otherwise. No Java counterpart.
+            </xs:documentation></xs:annotation></xs:attribute>
         </xs:complexType>
     </xs:element>
     <xs:element name="screen-text-output"><xs:complexType>
@@ -796,6 +856,12 @@ along with this software (see the LICENSE.md file). If not, see
                     Must follow index name requirements (lower case, etc).
                     No separator character is added, recommend ending with underscore (_).
                 </xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="run" type="boolean-expandable" default="true"><xs:annotation><xs:documentation>
+                    When the url is this host and nothing answers there, start the install in runtime/opensearch (unless
+                    it has a pid file, a node run outside the server) and stop it on shutdown.
+                </xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="start-wait" type="non-neg-int-expandable" default="120"><xs:annotation><xs:documentation>
+                    How many seconds startup waits for that node to answer.</xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
             <xs:element name="semantic" minOccurs="0"><xs:complexType>
                 <xs:annotation><xs:documentation>Semantic and hybrid retrieval on the postgres backend. Off unless enabled;
@@ -977,6 +1043,114 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="crypt-iter" type="xs:string"/>
             <xs:attribute name="crypt-algo" type="xs:string"/>
             <xs:attribute name="query-stats" default="false" type="boolean-expandable"/>
+            <xs:attribute name="rest-max-page-size" type="non-neg-int-expandable" default="1000"><xs:annotation><xs:documentation>
+                The most rows a page of the entity REST API returns. No Java counterpart.</xs:documentation></xs:annotation></xs:attribute>
+        </xs:complexType>
+    </xs:element>
+
+    <!-- ===================== Server Elements (no Java counterpart) ===================== -->
+
+    <xs:element name="email-client">
+        <xs:annotation><xs:documentation>The mail client (org.moqui.impl.EmailClientServices).</xs:documentation></xs:annotation>
+        <xs:complexType>
+            <xs:attribute name="allowed-hosts" type="xs:string"><xs:annotation><xs:documentation>Comma separated hostnames and IPs poll#EmailServer and send#Email may connect
+                to; empty allows any host. smtp.example.com matches example.com; notexample.com does not.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="idle-enabled" type="boolean-expandable" default="true"><xs:annotation><xs:documentation>IMAP IDLE on the Inbox of each active account, so new mail shows at once; false relies on the sync job only.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="idle-max" type="non-neg-int-expandable" default="8"><xs:annotation><xs:documentation>The most IDLE connections (a thread each) in a server.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="sync-interval" type="non-neg-int-expandable" default="5"><xs:annotation><xs:documentation>Minutes between syncs of an account with no syncIntervalMinutes.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="sync-batch" type="non-neg-int-expandable" default="500"><xs:annotation><xs:documentation>The most new messages a folder brings in one sync.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="flag-scan" type="non-neg-int-expandable" default="15"><xs:annotation><xs:documentation>Minutes between reading every message's flags, on a server without CONDSTORE.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="sync-push-now" type="boolean-expandable" default="true"><xs:annotation><xs:documentation>Make a local change on the server right after it commits; false waits for the next sync.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="autoconfig-urls" type="xs:string"><xs:annotation><xs:documentation>discover#EmailServer's Thunderbird autoconfig URLs, comma separated, with
+                {domain} and {email}; empty for autoconfig.{domain}, the domain's .well-known URL and the Thunderbird ISPDB.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="dns-server" type="xs:string"><xs:annotation><xs:documentation>The DNS server (host:port) for discover#EmailServer's SRV lookups; empty for the first in /etc/resolv.conf.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="tls-ca-file" type="xs:string"><xs:annotation><xs:documentation>A PEM file of more certificate authorities to trust, for a mail server with its own.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="oauth-redirect-uri" type="xs:string"><xs:annotation><xs:documentation>The callback the OAuth provider sends the browser back to, exactly as
+                registered there; empty for the webroot webapp's URL and /emailOAuth/callback.</xs:documentation></xs:annotation></xs:attribute>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:element name="ssh-server">
+        <xs:annotation><xs:documentation>The built-in SSH server: the terminal client, SFTP, git and the admin shell.</xs:documentation></xs:annotation>
+        <xs:complexType>
+            <xs:attribute name="port" type="xs:string"><xs:annotation><xs:documentation>The port to bind; empty leaves the server off, 0 binds an ephemeral port.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="host" type="xs:string" default="127.0.0.1"><xs:annotation><xs:documentation>The address to bind.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="host-key" type="xs:string"><xs:annotation><xs:documentation>The base64 of a 32-byte Ed25519 seed, or an OpenSSH private key.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="public-host" type="xs:string"><xs:annotation><xs:documentation>The SSH host git clone URLs show; the webapp host when empty.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="public-port" type="xs:string"><xs:annotation><xs:documentation>The SSH port git clone URLs show; port when empty.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="sftp-root" type="xs:string" default="runtime://sftp"><xs:annotation><xs:documentation>The resource location SFTP serves (runtime, file, component or dbresource).</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="sftp-max-file" type="non-neg-int-expandable" default="268435456"><xs:annotation><xs:documentation>The largest file SFTP takes, in bytes.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-sessions" type="non-neg-int-expandable" default="8"><xs:annotation><xs:documentation>The most connections at once.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="git-password-auth" type="boolean-expandable" default="false"><xs:annotation><xs:documentation>Git over SSH on a connection that logged in by password; by key only when false.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="login-dialog" type="boolean-expandable" default="true"><xs:annotation><xs:documentation>A client with no key is let in with no user and gets the terminal client's
+                login dialog; when false, such a client logs in by password at the SSH level or not at all.</xs:documentation></xs:annotation></xs:attribute>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:element name="terminal">
+        <xs:annotation><xs:documentation>The terminal client's sessions, over SSH and in the browser together.</xs:documentation></xs:annotation>
+        <xs:complexType>
+            <xs:attribute name="max-sessions" type="non-neg-int-expandable" default="16"><xs:annotation><xs:documentation>The most sessions at once.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-sessions-per-user" type="non-neg-int-expandable" default="4"><xs:annotation><xs:documentation>The most sessions of one user; a session in its login dialog counts toward max-sessions only.</xs:documentation></xs:annotation></xs:attribute>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:element name="git-server">
+        <xs:annotation><xs:documentation>The git server, over smart HTTP and SSH, and the storage of db kind
+            repositories (docs/Git-Hosting.md).</xs:documentation></xs:annotation>
+        <xs:complexType>
+            <xs:attribute name="public-url" type="xs:string"><xs:annotation><xs:documentation>The base URL clone URLs show; from the webapp host and port when empty.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="lfs-token-key" type="xs:string"><xs:annotation><xs:documentation>The key Git LFS action tokens are signed with.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="lfs-token-key-previous" type="xs:string"><xs:annotation><xs:documentation>A key that still reads while lfs-token-key is changed.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-concurrent" type="non-neg-int-expandable" default="4"><xs:annotation><xs:documentation>Clones and pushes that run at once, on threads of their own.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-queued" type="non-neg-int-expandable" default="16"><xs:annotation><xs:documentation>Clones and pushes that wait for one of those threads.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-request" type="non-neg-int-expandable" default="67108864"><xs:annotation><xs:documentation>Bytes of an upload-pack request.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-push-size" type="non-neg-int-expandable" default="2147483648"><xs:annotation><xs:documentation>Bytes of a push.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-object-size" type="non-neg-int-expandable" default="536870912"><xs:annotation><xs:documentation>Bytes of one pushed object.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="idle-timeout" type="non-neg-int-expandable" default="120"><xs:annotation><xs:documentation>Seconds of silence in a request body that end it.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="pack-threads" type="xs:string"><xs:annotation><xs:documentation>Threads that compress and index packs; all cores when empty.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="allow-http" type="boolean-expandable" default="false"><xs:annotation><xs:documentation>Take credentials over plain HTTP.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="lfs-max-object-size" type="non-neg-int-expandable" default="5368709120"><xs:annotation><xs:documentation>The largest Git LFS object, in bytes.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="eca-max-commits" type="non-neg-int-expandable" default="10000"><xs:annotation><xs:documentation>The most commits one change raises gitECA commit events for.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="db-delta-depth" type="non-neg-int-expandable" default="50"><xs:annotation><xs:documentation>Deltas at most from an object to a whole one.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="db-delta-max-size" type="non-neg-int-expandable" default="16777216"><xs:annotation><xs:documentation>Objects up to this many bytes may be stored as deltas.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="db-large-object" type="non-neg-int-expandable" default="8388608"><xs:annotation><xs:documentation>An object over this many bytes is a content blob, read and sent a window at a time.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="db-write-format" type="xs:string" default="v2"><xs:annotation><xs:documentation>raw writes new rows uncompressed, as versions before this format read them.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="db-cache-bytes" type="non-neg-int-expandable" default="67108864"><xs:annotation><xs:documentation>Bytes of decoded objects kept in memory for all repositories.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="gc-prune-days" type="non-neg-int-expandable" default="14"><xs:annotation><xs:documentation>gc#GitRepositories deletes unreachable objects not written or referenced in this many days (at least 1).</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="gc-reflog-days" type="non-neg-int-expandable" default="30"><xs:annotation><xs:documentation>gc#GitRepositories keeps the commits of this many days of changes, so a force push can be undone.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="gc-max-objects" type="non-neg-int-expandable" default="20000000"><xs:annotation><xs:documentation>gc#GitRepositories passes over a repository of more objects than this.</xs:documentation></xs:annotation></xs:attribute>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:element name="smtp-server">
+        <xs:annotation><xs:documentation>The inbound SMTP listener for hosted and shared mail accounts, behind the edge
+            gateway (docs/Mail-Inbound.md).</xs:documentation></xs:annotation>
+        <xs:complexType>
+            <xs:attribute name="listen-port" type="xs:string"><xs:annotation><xs:documentation>The port to bind; empty leaves the listener off, 0 binds an ephemeral port.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="listen-host" type="xs:string" default="127.0.0.1"><xs:annotation><xs:documentation>The address to bind.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="allowed-addresses" type="xs:string"><xs:annotation><xs:documentation>The gateway's IPs and CIDRs, comma separated; an empty list does not start the listener.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="hostname" type="xs:string"><xs:annotation><xs:documentation>The name in the greeting and the Received field; the webapp host when empty.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="authserv-id" type="xs:string"><xs:annotation><xs:documentation>The authserv-id of the gateway's Authentication-Results; only those are kept.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="proxy-protocol" type="boolean-expandable" default="false"><xs:annotation><xs:documentation>Each connection starts with a PROXY v1 or v2 header, whose address must be allowed too.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="spam-headers" type="xs:string" default="X-Spam-Flag,X-Spam-Status,X-Spam"><xs:annotation><xs:documentation>The gateway's spam verdict fields; mail one of them says yes to goes to Junk.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="plus-separator" type="xs:string" default="+"><xs:annotation><xs:documentation>The plus-addressing characters (sales+news@ is sales@); none turns it off.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-message-size" type="non-neg-int-expandable" default="26214400"><xs:annotation><xs:documentation>The largest message, in bytes.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-recipients" type="non-neg-int-expandable" default="100"><xs:annotation><xs:documentation>The most recipients of one message.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-connections" type="non-neg-int-expandable" default="20"><xs:annotation><xs:documentation>The most connections at once.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="command-timeout" type="non-neg-int-expandable" default="300"><xs:annotation><xs:documentation>Seconds for each command or data chunk.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="session-timeout" type="non-neg-int-expandable" default="1800"><xs:annotation><xs:documentation>Seconds for a whole session.</xs:documentation></xs:annotation></xs:attribute>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:element name="logging">
+        <xs:annotation><xs:documentation>The log files moqui.log (all events) and moqui-error.log (warn and error).
+            The stderr level and color are the properties moqui_log_level and moqui_log_color, read before the conf.
+        </xs:documentation></xs:annotation>
+        <xs:complexType>
+            <xs:attribute name="dir" type="xs:string" default="runtime://log"><xs:annotation><xs:documentation>A path or runtime:// location; empty writes no files.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-size-mb" type="non-neg-int-expandable" default="100"><xs:annotation><xs:documentation>A file rolls over to moqui.yyyy-MM-dd.N.log (UTC) at this size or when the day changes.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-files" type="non-neg-int-expandable" default="30"><xs:annotation><xs:documentation>Only this many of the newest rolled files of each kind are kept.</xs:documentation></xs:annotation></xs:attribute>
         </xs:complexType>
     </xs:element>
 

@@ -28,7 +28,10 @@ use moqui_core::screen::PdfEngine;
 use moqui_host::pdf::ChromiumPdf;
 
 fn browser() -> Option<PathBuf> {
-    if let Ok(found) = moqui_host::pdf::find_chromium(&crate::common::repo_runtime()) {
+    if let Ok(found) = moqui_host::pdf::find_chromium(
+        &crate::common::repo_runtime(),
+        &moqui_lib::env::get_prop_or_env("pdf_chromium_path"),
+    ) {
         return Some(found);
     }
     let path = std::env::var_os("PATH").unwrap_or_default();

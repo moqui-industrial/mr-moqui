@@ -67,7 +67,8 @@ moqui> apps                                 from the admin shell; quitting the a
   with the same login dialog `moqui tui` shows, the SSH name filled in. Such a session closes after 2 minutes without a
   login, or after 5 refused ones, and gets only the apps: no commands, `agent-apps`, SFTP or git. To log in by password
   at the SSH level instead (for the admin shell without a key), use `ssh -o PreferredAuthentications=password`.
-  `ssh_login_dialog=false` turns the dialog off. An account with a second factor logs in through the dialog ("The login dialog");
+  `ssh-server` `login-dialog="false"` turns the dialog off.
+  An account with a second factor logs in through the dialog ("The login dialog");
   at the SSH level a password alone does not let it in. A dialog login is checked against the account's and its
   groups' `ipAllowed` with the SSH client's address, as an SSH password login is.
 - **Permission.** None is needed for the apps: every screen is still rendered as the user with artifact authorization
@@ -77,9 +78,9 @@ moqui> apps                                 from the admin shell; quitting the a
   window size, and follows window changes. Colors follow `TERM` (`*-256color` is 256 colors). Send
   `COLORTERM=truecolor` for true color, or `NO_COLOR=1` for none, with `SendEnv COLORTERM NO_COLOR LANG` in
   `~/.ssh/config`. A locale that is set and is not UTF-8 draws in ASCII.
-- **Limits.** At most `tui_max_sessions` (16) terminal sessions run at once, over SSH and in the browser together, and
-  `tui_max_sessions_per_user` (4) of them for one user; a session in its login dialog counts toward the first only.
-  `ssh_max_sessions` counts connections, one let in for the dialog too. A session ends after 10 minutes without input.
+- **Limits.** At most `terminal` `max-sessions` (16) terminal sessions run at once, over SSH and in the browser together, and
+  `terminal` `max-sessions-per-user` (4) of them for one user; a session in its login dialog counts toward the first only.
+  `ssh-server` `max-sessions` counts connections, one let in for the dialog too. A session ends after 10 minutes without input.
 - **Files.** Exports are not downloaded, because the client runs on the server; the text export still shows in a
   dialog. Uploads are off.
 - **Log.** Alt+L opens the log pane, with the WARN and ERROR lines from the session's start, for a user who may view
@@ -93,8 +94,8 @@ The account menu (the user's name in the header) has **Terminal UI**, for every 
 same client in xterm.js, on the `/termws` WebSocket (`crates/moqui-host/src/termws.rs`). It runs as the browser's user
 with no login of its own, and the apps alone, as a dialog login over SSH does. The socket is checked by origin and
 session cookie as `/notws` is; a logout closes it within a minute. The limits, the idle close, the files and the log are
-as over SSH. When the socket closes, its reason shows with Reconnect. `webapp_terminal=false` turns the socket and the
-menu item off. While the terminal has focus it takes the keys, except those a browser keeps (Ctrl+W, Ctrl+T, Ctrl+N,
+as over SSH. When the socket closes, its reason shows with Reconnect. `enabled="false"` on the webapp's `/termws` `endpoint` in
+the conf turns the socket and the menu item off. While the terminal has focus it takes the keys, except those a browser keeps (Ctrl+W, Ctrl+T, Ctrl+N,
 and in some browsers Ctrl+Q); leaving the page ends the session as Ctrl+Q does. A link the client writes (`o`) opens
 in a new tab.
 
@@ -113,7 +114,7 @@ moqui tui --agent --user john.doe                                               
 
 The server keeps an opened session between commands, so each step is one `ssh`, and the agent holds no connection. A
 session is found only by its own user. It ends on `close`, or after 10 minutes without a command, and counts in
-`tui_max_sessions` and `tui_max_sessions_per_user` as `apps` does. The exit status is 0 for an answer that ends
+`terminal` `max-sessions` and `terminal` `max-sessions-per-user` as `apps` does. The exit status is 0 for an answer that ends
 `--- ok`, 1 for `--- error`, and 2 when there is no such session or none may start.
 
 | Command | |

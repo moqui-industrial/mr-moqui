@@ -28,7 +28,7 @@ use moqui_lib::sync::lock;
 use super::fake_servers::{FakeImap, FakeSmtp};
 use super::sync_tests::{
     alice, by_message_id, call, errors, field, folder_id, imap_account, login, mail, now, ok, one, out_number,
-    out_text, row, rows, setup, stamp, sync, text, update, user,
+    out_text, row, rows, setup, setup_with, stamp, sync, text, update, user,
 };
 use crate::context::ExecutionContext;
 use crate::entity::EntityFacade;
@@ -1024,7 +1024,8 @@ type Seen = (std::time::Instant, IndexMap<String, Value>, Vec<String>);
 #[test]
 fn a_sync_sends_its_progress() {
     let _lock = crate::user::session::cookie_property_lock();
-    let (ctx, facade) = setup();
+    // two a session: the first sync fetches two of the three, the next the third
+    let (ctx, facade) = setup_with(r#"<moqui-conf><email-client sync-batch="2"/></moqui-conf>"#);
     let _entered = ctx.enter();
     install_with(None);
     alice(&facade);
@@ -1071,8 +1072,6 @@ fn a_sync_sends_its_progress() {
         }),
     )
     .unwrap();
-    // two a session: the first sync fetches two of the three, the next the third
-    let batch = Property::set("email_sync_batch", "2");
     let out = sync(&account);
     assert_eq!(out_number(&out, "newCount"), 2);
     let sent = lock(&seen).clone();
@@ -1107,7 +1106,6 @@ fn a_sync_sends_its_progress() {
     let (_, first, _) = &sent[0];
     assert_eq!(get(first, "folderKept"), "2", "{first:?}");
     assert_eq!(get(first, "folderPending"), "1");
-    drop(batch);
     // nothing to fetch: nothing sent
     lock(&seen).clear();
     sync(&account);

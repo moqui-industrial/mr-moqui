@@ -22,7 +22,7 @@
 //! - `agent-apps` alone reads command lines from the channel and answers each, until `close` or the end of input.
 //!
 //! Both need a user the SSH connection logged in (a key or a password), run every request as the user, and count
-//! against `tui_max_sessions` and `tui_max_sessions_per_user` with `apps`. Exit status: 0 for an answer that ends
+//! against `terminal` `max-sessions` and `terminal` `max-sessions-per-user` with `apps`. Exit status: 0 for an answer that ends
 //! `--- ok`, 1 for `--- error`, 2 for a session that is not there or not allowed.
 
 use std::collections::HashMap;

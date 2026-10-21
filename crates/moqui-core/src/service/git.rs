@@ -527,7 +527,7 @@ fn get_blob(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Res
 }
 
 /// `get#GitCloneUrls`: how to clone a repository. Out: `httpsUrl` (`<base>/git/<id>.git`), and `sshUrl` when the SSH
-/// server is on (`ssh_port`), with the current user's username, as the SSH server logs in Moqui users.
+/// server is on (`ssh-server` `port`), with the current user's username, as the SSH server logs in Moqui users.
 fn get_clone_urls(
     parameters: &BTreeMap<String, Value>,
     _facade: &EntityFacade,
@@ -536,15 +536,24 @@ fn get_clone_urls(
         return Ok(BTreeMap::new());
     };
     let property = |name: &str| moqui_lib::env::get_prop_or_env(name).trim().to_string();
+    // an `ssh-server` attribute, else its property
+    let ssh_setting = |name: &str, property_name: &str| {
+        let configured = ExecutionContext::with_current(|ec| ec.factory().conf_setting("ssh-server", name)).unwrap_or_default();
+        if configured.is_empty() {
+            property(property_name)
+        } else {
+            configured
+        }
+    };
     let http = format!("{}/git/{id}.git", crate::resource::git::server::public_base_url());
-    let ssh_port = Some(property("ssh_public_port"))
+    let ssh_port = Some(ssh_setting("public-port", "ssh_public_port"))
         .filter(|port| !port.is_empty())
-        .unwrap_or_else(|| property("ssh_port"));
+        .unwrap_or_else(|| ssh_setting("port", "ssh_port"));
     let ssh = (!ssh_port.is_empty() && ssh_port != "0").then(|| {
         let host = [
-            property("ssh_public_host"),
+            ssh_setting("public-host", "ssh_public_host"),
             property("webapp_http_host"),
-            property("ssh_host"),
+            ssh_setting("host", "ssh_host"),
         ]
         .into_iter()
         .find(|host| !host.is_empty() && host != "0.0.0.0")
@@ -671,7 +680,7 @@ fn gc_repositories(
         return Ok(BTreeMap::new());
     };
     let minutes = number(parameters, "timeoutMinutes", 60).max(1);
-    let options = crate::resource::git::gc::GcOptions::from_properties(
+    let options = crate::resource::git::gc::GcOptions::from_conf(
         flag(parameters, "dryRun"),
         std::time::Duration::from_secs(u64::try_from(minutes).unwrap_or(60) * 60),
     );

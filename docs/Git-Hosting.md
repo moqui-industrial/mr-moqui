@@ -36,10 +36,10 @@ first branch pushed) its default branch.
   with a second factor need (the password alone cannot complete a login there). `Authorization: Bearer <token>` and
   an `api_key` header work too. Credentials are taken only over HTTPS (the `webapp_https_listen_port` listener, or
   `X-Forwarded-Proto: https` behind the proxy that `webapp_client_ip_header` names), from loopback, or with
-  `git_allow_http=true`. A request with no credentials gets 401, so git asks for them.
+  `git-server` `allow-http="true"`. A request with no credentials gets 401, so git asks for them.
 - **SSH**: a key (`moqui.security.UserSshKey`, matched by its SHA-256 fingerprint) or the password. The user needs the
   `SSH_GIT` permission (granted to ADMIN; grant it to the groups of developers). A user whose only SSH permission is
-  `SSH_GIT` logs in by key unless `ssh_git_password_auth=true`. `git -c protocol.version=2` sends `GIT_PROTOCOL`,
+  `SSH_GIT` logs in by key unless `ssh-server` `git-password-auth="true"`. `git -c protocol.version=2` sends `GIT_PROTOCOL`,
   which the server reads from the channel's `env`.
 
 My Account, Git Access (`MyAccount/User/GitAccess.xml` of SimpleScreens) adds and removes SSH keys and creates and
@@ -78,10 +78,10 @@ The default branch cannot be deleted. Only `refs/heads/` and `refs/tags/` can be
   refers to must be in it or the repository; only an accepted push moves it in (a `local` repository keeps the pack in
   `objects/pack`, a `db` one writes each object as a row). Each ref is then moved by compare-and-set: a ref another
   push moved first is refused with `stale info`.
-- Clones and pushes run on a pool of their own (`git_max_concurrent`, 4, and `git_max_queued` waiting), not on the
-  request workers of the screens, and are exempt from `webapp_request_timeout`; `git_idle_timeout` (120 seconds) of
-  silence in a request body ends it. Limits: `git_max_request` (64 MB) for a fetch request, `git_max_push_size` (2 GB),
-  `git_max_object_size` (512 MB) for one pushed object; `git_pack_threads` (all cores when empty) compress and index.
+- Clones and pushes run on a pool of their own (`git-server` `max-concurrent`, 4, and `git-server` `max-queued` waiting), not on the
+  request workers of the screens, and are exempt from `webapp_request_timeout`; `git-server` `idle-timeout` (120 seconds) of
+  silence in a request body ends it. Limits: `git-server` `max-request` (64 MB) for a fetch request, `git-server` `max-push-size` (2 GB),
+  `git-server` `max-object-size` (512 MB) for one pushed object; `git-server` `pack-threads` (all cores when empty) compress and index.
 
 ## gitECA rules
 
@@ -133,7 +133,7 @@ on the client as `remote:` lines. The post events run after the change, on a job
 is logged and recorded on the row (`ecaStatus` failed, `ecaError`), and the others still run. The updates of one
 repository run one at a time, in order. Every push is recorded, accepted or not, so the rows are also its push log
 (the tools screen of the repository lists them, and runs a done or failed one again). A change's commit events stop at
-`git_eca_max_commits` (10,000) new commits. The `process_PendingGitUpdates_frequent` job runs what is left pending (a
+`git-server` `eca-max-commits` (10,000) new commits. The `process_PendingGitUpdates_frequent` job runs what is left pending (a
 full pool, a restart) and finishes a push a restart cut short. Rules run with authorization off: they are a
 component's own code.
 
@@ -163,8 +163,8 @@ A `GitObject` row holds an object as a pack does (`storage`):
 | `storage` | `objectData` |
 |---|---|
 | `zlib` | the zlib stream of the content |
-| `delta` | the zlib stream of git delta instructions that make the content from `deltaBaseId`, an object of the same repository, at most `git_db_delta_depth` (50) deltas from a whole one |
-| `blob` | nothing: an object over `git_db_large_object` bytes (8 MiB) is the [content blob](#content-blobs) `blobId` |
+| `delta` | the zlib stream of git delta instructions that make the content from `deltaBaseId`, an object of the same repository, at most `git-server` `db-delta-depth` (50) deltas from a whole one |
+| `blob` | nothing: an object over `git-server` `db-large-object` bytes (8 MiB) is the [content blob](#content-blobs) `blobId` |
 | empty | the content itself, as rows written before this format were; still read, and compressed by the next collection |
 
 A push keeps the deltas the client sent, and its entries' compressed bytes, as they are (a commit or tag, and a delta
@@ -172,16 +172,16 @@ deeper than the limit, is stored whole); a large object is inflated into its con
 or fetch copies the rows into its pack: a delta as `OFS_DELTA` when its base is in the pack (or `REF_DELTA` without
 `ofs-delta`), as a delta against an object the client has in a thin pack, and applied otherwise; a content blob is
 compressed into the pack a window at a time. Reads go a batch of rows at a time, a delta chain a level of bases per
-query, and each object is checked against its id as it is decoded; `git_db_cache_bytes` (64 MiB) of decoded objects
+query, and each object is checked against its id as it is decoded; `git-server` `db-cache-bytes` (64 MiB) of decoded objects
 are kept for all repositories. `import#GitRepository` and `export#GitRepository` go through a pack as a push does.
-`git_db_write_format=raw` writes rows in the old form, for a database an older version also reads.
+`git-server` `db-write-format="raw"` writes rows in the old form, for a database an older version also reads.
 
 `gc#GitRepositories` (the `gc_GitRepositories_daily` job, 03:30) collects each `db` repository, holding its lease
 (`gcLeaseOwner`) so only one run rewrites its rows:
 
 1. It marks what the refs reach, and what may still be needed: the tips of a change whose gitECA events have not run,
-   the old and new ids of the changes of the last `git_gc_reflog_days` (30) days (a force push can be undone), and every
-   row written or referenced again in the last `git_gc_prune_days` (14) days. A ref that reaches a missing object stops
+   the old and new ids of the changes of the last `git-server` `gc-reflog-days` (30) days (a force push can be undone), and every
+   row written or referenced again in the last `git-server` `gc-prune-days` (14) days. A ref that reaches a missing object stops
    the run: a damaged repository is never swept (`fsck#GitRepository` names what is wrong).
 2. It deletes the other rows, deepest delta first, each only while it is still that old: a push that reuses an old
    object while the run goes refreshes its stamp, and keeps it.
@@ -208,14 +208,14 @@ and sent at about 270 MiB/s, the process's peak memory rising about 180 MiB; a 6
 ## Content blobs
 
 Large content is a `moqui.resource.ContentBlob`, by the SHA-256 of its bytes, in `ContentBlobChunk` rows of
-`blob_chunk_size` (1 MiB) written a chunk per transaction: Git LFS objects, the large objects of `db` repositories, and
+`resource-facade` `blob-chunk-size` (1 MiB) written a chunk per transaction: Git LFS objects, the large objects of `db` repositories, and
 `dbresource://` files over 64 KiB. The same bytes are stored once; two uploads of them at once, or a crash halfway
 (`ContentBlobUpload`), leave one blob and no stray chunks. A row refers to a blob by a relationship to `ContentBlob`,
 and `gc#ContentBlobs` (`org.moqui.impl.ResourceServices`, the `gc_ContentBlobs_daily` job, 04:30) deletes the blobs no
-row refers to and that were not written or referenced again in the last `blob_gc_prune_days` (14) days.
+row refers to and that were not written or referenced again in the last `resource-facade` `blob-gc-prune-days` (14) days.
 
 File responses stream (`sendResourceResponse`, a screen's static files): a file over 256 KiB is read a window at a time
-as the client takes it, on a thread of its own (at most `webapp_transfer_workers`, 16, reading the database at once), so
+as the client takes it, on a thread of its own (at most `webapp` `transfer-workers`, 16, reading the database at once), so
 a slow download holds no request worker. One `Range` is answered from the bytes it names, with `ETag` (a git file's
 blob id, a content blob's SHA-256) and `If-Range`. Only text types are compressed. An upload is read as it arrives: a
 file part over 256 KiB goes to a file in `runtime/tmp/upload`, and from there to its storage (a content blob, a git
@@ -232,7 +232,7 @@ repository has an object (`moqui.resource.GitLfsObject`) only once it was upload
 another repository's file. Uploads need the push rights of the repository, downloads view; a lock needs push rights,
 and force unlocking another user's lock `delete`. The batch's actions carry a token signed with `git_lfs_token_key`
 (generated into `runtime/.env`; `git_lfs_token_key_previous` still reads while it is changed) that says who the user
-is, for 15 minutes, and each request is authorized again. Objects are at most `git_lfs_max_object_size` (5 GiB).
+is, for 15 minutes, and each request is authorized again. Objects are at most `git-server` `lfs-max-object-size` (5 GiB).
 
 Moqui itself writes LFS files through `git://` locations: a file the `.gitattributes` of the branch head keep in LFS
 (`filter=lfs`) is stored as a content blob, linked to the repository, and committed as its pointer; a read gives the

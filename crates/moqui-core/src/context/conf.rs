@@ -125,6 +125,17 @@ fn merge_config_nodes(base: &MNode, over: &MNode) {
     merge_entity_facade(base, over);
     merge_database_list(base, over);
     merge_repository_list(base, over);
+    // elements of settings only: an attribute of the override replaces the base one
+    for name in [
+        "email-client",
+        "ssh-server",
+        "terminal",
+        "git-server",
+        "smtp-server",
+        "logging",
+    ] {
+        base.merge_single_child(over, name);
+    }
 }
 
 fn merge_server_stats(base: &MNode, over: &MNode) {
@@ -265,6 +276,7 @@ fn merge_user_facade(base: &MNode, over: &MNode) {
     base_node.merge_single_child(&over_node, "password");
     base_node.merge_single_child(&over_node, "login-key");
     base_node.merge_single_child(&over_node, "login");
+    base_node.merge_single_child(&over_node, "authz");
 }
 
 fn merge_transaction_facade(base: &MNode, over: &MNode) {
@@ -294,6 +306,9 @@ fn merge_screen_facade(base: &MNode, over: &MNode) {
         base_screen.merge_children_by_keys(over_screen, "subscreens-item", &["name"], None);
     };
     base.merge_child_with_child_key(over, "screen-facade", "screen", &["location"], Some(&mut merge_screen));
+    if let (Some(base_node), Some(over_node)) = (base.first_named("screen-facade"), over.first_named("screen-facade")) {
+        base_node.merge_single_child(&over_node, "pdf");
+    }
 }
 
 fn merge_service_facade(base: &MNode, over: &MNode) {
@@ -479,5 +494,35 @@ mod tests {
             .and_then(|list| list.first_named("webapp"))
             .unwrap();
         assert!(webapp.first_named("web-protection").is_some());
+    }
+
+    #[test]
+    fn a_runtime_conf_overrides_one_attribute_of_a_settings_element() {
+        let base = MNode::parse_text(
+            "moqui-conf",
+            r#"<moqui-conf><screen-facade><pdf page-limit="4" timeout="60"/></screen-facade>
+                <user-facade><authz privileged-groups="ADMIN"/></user-facade>
+                <git-server max-concurrent="4" max-queued="16"/></moqui-conf>"#,
+        )
+        .unwrap();
+        let over = MNode::parse_text(
+            "moqui-conf",
+            r#"<moqui-conf><screen-facade><pdf timeout="90"/></screen-facade>
+                <user-facade><authz sealed-permissions="X"/></user-facade>
+                <git-server max-concurrent="2"/><ssh-server sftp-root="dbresource://sftp"/></moqui-conf>"#,
+        )
+        .unwrap();
+        super::merge_conf(&base, &over);
+        let pdf = base.first_named("screen-facade").and_then(|facade| facade.first_named("pdf")).unwrap();
+        assert_eq!(pdf.attribute("page-limit").as_deref(), Some("4"));
+        assert_eq!(pdf.attribute("timeout").as_deref(), Some("90"));
+        let authz = base.first_named("user-facade").and_then(|facade| facade.first_named("authz")).unwrap();
+        assert_eq!(authz.attribute("privileged-groups").as_deref(), Some("ADMIN"));
+        assert_eq!(authz.attribute("sealed-permissions").as_deref(), Some("X"));
+        let git = base.first_named("git-server").unwrap();
+        assert_eq!(git.attribute("max-concurrent").as_deref(), Some("2"));
+        assert_eq!(git.attribute("max-queued").as_deref(), Some("16"));
+        let ssh = base.first_named("ssh-server").unwrap();
+        assert_eq!(ssh.attribute("sftp-root").as_deref(), Some("dbresource://sftp"));
     }
 }

@@ -196,7 +196,7 @@ pub struct GitHttpRequest {
     /// The `api_key` or `login_key` header.
     pub api_key: Option<String>,
     /// Credentials may be taken: the request came over HTTPS (or a trusted proxy's), from loopback, or
-    /// `git_allow_http` is set.
+    /// `git-server` `allow-http` is set.
     pub secure: bool,
     pub client_ip: String,
 }
@@ -211,12 +211,13 @@ fn property(name: &str) -> String {
     moqui_lib::env::get_prop_or_env(name).trim().to_string()
 }
 
-fn number_property(name: &str) -> Option<usize> {
-    property(name).parse().ok().filter(|value| *value > 0)
+/// An attribute of the conf's `git-server` as a positive number; None when it is empty, 0 or not a number.
+fn positive_setting(name: &str) -> Option<usize> {
+    crate::resource::git::setting(name).parse().ok().filter(|value| *value > 0)
 }
 
 /// The git pool's workers: clones and pushes run long, so they get their own threads, apart from the request pool
-/// the screens use (`git_max_concurrent`, 4, and `git_max_queued`, 16).
+/// the screens use (`git-server` `max-concurrent`, 4, and `max-queued`, 16).
 pub struct GitPool {
     pool: RequestPool,
 }
@@ -238,10 +239,10 @@ impl GitPool {
 
 /// The factory's git pool, started on first use.
 pub fn pool(factory: &ExecutionContextFactory) -> Arc<GitPool> {
-    factory.extension(|_| {
+    factory.extension(|factory| {
         let pool = RequestPool::idle();
-        let workers = number_property("git_max_concurrent").unwrap_or(4);
-        let queue = number_property("git_max_queued").unwrap_or(16);
+        let workers = Some(factory.conf_number("git-server", "max-concurrent", 4)).filter(|n| *n > 0).unwrap_or(4);
+        let queue = Some(factory.conf_number("git-server", "max-queued", 16)).filter(|n| *n > 0).unwrap_or(16);
         if let Err(err) = pool.start(workers, queue) {
             tracing::error!("the git pool did not start: {err}");
         }
@@ -250,11 +251,11 @@ pub fn pool(factory: &ExecutionContextFactory) -> Arc<GitPool> {
 }
 
 fn pack_threads() -> Option<usize> {
-    number_property("git_pack_threads")
+    positive_setting("pack-threads")
 }
 
 fn max_object_size() -> Option<usize> {
-    Some(number_property("git_max_object_size").unwrap_or(512 * 1024 * 1024))
+    Some(positive_setting("max-object-size").unwrap_or(512 * 1024 * 1024))
 }
 
 /// Copy the objects `head` reaches and the commits `haves` do not from `from` into `to`, as a push does: a pack of
@@ -307,10 +308,13 @@ pub(crate) fn copy_objects(
     result.map(|_| planned.objects.len())
 }
 
-/// The base URL git clients reach the web server at: `git_public_url`, else from the webapp host and port
-/// properties.
+/// The base URL git clients reach the web server at: the conf's `git-server` `public-url` (`git_public_url`), else
+/// from the webapp host and port properties.
 pub(crate) fn public_base_url() -> String {
-    let configured = property("git_public_url");
+    let mut configured = crate::resource::git::setting("public-url");
+    if configured.is_empty() {
+        configured = property("git_public_url");
+    }
     if !configured.is_empty() {
         return configured.trim_end_matches('/').to_string();
     }

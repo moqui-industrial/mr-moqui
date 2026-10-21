@@ -217,9 +217,9 @@ fn attach_opensearch(
     let mut store = SearchStore::default();
     if !backend.reachable() {
         let dir = factory.runtime_dir().join("opensearch");
-        if run_local_opensearch(&dir, &cluster.url) {
+        if run_local_opensearch(factory, &dir, &cluster.url) {
             store.opensearch = Some(OpenSearchProcess::start(&dir)?);
-            wait_for(&backend, &dir)?;
+            wait_for(factory, &backend, &dir)?;
         }
     }
     moqui_core::search::install(factory, SearchFacade::new(Arc::new(backend), entity.clone()));
@@ -305,11 +305,14 @@ fn signal(args: &[&str]) -> std::io::Result<std::process::ExitStatus> {
     Command::new("kill").args(args).stderr(Stdio::null()).status()
 }
 
-/// Start the install in `dir` when: `opensearch_run` is not false, `dir/bin` exists, there is no
-/// `dir/pid` (a node started with `-p pid` is managed outside this process, as Java leaves it), and
+/// Start the install in `dir` when: the `search-facade` `cluster` `run` (`opensearch_run`) is not false, `dir/bin`
+/// exists, there is no `dir/pid` (a node started with `-p pid` is managed outside this process, as Java leaves it), and
 /// the cluster url is this host.
-fn run_local_opensearch(dir: &Path, url: &str) -> bool {
-    let run = moqui_lib::env::get_prop_or_env("opensearch_run");
+fn run_local_opensearch(factory: &ExecutionContextFactory, dir: &Path, url: &str) -> bool {
+    let mut run = factory.conf_setting("search-facade/cluster", "run");
+    if run.is_empty() {
+        run = moqui_lib::env::get_prop_or_env("opensearch_run");
+    }
     if run.trim().eq_ignore_ascii_case("false") {
         return false;
     }
@@ -372,12 +375,13 @@ fn switchable_owner(_dir: &Path) -> Option<String> {
     None
 }
 
-/// Wait for the started node to answer, up to `opensearch_start_wait` seconds (default 120).
-fn wait_for(backend: &moqui_core::search::opensearch::OpenSearchBackend, dir: &Path) -> Result<(), Error> {
-    let seconds = moqui_lib::env::get_prop_or_env("opensearch_start_wait")
-        .trim()
-        .parse::<u64>()
-        .unwrap_or(120);
+/// Wait for the started node to answer, up to the `search-facade` `cluster` `start-wait` seconds (default 120).
+fn wait_for(
+    factory: &ExecutionContextFactory,
+    backend: &moqui_core::search::opensearch::OpenSearchBackend,
+    dir: &Path,
+) -> Result<(), Error> {
+    let seconds = factory.conf_number("search-facade/cluster", "start-wait", 120u64);
     let deadline = Instant::now() + Duration::from_secs(seconds);
     while Instant::now() < deadline {
         if backend.reachable() {

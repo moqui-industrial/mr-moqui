@@ -529,10 +529,10 @@ fn dispatch_load(flags: &LoadFlags) -> Result<LoadReport, moqui_lib::error::Erro
 }
 
 /// Open the log files in `moqui_log_dir` and say where they are.
-fn log_files_attached(runtime_dir: &std::path::Path) {
-    match logging::attach_files(runtime_dir) {
+fn log_files_attached(factory: &moqui_core::context::ExecutionContextFactory) {
+    match logging::attach_files(factory.runtime_dir(), Some(factory)) {
         Some(dir) => tracing::info!("Writing log files moqui.log and moqui-error.log in {}", dir.display()),
-        None => tracing::info!("Not writing log files, moqui_log_dir is empty or could not be opened"),
+        None => tracing::info!("Not writing log files, the logging dir is empty or could not be opened"),
     }
 }
 
@@ -814,7 +814,7 @@ fn load_embedded(
     );
     let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(&runtime_dir, &framework_dir)
         .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
-    log_files_attached(&runtime_dir);
+    log_files_attached(&factory);
     let opened_at = std::time::Instant::now();
     let opened = crate::db::entity_db::transactional_conf(&factory).and_then(|conf| {
         let pool = load_pool(&conf.pool);
@@ -1136,9 +1136,9 @@ fn boot_server_factory(
     let factory =
         moqui_core::context::ExecutionContextFactory::boot_with_options(&runtime_dir, &framework_dir, options)
             .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
-    log_files_attached(&runtime_dir);
+    log_files_attached(&factory);
     // Tool checks before the database: which Chromium PDF uses, or why there is none.
-    let pdf = install_pdf(&runtime_dir);
+    let pdf = install_pdf(&factory);
     let conf = crate::db::entity_db::transactional_conf(&factory)?;
     // `(request cap + service cap) * 2` must fit in `max - reserve`; check_serve_caps below says so.
     let pool = conf.pool.clone();
@@ -1271,7 +1271,7 @@ fn boot_server_factory(
     cluster_notify::install_sender(&factory, db.is_postgres())?;
     let notify_listener = cluster_notify::listen_if_configured(&factory, &db, Arc::clone(&cluster_posts))?;
     moqui_core::cluster::start(&factory).map_err(moqui_lib::error::Error::from)?;
-    // the mail client's IMAP IDLE workers, started on the scheduler's tick (email_idle_enabled)
+    // the mail client's IMAP IDLE workers, started on the scheduler's tick (email-client idle-enabled)
     moqui_core::service::start_mail_idle(&factory);
     tracing::info!(
         "Cluster notify {}",
@@ -1411,12 +1411,12 @@ type PdfSlot = ();
 
 /// The Chromium engine, or the reason PDF is not available. The server starts either way.
 #[cfg(feature = "pdf")]
-fn install_pdf(runtime_dir: &std::path::Path) -> PdfSlot {
-    pdf::install(runtime_dir)
+fn install_pdf(factory: &moqui_core::context::ExecutionContextFactory) -> PdfSlot {
+    pdf::install(factory)
 }
 
 #[cfg(not(feature = "pdf"))]
-fn install_pdf(_runtime_dir: &std::path::Path) -> PdfSlot {
+fn install_pdf(_factory: &moqui_core::context::ExecutionContextFactory) -> PdfSlot {
     moqui_core::screen::install_pdf_unavailable("PDF is not available: this build leaves out the pdf feature");
 }
 

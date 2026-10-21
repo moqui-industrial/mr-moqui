@@ -729,12 +729,16 @@ pub(super) fn require_host(host: &str) -> Result<(), Error> {
     if host_allowed(host) {
         Ok(())
     } else {
-        Err(Error::new(format!("Email host {host} is not in email_allowed_hosts")))
+        Err(Error::new(format!("Email host {host} is not in email-client allowed-hosts")))
     }
 }
 
 fn host_allowed(host: &str) -> bool {
-    let allowed = moqui_lib::env::get_prop_or_env("email_allowed_hosts");
+    host_in(&super::client_setting("allowed-hosts"), host)
+}
+
+/// True when `allowed` (comma-separated hosts and domains) is empty or names `host` or a domain above it.
+fn host_in(allowed: &str, host: &str) -> bool {
     if allowed.trim().is_empty() {
         return true;
     }
@@ -1301,7 +1305,7 @@ fn smtp_transport(
     let host = field_text(server, "smtpHost");
     let port = parse_port(&field_text(server, "smtpPort"), 25)?;
     // smtpSsl is TLS from the start. smtpStartTls upgrades when the server offers it, as Java's setStartTLSEnabled
-    // (not required), so a server without STARTTLS still takes the mail. Both trust `email_tls_ca_file` too.
+    // (not required), so a server without STARTTLS still takes the mail. Both trust `email-client` `tls-ca-file` too.
     use lettre::transport::smtp::authentication::{Credentials, Mechanism};
     use lettre::transport::smtp::client::Tls;
     let mut builder = lettre::SmtpTransport::builder_dangerous(&host).port(port);
@@ -1709,18 +1713,19 @@ fn smtp_step(facade: &EntityFacade, server: &EntityValue) -> (&'static str, bool
     }
 }
 
-/// The certificates of the PEM file `email_tls_ca_file` names, for a mail server with its own CA. Empty when unset.
+/// The certificates of the PEM file `email-client` `tls-ca-file` names, for a mail server with its own CA. Empty when
+/// unset.
 pub(super) fn extra_ca_certificates() -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, Error> {
     use rustls::pki_types::pem::PemObject;
-    let location = moqui_lib::env::get_prop_or_env("email_tls_ca_file");
+    let location = super::client_setting("tls-ca-file");
     if location.trim().is_empty() {
         return Ok(Vec::new());
     }
     let pem = std::fs::read(location.trim())
-        .map_err(|err| Error::new(format!("could not read email_tls_ca_file {location}: {err}")))?;
+        .map_err(|err| Error::new(format!("could not read tls-ca-file {location}: {err}")))?;
     rustls::pki_types::CertificateDer::pem_slice_iter(&pem)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| Error::new(format!("email_tls_ca_file {location} is not PEM certificates: {err}")))
+        .map_err(|err| Error::new(format!("tls-ca-file {location} is not PEM certificates: {err}")))
 }
 
 fn smtp_tls(host: &str) -> Result<lettre::transport::smtp::client::TlsParameters, Error> {
@@ -1847,7 +1852,7 @@ mod tests {
 
     use indexmap::IndexMap;
 
-    use super::{field_text, host_allowed, stored_headers, SinkGuard, LIST_HEADERS, MESSAGE};
+    use super::{field_text, host_in, stored_headers, SinkGuard, LIST_HEADERS, MESSAGE};
     use crate::context::ExecutionContextFactory;
     use crate::entity::EntityFacade;
     use crate::screen::PDF_UNAVAILABLE;
@@ -1857,7 +1862,7 @@ mod tests {
     use crate::service::mail::inbound::{header_one, parse_rfc822, read_line_bytes, FakeGuard, Inbound, FAKE_DELETED};
     use moqui_lib::object::Value;
 
-    /// The tests set `email_allowed_hosts`, a process property, so they share the property lock.
+    /// The tests set `email-client` `allowed-hosts`, a process property, so they share the property lock.
     fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
         crate::user::session::cookie_property_lock()
     }
@@ -1903,25 +1908,15 @@ mod tests {
         )
     }
 
-    struct HostList;
-
-    impl HostList {
-        fn set(value: &'static str) -> Self {
-            moqui_lib::env::set_property("email_allowed_hosts", value);
-            Self
-        }
-    }
-
-    impl Drop for HostList {
-        fn drop(&mut self) {
-            moqui_lib::env::clear_property("email_allowed_hosts");
-        }
-    }
-
     fn entered() -> (EntityFacade, crate::context::ExecutionContext) {
+        entered_with("")
+    }
+
+    /// [`entered`] with the conf text `conf`.
+    fn entered_with(conf: &str) -> (EntityFacade, crate::context::ExecutionContext) {
         let facade = crate::testing::open();
         let context = ExecutionContextFactory::test_context_in(
-            "",
+            conf,
             crate::service::ServicePools::idle(),
             crate::context::framework_dir(),
         );
@@ -1940,12 +1935,10 @@ mod tests {
 
     #[test]
     fn host_suffix_matches_on_a_dot_boundary() {
-        assert!(host_allowed("smtp.example.com") || !moqui_lib::env::get_prop_or_env("email_allowed_hosts").is_empty());
-        let _lock = lock_tests();
-        let _list = HostList::set("example.com");
-        assert!(host_allowed("smtp.example.com"));
-        assert!(host_allowed("example.com"));
-        assert!(!host_allowed("notexample.com"));
+        assert!(host_in("", "smtp.example.com"));
+        assert!(host_in("example.com", "smtp.example.com"));
+        assert!(host_in("example.com", "example.com"));
+        assert!(!host_in("example.com", "notexample.com"));
     }
 
     #[test]
@@ -2059,10 +2052,9 @@ mod tests {
     }
 
     #[test]
-    fn host_rejected_by_email_allowed_hosts_does_not_touch_the_sink() {
+    fn host_rejected_by_allowed_hosts_does_not_touch_the_sink() {
         let _lock = lock_tests();
-        let _list = HostList::set("example.com");
-        let (facade, context) = entered();
+        let (facade, context) = entered_with(r#"<moqui-conf><email-client allowed-hosts="example.com"/></moqui-conf>"#);
         let _entered = context.enter();
         crate::service::load_definitions().unwrap();
         seed(

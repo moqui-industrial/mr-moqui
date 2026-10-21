@@ -19,7 +19,7 @@
 //! Routing: a recipient is an account of kind EakHosted or EakShared that is not removed and has no incoming (IMAP or
 //! POP) server, since an account the sync feeds would get every message twice. The address matches the account's
 //! address, then one of its `EmailIdentity` addresses, without regard to case; then the same for the address without
-//! its plus tag (`sales+news@` is `sales@`), the delimiters being the listener's `smtp_plus_separator` characters. One
+//! its plus tag (`sales+news@` is `sales@`), the delimiters being the listener's `smtp-server` `plus-separator` characters. One
 //! address is one account: when several accounts claim it at the same step, the one made first (the lowest sequenced
 //! id) gets the mail and a warning names the others, so an identity added later cannot read another account's mail.
 //!
@@ -33,7 +33,7 @@
 //!    451 does not double the accounts that took it the first time.
 //! 3. The message is stored as the sync stores fetched mail ([`super::store::store_message`]: the `EmailMessage` in the
 //!    Inbox, its files as DbResource, its thread), in a transaction of its own; the app's `EmailMessage` ECA files it
-//!    on the records by the account's filing policy. Mail the gateway marked as spam (one of `smtp_spam_headers` says
+//!    on the records by the account's filing policy. Mail the gateway marked as spam (one of `smtp-server` `spam-headers` says
 //!    yes) goes to the Junk folder instead and is not filed.
 //! 4. For Inbox mail: the email ECAs, the account's rules (`run#EmailRules`), the snooze wake and the out-of-office
 //!    reply; then the account's users' counts. Each of these logs its own failure and the message stays stored.

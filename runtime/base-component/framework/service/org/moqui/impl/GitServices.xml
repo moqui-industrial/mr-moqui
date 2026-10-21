@@ -188,9 +188,9 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="gc" noun="GitRepositories" type="rust" location="moqui_core::service::git::gc_repositories"
             transaction="ignore">
         <description>Delete the objects of db kind repositories that no ref reaches (and no change in progress or of
-            the last git_gc_reflog_days days needs) and that were not written or referenced in the last
-            git_gc_prune_days days; then repack: store the versions of each path as deltas of each other, the newest
-            whole, compress rows written before the zlib format, and make delta chains deeper than git_db_delta_depth
+            the last git-server gc-reflog-days days needs) and that were not written or referenced in the last
+            git-server gc-prune-days days; then repack: store the versions of each path as deltas of each other, the newest
+            whole, compress rows written before the zlib format, and make delta chains deeper than git-server db-delta-depth
             shorter (for the gc_GitRepositories_daily ServiceJob). A repository whose refs reach a missing object is
             not collected. A repository that fails has its error recorded (lastGcResult) and logged, and the others
             still run.</description>

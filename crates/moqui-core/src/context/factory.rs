@@ -227,7 +227,7 @@ impl ExecutionContextFactory {
         tracing::info!("Cache Facade initialized");
         let conf_text = conf_node.write_string();
         let hits = super::hits::ArtifactHits::from_conf(&conf_text);
-        let flush_mode = crate::user::session::flush_mode_from_property()?;
+        let (flush_mode, max_sessions) = crate::user::session::settings_from_conf(&conf_node)?;
         let pools = match options.executor {
             Executor::Threads => crate::service::start_pools(&conf_text)?,
             Executor::Inline => crate::service::ServicePools::inline(),
@@ -254,7 +254,7 @@ impl ExecutionContextFactory {
             pools,
             requests: crate::service::RequestPool::idle(),
             executor: options.executor,
-            sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(flush_mode)),
+            sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(flush_mode, max_sessions)),
             cluster_heartbeat: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
             hits,
@@ -581,6 +581,40 @@ impl ExecutionContextFactory {
             .map(|raw| moqui_lib::env::expand(&raw).unwrap_or(raw))
             .map(|value| value.trim().to_string())
             .unwrap_or_default()
+    }
+
+    /// An attribute of a `webapp` child element with `${}` expanded and trimmed: `child` is the element name
+    /// (`session-config`), or `endpoint <path>` for an `endpoint` (`endpoint /notws`). Empty when the conf leaves it out.
+    pub fn webapp_child_setting(&self, webapp_name: &str, child: &str, name: &str) -> String {
+        self.conf()
+            .webapp_child_attr(webapp_name, child, name)
+            .map(|raw| moqui_lib::env::expand(&raw).unwrap_or(raw))
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default()
+    }
+
+    /// An attribute of the first conf element at `path` (`ssh-server`, `search-facade/cluster`, up to three names) with
+    /// `${}` expanded and trimmed; empty when the conf leaves it out.
+    pub fn conf_setting(&self, path: &str, name: &str) -> String {
+        self.conf()
+            .element_attr(path, name)
+            .map(|raw| moqui_lib::env::expand(&raw).unwrap_or(raw))
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default()
+    }
+
+    /// [`Self::conf_setting`] parsed as a number, or `default` when it is empty or not one.
+    pub fn conf_number<T: std::str::FromStr>(&self, path: &str, name: &str, default: T) -> T {
+        self.conf_setting(path, name).parse().unwrap_or(default)
+    }
+
+    /// [`Self::conf_setting`] as a flag: `true` or `false`, else `default`.
+    pub fn conf_flag(&self, path: &str, name: &str, default: bool) -> bool {
+        match self.conf_setting(path, name).as_str() {
+            "true" => true,
+            "false" => false,
+            _ => default,
+        }
     }
 
     fn conf(&self) -> &ConfCache {
@@ -1353,6 +1387,7 @@ impl ExecutionContextFactory {
             executor,
             sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(
                 crate::user::session::FlushMode::Eventual,
+                Some(crate::user::session::DEFAULT_MAX_LIVE),
             )),
             cluster_heartbeat: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),

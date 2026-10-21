@@ -21,7 +21,7 @@
 //! A session starts either as a user the transport already logged in (an SSH key or password, the browser's session
 //! cookie) or with no user, and then the client's login dialog logs in (an SSH connection with no key). Such a session
 //! closes after [`LOGIN_WAIT`] without a login, or after [`MAX_LOGIN_FAILURES`] refused ones. At most
-//! `tui_max_sessions` run at once in this process, `tui_max_sessions_per_user` of them for one user; a session with
+//! `terminal` `max-sessions` run at once in this process, `terminal` `max-sessions-per-user` of them for one user; a session with
 //! no user yet counts toward the first only. Files are not downloaded.
 
 use std::collections::{BTreeMap, HashMap};
@@ -89,17 +89,15 @@ impl Terminal {
     }
 }
 
-fn number_property(name: &str, default: usize) -> usize {
-    moqui_lib::env::get_prop_or_env(name)
-        .trim()
-        .parse::<usize>()
-        .ok()
+/// The conf's `terminal` attribute `name` as a positive number, else `default`.
+fn terminal_number(factory: &ExecutionContextFactory, name: &str, default: usize) -> usize {
+    Some(factory.conf_number("terminal", name, default))
         .filter(|value| *value > 0)
         .unwrap_or(default)
 }
 
-/// The live terminal sessions of this process, over every transport, against `tui_max_sessions` and
-/// `tui_max_sessions_per_user`. A session with no user yet is counted under the empty name, toward the first only.
+/// The live terminal sessions of this process, over every transport, against `terminal` `max-sessions` and
+/// `terminal` `max-sessions-per-user`. A session with no user yet is counted under the empty name, toward the first only.
 pub(crate) struct Sessions {
     max: usize,
     max_per_user: usize,
@@ -107,12 +105,12 @@ pub(crate) struct Sessions {
 }
 
 impl Sessions {
-    /// The factory's sessions, read from the properties when first asked for.
+    /// The factory's sessions, by the conf's `terminal` element when first asked for.
     pub fn of(factory: &ExecutionContextFactory) -> Arc<Self> {
-        factory.extension(|_| {
+        factory.extension(|factory| {
             Self::new(
-                number_property("tui_max_sessions", DEFAULT_MAX),
-                number_property("tui_max_sessions_per_user", DEFAULT_MAX_PER_USER),
+                terminal_number(factory, "max-sessions", DEFAULT_MAX),
+                terminal_number(factory, "max-sessions-per-user", DEFAULT_MAX_PER_USER),
             )
         })
     }
@@ -129,7 +127,7 @@ impl Sessions {
     pub fn take(self: &Arc<Self>, username: &str) -> Result<SessionSlot, String> {
         let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
         if live.values().sum::<usize>() >= self.max {
-            return Err(format!("{} terminal sessions are open (tui_max_sessions)", self.max));
+            return Err(format!("{} terminal sessions are open (terminal max-sessions)", self.max));
         }
         self.full_for(&live, username)?;
         *live.entry(username.to_string()).or_default() += 1;
@@ -142,7 +140,7 @@ impl Sessions {
     fn full_for(&self, live: &HashMap<String, usize>, username: &str) -> Result<(), String> {
         if !username.is_empty() && live.get(username).copied().unwrap_or(0) >= self.max_per_user {
             return Err(format!(
-                "you have {} terminal sessions open (tui_max_sessions_per_user)",
+                "you have {} terminal sessions open (terminal max-sessions-per-user)",
                 self.max_per_user
             ));
         }
@@ -590,9 +588,9 @@ mod tests {
         let sessions = Arc::new(Sessions::new(3, 2));
         let first = sessions.take("a").unwrap();
         let _second = sessions.take("a").unwrap();
-        assert!(sessions.take("a").err().unwrap().contains("tui_max_sessions_per_user"));
+        assert!(sessions.take("a").err().unwrap().contains("max-sessions-per-user"));
         let _third = sessions.take("b").unwrap();
-        assert!(sessions.take("c").err().unwrap().contains("tui_max_sessions"));
+        assert!(sessions.take("c").err().unwrap().contains("max-sessions"));
         drop(first);
         assert!(sessions.take("c").is_ok());
     }
@@ -603,7 +601,7 @@ mod tests {
         let _a = sessions.take("a").unwrap();
         let mut login = sessions.take("").unwrap();
         let _other = sessions.take("").unwrap();
-        assert!(login.assign("a").unwrap_err().contains("tui_max_sessions_per_user"));
+        assert!(login.assign("a").unwrap_err().contains("max-sessions-per-user"));
         login.assign("b").unwrap();
         assert!(sessions.take("b").is_err());
         login.assign("").unwrap();

@@ -40,7 +40,7 @@ use super::value::{EntityArtifact, EntityValue};
 use crate::context::ErrorKind;
 
 const MAX_DEPTH: u32 = 32;
-/// The largest `pageSize` a REST find reads, unless the `entity_rest_max_page_size` property sets another.
+/// The largest `pageSize` a REST find reads, unless the `entity-facade` `rest-max-page-size` property sets another.
 const DEFAULT_MAX_PAGE_SIZE: i64 = 1_000;
 
 /// Build a view from `parameters` and return its rows.
@@ -530,7 +530,7 @@ fn find_rest(facade: &EntityFacade, target: &Resolved, parameters: &BTreeMap<Str
 }
 
 /// As Java's list find: the search form conditions, order and paging of the parameters, and never more than 100 rows
-/// when no page is asked for. This port also caps a page asked for at `entity_rest_max_page_size` (1000 by default).
+/// when no page is asked for. This port also caps a page asked for at `entity-facade` `rest-max-page-size` (1000 by default).
 fn list_find(
     facade: &EntityFacade,
     entity_name: &str,
@@ -580,9 +580,10 @@ fn page_numbers(page: &Page, parameters: &BTreeMap<String, Value>, total: i64) -
     }
 }
 
+/// The conf's `entity-facade` `rest-max-page-size`, else [`DEFAULT_MAX_PAGE_SIZE`].
 fn max_page_size() -> i64 {
-    moqui_lib::env::get_prop_or_env("entity_rest_max_page_size")
-        .trim()
+    crate::context::ExecutionContext::with_current(|ec| ec.factory().conf_setting("entity-facade", "rest-max-page-size"))
+        .unwrap_or_default()
         .parse::<i64>()
         .ok()
         .filter(|size| *size > 0)

@@ -19,23 +19,26 @@ It adds no crate: the server is a small RFC 5321 server on Tokio, for the one cl
 
 ## What the deployment configures
 
-The listener starts with the server when `smtp_listen_port` is set. All properties are in `MoquiDefaultConf.xml`.
+The listener starts with the server when `smtp_listen_port` is set. The settings are the attributes of the
+`smtp-server` element in `MoquiDefaultConf.xml`; the deployment ones are also properties (`smtp_listen_port` and so on,
+in the environment or `runtime/.env`), and the others are changed in a runtime or component conf, such as
+`<smtp-server max-message-size="52428800"/>`.
 
-| Property | Default | |
+| Property or attribute | Default | |
 | --- | --- | --- |
 | `smtp_listen_port` | empty (off) | The port the gateway delivers to, such as `2525`. Use a port above 1024: the gateway, not mr-moqui, has port 25. |
 | `smtp_listen_host` | `127.0.0.1` | The address to listen on: loopback for a gateway on the same host, the WireGuard or private address for a remote one. |
 | `smtp_allowed_addresses` | empty | The gateway's addresses, IPs and CIDRs separated by commas (`127.0.0.1`, `10.8.0.1`, `fd00::/8`). Every other address gets `554` at connect. **Empty does not start the listener**, so it never takes mail from everyone. |
-| `smtp_proxy_protocol` | `false` | Each connection starts with a PROXY v1 or v2 header (a TCP proxy such as HAProxy in front of mr-moqui). The address the header names must be in `smtp_allowed_addresses` too, so list both the proxy's and the gateway's addresses. |
+| `smtp-server` `proxy-protocol` | `false` | Each connection starts with a PROXY v1 or v2 header (a TCP proxy such as HAProxy in front of mr-moqui). The address the header names must be in `smtp_allowed_addresses` too, so list both the proxy's and the gateway's addresses. |
 | `smtp_hostname` | `webapp_http_host` | The name in the greeting and in the `Received` field. |
 | `smtp_authserv_id` | empty | The authserv-id the gateway writes in its `Authentication-Results` (Rspamd: the `authserv_id` of its milter headers, usually the gateway's host name). Only those fields are kept on the message; any other `Authentication-Results` (such as one a sender forged) is dropped. Empty keeps them all as they came, and a warning says so at startup. |
-| `smtp_spam_headers` | `X-Spam-Flag,X-Spam-Status,X-Spam` | The gateway's spam verdict fields. A message where one of them starts with `yes` or `true` (`X-Spam-Flag: YES`, `X-Spam-Status: Yes, score=7.2`) goes to the account's Junk folder. |
-| `smtp_plus_separator` | `+` | The plus-addressing characters: `sales+news@example.com` goes to `sales@example.com`. Several characters are each a separator (`+-`); `none` turns it off. |
-| `smtp_max_message_size` | `26214400` (25 MiB) | Bytes, advertised as `SIZE`. A larger message is refused with `552` (at `MAIL FROM` when its `SIZE` says so, else after its data). A message is held in memory while it is stored. |
-| `smtp_max_recipients` | `100` | Recipients of one message; the next gets `452` and the gateway sends to it later. |
-| `smtp_max_connections` | `20` | Connections at once; the next gets `421`. |
-| `smtp_command_timeout` | `300` | Seconds for each command line and each chunk of data. |
-| `smtp_session_timeout` | `1800` | Seconds for a whole connection. |
+| `smtp-server` `spam-headers` | `X-Spam-Flag,X-Spam-Status,X-Spam` | The gateway's spam verdict fields. A message where one of them starts with `yes` or `true` (`X-Spam-Flag: YES`, `X-Spam-Status: Yes, score=7.2`) goes to the account's Junk folder. |
+| `smtp-server` `plus-separator` | `+` | The plus-addressing characters: `sales+news@example.com` goes to `sales@example.com`. Several characters are each a separator (`+-`); `none` turns it off. |
+| `smtp-server` `max-message-size` | `26214400` (25 MiB) | Bytes, advertised as `SIZE`. A larger message is refused with `552` (at `MAIL FROM` when its `SIZE` says so, else after its data). A message is held in memory while it is stored. |
+| `smtp-server` `max-recipients` | `100` | Recipients of one message; the next gets `452` and the gateway sends to it later. |
+| `smtp-server` `max-connections` | `20` | Connections at once; the next gets `421`. |
+| `smtp-server` `command-timeout` | `300` | Seconds for each command line and each chunk of data. |
+| `smtp-server` `session-timeout` | `1800` | Seconds for a whole connection. |
 
 The accounts are made as usual (`create#EmailAccount` with `accountKindEnumId` `EakHosted` or `EakShared`, the BOSS
 MailAccounts wizard). An account gets the listener's mail when it is hosted or shared, not removed, and has **no incoming

@@ -549,9 +549,6 @@ mod tests {
 
     #[test]
     fn a_script_on_a_request_worker_is_limited_to_the_request_timeout() {
-        if !moqui_lib::env::get_prop_or_env("script_timeout").is_empty() {
-            return;
-        }
         let pool = RequestPool::idle();
         pool.start(1, 1).unwrap();
         let left = pool

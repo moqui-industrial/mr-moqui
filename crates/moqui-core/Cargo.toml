@@ -72,7 +72,7 @@ default = ["mail", "http", "cluster-tls", "git", "image", "xlsx"]
 # Both halves of the email services.
 mail = ["smtp", "imap"]
 # Outbound SMTP: send#EmailMessage and send#EmailTemplate (password reset, notifications), test#EmailServer's SMTP step.
-# rustls reads the extra CA file (email_tls_ca_file); lettre links it already.
+# rustls reads the extra CA file (email-client tls-ca-file); lettre links it already.
 smtp = ["dep:lettre", "dep:rustls"]
 # Inbound: IMAP and POP3 poll, the mail client's sync, IDLE and import, inbound MIME, the OAuth sign-in of mail accounts
 # and the delivery of mail the host's SMTP listener received. Replies and the client's sends go out through SMTP, so

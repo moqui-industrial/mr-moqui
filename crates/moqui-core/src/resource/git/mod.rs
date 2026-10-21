@@ -41,6 +41,17 @@ pub(crate) mod store;
 mod tests;
 pub(crate) mod values;
 
+/// An attribute of the conf's `git-server` element in the current context's factory, `${}` expanded and trimmed; empty
+/// when there is no current context or the conf leaves it out.
+pub(crate) fn setting(name: &str) -> String {
+    crate::context::ExecutionContext::with_current(|ec| ec.factory().conf_setting("git-server", name)).unwrap_or_default()
+}
+
+/// [`setting`] as a number, or `default` when it is empty or not one.
+pub(crate) fn number_setting<T: std::str::FromStr>(name: &str, default: T) -> T {
+    setting(name).parse().unwrap_or(default)
+}
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -136,8 +147,8 @@ struct Inner {
     /// When each repository's refs last changed (milliseconds): a push of commits dated in the past still changes the
     /// last-modified time of its files, which caches over `git://` locations go by.
     updated: Mutex<HashMap<String, i64>>,
-    /// Decoded objects of the `db` repositories.
-    objects: Arc<db::ObjectCache>,
+    /// Decoded objects of the `db` repositories, made on first use by the conf of the context then current.
+    objects: std::sync::OnceLock<Arc<db::ObjectCache>>,
     /// Parsed `.gitattributes` files, by blob.
     attributes: attributes::RulesCache,
     /// The path index of each branch ("repositoryId\nbranch"), brought to the branch's head when it is used.
@@ -211,11 +222,16 @@ impl GitProvider {
                 locks: Mutex::new(HashMap::new()),
                 event_locks: Mutex::new(HashMap::new()),
                 updated: Mutex::new(HashMap::new()),
-                objects: db::object_cache(),
+                objects: std::sync::OnceLock::new(),
                 attributes: attributes::rules_cache(),
                 indexes: Mutex::new(BoundedMap::with_bytes(INDEX_BRANCHES, INDEX_BYTES)),
             }),
         }
+    }
+
+    /// The cache of decoded objects, made on first use.
+    pub(crate) fn objects(&self) -> Arc<db::ObjectCache> {
+        Arc::clone(self.inner.objects.get_or_init(db::object_cache))
     }
 
     fn entity(&self) -> Result<EntityFacade, Error> {
@@ -275,7 +291,7 @@ impl GitProvider {
             RepositoryKind::Db => Box::new(db::DbStore::new(
                 self.entity()?,
                 &definition.id,
-                Arc::clone(&self.inner.objects),
+                self.objects(),
             )),
         };
         Ok(Repo { definition, store })
@@ -879,7 +895,7 @@ impl GitProvider {
                 RepositoryKind::Db => Box::new(db::DbStore::new(
                     self.entity()?,
                     &other.id,
-                    Arc::clone(&self.inner.objects),
+                    self.objects(),
                 )),
                 _ => Box::new(fs::FsStore::open(&other.path)?),
             };

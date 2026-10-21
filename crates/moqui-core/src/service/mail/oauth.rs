@@ -282,10 +282,14 @@ pub(super) fn load_providers(facade: &EntityFacade) -> Result<Vec<Provider>, Lib
         .collect())
 }
 
-/// The redirect URI registered at the providers: `email_oauth_redirect_uri`, else the webroot webapp's URL from the
-/// conf with `/emailOAuth/callback`. Never from a request.
+/// The redirect URI registered at the providers: the conf's `email-client` `oauth-redirect-uri`
+/// (`email_oauth_redirect_uri`), else the webroot webapp's URL from the conf with `/emailOAuth/callback`. Never from a
+/// request.
 pub(super) fn redirect_uri() -> String {
-    let configured = moqui_lib::env::get_prop_or_env("email_oauth_redirect_uri");
+    let mut configured = super::client_setting("oauth-redirect-uri");
+    if configured.is_empty() {
+        configured = moqui_lib::env::get_prop_or_env("email_oauth_redirect_uri");
+    }
     if !configured.trim().is_empty() {
         return configured.trim().to_string();
     }

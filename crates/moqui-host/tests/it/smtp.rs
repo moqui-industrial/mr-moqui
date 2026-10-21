@@ -17,7 +17,7 @@
 //! connect; RCPT TO takes a hosted account's address with or without a plus tag, a shared account's address and
 //! identity, and refuses any other with 550; one message to both accounts is stored once in each Inbox with its file as
 //! a DbResource, the account rule and the email ECAs run once on each copy (a failing ECA logged, the other running);
-//! the gateway's spam verdict files in Junk; a message over `smtp_max_message_size` is refused with 552; a store that
+//! the gateway's spam verdict files in Junk; a message over `smtp-server` `max-message-size` is refused with 552; a store that
 //! fails answers 451 and the gateway's retry does not double the account that took it.
 
 #![cfg(all(
@@ -166,18 +166,16 @@ impl Client {
 
 #[test]
 fn the_smtp_listener_stores_gateway_mail_for_hosted_and_shared_accounts() {
-    let gate = crate::common::start_with_files(
+    let gate = crate::common::start_with_conf_files(
         "smtp",
         Some(DATA),
+        r#"<smtp-server spam-headers="X-Spam-Flag,X-Spam-Status" plus-separator="+" max-message-size="200000"/>
+            <email-client idle-enabled="false"/>"#,
         &[
             ("smtp_listen_port", "0"),
             ("smtp_allowed_addresses", "127.0.0.1"),
             ("smtp_hostname", "mx.gate.test"),
             ("smtp_authserv_id", "gw.example.com"),
-            ("smtp_spam_headers", "X-Spam-Flag,X-Spam-Status"),
-            ("smtp_plus_separator", "+"),
-            ("smtp_max_message_size", "200000"),
-            ("email_idle_enabled", "false"),
         ],
         &[
             ("component/gate-smtp/component.xml", COMPONENT),
@@ -366,7 +364,7 @@ fn the_smtp_listener_stores_gateway_mail_for_hosted_and_shared_accounts() {
     assert_eq!(field(&junk[0], "isFlagged"), "N");
     assert_eq!(ecas().len(), 2);
 
-    // over smtp_max_message_size: refused when declared, and when sent
+    // over smtp-server max-message-size: refused when declared, and when sent
     assert_eq!(
         gateway.command("MAIL FROM:<big@example.org> SIZE=300000"),
         "552 5.3.4 Message size exceeds fixed maximum message size"

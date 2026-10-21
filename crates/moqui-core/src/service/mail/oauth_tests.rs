@@ -60,8 +60,6 @@ impl Drop for Properties {
             "email_oauth_redirect_uri",
             "email_oauth_test_client_id",
             "email_oauth_test_client_secret",
-            "email_autoconfig_urls",
-            "email_dns_server",
         ] {
             moqui_lib::env::clear_property(name);
         }
@@ -75,8 +73,13 @@ fn serial() -> MutexGuard<'static, ()> {
 }
 
 fn setup() -> (ExecutionContext, EntityFacade) {
+    setup_with("")
+}
+
+/// [`setup`] with the conf text `conf`.
+fn setup_with(conf: &str) -> (ExecutionContext, EntityFacade) {
     let ctx = ExecutionContextFactory::test_context_in(
-        "",
+        conf,
         crate::service::ServicePools::idle(),
         crate::context::framework_dir(),
     );
@@ -1270,7 +1273,18 @@ fn discover_names_the_provider_by_domain_or_mx() {
     let _serial = serial();
     let _lock = crate::user::session::cookie_property_lock();
     let _properties = Properties::set();
-    let (ctx, facade) = setup();
+    let http = fake_http(HashMap::new());
+    let mut mx = HashMap::new();
+    mx.insert("acme.test".to_string(), vec!["aspmx.l.google.com".to_string()]);
+    mx.insert(
+        "contoso.test".to_string(),
+        vec!["contoso-test.mail.protection.outlook.com".to_string()],
+    );
+    let dns = fake_dns_with_mx(HashMap::new(), mx);
+    let (ctx, facade) = setup_with(&format!(
+        r#"<moqui-conf><email-client autoconfig-urls="http://127.0.0.1:{http}/{{domain}}/config-v1.1.xml"
+            dns-server="127.0.0.1:{dns}"/></moqui-conf>"#
+    ));
     let _entered = ctx.enter();
     install();
     user(&facade, "alice");
@@ -1298,19 +1312,6 @@ fn discover_names_the_provider_by_domain_or_mx() {
             ("storeHost", text("outlook.office365.test")),
         ],
     );
-    let http = fake_http(HashMap::new());
-    moqui_lib::env::set_property(
-        "email_autoconfig_urls",
-        format!("http://127.0.0.1:{http}/{{domain}}/config-v1.1.xml"),
-    );
-    let mut mx = HashMap::new();
-    mx.insert("acme.test".to_string(), vec!["aspmx.l.google.com".to_string()]);
-    mx.insert(
-        "contoso.test".to_string(),
-        vec!["contoso-test.mail.protection.outlook.com".to_string()],
-    );
-    let dns = fake_dns_with_mx(HashMap::new(), mx);
-    moqui_lib::env::set_property("email_dns_server", format!("127.0.0.1:{dns}"));
 
     let started = Instant::now();
     let gmail = ok("discover#EmailServer", &[("emailAddress", text("ann@gmail.test"))]);
