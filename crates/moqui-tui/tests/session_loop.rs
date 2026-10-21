@@ -321,6 +321,7 @@ fn start_with(link: FakeLink, path: &str, columns: u16, rows: u16, log: bool) ->
         rows,
         notes: None,
         log,
+        login_name: None,
     };
     let done = thread::spawn(move || run_session(link, options, &rx, &replies, &mut writer));
     Running { tx, out, done }

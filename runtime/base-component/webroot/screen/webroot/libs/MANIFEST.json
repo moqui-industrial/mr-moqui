@@ -69,7 +69,7 @@
   },
   "notices": {
     "path": "NOTICES.md",
-    "sha256": "4781530dba95f5184f3e6a37499a43d7d475dd859c4570b0018bac3def646551"
+    "sha256": "6cfc129cf1e2571b8d098d6b282dee709c65b46416908b00b969a3e25cf9a9da"
   },
   "libraries": [
     {
@@ -157,6 +157,46 @@
           "from": "Sortable.min.js",
           "size": 45478,
           "sha256": "bf4241bc73fef7f11c59a283a69fe8051cdd31c6d8ff5a2b9ba219e7831fcf76"
+        }
+      ]
+    },
+    {
+      "id": "xterm",
+      "name": "xterm.js",
+      "version": "6.0.0",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/@xterm/xterm/-/xterm-6.0.0.tgz",
+      "npm": "@xterm/xterm@6.0.0",
+      "tarballIntegrity": "sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==",
+      "files": [
+        {
+          "path": "xterm/xterm.js",
+          "from": "lib/xterm.js",
+          "size": 488663,
+          "sha256": "14903579ff54664cd72f8e8699e6961a6272c21863ec1c3b118cdc8af5d4a972"
+        },
+        {
+          "path": "xterm/xterm.css",
+          "from": "css/xterm.css",
+          "size": 7112,
+          "sha256": "854a7c0fb70e8b1a083c16797ab827299fb18744f5ad34f227b48337e33293c6"
+        }
+      ]
+    },
+    {
+      "id": "xterm-addon-fit",
+      "name": "@xterm/addon-fit",
+      "version": "0.11.0",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/@xterm/addon-fit/-/addon-fit-0.11.0.tgz",
+      "npm": "@xterm/addon-fit@0.11.0",
+      "tarballIntegrity": "sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==",
+      "files": [
+        {
+          "path": "xterm/addon-fit.js",
+          "from": "lib/addon-fit.js",
+          "size": 1521,
+          "sha256": "ba3ea256ce0620a0992a197d6c9baea64823fc93d8da07a9e366ca9943c18527"
         }
       ]
     },

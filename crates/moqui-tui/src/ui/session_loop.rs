@@ -46,6 +46,8 @@ pub enum SessionEvent {
     Push(Push),
     /// A line for the log pane, for a user who may read the log.
     Log(String),
+    /// Whether Alt+L offers the log pane, decided again after a login in the session's dialog.
+    LogOffered(bool),
     /// The channel closed: end without writing more.
     Close,
 }
@@ -61,6 +63,8 @@ pub struct SessionOptions {
     pub notes: Option<fn(&str)>,
     /// The caller sends [`SessionEvent::Log`] lines, so Alt+L offers the log pane.
     pub log: bool,
+    /// The username the login dialog starts with, for a session that starts with no user (the SSH login name).
+    pub login_name: Option<String>,
 }
 
 /// OSC 11 with `?`: the terminal answers with its background color, which the decoder reads. It ends with ST, as the
@@ -132,6 +136,7 @@ fn run<L: ScreenLink + 'static, W: Write>(
     }));
     view.session_mut().set_pushed(subscription.is_some());
     view.session_mut().set_log_offered(options.log);
+    view.session_mut().set_login_name(options.login_name.clone());
     let mut minute = jiff::Zoned::now().minute();
     settle(&mut view, &link, &done, options.notes);
     screen.draw(&view, out)?;
@@ -178,6 +183,10 @@ fn run<L: ScreenLink + 'static, W: Write>(
                 }
                 SessionEvent::Push(push) => {
                     view.session_mut().on_push(&push);
+                    changed = true;
+                }
+                SessionEvent::LogOffered(offered) => {
+                    view.session_mut().set_log_offered(offered);
                     changed = true;
                 }
                 SessionEvent::Close => return Ok(()),

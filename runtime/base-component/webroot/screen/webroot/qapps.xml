@@ -83,6 +83,8 @@ along with this software (see the LICENSE.md file). If not, see
             darkMode: ec.user.getPreference('QUASAR_DARK') == 'true', leftOpen: ec.user.getPreference('QUASAR_LEFT_OPEN') == 'true',
             density: density, startApp: startApp,
             notificationEndpoint: (ec.user.userId && System.getProperty('webapp_notification_endpoint')) || '',
+            // the account menu's Terminal, when the host serves the browser terminal (webapp_terminal, /termws)
+            terminalUrl: (ec.user.userId && System.getProperty('webapp_terminal_endpoint')) ? '/qapps/Terminal' : '',
             navPlugins: sri.getThemeValues('STRT_HEADER_NAVBAR_COMP'), accountPlugins: sri.getThemeValues('STRT_HEADER_ACCOUNT_COMP'),
             qz: { enabled: qzEnabled },
             userAccount: { partyId: account.partyId || '', emailAddress: account.emailAddress || '', userFullName: account.userFullName || '' },
@@ -96,7 +98,7 @@ along with this software (see the LICENSE.md file). If not, see
                 screenHistory: ec.l10n.localize('Screen History'), account: ec.l10n.localize('Account'), welcome: ec.l10n.localize('Welcome'),
                 logout: ec.l10n.localize('Logout'), switchDarkLight: ec.l10n.localize('Switch Dark/Light'), reLogin: ec.l10n.localize('Re-Login'),
                 authenticationCode: ec.l10n.localize('Authentication Code'), signIn: ec.l10n.localize('Sign in'), password: ec.l10n.localize('Password'),
-                reloadPage: ec.l10n.localize('Reload Page'),
+                reloadPage: ec.l10n.localize('Reload Page'), terminal: ec.l10n.localize('Terminal UI'),
                 // the suite shell: launcher, search and palette, quick create, the tray and its counts, the keys (js/README.md)
                 applications: ec.l10n.localize('Applications'), allApplications: ec.l10n.localize('All applications'), search: ec.l10n.localize('Search'),
                 quickCreate: ec.l10n.localize('Create'), quickCreateFirst: ec.l10n.localize('Create in this app'), today: ec.l10n.localize('Today'),
