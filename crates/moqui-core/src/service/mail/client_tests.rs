@@ -32,8 +32,13 @@ const MESSAGE: &str = "moqui.basic.email.EmailMessage";
 const DAY: i64 = 86_400_000;
 
 fn setup() -> (ExecutionContext, EntityFacade) {
+    setup_with("")
+}
+
+/// [`setup`] with the conf text `conf`.
+fn setup_with(conf: &str) -> (ExecutionContext, EntityFacade) {
     let ctx = ExecutionContextFactory::test_context_in(
-        "",
+        conf,
         crate::service::ServicePools::idle(),
         crate::context::framework_dir(),
     );
@@ -990,20 +995,15 @@ fn filing_snooze_archive_trash_and_the_unread_count() {
     assert_eq!(unread(None), (0, 0));
 }
 
-/// `email_allowed_hosts` while it lives.
-struct AllowedHosts;
-
-impl AllowedHosts {
-    fn set(value: &str) -> Self {
-        moqui_lib::env::set_property("email_allowed_hosts", value);
-        Self
-    }
-}
-
-impl Drop for AllowedHosts {
-    fn drop(&mut self) {
-        moqui_lib::env::clear_property("email_allowed_hosts");
-    }
+/// Set the `smtpHost` of the server of `account`.
+fn set_smtp_host(facade: &EntityFacade, account: &str, host: &str) {
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let server = find_one(facade, "moqui.basic.email.EmailAccount", "emailAccountId", account)
+        .and_then(|row| row.get("emailServerId").map(to_plain_string))
+        .unwrap();
+    let mut row = find_one(facade, "moqui.basic.email.EmailServer", "emailServerId", &server).unwrap();
+    row.set("smtpHost", text(host));
+    row.update(facade).unwrap();
 }
 
 /// Drafts and sends through the test sink: a reply with an attachment now, a scheduled send and an undo-send hold by
@@ -1011,7 +1011,7 @@ impl Drop for AllowedHosts {
 #[test]
 fn drafts_send_now_scheduled_held_and_failed() {
     let _lock = crate::user::session::cookie_property_lock();
-    let (ctx, facade) = setup();
+    let (ctx, facade) = setup_with(r#"<moqui-conf><email-client allowed-hosts="example.com"/></moqui-conf>"#);
     let _entered = ctx.enter();
     install();
     let account = shared_account(&facade, "smtp.example.com");
@@ -1258,18 +1258,16 @@ fn drafts_send_now_scheduled_held_and_failed() {
     // a send that fails waits in the Outbox with its error, and goes on a retry
     let failing = new_draft("Fails");
     {
-        let _hosts = AllowedHosts::set("other.example.org");
+        set_smtp_host(&facade, &account, "smtp.other.example.org");
         let failed = ok("send#Draft", &[("emailMessageId", text(&failing))]);
+        set_smtp_host(&facade, &account, "smtp.example.com");
         assert_eq!(failed.get("sent"), Some(&Value::Bool(false)));
-        assert!(
-            out_text(&failed, "sendError").contains("email_allowed_hosts"),
-            "{failed:?}"
-        );
+        assert!(out_text(&failed, "sendError").contains("allowed-hosts"), "{failed:?}");
     }
     assert_eq!(message_field(&facade, &failing, "statusId"), "ES_READY");
     let outbox = ok("find#Messages", &[("view", text("outbox"))]);
     assert_eq!(message_ids(&outbox), [failing.as_str()]);
-    assert!(field(&maps(&outbox, "threadList")[0], "sendError").contains("email_allowed_hosts"));
+    assert!(field(&maps(&outbox, "threadList")[0], "sendError").contains("allowed-hosts"));
     let accounts = ok("get#UserEmailAccounts", &[]);
     assert_eq!(field(&maps(&accounts, "accountList")[1], "outboxErrorCount"), "1");
     refused(

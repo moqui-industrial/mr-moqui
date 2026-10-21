@@ -19,7 +19,7 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="gc" noun="ContentBlobs" type="rust" location="moqui_core::service::content::gc_content_blobs"
             transaction="ignore">
         <description>Delete the blobs that no row refers to (by a relationship to moqui.resource.ContentBlob) and that
-            were not written or referenced again in the last blob_gc_prune_days days, and the chunks of uploads with
+            were not written or referenced again in the last resource-facade blob-gc-prune-days days, and the chunks of uploads with
             nothing written for a day (for the gc_ContentBlobs_daily ServiceJob).</description>
         <in-parameters><parameter name="dryRun" type="Boolean" default-value="false"/></in-parameters>
         <out-parameters>
@@ -31,7 +31,7 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="migrate" noun="DbResourceBlobs" type="rust" location="moqui_core::service::content::migrate_db_resource_blobs"
             transaction="ignore">
         <description>Move the dbresource files, and their past versions, written before content blobs and over
-            dbresource_blob_threshold bytes into content blobs, and record the size of the others. Run once after an
+            resource-facade dbresource-blob-threshold bytes into content blobs, and record the size of the others. Run once after an
             upgrade; it can be run again, and goes on from where a timeout stopped it.</description>
         <in-parameters><parameter name="timeoutMinutes" type="Integer" default-value="60"/></in-parameters>
         <out-parameters>

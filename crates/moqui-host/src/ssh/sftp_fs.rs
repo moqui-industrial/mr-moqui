@@ -12,12 +12,12 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The SFTP subsystem of the built-in SSH server: a view of one resource location (`ssh_sftp_root`, a `runtime://`,
+//! The SFTP subsystem of the built-in SSH server: a view of one resource location (`ssh-server` `sftp-root`, a `runtime://`,
 //! `file:`, `component://` or `dbresource://` directory), never of the host disk outside it. A client path is
 //! normalized against `/`; a `..` that would leave the root is refused. Each call runs on a request worker.
 //!
 //! A file opened for reading is read whole; one opened for writing is kept in memory and written on close, because a
-//! `dbresource` file is a row. `ssh_sftp_max_file` bytes (default 256 MiB) bound either, and also the bytes all the
+//! `dbresource` file is a row. `ssh-server` `sftp-max-file` bytes (default 256 MiB) bound either, and also the bytes all the
 //! open files of one channel hold together. A channel has at most [`MAX_HANDLES`] handles open.
 
 use std::collections::HashMap;
@@ -72,13 +72,13 @@ impl SftpFs {
         Ok(())
     }
 
-    /// The bytes open files may still take before this channel holds `ssh_sftp_max_file`.
+    /// The bytes open files may still take before this channel holds `ssh-server` `sftp-max-file`.
     fn room(&self) -> usize {
         self.max_file.saturating_sub(self.held)
     }
 
     fn too_much_held() -> StatusReply {
-        StatusCode::Failure.with_message("the open files on this channel would hold more than ssh_sftp_max_file bytes")
+        StatusCode::Failure.with_message("the open files on this channel would hold more than ssh-server sftp-max-file bytes")
     }
 
     /// The location for a client path, or `PermissionDenied` when it climbs above the root.
@@ -272,7 +272,7 @@ impl russh_sftp::server::Handler for SftpFs {
                     Err(moqui_core::context::Error::new(format!("not a file: {read_location}")))
                 }
                 Some(stat) if usize::try_from(stat.size).unwrap_or(usize::MAX) > max => Err(
-                    moqui_core::context::Error::new(format!("{read_location} is larger than ssh_sftp_max_file")),
+                    moqui_core::context::Error::new(format!("{read_location} is larger than ssh-server sftp-max-file")),
                 ),
                 Some(stat) if usize::try_from(stat.size).unwrap_or(usize::MAX) > room => Ok(Err(())),
                 Some(_) if writing && truncate => Ok(Ok(Some(Vec::new()))),
@@ -339,7 +339,7 @@ impl russh_sftp::server::Handler for SftpFs {
         let start = usize::try_from(offset).unwrap_or(usize::MAX);
         let end = start.saturating_add(data.len());
         if end > max {
-            return Err(StatusCode::Failure.with_message("the file is larger than ssh_sftp_max_file"));
+            return Err(StatusCode::Failure.with_message("the file is larger than ssh-server sftp-max-file"));
         }
         let grown = end.saturating_sub(bytes.len());
         if grown > room {

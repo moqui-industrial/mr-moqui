@@ -33,15 +33,6 @@
         cut off when nothing arrives for webapp_upload_idle_timeout seconds. -->
     <default-property name="webapp_max_upload" value="2147483648"/>
     <default-property name="webapp_upload_idle_timeout" value="60"/>
-    <!-- A file response over 256 KiB streams, read a window at a time as the client takes it; at most
-        webapp_transfer_workers reads of files in the database run at once. -->
-    <default-property name="webapp_transfer_workers" value="16"/>
-    <!-- Path of the notification WebSocket the html and qvt clients of a signed in user connect to, the /notws endpoint by default as
-        in Java. Empty means the clients do not connect. -->
-    <default-property name="webapp_notification_endpoint" value="/notws"/>
-    <!-- The browser terminal: the terminal client on the /termws WebSocket, opened from the account menu's Terminal UI
-        (/qapps/Terminal) by any signed in user. False turns the socket and the menu item off. -->
-    <default-property name="webapp_terminal" value="true"/>
 
     <!--
         webapp_client_ip_header is how Moqui reads the client IP from a trusted proxy (X-Real-IP, CF-Connecting-IP,
@@ -64,51 +55,6 @@
     -->
     <default-property name="webapp_trusted_proxies" value=""/>
     <default-property name="webapp_web_protection" value=""/>
-    <default-property name="webapp_session_flush" value="eventual"/>
-    <!-- Minutes without a request before a web session expires. 0 never expires. -->
-    <default-property name="webapp_session_timeout" value="60"/>
-    <!-- Most web sessions kept in memory. Over it, the sessions used longest ago are written and dropped, and reload
-        from HttpSession when they come back. 0 keeps every session. -->
-    <default-property name="webapp_session_max" value="10000"/>
-
-    <!--
-        user_privileged_groups: UserGroupMember create/update/delete for these groups is allowed only if the
-        caller is already a member (seed/install and disableAuthz skip the check). Comma-separated group IDs.
-        user_sealed_permissions: UserGroupPermission create/update/delete for these IDs is allowed only if the
-        caller already has that permission. Comma-separated permission IDs.
-    -->
-    <default-property name="user_privileged_groups" value="ADMIN,ADMIN_ADV"/>
-    <default-property name="user_sealed_permissions"
-            value="GROOVY_SHELL_WEB,SQL_RUNNER_WEB,SSH_SHELL,SERVICE_LOAD_RUNNER,ADMIN_LOGIN_AS,ADMIN_PASSWORD,ElasticRemote,KibanaRemote,REST_SCHEMA,LlmGateway"/>
-
-    <!--
-        email_allowed_hosts: comma-separated hostnames/IPs poll#EmailServer and send#Email may connect to.
-        Empty (default) allows any host. smtp.example.com matches example.com; notexample.com does not.
-        EmailServer.allowedToDomains is a separate recipient-domain filter.
-    -->
-    <default-property name="email_allowed_hosts" value=""/>
-
-    <!--
-        The mail client's sync (org.moqui.impl.EmailClientServices.sync#EmailAccount).
-        email_idle_enabled: IMAP IDLE on the Inbox of each active account, so new mail shows at once; false relies on the
-        sync job only (tests, small deployments). email_idle_max: the most IDLE connections (a thread each) in a server.
-        email_sync_interval: minutes between syncs of an account by the job sync_EmailAccounts_frequent, for an account
-        with no syncIntervalMinutes. email_sync_batch: the most new messages a folder brings in one sync.
-        email_flag_scan: minutes between reading every message's flags, on a server without CONDSTORE.
-        email_sync_push_now: make a local change (read, move, delete) on the server right after it commits; false
-        waits for the next sync.
-        email_autoconfig_urls: discover#EmailServer's Thunderbird autoconfig URLs, comma-separated, with {domain} and
-        {email}; empty for autoconfig.{domain}, the domain's .well-known URL and the Thunderbird ISPDB.
-        email_dns_server: the DNS server (host:port) for its SRV lookups; empty for the first in /etc/resolv.conf.
-    -->
-    <default-property name="email_idle_enabled" value="true"/>
-    <default-property name="email_idle_max" value="8"/>
-    <default-property name="email_sync_interval" value="5"/>
-    <default-property name="email_sync_batch" value="500"/>
-    <default-property name="email_flag_scan" value="15"/>
-    <default-property name="email_sync_push_now" value="true"/>
-    <default-property name="email_autoconfig_urls" value=""/>
-    <default-property name="email_dns_server" value=""/>
 
     <!--
         Sign-in with Google or Microsoft for mail accounts (OAuth 2.0 with PKCE, XOAUTH2 for IMAP and SMTP;
@@ -117,9 +63,9 @@
         (EMAIL_OAUTH_GOOGLE_CLIENT_ID and so on); a provider without both is not offered. The secret is never written to
         a log or answered by a service. email_oauth_microsoft_tenant: common (the default; work, school and personal
         accounts), organizations, consumers or a tenant id.
-        email_oauth_redirect_uri: the callback the provider sends the browser back to, exactly as registered there;
-        empty for the webroot webapp's URL from this conf (webapp_http_host, webapp_https_enabled and the ports) and
-        /emailOAuth/callback. It is never taken from a request.
+        email_oauth_redirect_uri (email-client oauth-redirect-uri): the callback the provider sends the browser back to,
+        exactly as registered there; empty for the webroot webapp's URL from this conf (webapp_http_host,
+        webapp_https_enabled and the ports) and /emailOAuth/callback. It is never taken from a request.
     -->
     <default-property name="email_oauth_redirect_uri" value=""/>
     <default-property name="email_oauth_google_client_id" value=""/>
@@ -132,110 +78,46 @@
         PDF (the html-print render through headless Chromium). pdf_chromium_path names the executable; empty, or a path
         that names no file, looks in runtime/chromium (from ./moq chromium-download), then for chromium, then
         chromium-browser, on the PATH. Google Chrome is used only when pdf_chromium_path names it. Startup logs each one
-        found and the one used. With none the server starts and PDF reports it is not available.
-        pdf_page_limit is the pages that print at once; pdf_timeout is the seconds one document may take.
+        found and the one used. With none the server starts and PDF reports it is not available. The limits are on
+        screen-facade pdf.
     -->
     <default-property name="pdf_chromium_path" value=""/>
-    <default-property name="pdf_page_limit" value="4"/>
-    <default-property name="pdf_timeout" value="60"/>
 
     <!--
-        The built-in SSH server (the terminal client for every user, SFTP, git and the admin shell). Off while ssh_port is
-        empty; 0 binds an ephemeral port.
+        The built-in SSH server (ssh-server below). Off while ssh_port is empty; 0 binds an ephemeral port.
         ssh_host_key is the base64 of a 32-byte Ed25519 seed (generated into runtime/.env) or an OpenSSH private key.
-        ssh_sftp_root is the resource location SFTP serves (runtime, file, component or dbresource).
+        ssh_public_host and ssh_public_port are the SSH host and port git clone URLs show; webapp_http_host and ssh_port
+        when empty.
     -->
     <default-property name="ssh_port" value=""/>
     <default-property name="ssh_host" value="127.0.0.1"/>
     <default-property name="ssh_host_key" value="CHANGEME" is-secret="true"/>
-    <default-property name="ssh_sftp_root" value="runtime://sftp"/>
-    <default-property name="ssh_sftp_max_file" value="268435456"/>
-    <default-property name="ssh_max_sessions" value="8"/>
-    <!-- Git over SSH (SSH_GIT) on a connection that logged in by password; by key only when false. -->
-    <default-property name="ssh_git_password_auth" value="false"/>
-    <!-- A client with no key is let in with no user and gets the terminal client's login dialog (keyboard-interactive
-        with no questions). When false, such a client logs in by password at the SSH level or not at all. -->
-    <default-property name="ssh_login_dialog" value="true"/>
-
-    <!--
-        The git server: clone, fetch and push of GitRepository repositories at <git_public_url>/git/<repositoryId>.git
-        (smart HTTP) and over the SSH server (SSH_GIT), checked against AT_GIT_REPOSITORY (docs/Git-Hosting.md).
-        git_public_url is the base URL clone URLs show; from the webapp host and port when empty. ssh_public_host and
-        ssh_public_port are the SSH host and port clone URLs show; webapp_http_host and ssh_port when empty.
-        git_max_concurrent clones and pushes run at once, on threads of their own, with git_max_queued waiting.
-        git_max_request bytes of an upload-pack request, git_max_push_size bytes of a push, git_max_object_size bytes
-        of one pushed object; git_idle_timeout seconds of silence in a request body end it. git_pack_threads (all
-        cores when empty) compress and index packs. Credentials over plain HTTP are refused unless git_allow_http.
-    -->
-    <default-property name="git_public_url" value=""/>
     <default-property name="ssh_public_host" value=""/>
     <default-property name="ssh_public_port" value=""/>
-    <default-property name="git_max_concurrent" value="4"/>
-    <default-property name="git_max_queued" value="16"/>
-    <default-property name="git_max_request" value="67108864"/>
-    <default-property name="git_max_push_size" value="2147483648"/>
-    <default-property name="git_max_object_size" value="536870912"/>
-    <default-property name="git_idle_timeout" value="120"/>
-    <default-property name="git_pack_threads" value=""/>
-    <default-property name="git_allow_http" value="false"/>
-    <!--
-        The storage of db kind git repositories (docs/Git-Hosting.md, Storage). Objects are rows of zlib streams, or of
-        deltas against another object, as a pack has them: git_db_delta_depth (50) deltas at most from an object to a
-        whole one, and objects up to git_db_delta_max_size bytes as deltas; an object over git_db_large_object bytes
-        is a content blob (moqui.resource.ContentBlob), read and sent a window at a time. git_db_write_format=raw writes new rows
-        uncompressed, as versions before this format read them. git_db_cache_bytes of decoded objects are kept in
-        memory for all repositories. gc#GitRepositories deletes unreachable objects not written or referenced in the
-        last git_gc_prune_days days (at least 1), keeps the commits of the last git_gc_reflog_days days of changes (a
-        force push can be undone), and passes over a repository of more than git_gc_max_objects objects.
-    -->
-    <default-property name="git_db_delta_depth" value="50"/>
-    <default-property name="git_db_delta_max_size" value="16777216"/>
-    <default-property name="git_db_large_object" value="8388608"/>
-    <default-property name="git_db_write_format" value="v2"/>
-    <default-property name="git_db_cache_bytes" value="67108864"/>
-    <default-property name="git_gc_prune_days" value="14"/>
-    <default-property name="git_gc_reflog_days" value="30"/>
-    <default-property name="git_gc_max_objects" value="20000000"/>
-    <!-- Git LFS at /git/<repositoryId>.git/info/lfs: objects up to git_lfs_max_object_size bytes; the tokens of its
-        actions (and of git-lfs-authenticate over SSH) are signed with git_lfs_token_key (generated into runtime/.env),
-        and git_lfs_token_key_previous still reads while a key is changed. -->
-    <default-property name="git_lfs_max_object_size" value="5368709120"/>
-    <default-property name="git_lfs_token_key" value="CHANGEME" is-secret="true"/>
-    <default-property name="git_lfs_token_key_previous" value="" is-secret="true"/>
-    <!-- Content blobs (moqui.resource.ContentBlob): bytes per ContentBlobChunk row, and how many days a blob nothing
-        refers to is kept (gc#ContentBlobs). -->
-    <default-property name="blob_chunk_size" value="1048576"/>
-    <default-property name="blob_gc_prune_days" value="14"/>
-    <!-- A dbresource file over this many bytes is a content blob (stored once, streamed), not fileData. -->
-    <default-property name="dbresource_blob_threshold" value="65536"/>
-    <!-- Image conversions (convert#Image) that may run at once; a decoded image may take hundreds of MB. -->
-    <default-property name="image_max_concurrent" value="2"/>
 
     <!--
-        The inbound SMTP listener for hosted and shared mail accounts, behind the edge gateway (a host built with the
-        inbound-smtp feature; docs/Mail-Inbound.md). Off while smtp_listen_port is empty; 0 binds an ephemeral port.
-        smtp_allowed_addresses: the gateway's IPs and CIDRs, comma-separated (127.0.0.1 for a gateway on this host); every
-        other address is refused at connect, and an empty list does not start the listener. smtp_proxy_protocol: each
-        connection starts with a PROXY v1 or v2 header, and the address it names must be in the list too.
-        smtp_hostname: the name in the greeting and the Received field; empty for webapp_http_host.
+        The git server (git-server below): git_public_url is the base URL clone URLs show; from the webapp host and port
+        when empty. The tokens of Git LFS actions (and of git-lfs-authenticate over SSH) are signed with
+        git_lfs_token_key (generated into runtime/.env), and git_lfs_token_key_previous still reads while a key is
+        changed.
+    -->
+    <default-property name="git_public_url" value=""/>
+    <default-property name="git_lfs_token_key" value="CHANGEME" is-secret="true"/>
+    <default-property name="git_lfs_token_key_previous" value="" is-secret="true"/>
+
+    <!--
+        The inbound SMTP listener for hosted and shared mail accounts (smtp-server below). Off while smtp_listen_port is
+        empty; 0 binds an ephemeral port. smtp_allowed_addresses: the gateway's IPs and CIDRs, comma-separated
+        (127.0.0.1 for a gateway on this host); every other address is refused at connect, and an empty list does not
+        start the listener. smtp_hostname: the name in the greeting and the Received field; empty for webapp_http_host.
         smtp_authserv_id: the authserv-id of the gateway's Authentication-Results; only those are kept (the verdict is
-        trusted, not verified again). smtp_spam_headers: the gateway's spam verdict fields; mail one of them says yes to
-        goes to Junk. smtp_plus_separator: the plus-addressing characters (sales+news@ is sales@); none turns it off.
-        smtp_max_message_size is bytes; the timeouts are seconds (each command or data chunk, and a whole session).
+        trusted, not verified again).
     -->
     <default-property name="smtp_listen_port" value=""/>
     <default-property name="smtp_listen_host" value="127.0.0.1"/>
     <default-property name="smtp_allowed_addresses" value=""/>
-    <default-property name="smtp_proxy_protocol" value="false"/>
     <default-property name="smtp_hostname" value=""/>
     <default-property name="smtp_authserv_id" value=""/>
-    <default-property name="smtp_spam_headers" value="X-Spam-Flag,X-Spam-Status,X-Spam"/>
-    <default-property name="smtp_plus_separator" value="+"/>
-    <default-property name="smtp_max_message_size" value="26214400"/>
-    <default-property name="smtp_max_recipients" value="100"/>
-    <default-property name="smtp_max_connections" value="20"/>
-    <default-property name="smtp_command_timeout" value="300"/>
-    <default-property name="smtp_session_timeout" value="1800"/>
 
     <!-- Properties for the primary (transactional group) datasource -->
     <default-property name="entity_ds_db_conf" value="h2"/>
@@ -265,6 +147,8 @@
     <!-- How peers reach this member: empty is the HTTPS POST to cluster_base_url, "ssh" its SSH server (ssh_port),
         "notify" Postgres NOTIFY on the shared entity database, for members that cannot open a connection to each other. -->
     <default-property name="cluster_transport" value=""/>
+    <!-- The address the cluster listener binds; empty for every interface, as a member on another host must reach it. -->
+    <default-property name="cluster_bind_address" value=""/>
     <default-property name="instance_id" value=""/>
     <default-property name="entity_add_missing_runtime" value="false"/>
     <default-property name="entity_add_missing_startup" value="true"/>
@@ -288,13 +172,6 @@
     <!-- How often (in seconds) to check for scheduled jobs to run, set to 0 to not run scheduled jobs -->
     <default-property name="scheduled_job_check_time" value="60"/>
 
-    <!-- script_timeout: seconds a script may run when no transaction limits it (a widget condition, a transaction="ignore"
-        service), on every thread. A transaction's own timeout replaces it, and 0 is no limit. Unset, a script on a request
-        worker is limited to webapp_request_timeout (300 seconds by default), and one on a service, job or scheduler
-        thread is not limited, as in Java.
-    <default-property name="script_timeout" value="0"/>
-    -->
-
     <!-- SearchFacade backend: postgres (the default, tables in the search schema of the entity Postgres, or a dedicated
         embedded cluster when the entity database is not Postgres) or opensearch (the cluster settings below) -->
     <default-property name="search_backend" value="postgres"/>
@@ -304,20 +181,15 @@
     <default-property name="elasticsearch_password" value="" is-secret="true"/>
     <default-property name="elasticsearch_index_prefix" value=""/>
     <!-- On the opensearch backend, when elasticsearch_url is this host and nothing answers there, the server starts the install in
-        runtime/opensearch (unless it has a pid file, a node run outside the server) and stops it on shutdown. "false" never starts it.
-        opensearch_start_wait is how many seconds startup waits for that node to answer. -->
+        runtime/opensearch (unless it has a pid file, a node run outside the server) and stops it on shutdown. "false" never starts it. -->
     <default-property name="opensearch_run" value="true"/>
-    <default-property name="opensearch_start_wait" value="120"/>
     <!-- Server log output on stderr: trace, debug, info, warn, or error -->
     <default-property name="moqui_log_level" value="info"/>
     <!-- stderr header color: auto (a terminal, and not NO_COLOR), always, or never. Files stay plain. -->
     <default-property name="moqui_log_color" value="auto"/>
-    <!-- Log files: moqui.log (all events) and moqui-error.log (warn and error) in moqui_log_dir, a path or runtime:// location;
-        empty writes no files. A file rolls over to moqui.yyyy-MM-dd.N.log (UTC) at moqui_log_max_size_mb or when the day changes,
-        and only the newest moqui_log_max_files rolled files of each kind are kept. -->
+    <!-- Log files: moqui.log (all events) and moqui-error.log (warn and error) in moqui_log_dir (logging dir), a path or
+        runtime:// location; empty writes no files. -->
     <default-property name="moqui_log_dir" value="runtime://log"/>
-    <default-property name="moqui_log_max_size_mb" value="100"/>
-    <default-property name="moqui_log_max_files" value="30"/>
 
     <!-- LLM Client settings (env vars / Java properties; see ReleaseNotes.md). url may be an origin
          (default path /v1/chat/completions is appended) or a full chat/completions URL (Azure).
@@ -326,23 +198,6 @@
     <default-property name="llm_openai_api_key" value="" is-secret="true"/>
     <default-property name="llm_openai_model" value=""/>
     <default-property name="llm_log_content" value="false"/>
-    <!-- A2A server: JSON-RPC 1.0 binding at /llm/a2a/jsonrpc (auth via LlmAuthFilter) and public Agent Card at
-         /.well-known/agent-card.json. Off by default: both endpoints answer 404 until a2a_enabled is true, so an
-         upgrade never publishes an agent surface without an operator opting in.
-         a2a_public_url is the base URL advertised in the Agent Card; behind a reverse proxy or tunnel set it, or set
-         a2a_trust_forwarded_headers=true to derive it from X-Forwarded-Proto/Host. -->
-    <default-property name="a2a_enabled" value="false"/>
-    <default-property name="a2a_trust_forwarded_headers" value="false"/>
-    <default-property name="a2a_public_url" value=""/>
-    <default-property name="a2a_default_profile" value="assist"/>
-    <default-property name="a2a_agent_name" value="Moqui"/>
-    <default-property name="a2a_agent_description" value="Moqui enterprise application agent"/>
-    <default-property name="a2a_agent_version" value="1.0.0"/>
-    <default-property name="a2a_provider_organization" value=""/>
-    <default-property name="a2a_provider_url" value=""/>
-    <default-property name="a2a_max_part_bytes" value="65536"/>
-    <default-property name="a2a_max_parts" value="32"/>
-    <default-property name="a2a_replay_wait_ms" value="600000"/>
 
     <!-- Kibana Proxy Servlet settings -->
     <default-property name="kibana_host" value="127.0.0.1"/>
@@ -445,7 +300,7 @@
                 handle-cors="${webapp_handle_cors}" allow-origins="${webapp_allow_origins}"
                 require-session-token="${webapp_require_session_token}" upload-executable-allow="${webapp_upload_executable_allow}"
                 websocket-timeout="600000" client-ip-header="${webapp_client_ip_header}"
-                trusted-proxies="${webapp_trusted_proxies}">
+                trusted-proxies="${webapp_trusted_proxies}" status-ips="${webapp_status_ips}" transfer-workers="16">
             <!-- root and error screens for OOTB runtime directory (moqui/moqui-runtime repository) -->
             <root-screen host=".*" location="component://webroot/screen/webroot.xml"/>
             <error-screen error="unauthorized" screen-path="error/Unauthorized"/>
@@ -518,11 +373,18 @@
                 <url-pattern>/kibana/*</url-pattern>
             </servlet>
 
-            <!-- timeout session in 60 minutes without a request -->
-            <session-config timeout="60"/>
+            <!-- timeout: minutes without a request before a web session expires, 0 never. max: the most web sessions kept in
+                memory; over it the sessions used longest ago are written and dropped, and reload from HttpSession when
+                they come back; 0 keeps every session. flush: eventual, or guarantee to write a changed session before
+                the response. -->
+            <session-config timeout="60" flush="eventual" max="10000"/>
 
-            <!-- Notification Message Endpoint -->
+            <!-- Notification Message Endpoint: the html and qvt clients of a signed in user connect to it; enabled="false"
+                turns it off. timeout: milliseconds with nothing from the client before the socket closes. -->
             <endpoint path="/notws" class="org.moqui.impl.webapp.NotificationEndpoint" timeout="3600000" enabled="true"/>
+            <!-- The browser terminal: the terminal client on the /termws WebSocket, opened from the account menu's Terminal
+                UI (/qapps/Terminal) by any signed in user; enabled="false" turns the socket and the menu item off. -->
+            <endpoint path="/termws" enabled="true"/>
             <endpoint path="/groovysh" class="org.moqui.impl.webapp.GroovyShellEndpoint" timeout="900000" enabled="true"/>
 
             <!-- Default response headers, for override keyed on type+name -->
@@ -618,6 +480,11 @@
                   history-limit="5" change-weeks="104" email-require-change="false" email-expire-hours="48"/>
         <login-key encrypt-hash-type="SHA-256" expire-hours="144"/><!-- default expire 6 days, 144 hours -->
         <login max-failures="3" disable-minutes="5" history-store="true" history-incorrect-password="false"/>
+        <!-- privileged-groups: UserGroupMember create/update/delete for these groups is allowed only if the caller is
+            already a member (seed/install and disableAuthz skip the check). sealed-permissions: UserGroupPermission
+            create/update/delete for these IDs is allowed only if the caller already has that permission. -->
+        <authz privileged-groups="ADMIN,ADMIN_ADV"
+                sealed-permissions="GROOVY_SHELL_WEB,SQL_RUNNER_WEB,SSH_SHELL,SERVICE_LOAD_RUNNER,ADMIN_LOGIN_AS,ADMIN_PASSWORD,ElasticRemote,KibanaRemote,REST_SCHEMA,LlmGateway"/>
     </user-facade>
 
     <transaction-facade use-transaction-cache="true" use-connection-stash="true" use-lock-track="${entity_lock_track}" use-statement-timeout="${entity_statement_timeout}">
@@ -637,7 +504,17 @@
             JBoss (separate objects): "java:comp/UserTransaction" and "java:comp/TransactionManager" -->
     </transaction-facade>
 
-    <resource-facade xml-actions-template-location="component://framework/template/XmlActions.groovy.ftl">
+    <!-- blob-chunk-size: bytes per ContentBlobChunk row of a content blob (moqui.resource.ContentBlob);
+        blob-gc-prune-days: how many days a blob nothing refers to is kept (gc#ContentBlobs). dbresource-blob-threshold:
+        a dbresource file over this many bytes is a content blob (stored once, streamed), not fileData.
+        image-max-concurrent: image conversions (convert#Image) that may run at once; a decoded image may take hundreds
+        of MB. script-timeout: seconds a script may run when no transaction limits it (a widget condition, a
+        transaction="ignore" service), on every thread; a transaction's own timeout replaces it, and 0 is no limit.
+        Empty, a script on a request worker is limited to the webapp's request-timeout (300 seconds by default), and
+        one on a service, job or scheduler thread is not limited, as in Java. -->
+    <resource-facade xml-actions-template-location="component://framework/template/XmlActions.groovy.ftl"
+            blob-chunk-size="1048576" blob-gc-prune-days="14" dbresource-blob-threshold="65536"
+            image-max-concurrent="2" script-timeout="">
         <!-- resource reference class needs to implement the org.moqui.resource.ResourceReference interface -->
         <resource-reference scheme="http" class="org.moqui.resource.UrlResourceReference"/>
         <resource-reference scheme="https" class="org.moqui.resource.UrlResourceReference"/>
@@ -680,7 +557,14 @@
         <script-runner extension=".js" engine="javascript"/>
     </resource-facade>
 
-    <screen-facade boundary-comments="false" default-autocomplete-rows="20" default-paginate-rows="20">
+    <!-- check-interval-ms: how often a screen file is checked for changes; empty is never in production and two
+        seconds otherwise. -->
+    <screen-facade boundary-comments="false" default-autocomplete-rows="20" default-paginate-rows="20"
+            check-interval-ms="">
+        <!-- PDF, the html-print render through headless Chromium. chromium-path names the executable (see
+            pdf_chromium_path); page-limit is the pages that print at once; timeout is the seconds one document may
+            take. -->
+        <pdf chromium-path="${pdf_chromium_path}" page-limit="4" timeout="60"/>
         <!-- Each type is written by a JavaScript macro module, see framework/template/screen/ -->
         <screen-text-output type="csv" mime-type="text/csv" always-standalone="true"
                 macro-template-location="framework/template/screen/ScreenCsv.js"/>
@@ -753,8 +637,10 @@
     <!-- One search backend. With no postgres element the postgres backend uses the search schema of the entity Postgres;
         a postgres element with a url points it at another Postgres. The cluster element is used only by the opensearch backend. -->
     <search-facade backend="${search_backend}">
+        <!-- run: start the install in runtime/opensearch when the url is this host and nothing answers (opensearch_run);
+            start-wait: how many seconds startup waits for that node to answer. -->
         <cluster url="${elasticsearch_url}" user="${elasticsearch_user}" password="${elasticsearch_password}"
-                index-prefix="${elasticsearch_index_prefix}"/>
+                index-prefix="${elasticsearch_index_prefix}" run="${opensearch_run}" start-wait="120"/>
     </search-facade>
 
     <llm-facade enabled="true" default-profile="default">
@@ -851,11 +737,95 @@
         -->
     </llm-facade>
 
+    <!--
+        The mail client (org.moqui.impl.EmailClientServices).
+        allowed-hosts: comma-separated hostnames and IPs poll#EmailServer and send#Email may connect to; empty allows
+        any host. smtp.example.com matches example.com; notexample.com does not. EmailServer.allowedToDomains is a
+        separate recipient-domain filter.
+        idle-enabled: IMAP IDLE on the Inbox of each active account, so new mail shows at once; false relies on the sync
+        job only (tests, small deployments). idle-max: the most IDLE connections (a thread each) in a server.
+        sync-interval: minutes between syncs of an account by the job sync_EmailAccounts_frequent, for an account with
+        no syncIntervalMinutes. sync-batch: the most new messages a folder brings in one sync. flag-scan: minutes
+        between reading every message's flags, on a server without CONDSTORE. sync-push-now: make a local change (read,
+        move, delete) on the server right after it commits; false waits for the next sync.
+        autoconfig-urls: discover#EmailServer's Thunderbird autoconfig URLs, comma-separated, with {domain} and
+        {email}; empty for autoconfig.{domain}, the domain's .well-known URL and the Thunderbird ISPDB. dns-server: the
+        DNS server (host:port) for its SRV lookups; empty for the first in /etc/resolv.conf. tls-ca-file: a PEM file of
+        more certificate authorities to trust, for a mail server with its own.
+        oauth-redirect-uri: see email_oauth_redirect_uri.
+    -->
+    <email-client allowed-hosts="" idle-enabled="true" idle-max="8" sync-interval="5" sync-batch="500" flag-scan="15"
+            sync-push-now="true" autoconfig-urls="" dns-server="" tls-ca-file=""
+            oauth-redirect-uri="${email_oauth_redirect_uri}"/>
+
+    <!--
+        The built-in SSH server: the terminal client for every user, SFTP, git and the admin shell. port, host,
+        host-key, public-host and public-port: see the ssh_ properties. sftp-root: the resource location SFTP serves
+        (runtime, file, component or dbresource); sftp-max-file: the largest file it takes, in bytes. max-sessions: the
+        most connections at once. git-password-auth: git over SSH (SSH_GIT) on a connection that logged in by
+        password; by key only when false. login-dialog: a client with no key is let in with no user and gets the
+        terminal client's login dialog (keyboard-interactive with no questions); when false, such a client logs in by
+        password at the SSH level or not at all.
+    -->
+    <ssh-server port="${ssh_port}" host="${ssh_host}" host-key="${ssh_host_key}" public-host="${ssh_public_host}"
+            public-port="${ssh_public_port}" sftp-root="runtime://sftp" sftp-max-file="268435456" max-sessions="8"
+            git-password-auth="false" login-dialog="true"/>
+    <!-- The terminal client's sessions, over SSH and in the browser together: max-sessions at once, and
+        max-sessions-per-user of them for one user; a session in its login dialog counts toward the first only. -->
+    <terminal max-sessions="16" max-sessions-per-user="4"/>
+
+    <!--
+        The git server: clone, fetch and push of GitRepository repositories at <public-url>/git/<repositoryId>.git
+        (smart HTTP) and over the SSH server (SSH_GIT), checked against AT_GIT_REPOSITORY (docs/Git-Hosting.md).
+        public-url, lfs-token-key and lfs-token-key-previous: see the git_ properties.
+        max-concurrent clones and pushes run at once, on threads of their own, with max-queued waiting. max-request
+        bytes of an upload-pack request, max-push-size bytes of a push, max-object-size bytes of one pushed object;
+        idle-timeout seconds of silence in a request body end it. pack-threads (all cores when empty) compress and index
+        packs. Credentials over plain HTTP are refused unless allow-http. lfs-max-object-size: the largest Git LFS
+        object, at /git/<repositoryId>.git/info/lfs. eca-max-commits: the most commits one change raises gitECA commit
+        events for.
+        The storage of db kind repositories (docs/Git-Hosting.md, Storage): objects are rows of zlib streams, or of
+        deltas against another object, as a pack has them: db-delta-depth deltas at most from an object to a whole
+        one, and objects up to db-delta-max-size bytes as deltas; an object over db-large-object bytes is a content
+        blob, read and sent a window at a time. db-write-format="raw" writes new rows uncompressed, as versions before
+        this format read them. db-cache-bytes of decoded objects are kept in memory for all repositories.
+        gc#GitRepositories deletes unreachable objects not written or referenced in the last gc-prune-days days (at
+        least 1), keeps the commits of the last gc-reflog-days days of changes (a force push can be undone), and passes
+        over a repository of more than gc-max-objects objects.
+    -->
+    <git-server public-url="${git_public_url}" lfs-token-key="${git_lfs_token_key}"
+            lfs-token-key-previous="${git_lfs_token_key_previous}"
+            max-concurrent="4" max-queued="16" max-request="67108864" max-push-size="2147483648"
+            max-object-size="536870912" idle-timeout="120" pack-threads="" allow-http="false"
+            lfs-max-object-size="5368709120" eca-max-commits="10000"
+            db-delta-depth="50" db-delta-max-size="16777216" db-large-object="8388608" db-write-format="v2"
+            db-cache-bytes="67108864" gc-prune-days="14" gc-reflog-days="30" gc-max-objects="20000000"/>
+
+    <!--
+        The inbound SMTP listener for hosted and shared mail accounts, behind the edge gateway (a host built with the
+        inbound-smtp feature; docs/Mail-Inbound.md). listen-port, listen-host, allowed-addresses, hostname and
+        authserv-id: see the smtp_ properties. proxy-protocol: each connection starts with a PROXY v1 or v2 header, and
+        the address it names must be in allowed-addresses too. spam-headers: the gateway's spam verdict fields; mail one
+        of them says yes to goes to Junk. plus-separator: the plus-addressing characters (sales+news@ is sales@); none
+        turns it off. max-message-size is bytes; the timeouts are seconds (each command or data chunk, and a whole
+        session).
+    -->
+    <smtp-server listen-port="${smtp_listen_port}" listen-host="${smtp_listen_host}"
+            allowed-addresses="${smtp_allowed_addresses}" hostname="${smtp_hostname}" authserv-id="${smtp_authserv_id}"
+            proxy-protocol="false" spam-headers="X-Spam-Flag,X-Spam-Status,X-Spam" plus-separator="+"
+            max-message-size="26214400" max-recipients="100" max-connections="20" command-timeout="300"
+            session-timeout="1800"/>
+
+    <!-- Log files: dir (moqui_log_dir). A file rolls over to moqui.yyyy-MM-dd.N.log (UTC) at max-size-mb or when the day
+        changes, and only the newest max-files rolled files of each kind are kept. -->
+    <logging dir="${moqui_log_dir}" max-size-mb="100" max-files="30"/>
+
     <!-- Rust: java names for fresh schemas; set entity_sql_name_style=legacy before opening an old Rust database. -->
     <entity-facade sql-name-style="${entity_sql_name_style ?: 'java'}"
             default-group-name="transactional" entity-eca-enabled="true" sequenced-id-prefix=""
             distributed-cache-invalidate="false" dci-topic-factory="" query-stats="false"
             database-locale="${default_locale}" database-time-zone="${database_time_zone ?: default_time_zone}"
+            rest-max-page-size="1000"
             crypt-salt="20201202" crypt-iter="10" crypt-algo="PBEWithHmacSHA256AndAES_128" crypt-pass="${entity_ds_crypt_pass}">
 
         <!-- alternate decrypt using original algo (PBEWithMD5AndDES), etc for decrypting old values, all new values will encrypt using the 4 attributes on entity-facade element -->

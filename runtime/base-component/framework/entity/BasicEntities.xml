@@ -851,7 +851,7 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="lastSyncDate" type="date-time"/>
         <field name="lastSyncError" type="text-long"/>
         <field name="syncIntervalMinutes" type="number-integer"><description>How often the sync job syncs the account;
-            empty for the email_sync_interval property (5 minutes)</description></field>
+            empty for the email-client sync-interval in the conf (5 minutes)</description></field>
         <field name="syncLockedUntil" type="date-time"><description>A sync of the account holds it until then
             (sync#EmailAccount), so no two run at once, on this server or another; the lock of a server that stopped
             ends then</description></field>
@@ -1002,7 +1002,7 @@ along with this software (see the LICENSE.md file). If not, see
     <entity entity-name="EmailRemoteChange" package="moqui.basic.email" use="transactional" cache="never">
         <description>A local change of an account's mail waiting to be made on its IMAP server (push#RemoteChanges). The
             sync (sync#EmailAccount) applies them in the order made, at the start and the end of each session and, with
-            the email_sync_push_now property on, right after the change commits. One that cannot be made now (the server
+            the email-client sync-push-now in the conf on, right after the change commits. One that cannot be made now (the server
             cannot be reached, the message has no UID yet) waits for the next session; one that fails ten times is dropped
             with an error logged. So a local change is not lost while the server is away.</description>
         <field name="emailRemoteChangeId" type="id" is-pk="true"/>

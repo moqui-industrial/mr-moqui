@@ -376,7 +376,7 @@ fn encode_image(
     }
 }
 
-/// Image conversions that may run at once (`image_max_concurrent`, 2): a decoded image may take hundreds of MB.
+/// Image conversions that may run at once (`resource-facade` `image-max-concurrent`, 2): a decoded image may take hundreds of MB.
 struct Slots {
     used: std::sync::Mutex<usize>,
     freed: std::sync::Condvar,
@@ -397,8 +397,7 @@ fn image_slot() -> Slot {
         used: std::sync::Mutex::new(0),
         freed: std::sync::Condvar::new(),
     };
-    let most = moqui_lib::env::get_prop_or_env("image_max_concurrent")
-        .trim()
+    let most = crate::resource::setting("image-max-concurrent")
         .parse::<usize>()
         .ok()
         .filter(|most| *most > 0)

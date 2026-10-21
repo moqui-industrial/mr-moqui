@@ -1732,7 +1732,7 @@ along with this software (see the LICENSE.md file). If not, see
             here), labels (stored as IMAP keywords), keywords (addKeywordList, removeKeywordList, such as $Junk), delete
             (where the message is on the server is kept with the change, as its row goes), sent (APPEND to Sent, unless
             the server keeps a copy of what it sends), createFolder or renameFolder (emailFolderId). The sync makes them,
-            in order, at the start and end of each session, and right after the commit when email_sync_push_now is on
+            in order, at the start and end of each session, and right after the commit when email-client sync-push-now is on
             (the default). A change made from the message's state when applied, so later changes need no merging.
             fromFolderMap and oldName are accepted for the callers, which ignore its errors.</description>
         <in-parameters>
@@ -1757,8 +1757,8 @@ along with this software (see the LICENSE.md file). If not, see
             job and the IDLE workers (authorization disabled). The queued local changes go to the server first; then
             LIST maps the server's folders (INBOX and the special-use attributes onto the account's folders, never over a
             kind a user chose with update#EmailFolder), and each subscribed folder (subscribed N is not read), the Inbox
-            first, brings its new mail (within syncWindowDays; at most email_sync_batch a
-            folder a session), its flags (CONDSTORE CHANGEDSINCE when offered, else a scan every email_flag_scan
+            first, brings its new mail (within syncWindowDays; at most email-client sync-batch a
+            folder a session), its flags (CONDSTORE CHANGEDSINCE when offered, else a scan every email-client flag-scan
             minutes) and its expunges (QRESYNC VANISHED, else by UID). A message is stored once, by folder and UID and
             by Message-ID across folders (a move keeps the row and its links); its files are DbResource files under
             dbresource://email/; it is threaded by In-Reply-To and References; received mail is ES_RECEIVED, the Sent
@@ -1777,7 +1777,7 @@ along with this software (see the LICENSE.md file). If not, see
             to the account's owner and members (not persisted, no alert), at most one a second while a folder has mail to
             fetch, with {emailAccountId, done, folderCount, foldersDone, folderName, folderPath, folderKept,
             folderFetched, folderToFetch, folderPending, fetched, toFetch, pending}, and one last with done true,
-            outcome, message and newCount. A session fetches at most email_sync_batch a folder (folderToFetch);
+            outcome, message and newCount. A session fetches at most email-client sync-batch a folder (folderToFetch);
             folderPending is all its new mail in the sync window (later sessions bring the rest) and folderKept what was
             kept of it before, so a first sync shows "{folderKept + folderFetched} of {folderKept + folderPending}"
             across its sessions; toFetch and pending add up the folders read so far. A sync with nothing to fetch sends
@@ -1803,8 +1803,8 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="sync" noun="DueEmailAccounts" type="rust" location="moqui_core::service::mail::sync_due_accounts"
             transaction="ignore" authenticate="anonymous-all" allow-remote="false">
         <description>The ServiceJob sync_EmailAccounts_frequent: sync each account with an incoming server whose last sync
-            is older than its interval (syncIntervalMinutes, else the email_sync_interval property, 5 minutes; three times
-            as long after an error), or whose last sync stopped at email_sync_batch with mail left on the server (at every
+            is older than its interval (syncIntervalMinutes, else email-client sync-interval in the conf, 5 minutes; three times
+            as long after an error), or whose last sync stopped at email-client sync-batch with mail left on the server (at every
             run of the job, so a large first sync goes on a batch a minute), each on its own. Paused accounts, those whose
             sign-in failed and those syncing now are left.</description>
         <out-parameters>
@@ -1816,7 +1816,7 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="discover" noun="EmailServer" type="rust" location="moqui_core::service::mail::discover_server"
             transaction="ignore" allow-remote="false">
         <description>The servers for an address, for the MailAccounts wizard, within a few seconds: Thunderbird autoconfig
-            (autoconfig.domain, the domain's .well-known URL, then the ISPDB; email_autoconfig_urls replaces the list),
+            (autoconfig.domain, the domain's .well-known URL, then the ISPDB; email-client autoconfig-urls replaces the list),
             then DNS SRV records (RFC 6186), else the guesses imap.domain and smtp.domain. The best of each, as the fields
             create#EmailAccount takes, and every one found in incomingList and outgoingList. oauthOnly when the provider
             signs in only with OAuth. oauthProviderEnumId is the EmailOAuthProvider the mail is at (by the address's

@@ -49,6 +49,9 @@ fn sockets() -> &'static Mutex<HashMap<u64, Arc<Slot>>> {
 const SOCKET_QUEUE: usize = 256;
 /// A ping goes out this often, so a dead peer is noticed and proxies keep the connection.
 const PING_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+/// Set to `/notws` while this server serves the socket; the html and qvt clients (`Header.html.fancy`, `qapps.xml`)
+/// connect when it is.
+pub(crate) const ENDPOINT_PROPERTY: &str = "webapp_notification_endpoint";
 /// Java's `/notws` endpoint timeout: an hour with nothing from the client closes the socket.
 const DEFAULT_IDLE: std::time::Duration = std::time::Duration::from_secs(3600);
 
@@ -223,7 +226,7 @@ async fn run_socket(
         unregister(id);
         return;
     }
-    let idle = idle_timeout();
+    let idle = idle_timeout(&factory);
     let mut last_heard = tokio::time::Instant::now();
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.tick().await;
@@ -276,14 +279,14 @@ async fn run_socket(
     unregister(id);
 }
 
-/// `webapp_notification_idle_seconds`, else an hour.
-fn idle_timeout() -> std::time::Duration {
-    moqui_lib::env::get_prop_or_env("webapp_notification_idle_seconds")
-        .trim()
+/// The `webroot` webapp's `/notws` `endpoint` `timeout` in milliseconds, else an hour.
+fn idle_timeout(factory: &ExecutionContextFactory) -> std::time::Duration {
+    factory
+        .webapp_child_setting("webroot", "endpoint /notws", "timeout")
         .parse::<u64>()
         .ok()
-        .filter(|seconds| *seconds > 0)
-        .map_or(DEFAULT_IDLE, std::time::Duration::from_secs)
+        .filter(|millis| *millis > 0)
+        .map_or(DEFAULT_IDLE, std::time::Duration::from_millis)
 }
 
 async fn handle_incoming(

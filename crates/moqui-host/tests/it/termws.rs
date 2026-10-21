@@ -14,7 +14,7 @@
 
 //! The browser terminal: the shell offers it in the account menu, its screen is the xterm.js component, and its socket,
 //! `/termws`, is refused without a session, runs the apps as the signed in user once the page sends its size, gives
-//! `tui_max_sessions_per_user` as the close reason of a second socket, and ends on Ctrl+Q with the terminal put back.
+//! `terminal` `max-sessions-per-user` as the close reason of a second socket, and ends on Ctrl+Q with the terminal put back.
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "tui"))]
 
@@ -95,7 +95,12 @@ fn terminal_screen(address: SocketAddr, cookie: &str) -> (u16, Vec<(String, Stri
 
 #[test]
 fn the_browser_terminal_runs_the_apps_as_the_signed_in_user() {
-    let gate = crate::common::start_with_properties("termws", Some(PLAIN_USER), &[("tui_max_sessions_per_user", "1")]);
+    let gate = crate::common::start_with_conf_properties(
+        "termws",
+        Some(PLAIN_USER),
+        r#"<terminal max-sessions-per-user="1"/>"#,
+        &[],
+    );
     let address = gate.server.address();
 
     // No session cookie, or one that is not a session: no socket.
@@ -143,10 +148,10 @@ fn the_browser_terminal_runs_the_apps_as_the_signed_in_user() {
     // True color, from the terminal the socket describes.
     read_until(&mut socket, &mut seen, "38;2;").unwrap();
 
-    // A second terminal of the same user is past tui_max_sessions_per_user (1): the close reason says so.
+    // A second terminal of the same user is past terminal max-sessions-per-user (1): the close reason says so.
     let mut second = open(address, &cookie, 120, 40);
     let reason = read_until(&mut second, &mut Vec::new(), "never").unwrap_err();
-    assert!(reason.contains("tui_max_sessions_per_user"), "{reason}");
+    assert!(reason.contains("max-sessions-per-user"), "{reason}");
 
     // A resize redraws whole; Ctrl+Q ends the session, the terminal put back, and the socket closes.
     socket

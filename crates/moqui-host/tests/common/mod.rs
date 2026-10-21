@@ -228,6 +228,28 @@ pub fn start_with_properties(label: &str, data: Option<&str>, properties: &[(&st
     start_seeded(label, false, data.map(|text| (text, None)), "", properties, &[], &[])
 }
 
+/// [`start_with_properties`] with more conf in the runtime's `MoquiDevConf.xml` (the children of `moqui-conf`), such
+/// as `<ssh-server sftp-root="dbresource://sftp"/>`.
+pub fn start_with_conf_properties(
+    label: &str,
+    data: Option<&str>,
+    extra_conf: &str,
+    properties: &[(&str, &str)],
+) -> Gate {
+    start_seeded(label, false, data.map(|text| (text, None)), extra_conf, properties, &[], &[])
+}
+
+/// [`start_with_files`] with more conf in the runtime's `MoquiDevConf.xml` (the children of `moqui-conf`).
+pub fn start_with_conf_files(
+    label: &str,
+    data: Option<&str>,
+    extra_conf: &str,
+    properties: &[(&str, &str)],
+    files: &[(&str, &str)],
+) -> Gate {
+    start_seeded(label, false, data.map(|text| (text, None)), extra_conf, properties, files, &[])
+}
+
 /// [`start_with_properties`] with files written into the runtime directory before the server starts, by path relative
 /// to it, such as a component of the test's own (`component/<name>/component.xml` and its `service` files).
 pub fn start_with_files(label: &str, data: Option<&str>, properties: &[(&str, &str)], files: &[(&str, &str)]) -> Gate {

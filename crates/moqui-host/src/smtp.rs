@@ -19,7 +19,7 @@
 //! DMARC, spam and virus filtering, queueing and retries. So it is a small RFC 5321 server for that one client: EHLO or
 //! HELO, MAIL FROM (SIZE, BODY=8BITMIME, SMTPUTF8), RCPT TO, DATA, RSET, NOOP, QUIT, VRFY (252), HELP, with PIPELINING
 //! and ENHANCEDSTATUSCODES; no AUTH, no STARTTLS, no relay. A connection from an address outside `smtp_allowed_addresses`
-//! (IPs and CIDRs) gets 554 at connect and is closed; with `smtp_proxy_protocol` each connection starts with a PROXY v1
+//! (IPs and CIDRs) gets 554 at connect and is closed; with `smtp-server` `proxy-protocol` each connection starts with a PROXY v1
 //! or v2 header and the address it names must be allowed too. An empty allow-list does not start the listener.
 //!
 //! `RCPT TO` is answered from the accounts ([`moqui_core::service::mail_inbound::find_recipient`]): an address of a
@@ -28,9 +28,9 @@
 //! that fails, or no request worker free, answers 451 so the gateway tries again, and the accounts that took it the
 //! first time do not store it twice. Both run on a request worker with authorization disabled.
 //!
-//! Limits: `smtp_max_message_size` bytes (advertised as SIZE; a larger message is read to its end and refused with
-//! 552), `smtp_max_recipients` a message (452 after), `smtp_max_connections` at once (421 after), `smtp_command_timeout`
-//! seconds for each command line or data chunk, `smtp_session_timeout` seconds for a whole connection. Each session's
+//! Limits: `smtp-server` `max-message-size` bytes (advertised as SIZE; a larger message is read to its end and refused with
+//! 552), `smtp-server` `max-recipients` a message (452 after), `smtp-server` `max-connections` at once (421 after), `smtp-server` `command-timeout`
+//! seconds for each command line or data chunk, `smtp-server` `session-timeout` seconds for a whole connection. Each session's
 //! outcome is logged, with its addresses and sizes, never the message.
 
 use std::future::Future;
@@ -135,34 +135,37 @@ fn property(name: &str) -> String {
     moqui_lib::env::get_prop_or_env(name).trim().to_string()
 }
 
-fn number(name: &str, default: u64) -> u64 {
-    property(name)
-        .parse::<u64>()
-        .ok()
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
-}
-
-fn count(name: &str, default: usize) -> usize {
-    usize::try_from(number(name, default as u64)).unwrap_or(default)
-}
-
 impl SmtpConfig {
-    /// The settings when `smtp_listen_port` is set, else none.
+    /// The settings of the conf's `smtp-server` when its `listen-port` (`smtp_listen_port`) is set, else none. An
+    /// attribute the conf leaves out, or that expands to nothing, is its property when it has one.
     ///
     /// # Errors
     ///
     /// Returns why the listener cannot start: a port that does not parse, an allow-list that is empty or does not
     /// parse.
-    pub fn from_properties() -> Result<Option<Self>, Error> {
-        let port_text = property("smtp_listen_port");
+    pub fn from_conf(factory: &ExecutionContextFactory) -> Result<Option<Self>, Error> {
+        let setting = |name: &str| factory.conf_setting("smtp-server", name);
+        let setting_or_property = |name: &str, property_name: &str| {
+            Some(setting(name))
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| property(property_name))
+        };
+        let number = |name: &str, default: u64| {
+            setting(name)
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value > 0)
+                .unwrap_or(default)
+        };
+        let count = |name: &str, default: usize| usize::try_from(number(name, default as u64)).unwrap_or(default);
+        let port_text = setting_or_property("listen-port", "smtp_listen_port");
         if port_text.is_empty() {
             return Ok(None);
         }
         let port: u16 = port_text
             .parse()
             .map_err(|_| Error::new(format!("smtp_listen_port {port_text} is not a port number")))?;
-        let allowed_text = property("smtp_allowed_addresses");
+        let allowed_text = setting_or_property("allowed-addresses", "smtp_allowed_addresses");
         let allowed = allowed_text
             .split([',', ' '])
             .filter(|entry| !entry.trim().is_empty())
@@ -174,19 +177,19 @@ impl SmtpConfig {
                 "smtp_allowed_addresses is empty: name the edge gateway's addresses (127.0.0.1 for a gateway on this host)",
             ));
         }
-        let hostname = match property("smtp_hostname") {
+        let hostname = match setting_or_property("hostname", "smtp_hostname") {
             name if !name.is_empty() => name,
             _ => match property("webapp_http_host") {
                 name if !name.is_empty() => name,
                 _ => "localhost".to_string(),
             },
         };
-        let host = match property("smtp_listen_host") {
+        let host = match setting_or_property("listen-host", "smtp_listen_host") {
             host if !host.is_empty() => host,
             _ => "127.0.0.1".to_string(),
         };
         let list = |name: &str| -> Vec<String> {
-            property(name)
+            setting(name)
                 .split(',')
                 .map(str::trim)
                 .filter(|entry| !entry.is_empty())
@@ -198,24 +201,24 @@ impl SmtpConfig {
             port,
             hostname,
             allowed,
-            max_message: count("smtp_max_message_size", 25 * 1024 * 1024),
-            max_recipients: count("smtp_max_recipients", 100),
-            max_connections: count("smtp_max_connections", 20),
-            command_timeout: Duration::from_secs(number("smtp_command_timeout", 300)),
-            session_timeout: Duration::from_secs(number("smtp_session_timeout", 1800)),
+            max_message: count("max-message-size", 25 * 1024 * 1024),
+            max_recipients: count("max-recipients", 100),
+            max_connections: count("max-connections", 20),
+            command_timeout: Duration::from_secs(number("command-timeout", 300)),
+            session_timeout: Duration::from_secs(number("session-timeout", 1800)),
             proxy_protocol: matches!(
-                property("smtp_proxy_protocol").to_ascii_lowercase().as_str(),
+                setting("proxy-protocol").to_ascii_lowercase().as_str(),
                 "true" | "y" | "yes" | "1"
             ),
-            plus_separator: match property("smtp_plus_separator") {
+            plus_separator: match setting("plus-separator") {
                 none if none.eq_ignore_ascii_case("none") => String::new(),
                 characters => characters
                     .chars()
                     .filter(|ch| !ch.is_whitespace() && *ch != '@')
                     .collect(),
             },
-            spam_headers: list("smtp_spam_headers"),
-            authserv_id: property("smtp_authserv_id"),
+            spam_headers: list("spam-headers"),
+            authserv_id: setting_or_property("authserv-id", "smtp_authserv_id"),
         }))
     }
 
@@ -249,7 +252,7 @@ impl Drop for SmtpServer {
 ///
 /// Returns an error when the settings or the bind fail; the host logs it and starts without the listener.
 pub fn start(factory: &Arc<ExecutionContextFactory>) -> Result<Option<SmtpServer>, Error> {
-    let Some(config) = SmtpConfig::from_properties()? else {
+    let Some(config) = SmtpConfig::from_conf(factory)? else {
         return Ok(None);
     };
     let bind = if config.host.contains(':') && !config.host.starts_with('[') {
@@ -409,7 +412,7 @@ struct Shared<B> {
     sessions: AtomicU64,
 }
 
-/// A place among `smtp_max_connections`, given back on drop.
+/// A place among `smtp-server` `max-connections`, given back on drop.
 struct Slot<'a>(&'a AtomicUsize);
 
 impl Drop for Slot<'_> {
@@ -492,7 +495,7 @@ async fn connection<B: Backend, R, W>(
     }
     if shared.active.fetch_add(1, Ordering::SeqCst) >= config.max_connections {
         shared.active.fetch_sub(1, Ordering::SeqCst);
-        tracing::warn!("SMTP connection {id} from {peer_ip} refused: smtp_max_connections are open");
+        tracing::warn!("SMTP connection {id} from {peer_ip} refused: smtp-server max-connections are open");
         let _ = reply_now(
             &mut writer,
             config.command_timeout,
@@ -971,7 +974,7 @@ where
         };
         let Some(raw) = raw else {
             tracing::warn!(
-                "SMTP session {} refused a message from <{}>: larger than smtp_max_message_size ({} bytes)",
+                "SMTP session {} refused a message from <{}>: larger than smtp-server max-message-size ({} bytes)",
                 self.id,
                 clip(&transaction.mail_from),
                 self.config().max_message

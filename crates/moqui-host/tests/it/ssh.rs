@@ -131,15 +131,11 @@ fn exec(address: std::net::SocketAddr, username: &str, password: &str, command: 
 fn sftp_and_the_admin_shell_run_on_the_built_in_server() {
     let user_key = key(USER_SEED);
     let seed = base64::engine::general_purpose::STANDARD.encode(HOST_SEED);
-    let gate = crate::common::start_with_properties(
+    let gate = crate::common::start_with_conf_properties(
         "ssh",
         Some(&data(&user_key)),
-        &[
-            ("ssh_port", "0"),
-            ("ssh_host_key", &seed),
-            ("ssh_sftp_root", "dbresource://sftp"),
-            ("cluster_transport", "ssh"),
-        ],
+        r#"<ssh-server sftp-root="dbresource://sftp"/>"#,
+        &[("ssh_port", "0"), ("ssh_host_key", &seed), ("cluster_transport", "ssh")],
     );
     let address = gate.server.ssh_address().expect("the SSH server listens");
     let host = format!("127.0.0.1:{}", address.port());
@@ -194,7 +190,7 @@ fn sftp_and_the_admin_shell_run_on_the_built_in_server() {
     client.mkdirs("/outbox/SshOut").unwrap();
     client.close();
 
-    // Connections that never log in do not take the ssh_max_sessions (8) slots from one that does.
+    // Connections that never log in do not take the ssh-server max-sessions (8) slots from one that does.
     let idle: Vec<std::net::TcpStream> = (0..8).map(|_| std::net::TcpStream::connect(address).unwrap()).collect();
     let mut past_idle = SftpClient::new(&host, "john.doe", None).unwrap();
     past_idle.password("moqui").connect().unwrap();
@@ -630,21 +626,18 @@ mod apps {
 
 /// `apps` over SSH: a user with no SSH permission lands in it from `ssh user@host`; `ssh -t host apps` runs it; a window
 /// change redraws at the new size; `apps` at the shell prompt comes back to the prompt; a channel without a pty is told
-/// why not; and `tui_max_sessions_per_user` holds.
+/// why not; and `terminal` `max-sessions-per-user` holds.
 #[cfg(feature = "tui")]
 #[test]
 fn apps_runs_the_terminal_client_over_ssh() {
     use apps::{connect, exit_status, pty, read_until, send, text};
 
     let seed = base64::engine::general_purpose::STANDARD.encode(HOST_SEED);
-    let gate = crate::common::start_with_properties(
+    let gate = crate::common::start_with_conf_properties(
         "ssh_apps",
         Some(APPS_DATA),
-        &[
-            ("ssh_port", "0"),
-            ("ssh_host_key", &seed),
-            ("tui_max_sessions_per_user", "1"),
-        ],
+        r#"<terminal max-sessions-per-user="1"/>"#,
+        &[("ssh_port", "0"), ("ssh_host_key", &seed)],
     );
     let address = gate.server.ssh_address().expect("the SSH server listens");
     moqui_host::edge::block_on(async move {
@@ -661,13 +654,13 @@ fn apps_runs_the_terminal_client_over_ssh() {
         send(&channel, b"\x1bl").await;
         read_until(&mut channel, &mut seen, "The log is not offered", false).await.unwrap();
 
-        // A second session of the same user is past tui_max_sessions_per_user (1).
+        // A second session of the same user is past terminal max-sessions-per-user (1).
         let mut second = pty(&handle, 100, 40).await;
         second.exec(true, "apps").await.unwrap();
         let mut refused = Vec::new();
         assert_eq!(exit_status(&mut second, &mut refused).await, Some(1));
         assert!(
-            text(&refused).contains("tui_max_sessions_per_user"),
+            text(&refused).contains("max-sessions-per-user"),
             "{}",
             text(&refused)
         );
@@ -758,19 +751,16 @@ fn exec_with_input(address: std::net::SocketAddr, username: &str, command: &str,
 }
 
 /// `agent-apps`: a session the server keeps between one-command execs, found only by its own user, counted against
-/// `tui_max_sessions_per_user`; and the line mode, many commands over one exec.
+/// `terminal` `max-sessions-per-user`; and the line mode, many commands over one exec.
 #[cfg(feature = "tui")]
 #[test]
 fn agent_apps_answers_one_command_per_exec() {
     let seed = base64::engine::general_purpose::STANDARD.encode(HOST_SEED);
-    let gate = crate::common::start_with_properties(
+    let gate = crate::common::start_with_conf_properties(
         "ssh_agent",
         Some(APPS_DATA),
-        &[
-            ("ssh_port", "0"),
-            ("ssh_host_key", &seed),
-            ("tui_max_sessions_per_user", "1"),
-        ],
+        r#"<terminal max-sessions-per-user="1"/>"#,
+        &[("ssh_port", "0"), ("ssh_host_key", &seed)],
     );
     let address = gate.server.ssh_address().expect("the SSH server listens");
     let run = |user: &str, command: &str| exec_with_input(address, user, command, b"");
@@ -814,13 +804,13 @@ fn agent_apps_answers_one_command_per_exec() {
     let (out, status) = run("john.doe", &format!("agent-apps {id} dance"));
     assert_eq!(status, 1, "{out}");
 
-    // Another user does not find it, and john.doe's one session (tui_max_sessions_per_user) is in use.
+    // Another user does not find it, and john.doe's one session (terminal max-sessions-per-user) is in use.
     let (out, status) = run("apps.only", &format!("agent-apps {id} look"));
     assert_eq!(status, 2, "{out}");
     assert!(out.contains(&format!("no session {id}")), "{out}");
     let (out, status) = run("john.doe", "agent-apps open");
     assert_eq!(status, 2, "{out}");
-    assert!(out.contains("tui_max_sessions_per_user"), "{out}");
+    assert!(out.contains("max-sessions-per-user"), "{out}");
     // Any user who logged in by password may open one; shell.only has no SSH permission but the shell.
     let (out, status) = run("shell.only", "agent-apps open");
     assert_eq!(status, 0, "{out}");

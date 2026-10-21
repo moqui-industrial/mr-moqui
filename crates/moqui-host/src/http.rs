@@ -209,9 +209,12 @@ pub(crate) async fn listen(
     let https_text = https_address
         .map(|secure| format!(", HTTPS on {secure}"))
         .unwrap_or_default();
+    let notws = endpoint_enabled(&factory, "/notws");
+    let termws = cfg!(feature = "tui") && endpoint_enabled(&factory, "/termws");
     tracing::info!(
-        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, /notws, {}/elastic, /kibana, {}the screen dispatcher",
-        if cfg!(feature = "tui") { "/termws, " } else { "" },
+        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, {}{}/elastic, /kibana, {}the screen dispatcher",
+        if notws { "/notws, " } else { "" },
+        if termws { "/termws, " } else { "" },
         if cfg!(feature = "git") { "/git and " } else { "" }
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -223,21 +226,30 @@ pub(crate) async fn listen(
     let app = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
-        .route("/notws", get(notws::upgrade))
         .route("/elastic", any(search_proxy::elastic))
         .route("/elastic/", any(search_proxy::elastic))
         .route("/elastic/{*rest}", any(search_proxy::elastic))
         .route("/kibana", any(search_proxy::kibana))
         .route("/kibana/", any(search_proxy::kibana))
         .route("/kibana/{*rest}", any(search_proxy::kibana));
-    // The browser terminal, unless `webapp_terminal` is false; the account menu offers it when this property is set.
-    #[cfg(feature = "tui")]
-    let app = if moqui_lib::env::get_prop_or_env("webapp_terminal").trim() == "false" {
-        moqui_lib::env::set_property(crate::termws::ENDPOINT_PROPERTY, "");
-        app
+    // The notification socket, unless the webapp's `/notws` endpoint has enabled="false"; the html and qvt clients
+    // connect when the property is set.
+    let app = if notws {
+        moqui_lib::env::set_property(notws::ENDPOINT_PROPERTY, "/notws");
+        app.route("/notws", get(notws::upgrade))
     } else {
+        moqui_lib::env::set_property(notws::ENDPOINT_PROPERTY, "");
+        app
+    };
+    // The browser terminal, unless the `/termws` endpoint has enabled="false"; the account menu offers it when the
+    // property is set.
+    #[cfg(feature = "tui")]
+    let app = if termws {
         moqui_lib::env::set_property(crate::termws::ENDPOINT_PROPERTY, "/termws");
         app.route("/termws", get(crate::termws::upgrade))
+    } else {
+        moqui_lib::env::set_property(crate::termws::ENDPOINT_PROPERTY, "");
+        app
     };
     #[cfg(feature = "git")]
     let app = app.route("/git/{*rest}", any(crate::git_http::handle));
@@ -526,7 +538,7 @@ pub(crate) fn http_port(raw: &str) -> Result<u16, Error> {
 }
 
 async fn health(State(state): State<Arc<HttpState>>, ConnectInfo(peer): ConnectInfo<SocketAddr>) -> Response {
-    if !status_allowed(&peer.ip().to_canonical().to_string()) {
+    if !status_allowed(&state.factory.webapp_setting("webroot", "status-ips"), &peer.ip().to_canonical().to_string()) {
         return plain(404, "not found");
     }
     if readiness(&state.factory) {
@@ -537,7 +549,7 @@ async fn health(State(state): State<Arc<HttpState>>, ConnectInfo(peer): ConnectI
 }
 
 async fn metrics(State(state): State<Arc<HttpState>>, ConnectInfo(peer): ConnectInfo<SocketAddr>) -> Response {
-    if !status_allowed(&peer.ip().to_canonical().to_string()) {
+    if !status_allowed(&state.factory.webapp_setting("webroot", "status-ips"), &peer.ip().to_canonical().to_string()) {
         return plain(404, "not found");
     }
     let Some(stats) = pool_stats(&state.factory) else {
@@ -952,9 +964,14 @@ fn pool_stats(factory: &ExecutionContextFactory) -> Option<PoolStats> {
     Some(transactions.stats())
 }
 
-fn status_allowed(ip: &str) -> bool {
+/// False only when the `webroot` webapp's `endpoint` at `path` has `enabled="false"`.
+fn endpoint_enabled(factory: &ExecutionContextFactory, path: &str) -> bool {
+    factory.webapp_child_setting("webroot", &format!("endpoint {path}"), "enabled") != "false"
+}
+
+/// True when `ip` is in `configured` (the webapp's `status-ips`, comma-separated) or is a loopback address.
+fn status_allowed(configured: &str, ip: &str) -> bool {
     let mut allowed = Vec::new();
-    let configured = moqui_lib::env::get_prop_or_env("webapp_status_ips");
     for part in configured.split(',') {
         let part = part.trim();
         if !part.is_empty() {
@@ -1487,15 +1504,13 @@ mod tests {
 
     #[test]
     fn status_routes_allow_loopback_only() {
-        assert!(status_allowed("127.0.0.1"));
-        assert!(status_allowed("::1"));
-        assert!(status_allowed("0:0:0:0:0:0:0:1"));
+        assert!(status_allowed("", "127.0.0.1"));
+        assert!(status_allowed("", "::1"));
+        assert!(status_allowed("", "0:0:0:0:0:0:0:1"));
         // an IPv4 peer seen through a dual-stack socket is its IPv4 address
         let mapped: std::net::IpAddr = "::ffff:127.0.0.1".parse().unwrap();
-        assert!(status_allowed(&mapped.to_canonical().to_string()));
-        let configured = moqui_lib::env::get_prop_or_env("webapp_status_ips");
-        if !configured.split(',').any(|part| part.trim() == "203.0.113.5") {
-            assert!(!status_allowed("203.0.113.5"));
-        }
+        assert!(status_allowed("", &mapped.to_canonical().to_string()));
+        assert!(!status_allowed("127.0.0.1", "203.0.113.5"));
+        assert!(status_allowed("10.0.0.9, 203.0.113.5", "203.0.113.5"));
     }
 }

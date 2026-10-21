@@ -972,7 +972,7 @@ fn tls_config() -> Result<Arc<rustls::ClientConfig>, Error> {
     for der in extra_ca_certificates()? {
         roots
             .add(der)
-            .map_err(|err| Error::new(format!("email_tls_ca_file: {err}")))?;
+            .map_err(|err| Error::new(format!("tls-ca-file: {err}")))?;
     }
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider)

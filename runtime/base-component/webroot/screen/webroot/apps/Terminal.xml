@@ -14,7 +14,7 @@ along with this software (see the LICENSE.md file). If not, see
 -->
 <!-- The browser terminal (plans/Screen-TUI-Impl.md 4.4): the terminal client of `moqui tui` and SSH apps, in xterm.js on the
     /termws socket, as the signed in user. The account menu's Terminal UI opens it, for every user, while the host serves the
-    socket (webapp_terminal). Terminal.qvue next to this file is the page. In the terminal client itself it says so. -->
+    socket (the /termws endpoint of the webapp in the conf). Terminal.qvue next to this file is the page. In the terminal client itself it says so. -->
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         require-authentication="true" default-menu-title="Terminal UI" default-menu-include="false" render-modes="qvue,tui,html,qvt" server-static="qvue">
     <widgets>

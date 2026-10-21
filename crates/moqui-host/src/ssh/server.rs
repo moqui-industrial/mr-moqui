@@ -21,16 +21,16 @@
 //! needs a second factor cannot log in here), or a public key whose fingerprint is an active `UserSshKey` of that
 //! user. A client with neither (keyboard-interactive, which OpenSSH tries after its keys) is let in with no user and no
 //! questions: it gets the terminal client's login dialog, as `moqui tui` shows it, and nothing else
-//! (`ssh_login_dialog`, on by default).
+//! (`ssh-server` `login-dialog`, on by default).
 //!
 //! `apps`, the terminal client (`crate::term`), needs a pty. It is the whole session of a user without `SSH_SHELL`
 //! and of one who logged in through the dialog, the `exec` command `apps` (`ssh -t host apps`), and a command at the
 //! shell's prompt. A user who logged in by key or password with `SSH_SHELL` gets the admin shell ([`super::shell`]),
-//! for `shell` and `exec`. The `sftp` subsystem needs `SSH_SFTP` and serves `ssh_sftp_root`. Git needs `SSH_GIT`, and
-//! a key unless `ssh_git_password_auth` is true. `agent-apps` (`super::agent`) is the terminal client for a program,
+//! for `shell` and `exec`. The `sftp` subsystem needs `SSH_SFTP` and serves `ssh-server` `sftp-root`. Git needs `SSH_GIT`, and
+//! a key unless `ssh-server` `git-password-auth` is true. `agent-apps` (`super::agent`) is the terminal client for a program,
 //! on an `exec` channel with no pty, one command line at a time, for a user logged in by key or password.
 //!
-//! At most `ssh_max_sessions` logged-in sessions are open at once; one with no user counts too. A connection that has
+//! At most `ssh-server` `max-sessions` logged-in sessions are open at once; one with no user counts too. A connection that has
 //! not logged in has [`PREAUTH_TIMEOUT`] to do so, and at most [`MAX_PREAUTH`] such connections wait at once. One let in
 //! with no user is closed when its dialog has not logged in within `crate::term::LOGIN_WAIT`.
 
@@ -58,7 +58,7 @@ const DEFAULT_MAX_FILE: usize = 256 * 1024 * 1024;
 pub(super) const IDLE: Duration = Duration::from_secs(600);
 /// How long a connection has from accept to a successful login.
 const PREAUTH_TIMEOUT: Duration = Duration::from_secs(30);
-/// Connections that have not logged in yet, at once; one more is closed. They do not count toward `ssh_max_sessions`.
+/// Connections that have not logged in yet, at once; one more is closed. They do not count toward `ssh-server` `max-sessions`.
 const MAX_PREAUTH: usize = 16;
 /// The longest admin shell line, and the longest `js` block.
 const MAX_LINE: usize = 1024 * 1024;
@@ -91,7 +91,7 @@ struct Shared {
     factory: std::sync::Weak<ExecutionContextFactory>,
     root: String,
     max_file: usize,
-    /// The live terminal sessions of the process, against `tui_max_sessions`.
+    /// The live terminal sessions of the process, against `terminal` `max-sessions`.
     #[cfg(feature = "tui")]
     apps: Arc<crate::term::Sessions>,
     /// The sessions `agent-apps open` started, kept between its commands.
@@ -99,9 +99,12 @@ struct Shared {
     agents: Arc<super::agent::AgentSessions>,
     /// The cluster topics received, shared with the HTTPS cluster listener.
     cluster_posts: Arc<std::sync::Mutex<Vec<String>>>,
-    /// Keyboard-interactive lets a client in with no user, for the login dialog (`ssh_login_dialog`).
+    /// Keyboard-interactive lets a client in with no user, for the login dialog (`ssh-server` `login-dialog`).
     #[cfg_attr(not(feature = "tui"), allow(dead_code))]
     dialog: bool,
+    /// Git over SSH on a connection that logged in by password (`ssh-server` `git-password-auth`).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    git_password_auth: bool,
 }
 
 /// The host key from `ssh_host_key`: an OpenSSH private key, or the base64 of a 32-byte Ed25519 seed.
@@ -129,25 +132,43 @@ pub fn host_key(text: &str) -> Result<PrivateKey, Error> {
     Ok(PrivateKey::from(keypair))
 }
 
-/// The host and port the SSH server binds: `ssh_host` (default `127.0.0.1`) and `ssh_port`. None while `ssh_port` is
-/// empty, which leaves the server off.
+/// The host and port the SSH server binds by the properties `ssh_host` (default `127.0.0.1`) and `ssh_port`, for the
+/// port check before the conf is read. None while `ssh_port` is empty, which leaves the server off.
 pub(crate) fn listen_target() -> Result<Option<(String, u16)>, Error> {
-    let port_text = moqui_lib::env::get_prop_or_env("ssh_port");
+    listen_target_of(
+        &moqui_lib::env::get_prop_or_env("ssh_port"),
+        &moqui_lib::env::get_prop_or_env("ssh_host"),
+    )
+}
+
+/// The host and port of `port_text` and `host_text` (default `127.0.0.1`); None when `port_text` is empty.
+fn listen_target_of(port_text: &str, host_text: &str) -> Result<Option<(String, u16)>, Error> {
     let port_text = port_text.trim();
     if port_text.is_empty() {
         return Ok(None);
     }
     let port: u16 = port_text
         .parse()
-        .map_err(|_| Error::new(format!("ssh_port {port_text} is not a port number")))?;
-    let host = match moqui_lib::env::get_prop_or_env("ssh_host").trim() {
+        .map_err(|_| Error::new(format!("ssh-server port {port_text} is not a port number")))?;
+    let host = match host_text.trim() {
         "" => "127.0.0.1".to_string(),
         other => other.to_string(),
     };
     Ok(Some((host, port)))
 }
 
-/// Start the server when `ssh_port` is set (`0` binds an ephemeral port).
+/// An attribute of the conf's `ssh-server`, or the property `property` when the conf leaves it out or it expands to
+/// nothing.
+fn setting(factory: &ExecutionContextFactory, name: &str, property: &str) -> String {
+    let configured = factory.conf_setting("ssh-server", name);
+    if configured.is_empty() {
+        moqui_lib::env::get_prop_or_env(property).trim().to_string()
+    } else {
+        configured
+    }
+}
+
+/// Start the server when the conf's `ssh-server` `port` (`ssh_port`) is set (`0` binds an ephemeral port).
 ///
 /// # Errors
 ///
@@ -159,11 +180,12 @@ pub fn start(
 ) -> Result<Option<SshServer>, Error> {
     moqui_lib::env::set_property(moqui_core::cluster::SSH_FINGERPRINT_PROPERTY, "");
     moqui_lib::env::set_property(moqui_core::cluster::SSH_ADDRESS_PROPERTY, "");
-    let Some((host, port)) = listen_target()? else {
+    let Some((host, port)) = listen_target_of(&setting(factory, "port", "ssh_port"), &setting(factory, "host", "ssh_host"))?
+    else {
         return Ok(None);
     };
-    let key = host_key(&moqui_lib::env::get_prop_or_env("ssh_host_key"))?;
-    let root = match moqui_lib::env::get_prop_or_env("ssh_sftp_root").trim() {
+    let key = host_key(&setting(factory, "host-key", "ssh_host_key"))?;
+    let root = match factory.conf_setting("ssh-server", "sftp-root").as_str() {
         "" => "runtime://sftp".to_string(),
         other => other.to_string(),
     };
@@ -171,12 +193,13 @@ pub fn start(
         let relative = root.trim_start_matches("runtime://").trim_start_matches("runtime:");
         let _ = std::fs::create_dir_all(runtime_dir.join(relative.trim_start_matches('/')));
     }
-    let max_sessions = number_property("ssh_max_sessions", DEFAULT_MAX_SESSIONS);
-    let max_file = number_property("ssh_sftp_max_file", DEFAULT_MAX_FILE);
+    let max_sessions = positive(factory.conf_number("ssh-server", "max-sessions", DEFAULT_MAX_SESSIONS), DEFAULT_MAX_SESSIONS);
+    let max_file = positive(factory.conf_number("ssh-server", "sftp-max-file", DEFAULT_MAX_FILE), DEFAULT_MAX_FILE);
     let fingerprint = key.public_key().fingerprint(HashAlg::Sha256).to_string();
     // "none" is not offered, so a client tries its keys first; keyboard-interactive, which OpenSSH tries next, is the
     // login dialog, and only with the terminal client.
-    let dialog = cfg!(feature = "tui") && moqui_lib::env::get_prop_or_env("ssh_login_dialog").trim() != "false";
+    let dialog = cfg!(feature = "tui") && factory.conf_flag("ssh-server", "login-dialog", true);
+    let git_password_auth = factory.conf_flag("ssh-server", "git-password-auth", false);
     let methods: &[MethodKind] = if dialog {
         &[
             MethodKind::PublicKey,
@@ -213,6 +236,7 @@ pub fn start(
         agents: Arc::default(),
         cluster_posts,
         dialog,
+        git_password_auth,
     });
     crate::edge::handle().spawn(accept_loop(listener, config, shared, watch, max_sessions));
     *factory
@@ -227,13 +251,13 @@ pub fn start(
     Ok(Some(SshServer { address, shutdown }))
 }
 
-pub(super) fn number_property(name: &str, default: usize) -> usize {
-    moqui_lib::env::get_prop_or_env(name)
-        .trim()
-        .parse::<usize>()
-        .ok()
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
+/// `value`, or `default` when it is 0.
+fn positive(value: usize, default: usize) -> usize {
+    if value == 0 {
+        default
+    } else {
+        value
+    }
 }
 
 /// The connections counted against the two limits.
@@ -271,7 +295,7 @@ impl Slot {
         })
     }
 
-    /// Trade the pre-auth slot for a session. False when `ssh_max_sessions` are open.
+    /// Trade the pre-auth slot for a session. False when `ssh-server` `max-sessions` are open.
     fn log_in(&self) -> bool {
         if self.session.load(Ordering::Acquire) {
             return true;
@@ -421,7 +445,7 @@ struct Connection {
     /// session with no user.
     #[cfg_attr(not(feature = "tui"), allow(dead_code))]
     dialog_used: bool,
-    /// The user logged in by password, not a key: git is refused unless `ssh_git_password_auth`.
+    /// The user logged in by password, not a key: git is refused unless `ssh-server` `git-password-auth`.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     by_password: bool,
     /// A cluster peer logged in with the cluster key: it may open `cluster <topic>` channels and nothing else.
@@ -497,7 +521,7 @@ impl Connection {
         let Permissions { sftp, shell, git } = permissions;
         if !self.slot.log_in() {
             tracing::warn!(
-                "SSH login of {username} from {} refused: ssh_max_sessions {} are open",
+                "SSH login of {username} from {} refused: ssh-server max-sessions {} are open",
                 self.peer,
                 self.slot.counts.max_sessions
             );
@@ -682,7 +706,7 @@ impl russh::server::Handler for Connection {
             if super::cluster::is_cluster_key(public_key) {
                 if !self.slot.log_in() {
                     tracing::warn!(
-                        "cluster peer from {} refused: ssh_max_sessions {} are open",
+                        "cluster peer from {} refused: ssh-server max-sessions {} are open",
                         self.peer,
                         self.slot.counts.max_sessions
                     );
@@ -733,7 +757,7 @@ impl russh::server::Handler for Connection {
         }
         if !self.slot.log_in() {
             tracing::warn!(
-                "SSH login dialog for {user} from {} refused: ssh_max_sessions {} are open",
+                "SSH login dialog for {user} from {} refused: ssh-server max-sessions {} are open",
                 self.peer,
                 self.slot.counts.max_sessions
             );
@@ -855,9 +879,9 @@ impl russh::server::Handler for Connection {
                 return session.channel_failure(channel);
             };
             // Git hosting opens the server to every developer, and keys are not guessed.
-            if self.by_password && moqui_lib::env::get_prop_or_env("ssh_git_password_auth").trim() != "true" {
+            if self.by_password && !self.shared.git_password_auth {
                 tracing::warn!(
-                    "SSH git of {username} from {} refused: git over SSH takes a key (ssh_git_password_auth)",
+                    "SSH git of {username} from {} refused: git over SSH takes a key (ssh-server git-password-auth)",
                     self.peer
                 );
                 return session.channel_failure(channel);
@@ -1272,7 +1296,7 @@ mod tests {
         assert!(waiting[0].log_in());
         // The login gave its pre-auth slot back, and took the one session.
         let next = Slot::preauth(&counts).unwrap();
-        assert!(!next.log_in(), "past ssh_max_sessions");
+        assert!(!next.log_in(), "past ssh-server max-sessions");
         drop(waiting);
         assert!(next.log_in());
         drop(next);

@@ -789,8 +789,10 @@ fn settings(conf_text: &str) -> Result<Settings, Error> {
     })
 }
 
+/// An attribute as a number, `${}` expanded; `default` when it is missing, empty or not a number.
 fn usize_attr(node: &MNode, name: &str, default: usize) -> usize {
     node.attribute(name)
+        .map(|raw| moqui_lib::env::expand(&raw).unwrap_or(raw))
         .and_then(|text| text.trim().parse().ok())
         .unwrap_or(default)
 }
@@ -1299,9 +1301,6 @@ mod tests {
 
     #[test]
     fn a_script_on_a_service_worker_has_no_default_limit() {
-        if !moqui_lib::env::get_prop_or_env("script_timeout").is_empty() {
-            return;
-        }
         let ctx = crate::context::ExecutionContextFactory::test_context_with("", ServicePools::bounded(1, 1));
         let left = ctx
             .factory()

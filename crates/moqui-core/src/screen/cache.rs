@@ -17,7 +17,7 @@
 //! One `ScreenFacade` lives on each factory as an extension. Definitions sit in a `moqui_lib`
 //! `MCache` keyed by location. A cached definition is used while every file it was read from
 //! still has the modified time it had at load. The files are checked at most once per check
-//! interval (`screen_check_interval_ms`, default 2 s), and never when `instance_purpose` is
+//! interval (`screen-facade` `check-interval-ms`, default 2 s), and never when `instance_purpose` is
 //! `production`, as Java's `screen.location` cache returns a hit without looking at the file.
 //!
 //! Resolved paths (`ScreenUrlInfo`) are kept in a second cache, as Java's `screen.url`, while the
@@ -361,7 +361,7 @@ impl ScreenFacade {
                     .max_entries(MAX_URL_ENTRIES)
                     .expire_creation_ms(ICON_EXPIRE_MS),
             ),
-            check_interval_ms: AtomicI64::new(configured_check_interval()),
+            check_interval_ms: AtomicI64::new(configured_check_interval(factory)),
             loading: Mutex::new(HashMap::new()),
             shell_providers: Mutex::new(HashMap::new()),
         }
@@ -659,10 +659,9 @@ impl ScreenFacade {
     }
 }
 
-/// `screen_check_interval_ms` when set, else never in production and two seconds otherwise.
-fn configured_check_interval() -> i64 {
-    let configured = moqui_lib::env::get_prop_or_env("screen_check_interval_ms");
-    if let Ok(millis) = configured.trim().parse::<i64>() {
+/// The conf's `screen-facade` `check-interval-ms` when set, else never in production and two seconds otherwise.
+fn configured_check_interval(factory: &ExecutionContextFactory) -> i64 {
+    if let Ok(millis) = factory.conf_setting("screen-facade", "check-interval-ms").parse::<i64>() {
         return millis;
     }
     if crate::web::is_production() {

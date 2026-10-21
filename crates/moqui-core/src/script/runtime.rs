@@ -289,23 +289,25 @@ pub(crate) fn script_time_remaining() -> Option<Duration> {
 const DEFAULT_REQUEST_TIMEOUT: u64 = 300;
 
 /// Mark this thread a request worker: a script on it that runs outside a transaction is limited to the request
-/// timeout unless `script_timeout` says otherwise.
+/// timeout unless `resource-facade` `script-timeout` says otherwise.
 pub(crate) fn mark_request_thread() {
     REQUEST_THREAD.with(|flag| flag.set(true));
     SCRIPT_LIMIT.with(|cell| cell.set(None));
 }
 
-/// The seconds a script may run when no transaction limits it, read once per thread. `script_timeout` when set, for
-/// every thread; else `webapp_request_timeout` on a request worker, and no limit on a service, job, or scheduler
-/// thread, which run batch work outside a transaction as Java does. 0 is no limit.
+/// The seconds a script may run when no transaction limits it, read once per thread. The conf's `resource-facade`
+/// `script-timeout` when set, for every thread; else the webapp's `requests` `request-timeout`
+/// (`webapp_request_timeout`) on a request worker, and no limit on a service, job, or scheduler thread, which run batch
+/// work outside a transaction as Java does. 0 is no limit.
 fn default_script_limit() -> Option<Duration> {
     if let Some(limit) = SCRIPT_LIMIT.with(Cell::get) {
         return limit;
     }
+    let factory = crate::context::ExecutionContext::with_current(|ec| std::sync::Arc::clone(ec.factory()));
     let limit = script_limit_for(
-        &moqui_lib::env::get_prop_or_env("script_timeout"),
+        &crate::resource::setting("script-timeout"),
         REQUEST_THREAD.with(Cell::get),
-        &moqui_lib::env::get_prop_or_env("webapp_request_timeout"),
+        &crate::web::protection_setting(factory.as_deref(), "requests", "request-timeout", "webapp_request_timeout"),
     );
     SCRIPT_LIMIT.with(|cell| cell.set(Some(limit)));
     limit
@@ -2250,7 +2252,7 @@ mod tests {
     fn a_loop_outside_a_transaction_stops_at_the_default_limit() -> Result<(), Error> {
         use std::time::{Duration, Instant};
         clear_context_stack();
-        // As a `script_timeout` of 200 ms would set it.
+        // As a `resource-facade` `script-timeout` of 200 ms would set it.
         super::SCRIPT_LIMIT.with(|limit| limit.set(Some(Some(Duration::from_millis(200)))));
         let started = Instant::now();
         let err = run_script("while (true) {}").expect_err("interrupted");

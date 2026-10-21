@@ -48,7 +48,7 @@ Java writes every history row whole and reads an `isDiff="Y"` row as null, so a 
 the delta versions as missing (the current text is unaffected). Rows loaded from data files with `isDiff="N"` read as
 before.
 
-A file over `dbresource_blob_threshold` bytes (64 KiB) is a content blob (`moqui.resource.ContentBlob`, by its
+A file over `resource-facade` `dbresource-blob-threshold` bytes (64 KiB) is a content blob (`moqui.resource.ContentBlob`, by its
 SHA-256, in 1 MiB `ContentBlobChunk` rows; [Git-Hosting](Git-Hosting.md#content-blobs)) named by `DbResourceFile.blobId`,
 with `fileData` empty: the same bytes in two files are stored once, a response streams it (with `Range`), and a past
 version keeps its blob rather than a copy. `fileSize` gives its size without reading it. `migrate#DbResourceBlobs`

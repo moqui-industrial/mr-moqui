@@ -98,7 +98,7 @@ pub(crate) use validate::clean_safe_html;
 pub use validate::validate;
 pub(crate) use validate::{auto_entity_name, auto_fields};
 
-/// Start the mail client's IMAP IDLE workers (`email_idle_enabled`, on the scheduler's tick). The host calls it once,
+/// Start the mail client's IMAP IDLE workers (`email-client` `idle-enabled`, on the scheduler's tick). The host calls it once,
 /// after the entity facade is installed; a host built without mail does nothing.
 pub fn start_mail_idle(factory: &std::sync::Arc<crate::context::ExecutionContextFactory>) {
     mail::start_idle(factory);
