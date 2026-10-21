@@ -455,6 +455,14 @@ fn fixed_key(press: &KeyPress) -> bool {
     matches!(press.key, Key::Escape | Key::Enter | Key::Tab | Key::BackTab) && !press.alt && !press.ctrl
 }
 
+impl KeyPress {
+    /// A chord as the theme's key bindings and the agent mode name it: `F10`, `Enter`, `Ctrl+K`, `Alt+M`, `Shift+Tab`,
+    /// a single character. Case does not matter in the names.
+    pub fn parse(chord: &str) -> Option<Self> {
+        parse_chord(chord)
+    }
+}
+
 fn parse_chord(chord: &str) -> Option<KeyPress> {
     let mut alt = false;
     let mut ctrl = false;

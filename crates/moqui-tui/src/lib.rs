@@ -70,6 +70,6 @@ pub use state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, 
 pub use theme::{Depth, Glyph, Role, Theme};
 #[cfg(feature = "ui")]
 pub use ui::{
-    from_revue, render_text, run_local, run_session, snapshot, AppView, LocalOptions, Screen, SessionEvent,
-    SessionOptions, ENTER, LEAVE,
+    from_revue, render_text, run_local, run_session, snapshot, Agent, AgentAnswer, AppView, LocalOptions, Screen,
+    SessionEvent, SessionOptions, AGENT_HELP, ENTER, LEAVE,
 };

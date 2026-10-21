@@ -715,3 +715,112 @@ fn apps_runs_the_terminal_client_over_ssh() {
     })
     .unwrap();
 }
+
+/// One exec with `input` written to its stdin (then end of input), as `ssh host command < input`: the output and the
+/// exit status.
+#[cfg(feature = "tui")]
+fn exec_with_input(address: std::net::SocketAddr, username: &str, command: &str, input: &[u8]) -> (String, u32) {
+    use apps::{connect, exit_status};
+    let (username, command, input) = (username.to_string(), command.to_string(), input.to_vec());
+    moqui_host::edge::block_on(async move {
+        let handle = connect(address, &username, "moqui").await.expect("logs in");
+        let mut channel = handle.channel_open_session().await.unwrap();
+        channel.exec(true, command).await.unwrap();
+        if !input.is_empty() {
+            channel.data(&input[..]).await.unwrap();
+        }
+        channel.eof().await.unwrap();
+        let mut seen = Vec::new();
+        let status = exit_status(&mut channel, &mut seen).await.unwrap_or(255);
+        (String::from_utf8_lossy(&seen).into_owned(), status)
+    })
+    .unwrap()
+}
+
+/// `agent-apps`: a session the server keeps between one-command execs, found only by its own user, counted against
+/// `tui_max_sessions_per_user`; and the line mode, many commands over one exec.
+#[cfg(feature = "tui")]
+#[test]
+fn agent_apps_answers_one_command_per_exec() {
+    let seed = base64::engine::general_purpose::STANDARD.encode(HOST_SEED);
+    let gate = crate::common::start_with_properties(
+        "ssh_agent",
+        Some(APPS_DATA),
+        &[
+            ("ssh_port", "0"),
+            ("ssh_host_key", &seed),
+            ("tui_max_sessions_per_user", "1"),
+        ],
+    );
+    let address = gate.server.ssh_address().expect("the SSH server listens");
+    let run = |user: &str, command: &str| exec_with_input(address, user, command, b"");
+
+    let (out, status) = run(
+        "john.doe",
+        "agent-apps open /apps/system/Security/UserAccount/UserAccountList",
+    );
+    assert_eq!(status, 0, "{out}");
+    let id = out
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("session "))
+        .unwrap_or_else(|| panic!("{out}"))
+        .to_string();
+    assert!(
+        out.contains("path /apps/system/Security/UserAccount/UserAccountList"),
+        "{out}"
+    );
+    assert!(out.contains("john.doe") && out.trim_end().ends_with("--- ok"), "{out}");
+    assert!(!out.contains("Tried to render subscreen"), "{out}");
+
+    // The find dialog, its Username field by label, and Enter: one exec each.
+    let (out, status) = run("john.doe", &format!("agent-apps {id} key f"));
+    assert_eq!(status, 0, "{out}");
+    assert!(out.contains("overlay find"), "{out}");
+    let (out, status) = run("john.doe", &format!("agent-apps {id} set Username john"));
+    assert_eq!(status, 0, "{out}");
+    let (out, status) = run("john.doe", &format!("agent-apps {id} key Enter"));
+    assert_eq!(status, 0, "{out}");
+    assert!(out.contains("EX_JOHN_DOE") && !out.contains("bob.developer"), "{out}");
+    let (out, status) = run("john.doe", &format!("agent-apps {id} elements --json"));
+    assert_eq!(status, 0, "{out}");
+    let value: serde_json::Value = serde_json::from_str(out.trim()).unwrap_or_else(|err| panic!("{err}: {out}"));
+    assert!(
+        value["elements"]
+            .as_array()
+            .is_some_and(|elements| !elements.is_empty()),
+        "{out}"
+    );
+    let (out, status) = run("john.doe", &format!("agent-apps {id} dance"));
+    assert_eq!(status, 1, "{out}");
+
+    // Another user does not find it, and john.doe's one session (tui_max_sessions_per_user) is in use.
+    let (out, status) = run("apps.only", &format!("agent-apps {id} look"));
+    assert_eq!(status, 2, "{out}");
+    assert!(out.contains(&format!("no session {id}")), "{out}");
+    let (out, status) = run("john.doe", "agent-apps open");
+    assert_eq!(status, 2, "{out}");
+    assert!(out.contains("tui_max_sessions_per_user"), "{out}");
+    // A user without SSH_APPS is told why.
+    let (out, status) = run("shell.only", "agent-apps open");
+    assert_eq!(status, 2, "{out}");
+    assert!(out.contains("SSH_APPS"), "{out}");
+
+    // close frees the slot.
+    let (out, status) = run("john.doe", &format!("agent-apps {id} close"));
+    assert_eq!(status, 0, "{out}");
+    let (out, status) = run("john.doe", &format!("agent-apps {id} look"));
+    assert_eq!(status, 2, "{out}");
+
+    // The line mode: the first screen, then an answer per line, over one exec.
+    let (out, status) = exec_with_input(
+        address,
+        "john.doe",
+        "agent-apps",
+        b"go /apps/system/Security/UserAccount/UserAccountList\nfocus Create User Account\nclose\n",
+    );
+    assert_eq!(status, 0, "{out}");
+    assert_eq!(out.matches("--- ok").count(), 4, "{out}");
+    assert!(out.contains("focus dialog"), "{out}");
+    assert!(out.trim_end().ends_with("closed\n--- ok"), "{out}");
+}

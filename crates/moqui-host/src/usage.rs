@@ -76,7 +76,7 @@ Other conf properties are environment variables with underscore names.
 ";
 
 const TUI: &str = "\
-moqui tui [--path PATH] [--user NAME] [--serve] [--ascii] [--no-color] [--snapshot PATH [--size WxH]]
+moqui tui [--path PATH] [--user NAME] [--serve] [--ascii] [--no-color] [--snapshot PATH [--size WxH]] [--agent]
     The apps in this terminal (the tui render mode), on this runtime and in this process. No port is
     opened unless --serve, and nothing is written to stderr: the log files and the log pane (Alt+L) get
     the log. It asks for a login, as the browser does. F1 lists the keys; docs/TUI.md has the rest.
@@ -87,10 +87,14 @@ moqui tui [--path PATH] [--user NAME] [--serve] [--ascii] [--no-color] [--snapsh
   --ascii            Plain ASCII for borders and symbols (also when TERM is linux or vt100).
   --no-color         Monochrome: reverse video and underline only (also when NO_COLOR is set).
   --snapshot PATH    Print the screen at PATH as text and exit, at --size (default 180x50).
+  --agent            For a program: read command lines on stdin and answer each with the screen as text (look,
+                     key, type, go, focus, set, do, find, elements, help, close), at --size (default 120x40).
+                     Over SSH the same is `agent-apps`; docs/TUI.md, For agents.
 
   moqui tui
   moqui tui --user john.doe --path /apps/gallery/List
   moqui tui --snapshot /apps/gallery/Detail --size 100x40
+  moqui tui --agent --user john.doe
 ";
 
 const LOAD: &str = "\
@@ -519,7 +523,7 @@ pub fn command_usage(command: &str) -> Error {
         "types" => "moqui types [--out dir]",
         "test" => "moqui test [component ...] [options]",
         "tui" => {
-            "moqui tui [--path PATH] [--user NAME] [--serve] [--ascii] [--no-color] [--snapshot PATH [--size WxH]]"
+            "moqui tui [--path PATH] [--user NAME] [--serve] [--ascii] [--no-color] [--snapshot PATH [--size WxH]] [--agent]"
         }
         "help" => "moqui help [command]",
         "version" => "moqui version",

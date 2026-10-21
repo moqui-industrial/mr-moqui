@@ -15,6 +15,7 @@
 //! The Revue view (section 3.2). [`AppView`] holds the session, the theme and the breakpoints, and its `render` draws the
 //! frame and the canvas from them every frame: the session owns the state, the view owns none but the canvas scroll.
 
+mod agent;
 mod draw;
 mod encode;
 mod overlays;
@@ -35,6 +36,7 @@ use crate::model::ScreenModel;
 use crate::session::Session;
 use crate::theme::Theme;
 
+pub use agent::{Agent, AgentAnswer, AGENT_HELP};
 pub use encode::{Screen, ENTER, LEAVE};
 pub use run::{from_revue, run_local, snapshot, LocalOptions};
 pub use session_loop::{run_session, SessionEvent, SessionOptions};

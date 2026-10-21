@@ -92,7 +92,7 @@ impl Sessions {
     }
 
     /// A place for one more session of `username`, or why there is none. Drop gives it back.
-    fn take(self: &Arc<Self>, username: &str) -> Result<SessionSlot, String> {
+    pub(super) fn take(self: &Arc<Self>, username: &str) -> Result<SessionSlot, String> {
         let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
         if live.values().sum::<usize>() >= self.max {
             return Err(format!("{} terminal sessions are open (tui_max_sessions)", self.max));
@@ -112,7 +112,7 @@ impl Sessions {
     }
 }
 
-struct SessionSlot {
+pub(super) struct SessionSlot {
     sessions: Arc<Sessions>,
     username: String,
 }

@@ -144,19 +144,7 @@ fn rule(paint: &mut Painter, row: u16, width: u16, framed: &Frame, joint: Joint)
 fn title_line(paint: &mut Painter, session: &Session, framed: &Frame, clock: Option<&str>) {
     let width = usize::from(framed.terminal);
     let crumb = format!(" {} ", paint.theme.glyph(Glyph::Crumb));
-    let mut names: Vec<String> = session.model().screen.path_list.iter().skip(1).cloned().collect();
-    if names.is_empty() {
-        names = session
-            .path()
-            .split('/')
-            .filter(|name| !name.is_empty())
-            .map(str::to_string)
-            .collect();
-    }
-    let title = &session.model().screen.title;
-    if !title.is_empty() && names.last().is_none_or(|last| last != title) {
-        names.push(title.clone());
-    }
+    let names = session.crumbs();
     let mut left = String::from(" ");
     if framed.drawer == 0 {
         left.push_str(paint.theme.glyph(Glyph::Menu));

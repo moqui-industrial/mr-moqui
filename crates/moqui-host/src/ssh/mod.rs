@@ -16,6 +16,8 @@
 //! built-in server with its SFTP subsystem and admin shell.
 
 #[cfg(feature = "tui")]
+mod agent;
+#[cfg(feature = "tui")]
 mod apps;
 pub mod client;
 pub mod cluster;
