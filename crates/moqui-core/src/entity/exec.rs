@@ -87,6 +87,16 @@ pub(crate) fn execute_deferred_tx(
     tx.with_connection(|conn| trace(sql, || conn.execute_deferred(sql, params, zero_rows)))
 }
 
+/// See [`DbConnection::execute_deferred_row`].
+pub(crate) fn execute_deferred_row_tx(
+    tx: &TransactionManager,
+    sql: &str,
+    params: Vec<Value>,
+    key: u64,
+) -> Result<(), Error> {
+    tx.with_connection(|conn| trace(sql, || conn.execute_deferred_row(sql, params, key)))
+}
+
 pub(crate) fn query_conn(conn: &mut dyn DbConnection, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
     trace(sql, || conn.query(sql, params))
 }

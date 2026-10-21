@@ -877,6 +877,7 @@ mod cluster {
             stream_requires_a_transaction(&mut conn);
             stream_reads_every_inserted_row(&mut conn);
             a_refused_stream_fails_at_open_and_a_closed_one_reopens(&mut conn);
+            deferred_rows_go_out_as_statements_of_many_rows(&mut conn);
             rollback_ends_an_aborted_transaction_with_an_open_stream(&mut conn);
             statement_timeout_is_never_lifted_by_rounding(&mut conn);
             a_pipelined_begin_starts_the_transaction_its_first_statement_runs_in(&mut conn);
@@ -1438,6 +1439,71 @@ mod cluster {
             assert_eq!(count, 51);
             conn.close_stream().unwrap();
             conn.commit().unwrap();
+        }
+
+        /// Rows of one upsert go out several to a statement. A key the held rows already have goes after them (one upsert
+        /// cannot change a row twice), another statement or a query sends them first, a rollback drops them, and a
+        /// row the server refuses fails the commit.
+        fn deferred_rows_go_out_as_statements_of_many_rows(conn: &mut PostgresConn) {
+            conn.execute("CREATE TABLE batched (id text PRIMARY KEY, n int NOT NULL)", &[])
+                .unwrap();
+            conn.execute("CREATE TABLE beside (id text PRIMARY KEY)", &[]).unwrap();
+            let upsert = "INSERT INTO batched (id, n) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n";
+            let key = |id: &str| {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                id.hash(&mut hasher);
+                hasher.finish()
+            };
+            let row = |conn: &mut PostgresConn, id: &str, n: i32| {
+                conn.execute_deferred_row(upsert, vec![Value::string(id), Value::I32(n)], key(id))
+                    .unwrap();
+            };
+            conn.begin().unwrap();
+            for n in 0..125 {
+                row(conn, &format!("r{n}"), n);
+                if n == 60 {
+                    // The same key again, and a row of another statement between.
+                    row(conn, "r7", 700);
+                    conn.execute_deferred_row("INSERT INTO beside (id) VALUES (?)", vec![Value::string("b")], 1)
+                        .unwrap();
+                }
+            }
+            // A query sends what is held first, and sees it.
+            let counted = conn.query("SELECT count(*) AS c FROM batched", &[]).unwrap();
+            assert_eq!(counted[0].get("c"), Some(&Value::I64(125)));
+            row(conn, "r124", 1240);
+            conn.commit().unwrap();
+            let rows = conn.query(
+                "SELECT id, n FROM batched WHERE id IN (?, ?, ?)",
+                &[Value::string("r7"), Value::string("r100"), Value::string("r124")],
+            );
+            let rows = rows.unwrap();
+            let n_of = |id: &str| {
+                rows.iter()
+                    .find(|row| row.get("id") == Some(&Value::string(id)))
+                    .and_then(|row| row.get("n").cloned())
+            };
+            assert_eq!(n_of("r7"), Some(Value::I32(700)));
+            assert_eq!(n_of("r100"), Some(Value::I32(100)));
+            assert_eq!(n_of("r124"), Some(Value::I32(1240)));
+            assert_eq!(conn.query("SELECT id FROM beside", &[]).unwrap().len(), 1);
+
+            conn.begin().unwrap();
+            row(conn, "dropped", 1);
+            conn.rollback().unwrap();
+            let dropped = conn.query("SELECT id FROM batched WHERE id = ?", &[Value::string("dropped")]);
+            assert!(dropped.unwrap().is_empty());
+
+            conn.begin().unwrap();
+            row(conn, "fine", 1);
+            conn.execute_deferred_row(upsert, vec![Value::string("refused"), Value::Null], key("refused"))
+                .unwrap();
+            let err = conn.commit().unwrap_err();
+            assert!(err.message().contains("null value"), "{err}");
+            conn.rollback().unwrap();
+            let fine = conn.query("SELECT id FROM batched WHERE id = ?", &[Value::string("fine")]);
+            assert!(fine.unwrap().is_empty());
         }
 
         /// ROLLBACK closes the cursor itself, so a stream left open in an aborted transaction does not stop it.

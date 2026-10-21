@@ -196,6 +196,10 @@ impl DbConnection for Tracked {
         self.conn.execute_deferred(sql, params, zero_rows)
     }
 
+    fn execute_deferred_row(&mut self, sql: &str, params: Vec<Value>, key: u64) -> Result<(), Error> {
+        self.conn.execute_deferred_row(sql, params, key)
+    }
+
     fn finish_deferred(&mut self) -> Result<(), Error> {
         self.conn.finish_deferred()
     }

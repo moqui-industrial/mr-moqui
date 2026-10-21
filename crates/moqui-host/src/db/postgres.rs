@@ -35,8 +35,15 @@ mod driver {
     use crate::db::pgwire::{self, Column, Endpoint, Wire};
     use crate::db::statement_lru::StatementLru;
 
-    const CACHE_CAP: usize = 100;
+    /// Statements kept prepared on a connection, as pgjdbc's `preparedStatementCacheQueries` default. A data load of
+    /// many entities prepares several statements of each (see [`BATCH_SIZES`]); at 100 they pushed each other out.
+    const CACHE_CAP: usize = 256;
     const FETCH_BATCH: usize = 50;
+    /// Rows a statement of [`RowBatch`] takes at most, and the smaller sizes the end of a run of rows goes out in: up
+    /// to five statements of an entity's columns prepared on a connection, which [`CACHE_CAP`] leaves room for.
+    const BATCH_SIZES: [usize; 5] = [100, 30, 10, 3, 1];
+    /// Parameters a [`RowBatch`] statement takes at most, well under the protocol's 65,535.
+    const BATCH_PARAMS: usize = 30_000;
     const STREAM_CURSOR: &str = "moqui_stream_cursor";
     /// Every parameter in text: the server parses each as its column's type.
     const ALL_TEXT: [i16; 1] = [0];
@@ -100,6 +107,71 @@ mod driver {
         streaming: bool,
         stream_exhausted: bool,
         stream_buf: VecDeque<DbRow>,
+        /// Rows [`DbConnection::execute_deferred_row`] holds. Every other call sends them first, and a rollback drops
+        /// them.
+        batch: Option<RowBatch>,
+    }
+
+    /// Rows of one `INSERT ... VALUES (?, ...)` statement, gathered to go out as statements of many rows.
+    struct RowBatch {
+        sql: String,
+        /// Where the `VALUES` row of `sql` starts and ends: what is before it, and what follows it (an
+        /// `ON CONFLICT` clause), are the same in a statement of many rows.
+        row: std::ops::Range<usize>,
+        /// Parameters a row takes.
+        width: usize,
+        /// The most rows a statement takes.
+        most: usize,
+        params: Vec<Value>,
+        keys: std::collections::HashSet<u64>,
+    }
+
+    impl RowBatch {
+        /// A batch for `sql` when it is an `INSERT` of one row of `width` placeholders, the `VALUES` row only
+        /// placeholders.
+        fn new(sql: &str, width: usize) -> Option<Self> {
+            if width == 0 || !sql.starts_with("INSERT INTO ") {
+                return None;
+            }
+            let start = sql.find(" VALUES (")? + " VALUES ".len();
+            let end = start + sql[start..].find(')')? + 1;
+            let inner = &sql[start + 1..end - 1];
+            if inner.bytes().any(|byte| !matches!(byte, b'?' | b',' | b' '))
+                || inner.bytes().filter(|byte| *byte == b'?').count() != width
+            {
+                return None;
+            }
+            Some(Self {
+                sql: sql.to_string(),
+                row: start..end,
+                width,
+                most: BATCH_SIZES[0].min(BATCH_PARAMS / width).max(1),
+                params: Vec::new(),
+                keys: std::collections::HashSet::new(),
+            })
+        }
+
+        fn rows(&self) -> usize {
+            self.params.len() / self.width
+        }
+
+        /// The statement of `rows` rows.
+        fn statement(&self, rows: usize) -> String {
+            if rows == 1 {
+                return self.sql.clone();
+            }
+            let row = &self.sql[self.row.clone()];
+            let mut sql = String::with_capacity(self.sql.len() + (row.len() + 2) * (rows - 1));
+            sql.push_str(&self.sql[..self.row.start]);
+            for index in 0..rows {
+                if index > 0 {
+                    sql.push_str(", ");
+                }
+                sql.push_str(row);
+            }
+            sql.push_str(&self.sql[self.row.end..]);
+            sql
+        }
     }
 
     /// A statement prepared on the connection: its name there, its parameter types and its result columns.
@@ -260,6 +332,7 @@ mod driver {
                 streaming: false,
                 stream_exhausted: false,
                 stream_buf: VecDeque::new(),
+                batch: None,
             };
             conn.wire.simple("SET TIME ZONE 'UTC'", "set time zone")?;
             Ok(conn)
@@ -343,6 +416,36 @@ mod driver {
             Ok((rows, changed))
         }
 
+        /// Send the rows [`DbConnection::execute_deferred_row`] holds, unanswered: as statements of the largest
+        /// [`BATCH_SIZES`] that fit, in order.
+        fn flush_batch(&mut self) -> Result<(), Error> {
+            let Some(batch) = self.batch.take() else {
+                return Ok(());
+            };
+            let rows = batch.rows();
+            let mut done = 0;
+            while done < rows {
+                let left = rows - done;
+                // The largest a statement takes, then the smaller sizes.
+                let size = std::iter::once(batch.most)
+                    .chain(BATCH_SIZES.iter().copied().filter(|size| *size < batch.most))
+                    .find(|size| *size <= left)
+                    .unwrap_or(1);
+                let chunk = &batch.params[done * batch.width..(done + size) * batch.width];
+                done += size;
+                let prepared = self.prepared(&batch.statement(size))?;
+                let formats = prepared.formats(chunk);
+                self.wire.send_execute(
+                    &prepared.name,
+                    &formats,
+                    chunk.len(),
+                    &mut |index, buf| encode_param(&chunk[index], prepared.params.get(index), buf),
+                    None,
+                )?;
+            }
+            Ok(())
+        }
+
         fn statement_name(&mut self) -> String {
             let name = format!("s{}", self.next_statement);
             self.next_statement += 1;
@@ -369,8 +472,10 @@ mod driver {
         fn finish_transaction(&mut self, sql: &str) -> Result<(), Error> {
             let commit = sql == "COMMIT";
             if commit {
+                self.flush_batch()?;
                 self.wire.finish()?;
             } else {
+                self.batch = None;
                 self.wire.abandon();
             }
             let close = self.streaming && commit;
@@ -421,6 +526,7 @@ mod driver {
         }
 
         fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
+            self.flush_batch()?;
             check_scalar(params)?;
             let Some(prepared) = self.cached(sql, params)? else {
                 return Ok(self.first_run(sql, params, "execute")?.1);
@@ -437,6 +543,7 @@ mod driver {
         /// In a transaction the statement is sent and its reply left for the next call that waits, or the commit. Out
         /// of one it runs as [`Self::execute`]: the connection goes back to the pool after it.
         fn execute_deferred(&mut self, sql: &str, params: Vec<Value>, zero_rows: Option<String>) -> Result<(), Error> {
+            self.flush_batch()?;
             if !self.in_transaction {
                 let count = self.execute(sql, &params)?;
                 return match zero_rows {
@@ -456,11 +563,46 @@ mod driver {
             )
         }
 
+        /// In a transaction the row is held with the rows before it of the same statement, and they go out as one
+        /// statement when the next row is of another, or names a key among them, or fills the statement, or another
+        /// call is made. Out of one, or for a statement that is not an `INSERT` of one row, it goes out alone.
+        fn execute_deferred_row(&mut self, sql: &str, params: Vec<Value>, key: u64) -> Result<(), Error> {
+            if !self.in_transaction {
+                return self.execute_deferred(sql, params, None);
+            }
+            check_scalar(&params)?;
+            if self
+                .batch
+                .as_ref()
+                .is_some_and(|batch| batch.sql != sql || batch.width != params.len() || batch.keys.contains(&key))
+            {
+                self.flush_batch()?;
+            }
+            if self.batch.is_none() {
+                match RowBatch::new(sql, params.len()) {
+                    Some(batch) => self.batch = Some(batch),
+                    None => return self.execute_deferred(sql, params, None),
+                }
+            }
+            let Some(batch) = self.batch.as_mut() else {
+                return Ok(());
+            };
+            batch.params.extend(params);
+            batch.keys.insert(key);
+            // A full statement goes out now, so the server works on it while the next rows are read.
+            if batch.rows() >= batch.most {
+                self.flush_batch()?;
+            }
+            Ok(())
+        }
+
         fn finish_deferred(&mut self) -> Result<(), Error> {
+            self.flush_batch()?;
             self.wire.finish()
         }
 
         fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
+            self.flush_batch()?;
             check_scalar(params)?;
             let Some(prepared) = self.cached(sql, params)? else {
                 return Ok(self.first_run(sql, params, "query")?.0);
@@ -477,6 +619,7 @@ mod driver {
         }
 
         fn returns_rows(&mut self, sql: &str) -> Result<Option<bool>, Error> {
+            self.flush_batch()?;
             // A deferred failure is reported, not taken for this statement's.
             self.wire.finish()?;
             // Not kept in the statement cache: a statement typed in the SQL runner runs once. One that does not prepare
@@ -488,10 +631,12 @@ mod driver {
         }
 
         fn query_once(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
+            self.flush_batch()?;
             Ok(self.run_unnamed(sql, params, "query")?.0)
         }
 
         fn open_stream(&mut self, sql: &str, params: &[Value]) -> Result<(), Error> {
+            self.flush_batch()?;
             if !self.in_transaction {
                 return Err(Error::new("a transaction is required"));
             }
@@ -519,6 +664,7 @@ mod driver {
         }
 
         fn next_row(&mut self) -> Result<Option<DbRow>, Error> {
+            self.flush_batch()?;
             if !self.streaming {
                 return Ok(None);
             }
@@ -532,6 +678,7 @@ mod driver {
         }
 
         fn close_stream(&mut self) -> Result<(), Error> {
+            self.flush_batch()?;
             if !self.streaming {
                 return Ok(());
             }
@@ -562,10 +709,12 @@ mod driver {
         }
 
         fn savepoint(&mut self, name: &str) -> Result<(), Error> {
+            self.flush_batch()?;
             self.wire.simple(&format!("SAVEPOINT {}", quote_ident(name)), "savepoint")
         }
 
         fn rollback_to_savepoint(&mut self, name: &str) -> Result<(), Error> {
+            self.flush_batch()?;
             self.wire.simple(
                 &format!("ROLLBACK TO SAVEPOINT {}", quote_ident(name)),
                 "rollback to savepoint",
@@ -573,12 +722,14 @@ mod driver {
         }
 
         fn release_savepoint(&mut self, name: &str) -> Result<(), Error> {
+            self.flush_batch()?;
             self.wire
                 .simple(&format!("RELEASE SAVEPOINT {}", quote_ident(name)), "release savepoint")
         }
 
         /// `SET LOCAL` lasts until the transaction ends, so clearing is a no-op. Not waited for, as `BEGIN` is not.
         fn set_statement_timeout(&mut self, remaining: Option<std::time::Duration>) -> Result<(), Error> {
+            self.flush_batch()?;
             let Some(remaining) = remaining else {
                 return Ok(());
             };

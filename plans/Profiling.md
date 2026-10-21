@@ -1,6 +1,6 @@
 # Profiling
 
-Status 2026-10-21: four rounds of profiling and optimization of entity, service, data load and XML/definition work against embedded Postgres, built and committed. Round 5 tested and measured against an external Postgres 18 in Docker ([Round 5](#round-5-external-postgres)); its findings lead the [Next steps](#next-steps). Companion to [Performance-Summary](Performance-Summary.md), which digests the performance plan; this document records what was measured and changed, how to measure, and what is left.
+Status 2026-10-21: four rounds of profiling and optimization of entity, service, data load and XML/definition work against embedded Postgres, built and committed. Round 5 tested and measured against an external Postgres 18 in Docker ([Round 5](#round-5-external-postgres)), fixed what it found, and sends a data load's rows several to a statement ([Round 6](#round-6-multi-row-data-load-statements)); what is left leads the [Next steps](#next-steps). Companion to [Performance-Summary](Performance-Summary.md), which digests the performance plan; this document records what was measured and changed, how to measure, and what is left.
 
 ## How to measure
 
@@ -115,7 +115,31 @@ What the numbers say:
 
 Checked against the containers: a restart under a running server with requests sent as soon as Postgres is ready, 15 of 15 succeed (direct to the container, and through docker's proxy); while it is down or starting, requests answer 503 and succeed once it is up. `require`, `verify-ca` and `verify-full` with the private authority connect to a TLS-only server; `verify-full` with the public roots, and `require` with a root file that does not hold its authority, are refused with the handshake error; `./moq load seed -D entity_ds_host=... -D entity_ds_sslmode=verify-full -D entity_ds_sslrootcert=ca.crt` loads over TLS.
 
+## Round 6: multi-row data load statements
+
+A pipelined data load was server bound over TCP (round 5). pgbench in the container put the server's cost of a row at 9–16 µs as 100 single-row upserts in one pipeline, and 6 µs as one upsert of 100 rows.
+
+What changed:
+- **`DbConnection::execute_deferred_row(sql, params, key)`**: a deferred one-row `INSERT` or upsert the driver may send with the rows after it. `key` is a hash of the row's primary key (`value.rs` `pk_key`). The default sends it alone, so MySQL, SQLite and the test connections are as before. A data load's creates and upserts call it; its updates stay `execute_deferred` (each needs its own `zero_rows` check).
+- **Postgres** (`RowBatch` in `postgres.rs`): in a transaction, rows of the same `INSERT ... VALUES (?, ...)` text are held and go out as `INSERT ... VALUES (...), (...)` with the statement's tail (`ON CONFLICT ... DO UPDATE`) unchanged. They go out when a row of another statement comes, when a row's key is among those held (one upsert cannot change a row twice; a hash that collides only splits the rows), when 100 are held (fewer for a wide entity: 30,000 parameters), and before any other call on the connection; a rollback drops them. A run is sent as statements of 100, 30, 10, 3 and 1 rows, each prepared once per connection. Rows go out in the order they came, so a row's foreign keys to rows before it hold; rows are never reordered across statements.
+- **Statement cache** per connection 100 → 256 (pgjdbc's default). With five sizes per entity, a seed data reload at 100 pushed statements out and prepared them again with a waited round trip each, which made it 16% slower than three sizes instead of 21% faster.
+
+Data load per record, µs (best of alternating runs; same binaries otherwise):
+
+| Row | Embedded before → after | Docker tmpfs | tmpfs + 200 µs delay |
+|---|---|---|---|
+| XML create, new rows | 12.8 → 10.2 | 18.9 → 10.5 | 22.3 → 11.0 |
+| XML reload, same values | 14.2 → 10.3 | 21.6 → 10.5 | 25.1 → 11.2 |
+| CSV create | 12.7 → 9.0 | 19.4 → 9.2 | 22.4 → 9.6 |
+| nested, type + 9 enums | 21.1 → 16.0 | 31.1 → 21.0 | 34.5 → 21.9 |
+| framework seed data, first load | 45.6 → 48.2 (one sample a run) | 57.2 → 55.1 | 97.5 → 97.9 |
+| framework seed data, reload | 20.6 → 18.7 | 28.9 → 22.9 | 59.8 → 51.3 |
+
+`./moq load` of every data type into `moqui-pg18` (8,740 records): 4.87 s → 4.34 s. The seed first load gains little: its records of one entity often name different fields (each set of columns is its own statement), and the entities with ECA rules, status fields or audit logs take the read-first store.
+
 ## Behaviour changes to know
+
+- A data load's failed row is reported for the statement of many rows it went out in: the server's message (which names the key for a constraint) is the same, at the same place (the next waited statement or the end of the file).
 
 - `sslmode=require` on an external Postgres now encrypts without checking the server's certificate, as libpq and pgjdbc do (it checked authority and name before). `verify-full` or empty keeps the full check; `sslrootcert` makes `require` check the authority.
 - A request that fails because the database cannot be reached answers 503 (it was 500, or 401 when it held credentials).
@@ -131,7 +155,7 @@ Checked against the containers: a restart under a running server with requests s
 **From round 5 (external Postgres), by expected payoff:**
 1. ~~Pool after a server restart~~, ~~TLS roots and modes~~ and ~~iterate round trips~~: done, see Round 5 fixes.
 2. **MySQL**: the same idle check (the `mysql` crate's connection), and `sslMode`/`useSSL` root certificates; neither was looked at.
-3. **Multi-row upsert for data loads.** The server is the bottleneck in a pipelined load; `INSERT ... VALUES (...), (...) ON CONFLICT DO UPDATE` for runs of records of one entity, or `COPY` for an empty database (item 1 below), cuts its per-statement work.
+3. ~~Multi-row upsert for data loads~~: done (round 6) for Postgres. MySQL could take the same `execute_deferred_row` (`ON DUPLICATE KEY UPDATE` allows a key twice in one statement). A record's fields differ between records of a seed file; writing the entity's whole column list would batch more but would clear the fields a record leaves out, so it is not done.
 4. Still open from the list below: connection failure mid-transaction, mid-pipeline and mid-stream, `cancel` over TLS, a `statement_timeout` that fires, and poolers.
 
 **External Postgres (before round 5).** What the embedded tests cannot show:
