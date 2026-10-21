@@ -61,7 +61,7 @@ A reviewer classifies these as intentional. Each Java type is also in the revers
 - **Databases not in this tree.** H2 (`H2ServerToolFactory`), SQL Server, Oracle, DB2, Derby, HSQLDB. The port's drivers are Postgres, MySQL, and the browser SQLite driver.
 - **Shiro.** `shiro.ini`, `MoquiShiroRealm`, `MoquiWebSecurityManager`. Login still verifies a stored Shiro `SimpleHash` and rehashes to argon2 (`user/password.rs`).
 - **Jackrabbit, JCS, SubEtha.** `JackrabbitRunToolFactory`, `JCSCacheToolFactory`, `cache.ccf`, `SubEthaSmtpToolFactory`. The embedded SMTP server stays disabled. Inbound mail is `poll#EmailServer`, the mail client's sync, and for hosted and shared accounts the SMTP listener behind an edge gateway (the moqui-host `inbound-smtp` feature, [Mail-Inbound](../docs/Mail-Inbound.md)), which is not SubEtha's open receiver.
-- **FreeMarker, GString, and FOP as engines.** `FtlTemplateRenderer`, `GStringTemplateRenderer`, `FtlMarkdownTemplateRenderer`, and `moqui-fop` (`FopToolFactory`, `HtmlRenderer`, `HtmlRenderServlet`). Markdown files render through `moqui-lib/src/markdown.rs`. Print is `html-print` (README redesign 5); the `/fop/*` path of `MoquiFopServlet` is kept, on that renderer (`screen/mod.rs`).
+- **FreeMarker, GString, and FOP as engines.** `FtlTemplateRenderer`, `GStringTemplateRenderer`, `FtlMarkdownTemplateRenderer`, and `moqui-fop` (`FopToolFactory`, `HtmlRenderer`, `HtmlRenderServlet`). Markdown files render through `moqui-lib/src/markdown.rs`. Print is `html-print` (README redesign 4); the `/fop/*` path of `MoquiFopServlet` is kept, on that renderer (`screen/mod.rs`).
 - **vuet, vue, js render modes and `/vapps`.** `DefaultScreenMacros.vuet.ftl` and the vuet/js screen companions.
 - **Other dropped pieces.** `SimpleSgmlReader` (no SGML reader). `content://` (`ContentResourceReference`) is a named error. OAuth 1.0 and SAML (the SSO section). `MClassLoader` and `LiteStringMap` (JVM class loading and a Java map optimization). `bitronix-default-config.properties` (Bitronix is a behavior reference only). `MoquiLog4jAppender` and `log4j2.xml` as a runtime (logging is `tracing` in the host).
 
@@ -332,11 +332,11 @@ Framework service XML with no Rust body (`BasicServices`, `UserServices`, `Serve
 | `screen/generate.rs` | `ScreenWidgetRender` and `ScreenWidgetRenderFtl`. Generates one function per section from the JS macro module. | Port |
 | `screen/statics.rs`, `screen/static_ast.rs`, `screen/statics/report.rs` | Server-static qvt. Java `server-static` was only a `Cache-Control` hint. [QvtServerStatic](archive/QvtServerStatic.md). | Redesign |
 | `screen/vue_check.rs` | Vue 3 compiler check of a qvt template, in QuickJS. Gate 3. | Native |
-| `screen/pdf.rs`, `moqui-host/src/pdf.rs`, `moqui-host/src/pdf/cdp.rs` | PDF bytes for `html-print`, its resource-location images inlined as `data:` URLs first (Java's FOP resolved them through the resource facade). `pdf.rs` in the host keeps one Chromium process. `pdf/cdp.rs` is the DevTools socket (`chromiumoxide` was not used). `xsl-fo` as a stored mode name selects this. README redesign 5. | Redesign |
+| `screen/pdf.rs`, `moqui-host/src/pdf.rs`, `moqui-host/src/pdf/cdp.rs` | PDF bytes for `html-print`, its resource-location images inlined as `data:` URLs first (Java's FOP resolved them through the resource facade). `pdf.rs` in the host keeps one Chromium process. `pdf/cdp.rs` is the DevTools socket (`chromiumoxide` was not used). `xsl-fo` as a stored mode name selects this. README redesign 4. | Redesign |
 | `screen/xlsx.rs` | moqui-poi `FormListExcelRender`, `ScreenWidgetRenderExcel`. `ScreenXlsx.js` fills the book through `sri.xlsx*`. | Port |
 | `screen/dispatch.rs` | Rust bodies for the `rest.xml` transitions (`login`, and the other transitions that file declares in Rust). | Native |
 | `screen/schema.rs` | `RestSchemaUtil` documents served from screens: `entity.json`, `master.json`. `service.swagger` is not the Swagger 2 document. YAML and RAML stay unbuilt. | Partial |
-| `screen/mod.rs` | `ScreenFacade`. Also the screen-path half of `MoquiAuthFilter` (anonymous 401, Basic challenge), and `MoquiFopServlet` (`/fop/<path>` as PDF). | Partial |
+| `screen/mod.rs` | `ScreenFacade`. Also the screen-path half of `MoquiAuthFilter` (anonymous 401, with no challenge, as Java; the search proxies and git send a Basic one), and `MoquiFopServlet` (`/fop/<path>` as PDF). | Partial |
 
 ### Macro libraries
 
@@ -359,7 +359,7 @@ Framework service XML with no Rust body (`BasicServices`, `UserServices`, `Serve
 | `DefaultScreenMacros.any.ftl` | — | Excluded |
 | `TestScreenHtmlMacros.ftl` | — | Excluded |
 
-`html-print` emits HTML with print CSS. A direct `.xsl-fo` request still returns FO XML. A stored caller that passes render mode `xsl-fo` to mean PDF renders `html-print` and hands it to `PdfRenderer`.
+`html-print` emits HTML with print CSS. `xsl-fo` is an alias of `html-print`, so a direct `.xsl-fo` request returns that HTML (Parity-Diffs P6-06). A stored caller that passes render mode `xsl-fo` to mean PDF renders `html-print` and hands it to `PdfRenderer`.
 
 ## Web and the HTTP host
 

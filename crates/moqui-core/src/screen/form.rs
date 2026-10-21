@@ -127,8 +127,8 @@ impl FormInstance {
 /// The fields a form-list's `entity-find` selects, as Java's `FormListRenderInfo`: the fields of the
 /// columns (the `form-list-column` or `columns` field refs, otherwise each field whose widget is not
 /// hidden), then the hidden fields that have a `default-field`, then the fields the `view-board` and
-/// `view-calendar` name (not in Java). Java takes the columns from the user's saved column selection when
-/// there is one; here the definition's columns are a superset of it.
+/// `view-calendar` name (not in Java). A user's saved column selection comes through the node: as in Java,
+/// `render_user_columns_form` rebuilds the form with those columns.
 fn form_select_fields(form: &MNode) -> Vec<String> {
     let fields = form.children_named("field");
     let mut names: Vec<String> = Vec::new();
