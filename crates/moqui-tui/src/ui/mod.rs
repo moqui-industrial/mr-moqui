@@ -16,9 +16,11 @@
 //! frame and the canvas from them every frame: the session owns the state, the view owns none but the canvas scroll.
 
 mod draw;
+mod encode;
 mod overlays;
 mod paint;
 mod run;
+mod session_loop;
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -33,7 +35,9 @@ use crate::model::ScreenModel;
 use crate::session::Session;
 use crate::theme::Theme;
 
+pub use encode::{Screen, ENTER, LEAVE};
 pub use run::{from_revue, run_local, snapshot, LocalOptions};
+pub use session_loop::{run_session, SessionEvent, SessionOptions};
 
 pub struct AppView<L: ScreenLink = FakeLink> {
     session: Session,

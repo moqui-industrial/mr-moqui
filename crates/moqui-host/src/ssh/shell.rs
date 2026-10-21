@@ -44,6 +44,7 @@ const HELP: &str = "Commands:
   entity <name> [json]          find up to 100 rows, with a JSON object of field conditions
   cache clear [name]            clear one cache, or all of them
   js <code>                     run JavaScript with ec; 'js' alone reads lines until a line with '.'
+  apps                          the applications in the terminal (SSH_APPS); quit them to come back here
   exit                          end the session";
 
 /// What a command printed, and the exit status for `exec`.

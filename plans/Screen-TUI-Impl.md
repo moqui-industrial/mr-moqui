@@ -1,7 +1,6 @@
 # Screen TUI implementation plan
 
-Oct 20, 2026 · Phases 1, 2 and 3 built (findings under each in section 5), Phase 3's SSH item moved to Phase 3b; Phase 3b
-and Phase 4 are next. This plan implements [proposals/Screen-TUI-Revue.md](proposals/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
+Oct 20, 2026 · Phases 1, 2, 3 and 3b built (findings under each in section 5); Phase 4 is next. This plan implements [proposals/Screen-TUI-Revue.md](proposals/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
 
 The proposal sets the architecture: a `tui` render mode emits a JSON screen model, and one Revue client interprets it and reaches the server over several channels. This plan adds four things:
 
@@ -25,7 +24,7 @@ Most of these are beyond what the proposal settles.
 | D3 | The client is a new crate, `crates/moqui-tui`. Its `model` module has no Revue import and is usable alone through a `model` feature. Revue is an optional dependency behind the `ui` feature (3.1). | This is the proposal's single adapter layer. It also lets `moqui-core` tests deserialize the model without pulling in Revue. A Ratatui client stays possible. |
 | D4 | `moqui-tui` does no I/O of its own. It defines a `ScreenLink` trait, and `moqui-host` implements it (in-process and HTTP) behind a new `tui` feature. | `crates/moqui-host/Cargo.toml:9` says only `moqui-host` may depend on Tokio, axum, russh and the like. Revue is used with `default-features = false`, so its `async` feature does not pull in Tokio. |
 | D5 | Revue is a **render pipeline and widget kit**, not the app framework. The interpreter owns focus, key routing, navigation and the form state. | Revue routes no keys to widgets. The app does that (`docs/refactor/findings-event-dispatch.md`, and `src/core/app/event_loop.rs:171`). Its three focus systems are not connected. `Form`/`FormFieldWidget` only render (`src/widget/form/form/mod.rs`). None of the examples uses its routers. |
-| D6 | The SSH and browser channels run a **custom event loop on Revue's generic `Terminal<W>`**, in process, one per session. A child process on a pseudo-terminal is the fallback if the Phase 1 spike fails. | `App::run` is tied to the process: it hardcodes stdout and crossterm's `poll`/`read` (`event_loop.rs:76,94`), installs signal handlers (`src/core/app/signals.rs`) and installs a global panic hook (`src/runtime/render/terminal/panic_hook.rs:76`). None of that can run per session in a server. `Terminal<W: Write>` itself is generic (`src/runtime/render/terminal/core.rs:23`), and `PipelineHarness` already drives the real draw path into memory (`src/testing/pipeline.rs:42`). |
+| D6 | The SSH and browser channels run a **custom event loop**, in process, one per session. A child process on a pseudo-terminal is the fallback if the Phase 1 spike fails. **Built (Phase 3b) as route 4 of 3.5:** our own frame loop, which draws into a Revue `Buffer` and writes the diff itself, on Revue's public API. | `App::run` is tied to the process: it hardcodes stdout and crossterm's `poll`/`read` (`event_loop.rs:76,94`), installs signal handlers (`src/core/app/signals.rs`) and installs a global panic hook (`src/runtime/render/terminal/panic_hook.rs:76`). None of that can run per session in a server. `Terminal<W: Write>` itself is generic (`src/runtime/render/terminal/core.rs:23`), and `PipelineHarness` already drives the real draw path into memory (`src/testing/pipeline.rs:42`). |
 | D7 | Width classes are measured in **canvas columns**, which is the terminal width less a docked drawer. The second column starts at **120**. | Section 1.3. On the user's 180-column terminal the drawer docks and the canvas is 153 columns, which gives two columns of boxes holding forms. |
 | D8 | The keyboard scheme follows **5250/3270 function keys plus Lynx link travel**, and every action has a key. | Section 1.5. This settles the proposal's "Keyboard conventions" open question. |
 | D9 | Every string from the server is stripped of control characters before it is drawn. | A field value holding ESC or OSC bytes would otherwise drive the user's terminal. Revue writes cell characters as given. |
@@ -589,11 +588,17 @@ It must not touch the process terminal. It skips `Terminal::init`'s raw mode and
 
 So an idle session wakes about once a minute, and SSH and browser sessions behave as local mode does.
 
-**Drawing.** The loop needs the same draw path `App::run` uses: DOM, CSS, layout, diff and dirty-rect output. Today that path is reachable from outside the crate only through `PipelineHarness` (`src/testing/pipeline.rs:42`, `send`/`send_with` at :252), which draws into a `Vec<u8>`. The spike (Phase 1) settles which of three routes the loop uses:
+**Drawing.** The loop needs the same draw path `App::run` uses: DOM, CSS, layout, diff and dirty-rect output. Today that path is reachable from outside the crate only through `PipelineHarness` (`src/testing/pipeline.rs:42`, `send`/`send_with` at :252), which draws into a `Vec<u8>`. The spike (Phase 1) was to settle which route the loop uses; Phase 3b took the fourth:
 
 1. An upstream change to Revue: a public `App::run_on(terminal, events)`, or making the harness's draw step public. **Preferred.**
 2. Driving `PipelineHarness`, then copying its byte buffer to the writer after each frame. Workable, but it leans on a testing API.
 3. The fallback of D6: spawn `moqui tui --attach <socket>` on a server-side pseudo-terminal (`portable-pty` or `rustix` openpty), with the parent bridging bytes and window size. The child reaches the parent through the HTTP link over a Unix socket with a one-time login key, since an in-process link is impossible across processes. This costs a process per session and a fork of a large binary, which is why it is the fallback.
+4. **Chosen (Phase 3b): our own frame loop on Revue's public API.** The spike assumed the client would draw through Revue's DOM and CSS, which only `App` drives. Phase 2 moved all drawing to the client's own painter (`crates/moqui-tui/src/ui/paint.rs`), which sets cells through `RenderContext`. So the loop needs only what is public in 3.10.1:
+   - `Buffer::new`, `RenderContext::new` and `View::render` (`src/widget/traits/render_context/mod.rs:165`);
+   - `render::diff` (`src/runtime/render/diff.rs:41`), which compares hyperlinks by URL;
+   - every `Cell` field and the buffer's hyperlink registry.
+
+   `crates/moqui-tui/src/ui/encode.rs` writes the changes. `Terminal::render` is not used, for two reasons: its `current` buffer has no hyperlink registry, so every linked cell would be rewritten each frame, and it always writes true color. Nothing upstream is needed.
 
 ### 3.6 Background requests
 
@@ -687,6 +692,13 @@ It would be an own widget over `TextArea`, or a contribution to Revue's `RichTex
   - SSH channels and `/termws` sockets (4.4) take slots from the same count, and a slot is freed when its session ends.
   - Over the limit, `apps` refuses with a one-line message, and the socket closes with a reason.
 - **Downloads and uploads** are off over SSH (1.6, `file` and exports). The log pane is off, unless the user has the permission to read logs, in which case it shows only lines at WARN and above. The proposal leaves this to permissions, and it is Phase 4.
+- **As built (Phase 3b).** `crates/moqui-host/src/ssh/apps.rs`, behind `ssh` and `tui`.
+  - `SSH_APPS` is not a sealed permission (`security_checks.rs` `DEFAULT_SEALED_PERMISSIONS`), as `SSH_SFTP` is not: it gives no rights beyond the screens.
+  - `apps` runs as the `exec` command, as the whole shell session of a user with `SSH_APPS` and no `SSH_SHELL`, and as a command at the `moqui>` prompt.
+  - `env_request` also keeps `COLORTERM`, `NO_COLOR`, `COLORFGBG`, `LANG`, `LC_ALL` and `LC_CTYPE` for the theme. A locale that is set and is not UTF-8 draws in ASCII.
+  - The window size is a `watch` per pty channel, so a window change while the user is still at the prompt is not lost.
+  - `tui_max_sessions` (16) and `tui_max_sessions_per_user` (4).
+  - **Idle.** russh resets its inactivity timer after any loop turn that is not a keepalive, sent data included (`server/session.rs:834-841` in russh 0.64.1). So the client's minute clock would keep an idle session open forever. An `apps` session therefore ends itself after `IDLE` (600 s) without input, with a one-line note.
 
 ### 4.3 Remote client (`moqui tui --server <url>`)
 
@@ -710,7 +722,7 @@ The same interpreter draws through `PipelineHarness` at a given size with a `Fak
 
 ### 4.6 Packaging
 
-- **The `tui` feature.** A new `tui` feature in `crates/moqui-host/Cargo.toml` enables `dep:moqui-tui`. `enterprise` and `maximal` include it. `lite` leaves it out, because `lite` is the small server build, and a `lite` user runs the remote client from any other build.
+- **The `tui` feature.** A new `tui` feature in `crates/moqui-host/Cargo.toml` enables `dep:moqui-tui`. `enterprise` and `maximal` include it. **Changed 2026-10-20 (user):** `lite` includes it too, for a quick terminal dev and test loop. `lite` has no `ssh`, so it has `moqui tui` but not `apps`.
 - **The `tui-client` feature.** A `tui-client` feature builds the remote client alone.
 - **Forwarding.** `crates/moqui/Cargo.toml` forwards both features.
 - **The generated app crate.** The template in `moq` (the `[features]` block near `moq:1067-1074`, `package_features` at `moq:941`) gets them too, so `./moq build` of an add-on set carries the feature.
@@ -788,7 +800,7 @@ Other server changes:
 
 Revue always writes RGB escapes, so the 16 and 256 color depths only choose nearer colors.
 
-**Packaging.** `tui` is in `enterprise` and `maximal` as 4.6 says (so `cargo check -p moqui` compiles Revue), not in `lite`. The generated app crate forwards it.
+**Packaging.** `tui` is in `enterprise` and `maximal` as 4.6 said then (so `cargo check -p moqui` compiles Revue), not in `lite`; `lite` got it later (4.6). The generated app crate forwards it.
 
 **Smaller decisions.**
 
@@ -810,7 +822,7 @@ Revue always writes RGB escapes, so the 16 and 256 color depths only choose near
 
 ### Phase 3 — Shell and dynamics: a full admin task over SSH
 
-1. **SSH.** Moved to Phase 3b, below: Revue has no public run-on-writer entry yet.
+1. **SSH.** Moved to Phase 3b, below, and built there.
 2. **Dynamics.** Autocomplete, `depends-on` everywhere, `dynamic-dialog`/`dynamic-container` with reload and hide ids, `editable`, multi lists with inline editing, stacked columns, row actions, saved finds and the columns dialog.
 3. **Shell.** Palette, quick create, counters, tray (as a modal), help with screen documents, message history.
 4. **Structure.** Trees, wizard and stack panels, `container-split`, `status-bar`, `number-card` and `dashboard`.
@@ -888,9 +900,47 @@ The client has 33 more tests (97 in all): `dynamic.rs`, `shell.rs`, `structure.r
 
 1. **SSH.** `apps` over SSH with the chosen session route, `SSH_APPS` at every gate of 4.2, `tui_max_sessions`, pty size, window change, and the guard against downloads and uploads.
 
-The route waits on [hawk90/revue#1153](https://github.com/hawk90/revue/issues/1153): it was still open with no maintainer reply on 2026-10-20, and 3.10.2 does not have a run-on-writer entry. Route 1 is the one to build when a release has it. If it does not come, route 3 (a `moqui tui --attach` child on a server-side pty) is the fallback; the session's timers (`next_deadline`, `on_time`) and the input decoder are ready for either route.
-
 **Exit:** an administrator connects by `ssh user@host`, lands in the apps, and completes the Phase 3 Tools task.
+
+#### Phase 3b findings
+
+Recorded 2026-10-20.
+
+**Route.** [hawk90/revue#1153](https://github.com/hawk90/revue/issues/1153) was still open with no maintainer reply, and 3.10.2 has no run-on-writer entry. It is not needed: route 4 of 3.5 was found and built. The pin stays `revue =3.10.1`. #1153 would still be nice, since `run_local` could then share the loop, but it blocks nothing. Comment upstream only with the user's leave.
+
+**The client** (`crates/moqui-tui`, `ui` feature).
+- `run_session(link, options, events, replies, out)` (`ui/session_loop.rs`). It takes `SessionEvent`s: input bytes, a window size, a request's answer, close. It writes frames to any `Write` and never touches the process terminal, its signals or its panic hook.
+- It blocks on its channel until the earliest of the session's deadlines (`next_deadline`), the decoder's ESC wait, the clock's next minute, and the spinner while a request runs. An idle session wakes once a minute. Events already queued are applied before one draw.
+- It enters and leaves the alternate screen with bracketed paste on and the cursor hidden. A panic is caught: the terminal is put back, and the error goes to the caller's log.
+- The loop keeps a sender for its worker threads, so the channel never disconnects while it runs. The caller sends `Close` when its input ends. The first test drop of the sender hung on this.
+- Requests run on threads, one per request, through the same `send` the local loop uses. Lanes keep one per purpose (3.6).
+- `Screen` (`ui/encode.rs`):
+  - writes the whole frame after a clear on the first draw and after a resize, and only the changed cells after that, with a cursor move only on a jump;
+  - writes the SGR of each change of look at the terminal's depth: true color, the 256-color cube, the 16 ANSI colors, or none (`theme::sgr_color`);
+  - writes OSC 8 by URL, writes a wide glyph once, and writes an unchanged frame as nothing.
+- The decoder now gives Ctrl with a letter (Ctrl+K, Ctrl+Q), Ctrl+Space, Alt+Enter, Alt+Backspace, and the `1~`/`4~`/`7~`/`8~` and SS3 Home and End. A lone ESC becomes Escape after `ESC_WAIT` (50 ms) without a next byte: `Decoder::deadline` and `flush`. Before, it waited for the next key.
+- Exports are refused in a session ("downloads are off in a remote session; use the browser"). The text export still shows in its dialog.
+- `HostLink` holds the factory weakly (`HostLink::weak_as_user`). A call after the server stopped answers that the server is stopping.
+
+**The host.** As 4.2, "As built".
+
+**Exit evidence.**
+- `crates/moqui-tui/tests/session_loop.rs` (6 tests).
+  - The bytes a `Screen` writes, replayed on a small terminal, equal `PipelineHarness`'s screen text at 100x40, after a key, and at 180x50.
+  - An unchanged frame writes nothing, and a key's frame is under a quarter of the first.
+  - Depth, a wide glyph and links.
+  - `run_session` over a channel: keys in split reads to the detail screen, a resize, close, a lone ESC closing the help after its wait, Ctrl+Q, and a refused export.
+- `crates/moqui-host/tests/it/ssh.rs` `apps_runs_the_terminal_client_over_ssh`, on a russh client.
+  - A user with only `SSH_APPS` lands in the apps from a shell request, in true color from the `COLORTERM` env request.
+  - A second channel of that user is refused by `tui_max_sessions_per_user`.
+  - A window change redraws whole, and Ctrl+Q exits 0 with the terminal put back.
+  - A shell user without `SSH_APPS` is told why at the prompt.
+  - john.doe types `apps` at the prompt, goes to the Tools user list by `g`, quits, and is at `moqui>` again.
+  - `apps` without a pty says to use `ssh -t`.
+  - The Phase 3 Tools task itself runs on the same `Session` in `tui_screens.rs` through the in-process link.
+- Unit tests: the session limits, the terminal's theme from `TERM` and the locale, and the SGR colors.
+
+**Not yet checked.** No live terminal has run it: xterm, kitty, GNOME Terminal, tmux and the Linux console are still to do by hand (F-keys, Alt, paste, resize, 256 colors). The full Tools task by keyboard over a real `ssh` is the manual exit check.
 
 ### Phase 4 — Reach and polish
 
@@ -931,7 +981,7 @@ These update the proposal's list with what the survey found.
 | API churn | Pin `=3.10.1`. Upgrade only with the snapshot suite green. Revue's `STABILITY.md` marks `FormState` and `Store` as Evolving, and this plan uses neither. |
 | One maintainer | Unchanged. Contained by D3 and D5: the model, link, nav, state and layout modules have no Revue import. |
 | Toolchain | Revue needs 1.95; the workspace needs 1.94 and builds on 1.99. No conflict. |
-| Terminal I/O (was the proposal's "pluggable backend?") | **Answered: no.** Revue has a `Backend` trait that `Terminal` does not use, and `App::run` is tied to the process. The Phase 1 spike picks route 1, 2 or 3 of 3.5. |
+| Terminal I/O (was the proposal's "pluggable backend?") | **Answered: no**, and not needed. Revue has a `Backend` trait that `Terminal` does not use, and `App::run` is tied to the process. Phase 3b built route 4 of 3.5: our own frame loop on the public `Buffer`, `RenderContext` and `diff`. |
 | Date picker | **Exists**, with the fixed today/now bug and no parser: the `DateField` wrapper. |
 | Inline table editing | **Exists** in `DataGrid`, without a validation hook: the `ListTable` wrapper owns validation. |
 | Large lists | **Answered:** `DataGrid` and `Table` draw only visible rows. Server paging stays, with the page sized to the screen. |
@@ -946,7 +996,7 @@ These update the proposal's list with what the survey found.
 
 **Upstream asks for Revue** (issues first, PRs where small):
 
-- a public run-on-writer entry with an external event source;
+- a public run-on-writer entry with an external event source ([#1153](https://github.com/hawk90/revue/issues/1153); no longer blocking, after route 4 of 3.5);
 - bracketed paste in `Terminal::init`;
 - real `Date::today`/`Time::now`;
 - values on `Select` options, and mutable `Combobox` options;

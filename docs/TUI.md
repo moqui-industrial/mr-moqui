@@ -5,7 +5,8 @@ the server writes each screen as a JSON document of nodes, and the client in `cr
 [Revue](https://github.com/hawk90/revue). There are no TUI-only screens. The design is in
 [plans/Screen-TUI-Impl.md](../plans/Screen-TUI-Impl.md).
 
-It is in the Enterprise and Maximal packages (the `tui` feature, [Packaging](Packaging.md)).
+It is in every package, Default (`lite`) included (the `tui` feature, [Packaging](Packaging.md)). `apps` over SSH also
+needs the `ssh` feature, which Default leaves out.
 
 ## Starting it
 
@@ -23,6 +24,28 @@ tui` says so and stops; stop the server first.
 
 Each screen is rendered as the logged-in user with artifact authorization on, as the browser's requests are. The client
 holds no permission logic: what the user may not do is not in the document.
+
+## Over SSH
+
+When the built-in SSH server runs (`ssh_port`, see `crates/moqui-host/src/ssh/server.rs`), the same client runs on an
+SSH channel, in the server's process:
+
+```
+ssh -p <ssh_port> <user>@<host>             with SSH_APPS and no SSH_SHELL, the apps are the whole session
+ssh -t -p <ssh_port> <user>@<host> apps     the apps from any account with SSH_APPS
+moqui> apps                                 from the admin shell; quitting the apps (Ctrl+Q) comes back to the prompt
+```
+
+- **Permission.** `SSH_APPS`, granted to `ADMIN` in the seed data. It opens the client and nothing more: every screen is
+  still rendered as the user with artifact authorization on, as in the browser.
+- **Terminal.** It needs a pty (`ssh -t`, which plain `ssh user@host` asks for). The client takes the pty's `TERM` and
+  window size, and follows window changes. Colors follow `TERM` (`*-256color` is 256 colors). Send
+  `COLORTERM=truecolor` for true color, or `NO_COLOR=1` for none, with `SendEnv COLORTERM NO_COLOR LANG` in
+  `~/.ssh/config`. A locale that is set and is not UTF-8 draws in ASCII.
+- **Limits.** At most `tui_max_sessions` (16) apps sessions run at once, and `tui_max_sessions_per_user` (4) of them for
+  one user; `ssh_max_sessions` counts connections, not these. A session ends after 10 minutes without input.
+- **Files.** Exports are not downloaded, because the client runs on the server; the text export still shows in a
+  dialog. Uploads are off. The log pane is not offered.
 
 ## Keys
 
@@ -177,5 +200,5 @@ post, follow, a message), and its help.
 
 ## Not yet
 
-The SSH `apps` command waits for a public run-on-writer entry in Revue (plans/Screen-TUI-Impl.md, Phase 3b). Phase 4
-brings the remote client (`moqui tui --server <url>`), list views, and a Markdown editor.
+Phase 4 brings the remote client (`moqui tui --server <url>`), list views, a Markdown editor, and the log pane over
+SSH for users who may read the logs.

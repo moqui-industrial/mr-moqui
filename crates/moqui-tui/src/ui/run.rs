@@ -53,6 +53,9 @@ pub fn run_local<L: ScreenLink + 'static>(link: L, options: LocalOptions) -> rev
     let mut view = AppView::with_session(Session::start(&options.path), Arc::clone(&link));
     view.set_theme(options.theme.clone());
     let (done_tx, done_rx) = mpsc::channel::<(u64, Reply)>();
+    let done_tx = move |id, reply| {
+        let _ = done_tx.send((id, reply));
+    };
     let notes = options.notes;
     let log = options.log;
     // Revue's terminal setup does not turn on bracketed paste, so a paste would arrive as keys and a newline in it would
@@ -174,14 +177,18 @@ fn save_download(body: &RawBody) -> Result<String, String> {
     Ok(path.display().to_string())
 }
 
-/// Start the session's queued requests on worker threads.
-fn send<L: ScreenLink + 'static>(view: &mut AppView<Arc<L>>, link: &Arc<L>, done: &mpsc::Sender<(u64, Reply)>) {
+/// Start the session's queued requests on worker threads; `done` gets each answer. Both loops use it.
+pub(super) fn send<L, F>(view: &mut AppView<Arc<L>>, link: &Arc<L>, done: &F)
+where
+    L: ScreenLink + 'static,
+    F: Fn(u64, Reply) + Clone + Send + 'static,
+{
     for request in view.session_mut().take_requests() {
         let link = Arc::clone(link);
         let done = done.clone();
         std::thread::spawn(move || {
             let reply = link.call(&request.call);
-            let _ = done.send((request.id, reply));
+            done(request.id, reply);
         });
     }
 }

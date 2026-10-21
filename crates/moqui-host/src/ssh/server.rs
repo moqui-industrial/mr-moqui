@@ -19,10 +19,12 @@
 //! Login is the user facade: a password through `loginUser` (failures count toward the lockout, and an account that
 //! needs a second factor cannot log in here), or a public key whose fingerprint is an active `UserSshKey` of that
 //! user. The `sftp` subsystem needs the `SSH_SFTP` permission and serves `ssh_sftp_root`; `exec` and `shell` need
-//! `SSH_SHELL` and run [`super::shell`]. At most `ssh_max_sessions` logged-in sessions are open at once. A connection
+//! `SSH_SHELL` and run [`super::shell`]. `apps` (the terminal client, `super::apps`) needs `SSH_APPS` and a pty: it is
+//! the whole session of a user with `SSH_APPS` and no `SSH_SHELL`, the `exec` command `apps` (`ssh -t host apps`), and
+//! a command at the shell's prompt. At most `ssh_max_sessions` logged-in sessions are open at once. A connection
 //! that has not logged in has [`PREAUTH_TIMEOUT`] to do so, and at most [`MAX_PREAUTH`] such connections wait at once.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -41,7 +43,8 @@ use super::{on_pool, sftp_fs::SftpFs, shell};
 
 const DEFAULT_MAX_SESSIONS: usize = 8;
 const DEFAULT_MAX_FILE: usize = 256 * 1024 * 1024;
-const IDLE: Duration = Duration::from_secs(600);
+/// The connection's inactivity timeout; `apps` ends after as long without input (`super::apps`).
+pub(super) const IDLE: Duration = Duration::from_secs(600);
 /// How long a connection has from accept to a successful login.
 const PREAUTH_TIMEOUT: Duration = Duration::from_secs(30);
 /// Connections that have not logged in yet, at once; one more is closed. They do not count toward `ssh_max_sessions`.
@@ -77,6 +80,9 @@ struct Shared {
     factory: std::sync::Weak<ExecutionContextFactory>,
     root: String,
     max_file: usize,
+    /// The live `apps` sessions, against `tui_max_sessions`.
+    #[cfg(feature = "tui")]
+    apps: Arc<super::apps::Sessions>,
     /// The cluster topics received, shared with the HTTPS cluster listener.
     cluster_posts: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -162,6 +168,8 @@ pub fn start(
         factory: Arc::downgrade(factory),
         root,
         max_file,
+        #[cfg(feature = "tui")]
+        apps: Arc::new(super::apps::Sessions::from_properties()),
         cluster_posts,
     });
     crate::edge::handle().spawn(accept_loop(listener, config, shared, watch, max_sessions));
@@ -177,7 +185,7 @@ pub fn start(
     Ok(Some(SshServer { address, shutdown }))
 }
 
-fn number_property(name: &str, default: usize) -> usize {
+pub(super) fn number_property(name: &str, default: usize) -> usize {
     moqui_lib::env::get_prop_or_env(name)
         .trim()
         .parse::<usize>()
@@ -291,8 +299,10 @@ async fn accept_loop(
             can_sftp: false,
             can_shell: false,
             can_git: false,
+            can_apps: false,
             channels: HashMap::new(),
-            ptys: HashSet::new(),
+            ptys: HashMap::new(),
+            terminal_env: HashMap::new(),
             git_protocol: HashMap::new(),
         };
         let config = Arc::clone(&config);
@@ -342,12 +352,32 @@ struct Connection {
     /// feature, where git commands are not served.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     can_git: bool,
+    /// `apps`, the terminal client (`SSH_APPS`); it also needs a pty and the `tui` feature.
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    can_apps: bool,
     channels: HashMap<ChannelId, Channel<Msg>>,
-    ptys: HashSet<ChannelId>,
+    /// The channels that asked for a pty, with its terminal and window size.
+    ptys: HashMap<ChannelId, Pty>,
+    /// The `env` variables of each channel that say how a terminal draws (`super::apps::is_terminal_variable`).
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    terminal_env: HashMap<ChannelId, BTreeMap<String, String>>,
     /// `GIT_PROTOCOL` of each channel's `env` request.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     git_protocol: HashMap<ChannelId, String>,
 }
+
+/// A channel's pty: its `TERM`, and its window size, which `apps` follows.
+struct Pty {
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    term: String,
+    size: tokio::sync::watch::Sender<(u16, u16)>,
+}
+
+/// What `apps` gets on a channel: the client, or why not.
+#[cfg(feature = "tui")]
+type AppsAccess = Result<super::apps::Apps, &'static str>;
+#[cfg(not(feature = "tui"))]
+type AppsAccess = Result<(), &'static str>;
 
 /// The SSH permissions of the user now logged in.
 #[derive(Clone, Copy, Debug)]
@@ -355,6 +385,7 @@ struct Permissions {
     sftp: bool,
     shell: bool,
     git: bool,
+    apps: bool,
 }
 
 fn ssh_permissions() -> Result<Permissions, CoreError> {
@@ -362,22 +393,38 @@ fn ssh_permissions() -> Result<Permissions, CoreError> {
         sftp: moqui_core::user::has_permission("SSH_SFTP")?,
         shell: moqui_core::user::has_permission("SSH_SHELL")?,
         git: moqui_core::user::has_permission("SSH_GIT")?,
+        apps: moqui_core::user::has_permission("SSH_APPS")?,
     })
+}
+
+/// A window size from the SSH request's `u32`s; 0 (not given) is 80 by 24.
+fn window(columns: u32, rows: u32) -> (u16, u16) {
+    let fit = |value: u32, default: u16| match u16::try_from(value) {
+        Ok(0) => default,
+        Ok(value) => value,
+        Err(_) => u16::MAX,
+    };
+    (fit(columns, 80), fit(rows, 24))
 }
 
 impl Connection {
     /// Let the user in when a permission allows something. A user who may only use git logs in by key, unless
     /// `ssh_git_password_auth` is true: git hosting opens the server to every developer, and keys are not guessed.
     fn accept(&mut self, username: &str, permissions: Permissions, by_password: bool) -> Auth {
-        let Permissions { sftp, shell, git } = permissions;
-        if !sftp && !shell && !git {
+        let Permissions { sftp, shell, git, apps } = permissions;
+        if !sftp && !shell && !git && !apps {
             tracing::warn!(
-                "SSH login of {username} from {}: no SSH_SFTP, SSH_SHELL or SSH_GIT permission",
+                "SSH login of {username} from {}: no SSH_SFTP, SSH_SHELL, SSH_GIT or SSH_APPS permission",
                 self.peer
             );
             return Auth::reject();
         }
-        if !sftp && !shell && by_password && moqui_lib::env::get_prop_or_env("ssh_git_password_auth").trim() != "true" {
+        if !sftp
+            && !shell
+            && !apps
+            && by_password
+            && moqui_lib::env::get_prop_or_env("ssh_git_password_auth").trim() != "true"
+        {
             tracing::warn!(
                 "SSH password login of {username} from {} refused: git over SSH takes a key (ssh_git_password_auth)",
                 self.peer
@@ -397,7 +444,54 @@ impl Connection {
         self.can_sftp = sftp;
         self.can_shell = shell;
         self.can_git = git;
+        self.can_apps = apps;
         Auth::Accept
+    }
+
+    /// `apps` on `channel`: the user's permission, a pty, and a build with the client.
+    fn apps_access(&self, channel: ChannelId) -> AppsAccess {
+        if !self.can_apps {
+            return Err("apps needs the SSH_APPS permission");
+        }
+        let Some(pty) = self.ptys.get(&channel) else {
+            return Err("apps needs a terminal: connect with ssh -t");
+        };
+        #[cfg(feature = "tui")]
+        {
+            Ok(super::apps::Apps {
+                factory: std::sync::Weak::clone(&self.shared.factory),
+                sessions: Arc::clone(&self.shared.apps),
+                username: self.username.clone().unwrap_or_default(),
+                terminal: super::apps::Terminal {
+                    term: pty.term.clone(),
+                    env: self.terminal_env.get(&channel).cloned().unwrap_or_default(),
+                },
+                size: pty.size.subscribe(),
+            })
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            let _ = pty;
+            Err("this build has no terminal UI")
+        }
+    }
+}
+
+/// Run `apps` on the stream, or write why it cannot run. Returns the exit status.
+async fn run_apps<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    stream: &mut S,
+    access: AppsAccess,
+    newline: &str,
+) -> u32 {
+    match access {
+        #[cfg(feature = "tui")]
+        Ok(mut apps) => super::apps::serve(stream, &mut apps, newline).await,
+        #[cfg(not(feature = "tui"))]
+        Ok(()) => 1,
+        Err(reason) => {
+            let _ = stream.write_all(format!("{reason}{newline}").as_bytes()).await;
+            1
+        }
     }
 }
 
@@ -489,16 +583,39 @@ impl russh::server::Handler for Connection {
     async fn pty_request(
         &mut self,
         channel: ChannelId,
-        _term: &str,
-        _col_width: u32,
-        _row_height: u32,
+        term: &str,
+        col_width: u32,
+        row_height: u32,
         _pix_width: u32,
         _pix_height: u32,
         _modes: &[(russh::Pty, u32)],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        self.ptys.insert(channel);
+        let (size, _) = tokio::sync::watch::channel(window(col_width, row_height));
+        self.ptys.insert(
+            channel,
+            Pty {
+                term: term.to_string(),
+                size,
+            },
+        );
         session.channel_success(channel)
+    }
+
+    /// A new window size, for an `apps` session on the channel (now or later).
+    async fn window_change_request(
+        &mut self,
+        channel: ChannelId,
+        col_width: u32,
+        row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(pty) = self.ptys.get(&channel) {
+            pty.size.send_replace(window(col_width, row_height));
+        }
+        Ok(())
     }
 
     async fn subsystem_request(
@@ -568,6 +685,24 @@ impl russh::server::Handler for Connection {
             ));
             return Ok(());
         }
+        if line.trim() == "apps" && self.username.is_some() {
+            let Some(open) = self.channels.remove(&channel) else {
+                return session.channel_failure(channel);
+            };
+            session.channel_success(channel)?;
+            let access = self.apps_access(channel);
+            let newline = if self.ptys.contains_key(&channel) { "\r\n" } else { "\n" };
+            let handle = session.handle();
+            tokio::spawn(async move {
+                let mut stream = open.into_stream();
+                let status = run_apps(&mut stream, access, newline).await;
+                let _ = stream.flush().await;
+                let _ = handle.exit_status_request(channel, status).await;
+                let _ = handle.eof(channel).await;
+                let _ = handle.close(channel).await;
+            });
+            return Ok(());
+        }
         let (Some(username), true) = (self.username.clone(), self.can_shell) else {
             return session.channel_failure(channel);
         };
@@ -577,7 +712,7 @@ impl russh::server::Handler for Connection {
         session.channel_success(channel)?;
         let factory = std::sync::Weak::clone(&self.shared.factory);
         let handle = session.handle();
-        let newline = if self.ptys.contains(&channel) { "\r\n" } else { "\n" };
+        let newline = if self.ptys.contains_key(&channel) { "\r\n" } else { "\n" };
         tokio::spawn(async move {
             let mut stream = open.into_stream();
             let outcome = shell::run(&factory, &username, &line).await;
@@ -594,8 +729,9 @@ impl russh::server::Handler for Connection {
         Ok(())
     }
 
-    /// `GIT_PROTOCOL` (protocol v2 for git) is kept for the channel's exec; other variables are refused, as
-    /// OpenSSH's default `AcceptEnv` does.
+    /// `GIT_PROTOCOL` (protocol v2 for git) is kept for the channel's exec, and the variables that say how a terminal
+    /// draws for `apps` (`COLORTERM`, `NO_COLOR`, the locale); other variables are refused, as OpenSSH's default
+    /// `AcceptEnv` does.
     async fn env_request(
         &mut self,
         channel: ChannelId,
@@ -607,11 +743,20 @@ impl russh::server::Handler for Connection {
             self.git_protocol.insert(channel, variable_value.to_string());
             return session.channel_success(channel);
         }
+        #[cfg(feature = "tui")]
+        if super::apps::is_terminal_variable(variable_name) && self.username.is_some() && variable_value.len() < 256 {
+            self.terminal_env
+                .entry(channel)
+                .or_default()
+                .insert(variable_name.to_string(), variable_value.to_string());
+            return session.channel_success(channel);
+        }
         session.channel_failure(channel)
     }
 
+    /// The admin shell with `SSH_SHELL`; with only `SSH_APPS`, `apps` is the whole session.
     async fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Self::Error> {
-        let (Some(username), true) = (self.username.clone(), self.can_shell) else {
+        let Some(username) = self.username.clone().filter(|_| self.can_shell || self.can_apps) else {
             return session.channel_failure(channel);
         };
         let Some(open) = self.channels.remove(&channel) else {
@@ -620,9 +765,22 @@ impl russh::server::Handler for Connection {
         session.channel_success(channel)?;
         let factory = std::sync::Weak::clone(&self.shared.factory);
         let handle = session.handle();
-        let pty = self.ptys.contains(&channel);
+        let pty = self.ptys.contains_key(&channel);
+        let access = self.apps_access(channel);
+        if !self.can_shell {
+            let newline = if pty { "\r\n" } else { "\n" };
+            tokio::spawn(async move {
+                let mut stream = open.into_stream();
+                let status = run_apps(&mut stream, access, newline).await;
+                let _ = stream.flush().await;
+                let _ = handle.exit_status_request(channel, status).await;
+                let _ = handle.eof(channel).await;
+                let _ = handle.close(channel).await;
+            });
+            return Ok(());
+        }
         tokio::spawn(async move {
-            let status = interactive(open.into_stream(), &factory, &username, pty).await;
+            let status = interactive(open.into_stream(), &factory, &username, pty, access).await;
             let _ = handle.exit_status_request(channel, status).await;
             let _ = handle.eof(channel).await;
             let _ = handle.close(channel).await;
@@ -687,12 +845,14 @@ fn with_newlines(text: &str, newline: &str) -> String {
 }
 
 /// The interactive loop: a prompt, a line, its output. With a PTY the client does not echo, so this echoes and
-/// handles backspace, ctrl-C (drop the line) and ctrl-D (end on an empty line). Returns the exit status.
+/// handles backspace, ctrl-C (drop the line) and ctrl-D (end on an empty line). `apps` runs the terminal client on
+/// the stream, and the prompt comes back when it ends. Returns the exit status.
 async fn interactive<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     mut stream: S,
     factory: &std::sync::Weak<ExecutionContextFactory>,
     username: &str,
     pty: bool,
+    apps: AppsAccess,
 ) -> u32 {
     let newline = if pty { "\r\n" } else { "\n" };
     let greeting = format!("MR-Moqui admin shell for {username}; type help{newline}{PROMPT}");
@@ -800,6 +960,22 @@ async fn interactive<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                     return 1;
                 }
                 continue;
+            } else if text.trim() == "apps" {
+                // `apps` takes the stream until it ends; a second `apps` gets a fresh window watch.
+                #[cfg(feature = "tui")]
+                let access = match &apps {
+                    Ok(apps) => Ok(super::apps::Apps {
+                        factory: std::sync::Weak::clone(&apps.factory),
+                        sessions: Arc::clone(&apps.sessions),
+                        username: apps.username.clone(),
+                        terminal: apps.terminal.clone(),
+                        size: apps.size.clone(),
+                    }),
+                    Err(reason) => Err(*reason),
+                };
+                #[cfg(not(feature = "tui"))]
+                let access = apps;
+                run_apps(&mut stream, access, newline).await;
             } else {
                 let outcome = shell::run(factory, username, &text).await;
                 if outcome.exit {
@@ -844,7 +1020,10 @@ mod tests {
     #[tokio::test]
     async fn an_overlong_shell_line_or_js_block_is_refused() {
         let (client, server) = tokio::io::duplex(64 * 1024);
-        let shell = tokio::spawn(async move { interactive(server, &std::sync::Weak::new(), "tester", false).await });
+        let shell =
+            tokio::spawn(
+                async move { interactive(server, &std::sync::Weak::new(), "tester", false, Err("no apps")).await },
+            );
         let (mut reader, mut writer) = tokio::io::split(client);
         let send = tokio::spawn(async move {
             writer.write_all(&vec![b'a'; MAX_LINE + 10]).await.unwrap();

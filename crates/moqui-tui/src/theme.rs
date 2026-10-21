@@ -338,21 +338,64 @@ fn nearest_16(rgb: Rgb) -> Rgb {
         .unwrap_or(rgb)
 }
 
+/// The levels of each axis of the 6x6x6 cube of the 256-color palette.
+const CUBE: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+/// The index of the cube level nearest `value`.
+fn cube_step(value: u8) -> u8 {
+    (0u8..6)
+        .min_by_key(|at| CUBE[usize::from(*at)].abs_diff(value))
+        .unwrap_or(0)
+}
+
 /// The 6x6x6 cube of the 256-color palette.
 fn nearest_256(rgb: Rgb) -> Rgb {
-    let step = |value: u8| -> u8 {
-        const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
-        LEVELS
-            .into_iter()
-            .min_by_key(|level| level.abs_diff(value))
-            .unwrap_or(value)
-    };
-    Rgb(step(rgb.0), step(rgb.1), step(rgb.2))
+    let level = |value: u8| CUBE[usize::from(cube_step(value))];
+    Rgb(level(rgb.0), level(rgb.1), level(rgb.2))
+}
+
+/// The SGR parameters that set a color at this depth: `38;2;r;g;b`, `38;5;n` from the cube, or `3n`/`9n` from the 16
+/// (`4n`/`10n` for a background). None in monochrome. A session over SSH writes these itself (`ui/encode.rs`).
+pub fn sgr_color(depth: Depth, rgb: Rgb, background: bool) -> Option<String> {
+    let (true_color, base) = if background { (48, 40) } else { (38, 30) };
+    match depth {
+        Depth::Mono => None,
+        Depth::TrueColor => Some(format!("{true_color};2;{};{};{}", rgb.0, rgb.1, rgb.2)),
+        Depth::Ansi256 => {
+            let index =
+                16 + 36 * u16::from(cube_step(rgb.0)) + 6 * u16::from(cube_step(rgb.1)) + u16::from(cube_step(rgb.2));
+            Some(format!("{true_color};5;{index}"))
+        }
+        Depth::Ansi16 => {
+            let index = (0u8..16)
+                .min_by_key(|at| distance(rgb, ANSI_16[usize::from(*at)]))
+                .unwrap_or(7);
+            Some(if index < 8 {
+                (base + index).to_string()
+            } else {
+                (base + 60 + index - 8).to_string()
+            })
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sgr_colors_by_depth() {
+        let primary = Rgb(100, 160, 255);
+        assert_eq!(
+            sgr_color(Depth::TrueColor, primary, false).as_deref(),
+            Some("38;2;100;160;255")
+        );
+        // 100 -> 95 (1), 160 -> 175 (3), 255 -> 255 (5): 16 + 36 + 18 + 5.
+        assert_eq!(sgr_color(Depth::Ansi256, primary, true).as_deref(), Some("48;5;75"));
+        assert_eq!(sgr_color(Depth::Ansi16, Rgb(240, 60, 60), false).as_deref(), Some("91"));
+        assert_eq!(sgr_color(Depth::Ansi16, Rgb(0, 0, 0), true).as_deref(), Some("40"));
+        assert_eq!(sgr_color(Depth::Mono, primary, false), None);
+    }
 
     #[test]
     fn no_color_is_mono_and_linux_is_ascii() {

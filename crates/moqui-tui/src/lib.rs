@@ -69,4 +69,7 @@ pub use session::{
 pub use state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, Then};
 pub use theme::{Depth, Glyph, Role, Theme};
 #[cfg(feature = "ui")]
-pub use ui::{from_revue, render_text, run_local, snapshot, AppView, LocalOptions};
+pub use ui::{
+    from_revue, render_text, run_local, run_session, snapshot, AppView, LocalOptions, Screen, SessionEvent,
+    SessionOptions, ENTER, LEAVE,
+};

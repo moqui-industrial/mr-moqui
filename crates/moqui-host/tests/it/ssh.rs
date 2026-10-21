@@ -478,3 +478,240 @@ fn sftp_and_the_admin_shell_run_on_the_built_in_server() {
     drop(_entered);
     drop(context);
 }
+
+/// Users of the `apps` test: one with `SSH_APPS` alone, and one with `SSH_SHELL` alone. john.doe (ADMIN) has both.
+#[cfg(feature = "tui")]
+const APPS_DATA: &str = r#"<entity-facade-xml type="seed">
+    <!-- password=moqui, as john.doe -->
+    <moqui.security.UserAccount userId="APPS_ONLY" username="apps.only" userFullName="Apps Only"
+        currentPassword="16ac58bbfa332c1c55bd98b53e60720bfa90d394" passwordHashType="SHA"/>
+    <moqui.security.UserGroup userGroupId="APPS_ONLY" description="SSH apps only"/>
+    <moqui.security.UserGroupMember userGroupId="APPS_ONLY" userId="APPS_ONLY" fromDate="1265184000000"/>
+    <moqui.security.UserGroupPermission userGroupId="APPS_ONLY" userPermissionId="SSH_APPS" fromDate="1265184000000"/>
+    <moqui.security.UserAccount userId="SHELL_ONLY" username="shell.only" userFullName="Shell Only"
+        currentPassword="16ac58bbfa332c1c55bd98b53e60720bfa90d394" passwordHashType="SHA"/>
+    <moqui.security.UserGroup userGroupId="SHELL_ONLY" description="SSH shell only"/>
+    <moqui.security.UserGroupMember userGroupId="SHELL_ONLY" userId="SHELL_ONLY" fromDate="1265184000000"/>
+    <moqui.security.UserGroupPermission userGroupId="SHELL_ONLY" userPermissionId="SSH_SHELL" fromDate="1265184000000"/>
+</entity-facade-xml>"#;
+
+#[cfg(feature = "tui")]
+mod apps {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use russh::client::{Handle, Msg};
+    use russh::{Channel, ChannelMsg};
+
+    pub struct Accept;
+
+    impl russh::client::Handler for Accept {
+        type Error = russh::Error;
+        async fn check_server_key(&mut self, _key: &russh::keys::PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+    }
+
+    pub async fn connect(address: std::net::SocketAddr, username: &str, password: &str) -> Option<Handle<Accept>> {
+        let config = Arc::new(russh::client::Config::default());
+        let mut handle = russh::client::connect(config, address, Accept).await.ok()?;
+        let auth = handle.authenticate_password(username, password).await.ok()?;
+        auth.success().then_some(handle)
+    }
+
+    /// A session channel with a pty of `columns` by `rows`.
+    pub async fn pty(handle: &Handle<Accept>, columns: u32, rows: u32) -> Channel<Msg> {
+        let channel = handle.channel_open_session().await.unwrap();
+        channel.set_env(false, "COLORTERM", "truecolor").await.unwrap();
+        channel
+            .request_pty(true, "xterm-256color", columns, rows, 0, 0, &[])
+            .await
+            .unwrap();
+        channel
+    }
+
+    pub async fn send(channel: &Channel<Msg>, bytes: &[u8]) {
+        channel.data(bytes).await.unwrap();
+    }
+
+    /// The channel's output with the escape sequences taken out: the text the frames wrote, in order.
+    pub fn text(bytes: &[u8]) -> String {
+        let text = String::from_utf8_lossy(bytes);
+        let mut out = String::new();
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch != '\x1b' {
+                out.push(ch);
+                continue;
+            }
+            match chars.next() {
+                Some('[') => {
+                    for next in chars.by_ref() {
+                        if ('\x40'..='\x7e').contains(&next) {
+                            break;
+                        }
+                    }
+                    // A cursor move ends a run of text.
+                    out.push('\n');
+                }
+                Some(']') => {
+                    while let Some(next) = chars.next() {
+                        if next == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Read until the output holds `want` (raw bytes when `raw`, else [`text`]); the exit status when the channel
+    /// ends first.
+    pub async fn read_until(
+        channel: &mut Channel<Msg>,
+        seen: &mut Vec<u8>,
+        want: &str,
+        raw: bool,
+    ) -> Result<(), String> {
+        let found = |seen: &[u8]| {
+            if raw {
+                seen.windows(want.len()).any(|window| window == want.as_bytes())
+            } else {
+                text(seen).contains(want)
+            }
+        };
+        let wait = async {
+            while !found(seen) {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => seen.extend_from_slice(&data),
+                    Some(ChannelMsg::ExitStatus { exit_status }) => return Err(format!("exited {exit_status}")),
+                    Some(ChannelMsg::Failure) => return Err("channel request refused".to_string()),
+                    Some(_) => {}
+                    None => return Err("channel closed".to_string()),
+                }
+            }
+            Ok(())
+        };
+        match tokio::time::timeout(Duration::from_secs(30), wait).await {
+            Ok(result) => result.map_err(|err| format!("{err} before {want:?}:\n{}", text(seen))),
+            Err(_) => Err(format!("{want:?} never came:\n{}", text(seen))),
+        }
+    }
+
+    /// The exit status, once the channel ends.
+    pub async fn exit_status(channel: &mut Channel<Msg>, seen: &mut Vec<u8>) -> Option<u32> {
+        let mut status = None;
+        let wait = async {
+            while let Some(message) = channel.wait().await {
+                match message {
+                    ChannelMsg::Data { data } => seen.extend_from_slice(&data),
+                    ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                    _ => {}
+                }
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(30), wait).await;
+        status
+    }
+}
+
+/// `apps` over SSH: a user with only `SSH_APPS` lands in it from `ssh user@host`; `ssh -t host apps` runs it; a window
+/// change redraws at the new size; `apps` at the shell prompt comes back to the prompt; a user without `SSH_APPS` and
+/// a channel without a pty are told why not; and `tui_max_sessions_per_user` holds.
+#[cfg(feature = "tui")]
+#[test]
+fn apps_runs_the_terminal_client_over_ssh() {
+    use apps::{connect, exit_status, pty, read_until, send, text};
+
+    let seed = base64::engine::general_purpose::STANDARD.encode(HOST_SEED);
+    let gate = crate::common::start_with_properties(
+        "ssh_apps",
+        Some(APPS_DATA),
+        &[
+            ("ssh_port", "0"),
+            ("ssh_host_key", &seed),
+            ("tui_max_sessions_per_user", "1"),
+        ],
+    );
+    let address = gate.server.ssh_address().expect("the SSH server listens");
+    moqui_host::edge::block_on(async move {
+        // SSH_APPS and no SSH_SHELL: the shell request is the client, at the pty's size; Ctrl+Q ends the session.
+        let handle = connect(address, "apps.only", "moqui").await.expect("apps.only logs in");
+        let mut channel = pty(&handle, 100, 40).await;
+        channel.request_shell(true).await.unwrap();
+        let mut seen = Vec::new();
+        read_until(&mut channel, &mut seen, "\x1b[?1049h", true).await.unwrap();
+        read_until(&mut channel, &mut seen, "apps.only", false).await.unwrap();
+        // True color, from the COLORTERM env request.
+        read_until(&mut channel, &mut seen, "38;2;", true).await.unwrap();
+
+        // A second session of the same user is past tui_max_sessions_per_user (1).
+        let mut second = pty(&handle, 100, 40).await;
+        second.exec(true, "apps").await.unwrap();
+        let mut refused = Vec::new();
+        assert_eq!(exit_status(&mut second, &mut refused).await, Some(1));
+        assert!(
+            text(&refused).contains("tui_max_sessions_per_user"),
+            "{}",
+            text(&refused)
+        );
+
+        // A window change: the next frame is drawn whole after a clear.
+        let before = seen.len();
+        channel.window_change(180, 50, 0, 0).await.unwrap();
+        let mut after = seen.split_off(before);
+        read_until(&mut channel, &mut after, "\x1b[2J", true).await.unwrap();
+        seen.extend(after);
+        send(&channel, b"\x11").await;
+        assert_eq!(exit_status(&mut channel, &mut seen).await, Some(0));
+        assert!(seen.ends_with(b"\x1b[?1049l"), "the terminal is put back");
+
+        // A user with SSH_SHELL and no SSH_APPS: apps at the prompt says why not, and the prompt stays.
+        let handle = connect(address, "shell.only", "moqui")
+            .await
+            .expect("shell.only logs in");
+        let mut channel = pty(&handle, 100, 40).await;
+        channel.request_shell(true).await.unwrap();
+        let mut seen = Vec::new();
+        read_until(&mut channel, &mut seen, "moqui> ", true).await.unwrap();
+        send(&channel, b"apps\r").await;
+        read_until(&mut channel, &mut seen, "apps needs the SSH_APPS permission", true)
+            .await
+            .unwrap();
+        send(&channel, b"exit\r").await;
+        assert_eq!(exit_status(&mut channel, &mut seen).await, Some(0));
+
+        // john.doe has both: apps at the prompt, to the Tools user list by go to, and back to the prompt on quit.
+        let handle = connect(address, "john.doe", "moqui").await.expect("john.doe logs in");
+        let mut channel = pty(&handle, 160, 45).await;
+        channel.request_shell(true).await.unwrap();
+        let mut seen = Vec::new();
+        read_until(&mut channel, &mut seen, "moqui> ", true).await.unwrap();
+        send(&channel, b"apps\r").await;
+        read_until(&mut channel, &mut seen, "\x1b[?1049h", true).await.unwrap();
+        read_until(&mut channel, &mut seen, "john.doe", false).await.unwrap();
+        let mark = seen.len();
+        send(&channel, b"g").await;
+        send(&channel, b"/apps/system/Security/UserAccount/UserAccountList").await;
+        send(&channel, b"\r").await;
+        let mut list = seen.split_off(mark);
+        read_until(&mut channel, &mut list, "EX_JOHN_DOE", false).await.unwrap();
+        seen.extend(list);
+        send(&channel, b"\x11").await;
+        read_until(&mut channel, &mut seen, "\x1b[?1049l", true).await.unwrap();
+        read_until(&mut channel, &mut seen, "moqui> ", true).await.unwrap();
+        send(&channel, b"exit\r").await;
+        assert_eq!(exit_status(&mut channel, &mut seen).await, Some(0));
+
+        // Without a pty, apps says to ask for one.
+        let mut channel = handle.channel_open_session().await.unwrap();
+        channel.exec(true, "apps").await.unwrap();
+        let mut seen = Vec::new();
+        assert_eq!(exit_status(&mut channel, &mut seen).await, Some(1));
+        assert!(text(&seen).contains("ssh -t"), "{}", text(&seen));
+    })
+    .unwrap();
+}

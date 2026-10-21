@@ -16,11 +16,18 @@
 //!
 //! crossterm 0.29 reads the process terminal from `EventReader` and does not export a
 //! parser for an arbitrary byte stream, so this decoder is the one the spike keeps.
-//! A lone ESC stays buffered until the next byte, because it may be the start of a sequence.
+//! A lone ESC stays buffered until the next byte, because it may be the start of a sequence; [`Decoder::deadline`] says
+//! when it has waited long enough, and [`Decoder::flush`] then gives it as Escape.
 //! Resize on a real SSH session arrives as a window-change, not as bytes. The `8;rows;cols t`
 //! report is accepted so a test can feed a size without a pty.
 
+use std::time::{Duration, Instant};
+
 use crate::keys::{Key, KeyPress};
+
+/// How long an unfinished sequence waits for its next byte before it is taken as typed: a lone ESC is the Escape key.
+/// Terminals send a sequence in one write, so a gap this long means a person pressed Escape.
+pub const ESC_WAIT: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decoded {
@@ -37,6 +44,8 @@ pub enum Decoded {
 pub struct Decoder {
     pending: Vec<u8>,
     paste: Option<Vec<u8>>,
+    /// When the bytes still pending stopped short of a whole sequence.
+    waiting: Option<Instant>,
 }
 
 impl Default for Decoder {
@@ -50,7 +59,27 @@ impl Decoder {
         Self {
             pending: Vec::new(),
             paste: None,
+            waiting: None,
         }
+    }
+
+    /// When [`Self::flush`] should run: an unfinished sequence has waited [`ESC_WAIT`]. None inside a paste, which
+    /// waits for its end however long it takes.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.waiting.map(|since| since + ESC_WAIT)
+    }
+
+    /// Take what is pending as typed: an ESC is the Escape key, and the bytes after it are read again.
+    pub fn flush(&mut self) -> Vec<Decoded> {
+        self.waiting = None;
+        if self.paste.is_some() || self.pending.first() != Some(&b'\x1b') {
+            return Vec::new();
+        }
+        let rest = self.pending.split_off(1);
+        self.pending.clear();
+        let mut out = vec![key(Key::Escape)];
+        out.extend(self.push(&rest));
+        out
     }
 
     pub fn push(&mut self, bytes: &[u8]) -> Vec<Decoded> {
@@ -88,6 +117,7 @@ impl Decoder {
                 }
             }
         }
+        self.waiting = (self.paste.is_none() && !self.pending.is_empty()).then(Instant::now);
         out
     }
 }
@@ -109,6 +139,9 @@ fn take_one(buf: &[u8]) -> Take {
         b'\n' => Take::One(key(Key::Enter), 1),
         b'\t' => Take::One(key(Key::Tab), 1),
         0x7f | 0x08 => Take::One(key(Key::Backspace), 1),
+        // Ctrl+Space, and Ctrl with a letter (the bytes of Tab, Enter and Backspace are those keys, above).
+        0x00 => Take::One(press(Key::Char(' '), false, true, false), 1),
+        byte @ 0x01..=0x1a => Take::One(press(Key::Char(char::from(b'a' + byte - 1)), false, true, false), 1),
         byte if byte.is_ascii_graphic() || byte == b' ' => Take::One(key(Key::Char(byte as char)), 1),
         byte if byte >= 0x80 => take_utf8(buf),
         _ => Take::Skip(1),
@@ -123,7 +156,11 @@ fn take_esc(buf: &[u8]) -> Take {
         b'[' => take_csi(buf),
         b'O' => take_ss3(buf),
         b'\x1b' => Take::One(key(Key::Escape), 1),
-        byte if byte.is_ascii_graphic() => Take::One(press(Key::Char(byte as char), true, false, false), 2),
+        b'\r' => Take::One(press(Key::Enter, true, false, false), 2),
+        0x7f => Take::One(press(Key::Backspace, true, false, false), 2),
+        byte if byte.is_ascii_graphic() || byte == b' ' => {
+            Take::One(press(Key::Char(byte as char), true, false, false), 2)
+        }
         _ => Take::One(key(Key::Escape), 1),
     }
 }
@@ -141,6 +178,8 @@ fn take_ss3(buf: &[u8]) -> Take {
         b'B' => Key::Down,
         b'C' => Key::Right,
         b'D' => Key::Left,
+        b'H' => Key::Home,
+        b'F' => Key::End,
         _ => return Take::Skip(3),
     };
     Take::One(Decoded::Key(KeyPress::plain(key)), 3)
@@ -209,6 +248,8 @@ fn take_tilde(body: &str, len: usize) -> Take {
         return Take::Skip(len);
     }
     let key = match code {
+        "1" | "7" => Key::Home,
+        "4" | "8" => Key::End,
         "3" => Key::Delete,
         "5" => Key::PageUp,
         "6" => Key::PageDown,
@@ -346,6 +387,33 @@ mod tests {
         let mut decoder = Decoder::new();
         assert!(decoder.push(b"\x1b[1").is_empty());
         assert_eq!(decoder.push(b"5~"), vec![key(Key::F(5))]);
+    }
+
+    #[test]
+    fn a_lone_escape_waits_then_is_the_escape_key() {
+        let mut decoder = Decoder::new();
+        assert!(decoder.push(b"\x1b").is_empty());
+        assert!(decoder.deadline().is_some());
+        assert_eq!(decoder.flush(), vec![key(Key::Escape)]);
+        assert_eq!(decoder.deadline(), None);
+        // An ESC and `[` in two reads, before the wait ends, are still one sequence.
+        assert!(decoder.push(b"\x1b").is_empty());
+        assert!(decoder.push(b"[").is_empty());
+        assert_eq!(decoder.push(b"B"), vec![key(Key::Down)]);
+        assert_eq!(decoder.deadline(), None);
+        // A paste waits for its end without a deadline.
+        assert!(decoder.push(b"\x1b[200~part").is_empty());
+        assert_eq!(decoder.deadline(), None);
+    }
+
+    #[test]
+    fn control_letters_alt_enter_and_home_end() {
+        assert_eq!(keys(b"\x0b"), vec![press(Key::Char('k'), false, true, false)]);
+        assert_eq!(keys(b"\x13"), vec![press(Key::Char('s'), false, true, false)]);
+        assert_eq!(keys(b"\t"), vec![key(Key::Tab)]);
+        assert_eq!(keys(b"\x1b\r"), vec![press(Key::Enter, true, false, false)]);
+        assert_eq!(keys(b"\x1b[1~\x1b[4~"), vec![key(Key::Home), key(Key::End)]);
+        assert_eq!(keys(b"\x1bOH"), vec![key(Key::Home)]);
     }
 
     #[test]

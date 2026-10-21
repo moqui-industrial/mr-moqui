@@ -72,7 +72,7 @@ fn gallery_and_party_screens() {
     let factory = Arc::clone(gate.server.factory());
     grant_gate(&factory);
     log_in_through_the_dialog(&factory);
-    let link = HostLink::as_user(factory, "john.doe");
+    let link = HostLink::as_user(&factory, "john.doe");
     render_gallery(&link);
     drive_gallery(&link);
     drive_party(&link);
@@ -304,7 +304,7 @@ fn link_with_text(view: &AppView<HostLink>, text: &str) -> String {
 /// A link with no user answers 401 to every call, so the client opens its login dialog; a wrong password stays there,
 /// and the right one asks for the screen again.
 fn log_in_through_the_dialog(factory: &Arc<ExecutionContextFactory>) {
-    let link = HostLink::new(Arc::clone(factory));
+    let link = HostLink::new(factory);
     let mut view = AppView::with_session(Session::start("/apps/gallery/List"), link);
     view.run_requests();
     assert!(

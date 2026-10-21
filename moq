@@ -1077,7 +1077,7 @@ path = \"src/main.rs\"
 # The packages, as crates/moqui has them (docs/Packaging.md). ./moq build picks one with --no-default-features.
 [features]
 default = [\"maximal\"]
-lite = [\"moqui-host/lite\"]
+lite = [\"moqui-host/lite\", \"tui\"]
 enterprise = [\"moqui-host/enterprise\", \"tui\"]
 maximal = [\"moqui-host/maximal\", \"tui\"]
 inbound-smtp = [\"moqui-host/inbound-smtp\"]

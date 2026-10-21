@@ -15,10 +15,11 @@
 //! The in-process [`ScreenLink`](moqui_tui::ScreenLink) (plans/Screen-TUI-Impl.md 2.7, 4.1). Each call runs on the
 //! factory's request pool in a fresh execution context, logged in as the link's user, as the SSH shell's commands are;
 //! the client holds no permission logic. Until a user is logged in, every call answers [`LinkError::Auth`], so the client
-//! shows its login dialog.
+//! shows its login dialog. The link holds the factory weakly, as the SSH tasks do: a session over SSH never keeps a
+//! stopped server alive, and its calls then answer that the server is stopping.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use moqui_core::context::{Error, ErrorKind, ExecutionContextFactory};
 use moqui_core::screen::RenderOutput;
@@ -34,7 +35,7 @@ const FRAGMENT_REDIRECTS: usize = 4;
 /// One screen client bound to a running factory.
 #[derive(Clone)]
 pub struct HostLink {
-    factory: Arc<ExecutionContextFactory>,
+    factory: Weak<ExecutionContextFactory>,
     /// The user the calls run as, once logged in.
     user: Arc<Mutex<Option<String>>>,
     /// The path of the last level that rendered, used to resolve a relative transition or options url.
@@ -43,7 +44,12 @@ pub struct HostLink {
 
 impl HostLink {
     /// A link with no user: the client logs in through its dialog first.
-    pub fn new(factory: Arc<ExecutionContextFactory>) -> Self {
+    pub fn new(factory: &Arc<ExecutionContextFactory>) -> Self {
+        Self::weak(Arc::downgrade(factory))
+    }
+
+    /// A link with no user over a factory the caller holds weakly.
+    pub fn weak(factory: Weak<ExecutionContextFactory>) -> Self {
         Self {
             factory,
             user: Arc::new(Mutex::new(None)),
@@ -52,8 +58,13 @@ impl HostLink {
     }
 
     /// A link already logged in as `username`: `moqui tui --user` on a dev instance, and the tests.
-    pub fn as_user(factory: Arc<ExecutionContextFactory>, username: impl Into<String>) -> Self {
-        let link = Self::new(factory);
+    pub fn as_user(factory: &Arc<ExecutionContextFactory>, username: impl Into<String>) -> Self {
+        Self::weak_as_user(Arc::downgrade(factory), username)
+    }
+
+    /// [`Self::as_user`] over a factory held weakly: an SSH session, logged in by the SSH server.
+    pub fn weak_as_user(factory: Weak<ExecutionContextFactory>, username: impl Into<String>) -> Self {
+        let link = Self::weak(factory);
         *link.user.lock().unwrap_or_else(PoisonError::into_inner) = Some(username.into());
         link
     }
@@ -65,9 +76,16 @@ impl HostLink {
     /// Returns [`LinkError::Remote`] when the menu request fails or the body is not a JSON array.
     pub fn menu(&self, path: &str) -> Result<Vec<MenuItem>, LinkError> {
         let url = menu_url(path);
-        let factory = Arc::clone(&self.factory);
+        let factory = self.factory()?;
         let output = self.on_pool(move || moqui_core::screen::make_render(&factory).screen_path(url).render())?;
         menu_from(&output)
+    }
+
+    /// The factory, or [`LinkError::Remote`] once the server stopped.
+    fn factory(&self) -> Result<Arc<ExecutionContextFactory>, LinkError> {
+        self.factory
+            .upgrade()
+            .ok_or_else(|| LinkError::Remote("the server is stopping".into()))
     }
 
     fn user(&self) -> Option<String> {
@@ -89,10 +107,10 @@ impl HostLink {
         let Some(username) = self.user() else {
             return Err(LinkError::Auth("Authentication required".into()));
         };
-        let rx = self
-            .factory
+        let factory = self.factory()?;
+        let rx = factory
             .request_pool()
-            .try_submit(Arc::clone(&self.factory), move || {
+            .try_submit(Arc::clone(&factory), move || {
                 moqui_core::user::internal_login_user(&username)?;
                 work()
             })
@@ -115,7 +133,7 @@ impl HostLink {
         remember: bool,
     ) -> Result<RenderOutput, LinkError> {
         let values = value_map(parameters);
-        let factory = Arc::clone(&self.factory);
+        let factory = self.factory()?;
         self.on_pool(move || {
             moqui_core::screen::make_render(&factory)
                 .screen_path(path)
@@ -165,7 +183,7 @@ impl ScreenLink for HostLink {
             method.to_ascii_uppercase()
         };
         let values = value_map(parameters);
-        let factory = Arc::clone(&self.factory);
+        let factory = self.factory()?;
         let asked = url.clone();
         let result = self
             .on_pool(move || {
@@ -213,7 +231,7 @@ impl ScreenLink for HostLink {
     fn raw(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<RawBody, LinkError> {
         let url = self.absolute(url);
         let values = value_map(parameters);
-        let factory = Arc::clone(&self.factory);
+        let factory = self.factory()?;
         let output = self.on_pool(move || {
             moqui_core::screen::make_render(&factory)
                 .screen_path(url)
@@ -248,7 +266,7 @@ impl ScreenLink for HostLink {
             method.to_ascii_uppercase()
         };
         let values = value_map(fields);
-        let factory = Arc::clone(&self.factory);
+        let factory = self.factory()?;
         let posted = url.clone();
         let output = self.on_pool(move || {
             moqui_core::screen::make_render(&factory)
@@ -272,7 +290,7 @@ impl ScreenLink for HostLink {
     fn options(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<Vec<Choice>, LinkError> {
         let url = self.absolute(url);
         let values = value_map(parameters);
-        let factory = Arc::clone(&self.factory);
+        let factory = self.factory()?;
         let asked = url.clone();
         let result = self
             .on_pool(move || {
@@ -300,7 +318,7 @@ impl ScreenLink for HostLink {
             Err(LinkError::Auth(text)) => return Err(LinkError::Auth(text)),
             Err(err) => tracing::warn!("TUI menu for {path} failed: {err}"),
         }
-        let factory = Arc::clone(&self.factory);
+        let factory = self.factory()?;
         let output = self.on_pool(move || {
             moqui_core::screen::make_render(&factory)
                 .screen_path("/shellData")
@@ -317,11 +335,10 @@ impl ScreenLink for HostLink {
     }
 
     fn login(&self, username: &str, password: &str, _code: &str) -> Result<(), LinkError> {
-        let factory = Arc::clone(&self.factory);
+        let factory = self.factory()?;
         let name = username.to_string();
         let secret = password.to_string();
-        let rx = self
-            .factory
+        let rx = factory
             .request_pool()
             .try_submit(Arc::clone(&factory), move || {
                 moqui_core::user::login_user(&name, &secret)?;
