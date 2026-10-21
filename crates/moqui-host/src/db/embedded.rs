@@ -920,7 +920,7 @@ mod cluster {
                 "postmaster.pid still present"
             );
             assert!(
-                !Path::new(&format!("/proc/{pid}")).exists(),
+                !process_live(pid),
                 "postmaster {pid} still alive"
             );
         }
@@ -1223,7 +1223,7 @@ mod cluster {
             drop(cluster);
             assert_eq!(postmaster_pid(&data_dir), pid, "adopted postmaster was stopped");
             assert!(
-                Path::new(&format!("/proc/{pid}")).exists(),
+                process_live(pid),
                 "adopted postmaster {pid} must keep running"
             );
         }
@@ -1244,7 +1244,7 @@ mod cluster {
             assert!(err.message().contains("17"), "{err}");
             assert!(err.message().contains(SHIPPED_VERSION), "{err}");
             assert!(
-                Path::new(&format!("/proc/{pid}")).exists(),
+                process_live(pid),
                 "refusing to adopt killed postmaster {pid}"
             );
         }
@@ -1270,7 +1270,7 @@ mod cluster {
             assert!(err.message().contains(&pid.to_string()), "{err}");
             assert!(err.message().contains("copied lock"), "{err}");
             assert!(
-                Path::new(&format!("/proc/{pid}")).exists(),
+                process_live(pid),
                 "the live postmaster was touched"
             );
             drop(cluster);
@@ -1428,7 +1428,7 @@ mod cluster {
 
         impl Drop for KillGuard {
             fn drop(&mut self) {
-                if Path::new(&format!("/proc/{}", self.0)).exists() {
+                if process_live(self.0) {
                     let _ = std::process::Command::new("kill")
                         .args(["-9", &self.0.to_string()])
                         .status();
@@ -1443,7 +1443,7 @@ mod cluster {
                 .expect("kill");
             assert!(status.success(), "kill {pid}");
             for _ in 0..50 {
-                if !Path::new(&format!("/proc/{pid}")).exists() {
+                if !process_live(pid) {
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
