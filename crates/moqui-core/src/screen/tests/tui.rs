@@ -921,6 +921,74 @@ fn stacked_columns_are_parts_and_no_cell_is_an_element_name() {
     client_model(&output.body_text());
 }
 
+/// A container-dialog in a list cell (an Edit per row) is a dialog node of the row, its form filled from the row; a
+/// section in such a dialog cannot be captured and is an error node, with the rest of the document whole.
+#[test]
+fn a_container_dialog_in_a_list_cell_is_a_dialog_of_its_row() {
+    let xml = format!(
+        r#"<screen require-authentication="false"><transition name="update"><default-response url="."/></transition>
+        <actions><script>{ROWS}</script></actions><widgets>
+            <form-list name="Rows" list="rows" skip-form="true">
+                <field name="name"><default-field><display/></default-field></field>
+                <field name="edit"><default-field title="">
+                    <container-dialog id="EditDialog" button-text="Edit" title="Edit ${{name}}">
+                        <form-single name="EditRow" transition="update">
+                            <field name="name"><default-field><display/></default-field></field>
+                            <field name="qty"><default-field><text-line/></default-field></field>
+                            <field name="save"><default-field><submit/></default-field></field>
+                        </form-single>
+                    </container-dialog>
+                </default-field></field>
+            </form-list>
+            <section name="After"><widgets><label text="after the list"/></widgets></section>
+        </widgets></screen>"#
+    );
+    let output = render("row-dialog", &xml, BTreeMap::new());
+    let body = output.body_text();
+    let doc = document(&output);
+    let list = list_named(&doc, "Rows");
+    let rows = list["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{list:?}");
+    let dialog = |row: usize| {
+        rows[row]["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|cell| cell["t"] == json!("dialog"))
+            .unwrap_or_else(|| panic!("no dialog in row {row}: {}", rows[row]))
+            .clone()
+    };
+    let (first, second) = (dialog(0), dialog(1));
+    assert_eq!(first["title"], json!("Edit Alpha"));
+    assert_eq!(second["title"], json!("Edit Beta"));
+    assert_ne!(first["id"], second["id"]);
+    let qty = |dialog: &Json| {
+        nodes(dialog)
+            .into_iter()
+            .find(|node| node.get("name").and_then(Json::as_str) == Some("qty"))
+            .map(|node| node["w"]["value"].clone())
+    };
+    assert_eq!(qty(&first), Some(json!("2")), "{first}");
+    assert_eq!(qty(&second), Some(json!("3")), "{second}");
+    assert!(body.contains("after the list"), "{body}");
+    client_model(&body);
+
+    let nested = xml.replace(
+        r#"<form-single name="EditRow""#,
+        r#"<section name="Inner"><widgets><label text="x"/></widgets></section><form-single name="EditRow""#,
+    );
+    let output = render("row-dialog-nested", &nested, BTreeMap::new());
+    let body = output.body_text();
+    let doc = document(&output);
+    assert!(body.contains("after the list"), "{body}");
+    assert!(
+        nodes(&doc)
+            .iter()
+            .any(|node| node.get("t").and_then(Json::as_str) == Some("error")),
+        "{body}"
+    );
+}
+
 /// A row-selection action with a dialog is a dialog after the list, naming the list, with the action's form.
 #[test]
 fn a_row_selection_action_is_a_dialog_of_its_list() {

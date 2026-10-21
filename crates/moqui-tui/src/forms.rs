@@ -586,6 +586,24 @@ impl Index {
                             };
                             self.add(c, &inner_at);
                         }
+                        // A container-dialog of the row (an Edit per row): its body came with the row; F10 offers it.
+                        Node::Dialog {
+                            id, button, title, c, ..
+                        } => {
+                            let shown = if title.is_empty() { button } else { title };
+                            self.dialogs.insert(id.clone(), shown.clone());
+                            self.row_dialogs
+                                .entry((list.id.clone(), row_at))
+                                .or_default()
+                                .push(id.clone());
+                            let inner_at = At {
+                                scope: Scope::Dialog(id.clone()),
+                                form: None,
+                                list: None,
+                                ..at.clone()
+                            };
+                            self.add(c, &inner_at);
+                        }
                         _ => {}
                     }
                 }

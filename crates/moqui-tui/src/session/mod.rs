@@ -231,6 +231,9 @@ pub struct Session {
     downloads: Vec<RawBody>,
     /// Markdown text areas showing their preview (F4).
     previews: BTreeSet<String>,
+    /// The first line a text area shows, by field, kept so the cursor stays in its rows; and a preview's first row.
+    area_tops: BTreeMap<String, usize>,
+    preview_tops: BTreeMap<String, usize>,
 }
 
 impl Session {
@@ -286,6 +289,8 @@ impl Session {
             counts: BTreeMap::new(),
             downloads: Vec::new(),
             previews: BTreeSet::new(),
+            area_tops: BTreeMap::new(),
+            preview_tops: BTreeMap::new(),
         };
         session.reindex(false);
         session.show_model_messages();
@@ -819,6 +824,57 @@ impl Session {
         self.previews.contains(field)
     }
 
+    /// The first line of a text area's source on screen: where it was last, moved so the cursor's row shows. The
+    /// drawing clamps it to the text.
+    pub fn area_top(&self, field: &str) -> usize {
+        let top = self.area_tops.get(field).copied().unwrap_or(0);
+        let Some(widget @ Widget::TextArea { .. }) = self.field_widget(field) else {
+            return top;
+        };
+        let shown = crate::layout::text_area_rows(widget);
+        let (row, _) = edit::row_col(self.buffer(field), self.cursor(field));
+        if row < top {
+            row
+        } else if row >= top + shown {
+            row + 1 - shown
+        } else {
+            top
+        }
+    }
+
+    /// The first row of a Markdown preview on screen.
+    pub fn preview_top(&self, field: &str) -> usize {
+        self.preview_tops.get(field).copied().unwrap_or(0)
+    }
+
+    /// Scroll a text area by `rows` (up when negative): its preview when it shows one, else its source, the cursor kept
+    /// in view. The wheel and PgUp/PgDn.
+    pub fn scroll_area(&mut self, field: &str, rows: isize) {
+        let shown = self.field_widget(field).map_or(1, crate::layout::text_area_rows);
+        if self.previewing(field) {
+            let top = self.preview_top(field).saturating_add_signed(rows);
+            self.preview_tops.insert(field.to_string(), top);
+            return;
+        }
+        let top = self.area_top(field).saturating_add_signed(rows);
+        let lines = self.buffer(field).split('\n').count();
+        let top = top.min(lines.saturating_sub(shown));
+        self.area_tops.insert(field.to_string(), top);
+        // The cursor moves into the rows shown, as a terminal pager moves its point.
+        let text = self.buffer(field).to_string();
+        let (row, col) = edit::row_col(&text, self.cursor(field));
+        let row = row.clamp(top, top + shown - 1);
+        self.cursors.insert(field.to_string(), edit::offset_of(&text, row, col));
+    }
+
+    /// Keep where a text area shows from, after its cursor moved, so it scrolls only as far as the cursor needs.
+    fn follow_area_cursor(&mut self, field: &str) {
+        if matches!(self.field_widget(field), Some(Widget::TextArea { .. })) {
+            let top = self.area_top(field);
+            self.area_tops.insert(field.to_string(), top);
+        }
+    }
+
     /// Whether a field shows now, by its `visible-when`.
     pub fn visible(&self, field_id: &str) -> bool {
         self.index.visible(field_id, &|key| self.edits.get(key).to_string())
@@ -1001,6 +1057,17 @@ impl Session {
                 self.edits.set(&item.key, text);
                 self.cursors.insert(item.key.clone(), cursor);
                 self.after_edit(&item.key);
+                self.follow_area_cursor(&item.key);
+                true
+            }
+            FocusKind::Text
+                if press.is_plain()
+                    && matches!(press.key, Key::PageUp | Key::PageDown)
+                    && matches!(self.field_widget(&item.key), Some(Widget::TextArea { .. })) =>
+            {
+                let shown = self.field_widget(&item.key).map_or(1, crate::layout::text_area_rows);
+                let step = isize::try_from(shown).unwrap_or(1);
+                self.scroll_area(&item.key, if press.key == Key::PageUp { -step } else { step });
                 true
             }
             FocusKind::Text => {
@@ -1011,12 +1078,14 @@ impl Session {
                     Edited::No => false,
                     Edited::Moved => {
                         self.cursors.insert(item.key.clone(), cursor);
+                        self.follow_area_cursor(&item.key);
                         true
                     }
                     Edited::Changed => {
                         self.edits.set(&item.key, text);
                         self.cursors.insert(item.key.clone(), cursor);
                         self.after_edit(&item.key);
+                        self.follow_area_cursor(&item.key);
                         true
                     }
                 }

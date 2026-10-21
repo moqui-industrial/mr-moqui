@@ -914,9 +914,9 @@ The client has 33 more tests (97 in all): `dynamic.rs`, `shell.rs`, `structure.r
 - The script runtime had no `ec.service.job(name)`. It is added (`parameters`, `parameter`, `localOnly`, `run` giving the run id, over `service::run_job_now`), so Tools' Run Job works in every mode.
 
 **Open.**
-- A `container-dialog` in a list cell (Gallery Dialog's Edit per row) draws nothing: its body is statement code, and a cell is a value.
+- A `container-dialog` in a list cell (Gallery Dialog's Edit per row) draws nothing: its body is statement code, and a cell is a value. **Fixed Oct 21:** `ScreenTui.js` captures the dialog's writes (`$captured`) into the row's cell as a `dialog` node; F10 offers it. A section, include or subscreen inside such a dialog is an `error` node.
 - `split.selectParameter` is carried but not used: the side's links already hold the parameter.
-- `/apps/setPreference` with no user answers 500, not 401 (the screen names a Java exception class the JS runtime does not have).
+- `/apps/setPreference` with no user answers 500, not 401 (the screen names a Java exception class the JS runtime does not have). **Fixed Oct 21:** `apps.xml` answers `ec.web.sendJsonError(401, …)`, as `webroot.xml` does.
 - The Calendar component shows and moves through months, but does not create an event as the `.qvue` does.
 - The Service Load Runner needs `ec.service.getLoadRunner`, which the port does not have, in every mode; its twin says so and is ready for it.
 

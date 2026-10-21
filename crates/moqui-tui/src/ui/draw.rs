@@ -795,7 +795,7 @@ fn draw_value(paint: &mut Painter, session: &Session, field: &LaidField, widget:
             // The preview of the source, drawn as markdown-view draws it.
             let room = usize::from(paint.right.saturating_sub(x)).saturating_sub(3);
             let (blocks, _) = crate::markdown::blocks(session.buffer(id));
-            let mut row = 0;
+            let mut lines = Vec::new();
             for block in &blocks {
                 let lead = match block.kind.as_str() {
                     "li" => format!(
@@ -807,13 +807,21 @@ fn draw_value(paint: &mut Painter, session: &Session, field: &LaidField, widget:
                     _ => String::new(),
                 };
                 for line in crate::layout::wrap(&format!("{lead}{}", block.text), room) {
-                    if row >= field.rows {
-                        break;
-                    }
-                    let bar = if paint.theme.ascii { "|" } else { "│" };
-                    paint.text(x, y + row, bar, Look::role(Role::Info), 1);
-                    paint.text(x + 1, y + row, &line, text_look(&block.kind), room);
-                    row += 1;
+                    lines.push((line, block.kind.as_str()));
+                }
+            }
+            // PgUp, PgDn and the wheel scroll the preview.
+            let top = session.preview_top(id).min(lines.len().saturating_sub(field.rows));
+            for row in 0..field.rows {
+                paint.text(
+                    x,
+                    y + row,
+                    area_bar(paint, row, field.rows, top, lines.len()),
+                    Look::role(Role::Info),
+                    1,
+                );
+                if let Some((line, kind)) = lines.get(top + row) {
+                    paint.text(x + 1, y + row, line, text_look(kind), room);
                 }
             }
             paint.text(
@@ -834,22 +842,24 @@ fn draw_value(paint: &mut Painter, session: &Session, field: &LaidField, widget:
             let room = usize::from(paint.right.saturating_sub(x)).saturating_sub(3);
             // Markdown source is drawn styled (3.8): its text is the value, each character in the look of its part.
             let looks = (editor_type == "md").then(|| crate::markdown::source_looks(text));
-            let mut line_start = 0;
-            for row in 0..field.rows {
+            // The lines from the area's top, which follows the cursor; a text longer than the rows scrolls.
+            let top = session.area_top(id).min(lines.len().saturating_sub(field.rows));
+            let mut line_start: usize = lines.iter().take(top).map(|line| line.chars().count() + 1).sum();
+            for shown in 0..field.rows {
+                let row = top + shown;
                 let line = lines.get(row).copied().unwrap_or("");
-                let bar = if paint.theme.ascii { "|" } else { "│" };
-                paint.text(x, y + row, bar, Look::role(Role::Field), 1);
+                let y = y + shown;
+                let bar = area_bar(paint, shown, field.rows, top, lines.len());
+                paint.text(x, y, bar, Look::role(Role::Field), 1);
                 let look = if *read_only {
                     Look::role(Role::Text)
                 } else {
                     Look::role(Role::Field)
                 };
                 match &looks {
-                    Some(looks) => {
-                        source_line(paint, x + 1, y + row, line, &looks[line_start.min(looks.len())..], room)
-                    }
+                    Some(looks) => source_line(paint, x + 1, y, line, &looks[line_start.min(looks.len())..], room),
                     None => {
-                        paint.text(x + 1, y + row, &truncate_width(line, room), look, room);
+                        paint.text(x + 1, y, &truncate_width(line, room), look, room);
                     }
                 }
                 line_start += line.chars().count() + 1;
@@ -858,7 +868,7 @@ fn draw_value(paint: &mut Painter, session: &Session, field: &LaidField, widget:
                     let cx = x
                         + 1
                         + u16::try_from(display_width(&line.chars().take(cursor_col).collect::<String>())).unwrap_or(0);
-                    paint.text(cx, y + row, &ch, Look::role(Role::Focus).reverse(), 1);
+                    paint.text(cx, y, &ch, Look::role(Role::Focus).reverse(), 1);
                 }
             }
             // The changed and error marks after the text's room, not over its first column.
@@ -1038,6 +1048,28 @@ fn input(
 
 /// One line of Markdown source in runs of the same look: headings bold in the primary color, strong bold, emphasis
 /// italic, code in the info color, links underlined, quotes and markers muted.
+/// The left bar of a text area's row: `▲` on the first row with lines above, `▼` on the last with lines below.
+fn area_bar(paint: &Painter, shown: usize, rows: usize, top: usize, lines: usize) -> &'static str {
+    let ascii = paint.theme.ascii;
+    if shown == 0 && top > 0 {
+        if ascii {
+            "^"
+        } else {
+            "▲"
+        }
+    } else if shown + 1 == rows && top + rows < lines {
+        if ascii {
+            "v"
+        } else {
+            "▼"
+        }
+    } else if ascii {
+        "|"
+    } else {
+        "│"
+    }
+}
+
 fn source_line(paint: &mut Painter, x: u16, y: usize, line: &str, looks: &[crate::markdown::SourceLook], room: usize) {
     let look_of = |part: &crate::markdown::SourceLook| {
         let mut look = if part.marker || part.quote {
@@ -1335,7 +1367,7 @@ fn cell_part(paint: &Painter, session: &Session, part: &Cell) -> (String, Look) 
             (format!("{number}{text}"), Look::role(Role::Primary).underline())
         }
         Node::Text { text, .. } => (text.clone(), text_look),
-        Node::DynamicDialog { button, title, .. } => {
+        Node::DynamicDialog { button, title, .. } | Node::Dialog { button, title, .. } => {
             let text = if button.is_empty() { title } else { button };
             (format!("[ {text}… ]"), Look::role(Role::Secondary))
         }

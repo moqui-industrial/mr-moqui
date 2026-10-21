@@ -1264,9 +1264,12 @@ fn the_drawer_choice_is_a_preference_the_shell_data_gives_back() {
         assert_eq!(status, 200, "{data}");
         assert_eq!(data["tui"]["drawerOpen"], expected, "{data}");
     }
-    // no user: setPreference refuses. Its `new org.moqui.context.AuthenticationRequiredException` is not a class of the
-    // script runtime, so the refusal is a 500 with the error, not the 401 Java gave.
+    // no user: setPreference refuses with a 401, as Java's AuthenticationRequiredException gave.
     let response = set(None, "true");
-    assert_ne!(response.status, 200, "{}", response.body_text());
-    assert!(response.body_text().contains("errors"), "{}", response.body_text());
+    assert_eq!(response.status, 401, "{}", response.body_text());
+    assert!(
+        response.body_text().contains("Authentication required"),
+        "{}",
+        response.body_text()
+    );
 }

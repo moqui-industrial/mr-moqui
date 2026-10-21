@@ -79,6 +79,7 @@ fn gallery_and_party_screens() {
     render_gallery(&link);
     snapshot_gallery(&link);
     drive_gallery(&link);
+    drive_row_dialog(&link);
     drive_party(&link);
     drive_components(&link);
     drive_shell(&link);
@@ -913,6 +914,42 @@ fn create_person(view: &mut AppView<HostLink>, link: &HostLink) {
 }
 
 /// The screen at `path` as the client opens it: the shell data (drawer, theme) and the level.
+/// Gallery Dialog's Edit per row, a container-dialog in a list cell: F10 on the second row offers that row's dialog,
+/// whose form holds the row's values and posts its own update.
+fn drive_row_dialog(link: &HostLink) {
+    let mut view = open_screen(link, "/apps/gallery/Dialog");
+    focus(&mut view, "EnumList");
+    view.on_key(&press(Key::Down));
+    assert_eq!(view.session().row_at("EnumList"), 1);
+    let second = view.session().list("EnumList").expect("EnumList").rows[1].clone();
+    let enum_id = second.cells[0].text().to_string();
+    view.on_key(&press(Key::F(10)));
+    let Some(Overlay::Menu(menu)) = view.session().top_overlay() else {
+        panic!("no actions: {:?}", view.session().overlays());
+    };
+    let at = menu
+        .items
+        .iter()
+        .position(|item| item.label == format!("Edit {enum_id}…"))
+        .unwrap_or_else(|| panic!("no Edit {enum_id}: {:?}", menu.items));
+    for _ in 0..at {
+        view.on_key(&press(Key::Down));
+    }
+    view.on_key(&press(Key::Enter));
+    let open = view.session().dialogs_open().join(",");
+    assert!(open.starts_with("EditEnumDialog"), "{open}");
+    assert_eq!(view.session().focus_kind(), Some(moqui_tui::FocusKind::Text));
+    type_text(&mut view, " (edited)");
+    view.on_key(&press(Key::Enter));
+    assert!(
+        view.session()
+            .message()
+            .contains(&format!("Enumeration {enum_id} updated")),
+        "{}",
+        view.session().message()
+    );
+}
+
 fn open_screen(link: &HostLink, path: &str) -> AppView<HostLink> {
     let mut view = AppView::with_session(Session::start(path), link.clone());
     view.run_requests();
