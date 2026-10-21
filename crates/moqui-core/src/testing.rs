@@ -660,6 +660,9 @@ impl MemConn {
                 }],
             ));
         }
+        if !query.group.is_empty() || query.columns.iter().any(|column| column.starts_with(COUNT_COLUMN)) {
+            matched = group_rows(matched, &query.group, &query.columns);
+        }
         matched.sort_by(|left, right| sort_rows(left, right, &query.order));
         let mut idx = pred_slots(&query.pred);
         // The statement reads LIMIT then OFFSET, and the parameters follow that order.
@@ -836,7 +839,7 @@ fn count_slots(pred: &Pred) -> usize {
     match pred {
         Pred::Cmp { .. } => 1,
         Pred::In { slots, .. } => *slots,
-        Pred::IsNull { .. } => 0,
+        Pred::IsNull { .. } | Pred::Fields { .. } => 0,
         Pred::And(parts) | Pred::Or(parts) => parts.iter().map(count_slots).sum(),
     }
 }
@@ -868,6 +871,11 @@ fn eval_pred(pred: &Pred, row: &Row, params: &[Value], idx: &mut usize) -> Resul
         Pred::IsNull { field, negated } => {
             let is_null = row.get(field).is_none_or(Value::is_null);
             Ok(if *negated { !is_null } else { is_null })
+        }
+        Pred::Fields { field, op, other } => {
+            let left = row.get(field).cloned().unwrap_or(Value::Null);
+            let right = row.get(other).cloned().unwrap_or(Value::Null);
+            Ok(!left.is_null() && !right.is_null() && compare(&left, *op, &right))
         }
         Pred::And(parts) => {
             let mut all = true;
@@ -1011,6 +1019,41 @@ fn sort_rows(left: &Row, right: &Row, order: &[OrderKey]) -> std::cmp::Ordering 
     std::cmp::Ordering::Equal
 }
 
+/// One row per value of the `group` columns, its first row's columns and each `COUNT("field")` column the rows of the
+/// group whose field is not null. No group columns: one row of all, as `SELECT COUNT("x") FROM ...`.
+fn group_rows(rows: Vec<Row>, group: &[String], columns: &[String]) -> Vec<Row> {
+    let mut groups: Vec<(Vec<Value>, Vec<Row>)> = Vec::new();
+    for row in rows {
+        let key: Vec<Value> = group
+            .iter()
+            .map(|field| row.get(field).cloned().unwrap_or(Value::Null))
+            .collect();
+        match groups.iter_mut().find(|(seen, _)| *seen == key) {
+            Some((_, members)) => members.push(row),
+            None => groups.push((key, vec![row])),
+        }
+    }
+    if groups.is_empty() && group.is_empty() {
+        groups.push((Vec::new(), Vec::new()));
+    }
+    groups
+        .into_iter()
+        .map(|(_, members)| {
+            let mut out = members.first().cloned().unwrap_or_default();
+            for column in columns {
+                if let Some(field) = column.strip_prefix(COUNT_COLUMN) {
+                    let n = members
+                        .iter()
+                        .filter(|row| row.get(field).is_some_and(|value| !value.is_null()))
+                        .count();
+                    out.insert(column.clone(), Value::I64(i64::try_from(n).unwrap_or(i64::MAX)));
+                }
+            }
+            out
+        })
+        .collect()
+}
+
 fn project(row: &Row, columns: &[String]) -> DbRow {
     DbRow {
         columns: columns
@@ -1065,10 +1108,15 @@ struct SelectQuery {
     alias: Option<String>,
     joins: Vec<Join>,
     pred: Option<Pred>,
+    /// `GROUP BY` columns. With them, or with a `COUNT("field")` column, the matched rows are grouped: one row each.
+    group: Vec<String>,
     order: Vec<OrderKey>,
     limit: bool,
     offset: bool,
 }
+
+/// A column that counts, `COUNT("field")`, is kept as this prefix and the field.
+const COUNT_COLUMN: &str = "COUNT ";
 
 enum Pred {
     /// `"field" op ?`, or with `upper` `UPPER("field") op UPPER(?)`, a comparison that ignores case.
@@ -1087,6 +1135,12 @@ enum Pred {
     IsNull {
         field: String,
         negated: bool,
+    },
+    /// `"field" op "other"`, two columns compared (a view's `econdition` with `to-field-name`). A null never matches.
+    Fields {
+        field: String,
+        op: Op,
+        other: String,
     },
     And(Vec<Pred>),
     Or(Vec<Pred>),
@@ -1232,12 +1286,13 @@ fn parse_delete(cur: &mut Cur) -> Result<Stmt, Error> {
 }
 
 fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
-    let count = if cur.eat_keyword("COUNT") {
-        cur.expect_symbol(b'(')?;
-        cur.expect_symbol(b'*')?;
+    let start = cur.i;
+    let count = if cur.eat_keyword("COUNT") && cur.eat_symbol(b'(') && cur.eat_symbol(b'*') {
         cur.expect_symbol(b')')?;
         true
     } else {
+        // a column that counts a field: parse_columns reads it
+        cur.i = start;
         false
     };
     let (columns, names): (Vec<String>, Vec<String>) = if count {
@@ -1292,6 +1347,16 @@ fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
     } else {
         None
     };
+    let mut group = Vec::new();
+    if cur.eat_keyword("GROUP") {
+        cur.expect_keyword("BY")?;
+        loop {
+            group.push(cur.quoted()?);
+            if !cur.eat_symbol(b',') {
+                break;
+            }
+        }
+    }
     let order = if cur.eat_keyword("ORDER") {
         cur.expect_keyword("BY")?;
         // `ORDER BY 1` sorts by the first column.
@@ -1337,6 +1402,7 @@ fn parse_select(cur: &mut Cur) -> Result<Stmt, Error> {
         alias,
         joins,
         pred,
+        group,
         order,
         limit,
         offset,
@@ -1351,7 +1417,14 @@ fn parse_columns(cur: &mut Cur) -> Result<Vec<(String, String)>, Error> {
         if cur.peek_keyword("FROM") {
             break;
         }
-        let column = cur.quoted()?;
+        let column = if cur.eat_keyword("COUNT") {
+            cur.expect_symbol(b'(')?;
+            let field = cur.quoted()?;
+            cur.expect_symbol(b')')?;
+            format!("{COUNT_COLUMN}{field}")
+        } else {
+            cur.quoted()?
+        };
         let name = if cur.eat_keyword("AS") {
             cur.quoted()?
         } else {
@@ -1445,6 +1518,16 @@ fn parse_primary(cur: &mut Cur) -> Result<Pred, Error> {
         return Ok(Pred::IsNull { field, negated });
     }
     let negated = cur.eat_keyword("NOT");
+    if !negated && !upper {
+        let start = cur.i;
+        if let Some(op) = cur.eat_op() {
+            if cur.peek_symbol(b'"') {
+                let other = cur.quoted()?;
+                return Ok(Pred::Fields { field, op, other });
+            }
+        }
+        cur.i = start;
+    }
     if cur.eat_keyword("LIKE") {
         expect_slot(cur, upper)?;
         return Ok(Pred::Cmp {

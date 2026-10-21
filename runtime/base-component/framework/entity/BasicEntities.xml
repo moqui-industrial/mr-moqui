@@ -1103,9 +1103,10 @@ along with this software (see the LICENSE.md file). If not, see
     </entity>
     <entity entity-name="EmailOutOfOffice" package="moqui.basic.email" use="transactional" cache="never">
         <description>An account's automatic reply: sent by the receiver while enabled and between the dates, once per sender
-            in replyOncePerDays; internalBodyHtml, when set, to senders of the user's own organization. replyAudienceEnumId
-            says who gets it: everyone (EraEveryone, the default), internal senders and the owner's contacts (EraContacts),
-            or internal senders only (EraInternal).</description>
+            in replyOncePerDays; internalBodyHtml, when set, to senders of the user's own organization (its users, the
+            domains of its hosted and shared accounts, and internalDomains). replyAudienceEnumId says who gets it:
+            everyone (EraEveryone, the default), internal senders and the owner's contacts (EraContacts), or internal
+            senders only (EraInternal).</description>
         <field name="emailAccountId" type="id" is-pk="true"/>
         <field name="enabled" type="text-indicator"/>
         <field name="fromDate" type="date-time"/>
@@ -1117,6 +1118,9 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="replyAudienceEnumId" type="id"><description>Who gets the reply; empty for everyone. A contact is a
             sender the hook service names (EmailClientServices.filter#ContactAddresses: the email_contact_service property,
             else the owner's theme value STRT_EMAIL_CONTACT_SERVICE); with no hook every sender is one.</description></field>
+        <field name="internalDomains" type="text-medium"><description>More domains whose senders are internal, comma
+            separated in lower case (example.com,example.org), beside the users of this system and the domains of the
+            hosted and shared accounts.</description></field>
         <relationship type="one" related="moqui.basic.email.EmailAccount" short-alias="account"/>
         <relationship type="one" title="EmailReplyAudience" related="moqui.basic.Enumeration" short-alias="replyAudience">
             <key-map field-name="replyAudienceEnumId"/></relationship>

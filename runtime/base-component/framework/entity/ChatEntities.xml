@@ -37,8 +37,8 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="recordId" type="text-medium"/>
         <field name="directKey" type="text-medium"><description>For a direct room, its members' userIds sorted and joined
             with commas, so the room of a set of users is found and reused</description></field>
-        <field name="retentionDays" type="number-integer"><description>How long the room keeps its events; empty for
-            always (the retention job is later)</description></field>
+        <field name="retentionDays" type="number-integer"><description>How many days the room keeps its events; empty for
+            always. The daily job clean#ChatRetention deletes the older ones.</description></field>
         <field name="createdByUserId" type="id"/>
         <field name="createdDate" type="date-time"/>
         <field name="archivedDate" type="date-time"><description>An archived room is read only</description></field>
@@ -92,7 +92,8 @@ along with this software (see the LICENSE.md file). If not, see
             messages (deliver#AgentMessage calls it)</description></field>
         <field name="joinedDate" type="date-time"/>
         <field name="leftDate" type="date-time"/>
-        <field name="lastReadEventSeq" type="number-integer"/>
+        <field name="lastReadEventSeq" type="number-integer" default="0"><description>Never empty: the unread views compare
+            the events with it</description></field>
         <field name="lastReadDate" type="date-time"/>
         <field name="notificationLevelEnumId" type="id"/>
         <field name="isPinned" type="text-indicator"/>
@@ -194,6 +195,38 @@ along with this software (see the LICENSE.md file). If not, see
         <index name="CHAT_MENTION_USER"><index-field name="userId"/><index-field name="chatRoomId"/><index-field name="eventSeq"/></index>
     </entity>
 
+    <view-entity entity-name="ChatMemberUnread" package="moqui.chat">
+        <description>The unread messages of a member, per room in one query: the messages (not redacted) from others after
+            the member's read marker. Find it by userId with leftDate empty, select chatRoomId and unreadCount (grouped by
+            room). get#UnreadCounts and find#Rooms read it.</description>
+        <member-entity entity-alias="CRM" entity-name="moqui.chat.ChatRoomMember"/>
+        <member-entity entity-alias="CE" entity-name="moqui.chat.ChatEvent" join-from-alias="CRM">
+            <key-map field-name="chatRoomId"/></member-entity>
+        <alias entity-alias="CRM" name="chatRoomId"/>
+        <alias entity-alias="CRM" name="userId"/>
+        <alias entity-alias="CRM" name="leftDate"/><!-- filter only -->
+        <alias entity-alias="CE" name="redactedDate"/><!-- filter only -->
+        <alias entity-alias="CE" name="unreadCount" field="eventSeq" function="count"/>
+        <entity-condition>
+            <econdition entity-alias="CE" field-name="eventTypeEnumId" value="CetMessage"/>
+            <econdition entity-alias="CE" field-name="eventSeq" operator="greater" to-entity-alias="CRM" to-field-name="lastReadEventSeq"/>
+            <econdition entity-alias="CE" field-name="senderUserId" operator="not-equals" to-entity-alias="CRM" to-field-name="userId"/>
+        </entity-condition>
+    </view-entity>
+    <view-entity entity-name="ChatMemberMentions" package="moqui.chat">
+        <description>The mentions of a member after the member's read marker, per room in one query. Find it by userId with
+            leftDate empty, select chatRoomId and mentionCount (grouped by room).</description>
+        <member-entity entity-alias="CRM" entity-name="moqui.chat.ChatRoomMember"/>
+        <member-entity entity-alias="CEM" entity-name="moqui.chat.ChatEventMention" join-from-alias="CRM">
+            <key-map field-name="chatRoomId"/><key-map field-name="userId"/></member-entity>
+        <alias entity-alias="CRM" name="chatRoomId"/>
+        <alias entity-alias="CRM" name="userId"/>
+        <alias entity-alias="CRM" name="leftDate"/><!-- filter only -->
+        <alias entity-alias="CEM" name="mentionCount" field="eventSeq" function="count"/>
+        <entity-condition>
+            <econdition entity-alias="CEM" field-name="eventSeq" operator="greater" to-entity-alias="CRM" to-field-name="lastReadEventSeq"/>
+        </entity-condition>
+    </view-entity>
     <entity entity-name="ChatAttachment" package="moqui.chat" use="transactional" cache="never">
         <description>A file of a message, stored as a DbResource under dbresource://chat/(room)/(attachment)/(file name).
             upload#Attachment makes the row before the message is sent (eventSeq empty); send#Message gives it the

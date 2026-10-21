@@ -22,7 +22,11 @@
 //!   current user may see a record, so a user who is not a member may read and join the room bound to it. The framework
 //!   cannot read an app's records; IronStone BOSS points the theme value at Mantle's
 //!   `mantle.party.CommunicationServices.get#RecordLinkInfo`, which takes `checkOnly` and answers `recordVisible`.
-//!   `FileServices.check#RecordPaths` asks it too, for the record folders of a records drive.
+//!   `FileServices.check#RecordPaths` asks it too, for the record folders of a records drive. With `userId` (honored
+//!   only with authorization disabled, as `get#RoomAccess` has it) it asks for another user: the hook of that user's
+//!   theme runs as that user, with authorization on, in an execution context of its own on this thread (so in the
+//!   caller's transaction), and the caller's user is untouched. `send#Message` asks so for a mentioned user who is not a
+//!   member of a record room.
 //!
 //!   The hook is called in the caller's transaction (a record made earlier in it is seen), so with `checkOnly` it must
 //!   answer without adding an error: an error in a service call marks the transaction rollback-only even when its
@@ -171,6 +175,9 @@ fn first_time(key: &str) -> bool {
 /// asked (null when the theme names none: then no record is visible this way, which is logged once). A service that
 /// fails or answers no `recordVisible` gives false and is logged once by name. It never adds an error, so it does not
 /// mark the caller's transaction for rollback.
+///
+/// `userId`, another user, is asked for only with authorization disabled (else false, logged): the hook of that user's
+/// theme runs as that user with authorization on ([`as_user`]); a user who is not found sees nothing.
 fn check_record_visible(
     parameters: &BTreeMap<String, Value>,
     _facade: &EntityFacade,
@@ -185,10 +192,18 @@ fn check_record_visible(
     else {
         return Ok(answer(false, None));
     };
-    let user_id = crate::user::current_user_id()
+    let current = crate::user::current_user_id()
         .ok()
         .flatten()
         .filter(|id| !id.is_empty());
+    let other = text(parameters, "userId").filter(|id| current.as_deref() != Some(id.as_str()));
+    if let Some(other) = &other {
+        if !ExecutionContext::with_current(ExecutionContext::authz_disabled).unwrap_or(false) {
+            tracing::warn!("check#RecordVisible for user {other} refused: another user is asked for only with authorization disabled");
+            return Ok(answer(false, None));
+        }
+    }
+    let user_id = other.clone().or(current);
     let theme = user_theme_id(user_id.as_deref(), QUASAR_THEME_TYPE, DEFAULT_QUASAR_THEME);
     let service = match theme_resource_values(&theme, RECORD_VISIBLE) {
         Ok(values) => values.into_iter().next(),
@@ -211,7 +226,14 @@ fn check_record_visible(
         ("recordId".to_string(), Value::string(&record_id)),
         ("checkOnly".to_string(), Value::Bool(true)),
     ]);
-    let visible = match super::shell::call_tolerant(&service, &call) {
+    let asked = match &other {
+        Some(other) => match as_user(other, || super::shell::call_tolerant(&service, &call)) {
+            Some(asked) => asked,
+            None => return Ok(answer(false, Some(&service))),
+        },
+        None => super::shell::call_tolerant(&service, &call),
+    };
+    let visible = match asked {
         Ok(out) => match out.get("recordVisible") {
             Some(Value::Bool(visible)) => *visible,
             Some(other) if !is_empty(other) => matches!(to_plain_string(other).as_str(), "true" | "Y"),
@@ -230,6 +252,35 @@ fn check_record_visible(
         }
     };
     Ok(answer(visible, Some(&service)))
+}
+
+/// Run `work` as the user `user_id`, with authorization on: in a context of its own, entered on this thread, so it
+/// shares the caller's transaction but not the caller's user, authorization or messages. None when there is no
+/// context or the user is not found.
+fn as_user<T>(user_id: &str, work: impl FnOnce() -> T) -> Option<T> {
+    let factory = ExecutionContext::with_current(|ec| Arc::clone(ec.factory()))?;
+    let facade = factory.entity()?;
+    let account = {
+        let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+        facade
+            .find("moqui.security.UserAccount")
+            .and_then(|find| find.eq("userId", Value::string(user_id)).one())
+    };
+    let username = match account {
+        Ok(Some(account)) => account
+            .get("username")
+            .map(to_plain_string)
+            .filter(|name| !name.is_empty()),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::error!("Could not read the account of user {user_id}: {err}");
+            None
+        }
+    }?;
+    let ctx = factory.new_context();
+    let _entered = ctx.enter();
+    crate::user::session::set_user(user_id, &username);
+    Some(work())
 }
 
 #[cfg(test)]

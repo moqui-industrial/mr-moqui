@@ -18,7 +18,8 @@
 //! (to members only, after the commit), presence (status, heartbeat, auto-away, clear-at, do not disturb), the search
 //! document and the search by membership, files, the agent entry point, and the later parts: a send tried again, one
 //! event by its eventSeq, the files and threads of a room, forwards, polls, link previews (through a stub of the page),
-//! read receipts by preference and @room. The SQL on the real database and the
+//! read receipts by preference and @room, retention per room, the mentions of a record room's non-members, and the
+//! unread counts of one query each against the counts per room. The SQL on the real database and the
 //! search index are `runtime/base-component/example/test/Chat.spec.js`.
 
 use std::collections::BTreeMap;
@@ -35,13 +36,14 @@ const SERVICES: &str = "org.moqui.impl.ChatServices";
 const MINUTE: i64 = 60_000;
 
 /// The stubs the tests point the hooks at: the record visibility service (a record whose id starts with OPEN is
-/// visible), a service that pushes and then fails (so its transaction rolls back), the pages of link previews (a URL
+/// visible, and one whose id lists the user among ids joined by + is, to that user with authorization on), a service that pushes and then fails (so its transaction rolls back), the pages of link previews (a URL
 /// with broken in it fails), and an agent that answers.
 const STUBS: &str = r#"<services>
     <service verb="check" noun="Visible">
         <in-parameters><parameter name="recordEntityName"/><parameter name="recordId"/><parameter name="checkOnly" type="Boolean"/></in-parameters>
         <out-parameters><parameter name="recordVisible" type="Boolean"/></out-parameters>
-        <actions><script><![CDATA[ recordVisible = checkOnly === true && String(recordId).startsWith('OPEN') ]]></script></actions>
+        <actions><script><![CDATA[ recordVisible = checkOnly === true && (String(recordId).startsWith('OPEN')
+                || (String(recordId).split('+').includes(ec.user.userId) && !ec.artifactExecution.authzDisabled())) ]]></script></actions>
     </service>
     <service verb="push" noun="ThenFail">
         <in-parameters><parameter name="userId"/></in-parameters>
@@ -2157,5 +2159,298 @@ fn read_receipts_follow_the_preference_and_room_mentions_reach_everyone() {
     login("rra");
     let loud = ok("send#Message", &[("chatRoomId", text(&big)), ("body", text(everyone))]);
     assert_eq!(mentioned(&loud).len(), 20);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The retention job: each room with retentionDays loses its events older than that, with their mentions, polls and the
+/// reactions to them; a room with a longer retention or none keeps its events.
+#[test]
+fn retention_deletes_each_rooms_old_events() {
+    let (ctx, facade, dir) = setup("retention", crate::service::ServicePools::idle());
+    let _entered = ctx.enter();
+    install(&dir);
+    users(&facade, &["rta", "rtb"]);
+    let start = now();
+    set_time(&ctx, start - 3 * 24 * 60 * MINUTE);
+    login("rta");
+    let create = |name: &str, days: Option<i64>| {
+        let mut parameters = vec![
+            ("roomTypeEnumId", text("private")),
+            ("roomName", text(name)),
+            ("memberUserIdList", list(&["rtb"])),
+        ];
+        if let Some(days) = days {
+            parameters.push(("retentionDays", int(days)));
+        }
+        out_text(&ok("create#Room", &parameters), "chatRoomId")
+    };
+    let short = create("Short", Some(1));
+    let long = create("Long", Some(7));
+    let always = create("Always", None);
+    let old = send(&short, r#"<p>old <span data-mention-id="rtb">@Rtb</span></p>"#);
+    let poll = out_number(
+        &ok(
+            "create#Poll",
+            &[
+                ("chatRoomId", text(&short)),
+                ("question", text("Lunch?")),
+                ("optionList", list(&["Yes", "No"])),
+            ],
+        ),
+        "eventSeq",
+    );
+    send(&long, "<p>old in long</p>");
+    send(&always, "<p>old in always</p>");
+    set_time(&ctx, start);
+    let fresh = send(&short, "<p>fresh</p>");
+    // a reaction today to the old message goes with it
+    ok(
+        "react#Message",
+        &[("chatRoomId", text(&short)), ("eventSeq", int(old)), ("key", text("👍"))],
+    );
+    assert_eq!(out_number(&counts("rtb"), "mentions"), 1);
+
+    let out = {
+        let _authz = ctx.disable_authz();
+        ok("clean#ChatRetention", &[])
+    };
+    assert_eq!(out_number(&out, "roomCount"), 2, "{out:?}");
+    assert_eq!(out_number(&out, "failedCount"), 0);
+    let left = timeline(&short, &[]);
+    assert_eq!(texts(&left), ["fresh"]);
+    assert_eq!(seqs(&left), [fresh], "the reaction to the old message went with it");
+    assert_eq!(texts(&timeline(&long, &[])), ["old in long"]);
+    assert_eq!(texts(&timeline(&always, &[])), ["old in always"]);
+    let rows = |entity: &str| {
+        let _authz = ctx.disable_authz();
+        facade
+            .find(entity)
+            .unwrap()
+            .eq("chatRoomId", text(&short))
+            .list()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(rows("moqui.chat.ChatEventMention"), 0);
+    assert_eq!(rows("moqui.chat.ChatPoll"), 0, "poll {poll}");
+    assert_eq!(rows("moqui.chat.ChatPollOption"), 0);
+    let b = counts("rtb");
+    assert_eq!(out_number(&b, "mentions"), 0);
+    assert_eq!(out_number(&b, "unread"), 3, "fresh in Short, and the old ones of Long and Always");
+    let listed = maps(ok("find#Rooms", &[]).get("roomList"));
+    let short_item = listed.iter().find(|item| field(item, "chatRoomId") == short).unwrap();
+    assert_eq!(number(&sub(short_item, "lastMessage"), "eventSeq"), fresh);
+    // a second run has nothing left to delete
+    let again = {
+        let _authz = ctx.disable_authz();
+        ok("clean#ChatRetention", &[])
+    };
+    assert_eq!(out_number(&again, "deletedCount"), 0);
+    ctx.set_effective_time(None);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A mentioned user who is not a member of a record room counts when they may see the record, which the hook answers as
+/// that user: notified, with no room count. One who may not see it is not mentioned.
+#[test]
+fn a_record_rooms_mention_reaches_a_non_member_who_may_see_the_record() {
+    let (ctx, facade, dir) = setup("record-mention", crate::service::ServicePools::idle());
+    let _entered = ctx.enter();
+    install(&dir);
+    users(&facade, &["rma", "rmseer", "rmblind"]);
+    row(
+        &facade,
+        "moqui.security.user.NotificationTopic",
+        &[
+            ("topic", text("ChatMention")),
+            ("persistOnSend", text("Y")),
+            ("titleTemplate", text("${authorName} mentioned you in ${roomName}")),
+        ],
+    );
+    row(
+        &facade,
+        "moqui.screen.ScreenThemeResource",
+        &[
+            ("screenThemeId", text("DEFAULT_QUASAR")),
+            ("sequenceNum", int(990)),
+            ("resourceTypeEnumId", text("STRT_RECORD_VISIBLE_SERVICE")),
+            ("resourceValue", text("test.ChatStub.check#Visible")),
+        ],
+    );
+    login("rma");
+    let record = out_text(
+        &ok(
+            "create#Room",
+            &[
+                ("roomTypeEnumId", text("record")),
+                ("recordEntityName", text("test.Thing")),
+                ("recordId", text("rma+rmseer")),
+            ],
+        ),
+        "chatRoomId",
+    );
+    // the hook answers for the user asked about, as that user, only for internal work
+    let visible_to = |user: &str| {
+        let _authz = ctx.disable_authz();
+        let out = ok(
+            "check#RecordVisible",
+            &[
+                ("recordEntityName", text("test.Thing")),
+                ("recordId", text("rma+rmseer")),
+                ("userId", text(user)),
+            ],
+        );
+        out.get("recordVisible") == Some(&Value::Bool(true))
+    };
+    assert!(visible_to("rmseer"));
+    assert!(!visible_to("rmblind"));
+    let refused_out = ok(
+        "check#RecordVisible",
+        &[
+            ("recordEntityName", text("test.Thing")),
+            ("recordId", text("rma+rmseer")),
+            ("userId", text("rmseer")),
+        ],
+    );
+    assert_eq!(refused_out.get("recordVisible"), Some(&Value::Bool(false)), "another user only with authorization disabled");
+    let level_of = |user: &str| {
+        let _authz = ctx.disable_authz();
+        out_number(
+            &ok("get#RoomAccess", &[("chatRoomId", text(&record)), ("userId", text(user))]),
+            "level",
+        )
+    };
+    assert_eq!(level_of("rmseer"), 1);
+    assert_eq!(level_of("rmblind"), 0);
+
+    let both = r#"<p>see <span data-mention-id="rmseer">@Rmseer</span> and <span data-mention-id="rmblind">@Rmblind</span></p>"#;
+    let sent = ok("send#Message", &[("chatRoomId", text(&record)), ("body", text(both))]);
+    let mentions = |out: &BTreeMap<String, Value>| -> Vec<String> {
+        match out_map(out, "event").get("mentions") {
+            Some(Value::List(items)) => items.iter().map(to_plain_string).collect(),
+            _ => Vec::new(),
+        }
+    };
+    assert_eq!(mentions(&sent), ["rmseer"]);
+    let notified = |user: &str| {
+        let _authz = ctx.disable_authz();
+        facade
+            .find("moqui.security.user.NotificationMessageUser")
+            .unwrap()
+            .eq("userId", text(user))
+            .list()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(notified("rmseer"), 1);
+    assert_eq!(notified("rmblind"), 0);
+    let seer = counts("rmseer");
+    assert_eq!(out_number(&seer, "total"), 0, "no room count: not a member");
+    assert!(out_map(&seer, "roomCounts").is_empty());
+
+    // an edit that adds the mentions: the same
+    let plain = send(&record, "<p>plain</p>");
+    let edited = ok(
+        "edit#Message",
+        &[("chatRoomId", text(&record)), ("eventSeq", int(plain)), ("body", text(both))],
+    );
+    assert_eq!(mentions(&edited), ["rmseer"]);
+    assert_eq!(notified("rmseer"), 2);
+    assert_eq!(notified("rmblind"), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The unread and mention counts of one query each (the views ChatMemberUnread and ChatMemberMentions) equal the counts
+/// of each room the services made before: the messages (not redacted) from others after the read marker, and the
+/// mentions after it.
+#[test]
+fn the_counts_of_one_query_equal_the_counts_per_room() {
+    let (ctx, facade, dir) = setup("counts-view", crate::service::ServicePools::idle());
+    let _entered = ctx.enter();
+    install(&dir);
+    users(&facade, &["cva", "cvb", "cvc"]);
+    login("cva");
+    let first = room("private", "First", &["cvb", "cvc"]);
+    let second = room("public", "Second", &["cvb"]);
+    let quiet = room("private", "Quiet", &["cvb"]);
+    send(&first, r#"<p>one <span data-mention-id="cvb">@Cvb</span></p>"#);
+    send(&first, "<p>two</p>");
+    send(&second, r#"<p>three <span data-mention-id="cvb">@Cvb</span> <span data-mention-id="cvc">@Cvc</span></p>"#);
+    send(&quiet, "<p>read</p>");
+    login("cvb");
+    ok("mark#Read", &[("chatRoomId", text(&quiet))]);
+    send(&first, "<p>my own</p>");
+    login("cvc");
+    send(&first, r#"<p>four <span data-mention-id="cvb">@Cvb</span></p>"#);
+    login("cva");
+    let gone = send(&first, r#"<p>gone <span data-mention-id="cvb">@Cvb</span></p>"#);
+    ok("redact#Message", &[("chatRoomId", text(&first)), ("eventSeq", int(gone))]);
+    send(&second, "<p>five</p>");
+    ok("add#Member", &[("chatRoomId", text(&second)), ("userId", text("cvc"))]);
+    send(&second, "<p>six</p>");
+
+    // the old counts: two finds per room
+    let per_room = |user: &str| -> BTreeMap<String, (i64, i64)> {
+        let _authz = ctx.disable_authz();
+        let mut out = BTreeMap::new();
+        for member in facade.find("moqui.chat.ChatRoomMember").unwrap().eq("userId", text(user)).list().unwrap().iter() {
+            if member.get("leftDate").is_some_and(|value| !matches!(value, Value::Null)) {
+                continue;
+            }
+            let room_id = to_plain_string(member.get("chatRoomId").unwrap());
+            let last_read: i64 = member.get("lastReadEventSeq").map(to_plain_string).and_then(|seq| seq.parse().ok()).unwrap_or(0);
+            let events = facade.find("moqui.chat.ChatEvent").unwrap().eq("chatRoomId", text(&room_id)).list().unwrap();
+            let seq = |row: &crate::entity::EntityValue| to_plain_string(row.get("eventSeq").unwrap()).parse::<i64>().unwrap();
+            let empty = |row: &crate::entity::EntityValue, name: &str| row.get(name).is_none_or(|value| matches!(value, Value::Null));
+            let unread = events
+                .iter()
+                .filter(|row| to_plain_string(row.get("eventTypeEnumId").unwrap()) == "CetMessage")
+                .filter(|row| seq(row) > last_read && empty(row, "redactedDate"))
+                .filter(|row| !empty(row, "senderUserId") && to_plain_string(row.get("senderUserId").unwrap()) != user)
+                .count();
+            let mentions = facade
+                .find("moqui.chat.ChatEventMention")
+                .unwrap()
+                .eq("chatRoomId", text(&room_id))
+                .eq("userId", text(user))
+                .list()
+                .unwrap()
+                .iter()
+                .filter(|row| seq(row) > last_read)
+                .count();
+            if unread > 0 || mentions > 0 {
+                out.insert(room_id, (unread as i64, mentions as i64));
+            }
+        }
+        out
+    };
+    for user in ["cva", "cvb", "cvc"] {
+        let expected = per_room(user);
+        let from_counts: BTreeMap<String, (i64, i64)> = out_map(&counts(user), "roomCounts")
+            .iter()
+            .map(|(room_id, value)| match value {
+                Value::Map(map) => (room_id.clone(), (number(map, "unread"), number(map, "mentions"))),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(from_counts, expected, "get#UnreadCounts of {user}");
+        let listed = {
+            let _authz = ctx.disable_authz();
+            ok("find#Rooms", &[("userId", text(user))])
+        };
+        let from_rooms: BTreeMap<String, (i64, i64)> = maps(listed.get("roomList"))
+            .iter()
+            .map(|item| (field(item, "chatRoomId"), (number(item, "unreadCount"), number(item, "mentionCount"))))
+            .filter(|(_, (unread, mentions))| *unread > 0 || *mentions > 0)
+            .collect();
+        assert_eq!(from_rooms, expected, "find#Rooms of {user}");
+    }
+    assert_eq!(
+        per_room("cvb").get(&first),
+        Some(&(1, 1)),
+        "four, after cvb's own message; gone is redacted"
+    );
+    assert!(!per_room("cvb").contains_key(&quiet));
+    assert_eq!(per_room("cvb").get(&second), Some(&(3, 1)), "three, five and six; three mentions cvb");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -14,9 +14,12 @@
 
 //! `GET /notws`. The socket is checked with the session cookie, then pushed notification JSON.
 //! No execution context is kept for the life of the socket. Each socket of a session (a page in
-//! each tab) is registered and receives the notifications of its topics.
+//! each tab) is registered and receives the notifications of its topics. When the last socket of a user closes and none
+//! comes back within [`OFFLINE_GRACE`], the user is marked offline (`ChatServices.disconnect#UserStatus`) rather than
+//! when the chat heartbeat runs out; per node, so in a cluster a page on another node keeps the user online with its
+//! next heartbeat.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -54,6 +57,11 @@ const PING_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 pub(crate) const ENDPOINT_PROPERTY: &str = "webapp_notification_endpoint";
 /// Java's `/notws` endpoint timeout: an hour with nothing from the client closes the socket.
 const DEFAULT_IDLE: std::time::Duration = std::time::Duration::from_secs(3600);
+/// How long after a user's last socket closed the user is marked offline, unless a socket of theirs came back: a page
+/// reload opens its socket again well within it, so presence does not flicker.
+const OFFLINE_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
+/// Marks a user offline at once and publishes it on the userStatus topic.
+const DISCONNECT_SERVICE: &str = "org.moqui.impl.ChatServices.disconnect#UserStatus";
 
 struct Slot {
     id: u64,
@@ -281,6 +289,7 @@ async fn run_socket(
     }
     tracing::debug!(session_id = %slot.session_id, user_id = %slot.user_id, "notification socket closed");
     unregister(id);
+    offline_when_gone(&factory, &slot.user_id);
 }
 
 /// The `webroot` webapp's `/notws` `endpoint` `timeout` in milliseconds, else an hour.
@@ -364,6 +373,52 @@ fn mark_after_send(factory: &Arc<ExecutionContextFactory>, user_id: &str, messag
             tracing::warn!(error = %err, "could not mark notification sent");
         }
     });
+}
+
+/// After a socket of `user_id` closed: when no socket of the user is left, wait [`OFFLINE_GRACE`], check again, then mark
+/// the user offline on a service worker, as [`mark_after_send`] marks a notification sent.
+fn offline_when_gone(factory: &Arc<ExecutionContextFactory>, user_id: &str) {
+    if has_socket(user_id) {
+        return;
+    }
+    let factory = Arc::clone(factory);
+    let user_id = user_id.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(OFFLINE_GRACE).await;
+        if has_socket(&user_id) {
+            return;
+        }
+        let called = user_id.clone();
+        let ran =
+            tokio::task::spawn_blocking(move || factory.service_pools().call(move || disconnect_user(&called))).await;
+        if let Err(err) = flatten_call(ran) {
+            tracing::warn!(error = %err, user_id = %user_id, "could not mark the user offline");
+        }
+    });
+}
+
+fn has_socket(user_id: &str) -> bool {
+    lock(sockets()).values().any(|slot| slot.user_id == user_id)
+}
+
+/// `disconnect#UserStatus` of `user_id`, as internal work. Its errors are the call's error.
+fn disconnect_user(user_id: &str) -> Result<(), CoreError> {
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz)
+        .ok_or_else(|| CoreError::new("no execution context is entered"))?;
+    let parameters = BTreeMap::from([("userId".to_string(), Value::string(user_id))]);
+    let called = moqui_core::service::sync(DISCONNECT_SERVICE, &parameters);
+    let errors = ExecutionContext::with_current(|ec| {
+        let errors = ec.message().errors().join("; ");
+        ec.message().clear_errors();
+        errors
+    })
+    .unwrap_or_default();
+    called?;
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(CoreError::new(errors))
+    }
 }
 
 fn flatten_call(ran: Result<Result<(), CoreError>, tokio::task::JoinError>) -> Result<(), CoreError> {
