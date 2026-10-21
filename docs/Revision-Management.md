@@ -241,8 +241,11 @@ version and note, shared, favorite, tags, content and file type), `get#ResourceI
 search document when search is available, else a walk), `find#Recent`, `upload#Resource` (one change set, a version note,
 conflicts replace, keepBoth or skip, the quota), `save#Text`, `create#Folder`, `rename#Resource`, `move#Resource` and
 `copy#Resource` (within a drive one change set; a move across drives is a copy and a trash), `download#Zip`,
-`get#Activity` (versions or commits under the path, shares, trash), `get#Preview` (an image thumbnail made once under
-`runtime://tmp/preview`, a text excerpt; a PDF thumbnail through Chromium is later). Trash: `trash#Resource` (on the
+`get#Activity` (versions or commits under the path, shares, trash), `get#Preview` (made once per version under
+`runtime://tmp/preview`: an image thumbnail; a PDF's first page and page count, drawn by the vendored pdf.js in the PDF
+engine's Chromium page, nothing without an engine; a spreadsheet's first rows by sheet; a text excerpt), `extract#DriveFileText`
+(asynchronous: the text of PDFs, spreadsheets and text files into `runtime://tmp/file-text`, which `index#DriveFiles`
+reads for the search document's `extractedText`). Trash: `trash#Resource` (on the
 database tree the item moves with its history into the drive's hidden `.trash/<trashId>/`; on git it is deleted in one
 commit and `ResourceTrash.versionName` is the version before), `list#Trash`, `restore#Resource`,
 `delete#TrashForever`, `empty#Trash`. Versions: `get#Versions`, `get#VersionDiff`, `restore#Version`. Sharing:

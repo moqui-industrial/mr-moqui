@@ -460,3 +460,58 @@ test("a notification listener unregisters by its handle or by topic and function
         else delete globalThis.WebSocket;
     }
 });
+
+test("a notification client tells its listeners when the socket opens and closes, and reopens at once back online", () => {
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+    const savedAdd = globalThis.addEventListener;
+    const sockets = [];
+    const windowListeners = {};
+    function FakeSocket(url) { this.url = url; this.readyState = 0; this.sent = []; sockets.push(this); }
+    FakeSocket.prototype.send = function (text) { this.sent.push(text); };
+    Object.assign(FakeSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+    Object.defineProperty(globalThis, "WebSocket", { value: FakeSocket, configurable: true, writable: true });
+    globalThis.addEventListener = (name, fn) => { (windowListeners[name] = windowListeners[name] || []).push(fn); };
+    const timers = [];
+    const savedTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = (fn, ms) => { timers.push(ms); return 0; };
+    try {
+        const client = new moqui.NotificationClient("ws://erp.example.com/notws");
+        const states = [];
+        const off = client.onState((state) => states.push(state));
+        client.onState(() => { throw new Error("a listener that fails stops no other"); });
+        // online before any socket: nothing to reopen
+        windowListeners.online.forEach((fn) => fn());
+        assert.equal(sockets.length, 0);
+        client.registerListener("orders", () => {});
+        const first = sockets[0];
+        first.readyState = 1;
+        first.onopen();
+        assert.equal(client.isOpen(), true);
+        first.readyState = 3;
+        first.onclose();
+        assert.deepEqual(states, ["open", "closed"]);
+        assert.deepEqual(timers, [30000], "the usual reopen waits");
+        // used up its tries: back online opens it at once, with the tries counted again
+        client.tryReopenCount = 6;
+        client.tryReopen();
+        assert.equal(sockets.length, 1);
+        windowListeners.online.forEach((fn) => fn());
+        assert.equal(sockets.length, 2);
+        assert.equal(client.tryReopenCount, 1);
+        sockets[1].readyState = 1;
+        sockets[1].onopen();
+        assert.deepEqual(sockets[1].sent, ["subscribe:orders"]);
+        assert.deepEqual(states, ["open", "closed", "open"]);
+        // the old socket closing late is not the client's state
+        first.onclose();
+        assert.deepEqual(states, ["open", "closed", "open"]);
+        off();
+        sockets[1].onclose();
+        assert.equal(states.length, 3);
+    } finally {
+        if (saved) Object.defineProperty(globalThis, "WebSocket", saved);
+        else delete globalThis.WebSocket;
+        if (savedAdd) globalThis.addEventListener = savedAdd; else delete globalThis.addEventListener;
+        globalThis.setTimeout = savedTimeout;
+    }
+});

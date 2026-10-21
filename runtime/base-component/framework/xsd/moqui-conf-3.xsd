@@ -705,6 +705,9 @@ along with this software (see the LICENSE.md file). If not, see
                         The pages that print at once.</xs:documentation></xs:annotation></xs:attribute>
                     <xs:attribute name="timeout" type="non-neg-int-expandable" default="60"><xs:annotation><xs:documentation>
                         The seconds one document may take.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="preview-max-size" type="non-neg-int-expandable" default="26214400"><xs:annotation><xs:documentation>
+                        The largest PDF, in bytes, that gets a preview (its first page and text, through pdf.js in the
+                        same browser).</xs:documentation></xs:annotation></xs:attribute>
                 </xs:complexType></xs:element>
                 <xs:element minOccurs="0" maxOccurs="unbounded" ref="screen-text-output"/>
                 <xs:element minOccurs="0" maxOccurs="unbounded" ref="screen-output"/>
@@ -1160,9 +1163,6 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="max-connections" type="non-neg-int-expandable" default="20"><xs:annotation><xs:documentation>The most connections at once.</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="command-timeout" type="non-neg-int-expandable" default="300"><xs:annotation><xs:documentation>Seconds for each command or data chunk.</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="session-timeout" type="non-neg-int-expandable" default="1800"><xs:annotation><xs:documentation>Seconds for a whole session.</xs:documentation></xs:annotation></xs:attribute>
-        </xs:complexType>
-    </xs:element>
-
             <xs:attribute name="protocol" default="smtp"><xs:annotation><xs:documentation>smtp, or lmtp (RFC 2033): LHLO, and a reply per recipient after the data.</xs:documentation></xs:annotation>
                 <xs:simpleType><xs:restriction base="xs:token"><xs:enumeration value="smtp"/><xs:enumeration value="lmtp"/></xs:restriction></xs:simpleType></xs:attribute>
             <xs:attribute name="starttls" type="boolean-expandable" default="false"><xs:annotation><xs:documentation>Offer STARTTLS (RFC 3207). With no certificate the listener does not start.</xs:documentation></xs:annotation></xs:attribute>
@@ -1171,6 +1171,9 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="tls-key-file" type="xs:string"><xs:annotation><xs:documentation>The private key PEM file that goes with tls-cert-file.</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="chunking" type="boolean-expandable" default="true"><xs:annotation><xs:documentation>CHUNKING (RFC 3030): BDAT.</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="dsn" type="boolean-expandable" default="false"><xs:annotation><xs:documentation>DSN (RFC 3461): RET, ENVID, NOTIFY and ORCPT are taken and kept, and NOTIFY=SUCCESS gets a "delivered" report.</xs:documentation></xs:annotation></xs:attribute>
+        </xs:complexType>
+    </xs:element>
+
     <xs:element name="logging">
         <xs:annotation><xs:documentation>The log files moqui.log (all events) and moqui-error.log (warn and error).
             The stderr level and color are the properties moqui_log_level and moqui_log_color, read before the conf.

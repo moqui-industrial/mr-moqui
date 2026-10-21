@@ -414,6 +414,12 @@ interface MoquiResourceFacade {
     contentTypeOf(filename: string): string | null;
     /** A PNG thumbnail of an image, no side over maxSize (256); null when the bytes are not an image. */
     makeThumbnail(source: string, target: string, maxSize?: number | null): { width: number; height: number; contentType: string } | null;
+    /** Page 1 of a PDF as a PNG at target, no side over maxSize (1024), with the page count; null when there is no PDF engine or the PDF does not open. */
+    makePdfPreview(source: string, target: string, maxSize?: number | null): { width: number; height: number; pages: number; contentType: string } | null;
+    /** The first rows of a sheet (the first when sheetName is empty), from the first used row and column; null when it is not a spreadsheet. */
+    readSheetPreview(location: string, sheetName?: string | null, maxRows?: number | null, maxCols?: number | null): { sheetNames: string[]; sheetName: string; rows: unknown[][]; truncated: boolean } | null;
+    /** The text of a PDF, spreadsheet or text file (maxChars, 100000), kept under runtime://tmp/file-text by cacheKey; "" when it has none; null with cacheOnly when not extracted yet. */
+    extractText(location: string, cacheKey: string, maxChars?: number | null, cacheOnly?: boolean | null): string | null;
     /** A zip of the files at the entries' locations, each under its path; an entry that cannot be read is in failures. */
     writeZip(target: string, entries: { path: string; location: string }[]): { count: number; size: number; failures: { path: string; error: string }[] };
     /** A signed grant for subject, valid ttlSeconds (3600); checkGrant verifies it with the same key. */

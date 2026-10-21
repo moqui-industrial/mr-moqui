@@ -19,6 +19,7 @@ pub(crate) mod rust_services;
 mod backup;
 pub(crate) mod call;
 mod chat;
+mod chat_link;
 #[cfg(test)]
 mod chat_tests;
 mod content;
@@ -54,7 +55,7 @@ mod security_checks;
 pub(crate) mod semaphore;
 pub(crate) mod shell;
 #[cfg(feature = "xlsx")]
-mod spreadsheet;
+pub(crate) mod spreadsheet;
 mod sso;
 mod system_sync;
 mod tools;

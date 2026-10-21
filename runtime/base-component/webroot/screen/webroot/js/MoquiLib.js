@@ -463,20 +463,33 @@
         },
 
         // A WebSocket for the topics a page listens to. It connects when the first listener is registered, and
-        // only when an endpoint is configured: the object is not made without one.
+        // only when an endpoint is configured: the object is not made without one. onState(fn) calls fn("open") or
+        // fn("closed") as the socket opens and closes (a chat store sends what waited, and reads what it missed); the
+        // browser coming back online reopens a closed socket at once, with its tries counted again.
         NotificationClient: function (webSocketUrl) {
             this.displayEnable = true;
             this.webSocketUrl = webSocketUrl;
             this.topicListeners = {};
+            this.stateListeners = [];
             this.tryReopenCount = 0;
             this.disableDisplay = () => { this.displayEnable = false; };
             this.enableDisplay = () => { this.displayEnable = true; };
+            this.isOpen = () => !!this.webSocket && this.webSocket.readyState === root.WebSocket.OPEN;
+            // Calls fn(state) for each change, "open" or "closed"; returns a function that removes it.
+            this.onState = (fn) => {
+                this.stateListeners.push(fn);
+                return () => { const index = this.stateListeners.indexOf(fn); if (index >= 0) this.stateListeners.splice(index, 1); };
+            };
+            const tellState = (state) => this.stateListeners.slice().forEach((fn) => {
+                try { fn(state, this); } catch (err) { console.error("notification state listener failed", err); }
+            });
             this.initWebSocket = () => {
                 const socket = new root.WebSocket(this.webSocketUrl);
                 this.webSocket = socket;
                 socket.onopen = () => {
                     this.tryReopenCount = 0;
                     socket.send("subscribe:" + Object.keys(this.topicListeners).join(","));
+                    tellState("open");
                 };
                 socket.onmessage = (event) => {
                     let jsonObj;
@@ -485,7 +498,11 @@
                     (this.topicListeners[jsonObj.topic] || []).slice().forEach((callback) => callback(jsonObj, this));
                     (this.topicListeners.ALL || []).slice().forEach((callback) => callback(jsonObj, this));
                 };
-                socket.onclose = () => { setTimeout(() => this.tryReopen(), 30 * 1000); };
+                socket.onclose = () => {
+                    // a socket replaced by a reopen is not the client's state
+                    if (this.webSocket === socket) tellState("closed");
+                    setTimeout(() => this.tryReopen(), 30 * 1000);
+                };
                 socket.onerror = (event) => { console.log(event); };
             };
             this.tryReopen = () => {
@@ -495,6 +512,12 @@
                     this.initWebSocket();
                 }
             };
+            // back online: a socket that was made and closed opens now, with its six tries again
+            if (root.addEventListener) root.addEventListener("online", () => {
+                if (!this.webSocket) return;
+                this.tryReopenCount = 0;
+                this.tryReopen();
+            });
             this.displayNotify = (jsonObj) => {
                 if (!this.displayEnable) return;
                 if (jsonObj.title && jsonObj.showAlert === true) moqui.notifyNotification(jsonObj, moqui.notifyGrowl);

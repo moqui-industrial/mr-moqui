@@ -65,7 +65,10 @@ pub use definition::{
 };
 #[cfg(test)]
 pub(crate) use pdf::pdf_test_lock;
-pub use pdf::{clear_pdf_engine, install_pdf_engine, install_pdf_unavailable, PdfEngine, PdfRenderer, PDF_UNAVAILABLE};
+pub use pdf::{
+    clear_pdf_engine, install_pdf_engine, install_pdf_unavailable, PdfEngine, PdfLibrary, PdfPreview,
+    PdfPreviewRequest, PdfRenderer, PDFJS_LOCATION, PDFJS_WORKER_LOCATION, PDF_UNAVAILABLE, PREVIEW_UNSUPPORTED,
+};
 pub use render::{
     make_render, save_screen_last_info, send_redirect_and_stop_render, with_current_render, RenderOutput, RenderState,
     ScreenRender,

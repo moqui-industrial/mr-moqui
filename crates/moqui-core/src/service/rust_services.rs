@@ -105,6 +105,7 @@ fn build() -> BTreeMap<&'static str, RustServiceFn> {
         super::shell::register(&mut map),
         super::user_keys::register(&mut map),
         super::chat::register(&mut map),
+        super::chat_link::register(&mut map),
         #[cfg(feature = "git")]
         super::git::register(&mut map),
     ] {
@@ -127,6 +128,8 @@ mod tests {
             "moqui_core::service::backup::backup_embedded_database",
             "moqui_core::service::chat::check_record_visible",
             "moqui_core::service::chat::push_signal",
+            "moqui_core::service::chat_link::extract_link_urls",
+            "moqui_core::service::chat_link::fetch_link_page",
             "moqui_core::service::content::gc_content_blobs",
             "moqui_core::service::content::migrate_db_resource_blobs",
             "moqui_core::service::elfinder::run_command",

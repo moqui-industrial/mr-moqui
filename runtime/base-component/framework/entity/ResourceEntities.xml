@@ -277,7 +277,9 @@ along with this software (see the LICENSE.md file). If not, see
 
             <!-- The search document of drive files: no row feeds it, FileServices indexes each write, move, rename and
                 trash with documents it builds (ec.search.indexDocuments), and the mirror fetch indexes the paths that
-                changed. Queries filter by the drives the user may open. extractedText is for later. -->
+                changed. Queries filter by the drives the user may open. extractedText is the text of a PDF (through the
+                PDF engine), spreadsheet or text file from the text cache under runtime://tmp/file-text; a file not in it
+                yet is extracted by extract#DriveFileText, asynchronously, and indexed again. -->
             <moqui.entity.document.DataDocument dataDocumentId="MoquiDriveFile" indexName="moqui_drive" documentName="Drive File"
                     primaryEntityName="moqui.resource.ResourceDrive" documentTitle="${name}"/>
             <moqui.entity.document.DataDocumentField dataDocumentId="MoquiDriveFile" fieldSeqId="01" fieldPath="driveId"/>

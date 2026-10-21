@@ -293,6 +293,18 @@ SIL Open Font License 1.1 (the fonts): the full text is in licenses/OFL-1.1.txt,
     produce: (ctx) => [['tiptap/tiptap.min.js', ctx.esbuildTiptap()]],
   },
   {
+    // PDF previews in Files: the PDF engine's Chromium page imports the two modules (crates/moqui-host/src/pdf.rs).
+    // Pinned Oct 21, 2026; 6.4.299 was published Oct 3 and has the CVE-2024-4367 fix (4.2.67 and later).
+    id: 'pdfjs', name: 'PDF.js', npm: 'pdfjs-dist', version: '6.4.299', license: 'Apache-2.0',
+    licenseNote: 'Only the display and worker modules. The standard_fonts (Foxit fonts under a BSD license, Liberation ' +
+      'fonts under GPL-2.0 with a font exception), cmaps, iccs and wasm directories are not shipped.',
+    copy: [
+      ['build/pdf.min.mjs', 'pdfjs/pdf.min.mjs'],
+      ['build/pdf.worker.min.mjs', 'pdfjs/pdf.worker.min.mjs'],
+    ],
+    licenseFiles: ['LICENSE'],
+  },
+  {
     id: 'qz-tray', name: 'QZ Tray connector (qz-tray.js)', npm: 'qz-tray', version: '2.3.0', license: 'LGPL-2.1-only',
     licenseNote: 'The file is served unmodified as its own script, and only when printing is enabled. Never concatenated or minified into another file.',
     copy: [['qz-tray.js', 'qz-tray/qz-tray.js']],

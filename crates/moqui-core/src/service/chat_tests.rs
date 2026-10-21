@@ -16,7 +16,9 @@
 //! record room through a stub of the record visibility hook), direct rooms one per set of users, the timeline (pages,
 //! edits, redactions, reactions, threads, replies, pins), unread and mention counts by notification level, the pushes
 //! (to members only, after the commit), presence (status, heartbeat, auto-away, clear-at, do not disturb), the search
-//! document and the search by membership, files, and the agent entry point. The SQL on the real database and the
+//! document and the search by membership, files, the agent entry point, and the later parts: a send tried again, one
+//! event by its eventSeq, the files and threads of a room, forwards, polls, link previews (through a stub of the page),
+//! read receipts by preference and @room. The SQL on the real database and the
 //! search index are `runtime/base-component/example/test/Chat.spec.js`.
 
 use std::collections::BTreeMap;
@@ -33,7 +35,8 @@ const SERVICES: &str = "org.moqui.impl.ChatServices";
 const MINUTE: i64 = 60_000;
 
 /// The stubs the tests point the hooks at: the record visibility service (a record whose id starts with OPEN is
-/// visible), a service that pushes and then fails (so its transaction rolls back), and an agent that answers.
+/// visible), a service that pushes and then fails (so its transaction rolls back), the pages of link previews (a URL
+/// with broken in it fails), and an agent that answers.
 const STUBS: &str = r#"<services>
     <service verb="check" noun="Visible">
         <in-parameters><parameter name="recordEntityName"/><parameter name="recordId"/><parameter name="checkOnly" type="Boolean"/></in-parameters>
@@ -46,6 +49,15 @@ const STUBS: &str = r#"<services>
             ec.service.sync().name('org.moqui.impl.ChatServices.push#Signal').parameters({topic: 'chatUser:' + userId,
                 userIdList: [userId], message: {kind: 'room', action: 'rolledBack'}}).call()
             ec.message.addError('failed after the push')
+        ]]></script></actions>
+    </service>
+    <service verb="get" noun="LinkPage">
+        <in-parameters><parameter name="url"/></in-parameters>
+        <out-parameters><parameter name="status"/><parameter name="contentType"/><parameter name="body" allow-html="any"/></out-parameters>
+        <actions><script><![CDATA[
+            if (url.includes('broken')) { status = '500'; contentType = 'text/html'; body = '' }
+            else { status = '200'; contentType = 'text/html; charset=utf-8'
+                body = '<html><head><title>Page ' + url + '</title><meta property="og:description" content="About it"></head><body></body></html>' }
         ]]></script></actions>
     </service>
     <service verb="receive" noun="AgentMessage">
@@ -324,6 +336,17 @@ impl Tape {
     fn clear(&self) {
         self.seen.lock().unwrap().clear();
     }
+}
+
+/// Tests that store chat files set the property chat_attachment_root, which the whole process shares, to a folder of
+/// their own: one at a time. The property is cleared before the lock goes.
+fn attachment_root(dir: &std::path::Path) -> (std::sync::MutexGuard<'static, ()>, String) {
+    static ROOT: Mutex<()> = Mutex::new(());
+    let guard = ROOT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::fs::create_dir_all(dir.join("chat")).unwrap();
+    let root = format!("file:{}", dir.join("chat").display());
+    moqui_lib::env::set_property("chat_attachment_root", &root);
+    (guard, root)
 }
 
 fn sorted(mut ids: Vec<String>) -> Vec<String> {
@@ -1461,9 +1484,7 @@ fn files_go_with_their_message_and_go_away_with_it() {
     let _entered = ctx.enter();
     install(&dir);
     users(&facade, &["fla", "flb", "flc"]);
-    std::fs::create_dir_all(dir.join("chat")).unwrap();
-    let root = format!("file:{}", dir.join("chat").display());
-    moqui_lib::env::set_property("chat_attachment_root", &root);
+    let (_root_lock, root) = attachment_root(&dir);
     let upload = |name: &str, bytes: &[u8]| {
         crate::web::multipart::UploadedFile::in_memory("file", name, "text/plain", bytes.to_vec()).into_value()
     };
@@ -1626,5 +1647,515 @@ fn an_agent_member_gets_each_message_through_its_entry_point() {
     assert_eq!(field(&shown[1], "senderUserId"), "agbot");
     // the agent's own answer is not handed back to it
     assert_eq!(ctx.factory().service_pools().run_pending(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn bool_text(out: &BTreeMap<String, Value>, key: &str) -> bool {
+    out_text(out, key) == "true"
+}
+
+fn ints(items: &[i64]) -> Value {
+    Value::List(items.iter().map(|item| int(*item)).collect())
+}
+
+fn preference(facade: &EntityFacade, user_id: &str, key: &str, value: &str) {
+    row(
+        facade,
+        "moqui.security.UserPreference",
+        &[("userId", text(user_id)), ("preferenceKey", text(key)), ("preferenceValue", text(value))],
+    );
+}
+
+fn one_event(room: &str, seq: i64) -> IndexMap<String, Value> {
+    let found = events(&timeline(room, &[("eventSeq", int(seq))]));
+    assert_eq!(found.len(), 1, "event {seq}");
+    found[0].clone()
+}
+
+/// A send tried again with its clientRef is answered with the message it made and pushes nothing; get#Timeline reads one
+/// event by its eventSeq, a thread reply too; a thread's root knows its last reply.
+#[test]
+fn a_retried_send_is_answered_with_its_message_and_one_event_is_read_by_its_seq() {
+    let (ctx, facade, dir) = setup("retry", crate::service::ServicePools::idle());
+    let _entered = ctx.enter();
+    install(&dir);
+    users(&facade, &["rta", "rtb"]);
+    let tape = Tape::start(&["rta", "rtb"]);
+    login("rta");
+    let chat = room("private", "Retries", &["rtb"]);
+    tape.clear();
+    let parameters = [("chatRoomId", text(&chat)), ("body", text("<p>once</p>")), ("clientRef", text("c1.a:b_c-d"))];
+    let first = ok("send#Message", &parameters);
+    assert!(!bool_text(&first, "duplicate"));
+    let seq = out_number(&first, "eventSeq");
+    let pushed = tape.take("chatRoom:");
+    assert_eq!(pushed.len(), 1);
+    assert_eq!(pushed[0].2["event"]["clientRef"], "c1.a:b_c-d");
+    let again = ok("send#Message", &parameters);
+    assert!(bool_text(&again, "duplicate"));
+    assert_eq!(out_number(&again, "eventSeq"), seq);
+    assert_eq!(field(&out_map(&again, "event"), "bodyText"), "once");
+    assert!(tape.take("chatRoom:").is_empty(), "a retry pushes nothing");
+    assert_eq!(texts(&timeline(&chat, &[])), ["once"]);
+    refused(
+        "send#Message",
+        &[("chatRoomId", text(&chat)), ("body", text("<p>x</p>")), ("clientRef", text("not a ref!"))],
+        "clientRef",
+    );
+    // the same clientRef from another sender is another message; its clientRef is its sender's only
+    login("rtb");
+    let other = ok("send#Message", &parameters);
+    assert!(!bool_text(&other, "duplicate"));
+    assert_ne!(out_number(&other, "eventSeq"), seq);
+    assert_ne!(field(&one_event(&chat, seq), "clientRef"), "c1.a:b_c-d");
+    login("rta");
+    assert_eq!(field(&one_event(&chat, seq), "clientRef"), "c1.a:b_c-d");
+
+    // one event by its eventSeq: a thread reply, its root with the last reply, and none for a number not there
+    let reply = out_number(
+        &ok(
+            "send#Message",
+            &[("chatRoomId", text(&chat)), ("body", text("<p>in the thread</p>")), ("threadRootEventSeq", int(seq))],
+        ),
+        "eventSeq",
+    );
+    let shown = one_event(&chat, reply);
+    assert_eq!(number(&shown, "threadRootEventSeq"), seq);
+    let root = one_event(&chat, seq);
+    assert_eq!(number(&root, "threadLastEventSeq"), reply);
+    assert_eq!(field(&root, "threadLastUserId"), "rta");
+    assert_eq!(field(&root, "threadLastUserName"), "Rta");
+    assert!(events(&timeline(&chat, &[("eventSeq", int(999))])).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The files of a room, newest first, by type and name, paged at whole messages; the threads of a room, the latest reply
+/// first, mine, paged, and a thread's last reply after a redaction.
+#[test]
+fn the_files_and_the_threads_of_a_room_are_listed() {
+    let (ctx, facade, dir) = setup("lists", crate::service::ServicePools::idle());
+    let _entered = ctx.enter();
+    install(&dir);
+    users(&facade, &["lsa", "lsb", "lsc"]);
+    let (_root_lock, _root) = attachment_root(&dir);
+    login("lsa");
+    let chat = room("private", "Lists", &["lsb"]);
+    let upload = |name: &str, kind: &str| {
+        let file = crate::web::multipart::UploadedFile::in_memory("file", name, kind, b"bytes".to_vec()).into_value();
+        out_text(&ok("upload#Attachment", &[("chatRoomId", text(&chat)), ("file", file)]), "chatAttachmentId")
+    };
+    let send_files = |ids: &[&str]| {
+        out_number(
+            &ok("send#Message", &[("chatRoomId", text(&chat)), ("chatAttachmentIdList", list(ids))]),
+            "eventSeq",
+        )
+    };
+    let (a, b) = (upload("a.png", "image/png"), upload("b.txt", "text/plain"));
+    let first = send_files(&[&a, &b]);
+    let c = upload("c.png", "image/png");
+    let second = send_files(&[&c]);
+    let d = upload("d.txt", "text/plain");
+    let gone = send_files(&[&d]);
+    ok("redact#Message", &[("chatRoomId", text(&chat)), ("eventSeq", int(gone))]);
+    let names = |out: &BTreeMap<String, Value>| -> Vec<String> {
+        maps(out.get("fileList")).iter().map(|file| field(file, "fileName")).collect()
+    };
+    let all = ok("find#RoomFiles", &[("chatRoomId", text(&chat))]);
+    assert_eq!(names(&all), ["c.png", "a.png", "b.txt"]);
+    assert_eq!(number(&maps(all.get("fileList"))[0], "eventSeq"), second);
+    assert_eq!(field(&maps(all.get("fileList"))[0], "senderName"), "Lsa");
+    assert_eq!(out_text(&all, "nextBeforeEventSeq"), "");
+    let images = ok("find#RoomFiles", &[("chatRoomId", text(&chat)), ("contentTypePrefix", text("image/"))]);
+    assert_eq!(names(&images), ["c.png", "a.png"]);
+    let named = ok("find#RoomFiles", &[("chatRoomId", text(&chat)), ("searchText", text("B.T"))]);
+    assert_eq!(names(&named), ["b.txt"]);
+    // a page of 2 ends at a whole message: the second message's files come on the next page together
+    let page = ok("find#RoomFiles", &[("chatRoomId", text(&chat)), ("limit", int(2))]);
+    assert_eq!(names(&page), ["c.png"]);
+    assert_eq!(out_number(&page, "nextBeforeEventSeq"), second);
+    let next = ok(
+        "find#RoomFiles",
+        &[("chatRoomId", text(&chat)), ("limit", int(2)), ("beforeEventSeq", int(second))],
+    );
+    assert_eq!(names(&next), ["a.png", "b.txt"]);
+    assert_eq!(number(&maps(next.get("fileList"))[0], "eventSeq"), first);
+    login("lsc");
+    refused("find#RoomFiles", &[("chatRoomId", text(&chat))], "not found");
+    refused("find#RoomThreads", &[("chatRoomId", text(&chat))], "not found");
+
+    // threads: the one with the latest reply first
+    let start = now();
+    let reply = |user: &str, root: i64, body: &str, minute: i64| {
+        set_time(&ctx, start + minute * MINUTE);
+        login(user);
+        out_number(
+            &ok(
+                "send#Message",
+                &[("chatRoomId", text(&chat)), ("body", text(body)), ("threadRootEventSeq", int(root))],
+            ),
+            "eventSeq",
+        )
+    };
+    login("lsa");
+    let one = send(&chat, "<p>first topic</p>");
+    login("lsb");
+    let two = send(&chat, "<p>second topic</p>");
+    reply("lsb", one, "<p>b on one</p>", 1);
+    let early = reply("lsa", two, "<p>a on two</p>", 2);
+    let late = reply("lsa", two, "<p>a again on two</p>", 3);
+    let roots = |out: &BTreeMap<String, Value>| -> Vec<i64> {
+        maps(out.get("threadList")).iter().map(|thread| number(thread, "eventSeq")).collect()
+    };
+    login("lsa");
+    let threads = ok("find#RoomThreads", &[("chatRoomId", text(&chat))]);
+    assert_eq!(roots(&threads), [two, one]);
+    let top = &maps(threads.get("threadList"))[0];
+    assert_eq!(number(top, "threadReplyCount"), 2);
+    assert_eq!(number(top, "threadLastEventSeq"), late);
+    assert_eq!(field(top, "threadLastUserName"), "Lsa");
+    assert_eq!(field(top, "lastSnippet"), "a again on two");
+    assert_eq!(field(top, "snippet"), "second topic");
+    // mine: started by me or replied in
+    let mine = ok("find#RoomThreads", &[("chatRoomId", text(&chat)), ("mine", Value::Bool(true))]);
+    assert_eq!(roots(&mine), [two, one]);
+    // paged
+    let first_page = ok("find#RoomThreads", &[("chatRoomId", text(&chat)), ("limit", int(1))]);
+    assert!(bool_text(&first_page, "hasMore"));
+    let before = number(&maps(first_page.get("threadList"))[0], "threadLastDate");
+    let rest = ok(
+        "find#RoomThreads",
+        &[("chatRoomId", text(&chat)), ("limit", int(1)), ("beforeDate", int(before))],
+    );
+    assert_eq!(roots(&rest), [one]);
+    assert!(!bool_text(&rest, "hasMore"));
+    // the last reply redacted: the one before it is the last
+    ok("redact#Message", &[("chatRoomId", text(&chat)), ("eventSeq", int(late))]);
+    let root = one_event(&chat, two);
+    assert_eq!(number(&root, "threadReplyCount"), 1);
+    assert_eq!(number(&root, "threadLastEventSeq"), early);
+    ctx.set_effective_time(None);
+    moqui_lib::env::clear_property("chat_attachment_root");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A forward: made by the server from a message of a room the sender is in, its mentions inert, nothing of its room, its
+/// files copied into the room it goes to; not from a room the sender is not in, nor a redacted message.
+#[test]
+fn a_forward_is_made_from_a_message_the_sender_may_read() {
+    let (ctx, facade, dir) = setup("forward", crate::service::ServicePools::idle());
+    let _entered = ctx.enter();
+    install(&dir);
+    users(&facade, &["fwa", "fwb", "fwc"]);
+    let (_root_lock, _root) = attachment_root(&dir);
+    login("fwb");
+    let source = room("private", "Source", &["fwa"]);
+    let file = crate::web::multipart::UploadedFile::in_memory("file", "notes.txt", "text/plain", b"the notes".to_vec()).into_value();
+    let attachment = out_text(&ok("upload#Attachment", &[("chatRoomId", text(&source)), ("file", file)]), "chatAttachmentId");
+    let original = out_number(
+        &ok(
+            "send#Message",
+            &[
+                ("chatRoomId", text(&source)),
+                ("body", text(r#"<p>For <span data-mention-id="fwa">@Fwa</span>: the plan</p>"#)),
+                ("chatAttachmentIdList", list(&[&attachment])),
+            ],
+        ),
+        "eventSeq",
+    );
+    login("fwa");
+    let target = room("private", "Target", &["fwc"]);
+    let sent = ok(
+        "send#Message",
+        &[
+            ("chatRoomId", text(&target)),
+            ("body", text("<p>see this</p>")),
+            ("forwardOfChatRoomId", text(&source)),
+            ("forwardOfEventSeq", int(original)),
+        ],
+    );
+    let seq = out_number(&sent, "eventSeq");
+    login("fwc");
+    let shown = one_event(&target, seq);
+    let forward = sub(&shown, "forwardOf");
+    assert_eq!(field(&forward, "senderName"), "Fwb");
+    assert_eq!(field(&forward, "bodyText"), "For @Fwa: the plan");
+    assert!(!field(&forward, "body").contains("data-mention-id"), "{}", field(&forward, "body"));
+    assert!(field(&forward, "body").contains("@Fwa"));
+    assert!(!forward.contains_key("chatRoomId") && !forward.contains_key("roomName"));
+    assert_eq!(field(&shown, "body"), "<p>see this</p>");
+    assert_eq!(out_number(&counts("fwc"), "mentions"), 0);
+    let files = maps(shown.get("attachments"));
+    assert_eq!(files.len(), 1);
+    let copy = field(&files[0], "chatAttachmentId");
+    assert_ne!(copy, attachment);
+    let info = ok("get#Attachment", &[("chatAttachmentId", text(&copy))]);
+    assert_eq!(out_text(&info, "chatRoomId"), target);
+    let bytes = ctx.factory().resource().get(&out_text(&info, "location")).unwrap().read_bytes().unwrap();
+    assert_eq!(bytes, b"the notes");
+    refused("get#Attachment", &[("chatAttachmentId", text(&attachment))], "not found");
+    // not from a room I am not in
+    refused(
+        "send#Message",
+        &[("chatRoomId", text(&target)), ("forwardOfChatRoomId", text(&source)), ("forwardOfEventSeq", int(original))],
+        "not found",
+    );
+    // with no comment; not a redacted message
+    login("fwa");
+    ok(
+        "send#Message",
+        &[("chatRoomId", text(&target)), ("forwardOfChatRoomId", text(&source)), ("forwardOfEventSeq", int(original))],
+    );
+    login("fwb");
+    ok("redact#Message", &[("chatRoomId", text(&source)), ("eventSeq", int(original))]);
+    login("fwa");
+    refused(
+        "send#Message",
+        &[("chatRoomId", text(&target)), ("forwardOfChatRoomId", text(&source)), ("forwardOfEventSeq", int(original))],
+        "not found",
+    );
+    moqui_lib::env::clear_property("chat_attachment_root");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Polls: 2 to 10 options; a vote replaces the voter's, an empty one takes it back; one option unless multiple; the
+/// update push is the same for everyone (no mine; no voters of an anonymous poll); closed by its creator or a
+/// moderator, then no votes; not edited; a redaction removes it.
+#[test]
+fn a_poll_takes_votes_until_it_is_closed() {
+    let (ctx, facade, dir) = setup("polls", crate::service::ServicePools::idle());
+    let _entered = ctx.enter();
+    install(&dir);
+    users(&facade, &["pla", "plb", "plc"]);
+    let tape = Tape::start(&["pla", "plb", "plc"]);
+    login("pla");
+    let chat = room("private", "Polls", &["plb", "plc"]);
+    let poll = |options: &[&str], more: &[(&'static str, Value)]| -> Vec<(&'static str, Value)> {
+        let mut parameters = vec![
+            ("chatRoomId", text(&chat)),
+            ("question", text("Lunch?")),
+            ("optionList", list(options)),
+        ];
+        parameters.extend(more.iter().cloned());
+        parameters
+    };
+    refused("create#Poll", &poll(&["only"], &[]), "2 to 10 options");
+    refused("create#Poll", &poll(&["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"], &[]), "2 to 10 options");
+    refused("create#Poll", &poll(&["Pizza", "pizza"], &[]), "twice");
+    tape.clear();
+    let made = ok("create#Poll", &poll(&["Pizza", "Sushi", "Salad"], &[]));
+    let seq = out_number(&made, "eventSeq");
+    let state = sub(&out_map(&made, "event"), "poll");
+    assert_eq!(maps(state.get("options")).len(), 3);
+    assert_eq!(field(&maps(state.get("options"))[0], "mine"), "false");
+    let pushed = tape.take("chatRoom:");
+    assert_eq!(pushed.len(), 2, "the event, then its poll: {pushed:?}");
+    assert_eq!(pushed[0].2["kind"], "event");
+    assert_eq!(pushed[1].2["kind"], "update");
+    assert_eq!(pushed[1].2["eventSeq"], seq);
+    assert!(pushed[1].2["fields"]["poll"]["options"][0].get("mine").is_none());
+    assert!(pushed[1].2["fields"]["poll"].get("mine").is_none());
+
+    login("plb");
+    refused(
+        "vote#Poll",
+        &[("chatRoomId", text(&chat)), ("eventSeq", int(seq)), ("optionIdList", ints(&[1, 2]))],
+        "Choose one",
+    );
+    refused(
+        "vote#Poll",
+        &[("chatRoomId", text(&chat)), ("eventSeq", int(seq)), ("optionIdList", ints(&[9]))],
+        "not found",
+    );
+    tape.clear();
+    let voted = ok("vote#Poll", &[("chatRoomId", text(&chat)), ("eventSeq", int(seq)), ("optionIdList", ints(&[1]))]);
+    let state = out_map(&voted, "poll");
+    assert_eq!(number(&maps(state.get("options"))[0], "voteCount"), 1);
+    assert_eq!(field(&maps(state.get("options"))[0], "mine"), "true");
+    let update = tape.take("chatRoom:");
+    assert_eq!(update.len(), 1);
+    assert_eq!(update[0].2["fields"]["poll"]["options"][0]["voterIds"][0], "plb");
+    // a new vote replaces the old one
+    let changed = ok("vote#Poll", &[("chatRoomId", text(&chat)), ("eventSeq", int(seq)), ("optionIdList", ints(&[2]))]);
+    let state = out_map(&changed, "poll");
+    let options = maps(state.get("options"));
+    assert_eq!((number(&options[0], "voteCount"), number(&options[1], "voteCount")), (0, 1));
+    assert_eq!(number(&state, "voterCount"), 1);
+    login("plc");
+    ok("vote#Poll", &[("chatRoomId", text(&chat)), ("eventSeq", int(seq)), ("optionIdList", ints(&[2]))]);
+    let seen = sub(&one_event(&chat, seq), "poll");
+    assert_eq!(number(&maps(seen.get("options"))[1], "voteCount"), 2);
+    assert_eq!(field(&maps(seen.get("options"))[1], "mine"), "true");
+    assert_eq!(number(&seen, "totalVotes"), 2);
+    // taken back
+    let back = ok("vote#Poll", &[("chatRoomId", text(&chat)), ("eventSeq", int(seq)), ("optionIdList", ints(&[]))]);
+    assert_eq!(number(&out_map(&back, "poll"), "voterCount"), 1);
+    // closed by its creator, not by another member
+    refused("close#Poll", &[("chatRoomId", text(&chat)), ("eventSeq", int(seq))], "creator or a moderator");
+    login("pla");
+    refused(
+        "edit#Message",
+        &[("chatRoomId", text(&chat)), ("eventSeq", int(seq)), ("body", text("<p>Dinner?</p>"))],
+        "A poll is not edited",
+    );
+    let closed = ok("close#Poll", &[("chatRoomId", text(&chat)), ("eventSeq", int(seq))]);
+    assert_eq!(field(&out_map(&closed, "poll"), "closed"), "true");
+    login("plb");
+    refused(
+        "vote#Poll",
+        &[("chatRoomId", text(&chat)), ("eventSeq", int(seq)), ("optionIdList", ints(&[3]))],
+        "closed",
+    );
+
+    // anonymous: no voters in the push or the timeline
+    login("pla");
+    let secret = out_number(
+        &ok("create#Poll", &poll(&["Yes", "No"], &[("anonymous", Value::Bool(true)), ("multiple", Value::Bool(true))])),
+        "eventSeq",
+    );
+    login("plb");
+    tape.clear();
+    ok("vote#Poll", &[("chatRoomId", text(&chat)), ("eventSeq", int(secret)), ("optionIdList", ints(&[1, 2]))]);
+    let update = tape.take("chatRoom:");
+    assert_eq!(update[0].2["fields"]["poll"]["options"][0]["voteCount"], 1);
+    assert_eq!(update[0].2["fields"]["poll"]["options"][0]["voterIds"], serde_json::json!([]));
+    login("pla");
+    let seen = sub(&one_event(&chat, secret), "poll");
+    assert!(maps(seen.get("options")).iter().all(|option| maps(option.get("voterIds")).is_empty()));
+    // a redaction removes the poll
+    ok("redact#Message", &[("chatRoomId", text(&chat)), ("eventSeq", int(secret))]);
+    {
+        let _authz = ctx.disable_authz();
+        for entity in ["moqui.chat.ChatPoll", "moqui.chat.ChatPollOption", "moqui.chat.ChatPollVote"] {
+            let left = facade.find(entity).unwrap().eq("chatRoomId", text(&chat)).eq("eventSeq", int(secret)).list().unwrap();
+            assert!(left.is_empty(), "{entity}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Link previews: fetched after the commit (here from a stub of the pages), each link on its own (a broken one has no
+/// card), kept on the message and pushed as an update, cached; removed by the sender for good; none for a sender who
+/// turned them off.
+#[test]
+fn the_links_of_a_message_get_text_previews_after_the_commit() {
+    let (ctx, facade, dir) = setup("links", crate::service::ServicePools::inline());
+    let _entered = ctx.enter();
+    install(&dir);
+    users(&facade, &["lpa", "lpb"]);
+    moqui_lib::env::set_property("chat_link_preview_service", "test.ChatStub.get#LinkPage");
+    let tape = Tape::start(&["lpa", "lpb"]);
+    login("lpa");
+    let chat = room("private", "Links", &["lpb"]);
+    let seq = send(
+        &chat,
+        r#"<p>See <a href="https://example.com/one">https://example.com/one</a> and https://broken.example/x</p>"#,
+    );
+    // the fetch runs after the commit (inline pools run it at the next drain point)
+    ctx.factory().service_pools().run_pending();
+    let previews = maps(one_event(&chat, seq).get("linkPreviews"));
+    assert_eq!(previews.len(), 1, "{previews:?}");
+    assert_eq!(field(&previews[0], "title"), "Page https://example.com/one");
+    assert_eq!(field(&previews[0], "description"), "About it");
+    assert_eq!(field(&previews[0], "url"), "https://example.com/one");
+    let update: Vec<_> = tape.take("chatRoom:").into_iter().filter(|(_, _, message)| message["kind"] == "update").collect();
+    assert_eq!(update.len(), 1);
+    assert_eq!(update[0].2["fields"]["linkPreviews"][0]["title"], "Page https://example.com/one");
+    {
+        let _authz = ctx.disable_authz();
+        let cached = facade.find("moqui.chat.ChatLinkPreview").unwrap().list().unwrap();
+        let mine: Vec<_> = cached
+            .iter()
+            .filter(|row| {
+                let url = row.get("url").map(to_plain_string).unwrap_or_default();
+                url == "https://example.com/one" || url == "https://broken.example/x"
+            })
+            .collect();
+        assert_eq!(mine.len(), 2);
+        assert!(mine.iter().any(|row| row.get("failed").map(to_plain_string).as_deref() == Some("Y")));
+    }
+    // removed by its sender, not by another member, and not fetched again on an edit
+    login("lpb");
+    refused("remove#LinkPreviews", &[("chatRoomId", text(&chat)), ("eventSeq", int(seq))], "Only the sender");
+    login("lpa");
+    ok("remove#LinkPreviews", &[("chatRoomId", text(&chat)), ("eventSeq", int(seq))]);
+    assert!(maps(one_event(&chat, seq).get("linkPreviews")).is_empty());
+    ok(
+        "edit#Message",
+        &[("chatRoomId", text(&chat)), ("eventSeq", int(seq)), ("body", text("<p>Now https://example.com/two</p>"))],
+    );
+    ctx.factory().service_pools().run_pending();
+    assert!(maps(one_event(&chat, seq).get("linkPreviews")).is_empty());
+    // a sender who turned link previews off; another member's link is previewed
+    preference(&facade, "lpa", "CHAT_LINK_PREVIEWS", "N");
+    let off = send(&chat, "<p>https://example.com/three</p>");
+    login("lpb");
+    let on = send(&chat, "<p>https://example.com/four</p>");
+    ctx.factory().service_pools().run_pending();
+    assert!(maps(one_event(&chat, off).get("linkPreviews")).is_empty());
+    assert_eq!(maps(one_event(&chat, on).get("linkPreviews")).len(), 1);
+    moqui_lib::env::clear_property("chat_link_preview_service");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Read receipts by preference: a member who turned them off pushes no read marker and shows none; @room mentions every
+/// member, from a moderator or owner, or from anyone in a room of 20 members or fewer.
+#[test]
+fn read_receipts_follow_the_preference_and_room_mentions_reach_everyone() {
+    let (ctx, facade, dir) = setup("receipts", crate::service::ServicePools::idle());
+    let _entered = ctx.enter();
+    install(&dir);
+    users(&facade, &["rra", "rrb", "rrc"]);
+    preference(&facade, "rrb", "CHAT_READ_RECEIPTS", "N");
+    let tape = Tape::start(&["rra", "rrb", "rrc"]);
+    login("rra");
+    let chat = room("private", "Receipts", &["rrb", "rrc"]);
+    let seq = send(&chat, "<p>read me</p>");
+    tape.clear();
+    login("rrb");
+    ok("mark#Read", &[("chatRoomId", text(&chat))]);
+    assert_eq!(tape.take("chatUser:").len(), 1, "my own tabs still hear of it");
+    assert!(tape.take("chatRoom:").is_empty(), "no read receipt");
+    login("rrc");
+    ok("mark#Read", &[("chatRoomId", text(&chat))]);
+    assert_eq!(tape.take("chatRoom:").len(), 1);
+    login("rra");
+    let members = maps(ok("get#Room", &[("chatRoomId", text(&chat))]).get("memberList"));
+    let marker = |id: &str| field(members.iter().find(|member| field(member, "userId") == id).unwrap(), "lastReadEventSeq");
+    assert_eq!(marker("rrb"), "");
+    assert_eq!(marker("rrc"), seq.to_string());
+    login("rrb");
+    let own = maps(ok("get#Room", &[("chatRoomId", text(&chat))]).get("memberList"));
+    assert_eq!(
+        field(own.iter().find(|member| field(member, "userId") == "rrb").unwrap(), "lastReadEventSeq"),
+        seq.to_string(),
+        "my own marker"
+    );
+
+    // @room from a member of a small room
+    let everyone = r#"<p><span data-mention-id="@room">@room</span> standup</p>"#;
+    let mentioned = |out: &BTreeMap<String, Value>| -> Vec<String> {
+        let mut ids: Vec<String> = match out_map(out, "event").get("mentions") {
+            Some(Value::List(items)) => items.iter().map(to_plain_string).collect(),
+            _ => Vec::new(),
+        };
+        ids.sort();
+        ids
+    };
+    let sent = ok("send#Message", &[("chatRoomId", text(&chat)), ("body", text(everyone))]);
+    assert_eq!(mentioned(&sent), ["rra", "rrc"]);
+    // a room of 21: a member's @room is plain text, the owner's reaches everyone
+    let many: Vec<String> = (1..=19).map(|n| format!("rrm{n:02}")).collect();
+    let many_refs: Vec<&str> = many.iter().map(String::as_str).collect();
+    users(&facade, &many_refs);
+    login("rra");
+    let mut members = many_refs.clone();
+    members.push("rrb");
+    let big = room("private", "Big", &members);
+    login("rrb");
+    let plain = ok("send#Message", &[("chatRoomId", text(&big)), ("body", text(everyone))]);
+    assert!(mentioned(&plain).is_empty());
+    login("rra");
+    let loud = ok("send#Message", &[("chatRoomId", text(&big)), ("body", text(everyone))]);
+    assert_eq!(mentioned(&loud).len(), 20);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -69,7 +69,7 @@
   },
   "notices": {
     "path": "NOTICES.md",
-    "sha256": "6cfc129cf1e2571b8d098d6b282dee709c65b46416908b00b969a3e25cf9a9da"
+    "sha256": "aba8f759f4f36d27bf4da860f527754483336219d3f2483c9c943b9457214c13"
   },
   "libraries": [
     {
@@ -505,6 +505,30 @@
           "from": "build",
           "size": 472701,
           "sha256": "ddc730d8a3c595b1d906e53044ff693ba8f276e1809117a245c9353483dc0af8"
+        }
+      ]
+    },
+    {
+      "id": "pdfjs",
+      "name": "PDF.js",
+      "version": "6.4.299",
+      "license": "Apache-2.0",
+      "note": "Only the display and worker modules. The standard_fonts (Foxit fonts under a BSD license, Liberation fonts under GPL-2.0 with a font exception), cmaps, iccs and wasm directories are not shipped.",
+      "source": "https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.4.299.tgz",
+      "npm": "pdfjs-dist@6.4.299",
+      "tarballIntegrity": "sha512-AVl138zALtfaAPvADulE0PZThbYzCBS79nL4pOSL/6Sm/4AH5A21BD9VHt97OlCuzJuCpmeZtAtkinisF4Vb1g==",
+      "files": [
+        {
+          "path": "pdfjs/pdf.min.mjs",
+          "from": "build/pdf.min.mjs",
+          "size": 458904,
+          "sha256": "57456c8e0c81e46be31174b499ef77f2b9f5ee46d04412ba627320a36755d4c2"
+        },
+        {
+          "path": "pdfjs/pdf.worker.min.mjs",
+          "from": "build/pdf.worker.min.mjs",
+          "size": 1264342,
+          "sha256": "9536359f1b8367850d485731ca1d5e45c159a7b7a0912325e539937aa21ceb18"
         }
       ]
     },

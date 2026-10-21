@@ -655,7 +655,8 @@ the store for the live parts and their own transitions over those services for t
 ```
 chatRoom:<chatRoomId>  {kind: 'event', chatRoomId, eventSeq, event}           // to the room's members: a new event, as get#Timeline lists one
                        {kind: 'typing', chatRoomId, userId, typing}            // to the other members (signal#Typing; nothing stored)
-                       {kind: 'read', chatRoomId, userId, lastReadEventSeq}    // a member's read marker (read receipts)
+                       {kind: 'read', chatRoomId, userId, lastReadEventSeq}    // a member's read marker (read receipts; none when CHAT_READ_RECEIPTS is N)
+                       {kind: 'update', chatRoomId, eventSeq, threadRootEventSeq, fields}   // a message's linkPreviews or poll changed; the same for everyone
 chatUser:<userId>      {kind: 'room', action: 'joined'|'left'|'changed'|'role'|'settings', chatRoomId}
                        {kind: 'read', chatRoomId, lastReadEventSeq} | {kind: 'read', all: true}   // read in another tab
 userStatus             {userId, presence, statusText, emoji, clearAtDate, inCall}   // to the user's room members; self and status to the user
@@ -668,15 +669,31 @@ header's Chat badge (`counts.chat`, the app's counts service adding `get#UnreadC
 
 | | |
 |---|---|
-| `state` | `me` (the user's status: `status` as chosen, `presence`, `statusText`, `emoji`, `clearAtDate`, `autoAwayMinutes`), `presence` (userId to `{presence, statusText, emoji, clearAtDate, inCall}`), `unread` (chatRoomId to `{unread, mentions}`), `typing` (chatRoomId to userId to the time it ends), `reads` (chatRoomId to userId to lastReadEventSeq), `openRooms` |
-| `on(kind, fn)` | a listener of `event`, `typing`, `read`, `room` or `presence`; returns the function that removes it. While a screen listens to `event` or `room`, a chat push no longer reloads the tray's Chat tab (`trayReloads`); a typing or read signal never does |
+| `state` | `me` (the user's status: `status` as chosen, `presence`, `statusText`, `emoji`, `clearAtDate`, `autoAwayMinutes`), `presence` (userId to `{presence, statusText, emoji, clearAtDate, inCall}`), `unread` (chatRoomId to `{unread, mentions}`), `typing` (chatRoomId to userId to the time it ends), `reads` (chatRoomId to userId to lastReadEventSeq), `openRooms`, `outbox` (the messages not yet answered, below), `sending` (clientRef to true while asked), `online` (the browser's), `connected` (the socket's: null until it opens) |
+| `on(kind, fn)` | a listener of `event`, `update`, `typing`, `read`, `room` or `presence`, and of the store's own `outbox` (it changed), `sent` (`{clientRef, chatRoomId, threadRootEventSeq, json}`: a message of the outbox was answered) and `connection` (`{state: 'open'|'closed', reconnected}`: a screen reads what it missed); returns the function that removes it. While a screen listens to `event` or `room`, a chat push no longer reloads the tray's Chat tab (`trayReloads`); a typing, read or update signal never does |
 | `openRoom(id)`, `closeRoom(id)` | a room shown now: its events do not count as unread, and the socket is told of its topic |
 | `typing(id, false?)` | tell the room the user is typing, at most every 3 seconds, and once when it stops; `typingIn(id)` the users typing there |
 | `presenceOf(userId)`, `statusOf(userId)` | the dot (`""` while not known) and the status; `watchUsers(ids)` asks for them, the asks of the moment in one request, each user once in five minutes |
 | `myPresence()`, `quiet()` | the user's own dot (invisible is grey) and do not disturb: while it is on the page's toasts are off (`notificationClient.disableDisplay()`) and a screen plays no chat sound; the notifications are still recorded and counted |
 | `setStatus({status, statusText, emoji, clearAt, clearStatus})` | `clearAt` is minutes, `today` or `week` (the end of today or of Sunday, in the browser's zone) |
-| `applyEvent(list, event, me, threadRoot)` | merge a pushed event into a timeline list as `get#Timeline` answers it: a message added in its place once (a thread reply counts on its root unless the list is that thread), an edit, a reaction, a redaction (of a message or a reaction) and a pin applied |
+| `applyEvent(list, event, me, threadRoot)` | merge a pushed event into a timeline list as `get#Timeline` answers it: a message added in its place once (a thread reply counts on its root, with its last reply, unless the list is that thread), an edit, a reaction, a redaction (of a message or a reaction) and a pin applied |
+| `applyUpdate(list, payload, me)` | merge an `update` push into a timeline list: its fields replace the message's, but what is the user's own (`mine`, which the push has not: it is the same for everyone) stays as the list has it, in objects and in lists of objects matched by `id` (a poll's options) |
+| `send(item)`, `flush(force)`, `retry(clientRef)`, `discard(clientRef)`, `pendingIn(roomId, threadRoot)` | the outbox, below |
 | `reduce(state, jsonObj, me, now)` | the socket message on a state (pure; the store's listener) |
+
+**The outbox.** A screen sends a message with `moqui.chat.send({chatRoomId, url, params, text, threadRootEventSeq, hasFiles})`: `url` is
+its send transition, `params` its other parameters, `text` what its pending row shows. The item is kept first in `localStorage`
+(`moqui.chat.outbox.<userId>`, so it outlives the page and other tabs see it through `storage` events) with a `clientRef`, then posted with
+it; the server answers a clientRef it has seen with the first message (`duplicate`), so a message is posted once however often it is tried.
+`send` resolves `{sent: true, json}` when answered now, `{queued: true}` when it waits, `{failed: true, error}` when refused, and rejects when
+the outbox cannot keep it (50 items, 64 KB each). A send that did not go is classified by its status (`classify`): no answer, 408, 429 and
+5xx try again after `backoff` (2, 5, 15, then 60 seconds); 401 and 403 hold until the next flush that sends all; another 4xx, or an answer
+with no message, fails with the server's message (the row's Retry and Delete). `flush` sends what is due, oldest first and one at a time:
+every 2 seconds, and all of it when the store starts, when the browser is back online and when the socket opens. Offline nothing is asked:
+the items wait. An item with files fails after 20 hours, before `clean#PendingAttachments` removes its files. A pushed event of the user
+with the item's clientRef takes it out (sent from another tab, or its answer lost). The pure parts are `outboxAdd`, `outboxRemove`,
+`outboxFor`, `outboxExpired`, `classify` and `backoff`. BOSS's Chat rooms show the pending rows (Sending, Waiting, Not sent), a banner while
+offline (no uploads then), and read the timeline after their last event when the socket comes back.
 
 **Auto-away.** The store notes the user's input (keys, pointer, wheel, touch, focus, the tab coming back) and posts a heartbeat every minute
 with the seconds since the last input; the server sets away after the user's `CHAT_AUTO_AWAY_MINUTES` preference (10 by default) and
@@ -697,7 +714,9 @@ preset fills the fields and Save sets it.
 
 **Chat preferences the server reads** (`ChatServices.xml`): `CHAT_NOTIFY_DEFAULT` (`all`, `mentions` or `none`) is the notification level a
 membership starts at, in `create#Room` and `add#Member` (not in a direct room, whose messages always count); `CHAT_NOTIFY_PREVIEW` `N` leaves
-the message text out of the user's `ChatMention` notifications (no `summary`, and the title is who mentioned them where).
+the message text out of the user's `ChatMention` notifications (no `summary`, and the title is who mentioned them where);
+`CHAT_READ_RECEIPTS` `N` sends no read marker of the user to the room and blanks it in the member lists others read; `CHAT_LINK_PREVIEWS`
+`N` fetches no link previews of the user's messages.
 
 ## Notification listeners
 
@@ -717,6 +736,10 @@ unmounted() { if (this.stopListening) this.stopListening(); },
 | `registerListener(topic, callback)` | `callback(message, client)` for each message of the topic (`ALL`: every message); no callback is the alert display. The first listener of a topic subscribes the socket to it (and opens the socket). Returns a function that unregisters this listener |
 | `unregisterListener(topic, callback)` | Removes that listener (the same function; none is the alert display): true when it was there. With the topic's last listener gone the socket sends `unsubscribe:<topic>`, and a reconnect no longer asks for it |
 | `disableDisplay()`, `enableDisplay()` | Alerts off and on (do not disturb); the listeners still get every message |
+| `onState(fn)` | `fn(state, client)` as the socket opens (`"open"`) and closes (`"closed"`); returns a function that removes it. The chat store sends what waited and reads what it missed on `"open"`. `isOpen()` says whether it is open now |
+
+A closed socket tries again after 30 seconds, six times; the browser coming back online (the window's `online` event) reopens it at once,
+with its six tries again.
 
 A listener may unregister itself, or another, while it is called: the other listeners of that message still get it.
 

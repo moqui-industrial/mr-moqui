@@ -6,6 +6,8 @@
  *   - presence: the presence and status of the users the page shows (m-avatar with a user-id draws the dot from it),
  *   - me: the current user's own status, set from the account menu, with the heartbeat that keeps it (auto-away from idle),
  *   - unread: each room's unread and mention counts, typing: who is typing in each room, reads: the members' read markers,
+ *   - outbox: the messages sent and not yet answered, kept in localStorage per user (moqui.chat.outbox.<userId>) so a
+ *     send made offline, or one that failed for a while, goes when the page is back (chat.send, chat.flush),
  * and hands the chat pushes to the screens that listen (moqui.chat.on). The server side is org.moqui.impl.ChatServices; the
  * topics and their messages are described there and in js/README.md, "Chat store and presence".
  *
@@ -25,6 +27,13 @@
     const TYPING_FOR = 6000;
     const BEAT_EVERY = 60 * 1000;
     const STATUS_TTL = 5 * 60 * 1000;
+    // the outbox: its size, how long an item with files waits (clean#PendingAttachments removes unsent files after 24
+    // hours), the waits between tries, and how often it looks for an item that is due
+    const OUTBOX_MAX = 50;
+    const OUTBOX_ITEM_BYTES = 64 * 1024;
+    const OUTBOX_FILES_FOR = 20 * 3600 * 1000;
+    const BACKOFF = [2000, 5000, 15000, 60000];
+    const FLUSH_EVERY = 2000;
 
     const chat = {
         labels: { statusOnline: "Online", statusAway: "Away", statusDnd: "Do not disturb", statusInvisible: "Invisible", statusOffline: "Offline",
@@ -152,7 +161,12 @@
             const inThread = event.threadRootEventSeq != null;
             if (inThread && Number(threadRoot) !== Number(event.threadRootEventSeq)) {
                 const rootItem = find(event.threadRootEventSeq);
-                if (rootItem) { rootItem.threadReplyCount = (rootItem.threadReplyCount || 0) + 1; rootItem.threadLastDate = event.sentDate; }
+                if (rootItem) {
+                    rootItem.threadReplyCount = (rootItem.threadReplyCount || 0) + 1;
+                    rootItem.threadLastDate = event.sentDate;
+                    rootItem.threadLastEventSeq = seq;
+                    rootItem.threadLastUserId = event.senderUserId || null;
+                }
                 return list;
             }
             if (threadRoot != null && !inThread && seq !== Number(threadRoot)) return list;
@@ -162,6 +176,61 @@
             list.splice(at, 0, item);
             return list;
         },
+
+        // A pushed update of a message (push#Update: its link previews, its poll) merged into a timeline: the fields replace
+        // the message's, but what is the user's own stays as the list has it (mine: the push is the same for everyone, so it
+        // has none). Nothing for a message not in the list. Returns the list (changed in place).
+        applyUpdate(list, payload, me) {
+            if (!Array.isArray(list) || !payload || !moqui.isPlainObject(payload.fields)) return list;
+            const target = list.find((item) => Number(item.eventSeq) === Number(payload.eventSeq));
+            if (!target || target.redacted) return list;
+            const keepMine = (before, after) => {
+                if (Array.isArray(after)) {
+                    if (!Array.isArray(before)) return after;
+                    return after.map((value, index) => {
+                        const match = moqui.isPlainObject(value) && value.id !== undefined
+                            ? before.find((old) => moqui.isPlainObject(old) && old.id === value.id) : before[index];
+                        return keepMine(match, value);
+                    });
+                }
+                if (!moqui.isPlainObject(after)) return after;
+                const out = {};
+                Object.keys(after).forEach((key) => { out[key] = keepMine(moqui.isPlainObject(before) ? before[key] : undefined, after[key]); });
+                if (moqui.isPlainObject(before) && before.mine !== undefined && after.mine === undefined) out.mine = before.mine;
+                return out;
+            };
+            Object.keys(payload.fields).forEach((key) => { target[key] = keepMine(target[key], payload.fields[key]); });
+            return list;
+        },
+
+        // ---- the outbox (pure) ----
+
+        // The outbox with item added at its end: a new list, or null when it is full (50 items) or the item is over 64 KB.
+        outboxAdd(list, item) {
+            const items = Array.isArray(list) ? list : [];
+            if (!item || !item.clientRef || items.length >= OUTBOX_MAX) return null;
+            if (JSON.stringify(item).length > OUTBOX_ITEM_BYTES) return null;
+            return items.filter((other) => other.clientRef !== item.clientRef).concat([item]);
+        },
+        outboxRemove(list, clientRef) { return (Array.isArray(list) ? list : []).filter((item) => item.clientRef !== clientRef); },
+        // whether an item with files waited too long: its files are about to go (clean#PendingAttachments)
+        outboxExpired(item, now) { return !!item && !!item.hasFiles && now - Number(item.createdDate || 0) > OUTBOX_FILES_FOR; },
+        // The items of a room (threadRoot null) or of one of its threads, oldest first; one that expired shows as not sent.
+        outboxFor(list, roomId, threadRoot, now) {
+            return (Array.isArray(list) ? list : []).filter((item) => item.chatRoomId === roomId
+                && (threadRoot == null ? item.threadRootEventSeq == null : Number(item.threadRootEventSeq) === Number(threadRoot)))
+                .map((item) => (chat.outboxExpired(item, now) ? Object.assign({}, item, { status: "failed", expired: true }) : item));
+        },
+        // What a send that did not go does next, by its HTTP status: retry (0 no answer, 408, 429, 5xx), hold (401 and 403,
+        // until the user is signed in again) or fail (another 4xx, or an answer with no message).
+        classify(status) {
+            const code = Number(status) || 0;
+            if (code === 0 || code === 408 || code === 429 || code >= 500) return "retry";
+            if (code === 401 || code === 403) return "hold";
+            return "fail";
+        },
+        // the wait before try number attempts + 1: 2, 5, 15, then 60 seconds
+        backoff(attempts) { return BACKOFF[Math.min(Math.max(Number(attempts) || 1, 1), BACKOFF.length) - 1]; },
 
         // A message of the socket on the state: presence (userStatus), the room events and signals (chatRoom:<id>) and the
         // user's room list (chatUser:<me>). Returns what it was ({kind, chatRoomId, ...}) for the listeners, or null.
@@ -192,6 +261,10 @@
                 if (message.kind === "read") {
                     state.reads[roomId] = Object.assign({}, state.reads[roomId], { [message.userId]: message.lastReadEventSeq });
                     return { kind: "read", chatRoomId: roomId, userId: message.userId, lastReadEventSeq: message.lastReadEventSeq };
+                }
+                if (message.kind === "update" && moqui.isPlainObject(message.fields)) {
+                    return { kind: "update", chatRoomId: roomId, eventSeq: message.eventSeq, threadRootEventSeq: message.threadRootEventSeq ?? null,
+                        fields: message.fields };
                 }
                 if (message.kind === "event" && message.event) {
                     const event = message.event;
@@ -233,7 +306,8 @@
 
         // ---- the store of the page ----
 
-        state: reactive({ me: null, presence: {}, unread: {}, typing: {}, reads: {}, openRooms: {}, statusDialog: false }),
+        state: reactive({ me: null, presence: {}, unread: {}, typing: {}, reads: {}, openRooms: {}, statusDialog: false, outbox: [], sending: {},
+            online: true, connected: null }),
         listeners: {},
         vm: null,
         started: false,
@@ -274,6 +348,23 @@
             chat.beatTimer = setInterval(() => chat.beat(), BEAT_EVERY);
             // the avatars mounted before the store started
             chat.watchUsers([]);
+            // the outbox: what waited goes now, when the browser and the socket are back, and when an item is due; other
+            // tabs' changes are read (the server answers a message sent twice with the first)
+            chat.state.online = !(root.navigator && root.navigator.onLine === false);
+            chat.readOutbox();
+            if (root.addEventListener) {
+                root.addEventListener("online", () => { chat.state.online = true; chat.flush(true); });
+                root.addEventListener("offline", () => { chat.state.online = false; chat.touchOutbox(); });
+                root.addEventListener("storage", (event) => { if (event && event.key === chat.outboxKey()) { chat.readOutbox(); chat.emit("outbox", {}); } });
+            }
+            if (client && client.onState) client.onState((socketState) => {
+                const reconnected = socketState === "open" && chat.state.connected === false;
+                chat.state.connected = socketState === "open";
+                if (socketState === "open") chat.flush(true);
+                chat.emit("connection", { state: socketState, reconnected });
+            });
+            chat.flushTimer = setInterval(() => chat.flush(false), FLUSH_EVERY);
+            chat.flush(true);
         },
         noop() {},
         // a GET or POST to a webroot transition of the store, its JSON (null when it fails, which is logged)
@@ -285,10 +376,14 @@
         receive(jsonObj) {
             const done = chat.reduce(chat.state, jsonObj, chat.me, Date.now());
             if (!done) return;
+            // my message arrived: it waits no more (it was sent from another tab, or its answer was lost)
+            if (done.kind === "event" && done.event.clientRef && done.event.senderUserId === chat.me) chat.dropOutbox(done.event.clientRef);
             if (done.kind === "presence" && done.userId === chat.me) chat.applyQuiet();
             chat.emit(done.kind, done);
         },
-        // listeners of the screens: kind is event, typing, read, room or presence; returns the function that removes it
+        // listeners of the screens: kind is event, update, typing, read, room or presence; outbox (the outbox changed), sent
+        // ({clientRef, chatRoomId, threadRootEventSeq, json}: a message of the outbox was answered) and connection ({state,
+        // reconnected}); returns the function that removes it
         on(kind, fn) {
             (chat.listeners[kind] = chat.listeners[kind] || []).push(fn);
             return () => { const list = chat.listeners[kind] || []; const index = list.indexOf(fn); if (index >= 0) list.splice(index, 1); };
@@ -302,7 +397,7 @@
         // listens to the events itself (a live room list or room).
         trayReloads(jsonObj) {
             const message = jsonObj && moqui.isPlainObject(jsonObj.message) ? jsonObj.message : {};
-            if (message.kind === "typing" || message.kind === "read") return false;
+            if (message.kind === "typing" || message.kind === "read" || message.kind === "update") return false;
             return !((chat.listeners.event || []).length || (chat.listeners.room || []).length);
         },
         // a room shown now: its events count as read there; the socket is told of its topic
@@ -327,6 +422,130 @@
             chat.request("/chatTyping", { chatRoomId: roomId, typing: !stop }, "POST");
         },
         typingIn(roomId) { return chat.typingUsers(chat.state, roomId, Date.now()); },
+
+        // ---- the outbox ----
+
+        outboxKey() { return "moqui.chat.outbox." + (chat.me || ""); },
+        // the outbox as stored (another tab may have changed it); the state changes only when it did, so the screens
+        // do not draw their pending rows again for nothing
+        readOutbox() {
+            let text = null;
+            try { text = root.localStorage ? root.localStorage.getItem(chat.outboxKey()) : null; } catch (err) { text = null; }
+            if (text !== null && text === chat.outboxText) return chat.state.outbox.map((item) => Object.assign({}, item));
+            let list = [];
+            try {
+                const parsed = text ? JSON.parse(text) : [];
+                if (Array.isArray(parsed)) list = parsed.filter((item) => item && item.clientRef && item.chatRoomId);
+            } catch (err) { list = []; }
+            // without storage, or with storage that refused the last write, the state is the outbox
+            if (chat.storageFailed || (text === null && !chat.outboxText && chat.state.outbox.length)) list = chat.state.outbox;
+            chat.outboxText = text;
+            if (list !== chat.state.outbox) chat.state.outbox = list;
+            return list.map((item) => Object.assign({}, item));
+        },
+        outboxText: null,
+        storageFailed: false,
+        saveOutbox(list) {
+            chat.state.outbox = list;
+            try {
+                if (root.localStorage) {
+                    if (list.length) root.localStorage.setItem(chat.outboxKey(), JSON.stringify(list));
+                    else root.localStorage.removeItem(chat.outboxKey());
+                    chat.outboxText = list.length ? JSON.stringify(list) : null;
+                }
+                chat.storageFailed = false;
+            } catch (err) { chat.storageFailed = true; console.info("chat outbox not stored", err); }
+            chat.emit("outbox", {});
+        },
+        touchOutbox() { chat.state.outbox = chat.state.outbox.slice(); chat.emit("outbox", {}); },
+        dropOutbox(clientRef) {
+            if (!chat.state.outbox.some((item) => item.clientRef === clientRef)) return;
+            chat.saveOutbox(chat.outboxRemove(chat.readOutbox(), clientRef));
+        },
+        changeOutbox(clientRef, fields) {
+            const list = chat.readOutbox();
+            const item = list.find((other) => other.clientRef === clientRef);
+            if (!item) return null;
+            Object.assign(item, fields);
+            chat.saveOutbox(list);
+            return item;
+        },
+        // the outbox items of a room or a thread, each with its status: sending (asked now), waiting (to try again),
+        // held (until the user is signed in again) or failed (not sent: Retry or Delete)
+        pendingIn(roomId, threadRoot) {
+            return chat.outboxFor(chat.state.outbox, roomId, threadRoot, Date.now()).map((item) => (chat.state.sending[item.clientRef]
+                ? Object.assign({}, item, { status: "sending" }) : item));
+        },
+        // Send a message through the outbox: item {chatRoomId, url (the send transition), params (its other parameters),
+        // text (shown while it waits), threadRootEventSeq, hasFiles}, given a clientRef. It is kept first, so a page
+        // closed or offline sends it later. Resolves to {sent: true, json} when answered now, {queued: true} when it
+        // waits, {failed: true, error} when refused; rejects when the outbox cannot take it (full, or too large).
+        send(item) {
+            const kept = Object.assign({ clientRef: chat.newClientRef(), createdDate: Date.now(), attempts: 0, nextDate: 0, status: "waiting" }, item);
+            const list = chat.outboxAdd(chat.readOutbox(), kept);
+            if (!list) return Promise.reject({ outbox: true, status: 0 });
+            chat.saveOutbox(list);
+            if (!chat.state.online) return Promise.resolve({ queued: true, clientRef: kept.clientRef });
+            return chat.sendItem(kept);
+        },
+        newClientRef() { return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); },
+        retry(clientRef) {
+            const item = chat.changeOutbox(clientRef, { status: "waiting", nextDate: 0, attempts: 0, error: null, createdDate: Date.now() });
+            return item ? chat.sendItem(item) : Promise.resolve(null);
+        },
+        discard(clientRef) { chat.dropOutbox(clientRef); },
+        sendItem(item) {
+            if (chat.inFlight[item.clientRef]) return chat.inFlight[item.clientRef];
+            const params = Object.assign({}, item.params, { chatRoomId: item.chatRoomId, clientRef: item.clientRef });
+            chat.state.sending = Object.assign({}, chat.state.sending, { [item.clientRef]: true });
+            const done = moqui.request(item.url, { method: "POST", params }).then((result) => {
+                const json = (result && result.json) || {};
+                if (json.event || json.eventSeq != null) {
+                    chat.dropOutbox(item.clientRef);
+                    chat.emit("sent", { clientRef: item.clientRef, chatRoomId: item.chatRoomId, threadRootEventSeq: item.threadRootEventSeq ?? null, json });
+                    return { sent: true, json };
+                }
+                return chat.notSent(item, 200, json);
+            }, (err) => chat.notSent(item, err && err.status, err && err.json));
+            chat.inFlight[item.clientRef] = done;
+            const clear = () => {
+                delete chat.inFlight[item.clientRef];
+                const sending = Object.assign({}, chat.state.sending);
+                delete sending[item.clientRef];
+                chat.state.sending = sending;
+            };
+            done.then(clear, clear);
+            return done;
+        },
+        inFlight: {},
+        // a send that did not go: tried again later, held, or failed with the server's message
+        notSent(item, status, json) {
+            const next = chat.classify(status);
+            const attempts = Number(item.attempts || 0) + 1;
+            const errors = json && json.errors ? (Array.isArray(json.errors) ? json.errors.join(" ") : String(json.errors)) : null;
+            if (next === "retry") {
+                chat.changeOutbox(item.clientRef, { attempts, nextDate: Date.now() + chat.backoff(attempts), status: "waiting" });
+                return { queued: true, clientRef: item.clientRef };
+            }
+            if (next === "hold") {
+                chat.changeOutbox(item.clientRef, { attempts, status: "held" });
+                return { queued: true, clientRef: item.clientRef };
+            }
+            chat.changeOutbox(item.clientRef, { attempts, status: "failed", error: errors });
+            return { failed: true, clientRef: item.clientRef, error: errors };
+        },
+        // Send what is due, oldest first and one at a time (force: what waits too, as when the browser or the socket is
+        // back). Not while offline; not an item that failed or whose files expired.
+        flush(force) {
+            if (!chat.started || !chat.state.online || chat.flushing) return Promise.resolve();
+            const now = Date.now();
+            const due = chat.readOutbox().filter((item) => !chat.inFlight[item.clientRef] && item.status !== "failed" && !chat.outboxExpired(item, now)
+                && (force || (item.status !== "held" && Number(item.nextDate || 0) <= now)));
+            if (!due.length) return Promise.resolve();
+            chat.flushing = true;
+            const done = due.reduce((previous, item) => previous.then(() => (chat.state.online ? chat.sendItem(item) : null)), Promise.resolve());
+            return done.then(() => { chat.flushing = false; }, () => { chat.flushing = false; });
+        },
 
         // ---- presence ----
 

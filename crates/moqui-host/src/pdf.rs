@@ -25,6 +25,13 @@
 //! document's `@page` size, and the page closes. `pdf` `page-limit` pages print at once and `timeout` seconds bound
 //! each one. The caller's thread blocks on the edge runtime until the bytes come back.
 //!
+//! A preview ([`moqui_core::screen::PdfEngine::preview`]) uses a page the same way, under the same limits: the page's
+//! content is a `<canvas>`, and one `Runtime.evaluate` imports the vendored pdf.js modules from `data:` URLs (which the
+//! request blocker never sees), runs its worker on the page's main thread, opens the PDF from bytes, draws page 1 to
+//! the canvas, and reads the text of the first pages. No request leaves the page: there are no font, cmap or wasm
+//! URLs, so the standard fonts come from the system and a JPEG 2000 image is left out. `pdf` `preview-max-size` bytes
+//! is the largest PDF previewed.
+//!
 //! The protocol client is [`cdp`], on `tokio-tungstenite`. `chromiumoxide` was the planned crate, but it parses
 //! messages through an untagged enum, which fails on every event with a float once the workspace's `serde_json` has
 //! `arbitrary_precision`, so its pages never finish loading.
@@ -49,6 +56,8 @@ use self::cdp::Connection;
 const PAGE_LIMIT: u64 = 4;
 /// Default seconds a render may take.
 const TIMEOUT_SECONDS: u64 = 60;
+/// Default largest PDF previewed, in bytes.
+const PREVIEW_MAX_SIZE: u64 = 25 * 1024 * 1024;
 /// How long the browser may take to start listening.
 const START_WAIT: Duration = Duration::from_secs(30);
 /// What the page waits for before it prints: the load event, then the fonts.
@@ -222,9 +231,15 @@ pub fn install(factory: &moqui_core::context::ExecutionContextFactory) -> PdfGua
         Ok(binary) => {
             let temp_dir = runtime_dir.join("tmp");
             remove_orphan_profiles(&temp_dir);
-            let pages = factory.conf_number("screen-facade/pdf", "page-limit", PAGE_LIMIT).max(1);
-            let timeout = factory.conf_number("screen-facade/pdf", "timeout", TIMEOUT_SECONDS).max(1);
-            let engine = Arc::new(ChromiumPdf::with_limits(binary, temp_dir, pages, timeout));
+            let pages = factory
+                .conf_number("screen-facade/pdf", "page-limit", PAGE_LIMIT)
+                .max(1);
+            let timeout = factory
+                .conf_number("screen-facade/pdf", "timeout", TIMEOUT_SECONDS)
+                .max(1);
+            let preview_max = factory.conf_number("screen-facade/pdf", "preview-max-size", PREVIEW_MAX_SIZE);
+            let engine =
+                Arc::new(ChromiumPdf::with_limits(binary, temp_dir, pages, timeout).with_preview_max_size(preview_max));
             moqui_core::screen::install_pdf_engine(engine.clone());
             PdfGuard { engine: Some(engine) }
         }
@@ -298,6 +313,7 @@ struct Inner {
     temp_dir: PathBuf,
     pages: Semaphore,
     timeout: Duration,
+    preview_max: usize,
     live: Mutex<Option<Live>>,
 }
 
@@ -324,9 +340,19 @@ impl ChromiumPdf {
                 temp_dir,
                 pages: Semaphore::new(usize::try_from(pages).unwrap_or(4)),
                 timeout: Duration::from_secs(timeout),
+                preview_max: usize::try_from(PREVIEW_MAX_SIZE).unwrap_or(usize::MAX),
                 live: Mutex::new(None),
             }),
         }
+    }
+
+    /// This engine with `bytes` as the largest PDF it previews. Call it before the engine is shared.
+    #[must_use]
+    pub fn with_preview_max_size(mut self, bytes: u64) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.preview_max = usize::try_from(bytes).unwrap_or(usize::MAX);
+        }
+        self
     }
 
     /// The binary this engine starts.
@@ -352,7 +378,82 @@ impl moqui_core::screen::PdfEngine for ChromiumPdf {
             .and_then(|rendered| rendered)
             .map_err(|err| moqui_core::context::Error::new(err.to_string()))
     }
+
+    fn preview(
+        &self,
+        request: &moqui_core::screen::PdfPreviewRequest<'_>,
+    ) -> Result<moqui_core::screen::PdfPreview, moqui_core::context::Error> {
+        if request.pdf.len() > self.inner.preview_max {
+            return Err(moqui_core::context::Error::new(format!(
+                "the PDF is {} bytes, larger than the {} bytes previewed (pdf preview-max-size)",
+                request.pdf.len(),
+                self.inner.preview_max
+            )));
+        }
+        let inner = Arc::clone(&self.inner);
+        let expression = preview_expression(request);
+        crate::edge::block_on(async move { inner.preview(expression).await })
+            .and_then(|previewed| previewed)
+            .map_err(|err| moqui_core::context::Error::new(err.to_string()))
+    }
 }
+
+/// The script a preview page evaluates: it resolves to `{png, width, height, pages, text}`, `png` base64.
+fn preview_expression(request: &moqui_core::screen::PdfPreviewRequest<'_>) -> String {
+    let engine = base64::engine::general_purpose::STANDARD;
+    let module = |source: &str| format!("data:text/javascript;base64,{}", engine.encode(source));
+    let quoted = |text: String| serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
+    format!(
+        "({PREVIEW_SCRIPT})({main}, {worker}, {pdf}, {image}, {max_size}, {text_pages}, {max_chars})",
+        main = quoted(module(&request.library.main)),
+        worker = quoted(module(&request.library.worker)),
+        pdf = quoted(engine.encode(request.pdf)),
+        image = request.image,
+        max_size = request.max_size.clamp(16, 4096),
+        text_pages = request.text_pages,
+        max_chars = request.max_chars,
+    )
+}
+
+/// The preview, as a function of the module URLs, the PDF in base64, and the limits. pdf.js finds its worker in
+/// `globalThis.pdfjsWorker` and runs it on this thread (its "fake worker"), so no Worker script is fetched.
+const PREVIEW_SCRIPT: &str = r##"async (mainUrl, workerUrl, pdfBase64, image, maxSize, textPages, maxChars) => {
+    const pdfjs = await import(mainUrl);
+    globalThis.pdfjsWorker = await import(workerUrl);
+    const data = typeof Uint8Array.fromBase64 === "function" ? Uint8Array.fromBase64(pdfBase64)
+        : Uint8Array.from(atob(pdfBase64), (c) => c.charCodeAt(0));
+    const task = pdfjs.getDocument({ data, enableXfa: false, isEvalSupported: false, useWasm: false,
+        useSystemFonts: true, stopAtErrors: false });
+    const doc = await task.promise;
+    try {
+        const out = { png: "", width: 0, height: 0, pages: doc.numPages, text: "" };
+        if (image && doc.numPages > 0) {
+            const page = await doc.getPage(1);
+            const base = page.getViewport({ scale: 1 });
+            const viewport = page.getViewport({ scale: Math.min(maxSize / base.width, maxSize / base.height) });
+            const canvas = document.querySelector("canvas") || document.body.appendChild(document.createElement("canvas"));
+            canvas.width = Math.max(1, Math.floor(viewport.width));
+            canvas.height = Math.max(1, Math.floor(viewport.height));
+            const canvasContext = canvas.getContext("2d");
+            await page.render({ canvas, canvasContext, viewport, background: "#ffffff" }).promise;
+            out.png = canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
+            out.width = canvas.width;
+            out.height = canvas.height;
+        }
+        let text = "";
+        for (let n = 1; n <= Math.min(doc.numPages, textPages) && text.length < maxChars; n++) {
+            const content = await (await doc.getPage(n)).getTextContent();
+            for (const item of content.items) {
+                if (typeof item.str === "string") text += item.str + (item.hasEOL ? "\n" : "");
+            }
+            text += "\n";
+        }
+        out.text = text.length > maxChars ? text.slice(0, maxChars) : text;
+        return out;
+    } finally {
+        await task.destroy();
+    }
+}"##;
 
 impl Inner {
     async fn render(&self, html: String) -> Result<Vec<u8>, Error> {
@@ -372,6 +473,25 @@ impl Inner {
         };
         page.close().await;
         printed
+    }
+
+    async fn preview(&self, expression: String) -> Result<moqui_core::screen::PdfPreview, Error> {
+        let _permit = self
+            .pages
+            .acquire()
+            .await
+            .map_err(|_| Error::new("the PDF engine is shutting down"))?;
+        let connection = self.connection().await?;
+        let page = Page::open(&connection, self.timeout).await?;
+        let previewed = match tokio::time::timeout(self.timeout, page.preview(&expression)).await {
+            Ok(previewed) => previewed,
+            Err(_) => Err(Error::new(format!(
+                "PDF preview did not finish in {} seconds",
+                self.timeout.as_secs()
+            ))),
+        };
+        page.close().await;
+        previewed
     }
 
     /// The browser connection, starting the browser (or starting it again after it exited) as needed.
@@ -498,6 +618,63 @@ impl Page {
         base64::engine::general_purpose::STANDARD
             .decode(data)
             .map_err(|err| Error::new(format!("Chromium returned PDF data that is not base64: {err}")))
+    }
+
+    /// Run [`PREVIEW_SCRIPT`] (inside `expression`) on a page whose content is a canvas.
+    async fn preview(&self, expression: &str) -> Result<moqui_core::screen::PdfPreview, Error> {
+        self.call("Fetch.enable", json!({})).await?;
+        let tree = self.call("Page.getFrameTree", json!({})).await?;
+        let frame = tree
+            .pointer("/frameTree/frame/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::new("the PDF page has no frame"))?
+            .to_string();
+        self.call(
+            "Page.setDocumentContent",
+            json!({ "frameId": frame, "html": "<!DOCTYPE html><html><body><canvas></canvas></body></html>" }),
+        )
+        .await?;
+        let evaluated = self
+            .call(
+                "Runtime.evaluate",
+                json!({ "expression": expression, "awaitPromise": true, "returnByValue": true }),
+            )
+            .await?;
+        if let Some(thrown) = evaluated.get("exceptionDetails") {
+            let message = thrown
+                .pointer("/exception/description")
+                .or_else(|| thrown.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
+            return Err(Error::new(format!("pdf.js could not preview the PDF: {message}")));
+        }
+        let value = evaluated
+            .pointer("/result/value")
+            .ok_or_else(|| Error::new("the PDF preview returned nothing"))?;
+        let number = |name: &str| {
+            value
+                .get(name)
+                .and_then(|number| number.as_f64())
+                .filter(|number| number.is_finite() && *number >= 0.0)
+                .map_or(0, |number| {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let whole = number as u32;
+                    whole
+                })
+        };
+        let png = match value.get("png").and_then(Value::as_str) {
+            Some(data) if !data.is_empty() => base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|err| Error::new(format!("the PDF preview image is not base64: {err}")))?,
+            _ => Vec::new(),
+        };
+        Ok(moqui_core::screen::PdfPreview {
+            png,
+            width: number("width"),
+            height: number("height"),
+            pages: number("pages"),
+            text: value.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+        })
     }
 
     async fn close(self) {
