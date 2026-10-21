@@ -1,6 +1,6 @@
 # Profiling
 
-Status 2026-10-21: four rounds of profiling and optimization of entity, service, data load and XML/definition work against embedded Postgres, built and committed. Round 5 tested and measured against an external Postgres 18 in Docker ([Round 5](#round-5-external-postgres)), fixed what it found, and sends a data load's rows several to a statement ([Round 6](#round-6-multi-row-data-load-statements)); what is left leads the [Next steps](#next-steps). Companion to [Performance-Summary](Performance-Summary.md), which digests the performance plan; this document records what was measured and changed, how to measure, and what is left.
+Status 2026-10-21: four rounds of profiling and optimization of entity, service, data load and XML/definition work against embedded Postgres, built and committed. Round 5 tested and measured against an external Postgres 18 in Docker ([Round 5](#round-5-external-postgres)), fixed what it found, and sends a data load's rows several to a statement ([Round 6](#round-6-multi-row-data-load-statements)). Round 7, on an M1 Pro (macOS), measured COPY and dropped it, added a multi-threaded benchmark and fixed the lock it showed, and cut what a transaction keeps per write ([Round 7](#round-7-macos-threads-copy-bookkeeping)); what is left leads the [Next steps](#next-steps). Companion to [Performance-Summary](Performance-Summary.md), which digests the performance plan; this document records what was measured and changed, how to measure, and what is left.
 
 ## How to measure
 
@@ -8,7 +8,7 @@ Five opt-in speed tests in `crates/moqui-host/tests/` (each `test = false` and `
 
 | Test | What it times | Needs |
 |---|---|---|
-| `entity_speed` | entity facade finds (cache, PK, list, count, iterate 100 rows) and writes (create, update, delete, `create_or_update`), in one transaction and in autocommit | embedded Postgres |
+| `entity_speed` | entity facade finds (cache, PK, list, count, iterate 100 rows) and writes (create, update, delete, `create_or_update`), in one transaction and in autocommit; then a cached find, a PK find and writes on 1, 2, 4 and 8 threads at once (`ENTITY_SPEED_THREADS`; `ENTITY_SPEED_THREADS_ONLY` runs that section alone) | embedded Postgres |
 | `service_speed` | the `SpeedTest.xml` calls: entity-auto create/update/delete of `moqui.test.TestEntity` and `echo#Data`, plus the same entity calls direct, in one transaction and each in its own | embedded Postgres |
 | `data_load_speed` | XML create and reload, CSV, JSON, nested records, and the framework seed data in `moqui load` order (first load and reload) | embedded Postgres |
 | `xml_speed` | `MNode` parse, keep, read, lookup and drop over the 784 runtime XML files, and loader-style record elements | nothing |
@@ -18,6 +18,7 @@ Run one with `CARGO_PROFILE_RELEASE_DEBUG=1 cargo test --release -p moqui-host -
 
 Tools, as used here:
 - **samply** for CPU (`samply record --save-only --unstable-presymbolicate`); needs `/proc/sys/kernel/perf_event_paranoid` at 1 or lower, which resets at reboot.
+- **macOS `sample`** (`sample <pid> 2 -file out.txt`, no setup) for where threads wait: the leaf `__psynch_mutexwait` frames and the code above them name the lock. heaptrack and perf are Linux only.
 - **heaptrack** for allocation sites: `heaptrack_print X.zst --flamegraph-cost-type allocations -F stacks.txt`, demangled with `c++filt`, filtered to the stacks under one benchmark row (its closure, or a function such as `ScreenFacade>::screen_def`). Identical row closures are folded into one symbol, so pick a row whose closure is unique.
 - **perf stat** `-e instructions:u` with 1 and 6 batches, for a load-independent comparison (the difference over 5 is one batch, Postgres children included).
 - **strace** `-ff -o DIR/t` for syscalls per round trip (`perf trace` has no tracefs access on the dev machine); the client thread is the file whose `sendto` carries `SET TIME ZONE`.
@@ -137,7 +138,54 @@ Data load per record, µs (best of alternating runs; same binaries otherwise):
 
 `./moq load` of every data type into `moqui-pg18` (8,740 records): 4.87 s → 4.34 s. The seed first load gains little: its records of one entity often name different fields (each set of columns is its own statement), and the entities with ECA rules, status fields or audit logs take the read-first store.
 
+## Round 7: macOS, threads, COPY, bookkeeping
+
+Run on an M1 Pro (macOS, 8 cores, 32 GB), where the embedded cluster's `/tmp` is on the APFS disk, not a tmpfs: a commit there pays a real fsync. Allocation counts were the same as on the Linux machine on every row before the changes below; times were equal or faster, except anything that commits, which was 25–30 µs slower per commit (autocommit create 34 → 53 µs, service create in its own transaction 60 → 75 µs).
+
+**COPY, measured and dropped.** A throwaway test against the embedded cluster timed 10,000 rows of eight columns in one transaction (best of 5, µs per row; the prototype is kept at `target/profiling/round7/copy-prototype.patch`, not committed):
+
+| Variant | New rows | Reload (every row conflicts) |
+|---|---|---|
+| 100-row `INSERT ... ON CONFLICT DO UPDATE` (round 6) | 4.57 | 6.41 |
+| COPY into a temp stage, `INSERT ... SELECT ... ON CONFLICT`, `TRUNCATE` | 4.51 | 6.25 |
+| the same with an `ON COMMIT DELETE ROWS` stage and `DELETE` | 4.20 | 6.36 |
+| COPY straight into the empty table | 2.72 | — |
+
+Staging saves nothing, since the server's upsert of a row is the cost, not reading its parameters. Direct COPY is 40% cheaper, but only for rows known to be new; with a data load at about 10 µs a record, that would be 19% of an empty-table load, for a guarantee that no row is already there (or a savepoint and a retry when one is). `./moq load` of 8,740 records takes about 4.3 s, of which the writes are well under 0.5 s, so the time of a load is elsewhere (startup, the schema, the read-first stores). Not done.
+
+**Threads.** `entity_speed` runs a cached PK find, a PK find in a transaction and create/update/delete in a transaction on 1, 2, 4 and 8 threads at once, each thread on its own connection (`speed::Rows::run_threads`: a barrier start, the slowest thread's time, each thread's own allocation counts summed). On eight threads the cached find fell to 418k calls/s from 1.04M on one: `sample` put nearly all the waiting in `EntityFacade::with_slot`, the facade-wide mutex that `read_meta`, `find_l10n` and the list cache lookup each took. Then in `L10nMemo::clone` and `ReadState::clone`, mutexes locked to clone a cached value that every thread clones.
+- The facade slots are an `RwLock`; `with_slot_read` is the lookup path (read metas, l10n targets, read shapes, SQL text, the list and count cache lookups, views by member, the cluster link, loader shapes, implicit service definitions). `ByDefinition::get` takes `&self`, and `insert` drops an older generation.
+- `L10nMemo` is a `OnceLock`, `ReadState` an `RwLock`. On macOS this also drops one allocation per value read (a std `Mutex` there allocates its pthread mutex): iterate 100 rows 1,503 → 1,303 allocations.
+
+| Calls/s, best of 3 | 1 thread | 2 | 4 | 8 |
+|---|---|---|---|---|
+| cached PK find, before → after | 1.05M → 1.06M | 1.14M → 1.33M | 567k → 1.01M | 418k → 956k |
+| PK find in a transaction | 74.5k → 74.9k | 93.7k → 98.2k | 111k → 117k | 141k → 161k |
+| create, update, delete in a transaction | 41.4k → 41.9k | 73.0k → 75.0k | 89.0k → 94.2k | 106k → 119k |
+
+The cached find still does not scale past two threads: what is left is the slots lock's reader count and the cache entry's atomics, one cache line every thread writes (see Next steps).
+
+**Transaction bookkeeping.** A write in a transaction kept its whole field map until commit twice: in the frame's record for the end-of-frame cache eviction, and in the data-feed touch.
+- A write of an entity with no cached find or count keeps no eviction record: the entity's frame entry is the existing "clear whole" state, which finds nothing to clear at the end unless another thread cached a find meanwhile. The operation is a `&'static str`, not a `String`.
+- A data-feed touch keeps the values only when the feed configuration is unknown, older than the feed definitions, or has a document on the entity; the commit reads no values for any other.
+
+| One transaction | Kept per write, before → after |
+|---|---|
+| entity update / delete | 1,188 → 110 / 1,104 → 27 bytes |
+| entity `create_or_update` | 1,523 → 383 bytes |
+| service create / update / delete | 1,277 → 215 / 1,191 → 117 / 1,269 → 207 bytes |
+| commit of the batch (1,000 of each) | 1.61 → 0.72 ms |
+
+Every write and every loaded record also allocates once less. A create still shows about 1.3 KB kept per call: the value the test keeps in its own list.
+
+**A pipelining deadlock on macOS.** The workspace tests hung on macOS: a `moqui test` load's log-shipping thread blocked writing a large statement while its backend sat in `PARSE`. The wire client sends requests without waiting for the replies before them and read nothing until its write finished; once those replies filled the socket the server stopped reading, and each side waited on the other's write. A macOS Unix socket holds 8 KB each way (`net.local.stream.sendspace` and `recvspace`), against about 200 KB on Linux, so it showed there first; over TCP it needs megabytes of unread replies. `Wire::send_all` now writes with a 2 ms send timeout and, each time the write would block, reads what the server sent onto the read buffer, where the next read parses it (libpq's `pqSendSome` does the same). Over TLS those bytes are read and decrypted through the rustls connection, as `StreamOwned::read` would first retry the blocked write, and the timeout is set only for the write. A Unix or TCP socket has the timeout from the connect, so a round trip makes no more system calls than before (PK find 13.5 µs before and after). `a_write_reads_what_the_server_sends_while_it_waits` (Unix) and its TLS twin send 2 MB and 16 MB queries to a fake server that first writes as many bytes of notices; with the old write the Unix one times out. With it, `cargo test --workspace` runs to the end on macOS; what still fails there are Linux assumptions in tests (`/proc/<pid>`, binding `127.0.0.2`, `/tmp` against `/private/tmp`, `node --test` before Node 18).
+
+**MNode copies.** `x.attribute("a").as_deref() == Some(..)`, `.attribute(..).is_some()` and `x.name() == ".."` in the screen, form, service and entity-model builders are `attribute_is`, `has_attribute` and `has_name`, and `is_true` and `bool_attr` read in place. Allocations: entity model 79,470 → 78,253, service definitions 38,690 → 38,661, per screen 467.5 → 464.1. The copies were a small part; the `match x.name().as_str()` arms and `for c in x.children()` loops were left, since closures there would cost readability for about another percent. Where the rest goes needs heaptrack on Linux.
+
 ## Behaviour changes to know
+
+- A data-feed touch of an entity no feed document has keeps no values, once the feed configuration has been read and no definition was written since. If a definition that adds the entity is committed by another thread between the write and its commit, that commit feeds the write through the Postgres `xmin` probe (other databases miss it), as for a touch recorded without values.
+- A write in a transaction of an entity with no cached find or count clears the entity's caches whole at the end of the frame, instead of evicting by the values written. Only a find cached by another thread during the frame is affected, and it is cleared rather than kept.
 
 - A data load's failed row is reported for the statement of many rows it went out in: the server's message (which names the key for a constraint) is the same, at the same place (the next waited statement or the end of the file).
 
@@ -167,15 +215,15 @@ Data load per record, µs (best of alternating runs; same binaries otherwise):
 5. **Poolers.** Named prepared statements need session pooling, or PgBouncer 1.21+ with protocol-level prepared statements. Check, and document the setting.
 
 **Further work, by expected payoff:**
-1. **COPY for bulk loads.** An empty-database load (`raw`, or a new seed) could stream rows with `COPY ... FROM STDIN` instead of one statement each; with the wire client this is a small addition and the largest remaining win for big loads.
-2. **Multi-threaded benchmark.** `with_slot` is one facade-wide mutex that finds and writes take several times; a single-thread benchmark cannot show contention. Add a row that runs N threads on separate connections.
+1. ~~COPY for bulk loads~~: measured in round 7. A staging table saves nothing; direct COPY saves 40% of the server's write only for rows known to be new. Not done. A load's time is mostly elsewhere: profile `./moq load` end to end first.
+2. ~~Multi-threaded benchmark~~: done (round 7), and the slot mutex it showed is an `RwLock`. Cached finds still stop scaling past two threads, on the slots lock's reader count and the `MCache` entry's atomics: a per-thread memo of the definition lookups (read meta, l10n targets, read shape; keyed by a facade id and the derived generation) would take the shared lock out of a cache hit.
 3. **Deferred writes on a cold statement** still prepare with a waited round trip (once per statement per connection). Queue the prepare with the write.
 4. **Binary parameters** for integers, timestamps and numerics: less text formatting here and less parsing on the server.
-5. **Remaining copying MNode calls in definition builders.** `name()`, `attribute()` and `children()` still copy; screen, form and service builders use them a few times per node. The borrowing calls exist; moving the busiest callers (screen `form.rs`, `definition.rs`, `service/define.rs`, the moqui-db model) would cut definition load further. The entity model's remaining allocations are mostly its own `String` fields.
+5. **Remaining copying MNode calls in definition builders** (comparisons done in round 7, 1.5% of the entity model's allocations). `name()`, `attribute()` and `children()` still copy; screen, form and service builders use them a few times per node. The borrowing calls exist; moving the busiest callers (screen `form.rs`, `definition.rs`, `service/define.rs`, the moqui-db model) would cut definition load further. The entity model's remaining allocations are mostly its own `String` fields.
 6. **Nested data records** still go through an `MNode` per top-level element; a streaming builder could read them the way `parse_flat` reads flat ones.
 7. **Reads before write** for entities that cannot upsert (audit-logged, status flows, data-feed entities) still cost one waited round trip each in a load.
 8. **QuickJS for trivial actions.** About half of `echo#Data` is QuickJS running four `<set>` actions through its proxy; a native path for trivial actions would change value types, so it needs a decision.
-9. **Transaction bookkeeping.** A transaction keeps about 1.3 KB per write until commit, for the end-of-transaction cache eviction; a smaller per-write record would do.
+9. ~~Transaction bookkeeping~~: done (round 7) for entities with no cached find and no feed document. A data-feed touch still keeps two `String`s per write; an entity with cached finds keeps the values written.
 10. **A Java comparison.** Run the same `SpeedTest.xml` calls and a seed load on Moqui Java against the same Postgres, so the numbers above have a reference.
 
 Known flaky test, not from this work: `service::coverage::tests::calls_are_counted_only_between_enable_and_finish` counts into a process-wide recorder and can race with tests running in parallel.
