@@ -235,3 +235,25 @@ test('the active saved find can be scheduled, and a scheduled one shows its sche
     assert.match(scheduled, /<p>\(Scheduled for PDF at 06:00\)<\/p>/);
     assert.doesNotMatch(scheduled, /_SCHED/);
 });
+
+test('the filter summary shows a display header field by its value and a display-entity by its entity text', () => {
+    const factory = vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'ScreenQvt.js'), 'utf8'));
+    const module = factory({ stmt: fn => fn, noops: () => ({}) }, { anyMacros: () => ({}), allElements: [], opaqueElements: [] });
+    const calls = [];
+    const context = {
+        sri: {
+            getFieldValueString: () => 'PMT_ID',
+            getFieldEntityValue: () => 'Visa ending 1111',
+            getFieldTransitionValue: (...args) => { calls.push(args); return 'Labelled'; }
+        },
+        ec: { context: { get: () => null }, l10n: { localize: text => text } }
+    };
+    vm.runInNewContext(module.runtime, context);
+    const widget = (name, attrs = {}) => ({ name, attrs, parent: { parent: { attrs: { name: 'eitherPaymentMethodId' } } } });
+    assert.equal(context.$mqQvt.valueText(widget('display', { text: 'Static text' })), 'PMT_ID');
+    assert.equal(context.$mqQvt.valueText(widget('display-entity', { 'entity-name': 'PaymentMethod' })), 'Visa ending 1111');
+    assert.equal(context.$mqQvt.valueText(widget('display', { 'dynamic-transition': 'getLabel' })), 'Labelled');
+    assert.equal(calls[0][0], 'getLabel');
+    assert.equal(calls[0][2], 'PMT_ID');
+    assert.equal(context.$mqQvt.valueText(widget('hidden')), '');
+});

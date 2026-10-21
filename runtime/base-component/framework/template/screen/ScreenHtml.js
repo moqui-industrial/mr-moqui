@@ -509,7 +509,8 @@
             } else value = sri.getFieldValueString(n);
             const body = value ? (at(n, "encode") === "false" ? value : e(value).replace(/\n/g, "<br>")) : "";
             let out = "<span" + A({
-                class: cls("display", unit ? "currency" : null, xn(at(n, "style"))), title: tip(n), id: dyn ? id + "_display" : null
+                // the value's type (BigDecimal, Long...) as a class, as Java's html display writes sri.getFieldValueClass
+                class: cls("display", sri.getFieldValueClass(field), unit ? "currency" : null, xn(at(n, "style"))), title: tip(n), id: dyn ? id + "_display" : null
             }) + ">" + body + "</span>";
             if (alsoHidden) {
                 out += "<input" + A({ type: "hidden", id, name: fnm(n), value: dyn ? "" : sri.getFieldValuePlainString(field, ""), form: owner() }) + ">";

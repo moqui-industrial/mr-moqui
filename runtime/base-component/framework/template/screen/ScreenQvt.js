@@ -1662,7 +1662,15 @@
         const valueText = (n) => {
             const type = n.name;
             const name = fnm(n);
-            if (["display", "display-entity", "hidden", "ignored", "password", "reset", "submit", "text-area", "link", "label"].indexOf(type) >= 0) return "";
+            // Java's widgetTextValue took display and display-entity out of this list, so the summary shows their values.
+            if (["hidden", "ignored", "password", "reset", "submit", "text-area", "link", "label"].indexOf(type) >= 0) return "";
+            if (type === "display") {
+                // the field's value (not the display's text), or the label a dynamic-transition gives it
+                const value = sri.getFieldValueString(n);
+                const transition = at(n, "dynamic-transition");
+                return transition ? sri.getFieldTransitionValue(transition, n, value, "label", false) || "" : value;
+            }
+            if (type === "display-entity") return sri.getFieldEntityValue(n) || "";
             if (type === "drop-down" || type === "check" || type === "radio") {
                 const current = type === "drop-down" ? sri.getFieldValuePlainString(fieldOf(n), "") : sri.getFieldValueString(n);
                 if (!current) return "";

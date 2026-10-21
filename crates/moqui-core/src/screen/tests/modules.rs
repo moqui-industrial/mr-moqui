@@ -453,11 +453,17 @@ fn xlsx_fills_a_sheet_and_writes_no_text() {
                 <field name="c"><conditional-field condition="a"><display/></conditional-field></field>
                 <field name="d"><default-field><hidden/></default-field></field>
                 <field name="e"><default-field><display-entity entity-name="moqui.basic.Enumeration"/></default-field></field>
+                <field name="item2Id"><default-field><display/></default-field></field>
             </form-list>
         </box-body></container-box>
         <label text="not in the workbook"/>
     </widgets>"##;
     let source = generate_unit_source("xlsx", xml).unwrap_or_else(|err| panic!("xlsx: {err}"));
+    // A field with no title is headed by camelCaseToPretty at render time, as FormListExcelRender ("Item 2 ID").
+    assert!(
+        source.contains(r#"StringUtilities.camelCaseToPretty("item2Id")"#),
+        "{source}"
+    );
     assert!(source.contains("sri.xlsxSheet("), "{source}");
     assert!(source.contains("sri.xlsxHeader("), "{source}");
     assert!(source.contains(r#"sri.xlsxCell([sri.getFieldValue("#), "{source}");
