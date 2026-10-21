@@ -25,21 +25,148 @@ use moqui_core::context::{Error, ErrorKind, ExecutionContextFactory};
 use moqui_core::screen::RenderOutput;
 use moqui_lib::object::Value;
 use moqui_tui::{
-    counts_of, query_parameters, Choice, LinkError, MenuItem, Messages, RawBody, ScreenLink, ScreenModel, ShellAction,
-    ShellInfo, TransitionOutcome, ValidationError,
+    counts_of, query_parameters, Choice, LinkError, MenuItem, Messages, Push, PushSink, RawBody, ScreenLink,
+    ScreenModel, ShellAction, ShellInfo, Subscription, TransitionOutcome, ValidationError,
 };
 
 /// Redirects a level or a fragment follows before it gives up: a transition answers its screen with one.
 const FRAGMENT_REDIRECTS: usize = 4;
 
-/// One screen client bound to a running factory.
+/// One request of a link, as its transport sends it.
+pub struct Ask {
+    /// A path on the server, with no query.
+    pub path: String,
+    /// `GET` or `POST`.
+    pub method: String,
+    pub parameters: BTreeMap<String, String>,
+    /// `Accept: application/json`: a transition answers JSON.
+    pub json: bool,
+    /// Rendered in the `tui` mode.
+    pub tui: bool,
+    /// A screen the user goes to, kept in the history; a fragment, options or a file are not.
+    pub remember: bool,
+}
+
+/// How a [`Link`] reaches the server: in this process ([`InProcess`]) or over HTTP ([`crate::tui_remote::Http`]). Every
+/// answer is a [`RenderOutput`], so the link reads both the same way.
+pub trait Transport: Send + Sync {
+    /// # Errors
+    ///
+    /// [`LinkError::Auth`] when no user is logged in, [`LinkError::Remote`] when the request cannot be made.
+    fn send(&self, ask: Ask) -> Result<RenderOutput, LinkError>;
+
+    /// # Errors
+    ///
+    /// [`LinkError::Remote`] with the reason the login was refused.
+    fn login(&self, username: &str, password: &str, code: &str) -> Result<(), LinkError>;
+
+    /// The logged-in user's name, for the title line.
+    fn user(&self) -> Option<String>;
+
+    /// Pushed notifications for the logged-in user, until the answer drops; none when this transport cannot push.
+    fn subscribe(&self, _sink: PushSink) -> Option<Subscription> {
+        None
+    }
+}
+
+/// The client's [`ScreenLink`] over a [`Transport`].
 #[derive(Clone)]
-pub struct HostLink {
+pub struct Link<T> {
+    transport: T,
+    /// The path of the last level that rendered, used to resolve a relative transition or options url.
+    last_path: Arc<Mutex<String>>,
+}
+
+/// The link in this process.
+pub type HostLink = Link<InProcess>;
+
+/// Each call on the factory's request pool, in a fresh execution context logged in as the link's user.
+#[derive(Clone)]
+pub struct InProcess {
     factory: Weak<ExecutionContextFactory>,
     /// The user the calls run as, once logged in.
     user: Arc<Mutex<Option<String>>>,
-    /// The path of the last level that rendered, used to resolve a relative transition or options url.
-    last_path: Arc<Mutex<String>>,
+    /// That user's id, known after the first call: the notifications a push takes are routed by it.
+    user_id: Arc<Mutex<Option<String>>>,
+}
+
+impl<T: Transport> Link<T> {
+    pub fn over(transport: T) -> Self {
+        Self {
+            transport,
+            last_path: Arc::new(Mutex::new(String::new())),
+        }
+    }
+
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+
+    /// The drawer for `path`, from the `menuData` transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinkError::Remote`] when the menu request fails or the body is not a JSON array.
+    pub fn menu(&self, path: &str) -> Result<Vec<MenuItem>, LinkError> {
+        let output = self.transport.send(Ask::get(menu_url(path)))?;
+        menu_from(&output)
+    }
+
+    fn absolute(&self, url: &str) -> String {
+        let base = self.last_path.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        resolve_url(&base, url)
+    }
+
+    /// Render `path` in the `tui` mode. A screen the user goes to is remembered for the history and as the base of
+    /// relative urls; a fragment is neither.
+    fn render_tui(
+        &self,
+        path: String,
+        parameters: &BTreeMap<String, String>,
+        remember: bool,
+    ) -> Result<RenderOutput, LinkError> {
+        self.transport.send(Ask {
+            path,
+            method: "GET".to_string(),
+            parameters: parameters.clone(),
+            json: false,
+            tui: true,
+            remember,
+        })
+    }
+
+    /// `url` (a query included) with `parameters` over it, `method` or else `default`.
+    fn ask(&self, url: &str, method: &str, default: &str, parameters: &BTreeMap<String, String>, json: bool) -> Ask {
+        let url = self.absolute(url);
+        let (path, query) = split_query(&url);
+        let mut asked = query.map(query_parameters).unwrap_or_default();
+        asked.extend(parameters.clone());
+        Ask {
+            path: path.to_string(),
+            method: if method.is_empty() {
+                default.to_string()
+            } else {
+                method.to_ascii_uppercase()
+            },
+            parameters: asked,
+            json,
+            tui: false,
+            remember: false,
+        }
+    }
+}
+
+impl Ask {
+    fn get(path: String) -> Self {
+        Self {
+            path,
+            method: "GET".to_string(),
+            parameters: BTreeMap::new(),
+            json: false,
+            tui: false,
+            remember: false,
+        }
+    }
 }
 
 impl HostLink {
@@ -50,11 +177,11 @@ impl HostLink {
 
     /// A link with no user over a factory the caller holds weakly.
     pub fn weak(factory: Weak<ExecutionContextFactory>) -> Self {
-        Self {
+        Link::over(InProcess {
             factory,
             user: Arc::new(Mutex::new(None)),
-            last_path: Arc::new(Mutex::new(String::new())),
-        }
+            user_id: Arc::new(Mutex::new(None)),
+        })
     }
 
     /// A link already logged in as `username`: `moqui tui --user` on a dev instance, and the tests.
@@ -65,22 +192,12 @@ impl HostLink {
     /// [`Self::as_user`] over a factory held weakly: an SSH session, logged in by the SSH server.
     pub fn weak_as_user(factory: Weak<ExecutionContextFactory>, username: impl Into<String>) -> Self {
         let link = Self::weak(factory);
-        *link.user.lock().unwrap_or_else(PoisonError::into_inner) = Some(username.into());
+        *link.transport.user.lock().unwrap_or_else(PoisonError::into_inner) = Some(username.into());
         link
     }
+}
 
-    /// The drawer for `path`, from the `menuData` transition.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinkError::Remote`] when the menu request fails or the body is not a JSON array.
-    pub fn menu(&self, path: &str) -> Result<Vec<MenuItem>, LinkError> {
-        let url = menu_url(path);
-        let factory = self.factory()?;
-        let output = self.on_pool(move || moqui_core::screen::make_render(&factory).screen_path(url).render())?;
-        menu_from(&output)
-    }
-
+impl InProcess {
     /// The factory, or [`LinkError::Remote`] once the server stopped.
     fn factory(&self) -> Result<Arc<ExecutionContextFactory>, LinkError> {
         self.factory
@@ -88,30 +205,24 @@ impl HostLink {
             .ok_or_else(|| LinkError::Remote("the server is stopping".into()))
     }
 
-    fn user(&self) -> Option<String> {
-        self.user.lock().unwrap_or_else(PoisonError::into_inner).clone()
-    }
-
-    fn absolute(&self, url: &str) -> String {
-        let base = self.last_path.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        resolve_url(&base, url)
-    }
-
     /// Run `work` on the request pool as the link's user, waiting for its answer. The client calls this off its UI
     /// thread, so the wait holds a worker of the client's, never the keys.
-    fn on_pool<T, F>(&self, work: F) -> Result<T, LinkError>
+    fn on_pool<R, F>(&self, work: F) -> Result<R, LinkError>
     where
-        T: Send + 'static,
-        F: FnOnce() -> Result<T, Error> + Send + 'static,
+        R: Send + 'static,
+        F: FnOnce() -> Result<R, Error> + Send + 'static,
     {
         let Some(username) = self.user() else {
             return Err(LinkError::Auth("Authentication required".into()));
         };
         let factory = self.factory()?;
+        let user_id = Arc::clone(&self.user_id);
         let rx = factory
             .request_pool()
             .try_submit(Arc::clone(&factory), move || {
                 moqui_core::user::internal_login_user(&username)?;
+                let id = moqui_core::user::current_user_id()?;
+                *user_id.lock().unwrap_or_else(PoisonError::into_inner) = id;
                 work()
             })
             .map_err(link_error)?;
@@ -123,215 +234,23 @@ impl HostLink {
     }
 }
 
-impl HostLink {
-    /// Render `path` in the `tui` mode. A screen the user goes to is remembered for the history and as the base of
-    /// relative urls; a fragment is neither.
-    fn render_tui(
-        &self,
-        path: String,
-        parameters: &BTreeMap<String, String>,
-        remember: bool,
-    ) -> Result<RenderOutput, LinkError> {
-        let values = value_map(parameters);
+impl Transport for InProcess {
+    fn send(&self, ask: Ask) -> Result<RenderOutput, LinkError> {
         let factory = self.factory()?;
+        let values = value_map(&ask.parameters);
         self.on_pool(move || {
-            moqui_core::screen::make_render(&factory)
-                .screen_path(path)
-                .parameters(values)
-                .render_mode("tui")
-                .history(remember)
-                .render()
+            let mut render = moqui_core::screen::make_render(&factory)
+                .screen_path(ask.path)
+                .method(ask.method)
+                .parameters(values);
+            if ask.json {
+                render = render.header("Accept", "application/json");
+            }
+            if ask.tui {
+                render = render.render_mode("tui").history(ask.remember);
+            }
+            render.render()
         })
-    }
-}
-
-impl ScreenLink for HostLink {
-    /// A screen, or a transition a link goes to (an anchor to `runJob`), whose redirect to its screen is followed as the
-    /// browser follows it.
-    fn level(&self, path: &str, parameters: &BTreeMap<String, String>) -> Result<ScreenModel, LinkError> {
-        let mut path = self.absolute(path);
-        let mut parameters = parameters.clone();
-        for _ in 0..FRAGMENT_REDIRECTS {
-            let output = self.render_tui(path.clone(), &parameters, true)?;
-            if (300..400).contains(&output.status) {
-                let Some(location) = output.header("Location").map(local_path) else {
-                    return Err(LinkError::Remote(format!("HTTP {} with no Location", output.status)));
-                };
-                let (bare, query) = split_query(&location);
-                path = bare.to_string();
-                parameters = query.map(query_parameters).unwrap_or_default();
-                continue;
-            }
-            let model = model_from(&output)?;
-            *self.last_path.lock().unwrap_or_else(PoisonError::into_inner) = model.screen.path.clone();
-            return Ok(model);
-        }
-        Err(LinkError::Remote(format!("{path} redirected too many times")))
-    }
-
-    /// A transition that answers JSON, or text (a default value, a value url's label), as a JSON string.
-    fn json(
-        &self,
-        url: &str,
-        method: &str,
-        parameters: &BTreeMap<String, String>,
-    ) -> Result<serde_json::Value, LinkError> {
-        let url = self.absolute(url);
-        let method = if method.is_empty() {
-            "GET".to_string()
-        } else {
-            method.to_ascii_uppercase()
-        };
-        let values = value_map(parameters);
-        let factory = self.factory()?;
-        let asked = url.clone();
-        let result = self
-            .on_pool(move || {
-                moqui_core::screen::make_render(&factory)
-                    .screen_path(asked)
-                    .method(method)
-                    .parameters(values)
-                    .header("Accept", "application/json")
-                    .render()
-            })
-            .and_then(|output| {
-                check_status(&output)?;
-                let text = output.body_text();
-                Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)))
-            });
-        if let Err(err) = &result {
-            tracing::warn!("TUI request to {url} failed: {err}");
-        }
-        result
-    }
-
-    /// The body of a dynamic dialog or container: its url rendered in the `tui` mode. A transition answers with a
-    /// redirect to its screen, which is followed.
-    fn fragment(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<ScreenModel, LinkError> {
-        let mut path = self.absolute(url);
-        let mut parameters = parameters.clone();
-        for _ in 0..FRAGMENT_REDIRECTS {
-            let (bare, query) = split_query(&path);
-            let mut asked = query.map(query_parameters).unwrap_or_default();
-            asked.extend(parameters.clone());
-            let output = self.render_tui(bare.to_string(), &asked, false)?;
-            if !(300..400).contains(&output.status) {
-                return model_from(&output);
-            }
-            let Some(location) = output.header("Location").map(local_path) else {
-                return Err(LinkError::Remote(format!("HTTP {} with no Location", output.status)));
-            };
-            path = location;
-            parameters = BTreeMap::new();
-        }
-        Err(LinkError::Remote(format!("{url} redirected too many times")))
-    }
-
-    /// A file: an export, as the server renders it, with its type and name.
-    fn raw(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<RawBody, LinkError> {
-        let url = self.absolute(url);
-        let values = value_map(parameters);
-        let factory = self.factory()?;
-        let output = self.on_pool(move || {
-            moqui_core::screen::make_render(&factory)
-                .screen_path(url)
-                .parameters(values)
-                .render()
-        })?;
-        check_status(&output)?;
-        let disposition = output.header("Content-Disposition").unwrap_or("");
-        let file_name = disposition
-            .split(';')
-            .filter_map(|part| part.trim().strip_prefix("filename="))
-            .map(|name| name.trim_matches('"').to_string())
-            .next()
-            .unwrap_or_default();
-        Ok(RawBody {
-            content_type: output.header("Content-Type").unwrap_or("").to_string(),
-            file_name,
-            bytes: output.body,
-        })
-    }
-
-    fn transition(
-        &self,
-        url: &str,
-        method: &str,
-        fields: &BTreeMap<String, String>,
-    ) -> Result<TransitionOutcome, LinkError> {
-        let url = self.absolute(url);
-        let method = if method.is_empty() {
-            "POST".to_string()
-        } else {
-            method.to_ascii_uppercase()
-        };
-        let values = value_map(fields);
-        let factory = self.factory()?;
-        let posted = url.clone();
-        let output = self.on_pool(move || {
-            moqui_core::screen::make_render(&factory)
-                .screen_path(posted)
-                .method(method)
-                .parameters(values)
-                .header("Accept", "application/json")
-                .render()
-        })?;
-        let text = output.body_text();
-        let trimmed = text.trim_start();
-        if trimmed.starts_with('{') || trimmed.starts_with('[') {
-            return outcome_from(&output);
-        }
-        // Not JSON: an error page, or a form whose transition is the screen itself, which answers the screen; then the
-        // posted fields are the parameters of that screen.
-        check_status(&output)?;
-        Ok(screen_repost(&url, fields))
-    }
-
-    fn options(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<Vec<Choice>, LinkError> {
-        let url = self.absolute(url);
-        let values = value_map(parameters);
-        let factory = self.factory()?;
-        let asked = url.clone();
-        let result = self
-            .on_pool(move || {
-                moqui_core::screen::make_render(&factory)
-                    .screen_path(asked)
-                    .parameters(values)
-                    .header("Accept", "application/json")
-                    .render()
-            })
-            .and_then(|output| choices_from(&output));
-        if let Err(err) = &result {
-            tracing::warn!("TUI options from {url} failed: {err}");
-        }
-        result
-    }
-
-    fn shell(&self, path: &str) -> Result<ShellInfo, LinkError> {
-        let mut shell = ShellInfo {
-            user: self.user().unwrap_or_default(),
-            ..ShellInfo::default()
-        };
-        // The drawer of the current app; a screen without one has none, which is not an error.
-        match self.menu(path) {
-            Ok(menu) => shell.menu = app_menu(menu, path),
-            Err(LinkError::Auth(text)) => return Err(LinkError::Auth(text)),
-            Err(err) => tracing::warn!("TUI menu for {path} failed: {err}"),
-        }
-        let factory = self.factory()?;
-        let output = self.on_pool(move || {
-            moqui_core::screen::make_render(&factory)
-                .screen_path("/shellData")
-                .render()
-        })?;
-        match serde_json::from_str::<serde_json::Value>(&output.body_text()) {
-            Ok(data) => {
-                tui_values(&data, &mut shell);
-                shell_values(&data, &mut shell);
-            }
-            Err(err) => tracing::warn!("TUI shell data was not JSON: {err}"),
-        }
-        Ok(shell)
     }
 
     fn login(&self, username: &str, password: &str, _code: &str) -> Result<(), LinkError> {
@@ -359,6 +278,187 @@ impl ScreenLink for HostLink {
             Ok(Err(err)) => Err(LinkError::Remote(err.message().to_string())),
             Err(_) => Err(LinkError::Remote("request worker dropped the result".into())),
         }
+    }
+
+    fn user(&self) -> Option<String> {
+        self.user.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// The notification topic of this process, filtered to the link's user as `/notws` filters a socket's.
+    fn subscribe(&self, sink: PushSink) -> Option<Subscription> {
+        let user_id = Arc::clone(&self.user_id);
+        let listener = move |message: &moqui_core::notify::TopicMessage| {
+            let Some(me) = user_id.lock().unwrap_or_else(PoisonError::into_inner).clone() else {
+                return;
+            };
+            let routed = message
+                .body
+                .get(moqui_core::notify::ROUTE_USER_IDS)
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|users| users.iter().any(|user| user.as_str() == Some(me.as_str())));
+            if routed {
+                sink(push_of(&message.body));
+            }
+        };
+        match moqui_core::notify::subscribe(moqui_core::notify::NOTIFICATION_MESSAGE, Arc::new(listener)) {
+            Ok(subscription) => Some(Box::new(subscription)),
+            Err(err) => {
+                tracing::warn!("TUI notifications not pushed: {err}");
+                None
+            }
+        }
+    }
+}
+
+/// A notification's topic and title, from the body `/notws` sends and the topic carries.
+pub(crate) fn push_of(body: &serde_json::Value) -> Push {
+    Push {
+        topic: json_field(body, "topic"),
+        title: json_field(body, "title"),
+    }
+}
+
+impl<T: Transport> ScreenLink for Link<T> {
+    /// A screen, or a transition a link goes to (an anchor to `runJob`), whose redirect to its screen is followed as the
+    /// browser follows it.
+    fn level(&self, path: &str, parameters: &BTreeMap<String, String>) -> Result<ScreenModel, LinkError> {
+        let mut path = self.absolute(path);
+        let mut parameters = parameters.clone();
+        let mut carried = Messages::default();
+        for _ in 0..FRAGMENT_REDIRECTS {
+            let output = self.render_tui(path.clone(), &parameters, true)?;
+            if let Some(redirect) = redirect_of(&output)? {
+                (path, parameters) = (redirect.path, redirect.parameters);
+                carry(&mut carried, redirect.messages);
+                continue;
+            }
+            let mut model = model_from(&output)?;
+            carry(&mut carried, std::mem::take(&mut model.messages));
+            model.messages = carried;
+            *self.last_path.lock().unwrap_or_else(PoisonError::into_inner) = model.screen.path.clone();
+            return Ok(model);
+        }
+        Err(LinkError::Remote(format!("{path} redirected too many times")))
+    }
+
+    /// A transition that answers JSON, or text (a default value, a value url's label), as a JSON string.
+    fn json(
+        &self,
+        url: &str,
+        method: &str,
+        parameters: &BTreeMap<String, String>,
+    ) -> Result<serde_json::Value, LinkError> {
+        let ask = self.ask(url, method, "GET", parameters, true);
+        let result = self.transport.send(ask).and_then(|output| {
+            check_status(&output)?;
+            let text = output.body_text();
+            Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)))
+        });
+        if let Err(err) = &result {
+            tracing::warn!("TUI request to {url} failed: {err}");
+        }
+        result
+    }
+
+    /// The body of a dynamic dialog or container: its url rendered in the `tui` mode. A transition answers with a
+    /// redirect to its screen, which is followed.
+    fn fragment(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<ScreenModel, LinkError> {
+        let mut path = self.absolute(url);
+        let mut parameters = parameters.clone();
+        let mut carried = Messages::default();
+        for _ in 0..FRAGMENT_REDIRECTS {
+            let (bare, query) = split_query(&path);
+            let mut asked = query.map(query_parameters).unwrap_or_default();
+            asked.extend(parameters.clone());
+            let output = self.render_tui(bare.to_string(), &asked, false)?;
+            let Some(redirect) = redirect_of(&output)? else {
+                let mut model = model_from(&output)?;
+                carry(&mut carried, std::mem::take(&mut model.messages));
+                model.messages = carried;
+                return Ok(model);
+            };
+            (path, parameters) = (redirect.path, redirect.parameters);
+            carry(&mut carried, redirect.messages);
+        }
+        Err(LinkError::Remote(format!("{url} redirected too many times")))
+    }
+
+    /// A file: an export, as the server renders it, with its type and name.
+    fn raw(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<RawBody, LinkError> {
+        let output = self.transport.send(self.ask(url, "", "GET", parameters, false))?;
+        check_status(&output)?;
+        let disposition = output.header("Content-Disposition").unwrap_or("");
+        let file_name = disposition
+            .split(';')
+            .filter_map(|part| part.trim().strip_prefix("filename="))
+            .map(|name| name.trim_matches('"').to_string())
+            .next()
+            .unwrap_or_default();
+        Ok(RawBody {
+            content_type: output.header("Content-Type").unwrap_or("").to_string(),
+            file_name,
+            bytes: output.body,
+        })
+    }
+
+    fn transition(
+        &self,
+        url: &str,
+        method: &str,
+        fields: &BTreeMap<String, String>,
+    ) -> Result<TransitionOutcome, LinkError> {
+        let absolute = self.absolute(url);
+        let output = self.transport.send(self.ask(url, method, "POST", fields, true))?;
+        let text = output.body_text();
+        let trimmed = text.trim_start();
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            return outcome_from(&output);
+        }
+        // Not JSON: an error page, or a form whose transition is the screen itself, which answers the screen; then the
+        // posted fields are the parameters of that screen.
+        check_status(&output)?;
+        Ok(screen_repost(&absolute, fields))
+    }
+
+    fn options(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<Vec<Choice>, LinkError> {
+        let result = self
+            .transport
+            .send(self.ask(url, "", "GET", parameters, true))
+            .and_then(|output| choices_from(&output));
+        if let Err(err) = &result {
+            tracing::warn!("TUI options from {url} failed: {err}");
+        }
+        result
+    }
+
+    fn shell(&self, path: &str) -> Result<ShellInfo, LinkError> {
+        let mut shell = ShellInfo {
+            user: self.transport.user().unwrap_or_default(),
+            ..ShellInfo::default()
+        };
+        // The drawer of the current app; a screen without one has none, which is not an error.
+        match self.menu(path) {
+            Ok(menu) => shell.menu = app_menu(menu, path),
+            Err(LinkError::Auth(text)) => return Err(LinkError::Auth(text)),
+            Err(err) => tracing::warn!("TUI menu for {path} failed: {err}"),
+        }
+        let output = self.transport.send(Ask::get("/shellData".to_string()))?;
+        match serde_json::from_str::<serde_json::Value>(&output.body_text()) {
+            Ok(data) => {
+                tui_values(&data, &mut shell);
+                shell_values(&data, &mut shell);
+            }
+            Err(err) => tracing::warn!("TUI shell data was not JSON: {err}"),
+        }
+        Ok(shell)
+    }
+
+    fn login(&self, username: &str, password: &str, code: &str) -> Result<(), LinkError> {
+        self.transport.login(username, password, code)
+    }
+
+    fn subscribe(&self, sink: PushSink) -> Option<Subscription> {
+        self.transport.subscribe(sink)
     }
 }
 
@@ -389,6 +489,64 @@ fn check_status(output: &RenderOutput) -> Result<(), LinkError> {
         )));
     }
     Ok(())
+}
+
+/// Where a level's request went on to: a transition's redirect, as a 3xx or as the JSON a `tui` request gets, with the
+/// messages the transition left (`runJob`'s, a save's), which only the JSON form carries.
+struct Redirect {
+    path: String,
+    parameters: BTreeMap<String, String>,
+    messages: Messages,
+}
+
+fn redirect_of(output: &RenderOutput) -> Result<Option<Redirect>, LinkError> {
+    if (300..400).contains(&output.status) {
+        let Some(location) = output.header("Location").map(local_path) else {
+            return Err(LinkError::Remote(format!("HTTP {} with no Location", output.status)));
+        };
+        let (bare, query) = split_query(&location);
+        return Ok(Some(Redirect {
+            path: bare.to_string(),
+            parameters: query.map(query_parameters).unwrap_or_default(),
+            messages: Messages::default(),
+        }));
+    }
+    let text = output.body_text();
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Ok(None);
+    };
+    // A screen document has its envelope; a redirect has a screenUrl or redirectUrl and none.
+    if map.contains_key("v") || !(map.contains_key("screenUrl") || map.contains_key("redirectUrl")) {
+        return Ok(None);
+    }
+    let outcome = outcome_from(output)?;
+    if outcome.screen_url.is_empty() {
+        let mut errors = outcome.messages.errors;
+        errors.extend(
+            outcome
+                .messages
+                .validation_errors
+                .into_iter()
+                .map(|error| error.message),
+        );
+        return Err(LinkError::Remote(errors.join("; ")));
+    }
+    let location = local_path(&outcome.screen_url);
+    let (bare, query) = split_query(&location);
+    let mut parameters = outcome.parameters;
+    parameters.extend(query.map(query_parameters).unwrap_or_default());
+    Ok(Some(Redirect {
+        path: bare.to_string(),
+        parameters,
+        messages: outcome.messages,
+    }))
+}
+
+/// Add `more` after the messages already carried.
+fn carry(carried: &mut Messages, more: Messages) {
+    carried.info.extend(more.info);
+    carried.errors.extend(more.errors);
+    carried.validation_errors.extend(more.validation_errors);
 }
 
 fn model_from(output: &RenderOutput) -> Result<ScreenModel, LinkError> {

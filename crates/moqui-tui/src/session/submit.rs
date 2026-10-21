@@ -188,7 +188,14 @@ impl Session {
             .cloned()
             .or_else(|| submitted.as_ref().map(|done| done.submit_message.clone()))
             .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| "Saved".to_string());
+            // A form saved; a link that posts (Run Job) did something, and saved nothing the user typed.
+            .unwrap_or_else(|| {
+                if submitted.as_ref().is_some_and(|done| done.form.is_empty()) {
+                    "Done".to_string()
+                } else {
+                    "Saved".to_string()
+                }
+            });
         if let Some(done) = &submitted {
             self.edits.drop_keys(&done.keys);
             self.edits.clear_marks();

@@ -647,6 +647,9 @@ fn apps_runs_the_terminal_client_over_ssh() {
         read_until(&mut channel, &mut seen, "apps.only", false).await.unwrap();
         // True color, from the COLORTERM env request.
         read_until(&mut channel, &mut seen, "38;2;", true).await.unwrap();
+        // apps.only may not view the System app, so Alt+L offers no log.
+        send(&channel, b"\x1bl").await;
+        read_until(&mut channel, &mut seen, "The log is not offered", false).await.unwrap();
 
         // A second session of the same user is past tui_max_sessions_per_user (1).
         let mut second = pty(&handle, 100, 40).await;
@@ -700,6 +703,9 @@ fn apps_runs_the_terminal_client_over_ssh() {
         let mut list = seen.split_off(mark);
         read_until(&mut channel, &mut list, "EX_JOHN_DOE", false).await.unwrap();
         seen.extend(list);
+        // An admin's Alt+L opens the log pane (its WARN and ERROR lines: `logging::tap_at`, unit tested there).
+        send(&channel, b"\x1bl").await;
+        read_until(&mut channel, &mut seen, "Log · Alt+L closes", false).await.unwrap();
         send(&channel, b"\x11").await;
         read_until(&mut channel, &mut seen, "\x1b[?1049l", true).await.unwrap();
         read_until(&mut channel, &mut seen, "moqui> ", true).await.unwrap();

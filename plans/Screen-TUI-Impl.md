@@ -1,6 +1,6 @@
 # Screen TUI implementation plan
 
-Oct 21, 2026 · Phases 1, 2, 3, 3b and 3c built (findings under each in section 5); the quirks found over SSH (under 3c) and Phase 4 are next. This plan implements [proposals/Screen-TUI-Revue.md](proposals/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
+Oct 21, 2026 · Phases 1 to 4 built (findings under each in section 5): Phase 4 without the browser terminal (4.4), which waits in plans/Remaining-Work.md. This plan implements [archive/Screen-TUI-Revue.md](archive/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
 
 The proposal sets the architecture: a `tui` render mode emits a JSON screen model, and one Revue client interprets it and reaches the server over several channels. This plan adds four things:
 
@@ -713,6 +713,8 @@ It would be an own widget over `TextArea`, or a contribution to Revue's `RichTex
 
 ### 4.4 Browser terminal (if wanted)
 
+Not built in Phase 4, by the user's choice (Oct 21, 2026); it waits in plans/Remaining-Work.md.
+
 - **Server.** A `/termws` WebSocket route beside `/notws` (`crates/moqui-host/src/http.rs:211`), exempt from the request timeout as `/notws` is (`http.rs:429`). It is authenticated by the session cookie as `notws::upgrade` is (`crates/moqui-host/src/notws.rs:85`), and needs `SSH_APPS`-equivalent permission (the same permission, renamed `TERMINAL_APPS` if the SSH name reads wrong). Its bytes feed `run_session` exactly as SSH does. Because it is exempt from the request deadline, each socket takes a slot of `tui_max_sessions` (4.2) before its session starts.
 - **Page.** A small page with xterm.js, vendored through `libs/refresh.mjs` with a manifest line and a license review entry (MIT).
 - **Placement.** Phase 4, only on demand, as the proposal says.
@@ -724,7 +726,7 @@ The same interpreter draws through `PipelineHarness` at a given size with a `Fak
 ### 4.6 Packaging
 
 - **The `tui` feature.** A new `tui` feature in `crates/moqui-host/Cargo.toml` enables `dep:moqui-tui`. `enterprise` and `maximal` include it. **Changed 2026-10-20 (user):** `lite` includes it too, for a quick terminal dev and test loop. `lite` has no `ssh`, so it has `moqui tui` but not `apps`.
-- **The `tui-client` feature.** A `tui-client` feature builds the remote client alone.
+- **The `tui-client` feature.** Not made: `tui` alone is the remote client's build (Phase 4 findings).
 - **Forwarding.** `crates/moqui/Cargo.toml` forwards both features.
 - **The generated app crate.** The template in `moq` (the `[features]` block near `moq:1067-1074`, `package_features` at `moq:941`) gets them too, so `./moq build` of an add-on set carries the feature.
 - **Checks and docs.** `scripts/check-packages.sh` checks the new sets, and `docs/Packaging.md:18-42` gets the rows.
@@ -1000,6 +1002,38 @@ To fix next, with `agent-apps` to check each. Items later phases already cover a
 6. The breadcrumb repeats the leaf as its name and its title: `JobRunDetail ▸ Job Run Detail`.
 7. ServiceJobDetail's empty From Date shows the current time. Check against the browser whether it is the field's default value.
 
+#### Quirks: findings (Oct 21, 2026)
+
+Each fix was checked with `agent-apps` against the release build at 120 columns.
+
+1. **The counters.** `title_line` takes the long counters only when the crumbs still fit beside them, then the short form
+   (`T3 C1 N2`), then drops the user, then the clock. At 120 columns the Security crumbs are whole with `T3 C4 N4 …`.
+2. **Buttons wrap.** A run of links and buttons is split into lines that fit (`layout::wrap_inline`, by
+   `Inline::width`, which matches the looks `draw_inline` draws and counts a `[n]` while links are numbered). So are a
+   form's button line and a wizard's buttons. A box toolbar stays one line. AppList's apps take five lines at 120.
+   Test: `layout.rs` `a_row_of_buttons_wraps`.
+3. **Find in a stacked cell.** `find_next` searches every part of a cell. `find MY_ACCOUNT_USERS` finds the row.
+4. **The confirm choice.** The choices are `[ No ]  [ Yes ]`, and the chosen one is reversed as a focused button is; the
+   agent shows it as `[[[ Yes ]]]`.
+5. **Run Job.** As Java: `runJob` adds no message, the run is async, and Last Run is the run lock's time, which a
+   run-now never takes. Two things were wrong, and are fixed:
+   - A link to a transition that runs actions was a plain GET. Over HTTP the server refuses its parameters on the url
+     (`insecure_transition`, as Java). `ScreenTui.js` now marks it `method: post` when `sri.isAnchorLink` says it is not
+     an anchor, as qvt's `m-form` and Java's hidden form do; the client posts it as a form. With no message of its
+     own, the answer is "Done", not "Saved".
+   - A message from a transition reached as a level was lost: the client asks for each level as its own request, with
+     no session between them for the flash. `wants_json` (`render.rs`) is true for a `tui` request, so such a transition
+     answers `send_json_redirect` with its messages; `Link::level` follows it and puts the messages ahead of the
+     screen's. Thread List's Interrupt shows "Thread … not interrupted". Tests: `tui.rs`
+     `a_transition_asked_for_in_tui_answers_its_redirect_as_json`, and steps in `tui_screens.rs`.
+6. **The breadcrumb.** The title takes the place of the leaf's name: `JobRuns ▸ Job Run Detail`. The agent's `path`
+   line keeps the name.
+7. **From Date.** As Java and qvt: `auto-fields-entity` gives an edit `fromDate` a `nowTimestamp` default
+   (`screen/form.rs:1116`, Java `ScreenForm.groovy:819`). No change.
+
+Also: a `tui` request that needs a login gets the 401, not the browser's redirect to `/Login` (`redirect_to_login`),
+so a remote client shows its login dialog.
+
 ### Phase 4 — Reach and polish
 
 - **Remote.** Remote client mode with stored login keys, and the `tui-client` build.
@@ -1009,6 +1043,96 @@ To fix next, with `agent-apps` to check each. Items later phases already cover a
 - **Push.** Counter updates in place of polling: the in-process link subscribes to the notification topic directly; the remote client uses `/notws`.
 - **CI.** Snapshot tests in CI (section 6), the `--snapshot` command.
 - **On demand.** The browser terminal; the log pane over SSH for permitted users.
+
+#### Phase 4 findings
+
+Recorded 2026-10-21. Built: the remote client, push, theming, list views, the Markdown source editor, the Gallery
+snapshots and the log pane over SSH. Evaluated and not built: a `diagram` component. Not built, by the user's choice:
+the browser terminal (4.4).
+
+**Remote client (4.3).**
+- `crates/moqui-host/src/tui.rs` is now one `Link<T: Transport>`: the level, transition, options, json, fragment, raw and
+  shell calls and their parsing are shared. `HostLink` is `Link<InProcess>`. `HttpLink` (`tui_remote.rs`) is `Link<Http>`
+  on blocking reqwest, building a `RenderOutput` from each response so the same parsing reads it. Redirects are not
+  followed by reqwest; `Link::level` follows them, a JSON redirect included (quirk 5).
+- **Login.** The REST `login` takes `createLoginKey=true` and answers `loginKey` (`dispatch.rs` `send_logged_in`, through
+  `get_login_key`; Parity-Diffs). The key file is `~/.config/moqui/tui/<host>_<port>.toml`, mode 0600, with the user and
+  the key. No expiry is kept: a 401 opens the login dialog, which is the same for a key that expired or was revoked.
+  `--forget` removes it.
+- **`tui-client` is not a feature.** moqui-host with `tui` alone already builds without a database driver or the HTTP
+  server (moqui-core is always linked), and `--server` runs outside the axum/DB cfg of `tui_cmd`. check-packages.sh
+  builds `-p moqui-host --no-default-features --features tui`.
+- Live: `moqui tui --agent --server http://localhost:8080` against the dev server logged in by typing into the login
+  dialog (the agent's `set` names no login field), found a user, opened it, ran a job; a second run used the stored key.
+- Test: `tests/it/tui_remote.rs`.
+
+**Push.** `ScreenLink::subscribe(PushSink) -> Option<Subscription>`, the subscription a guard that ends it on drop.
+`InProcess` listens on the process's notification topic, filtered to the link's user id (known after its first call).
+`Http` runs `/notws` on a thread of its own, with the login key, reconnecting with a backoff; `/notws` now takes a
+`login_key` header when there is no session cookie (`notws.rs` `key_user`). A push reads the counters and puts the
+notification's title on the message line; with a subscription, the counters are read every ten minutes, not each
+minute. The local loop drains pushes on its tick, the session loop gets `SessionEvent::Push`, the agent applies them
+before its next command. Tests: `tui_remote.rs` (over `/notws`), `tui_screens.rs` `drive_push`.
+
+**Theming.**
+- The shell data's `tui.colors` takes the brand colors of `STRT_QUASAR_CONFIG` for the six roles they name, under
+  `STRT_TUI_COLORS`.
+- A color name may start `dark.` or `light.`.
+- The SSH session loop asks OSC 11 (ended with ST) and the decoder reads the answer as `Decoded::Background`. Local
+  mode does not ask: Revue reads its input, and an answer that came after a timeout would be taken as keys.
+- Verifying ASCII found client marks still written in it (`…`, `–`, `·`): the painter now writes a one-column ASCII
+  stand-in for each of its marks in ASCII mode, so nothing moves.
+
+**List views.**
+- `ScreenTui.js` writes a form-list's `views`: the kinds in the form's order, the chosen one (a `view` parameter, else
+  the `LIST_VIEW_` preference qvt keeps, else the first), and the props of a `board` and a `calendar` with the page's
+  rows inline. The board's columns come from `get#ListViewColumns`, as qvt's do; a card's fields are their cell text,
+  and its `_open` is the row's first link.
+- The session swaps the list node for its view's component node before indexing (`apply_views`, the list kept aside),
+  so layout, focus and keys are a component's. `v` cycles and saves the preference.
+- Board sums and the calendar's create and resize are not in the terminal.
+- Test: `tui_screens.rs` `drive_views` (board, list, calendar, a card moved to its next status).
+
+**Diagrams.** Revue 3.10.1's `Diagram` was run on a status flow (nine transitions) at 100 and 180 columns:
+- it lays the nodes on a square grid with straight vertical lines, so most edges are missing and the lines it draws
+  join the wrong nodes;
+- its parser reads only `A --> B` lines, so a `stateDiagram-v2` (Tools' Status Flows) reads `B: label` as a node.
+
+Not usable, so no `diagram` component; Status Flows' twin stays text.
+
+**Markdown.**
+- `tests/markdown_roundtrip.rs` runs `RichTextEditor`'s round trip:
+  - the Gallery sample, the wiki pages and plans/README.md come back as they went in;
+  - a line that starts with digits and holds `. ` is rewritten as a numbered item (`00:53 … quotes. An answer is:`
+    became `1. An answer is:` in docs/TUI.md);
+  - inline markup is drawn plain.
+- So the editor is styled source (3.8). `markdown::source_looks` gives each character its look from pulldown-cmark's
+  offsets, `draw.rs` `source_line` draws the runs, and Alt+B, Alt+I and Alt+K wrap the word at the cursor. F1 lists
+  them on a Markdown field.
+- The text area does not scroll: a source longer than its rows shows its first lines, as before.
+
+**Snapshots.**
+- `tui_screens.rs` `snapshot_gallery` keeps every Gallery screen at 180x50 in `tests/tui_snapshots/`, and List, Detail
+  and Widgets in ASCII.
+- Every screen in monochrome must write no SGR color.
+- Today's date and a time after it are masked, since some records are stamped while the data loads. The Calendar has
+  no golden: its events are days of this month.
+- No CI service is configured. check-packages.sh runs these, as before.
+
+**Log pane over SSH.**
+- `logging::tap_at(capacity, least)` keeps the lines at a level and above.
+- `apps` asks whether the user may view `component://tools/screen/System.xml` (the Log Viewer's app, which grants by
+  inheritance) and, if so, forwards WARN and ERROR lines as `SessionEvent::Log`. `SessionOptions::log` says the pane is
+  offered; otherwise Alt+L says it is not.
+- Tests: `logging` `a_tap_takes_the_lines_at_its_level_and_above`, `session_loop.rs`
+  `the_log_pane_shows_the_lines_the_caller_sends`, `ssh.rs` (apps.only refused, an admin's pane opens).
+
+**Found on the way.**
+- The `agent`, `session_loop` and `markdown_roundtrip` tests and `theme::sgr_color` failed the model-only clippy of
+  check-packages.sh. The tests now require `ui`, and `sgr_color` allows dead code without it.
+- A changed text area drew its `•` over the first column of its text; the marks now follow the text's room.
+- `ssh.rs` failed once at the shell user's `exit` (no exit status within 30 s) and passed on each run after; not
+  reproduced.
 
 ---
 

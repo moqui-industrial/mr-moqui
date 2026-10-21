@@ -35,3 +35,15 @@ required-features = ["ui"]
 [[test]]
 name = "screens"
 required-features = ["ui"]
+
+[[test]]
+name = "markdown_roundtrip"
+required-features = ["ui"]
+
+[[test]]
+name = "agent"
+required-features = ["ui"]
+
+[[test]]
+name = "session_loop"
+required-features = ["ui"]

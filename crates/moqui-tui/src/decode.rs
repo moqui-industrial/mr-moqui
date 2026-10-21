@@ -38,6 +38,10 @@ pub enum Decoded {
         rows: u16,
     },
     Paste(String),
+    /// The terminal's answer to the OSC 11 query: whether its background is dark.
+    Background {
+        dark: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -155,6 +159,7 @@ fn take_esc(buf: &[u8]) -> Take {
     match buf[1] {
         b'[' => take_csi(buf),
         b'O' => take_ss3(buf),
+        b']' => take_osc(buf),
         b'\x1b' => Take::One(key(Key::Escape), 1),
         b'\r' => Take::One(press(Key::Enter, true, false, false), 2),
         0x7f => Take::One(press(Key::Backspace, true, false, false), 2),
@@ -163,6 +168,52 @@ fn take_esc(buf: &[u8]) -> Take {
         }
         _ => Take::One(key(Key::Escape), 1),
     }
+}
+
+/// An operating system command, `ESC ] … BEL` or `ESC ] … ESC \`: the terminal's answer to the background query
+/// (`11;rgb:RRRR/GGGG/BBBB`) is read, any other is dropped. `ESC ]` with no digit after it is Alt+].
+fn take_osc(buf: &[u8]) -> Take {
+    match buf.get(2) {
+        None => return Take::NeedMore,
+        Some(byte) if !byte.is_ascii_digit() => return Take::One(press(Key::Char(']'), true, false, false), 2),
+        Some(_) => {}
+    }
+    let end = buf.iter().enumerate().skip(2).find_map(|(at, byte)| match byte {
+        0x07 => Some((at, at + 1)),
+        b'\\' if buf[at - 1] == 0x1b => Some((at - 1, at + 1)),
+        _ => None,
+    });
+    let Some((body_end, len)) = end else {
+        // A runaway sequence is dropped rather than held forever.
+        return if buf.len() > 512 {
+            Take::Skip(buf.len())
+        } else {
+            Take::NeedMore
+        };
+    };
+    let body = String::from_utf8_lossy(&buf[2..body_end]);
+    match body.strip_prefix("11;").and_then(background_dark) {
+        Some(dark) => Take::One(Decoded::Background { dark }, len),
+        None => Take::Skip(len),
+    }
+}
+
+/// `rgb:RRRR/GGGG/BBBB` (1 to 4 hex digits each): dark when its luminance is under half.
+fn background_dark(color: &str) -> Option<bool> {
+    let parts: Vec<f64> = color
+        .strip_prefix("rgb:")?
+        .split('/')
+        .map(|part| {
+            let digits = part.get(..part.len().min(4))?;
+            let value = u32::from_str_radix(digits, 16).ok()?;
+            let max = (1_u32 << (4 * digits.len())) - 1;
+            Some(f64::from(value) / f64::from(max))
+        })
+        .collect::<Option<_>>()?;
+    let [r, g, b] = parts.as_slice() else {
+        return None;
+    };
+    Some(0.2126 * r + 0.7152 * g + 0.0722 * b < 0.5)
 }
 
 fn take_ss3(buf: &[u8]) -> Take {
@@ -421,6 +472,29 @@ mod tests {
         assert_eq!(
             keys(b"\x1b[8;50;180t"),
             vec![Decoded::Resize { columns: 180, rows: 50 }]
+        );
+    }
+
+    #[test]
+    fn the_background_answer_is_read_and_other_commands_dropped() {
+        assert_eq!(
+            keys(b"\x1b]11;rgb:0000/0000/0000\x07"),
+            vec![Decoded::Background { dark: true }]
+        );
+        assert_eq!(
+            keys(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\x"),
+            vec![Decoded::Background { dark: false }, key(Key::Char('x'))]
+        );
+        let mut decoder = Decoder::new();
+        assert!(decoder.push(b"\x1b]11;rgb:fa").is_empty(), "a split answer waits");
+        assert_eq!(
+            decoder.push(b"fa/fafa/fafa\x07"),
+            vec![Decoded::Background { dark: false }]
+        );
+        assert_eq!(keys(b"\x1b]52;c;aGk=\x07z"), vec![key(Key::Char('z'))]);
+        assert_eq!(
+            keys(b"\x1b]a"),
+            vec![press(Key::Char(']'), true, false, false), key(Key::Char('a'))]
         );
     }
 }

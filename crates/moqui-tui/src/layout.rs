@@ -237,6 +237,12 @@ pub trait Shown {
         Vec::new()
     }
 
+    /// The number a link shows before its text while links are numbered (`#`), so a line of buttons wraps with room
+    /// for it.
+    fn link_number(&self, _id: &str) -> Option<usize> {
+        None
+    }
+
     /// A component's lines at `width`; None when no component of its name is registered.
     fn component_lines(
         &self,
@@ -436,6 +442,52 @@ impl Inline {
             Self::Link { id, .. } | Self::Button { id, .. } | Self::Dialog { id, .. } | Self::Menu { id, .. } => id,
         }
     }
+
+    /// Columns as `draw_inline` draws it: `[ x ]`, `[ x… ]`, `[ x ▾ ]`, `< x >`, a plain link or an image's glyph and
+    /// alt text, after its `[n]` while links are numbered.
+    pub fn width(&self, number: Option<usize>) -> usize {
+        let number = number.map_or(0, |n| n.to_string().len() + 2);
+        match self {
+            Self::Link {
+                text, btn_type, button, ..
+            } => {
+                number
+                    + display_width(text)
+                    + if btn_type == "image" {
+                        2
+                    } else if *button {
+                        4
+                    } else {
+                        0
+                    }
+            }
+            Self::Button { text, .. } => display_width(text) + 4,
+            Self::Dialog { text, .. } => number + display_width(text) + 5,
+            Self::Menu { text, .. } => display_width(text) + 6,
+        }
+    }
+}
+
+/// Links and buttons as lines that each fit `width`, two columns apart, as many to a line as fit; one too wide for any
+/// line has a line of its own and is cut when drawn.
+fn wrap_inline(items: Vec<Inline>, ctx: &Ctx<'_>, width: u16) -> Vec<Vec<Inline>> {
+    let width = usize::from(width);
+    let mut lines: Vec<Vec<Inline>> = Vec::new();
+    let mut used = 0;
+    for item in items {
+        let w = item.width(ctx.shown.link_number(item.id()));
+        match lines.last_mut() {
+            Some(line) if used + 2 + w <= width => {
+                used += 2 + w;
+                line.push(item);
+            }
+            _ => {
+                used = w;
+                lines.push(vec![item]);
+            }
+        }
+    }
+    lines
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -608,7 +660,7 @@ fn place_nodes(nodes: &[Node], ctx: &Ctx<'_>, width: u16) -> Vec<Piece> {
                 line.push(item);
                 index += 1;
             }
-            pieces.push(Piece::Inline(line));
+            pieces.extend(wrap_inline(line, ctx, width).into_iter().map(Piece::Inline));
             continue;
         }
         pieces.extend(place_one(&nodes[index], ctx, width));
@@ -877,7 +929,7 @@ fn place_subscreens(
                 });
             }
             if !buttons.is_empty() {
-                pieces.push(Piece::Inline(buttons));
+                pieces.extend(wrap_inline(buttons, ctx, width).into_iter().map(Piece::Inline));
             }
         }
         "stack" if !items.is_empty() => {
@@ -1297,7 +1349,7 @@ fn form_lines(nodes: &[Node], ctx: &Ctx<'_>, width: u16) -> Vec<FormLine> {
     let mut buttons = Vec::new();
     collect_form(nodes, ctx, width, label_width, &mut lines, &mut buttons);
     if !buttons.is_empty() {
-        lines.push(FormLine::Buttons(buttons));
+        lines.extend(wrap_inline(buttons, ctx, width).into_iter().map(FormLine::Buttons));
     }
     lines
 }

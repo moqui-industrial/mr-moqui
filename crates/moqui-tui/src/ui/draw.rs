@@ -151,13 +151,13 @@ fn title_line(paint: &mut Painter, session: &Session, framed: &Frame, clock: Opt
         left.push(' ');
     }
     left.push_str(&names.join(&crumb));
-    let mut right = String::new();
-    if session.is_busy() {
-        right.push_str(spinner(paint.theme.ascii));
-        right.push_str("  ");
-    }
-    // The counters: `Today 3  Chat 1  Notif 2`, or `T3 C1 N2` on a narrow screen.
-    let short = framed.class < WidthClass::Md;
+    let spin = if session.is_busy() {
+        format!("{}  ", spinner(paint.theme.ascii))
+    } else {
+        String::new()
+    };
+    // The counters: `Today 3  Chat 1  Notif 2`, or `T3 C1 N2` on a narrow screen or when the long form would cut the
+    // crumbs; then the user and the clock, dropped in that order while the crumbs still do not fit.
     let order = |name: &str| {
         ["today", "chat", "notifications"]
             .iter()
@@ -166,6 +166,7 @@ fn title_line(paint: &mut Painter, session: &Session, framed: &Frame, clock: Opt
     };
     let mut counts: Vec<(&String, &i64)> = session.counts().iter().collect();
     counts.sort_by_key(|(name, _)| order(name));
+    let (mut long, mut short) = (String::new(), String::new());
     for (name, count) in counts {
         if *count == 0 {
             continue;
@@ -180,24 +181,34 @@ fn title_line(paint: &mut Painter, session: &Session, framed: &Frame, clock: Opt
                     .unwrap_or_default()
             }
         };
-        if short {
-            right.push_str(&format!("{}{count} ", word.chars().next().unwrap_or(' ')));
-        } else {
-            right.push_str(&format!("{word} {count}  "));
-        }
+        short.push_str(&format!("{}{count} ", word.chars().next().unwrap_or(' ')));
+        long.push_str(&format!("{word} {count}  "));
     }
-    if short && !session.counts().is_empty() {
-        right.push(' ');
+    if !short.is_empty() {
+        short.push(' ');
     }
-    if !session.shell().user.is_empty() {
-        right.push_str(&session.shell().user);
-        right.push_str("  ");
+    let user = &session.shell().user;
+    let user = if user.is_empty() {
+        String::new()
+    } else {
+        format!("{user}  ")
+    };
+    let clock = match clock {
+        Some(clock) => format!("{clock} "),
+        None => format!("{} ", jiff::Zoned::now().strftime("%a %H:%M")),
+    };
+    let mut choices = Vec::new();
+    if framed.class >= WidthClass::Md {
+        choices.push(format!("{spin}{long}{user}{clock}"));
     }
-    match clock {
-        Some(clock) => right.push_str(clock),
-        None => right.push_str(&jiff::Zoned::now().strftime("%a %H:%M").to_string()),
-    }
-    right.push(' ');
+    choices.push(format!("{spin}{short}{user}{clock}"));
+    choices.push(format!("{spin}{short}{clock}"));
+    choices.push(format!("{spin}{short}"));
+    let fits = |right: &String| display_width(&left) + display_width(right) < width;
+    let right = match choices.iter().position(fits) {
+        Some(index) => choices.swap_remove(index),
+        None => choices.pop().unwrap_or_default(),
+    };
     let room = width.saturating_sub(display_width(&right) + 1);
     paint.fixed(0, 0, &truncate_width(&left, room), Look::role(Role::Text).bold(), room);
     let x = u16::try_from(width.saturating_sub(display_width(&right))).unwrap_or(0);
@@ -350,12 +361,16 @@ fn key_line(paint: &mut Painter, session: &Session, row: u16, width: u16) {
                 actions.push(Action::EditRow);
             }
             actions.extend([Action::PageNext, Action::Sort, Action::Find]);
+            if session.list(list).is_some_and(|list| list.views.is_some()) {
+                actions.push(Action::View);
+            }
             if session.list(list).is_some_and(|list| list.row_selection.is_some()) {
                 actions.push(Action::Select);
             }
             actions.push(Action::Actions);
         }
         Some(FocusKind::Menu) => actions.push(Action::Actions),
+        Some(FocusKind::Component) if session.view_of(session.focus_id()).is_some() => actions.push(Action::View),
         _ => {}
     }
     actions.extend([
@@ -809,12 +824,17 @@ fn draw_value(paint: &mut Painter, session: &Session, field: &LaidField, widget:
                 11,
             );
         }
-        Widget::TextArea { read_only, .. } => {
+        Widget::TextArea {
+            read_only, editor_type, ..
+        } => {
             let text = session.buffer(id);
             let lines: Vec<&str> = text.split('\n').collect();
             let focused = focus_key == id.as_str();
             let (cursor_row, cursor_col) = crate::edit::row_col(text, session.cursor(id));
             let room = usize::from(paint.right.saturating_sub(x)).saturating_sub(3);
+            // Markdown source is drawn styled (3.8): its text is the value, each character in the look of its part.
+            let looks = (editor_type == "md").then(|| crate::markdown::source_looks(text));
+            let mut line_start = 0;
             for row in 0..field.rows {
                 let line = lines.get(row).copied().unwrap_or("");
                 let bar = if paint.theme.ascii { "|" } else { "│" };
@@ -824,7 +844,15 @@ fn draw_value(paint: &mut Painter, session: &Session, field: &LaidField, widget:
                 } else {
                     Look::role(Role::Field)
                 };
-                paint.text(x + 1, y + row, &truncate_width(line, room), look, room);
+                match &looks {
+                    Some(looks) => {
+                        source_line(paint, x + 1, y + row, line, &looks[line_start.min(looks.len())..], room)
+                    }
+                    None => {
+                        paint.text(x + 1, y + row, &truncate_width(line, room), look, room);
+                    }
+                }
+                line_start += line.chars().count() + 1;
                 if focused && row == cursor_row {
                     let ch = line.chars().nth(cursor_col).unwrap_or(' ').to_string();
                     let cx = x
@@ -833,7 +861,8 @@ fn draw_value(paint: &mut Painter, session: &Session, field: &LaidField, widget:
                     paint.text(cx, y + row, &ch, Look::role(Role::Focus).reverse(), 1);
                 }
             }
-            after(paint, 1, id);
+            // The changed and error marks after the text's room, not over its first column.
+            after(paint, room + 1, id);
         }
         Widget::DropDown { options, multiple, .. } => {
             let value = session.buffer(id);
@@ -1005,6 +1034,51 @@ fn input(
         }
     }
     inner + 2
+}
+
+/// One line of Markdown source in runs of the same look: headings bold in the primary color, strong bold, emphasis
+/// italic, code in the info color, links underlined, quotes and markers muted.
+fn source_line(paint: &mut Painter, x: u16, y: usize, line: &str, looks: &[crate::markdown::SourceLook], room: usize) {
+    let look_of = |part: &crate::markdown::SourceLook| {
+        let mut look = if part.marker || part.quote {
+            Look::role(Role::Muted)
+        } else if part.code {
+            Look::role(Role::Info)
+        } else if part.heading || part.link {
+            Look::role(Role::Primary)
+        } else {
+            Look::role(Role::Field)
+        };
+        if part.heading || part.strong {
+            look = look.bold();
+        }
+        if part.emphasis {
+            look = look.italic();
+        }
+        if part.link && !part.marker {
+            look = look.underline();
+        }
+        look
+    };
+    let mut col = 0;
+    let mut run = String::new();
+    let mut current: Option<crate::markdown::SourceLook> = None;
+    let flush = |paint: &mut Painter, run: &mut String, part: Option<crate::markdown::SourceLook>, col: &mut usize| {
+        if let Some(part) = part.filter(|_| !run.is_empty()) {
+            let left = room.saturating_sub(*col);
+            *col += paint.text(x + u16::try_from(*col).unwrap_or(0), y, run, look_of(&part), left);
+        }
+        run.clear();
+    };
+    for (at, ch) in line.chars().enumerate() {
+        let part = looks.get(at).copied().unwrap_or_default();
+        if current != Some(part) {
+            flush(paint, &mut run, current, &mut col);
+            current = Some(part);
+        }
+        run.push(ch);
+    }
+    flush(paint, &mut run, current, &mut col);
 }
 
 /// Links and buttons on one line, two columns apart.

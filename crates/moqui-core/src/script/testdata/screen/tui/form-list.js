@@ -77,6 +77,8 @@ $addPart($parts, $start, (() => {
             
             
             
+            if ($made && !$link.method && $made.isTransition() && !sri.isAnchorLink({"name":"link","attrs":{"url":"open","text":"Open ${id}","link-type":"anchor"},"parent":{"name":"default-field","attrs":{"title":"Open"},"parent":{"name":"field","attrs":{"name":"link"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}, $made)
+                && $made.getTransitionMethod() !== "get") $link.method = "post";
             
             return $link;
         })());

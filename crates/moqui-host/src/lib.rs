@@ -46,6 +46,8 @@ pub mod test_cmd;
 pub mod tui;
 #[cfg(feature = "tui")]
 mod tui_cmd;
+#[cfg(feature = "tui")]
+pub mod tui_remote;
 pub mod types;
 pub mod usage;
 

@@ -189,3 +189,20 @@ fn a_box_toolbar_and_buttons_are_their_own_lines() {
         "class=sm canvas=100\nbox Order w=100\n  toolbar ship\n  text body\n"
     );
 }
+
+/// A run of buttons wider than the canvas wraps onto more lines, as many to a line as fit (AppList at 120 columns).
+#[test]
+fn a_row_of_buttons_wraps() {
+    let links: Vec<String> = (0..8)
+        .map(|n| {
+            format!(r#"{{"t":"link","id":"app{n}","text":"Application Number {n}","kind":"anchor-button","url":"/apps/a{n}"}}"#)
+        })
+        .collect();
+    let model = screen(&links.join(","));
+    let wide = outline(&model, 240);
+    assert_eq!(wide.matches("inline ").count(), 1, "{wide}");
+    // Each button is `[ Application Number n ]`, 26 columns, 28 with the gap: four to a line at 120.
+    let narrow = outline(&model, 120);
+    assert_eq!(narrow.matches("inline ").count(), 2, "{narrow}");
+    assert!(narrow.contains("inline app0 app1 app2 app3\ninline app4"), "{narrow}");
+}

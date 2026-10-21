@@ -30,6 +30,10 @@ pub struct TuiFlags {
     pub snapshot: Option<(u16, u16)>,
     /// Command lines on stdin, an answer each on stdout (`moqui_tui::Agent`), for a program rather than a person.
     pub agent: bool,
+    /// A running server to reach over HTTP rather than this runtime in process.
+    pub server: Option<String>,
+    /// Remove the login key stored for `server`.
+    pub forget: bool,
 }
 
 /// # Errors
@@ -60,6 +64,8 @@ pub fn parse(args: &[String]) -> Result<TuiFlags, Error> {
             "--no-color" => flags.no_color = true,
             "--serve" => flags.serve = true,
             "--agent" => flags.agent = true,
+            "--server" => flags.server = Some(value("a url such as https://erp.example.com")?),
+            "--forget" => flags.forget = true,
             "--snapshot" => {
                 flags.path = value("a screen path")?;
                 flags.snapshot.get_or_insert((180, 50));
@@ -83,17 +89,85 @@ pub fn parse(args: &[String]) -> Result<TuiFlags, Error> {
     if !flags.path.starts_with('/') {
         flags.path.insert(0, '/');
     }
+    if flags.forget && flags.server.is_none() {
+        return Err(Error::new(
+            "moqui tui: --forget needs --server, the server whose key to forget",
+        ));
+    }
+    if flags.server.is_some() && (flags.user.is_some() || flags.serve) {
+        return Err(Error::new(
+            "moqui tui: --server reaches a running server, which asks for the login; --user and --serve are for this runtime",
+        ));
+    }
     Ok(flags)
 }
 
-/// Run `moqui tui`.
+/// Run `moqui tui`: over HTTP with `--server`, else on this runtime.
+///
+/// # Errors
+///
+/// As [`run_here`] and [`run_remote`].
+pub fn run(flags: &TuiFlags) -> Result<(), Error> {
+    match &flags.server {
+        Some(server) => run_remote(flags, server),
+        None => run_here(flags),
+    }
+}
+
+/// `--server`: the client of a running server, with no runtime of its own (4.3).
+fn run_remote(flags: &TuiFlags, server: &str) -> Result<(), Error> {
+    if flags.forget {
+        let path = crate::tui_remote::key_file(server)?;
+        if crate::tui_remote::forget(server)? {
+            println!("Removed the login key in {}", path.display());
+        } else {
+            println!("No login key stored for {server}");
+        }
+        return Ok(());
+    }
+    if flags.snapshot.is_none() || flags.agent {
+        crate::logging::install_without_console();
+    } else {
+        crate::logging::install_with_console(Some(tracing::Level::ERROR));
+    }
+    let log = crate::logging::tap(500);
+    let link = crate::tui_remote::HttpLink::connect(server, Some(crate::tui_remote::key_file(server)?))?;
+    present(link, flags, log)
+}
+
+/// The client on `link`: the agent's lines, one snapshot, or the terminal.
+fn present<L: moqui_tui::ScreenLink + 'static>(
+    link: L,
+    flags: &TuiFlags,
+    log: std::sync::mpsc::Receiver<String>,
+) -> Result<(), Error> {
+    if flags.agent {
+        let (columns, rows) = flags.snapshot.unwrap_or((120, 40));
+        return agent_lines(link, &flags.path, columns, rows)
+            .map_err(|err| Error::new(format!("moqui tui --agent: {err}")));
+    }
+    let theme = moqui_tui::Theme::detect(&|name| std::env::var(name).ok(), flags.ascii, flags.no_color);
+    if let Some((width, height)) = flags.snapshot {
+        println!("{}", moqui_tui::snapshot(link, &flags.path, width, height, theme));
+        return Ok(());
+    }
+    let options = moqui_tui::LocalOptions {
+        path: flags.path.clone(),
+        theme,
+        notes: Some(|note| tracing::warn!("TUI theme: {note}")),
+        log: Some(log),
+    };
+    moqui_tui::run_local(link, options).map_err(|err| Error::new(format!("moqui tui: {err}")))
+}
+
+/// `moqui tui` on this runtime.
 ///
 /// # Errors
 ///
 /// Returns an error when the runtime is already served, the boot fails, `--user` is given on an instance that is not
 /// for development, or the terminal cannot be drawn.
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
-pub fn run(flags: &TuiFlags) -> Result<(), Error> {
+fn run_here(flags: &TuiFlags) -> Result<(), Error> {
     use crate::tui::HostLink;
 
     let (runtime, framework) = crate::runtime_framework_dirs();
@@ -101,8 +175,8 @@ pub fn run(flags: &TuiFlags) -> Result<(), Error> {
     let port = crate::http::http_port(&moqui_lib::env::get_prop_or_env("webapp_http_port")).unwrap_or(8080);
     if !flags.serve && served_on(port) {
         return Err(Error::new(format!(
-            "moqui tui: a server already answers on port {port}, likely on this runtime. Stop it first, or use the \
-             apps in its browser; a client that connects to a running server comes with `moqui tui --server`."
+            "moqui tui: a server already answers on port {port}, likely on this runtime. Stop it first, or reach it \
+             with `moqui tui --server http://localhost:{port}`."
         )));
     }
     // Before anything logs: a line on stderr would tear the screen.
@@ -146,31 +220,13 @@ pub fn run(flags: &TuiFlags) -> Result<(), Error> {
         }
         None => HostLink::new(&factory),
     };
-    if flags.agent {
-        let (columns, rows) = flags.snapshot.unwrap_or((120, 40));
-        let result = agent_lines(link, &flags.path, columns, rows);
-        drop(keep_alive);
-        return result.map_err(|err| Error::new(format!("moqui tui --agent: {err}")));
-    }
-    let theme = moqui_tui::Theme::detect(&|name| std::env::var(name).ok(), flags.ascii, flags.no_color);
-    if let Some((width, height)) = flags.snapshot {
-        println!("{}", moqui_tui::snapshot(link, &flags.path, width, height, theme));
-        return Ok(());
-    }
-    let options = moqui_tui::LocalOptions {
-        path: flags.path.clone(),
-        theme,
-        notes: Some(|note| tracing::warn!("TUI theme: {note}")),
-        log: Some(log),
-    };
-    let result = moqui_tui::run_local(link, options);
+    let result = present(link, flags, log);
     drop(keep_alive);
-    result.map_err(|err| Error::new(format!("moqui tui: {err}")))
+    result
 }
 
 /// `--agent`: the first screen, then one answer for each command line on stdin, until `close` or the end of input.
-#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
-fn agent_lines(link: crate::tui::HostLink, path: &str, columns: u16, rows: u16) -> std::io::Result<()> {
+fn agent_lines<L: moqui_tui::ScreenLink>(link: L, path: &str, columns: u16, rows: u16) -> std::io::Result<()> {
     use std::io::{BufRead, Write};
 
     let mut agent = moqui_tui::Agent::open(link, path, columns, rows);
@@ -192,13 +248,15 @@ fn agent_lines(link: crate::tui::HostLink, path: &str, columns: u16, rows: u16) 
 }
 
 #[cfg(not(all(feature = "axum", any(feature = "postgres", feature = "mysql"))))]
-pub fn run(_flags: &TuiFlags) -> Result<(), Error> {
+fn run_here(_flags: &TuiFlags) -> Result<(), Error> {
     Err(Error::new(
-        "moqui tui needs a database and the server pieces; this build has neither",
+        "moqui tui needs a database and the server pieces to run here; this build has neither. Reach a running server \
+         with --server <url>",
     ))
 }
 
 /// Something answers on the loopback port: a server holds this runtime's HTTP port.
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 fn served_on(port: u16) -> bool {
     let address = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
     std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(300)).is_ok()

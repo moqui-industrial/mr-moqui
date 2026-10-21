@@ -224,6 +224,19 @@ impl Reply {
     }
 }
 
+/// A notification the server pushed to the logged-in user: the counters change, and its title is worth a line.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Push {
+    pub topic: String,
+    pub title: String,
+}
+
+/// Called on the link's own thread with each push.
+pub type PushSink = Arc<dyn Fn(Push) + Send + Sync>;
+
+/// Holds a push subscription open; dropping it ends the subscription.
+pub type Subscription = Box<dyn Send>;
+
 /// The server as the client sees it. Calls run on worker threads, so a link is `Send + Sync`.
 pub trait ScreenLink: Send + Sync {
     fn level(&self, path: &str, parameters: &BTreeMap<String, String>) -> Result<ScreenModel, LinkError>;
@@ -265,6 +278,12 @@ pub trait ScreenLink: Send + Sync {
     /// A file the server sends.
     fn raw(&self, url: &str, _parameters: &BTreeMap<String, String>) -> Result<RawBody, LinkError> {
         Err(LinkError::Missing(url.to_string()))
+    }
+
+    /// Pushes for the logged-in user, delivered to `sink` until the answer drops. None when the link cannot push, and
+    /// the client reads the counters each minute instead.
+    fn subscribe(&self, _sink: PushSink) -> Option<Subscription> {
+        None
     }
 
     /// Run one call.
@@ -331,6 +350,10 @@ impl<L: ScreenLink + ?Sized> ScreenLink for Arc<L> {
 
     fn raw(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<RawBody, LinkError> {
         (**self).raw(url, parameters)
+    }
+
+    fn subscribe(&self, sink: PushSink) -> Option<Subscription> {
+        (**self).subscribe(sink)
     }
 }
 

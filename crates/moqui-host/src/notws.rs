@@ -89,16 +89,35 @@ pub(crate) async fn upgrade(ws: WebSocketUpgrade, headers: HeaderMap, State(stat
         tracing::warn!(origin = ?header(axum::http::header::ORIGIN), "notification socket refused for its origin");
         return plain(403, "origin not allowed");
     }
-    let Some(cookie) = session_cookie(&headers) else {
-        return plain(401, "unauthorized");
-    };
-    let session_id = match verify_session_cookie(&cookie) {
-        Ok(Some(id)) if !id.is_empty() => id,
-        Ok(_) | Err(_) => return plain(401, "unauthorized"),
-    };
-    let lookup_id = session_id.clone();
+    // A browser has its session cookie; the terminal client (`moqui tui --server`) has its login key, and no session.
     let factory = Arc::clone(&state.factory);
-    let loaded = tokio::task::spawn_blocking(move || session_user(factory, lookup_id)).await;
+    let (session_id, loaded) = match session_cookie(&headers) {
+        Some(cookie) => {
+            let session_id = match verify_session_cookie(&cookie) {
+                Ok(Some(id)) if !id.is_empty() => id,
+                Ok(_) | Err(_) => return plain(401, "unauthorized"),
+            };
+            let lookup_id = session_id.clone();
+            (
+                session_id,
+                tokio::task::spawn_blocking(move || session_user(factory, lookup_id)).await,
+            )
+        }
+        None => {
+            let Some(key) = headers
+                .get("login_key")
+                .and_then(|value| value.to_str().ok())
+                .filter(|key| !key.is_empty())
+                .map(str::to_string)
+            else {
+                return plain(401, "unauthorized");
+            };
+            (
+                "login-key".to_string(),
+                tokio::task::spawn_blocking(move || key_user(factory, key)).await,
+            )
+        }
+    };
     let user_id = match loaded {
         Ok(Ok(Some(user_id))) => user_id,
         Ok(Ok(None)) => return plain(401, "unauthorized"),
@@ -125,6 +144,21 @@ fn session_user(factory: Arc<ExecutionContextFactory>, session_id: String) -> Re
     let rx = factory
         .request_pool()
         .try_submit(owner, move || user_of(&looked, &session_id))?;
+    match rx.recv() {
+        Ok(result) => result,
+        Err(_) => Err(CoreError::new("request worker stopped")),
+    }
+}
+
+/// The user of a login key, or none for a key that is unknown, expired or revoked.
+fn key_user(factory: Arc<ExecutionContextFactory>, key: String) -> Result<Option<String>, CoreError> {
+    let owner = Arc::clone(&factory);
+    let rx = factory.request_pool().try_submit(owner, move || {
+        if moqui_core::user::login_user_key(&key).is_err() {
+            return Ok(None);
+        }
+        Ok(moqui_core::user::current_user_id()?.filter(|id| !id.is_empty()))
+    })?;
     match rx.recv() {
         Ok(result) => result,
         Err(_) => Err(CoreError::new("request worker stopped")),

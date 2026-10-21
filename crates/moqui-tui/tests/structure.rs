@@ -74,7 +74,10 @@ fn focus(session: &mut Session, link: &FakeLink, key: &str) {
 }
 
 fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-    pairs.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect()
+    pairs
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
 }
 
 fn tree_session() -> (Session, FakeLink) {
@@ -109,7 +112,12 @@ fn a_tree_loads_its_roots_opens_a_node_by_its_children_and_follows_a_leaf() {
     let rows = |session: &Session| -> Vec<String> {
         session
             .tree("Accounts")
-            .map(|tree| tree.rows().into_iter().map(|row| format!("{}{}", "  ".repeat(row.depth), row.text)).collect())
+            .map(|tree| {
+                tree.rows()
+                    .into_iter()
+                    .map(|row| format!("{}{}", "  ".repeat(row.depth), row.text))
+                    .collect()
+            })
             .unwrap_or_default()
     };
     assert_eq!(rows(&session), ["Assets", "Liabilities"]);
@@ -118,7 +126,11 @@ fn a_tree_loads_its_roots_opens_a_node_by_its_children_and_follows_a_leaf() {
     assert_eq!(rows(&session), ["Assets", "  Cash", "Liabilities"]);
     press(&mut session, &link, Key::Down);
     press(&mut session, &link, Key::Left);
-    assert_eq!(session.tree("Accounts").unwrap().at, 0, "Left on a leaf goes to its parent");
+    assert_eq!(
+        session.tree("Accounts").unwrap().at,
+        0,
+        "Left on a leaf goes to its parent"
+    );
     press(&mut session, &link, Key::Left);
     assert_eq!(rows(&session), ["Assets", "Liabilities"]);
     press(&mut session, &link, Key::Down);
@@ -133,7 +145,12 @@ fn a_tree_loads_its_roots_opens_a_node_by_its_children_and_follows_a_leaf() {
 fn a_closed_box_keeps_its_fields_out_of_the_focus_until_enter_opens_it() {
     let (mut session, link) = tree_session();
     assert!(!session.focus_order().iter().any(|item| item.key == "F.hidden"));
-    let outline = outline_of(&layout_levels(session.nav().models(), 100, &Breakpoints::default(), &session));
+    let outline = outline_of(&layout_levels(
+        session.nav().models(),
+        100,
+        &Breakpoints::default(),
+        &session,
+    ));
     assert!(outline.contains("box More w=100 closed"), "{outline}");
     focus(&mut session, &link, "More");
     press(&mut session, &link, Key::Enter);
@@ -161,7 +178,12 @@ fn a_button_menu_opens_its_items_and_one_posts() {
 #[test]
 fn a_status_bar_shows_its_stages_and_its_transitions_ask_first() {
     let (mut session, link) = tree_session();
-    let outline = outline_of(&layout_levels(session.nav().models(), 100, &Breakpoints::default(), &session));
+    let outline = outline_of(&layout_levels(
+        session.nav().models(),
+        100,
+        &Breakpoints::default(),
+        &session,
+    ));
     assert!(
         outline.contains("status Approved Placed:done Approved:current Shipped:todo"),
         "{outline}"
@@ -205,7 +227,12 @@ fn a_component_gets_its_data_from_its_screen_and_posts_a_move() {
     )));
     let lines = session.component_state("Pipeline").and_then(|state| state.data.clone());
     assert!(lines.is_some());
-    let outline = outline_of(&layout_levels(session.nav().models(), 100, &Breakpoints::default(), &session));
+    let outline = outline_of(&layout_levels(
+        session.nav().models(),
+        100,
+        &Breakpoints::default(),
+        &session,
+    ));
     assert!(outline.contains("line Qualify · 1"), "{outline}");
     assert!(outline.contains("placeholder The inbox component"), "{outline}");
     focus(&mut session, &link, "Pipeline");
@@ -223,8 +250,16 @@ fn a_wizard_saves_its_step_before_next_and_a_stack_shows_its_trail() {
     let link = FakeLink::from_json(&[WIZARD_JSON]).unwrap();
     let mut session = Session::start("/wiz/Options");
     session.run_now(&link);
-    let outline = outline_of(&layout_levels(session.nav().models(), 100, &Breakpoints::default(), &session));
-    assert!(outline.contains("status Step 2 of 3 · Options Start:done Options:current Confirm:todo"), "{outline}");
+    let outline = outline_of(&layout_levels(
+        session.nav().models(),
+        100,
+        &Breakpoints::default(),
+        &session,
+    ));
+    assert!(
+        outline.contains("status Step 2 of 3 · Options Start:done Options:current Confirm:todo"),
+        "{outline}"
+    );
     assert!(outline.contains("inline Steps#back Steps#next"), "{outline}");
     assert!(outline.contains("text Orders ▸ SO-1"), "{outline}");
     focus(&mut session, &link, "Opt.size");
@@ -239,4 +274,26 @@ fn a_wizard_saves_its_step_before_next_and_a_stack_shows_its_trail() {
         .iter()
         .position(|call| matches!(call, LinkCall::Level { path, .. } if path == "/wiz/Confirm"));
     assert!(saved.is_some() && next.is_some() && saved < next, "{calls:?}");
+}
+
+/// A Markdown text area: Alt+B, Alt+I and Alt+K wrap the word at the cursor in its source, which stays the value.
+#[test]
+fn alt_keys_wrap_a_word_of_markdown_source() {
+    let json = r#"{ "v": 1, "screen": { "path": "/md", "title": "Md" }, "c": [
+        { "t": "form", "id": "Note", "name": "Note", "transitionUrl": "/md/save", "c": [
+          { "t": "field", "id": "Note.body", "name": "body", "title": "Body",
+            "w": { "kind": "textArea", "value": "make it bold", "rows": 4, "editorType": "md" } } ] } ] }"#;
+    let link = FakeLink::from_json(&[json]).unwrap();
+    let mut session = Session::start("/md");
+    session.run_now(&link);
+    focus(&mut session, &link, "Note.body");
+    assert!(session.markdown_field("Note.body"));
+    for _ in 0..12 {
+        press(&mut session, &link, Key::Right);
+    }
+    session.press(&KeyPress::with_alt(Key::Char('b')), &link);
+    assert_eq!(session.buffer("Note.body"), "make it **bold**");
+    session.press(&KeyPress::plain(Key::Char(' ')), &link);
+    session.press(&KeyPress::with_alt(Key::Char('k')), &link);
+    assert_eq!(session.buffer("Note.body"), "make it **bold** []()");
 }

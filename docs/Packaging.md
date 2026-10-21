@@ -31,7 +31,7 @@ package features `lite`, `enterprise` and `maximal`, and `inbound-smtp` for a li
 | `ssh` | host | The SFTP client, the built-in SSH server (SFTP, admin shell, git over SSH, and `apps` with `tui`), the SSH cluster channel | | yes | yes |
 | `sso` | host | OIDC and OAuth 2 logins (`org.moqui.sso.AuthServices`) | | yes | yes |
 | `print` | host | Network printing over IPP (`moqui-cups`) | | yes | yes |
-| `tui` | host | `moqui tui`, the terminal client of the `tui` render mode, on Revue ([TUI](TUI.md)), and with `ssh` the SSH `apps` command; in lite too, for a quick terminal loop while developing and testing | yes | yes | yes |
+| `tui` | host | `moqui tui`, the terminal client of the `tui` render mode, on Revue ([TUI](TUI.md)), and with `ssh` the SSH `apps` command; in lite too, for a quick terminal loop while developing and testing. Alone (`cargo build -p moqui-host --no-default-features --features tui`) it is the client of a running server, `moqui tui --server <url>`, with no database driver or HTTP server in the build | yes | yes | yes |
 | `inbound-smtp` | host | The SMTP listener for hosted and shared mail accounts behind the edge gateway ([Mail-Inbound](Mail-Inbound.md); includes `imap`); it starts only when `smtp_listen_port` is set | | yes | yes |
 | `smtp` | core | Outbound mail: `send#EmailMessage`, `send#EmailTemplate`, password reset and notification mail | yes | yes | yes |
 | `imap` | core | Inbound mail: `poll#EmailServer`, the mail client's sync, IDLE, rules and import (includes `smtp`) | | yes | yes |

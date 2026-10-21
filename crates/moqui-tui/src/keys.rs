@@ -130,6 +130,8 @@ pub enum Action {
     SelectAll,
     Find,
     Sort,
+    /// A list's next view: list, board, calendar.
+    View,
     NumberLinks,
     Info,
     OpenBrowser,
@@ -159,7 +161,7 @@ pub enum Action {
 }
 
 /// Every action, in the order the help lists them.
-pub const ACTIONS: [Action; 32] = [
+pub const ACTIONS: [Action; 33] = [
     Action::Help,
     Action::Next,
     Action::Prev,
@@ -174,6 +176,7 @@ pub const ACTIONS: [Action; 32] = [
     Action::Drawer,
     Action::Find,
     Action::Sort,
+    Action::View,
     Action::Select,
     Action::SelectAll,
     Action::NumberLinks,
@@ -214,6 +217,7 @@ impl Action {
             Self::SelectAll => "select-all".into(),
             Self::Find => "find".into(),
             Self::Sort => "sort".into(),
+            Self::View => "view".into(),
             Self::NumberLinks => "number-links".into(),
             Self::Info => "info".into(),
             Self::OpenBrowser => "open-browser".into(),
@@ -253,6 +257,7 @@ impl Action {
             Self::SelectAll => "Select all",
             Self::Find => "Find",
             Self::Sort => "Sort",
+            Self::View => "View",
             Self::NumberLinks => "Number links",
             Self::Info => "Info",
             Self::OpenBrowser => "Open in browser",
@@ -320,6 +325,7 @@ impl KeyMap {
             (ch('*'), Action::SelectAll),
             (ch('f'), Action::Find),
             (ch('s'), Action::Sort),
+            (ch('v'), Action::View),
             (ch('#'), Action::NumberLinks),
             (ch('='), Action::Info),
             (ch('o'), Action::OpenBrowser),

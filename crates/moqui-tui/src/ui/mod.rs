@@ -105,6 +105,15 @@ impl<L: ScreenLink> AppView<L> {
         self.sync_shell();
     }
 
+    /// The terminal said its background is dark or light (OSC 11): the built-in pair for it, with the same depth and
+    /// ASCII choice, and the server's colors merged again.
+    pub fn set_dark(&mut self, dark: bool) {
+        if self.base_theme.dark != dark {
+            let theme = self.base_theme.with_background(dark);
+            self.set_theme(theme);
+        }
+    }
+
     /// Show this in place of the clock, so a snapshot does not change by the minute.
     pub fn set_clock(&mut self, clock: &str) {
         self.clock = Some(clock.to_string());

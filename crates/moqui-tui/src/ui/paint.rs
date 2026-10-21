@@ -171,6 +171,7 @@ impl Painter<'_, '_> {
             if width == 0 {
                 continue;
             }
+            let ch = if self.theme.ascii { ascii_stand_in(ch) } else { ch };
             if col + width > stop {
                 break;
             }
@@ -304,6 +305,29 @@ impl<V: View> RenderInto for V {
 }
 
 /// OSC 8 links are written only for these schemes (section 2.7).
+/// In ASCII mode a mark of one column has a stand-in of one column, so nothing moves: the ellipsis of a cut text, the
+/// dashes and dots of a footer, the arrows, bullets and bars. A letter of another script is left as it is.
+fn ascii_stand_in(ch: char) -> char {
+    match ch {
+        '…' => '.',
+        '–' | '—' | '─' | '·' => '-',
+        '•' | '●' => '*',
+        '○' => 'o',
+        '▸' | '▶' | '›' => '>',
+        '◂' | '‹' => '<',
+        '▾' | '▼' => 'v',
+        '▲' => '^',
+        '▌' | '│' | '┃' => '|',
+        '“' | '”' => '"',
+        '‘' | '’' => '\'',
+        '×' => 'x',
+        '✓' => '+',
+        '≡' => '=',
+        '▣' => '#',
+        other => other,
+    }
+}
+
 pub fn safe_link(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:")

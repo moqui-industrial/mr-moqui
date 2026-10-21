@@ -785,9 +785,30 @@ fn tui_values(theme: &str) -> Value {
                 .collect(),
         )
     };
+    // The browser's brand colors (STRT_QUASAR_CONFIG `brand`, as qapps.xml merges it) are the roles' colors too,
+    // under the theme's own STRT_TUI_COLORS, which win.
+    let mut colors = Item::new();
+    for text in rows("STRT_QUASAR_CONFIG") {
+        match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(config) => {
+                let brand = config.get("brand").and_then(serde_json::Value::as_object);
+                for (name, value) in brand.into_iter().flatten() {
+                    let role =
+                        ["primary", "secondary", "positive", "negative", "warning", "info"].contains(&name.as_str());
+                    if let (true, Some(color)) = (role, value.as_str()) {
+                        colors.insert(name.clone(), Value::string(color));
+                    }
+                }
+            }
+            Err(err) => tracing::error!("Theme {theme} STRT_QUASAR_CONFIG is not JSON: {err}"),
+        }
+    }
+    for (name, value) in pairs("STRT_TUI_COLORS") {
+        colors.insert(name, Value::string(value));
+    }
     let mut out = Item::new();
     out.insert("breakpoints".to_string(), Value::Map(breakpoints));
-    out.insert("colors".to_string(), map("STRT_TUI_COLORS"));
+    out.insert("colors".to_string(), Value::Map(colors));
     out.insert("keys".to_string(), map("STRT_TUI_KEYS"));
     out.insert("drawerOpen".to_string(), drawer_open());
     Value::Map(out)
