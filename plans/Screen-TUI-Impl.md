@@ -1,6 +1,6 @@
 # Screen TUI implementation plan
 
-Oct 21, 2026 · Phases 1 to 4 built (findings under each in section 5): Phase 4 without the browser terminal (4.4), which waits in plans/Remaining-Work.md. This plan implements [archive/Screen-TUI-Revue.md](archive/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
+Oct 21, 2026 · Phases 1 to 4 built (findings under each in section 5), the browser terminal (4.4) included, with SSH opened to every user (4.2, "Changed Oct 21"). Phase 5 (the mouse, with drag to select and copy) is planned and not built. This plan implements [archive/Screen-TUI-Revue.md](archive/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
 
 The proposal sets the architecture: a `tui` render mode emits a JSON screen model, and one Revue client interprets it and reaches the server over several channels. This plan adds four things:
 
@@ -38,7 +38,7 @@ Most of these are beyond what the proposal settles.
 
 ### 1.1 Principles
 
-- **Green screen first.** Fixed regions, dense forms with dot-leader labels, a message line, and a function-key line that names what each key does on this screen. Nothing needs a mouse. The mouse works where Revue gives it for free: click to focus, wheel to scroll.
+- **Green screen first.** Fixed regions, dense forms with dot-leader labels, a message line, and a function-key line that names what each key does on this screen. Nothing needs a mouse. Revue gives no mouse for free, since the client paints its own cells. The mouse comes in Phase 5: a click does what Enter does on what is under it, the wheel scrolls, and a drag selects text and copies it.
 - **Lynx for links.** Up and Down move through links and fields in reading order. Right or Enter follows a link, and Left goes back. `/` finds text on the screen. `#` numbers the links (`[12]Acme Supply Co`), so typing `12` then Enter follows that link. `=` shows where the current link goes and the browser URL of the screen. HTML content gets a numbered References list at its end.
 - **Same screens, same terms.** The TUI renders the XML Screens as written. There are no TUI-only screens and no TUI attributes in the XSD for the first release. Where a screen has gone custom for the browser (a `.qvue` file, inline `qvt` text), it adds a `tui` text of its own (D10, section 2.9). It does not get a separate TUI screen. The BOSS style guide's widget rules (`runtime/component/ironstone-boss/plan/style-guide.md` §4) are the visual source: one primary action per form, status as a chip, numbers right-aligned, a list's first column links to the record.
 - **Color is never the only signal.** Every color cue has a glyph or text cue. `NO_COLOR` and monochrome terminals stay fully usable, and an ASCII mode replaces box drawing and symbol glyphs.
@@ -699,6 +699,20 @@ It would be an own widget over `TextArea`, or a contribution to Revue's `RichTex
   - The window size is a `watch` per pty channel, so a window change while the user is still at the prompt is not lost.
   - `tui_max_sessions` (16) and `tui_max_sessions_per_user` (4).
   - **Idle.** russh resets its inactivity timer after any loop turn that is not a keepalive, sent data included (`server/session.rs:834-841` in russh 0.64.1). So the client's minute clock would keep an idle session open forever. An `apps` session therefore ends itself after `IDLE` (600 s) without input, with a one-line note.
+- **Changed Oct 21, 2026 (user): SSH for every user.** `SSH_APPS` is gone, as SSH became like the HTTP side.
+  - Any user may connect, and gets the apps; `SSH_SHELL` adds the `moqui>` prompt first, only for a login by key or
+    password at the SSH level. `accept` refuses no one for lack of a permission, and the git-only password rule moved
+    to the git exec: git on a password connection needs `ssh_git_password_auth`.
+  - A client with no key is let in with no user by keyboard-interactive with no questions ("none" is not offered, so
+    OpenSSH tries its keys first). Its `apps` starts with the link's login dialog, the SSH name filled in and the
+    password next (`SessionOptions::login_name`). Such a connection gets `apps` on a pty and nothing else; it takes an
+    `ssh_max_sessions` slot, and is disconnected when its dialog has not logged in within `LOGIN_WAIT` (120 s). A dialog
+    login is the apps alone, with no prompt after. `ssh_login_dialog=false` turns it off.
+  - The session code moved from `ssh/apps.rs` to `crates/moqui-host/src/term.rs` (feature `tui`), for SSH and `/termws`
+    alike. `Sessions` is now one per factory (an extension), so SSH and browser sessions share `tui_max_sessions`. A
+    session with no user counts toward the total only; the dialog login moves it to the user (`SessionSlot::assign`),
+    refused when the user's sessions are full. A host-side `ScreenLink` wrapper (`GatedLink`) does that, decides the log
+    pane after the login (`SessionEvent::LogOffered`), and closes the session after `MAX_LOGIN_FAILURES` (5).
 - **`agent-apps` (Phase 3c).** The same client for a program, on an `exec` channel with no pty (`crates/moqui-host/src/ssh/agent.rs`). Sessions are held by the server between one-command execs, and there is a line mode. It needs `SSH_APPS` and takes the same slots. docs/TUI.md "For agents".
 
 ### 4.3 Remote client (`moqui tui --server <url>`)
@@ -711,13 +725,26 @@ It would be an own widget over `TextArea`, or a contribution to Revue's `RichTex
 - **Login.** The client prompts for username and password (and OTP through `sendOtp`/`verifyOtp`, `crates/moqui-core/src/screen/dispatch.rs:54-55`). It posts them once to the `login` REST transition, then asks for a login key (`get_login_key`, `user/login.rs:305`, with the `login-key` expiry of `login_key_expire_hours`, `user/policy.rs:67`). The key is stored in `~/.config/moqui/tui/<host>.toml`, mode 0600, with its expiry, and the password is forgotten. `--forget` removes it. A missing server-side transition to mint a key is the one server addition this needs, if `login` does not already return one.
 - **Downloads** go to `~/Downloads` (or `XDG_DOWNLOAD_DIR`). The file picker browses the user's machine, and uploads are multipart posts.
 
-### 4.4 Browser terminal (if wanted)
+### 4.4 Browser terminal
 
-Not built in Phase 4, by the user's choice (Oct 21, 2026); it waits in plans/Remaining-Work.md.
+Built Oct 21, 2026, once SSH was open to every user (4.2): for every signed in user, from the account menu's Terminal UI.
+As built, below the first sketch.
 
 - **Server.** A `/termws` WebSocket route beside `/notws` (`crates/moqui-host/src/http.rs:211`), exempt from the request timeout as `/notws` is (`http.rs:429`). It is authenticated by the session cookie as `notws::upgrade` is (`crates/moqui-host/src/notws.rs:85`), and needs `SSH_APPS`-equivalent permission (the same permission, renamed `TERMINAL_APPS` if the SSH name reads wrong). Its bytes feed `run_session` exactly as SSH does. Because it is exempt from the request deadline, each socket takes a slot of `tui_max_sessions` (4.2) before its session starts.
 - **Page.** A small page with xterm.js, vendored through `libs/refresh.mjs` with a manifest line and a license review entry (MIT).
 - **Placement.** Phase 4, only on demand, as the proposal says.
+- **As built.**
+  - `crates/moqui-host/src/termws.rs`, behind `axum` and `tui` (so `lite` has it). No permission: the user of the
+    session cookie, apps only, every screen checked as that user. The origin check and cookie lookup are `notws.rs`'s.
+  - Binary messages are the terminal's bytes both ways; a text message `{"type":"resize","cols":N,"rows":N}` is the
+    size, and the first one starts the session. A `tokio::io::duplex` pipe feeds `term::serve`. The server closes with a
+    reason (the limits, idle, logged out, stopping), which the page shows with Reconnect. The HTTP session is read
+    again each minute, so a logout closes the socket.
+  - The page is `webroot/apps/Terminal.xml` with `Terminal.qvue` (`/qapps/Terminal`), viewable by every user through
+    the `SCREEN_TREE` artifact group (`WebrootSecurityData.xml`), as AppList is, xterm.js 6.0.0 and the fit
+    addon 0.11.0 vendored in `libs/xterm`. xterm.js answers the client's OSC 11, and OSC 8 links open in a new tab.
+  - The account menu item is static in the shell (`WebrootVue.qvt.js`), shown when `qapps.xml` gives `terminalUrl`,
+    which it does while the host sets `webapp_terminal_endpoint` (`webapp_terminal`, default true).
 
 ### 4.5 Headless
 
@@ -1134,6 +1161,86 @@ Not usable, so no `diagram` component; Status Flows' twin stays text.
 - `ssh.rs` failed once at the shell user's `exit` (no exit status within 30 s) and passed on each run after; not
   reproduced.
 
+### Phase 5 — Mouse
+
+Added Oct 21, 2026 (user), after the browser terminal: clicks, the wheel, and drag to select with copy on select. The
+keyboard stays complete; the mouse is a second way in, never the only one.
+
+**Today.** No channel has a mouse. `ENTER` (`ui/encode.rs`) turns on no mouse mode, the decoder (`decode.rs`) reads no
+mouse report, and `run_local` builds Revue with `mouse_capture(false)` and drops `Event::Mouse` (`ui/run.rs`). Revue's
+own mouse handling does not apply, because the client paints its own cells (`ui/paint.rs`), so nothing knows what is
+under a cell.
+
+1. **Modes.** `ENTER` adds button-event tracking with SGR coordinates (`?1002h`, `?1006h`), and `LEAVE` turns them off.
+   `?1002` (motion while a button is down) is needed for the drag; `?1003` (all motion) is not used, as it would send a
+   report for every move. `run_local` turns Revue's mouse capture on and maps `Event::Mouse` to the same `Mouse` event the
+   decoder gives, so `Session` has one mouse path for every channel. xterm.js sends these reports as data and its X10
+   bytes through `onBinary`, both already forwarded by `Terminal.qvue`.
+2. **Decoder.** `decode.rs` reads SGR reports, `ESC [ < b ; x ; y M` (press, or motion with a button) and `m` (release),
+   into `Decoded::Mouse { kind: Press | Drag | Release | Wheel(up/down), button, column, row, modifiers }`, with the
+   coordinates 1-based to 0-based. A report split across reads waits for the rest, as a CSI does. The legacy X10
+   encoding (`ESC [ M` and three bytes) is read too, for a terminal that ignores `?1006`.
+3. **Hit map.** Each frame, `Painter` records the area of every element it draws that a click can act on, in a hit map
+   kept on `AppView` beside the frame: `Hit { rect, target }`, the last drawn on top. The draw sites name their target
+   through one call around their drawing (`paint.target(target, |paint| ...)`), as the link id is named for OSC 8 today.
+   Targets:
+   - on the canvas: a link, a button, a field (its label and its box), a list row (and its first-column link), a column
+     title (the sort), a subscreen tab, a tree node and its toggle, a box title that opens and closes, a status bar stage;
+   - on the fixed rows: a drawer item and the drawer's toggle, the title line's app name (the palette), a key-line entry
+     (it presses its key);
+   - in the overlays, which cover the canvas: a dialog's buttons and fields, a drop-down list's choices, the palette's and
+     the quick create's entries, a menu's items, the confirm's choices, the login dialog's fields and its button. A click
+     outside a dialog does nothing (it does not close it, so a stray click loses no edits).
+   The scrolled canvas records its hits at screen rows after its scroll, and only the rows on screen.
+4. **Clicks and the wheel** (`Session::on_mouse`).
+   - A press and release on the same target is a click. A click focuses the target and then does what Enter does on it: a
+     link follows, a button presses, a tab opens, a row opens its first link (or edits the row when the list has fields),
+     a drop-down choice picks, a key-line entry presses its key. On a field it only focuses (and a check box toggles, as
+     Space does). The leave-a-changed-form question and every other confirmation stay as they are by key.
+   - A double click on a list row edits the row when the list has fields; elsewhere it is two clicks.
+   - The wheel scrolls the canvas three rows, or moves through the open drop-down list or palette; over a list at its end
+     it does not page (PgDn does), so a wheel cannot send page requests at the speed of a flick.
+   - Later, not in this phase: placing the cursor in a text field at the click, and dragging a column wider.
+5. **Drag to select, copy on select.** A press that moves off its cell before the release is a selection, not a click.
+   - The selection runs in reading order from the press to the pointer, as a terminal's own does, and Alt while dragging
+     makes it a rectangle (for a column of a list). It is drawn in the selection look of the theme (reverse video in
+     monochrome), over the frame, and goes on the next key, click or redraw.
+   - Text comes from the frame's cells, not the model: what is on screen, wide glyphs once, trailing blanks of each row
+     dropped, rows joined by newlines. A password field is drawn as `•`, so it is never copied.
+   - Double click on text that is not a target selects the word, and triple click the row.
+   - On release the text goes to the clipboard by OSC 52 (`ESC ] 52 ; c ; <base64> ST`), and the message line says
+     "Copied 42 characters". Local mode writes OSC 52 to its own terminal the same way, so it needs no clipboard crate and
+     works over a nested ssh or tmux (`set-clipboard on`). OSC 52 is at most 64 KiB here; a longer selection is cut,
+     and the message says so.
+   - Terminals differ. kitty, WezTerm, Alacritty, foot, Windows Terminal and xterm (with `allowWindowOps` or
+     `disallowedWindowOps` set for it) take OSC 52; iTerm2 when the user allows it; GNOME Terminal and the other VTE
+     terminals do not. So the first copy of a session also says how to fall back: Shift+drag (Option+drag on macOS) for
+     the terminal's own selection, which every terminal keeps while an app has the mouse.
+   - In the browser, `Terminal.qvue` registers an OSC 52 handler (`term.parser.registerOscHandler(52, …)`) that writes
+     the text with `navigator.clipboard.writeText`. The release that ended the drag is a user gesture shortly before, and
+     the page is a secure context or localhost; where the browser still refuses, the page shows the text in a small
+     dialog to copy by hand. `@xterm/addon-clipboard` is not needed for this.
+6. **Mouse off.** Alt+P turns the mouse modes off and on, so the terminal's own selection and its right-click menu work
+   without Shift. The choice is the user's `TUI_MOUSE` preference, as F9's drawer is (`TUI_DRAWER_OPEN`, D11); it is on
+   when not set. F1 and the key line show it. The agent sends no mouse; `agent-apps` gets `click <element>` only if
+   tests want it, since it already names elements.
+
+**Exit:** in the browser terminal, over SSH in kitty and GNOME Terminal, and in local mode: a menu item, a list row's
+link, a field, a tab, a dialog button and a drop-down choice each work by click; the wheel scrolls a long screen; a drag
+across three rows of a list puts their text on the clipboard where the terminal takes OSC 52, and says how to fall back
+where it does not; Alt+P gives the terminal its own selection back.
+
+**Tests.**
+- Decoder: SGR press, drag, release and wheel with modifiers; X10; a report split across reads; coordinates past 223
+  (SGR only).
+- Hit map: the Gallery list and detail at 100x40, the target under chosen cells, in the canvas after a scroll, and in a
+  dialog and a drop-down over it.
+- Session (`FakeLink`): a click on a link sends its level request; on a field focuses it; on a dialog's Cancel closes
+  it; outside a dialog does nothing; the wheel scrolls; a drag selects and writes one OSC 52 with the expected text;
+  Alt+P writes the mode sequences and the preference.
+- `session_loop.rs`: the mode sequences in `ENTER` and `LEAVE`, and a click as bytes through `run_session`.
+- The browser page's OSC 52 handler by hand, in Chrome and Firefox.
+
 ---
 
 ## 6. Client tests
@@ -1144,7 +1251,8 @@ Not usable, so no `diagram` component; Status Flows' twin stays text.
 | Layout | `layout` computed for fixture models at 72/100/120/153/180/240 columns, asserted as a text outline of boxes and widths | `crates/moqui-tui/tests/layout.rs` |
 | Snapshots | `PipelineHarness` draws fixture models at 72×24, 100×40, 180×50. The screen text is compared with checked-in files, rewritten with `UPDATE_GOLDEN=1` as in the rest of the repository (not Revue's `REVUE_UPDATE_SNAPSHOTS`). One set uses ASCII and no color. | `crates/moqui-tui/tests/snapshots/` |
 | Key flows | `FakeLink` records requests. Scripted keys check focus order, Enter submit, F4 prompt, F7/F8 paging, Esc and dirty-leave, palette, numbered links, that a superseded answer is dropped, and that a held PgDn sends at most one request in flight and one pending. | `crates/moqui-tui/tests/keys.rs` |
-| Input decoder | Byte sequences of xterm, kitty, tmux and the Linux console to events, paste with newlines, split sequences across reads | unit tests in `run` |
+| Input decoder | Byte sequences of xterm, kitty, tmux and the Linux console to events, paste with newlines, split sequences across reads; mouse reports in SGR and X10 (Phase 5) | unit tests in `decode.rs` |
+| Mouse | The hit map under chosen cells (canvas, scrolled canvas, overlays), clicks and the wheel, drag to select and the OSC 52 it writes, Alt+P (Phase 5) | `crates/moqui-tui/tests/mouse.rs` |
 | Sanitizing | Control and bidi characters in every string field of a model are not drawn | unit test |
 | In-process link | A real factory: login, render, submit with a validation error, options, 401 | `crates/moqui-host/tests/it/tui.rs` |
 | SSH | pty request with size, `apps` start, window change to a new size, exit back to the prompt, `SSH_APPS` refused without permission. A user with `SSH_APPS` but no `SSH_SHELL` logs in by password and lands in `apps` from `ssh user@host` and from `ssh -t host apps`. Channels past `tui_max_sessions` are refused. | extend `crates/moqui-host/tests/it/ssh.rs` |
@@ -1169,6 +1277,7 @@ These update the proposal's list with what the survey found.
 | Large lists | **Answered:** `DataGrid` and `Table` draw only visible rows. Server paging stays, with the page sized to the screen. |
 | Key routing | Revue does not route keys. The interpreter does (D5), which the JSON model needs anyway. |
 | Paste | Not enabled by Revue. Enabled by our loops (3.3). |
+| Mouse and copy | Not given by Revue for this client (it paints its own cells). Phase 5 records a hit map per frame. Capturing the mouse takes the terminal's own drag selection, so the client selects and copies itself by OSC 52, which GNOME Terminal and other VTE terminals do not take: they keep Shift+drag, and Alt+P turns the mouse off. |
 | Idle cost | Revue ticks every 16 ms. The session loop blocks until input or its next deadline, about once a minute when idle (3.5). |
 | `.qvue` screens and inline `qvt` | **Decided (D10):** each gets a `tui` implementation, and until then a placeholder with a browser link (2.9). For the BOSS Comms Inbox (a `.qvue`) to work as an email client in the terminal, BOSS writes its `tui` texts and its components (message list, reader, compose on the 3.8 editor) behind its crate's `tui` feature. |
 | Custom components in a remote client | A `tui-client` binary has only the components it was built with. Shown as placeholders, and listed by `=` (2.9). |

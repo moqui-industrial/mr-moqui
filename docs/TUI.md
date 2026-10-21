@@ -49,22 +49,30 @@ carries a login key. `--agent`, `--snapshot`, `--ascii` and `--no-color` work wi
 ## Over SSH
 
 When the built-in SSH server runs (`ssh_port`, see `crates/moqui-host/src/ssh/server.rs`), the same client runs on an
-SSH channel, in the server's process:
+SSH channel, in the server's process, for any user, as the browser is for any user:
 
 ```
-ssh -p <ssh_port> <user>@<host>             with SSH_APPS and no SSH_SHELL, the apps are the whole session
-ssh -t -p <ssh_port> <user>@<host> apps     the apps from any account with SSH_APPS
+ssh -p <ssh_port> <user>@<host>             the apps; with SSH_SHELL and a key or password login, the admin shell first
+ssh -t -p <ssh_port> <user>@<host> apps     the apps, for any account
 moqui> apps                                 from the admin shell; quitting the apps (Ctrl+Q) comes back to the prompt
 ```
 
-- **Permission.** `SSH_APPS`, granted to `ADMIN` in the seed data. It opens the client and nothing more: every screen is
-  still rendered as the user with artifact authorization on, as in the browser.
+- **Login.** A key (an active `UserSshKey`) logs in at the SSH level and goes straight in. With no key, the client is
+  let in with no user (keyboard-interactive, with no questions, which OpenSSH tries after its keys) and the apps open
+  with the same login dialog `moqui tui` shows, the SSH name filled in. Such a session closes after 2 minutes without a
+  login, or after 5 refused ones, and gets only the apps: no commands, `agent-apps`, SFTP or git. To log in by password
+  at the SSH level instead (for the admin shell without a key), use `ssh -o PreferredAuthentications=password`.
+  `ssh_login_dialog=false` turns the dialog off. An account with a second factor logs in from the browser.
+- **Permission.** None is needed for the apps: every screen is still rendered as the user with artifact authorization
+  on, as in the browser. `SSH_SHELL` adds the admin shell's `moqui>` prompt, only for a key or password login; a
+  dialog login is the apps alone, and quitting them ends the connection.
 - **Terminal.** It needs a pty (`ssh -t`, which plain `ssh user@host` asks for). The client takes the pty's `TERM` and
   window size, and follows window changes. Colors follow `TERM` (`*-256color` is 256 colors). Send
   `COLORTERM=truecolor` for true color, or `NO_COLOR=1` for none, with `SendEnv COLORTERM NO_COLOR LANG` in
   `~/.ssh/config`. A locale that is set and is not UTF-8 draws in ASCII.
-- **Limits.** At most `tui_max_sessions` (16) apps sessions run at once, and `tui_max_sessions_per_user` (4) of them for
-  one user; `ssh_max_sessions` counts connections, not these. A session ends after 10 minutes without input.
+- **Limits.** At most `tui_max_sessions` (16) terminal sessions run at once, over SSH and in the browser together, and
+  `tui_max_sessions_per_user` (4) of them for one user; a session in its login dialog counts toward the first only.
+  `ssh_max_sessions` counts connections, one let in for the dialog too. A session ends after 10 minutes without input.
 - **Files.** Exports are not downloaded, because the client runs on the server; the text export still shows in a
   dialog. Uploads are off.
 - **Log.** Alt+L opens the log pane, with the WARN and ERROR lines from the session's start, for a user who may view
@@ -72,11 +80,22 @@ moqui> apps                                 from the admin shell; quitting the a
 - **Background.** The client asks the terminal for its background color (OSC 11) and takes the dark or light colors
   to match; a terminal that does not answer keeps what `COLORFGBG` says, else dark.
 
+## In the browser
+
+The account menu (the user's name in the header) has **Terminal UI**, for every signed in user: `/qapps/Terminal`, the
+same client in xterm.js, on the `/termws` WebSocket (`crates/moqui-host/src/termws.rs`). It runs as the browser's user
+with no login of its own, and the apps alone, as a dialog login over SSH does. The socket is checked by origin and
+session cookie as `/notws` is; a logout closes it within a minute. The limits, the idle close, the files and the log are
+as over SSH. When the socket closes, its reason shows with Reconnect. `webapp_terminal=false` turns the socket and the
+menu item off. While the terminal has focus it takes the keys, except those a browser keeps (Ctrl+W, Ctrl+T, Ctrl+N,
+and in some browsers Ctrl+Q); leaving the page ends the session as Ctrl+Q does. A link the client writes (`o`) opens
+in a new tab.
+
 ## For agents
 
 `agent-apps` is the same client for a program, an AI agent above all: commands in, the screen as text out. Each
 command answers once the screen has settled (its requests done, a search's wait for typing fired at once), so there is
-no timing to guess and no escape sequence to read. It needs `SSH_APPS` and no pty.
+no timing to guess and no escape sequence to read. It needs a key or password login and no pty.
 
 ```
 ssh -p 2222 john.doe@localhost agent-apps open [path] [--size 120x40] [--json]     a session; answers its id
@@ -344,5 +363,5 @@ post, follow, a message), and its help.
 
 ## Not yet
 
-A browser terminal (xterm.js on a `/termws` socket), per-user key bindings, a two-way rich-text editor, and a
-`diagram` component wait; plans/Remaining-Work.md lists them.
+The mouse (clicks, the wheel, drag to select with copy), per-user key bindings, a two-way rich-text editor, a second
+factor in the login dialog, and a `diagram` component wait; plans/Remaining-Work.md lists them.

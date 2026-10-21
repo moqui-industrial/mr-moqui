@@ -6632,6 +6632,11 @@
         "                </q-item>\n" +
         "                <q-separator v-if=\"accountMenuItems.length\"></q-separator>\n" +
         "                <q-item v-for=\"(accountPlugin, accountIndex) in accountPlugins\" :key=\"accountIndex\"><q-item-section><component :is=\"accountPlugin\"></component></q-item-section></q-item>\n" +
+        // the browser terminal (apps/Terminal.xml), when the server serves /termws
+        "                <q-item v-if=\"terminalUrl\" id=\"m-account-terminal\" clickable v-close-popup @click=\"setUrl(terminalUrl)\">\n" +
+        "                    <q-item-section avatar><q-icon name=\"terminal\"></q-icon></q-item-section>\n" +
+        "                    <q-item-section>{{labels.terminal}}</q-item-section>\n" +
+        "                </q-item>\n" +
         "                <q-item tag=\"label\" clickable>\n" +
         "                    <q-item-section avatar><q-icon name=\"dark_mode\"></q-icon></q-item-section>\n" +
         "                    <q-item-section>{{labels.switchDarkLight}}</q-item-section>\n" +
@@ -6696,7 +6701,7 @@
     });
 
     // The text of the suite shell when the page's labels (qapps.xml, localized there) do not have it.
-    qvt.shellLabels = { applications: "Applications", allApplications: "All applications", search: "Search", quickCreate: "Create",
+    qvt.shellLabels = { terminal: "Terminal UI", applications: "Applications", allApplications: "All applications", search: "Search", quickCreate: "Create",
         quickCreateFirst: "Create in this app", today: "Today", chat: "Chat", mail: "Mail", messages: "Messages", notifications: "Notifications", close: "Close",
         closeTopmost: "Close the dialog, menu or panel", keyboardShortcuts: "Keyboard shortcuts", keysEverywhere: "Everywhere", recent: "Recent",
         screens: "Screens", savedFinds: "Saved finds", actions: "Actions", more: "More", noResults: "Nothing found",
@@ -6711,6 +6716,7 @@
                 lastNavTime: Date.now(), loading: 0, currentLoadRequest: null, activeContainers: {}, urlListeners: [],
                 moquiSessionToken: config.sessionToken || "", appHost: config.appHost || "", appRootPath: config.appRootPath || "", userId: config.userId || "",
                 username: config.username || "", locale: config.locale || "en", userFullName: config.userFullName || "",
+                terminalUrl: config.terminalUrl || "",
                 reLoginShow: false, reLoginPassword: null, reLoginMfaData: null, reLoginOtp: null,
                 notificationClient: null, sessionTokenBc: null, qzVue: null, leftOpen: !!config.leftOpen,
                 // the m-screen-context registrations, oldest first; formsVersion changes as the forms of the screens come and go

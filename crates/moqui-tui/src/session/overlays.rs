@@ -355,8 +355,14 @@ impl Session {
 
     pub(super) fn ask_login(&mut self) {
         if !self.overlays.iter().any(|overlay| matches!(overlay, Overlay::Login(_))) {
+            // The SSH login name starts the dialog at the password, as an `ssh user@host` prompt would.
+            let (username, at) = match (&self.shell.user, &self.login_name) {
+                (user, Some(name)) if user.is_empty() => (name.clone(), 1),
+                (user, _) => (user.clone(), 0),
+            };
             self.overlays.push(Overlay::Login(Login {
-                username: self.shell.user.clone(),
+                username,
+                at,
                 ..Login::default()
             }));
         }

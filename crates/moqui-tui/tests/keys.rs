@@ -778,6 +778,24 @@ fn a_login_after_a_401_asks_for_the_screen_again() {
     assert_eq!(logins, 2);
 }
 
+/// A session that starts with no user (SSH with no key) has the SSH name in its dialog, with the password next.
+#[test]
+fn the_login_dialog_starts_with_the_login_name() {
+    let link = gallery_link();
+    link.require_login("pw");
+    let mut session = Session::start(GALLERY_LIST_PATH);
+    session.set_login_name(Some("john".to_string()));
+    session.run_now(&link);
+    let Some(Overlay::Login(login)) = session.top_overlay() else {
+        panic!("the login dialog opens");
+    };
+    assert_eq!((login.username.as_str(), login.at), ("john", 1));
+    typed(&mut session, &link, "pw");
+    press(&mut session, &link, Key::Enter);
+    assert!(session.top_overlay().is_none());
+    assert_eq!(session.path(), GALLERY_LIST_PATH);
+}
+
 #[test]
 fn a_late_answer_for_a_request_not_sent_is_ignored() {
     let (mut session, link) = list_session();

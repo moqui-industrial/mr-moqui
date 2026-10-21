@@ -52,6 +52,7 @@ mod smtp;
 mod ssh;
 mod sso;
 mod system_sync;
+mod termws;
 mod tool_components;
 mod tools_screens;
 mod tools_services;

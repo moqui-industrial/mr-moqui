@@ -68,7 +68,7 @@ pub(crate) struct ListenLimits {
     /// is cut off with 408.
     pub upload_idle: Option<Duration>,
     /// `request-timeout` (`webapp_request_timeout`), default 300: from the request head to the response head, or the
-    /// answer is 504. `/notws` is exempt, and a response body, such as a long download, is sent after it.
+    /// answer is 504. `/notws` and `/termws` are exempt, and a response body, such as a long download, is sent after it.
     pub request: Option<Duration>,
     /// `max` (`webapp_max_connections`), default 1024: connections served at once, HTTP and HTTPS together. Past it
     /// the listeners stop accepting until one closes.
@@ -210,7 +210,8 @@ pub(crate) async fn listen(
         .map(|secure| format!(", HTTPS on {secure}"))
         .unwrap_or_default();
     tracing::info!(
-        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, /notws, /elastic, /kibana, {}the screen dispatcher",
+        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, /notws, {}/elastic, /kibana, {}the screen dispatcher",
+        if cfg!(feature = "tui") { "/termws, " } else { "" },
         if cfg!(feature = "git") { "/git and " } else { "" }
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -229,6 +230,15 @@ pub(crate) async fn listen(
         .route("/kibana", any(search_proxy::kibana))
         .route("/kibana/", any(search_proxy::kibana))
         .route("/kibana/{*rest}", any(search_proxy::kibana));
+    // The browser terminal, unless `webapp_terminal` is false; the account menu offers it when this property is set.
+    #[cfg(feature = "tui")]
+    let app = if moqui_lib::env::get_prop_or_env("webapp_terminal").trim() == "false" {
+        moqui_lib::env::set_property(crate::termws::ENDPOINT_PROPERTY, "");
+        app
+    } else {
+        moqui_lib::env::set_property(crate::termws::ENDPOINT_PROPERTY, "/termws");
+        app.route("/termws", get(crate::termws::upgrade))
+    };
     #[cfg(feature = "git")]
     let app = app.route("/git/{*rest}", any(crate::git_http::handle));
     let app = app
@@ -442,9 +452,10 @@ where
             .get(axum::http::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.trim_start().to_ascii_lowercase().starts_with("multipart/"));
+        let socket = matches!(request.uri().path(), "/notws" | "/termws");
         let deadline = limits
             .request
-            .filter(|_| request.uri().path() != "/notws" && !request.uri().path().starts_with("/git/") && !upload);
+            .filter(|_| !socket && !request.uri().path().starts_with("/git/") && !upload);
         let call = refused.is_none().then(|| router.clone().oneshot(request));
         async move {
             let Some(call) = call else {

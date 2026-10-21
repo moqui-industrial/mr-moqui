@@ -193,6 +193,8 @@ pub struct Session {
     log_open: bool,
     /// The log pane is offered: always in local mode, over SSH to a user who may view the System app.
     log_offered: bool,
+    /// The username the login dialog starts with when the shell has no user yet.
+    login_name: Option<String>,
     page_rows: Option<usize>,
     mobile: bool,
     timers: BTreeMap<Timer, Instant>,
@@ -260,6 +262,7 @@ impl Session {
             redraw: false,
             log_open: false,
             log_offered: true,
+            login_name: None,
             page_rows: None,
             mobile: false,
             timers: BTreeMap::new(),
@@ -764,6 +767,11 @@ impl Session {
     pub fn set_log_offered(&mut self, offered: bool) {
         self.log_offered = offered;
         self.log_open &= offered;
+    }
+
+    /// The username the login dialog starts with while no one is logged in.
+    pub fn set_login_name(&mut self, name: Option<String>) {
+        self.login_name = name.filter(|name| !name.is_empty());
     }
 
     pub fn log_open(&self) -> bool {

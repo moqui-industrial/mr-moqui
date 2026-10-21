@@ -43,6 +43,8 @@ pub mod sso;
 #[cfg(feature = "embedded-postgres")]
 pub mod test_cmd;
 #[cfg(feature = "tui")]
+mod term;
+#[cfg(feature = "tui")]
 pub mod tui;
 #[cfg(feature = "tui")]
 mod tui_cmd;
@@ -66,6 +68,8 @@ mod http;
 mod notws;
 #[cfg(feature = "axum")]
 mod search_proxy;
+#[cfg(all(feature = "axum", feature = "tui"))]
+mod termws;
 #[cfg(feature = "axum")]
 mod source_body;
 #[cfg(feature = "axum")]

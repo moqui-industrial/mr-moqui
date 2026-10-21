@@ -176,6 +176,21 @@ SIL Open Font License 1.1 (the fonts): the full text is in licenses/OFL-1.1.txt,
     licenseFiles: ['LICENSE'],
   },
   {
+    // The browser terminal (/qapps/Terminal): the terminal client over /termws. Pinned Oct 21, 2026; 6.0.0 and 0.11.0
+    // are the latest stable releases, both published in 2025.
+    id: 'xterm', name: 'xterm.js', npm: '@xterm/xterm', version: '6.0.0', license: 'MIT',
+    copy: [
+      ['lib/xterm.js', 'xterm/xterm.js'],
+      ['css/xterm.css', 'xterm/xterm.css'],
+    ],
+    licenseFiles: ['LICENSE'],
+  },
+  {
+    id: 'xterm-addon-fit', name: '@xterm/addon-fit', npm: '@xterm/addon-fit', version: '0.11.0', license: 'MIT',
+    copy: [['lib/addon-fit.js', 'xterm/addon-fit.js']],
+    licenseFiles: ['LICENSE'],
+  },
+  {
     id: 'vue', name: 'Vue', npm: 'vue', version: '3.5.44', license: 'MIT',
     copy: [
       ['dist/vue.global.prod.js', 'vue/vue.global.prod.js'],
