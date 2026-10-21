@@ -565,7 +565,9 @@
             pdf_chromium_path); page-limit is the pages that print at once; timeout is the seconds one document may
             take. -->
         <pdf chromium-path="${pdf_chromium_path}" page-limit="4" timeout="60"/>
-        <!-- Each type is written by a JavaScript macro module, see framework/template/screen/ -->
+        <!-- Each type is written by a JavaScript macro module, see framework/template/screen/. These are the only render
+            modes: there are none built in. output-kind is how a failed section is written (text, html, vue or json);
+            without it the mime type decides: application/json is json, text/html is html, anything else text. -->
         <screen-text-output type="csv" mime-type="text/csv" always-standalone="true"
                 macro-template-location="framework/template/screen/ScreenCsv.js"/>
         <screen-text-output type="html" mime-type="text/html"
@@ -581,11 +583,11 @@
                 macro-template-location="framework/template/screen/ScreenHtmlPrint.js"/>
 
         <!-- qvt is a custom extension for Quasar & Vue JS component templates (extended HTML) -->
-        <screen-text-output type="qvt" mime-type="text/html" always-standalone="true"
+        <screen-text-output type="qvt" mime-type="text/html" always-standalone="true" output-kind="vue"
                 macro-template-location="framework/template/screen/ScreenQvt.js"/>
         <screen-text-output type="qjs" mime-type="application/javascript" always-standalone="true"
                 macro-template-location="framework/template/screen/ScreenPlain.js"/>
-        <screen-text-output type="qvue" mime-type="text/html" always-standalone="true"
+        <screen-text-output type="qvue" mime-type="text/html" always-standalone="true" output-kind="text"
                 macro-template-location="framework/template/screen/ScreenPlain.js"/>
         <!-- tui is the terminal document: one JSON screen model -->
         <screen-text-output type="tui" mime-type="application/json" always-standalone="true"

@@ -95,7 +95,7 @@ pub(super) fn now_millis() -> i64 {
 pub enum OutputKind {
     /// Escaped text written where the section was.
     Text,
-    /// Same failure text as [`OutputKind::Text`]. A mode the conf adds with an HTML mime type.
+    /// Same failure text as [`OutputKind::Text`]. A mode with an HTML mime type.
     Html,
     /// A Vue template. What the failed section wrote is dropped, and a brace in the message is a character reference.
     Vue,
@@ -104,7 +104,19 @@ pub enum OutputKind {
 }
 
 impl OutputKind {
-    /// A mode that is not built in. `application/json` is [`OutputKind::Json`], `text/html` is [`OutputKind::Html`].
+    /// The `output-kind` attribute of a `screen-text-output`: `text`, `html`, `vue` or `json`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "text" => Some(Self::Text),
+            "html" => Some(Self::Html),
+            "vue" => Some(Self::Vue),
+            "json" => Some(Self::Json),
+            _ => None,
+        }
+    }
+
+    /// A mode whose conf entry has no `output-kind`. `application/json` is [`OutputKind::Json`], `text/html` is
+    /// [`OutputKind::Html`].
     pub fn from_mime(mime: &str) -> Self {
         let mime = mime.split(';').next().unwrap_or(mime).trim();
         if mime.eq_ignore_ascii_case("application/json") {
@@ -160,32 +172,6 @@ pub struct ScreenConf {
     pub default_autocomplete_rows: i64,
 }
 
-/// The `screen-output` (binary) modes: type, mime type, macro module. Java named a `widget-render-class` for each; here
-/// the module fills a document that the render sends as bytes.
-const BUILT_IN_BINARY_MODES: [(&str, &str, &str); 1] = [(
-    "xlsx",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "ScreenXlsx.js",
-)];
-
-const BUILT_IN_MODES: [(&str, &str, &str, bool, OutputKind); 9] = [
-    ("html", "text/html", "ScreenHtml.js", false, OutputKind::Html),
-    ("text", "text/plain", "ScreenText.js", false, OutputKind::Text),
-    ("csv", "text/csv", "ScreenCsv.js", true, OutputKind::Text),
-    ("xml", "text/xml", "ScreenXml.js", false, OutputKind::Text),
-    ("html-print", "text/html", "ScreenHtmlPrint.js", true, OutputKind::Html),
-    ("qvt", "text/html", "ScreenQvt.js", true, OutputKind::Vue),
-    (
-        "qjs",
-        "application/javascript",
-        "ScreenPlain.js",
-        true,
-        OutputKind::Text,
-    ),
-    ("qvue", "text/html", "ScreenPlain.js", true, OutputKind::Text),
-    ("tui", "application/json", "ScreenTui.js", true, OutputKind::Json),
-];
-
 /// The render mode name the macros see: `xsl-fo` is `html-print`.
 pub fn canonical_render_mode(mode: &str) -> &str {
     if mode == "xsl-fo" {
@@ -196,38 +182,13 @@ pub fn canonical_render_mode(mode: &str) -> &str {
 }
 
 impl ScreenConf {
-    /// Built-in modes first, so a factory with no `screen-facade` still renders. Conf entries
-    /// replace them by type.
+    /// The modes are the `screen-text-output` and `screen-output` entries of the merged conf; there are no others.
     pub(super) fn parse(conf_text: &str) -> Self {
         let mut conf = Self {
             default_paginate_rows: 20,
             default_autocomplete_rows: 20,
             ..Self::default()
         };
-        for (mode, mime, module, standalone, kind) in BUILT_IN_MODES {
-            conf.text_output.insert(
-                mode.to_string(),
-                TextOutput {
-                    mime_type: mime.to_string(),
-                    macro_template_location: format!("framework/template/screen/{module}"),
-                    always_standalone: standalone,
-                    binary: false,
-                    kind,
-                },
-            );
-        }
-        for (mode, mime, module) in BUILT_IN_BINARY_MODES {
-            conf.text_output.insert(
-                mode.to_string(),
-                TextOutput {
-                    mime_type: mime.to_string(),
-                    macro_template_location: format!("framework/template/screen/{module}"),
-                    always_standalone: true,
-                    binary: true,
-                    kind: OutputKind::Text,
-                },
-            );
-        }
         let Ok(root) = MNode::parse_text("moqui-conf", conf_text) else {
             return conf;
         };
@@ -267,10 +228,19 @@ impl ScreenConf {
                 .filter(|text| !text.is_empty())
                 .or_else(|| existing.as_ref().map(|found| found.mime_type.clone()))
                 .unwrap_or_else(|| "text/html".to_string());
-            // A built-in keeps its kind when the conf entry does not say. A new mode follows the mime type.
-            let output_kind = existing
-                .as_ref()
-                .map(|found| found.kind)
+            // `output-kind`, else the kind of an earlier entry of the type (`html-print` for `xsl-fo`), else the mime type.
+            let named_kind = output
+                .attribute("output-kind")
+                .filter(|text| !text.is_empty())
+                .and_then(|name| {
+                    let found = OutputKind::from_name(&name);
+                    if found.is_none() {
+                        tracing::warn!("Render mode {kind} has unknown output-kind {name}, using its mime type");
+                    }
+                    found
+                });
+            let output_kind = named_kind
+                .or_else(|| existing.as_ref().map(|found| found.kind))
                 .unwrap_or_else(|| OutputKind::from_mime(&mime_type));
             conf.text_output.insert(
                 kind,
@@ -661,7 +631,10 @@ impl ScreenFacade {
 
 /// The conf's `screen-facade` `check-interval-ms` when set, else never in production and two seconds otherwise.
 fn configured_check_interval(factory: &ExecutionContextFactory) -> i64 {
-    if let Ok(millis) = factory.conf_setting("screen-facade", "check-interval-ms").parse::<i64>() {
+    if let Ok(millis) = factory
+        .conf_setting("screen-facade", "check-interval-ms")
+        .parse::<i64>()
+    {
         return millis;
     }
     if crate::web::is_production() {

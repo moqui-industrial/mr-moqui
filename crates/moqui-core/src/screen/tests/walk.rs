@@ -288,14 +288,18 @@ fn the_default_conf_parses_into_the_factory_conf() {
 }
 
 #[test]
-fn a_conf_entry_keeps_a_built_in_output_kind() {
+fn output_kind_comes_from_the_attribute_or_the_mime_type() {
     let parsed = super::super::cache::ScreenConf::parse(
         r#"<moqui-conf><screen-facade>
-        <screen-text-output type="tui" mime-type="text/plain" always-standalone="true"
+        <screen-text-output type="tui" mime-type="text/plain" always-standalone="true" output-kind="json"
             macro-template-location="framework/template/screen/ScreenTui.js"/>
         <screen-text-output type="extra" mime-type="application/json"
             macro-template-location="framework/template/screen/ScreenPlain.js"/>
         <screen-text-output type="page" mime-type="text/html"
+            macro-template-location="framework/template/screen/ScreenHtml.js"/>
+        <screen-text-output type="template" mime-type="text/html" output-kind="vue"
+            macro-template-location="framework/template/screen/ScreenQvt.js"/>
+        <screen-text-output type="odd" mime-type="text/html" output-kind="pdf"
             macro-template-location="framework/template/screen/ScreenHtml.js"/>
     </screen-facade></moqui-conf>"#,
     );
@@ -303,8 +307,13 @@ fn a_conf_entry_keeps_a_built_in_output_kind() {
     assert_eq!(parsed.text_output["tui"].mime_type, "text/plain");
     assert_eq!(parsed.text_output["extra"].kind, OutputKind::Json);
     assert_eq!(parsed.text_output["page"].kind, OutputKind::Html);
-    assert_eq!(parsed.text_output["qvt"].kind, OutputKind::Vue);
-    assert_eq!(parsed.text_output["qvue"].kind, OutputKind::Text);
+    assert_eq!(parsed.text_output["template"].kind, OutputKind::Vue);
+    // an unknown output-kind follows the mime type
+    assert_eq!(parsed.text_output["odd"].kind, OutputKind::Html);
+    // no mode is built in: one the conf does not name is not there
+    for absent in ["qvt", "qvue", "html", "xlsx"] {
+        assert!(!parsed.text_output.contains_key(absent), "{absent}");
+    }
 }
 
 #[test]
