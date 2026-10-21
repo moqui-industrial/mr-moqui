@@ -39,7 +39,7 @@ use super::{
 use crate::context::Error;
 use crate::entity::EntityValue;
 use crate::resource::blob::{is_blob_id, BlobStore, Expected};
-use crate::resource::git::{RepositoryKind, GIT_ARTIFACT_TYPE};
+use crate::resource::git::RepositoryKind;
 use crate::resource::source::READ_WINDOW;
 
 pub const GIT_LFS_OBJECT: &str = "moqui.resource.GitLfsObject";
@@ -163,9 +163,9 @@ fn read_token(header: &str) -> Option<Result<Token, Refusal>> {
         key("lfs-token-key", "git_lfs_token_key"),
         key("lfs-token-key-previous", "git_lfs_token_key_previous"),
     ]
-        .into_iter()
-        .flatten()
-        .collect();
+    .into_iter()
+    .flatten()
+    .collect();
     read_token_with(&keys, header)
 }
 
@@ -762,7 +762,7 @@ impl Lfs {
                     "the lock is another user's; force unlocking it needs the delete permission",
                 ));
             }
-            if crate::user::authorize(GIT_ARTIFACT_TYPE, &self.repository, "delete").is_err() {
+            if !super::permitted(&self.repository, "delete") {
                 return Err(message(
                     403,
                     "force unlocking another user's lock needs the delete permission",

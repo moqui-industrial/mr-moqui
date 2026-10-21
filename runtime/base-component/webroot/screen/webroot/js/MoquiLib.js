@@ -465,12 +465,15 @@
         // A WebSocket for the topics a page listens to. It connects when the first listener is registered, and
         // only when an endpoint is configured: the object is not made without one. onState(fn) calls fn("open") or
         // fn("closed") as the socket opens and closes (a chat store sends what waited, and reads what it missed); the
-        // browser coming back online reopens a closed socket at once, with its tries counted again.
+        // browser coming back online reopens a closed socket at once, with its tries counted again. send(message)
+        // writes an object as JSON (the frames of m-coedit); while the socket is not open it waits, the last 200 of
+        // them, and goes after the subscribe of the next open.
         NotificationClient: function (webSocketUrl) {
             this.displayEnable = true;
             this.webSocketUrl = webSocketUrl;
             this.topicListeners = {};
             this.stateListeners = [];
+            this.sendQueue = [];
             this.tryReopenCount = 0;
             this.disableDisplay = () => { this.displayEnable = false; };
             this.enableDisplay = () => { this.displayEnable = true; };
@@ -489,6 +492,7 @@
                 socket.onopen = () => {
                     this.tryReopenCount = 0;
                     socket.send("subscribe:" + Object.keys(this.topicListeners).join(","));
+                    this.sendQueue.splice(0).forEach((text) => socket.send(text));
                     tellState("open");
                 };
                 socket.onmessage = (event) => {
@@ -521,6 +525,16 @@
             this.displayNotify = (jsonObj) => {
                 if (!this.displayEnable) return;
                 if (jsonObj.title && jsonObj.showAlert === true) moqui.notifyNotification(jsonObj, moqui.notifyGrowl);
+            };
+            // Sends message as JSON text; true when it went now, false when it waits for the socket to open (the oldest
+            // of more than 200 waiting is dropped). The first send without a socket opens one.
+            this.send = (message) => {
+                const text = JSON.stringify(message);
+                if (this.isOpen()) { this.webSocket.send(text); return true; }
+                this.sendQueue.push(text);
+                if (this.sendQueue.length > 200) this.sendQueue.shift();
+                if (!this.webSocket) this.initWebSocket();
+                return false;
             };
             // Calls callback(message, client) for each message of the topic (ALL: every message); no callback is the
             // alert display. Returns a function that unregisters it, as unregisterListener(topic, callback) does.

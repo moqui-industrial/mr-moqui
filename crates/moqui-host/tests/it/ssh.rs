@@ -207,17 +207,62 @@ fn sftp_and_the_admin_shell_run_on_the_built_in_server() {
     let stranger = key(OTHER_SEED).to_openssh(LineEnding::LF).unwrap().to_string();
     let mut refused = SftpClient::new(&host, "john.doe", None).unwrap();
     assert!(refused.public_key_pkcs8(&stranger, None).connect().is_err());
-    // A wrong password is refused, and a user without SSH_SFTP logs in (to the apps) but gets no SFTP.
+    // A wrong password is refused.
     assert!(SftpClient::new(&host, "john.doe", None)
         .unwrap()
         .password("wrong")
         .connect()
         .is_err());
-    assert!(SftpClient::new(&host, "no.ssh", None)
+    // A user without SSH_SFTP gets the drives they may open (dav-server sftp-drives), as that user, by an app password
+    // too: a write is an upload into the drive, a removal goes to its trash.
+    moqui_core::user::internal_login_user("no.ssh").unwrap();
+    let (out, errors) = sync(
+        "org.moqui.impl.UserServices.create#UserAppPassword",
+        &[("name", Value::string("Script"))],
+    );
+    assert!(errors.is_empty(), "{errors}");
+    let app_password = to_plain_string(out.get("password").unwrap());
+    moqui_core::user::internal_login_user("john.doe").unwrap();
+    let mut drives = SftpClient::new(&host, "no.ssh", None).unwrap();
+    drives.password(&app_password).connect().unwrap();
+    assert_eq!(
+        drives.ls_files("/").unwrap(),
+        Vec::<String>::new(),
+        "the top holds folders only"
+    );
+    let tops: Vec<String> = drives
+        .ls("/")
         .unwrap()
-        .password("moqui")
-        .connect()
-        .is_err());
+        .into_iter()
+        .map(|(_, entry)| entry.name)
+        .collect();
+    assert_eq!(tops, ["My files"]);
+    drives.mkdirs("/My files/Reports").unwrap();
+    drives.put_bytes("/My files/Reports/r.csv", "", b"a,b\n1,2\n").unwrap();
+    assert_eq!(drives.get_binary("/My files/Reports/r.csv").unwrap(), b"a,b\n1,2\n");
+    assert_eq!(
+        drives.rename_file("/My files/Reports/r.csv", "q.csv").unwrap(),
+        "/My files/Reports/q.csv"
+    );
+    assert_eq!(drives.ls_files("/My files/Reports").unwrap(), ["q.csv"]);
+    assert!(
+        drives.put_bytes("/elsewhere.txt", "", b"x").is_err(),
+        "the top is not a drive"
+    );
+    assert!(drives.get_binary("/My files/../../etc/passwd").is_err());
+    drives.rm("/My files/Reports/q.csv").unwrap();
+    assert!(drives.ls_files("/My files/Reports").unwrap().is_empty());
+    drives.close();
+    moqui_core::user::internal_login_user("no.ssh").unwrap();
+    let (drives_out, _) = sync("org.moqui.impl.FileServices.get#UserDrives", &[]);
+    let drive_id = to_plain_string(drives_out.get("personalDriveId").unwrap());
+    let (trash, errors) = sync(
+        "org.moqui.impl.FileServices.list#Trash",
+        &[("driveId", Value::string(drive_id))],
+    );
+    moqui_core::user::internal_login_user("john.doe").unwrap();
+    assert!(errors.is_empty(), "{errors}");
+    assert!(format!("{trash:?}").contains("q.csv"), "{trash:?}");
 
     // The moqui-sftp services: a queued message goes out by SFTP, and the poll brings it back in.
     let (_, errors) = sync(
@@ -652,18 +697,16 @@ fn apps_runs_the_terminal_client_over_ssh() {
         read_until(&mut channel, &mut seen, "38;2;", true).await.unwrap();
         // apps.only may not view the System app, so Alt+L offers no log.
         send(&channel, b"\x1bl").await;
-        read_until(&mut channel, &mut seen, "The log is not offered", false).await.unwrap();
+        read_until(&mut channel, &mut seen, "The log is not offered", false)
+            .await
+            .unwrap();
 
         // A second session of the same user is past terminal max-sessions-per-user (1).
         let mut second = pty(&handle, 100, 40).await;
         second.exec(true, "apps").await.unwrap();
         let mut refused = Vec::new();
         assert_eq!(exit_status(&mut second, &mut refused).await, Some(1));
-        assert!(
-            text(&refused).contains("max-sessions-per-user"),
-            "{}",
-            text(&refused)
-        );
+        assert!(text(&refused).contains("max-sessions-per-user"), "{}", text(&refused));
 
         // A window change: the next frame is drawn whole after a clear.
         let before = seen.len();
@@ -712,7 +755,9 @@ fn apps_runs_the_terminal_client_over_ssh() {
         seen.extend(list);
         // An admin's Alt+L opens the log pane (its WARN and ERROR lines: `logging::tap_at`, unit tested there).
         send(&channel, b"\x1bl").await;
-        read_until(&mut channel, &mut seen, "Log · Alt+L closes", false).await.unwrap();
+        read_until(&mut channel, &mut seen, "Log · Alt+L closes", false)
+            .await
+            .unwrap();
         send(&channel, b"\x11").await;
         read_until(&mut channel, &mut seen, "\x1b[?1049l", true).await.unwrap();
         read_until(&mut channel, &mut seen, "moqui> ", true).await.unwrap();

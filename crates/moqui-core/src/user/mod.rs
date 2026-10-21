@@ -36,11 +36,13 @@ pub use factor::{
 pub(crate) use factor::{CODE_NOT_VALID, FACTOR_INFO, SEND_CODE, VALIDATE_CODE};
 pub(crate) use filter::apply_view_filters;
 pub use filter::{apply_entity_filters, find_filters_for_user};
+pub(crate) use login::app_password_key;
 pub(crate) use login::login_user_local;
 pub(crate) use login::stamp_value;
 pub use login::{
-    apply_header_keys, change_password, get_login_key, internal_login_user, login_anonymous, login_external_user,
-    login_user, login_user_key, logout, logout_anonymous_only, with_client_ip,
+    apply_header_keys, change_password, get_login_key, internal_login_user, login_anonymous, login_app_password,
+    login_external_user, login_user, login_user_key, logout, logout_anonymous_only, looks_like_app_password,
+    new_app_password, with_client_ip,
 };
 pub(crate) use login::{now_effective_millis, now_effective_value, now_millis, now_value, value_millis};
 pub(crate) use login::{AUTHC_FACTOR_REQUIRED, PRE_AUTHC_USERNAME};

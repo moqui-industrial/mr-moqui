@@ -258,6 +258,10 @@ fn import_repository(
 /// The provider and repository id when the current user may `view` it; otherwise the error recorded.
 fn viewable(parameters: &BTreeMap<String, Value>) -> Option<(GitProvider, String)> {
     let (provider, id) = provider_and_id(parameters, true)?;
+    // a drive's members see the repository the drive holds, as the git server lets them fetch it
+    if crate::resource::git::server::permitted(&id, "view") {
+        return Some((provider, id));
+    }
     match crate::user::authorize(GIT_ARTIFACT_TYPE, &id, "view") {
         Ok(()) => Some((provider, id)),
         Err(err) => {
@@ -538,7 +542,8 @@ fn get_clone_urls(
     let property = |name: &str| moqui_lib::env::get_prop_or_env(name).trim().to_string();
     // an `ssh-server` attribute, else its property
     let ssh_setting = |name: &str, property_name: &str| {
-        let configured = ExecutionContext::with_current(|ec| ec.factory().conf_setting("ssh-server", name)).unwrap_or_default();
+        let configured =
+            ExecutionContext::with_current(|ec| ec.factory().conf_setting("ssh-server", name)).unwrap_or_default();
         if configured.is_empty() {
             property(property_name)
         } else {

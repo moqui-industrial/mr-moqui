@@ -45,6 +45,7 @@ use super::{GitProvider, Repo, RepositoryKind, GIT_ARTIFACT_TYPE};
 use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 use crate::resource::git::{events, revwalk};
 use crate::service::RequestPool;
+use moqui_lib::object::Value;
 
 /// Git's own error for the protocol layer.
 pub(crate) fn io_error(err: std::io::Error) -> Error {
@@ -213,7 +214,10 @@ fn property(name: &str) -> String {
 
 /// An attribute of the conf's `git-server` as a positive number; None when it is empty, 0 or not a number.
 fn positive_setting(name: &str) -> Option<usize> {
-    crate::resource::git::setting(name).parse().ok().filter(|value| *value > 0)
+    crate::resource::git::setting(name)
+        .parse()
+        .ok()
+        .filter(|value| *value > 0)
 }
 
 /// The git pool's workers: clones and pushes run long, so they get their own threads, apart from the request pool
@@ -241,8 +245,12 @@ impl GitPool {
 pub fn pool(factory: &ExecutionContextFactory) -> Arc<GitPool> {
     factory.extension(|factory| {
         let pool = RequestPool::idle();
-        let workers = Some(factory.conf_number("git-server", "max-concurrent", 4)).filter(|n| *n > 0).unwrap_or(4);
-        let queue = Some(factory.conf_number("git-server", "max-queued", 16)).filter(|n| *n > 0).unwrap_or(16);
+        let workers = Some(factory.conf_number("git-server", "max-concurrent", 4))
+            .filter(|n| *n > 0)
+            .unwrap_or(4);
+        let queue = Some(factory.conf_number("git-server", "max-queued", 16))
+            .filter(|n| *n > 0)
+            .unwrap_or(16);
         if let Err(err) = pool.start(workers, queue) {
             tracing::error!("the git pool did not start: {err}");
         }
@@ -405,6 +413,14 @@ fn authenticate_with(authorization: Option<&str>, api_key: Option<&str>) -> Resu
             return Ok(true);
         }
         if let Some((username, password)) = crate::web::basic_credentials(header) {
+            // an app password, as the DAV servers take it
+            if crate::user::looks_like_app_password(&password) {
+                if crate::user::login_app_password(&username, &password).is_ok() {
+                    return Ok(true);
+                }
+                // not one, so an account password of that form: only the password login below counts as a failure
+                crate::web::take_auth_failure();
+            }
             // an access token (a UserLoginKey) as the password, as git hosts take personal access tokens
             if password.len() == 40 {
                 if crate::user::login_user_key(&password).is_ok() {
@@ -438,13 +454,105 @@ fn authenticate_with(authorization: Option<&str>, api_key: Option<&str>) -> Resu
 fn may_push(id: &str) -> bool {
     ["create", "update", "delete"]
         .iter()
-        .any(|action| crate::user::authorize(GIT_ARTIFACT_TYPE, id, action).is_ok())
+        .any(|action| permitted(id, action))
+}
+
+/// Whether the logged-in user may do `action` (view, create, update, delete) on repository `id`: by `AT_GIT_REPOSITORY`
+/// authorization, or as a member of the drive the repository holds (`ResourceDrive.repositoryId`), by the drive's own
+/// rule (`FileServices.get#DriveAccess`): view to fetch, edit to push new refs and fast-forwards on a drive that is not
+/// read only, manage to force a push or delete a ref. Asked once per request and action.
+pub(crate) fn permitted(id: &str, action: &str) -> bool {
+    if crate::user::authorize(GIT_ARTIFACT_TYPE, id, action).is_ok() {
+        return true;
+    }
+    let key = format!("git.driveAccess.{id}");
+    let cached = ExecutionContext::with_current(|ec| ec.shared_map().get(&key).cloned()).flatten();
+    let (level, can_write) = match cached.and_then(|value| {
+        moqui_lib::object::to_plain_string(&value)
+            .split_once(':')
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+    }) {
+        Some((level, write)) => (level.parse::<i64>().unwrap_or(0), write == "true"),
+        None => {
+            let found = drive_access(id);
+            ExecutionContext::with_current(|ec| {
+                ec.shared_map()
+                    .insert(key.clone(), Value::string(format!("{}:{}", found.0, found.1)))
+            });
+            found
+        }
+    };
+    match action {
+        "view" => level >= 1,
+        "create" | "update" => level >= 2 && can_write,
+        "delete" => level >= 3 && can_write,
+        _ => false,
+    }
+}
+
+/// The user's level on the drive repository `id` holds and whether the drive may be written; (0, false) for none.
+fn drive_access(id: &str) -> (i64, bool) {
+    let Some(user) = crate::user::current_user_id()
+        .ok()
+        .flatten()
+        .filter(|user| !user.is_empty())
+    else {
+        return (0, false);
+    };
+    let drive = ExecutionContext::with_current(|ec| {
+        let _authz = ec.disable_authz();
+        ec.factory()
+            .entity()?
+            .find("moqui.resource.ResourceDrive")
+            .ok()?
+            .eq("repositoryId", Value::string(id))
+            .one()
+            .ok()
+            .flatten()
+    })
+    .flatten();
+    let Some(drive_id) = drive.and_then(|row| row.get("driveId").map(moqui_lib::object::to_plain_string)) else {
+        return (0, false);
+    };
+    let parameters: std::collections::BTreeMap<String, Value> = [("driveId".to_string(), Value::string(&drive_id))]
+        .into_iter()
+        .collect();
+    // the service reads the drive's members for the current user; its own rows are moqui.* entities the user may not read
+    let options = crate::service::call::CallOptions {
+        disable_authz: true,
+        ..Default::default()
+    };
+    match crate::service::call::sync_checked("org.moqui.impl.FileServices.get#DriveAccess", &parameters, &options) {
+        Ok(out) => {
+            let level = out
+                .get("level")
+                .map(moqui_lib::object::to_plain_string)
+                .and_then(|text| text.parse().ok())
+                .unwrap_or(0);
+            let can_write = out
+                .get("canWrite")
+                .is_some_and(|value| moqui_lib::object::to_plain_string(value) == "true");
+            tracing::debug!(
+                repository = id,
+                drive = drive_id,
+                user,
+                level,
+                "git access through the drive"
+            );
+            (level, can_write)
+        }
+        Err(err) => {
+            ExecutionContext::with_current(|ec| ec.message().clear_errors());
+            tracing::debug!(repository = id, drive = drive_id, "no drive access: {err}");
+            (0, false)
+        }
+    }
 }
 
 /// The repository a logged-in user may see, and may push to when `service` is receive-pack.
 fn open(provider: &GitProvider, id: &str, service: GitService) -> Result<Arc<Repo>, Refusal> {
     let not_found = || Refusal::NotFound(format!("repository {id} not found"));
-    if crate::user::authorize(GIT_ARTIFACT_TYPE, id, "view").is_err() {
+    if !permitted(id, "view") {
         return Err(not_found());
     }
     // the user may see it: say why it cannot be opened, unless there is no such repository
@@ -760,7 +868,7 @@ impl Session<'_> {
                 }
             }
         };
-        crate::user::authorize(GIT_ARTIFACT_TYPE, id, action).map_err(|_| {
+        permitted(id, action).then_some(()).ok_or(()).map_err(|()| {
             if action == "delete" && command.new.is_some() {
                 format!("non-fast-forward: forcing a ref needs the delete permission on {id}")
             } else {

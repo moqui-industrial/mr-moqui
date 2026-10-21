@@ -29,6 +29,7 @@ use example as _;
 
 mod backup;
 mod cluster_notify;
+mod collab;
 mod elfinder;
 mod entity_cache;
 mod entity_db;
@@ -41,8 +42,8 @@ mod git_storage;
 mod load_feed;
 mod notws;
 mod opensearch_start;
-mod pg_external;
 mod pdf;
+mod pg_external;
 mod query_rest;
 mod qvt_report;
 mod search;

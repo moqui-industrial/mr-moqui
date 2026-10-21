@@ -56,6 +56,8 @@ calamine = { workspace = true, optional = true }
 zip = { workspace = true }
 image = { workspace = true, optional = true }
 similar = { workspace = true }
+yrs = { workspace = true }
+pulldown-cmark = { workspace = true }
 gix = { workspace = true, optional = true }
 gix-pack = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }

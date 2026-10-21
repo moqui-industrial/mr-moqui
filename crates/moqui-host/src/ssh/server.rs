@@ -50,7 +50,11 @@ use russh::{MethodKind, MethodSet};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use super::{on_pool, sftp_fs::SftpFs, shell};
+use super::{
+    on_pool,
+    sftp_fs::{Backend, SftpFs},
+    shell,
+};
 
 const DEFAULT_MAX_SESSIONS: usize = 8;
 const DEFAULT_MAX_FILE: usize = 256 * 1024 * 1024;
@@ -91,6 +95,8 @@ struct Shared {
     factory: std::sync::Weak<ExecutionContextFactory>,
     root: String,
     max_file: usize,
+    /// `dav-server` `sftp-drives`: SFTP to the drives for a user without `SSH_SFTP`.
+    sftp_drives: bool,
     /// The live terminal sessions of the process, against `terminal` `max-sessions`.
     #[cfg(feature = "tui")]
     apps: Arc<crate::term::Sessions>,
@@ -180,7 +186,10 @@ pub fn start(
 ) -> Result<Option<SshServer>, Error> {
     moqui_lib::env::set_property(moqui_core::cluster::SSH_FINGERPRINT_PROPERTY, "");
     moqui_lib::env::set_property(moqui_core::cluster::SSH_ADDRESS_PROPERTY, "");
-    let Some((host, port)) = listen_target_of(&setting(factory, "port", "ssh_port"), &setting(factory, "host", "ssh_host"))?
+    let Some((host, port)) = listen_target_of(
+        &setting(factory, "port", "ssh_port"),
+        &setting(factory, "host", "ssh_host"),
+    )?
     else {
         return Ok(None);
     };
@@ -193,8 +202,14 @@ pub fn start(
         let relative = root.trim_start_matches("runtime://").trim_start_matches("runtime:");
         let _ = std::fs::create_dir_all(runtime_dir.join(relative.trim_start_matches('/')));
     }
-    let max_sessions = positive(factory.conf_number("ssh-server", "max-sessions", DEFAULT_MAX_SESSIONS), DEFAULT_MAX_SESSIONS);
-    let max_file = positive(factory.conf_number("ssh-server", "sftp-max-file", DEFAULT_MAX_FILE), DEFAULT_MAX_FILE);
+    let max_sessions = positive(
+        factory.conf_number("ssh-server", "max-sessions", DEFAULT_MAX_SESSIONS),
+        DEFAULT_MAX_SESSIONS,
+    );
+    let max_file = positive(
+        factory.conf_number("ssh-server", "sftp-max-file", DEFAULT_MAX_FILE),
+        DEFAULT_MAX_FILE,
+    );
     let fingerprint = key.public_key().fingerprint(HashAlg::Sha256).to_string();
     // "none" is not offered, so a client tries its keys first; keyboard-interactive, which OpenSSH tries next, is the
     // login dialog, and only with the terminal client.
@@ -230,6 +245,7 @@ pub fn start(
         factory: Arc::downgrade(factory),
         root,
         max_file,
+        sftp_drives: factory.conf_flag("dav-server", "sftp-drives", true),
         #[cfg(feature = "tui")]
         apps: crate::term::Sessions::of(factory),
         #[cfg(feature = "tui")]
@@ -683,7 +699,15 @@ impl russh::server::Handler for Connection {
         let (username, secret) = (user.to_string(), password.to_string());
         let client_ip = self.peer.ip().to_string();
         let checked = on_pool(&self.shared.factory, move |_| {
-            moqui_core::user::with_client_ip(&client_ip, || moqui_core::user::login_user(&username, &secret))?;
+            // an app password, the device password SFTP to the drives takes, before the account password
+            let by_app_password = moqui_core::user::looks_like_app_password(&secret)
+                && moqui_core::user::with_client_ip(&client_ip, || {
+                    moqui_core::user::login_app_password(&username, &secret)
+                })
+                .is_ok();
+            if !by_app_password {
+                moqui_core::user::with_client_ip(&client_ip, || moqui_core::user::login_user(&username, &secret))?;
+            }
             if moqui_core::user::current_user_id()?.is_none_or(|id| id.is_empty()) {
                 return Err(CoreError::new("a second factor is required, which SSH does not take"));
             }
@@ -834,16 +858,23 @@ impl russh::server::Handler for Connection {
         name: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if name != "sftp" || !self.can_sftp || self.username.is_none() {
+        let Some(username) = self.username.clone().filter(|_| name == "sftp" && !self.cluster) else {
             return session.channel_failure(channel);
-        }
+        };
+        let backend = if self.can_sftp {
+            Backend::Root(self.shared.root.clone())
+        } else if self.shared.sftp_drives {
+            Backend::Drives { username }
+        } else {
+            return session.channel_failure(channel);
+        };
         let Some(open) = self.channels.remove(&channel) else {
             return session.channel_failure(channel);
         };
         session.channel_success(channel)?;
         let fs = SftpFs::new(
             std::sync::Weak::clone(&self.shared.factory),
-            self.shared.root.clone(),
+            backend,
             self.shared.max_file,
         );
         russh_sftp::server::run(open.into_stream(), fs).await;

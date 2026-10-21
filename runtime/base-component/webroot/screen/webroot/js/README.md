@@ -59,7 +59,7 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 
 | File | What |
 |---|---|
-| `MoquiLib.js` | the `moqui` object: type checks, `deepCopy`, field comparison, `objToSearch` / `searchToObj` / `parseHref` / `makeHref`, `request` (fetch with the session token; it hands a response's `X-CSRF-Token` to `moqui.onSessionToken` and its `X-Moqui-Preferences` to `moqui.onPreferences`), `loadScript` / `loadStylesheet`, `parseVue` and `evalComponentJs` (the `qvue` and `qjs` text), `NotificationClient`, `LruMap`. Runs under Node. `loadScript(src, callback, validate)` loads a script once (`moqui.scriptLoads`, one promise per src): a call while it loads waits for it; when it fails every waiter is rejected (and the callback gets the error) and the element is removed, so a later call loads it again; a `validate` that never sees its library rejects after its retries (about 20 s). |
+| `MoquiLib.js` | the `moqui` object: type checks, `deepCopy`, field comparison, `objToSearch` / `searchToObj` / `parseHref` / `makeHref`, `request` (fetch with the session token; it hands a response's `X-CSRF-Token` to `moqui.onSessionToken` and its `X-Moqui-Preferences` to `moqui.onPreferences`), `loadScript` / `loadStylesheet`, `parseVue` and `evalComponentJs` (the `qvue` and `qjs` text), `NotificationClient` (with `send`, below, Notification listeners), `LruMap`. Runs under Node. `loadScript(src, callback, validate)` loads a script once (`moqui.scriptLoads`, one promise per src): a call while it loads waits for it; when it fails every waiter is rejected (and the callback gets the error) and the element is removed, so a later call loads it again; a `validate` that never sees its library rejects after its retries (about 20 s). |
 | `MoquiL10n.js` | `moqui.l10n`: `format`, `formatCurrency`, `formatCurrencyNoSymbol` and `localize`. A copy of `crates/moqui-lib` `format.rs` and `datefmt.rs`: Java `DecimalFormat` and date pattern subset, HALF_EVEN on decimal text. `MoquiL10n.test.js` runs `crates/moqui-lib/testdata/format-vectors.json`. |
 | `WebrootVue.qvt.js` | the `m-*` components and the application. `moqui.qvt.components` holds the definitions. |
 | `WebrootPublic.qvt.js` | the public shell of the anonymous token routes (`/s/<token>`; `docs/Revision-Management.md`, Token routes): on the page `webroot/PublicShell.xml` makes, with its own settings block `moqui-public-config` (`route {name, basePath, title, renderModes}`, `context`, the locale and the theme's Quasar configuration), it mounts the route's screen (loaded as `basePath.qvt`, `.qvue` or `.qjs`) with the `m-*` components of `WebrootVue.qvt.js`, which loads before it and starts nothing there. The root offers the parts of `m-qapps-root` the components call; a link under the route stays on the page, any other leaves it. |
@@ -69,7 +69,9 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 
 The tests are `MoquiLib.test.js`, `MoquiL10n.test.js`, `WebrootVue.qvt.test.js`, `WebrootVue.qvt.shell.test.js` (the palette, the key map, the
 screen context's forms and the root's shell data), `WebrootVue.qvt.records.test.js` (the HTML of the rich-text editor, the record panel URL,
-avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer), `WebrootVue.qvt.htmlview.test.js` (m-html-view's cleaning), `WebrootVue.qvt.views.test.js` (the board's columns, the calendar's times, events and lanes, and what a move posts), `WebrootVue.qvt.markdown.test.js` (m-markdown on the vendored Marked: heading ids, links, wiki links, tables), `WebrootPublic.qvt.test.js` (the public shell's screen load and links), `WebrootChat.test.js` (the chat store: presence,
+avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer), `WebrootVue.qvt.htmlview.test.js` (m-html-view's cleaning), `WebrootVue.qvt.views.test.js` (the board's columns, the calendar's times, events and lanes, and what a move posts), `WebrootVue.qvt.markdown.test.js` (m-markdown on the vendored Marked: heading ids, links, wiki links, tables), `WebrootVue.qvt.coedit.test.js`
+(m-coedit's provider on the vendored bundle's Yjs, with a fake notification client and server: the join, batching, acks, peers, read-only,
+errors, a join again after a reconnect, two editors converging), `WebrootPublic.qvt.test.js` (the public shell's screen load and links), `WebrootChat.test.js` (the chat store: presence,
 typing, read markers, unread counts, a pushed event merged into a timeline, do not disturb, the status components) and `WebrootVue.qvt.static.test.js` (the script and package
 the server answers for `crates/moqui-core` `testdata/Static/Items` run on the real Vue runtime over a fake DOM; every component template compiles with the vendored
 Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
@@ -185,6 +187,7 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-scope`, `m-static-form-list` | written by `ScreenQvtStatic.js` only: a scope over a form-single's map, and the form-list of a server-static screen (see Server-static screens) |
 | `m-text-line`, `m-text-area` | text input. `m-text-line` takes `autocomplete` (`off` by default; the `password` widget writes its `autocomplete` attribute, `new-password` unless it says `current-password`, so the browser does not fill the user's sign-in password into an app password or another user's new one). `m-text-area` with `editor-type` `html` is `QEditor`, `md` is a text area with a Marked preview, and `rich` and `rich-light` are `m-rich-text` (with `mention-url` and `mention-parameters` from `mention-transition`, and `record-url` and `record-parameters` from `record-transition`) |
 | `m-rich-text` | the Tiptap editor (see Rich text below): the `m-*` model contract (`v-model` or `model-value`, `name`, the change tint and field errors in an `m-form`, a hidden input), `light`, `placeholder`, `rows`, `enter` (`newline`, or `submit`: Enter submits the form and emits `submit`, Shift+Enter is a line break; Ctrl+Enter always submits), `mention-url`, `mention-parameters`, `record-url`, `record-parameters`, `plain` (`v-model:plain`, the plain-text toggle), `plain-toggle`, `autofocus`, `disable`, `readonly`; emits `mention` with the `{id, label}` picked |
+| `m-coedit` | `m-rich-text` on a shared Yjs document (see Collaborative editing below): `doc-key` (required, `WikiPage:100023`), `placeholder`, `rows`, `light`, `readonly`, `user-name` (the page's `userFullName`), `user-color` (`#rrggbb`, else one of the user id); other attributes go to the editor. Emits `status`, `saved` and `fallback`; `html()` is the editor's HTML |
 | `m-drop-down` | `options`, `options-url`, `options-parameters`, `depends-on`, `server-search`, `multiple`, `allow-empty`, `combo`, `submit-on-select`, `options-load-init` |
 | `m-date-time`, `m-date-period` | `QDate` and `QTime` in a popup; period and from-thru. In period mode the field is the base date (`_pdate`) and the period and offset selects (`_period`, `_poffset`) are in the menu of the `event_repeat` button in its append slot, which reads the choice ("Last Month") once made; the `date_range` button switches to from-thru (`_from`, `_thru`) |
 | `m-display` | text or a read-only field (`label-wrapper`), `display`, `value-url` |
@@ -737,11 +740,52 @@ unmounted() { if (this.stopListening) this.stopListening(); },
 | `unregisterListener(topic, callback)` | Removes that listener (the same function; none is the alert display): true when it was there. With the topic's last listener gone the socket sends `unsubscribe:<topic>`, and a reconnect no longer asks for it |
 | `disableDisplay()`, `enableDisplay()` | Alerts off and on (do not disturb); the listeners still get every message |
 | `onState(fn)` | `fn(state, client)` as the socket opens (`"open"`) and closes (`"closed"`); returns a function that removes it. The chat store sends what waited and reads what it missed on `"open"`. `isOpen()` says whether it is open now |
+| `send(message)` | The object as a JSON text frame: true when it went now, false when it waits for the next open (the last 200 wait, and go after that open's subscribe). Without a socket it opens one. `m-coedit` sends its frames this way |
 
 A closed socket tries again after 30 seconds, six times; the browser coming back online (the window's `online` event) reopens it at once,
 with its six tries again.
 
 A listener may unregister itself, or another, while it is called: the other listeners of that message still get it.
+
+## Collaborative editing
+
+`m-coedit` is `m-rich-text` (its toolbar, keys, links, images, tables and image upload) with the `collab` prop: the document is
+the Yjs `Y.XmlFragment` `default` (y-prosemirror's encoding, Tiptap's node names) of `Tiptap.Collaboration`, the history is Yjs's
+(undo and redo of this editor's own changes; StarterKit's history and trailing paragraph are off), and the others' carets and
+selections are `Tiptap.CollaborationCaret`'s (`.collaboration-carets__caret`, `__label`, `.ProseMirror-yjs-selection`). The server
+seeds the document (a wiki page's markdown) and renders it back, so the editor never sets content. Above the editor a presence line
+shows the others' avatars (once per user, not the user here) and the sync state. The editor is disabled until the first join is
+answered, and read-only when `canEdit` is false or after a 403; it stays editable offline.
+
+`moqui.coedit.Provider` speaks the protocol on the shell's notification socket, `{client, docKey, doc, awareness, lib}` (`lib` is
+the `Tiptap` global). The client id `C` is random per editor; `D` is the doc key; updates are base64 of Yjs's binary update
+(`moqui.coedit.toBase64`, `fromBase64`). Client to server, by `send`:
+
+| Frame | When |
+|---|---|
+| `{collab: "join", doc: D, client: C, awareness: <ydoc.clientID>, sv: B64}` | each open of the socket (after the listener on `collab:D`), with `Y.encodeStateVector` |
+| `{collab: "update", doc, client, id: N, update}` | local updates of 50 ms merged (`Y.mergeUpdates`), and the diff after a join (`Y.encodeStateAsUpdate(doc, sv)` when over 2 bytes); `N` counts up. Nothing while not joined: the next join carries it |
+| `{collab: "awareness", doc, client, update}` | `encodeAwarenessUpdate` of the local state, on a change (once per 50 ms) and as the Awareness renews it every 15 s |
+| `{collab: "leave", doc, client}` | the component unmounts (after its last batch) or falls back |
+
+Server to client, `topic: "collab:" + D`; `ack`, `error` and `joined` for another client id (another tab of the user) are ignored:
+
+| `type` | Effect |
+|---|---|
+| `joined` `{client, canEdit, update, sv, peers}` | apply `update`, send our diff against `sv`, then our awareness; `canEdit: false` is read-only |
+| `update` `{client, update}` | applied with the provider as the origin (not sent back), unless it is our own |
+| `ack` `{client, id}` | `pending` (sent and not acknowledged) goes down; `synced` at 0 |
+| `awareness` `{client, update}` | `applyAwarenessUpdate`, unless our own |
+| `peer` `{client, userId, name, awareness, joined}` | the peers list; `joined: false` removes that caret (`removeAwarenessStates`) |
+| `saved` `{versionName, userId, name}` | the `saved` event (the host says a version was saved) |
+| `error` `{client, code, message}` | before the join is answered: fallback; after it, 403 is read-only, another code joins again (three times without an ack between, then fallback) |
+
+`status` is `{state, peers: [{client, userId, name}], pending}`, `state` one of `loading`, `connecting`, `synced`, `saving`, `offline`,
+`readonly`, `failed`. `fallback` is `{reason, code, message}`: `library` (Tiptap did not load or start), `socket` (no notification
+client), `server` (an error answering the join, or a fourth in a row after it), `timeout` (no answer to a join on an open socket in
+20 s). The host then shows its plain markdown field. A socket that closes drops the others' carets and is `offline`; its next open
+joins again with the state vector, so the edits made meanwhile merge. Unmounting sends leave and destroys the editor, the awareness
+and the Y doc.
 
 ## Mail sign-in popup
 

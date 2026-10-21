@@ -71,11 +71,18 @@ fn user(entity: &EntityFacade, username: &str) {
 
 /// Two users: the writer has every action on every repository, the reader only `view`.
 fn fixture(name: &str) -> Fixture {
-    let context = ExecutionContextFactory::test_context_with_conf(
+    fixture_in(name, std::path::PathBuf::from("."))
+}
+
+/// [`fixture`] in a framework directory: with its services, for the drive rule.
+fn fixture_in(name: &str, framework: std::path::PathBuf) -> Fixture {
+    let context = ExecutionContextFactory::test_context_in(
         r#"<moqui-conf><artifact-execution-facade>
             <artifact-execution type="AT_GIT_REPOSITORY" authz-enabled="true"/>
             <artifact-execution type="AT_ENTITY" authz-enabled="true"/>
         </artifact-execution-facade></moqui-conf>"#,
+        crate::service::ServicePools::idle(),
+        framework,
     );
     let entity = crate::testing::open();
     context.factory().set_entity(entity.clone());
@@ -700,8 +707,7 @@ fn a_db_repository_keeps_pushed_deltas_and_sends_them_back() {
             crate::resource::git::db::object_cache(),
         );
         store.stamp_all(jiff::Timestamp::now().as_millisecond() - 30 * 24 * 60 * 60 * 1000);
-        let mut options =
-            crate::resource::git::gc::GcOptions::from_conf(false, std::time::Duration::from_secs(120));
+        let mut options = crate::resource::git::gc::GcOptions::from_conf(false, std::time::Duration::from_secs(120));
         options.reflog_millis = 0;
         // the updates of the pushes are older than the window, and done
         let _authz = fixture.context.disable_authz();
@@ -824,8 +830,7 @@ fn large_objects_are_content_blobs_streamed_in_and_out() {
             .eq("repositoryId", Value::string(id))
             .update_all([("ecaStatus".to_string(), Value::string("done"))])
             .unwrap();
-        let mut options =
-            crate::resource::git::gc::GcOptions::from_conf(false, std::time::Duration::from_secs(120));
+        let mut options = crate::resource::git::gc::GcOptions::from_conf(false, std::time::Duration::from_secs(120));
         options.reflog_millis = 0;
         let outcome = provider.gc(Some(id), &options).unwrap();
         let report = outcome[0].1.as_ref().unwrap();
@@ -1295,6 +1300,109 @@ fn credentials_and_rights_are_checked() {
     };
     let with_token = base.replacen("http://", &format!("http://{WRITER}:{token}@"), 1) + "/git/guarded.git";
     let out = git_ok(&fixture.dir, &home, &["ls-remote", &with_token]);
+    assert!(out.contains("refs/heads/main"), "{out}");
+}
+
+/// A drive's members reach the repository the drive holds by the drive's own rule, without any AT_GIT_REPOSITORY
+/// authorization: a viewer fetches and may not push, an editor pushes, a stranger finds nothing, and an app password
+/// stands for the account password.
+#[test]
+fn a_drive_repository_takes_the_drive_members() {
+    if !git_available() {
+        eprintln!("skipped: git is not on the PATH");
+        return;
+    }
+    let fixture = fixture_in("drive-members", crate::context::framework_dir());
+    define(&fixture, "DRIVE_D1", "db");
+    let app_password = {
+        let _entered = fixture.context.enter();
+        let _authz = fixture.context.disable_authz();
+        for name in ["drive.owner", "drive.viewer", "drive.editor", "drive.stranger"] {
+            user(&fixture.entity, name);
+        }
+        create(
+            &fixture.entity,
+            "moqui.resource.ResourceDrive",
+            &[
+                ("driveId", "D1"),
+                ("driveName", "Specs"),
+                ("driveKindEnumId", "RdkShared"),
+                ("rootLocation", "git://DRIVE_D1/"),
+                ("repositoryId", "DRIVE_D1"),
+                ("ownerUserId", "drive.owner"),
+            ],
+        );
+        for (id, member, permission) in [("M1", "drive.viewer", "RdpView"), ("M2", "drive.editor", "RdpEdit")] {
+            let mut row = EntityValue::make(&fixture.entity, "moqui.resource.ResourceDriveMember").unwrap();
+            for (field, value) in [
+                ("driveMemberId", id),
+                ("driveId", "D1"),
+                ("userId", member),
+                ("permissionEnumId", permission),
+            ] {
+                row.set(field, Value::string(value));
+            }
+            row.set(
+                "fromDate",
+                moqui_lib::object::basic_convert(&Value::I64(1_000), "java.sql.Timestamp").value,
+            );
+            row.create(&fixture.entity).unwrap();
+        }
+        crate::user::internal_login_user("drive.viewer").unwrap();
+        let out = crate::service::sync(
+            "org.moqui.impl.UserServices.create#UserAppPassword",
+            &[("name".to_string(), Value::string("CI"))].into_iter().collect(),
+        )
+        .unwrap();
+        crate::user::logout().unwrap();
+        moqui_lib::object::to_plain_string(out.get("password").unwrap())
+    };
+    let base = http_server(fixture.context.factory());
+    let home = fixture.dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let work = fixture.dir.join("work");
+    git_ok(
+        &fixture.dir,
+        &home,
+        &[
+            "clone",
+            &url_with(&base, "drive.editor", "DRIVE_D1"),
+            &work.to_string_lossy(),
+        ],
+    );
+    write_file(&work, "spec.md", "the spec\n");
+    git_ok(&work, &home, &["add", "."]);
+    git_ok(&work, &home, &["commit", "-m", "Spec"]);
+    git_ok(&work, &home, &["push", "origin", "main"]);
+    assert!(head_of(&fixture, "DRIVE_D1", "refs/heads/main").is_some());
+
+    let read = fixture.dir.join("read");
+    git_ok(
+        &fixture.dir,
+        &home,
+        &[
+            "clone",
+            &url_with(&base, "drive.viewer", "DRIVE_D1"),
+            &read.to_string_lossy(),
+        ],
+    );
+    assert!(read.join("spec.md").exists());
+    write_file(&read, "more.md", "more\n");
+    git_ok(&read, &home, &["add", "."]);
+    git_ok(&read, &home, &["commit", "-m", "More"]);
+    let (ok, out) = git_in(&read, &home, &["push", "origin", "main"]);
+    assert!(!ok && out.contains("403"), "a viewer may not push: {out}");
+
+    let (ok, out) = git_in(
+        &fixture.dir,
+        &home,
+        &["ls-remote", &url_with(&base, "drive.stranger", "DRIVE_D1")],
+    );
+    assert!(!ok && out.contains("not found"), "{out}");
+
+    let with_app_password =
+        base.replacen("http://", &format!("http://drive.viewer:{app_password}@"), 1) + "/git/DRIVE_D1.git";
+    let out = git_ok(&fixture.dir, &home, &["ls-remote", &with_app_password]);
     assert!(out.contains("refs/heads/main"), "{out}");
 }
 

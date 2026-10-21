@@ -104,6 +104,8 @@ fn build() -> BTreeMap<&'static str, RustServiceFn> {
         super::spreadsheet::register(&mut map),
         super::shell::register(&mut map),
         super::user_keys::register(&mut map),
+        super::dav::register(&mut map),
+        super::collab::register(&mut map),
         super::chat::register(&mut map),
         super::chat_link::register(&mut map),
         #[cfg(feature = "git")]
@@ -130,8 +132,12 @@ mod tests {
             "moqui_core::service::chat::push_signal",
             "moqui_core::service::chat_link::extract_link_urls",
             "moqui_core::service::chat_link::fetch_link_page",
+            "moqui_core::service::collab::get_document",
+            "moqui_core::service::collab::save_document",
             "moqui_core::service::content::gc_content_blobs",
             "moqui_core::service::content::migrate_db_resource_blobs",
+            "moqui_core::service::dav::get_sync_addresses",
+            "moqui_core::service::dav::serve_request",
             "moqui_core::service::elfinder::run_command",
             "moqui_core::service::images::convert_image",
             "moqui_core::service::images::get_rich_text_image",
@@ -186,9 +192,12 @@ mod tests {
             "moqui_core::service::tools::send_document_notifications",
             "moqui_core::service::tools::send_print_job_internal",
             "moqui_core::service::user_keys::create_access_token",
+            "moqui_core::service::user_keys::create_app_password",
             "moqui_core::service::user_keys::create_ssh_key",
             "moqui_core::service::user_keys::delete_ssh_key",
+            "moqui_core::service::user_keys::get_app_passwords",
             "moqui_core::service::user_keys::revoke_access_token",
+            "moqui_core::service::user_keys::revoke_app_password",
         ];
         if cfg!(feature = "git") {
             expected.extend([

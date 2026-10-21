@@ -22,8 +22,10 @@ mod chat;
 mod chat_link;
 #[cfg(test)]
 mod chat_tests;
+mod collab;
 mod content;
 pub mod coverage;
+mod dav;
 pub(crate) mod define;
 mod eca;
 mod eca_rules;

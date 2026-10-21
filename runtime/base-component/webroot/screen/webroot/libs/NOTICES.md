@@ -1724,13 +1724,108 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## Tiptap (with ProseMirror, bundled) 3.31.4
 
 License: MIT. Source: npm `@tiptap/core@3.31.4`.
-Bundles @tiptap/core, starter-kit (and the extensions it includes), extension-link, extension-image, extension-mention, extension-placeholder, extension-table, extension-table-row, extension-table-cell, extension-table-header, extensions, suggestion and pm 3.31.4, the prosemirror-* packages, @floating-ui/*, linkifyjs, orderedmap, rope-sequence and w3c-keyname: all MIT. Each license text is below once, with the packages it is the license of.
+Bundles @tiptap/core, starter-kit (and the extensions it includes), extension-link, extension-image, extension-mention, extension-placeholder, extension-table, extension-table-row, extension-table-cell, extension-table-header, extension-collaboration, extension-collaboration-caret, extensions, suggestion and pm 3.31.4, the prosemirror-* packages, @tiptap/y-tiptap, yjs, y-protocols, lib0, isomorphic.js, @floating-ui/*, linkifyjs, orderedmap, rope-sequence and w3c-keyname: all MIT. Each license text is below once, with the packages it is the license of.
 
 ```text
---- @tiptap/core 3.31.4: LICENSE.md, @tiptap/extension-blockquote 3.31.4: LICENSE.md, @tiptap/extension-bold 3.31.4: LICENSE.md, @tiptap/extension-bullet-list 3.31.4: LICENSE.md, @tiptap/extension-code 3.31.4: LICENSE.md, @tiptap/extension-code-block 3.31.4: LICENSE.md, @tiptap/extension-document 3.31.4: LICENSE.md, @tiptap/extension-dropcursor 3.31.4: LICENSE.md, @tiptap/extension-gapcursor 3.31.4: LICENSE.md, @tiptap/extension-hard-break 3.31.4: LICENSE.md, @tiptap/extension-heading 3.31.4: LICENSE.md, @tiptap/extension-horizontal-rule 3.31.4: LICENSE.md, @tiptap/extension-image 3.31.4: LICENSE.md, @tiptap/extension-italic 3.31.4: LICENSE.md, @tiptap/extension-link 3.31.4: LICENSE.md, @tiptap/extension-list 3.31.4: LICENSE.md, @tiptap/extension-list-item 3.31.4: LICENSE.md, @tiptap/extension-list-keymap 3.31.4: LICENSE.md, @tiptap/extension-mention 3.31.4: LICENSE.md, @tiptap/extension-ordered-list 3.31.4: LICENSE.md, @tiptap/extension-paragraph 3.31.4: LICENSE.md, @tiptap/extension-placeholder 3.31.4: LICENSE.md, @tiptap/extension-strike 3.31.4: LICENSE.md, @tiptap/extension-table 3.31.4: LICENSE.md, @tiptap/extension-table-cell 3.31.4: LICENSE.md, @tiptap/extension-table-header 3.31.4: LICENSE.md, @tiptap/extension-table-row 3.31.4: LICENSE.md, @tiptap/extension-text 3.31.4: LICENSE.md, @tiptap/extension-underline 3.31.4: LICENSE.md, @tiptap/extensions 3.31.4: LICENSE.md, @tiptap/pm 3.31.4: LICENSE, @tiptap/starter-kit 3.31.4: LICENSE.md, @tiptap/suggestion 3.31.4: LICENSE.md ---
+--- @tiptap/core 3.31.4: LICENSE.md, @tiptap/extension-blockquote 3.31.4: LICENSE.md, @tiptap/extension-bold 3.31.4: LICENSE.md, @tiptap/extension-bullet-list 3.31.4: LICENSE.md, @tiptap/extension-code 3.31.4: LICENSE.md, @tiptap/extension-code-block 3.31.4: LICENSE.md, @tiptap/extension-collaboration 3.31.4: LICENSE.md, @tiptap/extension-collaboration-caret 3.31.4: LICENSE.md, @tiptap/extension-document 3.31.4: LICENSE.md, @tiptap/extension-dropcursor 3.31.4: LICENSE.md, @tiptap/extension-gapcursor 3.31.4: LICENSE.md, @tiptap/extension-hard-break 3.31.4: LICENSE.md, @tiptap/extension-heading 3.31.4: LICENSE.md, @tiptap/extension-horizontal-rule 3.31.4: LICENSE.md, @tiptap/extension-image 3.31.4: LICENSE.md, @tiptap/extension-italic 3.31.4: LICENSE.md, @tiptap/extension-link 3.31.4: LICENSE.md, @tiptap/extension-list 3.31.4: LICENSE.md, @tiptap/extension-list-item 3.31.4: LICENSE.md, @tiptap/extension-list-keymap 3.31.4: LICENSE.md, @tiptap/extension-mention 3.31.4: LICENSE.md, @tiptap/extension-ordered-list 3.31.4: LICENSE.md, @tiptap/extension-paragraph 3.31.4: LICENSE.md, @tiptap/extension-placeholder 3.31.4: LICENSE.md, @tiptap/extension-strike 3.31.4: LICENSE.md, @tiptap/extension-table 3.31.4: LICENSE.md, @tiptap/extension-table-cell 3.31.4: LICENSE.md, @tiptap/extension-table-header 3.31.4: LICENSE.md, @tiptap/extension-table-row 3.31.4: LICENSE.md, @tiptap/extension-text 3.31.4: LICENSE.md, @tiptap/extension-underline 3.31.4: LICENSE.md, @tiptap/extensions 3.31.4: LICENSE.md, @tiptap/pm 3.31.4: LICENSE, @tiptap/starter-kit 3.31.4: LICENSE.md, @tiptap/suggestion 3.31.4: LICENSE.md ---
 MIT License
 
 Copyright (c) 2025, Tiptap GmbH
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--- @tiptap/y-tiptap 3.0.9: LICENSE ---
+The MIT License (MIT)
+
+Copyright (c) 2019 Kevin Jahns <kevin.jahns@protonmail.com>.
+Copyright (c) 2025 Tiptap GmbH.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--- yjs 13.6.33: LICENSE ---
+The MIT License (MIT)
+
+Copyright (c) 2023
+  - Kevin Jahns <kevin.jahns@protonmail.com>.
+  - Chair of Computer Science 5 (Databases & Information Systems), RWTH Aachen University, Germany
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--- y-protocols 1.0.7: LICENSE, lib0 0.2.119: LICENSE ---
+The MIT License (MIT)
+
+Copyright (c) 2019 Kevin Jahns <kevin.jahns@protonmail.com>.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--- isomorphic.js 0.2.5: LICENSE ---
+The MIT License (MIT)
+
+Copyright (c) 2020 Kevin Jahns <kevin.jahns@protonmail.com>.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

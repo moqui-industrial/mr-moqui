@@ -37,6 +37,8 @@ use moqui_lib::sync::lock;
 
 use crate::http::{plain, HttpState};
 
+pub(crate) mod collab;
+
 type CoreError = moqui_core::context::Error;
 
 static PUSH: OnceLock<moqui_core::notify::Subscription> = OnceLock::new();
@@ -262,7 +264,7 @@ async fn run_socket(
             }
             incoming = socket.recv() => {
                 last_heard = tokio::time::Instant::now();
-                if !handle_incoming(&mut socket, &slot, incoming).await {
+                if !handle_incoming(&mut socket, &factory, &slot, incoming).await {
                     break;
                 }
             }
@@ -289,6 +291,7 @@ async fn run_socket(
     }
     tracing::debug!(session_id = %slot.session_id, user_id = %slot.user_id, "notification socket closed");
     unregister(id);
+    collab::socket_closed(&factory, id);
     offline_when_gone(&factory, &slot.user_id);
 }
 
@@ -304,11 +307,16 @@ fn idle_timeout(factory: &ExecutionContextFactory) -> std::time::Duration {
 
 async fn handle_incoming(
     socket: &mut WebSocket,
+    factory: &Arc<ExecutionContextFactory>,
     slot: &Arc<Slot>,
     incoming: Option<Result<Message, axum::Error>>,
 ) -> bool {
     match incoming {
         Some(Ok(Message::Text(text))) => {
+            // a co-editing frame (JSON with `collab`)
+            if collab::handle(factory, slot, &text) {
+                return true;
+            }
             // A topic change is a set update on this socket; it needs no execution context or worker.
             if let Some(command) = parse_command(&text) {
                 apply_command(slot, command);
@@ -426,6 +434,21 @@ fn flatten_call(ran: Result<Result<(), CoreError>, tokio::task::JoinError>) -> R
         Ok(result) => result,
         Err(_) => Err(CoreError::new("service worker stopped")),
     }
+}
+
+/// Run `job` on a request worker in a fresh context, without blocking the async runtime.
+async fn on_pool<T, F>(factory: &Arc<ExecutionContextFactory>, job: F) -> Result<T, CoreError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, CoreError> + Send + 'static,
+{
+    let factory = Arc::clone(factory);
+    tokio::task::spawn_blocking(move || {
+        let rx = factory.request_pool().try_submit(Arc::clone(&factory), job)?;
+        rx.recv().map_err(|_| CoreError::new("request worker stopped"))?
+    })
+    .await
+    .map_err(|_| CoreError::new("request worker panicked"))?
 }
 
 fn deliver_notice(message: &TopicMessage) {

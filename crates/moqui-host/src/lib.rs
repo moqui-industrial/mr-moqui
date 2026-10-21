@@ -40,10 +40,10 @@ pub mod smtp;
 pub mod ssh;
 #[cfg(feature = "sso")]
 pub mod sso;
-#[cfg(feature = "embedded-postgres")]
-pub mod test_cmd;
 #[cfg(feature = "tui")]
 mod term;
+#[cfg(feature = "embedded-postgres")]
+pub mod test_cmd;
 #[cfg(feature = "tui")]
 pub mod tui;
 #[cfg(feature = "tui")]
@@ -56,6 +56,8 @@ pub mod usage;
 mod cluster_edge;
 mod cluster_notify;
 
+#[cfg(feature = "axum")]
+mod dav_http;
 #[cfg(all(feature = "git", any(feature = "axum", feature = "ssh")))]
 mod git_bridge;
 #[cfg(all(feature = "axum", feature = "git"))]
@@ -68,10 +70,10 @@ mod http;
 mod notws;
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 mod port_check;
-#[cfg(all(feature = "axum", feature = "tui"))]
-mod termws;
 #[cfg(feature = "axum")]
 mod source_body;
+#[cfg(all(feature = "axum", feature = "tui"))]
+mod termws;
 #[cfg(any(feature = "axum", feature = "inbound-smtp"))]
 mod tls;
 

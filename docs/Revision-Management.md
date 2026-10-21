@@ -347,6 +347,35 @@ space's tree for a file of that name: a new top-level page `Travel` would be wri
 | `search#WikiPages(text, wikiSpaceId)` | Through any search document on `WikiPage` (its content, title and last change from `get#WikiPageManualDocumentData`) when search is available, else the page paths; never a page the user may not view |
 | `get#WikiSpacePages(includeDetail)` | The tree, without the restricted pages a user may not view; with the detail each page's title, snippet, last change, categories and pinned (the category `Pinned`), for a notes list |
 
+## Co-editing
+
+Several people edit a wiki page at once in `m-coedit` (Tiptap over Yjs in the browser; js/README.md, Collaborative editing),
+and the server keeps the document with `yrs`, the Rust Yjs (`crates/moqui-core/src/collab/`, the socket side
+`crates/moqui-host/src/notws/collab.rs`). A document is named by its record, `WikiPage:<wikiPageId>`, and stored as
+`moqui.resource.CollabDocument`: the Yjs state, the markdown it renders to, the hash of the page text it was made from or
+last saved as, and the users whose changes are in no version yet.
+
+- **Join.** A client sends `{"collab":"join"}` with its state vector on the notification socket; the server checks the
+  user's view access (`get#WikiPageAccess`; update access to change it), loads the document (from its row, or seeded from
+  the page's markdown when there is none or the page was changed outside co-editing with no changes open) and answers the
+  update the client lacks. Updates are applied in memory, acknowledged, sent to the other editors and, in a cluster,
+  published on the topic `collab-update` for the editors on the other servers; presence (Yjs awareness) goes the same way
+  and is not kept.
+- **Markdown.** The document is the editor's structure: the `default` XML fragment in y-prosemirror's encoding, with
+  Tiptap's node and mark names (`collab/markdown.rs`). The server writes it from the markdown and the markdown from it, so
+  nothing depends on a browser being open; HTML and wiki links stay as written, and the markdown is normalized once (`-`
+  bullets, `**` and `*`, fenced code).
+- **Versions.** The page's text is written only as a version (`update#WikiPage`, as an editor): on Save with a note
+  (`org.moqui.impl.CollabServices.save#CollabDocument`), after two minutes without an edit on database files, and when the
+  last editor leaves (a note names the editors). The state is written a second and a half after an edit, merged with what
+  another server wrote. A save tells the editors (`saved`).
+- **Outside changes.** A page saved with the markdown text area, restored or moved while no co-edited changes are open is
+  read again at the next join; with changes open, the co-edited text is kept (logged) and the next save writes over the
+  change, which stays in the page's history.
+
+IronStone's Knowledge and Notes use it when the page exists and the page has its notification socket, and the markdown
+text area otherwise or when the editor cannot start (`fallback`).
+
 ## Token routes and the public shell
 
 A `token-route` of the webroot `webapp` in the conf makes `/<name>/<token>` an anonymous page:

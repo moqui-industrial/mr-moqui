@@ -32,8 +32,8 @@ first branch pushed) its default branch.
 
 ## Logging in
 
-- **HTTPS**: HTTP Basic with the username and the password, or an **access token** as the password, which accounts
-  with a second factor need (the password alone cannot complete a login there). `Authorization: Bearer <token>` and
+- **HTTPS**: HTTP Basic with the username and the password, or an **access token** or an **app password** (docs/Sync.md)
+  as the password, which accounts with a second factor need (the password alone cannot complete a login there). `Authorization: Bearer <token>` and
   an `api_key` header work too. Credentials are taken only over HTTPS (the `webapp_https_listen_port` listener, or
   `X-Forwarded-Proto: https` behind the proxy that `webapp_client_ip_header` names), from loopback, or with
   `git-server` `allow-http="true"`. A request with no credentials gets 401, so git asks for them.
@@ -66,6 +66,11 @@ refuses to serve at all when `<artifact-execution type="AT_GIT_REPOSITORY" authz
 as every check would pass then. Reading and writing `git://` locations is not checked against this type.
 
 The default branch cannot be deleted. Only `refs/heads/` and `refs/tags/` can be pushed.
+
+A repository that holds a drive (`ResourceDrive.repositoryId`, the `DRIVE_<driveId>` repositories of version-controlled
+drives) also takes the drive's own rule (`FileServices.get#DriveAccess`), for users with no `AT_GIT_REPOSITORY` grant: view
+fetches, edit pushes new refs and fast-forwards on a drive that is not read only, manage forces a push or deletes a ref. The
+`get#Git*` services follow it, so Files' drive settings show the clone addresses to every member.
 
 ## Protocol
 

@@ -56,6 +56,8 @@ function TIPTAP_DEPS() {
     '@tiptap/extension-bullet-list': '3.31.4',
     '@tiptap/extension-code': '3.31.4',
     '@tiptap/extension-code-block': '3.31.4',
+    '@tiptap/extension-collaboration': '3.31.4',
+    '@tiptap/extension-collaboration-caret': '3.31.4',
     '@tiptap/extension-document': '3.31.4',
     '@tiptap/extension-dropcursor': '3.31.4',
     '@tiptap/extension-gapcursor': '3.31.4',
@@ -83,6 +85,14 @@ function TIPTAP_DEPS() {
     '@tiptap/pm': '3.31.4',
     '@tiptap/starter-kit': '3.31.4',
     '@tiptap/suggestion': '3.31.4',
+    // The collaboration of m-coedit (pinned Oct 21, 2026, published by Sep 30): Yjs, Tiptap's y-prosemirror (@tiptap/y-tiptap,
+    // which the two collaboration extensions import) and the awareness protocol, in the same bundle so ProseMirror and Yjs are
+    // one instance each.
+    '@tiptap/y-tiptap': '3.0.9',
+    yjs: '13.6.33',
+    'y-protocols': '1.0.7',
+    lib0: '0.2.119',
+    'isomorphic.js': '0.2.5',
     '@floating-ui/core': '1.8.0',
     '@floating-ui/dom': '1.8.0',
     '@floating-ui/utils': '0.2.12',
@@ -105,7 +115,8 @@ function TIPTAP_DEPS() {
     'w3c-keyname': '2.2.8',
   };
 }
-// What the Tiptap bundle exports as the global Tiptap: the editor and the extensions m-rich-text uses.
+// What the Tiptap bundle exports as the global Tiptap: the editor and the extensions m-rich-text uses, and for m-coedit the
+// Yjs namespace (Y), the collaboration extensions and the awareness protocol.
 const TIPTAP_ENTRY = `export { Editor, Extension, Node, Mark, mergeAttributes } from '@tiptap/core';
 export { default as StarterKit } from '@tiptap/starter-kit';
 export { default as Link } from '@tiptap/extension-link';
@@ -114,6 +125,10 @@ export { default as Mention } from '@tiptap/extension-mention';
 export { default as Placeholder } from '@tiptap/extension-placeholder';
 export { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
 export { PluginKey } from '@tiptap/pm/state';
+export { default as Collaboration } from '@tiptap/extension-collaboration';
+export { default as CollaborationCaret } from '@tiptap/extension-collaboration-caret';
+export * as Y from 'yjs';
+export { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness';
 `;
 
 const HLJS_LANGS = ['bash', 'css', 'diff', 'groovy', 'java', 'javascript', 'json', 'markdown', 'plaintext',
@@ -276,20 +291,22 @@ SIL Open Font License 1.1 (the fonts): the full text is in licenses/OFL-1.1.txt,
     licenseFiles: ['LICENSE'],
   },
   {
-    // The rich-text editor of m-rich-text, loaded only when an editor mounts. Tiptap has no browser build of its own (it
-    // ships ES modules), so this is a bundle of the packages in TIPTAP_DEPS with ProseMirror in it.
+    // The rich-text editor of m-rich-text and m-coedit, loaded only when an editor mounts. Tiptap has no browser build of its
+    // own (it ships ES modules), so this is a bundle of the packages in TIPTAP_DEPS with ProseMirror and Yjs in it.
     id: 'tiptap', name: 'Tiptap (with ProseMirror, bundled)', npm: '@tiptap/core', version: '3.31.4', license: 'MIT',
     licenseNote: 'Bundles @tiptap/core, starter-kit (and the extensions it includes), extension-link, extension-image, ' +
       'extension-mention, extension-placeholder, extension-table, extension-table-row, extension-table-cell, ' +
-      'extension-table-header, extensions, suggestion and pm 3.31.4, the prosemirror-* packages, ' +
-      '@floating-ui/*, linkifyjs, orderedmap, rope-sequence and w3c-keyname: all MIT. Each license text is below once, ' +
+      'extension-table-header, extension-collaboration, extension-collaboration-caret, extensions, suggestion and pm 3.31.4, ' +
+      'the prosemirror-* packages, @tiptap/y-tiptap, yjs, y-protocols, lib0, isomorphic.js, @floating-ui/*, linkifyjs, ' +
+      'orderedmap, rope-sequence and w3c-keyname: all MIT. Each license text is below once, ' +
       'with the packages it is the license of.',
     copy: [],
     noticePackages: Object.keys(TIPTAP_DEPS()),
     noticeDedupe: true,
     build: 'esbuild --bundle --minify --format=iife --global-name=Tiptap --platform=browser --target=es2020 ' +
       '--legal-comments=none of an entry that exports Editor, Extension, Node, Mark, mergeAttributes, StarterKit, Link, ' +
-      'Image, Mention, Placeholder, Table, TableRow, TableCell, TableHeader and PluginKey. Exposes the global Tiptap.',
+      'Image, Mention, Placeholder, Table, TableRow, TableCell, TableHeader, PluginKey, Collaboration, CollaborationCaret, Y ' +
+      '(the yjs namespace), Awareness, encodeAwarenessUpdate, applyAwarenessUpdate and removeAwarenessStates. Exposes the global Tiptap.',
     produce: (ctx) => [['tiptap/tiptap.min.js', ctx.esbuildTiptap()]],
   },
   {

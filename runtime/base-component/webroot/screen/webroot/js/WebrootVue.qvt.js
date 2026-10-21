@@ -3016,10 +3016,14 @@
     // The editor's extensions: StarterKit (paragraphs, headings 1 to 3, bold, italic, strike, underline, code, code blocks,
     // quotes, lists, rules, breaks, history), Link (no target, class or rel of its own: the safe cleaning adds rel), Image by
     // URL (no data: URLs), the placeholder, a table (full editor only), the mention when the editor has a mention URL, the
-    // record link when it has a record URL, and the keys of the component.
+    // record link when it has a record URL, and the keys of the component. With collab (m-coedit) the document is the Yjs
+    // fragment "default" and the history is Yjs's (undo and redo of this editor's own changes), with the carets of the
+    // others; StarterKit's history and trailing paragraph are off (each editor adding that paragraph would add one each).
     const richTextExtensions = (T, vm) => {
+        const starter = { heading: { levels: [1, 2, 3] }, link: false, codeBlock: { HTMLAttributes: { class: null } } };
+        if (vm.collab) Object.assign(starter, { undoRedo: false, trailingNode: false });
         const list = [
-            T.StarterKit.configure({ heading: { levels: [1, 2, 3] }, link: false, codeBlock: { HTMLAttributes: { class: null } } }),
+            T.StarterKit.configure(starter),
             T.Link.configure({ openOnClick: false, autolink: true, linkOnPaste: true, defaultProtocol: "https",
                 HTMLAttributes: { target: null, rel: null, class: null } }),
             T.Image.configure({ inline: false, allowBase64: false }),
@@ -3042,6 +3046,10 @@
         ];
         if (!vm.light && T.Table && T.TableRow && T.TableCell && T.TableHeader) {
             list.push(T.Table.configure({ resizable: false }), T.TableRow, T.TableHeader, T.TableCell);
+        }
+        if (vm.collab) {
+            list.push(T.Collaboration.configure({ document: vm.collab.doc, field: "default" }),
+                T.CollaborationCaret.configure({ provider: { awareness: vm.collab.awareness }, user: vm.collab.user }));
         }
         if (vm.mentionUrl) {
             const Mention = T.Mention.extend({
@@ -3107,7 +3115,9 @@
     // edit, so a save while the toggle is on still stores HTML). Paste, drop and the full toolbar's file button upload an
     // image to /richTextImage and insert the returned address; a data: image is uploaded the same way. When the library
     // does not load, the field is the html editor of m-text-area, with a control that tries the editor again; a later
-    // editor that does load starts the ones still waiting.
+    // editor that does load starts the ones still waiting. collab ({doc, awareness, user: {name, color}}, from m-coedit)
+    // makes the document a shared Yjs one: no content of its own, no model, no plain-text toggle, and a failure emits
+    // failed (for m-coedit's host to show its own field) instead of the html editor.
     let richTextCount = 0;
     // one load of the library for the page; a failure clears it so the next try starts again
     let tiptapLoad = null;
@@ -3130,9 +3140,7 @@
                     other.start();
                     dropFailed(other);
                 } catch (err) {
-                    console.error("m-rich-text: the editor did not start, the html editor stands in: " + err);
-                    other.state = "failed";
-                    rememberFailed(other);
+                    other.startFailed("the editor did not start, the html editor stands in: " + err);
                 }
             });
         });
@@ -3142,8 +3150,9 @@
         mixins: [fieldMixin, localValueMixin],
         props: { modelValue: String, name: String, id: String, label: String, form: String, disable: Boolean, readonly: Boolean, tooltip: String,
             light: Boolean, placeholder: String, rows: [String, Number], enter: { type: String, default: "newline" }, mentionUrl: String,
-            mentionParameters: Object, recordUrl: String, recordParameters: Object, plain: Boolean, plainToggle: { type: Boolean, default: true }, autofocus: Boolean },
-        emits: ["update:modelValue", "update:plain", "submit", "mention"],
+            mentionParameters: Object, recordUrl: String, recordParameters: Object, plain: Boolean, plainToggle: { type: Boolean, default: true }, autofocus: Boolean,
+            collab: Object },
+        emits: ["update:modelValue", "update:plain", "submit", "mention", "failed"],
         data() {
             richTextCount += 1;
             return { state: "loading", isPlain: this.plain, focused: false, plainFocused: false, htmlBeforePlain: "", plainText: "",
@@ -3152,7 +3161,7 @@
         },
         template:
             '<div class="m-rich-text" :class="{\'m-rich-text-light\': light, \'m-rich-text-focused\': focused}" :data-state="state">' +
-                '<div v-if="state === \'failed\'">' +
+                '<div v-if="state === \'failed\' && !collab">' +
                     '<div class="row items-center q-mb-xs"><q-btn dense flat no-caps icon="sym_o_refresh" :label="t(\'Try the editor again\')" @click="retryEditor"></q-btn></div>' +
                     '<m-text-area editor-type="html" :model-value="local" @update:model-value="onInput" :name="name" :id="id"' +
                         ' :label="label" :form="form" :disable="disable" :readonly="readonly" :tooltip="tooltip"></m-text-area>' +
@@ -3216,7 +3225,7 @@
                 '</template>' +
             '</div>',
         computed: {
-            buttons() { return moqui.richText.toolbar(this.light, this.plainToggle && !this.light); },
+            buttons() { return moqui.richText.toolbar(this.light, this.plainToggle && !this.light && !this.collab); },
             blocks() { return [{ key: "paragraph", label: "Paragraph" }, { key: "h1", label: "Heading 1" }, { key: "h2", label: "Heading 2" }, { key: "h3", label: "Heading 3" }]; },
             tableItems() { return [{ key: "insertTable", label: "Insert table" }, { key: "addRowAfter", label: "Add row" }, { key: "addColumnAfter", label: "Add column" },
                 { key: "deleteRow", label: "Delete row" }, { key: "deleteColumn", label: "Delete column" }, { key: "deleteTable", label: "Delete table" }]; },
@@ -3229,6 +3238,7 @@
         },
         watch: {
             modelValue(value) {
+                if (this.collab) return;
                 if (this.isPlain) {
                     // the textarea is the plain text; do not rewrite it from the model while it is focused
                     if (this.plainFocused) return;
@@ -3256,7 +3266,8 @@
                 this.editor = markRaw(new T.Editor({
                     element: this.$refs.content,
                     extensions: richTextExtensions(T, this),
-                    content: moqui.richText.toHtml(this.local),
+                    // a shared document starts empty and takes the server's content through Yjs
+                    content: this.collab ? "" : moqui.richText.toHtml(this.local),
                     editable: this.canEdit,
                     autofocus: this.autofocus ? "end" : false,
                     editorProps: {
@@ -3274,7 +3285,7 @@
                         }
                     },
                     onUpdate: ({ editor }) => {
-                        if (this.isPlain) return;
+                        if (this.isPlain || this.collab) return;
                         const html = moqui.richText.value(editor.getHTML());
                         if (html !== (this.local || "")) this.onInput(html);
                     },
@@ -3418,6 +3429,18 @@
                     this.editor.chain().focus().setImage({ src: url, alt: alt }).run();
                 }, () => { moqui.notifyMessages(null, this.t("The image was not saved")); });
             },
+            // the load or the start failed: the html editor stands in and waits for a later success, or with collab the host
+            // is told (failed) and shows its own field
+            startFailed(message) {
+                this.state = "failed";
+                if (this.collab) {
+                    console.error("m-rich-text: " + message.replace(/, the html editor stands in/, ""));
+                    this.$emit("failed", message);
+                    return;
+                }
+                console.error("m-rich-text: " + message);
+                rememberFailed(this);
+            },
             retryEditor() {
                 this.state = "loading";
                 this.$nextTick(() => {
@@ -3428,15 +3451,11 @@
                             dropFailed(this);
                             wakeFailed();
                         } catch (err) {
-                            console.error("m-rich-text: the editor did not start, the html editor stands in: " + err);
-                            this.state = "failed";
-                            rememberFailed(this);
+                            this.startFailed("the editor did not start, the html editor stands in: " + err);
                         }
                     }, (err) => {
                         if (this.unmountedNow) return;
-                        console.error("m-rich-text: Tiptap did not load, the html editor stands in: " + err);
-                        this.state = "failed";
-                        rememberFailed(this);
+                        this.startFailed("Tiptap did not load, the html editor stands in: " + err);
                     });
                 });
             },
@@ -3529,15 +3548,11 @@
                     dropFailed(this);
                     wakeFailed();
                 } catch (err) {
-                    console.error("m-rich-text: the editor did not start, the html editor stands in: " + err);
-                    this.state = "failed";
-                    rememberFailed(this);
+                    this.startFailed("the editor did not start, the html editor stands in: " + err);
                 }
             }, (err) => {
                 if (this.unmountedNow) return;
-                console.error("m-rich-text: Tiptap did not load, the html editor stands in: " + err);
-                this.state = "failed";
-                rememberFailed(this);
+                this.startFailed("Tiptap did not load, the html editor stands in: " + err);
             });
         },
         beforeUnmount() {
@@ -3546,6 +3561,380 @@
             if (this.mentionUnmount) { this.mentionUnmount(); this.mentionUnmount = null; }
             if (this.editor) { this.editor.destroy(); this.editor = null; }
         }
+    });
+
+    /* ========== collaborative editing: m-coedit (Yjs over the notification socket) ========== */
+
+    // The pure part of m-coedit, tested under Node with a fake notification client (WebrootVue.qvt.coedit.test.js): base64 of
+    // the binary Yjs updates (btoa in a browser, Buffer where there is none), the caret color of a user, and the provider,
+    // the protocol of js/README.md (Collaborative editing) between a Y.Doc and its Awareness and the socket.
+    const coeditColors = ["#1e88e5", "#e53935", "#43a047", "#8e24aa", "#fb8c00", "#00897b", "#d81b60", "#3949ab", "#6d4c41",
+        "#00acc1", "#7cb342", "#f4511e"];
+    moqui.coedit = {
+        toBase64(bytes) {
+            if (typeof root.btoa !== "function") return Buffer.from(bytes).toString("base64");
+            let binary = "";
+            for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+            return root.btoa(binary);
+        },
+        fromBase64(text) {
+            if (typeof root.atob !== "function") return new Uint8Array(Buffer.from(String(text || ""), "base64"));
+            const binary = root.atob(String(text || ""));
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return bytes;
+        },
+        // a color for a user id (or a name), the same each time; #rrggbb, the only form the caret extension takes
+        userColor(id) {
+            let hash = 0;
+            for (const ch of String(id || "")) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+            return coeditColors[hash % coeditColors.length];
+        }
+    };
+
+    // One editor's side of a shared document. options: client (a moqui.NotificationClient: send, registerListener, onState,
+    // isOpen), docKey, doc (a Y.Doc), awareness (an Awareness of it), lib (the Tiptap global: Y and the awareness functions),
+    // onStatus({state, peers, pending}), onAccess(canEdit), onSaved(message), onFallback({reason, code, message}), batchMs
+    // (50: local updates in that time go as one message), joinTimeoutMs (20 s: a join no one answers on an open socket is a
+    // fallback). A remote update is applied with the provider as its origin, so it is not sent back. Each open of the socket
+    // joins again with the state vector, so what was edited offline merges; an update sent and not acknowledged before a
+    // close is in that exchange too.
+    class CoeditProvider {
+        constructor(options) {
+            this.options = options;
+            this.client = options.client;
+            this.doc = options.doc;
+            this.awareness = options.awareness;
+            this.lib = options.lib;
+            this.docKey = options.docKey;
+            this.clientId = options.clientId || "c" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+            this.batchMs = options.batchMs === undefined ? 50 : options.batchMs;
+            this.joined = false;
+            this.joinedOnce = false;
+            this.wasOpen = false;
+            this.canEdit = false;
+            this.failed = null;
+            this.destroyed = false;
+            this.peers = [];
+            this.unacked = new Set();
+            this.nextId = 0;
+            this.queue = [];
+            this.retries = 0;
+            this.lastStatus = "";
+            this.onMessage = (message) => this.receive(message);
+            this.onDocUpdate = (update, origin) => {
+                if (origin === this || this.destroyed) return;
+                this.queue.push(update);
+                if (!this.batchTimer) this.batchTimer = setTimeout(() => this.flush(), this.batchMs);
+                this.tell();
+            };
+            // the local state changed (a caret, the user; the Awareness renews it every 15 s): sent once per batch
+            this.onAwarenessUpdate = (changes, origin) => {
+                if (origin === this || this.destroyed) return;
+                const own = this.awareness.clientID;
+                if (![].concat(changes.added, changes.updated, changes.removed).includes(own)) return;
+                if (!this.awarenessTimer) this.awarenessTimer = setTimeout(() => { this.awarenessTimer = null; this.sendAwareness(); }, this.batchMs);
+            };
+        }
+        start() {
+            this.listenerOff = this.client.registerListener("collab:" + this.docKey, this.onMessage);
+            this.stateOff = this.client.onState((state) => { if (state === "open") this.join(); else this.closed(); });
+            this.doc.on("update", this.onDocUpdate);
+            this.awareness.on("update", this.onAwarenessUpdate);
+            if (this.client.isOpen()) this.join();
+            else this.tell();
+        }
+        send(message) { this.client.send(Object.assign({ doc: this.docKey, client: this.clientId }, message)); }
+        join() {
+            if (this.destroyed || this.failed) return;
+            this.joined = false;
+            this.wasOpen = true;
+            this.unacked.clear();
+            this.dropQueue();
+            this.send({ collab: "join", awareness: this.doc.clientID, sv: moqui.coedit.toBase64(this.lib.Y.encodeStateVector(this.doc)) });
+            clearTimeout(this.joinTimer);
+            this.joinTimer = setTimeout(() => {
+                if (!this.joined && !this.destroyed && this.client.isOpen()) this.fail("timeout", null, "no answer to the join");
+            }, this.options.joinTimeoutMs || 20000);
+            this.tell();
+        }
+        // the socket closed: the others' carets go, and what is sent from here on waits for the next join's exchange
+        closed() {
+            if (this.destroyed) return;
+            this.joined = false;
+            this.unacked.clear();
+            this.dropQueue();
+            clearTimeout(this.joinTimer);
+            const others = Array.from(this.awareness.getStates().keys()).filter((id) => id !== this.awareness.clientID);
+            if (others.length) this.lib.removeAwarenessStates(this.awareness, others, this);
+            this.peers = [];
+            this.tell();
+        }
+        dropQueue() {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
+            this.queue = [];
+        }
+        // the local updates of the batch as one message; nothing while not joined (the join's exchange carries them)
+        flush() {
+            this.batchTimer = null;
+            const updates = this.queue.splice(0);
+            if (updates.length && this.joined && this.canEdit && this.client.isOpen()) {
+                this.sendUpdate(updates.length === 1 ? updates[0] : this.lib.Y.mergeUpdates(updates));
+            }
+            this.tell();
+        }
+        sendUpdate(update) {
+            this.nextId += 1;
+            this.unacked.add(this.nextId);
+            this.send({ collab: "update", id: this.nextId, update: moqui.coedit.toBase64(update) });
+        }
+        sendAwareness() {
+            if (!this.joined || this.destroyed || !this.client.isOpen()) return;
+            const update = this.lib.encodeAwarenessUpdate(this.awareness, [this.awareness.clientID]);
+            this.send({ collab: "awareness", update: moqui.coedit.toBase64(update) });
+        }
+        applyRemote(text) {
+            try {
+                this.lib.Y.applyUpdate(this.doc, moqui.coedit.fromBase64(text), this);
+            } catch (err) {
+                console.error("m-coedit: an update of " + this.docKey + " did not apply: " + err);
+            }
+        }
+        // a frame on the topic; ack, error and joined of another client id (another editor of the same user) are not ours
+        receive(message) {
+            if (!message || this.destroyed || this.failed) return;
+            const own = message.client === this.clientId;
+            if (message.type === "joined") { if (own) this.onJoined(message); }
+            else if (message.type === "update") { if (!own && message.update) this.applyRemote(message.update); }
+            else if (message.type === "ack") {
+                if (!own) return;
+                this.unacked.delete(Number(message.id));
+                this.retries = 0;
+                this.tell();
+            } else if (message.type === "awareness") {
+                if (own || !message.update) return;
+                try {
+                    this.lib.applyAwarenessUpdate(this.awareness, moqui.coedit.fromBase64(message.update), this);
+                } catch (err) {
+                    console.error("m-coedit: an awareness update of " + this.docKey + " did not apply: " + err);
+                }
+            } else if (message.type === "peer") { if (!own) this.onPeer(message); }
+            else if (message.type === "saved") { if (this.options.onSaved) this.options.onSaved(message); }
+            else if (message.type === "error") { if (own) this.onError(message); }
+        }
+        // the server's diff against our state vector, then ours against its, when it holds anything (an empty update is 2 bytes)
+        onJoined(message) {
+            clearTimeout(this.joinTimer);
+            this.joined = true;
+            this.joinedOnce = true;
+            this.canEdit = message.canEdit !== false;
+            this.dropQueue();
+            if (message.update) this.applyRemote(message.update);
+            this.peers = (message.peers || []).filter((peer) => peer && peer.client !== this.clientId).map(peerOf);
+            if (this.canEdit) {
+                const diff = this.lib.Y.encodeStateAsUpdate(this.doc, message.sv ? moqui.coedit.fromBase64(message.sv) : undefined);
+                if (diff.length > 2) this.sendUpdate(diff);
+            }
+            this.sendAwareness();
+            if (this.options.onAccess) this.options.onAccess(this.canEdit);
+            this.tell();
+        }
+        onPeer(message) {
+            const peer = peerOf(message);
+            this.peers = this.peers.filter((other) => other.client !== peer.client);
+            if (message.joined !== false) this.peers.push(peer);
+            else if (peer.awareness !== null) this.lib.removeAwarenessStates(this.awareness, [peer.awareness], this);
+            this.tell();
+        }
+        // Before the join is answered any error is the end (the host shows its own field). After it, 403 is read-only, and
+        // another code joins again (the exchange of state vectors makes the document whole), three times without an ack between.
+        onError(message) {
+            const code = Number(message.code) || 500;
+            if (!this.joined) { this.fail("server", code, message.message); return; }
+            if (code === 403) {
+                this.canEdit = false;
+                this.unacked.clear();
+                this.dropQueue();
+                if (this.options.onAccess) this.options.onAccess(false);
+                this.tell();
+                return;
+            }
+            this.retries += 1;
+            if (this.retries > 3) { this.fail("server", code, message.message); return; }
+            console.info("m-coedit: the server answered " + code + " for " + this.docKey + ", joining again: " + (message.message || ""));
+            if (this.client.isOpen()) this.join();
+        }
+        fail(reason, code, text) {
+            if (this.failed) return;
+            this.failed = reason;
+            clearTimeout(this.joinTimer);
+            this.dropQueue();
+            if (this.client.isOpen()) this.send({ collab: "leave" });
+            this.tell();
+            if (this.options.onFallback) this.options.onFallback({ reason, code: code || null, message: text || "" });
+        }
+        status() {
+            let state;
+            if (this.failed) state = "failed";
+            else if (!this.joined) state = this.wasOpen && !this.client.isOpen() ? "offline" : "connecting";
+            else if (!this.canEdit) state = "readonly";
+            else state = this.unacked.size || this.queue.length ? "saving" : "synced";
+            return { state, peers: this.peers.map((peer) => ({ client: peer.client, userId: peer.userId, name: peer.name })), pending: this.unacked.size };
+        }
+        tell() {
+            const status = this.status();
+            const key = JSON.stringify(status);
+            if (key === this.lastStatus) return;
+            this.lastStatus = key;
+            if (this.options.onStatus) this.options.onStatus(status);
+        }
+        // the last batch goes, then leave; the doc, its awareness and the editor are the owner's to destroy
+        destroy() {
+            if (this.destroyed) return;
+            if (this.queue.length) { clearTimeout(this.batchTimer); this.flush(); }
+            this.destroyed = true;
+            clearTimeout(this.joinTimer);
+            clearTimeout(this.awarenessTimer);
+            this.dropQueue();
+            if (this.client.isOpen() && !this.failed) this.send({ collab: "leave" });
+            if (this.listenerOff) this.listenerOff();
+            if (this.stateOff) this.stateOff();
+            this.doc.off("update", this.onDocUpdate);
+            this.awareness.off("update", this.onAwarenessUpdate);
+        }
+    }
+    const peerOf = (message) => ({ client: message.client, userId: message.userId || "", name: message.name || message.userId || "",
+        awareness: message.awareness === undefined || message.awareness === null ? null : Number(message.awareness) });
+    moqui.coedit.Provider = CoeditProvider;
+
+    // m-rich-text on a shared document (js/README.md, Collaborative editing): doc-key names it ("WikiPage:100023"), and the
+    // server seeds and renders it, so the editor never sets content of its own. The presence line shows the others (by user)
+    // and the sync state. Emits status ({state: loading, connecting, synced, saving, offline, readonly or failed, peers:
+    // [{client, userId, name}], pending}), saved (the server's saved frame: a version was made) and fallback ({reason: library,
+    // socket, server or timeout, code, message}) when the host should show its own markdown field instead. Other attributes
+    // (id, label, autofocus) go to the editor. html() is the editor's HTML now, for a preview.
+    component("m-coedit", {
+        name: "mCoedit",
+        inheritAttrs: false,
+        props: { docKey: { type: String, required: true }, placeholder: String, rows: [String, Number], light: Boolean, readonly: Boolean,
+            userName: String, userColor: String },
+        emits: ["status", "saved", "fallback"],
+        data() { return { collab: null, status: { state: "loading", peers: [], pending: 0 }, canEdit: false, joinedOnce: false }; },
+        template:
+            '<div class="m-coedit" :data-state="status.state">' +
+                '<div class="m-coedit-presence row items-center no-wrap" role="status">' +
+                    '<m-avatar v-for="person in people" :key="person.key" class="m-coedit-peer" :name="person.name" :user-id="person.userId" size="22px" tooltip></m-avatar>' +
+                    '<q-icon :name="stateIcon" size="16px" class="m-coedit-state-icon"></q-icon>' +
+                    '<span class="m-coedit-state text-caption">{{t(stateLabel)}}</span>' +
+                '</div>' +
+                '<m-rich-text v-if="collab" ref="editor" v-bind="$attrs" :collab="collab" :light="light" :placeholder="placeholder" :rows="rows"' +
+                    ' :readonly="readonly || (joinedOnce && !canEdit)" :disable="!joinedOnce" :plain-toggle="false" @failed="editorFailed"></m-rich-text>' +
+            '</div>',
+        computed: {
+            // the others, once per user (two tabs of one person are one face), not the user here
+            people() {
+                const me = (this.$root && this.$root.userId) || "";
+                const seen = {};
+                const out = [];
+                this.status.peers.forEach((peer) => {
+                    const key = peer.userId || peer.client;
+                    if ((me && peer.userId === me) || seen[key]) return;
+                    seen[key] = true;
+                    out.push({ key, userId: peer.userId, name: peer.name });
+                });
+                return out;
+            },
+            stateLabel() {
+                return { loading: "Loading the editor", connecting: "Connecting", synced: "Up to date", saving: "Saving", offline: "Offline, the changes wait here",
+                    readonly: "Read only", failed: "Not available" }[this.status.state] || "";
+            },
+            stateIcon() {
+                return { loading: "sym_o_hourglass_empty", connecting: "sym_o_sync", synced: "sym_o_cloud_done", saving: "sym_o_cloud_upload",
+                    offline: "sym_o_cloud_off", readonly: "sym_o_visibility", failed: "sym_o_error" }[this.status.state] || "sym_o_sync";
+            }
+        },
+        watch: {
+            docKey() {
+                this.stop();
+                this.collab = null;
+                this.$nextTick(() => { this.dropDoc(); this.begin(); });
+            }
+        },
+        methods: {
+            t(text) { return moqui.l10n && moqui.l10n.localize ? moqui.l10n.localize(text) : text; },
+            setStatus(status) {
+                this.status = status;
+                this.$emit("status", status);
+            },
+            fallback(reason, code, message) {
+                if (this.fellBack) return;
+                this.fellBack = true;
+                this.stop();
+                this.collab = null;
+                this.setStatus({ state: "failed", peers: [], pending: 0 });
+                this.$emit("fallback", { reason, code: code || null, message: message || "" });
+            },
+            editorFailed(message) { this.fallback("library", null, message); },
+            html() {
+                const editor = this.$refs.editor && this.$refs.editor.editor;
+                return editor ? moqui.richText.value(editor.getHTML()) : "";
+            },
+            begin() {
+                const client = this.$root && this.$root.notificationClient;
+                this.fellBack = false;
+                this.canEdit = false;
+                this.joinedOnce = false;
+                this.setStatus({ state: "loading", peers: [], pending: 0 });
+                if (!client || typeof client.send !== "function") { this.fallback("socket", null, "no notification socket"); return; }
+                loadTiptap().then(() => {
+                    if (this.unmountedNow) return;
+                    const T = root.Tiptap;
+                    if (!T.Y || !T.Awareness || !T.Collaboration || !T.CollaborationCaret) { this.fallback("library", null, "the Tiptap bundle has no collaboration"); return; }
+                    try {
+                        this.open(T, client);
+                    } catch (err) {
+                        console.error("m-coedit: the shared document did not start: " + err);
+                        this.fallback("library", null, String(err));
+                    }
+                }, (err) => {
+                    if (this.unmountedNow) return;
+                    console.error("m-coedit: Tiptap did not load: " + err);
+                    this.fallback("library", null, String(err));
+                });
+            },
+            open(T, client) {
+                const rootVm = this.$root || {};
+                const doc = new T.Y.Doc();
+                const awareness = new T.Awareness(doc);
+                const name = this.userName || rootVm.userFullName || rootVm.username || rootVm.userId || "";
+                const color = /^#[0-9a-f]{6}$/i.test(this.userColor || "") ? this.userColor : moqui.coedit.userColor(rootVm.userId || name);
+                this.ydoc = markRaw(doc);
+                this.awareness = markRaw(awareness);
+                this.provider = markRaw(new moqui.coedit.Provider({ client, docKey: this.docKey, doc, awareness, lib: T,
+                    onStatus: (status) => { if (!this.fellBack) this.setStatus(status); },
+                    onAccess: (canEdit) => { this.canEdit = canEdit; this.joinedOnce = true; },
+                    onSaved: (message) => this.$emit("saved", message),
+                    onFallback: (info) => this.fallback(info.reason, info.code, info.message) }));
+                this.collab = markRaw({ doc, awareness, user: { name, color } });
+                this.provider.start();
+            },
+            // leave (the provider sends its last batch first)
+            stop() {
+                if (this.provider) { this.provider.destroy(); this.provider = null; }
+            },
+            // after the editor is gone
+            dropDoc() {
+                if (this.awareness) { this.awareness.destroy(); this.awareness = null; }
+                if (this.ydoc) { this.ydoc.destroy(); this.ydoc = null; }
+            }
+        },
+        mounted() { this.begin(); },
+        beforeUnmount() {
+            this.unmountedNow = true;
+            this.stop();
+        },
+        unmounted() { this.dropDoc(); }
     });
 
     /* ========== subscreens and the menu ========== */

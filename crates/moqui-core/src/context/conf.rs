@@ -131,6 +131,7 @@ fn merge_config_nodes(base: &MNode, over: &MNode) {
         "ssh-server",
         "terminal",
         "git-server",
+        "dav-server",
         "smtp-server",
         "logging",
     ] {
@@ -513,10 +514,16 @@ mod tests {
         )
         .unwrap();
         super::merge_conf(&base, &over);
-        let pdf = base.first_named("screen-facade").and_then(|facade| facade.first_named("pdf")).unwrap();
+        let pdf = base
+            .first_named("screen-facade")
+            .and_then(|facade| facade.first_named("pdf"))
+            .unwrap();
         assert_eq!(pdf.attribute("page-limit").as_deref(), Some("4"));
         assert_eq!(pdf.attribute("timeout").as_deref(), Some("90"));
-        let authz = base.first_named("user-facade").and_then(|facade| facade.first_named("authz")).unwrap();
+        let authz = base
+            .first_named("user-facade")
+            .and_then(|facade| facade.first_named("authz"))
+            .unwrap();
         assert_eq!(authz.attribute("privileged-groups").as_deref(), Some("ADMIN"));
         assert_eq!(authz.attribute("sealed-permissions").as_deref(), Some("X"));
         let git = base.first_named("git-server").unwrap();

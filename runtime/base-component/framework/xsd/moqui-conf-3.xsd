@@ -36,6 +36,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:element minOccurs="0" ref="ssh-server"/>
                 <xs:element minOccurs="0" ref="terminal"/>
                 <xs:element minOccurs="0" ref="git-server"/>
+                <xs:element minOccurs="0" ref="dav-server"/>
                 <xs:element minOccurs="0" ref="smtp-server"/>
                 <xs:element minOccurs="0" ref="logging"/>
                 <xs:element minOccurs="0" ref="entity-facade"/>
@@ -1174,6 +1175,24 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="gc-prune-days" type="non-neg-int-expandable" default="14"><xs:annotation><xs:documentation>gc#GitRepositories deletes unreachable objects not written or referenced in this many days (at least 1).</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="gc-reflog-days" type="non-neg-int-expandable" default="30"><xs:annotation><xs:documentation>gc#GitRepositories keeps the commits of this many days of changes, so a force push can be undone.</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="gc-max-objects" type="non-neg-int-expandable" default="20000000"><xs:annotation><xs:documentation>gc#GitRepositories passes over a repository of more objects than this.</xs:documentation></xs:annotation></xs:attribute>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:element name="dav-server">
+        <xs:annotation><xs:documentation>The DAV server at /dav: WebDAV over drives, and CalDAV and CardDAV over the
+            calendars and address books of the adapter services named here (docs/Sync.md). Devices log in with app
+            passwords.</xs:documentation></xs:annotation>
+        <xs:complexType>
+            <xs:attribute name="enabled" type="boolean-expandable" default="true"><xs:annotation><xs:documentation>Serve /dav; when false it answers 404.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="public-url" type="xs:string"><xs:annotation><xs:documentation>The base URL the Sync settings show devices; from the webapp host and port when empty.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="calendar-services" type="xs:string"><xs:annotation><xs:documentation>The service class of the CalDAV adapter (get#DavCollections, get#DavObjects,
+                put#DavObject, delete#DavObject); no CalDAV when empty.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="contact-services" type="xs:string"><xs:annotation><xs:documentation>The service class of the CardDAV adapter; no CardDAV when empty.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="account-password" type="boolean-expandable" default="false"><xs:annotation><xs:documentation>Take the account password too, for an account with no second factor; app passwords only when false.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="allow-http" type="boolean-expandable" default="false"><xs:annotation><xs:documentation>Take credentials over plain HTTP.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="max-file" type="non-neg-int-expandable" default="268435456"><xs:annotation><xs:documentation>The largest request body, so the largest file a PUT writes, in bytes.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="sftp-drives" type="boolean-expandable" default="true"><xs:annotation><xs:documentation>A user without the SSH_SFTP permission who logs in to the SSH server
+                with an app password or a key gets SFTP to the drives they may open, one folder each.</xs:documentation></xs:annotation></xs:attribute>
         </xs:complexType>
     </xs:element>
 

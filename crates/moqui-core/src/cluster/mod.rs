@@ -46,7 +46,7 @@ use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 use crate::driver::DbRow;
 use crate::entity::exec::with_reserve_tx;
 use crate::entity::EntityFacade;
-use crate::notify::{self, TopicMessage, ENTITY_CACHE_INVALIDATE, NOTIFICATION_MESSAGE};
+use crate::notify::{self, TopicMessage, COLLAB_UPDATE, ENTITY_CACHE_INVALIDATE, NOTIFICATION_MESSAGE};
 use crate::user::{now_millis, now_value, value_millis};
 
 const MEMBER: &str = "moqui.server.ClusterMember";
@@ -239,7 +239,7 @@ pub fn apply_remote(facade: &EntityFacade, topic: &str, message: &TopicMessage) 
                     .collect()
             });
         crate::entity::cache::clear_one_cache(facade, name, primary_key.as_ref()).map_err(Error::from)?;
-    } else if topic != NOTIFICATION_MESSAGE {
+    } else if topic != NOTIFICATION_MESSAGE && topic != COLLAB_UPDATE {
         return Err(Error::new(format!("unknown topic {topic}")));
     }
     notify::publish(topic, message)
@@ -714,11 +714,7 @@ fn post_with_retry(sender: &Arc<dyn Sender>, base_url: &str, topic: &str, payloa
     false
 }
 
-fn invalidation_body(
-    entity_name: &str,
-    pk_fields: &[String],
-    values: &crate::entity::FieldMap,
-) -> serde_json::Value {
+fn invalidation_body(entity_name: &str, pk_fields: &[String], values: &crate::entity::FieldMap) -> serde_json::Value {
     let mut primary_key = serde_json::Map::new();
     for name in pk_fields {
         if let Some(value) = values.get(name.as_str()).filter(|value| !value.is_null()) {

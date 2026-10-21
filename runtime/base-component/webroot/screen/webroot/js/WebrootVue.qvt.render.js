@@ -207,6 +207,57 @@
               ]))
             }
         } },
+        "m-coedit": { hash: "148d829f", make: function (Vue) {
+            const { renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, resolveComponent: _resolveComponent, createBlock: _createBlock, createVNode: _createVNode, toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, mergeProps: _mergeProps, createCommentVNode: _createCommentVNode } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_m_avatar = _resolveComponent("m-avatar")
+              const _component_q_icon = _resolveComponent("q-icon")
+              const _component_m_rich_text = _resolveComponent("m-rich-text")
+
+              return (_openBlock(), _createElementBlock("div", {
+                class: "m-coedit",
+                "data-state": _ctx.status.state
+              }, [
+                _createElementVNode("div", {
+                  class: "m-coedit-presence row items-center no-wrap",
+                  role: "status"
+                }, [
+                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.people, (person) => {
+                    return (_openBlock(), _createBlock(_component_m_avatar, {
+                      key: person.key,
+                      class: "m-coedit-peer",
+                      name: person.name,
+                      "user-id": person.userId,
+                      size: "22px",
+                      tooltip: ""
+                    }, null, 8, ["name", "user-id"]))
+                  }), 128)),
+                  _createVNode(_component_q_icon, {
+                    name: _ctx.stateIcon,
+                    size: "16px",
+                    class: "m-coedit-state-icon"
+                  }, null, 8, ["name"]),
+                  _createElementVNode("span", { class: "m-coedit-state text-caption" }, _toDisplayString(_ctx.t(_ctx.stateLabel)), 1)
+                ]),
+                (_ctx.collab)
+                  ? (_openBlock(), _createBlock(_component_m_rich_text, _mergeProps({
+                      key: 0,
+                      ref: "editor"
+                    }, _ctx.$attrs, {
+                      collab: _ctx.collab,
+                      light: _ctx.light,
+                      placeholder: _ctx.placeholder,
+                      rows: _ctx.rows,
+                      readonly: _ctx.readonly || (_ctx.joinedOnce && !_ctx.canEdit),
+                      disable: !_ctx.joinedOnce,
+                      "plain-toggle": false,
+                      onFailed: _ctx.editorFailed
+                    }), null, 16, ["collab", "light", "placeholder", "rows", "readonly", "disable", "onFailed"]))
+                  : _createCommentVNode("", true)
+              ], 8, ["data-state"]))
+            }
+        } },
         "m-container-box": { hash: "faa2a157", make: function (Vue) {
             const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, renderSlot: _renderSlot, resolveComponent: _resolveComponent, createVNode: _createVNode, withModifiers: _withModifiers, createElementVNode: _createElementVNode, withCtx: _withCtx, vShow: _vShow, withDirectives: _withDirectives, normalizeClass: _normalizeClass, createBlock: _createBlock } = Vue
 
@@ -3985,7 +4036,7 @@
                 : _createCommentVNode("", true)
             }
         } },
-        "m-rich-text": { hash: "c46ac17d", make: function (Vue) {
+        "m-rich-text": { hash: "435a40dd", make: function (Vue) {
             const { resolveComponent: _resolveComponent, createVNode: _createVNode, createElementVNode: _createElementVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, renderList: _renderList, Fragment: _Fragment, createBlock: _createBlock, createTextVNode: _createTextVNode, withCtx: _withCtx, resolveDirective: _resolveDirective, withDirectives: _withDirectives, withModifiers: _withModifiers, normalizeClass: _normalizeClass, withKeys: _withKeys, normalizeStyle: _normalizeStyle, vShow: _vShow, Teleport: _Teleport } = Vue
 
             return function render(_ctx, _cache) {
@@ -4005,7 +4056,7 @@
                 class: _normalizeClass(["m-rich-text", {'m-rich-text-light': _ctx.light, 'm-rich-text-focused': _ctx.focused}]),
                 "data-state": _ctx.state
               }, [
-                (_ctx.state === 'failed')
+                (_ctx.state === 'failed' && !_ctx.collab)
                   ? (_openBlock(), _createElementBlock("div", { key: 0 }, [
                       _createElementVNode("div", { class: "row items-center q-mb-xs" }, [
                         _createVNode(_component_q_btn, {

@@ -515,3 +515,46 @@ test("a notification client tells its listeners when the socket opens and closes
         globalThis.setTimeout = savedTimeout;
     }
 });
+
+test("a notification client sends JSON when open, and keeps what is sent while closed for the next open", () => {
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+    const sockets = [];
+    function FakeSocket(url) { this.url = url; this.readyState = 0; this.sent = []; sockets.push(this); }
+    FakeSocket.prototype.send = function (text) { this.sent.push(text); };
+    Object.assign(FakeSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+    Object.defineProperty(globalThis, "WebSocket", { value: FakeSocket, configurable: true, writable: true });
+    const savedTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = () => 0;
+    try {
+        const client = new moqui.NotificationClient("ws://erp.example.com/notws");
+        // the first send without a socket opens one, and waits for it
+        assert.equal(client.send({ collab: "join", doc: "WikiPage:1" }), false);
+        assert.equal(sockets.length, 1);
+        client.registerListener("collab:WikiPage:1", () => {});
+        assert.equal(client.send({ collab: "update", id: 1 }), false);
+        const first = sockets[0];
+        first.readyState = 1;
+        // the subscribe first, then what waited, in order
+        first.onopen();
+        assert.deepEqual(first.sent, ["subscribe:collab:WikiPage:1", '{"collab":"join","doc":"WikiPage:1"}', '{"collab":"update","id":1}']);
+        assert.equal(client.sendQueue.length, 0);
+        assert.equal(client.send({ collab: "leave" }), true);
+        assert.equal(first.sent[3], '{"collab":"leave"}');
+        // closed: it waits again, at most 200, the oldest dropped
+        first.readyState = 3;
+        first.onclose();
+        for (let i = 0; i < 205; i++) client.send({ n: i });
+        assert.equal(client.sendQueue.length, 200);
+        assert.equal(client.sendQueue[0], '{"n":5}');
+        assert.equal(sockets.length, 1, "a socket that was made reopens by its own retry");
+        client.tryReopen();
+        sockets[1].readyState = 1;
+        sockets[1].onopen();
+        assert.equal(sockets[1].sent.length, 201);
+        assert.equal(sockets[1].sent[200], '{"n":204}');
+    } finally {
+        if (saved) Object.defineProperty(globalThis, "WebSocket", saved);
+        else delete globalThis.WebSocket;
+        globalThis.setTimeout = savedTimeout;
+    }
+});

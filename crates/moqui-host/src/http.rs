@@ -212,7 +212,7 @@ pub(crate) async fn listen(
     let notws = endpoint_enabled(&factory, "/notws");
     let termws = cfg!(feature = "tui") && endpoint_enabled(&factory, "/termws");
     tracing::info!(
-        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, {}{}{}the webapp's servlets",
+        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, /dav, {}{}{}the webapp's servlets",
         if notws { "/notws, " } else { "" },
         if termws { "/termws, " } else { "" },
         if cfg!(feature = "git") { "/git and " } else { "" }
@@ -230,6 +230,7 @@ pub(crate) async fn listen(
     // connect when the property is set.
     let app = if notws {
         moqui_lib::env::set_property(notws::ENDPOINT_PROPERTY, "/notws");
+        notws::collab::install(&factory, shutdown_rx.clone());
         app.route("/notws", get(notws::upgrade))
     } else {
         moqui_lib::env::set_property(notws::ENDPOINT_PROPERTY, "");
@@ -247,6 +248,13 @@ pub(crate) async fn listen(
     };
     #[cfg(feature = "git")]
     let app = app.route("/git/{*rest}", axum::routing::any(crate::git_http::handle));
+    // the DAV server (CalDAV, CardDAV, WebDAV over drives), with the well-known addresses clients look for
+    let app = app
+        .route("/dav", axum::routing::any(crate::dav_http::handle))
+        .route("/dav/", axum::routing::any(crate::dav_http::handle))
+        .route("/dav/{*rest}", axum::routing::any(crate::dav_http::handle))
+        .route("/.well-known/caldav", axum::routing::any(crate::dav_http::handle))
+        .route("/.well-known/carddav", axum::routing::any(crate::dav_http::handle));
     let app = app.fallback(dispatch_screen);
     // The request log, Java's ElasticRequestLogFilter: off when its filter element says enabled="false".
     let app = if factory.webapp_scripts().request_log() {
@@ -464,9 +472,10 @@ where
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.trim_start().to_ascii_lowercase().starts_with("multipart/"));
         let socket = matches!(request.uri().path(), "/notws" | "/termws");
+        let path = request.uri().path();
         let deadline = limits
             .request
-            .filter(|_| !socket && !request.uri().path().starts_with("/git/") && !upload);
+            .filter(|_| !socket && !path.starts_with("/git/") && !path.starts_with("/dav/") && !upload);
         let call = refused.is_none().then(|| router.clone().oneshot(request));
         async move {
             let Some(call) = call else {
@@ -649,7 +658,10 @@ pub(crate) fn http_port(raw: &str) -> Result<u16, Error> {
 }
 
 async fn health(State(state): State<Arc<HttpState>>, ConnectInfo(peer): ConnectInfo<SocketAddr>) -> Response {
-    if !status_allowed(&state.factory.webapp_setting("webroot", "status-ips"), &peer.ip().to_canonical().to_string()) {
+    if !status_allowed(
+        &state.factory.webapp_setting("webroot", "status-ips"),
+        &peer.ip().to_canonical().to_string(),
+    ) {
         return plain(404, "not found");
     }
     if readiness(&state.factory) {
@@ -660,7 +672,10 @@ async fn health(State(state): State<Arc<HttpState>>, ConnectInfo(peer): ConnectI
 }
 
 async fn metrics(State(state): State<Arc<HttpState>>, ConnectInfo(peer): ConnectInfo<SocketAddr>) -> Response {
-    if !status_allowed(&state.factory.webapp_setting("webroot", "status-ips"), &peer.ip().to_canonical().to_string()) {
+    if !status_allowed(
+        &state.factory.webapp_setting("webroot", "status-ips"),
+        &peer.ip().to_canonical().to_string(),
+    ) {
         return plain(404, "not found");
     }
     let Some(stats) = pool_stats(&state.factory) else {
