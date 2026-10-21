@@ -50,16 +50,16 @@ pub use layout::{
     LaidOut, Piece, Plain, Shown, TreeMark, TreeRow, WidthClass, DRAWER_DOCK_AT, DRAWER_WIDTH, PAGE_ROWS,
 };
 pub use link::{
-    counts_of, gallery_link, row_link, FakeLink, LinkCall, LinkError, MenuItem, Push, PushSink, RawBody, Reply,
-    ScreenLink, ShellAction, ShellInfo, Subscription, TransitionOutcome, GALLERY_DETAIL_JSON, GALLERY_DETAIL_PATH,
-    GALLERY_LIST_JSON, GALLERY_LIST_PATH,
+    counts_of, gallery_link, row_link, CodeAsk, FakeLink, LinkCall, LinkError, MenuItem, Push, PushSink, RawBody,
+    Reply, ScreenLink, Sendable, ShellAction, ShellInfo, Subscription, TransitionOutcome, GALLERY_DETAIL_JSON,
+    GALLERY_DETAIL_PATH, GALLERY_LIST_JSON, GALLERY_LIST_PATH,
 };
 pub use markdown::blocks as markdown_blocks;
 pub use model::{
     clean_text, find_mut, node_of, prefix_ids, walk, walk_mut, Cell, Choice, Column, ColumnChoice, Export, FormList,
-    HiddenValue, HtmlBlock, HtmlLink, ListRow, ListViews, Messages, ModelError, Node, Paging, RowSelection, Rule, SavedFind,
-    SavedFinds, ScreenMeta, ScreenModel, SelectColumns, StatusStage, SubscreenItem, ValidationError, VisibleWhen,
-    Widget, MODEL_VERSION,
+    HiddenValue, HtmlBlock, HtmlLink, ListRow, ListViews, Messages, ModelError, Node, Paging, RowSelection, Rule,
+    SavedFind, SavedFinds, ScreenMeta, ScreenModel, SelectColumns, StatusStage, SubscreenItem, ValidationError,
+    VisibleWhen, Widget, MODEL_VERSION,
 };
 pub use nav::{decode as decode_query, level_path, query_parameters, Location, Nav, LEVEL_FLOOR};
 pub use session::{

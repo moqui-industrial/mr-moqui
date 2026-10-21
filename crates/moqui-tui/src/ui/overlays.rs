@@ -157,7 +157,11 @@ pub fn draw(paint: &mut Painter, session: &Session, breakpoints: &Breakpoints, c
                     format!("{} Password . : [{:<20}]", mark(1), dots),
                     format!("{} Code . . . : [{:<20}]", mark(2), login.code),
                     String::new(),
-                    "Enter=Log in  Tab=Next  Esc=Cancel".to_string(),
+                    if login.code_wanted && !login.sendable.is_empty() {
+                        "Enter=Log in  Alt+S=Send code  Tab=Next  Esc=Cancel".to_string()
+                    } else {
+                        "Enter=Log in  Tab=Next  Esc=Cancel".to_string()
+                    },
                 ];
                 if !login.error.is_empty() {
                     lines.insert(0, format!("! {}", login.error));

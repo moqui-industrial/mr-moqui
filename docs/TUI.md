@@ -26,6 +26,11 @@ tui` says so and stops: stop the server first, or reach it with `moqui tui --ser
 Each screen is rendered as the logged-in user with artifact authorization on, as the browser's requests are. The client
 holds no permission logic: what the user may not do is not in the document.
 
+**The login dialog** asks for the username and password, and the code of an account with a second factor (an
+authenticator app, a single-use code, or one sent by email or SMS). A right password moves the dialog to Code, says
+which factors the account has, and keeps the password for the next try only; Alt+S sends a code to the first factor
+that takes one, when there is one. Esc closes the dialog and forgets what was typed.
+
 ## A running server (`--server`)
 
 `moqui tui --server <url>` is the same client for a server that is already running, here or elsewhere. It boots no
@@ -36,8 +41,8 @@ carries a login key. `--agent`, `--snapshot`, `--ascii` and `--no-color` work wi
   `createLoginKey=true`. The server answers with a login key (`login_key_expire_hours`), which the client keeps in
   `~/.config/moqui/tui/<host>_<port>.toml` (or under `XDG_CONFIG_HOME`), readable by the user only. The password is not
   kept. The next run uses the key; when the server stops taking it (it expired, or its `UserLoginKey` row was removed)
-  the login dialog comes back. `moqui tui --server <url> --forget` removes the key. An account with a second factor is
-  told to use the browser.
+  the login dialog comes back. `moqui tui --server <url> --forget` removes the key. An account with a second factor
+  gets its code asked for in the dialog ("The login dialog", above).
 - **https.** Plain `http://` is refused except to this machine (`localhost`, `127.0.0.1`, `::1`), since the login
   would cross the network in the clear.
 - **Files.** Exports are saved to `XDG_DOWNLOAD_DIR` (else `~/Downloads`) on the user's machine, as in local mode.
@@ -62,7 +67,9 @@ moqui> apps                                 from the admin shell; quitting the a
   with the same login dialog `moqui tui` shows, the SSH name filled in. Such a session closes after 2 minutes without a
   login, or after 5 refused ones, and gets only the apps: no commands, `agent-apps`, SFTP or git. To log in by password
   at the SSH level instead (for the admin shell without a key), use `ssh -o PreferredAuthentications=password`.
-  `ssh_login_dialog=false` turns the dialog off. An account with a second factor logs in from the browser.
+  `ssh_login_dialog=false` turns the dialog off. An account with a second factor logs in through the dialog ("The login dialog");
+  at the SSH level a password alone does not let it in. A dialog login is checked against the account's and its
+  groups' `ipAllowed` with the SSH client's address, as an SSH password login is.
 - **Permission.** None is needed for the apps: every screen is still rendered as the user with artifact authorization
   on, as in the browser. `SSH_SHELL` adds the admin shell's `moqui>` prompt, only for a key or password login; a
   dialog login is the apps alone, and quitting them ends the connection.
@@ -159,6 +166,11 @@ agent-apps hFY74uac do Run Job                       overlay confirm "Run job no
 agent-apps hFY74uac do Yes                           message Done
 agent-apps hFY74uac close
 ```
+
+With the login dialog open (`moqui tui --agent --server`, or a session that lost its login), its fields are the
+elements: `set Username john.doe`, `set Password ...`, `set Code 123456`, then `do Log in`. The password is never in an
+answer, as text or JSON. An answer of `--- error Enter the authentication code ...` means the password was right and
+the account wants its code.
 
 **Logging in.** Each step is its own `ssh`, so let it not ask for a password every time:
 
@@ -363,5 +375,5 @@ post, follow, a message), and its help.
 
 ## Not yet
 
-The mouse (clicks, the wheel, drag to select with copy), per-user key bindings, a two-way rich-text editor, a second
-factor in the login dialog, and a `diagram` component wait; plans/Remaining-Work.md lists them.
+The mouse (clicks, the wheel, drag to select with copy), per-user key bindings, a two-way rich-text editor, and a
+`diagram` component wait; plans/Remaining-Work.md lists them.

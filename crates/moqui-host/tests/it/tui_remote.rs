@@ -87,6 +87,73 @@ fn the_remote_link_logs_in_with_a_key_and_reads_screens() {
     std::fs::write(&key_file, "user = \"john.doe\"\nloginKey = \"not-a-key\"\n").unwrap();
     let stale = HttpLink::connect(&server, Some(key_file)).unwrap();
     assert!(matches!(stale.level(USERS, &none), Err(LinkError::Auth(_))));
+
+    // An account with a second factor: the code it wants, a wrong one, the right one; and a code sent in the session
+    // the password started (a factor of another user is refused by name, so the pre-authentication held).
+    add_code_user(gate.server.factory());
+    let coded = HttpLink::connect(&server, None).unwrap();
+    match coded.login("code.user", "moqui", "") {
+        Err(LinkError::Code(ask)) => assert!(ask.text.starts_with("Enter the authentication code"), "{ask:?}"),
+        other => panic!("a code is wanted: {other:?}"),
+    }
+    match coded.login("code.user", "moqui", "111111") {
+        Err(LinkError::Code(ask)) => assert_eq!(ask.text, "Authentication code is not valid"),
+        other => panic!("a wrong code: {other:?}"),
+    }
+    match coded.send_code("code.user", "moqui", "OTHER_FACTOR") {
+        Err(LinkError::Remote(text)) => assert!(text.contains("OTHER_FACTOR"), "{text}"),
+        other => panic!("another user's factor is refused: {other:?}"),
+    }
+    coded.login("code.user", "moqui", "246810").unwrap();
+    // Logged in: a screen it may not view is refused, not a login again.
+    assert!(!matches!(coded.level(USERS, &none), Err(LinkError::Auth(_))));
+}
+
+/// `code.user`, john.doe's password and a single-use code `246810`; `OTHER_FACTOR` is john.doe's.
+fn add_code_user(factory: &std::sync::Arc<moqui_core::context::ExecutionContextFactory>) {
+    use moqui_lib::object::Value;
+    let ctx = factory.new_context();
+    let _entered = ctx.enter();
+    let _authz = ctx.disable_authz();
+    let facade = factory.entity().unwrap();
+    let john = facade
+        .find("moqui.security.UserAccount")
+        .unwrap()
+        .eq("username", Value::string("john.doe"))
+        .one()
+        .unwrap()
+        .unwrap();
+    let mut account = facade.make_value("moqui.security.UserAccount").unwrap();
+    for field in ["currentPassword", "passwordHashType", "passwordSalt", "passwordBase64"] {
+        if let Some(value) = john.get(field) {
+            account.set(field, value.clone());
+        }
+    }
+    account.set("userId", Value::string("CODE_USER"));
+    account.set("username", Value::string("code.user"));
+    account.create(&facade).unwrap();
+    for (factor_id, user_id, kind, option) in [
+        (
+            "CODE_USER_1",
+            "CODE_USER",
+            "UafSingleUse",
+            moqui_core::user::single_use_hash("246810").unwrap(),
+        ),
+        (
+            "OTHER_FACTOR",
+            "EX_JOHN_DOE",
+            "UafEmail",
+            "john.doe@example.com".to_string(),
+        ),
+    ] {
+        let mut factor = facade.make_value("moqui.security.UserAuthcFactor").unwrap();
+        factor.set("factorId", Value::string(factor_id));
+        factor.set("userId", Value::string(user_id));
+        factor.set("factorTypeEnumId", Value::string(kind));
+        factor.set("factorOption", Value::string(option));
+        factor.set("fromDate", Value::I64(0));
+        factor.create(&facade).unwrap();
+    }
 }
 
 fn send_note(

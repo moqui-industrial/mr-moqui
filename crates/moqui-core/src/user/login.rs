@@ -551,7 +551,7 @@ fn finish_login(facade: &EntityFacade, account: &EntityValue, plain: Option<&str
     }
     // After the second-factor check, as Java `loginPostPassword`: a code login reaches here through
     // `internal_login_user`, which checks the address too.
-    check_ip_allowed(account, &crate::web::current_client_ip())?;
+    check_ip_allowed(account, &client_ip())?;
     let mut fields = Vec::new();
     if rehash && legacy_hash(account) {
         if let Some(plain) = plain {
@@ -578,6 +578,35 @@ fn finish_login(facade: &EntityFacade, account: &EntityValue, plain: Option<&str
     session::set_locale(locale.as_deref());
     session::set_time_zone(zone.as_deref());
     link_visit(facade, &user_id)
+}
+
+thread_local! {
+    /// The address of a login outside an HTTP request (SSH, the terminal client's dialog): [`with_client_ip`].
+    static LOGIN_CLIENT_IP: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `work` with `client_ip` as the address a login in it checks `ipAllowed` against, for a login with no HTTP
+/// request (an SSH password, the terminal client's login dialog). A request's own address comes first.
+pub fn with_client_ip<T>(client_ip: &str, work: impl FnOnce() -> T) -> T {
+    let before = LOGIN_CLIENT_IP.with(|slot| slot.replace(Some(client_ip.to_string())));
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let before = self.0.take();
+            LOGIN_CLIENT_IP.with(|slot| *slot.borrow_mut() = before);
+        }
+    }
+    let _restore = Restore(before);
+    work()
+}
+
+/// The request's address, else the one [`with_client_ip`] gave, else empty.
+fn client_ip() -> String {
+    let web = crate::web::current_client_ip();
+    if !web.is_empty() {
+        return web;
+    }
+    LOGIN_CLIENT_IP.with(|slot| slot.borrow().clone()).unwrap_or_default()
 }
 
 /// `ipAllowed` of the account and of every group it is in, `ALL_USERS` included: when any is set, the client address

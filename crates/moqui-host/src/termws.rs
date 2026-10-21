@@ -201,6 +201,8 @@ async fn run_socket(mut socket: WebSocket, opened: Opened, mut shutdown: tokio::
         },
         size: sized,
         label: label.clone(),
+        // The user logged in over HTTP, so this session has no login dialog to check an address for.
+        client_ip: String::new(),
     };
     let session = tokio::spawn(async move { crate::term::serve(&mut theirs, &mut start).await });
     let mut buffer = vec![0u8; 64 * 1024];

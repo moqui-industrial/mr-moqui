@@ -23,10 +23,11 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use moqui_core::context::{Error, ErrorKind, ExecutionContextFactory};
 use moqui_core::screen::RenderOutput;
+use moqui_core::user::CodeLogin;
 use moqui_lib::object::Value;
 use moqui_tui::{
-    counts_of, query_parameters, Choice, LinkError, MenuItem, Messages, Push, PushSink, RawBody, ScreenLink,
-    ScreenModel, ShellAction, ShellInfo, Subscription, TransitionOutcome, ValidationError,
+    counts_of, query_parameters, Choice, CodeAsk, LinkError, MenuItem, Messages, Push, PushSink, RawBody, ScreenLink,
+    ScreenModel, Sendable, ShellAction, ShellInfo, Subscription, TransitionOutcome, ValidationError,
 };
 
 /// Redirects a level or a fragment follows before it gives up: a transition answers its screen with one.
@@ -60,6 +61,15 @@ pub trait Transport: Send + Sync {
     /// [`LinkError::Remote`] with the reason the login was refused.
     fn login(&self, username: &str, password: &str, code: &str) -> Result<(), LinkError>;
 
+    /// Send a second factor's code to `factor` for a login the password starts; the answer says where it went.
+    ///
+    /// # Errors
+    ///
+    /// [`LinkError::Remote`] with the reason no code was sent.
+    fn send_code(&self, _username: &str, _password: &str, _factor: &str) -> Result<String, LinkError> {
+        Err(LinkError::Remote("this connection does not send codes".into()))
+    }
+
     /// The logged-in user's name, for the title line.
     fn user(&self) -> Option<String>;
 
@@ -88,6 +98,9 @@ pub struct InProcess {
     user: Arc<Mutex<Option<String>>>,
     /// That user's id, known after the first call: the notifications a push takes are routed by it.
     user_id: Arc<Mutex<Option<String>>>,
+    /// The client's address (the SSH peer, the browser terminal's request), which a login checks `ipAllowed`
+    /// against; empty checks nothing, as for a login outside a request.
+    client_ip: Arc<Mutex<String>>,
 }
 
 impl<T: Transport> Link<T> {
@@ -181,7 +194,15 @@ impl HostLink {
             factory,
             user: Arc::new(Mutex::new(None)),
             user_id: Arc::new(Mutex::new(None)),
+            client_ip: Arc::new(Mutex::new(String::new())),
         })
+    }
+
+    /// The address the dialog's login is checked against (`ipAllowed`).
+    #[must_use]
+    pub fn from_address(self, client_ip: impl Into<String>) -> Self {
+        *self.transport.client_ip.lock().unwrap_or_else(PoisonError::into_inner) = client_ip.into();
+        self
     }
 
     /// A link already logged in as `username`: `moqui tui --user` on a dev instance, and the tests.
@@ -203,6 +224,27 @@ impl InProcess {
         self.factory
             .upgrade()
             .ok_or_else(|| LinkError::Remote("the server is stopping".into()))
+    }
+
+    /// Run `work` on the request pool with no user, as a login does, waiting for its answer.
+    fn on_pool_anonymous<R, F>(&self, work: F) -> Result<R, LinkError>
+    where
+        R: Send + 'static,
+        F: FnOnce() -> Result<R, Error> + Send + 'static,
+    {
+        let factory = self.factory()?;
+        let client_ip = self.client_ip.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let rx = factory
+            .request_pool()
+            .try_submit(Arc::clone(&factory), move || {
+                moqui_core::user::with_client_ip(&client_ip, work)
+            })
+            .map_err(link_error)?;
+        match rx.recv() {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(err)) => Err(LinkError::Remote(err.message().to_string())),
+            Err(_) => Err(LinkError::Remote("request worker dropped the result".into())),
+        }
     }
 
     /// Run `work` on the request pool as the link's user, waiting for its answer. The client calls this off its UI
@@ -253,31 +295,33 @@ impl Transport for InProcess {
         })
     }
 
-    fn login(&self, username: &str, password: &str, _code: &str) -> Result<(), LinkError> {
-        let factory = self.factory()?;
-        let name = username.to_string();
-        let secret = password.to_string();
-        let rx = factory
-            .request_pool()
-            .try_submit(Arc::clone(&factory), move || {
-                moqui_core::user::login_user(&name, &secret)?;
-                // A user with a second factor is not logged in yet; the browser asks for the code.
-                match moqui_core::user::current_user_id()? {
-                    Some(id) if !id.is_empty() => Ok(()),
-                    _ => Err(Error::new(
-                        "This account needs a second factor; log in from the browser",
-                    )),
-                }
-            })
-            .map_err(link_error)?;
-        match rx.recv() {
-            Ok(Ok(())) => {
+    /// The password, and for an account with a second factor the code, in one request: each call is its own context,
+    /// so nothing is left pre-authenticated between the dialog's tries.
+    fn login(&self, username: &str, password: &str, code: &str) -> Result<(), LinkError> {
+        let (name, secret, code) = (username.to_string(), password.to_string(), code.to_string());
+        let answer = self.on_pool_anonymous(move || moqui_core::user::login_with_code(&name, &secret, &code))?;
+        match answer {
+            CodeLogin::LoggedIn => {
                 *self.user.lock().unwrap_or_else(PoisonError::into_inner) = Some(username.to_string());
                 Ok(())
             }
-            Ok(Err(err)) => Err(LinkError::Remote(err.message().to_string())),
-            Err(_) => Err(LinkError::Remote("request worker dropped the result".into())),
+            CodeLogin::CodeNeeded { text, sendable } => Err(LinkError::Code(CodeAsk {
+                text,
+                sendable: sendable
+                    .into_iter()
+                    .map(|factor| Sendable {
+                        id: factor.factor_id,
+                        label: factor.label,
+                    })
+                    .collect(),
+            })),
         }
+    }
+
+    fn send_code(&self, username: &str, password: &str, factor: &str) -> Result<String, LinkError> {
+        let (name, secret, id) = (username.to_string(), password.to_string(), factor.to_string());
+        self.on_pool_anonymous(move || moqui_core::user::send_login_code(&name, &secret, &id))?;
+        Ok(factor.to_string())
     }
 
     fn user(&self) -> Option<String> {
@@ -455,6 +499,10 @@ impl<T: Transport> ScreenLink for Link<T> {
 
     fn login(&self, username: &str, password: &str, code: &str) -> Result<(), LinkError> {
         self.transport.login(username, password, code)
+    }
+
+    fn send_code(&self, username: &str, password: &str, factor: &str) -> Result<String, LinkError> {
+        self.transport.send_code(username, password, factor)
     }
 
     fn subscribe(&self, sink: PushSink) -> Option<Subscription> {

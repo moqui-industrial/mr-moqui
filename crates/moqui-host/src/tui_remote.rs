@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use moqui_core::screen::RenderOutput;
 use moqui_lib::error::Error;
-use moqui_tui::{LinkError, PushSink, Subscription};
+use moqui_tui::{CodeAsk, LinkError, PushSink, Sendable, Subscription};
 
 use crate::tui::{Ask, Link, Transport};
 
@@ -255,18 +255,68 @@ impl Transport for Http {
             *self.login.lock().unwrap_or_else(PoisonError::into_inner) = Some(stored);
             return Ok(());
         }
+        if status < 400 && value.get("secondFactorRequired").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Err(LinkError::Code(code_ask(&value, !code.is_empty())));
+        }
         let reason = ["errors", "error", "message"]
             .iter()
             .find_map(|name| value.get(*name).and_then(serde_json::Value::as_str))
             .map(str::to_string)
-            .unwrap_or_else(|| {
-                if status < 400 {
-                    "This account needs a second factor; log in from the browser".to_string()
-                } else {
-                    format!("HTTP {status}")
-                }
-            });
+            .unwrap_or_else(|| format!("HTTP {status}"));
         Err(LinkError::Remote(reason))
+    }
+
+    /// `/rest/login` to pre-authenticate, then `sendOtp` in that session: its cookie and its CSRF token.
+    fn send_code(&self, username: &str, password: &str, factor: &str) -> Result<String, LinkError> {
+        let url = format!("{}/rest/login", self.base);
+        let response = self
+            .client
+            .post(&url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form_body(&[("username", username), ("password", password)]))
+            .send()
+            .map_err(|err| LinkError::Remote(format!("{url}: {err}")))?;
+        if response.status().as_u16() >= 400 {
+            return Err(LinkError::Remote(format!("HTTP {}", response.status().as_u16())));
+        }
+        let cookies: Vec<String> = response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .filter_map(|cookie| cookie.split(';').next())
+            .map(str::to_string)
+            .collect();
+        let token = response
+            .headers()
+            .get("x-csrf-token")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let url = format!("{}/rest/sendOtp", self.base);
+        let response = self
+            .client
+            .post(&url)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("Cookie", cookies.join("; "))
+            .header("X-CSRF-Token", token)
+            .body(form_body(&[("factorId", factor)]))
+            .send()
+            .map_err(|err| LinkError::Remote(format!("{url}: {err}")))?;
+        let status = response.status().as_u16();
+        let value: serde_json::Value =
+            serde_json::from_str(&response.text().unwrap_or_default()).unwrap_or(serde_json::Value::Null);
+        let errors = ["errors", "error"]
+            .iter()
+            .find_map(|name| value.get(*name).and_then(serde_json::Value::as_str))
+            .filter(|text| !text.is_empty());
+        match errors {
+            Some(text) => Err(LinkError::Remote(text.to_string())),
+            None if status >= 400 => Err(LinkError::Remote(format!("HTTP {status}"))),
+            None => Ok(factor.to_string()),
+        }
     }
 
     fn user(&self) -> Option<String> {
@@ -382,6 +432,43 @@ impl Http {
 }
 
 /// `a=1&b=x%20y`, as a form posts it.
+/// The factor info `/rest/login` answers for an account that needs a code, as the dialog's [`CodeAsk`].
+fn code_ask(value: &serde_json::Value, code_given: bool) -> CodeAsk {
+    let kinds: Vec<&str> = value
+        .get("factorTypeDescriptions")
+        .and_then(serde_json::Value::as_array)
+        .map(|list| list.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    let sendable = value
+        .get("sendableFactors")
+        .and_then(serde_json::Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|factor| {
+                    let id = factor.get("factorId").and_then(serde_json::Value::as_str)?;
+                    let label = factor
+                        .get("factorOption")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .unwrap_or(id);
+                    Some(Sendable {
+                        id: id.to_string(),
+                        label: label.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let text = if code_given {
+        "Authentication code is not valid".to_string()
+    } else if kinds.is_empty() {
+        "Enter the authentication code".to_string()
+    } else {
+        format!("Enter the authentication code ({})", kinds.join(", "))
+    };
+    CodeAsk { text, sendable }
+}
+
 fn form_body<K: AsRef<str>, V: AsRef<str>>(pairs: &[(K, V)]) -> String {
     let mut url = reqwest::Url::parse("http://form/").unwrap_or_else(|_| unreachable!("a fixed url parses"));
     url.query_pairs_mut()

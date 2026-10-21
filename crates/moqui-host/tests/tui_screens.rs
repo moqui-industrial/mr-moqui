@@ -31,9 +31,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use moqui_core::context::ExecutionContextFactory;
-use moqui_host::tui::HostLink;
+use moqui_host::tui::{HostLink, Transport};
 use moqui_lib::object::Value;
-use moqui_tui::{frame, outline, AppView, FormList, Key, KeyPress, Node, Overlay, ScreenLink, ScreenModel, Session};
+use moqui_tui::{
+    frame, outline, AppView, FormList, Key, KeyPress, LinkError, Node, Overlay, ScreenLink, ScreenModel, Session,
+};
 
 const GALLERY: &[&str] = &[
     "Landing",
@@ -72,6 +74,7 @@ fn gallery_and_party_screens() {
     let factory = Arc::clone(gate.server.factory());
     grant_gate(&factory);
     log_in_through_the_dialog(&factory);
+    log_in_with_a_code_and_from_an_address(&factory);
     let link = HostLink::as_user(&factory, "john.doe");
     render_gallery(&link);
     snapshot_gallery(&link);
@@ -450,6 +453,75 @@ fn log_in_through_the_dialog(factory: &Arc<ExecutionContextFactory>) {
     );
     assert_eq!(view.session().shell().user, "john.doe");
     assert!(!view.session().menu().is_empty(), "the drawer of the gallery");
+}
+
+/// The dialog's logins on the in-process link: an account with a second factor answers the code it wants for its
+/// right password, a wrong code, and logs in with the right one (a single-use code here); an account with `ipAllowed`
+/// is checked against the address the link was given, as the SSH peer is.
+fn log_in_with_a_code_and_from_an_address(factory: &Arc<ExecutionContextFactory>) {
+    {
+        let context = factory.new_context();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        let facade = factory.entity().expect("entity facade");
+        let john = facade
+            .find("moqui.security.UserAccount")
+            .expect("UserAccount")
+            .eq("username", Value::string("john.doe"))
+            .one()
+            .expect("find john.doe")
+            .expect("john.doe");
+        for (id, ip) in [("CODE_USER", ""), ("IP_USER", "10.9.9.9")] {
+            let mut account = facade.make_value("moqui.security.UserAccount").expect("UserAccount");
+            for field in ["currentPassword", "passwordHashType", "passwordSalt", "passwordBase64"] {
+                if let Some(value) = john.get(field) {
+                    account.set(field, value.clone());
+                }
+            }
+            account.set("userId", Value::string(id));
+            account.set("username", Value::string(id.to_lowercase().replace('_', ".")));
+            if !ip.is_empty() {
+                account.set("ipAllowed", Value::string(ip));
+            }
+            account.create(&facade).unwrap_or_else(|err| panic!("{id}: {err}"));
+        }
+        let mut factor = facade
+            .make_value("moqui.security.UserAuthcFactor")
+            .expect("UserAuthcFactor");
+        factor.set("factorId", Value::string("CODE_USER_1"));
+        factor.set("userId", Value::string("CODE_USER"));
+        factor.set("factorTypeEnumId", Value::string("UafSingleUse"));
+        factor.set(
+            "factorOption",
+            Value::string(moqui_core::user::single_use_hash("246810").expect("hash")),
+        );
+        factor.set("fromDate", Value::I64(0));
+        factor.create(&facade).expect("factor");
+    }
+    let link = HostLink::new(factory);
+    match link.login("code.user", "moqui", "") {
+        Err(LinkError::Code(ask)) => assert!(ask.text.starts_with("Enter the authentication code"), "{ask:?}"),
+        other => panic!("a code is wanted: {other:?}"),
+    }
+    assert!(link.transport().user().is_none(), "no one logged in yet");
+    match link.login("code.user", "moqui", "111111") {
+        Err(LinkError::Code(ask)) => assert_eq!(ask.text, "Authentication code is not valid"),
+        other => panic!("a wrong code: {other:?}"),
+    }
+    link.login("code.user", "moqui", "246810").expect("the code logs in");
+    assert_eq!(link.transport().user().as_deref(), Some("code.user"));
+
+    let refused = HostLink::new(factory)
+        .from_address("127.0.0.1")
+        .login("ip.user", "moqui", "");
+    match refused {
+        Err(LinkError::Remote(text)) => assert!(text.contains("not in allowed list"), "{text}"),
+        other => panic!("refused from another address: {other:?}"),
+    }
+    HostLink::new(factory)
+        .from_address("10.9.9.9")
+        .login("ip.user", "moqui", "")
+        .expect("allowed from its address");
 }
 
 fn start_gate() -> common::Gate {

@@ -30,15 +30,17 @@ pub(crate) use authz::current_user_groups;
 pub use authz::{authorize, context_entered};
 pub(crate) use authz::{denied, is_permitted, note_entity_write, AuthInfo, Permit};
 pub use factor::{
-    random_code, random_string, second_factor_required, single_use_hash, totp_code_valid, totp_secret, totp_uri,
+    login_with_code, random_code, random_string, second_factor_required, send_login_code, single_use_hash,
+    totp_code_valid, totp_secret, totp_uri, CodeLogin, SendableFactor,
 };
+pub(crate) use factor::{CODE_NOT_VALID, FACTOR_INFO, SEND_CODE, VALIDATE_CODE};
 pub(crate) use filter::apply_view_filters;
 pub use filter::{apply_entity_filters, find_filters_for_user};
 pub(crate) use login::login_user_local;
 pub(crate) use login::stamp_value;
 pub use login::{
     apply_header_keys, change_password, get_login_key, internal_login_user, login_anonymous, login_external_user,
-    login_user, login_user_key, logout, logout_anonymous_only,
+    login_user, login_user_key, logout, logout_anonymous_only, with_client_ip,
 };
 pub(crate) use login::{now_effective_millis, now_effective_value, now_millis, now_value, value_millis};
 pub(crate) use login::{AUTHC_FACTOR_REQUIRED, PRE_AUTHC_USERNAME};

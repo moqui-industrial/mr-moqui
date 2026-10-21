@@ -95,17 +95,32 @@ impl Session {
             Key::BackTab | Key::Up => login.at = (login.at + fields - 1) % fields,
             Key::Enter => {
                 self.overlays.pop();
+                // The password stays until the answer: a right one that wants a code is kept for the try with the
+                // code, and any other answer clears it (`login_reply`).
                 self.lanes.push(
                     Purpose::Login,
                     LinkCall::Login {
                         username: login.username.clone(),
-                        password: std::mem::take(&mut login.password),
+                        password: login.password.clone(),
                         code: std::mem::take(&mut login.code),
                     },
                 );
                 login.error.clear();
                 self.overlays.push(Overlay::Login(login));
                 return;
+            }
+            Key::Char('s') if press.alt && login.code_wanted => {
+                if let Some(factor) = login.sendable.first() {
+                    self.lanes.push(
+                        Purpose::Login,
+                        LinkCall::SendCode {
+                            username: login.username.clone(),
+                            password: login.password.clone(),
+                            factor: factor.id.clone(),
+                        },
+                    );
+                    login.error = format!("Sending a code to {}…", factor.label);
+                }
             }
             Key::Escape | Key::F(12) => {
                 self.overlays.pop();
@@ -379,17 +394,45 @@ impl Session {
                 self.request_level(&location.path, location.parameters, Intent::Navigate { history: false });
             }
             Err(err) => {
-                if let Some(Overlay::Login(login)) = self
-                    .overlays
-                    .iter_mut()
-                    .rev()
-                    .find(|overlay| matches!(overlay, Overlay::Login(_)))
-                {
+                if let Some(login) = self.login_mut() {
                     login.error = err.to_string();
-                    login.at = 1;
+                    if let LinkError::Code(ask) = err {
+                        // The password was right: keep it, and ask for the code.
+                        login.code_wanted = true;
+                        login.sendable = ask.sendable;
+                        login.at = 2;
+                    } else {
+                        login.password.clear();
+                        login.code_wanted = false;
+                        login.sendable.clear();
+                        login.at = 1;
+                    }
                 }
             }
         }
+    }
+
+    /// The answer to Alt+S in the login dialog: where the code went, or why not.
+    pub(super) fn code_sent(&mut self, result: Result<String, LinkError>) {
+        if let Some(login) = self.login_mut() {
+            // The factor's label is the client's; the server's answer may hold only its id.
+            let to = login
+                .sendable
+                .first()
+                .map_or_else(String::new, |factor| factor.label.clone());
+            login.error = match result {
+                Ok(_) => format!("A code was sent to {to}"),
+                Err(err) => format!("No code sent: {err}"),
+            };
+            login.at = 2;
+        }
+    }
+
+    fn login_mut(&mut self) -> Option<&mut Login> {
+        self.overlays.iter_mut().rev().find_map(|overlay| match overlay {
+            Overlay::Login(login) => Some(login),
+            _ => None,
+        })
     }
 }
 

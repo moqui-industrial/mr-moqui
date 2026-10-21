@@ -83,6 +83,10 @@ pub struct Login {
     /// 0 username, 1 password, 2 code.
     pub at: usize,
     pub error: String,
+    /// The password was right and a code is wanted: the password is kept for the next try, and these factors take a
+    /// sent code (Alt+S sends to the first).
+    pub code_wanted: bool,
+    pub sendable: Vec<crate::link::Sendable>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -343,6 +347,7 @@ impl Session {
                 Err(err) => self.set_message(format!("Could not load the menu: {err}"), true),
             },
             (Purpose::Login, Reply::Login(result)) => self.login_reply(result),
+            (Purpose::Login, Reply::SendCode(result)) => self.code_sent(result),
             (Purpose::Fragment(id), Reply::Fragment(result)) => self.fragment_reply(&id, result),
             (Purpose::ValueUrl(field), Reply::Json(result)) => self.value_reply(&field, result),
             (Purpose::Palette, Reply::Json(result)) => self.palette_reply(result),
@@ -619,6 +624,22 @@ impl Session {
 
     pub fn top_overlay(&self) -> Option<&Overlay> {
         self.overlays.last()
+    }
+
+    /// Write field `at` of the login dialog on top (0 username, 1 password, 2 code) and move to it, as typing there
+    /// does; false with no login dialog on top.
+    pub fn set_login_field(&mut self, at: usize, value: &str) -> bool {
+        let Some(Overlay::Login(login)) = self.overlays.last_mut() else {
+            return false;
+        };
+        let text = match at {
+            0 => &mut login.username,
+            1 => &mut login.password,
+            _ => &mut login.code,
+        };
+        *text = value.to_string();
+        login.at = at.min(2);
+        true
     }
 
     pub fn dialogs_open(&self) -> Vec<&str> {
