@@ -74,7 +74,7 @@ impl FormInstance {
 
     fn of(def: &ScreenDef, node: &MNode) -> Result<Self, Error> {
         let name = node.attribute("name").unwrap_or_default();
-        let list = node.name() == "form-list";
+        let list = node.has_name("form-list");
         let label = format!("{} form {name}", def.location);
         let list_name = node.attribute("list").unwrap_or_default();
         let entity_find = match node.first_named("entity-find") {
@@ -140,13 +140,13 @@ fn form_select_fields(form: &MNode) -> Vec<String> {
     let column_refs: Vec<String> = form
         .children()
         .into_iter()
-        .filter(|child| child.name() == "form-list-column" || child.name() == "columns")
+        .filter(|child| child.has_name("form-list-column") || child.has_name("columns"))
         .flat_map(|child| descendants_named(&child, "field-ref"))
         .filter_map(|field_ref| field_ref.attribute("name"))
         .collect();
     if column_refs.is_empty() {
         for field in &fields {
-            if !list_field_hidden_widget(field) && field.attribute("hide").as_deref() != Some("true") {
+            if !list_field_hidden_widget(field) && !field.attribute_is("hide", "true") {
                 push(field.attribute("name").unwrap_or_default());
             }
         }
@@ -483,7 +483,7 @@ fn assemble_node(
         let found = extends_node(facade, factory, def, &extends, depth, dynamic)?;
         merge_form_nodes(&assembled, &found, true, true);
     }
-    let is_list = base.name() == "form-list";
+    let is_list = base.has_name("form-list");
     // Attributes are copied onto `assembled` after the auto fields, so the form name is read from the source node.
     let form_name = base.attribute("name").unwrap_or_default();
     for sub in base.children() {
@@ -518,7 +518,7 @@ fn assemble_node(
                     .filter(|text| !text.is_empty())
                     .unwrap_or_else(|| "find-display".to_string());
                 let displayed = add_entity_fields(&shape, &include, &field_type, &excludes, &assembled, &form_name);
-                if is_list && sub.attribute("auto-columns").as_deref() != Some("false") {
+                if is_list && !sub.attribute_is("auto-columns", "false") {
                     column_info.push((entity_name, displayed));
                 }
             }
@@ -584,7 +584,7 @@ fn assemble_node(
                 let field_name = field.attribute("name").unwrap_or_default();
                 let referenced = descendants_named(&layout, "field-ref")
                     .iter()
-                    .any(|reference| reference.attribute("name").as_deref() == Some(field_name.as_str()));
+                    .any(|reference| reference.attribute_is("name", &field_name));
                 if !referenced && has_descendant(&field, "hidden") {
                     add_field_to_layout(&assembled, &field);
                 }
@@ -669,7 +669,7 @@ fn merge_form_nodes(base: &MNode, over: &MNode, deep_copy: bool, copy_fields: bo
         }
     }
     if let Some(hidden) = over.first_named("hidden-parameters") {
-        base.remove_where(|child| child.name() == "hidden-parameters");
+        base.remove_where(|child| child.has_name("hidden-parameters"));
         base.append_node(hidden.deep_copy());
     }
     if copy_fields {
@@ -678,18 +678,18 @@ fn merge_form_nodes(base: &MNode, over: &MNode, deep_copy: bool, copy_fields: bo
         }
     }
     if let Some(layout) = over.first_named("field-layout") {
-        base.remove_where(|child| child.name() == "field-layout");
+        base.remove_where(|child| child.has_name("field-layout"));
         base.append_node(layout.deep_copy());
     }
     if over.first_named("form-list-column").is_some() {
-        base.remove_where(|child| child.name() == "form-list-column");
+        base.remove_where(|child| child.has_name("form-list-column"));
         for column in over.children_named("form-list-column") {
             base.append_node(column.deep_copy());
         }
     }
     for columns in over.children_named("columns") {
         let kind = columns.attribute("type");
-        base.remove_where(|child| child.name() == "columns" && child.attribute("type") == kind);
+        base.remove_where(|child| child.has_name("columns") && child.attribute("type") == kind);
         base.append_node(columns.deep_copy());
     }
     // the views of a form-list: the extending form's view element takes the place of the one it extends
@@ -707,7 +707,7 @@ fn merge_field_node(base: &MNode, over: &MNode, deep_copy: bool) {
     let existing = base
         .children()
         .into_iter()
-        .find(|child| child.name() == "field" && child.attribute("name") == name);
+        .find(|child| child.has_name("field") && child.attribute("name") == name);
     match existing {
         Some(field) => {
             field.copy_attributes_from(over);
@@ -783,7 +783,7 @@ fn expand_field_sub_node(
             let template = templates
                 .children()
                 .into_iter()
-                .find(|node| node.attribute("name").as_deref() == Some(template_name))
+                .find(|node| node.attribute_is("name", template_name))
                 .ok_or_else(|| Error::new(format!("Could not find widget-template [{template_name}] in [{file}]")))?;
             let others: Vec<MNode> = sub.children().into_iter().skip(1).collect();
             let sets = widget.children_named("set");
@@ -1031,7 +1031,7 @@ fn add_entity_fields(
             continue;
         }
         let mut make_default = true;
-        if form.name() == "form-list" {
+        if form.has_name("form-list") {
             // As Java: an alias's `default-display` decides; without it a form-list leaves out the long text types but
             // `text-long`.
             let display = shape.default_display.get(name).copied();
@@ -1081,7 +1081,7 @@ fn add_auto_entity_field(
         .find(|(name, _, _)| name == field_name)
         .map_or("text-long", |(_, field_type, _)| field_type.as_str());
     let relation = shape.one_relations.iter().find(|relation| relation.field == field_name);
-    let is_list = form.name() == "form-list";
+    let is_list = form.has_name("form-list");
     let header = |order: &str| {
         if is_list && field.first_named("header-field").is_none() {
             let header = field.append("header-field");
@@ -1677,7 +1677,7 @@ mod tests {
         let field = |name: &str| {
             form.children_named("field")
                 .into_iter()
-                .find(|field| field.attribute("name").as_deref() == Some(name))
+                .find(|field| field.attribute_is("name", name))
                 .unwrap()
         };
         assert!(field("note").first_named("default-field").is_some());
@@ -1714,7 +1714,7 @@ mod tests {
         let total = |form: &MNode, name: &str| {
             form.children_named("field")
                 .into_iter()
-                .find(|field| field.attribute("name").as_deref() == Some(name))
+                .find(|field| field.attribute_is("name", name))
                 .and_then(|field| field.attribute("show-total"))
         };
         let view = read_entity_shape(&model, "t.LineView").unwrap();
