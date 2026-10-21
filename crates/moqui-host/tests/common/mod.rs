@@ -355,11 +355,13 @@ fn template_key() -> String {
     format!("{:016x}", hasher.finish())
 }
 
-/// `cp -a` of the contents of `from` into the existing directory `to`, as a reflink where the file system has them.
+/// `cp -a` of the contents of `from` into the existing directory `to`, as a reflink where the file system has them
+/// (GNU `--reflink=auto`; macOS's `cp` names a clone `-c`, which falls back to a copy off APFS).
 fn copy_dir(from: &Path, to: &Path) {
+    let reflink = if cfg!(target_os = "macos") { "-c" } else { "--reflink=auto" };
     let status = std::process::Command::new("cp")
         .arg("-a")
-        .arg("--reflink=auto")
+        .arg(reflink)
         .arg(format!("{}/.", from.display()))
         .arg(to)
         .status()
