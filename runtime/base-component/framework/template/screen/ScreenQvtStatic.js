@@ -1600,6 +1600,19 @@
         };
         const savedFindsBody = (name) => {
             const button = (buttonName, text, extra) => '<q-btn dense flat no-caps size="sm" type="submit"' + A(Object.assign({ name: buttonName, value: buttonName ? "Y" : null, ":label": loc(text) }, extra || {})) + "></q-btn>";
+            // The active find, and a form that sends it by email on a schedule unless it is scheduled already.
+            const modes = "[{value:'xlsx',label:'XLSX'},{value:'csv',label:'CSV'},{value:'xsl-fo',label:'PDF'}]";
+            const crons = "[" + [["0 0 6 ? * MON-FRI", "Monday-Friday"], ["0 0 6 ? * *", "Every Day"], ["0 0 6 ? * MON", "Monday Only"], ["0 0 6 1 * ?", "Monthly"]]
+                .map(([value, label]) => "{value:" + sq(value) + ",label:" + loc(label) + "}").join(",") + "]";
+            w('<template v-if="nv.activeFind"><div><strong' + A({ "v-text": loc("Active Saved Find:") }) + '></strong> <span v-text="nv.activeFind.description || nv.activeFind.formListFindId"></span>' +
+                '<span v-if="nv.activeFind.formListFindId === nv.defaultFindId" class="text-info"' + A({ "v-text": "' (' + " + loc("My Default") + " + ')'" }) + "></span></div>");
+            w("<p" + A({ "v-if": "nv.activeScheduled", "v-text": "'(' + " + loc("Scheduled for") + " + ' ' + nv.activeScheduled.mode + ' ' + nv.activeScheduled.cronDescription + ')'" }) + "></p>");
+            w("<m-form" + A({ "v-else": true, class: "form-inline", id: name + "_SCHED", ":action": "nv.saveFindAction", ":fields-initial": "nv.scheduleFields()", "v-slot:default": "formProps" }) + "><m-drop-down" +
+                A({ "v-model": "formProps.fields.renderMode", name: "renderMode", ":label": loc("Mode"), id: name + "_SCHED_renderMode", ":options": modes }) + "></m-drop-down><m-drop-down" +
+                A({ "v-model": "formProps.fields.cronSelected", name: "cronSelected", ":label": loc("Schedule"), id: name + "_SCHED_cronSelected", ":options": crons }) +
+                '></m-drop-down><q-btn dense outline no-caps type="submit" name="ScheduleFind" value="Y"' +
+                A({ ":label": loc("Schedule"), ":data-confirm": loc("Setup a schedule to send this saved find to you by email?") }) + "></q-btn></m-form>");
+            w('<hr v-if="nv.hasParams"></template>');
             w('<q-list dense separator class="q-my-sm">');
             w('<q-item><q-item-section><m-link :href="nv.findUrl(\'_clear\')"><span v-text="' + e(loc("Clear Current Find")) + '"></span></m-link></q-item-section></q-item>');
             w('<q-item v-for="mqFind in nv.finds" :key="mqFind.formListFindId" :active="mqFind.formListFindId === nv.activeFindId">');

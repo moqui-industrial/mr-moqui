@@ -25,6 +25,12 @@ History:
   first two passes said. One new bug (P8-20) came up while checking P8-10. The phase narratives
   from the earlier passes are removed, since several of them were wrong. They are in git history:
   `git show 62d0a01:plans/ScreenWeb-Parity-Review.md`.
+- **2026-10-21, first batch fixed.** P8-20, P4-05, P2-04 and P7-02 (a) are fixed, with a test for each
+  that fails on the old code. P7-02's check also stopped counting artifact hits. Every link drawn
+  pushed tracked frames, so each permission check of a link counted a hit for its transition. P7-02
+  (b) is now a Record. P2-15 (new, found while fixing P2-04) was decided the same day: keep the
+  port's aggregated exports and record them. See
+  [Fixed on 2026-10-21](#fixed-on-2026-10-21).
 
 The review asks **"is the feature there?"**, not "is this line the same?". The port replaces
 FreeMarker macros with JavaScript modules, Groovy with Rust and the servlet API with axum, so the
@@ -38,71 +44,76 @@ line numbers, because the line numbers drift.
 
 | Disposition | Rows |
 |---|---|
-| [Fix](#fix) | 19 (1 Med-High, 2 Med, 16 Low): P8-20, P4-05, P2-04, P7-02, P7-03 with P9-13, P8-06, P8-04, P4-09, P3-06, P9-01, P9-11, P8-09, P8-12, P8-17, P9-07, P7-10, P6-03, P8-11 |
+| [Fixed on 2026-10-21](#fixed-on-2026-10-21) | 4: P8-20, P4-05, P2-04, P7-02 (a) |
+| [Fix](#fix) | 15, all Low: P7-03 with P9-13, P8-06, P8-04, P4-09, P3-06, P9-01, P9-11, P8-09, P8-12, P8-17, P9-07, P7-10, P6-03, P8-11 |
 | [Decide](#decide) | 9: P3-01, P8-05, P9-02, P9-03, P7-11, P7-09, P8-08, P3-05, P6-04 |
-| [Record in Parity-Diffs](#record-in-parity-diffs) | 22: P1-05, P1-07, P1-08, P2-05, P2-09, P2-10, P2-11, P3-02, P4-03, P6-01, P6-02, P6-06, P7-04, P7-07, P8-13, P8-14, P8-18, P8-19, P9-06, P9-12, P9-14, P9-15 |
+| [Record in Parity-Diffs](#record-in-parity-diffs) | 24: P1-05, P1-07, P1-08, P2-05, P2-09, P2-10, P2-11, P2-15, P3-02, P4-03, P6-01, P6-02, P6-06, P7-02 (b), P7-04, P7-07, P8-13, P8-14, P8-18, P8-19, P9-06, P9-12, P9-14, P9-15 |
 | [Dropped](#dropped-on-the-third-pass) | 14: P1-10, P1-11, P2-12, P2-13, P3-04, P4-06, P4-07, P4-10, P6-05, P7-05, P7-06, P8-10, P8-15, P8-16 |
 
-No High finding is open. None of the 22 rows to record has a Parity-Diffs row yet.
+No High finding is open, and no Medium one is left. None of the 24 rows to record has a Parity-Diffs row yet.
+
+## Fixed on 2026-10-21
+
+- **P8-20.** `EditDbView.xml` `setMasterFields` reads `ec.web.parameters` once and indexes it
+  (`params["field_" + i]`), as other port screens do. The facade stays a plain object.
+  `runtime/base-component/tools/test/DataView.spec.js`, the first tools spec, renders the screen,
+  posts the save and checks the alias, member and key-map rows (`./moq test tools`).
+- **P4-05.** Both qvt Saved Finds dialogs show the active find, "(My Default)", and either its
+  schedule ("Scheduled for PDF ...") or Java's `_SCHED` form. That form has Mode and Schedule
+  drop-downs and a `ScheduleFind` button with `data-confirm`, not Java's inline `onclick`.
+  `sri.getFormListFindScreenScheduled` is the port of `ScreenForm.getFormListFindScreenScheduled`.
+  The static package carries `formListFindScheduled`. `schedule_find` now refuses a mode other
+  than `xlsx`, `csv` or `xsl-fo`, which Java would store (to record).
+- **P2-04.** `form_rows` passes the shown fields into `Aggregation::apply`. These are
+  `list_column_fields`, a port of the macros' `formListColumns` with `_uiType`, minus a field whose
+  `hide` holds, plus the hidden fields with a `default-field` for an `entity-find` list. A
+  `group-by` field outside that set is not in the group key. With none shown, every row is one
+  group, as in Java.
+- **P7-02 (a).** `UrlInstance::permitted` checks the single service of a transition that is not
+  read-only as `AT_SERVICE`, with Java's anonymous allowances, before the transition frame. Its
+  frames are `Frames::untracked()`. Before, each permission check of a link counted artifact hits,
+  including a hit for a transition that never ran.
 
 ## Fix
 
 In order of what a user hits. The details and citations are in the phase tables below.
 
-1. **P8-20 (Med-High, new).** Edit DB View cannot save its fields. `EditDbView.xml` calls
-   `ec.web.parameters.get("dbViewEntityName_" + i)`, and the port's `ec.web.parameters` is a plain
-   JS object, so it has no `get` and the call throws a TypeError. No test covers it
-   (`moqui-host/tests/it/tools_screens.rs` only renders the screen). Fix the screen to use bracket
-   access, and add a spec that saves a view.
-2. **P4-05 (Med).** No screen can create a scheduled find. Neither qvt Saved Finds dialog writes
-   Java's Mode/Schedule block, and no html or tui macro posts `ScheduleFind`. My Account
-   Scheduled Finds and BOSS Scheduled Reports only edit `ScreenScheduled` rows that already exist.
-   `saved_finds.rs` handles `ScheduleFind` and `cronSelected`, so only the dialog is missing.
-   There are 68 shipped `saved-finds="true"` forms.
-3. **P2-04 (Med).** The group key of an aggregated form-list ignores which columns the user
-   shows. On `InvoiceAgingDetail.xml` (five `group-by` fields, `select-columns="true"`, an invoice
-   `count`), hiding the Invoice column rolls the rows up by party in Java. In the port it is still
-   one row per invoice. Pass the displayed field set into `Aggregation::apply`.
-4. **P7-02 (Low-Med).** The link check has no single-service permission step. A user without the
-   service permission sees an enabled link that fails when clicked, where Java greys it. Add
-   Java's `AT_SERVICE` check to `UrlInstance::permitted`. The rest of P7-02 (the check follows the
-   transition run) is a Record.
-5. **P7-03 with P9-13 (Low).** The conf's `<response-header>` list is merged and never applied.
+1. **P7-03 with P9-13 (Low).** The conf's `<response-header>` list is merged and never applied.
    Since `62d0a01` the port's `MoquiDefaultConf.xml` ships the full list "for override", so the
    conf now promises something the code does not do. `static_files.rs`, `finish_response`,
    `apply_cors` and `send_resource_response` hardcode their headers, and `X-XSS-Protection` is
    listed but never sent. One reader by header type, used everywhere, closes both. Keep
    `immutable` for a versioned file as a recorded extra.
-6. **P8-06 (Low).** `require-session-token`, `handle-cors`, `allow-origins` and
+2. **P8-06 (Low).** `require-session-token`, `handle-cors`, `allow-origins` and
    `upload-executable-allow` are read from the `webapp_*` properties, so a MoquiConf.xml
    `<webapp handle-cors="false">` is ignored. Every other webapp setting already goes through
    `ExecutionContextFactory::webapp_setting`. Small, and it fits the new config style.
-7. **P8-04 (Low).** The html remote-option list (`moqui-html.js` `optionList`) posts a single
+3. **P8-04 (Low).** The html remote-option list (`moqui-html.js` `optionList`) posts a single
    non-breaking space for an empty option. Java maps that value to null, and the port stores the
    NBSP or filters on it. Map it in `pairs_to_parameters` and the multipart field path.
-8. **P4-09 (Low).** The qvt filter summary leaves out `display` and `display-entity` header
+4. **P4-09 (Low).** The qvt filter summary leaves out `display` and `display-entity` header
    fields. On Find Payment the chosen payment method is missing from the summary.
-9. **P3-06 (Low).** The html `display` span has no value-type class. Java's
+5. **P3-06 (Low).** The html `display` span has no value-type class. Java's
    `td .BigDecimal, td .currency {text-align:right}` right-aligns numbers in list cells, and the
    port's html lists leave them left-aligned. The qvt display already writes the class.
-10. **P9-01 (Low).** The error page is still a hardcoded table, while the conf ships five live
+6. **P9-01 (Low).** The error page is still a hardcoded table, while the conf ships five live
     `<error-screen>` entries. Read them, with the table as the fallback.
-11. **P9-11 (Low).** The `/kibana` proxy keeps the prefix that Jetty strips, so a proxied
+7. **P9-11 (Low).** The `/kibana` proxy keeps the prefix that Jetty strips, so a proxied
     Dashboards with the default `rewriteBasePath: false` gets the wrong path. Strip the prefix and
     correct the module doc.
-12. **P8-09 (Low).** A text response sends 200 when the message facade has an error. Java sends
+8. **P8-09 (Low).** A text response sends 200 when the message facade has an error. Java sends
     the errors with a 500, and the port's own `send_json_response` already does. Three lines.
-13. **P8-12 (Low).** Any non-form body becomes `_requestBodyText`, binary or not, via
+9. **P8-12 (Low).** Any non-form body becomes `_requestBodyText`, binary or not, via
     `from_utf8_lossy`. A body with no content type that contains `=` is parsed as a form.
     `moqui_lib::resource::is_text_content_type` already exists to gate it.
-14. **P8-17 (Low).** The request URL is rebuilt from the decoded query pairs and keeps the `Host`
+10. **P8-17 (Low).** The request URL is rebuilt from the decoded query pairs and keeps the `Host`
     port. A decoded `%0A` can put a line break into `request_details`. Form-encode the pairs again.
-15. **P9-07 (Low).** The tarpit's 429 has no `Retry-After`. Carry the seconds on the error.
-16. **P7-10 (Low).** The entity schema is sent as `application/json` with the message facade's
+11. **P9-07 (Low).** The tarpit's 429 has no `Retry-After`. Carry the seconds on the error.
+12. **P7-10 (Low).** The entity schema is sent as `application/json` with the message facade's
     messages merged in. Send `application/schema+json` without the merge.
-17. **P6-03 (Low).** The xlsx header of a field with no title splits on capitals only. Use
+13. **P6-03 (Low).** The xlsx header of a field with no title splits on capitals only. Use
     `moqui_lib::string::camel_case_to_pretty`, as Java does (`address1` → "Address 1").
-18. **P8-11 (Low).** A repeated header is joined with `", "`, so a second `Cookie` header spoils the
+14. **P8-11 (Low).** A repeated header is joined with `", "`, so a second `Cookie` header spoils the
     session cookie and the user is logged out. The cookie is HMAC-checked, so no session mix-up
     is possible. Join `cookie` with `"; "`.
 
@@ -164,12 +175,19 @@ These are deliberate, or harmless supersets. Add a row to
 - **P2-09**: the narrower screen history (see the phase table).
 - **P2-10**: the `make_render` test seam skips the request checks.
 - **P2-11**: a JSON answer carries its messages and does not save them to the session.
+- **P2-15**: decided 2026-10-21, keep the port's way. The csv, text, xml and xsl-fo exports of an
+  aggregated form-list are aggregated, as the screen shows the list. Java's export macros call
+  `getListObject(false)`, so Java's exports have the raw rows. An export that matches the screen
+  is the more useful file.
 - **P3-02 and P4-03** (and `ScreenTui.js`): `show-pdf-button` is a Print link to `html-print`, not
   the FOP page-layout dialog (README redesign item 4). Optionally point it at `/fop/<path>`, which
   gives a real PDF cheaply.
 - **P6-01, P6-02**: the xlsx uses the matching `conditional-field` and walks more containers. Java
   throws a null-pointer exception on `FindTask.xml`'s `ownerPartyId`, which has no
   `default-field`.
+- **P7-02 (b)**: the link check follows the transition run. It needs no authorization on the transition
+  when the target screen does not require authentication, and skips the last screen's own view check
+  when the path ends on a transition. Java's `isPermitted` is stricter on both. The URL works in both.
 - **P6-06**: `xsl-fo` is an alias for `html-print`, so a direct request returns `text/html`.
   Correct `Parity-Mapping.md` ("still returns FO XML") when recording it.
 - **P7-04**: non-screen `.xml`, `.properties`, `.sql`, `.groovy`, `.ftl` and `.html.fancy` files
@@ -230,11 +248,12 @@ Compared `screen/render.rs`, `screen/sri/`, `screen/aggregate.rs` and `screen/mo
 
 | ID | Port | Java | Divergence | Sev | Disposition |
 |---|---|---|---|---|---|
-| P2-04 | `Aggregation::apply` (`screen/aggregate.rs`), `render_user_columns_form` | `AggregationUtil.processAggregateOriginal`, `ScreenForm` `FormListRenderInfo` (`includeFields`) | The group key uses every `group-by` field. Java leaves out a field that is not displayed (the user's columns minus `hide` fields). `InvoiceAgingDetail.xml` rolls up by party in Java when the Invoice column is removed, and stays one row per invoice in the port | Med | Fix |
+| P2-04 | `Aggregation::apply` (`screen/aggregate.rs`), `render_user_columns_form` | `AggregationUtil.processAggregateOriginal`, `ScreenForm` `FormListRenderInfo` (`includeFields`) | The group key uses every `group-by` field. Java leaves out a field that is not displayed (the user's columns minus `hide` fields). `InvoiceAgingDetail.xml` rolls up by party in Java when the Invoice column is removed, and stays one row per invoice in the port | Med | Fixed 2026-10-21 |
 | P2-05 | `Aggregation::of` (`screen/aggregate.rs`) | `ScreenForm.groovy` `AggregateFunction.valueOf`, `AggregationUtil.java` constructor | A bad `aggregate` is logged and ignored, and a bad `show-total` is dropped silently. Java throws and the screen fails to load. Every shipped value is valid | Low | Record (failure tolerance). Log the bad `show-total` too |
 | P2-09 | `record_history` (`screen/render.rs`) | `WebFacadeImpl.saveScreenHistory` | The port also leaves out ChangePassword, sso and error screens, and it records only a GET that answers 200 and is not `qjs`/`qvue`. Java skips standalone screens, transitions and `history="false"`. The Java Login and SecondFactor screens already say `history="false"` | Low | Record |
 | P2-10 | `make_render` (`screen/render.rs`) | `WebFacadeStub.groovy` | A render through the `make_render`/ScreenTest seam skips the session-token check. Java's stub reports `isSecure()=true` and no query string, so only the token check and the login redirect apply there. Port JS specs POST transitions with no token | Low | Record (test seam) |
 | P2-11 | `respond` (`screen/render.rs`) | `ScreenRenderImpl.saveMessagesToSession`, `getBasicResponseMap` | A JSON transition answer returns its messages in `messageInfos` and does not save them to the session. Java does both, so a later full page shows them again. The comment in `respond` gives the reason | Low | Record |
+| P2-15 | `form_rows` (`screen/sri/forms.rs`), called for every render mode | `DefaultScreenMacros.{csv,text,xml,xsl-fo}.ftl` `getListObject(false)` | An aggregated form-list is aggregated in every mode. Java aggregates only in html and qvt, so its exports have the raw rows | Low | Record (decided 2026-10-21: keep) |
 
 ## Phase 3 — Macro libraries: html, csv, text, xml, plain
 
@@ -256,7 +275,7 @@ Compared `ScreenQvt.js` (and `WebrootVue.qvt.js` where the contract turned on it
 | ID | Port | Java | Divergence | Sev | Disposition |
 |---|---|---|---|---|---|
 | P4-03 | `ScreenQvt.js` export menu | `DefaultScreenMacros.qvt.ftl` PDF dialog | Same as P3-02 in qvt: a Print item to `html-print`, not a dialog that posts to `/fop`. `/fop` still makes a PDF, and `?layoutMaster=` still selects a page | Low | Record |
-| P4-05 | Saved Finds dialog in `ScreenQvt.js` and `ScreenQvtStatic.js` | `DefaultScreenMacros.qvt.ftl` active-find block | No Mode/Schedule drop-downs and no Schedule button. Nothing else in the UI posts `ScheduleFind`, so no user can create a scheduled find. My Account and BOSS only edit existing ones | Med | Fix |
+| P4-05 | Saved Finds dialog in `ScreenQvt.js` and `ScreenQvtStatic.js` | `DefaultScreenMacros.qvt.ftl` active-find block | No Mode/Schedule drop-downs and no Schedule button. Nothing else in the UI posts `ScheduleFind`, so no user can create a scheduled find. My Account and BOSS only edit existing ones | Med | Fixed 2026-10-21 |
 | P4-09 | `valueText` in `ScreenQvt.js` | `DefaultScreenMacros.qvt.ftl` `widgetTextValue` | `display` and `display-entity` are in the no-display list. Java took them out on purpose (an FTL comment says so). Hits Find Payment `eitherPaymentMethodId`, and the Receivable/Payable status text on Find Invoice and Invoice Item Summary | Low | Fix |
 
 ## Phase 5 — Server-static qvt
@@ -292,7 +311,7 @@ Compared `screen/url.rs`, `screen/urls.rs`, `screen/tree.rs`, `screen/menu.rs`,
 
 | ID | Port | Java | Divergence | Sev | Disposition |
 |---|---|---|---|---|---|
-| P7-02 | `UrlInstance::permitted` (`screen/urls.rs`) | `ScreenUrlInfo.isPermitted` | (a) There is no `AT_SERVICE` check of a non-read-only transition's single service, so a user without the service permission sees an enabled link that fails when clicked. (b) The check follows the transition run, which is looser than `isPermitted`. It also skips the last screen's own view check when the path ends on a transition. Not a bypass: the request path matches Java's run | Low-Med | Fix (a), Record (b) |
+| P7-02 | `UrlInstance::permitted` (`screen/urls.rs`) | `ScreenUrlInfo.isPermitted` | (a) There is no `AT_SERVICE` check of a non-read-only transition's single service, so a user without the service permission sees an enabled link that fails when clicked. (b) The check follows the transition run, which is looser than `isPermitted`. It also skips the last screen's own view check when the path ends on a transition. Not a bypass: the request path matches Java's run | Low-Med | Fixed (a) 2026-10-21, Record (b) |
 | P7-03 | `static_files.rs` (`LONG_CACHE`, `REVALIDATE_CACHE`), `finish_response`, `apply_cors`, `send_resource_response`; `merge_response_headers` (`context/conf.rs`) | `WebappInfo.addHeaders` from `ScreenRenderImpl` and `WebFacadeImpl` | The conf's `<response-header>` entries (`screen-resource-*`, `web-resource-inline`, `screen-render`, `cors-*`) are merged and never applied. The port's conf now ships the full list. File `Cache-Control` is 1 hour, or 1 year `immutable` for a versioned file, where the conf says 24 hours | Low | Fix (with P9-13) |
 | P7-04 | `BLOCKED_EXTENSIONS` (`screen/static_files.rs`), file branch (`screen/render.rs`) | `ScreenUrlInfo` file lookup, `ScreenRenderImpl` file branch | Non-screen `.xml`, `.properties`, `.sql`, `.groovy`, `.ftl` and `.html.fancy` files are refused with a 404. Java serves the plain ones and renders the templates through `screen-resource-template`. A `.md` under a screen without `include-child-content` is sent raw, where Java renders it. `screen/tests/files.rs` locks in the list | Low | Record. Consider blocking `.md` |
 | P7-07 | `?` tail via `web::form_pairs` (`screen/url.rs`) | `ScreenUrlInfo` `split("=")` | A pair whose value holds `=` or is empty is kept. Java keeps only exactly-two-part pairs. No shipped `url=` has either | Low | Record |
@@ -320,7 +339,7 @@ Compared `web/mod.rs`, `web/multipart.rs`, `web/error_info.rs` and the `ec.web` 
 | P8-17 | `full_url` (`web/mod.rs`) | `WebFacadeImpl.getRequestUrl` | The port uses the raw `Host` header with its `:port` and re-joins the decoded query pairs without encoding them. Java uses the server name, drops `:80`/`:443` and appends the raw query string. Visible in `ArtifactHit.requestUrl`, `Visit.initialRequest` and `request_details` | Low | Fix |
 | P8-18 | `send_resource_response` (`web/mod.rs`) | `WebFacadeImpl.sendResourceResponseInternal` (`web-resource-inline` headers) | Only an inline `component://` or `classpath://` resource gets the public cache header. Anything else is `private, no-store`. A code comment says why | Low | Record |
 | P8-19 | `strip_credential_parameters` (`web/mod.rs`, also `screen/statics.rs`) | `WebUtilities.stripCredentialParameters` | The credential names are stripped at every depth of a JSON value. Java strips only the top level | Low | Record |
-| P8-20 | `EditDbView.xml` save actions, `parameters` getter (`script/runtime/facades.rs`) | `WebFacadeImpl.getParameters` (a `ContextStack`, a `Map`) | **New on the third pass.** The screen calls `ec.web.parameters.get(...)`. The port's getter returns a plain JS object, so `get` is undefined and saving a DB view's fields throws. Untested | Med-High | Fix |
+| P8-20 | `EditDbView.xml` save actions, `parameters` getter (`script/runtime/facades.rs`) | `WebFacadeImpl.getParameters` (a `ContextStack`, a `Map`) | **New on the third pass.** The screen calls `ec.web.parameters.get(...)`. The port's getter returns a plain JS object, so `get` is undefined and saving a DB view's fields throws. Untested | Med-High | Fixed 2026-10-21 |
 
 ## Phase 9 — The HTTP host and the web app endpoints
 
@@ -364,7 +383,8 @@ Compared `moqui-host/src/` (router, `http.rs`, `search_proxy.rs`, `logging.rs`),
 
 ## Next steps
 
-1. Fix P8-20, P4-05 and P2-04, then the rest of [Fix](#fix) in order.
+1. ~~Fix P8-20, P4-05 and P2-04~~, done on 2026-10-21 with P7-02 (a). Then the rest of
+   [Fix](#fix) in order.
 2. Get a decision on each row under [Decide](#decide).
 3. Add the [Record](#record-in-parity-diffs) rows to Parity-Diffs, and make the
    [follow-up](#follow-ups-outside-this-file) corrections.

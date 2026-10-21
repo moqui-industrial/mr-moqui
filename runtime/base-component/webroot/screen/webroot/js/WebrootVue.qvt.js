@@ -833,8 +833,13 @@
                 const params = this.findParameters();
                 const linkPath = (this.$root && this.$root.currentLinkPath) || screen.path;
                 const query = (extra) => moqui.objToSearch(Object.assign({}, screen.parameters, this.searchObj, extra));
+                const finds = Array.isArray(pkg.formListFinds) ? pkg.formListFinds : [];
+                const activeFindId = pkg.formListFindId || "";
                 return {
-                    finds: Array.isArray(pkg.formListFinds) ? pkg.formListFinds : [], activeFindId: pkg.formListFindId || "", defaultFindId: pkg.defaultFormListFindId || "",
+                    finds, activeFindId, defaultFindId: pkg.defaultFormListFindId || "",
+                    // the active find of the list, its schedule if it has one, and the fields of the form that schedules it
+                    activeFind: finds.find((find) => find.formListFindId === activeFindId) || null, activeScheduled: pkg.formListFindScheduled || null,
+                    scheduleFields: () => ({ formListFindId: activeFindId, screenPath: screen.path, renderMode: "", cronSelected: "" }),
                     params, hasParams: Object.keys(params).length > 0, orderByField: this.searchObj.orderByField || pkg.orderByField || "",
                     findAction: linkPath, saveFindAction: this.findAction || "", screenPath: screen.path,
                     findUrl: (id) => linkPath + "?formListFindId=" + encodeURIComponent(id),

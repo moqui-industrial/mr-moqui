@@ -870,6 +870,11 @@ pub(crate) fn service_authz_action(name: &str) -> String {
     verb_action(verb).to_string()
 }
 
+/// The `authenticate` of the service `name`. None when no service has that name, as for an implicit entity-auto one.
+pub(crate) fn service_authenticate(name: &str) -> Option<super::define::Authenticate> {
+    super::define::find(&canonical(name)).map(|def| def.authenticate)
+}
+
 /// The in-parameter names of a defined service, in definition order, with `auto-parameters` expanded. None when no
 /// service has that name.
 pub(crate) fn service_in_parameter_names(name: &str) -> Option<Vec<String>> {

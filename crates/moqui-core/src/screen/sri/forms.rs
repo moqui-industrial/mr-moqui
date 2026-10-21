@@ -122,6 +122,16 @@ pub fn saved_find_full_location(state: &RenderState, name: &str) -> Result<Strin
     ))
 }
 
+/// `sri.getFormListFindScreenScheduled(formListFindId)`: the newest schedule of a saved find for the user or one of the
+/// user's groups, with its cron description.
+///
+/// # Errors
+///
+/// Returns an error when the records cannot be read.
+pub fn form_list_find_screen_scheduled(find_id: &str) -> Result<Option<Value>, Error> {
+    crate::screen::saved_finds::form_list_find_screen_scheduled(find_id)
+}
+
 /// `sri.getUserDefaultFormListFindId()`: the user's default saved find of the active screen.
 ///
 /// # Errors
@@ -269,7 +279,12 @@ fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error>
         rows.push(row);
     }
     if let Some(aggregation) = &form.aggregation {
-        rows = aggregation.apply(rows, |row, name| {
+        let shown = if aggregation.group_fields.is_empty() {
+            None
+        } else {
+            Some(shown_list_fields(form)?)
+        };
+        rows = aggregation.apply(rows, shown.as_ref(), |row, name| {
             row.get(name)
                 .cloned()
                 .or_else(|| script::context_value(name))
@@ -280,6 +295,27 @@ fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error>
     // map; ScreenServices reads `ec.context.sharedMap`.
     note_form_list_rows(rows.len());
     Ok(rows)
+}
+
+/// The fields of a form-list Java's `getListObject` passes as `includeFields`: the columns of the request's `_uiType`
+/// less those whose `hide` holds, evaluated once in the screen context, and for an `entity-find` list the hidden
+/// fields with a `default-field`. The node already holds the user's column choice (`render_user_columns_form`).
+fn shown_list_fields(form: &FormInstance) -> Result<std::collections::HashSet<String>, Error> {
+    let node = form.node()?;
+    let ui_type = script::context_value("_uiType").map(|value| moqui_lib::object::to_plain_string(&value));
+    let mut shown = std::collections::HashSet::new();
+    for (name, hide) in form::list_column_fields(&node, ui_type.as_deref()) {
+        if let Some(hide) = hide {
+            if script::eval_condition(&hide)? {
+                continue;
+            }
+        }
+        shown.insert(name);
+    }
+    if form.entity_find.is_some() {
+        shown.extend(form::hidden_list_fields_with_default(&node));
+    }
+    Ok(shown)
 }
 
 /// `_formListRendered` and `_formListResultCount` on the shared map, as Java's `getListObject`. Several lists add.

@@ -358,6 +358,41 @@ pub(crate) fn user_default_find_id(screen_location: &str) -> Result<Option<Strin
     .map(|row| text(row, "formListFindId")))
 }
 
+/// The newest `ScreenScheduled` of a saved find for the user, else for one of the user's groups, as
+/// `ScreenForm.getFormListFindScreenScheduled`: `{renderMode, cronExpression, cronDescription}`, or None.
+///
+/// # Errors
+///
+/// Returns an error when the records cannot be read.
+pub(crate) fn form_list_find_screen_scheduled(find_id: &str) -> Result<Option<Value>, Error> {
+    let Some(user) = user_id().filter(|_| !find_id.is_empty()) else {
+        return Ok(None);
+    };
+    let facade = facade()?;
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let all = facade
+        .find("moqui.screen.ScreenScheduled")?
+        .eq("formListFindId", Value::string(find_id))
+        .order_by("screenScheduledId", true)
+        .list()?
+        .into_values();
+    let mut scheduled = all.iter().find(|row| text(row, "userId") == user).cloned();
+    if scheduled.is_none() {
+        let groups = crate::user::current_user_groups()?;
+        scheduled = all.into_iter().find(|row| groups.contains(&text(row, "userGroupId")));
+    }
+    Ok(scheduled.map(|row| {
+        let cron = text(&row, "cronExpression");
+        // A cron the parser does not read is shown as it is.
+        let description = crate::service::info::cron_description(&cron).unwrap_or_else(|_| cron.clone());
+        let mut map = IndexMap::new();
+        map.insert("renderMode".to_string(), Value::string(text(&row, "renderMode")));
+        map.insert("cronExpression".to_string(), Value::string(cron));
+        map.insert("cronDescription".to_string(), Value::string(description));
+        Value::Map(map)
+    }))
+}
+
 /// The form a posted `formLocation` names: a full location, else the name of a form of the screen at `screen_location`.
 /// Returns the full location, the screen location, the form name, and the location extension.
 fn split_form_location(posted: &str, screen_location: &str) -> Option<(String, String, String, String)> {
@@ -614,6 +649,9 @@ fn delete_find(facade: &EntityFacade, user: &str, find_id: &str, exists: bool) -
     Ok(None)
 }
 
+/// The render modes a saved find may be scheduled in: a spreadsheet, a CSV file, or a PDF (`xsl-fo` is `html-print`).
+const SCHEDULE_RENDER_MODES: &[&str] = &["xlsx", "csv", "xsl-fo"];
+
 /// `ScheduleFind`: a `ScreenScheduled` that renders the find's screen and sends it by email on a cron schedule.
 fn schedule_find(
     facade: &EntityFacade,
@@ -634,6 +672,13 @@ fn schedule_find(
     let render_mode = Some(context_text("renderMode"))
         .filter(|mode| !mode.is_empty())
         .unwrap_or_else(|| "csv".into());
+    // The modes the Saved Finds dialog offers, which the scheduled send attaches; Java stores any text.
+    if !SCHEDULE_RENDER_MODES.contains(&render_mode.as_str()) {
+        add_error(&format!(
+            "Render mode {render_mode} cannot be scheduled, not scheduling saved find with ID {find_id}"
+        ));
+        return Ok(Some(find_id));
+    }
     let screen_path = context_text("screenPath");
     let cron = context_text("cronSelected");
     if screen_path.is_empty() {
