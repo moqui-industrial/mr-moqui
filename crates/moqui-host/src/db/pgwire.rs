@@ -606,6 +606,51 @@ impl Wire {
         self.failed = None;
     }
 
+    /// Before the first request on a connection that has read nothing for [`QUIET_BEFORE_PEEK`] and waits for no
+    /// reply: what the server sent since, read without blocking. A session the server ended (an administrator, a
+    /// shutdown) has sent its `FATAL` reason and closed; that reason is the error, where writing the request would only
+    /// find the socket reset.
+    fn check_quiet(&mut self) -> Result<(), Error> {
+        if !self.pending.is_empty() || self.last_read.elapsed() < QUIET_BEFORE_PEEK {
+            return Ok(());
+        }
+        if self.stream.set_nonblocking(true).is_err() {
+            return Ok(());
+        }
+        let mut chunk = [0u8; 1024];
+        let read = self.stream.read(&mut chunk);
+        if let Err(err) = self.stream.set_nonblocking(false) {
+            self.dead = true;
+            return Err(io_error("read", err));
+        }
+        match read {
+            Ok(0) => {
+                self.dead = true;
+                return Err(Error::new("postgres: the server closed the connection"));
+            }
+            Ok(count) => {
+                self.read.extend_from_slice(&chunk[..count]);
+                self.last_read = Instant::now();
+            }
+            Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => return Ok(()),
+            Err(err) => {
+                self.dead = true;
+                return Err(io_error("read", err));
+            }
+        }
+        match self.parse_buffered()? {
+            None => Ok(()),
+            Some(Message::ErrorResponse(body)) => {
+                self.dead = true;
+                Err(DbError::parse(body.fields()).into_error("connection"))
+            }
+            Some(_) => {
+                self.dead = true;
+                Err(protocol_error("message while idle"))
+            }
+        }
+    }
+
     fn check_open(&self) -> Result<(), Error> {
         if self.dead {
             Err(Error::new("postgres: the connection is closed"))
@@ -617,6 +662,9 @@ impl Wire {
     /// Write a request with `encode`; on a failure to encode it, nothing of it stays in the buffer.
     fn encode(&mut self, encode: impl FnOnce(&mut BytesMut) -> Result<(), Error>) -> Result<(), Error> {
         self.check_open()?;
+        if self.write.is_empty() {
+            self.check_quiet()?;
+        }
         let mark = self.write.len();
         encode(&mut self.write).inspect_err(|_| self.write.truncate(mark))
     }

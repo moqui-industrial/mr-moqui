@@ -41,6 +41,7 @@ mod git_storage;
 mod load_feed;
 mod notws;
 mod opensearch_start;
+mod pg_external;
 mod pdf;
 mod query_rest;
 mod qvt_report;

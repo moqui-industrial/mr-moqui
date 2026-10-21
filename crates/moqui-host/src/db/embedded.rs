@@ -997,6 +997,149 @@ mod cluster {
             (pids.len(), rss, pss)
         }
 
+        /// A session the server ends or cancels fails the call that finds it with the server's reason, and leaves
+        /// the connection closed (or, for a cancel or a timeout, usable after a rollback); the pool then opens a new
+        /// one. The session is ended with `pg_terminate_backend`, as an administrator or a server shutdown ends it.
+        #[test]
+        fn connections_fail_cleanly_when_the_server_ends_or_cancels_them() {
+            let dir = temp_cluster_dir();
+            let _guard = DirGuard(dir.clone());
+            let (_cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
+            let mut admin = driver.connect_postgres().unwrap();
+            admin
+                .execute("CREATE TABLE ended (id text PRIMARY KEY, n int)", &[])
+                .unwrap();
+            for n in 0..120 {
+                admin
+                    .execute(
+                        "INSERT INTO ended (id, n) VALUES (?, ?)",
+                        &[Value::string(format!("e{n}")), Value::I32(n)],
+                    )
+                    .unwrap();
+            }
+            let pid_of = |conn: &mut PostgresConn| {
+                let rows = conn.query_once("SELECT pg_backend_pid() AS pid", &[]).unwrap();
+                match rows[0].get("pid") {
+                    Some(Value::I32(pid)) => *pid,
+                    other => panic!("pid {other:?}"),
+                }
+            };
+            /// End the session `pid` and wait until it is gone, and past the client's quiet time.
+            fn end(admin: &mut PostgresConn, pid: i32) {
+                admin
+                    .query_once("SELECT pg_terminate_backend(?)", &[Value::I32(pid)])
+                    .unwrap();
+                let alive = "SELECT count(*) AS c FROM pg_stat_activity WHERE pid = ?";
+                while admin.query_once(alive, &[Value::I32(pid)]).unwrap()[0].get("c") != Some(&Value::I64(0)) {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+
+            // Mid-transaction: the next statement fails and the connection is closed.
+            let mut conn = driver.connect_postgres().unwrap();
+            let pid = pid_of(&mut conn);
+            conn.begin().unwrap();
+            conn.execute("UPDATE ended SET n = n + 1 WHERE id = ?", &[Value::string("e1")])
+                .unwrap();
+            end(&mut admin, pid);
+            let err = conn
+                .execute("UPDATE ended SET n = n + 1 WHERE id = ?", &[Value::string("e2")])
+                .unwrap_err();
+            assert!(err.message().contains("terminating connection"), "{err}");
+            assert!(DbConnection::is_closed(&conn));
+            let _ = conn.rollback();
+
+            // Mid-pipeline: rows held and writes sent unanswered; the commit fails and nothing is written.
+            let mut conn = driver.connect_postgres().unwrap();
+            let pid = pid_of(&mut conn);
+            conn.begin().unwrap();
+            let upsert = "INSERT INTO ended (id, n) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n";
+            for n in 0..40_u32 {
+                let row = vec![Value::string(format!("p{n}")), Value::I64(i64::from(n))];
+                conn.execute_deferred_row(upsert, row, u64::from(n)).unwrap();
+            }
+            conn.execute_deferred("UPDATE ended SET n = 0 WHERE id = ?", vec![Value::string("e3")], None)
+                .unwrap();
+            end(&mut admin, pid);
+            assert!(conn.commit().is_err());
+            assert!(DbConnection::is_closed(&conn));
+            let _ = conn.rollback();
+            let written = admin
+                .query_once("SELECT count(*) AS c FROM ended WHERE id LIKE 'p%'", &[])
+                .unwrap();
+            assert_eq!(written[0].get("c"), Some(&Value::I64(0)));
+
+            // Mid-stream: the rows already fetched are read, then the next fetch fails.
+            let mut conn = driver.connect_postgres().unwrap();
+            let pid = pid_of(&mut conn);
+            conn.begin().unwrap();
+            conn.open_stream("SELECT id FROM ended ORDER BY n", &[]).unwrap();
+            assert!(conn.next_row().unwrap().is_some());
+            end(&mut admin, pid);
+            let mut failed = None;
+            for _ in 0..200 {
+                match conn.next_row() {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(err) => {
+                        failed = Some(err);
+                        break;
+                    }
+                }
+            }
+            assert!(failed.is_some(), "the stream ended without an error");
+            assert!(DbConnection::is_closed(&conn));
+            let _ = conn.rollback();
+
+            // A statement timeout fires: the statement fails, and after the rollback the connection is used again.
+            let mut conn = driver.connect_postgres().unwrap();
+            conn.begin().unwrap();
+            conn.set_statement_timeout(Some(std::time::Duration::from_millis(50)))
+                .unwrap();
+            let err = conn.query_once("SELECT pg_sleep(5)", &[]).unwrap_err();
+            assert!(err.message().contains("statement timeout"), "{err}");
+            conn.rollback().unwrap();
+            assert!(!DbConnection::is_closed(&conn));
+            assert_eq!(conn.query_once("SELECT 1", &[]).unwrap().len(), 1);
+
+            // A cancel from another thread, as the deadline thread sends it.
+            let canceller = conn.canceller();
+            let cancelling = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                canceller.cancel().unwrap();
+            });
+            let err = conn.query_once("SELECT pg_sleep(5)", &[]).unwrap_err();
+            cancelling.join().unwrap();
+            assert!(err.message().contains("canceling statement"), "{err}");
+            assert_eq!(conn.query_once("SELECT 1", &[]).unwrap().len(), 1);
+
+            // The pool: a connection the server ended fails one call; the next has a new connection.
+            let tx = moqui_core::transaction::TransactionManager::new(
+                std::sync::Arc::new(driver.clone()) as std::sync::Arc<dyn DbDriver>,
+                moqui_core::transaction::PoolConfig {
+                    min: 0,
+                    max: 4,
+                    reserve: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let pid = tx
+                .with_connection(|conn| conn.query_once("SELECT pg_backend_pid() AS pid", &[]))
+                .unwrap()[0]
+                .get("pid")
+                .cloned();
+            let Some(Value::I32(pid)) = pid else {
+                panic!("pid {pid:?}")
+            };
+            end(&mut admin, pid);
+            assert!(tx.with_connection(|conn| conn.query_once("SELECT 1", &[])).is_err());
+            let again = tx.with_connection(|conn| conn.query_once("SELECT pg_backend_pid() AS pid", &[]));
+            assert_ne!(again.unwrap()[0].get("pid"), Some(&Value::I32(pid)));
+            let _ = tx.destroy_all_in_thread();
+        }
+
         #[test]
         fn same_version_restart_keeps_the_row() {
             let dir = temp_cluster_dir();
