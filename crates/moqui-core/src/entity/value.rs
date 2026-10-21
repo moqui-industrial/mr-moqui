@@ -16,14 +16,14 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_db::model::EntityDefinition;
 use moqui_db::sql::{delete, insert, insert_or_update, update, Condition};
 use moqui_lib::error::Error;
 use moqui_lib::object::{basic_convert, Value};
-use moqui_lib::sync::lock;
+use moqui_lib::sync::{lock, read, write};
 
 use super::cache::WriteGate;
 use super::exec::{after_statement, execute_deferred_row_tx, execute_deferred_tx, execute_tx, pipelining};
@@ -143,25 +143,19 @@ impl std::fmt::Debug for EntityNames {
     }
 }
 
-/// The localized reads of one value. Empty until the first [`EntityValue::get_localized`].
-#[derive(Default)]
-struct L10nMemo(Mutex<Option<Arc<Mutex<LocalizedReads>>>>);
+/// The localized reads of one value. Empty until the first [`EntityValue::get_localized`]. A clone shares them, and
+/// reads the slot without a lock: a cache hit clones a value other threads clone too.
+#[derive(Clone, Default)]
+struct L10nMemo(OnceLock<Arc<Mutex<LocalizedReads>>>);
 
 impl L10nMemo {
     fn get_or_init(&self) -> Arc<Mutex<LocalizedReads>> {
-        let mut slot = lock(&self.0);
-        if let Some(memo) = slot.as_ref() {
-            return Arc::clone(memo);
-        }
-        let memo = Arc::new(Mutex::new(HashMap::new()));
-        *slot = Some(Arc::clone(&memo));
-        memo
+        Arc::clone(self.0.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))))
     }
 
     /// Drop `field`'s remembered reads on this value only.
     fn replace_without(&mut self, field: &str) {
-        let slot = self.0.get_mut().unwrap_or_else(PoisonError::into_inner);
-        let Some(memo) = slot.as_ref() else {
+        let Some(memo) = self.0.get() else {
             return;
         };
         let kept: HashMap<_, _> = lock(memo)
@@ -169,13 +163,7 @@ impl L10nMemo {
             .filter(|((name, _), _)| *name != field)
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        *slot = Some(Arc::new(Mutex::new(kept)));
-    }
-}
-
-impl Clone for L10nMemo {
-    fn clone(&self) -> Self {
-        Self(Mutex::new(lock(&self.0).clone()))
+        self.0 = OnceLock::from(Arc::new(Mutex::new(kept)));
     }
 }
 
@@ -186,9 +174,10 @@ impl std::fmt::Debug for L10nMemo {
 }
 
 /// What an [`EntityValue`] read from the database held before the caller changed it. Behind a lock so a write, which
-/// takes the value by reference, can mark the value written; a clone has a copy of its own.
+/// takes the value by reference, can mark the value written; a clone has a copy of its own. Read-write, so the clones
+/// of one cached value on several threads do not wait for each other.
 #[derive(Default)]
-struct ReadState(Mutex<Read>);
+struct ReadState(RwLock<Read>);
 
 #[derive(Clone, Debug, Default)]
 struct Read {
@@ -200,14 +189,14 @@ struct Read {
 
 impl ReadState {
     fn read() -> Self {
-        Self(Mutex::new(Read {
+        Self(RwLock::new(Read {
             from_db: true,
             before: BTreeMap::new(),
         }))
     }
 
-    fn get(&self) -> MutexGuard<'_, Read> {
-        lock(&self.0)
+    fn get(&self) -> RwLockReadGuard<'_, Read> {
+        read(&self.0)
     }
 
     fn get_mut(&mut self) -> &mut Read {
@@ -216,7 +205,7 @@ impl ReadState {
 
     /// The value holds what the database does, as Java's `setSyncedWithDb` after a create or an update.
     fn synced(&self) {
-        let mut read = self.get();
+        let mut read = write(&self.0);
         read.from_db = true;
         read.before.clear();
     }
@@ -224,7 +213,7 @@ impl ReadState {
 
 impl Clone for ReadState {
     fn clone(&self) -> Self {
-        Self(Mutex::new(self.get().clone()))
+        Self(RwLock::new(self.get().clone()))
     }
 }
 

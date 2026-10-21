@@ -22,8 +22,9 @@
 //! ```
 //!
 //! `ENTITY_SPEED_CALLS` is the loop size (default 1000). `ENTITY_SPEED_BATCHES` is how many timed
-//! batches to keep (default 5). The printed per-call figures use the upper median batch; see `speed/mod.rs` for the
-//! allocation columns. The rows a create keeps in the test's own list count as kept.
+//! batches to keep (default 5). `ENTITY_SPEED_THREADS` is the thread counts of the threads section (default
+//! `1,2,4,8`), and `ENTITY_SPEED_THREADS_ONLY` runs that section alone. The printed per-call figures use the upper
+//! median batch; see `speed/mod.rs` for the allocation columns. The rows a create keeps in the test's own list count as kept.
 //! `SPEED_PG_HOST` runs it on a new database of an external Postgres instead of the embedded one (`speed::SpeedDb`).
 //!
 //! There is no `ExecutionContext`, so artifact authorization and hit counting do not run. `fsync` and
@@ -81,7 +82,7 @@ fn entity_facade_speed() {
     let (cluster, driver) = speed::SpeedDb::start(&dir, 20);
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
     let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
-    let facade = open_entity_facade(&framework, driver, pool()).expect("open entity facade");
+    let facade = open_entity_facade(&framework, Arc::clone(&driver), pool()).expect("open entity facade");
     facade
         .check_tables(&[ENUM_TYPE, ENUM, TEST, "moqui.entity.SequenceValueItem"])
         .expect("check tables");
@@ -95,8 +96,16 @@ fn entity_facade_speed() {
          Pool is 1 ordinary + 1 reserve. No ExecutionContext. Lists read {LIST_ROWS} rows, {} calls.",
         list_calls(calls)
     );
-    run_mode(&facade, &cache, &now, Mode::Transaction, calls, batches);
-    run_mode(&facade, &cache, &now, Mode::Autocommit, calls, batches);
+    if std::env::var_os("ENTITY_SPEED_THREADS_ONLY").is_none() {
+        run_mode(&facade, &cache, &now, Mode::Transaction, calls, batches);
+        run_mode(&facade, &cache, &now, Mode::Autocommit, calls, batches);
+    }
+    drop(facade);
+
+    let threads = thread_counts();
+    let most = threads.iter().copied().max().unwrap_or(1);
+    let facade = open_entity_facade(&framework, Arc::clone(&driver), thread_pool(most)).expect("open entity facade");
+    run_threads(&facade, &now, &threads, calls, batches);
 
     drop(facade);
     drop(cluster);
@@ -123,6 +132,89 @@ fn run_mode(
         one_batch(facade, cache, now, mode, calls, batch, &mut rows);
     }
     rows.print();
+}
+
+/// The facade shared by several threads at once, each with a connection of its own: the cache path (no statement),
+/// a PK find in a transaction, and writes in a transaction. A row's us/call is the run's time over every thread's
+/// calls, so a row that scales keeps it falling as threads are added; calls/s is the total rate.
+fn run_threads(facade: &EntityFacade, now: &Value, threads: &[usize], calls: usize, batches: usize) {
+    println!(
+        "\n== threads ({} threads at once, {calls} calls each; us/call is the run's time over all their calls)",
+        threads.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+    );
+    let mut rows = Rows::default();
+    for batch in 0..=batches {
+        rows.record = batch > 0;
+        if batch > 0 {
+            eprintln!("  batch {batch}/{batches}");
+        }
+        let calls = if batch == 0 { WARMUP } else { calls };
+        for &count in threads {
+            rows.run_threads(&format!("{count} threads: one PK Enumeration, entity cache"), count, calls, |_| {
+                for _ in 0..calls {
+                    black_box(find_one(facade, "_NA_", true));
+                }
+            });
+            rows.run_threads(
+                &format!("{count} threads: one PK Enumeration, database, one tx"),
+                count,
+                calls,
+                |_| {
+                    facade.begin(ENUM, None).expect("begin");
+                    for _ in 0..calls {
+                        black_box(find_one(facade, "_NA_", false));
+                    }
+                    facade.commit(ENUM).expect("commit");
+                },
+            );
+            rows.run_threads(
+                &format!("{count} threads: create, update, delete TestEntity, one tx"),
+                count,
+                calls,
+                |thread| {
+                    facade.begin(TEST, None).expect("begin");
+                    let mut made: Vec<EntityValue> = (0..calls / 3)
+                        .map(|i| {
+                            let mut value = facade.make_value(TEST).expect("make TestEntity");
+                            value.set("testId", Value::string(format!("t{count}-{thread}-{batch}-{i}")));
+                            fill(&mut value, i, now);
+                            value.create(facade).expect("create");
+                            value
+                        })
+                        .collect();
+                    for value in &mut made {
+                        value.set("testMedium", Value::string("Updated"));
+                        value.update(facade).expect("update");
+                    }
+                    for value in &made {
+                        value.delete(facade).expect("delete");
+                    }
+                    facade.commit(TEST).expect("commit");
+                },
+            );
+        }
+    }
+    rows.print();
+}
+
+/// `ENTITY_SPEED_THREADS`, a comma-separated list (default `1,2,4,8`).
+fn thread_counts() -> Vec<usize> {
+    std::env::var("ENTITY_SPEED_THREADS")
+        .ok()
+        .map(|text| text.split(',').filter_map(|part| part.trim().parse().ok()).filter(|n| *n > 0).collect())
+        .filter(|counts: &Vec<usize>| !counts.is_empty())
+        .unwrap_or_else(|| vec![1, 2, 4, 8])
+}
+
+/// A connection for each of `threads`, and the reserve.
+fn thread_pool(threads: usize) -> PoolConfig {
+    PoolConfig {
+        min: 1,
+        max: u32::try_from(threads).unwrap_or(u32::MAX).saturating_add(1),
+        reserve: 1,
+        acquire_timeout: Duration::from_secs(30),
+        ..Default::default()
+    }
 }
 
 fn list_calls(calls: usize) -> usize {

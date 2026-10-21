@@ -149,7 +149,7 @@ impl ParameterDef {
         let name = node.attribute("name").filter(|text| !text.is_empty())?;
         Some(Self {
             name,
-            required: node.attribute("required").as_deref() == Some("true"),
+            required: node.attribute_is("required", "true"),
             from: node.attribute("from").filter(|text| !text.is_empty()),
             value: node.attribute("value").filter(|text| !text.is_empty()),
         })
@@ -214,8 +214,8 @@ impl ResponseDef {
             condition,
             parameters: parameters_of(node),
             parameter_map,
-            save_current_screen: node.attribute("save-current-screen").as_deref() == Some("true"),
-            save_parameters: node.attribute("save-parameters").as_deref() == Some("true"),
+            save_current_screen: node.attribute_is("save-current-screen", "true"),
+            save_parameters: node.attribute_is("save-parameters", "true"),
         })
     }
 
@@ -355,7 +355,7 @@ impl TransitionDef {
                 }
             }
             if call.attribute("multi").is_none_or(|text| text.is_empty())
-                && call.attribute("async").as_deref() != Some("true")
+                && !call.attribute_is("async", "true")
             {
                 call.set_attribute("multi", "parameter");
             }
@@ -382,7 +382,7 @@ impl TransitionDef {
             Some(condition) => Condition::from_element(&condition, &format!("{label} condition"))?,
             None => None,
         };
-        let read_only = !has_actions || node.attribute("read-only").as_deref() == Some("true");
+        let read_only = !has_actions || node.attribute_is("read-only", "true");
         let authz_explicit = node.attribute("authz-action").is_some_and(|text| !text.is_empty());
         let authz_action = match node.attribute("authz-action").filter(|text| !text.is_empty()) {
             Some(action) => action,
@@ -406,7 +406,7 @@ impl TransitionDef {
             name,
             method,
             screen_location: screen_location.to_string(),
-            begin_transaction: node.attribute("begin-transaction").as_deref() != Some("false"),
+            begin_transaction: !node.attribute_is("begin-transaction", "false"),
             read_only,
             require_session_token: flag(node.attribute("require-session-token")),
             authz_action,
@@ -534,7 +534,7 @@ impl SectionDef {
                 list: node.attribute("list").unwrap_or_default(),
                 entry: node.attribute("entry").unwrap_or_default(),
                 key: node.attribute("key").filter(|text| !text.is_empty()),
-                paginate: node.attribute("paginate").as_deref() == Some("true"),
+                paginate: node.attribute_is("paginate", "true"),
             },
             _ => SectionKind::Section,
         };
@@ -783,7 +783,7 @@ impl ScreenDef {
             modified: resource.last_modified(),
         }];
         let node = MNode::parse_text(location, &resource.read_text()?).map_err(Error::from)?;
-        if node.name() != "screen" {
+        if !node.has_name("screen") {
             return Err(Error::new(format!("{location} root is {} and not screen", node.name())));
         }
         let extended = apply_screen_extends(factory, &node, location, &mut sources)?;
@@ -821,10 +821,10 @@ impl ScreenDef {
         let web = WebSettings {
             allow_web_request: web
                 .as_ref()
-                .is_none_or(|web| web.attribute("allow-web-request").as_deref() != Some("false")),
+                .is_none_or(|web| !web.attribute_is("allow-web-request", "false")),
             require_encryption: web
                 .as_ref()
-                .is_none_or(|web| web.attribute("require-encryption").as_deref() != Some("false")),
+                .is_none_or(|web| !web.attribute_is("require-encryption", "false")),
             mime_type: web
                 .as_ref()
                 .and_then(|web| web.attribute("mime-type"))
@@ -928,7 +928,7 @@ impl ScreenDef {
                             FormDef {
                                 name: name.clone(),
                                 list: kind == "form-list",
-                                dynamic: item.attribute("dynamic").as_deref() == Some("true"),
+                                dynamic: item.attribute_is("dynamic", "true"),
                                 node: XmlFragment::of(&item),
                                 extensions: extended
                                     .forms
@@ -982,17 +982,17 @@ impl ScreenDef {
             location: location.to_string(),
             screen_name,
             authentication: Authentication::of(node.attribute("require-authentication")),
-            standalone: node.attribute("standalone").as_deref() == Some("true"),
-            allow_extra_path: node.attribute("allow-extra-path").as_deref() == Some("true"),
-            begin_transaction: node.attribute("begin-transaction").as_deref() == Some("true"),
+            standalone: node.attribute_is("standalone", "true"),
+            allow_extra_path: node.attribute_is("allow-extra-path", "true"),
+            begin_transaction: node.attribute_is("begin-transaction", "true"),
             transaction_timeout: int_attr("transaction-timeout"),
-            include_child_content: node.attribute("include-child-content").as_deref() == Some("true"),
-            history: node.attribute("history").as_deref() != Some("false"),
-            track_artifact_hit: node.attribute("track-artifact-hit").as_deref() != Some("false"),
+            include_child_content: node.attribute_is("include-child-content", "true"),
+            history: !node.attribute_is("history", "false"),
+            track_artifact_hit: !node.attribute_is("track-artifact-hit", "false"),
             login_path: node.attribute("login-path").filter(|text| !text.is_empty()),
             default_menu_title,
             default_menu_index: int_attr("default-menu-index"),
-            default_menu_include: node.attribute("default-menu-include").as_deref() != Some("false"),
+            default_menu_include: !node.attribute_is("default-menu-include", "false"),
             menu_image: node.attribute("menu-image").filter(|text| !text.is_empty()),
             menu_image_type: node
                 .attribute("menu-image-type")
@@ -1120,8 +1120,8 @@ fn merge_extend(screen: &MNode, extend: &MNode, location: &str, extended: &mut E
         };
         let mut matches = Vec::new();
         breadth_first(screen, &mut |candidate| {
-            if candidate.attribute("name").as_deref() == Some(target.as_str())
-                || candidate.attribute("id").as_deref() == Some(target.as_str())
+            if candidate.attribute_is("name", &target)
+                || candidate.attribute_is("id", &target)
             {
                 matches.push(candidate.clone());
             }
@@ -1134,7 +1134,7 @@ fn merge_extend(screen: &MNode, extend: &MNode, location: &str, extended: &mut E
             let Some(mut index) = parent.index_of(&matched) else {
                 continue;
             };
-            if widgets_extend.attribute("where").as_deref() == Some("after") {
+            if widgets_extend.attribute_is("where", "after") {
                 index += 1;
             }
             for (offset, child) in widgets_extend.children().iter().enumerate() {
@@ -1328,7 +1328,7 @@ fn load_subscreens(
             let Ok(root) = MNode::parse_root_only(entry.location(), &entry.read_text()?) else {
                 continue;
             };
-            if root.name() != "screen" {
+            if !root.has_name("screen") {
                 continue;
             }
             let item_location = format!("{base}/{file}");
@@ -1342,7 +1342,7 @@ fn load_subscreens(
                 menu_index: root
                     .attribute("default-menu-index")
                     .and_then(|text| text.trim().parse().ok()),
-                menu_include: root.attribute("default-menu-include").as_deref() != Some("false"),
+                menu_include: !root.attribute_is("default-menu-include", "false"),
                 location: item_location,
                 no_sub_path: false,
                 disable_when: None,
@@ -1352,7 +1352,7 @@ fn load_subscreens(
     }
     if let Some(element) = &element {
         subscreens.default_item = element.attribute("default-item").filter(|text| !text.is_empty());
-        subscreens.always_use_full_path = element.attribute("always-use-full-path").as_deref() == Some("true");
+        subscreens.always_use_full_path = element.attribute_is("always-use-full-path", "true");
         for item in element.children_named("conditional-default") {
             let (condition, name) = (
                 item.attribute("condition").unwrap_or_default(),
@@ -1485,7 +1485,7 @@ fn subscreens_item_of(
             .or_else(|| item.attribute("include-in-menu"))
             .as_deref()
             != Some("false"),
-        no_sub_path: item.attribute("no-sub-path").as_deref() == Some("true"),
+        no_sub_path: item.attribute_is("no-sub-path", "true"),
         disable_when: item.attribute("disable-when").filter(|text| !text.is_empty()),
         user_group_id: None,
         location,

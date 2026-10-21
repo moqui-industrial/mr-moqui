@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The check of plans/Screen-TUI-Impl.md 3.8: Revue's `RichTextEditor` reads Markdown and writes it back. The samples
+//! The check of plans/archive/Screen-TUI-Impl.md 3.8: Revue's `RichTextEditor` reads Markdown and writes it back. The samples
 //! are the Gallery's Markdown view, the example wiki pages and documents of this repository.
 
 use revue::widget::RichTextEditor;

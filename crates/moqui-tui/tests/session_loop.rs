@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use moqui_tui::{
     gallery_link, run_session, AppView, Depth, FakeLink, Key, KeyPress, RawBody, Screen, ScreenLink, ScreenModel,
-    SessionEvent, SessionOptions, Theme, ENTER, GALLERY_LIST_PATH, LEAVE,
+    SessionEvent, SessionOptions, Theme, ENTER, GALLERY_LIST_PATH, LEAVE, MOUSE_OFF, MOUSE_ON,
 };
 
 /// The part of a terminal the encoder speaks to: cursor moves, clears, SGR (ignored), OSC 8, and characters.
@@ -81,11 +81,11 @@ impl Term {
                         }
                         body.push(next);
                     }
-                    // The background query (OSC 11) draws nothing.
-                    if body == "11;?" {
+                    // The background query (OSC 11) and a copy to the clipboard (OSC 52) draw nothing.
+                    if body == "11;?" || body.starts_with("52;c;") {
                         continue;
                     }
-                    let url = body.strip_prefix("8;;").expect("only OSC 8 and 11 are written");
+                    let url = body.strip_prefix("8;;").expect("only OSC 8, 11 and 52 are written");
                     self.link = (!url.is_empty()).then(|| url.to_string());
                 }
                 other => panic!("unexpected escape {other:?}"),
@@ -334,7 +334,9 @@ fn the_log_pane_shows_the_lines_the_caller_sends() {
     running.out.wait_for("Open detail", 100, 40);
     running
         .tx
-        .send(SessionEvent::Log("2026-10-21 02:44:00.000 WARN  [x] a::b - A warning for the pane".to_string()))
+        .send(SessionEvent::Log(
+            "2026-10-21 02:44:00.000 WARN  [x] a::b - A warning for the pane".to_string(),
+        ))
         .unwrap();
     running.tx.send(SessionEvent::Input(b"\x1bl".to_vec())).unwrap();
     running.out.wait_for("A warning for the pane", 100, 40);
@@ -424,4 +426,42 @@ fn downloads_are_refused_in_a_remote_session() {
     running.out.wait_for("downloads are off", 100, 40);
     running.tx.send(SessionEvent::Close).unwrap();
     running.done.join().unwrap().unwrap();
+}
+
+/// The mouse over the channel: its modes go on after the screen starts and off with the rest; a drag across list rows,
+/// as SGR bytes, comes back as one OSC 52 copy; a click on a link follows it.
+#[test]
+fn a_drag_and_a_click_arrive_as_sgr_reports() {
+    let running = start(gallery_link(), GALLERY_LIST_PATH, 100, 40);
+    let text = running.out.wait_for("Open detail", 100, 40);
+    let has = |bytes: &[u8], part: &[u8]| bytes.windows(part.len()).any(|window| window == part);
+    assert!(
+        has(&running.out.bytes(), MOUSE_ON),
+        "the mouse is on until the user turns it off"
+    );
+    let lines: Vec<&str> = text.lines().collect();
+    let first = lines.iter().position(|line| line.contains("ENUM_00")).unwrap() + 1;
+    let report = format!("\x1b[<0;4;{first}M\x1b[<32;10;{}M\x1b[<0;10;{}m", first + 1, first + 1);
+    running.tx.send(SessionEvent::Input(report.into_bytes())).unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while !has(&running.out.bytes(), b"\x1b]52;c;") {
+        assert!(Instant::now() < until, "no OSC 52 after the drag");
+        thread::sleep(Duration::from_millis(20));
+    }
+    running.out.wait_for("Copied", 100, 40);
+    let open = lines.iter().position(|line| line.contains("Open detail")).unwrap() + 1;
+    // A report split across two reads.
+    running
+        .tx
+        .send(SessionEvent::Input(format!("\x1b[<0;3;{open}").into_bytes()))
+        .unwrap();
+    running
+        .tx
+        .send(SessionEvent::Input(format!("M\x1b[<0;3;{open}m").into_bytes()))
+        .unwrap();
+    running.out.wait_for("Enumeration Detail", 100, 40);
+    running.tx.send(SessionEvent::Close).unwrap();
+    running.done.join().unwrap().unwrap();
+    assert!(running.out.bytes().ends_with(LEAVE));
+    assert!(LEAVE.starts_with(MOUSE_OFF));
 }

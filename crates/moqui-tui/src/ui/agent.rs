@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The agent mode (plans/Screen-TUI-Impl.md Phase 3c, docs/TUI.md "For agents"): the same session, driven one command
+//! The agent mode (plans/archive/Screen-TUI-Impl.md Phase 3c, docs/TUI.md "For agents"): the same session, driven one command
 //! line at a time by a program rather than a person. Each command runs its keys and requests on this thread, fires the
 //! waits for typing to stop, and answers once the screen has settled: no timing to guess, no escape sequences to read.
 //! The answer names the place, the focus, any overlay and the message, then gives the screen as text with the focused
@@ -35,6 +35,14 @@ use crate::state::{Confirm, ConfirmKind};
 use crate::theme::Theme;
 
 use super::AppView;
+
+/// The login dialog's elements while it is on top: its three fields and its button.
+const LOGIN_ELEMENTS: [(&str, &str); 4] = [
+    ("login.username", "Username"),
+    ("login.password", "Password"),
+    ("login.code", "Code"),
+    ("login.submit", "Log in"),
+];
 
 /// The commands, for `help` and for an unknown command's answer.
 pub const AGENT_HELP: &str = "Commands (an element is its id, its number from `elements`, as #3, or text of its label):
@@ -150,7 +158,9 @@ impl<L: ScreenLink> Agent<L> {
             "focus" => self.target(&rest).map(|key| {
                 self.view.session_mut().focus_key(&key);
             }),
+            "set" if self.login().is_some() => self.set_login(&rest),
             "set" => self.set(&rest),
+            "do" if self.login().is_some() => self.do_login(&rest),
             "do" => match self.session().confirm().map(Confirm::choices) {
                 // A confirm's choices are not elements: `do Yes` moves to the choice, then Enter.
                 Some(choices) => self.confirm(choices, &rest),
@@ -484,6 +494,29 @@ impl<L: ScreenLink> Agent<L> {
     }
 
     fn elements(&self) -> Vec<Value> {
+        if let Some(login) = self.login() {
+            return LOGIN_ELEMENTS
+                .iter()
+                .enumerate()
+                .map(|(at, (id, label))| {
+                    let mut element = json!({
+                        "n": at + 1,
+                        "kind": if at < 3 { "text" } else { "button" },
+                        "id": id,
+                        "label": label,
+                        "focused": login.at == at,
+                    });
+                    match at {
+                        0 => element["value"] = json!(login.username),
+                        // The password is never in an answer: its length, as the dialog draws it.
+                        1 => element["value"] = json!("•".repeat(login.password.chars().count())),
+                        2 => element["value"] = json!(login.code),
+                        _ => {}
+                    }
+                    element
+                })
+                .collect();
+        }
         self.session()
             .focus_order()
             .iter()
@@ -522,6 +555,65 @@ impl<L: ScreenLink> Agent<L> {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn login(&self) -> Option<&crate::session::Login> {
+        match self.session().top_overlay() {
+            Some(Overlay::Login(login)) => Some(login),
+            _ => None,
+        }
+    }
+
+    /// One of [`LOGIN_ELEMENTS`] by `#n`, its id or its label (the same label, then one that holds the text).
+    fn login_element(text: &str) -> Option<usize> {
+        if let Some(n) = text.strip_prefix('#').and_then(|n| n.parse::<usize>().ok()) {
+            return n.checked_sub(1).filter(|at| *at < LOGIN_ELEMENTS.len());
+        }
+        let lower = text.trim().to_lowercase();
+        LOGIN_ELEMENTS
+            .iter()
+            .position(|(id, label)| *id == lower || label.to_lowercase() == lower)
+            .or_else(|| {
+                LOGIN_ELEMENTS
+                    .iter()
+                    .position(|(_, label)| !lower.is_empty() && label.to_lowercase().contains(&lower))
+            })
+    }
+
+    /// `set` in the login dialog: `set Password secret`.
+    fn set_login(&mut self, rest: &str) -> Result<(), String> {
+        let (name, value) = rest
+            .trim()
+            .split_once(char::is_whitespace)
+            .ok_or_else(|| "set takes an element and a value".to_string())?;
+        match Self::login_element(name) {
+            Some(at) if at < 3 => {
+                self.view.session_mut().set_login_field(at, value.trim());
+                Ok(())
+            }
+            _ => Err(format!("no login field named {name:?}; see elements")),
+        }
+    }
+
+    /// `do Log in` sends the dialog; `do` on a field moves to it.
+    fn do_login(&mut self, rest: &str) -> Result<(), String> {
+        let at = Self::login_element(rest).ok_or_else(|| format!("no login element named {rest:?}; see elements"))?;
+        if at == 3 {
+            self.press(KeyPress::plain(Key::Enter));
+            self.settle();
+            return match self.login() {
+                Some(login) if !login.error.is_empty() => Err(login.error.clone()),
+                _ => Ok(()),
+            };
+        }
+        let value = match (self.login(), at) {
+            (Some(login), 0) => login.username.clone(),
+            (Some(login), 1) => login.password.clone(),
+            (Some(login), _) => login.code.clone(),
+            (None, _) => String::new(),
+        };
+        self.view.session_mut().set_login_field(at, &value);
+        Ok(())
     }
 
     /// Run what the keys queued, and the waits for typing to stop, until nothing is left to do.

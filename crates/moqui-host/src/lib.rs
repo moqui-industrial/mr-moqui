@@ -227,7 +227,7 @@ pub fn start_server(
     }
 }
 
-/// A runtime booted with no listeners, for `moqui tui` (plans/Screen-TUI-Impl.md 4.1). Drop it to flush what is only in
+/// A runtime booted with no listeners, for `moqui tui` (plans/archive/Screen-TUI-Impl.md 4.1). Drop it to flush what is only in
 /// memory (artifact hits, sessions), stop log shipping and close the database, as a server does when it stops.
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 #[must_use = "dropping the runtime shuts it down"]

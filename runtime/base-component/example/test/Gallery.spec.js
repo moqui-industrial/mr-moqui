@@ -49,7 +49,7 @@ feature("gallery screen #name renders in #mode without errors", {
     },
 })
 
-// Every gallery screen is also a terminal screen (plans/Screen-TUI-Impl.md 2.8): its tui render is one JSON document, and
+// Every gallery screen is also a terminal screen (plans/archive/Screen-TUI-Impl.md 2.8): its tui render is one JSON document, and
 // no section of it failed. A qvue screen with no tui text yet answers its placeholder, which is not an error.
 const tuiErrors = (nodes, found) => {
     for (const node of nodes || []) {

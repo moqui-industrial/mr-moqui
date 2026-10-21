@@ -59,7 +59,7 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="SSH_SFTP" fromDate="0"/>
     <moqui.security.UserPermission userPermissionId="SSH_SHELL" description="SSH: admin command shell"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN_ADV" userPermissionId="SSH_SHELL" fromDate="0"/>
-    <!-- The terminal client (plans/Screen-TUI-Impl.md 4.2, 4.4) needs no permission: every user gets the apps over SSH
+    <!-- The terminal client (plans/archive/Screen-TUI-Impl.md 4.2, 4.4) needs no permission: every user gets the apps over SSH
         and in the browser terminal, every screen is still checked as the user, and files are not downloaded. SSH_SHELL
         adds the admin shell's prompt before them, for a login by key or password at the SSH level. -->
     <!-- git-upload-pack and git-receive-pack over SSH (git clone ssh://...); AT_GIT_REPOSITORY still gates each

@@ -148,18 +148,22 @@ impl<T> Default for ByDefinition<T> {
 }
 
 impl<T: Clone> ByDefinition<T> {
-    /// What was kept for `name` at `generation`. A newer generation drops everything kept before it.
-    pub(crate) fn get(&mut self, name: &str, generation: u64) -> Option<T> {
+    /// What was kept for `name` at `generation`. Entries of an older generation are not returned; the next
+    /// [`Self::insert`] drops them.
+    pub(crate) fn get(&self, name: &str, generation: u64) -> Option<T> {
         if self.generation != generation {
-            self.by_name.clear();
-            self.generation = generation;
             return None;
         }
         self.by_name.get(name).cloned()
     }
 
-    /// Keep `value`, read at `generation` (read before the definition was), unless the definitions changed since.
+    /// Keep `value`, read at `generation` (read before the definition was), unless the definitions changed since. A
+    /// newer generation than the one kept drops everything kept before it.
     pub(crate) fn insert(&mut self, name: &str, generation: u64, value: T) {
+        if self.generation < generation {
+            self.by_name.clear();
+            self.generation = generation;
+        }
         if self.generation == generation {
             self.by_name.insert(name.to_string(), value);
         }

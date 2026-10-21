@@ -22,6 +22,7 @@ use revue::render::{Cell, Modifier};
 use revue::style::Color;
 use revue::widget::{Border, RenderContext, View};
 
+pub use crate::keys::Target;
 use crate::layout::{char_width, display_width};
 use crate::theme::{Role, Theme};
 
@@ -88,6 +89,33 @@ impl Look {
 /// Where the view drew a field or a button on screen, so a drop-down opens under it.
 pub type Spots = BTreeMap<String, (u16, u16)>;
 
+/// One clickable area of a frame, in screen cells.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hit {
+    pub rect: Rect,
+    pub target: Target,
+}
+
+/// The areas of a frame, in drawing order: the last one drawn at a cell is on top.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Hits(pub Vec<Hit>);
+
+impl Hits {
+    /// What is under the cell at `column`, `row`: the top one.
+    pub fn at(&self, column: u16, row: u16) -> Option<&Target> {
+        self.0
+            .iter()
+            .rev()
+            .find(|hit| {
+                column >= hit.rect.x
+                    && column < hit.rect.x.saturating_add(hit.rect.width)
+                    && row >= hit.rect.y
+                    && row < hit.rect.y.saturating_add(hit.rect.height)
+            })
+            .map(|hit| &hit.target)
+    }
+}
+
 pub struct Painter<'a, 'b> {
     pub ctx: &'a mut RenderContext<'b>,
     pub theme: &'a Theme,
@@ -99,6 +127,9 @@ pub struct Painter<'a, 'b> {
     pub left: u16,
     pub right: u16,
     pub spots: &'a mut Spots,
+    pub hits: &'a mut Hits,
+    /// The target being drawn, and the screen cells its drawing covered so far: [`Self::target`].
+    pub aim: Option<(Target, Option<Rect>)>,
 }
 
 impl Painter<'_, '_> {
@@ -181,6 +212,7 @@ impl Painter<'_, '_> {
                 break;
             };
             self.ctx.set(cx, row, cell);
+            self.cover(Rect::new(cx, row, u16::try_from(width).unwrap_or(1), 1));
             if width == 2 {
                 let mut spacer = Cell::continuation();
                 spacer.bg = self.color(look.bg);
@@ -273,10 +305,51 @@ impl Painter<'_, '_> {
         border.render_child_into(self.ctx, rect, None);
     }
 
-    /// Blank the screen rows of `rect`, under an overlay.
+    /// Blank the screen rows of `rect`, under an overlay; a click there no longer reaches what is under it.
     pub fn clear(&mut self, rect: Rect) {
+        self.area(rect, Target::Block);
         for row in rect.y..rect.y.saturating_add(rect.height) {
             self.fill_row(rect.x, row, usize::from(rect.width), Look::default());
+        }
+    }
+
+    /// Draw with `draw`, and record the cells it wrote as a click area of `target`. A target drawn inside another is
+    /// its own area, on top.
+    pub fn target<R>(&mut self, target: Target, draw: impl FnOnce(&mut Self) -> R) -> R {
+        let outer = self.aim.replace((target, None));
+        let result = draw(self);
+        if let Some((target, Some(rect))) = std::mem::replace(&mut self.aim, outer) {
+            self.hits.0.push(Hit { rect, target });
+        }
+        result
+    }
+
+    /// An area of `target` that is not only drawn text: an overlay's whole box, a field's width.
+    pub fn area(&mut self, rect: Rect, target: Target) {
+        if rect.width > 0 && rect.height > 0 {
+            self.hits.0.push(Hit { rect, target });
+        }
+    }
+
+    /// An area of `target` on the canvas: `width` columns at column `x`, canvas rows `y` to `y + height`, the rows
+    /// scrolled out left off.
+    pub fn canvas_area(&mut self, x: u16, y: usize, width: usize, height: usize, target: Target) {
+        let rows: Vec<u16> = (y..y + height).filter_map(|row| self.row(row)).collect();
+        if let (Some(first), Some(last)) = (rows.first(), rows.last()) {
+            let width = u16::try_from(width)
+                .unwrap_or(u16::MAX)
+                .min(self.right.saturating_sub(x));
+            self.area(Rect::new(x, *first, width, last - first + 1), target);
+        }
+    }
+
+    /// Grow the area of the target being drawn by `rect`.
+    fn cover(&mut self, rect: Rect) {
+        if let Some((_, area)) = &mut self.aim {
+            *area = Some(match area {
+                Some(area) => area.union(&rect),
+                None => rect,
+            });
         }
     }
 

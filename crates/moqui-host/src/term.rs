@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The terminal client in a session of this server (plans/Screen-TUI-Impl.md 4.2, 4.4): `apps` over SSH and the
+//! The terminal client in a session of this server (plans/archive/Screen-TUI-Impl.md 4.2, 4.4): `apps` over SSH and the
 //! browser terminal on `/termws`. The client's session loop (`moqui_tui::run_session`) runs on a thread of its own,
 //! since it and the in-process link block; a task here carries the stream's bytes and window changes to it and its
 //! frames back. Every request runs as the user through the request pool, so a session gives nothing beyond the screens
@@ -209,6 +209,8 @@ pub(crate) struct Start {
     pub size: watch::Receiver<(u16, u16)>,
     /// For the log: what and from where, such as `SSH apps from 127.0.0.1:50122`.
     pub label: String,
+    /// The client's address, which a login in the dialog checks `ipAllowed` against; empty checks nothing.
+    pub client_ip: String,
 }
 
 impl Start {
@@ -222,6 +224,7 @@ impl Start {
             terminal: self.terminal.clone(),
             size: self.size.clone(),
             label: self.label.clone(),
+            client_ip: self.client_ip.clone(),
         }
     }
 }
@@ -373,6 +376,10 @@ impl ScreenLink for GatedLink {
                         gate.label
                     );
                 }
+                // A right password that only wants its code is not a refused login; a wrong code is.
+                if matches!(err, LinkError::Code(_)) && code.is_empty() {
+                    return Err(err);
+                }
                 let failures = gate.failures.fetch_add(1, Ordering::AcqRel) + 1;
                 tracing::warn!("{}: login of {username} refused ({failures}): {err}", gate.label);
                 if failures >= MAX_LOGIN_FAILURES {
@@ -383,6 +390,10 @@ impl ScreenLink for GatedLink {
                 Err(err)
             }
         }
+    }
+
+    fn send_code(&self, username: &str, password: &str, factor: &str) -> Result<String, LinkError> {
+        self.link.send_code(username, password, factor)
     }
 
     fn json(
@@ -449,7 +460,11 @@ pub(crate) async fn serve<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, sta
             let link = HostLink::weak_as_user(Weak::clone(&start.factory), username.clone());
             (log, link, None)
         }
-        Who::Login { name, .. } => (false, HostLink::weak(Weak::clone(&start.factory)), name.clone()),
+        Who::Login { name, .. } => (
+            false,
+            HostLink::weak(Weak::clone(&start.factory)).from_address(start.client_ip.clone()),
+            name.clone(),
+        ),
     };
     let link = GatedLink {
         link,

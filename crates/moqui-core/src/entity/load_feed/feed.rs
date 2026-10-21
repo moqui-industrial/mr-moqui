@@ -27,7 +27,7 @@ use moqui_lib::object::Value;
 
 use crate::entity::FieldMap;
 use super::loader::canonical_name;
-use super::{error_chain, with_load_slot, FeedServiceNames};
+use super::{error_chain, with_load_slot, with_load_slot_read, FeedServiceNames};
 use crate::driver::{DbConnection, DbRow};
 use crate::entity::facade::EntityFacade;
 use crate::transaction::TransactionManager;
@@ -53,6 +53,13 @@ pub(super) struct Touch {
     /// For an update of a feed entity, the row as it was before, so an update that changes no document field is
     /// not fed (Java's `oldValues`). `None` feeds the update.
     old: Option<FieldMap>,
+}
+
+impl Touch {
+    #[cfg(test)]
+    pub(super) fn keeps_fields(&self) -> bool {
+        self.fields.is_some()
+    }
 }
 
 struct Agg {
@@ -99,8 +106,10 @@ pub(crate) fn note_touch(
     {
         return;
     }
-    let keep_fields =
-        !facade.flags().disable_data_feed && entity_name != SKIP_FEED_ENTITY && entity_name != PENDING_ENTITY;
+    let keep_fields = !facade.flags().disable_data_feed
+        && entity_name != SKIP_FEED_ENTITY
+        && entity_name != PENDING_ENTITY
+        && feed_may_target(facade, entity_name);
     let touch = Touch {
         entity_name: entity_name.to_string(),
         operation: operation.to_string(),
@@ -108,6 +117,18 @@ pub(crate) fn note_touch(
         old: old.filter(|_| keep_fields),
     };
     TOUCHES.with(|touches| touches.borrow_mut().entry(frame).or_default().push(touch));
+}
+
+/// False when the feed configuration, as last read and not older than the feed definitions, has no document on
+/// `entity_name` (compared as [`insert_pending`] compares a touch's name): the commit then reads no values of the
+/// write. True before the configuration is first read, or after a definition was written since.
+fn feed_may_target(facade: &EntityFacade, entity_name: &str) -> bool {
+    let generation = crate::entity::cache::feed_definition_generation(facade);
+    with_load_slot_read(facade, |slot| {
+        slot.feed_config.as_ref().is_none_or(|config| {
+            config.generation != generation || config.targets.iter().any(|target| target.entity_name == entity_name)
+        })
+    })
 }
 
 /// Whether an update of `entity_name` should read the row first for the data feed: a known feed configuration has
@@ -119,7 +140,7 @@ pub(crate) fn feed_wants_old(facade: &EntityFacade, entity_name: &str) -> bool {
     let Ok(full_name) = canonical_name(facade, entity_name) else {
         return false;
     };
-    with_load_slot(facade, |slot| {
+    with_load_slot_read(facade, |slot| {
         slot.feed_config
             .as_ref()
             .is_some_and(|config| config.targets.iter().any(|target| target.entity_name == full_name))

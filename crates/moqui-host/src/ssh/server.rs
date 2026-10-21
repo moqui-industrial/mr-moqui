@@ -590,6 +590,7 @@ impl Connection {
                 },
                 size: pty.size.subscribe(),
                 label: format!("SSH apps from {}", self.peer),
+                client_ip: self.peer.ip().to_string(),
             })
         }
         #[cfg(not(feature = "tui"))]
@@ -680,8 +681,9 @@ impl russh::server::Handler for Connection {
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         let (username, secret) = (user.to_string(), password.to_string());
+        let client_ip = self.peer.ip().to_string();
         let checked = on_pool(&self.shared.factory, move |_| {
-            moqui_core::user::login_user(&username, &secret)?;
+            moqui_core::user::with_client_ip(&client_ip, || moqui_core::user::login_user(&username, &secret))?;
             if moqui_core::user::current_user_id()?.is_none_or(|id| id.is_empty()) {
                 return Err(CoreError::new("a second factor is required, which SSH does not take"));
             }

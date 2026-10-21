@@ -537,7 +537,7 @@ fn text_types(text: &MNode) -> Vec<String> {
         .collect()
 }
 
-/// The two tui findings of plans/Screen-TUI-Impl.md 2.9.
+/// The two tui findings of plans/archive/Screen-TUI-Impl.md 2.9.
 fn scan_tui(screen: &MNode, file: &mut FileReport) {
     let modes = screen.attribute("render-modes").unwrap_or_default();
     let named: Vec<&str> = modes.split(',').map(str::trim).collect();

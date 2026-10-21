@@ -47,4 +47,4 @@
                          | | p label: a paragraph of body text, 14 px at line height 1.5.              text-weight-bold: a total 12,400.00                                        |
 -------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------
  text-line mask=(999) 999-9999 - A masked text line
- F1=Help  Alt+Enter=Save  F3=Back  F5=Refresh  F9=Menu  Esc=Cancel  #=Number links  Ctrl+Q=Quit  Ctrl+K=Go to  F6=Create
+ F1=Help  Alt+Enter=Save  F3=Back  F5=Refresh  F9=Menu  Esc=Cancel  #=Number links  Ctrl+Q=Quit  Ctrl+K=Go to  F6=Create  Alt+P=Mouse

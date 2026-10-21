@@ -776,7 +776,7 @@ screen package, `private, no-store`) and shows the render function over it.
 
 ## The tui screen model
 
-`plans/Screen-TUI-Impl.md` is the plan and [docs/TUI.md](../../../../../../docs/TUI.md) the guide. The `tui` render mode (`ScreenTui.js`) is
+`plans/archive/Screen-TUI-Impl.md` is the plan and [docs/TUI.md](../../../../../../docs/TUI.md) the guide. The `tui` render mode (`ScreenTui.js`) is
 not for this shell: it answers one JSON document per screen level for the terminal client in `crates/moqui-tui`, whose serde
 types (`src/model.rs`) are the schema. It is always standalone: `<path>?renderMode=tui` renders the last level, and `<path>.tui` renders the
 level at the path itself (no walk down the default subscreens), which is how the client asks for the parents above the leaf.

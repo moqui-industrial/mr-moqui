@@ -3,7 +3,7 @@
 `moqui tui` shows the apps in a terminal. It draws the same XML Screens the browser does, through the `tui` render mode:
 the server writes each screen as a JSON document of nodes, and the client in `crates/moqui-tui` draws it with
 [Revue](https://github.com/hawk90/revue). There are no TUI-only screens. The design is in
-[plans/Screen-TUI-Impl.md](../plans/Screen-TUI-Impl.md).
+[plans/archive/Screen-TUI-Impl.md](../plans/archive/Screen-TUI-Impl.md).
 
 It is in every package, Default (`lite`) included (the `tui` feature, [Packaging](Packaging.md)). `apps` over SSH also
 needs the `ssh` feature, which Default leaves out.
@@ -26,6 +26,11 @@ tui` says so and stops: stop the server first, or reach it with `moqui tui --ser
 Each screen is rendered as the logged-in user with artifact authorization on, as the browser's requests are. The client
 holds no permission logic: what the user may not do is not in the document.
 
+**The login dialog** asks for the username and password, and the code of an account with a second factor (an
+authenticator app, a single-use code, or one sent by email or SMS). A right password moves the dialog to Code, says
+which factors the account has, and keeps the password for the next try only; Alt+S sends a code to the first factor
+that takes one, when there is one. Esc closes the dialog and forgets what was typed.
+
 ## A running server (`--server`)
 
 `moqui tui --server <url>` is the same client for a server that is already running, here or elsewhere. It boots no
@@ -36,8 +41,8 @@ carries a login key. `--agent`, `--snapshot`, `--ascii` and `--no-color` work wi
   `createLoginKey=true`. The server answers with a login key (`login_key_expire_hours`), which the client keeps in
   `~/.config/moqui/tui/<host>_<port>.toml` (or under `XDG_CONFIG_HOME`), readable by the user only. The password is not
   kept. The next run uses the key; when the server stops taking it (it expired, or its `UserLoginKey` row was removed)
-  the login dialog comes back. `moqui tui --server <url> --forget` removes the key. An account with a second factor is
-  told to use the browser.
+  the login dialog comes back. `moqui tui --server <url> --forget` removes the key. An account with a second factor
+  gets its code asked for in the dialog ("The login dialog", above).
 - **https.** Plain `http://` is refused except to this machine (`localhost`, `127.0.0.1`, `::1`), since the login
   would cross the network in the clear.
 - **Files.** Exports are saved to `XDG_DOWNLOAD_DIR` (else `~/Downloads`) on the user's machine, as in local mode.
@@ -62,7 +67,10 @@ moqui> apps                                 from the admin shell; quitting the a
   with the same login dialog `moqui tui` shows, the SSH name filled in. Such a session closes after 2 minutes without a
   login, or after 5 refused ones, and gets only the apps: no commands, `agent-apps`, SFTP or git. To log in by password
   at the SSH level instead (for the admin shell without a key), use `ssh -o PreferredAuthentications=password`.
-  `ssh-server` `login-dialog="false"` turns the dialog off. An account with a second factor logs in from the browser.
+  `ssh-server` `login-dialog="false"` turns the dialog off.
+  An account with a second factor logs in through the dialog ("The login dialog");
+  at the SSH level a password alone does not let it in. A dialog login is checked against the account's and its
+  groups' `ipAllowed` with the SSH client's address, as an SSH password login is.
 - **Permission.** None is needed for the apps: every screen is still rendered as the user with artifact authorization
   on, as in the browser. `SSH_SHELL` adds the admin shell's `moqui>` prompt, only for a key or password login; a
   dialog login is the apps alone, and quitting them ends the connection.
@@ -160,6 +168,11 @@ agent-apps hFY74uac do Yes                           message Done
 agent-apps hFY74uac close
 ```
 
+With the login dialog open (`moqui tui --agent --server`, or a session that lost its login), its fields are the
+elements: `set Username john.doe`, `set Password ...`, `set Code 123456`, then `do Log in`. The password is never in an
+answer, as text or JSON. An answer of `--- error Enter the authentication code ...` means the password was right and
+the account wants its code.
+
 **Logging in.** Each step is its own `ssh`, so let it not ask for a password every time:
 
 - Give the agent a key: a `UserSshKey` row with the key's fingerprint, for the agent's user.
@@ -216,6 +229,7 @@ tmux, screen, job control and ssh escapes are left alone. F1 lists the keys in u
 | Alt+L | The log pane (in local mode; over SSH for a user who may view the System app) |
 | Alt+M | The last 25 messages |
 | Alt+T | The tray: Today, Chat and Notifications; Left and Right change the tab |
+| Alt+P | The mouse off (the terminal's own selection and menu back) or on again, kept for the user (`TUI_MOUSE`) |
 | Ctrl+L | Redraw |
 | Ctrl+Q | Quit, after asking if a form changed |
 
@@ -243,12 +257,38 @@ is the agenda of the rows' dates. `v` goes to the next view.
 An `editor-type="md"` text area shows its Markdown source styled as it is typed: headings and links in the primary
 color, bold and italic, code in the info color, and the markers (`#`, `**`, backticks, a link's brackets and url, list
 bullets) muted. The source is the value, so nothing is converted and nothing is lost. F4 shows the preview and the
-source again. Rich-text fields (`html`, `rich`) stay read-only, with "open in browser".
+source again. Rich-text fields (`html`, `rich`) stay read-only, with "open in browser". A text area longer than its
+rows scrolls with its cursor, and PgUp, PgDn and the wheel move it by its rows; `▲` and `▼` on its bar say there is
+more above or below. The preview scrolls the same way.
 
 A row of buttons wider than the screen goes on as many lines as it needs.
 
 Leaving a changed form (a link, F3, Ctrl+Q) asks: Stay, Discard or Save. A button or link with a `confirmation` asks
 No or Yes, starting at No.
+
+## The mouse
+
+The keyboard does everything; the mouse is a second way in. It is on in every channel (local, `--server`, SSH and the
+browser terminal) until the user turns it off with Alt+P, which is kept as the `TUI_MOUSE` preference.
+
+- **Click.** A click does what Enter does on what is under it: a link follows, a button presses, a tab opens, a box
+  title opens or closes, a menu item, a drop-down choice, a palette row, a confirm's choice or a date in the picker is
+  taken. On a field it only takes the focus; a check box toggles and a drop-down opens its list. A click on a list row
+  makes it the current row, and a double click is Enter on it; its first column, or a link in a cell, follows. A
+  column title with a sort sorts by it, ascending, then descending; the selection box `[ ]` selects. The title line's
+  crumbs open the palette, the `≡` of a hidden drawer opens the drawer, and a key line entry presses its key. While a
+  drop-down list, a menu, the palette, a confirm or the login dialog is open, a click elsewhere does nothing, and a
+  click beside a dialog does not close it, so no edits are lost to a stray click.
+- **The wheel** scrolls the screen three rows, until the next key or click; over a text area it scrolls the text, and
+  over an open list or menu it moves the highlight. It never turns a list's page (PgDn does).
+- **Drag to copy.** A drag selects the screen's text in reading order, or a rectangle with Alt held (a column of a
+  list); a double click on plain text takes a word, a triple click the row. On release the text goes to the clipboard
+  by OSC 52 (up to 64 KiB) and the message line says how many characters. kitty, WezTerm, Alacritty, foot, Windows
+  Terminal and xterm (with its window ops allowed) take OSC 52, iTerm2 when allowed, tmux with `set-clipboard on`.
+  GNOME Terminal and the other VTE terminals do not: there, Shift+drag (Option+drag on macOS) is the terminal's own
+  selection, which every terminal keeps while an app has the mouse, or Alt+P turns the mouse off. A password field is
+  drawn as `•`, so it is never copied. In the browser terminal the page puts the text on the clipboard, or shows it to
+  copy by hand when the browser refuses.
 
 ## Widths
 
@@ -363,5 +403,4 @@ post, follow, a message), and its help.
 
 ## Not yet
 
-The mouse (clicks, the wheel, drag to select with copy), per-user key bindings, a two-way rich-text editor, a second
-factor in the login dialog, and a `diagram` component wait; plans/Remaining-Work.md lists them.
+Per-user key bindings, a two-way rich-text editor, and a `diagram` component wait; plans/Remaining-Work.md lists them.

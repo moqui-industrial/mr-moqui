@@ -810,25 +810,27 @@ fn tui_values(theme: &str) -> Value {
     out.insert("breakpoints".to_string(), Value::Map(breakpoints));
     out.insert("colors".to_string(), Value::Map(colors));
     out.insert("keys".to_string(), map("STRT_TUI_KEYS"));
-    out.insert("drawerOpen".to_string(), drawer_open());
+    out.insert("drawerOpen".to_string(), flag_preference("TUI_DRAWER_OPEN"));
+    out.insert("mouse".to_string(), flag_preference("TUI_MOUSE"));
     Value::Map(out)
 }
 
-/// The user's `TUI_DRAWER_OPEN` preference (F9's choice): true or false, null when it is not set or not a boolean.
-fn drawer_open() -> Value {
-    match user::get_preference("TUI_DRAWER_OPEN") {
+/// A true or false preference of the user's terminal client: `TUI_DRAWER_OPEN` (F9's choice) and `TUI_MOUSE` (Alt+P's);
+/// null when it is not set or not a boolean.
+fn flag_preference(key: &str) -> Value {
+    match user::get_preference(key) {
         Ok(Some(text)) => match text.trim() {
             "true" => Value::Bool(true),
             "false" => Value::Bool(false),
             "" => Value::Null,
             other => {
-                tracing::warn!("Preference TUI_DRAWER_OPEN [{other}] is not true or false; it is left unset");
+                tracing::warn!("Preference {key} [{other}] is not true or false; it is left unset");
                 Value::Null
             }
         },
         Ok(None) => Value::Null,
         Err(err) => {
-            tracing::error!("Could not read preference TUI_DRAWER_OPEN for the shell: {err}");
+            tracing::error!("Could not read preference {key} for the shell: {err}");
             Value::Null
         }
     }

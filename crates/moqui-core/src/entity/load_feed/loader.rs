@@ -790,7 +790,7 @@ type Shapes = crate::entity::ByDefinition<Arc<Shape>>;
 /// Read once per entity name: every record of a file asks.
 pub(super) fn shape_of(facade: &EntityFacade, entity_name: &str) -> Result<Arc<Shape>, Error> {
     let generation = crate::entity::definition_generation(facade);
-    if let Some(shape) = facade.with_slot(Shapes::default, |shapes| shapes.get(entity_name, generation)) {
+    if let Some(shape) = facade.with_slot_read(Shapes::default, |shapes| shapes.get(entity_name, generation)) {
         return Ok(shape);
     }
     let shape = Arc::new(read_shape(facade, entity_name)?);

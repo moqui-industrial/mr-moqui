@@ -19,8 +19,8 @@ use std::collections::BTreeMap;
 
 use moqui_tui::{
     gallery_link, merge_keys, Action, Choice, FakeLink, Key, KeyMap, KeyPress, LinkCall, Messages, Overlay, Reply,
-    ScreenLink, ScreenModel, Session, ShellInfo, TransitionOutcome, ValidationError, Widget, GALLERY_DETAIL_PATH,
-    GALLERY_LIST_JSON, GALLERY_LIST_PATH,
+    ScreenLink, ScreenModel, Sendable, Session, ShellInfo, TransitionOutcome, ValidationError, Widget,
+    GALLERY_DETAIL_PATH, GALLERY_LIST_JSON, GALLERY_LIST_PATH,
 };
 
 const EDIT_JSON: &str = r#"{
@@ -793,6 +793,54 @@ fn the_login_dialog_starts_with_the_login_name() {
     typed(&mut session, &link, "pw");
     press(&mut session, &link, Key::Enter);
     assert!(session.top_overlay().is_none());
+    assert_eq!(session.path(), GALLERY_LIST_PATH);
+}
+
+/// An account with a second factor: the right password moves the dialog to the code and keeps the password for the
+/// next try; Alt+S sends a code to the factor the server named; the code logs in.
+#[test]
+fn a_login_that_wants_a_code_keeps_the_password_and_asks_for_the_code() {
+    let link = gallery_link();
+    link.require_login("pw");
+    link.require_code(
+        "123456",
+        vec![Sendable {
+            id: "F1".to_string(),
+            label: "j***@example.com".to_string(),
+        }],
+    );
+    let mut session = Session::start(GALLERY_LIST_PATH);
+    session.set_login_name(Some("john".to_string()));
+    session.run_now(&link);
+    typed(&mut session, &link, "pw");
+    press(&mut session, &link, Key::Enter);
+    let Some(Overlay::Login(login)) = session.top_overlay() else {
+        panic!("the dialog stays for the code");
+    };
+    assert_eq!(login.at, 2, "the code is next");
+    assert!(login.code_wanted);
+    assert_eq!(login.password, "pw", "the password is kept for the try with the code");
+    assert_eq!(login.error, "Enter the code from your authenticator app");
+    session.press(&KeyPress::with_alt(Key::Char('s')), &link);
+    let Some(Overlay::Login(login)) = session.top_overlay() else {
+        panic!("the dialog stays");
+    };
+    assert_eq!(login.error, "A code was sent to j***@example.com");
+    assert!(link
+        .calls()
+        .iter()
+        .any(|call| matches!(call, LinkCall::SendCode { factor, .. } if factor == "F1")));
+    typed(&mut session, &link, "111111");
+    press(&mut session, &link, Key::Enter);
+    let Some(Overlay::Login(login)) = session.top_overlay() else {
+        panic!("a wrong code keeps the dialog");
+    };
+    assert_eq!(login.error, "Authentication code is not valid");
+    assert_eq!(login.password, "pw");
+    assert!(login.code.is_empty(), "the code is typed again");
+    typed(&mut session, &link, "123456");
+    press(&mut session, &link, Key::Enter);
+    assert!(session.top_overlay().is_none(), "logged in");
     assert_eq!(session.path(), GALLERY_LIST_PATH);
 }
 

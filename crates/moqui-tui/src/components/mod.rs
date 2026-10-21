@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The client components a `tui` text names (plans/Screen-TUI-Impl.md 2.9): the terminal twin of a `.qvue` screen or of
+//! The client components a `tui` text names (plans/archive/Screen-TUI-Impl.md 2.9): the terminal twin of a `.qvue` screen or of
 //! an inline `qvt` part. A component is registered by name with `inventory`, as native components are; an add-on crate
 //! registers its own the same way, behind a `tui` feature of its crate:
 //!

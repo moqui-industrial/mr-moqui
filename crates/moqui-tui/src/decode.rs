@@ -23,7 +23,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::keys::{Key, KeyPress};
+use crate::keys::{Key, KeyPress, Mouse, MouseKind};
 
 /// How long an unfinished sequence waits for its next byte before it is taken as typed: a lone ESC is the Escape key.
 /// Terminals send a sequence in one write, so a gap this long means a person pressed Escape.
@@ -42,6 +42,8 @@ pub enum Decoded {
     Background {
         dark: bool,
     },
+    /// A mouse report: SGR (`ESC [ < b ; x ; y M` or `m`), or the X10 encoding (`ESC [ M` and three bytes).
+    Mouse(Mouse),
 }
 
 #[derive(Debug)]
@@ -253,6 +255,21 @@ fn take_csi(buf: &[u8]) -> Take {
         };
         return Take::One(Decoded::Key(KeyPress::plain(key)), 4);
     }
+    // X10 mouse: ESC [ M and three bytes of 32 plus the button, column and row. 'M' is a final byte, so this comes
+    // before the scan as well.
+    if buf.len() >= 3 && buf[2] == b'M' {
+        if buf.len() < 6 {
+            return Take::NeedMore;
+        }
+        let code = u16::from(buf[3].saturating_sub(32));
+        let column = u16::from(buf[4].saturating_sub(33));
+        let row = u16::from(buf[5].saturating_sub(33));
+        // X10 has no release of a button of its own: code 3 is "a button went up".
+        return match mouse_of(code, column, row, code & 3 == 3 && code & 64 == 0) {
+            Some(mouse) => Take::One(Decoded::Mouse(mouse), 6),
+            None => Take::Skip(6),
+        };
+    }
     let Some(final_at) = buf.iter().skip(2).position(|byte| (0x40..=0x7e).contains(byte)) else {
         return if buf.len() > 64 { Take::Skip(1) } else { Take::NeedMore };
     };
@@ -261,6 +278,21 @@ fn take_csi(buf: &[u8]) -> Take {
     let body = &buf[2..final_at];
     let len = final_at + 1;
     let body = std::str::from_utf8(body).unwrap_or("");
+    if let Some(report) = body.strip_prefix('<').filter(|_| matches!(final_byte, b'M' | b'm')) {
+        let mut parts = report.split(';').map(|part| part.parse::<u16>().ok());
+        let (Some(Some(code)), Some(Some(column)), Some(Some(row))) = (parts.next(), parts.next(), parts.next()) else {
+            return Take::Skip(len);
+        };
+        return match mouse_of(
+            code,
+            column.saturating_sub(1),
+            row.saturating_sub(1),
+            final_byte == b'm',
+        ) {
+            Some(mouse) => Take::One(Decoded::Mouse(mouse), len),
+            None => Take::Skip(len),
+        };
+    }
     if final_byte == b'~' {
         return take_tilde(body, len);
     }
@@ -288,6 +320,42 @@ fn take_csi(buf: &[u8]) -> Take {
         _ => return Take::Skip(len),
     };
     Take::One(Decoded::Key(apply_mods(key, mods)), len)
+}
+
+/// A report's button code: the button in bits 0 and 1, Shift 4, Alt 8, Ctrl 16, motion 32, the wheel 64. Wheel
+/// left and right, and motion with no button, are left out.
+fn mouse_of(code: u16, column: u16, row: u16, release: bool) -> Option<Mouse> {
+    let button = u8::try_from(code & 3).unwrap_or(0);
+    let kind = if code & 64 != 0 {
+        match button {
+            0 => MouseKind::WheelUp,
+            1 => MouseKind::WheelDown,
+            _ => return None,
+        }
+    } else if release {
+        MouseKind::Release
+    } else if code & 32 != 0 {
+        if button == 3 {
+            return None;
+        }
+        MouseKind::Drag
+    } else {
+        MouseKind::Press
+    };
+    Some(Mouse {
+        kind,
+        // A wheel has no button, and X10's release does not say which went up.
+        button: if matches!(kind, MouseKind::WheelUp | MouseKind::WheelDown) || button == 3 {
+            0
+        } else {
+            button
+        },
+        column,
+        row,
+        shift: code & 4 != 0,
+        alt: code & 8 != 0,
+        ctrl: code & 16 != 0,
+    })
 }
 
 fn take_tilde(body: &str, len: usize) -> Take {
@@ -496,5 +564,39 @@ mod tests {
             keys(b"\x1b]a"),
             vec![press(Key::Char(']'), true, false, false), key(Key::Char('a'))]
         );
+    }
+
+    fn mouse(kind: MouseKind, column: u16, row: u16) -> Decoded {
+        Decoded::Mouse(Mouse::at(kind, column, row))
+    }
+
+    #[test]
+    fn sgr_mouse_press_drag_release_and_wheel() {
+        assert_eq!(keys(b"\x1b[<0;10;5M"), vec![mouse(MouseKind::Press, 9, 4)]);
+        assert_eq!(keys(b"\x1b[<32;11;5M"), vec![mouse(MouseKind::Drag, 10, 4)]);
+        assert_eq!(keys(b"\x1b[<0;11;5m"), vec![mouse(MouseKind::Release, 10, 4)]);
+        assert_eq!(keys(b"\x1b[<64;1;1M"), vec![mouse(MouseKind::WheelUp, 0, 0)]);
+        assert_eq!(keys(b"\x1b[<65;1;1M"), vec![mouse(MouseKind::WheelDown, 0, 0)]);
+        // Shift 4, Alt 8, Ctrl 16; the right button is 2.
+        let Decoded::Mouse(with) = keys(b"\x1b[<30;3;4M").remove(0) else {
+            panic!("a mouse report");
+        };
+        assert!(with.shift && with.alt && with.ctrl && with.button == 2, "{with:?}");
+        // Motion with no button is not reported, and the keys after it still are.
+        assert_eq!(keys(b"\x1b[<35;3;4Mx"), vec![key(Key::Char('x'))]);
+        // SGR has no coordinate limit, unlike X10's 223.
+        assert_eq!(keys(b"\x1b[<0;300;80M"), vec![mouse(MouseKind::Press, 299, 79)]);
+    }
+
+    #[test]
+    fn x10_mouse_and_reports_split_across_reads() {
+        // Button 0 at column 1, row 1: 32, 33, 33. A release is code 3.
+        assert_eq!(keys(b"\x1b[M !!"), vec![mouse(MouseKind::Press, 0, 0)]);
+        assert_eq!(keys(b"\x1b[M#*%"), vec![mouse(MouseKind::Release, 9, 4)]);
+        let mut decoder = Decoder::new();
+        assert!(decoder.push(b"\x1b[M ").is_empty());
+        assert_eq!(decoder.push(b"!!"), vec![mouse(MouseKind::Press, 0, 0)]);
+        assert!(decoder.push(b"\x1b[<0;1").is_empty());
+        assert_eq!(decoder.push(b"0;5M"), vec![mouse(MouseKind::Press, 9, 4)]);
     }
 }

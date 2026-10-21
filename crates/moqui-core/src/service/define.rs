@@ -736,7 +736,7 @@ fn names_in_file(path: &Path, relative: &Path, names: &mut BTreeSet<String>) {
             return;
         }
     };
-    if root.name() != "services" {
+    if !root.has_name("services") {
         return;
     }
     let prefix = relative.with_extension("").to_string_lossy().replace(['/', '\\'], ".");
@@ -954,7 +954,7 @@ fn load_file(
         }
     };
     let failures = &mut loaded.failures;
-    if root.name() != "services" {
+    if !root.has_name("services") {
         failures.push(format!("{} root is {} and not services", path.display(), root.name()));
         return Ok(());
     }
@@ -1260,11 +1260,11 @@ fn seconds_attr(node: &MNode, name: &str, default: u64) -> Result<Duration, Stri
 }
 
 fn bool_attr(node: &MNode, name: &str, default: bool) -> bool {
-    match node.attribute(name).as_deref() {
+    node.with_attribute(name, |value| match value {
         Some(value) if value.eq_ignore_ascii_case("true") => true,
         Some(value) if value.eq_ignore_ascii_case("false") => false,
         _ => default,
-    }
+    })
 }
 
 fn expressions_ok(service: &str, node: &MNode, errors: &mut Vec<String>) -> bool {
@@ -1594,7 +1594,7 @@ fn follow_include(include: &ServiceInclude, stack: &[PathBuf], depth: usize) -> 
             path.display()
         ));
     };
-    if node.name() == "service-include" {
+    if node.has_name("service-include") {
         let location = node.attribute("location").unwrap_or_default();
         let next = ServiceInclude {
             prefix: service_prefix(&path),

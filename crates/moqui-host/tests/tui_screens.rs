@@ -13,7 +13,7 @@
  */
 
 //! Scripted Gallery, Party and Tools screens through the in-process client: the Phase 2 and Phase 3 Exits of
-//! plans/Screen-TUI-Impl.md.
+//! plans/archive/Screen-TUI-Impl.md.
 //!
 //! One server: every Gallery screen renders a model with no error node in it, a login through the dialog, then the
 //! keyboard flows on Gallery List (find, page, sort, open, a dialog submit) and on SimpleScreens Party, a Mantle app
@@ -31,9 +31,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use moqui_core::context::ExecutionContextFactory;
-use moqui_host::tui::HostLink;
+use moqui_host::tui::{HostLink, Transport};
 use moqui_lib::object::Value;
-use moqui_tui::{frame, outline, AppView, FormList, Key, KeyPress, Node, Overlay, ScreenLink, ScreenModel, Session};
+use moqui_tui::{
+    frame, outline, AppView, FormList, Key, KeyPress, LinkError, Node, Overlay, ScreenLink, ScreenModel, Session,
+};
 
 const GALLERY: &[&str] = &[
     "Landing",
@@ -72,10 +74,12 @@ fn gallery_and_party_screens() {
     let factory = Arc::clone(gate.server.factory());
     grant_gate(&factory);
     log_in_through_the_dialog(&factory);
+    log_in_with_a_code_and_from_an_address(&factory);
     let link = HostLink::as_user(&factory, "john.doe");
     render_gallery(&link);
     snapshot_gallery(&link);
     drive_gallery(&link);
+    drive_row_dialog(&link);
     drive_party(&link);
     drive_components(&link);
     drive_shell(&link);
@@ -450,6 +454,75 @@ fn log_in_through_the_dialog(factory: &Arc<ExecutionContextFactory>) {
     );
     assert_eq!(view.session().shell().user, "john.doe");
     assert!(!view.session().menu().is_empty(), "the drawer of the gallery");
+}
+
+/// The dialog's logins on the in-process link: an account with a second factor answers the code it wants for its
+/// right password, a wrong code, and logs in with the right one (a single-use code here); an account with `ipAllowed`
+/// is checked against the address the link was given, as the SSH peer is.
+fn log_in_with_a_code_and_from_an_address(factory: &Arc<ExecutionContextFactory>) {
+    {
+        let context = factory.new_context();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        let facade = factory.entity().expect("entity facade");
+        let john = facade
+            .find("moqui.security.UserAccount")
+            .expect("UserAccount")
+            .eq("username", Value::string("john.doe"))
+            .one()
+            .expect("find john.doe")
+            .expect("john.doe");
+        for (id, ip) in [("CODE_USER", ""), ("IP_USER", "10.9.9.9")] {
+            let mut account = facade.make_value("moqui.security.UserAccount").expect("UserAccount");
+            for field in ["currentPassword", "passwordHashType", "passwordSalt", "passwordBase64"] {
+                if let Some(value) = john.get(field) {
+                    account.set(field, value.clone());
+                }
+            }
+            account.set("userId", Value::string(id));
+            account.set("username", Value::string(id.to_lowercase().replace('_', ".")));
+            if !ip.is_empty() {
+                account.set("ipAllowed", Value::string(ip));
+            }
+            account.create(&facade).unwrap_or_else(|err| panic!("{id}: {err}"));
+        }
+        let mut factor = facade
+            .make_value("moqui.security.UserAuthcFactor")
+            .expect("UserAuthcFactor");
+        factor.set("factorId", Value::string("CODE_USER_1"));
+        factor.set("userId", Value::string("CODE_USER"));
+        factor.set("factorTypeEnumId", Value::string("UafSingleUse"));
+        factor.set(
+            "factorOption",
+            Value::string(moqui_core::user::single_use_hash("246810").expect("hash")),
+        );
+        factor.set("fromDate", Value::I64(0));
+        factor.create(&facade).expect("factor");
+    }
+    let link = HostLink::new(factory);
+    match link.login("code.user", "moqui", "") {
+        Err(LinkError::Code(ask)) => assert!(ask.text.starts_with("Enter the authentication code"), "{ask:?}"),
+        other => panic!("a code is wanted: {other:?}"),
+    }
+    assert!(link.transport().user().is_none(), "no one logged in yet");
+    match link.login("code.user", "moqui", "111111") {
+        Err(LinkError::Code(ask)) => assert_eq!(ask.text, "Authentication code is not valid"),
+        other => panic!("a wrong code: {other:?}"),
+    }
+    link.login("code.user", "moqui", "246810").expect("the code logs in");
+    assert_eq!(link.transport().user().as_deref(), Some("code.user"));
+
+    let refused = HostLink::new(factory)
+        .from_address("127.0.0.1")
+        .login("ip.user", "moqui", "");
+    match refused {
+        Err(LinkError::Remote(text)) => assert!(text.contains("not in allowed list"), "{text}"),
+        other => panic!("refused from another address: {other:?}"),
+    }
+    HostLink::new(factory)
+        .from_address("10.9.9.9")
+        .login("ip.user", "moqui", "")
+        .expect("allowed from its address");
 }
 
 fn start_gate() -> common::Gate {
@@ -841,6 +914,42 @@ fn create_person(view: &mut AppView<HostLink>, link: &HostLink) {
 }
 
 /// The screen at `path` as the client opens it: the shell data (drawer, theme) and the level.
+/// Gallery Dialog's Edit per row, a container-dialog in a list cell: F10 on the second row offers that row's dialog,
+/// whose form holds the row's values and posts its own update.
+fn drive_row_dialog(link: &HostLink) {
+    let mut view = open_screen(link, "/apps/gallery/Dialog");
+    focus(&mut view, "EnumList");
+    view.on_key(&press(Key::Down));
+    assert_eq!(view.session().row_at("EnumList"), 1);
+    let second = view.session().list("EnumList").expect("EnumList").rows[1].clone();
+    let enum_id = second.cells[0].text().to_string();
+    view.on_key(&press(Key::F(10)));
+    let Some(Overlay::Menu(menu)) = view.session().top_overlay() else {
+        panic!("no actions: {:?}", view.session().overlays());
+    };
+    let at = menu
+        .items
+        .iter()
+        .position(|item| item.label == format!("Edit {enum_id}…"))
+        .unwrap_or_else(|| panic!("no Edit {enum_id}: {:?}", menu.items));
+    for _ in 0..at {
+        view.on_key(&press(Key::Down));
+    }
+    view.on_key(&press(Key::Enter));
+    let open = view.session().dialogs_open().join(",");
+    assert!(open.starts_with("EditEnumDialog"), "{open}");
+    assert_eq!(view.session().focus_kind(), Some(moqui_tui::FocusKind::Text));
+    type_text(&mut view, " (edited)");
+    view.on_key(&press(Key::Enter));
+    assert!(
+        view.session()
+            .message()
+            .contains(&format!("Enumeration {enum_id} updated")),
+        "{}",
+        view.session().message()
+    );
+}
+
 fn open_screen(link: &HostLink, path: &str) -> AppView<HostLink> {
     let mut view = AppView::with_session(Session::start(path), link.clone());
     view.run_requests();

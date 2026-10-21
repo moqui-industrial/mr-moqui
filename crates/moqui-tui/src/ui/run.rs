@@ -25,11 +25,12 @@ use std::time::Instant;
 use revue::core::app::App;
 use revue::event::{Event, Key as RevueKey, KeyEvent};
 
-use crate::keys::{Key, KeyPress};
+use crate::keys::{Key, KeyPress, Mouse, MouseKind};
 use crate::link::{Push, RawBody, Reply, ScreenLink};
 use crate::session::Session;
 use crate::theme::Theme;
 
+use super::encode::{osc52, MOUSE_OFF, MOUSE_ON};
 use super::AppView;
 
 /// What `moqui tui` passes to the local loop.
@@ -77,7 +78,7 @@ pub fn run_local<L: ScreenLink + 'static>(link: L, options: LocalOptions) -> rev
         .run(view, move |event, view, app| {
             let changed = match event {
                 Event::Key(key) => {
-                    let quit = from_revue(key).is_some_and(|press| view.session_mut().on_key(&press));
+                    let quit = from_revue(key).is_some_and(|press| view.key(&press));
                     if quit {
                         app.quit();
                     }
@@ -115,8 +116,22 @@ pub fn run_local<L: ScreenLink + 'static>(link: L, options: LocalOptions) -> rev
                     // The spinner moves while a request runs.
                     any || view.session().is_busy()
                 }
-                Event::Mouse(_) | Event::FocusGained | Event::FocusLost => false,
+                // Revue's mouse capture stays off (it is fixed when the app is built); the session's mouse mode is
+                // written below, and crossterm reads the reports either way.
+                Event::Mouse(mouse) => {
+                    from_revue_mouse(mouse).is_some_and(|mouse| view.on_mouse(&mouse, Instant::now()))
+                }
+                Event::FocusGained | Event::FocusLost => false,
             };
+            let mut stdout = std::io::stdout();
+            if let Some(on) = view.session_mut().take_mouse_mode() {
+                let _ = stdout.write_all(if on { MOUSE_ON } else { MOUSE_OFF });
+                let _ = stdout.flush();
+            }
+            if let Some(text) = view.session_mut().take_copy() {
+                let _ = stdout.write_all(&osc52(&text));
+                let _ = stdout.flush();
+            }
             view.sync_shell();
             if let Some(log) = notes {
                 for note in view.take_notes() {
@@ -130,9 +145,37 @@ pub fn run_local<L: ScreenLink + 'static>(link: L, options: LocalOptions) -> rev
             send(view, &link, &done_tx);
             changed
         });
+    let _ = out.write_all(MOUSE_OFF);
     let _ = out.write_all(b"\x1b[?2004l");
     let _ = out.flush();
     result
+}
+
+/// Revue's mouse event as the decoder's: a left, middle or right press, drag or release, or the wheel.
+pub fn from_revue_mouse(mouse: &revue::event::MouseEvent) -> Option<Mouse> {
+    use revue::event::{MouseButton, MouseEventKind};
+    let button = |button: &MouseButton| match button {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+    };
+    let (kind, pressed) = match &mouse.kind {
+        MouseEventKind::Down(which) => (MouseKind::Press, button(which)),
+        MouseEventKind::Drag(which) => (MouseKind::Drag, button(which)),
+        MouseEventKind::Up(which) => (MouseKind::Release, button(which)),
+        MouseEventKind::ScrollUp => (MouseKind::WheelUp, 0),
+        MouseEventKind::ScrollDown => (MouseKind::WheelDown, 0),
+        _ => return None,
+    };
+    Some(Mouse {
+        kind,
+        button: pressed,
+        column: mouse.x,
+        row: mouse.y,
+        alt: mouse.alt,
+        ctrl: mouse.ctrl,
+        shift: mouse.shift,
+    })
 }
 
 /// Where an export is saved: `XDG_DOWNLOAD_DIR`, else `~/Downloads`, else the current directory.

@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Screen model subset from `plans/Screen-TUI-Impl.md` section 2.3.
+//! Screen model subset from `plans/archive/Screen-TUI-Impl.md` section 2.3.
 //!
 //! Node names match that section (`box`, `formList`, `textLine`). Unknown object fields are ignored so a later key does
 //! not break a fixture. A node of an unknown `t`, or a widget of an unknown `kind`, becomes a placeholder

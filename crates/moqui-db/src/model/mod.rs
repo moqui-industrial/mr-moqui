@@ -310,7 +310,7 @@ impl EntityModel {
         let mut by_full: HashMap<String, usize> = HashMap::new();
         let mut extends = Vec::new();
         for document in documents {
-            if document.name() != "entities" {
+            if !document.has_name("entities") {
                 continue;
             }
             for child in document.children() {
@@ -325,12 +325,12 @@ impl EntityModel {
                                 where_of(&node),
                                 where_of(&nodes[index])
                             );
-                            view_flags[index] = child.name() == "view-entity";
+                            view_flags[index] = child.has_name("view-entity");
                             nodes[index] = node;
                             continue;
                         }
                         by_full.insert(full_name, nodes.len());
-                        view_flags.push(child.name() == "view-entity");
+                        view_flags.push(child.has_name("view-entity"));
                         nodes.push(node);
                     }
                     "extend-entity" => extends.push(child.clone()),
@@ -411,7 +411,7 @@ impl EntityModel {
         for path in paths {
             if path.is_file() {
                 let node = MNode::parse_file(path)?;
-                if node.name() == "entities" {
+                if node.has_name("entities") {
                     documents.push(node);
                 }
             } else {
@@ -559,7 +559,7 @@ fn entity_documents(directory: &Path) -> Result<Vec<MNode>, Error> {
     let mut documents = Vec::new();
     for path in paths {
         let node = MNode::parse_file(&path)?;
-        if node.name() == "entities" {
+        if node.has_name("entities") {
             documents.push(node);
         }
     }
@@ -586,7 +586,7 @@ fn parse_dictionary(conf: &MNode) -> Result<Vec<DictionaryType>, Error> {
 }
 
 fn collect_dictionary(node: &MNode, out: &mut Vec<MNode>) {
-    if node.name() == "database-list" {
+    if node.has_name("database-list") {
         out.extend(node.children_named("dictionary-type"));
         return;
     }
@@ -1173,7 +1173,7 @@ fn related_attr(node: &MNode) -> Result<String, Error> {
 }
 
 fn is_true(node: &MNode, name: &str) -> bool {
-    node.attribute(name).as_deref() == Some("true")
+    node.attribute_is(name, "true")
 }
 
 fn optional_attr(node: &MNode, name: &str) -> Option<String> {

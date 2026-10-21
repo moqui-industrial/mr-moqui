@@ -213,3 +213,34 @@ fn a_confirm_is_answered_by_its_choice_and_empty_rows_are_counted() {
     assert!(saved.text.contains("empty rows)"), "{}", saved.text);
     assert!(!saved.text.contains("\n\n\n"), "{}", saved.text);
 }
+
+/// The login dialog's fields are elements while it is on top: `set` fills them, `do Log in` sends it, and the
+/// password is never in an answer.
+#[test]
+fn the_login_dialog_is_filled_by_set_and_sent_by_do() {
+    let link = gallery_link();
+    link.require_login("secret-pw");
+    link.require_code("123456", Vec::new());
+    let mut agent = Agent::open(link.clone(), GALLERY_LIST_PATH, 100, 40);
+    let listed = agent.run("elements");
+    assert!(listed.text.contains("login.password"), "{}", listed.text);
+    assert!(agent.run("set Username john").ok);
+    let answer = agent.run("set Password secret-pw");
+    assert!(answer.ok, "{}", answer.text);
+    assert!(!answer.text.contains("secret-pw"), "{}", answer.text);
+    let json = agent.run("elements --json");
+    assert!(!json.text.contains("secret-pw"), "{}", json.text);
+    assert!(json.text.contains("•••••••••"), "{}", json.text);
+    // The right password wants the code: an error answer that says so, the dialog still open.
+    let wanted = agent.run("do Log in");
+    assert!(!wanted.ok, "{}", wanted.text);
+    assert!(wanted.text.contains("Enter the code"), "{}", wanted.text);
+    assert!(agent.run("set Code 123456").ok);
+    let done = agent.run("do Log in");
+    assert!(done.ok, "{}", done.text);
+    assert!(done.text.contains("overlay none"), "{}", done.text);
+    assert!(link
+        .calls()
+        .iter()
+        .any(|call| matches!(call, LinkCall::Login { username, code, .. } if username == "john" && code == "123456")));
+}

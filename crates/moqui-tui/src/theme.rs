@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The client's color roles and terminal capabilities (plans/Screen-TUI-Impl.md 1.4). Revue's widgets use fixed colors,
+//! The client's color roles and terminal capabilities (plans/archive/Screen-TUI-Impl.md 1.4). Revue's widgets use fixed colors,
 //! so the client keeps its own roles and the draw layer applies them. Color is never the only signal: every cue also has
 //! a glyph or text, so monochrome (`NO_COLOR`) is reverse and underline only, and the ASCII mode swaps box drawing and
 //! symbols for plain characters.

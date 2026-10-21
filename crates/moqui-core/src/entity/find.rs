@@ -809,7 +809,7 @@ fn find_l10n(facade: &EntityFacade, entity_name: &str) -> Option<Arc<field_rw::L
     }
     // Read before the definition, so a view built again meanwhile is not kept under the older count.
     let generation = super::derived::generation(facade);
-    let known = facade.with_slot(L10nCache::default, |cache| cache.get(entity_name, generation));
+    let known = facade.with_slot_read(L10nCache::default, |cache| cache.get(entity_name, generation));
     if let Some(known) = known {
         return known;
     }

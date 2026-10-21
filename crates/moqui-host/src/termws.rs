@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `GET /termws`: the terminal client in the browser (plans/Screen-TUI-Impl.md 4.4), for the Terminal screen's
+//! `GET /termws`: the terminal client in the browser (plans/archive/Screen-TUI-Impl.md 4.4), for the Terminal screen's
 //! xterm.js (`/qapps/Terminal`). The socket is checked as `/notws` checks it, by origin and session cookie, and the
 //! session runs as that user ([`crate::term`]), as `apps` does over SSH, with no permission of its own: every screen is
 //! still checked as the user.
@@ -201,6 +201,8 @@ async fn run_socket(mut socket: WebSocket, opened: Opened, mut shutdown: tokio::
         },
         size: sized,
         label: label.clone(),
+        // The user logged in over HTTP, so this session has no login dialog to check an address for.
+        client_ip: String::new(),
     };
     let session = tokio::spawn(async move { crate::term::serve(&mut theirs, &mut start).await });
     let mut buffer = vec![0u8; 64 * 1024];
