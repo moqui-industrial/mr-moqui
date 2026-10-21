@@ -12,8 +12,9 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! [`ScreenLink`] is the client's only way to the server: a level, a transition, a drop-down's options, the shell data
-//! and a login. The session never calls it itself; it queues [`LinkCall`]s, and the loop runs them off the UI thread
+//! [`ScreenLink`] is the client's only way to the server: a level, a transition, a drop-down's options, the shell data,
+//! a login, the JSON of a transition (search, counts, suggestions, a tree's children), a fragment (the body of a
+//! dynamic dialog or container) and a file (an export). The session never calls it itself; it queues [`LinkCall`]s, and the loop runs them off the UI thread
 //! (plans/Screen-TUI-Impl.md 3.6). [`FakeLink`] answers from fixture files and records each call.
 
 use std::collections::BTreeMap;
@@ -89,7 +90,8 @@ pub struct MenuItem {
 }
 
 /// The shell data the client draws around the screens: the drawer of the current app, the user, and the theme's `tui`
-/// values (section 2.6). A link without a shell answers the default, and the client keeps its built-in settings.
+/// values (section 2.6), with what the palette, quick create, the tray and the counters show. A link without a shell
+/// answers the default, and the client keeps its built-in settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ShellInfo {
     pub menu: Vec<MenuItem>,
@@ -100,6 +102,45 @@ pub struct ShellInfo {
     pub colors: BTreeMap<String, String>,
     /// Action name to chords, merged over the default keymap.
     pub keys: BTreeMap<String, String>,
+    /// The apps the user may open, for the palette.
+    pub apps: Vec<MenuItem>,
+    /// The quick create items of the apps (F6).
+    pub quick_create: Vec<ShellAction>,
+    /// The palette's actions.
+    pub actions: Vec<ShellAction>,
+    /// The tray's screens, each a label and a url: Today, Chat, Notifications.
+    pub tray: Vec<(String, String)>,
+    /// The badge counts: `today`, `chat`, `notifications`.
+    pub counts: BTreeMap<String, i64>,
+    /// The user's choice of the drawer (`TUI_DRAWER_OPEN`), None when not made.
+    pub drawer_open: Option<bool>,
+}
+
+/// A quick create item or a palette action: what it is called, and the screen or form it opens.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ShellAction {
+    pub label: String,
+    pub url: String,
+    /// The app it comes from.
+    pub app: String,
+}
+
+/// The counts of a `shellCounts` answer, or of the shell data's `counts`: each number by its name.
+pub fn counts_of(value: &serde_json::Value) -> BTreeMap<String, i64> {
+    let counts = value.get("counts").unwrap_or(value);
+    counts
+        .as_object()
+        .map(|map| {
+            map.iter()
+                .filter_map(|(name, count)| {
+                    count
+                        .as_i64()
+                        .or_else(|| count.as_str().and_then(|text| text.parse().ok()))
+                        .map(|n| (name.clone(), n))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,6 +167,32 @@ pub enum LinkCall {
         password: String,
         code: String,
     },
+    /// A transition that answers JSON: the palette's search, the counters, an autocomplete, a display's value, a
+    /// tree's children, a status bar, a preference.
+    Json {
+        url: String,
+        method: String,
+        parameters: BTreeMap<String, String>,
+    },
+    /// The body of a dynamic dialog or container: its transition, and the screen it answers, in the `tui` mode.
+    Fragment {
+        url: String,
+        parameters: BTreeMap<String, String>,
+    },
+    /// A file as the server sends it: an export.
+    Raw {
+        url: String,
+        parameters: BTreeMap<String, String>,
+    },
+}
+
+/// A file from [`LinkCall::Raw`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RawBody {
+    pub content_type: String,
+    /// The name the server gave it (`Content-Disposition`), else empty.
+    pub file_name: String,
+    pub bytes: Vec<u8>,
 }
 
 /// The answer to one [`LinkCall`], of the same kind.
@@ -136,6 +203,9 @@ pub enum Reply {
     Options(Result<Vec<Choice>, LinkError>),
     Shell(Result<ShellInfo, LinkError>),
     Login(Result<(), LinkError>),
+    Json(Result<serde_json::Value, LinkError>),
+    Fragment(Result<ScreenModel, LinkError>),
+    Raw(Result<RawBody, LinkError>),
 }
 
 impl Reply {
@@ -145,7 +215,10 @@ impl Reply {
             | Self::Transition(Err(err))
             | Self::Options(Err(err))
             | Self::Shell(Err(err))
-            | Self::Login(Err(err)) => Some(err),
+            | Self::Login(Err(err))
+            | Self::Json(Err(err))
+            | Self::Fragment(Err(err))
+            | Self::Raw(Err(err)) => Some(err),
             _ => None,
         }
     }
@@ -174,6 +247,26 @@ pub trait ScreenLink: Send + Sync {
         Err(LinkError::Remote("this connection does not log in".to_string()))
     }
 
+    /// A transition's JSON answer.
+    fn json(
+        &self,
+        url: &str,
+        _method: &str,
+        _parameters: &BTreeMap<String, String>,
+    ) -> Result<serde_json::Value, LinkError> {
+        Err(LinkError::Missing(url.to_string()))
+    }
+
+    /// The screen a dynamic dialog's or container's transition answers, as a model.
+    fn fragment(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<ScreenModel, LinkError> {
+        self.level(url, parameters)
+    }
+
+    /// A file the server sends.
+    fn raw(&self, url: &str, _parameters: &BTreeMap<String, String>) -> Result<RawBody, LinkError> {
+        Err(LinkError::Missing(url.to_string()))
+    }
+
     /// Run one call.
     fn call(&self, call: &LinkCall) -> Reply {
         match call {
@@ -186,6 +279,13 @@ pub trait ScreenLink: Send + Sync {
                 password,
                 code,
             } => Reply::Login(self.login(username, password, code)),
+            LinkCall::Json {
+                url,
+                method,
+                parameters,
+            } => Reply::Json(self.json(url, method, parameters)),
+            LinkCall::Fragment { url, parameters } => Reply::Fragment(self.fragment(url, parameters)),
+            LinkCall::Raw { url, parameters } => Reply::Raw(self.raw(url, parameters)),
         }
     }
 }
@@ -215,7 +315,27 @@ impl<L: ScreenLink + ?Sized> ScreenLink for Arc<L> {
     fn login(&self, username: &str, password: &str, code: &str) -> Result<(), LinkError> {
         (**self).login(username, password, code)
     }
+
+    fn json(
+        &self,
+        url: &str,
+        method: &str,
+        parameters: &BTreeMap<String, String>,
+    ) -> Result<serde_json::Value, LinkError> {
+        (**self).json(url, method, parameters)
+    }
+
+    fn fragment(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<ScreenModel, LinkError> {
+        (**self).fragment(url, parameters)
+    }
+
+    fn raw(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<RawBody, LinkError> {
+        (**self).raw(url, parameters)
+    }
 }
+
+/// One canned JSON answer: for these parameters, or for any with an empty map.
+type JsonAnswer = (BTreeMap<String, String>, serde_json::Value);
 
 /// One canned options answer. An empty parameter map is the default for that url.
 #[derive(Clone, Debug)]
@@ -230,6 +350,9 @@ struct Answers {
     transitions: BTreeMap<String, TransitionOutcome>,
     options: BTreeMap<String, Vec<OptionAnswer>>,
     shell: ShellInfo,
+    /// JSON answers by url; an answer that is a list of `(parameters, value)` picks by the parameters, as options do.
+    json: BTreeMap<String, Vec<JsonAnswer>>,
+    raw: BTreeMap<String, RawBody>,
     /// Calls answered [`LinkError::Auth`] until a login with this password.
     password: Option<String>,
 }
@@ -276,6 +399,19 @@ impl FakeLink {
 
     pub fn answer_shell(&self, shell: ShellInfo) {
         self.answers().shell = shell;
+    }
+
+    /// Answer `Json` calls to `url` with `value`: for these `parameters`, or for any with an empty map.
+    pub fn answer_json(&self, url: &str, parameters: BTreeMap<String, String>, value: serde_json::Value) {
+        self.answers()
+            .json
+            .entry(url.to_string())
+            .or_default()
+            .push((parameters, value));
+    }
+
+    pub fn answer_raw(&self, url: &str, body: RawBody) {
+        self.answers().raw.insert(url.to_string(), body);
     }
 
     /// Answer every call with [`LinkError::Auth`] until a login with `password`.
@@ -356,6 +492,53 @@ impl ScreenLink for FakeLink {
         Ok(self.answers().shell.clone())
     }
 
+    fn json(
+        &self,
+        url: &str,
+        method: &str,
+        parameters: &BTreeMap<String, String>,
+    ) -> Result<serde_json::Value, LinkError> {
+        self.record(LinkCall::Json {
+            url: url.to_string(),
+            method: method.to_string(),
+            parameters: parameters.clone(),
+        })?;
+        let answers = self.answers();
+        let list = answers
+            .json
+            .get(url)
+            .ok_or_else(|| LinkError::Missing(url.to_string()))?;
+        list.iter()
+            .find(|(asked, _)| asked == parameters)
+            .or_else(|| list.iter().find(|(asked, _)| asked.is_empty()))
+            .map(|(_, value)| value.clone())
+            .ok_or_else(|| LinkError::Missing(url.to_string()))
+    }
+
+    fn fragment(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<ScreenModel, LinkError> {
+        self.record(LinkCall::Fragment {
+            url: url.to_string(),
+            parameters: parameters.clone(),
+        })?;
+        let (screen, _) = url.split_once('?').unwrap_or((url, ""));
+        self.levels
+            .get(screen)
+            .cloned()
+            .ok_or_else(|| LinkError::Missing(screen.to_string()))
+    }
+
+    fn raw(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<RawBody, LinkError> {
+        self.record(LinkCall::Raw {
+            url: url.to_string(),
+            parameters: parameters.clone(),
+        })?;
+        self.answers()
+            .raw
+            .get(url)
+            .cloned()
+            .ok_or_else(|| LinkError::Missing(url.to_string()))
+    }
+
     fn login(&self, username: &str, password: &str, code: &str) -> Result<(), LinkError> {
         self.record(LinkCall::Login {
             username: username.to_string(),
@@ -413,11 +596,8 @@ fn page_nodes(nodes: &mut [Node], index: usize) {
 
 /// First link url in a row, if the row has one.
 pub fn row_link(row: &ListRow) -> Option<&str> {
-    row.cells.iter().find_map(|cell| match cell {
-        Cell::Node(node) => match node.as_ref() {
-            Node::Link { url, disabled, .. } if !url.is_empty() && !disabled => Some(url.as_str()),
-            _ => None,
-        },
-        Cell::Text(_) => None,
+    row.cells.iter().flat_map(Cell::nodes).find_map(|node| match node {
+        Node::Link { url, disabled, .. } if !url.is_empty() && !disabled => Some(url.as_str()),
+        _ => None,
     })
 }

@@ -22,12 +22,16 @@ use std::collections::BTreeMap;
 
 use crate::model::{walk, Choice, FormList, Node, Rule, ScreenModel, VisibleWhen, Widget};
 
-/// Which overlay a focusable item belongs to. A dialog or the find dialog of a list keeps focus inside it.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Which overlay a focusable item belongs to. A dialog, the find dialog of a list, or the editor of a list's row keeps
+/// focus inside it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Scope {
+    #[default]
     Main,
     Dialog(String),
     Find(String),
+    /// The fields of row `n` of a list, in the row editor.
+    Row(String, usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,8 +44,16 @@ pub enum FocusKind {
     Button,
     Link,
     List,
-    /// The button that opens a dialog.
+    /// The button that opens a dialog: a container-dialog, a dynamic-dialog, a row action.
     Dialog,
+    /// A button-menu: Enter opens its items.
+    Menu,
+    Tree,
+    /// The title of a collapsible box: Enter opens or closes it.
+    Toggle,
+    /// A click-to-edit value: Enter opens its editor.
+    Edit,
+    Component,
 }
 
 /// One item of the focus order, which is the reading order of the screen.
@@ -53,6 +65,8 @@ pub struct FocusItem {
     pub node: String,
     pub kind: FocusKind,
     pub scope: Scope,
+    /// The collapsible boxes around it: while one is closed the item is not in the focus order.
+    pub boxes: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -83,6 +97,9 @@ pub struct FormInfo {
     pub background_hide_id: String,
     /// Field ids in document order.
     pub fields: Vec<String>,
+    /// The form of a row action: it posts the selected rows of this list too.
+    pub selection: Option<String>,
+    pub multipart: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -111,6 +128,52 @@ pub struct TabInfo {
     pub active: bool,
 }
 
+/// A dynamic dialog or container: what its body loads from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DynamicInfo {
+    pub url: String,
+    /// A dialog opens on Enter; a container loads with the screen.
+    pub dialog: bool,
+}
+
+/// A button-menu: its text and its items' link ids.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuInfo {
+    pub text: String,
+    pub links: Vec<String>,
+}
+
+/// A tree: where its nodes load from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeInfo {
+    pub url: String,
+    pub open_path: String,
+    pub parameters: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComponentInfo {
+    pub name: String,
+    pub props: serde_json::Value,
+    /// The screen path its transitions are under.
+    pub base: String,
+}
+
+/// A wizard's steps: Back and Next are its links `#back` and `#next`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WizardInfo {
+    pub id: String,
+    pub steps: Vec<TabInfo>,
+    pub active: usize,
+}
+
+/// The fields of a list row, and the form they post with: the row's own, or the multi form of the list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RowInfo {
+    pub form: String,
+    pub fields: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Index {
     pub fields: BTreeMap<String, FieldInfo>,
@@ -121,27 +184,73 @@ pub struct Index {
     pub link_order: Vec<String>,
     /// Dialog id to title.
     pub dialogs: BTreeMap<String, String>,
+    /// A row action's dialog id to its list.
+    pub dialog_lists: BTreeMap<String, String>,
+    pub dynamic: BTreeMap<String, DynamicInfo>,
+    pub menus: BTreeMap<String, MenuInfo>,
+    pub trees: BTreeMap<String, TreeInfo>,
+    pub components: BTreeMap<String, ComponentInfo>,
+    /// A collapsible box's id to its `initial`.
+    pub boxes: BTreeMap<String, String>,
+    /// The fields of each list row that has a form, by list id and row.
+    pub rows: BTreeMap<(String, usize), RowInfo>,
+    /// The dialogs of each list row, by list id and row.
+    pub row_dialogs: BTreeMap<(String, usize), Vec<String>>,
     pub tabs: Vec<TabInfo>,
+    pub wizard: Option<WizardInfo>,
     /// Every focusable item in reading order, in every scope.
     pub order: Vec<FocusItem>,
+}
+
+/// Where a node is: the scope it is focused in, the form it posts with, the list whose find it is, the list whose rows
+/// a row action takes, and the collapsible boxes around it.
+#[derive(Clone, Debug, Default)]
+struct At {
+    scope: Scope,
+    form: Option<String>,
+    list: Option<String>,
+    selection: Option<String>,
+    boxes: Vec<String>,
+}
+
+/// A dialog the session adds that is not in a screen: a quick create, the tray, a document.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Extra {
+    pub id: String,
+    pub title: String,
+    pub c: Vec<Node>,
 }
 
 impl Index {
     /// Index the levels from the outermost to the leaf.
     pub fn of<'a>(levels: impl IntoIterator<Item = &'a ScreenModel>) -> Self {
+        Self::with_extras(levels, &[])
+    }
+
+    /// The levels, and the dialogs the session holds outside them.
+    pub fn with_extras<'a>(levels: impl IntoIterator<Item = &'a ScreenModel>, extras: &[Extra]) -> Self {
         let mut index = Self::default();
         for model in levels {
-            index.add(&model.c, &Scope::Main, None, None);
+            index.add(&model.c, &At::default());
+        }
+        for extra in extras {
+            index.dialogs.insert(extra.id.clone(), extra.title.clone());
+            let at = At {
+                scope: Scope::Dialog(extra.id.clone()),
+                ..At::default()
+            };
+            index.add(&extra.c, &at);
         }
         index
     }
 
-    fn add(&mut self, nodes: &[Node], scope: &Scope, form: Option<&str>, list: Option<&str>) {
+    fn add(&mut self, nodes: &[Node], at: &At) {
         for node in nodes {
             match node {
                 Node::Form {
                     id,
                     name,
+                    multipart,
                     transition_url,
                     method,
                     hidden,
@@ -176,46 +285,18 @@ impl Index {
                             background_reload_id: background_reload_id.clone(),
                             background_hide_id: background_hide_id.clone(),
                             fields,
+                            selection: at.selection.clone(),
+                            multipart: *multipart,
                         },
                     );
-                    self.add(c, scope, Some(id), None);
+                    let inner = At {
+                        form: Some(id.clone()),
+                        list: None,
+                        ..at.clone()
+                    };
+                    self.add(c, &inner);
                 }
-                Node::Field {
-                    id,
-                    name,
-                    title,
-                    required,
-                    maxlength,
-                    rules,
-                    tooltip,
-                    visible_when,
-                    w,
-                } => {
-                    self.fields.insert(
-                        id.clone(),
-                        FieldInfo {
-                            id: id.clone(),
-                            name: name.clone(),
-                            title: title.clone(),
-                            form: form.map(str::to_string),
-                            list: list.map(str::to_string),
-                            required: *required,
-                            maxlength: *maxlength,
-                            rules: rules.clone(),
-                            tooltip: tooltip.clone(),
-                            visible_when: visible_when.clone(),
-                            widget: w.clone(),
-                        },
-                    );
-                    for (key, kind) in focus_parts(id, w) {
-                        self.order.push(FocusItem {
-                            key,
-                            node: id.clone(),
-                            kind,
-                            scope: scope.clone(),
-                        });
-                    }
-                }
+                Node::Field { .. } => self.add_field(node, at),
                 Node::Link {
                     id,
                     text,
@@ -226,47 +307,110 @@ impl Index {
                     disabled,
                     ..
                 } => {
-                    self.add_link(id, text, url, kind, method, confirm, *disabled);
+                    self.add_link(id, text, url, kind, method, confirm, *disabled, true);
                     if !disabled {
-                        self.push(id, FocusKind::Link, scope);
+                        self.push(id, FocusKind::Link, at);
                     }
                 }
-                Node::FormList { list: formlist } => {
-                    self.lists.insert(formlist.id.clone(), formlist.clone());
-                    self.push(&formlist.id, FocusKind::List, scope);
-                    for row in &formlist.rows {
-                        for cell in &row.cells {
-                            if let crate::model::Cell::Node(inner) = cell {
-                                if let Node::Link {
-                                    id,
-                                    text,
-                                    url,
-                                    kind,
-                                    method,
-                                    confirm,
-                                    disabled,
-                                    ..
-                                } = inner.as_ref()
-                                {
-                                    self.add_link(id, text, url, kind, method, confirm, *disabled);
-                                }
-                            }
-                        }
-                    }
-                    self.add(
-                        &formlist.header_fields,
-                        &Scope::Find(formlist.id.clone()),
-                        None,
-                        Some(&formlist.id),
-                    );
-                    self.add(&formlist.c, scope, form, list);
-                }
-                Node::Dialog { id, title, c, .. } => {
+                Node::FormList { list } => self.add_list(list, at),
+                Node::Dialog { id, title, list, c, .. } => {
                     self.dialogs.insert(id.clone(), title.clone());
-                    self.push(id, FocusKind::Dialog, scope);
-                    self.add(c, &Scope::Dialog(id.clone()), form, list);
+                    self.push(id, FocusKind::Dialog, at);
+                    let mut inner = At {
+                        scope: Scope::Dialog(id.clone()),
+                        ..at.clone()
+                    };
+                    if !list.is_empty() {
+                        self.dialog_lists.insert(id.clone(), list.clone());
+                        inner.selection = Some(list.clone());
+                    }
+                    self.add(c, &inner);
                 }
-                Node::Subscreen { items, c, .. } => {
+                Node::DynamicDialog {
+                    id,
+                    url,
+                    button,
+                    title,
+                    c,
+                } => {
+                    let shown = if title.is_empty() { button } else { title };
+                    self.dialogs.insert(id.clone(), shown.clone());
+                    self.dynamic.insert(
+                        id.clone(),
+                        DynamicInfo {
+                            url: url.clone(),
+                            dialog: true,
+                        },
+                    );
+                    self.push(id, FocusKind::Dialog, at);
+                    let inner = At {
+                        scope: Scope::Dialog(id.clone()),
+                        ..at.clone()
+                    };
+                    self.add(c, &inner);
+                }
+                Node::DynamicContainer { id, url, c } => {
+                    self.dynamic.insert(
+                        id.clone(),
+                        DynamicInfo {
+                            url: url.clone(),
+                            dialog: false,
+                        },
+                    );
+                    self.add(c, at);
+                }
+                Node::ButtonMenu { id, text, c } => {
+                    let mut links = Vec::new();
+                    walk(c, &mut |inner| {
+                        if let Node::Link {
+                            id,
+                            text,
+                            url,
+                            kind,
+                            method,
+                            confirm,
+                            disabled,
+                            ..
+                        } = inner
+                        {
+                            self.add_link(id, text, url, kind, method, confirm, *disabled, false);
+                            links.push(id.clone());
+                        }
+                    });
+                    self.menus.insert(
+                        id.clone(),
+                        MenuInfo {
+                            text: text.clone(),
+                            links,
+                        },
+                    );
+                    self.push(id, FocusKind::Menu, at);
+                }
+                Node::Tree {
+                    id,
+                    url,
+                    open_path,
+                    parameters,
+                    ..
+                } => {
+                    self.trees.insert(
+                        id.clone(),
+                        TreeInfo {
+                            url: url.clone(),
+                            open_path: open_path.clone(),
+                            parameters: parameters.clone(),
+                        },
+                    );
+                    self.push(id, FocusKind::Tree, at);
+                }
+                Node::Box { id, initial, c, .. } if !initial.is_empty() => {
+                    self.boxes.insert(id.clone(), initial.clone());
+                    self.push(id, FocusKind::Toggle, at);
+                    let mut inner = at.clone();
+                    inner.boxes.push(id.clone());
+                    self.add(c, &inner);
+                }
+                Node::Subscreen { id, kind, items, c, .. } => {
                     // The deepest tab bar wins: Alt+N picks among the tabs nearest the content.
                     let tabs: Vec<TabInfo> = items
                         .iter()
@@ -276,19 +420,240 @@ impl Index {
                             active: item.active,
                         })
                         .collect();
-                    if tabs.len() > 1 {
+                    if kind == "wizard" {
+                        self.add(c, at);
+                        let (_, active) = crate::layout::wizard_steps(items);
+                        for (link, step, text) in [
+                            (crate::layout::wizard_back(id), active.checked_sub(1), "Back"),
+                            (crate::layout::wizard_next(id), Some(active + 1), "Next"),
+                        ] {
+                            if let Some(step) = step.and_then(|step| tabs.get(step)) {
+                                self.add_link(&link, text, &step.url, "", "", "", false, true);
+                                self.push(&link, FocusKind::Link, at);
+                            }
+                        }
+                        self.wizard = Some(WizardInfo {
+                            id: id.clone(),
+                            steps: tabs,
+                            active,
+                        });
+                        continue;
+                    }
+                    if tabs.len() > 1 && kind != "stack" {
                         self.tabs = tabs;
                     }
-                    self.add(c, scope, form, list);
+                    self.add(c, at);
                 }
-                other => self.add(other.children(), scope, form, list),
+                Node::NumberCard { id, value, url, .. } if !url.is_empty() => {
+                    self.add_link(id, value, url, "", "", "", false, true);
+                    self.push(id, FocusKind::Link, at);
+                }
+                Node::Image { id, alt, url } if !url.is_empty() => {
+                    self.add_link(id, alt, url, "image", "", "", false, true);
+                    self.push(id, FocusKind::Link, at);
+                }
+                Node::Html { id, links, .. } => self.add_references(id, links, at),
+                Node::Markdown { id, text } => {
+                    let (_, links) = crate::markdown::blocks(text);
+                    self.add_references(id, &links, at);
+                }
+                Node::Component { id, name, props, base } => {
+                    self.components.insert(
+                        id.clone(),
+                        ComponentInfo {
+                            name: name.clone(),
+                            props: props.clone(),
+                            base: base.clone(),
+                        },
+                    );
+                    self.push(id, FocusKind::Component, at);
+                }
+                other => self.add(other.children(), at),
             }
         }
     }
 
+    fn add_field(&mut self, node: &Node, at: &At) {
+        let Node::Field {
+            id,
+            name,
+            title,
+            required,
+            maxlength,
+            rules,
+            tooltip,
+            visible_when,
+            w,
+        } = node
+        else {
+            return;
+        };
+        self.fields.insert(
+            id.clone(),
+            FieldInfo {
+                id: id.clone(),
+                name: name.clone(),
+                title: title.clone(),
+                form: at.form.clone(),
+                list: at.list.clone(),
+                required: *required,
+                maxlength: *maxlength,
+                rules: rules.clone(),
+                tooltip: tooltip.clone(),
+                visible_when: visible_when.clone(),
+                widget: w.clone(),
+            },
+        );
+        for (key, kind) in focus_parts(id, w) {
+            self.order.push(FocusItem {
+                key,
+                node: id.clone(),
+                kind,
+                scope: at.scope.clone(),
+                boxes: at.boxes.clone(),
+            });
+        }
+    }
+
+    /// A list: its rows' links, and when it posts, the fields of each row with the form they go in (the row's own, or
+    /// the list's multi form), each row's fields focused in its row editor.
+    fn add_list(&mut self, list: &FormList, at: &At) {
+        self.lists.insert(list.id.clone(), list.clone());
+        self.push(&list.id, FocusKind::List, at);
+        let posts = !list.transition_url.is_empty();
+        let mut multi_fields = Vec::new();
+        let mut multi_hidden: Vec<(String, String)> = list
+            .hidden
+            .iter()
+            .map(|item| (item.name.clone(), item.value.clone()))
+            .collect();
+        for (row_at, row) in list.rows.iter().enumerate() {
+            let form = if list.multi {
+                list.id.clone()
+            } else {
+                format!("{}#{row_at}", list.id)
+            };
+            let row_scope = At {
+                scope: Scope::Row(list.id.clone(), row_at),
+                form: Some(form.clone()),
+                list: None,
+                ..at.clone()
+            };
+            let mut fields = Vec::new();
+            for cell in &row.cells {
+                for inner in cell.nodes() {
+                    match inner {
+                        Node::Link {
+                            id,
+                            text,
+                            url,
+                            kind,
+                            method,
+                            confirm,
+                            disabled,
+                            ..
+                        } => self.add_link(id, text, url, kind, method, confirm, *disabled, true),
+                        Node::Field { id, .. } if posts => {
+                            self.add_field(inner, &row_scope);
+                            fields.push(id.clone());
+                        }
+                        // A dialog of the row (a View per row): not in the focus order, F10 offers the current row's.
+                        Node::DynamicDialog {
+                            id,
+                            url,
+                            button,
+                            title,
+                            c,
+                        } => {
+                            let shown = if title.is_empty() { button } else { title };
+                            self.dialogs.insert(id.clone(), shown.clone());
+                            self.dynamic.insert(
+                                id.clone(),
+                                DynamicInfo {
+                                    url: url.clone(),
+                                    dialog: true,
+                                },
+                            );
+                            self.row_dialogs
+                                .entry((list.id.clone(), row_at))
+                                .or_default()
+                                .push(id.clone());
+                            let inner_at = At {
+                                scope: Scope::Dialog(id.clone()),
+                                form: None,
+                                list: None,
+                                ..at.clone()
+                            };
+                            self.add(c, &inner_at);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if fields.is_empty() {
+                continue;
+            }
+            let row_hidden = row.hidden.iter().map(|item| (item.name.clone(), item.value.clone()));
+            if list.multi {
+                multi_fields.extend(fields.iter().cloned());
+                multi_hidden.extend(row_hidden);
+            } else {
+                let mut hidden = multi_hidden.clone();
+                hidden.extend(row_hidden);
+                self.forms
+                    .insert(form.clone(), list_form(list, &form, fields.clone(), hidden));
+            }
+            self.rows.insert((list.id.clone(), row_at), RowInfo { form, fields });
+        }
+        if list.multi && posts {
+            let buttons = At {
+                form: Some(list.id.clone()),
+                list: None,
+                ..at.clone()
+            };
+            for node in &list.buttons {
+                if let Node::Field { id, .. } = node {
+                    self.add_field(node, &buttons);
+                    multi_fields.push(id.clone());
+                }
+            }
+            self.forms
+                .insert(list.id.clone(), list_form(list, &list.id, multi_fields, multi_hidden));
+        }
+        let find = At {
+            scope: Scope::Find(list.id.clone()),
+            form: None,
+            list: Some(list.id.clone()),
+            selection: None,
+            boxes: at.boxes.clone(),
+        };
+        self.add(&list.header_fields, &find);
+        self.add(&list.c, at);
+    }
+
+    /// The numbered links of an `html` or `markdown` node, each a link to follow.
+    fn add_references(&mut self, id: &str, links: &[crate::model::HtmlLink], at: &At) {
+        for (n, link) in links.iter().enumerate() {
+            let key = crate::layout::ref_id(id, n + 1);
+            self.add_link(&key, &link.text, &link.url, "", "", "", false, true);
+            self.push(&key, FocusKind::Link, at);
+        }
+    }
+
+    /// A link the screen has. One shown on the screen is numbered for `#`; a menu's item is not, as it is not shown.
     #[expect(clippy::too_many_arguments)]
-    fn add_link(&mut self, id: &str, text: &str, url: &str, kind: &str, method: &str, confirm: &str, disabled: bool) {
-        if !disabled && !url.is_empty() && !self.links.contains_key(id) {
+    fn add_link(
+        &mut self,
+        id: &str,
+        text: &str,
+        url: &str,
+        kind: &str,
+        method: &str,
+        confirm: &str,
+        disabled: bool,
+        numbered: bool,
+    ) {
+        if numbered && !disabled && !url.is_empty() && !self.links.contains_key(id) {
             self.link_order.push(id.to_string());
         }
         self.links.insert(
@@ -305,12 +670,13 @@ impl Index {
         );
     }
 
-    fn push(&mut self, id: &str, kind: FocusKind, scope: &Scope) {
+    fn push(&mut self, id: &str, kind: FocusKind, at: &At) {
         self.order.push(FocusItem {
             key: id.to_string(),
             node: id.to_string(),
             kind,
-            scope: scope.clone(),
+            scope: at.scope.clone(),
+            boxes: at.boxes.clone(),
         });
     }
 
@@ -370,7 +736,7 @@ impl Index {
                     options_url,
                     depends_on,
                     ..
-                } => !options_url.is_empty() && depends_on.values().any(|dep| dep == name),
+                } => !options_url.is_empty() && depends_on.values().any(|dep| names_field(dep, name, &field.name)),
                 _ => false,
             })
             .map(|field| field.id.clone())
@@ -398,15 +764,25 @@ impl Index {
         }
         let mut params = options_parameters.clone();
         for (parameter, name) in depends_on {
-            if let Some(other) = self
-                .fields
-                .values()
-                .find(|other| &other.name == name && other.form == field.form)
-            {
+            if let Some(other) = self.sibling(field, name) {
                 params.insert(parameter.clone(), values(&other.id));
             }
         }
         Some((options_url.clone(), params))
+    }
+
+    /// The field named `name` in the form of `of`. In a multi form a row's fields are `name_N`, and what a row's field
+    /// depends on is named without the row, so the row's own field of that name is found.
+    pub fn sibling(&self, of: &FieldInfo, name: &str) -> Option<&FieldInfo> {
+        let same = |other: &&FieldInfo, wanted: &str| other.form == of.form && other.name == wanted;
+        self.fields.values().find(|other| same(other, name)).or_else(|| {
+            let suffix = row_suffix(&of.name);
+            if suffix.is_empty() {
+                return None;
+            }
+            let wanted = format!("{name}{suffix}");
+            self.fields.values().find(|other| same(other, &wanted))
+        })
     }
 
     pub fn choices(&self, field_id: &str) -> &[Choice] {
@@ -426,6 +802,41 @@ impl Index {
         {
             *options = choices;
         }
+    }
+}
+
+/// The `_N` of a multi form's row field (`orgId_3`), else empty.
+pub fn row_suffix(name: &str) -> &str {
+    match name.rfind('_') {
+        Some(at) if at + 1 < name.len() && name[at + 1..].chars().all(|ch| ch.is_ascii_digit()) => &name[at..],
+        _ => "",
+    }
+}
+
+/// Whether a depends-on entry `dep` of the field `target` names the field `changed`: by its name, or in a multi form
+/// row by its name without the row's `_N`.
+pub fn names_field(dep: &str, changed: &str, target: &str) -> bool {
+    if dep == changed {
+        return true;
+    }
+    let suffix = row_suffix(changed);
+    !suffix.is_empty() && row_suffix(target) == suffix && changed.strip_suffix(suffix) == Some(dep)
+}
+
+/// The form of a list's row, or of all its rows (multi): it posts to the list's transition.
+fn list_form(list: &FormList, id: &str, fields: Vec<String>, hidden: Vec<(String, String)>) -> FormInfo {
+    FormInfo {
+        id: id.to_string(),
+        name: list.name.clone(),
+        transition_url: list.transition_url.clone(),
+        method: "post".to_string(),
+        hidden,
+        submit_message: String::new(),
+        background_reload_id: String::new(),
+        background_hide_id: String::new(),
+        fields,
+        selection: None,
+        multipart: false,
     }
 }
 
@@ -451,6 +862,7 @@ fn focus_parts(id: &str, widget: &Widget) -> Vec<(String, FocusKind)> {
         Widget::Check { .. } => one(FocusKind::Check),
         Widget::Radio { .. } => one(FocusKind::Radio),
         Widget::Submit { .. } | Widget::Reset { .. } => one(FocusKind::Button),
+        Widget::Editable { .. } => one(FocusKind::Edit),
         Widget::Display { .. }
         | Widget::Hidden { .. }
         | Widget::File { .. }
@@ -495,7 +907,8 @@ fn initial_parts(id: &str, widget: &Widget) -> Vec<(String, String)> {
         | Widget::Reset { .. }
         | Widget::File { .. }
         | Widget::Label { .. }
-        | Widget::Image { .. } => Vec::new(),
+        | Widget::Image { .. }
+        | Widget::Editable { .. } => Vec::new(),
     }
 }
 
@@ -549,7 +962,8 @@ pub fn field_parameters(field: &FieldInfo, values: &dyn Fn(&str) -> String) -> V
         | Widget::Reset { .. }
         | Widget::File { .. }
         | Widget::Label { .. }
-        | Widget::Image { .. } => Vec::new(),
+        | Widget::Image { .. }
+        | Widget::Editable { .. } => Vec::new(),
     }
 }
 

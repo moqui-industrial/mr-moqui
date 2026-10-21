@@ -139,10 +139,27 @@ pub enum Action {
     Quit,
     /// Subscreen tab 1 to 9.
     Tab(u8),
+    /// The palette: screens, records, saved finds, actions, recent screens, apps.
+    Palette,
+    /// Go to a path or a menu title.
+    GoTo,
+    QuickCreate,
+    /// One menu of the screen's button menus, the focused list's row actions and its tools.
+    Actions,
+    /// Find text on the screen, then the next or previous match.
+    FindText,
+    FindNext,
+    FindPrev,
+    /// The last messages.
+    Messages,
+    /// Today, Chat and Notifications.
+    Tray,
+    /// Edit the focused row of a list.
+    EditRow,
 }
 
 /// Every action, in the order the help lists them.
-pub const ACTIONS: [Action; 22] = [
+pub const ACTIONS: [Action; 32] = [
     Action::Help,
     Action::Next,
     Action::Prev,
@@ -164,6 +181,16 @@ pub const ACTIONS: [Action; 22] = [
     Action::OpenBrowser,
     Action::Redraw,
     Action::Log,
+    Action::Palette,
+    Action::GoTo,
+    Action::QuickCreate,
+    Action::Actions,
+    Action::FindText,
+    Action::FindNext,
+    Action::FindPrev,
+    Action::Messages,
+    Action::Tray,
+    Action::EditRow,
     Action::Quit,
 ];
 
@@ -194,6 +221,16 @@ impl Action {
             Self::Log => "log".into(),
             Self::Quit => "quit".into(),
             Self::Tab(n) => format!("tab-{n}"),
+            Self::Palette => "palette".into(),
+            Self::GoTo => "go-to".into(),
+            Self::QuickCreate => "quick-create".into(),
+            Self::Actions => "actions".into(),
+            Self::FindText => "find-text".into(),
+            Self::FindNext => "find-next".into(),
+            Self::FindPrev => "find-prev".into(),
+            Self::Messages => "messages".into(),
+            Self::Tray => "tray".into(),
+            Self::EditRow => "edit-row".into(),
         }
     }
 
@@ -223,6 +260,16 @@ impl Action {
             Self::Log => "Log",
             Self::Quit => "Quit",
             Self::Tab(_) => "Tab",
+            Self::Palette => "Go to",
+            Self::GoTo => "Path",
+            Self::QuickCreate => "Create",
+            Self::Actions => "Actions",
+            Self::FindText => "Find text",
+            Self::FindNext => "Next match",
+            Self::FindPrev => "Previous match",
+            Self::Messages => "Messages",
+            Self::Tray => "Tray",
+            Self::EditRow => "Edit row",
         }
     }
 
@@ -240,8 +287,7 @@ pub struct KeyMap {
 }
 
 impl KeyMap {
-    /// The scheme of section 1.5 as far as Phase 2 goes. The palette, go to, quick create, screen find, message history
-    /// and log pane come with Phase 3.
+    /// The scheme of section 1.5.
     pub fn baseline() -> Self {
         let plain = KeyPress::plain;
         let ch = |c| KeyPress::plain(Key::Char(c));
@@ -280,6 +326,18 @@ impl KeyMap {
             (KeyPress::with_ctrl(Key::Char('l')), Action::Redraw),
             (KeyPress::with_alt(Key::Char('l')), Action::Log),
             (KeyPress::with_ctrl(Key::Char('q')), Action::Quit),
+            (KeyPress::with_ctrl(Key::Char('k')), Action::Palette),
+            (ch(':'), Action::Palette),
+            (ch('g'), Action::GoTo),
+            (plain(Key::F(6)), Action::QuickCreate),
+            (ch('+'), Action::QuickCreate),
+            (plain(Key::F(10)), Action::Actions),
+            (ch('/'), Action::FindText),
+            (ch('n'), Action::FindNext),
+            (ch('N'), Action::FindPrev),
+            (KeyPress::with_alt(Key::Char('m')), Action::Messages),
+            (KeyPress::with_alt(Key::Char('t')), Action::Tray),
+            (ch('e'), Action::EditRow),
         ];
         for n in 1..=9u8 {
             let digit = char::from(b'0' + n);
@@ -289,10 +347,12 @@ impl KeyMap {
         Self { bindings }
     }
 
+    /// The action of a key. A character matches without Shift, which is in the character (`N`, `?`).
     pub fn action(&self, press: &KeyPress) -> Option<Action> {
+        let press = unshifted(press);
         self.bindings
             .iter()
-            .find(|(bound, _)| bound == press)
+            .find(|(bound, _)| unshifted(bound) == press)
             .map(|(_, action)| *action)
     }
 
@@ -381,6 +441,14 @@ pub fn merge_keys(base: &KeyMap, overrides: &[(&str, &str)]) -> (KeyMap, Vec<Mer
         }
     }
     (map, skipped)
+}
+
+fn unshifted(press: &KeyPress) -> KeyPress {
+    let mut press = press.clone();
+    if matches!(press.key, Key::Char(_)) {
+        press.shift = false;
+    }
+    press
 }
 
 fn fixed_key(press: &KeyPress) -> bool {

@@ -387,7 +387,7 @@ where
             {
                 let _ = rest;
                 Err(moqui_lib::error::Error::new(
-                    "moqui tui: this build has no terminal client (the tui feature; the enterprise and maximal packages have it)",
+                    "moqui tui: this build has no terminal client (the tui feature, which every package has)",
                 ))
             }
         }

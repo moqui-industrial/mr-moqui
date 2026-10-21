@@ -689,7 +689,7 @@ fn mobile_columns_are_chosen_by_the_ui_type() {
 }
 
 /// A test context with the framework's services and a database holding the EntitySync statuses and their Default flow.
-fn status_context() -> crate::context::ExecutionContext {
+pub(super) fn status_context() -> crate::context::ExecutionContext {
     let context = ExecutionContextFactory::test_context_in(
         "",
         crate::service::ServicePools::idle(),

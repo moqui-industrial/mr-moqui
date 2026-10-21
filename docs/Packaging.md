@@ -7,7 +7,7 @@ flag and uses that binary. `moqui version` prints a binary's package and feature
 
 | Package | `./moq` flag | Profile | Binary | What it has |
 |---|---|---|---|---|
-| Default | (none) | `lite` | `target/lite/moqui` | The web server on embedded Postgres, PDF (through Chromium), outbound mail (SMTP) |
+| Default | (none) | `lite` | `target/lite/moqui` | The web server on embedded Postgres, PDF (through Chromium), outbound mail (SMTP), the terminal client (`moqui tui`) |
 | Debug | `--debug` | `dev` | `target/debug/moqui` | Every feature, unoptimized framework code with debug info |
 | Maximal | `--release` | `release` | `target/release/moqui` | Every feature, Postgres embedded |
 | Enterprise | `--enterprise` | `enterprise` | `target/enterprise/moqui` | Every feature, with the databases external (Postgres and MySQL drivers, no embedded Postgres) |
@@ -19,7 +19,7 @@ Plain `cargo build -p moqui`, `cargo test` and `cargo lint` use the Maximal feat
 
 The framework features are in `crates/moqui-core`; the host features, and the packages, are in `crates/moqui-host`;
 `crates/moqui` (and the crate `./moq build` generates in `target/moqui-app` for add-on component crates) forwards the
-package features `lite`, `enterprise` and `maximal`, and `inbound-smtp` and `tui` for a lite build that wants one.
+package features `lite`, `enterprise` and `maximal`, and `inbound-smtp` for a lite build that wants one.
 
 | Feature | Crate | What it gates | Default | Enterprise | Maximal |
 |---|---|---|---|---|---|
@@ -28,10 +28,10 @@ package features `lite`, `enterprise` and `maximal`, and `inbound-smtp` and `tui
 | `embedded-postgres` | host | The embedded Postgres clusters (entity, search, sim), `save-db`, `load-save`, backups, `moqui test` | yes | | yes |
 | `mysql` | host | The MySQL driver | | yes | yes |
 | `pdf` | host | The DevTools client of the external Chromium that prints `html-print` to PDF | yes | yes | yes |
-| `ssh` | host | The SFTP client, the built-in SSH server (SFTP, admin shell, git over SSH), the SSH cluster channel | | yes | yes |
+| `ssh` | host | The SFTP client, the built-in SSH server (SFTP, admin shell, git over SSH, and `apps` with `tui`), the SSH cluster channel | | yes | yes |
 | `sso` | host | OIDC and OAuth 2 logins (`org.moqui.sso.AuthServices`) | | yes | yes |
 | `print` | host | Network printing over IPP (`moqui-cups`) | | yes | yes |
-| `tui` | host | `moqui tui`, the terminal client of the `tui` render mode, on Revue ([TUI](TUI.md)); lite leaves it out, so a lite server is used from another build's client | | yes | yes |
+| `tui` | host | `moqui tui`, the terminal client of the `tui` render mode, on Revue ([TUI](TUI.md)), and with `ssh` the SSH `apps` command; in lite too, for a quick terminal loop while developing and testing | yes | yes | yes |
 | `inbound-smtp` | host | The SMTP listener for hosted and shared mail accounts behind the edge gateway ([Mail-Inbound](Mail-Inbound.md); includes `imap`); it starts only when `smtp_listen_port` is set | | yes | yes |
 | `smtp` | core | Outbound mail: `send#EmailMessage`, `send#EmailTemplate`, password reset and notification mail | yes | yes | yes |
 | `imap` | core | Inbound mail: `poll#EmailServer`, the mail client's sync, IDLE, rules and import (includes `smtp`) | | yes | yes |
@@ -135,6 +135,8 @@ everything, and postgresql_embedded's `bundled` build script compiled a second H
 | Maximal (`release`) | 151 s | 1091 s | 545 | 82.9 MB | 66.8 MB | 37.7 MiB |
 | Enterprise | 141 s | 971 s | 522 | 68.4 MB | 53.1 MB | 36.4 MiB |
 | Default (`lite`) | 101 s | 608 s | 354 | 57.1 MB | 47.4 MB | 24.5 MiB |
+
+These were measured before the terminal client joined `lite` (2026-10-20), which adds Revue and crossterm to it.
 
 The embedded Postgres archive is 11.9 MB of each binary that has it.
 

@@ -20,14 +20,15 @@ use std::cell::Cell as Shared;
 use revue::layout::Rect;
 use revue::widget::RenderContext;
 
+use crate::components::Line;
 use crate::forms::FocusKind;
 use crate::keys::Action;
 use crate::layout::{
     display_width, dotted_label, frame_with, layout_levels, truncate_width, Breakpoints, FormLine, Frame, Inline,
-    LabelMode, LaidBox, LaidField, LaidList, LaidOut, Piece,
+    LabelMode, LaidBox, LaidField, LaidList, LaidOut, LaidStatus, LaidTree, Piece, TreeMark, WidthClass,
 };
 use crate::model::{Cell, Node, Widget};
-use crate::session::{drawer_rows, Session};
+use crate::session::Session;
 use crate::theme::{Glyph, Role, Theme};
 
 use super::overlays;
@@ -79,7 +80,12 @@ pub fn draw(
         rule(&mut paint, height - 3, width, &framed, Joint::Bottom);
     }
     let canvas_x = framed.drawer;
-    let laid = layout_levels(session.nav().models(), framed.canvas.saturating_sub(2), breakpoints);
+    let laid = layout_levels(
+        session.nav().models(),
+        framed.canvas.saturating_sub(2),
+        breakpoints,
+        session,
+    );
     let body_rows = usize::from(body_bottom.saturating_sub(body_top));
     let target = focus_rows(&laid, session);
     let mut top = scroll.get().min(laid.height().saturating_sub(1));
@@ -162,6 +168,39 @@ fn title_line(paint: &mut Painter, session: &Session, framed: &Frame, clock: Opt
         right.push_str(spinner(paint.theme.ascii));
         right.push_str("  ");
     }
+    // The counters: `Today 3  Chat 1  Notif 2`, or `T3 C1 N2` on a narrow screen.
+    let short = framed.class < WidthClass::Md;
+    let order = |name: &str| {
+        ["today", "chat", "notifications"]
+            .iter()
+            .position(|known| *known == name)
+            .unwrap_or(9)
+    };
+    let mut counts: Vec<(&String, &i64)> = session.counts().iter().collect();
+    counts.sort_by_key(|(name, _)| order(name));
+    for (name, count) in counts {
+        if *count == 0 {
+            continue;
+        }
+        let word = match name.as_str() {
+            "notifications" => "Notif".to_string(),
+            other => {
+                let mut chars = other.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_uppercase().chain(chars).collect())
+                    .unwrap_or_default()
+            }
+        };
+        if short {
+            right.push_str(&format!("{}{count} ", word.chars().next().unwrap_or(' ')));
+        } else {
+            right.push_str(&format!("{word} {count}  "));
+        }
+    }
+    if short && !session.counts().is_empty() {
+        right.push(' ');
+    }
     if !session.shell().user.is_empty() {
         right.push_str(&session.shell().user);
         right.push_str("  ");
@@ -201,7 +240,7 @@ fn drawer(paint: &mut Painter, session: &Session, framed: &Frame, top: u16, bott
     } else {
         26.min(framed.terminal)
     };
-    let rows = drawer_rows(session.menu());
+    let rows = session.drawer_rows();
     let focus = session.drawer_focus();
     for row in top..bottom {
         paint.fill_row(0, row, usize::from(width), Look::default());
@@ -220,13 +259,17 @@ fn drawer(paint: &mut Painter, session: &Session, framed: &Frame, top: u16, bott
         let active = paths
             .iter()
             .any(|shown| *shown == path || shown.starts_with(&format!("{path}/")));
+        let heading = url.is_empty();
         let mark = match (*depth, active) {
+            _ if heading => " ",
             (0, _) => paint.theme.glyph(Glyph::Open),
             (_, true) => paint.theme.glyph(Glyph::Active),
             _ => " ",
         };
         let text = format!(" {}{mark} {title}", "  ".repeat(*depth));
-        let look = if active {
+        let look = if heading {
+            Look::role(Role::Muted).bold()
+        } else if active {
             Look::role(Role::Primary).bold()
         } else {
             Look::role(Role::Text)
@@ -310,14 +353,21 @@ fn key_line(paint: &mut Painter, session: &Session, row: u16, width: u16) {
         }
         Some(FocusKind::DropDown | FocusKind::Check) => actions.push(Action::Prompt),
         Some(FocusKind::List) => {
-            actions.extend([Action::PageNext, Action::Sort, Action::Find]);
+            let list = session.focus_id();
             if session
-                .list(session.focus_id())
-                .is_some_and(|list| list.row_selection.is_some())
+                .index()
+                .rows
+                .contains_key(&(list.to_string(), session.row_at(list)))
             {
+                actions.push(Action::EditRow);
+            }
+            actions.extend([Action::PageNext, Action::Sort, Action::Find]);
+            if session.list(list).is_some_and(|list| list.row_selection.is_some()) {
                 actions.push(Action::Select);
             }
+            actions.push(Action::Actions);
         }
+        Some(FocusKind::Menu) => actions.push(Action::Actions),
         _ => {}
     }
     actions.extend([
@@ -327,6 +377,8 @@ fn key_line(paint: &mut Painter, session: &Session, row: u16, width: u16) {
         Action::Cancel,
         Action::NumberLinks,
         Action::Quit,
+        Action::Palette,
+        Action::QuickCreate,
     ]);
     let mut line = String::new();
     for action in actions {
@@ -372,7 +424,7 @@ fn find_in(piece: &Piece, id: &str, session: &Session, y: usize) -> Option<(usiz
         Piece::Row(placed) => placed.iter().find_map(|item| find_in(&item.piece, id, session, y)),
         Piece::Box(laid) => {
             let mut at = y + 1 + usize::from(!laid.toolbar.is_empty());
-            if laid.toolbar.iter().any(|item| item.id() == id) {
+            if laid.toolbar.iter().any(|item| item.id() == id) || laid.id == id {
                 return Some((y, 2));
             }
             for piece in &laid.body {
@@ -408,8 +460,26 @@ fn find_in(piece: &Piece, id: &str, session: &Session, y: usize) -> Option<(usiz
         Piece::Inline(items) => items.iter().any(|item| item.id() == id).then_some((y, 1)),
         Piece::List(list) if list.id == id => {
             let row = session.row_at(id);
+            let height = list.heights.get(row).copied().unwrap_or(1);
             // The header with the first row, else the row.
-            Some(if row == 0 { (y, 3) } else { (y + 2 + row, 1) })
+            Some(if row == 0 {
+                (y, 2 + height)
+            } else {
+                (y + 2 + list.row_top(row), height)
+            })
+        }
+        Piece::Tree(tree) if tree.id == id => {
+            let at = session.tree(id).map_or(0, |state| state.at);
+            Some((y + at.min(tree.rows.len().saturating_sub(1)), 1))
+        }
+        Piece::Lines(lines) if lines.id == id => {
+            // The highlighted line of a component, else its top.
+            let at = lines
+                .lines
+                .iter()
+                .position(|line| line.iter().any(|span| span.reverse))
+                .unwrap_or(0);
+            Some((y + at, 1))
         }
         _ => None,
     }
@@ -446,6 +516,8 @@ pub fn draw_piece(paint: &mut Painter, session: &Session, piece: &Piece, x: u16,
             for (at, line) in text.lines.iter().enumerate() {
                 let line = if text.style == "image" {
                     format!("{} {line}", paint.theme.glyph(Glyph::Image))
+                } else if text.style == "crumbs" {
+                    line.replace(" ▸ ", &format!(" {} ", paint.theme.glyph(Glyph::Crumb)))
                 } else {
                     line.clone()
                 };
@@ -453,6 +525,14 @@ pub fn draw_piece(paint: &mut Painter, session: &Session, piece: &Piece, x: u16,
             }
         }
         Piece::List(list) => draw_list(paint, session, list, x, y),
+        Piece::Tree(tree) => draw_tree(paint, session, tree, x, y),
+        Piece::Status(status) => draw_status(paint, status, x, y),
+        Piece::Lines(lines) => {
+            let focused = session.focus_id() == lines.id;
+            for (at, line) in lines.lines.iter().enumerate() {
+                draw_line(paint, line, x, y + at, focused);
+            }
+        }
         Piece::Tabs(tabs) => {
             let mut col = x;
             for (at, (title, active)) in tabs.items.iter().enumerate() {
@@ -506,18 +586,35 @@ fn text_look(style: &str) -> Look {
         "quote" => Look::role(Role::Muted).italic(),
         "i" | "em" => Look::role(Role::Text).italic(),
         "rule" => Look::role(Role::Border),
+        "crumbs" => Look::role(Role::Muted),
         _ => Look::role(Role::Text),
     }
 }
 
 fn draw_box(paint: &mut Painter, session: &Session, laid: &LaidBox, x: u16, y: usize, height: usize) {
     let edge = Role::of_type(&laid.kind);
-    let title = if laid.title.is_empty() {
-        String::new()
+    // A collapsible box shows its state before the title; its title is where its focus is.
+    let mark = if !laid.collapsible {
+        ""
+    } else if laid.collapsed {
+        paint.theme.glyph(Glyph::Closed)
     } else {
-        format!(" {} ", laid.title)
+        paint.theme.glyph(Glyph::Open)
+    };
+    let title = match (laid.title.is_empty(), mark.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => format!(" {mark} "),
+        (false, true) => format!(" {} ", laid.title),
+        (false, false) => format!(" {mark} {} ", laid.title),
     };
     paint.frame(x, y, laid.w, height, &title, edge);
+    if laid.collapsible && session.focus_id() == laid.id && !title.is_empty() {
+        let width = display_width(&title);
+        paint.text(x + 2, y, &title, Look::role(Role::Text).bold().reverse(), width);
+    }
+    if laid.collapsed {
+        return;
+    }
     let inner_x = x + 2;
     let mut at = y + 1;
     if !laid.toolbar.is_empty() {
@@ -691,6 +788,39 @@ fn draw_value(paint: &mut Painter, session: &Session, field: &LaidField, widget:
             let used = input(paint, session, &thru, thru_x, y, half, false, false);
             after(paint, used + usize::from(thru_x - x), &thru);
         }
+        Widget::TextArea { editor_type, .. } if editor_type == "md" && session.previewing(id) => {
+            // The preview of the source, drawn as markdown-view draws it.
+            let room = usize::from(paint.right.saturating_sub(x)).saturating_sub(3);
+            let (blocks, _) = crate::markdown::blocks(session.buffer(id));
+            let mut row = 0;
+            for block in &blocks {
+                let lead = match block.kind.as_str() {
+                    "li" => format!(
+                        "{}{} ",
+                        "  ".repeat(usize::from(block.depth).saturating_sub(1)),
+                        block.marker
+                    ),
+                    "quote" => "│ ".to_string(),
+                    _ => String::new(),
+                };
+                for line in crate::layout::wrap(&format!("{lead}{}", block.text), room) {
+                    if row >= field.rows {
+                        break;
+                    }
+                    let bar = if paint.theme.ascii { "|" } else { "│" };
+                    paint.text(x, y + row, bar, Look::role(Role::Info), 1);
+                    paint.text(x + 1, y + row, &line, text_look(&block.kind), room);
+                    row += 1;
+                }
+            }
+            paint.text(
+                x + u16::try_from(room.saturating_sub(10)).unwrap_or(0),
+                y,
+                " F4=Source ",
+                Look::role(Role::Muted),
+                11,
+            );
+        }
         Widget::TextArea { read_only, .. } => {
             let text = session.buffer(id);
             let lines: Vec<&str> = text.split('\n').collect();
@@ -782,9 +912,17 @@ fn draw_value(paint: &mut Painter, session: &Session, field: &LaidField, widget:
         }
         Widget::Display { text, .. } => {
             let room = usize::from(paint.right.saturating_sub(x));
+            let text = session.shown_text(id).unwrap_or(text);
             for (at, line) in crate::layout::wrap(text, room).iter().enumerate().take(field.rows) {
                 paint.text(x, y + at, line, Look::role(Role::Text), room);
             }
+        }
+        Widget::Editable { text, .. } => {
+            // Click to edit: the value, underlined as something to act on; Enter edits it.
+            let room = usize::from(paint.right.saturating_sub(x));
+            let shown = if text.is_empty() { "(click to edit)" } else { text };
+            let focused = focus_key == id.as_str();
+            paint.text(x, y, shown, Look::role(Role::Text).underline().focused(focused), room);
         }
         Widget::Label { text, style } => {
             paint.text(x, y, text, text_look(style), usize::from(paint.right.saturating_sub(x)));
@@ -812,7 +950,7 @@ fn draw_value(paint: &mut Painter, session: &Session, field: &LaidField, widget:
     }
 }
 
-fn label_of(options: &[crate::model::Choice], value: &str) -> String {
+pub fn label_of(options: &[crate::model::Choice], value: &str) -> String {
     options
         .iter()
         .find(|choice| choice.value == value)
@@ -895,12 +1033,21 @@ fn draw_inline(paint: &mut Painter, session: &Session, items: &[Inline], x: u16,
                 text, btn_type, button, ..
             } => {
                 let role = Role::of_type(btn_type).unwrap_or(Role::Primary);
-                if *button {
+                if btn_type == "image" {
+                    (
+                        format!("{number}{} {text}", paint.theme.glyph(Glyph::Image)),
+                        Look::role(Role::Primary).underline(),
+                    )
+                } else if *button {
                     (format!("{number}[ {text} ]"), Look::role(role))
                 } else {
                     (format!("{number}{text}"), Look::role(Role::Primary).underline())
                 }
             }
+            Inline::Menu { text, .. } => (
+                format!("[ {text} {} ]", paint.theme.glyph(Glyph::DropDown)),
+                Look::role(Role::Secondary),
+            ),
             Inline::Button { id, text, primary } => {
                 let dirty = session
                     .index()
@@ -1017,21 +1164,24 @@ fn draw_list(paint: &mut Painter, session: &Session, laid: &LaidList, x: u16, y:
         Look::role(Role::Border),
         rule_width,
     );
-    // Rows.
+    // Rows: a row takes the lines of its tallest cell, as a column that stacks several fields draws them under each other.
     if list.rows.is_empty() {
         paint.text(x + 2, y + 2, "No rows match", Look::role(Role::Muted).italic(), room);
     }
     for (at, row) in list.rows.iter().enumerate() {
-        let row_y = y + 2 + at;
+        let row_y = y + 2 + laid.row_top(at);
+        let height = laid.heights.get(at).copied().unwrap_or(1);
         let is_current = focused && at == current;
         if is_current {
-            paint.text(
-                x,
-                row_y,
-                paint.theme.glyph(Glyph::Row),
-                Look::role(Role::Primary).bold(),
-                1,
-            );
+            for line in 0..height {
+                paint.text(
+                    x,
+                    row_y + line,
+                    paint.theme.glyph(Glyph::Row),
+                    Look::role(Role::Primary).bold(),
+                    1,
+                );
+            }
         }
         let mut col = x + 2;
         if laid.selection {
@@ -1044,47 +1194,26 @@ fn draw_list(paint: &mut Painter, session: &Session, laid: &LaidList, x: u16, y:
             paint.text(col, row_y, if on { "[x]" } else { "[ ]" }, Look::role(Role::Field), 3);
             col += 4;
         }
-        let look = if is_current {
-            Look::role(Role::Text).on(Role::Selection)
-        } else {
-            Look::role(Role::Text)
-        };
         for column_at in &fits {
             let column = &laid.columns[*column_at];
-            let cell = row.cells.get(*column_at);
-            let (text, link) = match cell {
-                Some(Cell::Node(node)) => match node.as_ref() {
-                    Node::Link { id, text, .. } => {
-                        let number = session.link_number(id).map(|n| format!("[{n}]")).unwrap_or_default();
-                        (format!("{number}{text}"), true)
-                    }
-                    other => (cell_text(other), false),
-                },
-                Some(Cell::Text(text)) => (text.clone(), false),
-                None => (String::new(), false),
-            };
-            let cell_look = if link {
-                Look::role(Role::Primary).underline()
-            } else {
-                look
-            };
-            let cell_look = if is_current {
-                cell_look.on(Role::Selection)
-            } else {
-                cell_look
-            };
-            paint.text(
-                col,
-                row_y,
-                &fit(&text, column.width, column.right),
-                cell_look,
-                column.width,
-            );
+            if let Some(cell) = row.cells.get(*column_at) {
+                for (line, part) in cell.parts().into_iter().enumerate().take(height) {
+                    let (text, look) = cell_part(paint, session, part);
+                    let look = if is_current { look.on(Role::Selection) } else { look };
+                    paint.text(
+                        col,
+                        row_y + line,
+                        &fit(&text, column.width, column.right),
+                        look,
+                        column.width,
+                    );
+                }
+            }
             col += u16::try_from(column.width + 1).unwrap_or(0);
         }
     }
     // Footer: `Rows 21–40 of 312 · Page 2/16`.
-    let footer_y = y + 2 + list.rows.len().max(1);
+    let footer_y = y + 2 + laid.body_rows().max(1);
     let page = session.page_index(&laid.id) + 1;
     let pages = session.page_count(&laid.id);
     let low = list
@@ -1131,10 +1260,131 @@ fn filter_summary(session: &Session, list: &crate::model::FormList) -> Option<St
     (!parts.is_empty()).then(|| format!("Find: {}", parts.join(", ")))
 }
 
-fn cell_text(node: &Node) -> String {
-    match node {
-        Node::Text { text, .. } => text.clone(),
-        _ => String::new(),
+/// A part of a list cell as drawn: a link with its number, a field of a row form with its current value and marks, or
+/// text.
+fn cell_part(paint: &Painter, session: &Session, part: &Cell) -> (String, Look) {
+    let text_look = Look::role(Role::Text);
+    let Cell::Node(node) = part else {
+        return (part.text().to_string(), text_look);
+    };
+    match node.as_ref() {
+        Node::Link { id, text, .. } => {
+            let number = session.link_number(id).map(|n| format!("[{n}]")).unwrap_or_default();
+            (format!("{number}{text}"), Look::role(Role::Primary).underline())
+        }
+        Node::Text { text, .. } => (text.clone(), text_look),
+        Node::DynamicDialog { button, title, .. } => {
+            let text = if button.is_empty() { title } else { button };
+            (format!("[ {text}… ]"), Look::role(Role::Secondary))
+        }
+        Node::Field { id, w, .. } => {
+            let value = session.buffer(id);
+            let shown = match w {
+                Widget::DropDown { .. } | Widget::Radio { .. } => label_of(session.index().choices(id), value),
+                Widget::Check { options, .. } => {
+                    let on = options
+                        .iter()
+                        .any(|choice| value.split(',').any(|part| part == choice.value));
+                    if on { "[x]" } else { "[ ]" }.to_string()
+                }
+                Widget::Submit { text, .. } | Widget::Reset { text } => format!("[ {text} ]"),
+                Widget::Display { text, .. } => session.shown_text(id).unwrap_or(text).to_string(),
+                Widget::Editable { text, .. } | Widget::Label { text, .. } => text.clone(),
+                _ => value.to_string(),
+            };
+            let mut marks = String::new();
+            if session.is_dirty(id) {
+                marks.push_str(paint.theme.glyph(Glyph::Changed));
+            }
+            if session.mark(id).is_some() {
+                marks.push_str(paint.theme.glyph(Glyph::Error));
+            }
+            let look = if w.is_display() {
+                text_look
+            } else if session.mark(id).is_some() {
+                Look::role(Role::Negative)
+            } else if session.is_dirty(id) {
+                Look::role(Role::Changed)
+            } else {
+                Look::role(Role::Field)
+            };
+            (format!("{shown}{marks}"), look)
+        }
+        _ => (part.text().to_string(), text_look),
+    }
+}
+
+/// A tree's rows: `▾` an open node, `▸` a closed one, `·` a leaf, the current row reversed while the tree has focus.
+fn draw_tree(paint: &mut Painter, session: &Session, tree: &LaidTree, x: u16, y: usize) {
+    let room = usize::from(paint.right.saturating_sub(x));
+    if tree.rows.is_empty() {
+        paint.text(x, y, "Loading…", Look::role(Role::Muted).italic(), room);
+        return;
+    }
+    let focused = session.focus_id() == tree.id;
+    let at = session.tree(&tree.id).map_or(0, |state| state.at);
+    for (index, row) in tree.rows.iter().enumerate() {
+        let mark = match row.mark {
+            TreeMark::Open => paint.theme.glyph(Glyph::Open),
+            TreeMark::Closed => paint.theme.glyph(Glyph::Closed),
+            TreeMark::Leaf => paint.theme.glyph(Glyph::Leaf),
+            TreeMark::Loading => paint.theme.glyph(Glyph::Ellipsis),
+        };
+        let text = format!("{}{mark} {}", "  ".repeat(row.depth), row.text);
+        let look = if row.url.is_empty() {
+            Look::role(Role::Text)
+        } else {
+            Look::role(Role::Primary).underline()
+        };
+        paint.text(x, y + index, &text, look.focused(focused && index == at), room);
+    }
+}
+
+/// `✓ Placed ─ ● Approved ─ ○ Shipped`: the stages, done, current and to come, or the status alone.
+fn draw_status(paint: &mut Painter, status: &LaidStatus, x: u16, y: usize) {
+    let room = usize::from(paint.right.saturating_sub(x));
+    let mut col = x;
+    if !status.text.is_empty() && (status.stages.is_empty() || status.text.starts_with("Step")) {
+        let used = paint.text(col, y, &status.text, Look::role(Role::Text).bold(), room);
+        col += u16::try_from(used + 2).unwrap_or(0);
+    }
+    for (at, stage) in status.stages.iter().enumerate() {
+        if at > 0 {
+            let rule = format!(" {} ", paint.theme.glyph(Glyph::Rule));
+            col += u16::try_from(paint.text(col, y, &rule, Look::role(Role::Border), 3)).unwrap_or(0);
+        }
+        let (glyph, look) = match stage.state.as_str() {
+            "done" => (Glyph::Done, Look::role(Role::Muted)),
+            "current" => (Glyph::Current, Look::role(Role::Primary).bold()),
+            _ => (Glyph::Todo, Look::role(Role::Muted)),
+        };
+        let text = format!("{} {}", paint.theme.glyph(glyph), stage.label);
+        let left = room.saturating_sub(usize::from(col - x));
+        col += u16::try_from(paint.text(col, y, &text, look, left)).unwrap_or(0);
+    }
+}
+
+/// A component's line: its spans in their roles; a reversed span shows the component's choice while it has focus.
+fn draw_line(paint: &mut Painter, line: &Line, x: u16, y: usize, focused: bool) {
+    let mut col = x;
+    for span in line {
+        let mut look = Look::role(span.role);
+        if span.bold {
+            look = look.bold();
+        }
+        if span.underline {
+            look = look.underline();
+        }
+        if span.reverse && focused {
+            look = look.reverse();
+        } else if span.reverse {
+            look = look.underline();
+        }
+        let left = usize::from(paint.right.saturating_sub(col));
+        if left == 0 {
+            break;
+        }
+        col += u16::try_from(paint.text(col, y, &span.text, look, left)).unwrap_or(0);
     }
 }
 

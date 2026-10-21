@@ -789,7 +789,28 @@ fn tui_values(theme: &str) -> Value {
     out.insert("breakpoints".to_string(), Value::Map(breakpoints));
     out.insert("colors".to_string(), map("STRT_TUI_COLORS"));
     out.insert("keys".to_string(), map("STRT_TUI_KEYS"));
+    out.insert("drawerOpen".to_string(), drawer_open());
     Value::Map(out)
+}
+
+/// The user's `TUI_DRAWER_OPEN` preference (F9's choice): true or false, null when it is not set or not a boolean.
+fn drawer_open() -> Value {
+    match user::get_preference("TUI_DRAWER_OPEN") {
+        Ok(Some(text)) => match text.trim() {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            "" => Value::Null,
+            other => {
+                tracing::warn!("Preference TUI_DRAWER_OPEN [{other}] is not true or false; it is left unset");
+                Value::Null
+            }
+        },
+        Ok(None) => Value::Null,
+        Err(err) => {
+            tracing::error!("Could not read preference TUI_DRAWER_OPEN for the shell: {err}");
+            Value::Null
+        }
+    }
 }
 
 /// The provider kinds of [`shell_providers`]: the keys of an app's `providers` in the shell data.

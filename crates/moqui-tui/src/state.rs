@@ -30,6 +30,26 @@ pub enum Purpose {
     Options(String),
     Shell,
     Login,
+    /// The body of a dynamic dialog or container, by node id.
+    Fragment(String),
+    /// A display's value from its value url, by field id.
+    ValueUrl(String),
+    /// The palette's search.
+    Palette,
+    /// The title line's counters.
+    Counts,
+    /// A tree node's children, by tree id and node path.
+    Tree(String),
+    /// A user preference written (the drawer's state).
+    Preference,
+    /// The screen's documents for the help.
+    Help,
+    /// An export: a file to save, or text to read.
+    Export,
+    /// The data of a component, by node id.
+    Component(String),
+    /// The menu data of the screen: its documents and saved finds.
+    Menu,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,10 +141,15 @@ impl Lanes {
         self.lanes.get(purpose).is_some_and(|lane| lane.inflight.is_some())
     }
 
-    /// A level, a transition or a login runs: the title line shows the spinner.
+    /// A level, a transition, a login, a fragment or an export runs: the title line shows the spinner. The background
+    /// calls (counters, suggestions) do not.
     pub fn any_busy(&self) -> bool {
         self.lanes.iter().any(|(purpose, lane)| {
-            lane.inflight.is_some() && matches!(purpose, Purpose::Level | Purpose::Transition | Purpose::Login)
+            lane.inflight.is_some()
+                && matches!(
+                    purpose,
+                    Purpose::Level | Purpose::Transition | Purpose::Login | Purpose::Fragment(_) | Purpose::Export
+                )
         })
     }
 

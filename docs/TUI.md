@@ -5,7 +5,8 @@ the server writes each screen as a JSON document of nodes, and the client in `cr
 [Revue](https://github.com/hawk90/revue). There are no TUI-only screens. The design is in
 [plans/Screen-TUI-Impl.md](../plans/Screen-TUI-Impl.md).
 
-It is in the Enterprise and Maximal packages (the `tui` feature, [Packaging](Packaging.md)).
+It is in every package, Default (`lite`) included (the `tui` feature, [Packaging](Packaging.md)). `apps` over SSH also
+needs the `ssh` feature, which Default leaves out.
 
 ## Starting it
 
@@ -24,6 +25,28 @@ tui` says so and stops; stop the server first.
 Each screen is rendered as the logged-in user with artifact authorization on, as the browser's requests are. The client
 holds no permission logic: what the user may not do is not in the document.
 
+## Over SSH
+
+When the built-in SSH server runs (`ssh_port`, see `crates/moqui-host/src/ssh/server.rs`), the same client runs on an
+SSH channel, in the server's process:
+
+```
+ssh -p <ssh_port> <user>@<host>             with SSH_APPS and no SSH_SHELL, the apps are the whole session
+ssh -t -p <ssh_port> <user>@<host> apps     the apps from any account with SSH_APPS
+moqui> apps                                 from the admin shell; quitting the apps (Ctrl+Q) comes back to the prompt
+```
+
+- **Permission.** `SSH_APPS`, granted to `ADMIN` in the seed data. It opens the client and nothing more: every screen is
+  still rendered as the user with artifact authorization on, as in the browser.
+- **Terminal.** It needs a pty (`ssh -t`, which plain `ssh user@host` asks for). The client takes the pty's `TERM` and
+  window size, and follows window changes. Colors follow `TERM` (`*-256color` is 256 colors). Send
+  `COLORTERM=truecolor` for true color, or `NO_COLOR=1` for none, with `SendEnv COLORTERM NO_COLOR LANG` in
+  `~/.ssh/config`. A locale that is set and is not UTF-8 draws in ASCII.
+- **Limits.** At most `tui_max_sessions` (16) apps sessions run at once, and `tui_max_sessions_per_user` (4) of them for
+  one user; `ssh_max_sessions` counts connections, not these. A session ends after 10 minutes without input.
+- **Files.** Exports are not downloaded, because the client runs on the server; the text export still shows in a
+  dialog. Uploads are off. The log pane is not offered.
+
 ## Keys
 
 The scheme follows 5250 function keys and Lynx link travel. Single-letter keys act only when focus is not in a text
@@ -33,29 +56,46 @@ tmux, screen, job control and ssh escapes are left alone. F1 lists the keys in u
 | Key | Action |
 | --- | --- |
 | Tab, Down / Shift+Tab, Up | Next / previous field, link, button or list |
-| Enter | In a field: submit its form (a find form finds). On a link: follow it. On a button: press it. On a list: open the row's first link. In a text area: a new line |
-| Right / Left | Not in a field: follow / back. In a field: move the cursor |
+| Enter | In a field: submit its form (a find form finds). On a link: follow it. On a button: press it. On a list: edit the row when it has fields, else open its first link. On a menu button: its items. On a box title: open or close it. In a text area: a new line |
+| Right / Left | Not in a field: follow / back (on a list row, its first link). In a field: move the cursor. On a tree: open / close a node |
 | Alt+Enter, Ctrl+S | Submit the focused form from anywhere, a text area included |
 | Esc, F12 | Close the top dialog or list; else clear the message; else leave the edits, after asking |
-| F1, `?` | The keys |
+| F1, `?` | The keys, the focused component's keys, and the screen's documents: a document's number opens it |
 | F3, Alt+Left, Backspace (not in a field) | Back to the screen before |
 | F4 | Prompt: a drop-down's list, a date's picker, a text find's operator |
 | F5, Ctrl+R | Refresh the screen |
-| F7 / F8, PgUp / PgDn | Previous / next page of the focused list (else the first list) |
+| F6, `+` | Quick create: the apps' create forms, each in a dialog |
+| F7 / F8, PgUp / PgDn | Previous / next page of the focused list (else the first list); on a wizard with no list, PgDn is Next |
 | Shift+Left / Shift+Right | Scroll a list wider than the screen; its first column stays |
-| F9 | Show the drawer and focus it; again to hide it |
+| F9 | Show the drawer and focus it; again to hide it. The choice is kept for the user (`TUI_DRAWER_OPEN`) |
+| F10 | Actions: the screen's button menus, then the focused list's row actions, Edit row, Find, Saved finds, Columns and exports |
+| Ctrl+K, `:` | The palette: apps, recent screens, actions, and what the server's search finds as you type |
+| `g` | Go to a path (`/apps/...`) or a menu title |
+| `/`, `n`, `N` | Find text on the screen (links, fields, list rows), then the next and previous match |
 | Space, `*` | On a list: select the row, select all. On a check box: toggle |
-| `f`, `s` | On a list: the find dialog of its header fields, cycle the sort |
+| `f`, `s`, `e` | On a list: the find dialog of its header fields, cycle the sort, edit the row |
 | Alt+1…Alt+9, 1…9 | Subscreen tab N |
 | `#` | Number the links; then digits and Enter follow link N |
 | `=` | Info: the screen, its address, the focused link's target |
 | `o` | Open the screen or the focused link in the browser (its address on the message line) |
 | Alt+L | The log pane |
+| Alt+M | The last 25 messages |
+| Alt+T | The tray: Today, Chat and Notifications; Left and Right change the tab |
 | Ctrl+L | Redraw |
 | Ctrl+Q | Quit, after asking if a form changed |
 
-In a drop-down list, typing narrows it, Up and Down move, Enter picks and Esc closes. In the date picker the arrows move
-a day or a week, PgUp and PgDn a month, Home is today and Enter picks.
+In a drop-down list, typing narrows it, Up and Down move, Enter picks and Esc closes; a search drop-down (an
+`ac-transition` text line, or `server-search`) asks the server for what is typed once the typing stops. In the date
+picker the arrows move a day or a week, PgUp and PgDn a month, Home is today and Enter picks.
+
+A list row with fields (a list with a `transition`) opens in the row editor with Enter or `e`: its fields under their
+column titles; Enter or Ctrl+S saves the row, or every row of a `multi` list. A row action (`row-selection` `action`)
+is on F10, and its form posts the rows selected with Space. In the Columns dialog Space shows or hides a field,
+Alt+Up and Alt+Down move it, Enter saves and `r` puts back the list's own columns. An export saves a file to
+`XDG_DOWNLOAD_DIR` (else `~/Downloads`), with its path on the message line; the text export shows in a dialog.
+
+The title line shows the counters (`Today 3  Chat 1  Notif 2`, read again each minute) when the server has a count
+service.
 
 Leaving a changed form (a link, F3, Ctrl+Q) asks: Stay, Discard or Save. A button or link with a `confirmation` asks
 No or Yes, starting at No.
@@ -86,7 +126,7 @@ A screen theme (the user's `STT_INTERNAL_QUASAR` theme, else `DEFAULT_QUASAR`) c
 | --- | --- | --- |
 | `STRT_TUI_BREAKPOINTS` | `sm`, `md`, `lg`, `xl`, `drawer` (columns) | `md = 110` |
 | `STRT_TUI_COLORS` | `text`, `primary`, `secondary`, `positive`, `negative`, `warning`, `info`, `muted`, `field`, `focus`, `changed`, `selection`, `border` | `primary = #1976d2` |
-| `STRT_TUI_KEYS` | an action name: `next`, `prev`, `activate`, `submit`, `back`, `cancel`, `help`, `prompt`, `refresh`, `page-prev`, `page-next`, `drawer`, `select`, `select-all`, `find`, `sort`, `number-links`, `info`, `open-browser`, `redraw`, `log`, `quit`, `tab-1` to `tab-9` | `back = f3 \| alt+left` |
+| `STRT_TUI_KEYS` | an action name: `next`, `prev`, `activate`, `submit`, `back`, `cancel`, `help`, `prompt`, `refresh`, `page-prev`, `page-next`, `drawer`, `select`, `select-all`, `find`, `sort`, `number-links`, `info`, `open-browser`, `redraw`, `log`, `palette`, `go-to`, `quick-create`, `actions`, `find-text`, `find-next`, `find-prev`, `messages`, `tray`, `edit-row`, `quit`, `tab-1` to `tab-9` | `back = f3 \| alt+left` |
 
 A value that does not read is logged and the built-in one stays. Esc, Enter and Tab keep what they do whatever a theme
 binds. Color is never the only signal: every cue has a glyph or text too. `NO_COLOR` (or `--no-color`) draws in reverse
@@ -116,8 +156,49 @@ The node types and their properties are documented with the other client contrac
 `runtime/base-component/webroot/screen/webroot/js/README.md` ("The tui screen model"); the serde types in
 `crates/moqui-tui/src/model.rs` are the schema.
 
+### Components
+
+A `.qvue` screen's twin is usually one `component` node: a client widget registered by name. The screen adds `tui` to its
+`render-modes` and puts the text beside its `qvue` text; the server sets the component's `base` to the screen's path, so
+the component's transitions are the screen's own, the ones the `.qvue` file calls:
+
+```xml
+<screen render-modes="vue,qvue,tui">
+    <widgets><render-mode>
+        <text type="qvue" location="component://example/screen/Gallery/Board.qvue" template="false"/>
+        <text type="tui" location="component://example/screen/Gallery/Board.tui.json" template="false"/>
+    </render-mode></widgets>
+</screen>
+```
+
+```json
+{"t": "component", "name": "board", "props": {"source": "boardRows", "groups": "stages", "groupOf": "stage",
+ "fields": ["amount", "owner", "next"], "move": "moveCard", "moveGroup": "stage", "open": "../Detail?opportunityId={id}"}}
+```
+
+The framework's components, with their props documented at the top of each file in `crates/moqui-tui/src/components/`:
+
+| Name | Shows | Keys |
+| --- | --- | --- |
+| `board` | Cards in columns by group from lg, else grouped under headings; `source` answers `{groups, rows}` | Up/Down, Left/Right (wide), `m` moves a card through `move`, Enter opens `open` |
+| `calendar` | An agenda by day, with the month grid from lg; `source` answers `{month, events}` | Up/Down, PgUp/PgDn months, `t` today |
+| `chart` | A table of the datasets (`labels`, `series`) with a bar for the first series | `r` reads again |
+| `timeline` | Entries (`items`) in order, each its time, title and text | Up/Down, Enter |
+
+A name the client does not know draws a placeholder naming it, and `=` lists the components the client has: a remote
+client knows only those it was built with. An add-on crate registers its own behind a `tui` feature of its crate, which
+`./moq build` turns on when the binary has the TUI:
+
+```rust
+#[cfg(feature = "tui")]
+inventory::submit! { moqui_tui::Registered(&MyInbox) }
+```
+
+A component implements `moqui_tui::Component`: where its data comes from (a transition under the screen's path), its
+lines at a width (spans in theme roles, so it needs no Revue), its keys (moves, and what it asks of the session: reload,
+post, follow, a message), and its help.
+
 ## Not yet
 
-Phase 3 brings the SSH `apps` command, the palette, quick create, counters and the tray, trees, wizards and stack panels,
-row actions and saved finds, autocomplete, and the component registry for `.qvue` twins. Phase 4 brings the remote
-client (`moqui tui --server <url>`), list views, and a Markdown editor.
+Phase 4 brings the remote client (`moqui tui --server <url>`), list views, a Markdown editor, and the log pane over
+SSH for users who may read the logs.

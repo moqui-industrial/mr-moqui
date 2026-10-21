@@ -139,9 +139,9 @@ pub fn run(flags: &TuiFlags) -> Result<(), Error> {
                     if purpose.is_empty() { "production" } else { &purpose }
                 )));
             }
-            HostLink::as_user(factory, user.clone())
+            HostLink::as_user(&factory, user.clone())
         }
-        None => HostLink::new(factory),
+        None => HostLink::new(&factory),
     };
     let theme = moqui_tui::Theme::detect(&|name| std::env::var(name).ok(), flags.ascii, flags.no_color);
     if let Some((width, height)) = flags.snapshot {

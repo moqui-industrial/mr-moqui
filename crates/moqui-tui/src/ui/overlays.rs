@@ -20,7 +20,7 @@ use revue::layout::Rect;
 use crate::keys::ACTIONS;
 use crate::layout::{display_width, layout_nodes, truncate_width, Breakpoints, WidthClass};
 use crate::model::{walk, Node};
-use crate::session::{Overlay, Session};
+use crate::session::{Columns, Editor, Menu, Overlay, Session};
 use crate::state::ConfirmKind;
 use crate::theme::Role;
 
@@ -32,9 +32,70 @@ pub fn draw(paint: &mut Painter, session: &Session, breakpoints: &Breakpoints, c
         match overlay {
             Overlay::Dialog(id) => {
                 let title = session.index().dialogs.get(id).cloned().unwrap_or_default();
-                if let Some(nodes) = dialog_nodes(session, id) {
+                if let Some(mut nodes) = dialog_nodes(session, id) {
+                    if nodes.is_empty() {
+                        nodes.push(Node::Text {
+                            id: format!("{id}#loading"),
+                            text: "Loading…".to_string(),
+                            style: "quote".to_string(),
+                        });
+                    }
                     body_box(paint, session, breakpoints, canvas, class, &title, &nodes);
                 }
+            }
+            Overlay::Row(list, row) => {
+                let nodes = session.row_nodes(list, *row);
+                let title = format!("Row {} · Enter or Ctrl+S saves · Esc closes", row + 1);
+                body_box(paint, session, breakpoints, canvas, class, &title, &nodes);
+            }
+            Overlay::Menu(menu) => menu_box(paint, menu, canvas),
+            Overlay::Palette(_) => palette(paint, session, canvas),
+            Overlay::Search(text) => {
+                let line = format!("Find: {text}_   Enter finds · n next · N previous · Esc");
+                let width = canvas
+                    .width
+                    .min(u16::try_from(display_width(&line) + 4).unwrap_or(u16::MAX));
+                let rect = Rect::new(canvas.x, (canvas.y + canvas.height).saturating_sub(3), width, 3);
+                paint.clear(rect);
+                paint.fixed_frame(rect, "");
+                paint.fixed(
+                    rect.x + 2,
+                    rect.y + 1,
+                    &line,
+                    Look::role(Role::Info),
+                    usize::from(width - 4),
+                );
+            }
+            Overlay::Messages => {
+                let mut lines: Vec<String> = session
+                    .history()
+                    .iter()
+                    .map(|message| {
+                        if message.error {
+                            format!("! {}", message.text)
+                        } else {
+                            message.text.clone()
+                        }
+                    })
+                    .collect();
+                if lines.is_empty() {
+                    lines.push("No messages yet.".to_string());
+                }
+                let room = usize::from(canvas.height.saturating_sub(2));
+                if lines.len() > room {
+                    lines.drain(..lines.len() - room);
+                }
+                small_box(paint, canvas, "Messages", &lines);
+            }
+            Overlay::Editor(editor) => editor_box(paint, session, editor, canvas),
+            Overlay::Columns(columns) => columns_box(paint, columns, canvas),
+            Overlay::Prompt(prompt) => {
+                let lines = vec![
+                    format!("[{:<30}]", format!("{}_", prompt.text)),
+                    String::new(),
+                    "Enter=Save  Esc=Cancel".to_string(),
+                ];
+                small_box(paint, canvas, &prompt.title, &lines);
             }
             Overlay::Find(list) => {
                 if let Some(found) = session.list(list) {
@@ -81,6 +142,8 @@ pub fn draw(paint: &mut Painter, session: &Session, breakpoints: &Breakpoints, c
                     format!("Title: {}", session.model().screen.title),
                 ];
                 lines.extend(link);
+                // A remote client knows only the components built into it (section 2.9).
+                lines.push(format!("Components: {}", crate::components::names().join(", ")));
                 small_box(paint, canvas, "Info", &lines);
             }
             Overlay::Login(login) => {
@@ -107,15 +170,18 @@ fn paint_spot(paint: &Painter, key: &str) -> Option<(u16, u16)> {
     paint.spots.get(key).copied()
 }
 
+/// The body of a dialog: a container-dialog's or a dynamic-dialog's of the screen, or one the session added.
 fn dialog_nodes(session: &Session, id: &str) -> Option<Vec<Node>> {
+    if let Some(extra) = session.extras().iter().find(|extra| extra.id == id) {
+        return Some(extra.c.clone());
+    }
     let mut found = None;
     for model in session.nav().models() {
-        walk(&model.c, &mut |node| {
-            if let Node::Dialog { id: dialog, c, .. } = node {
-                if dialog == id {
-                    found = Some(c.clone());
-                }
+        walk(&model.c, &mut |node| match node {
+            Node::Dialog { id: dialog, c, .. } | Node::DynamicDialog { id: dialog, c, .. } if dialog == id => {
+                found = Some(c.clone());
             }
+            _ => {}
         });
     }
     found
@@ -136,7 +202,7 @@ fn body_box(
     } else {
         canvas.width * 9 / 10
     };
-    let laid = layout_nodes(nodes, width.saturating_sub(4), breakpoints);
+    let laid = layout_nodes(nodes, width.saturating_sub(4), breakpoints, session);
     let height = u16::try_from(laid.height() + 2).unwrap_or(u16::MAX).min(canvas.height);
     let x = canvas.x + (canvas.width - width) / 2;
     let y = if class == WidthClass::Xs {
@@ -320,10 +386,29 @@ fn date_picker(paint: &mut Painter, picker: &crate::session::Picker, canvas: Rec
     );
 }
 
-/// F1: every action with its keys, from the merged keymap, so a theme's keys show.
+/// F1: the screen's documents by number, the focused component's keys, then every action with its keys, from the merged
+/// keymap, so a theme's keys show.
 fn help(paint: &mut Painter, session: &Session, canvas: Rect) {
     let keys = session.keys();
     let mut lines = Vec::new();
+    if !session.docs().is_empty() {
+        lines.push("Documents (press the number):".to_string());
+        for (at, (title, _)) in session.docs().iter().enumerate().take(9) {
+            lines.push(format!("  {}  {title}", at + 1));
+        }
+        lines.push(String::new());
+    }
+    let component = session
+        .focus()
+        .and_then(|item| session.index().components.get(&item.key))
+        .and_then(|info| crate::components::find(&info.name));
+    if let Some(component) = component {
+        lines.push(format!("This {}:", component.name()));
+        for (key, what) in component.help() {
+            lines.push(format!("  {key:<14} {what}"));
+        }
+        lines.push(String::new());
+    }
     for action in ACTIONS {
         let chords: Vec<String> = keys.chords(action).iter().map(|press| press.label()).collect();
         if chords.is_empty() {
@@ -339,4 +424,146 @@ fn help(paint: &mut Painter, session: &Session, canvas: Rect) {
         lines.truncate(room);
     }
     small_box(paint, canvas, "Keys", &lines);
+}
+
+/// A menu over the canvas: its title, its entries, the highlighted one reversed.
+fn menu_box(paint: &mut Painter, menu: &Menu, canvas: Rect) {
+    let widest = menu
+        .items
+        .iter()
+        .map(|item| display_width(&item.label))
+        .chain(std::iter::once(display_width(&menu.title) + 4))
+        .max()
+        .unwrap_or(10)
+        .clamp(16, 60);
+    let width = u16::try_from(widest + 4).unwrap_or(64).min(canvas.width);
+    let visible = menu
+        .items
+        .len()
+        .clamp(1, usize::from(canvas.height.saturating_sub(3)).max(1));
+    let height = u16::try_from(visible + 2).unwrap_or(12).min(canvas.height);
+    let rect = Rect::new(
+        canvas.x + (canvas.width - width) / 2,
+        canvas.y + (canvas.height - height) / 2,
+        width,
+        height,
+    );
+    paint.clear(rect);
+    paint.fixed_frame(rect, &format!(" {} ", menu.title));
+    let start = menu.at.saturating_sub(visible - 1);
+    for (row, (at, item)) in menu.items.iter().enumerate().skip(start).take(visible).enumerate() {
+        let y = rect.y + 1 + u16::try_from(row).unwrap_or(0);
+        let look = Look::role(Role::Text).focused(at == menu.at);
+        paint.fill_row(rect.x + 1, y, usize::from(width - 2), look);
+        paint.fixed(rect.x + 2, y, &item.label, look, usize::from(width - 4));
+    }
+}
+
+/// The palette at the top of the canvas: what is typed, then the rows under their groups.
+fn palette(paint: &mut Painter, session: &Session, canvas: Rect) {
+    let Some(Overlay::Palette(palette)) = session.top_overlay() else {
+        return;
+    };
+    let rows = session.palette_rows();
+    let width = canvas.width.min(80).max(canvas.width * 7 / 10).min(canvas.width);
+    let room = usize::from(canvas.height.saturating_sub(4)).max(1);
+    let mut lines: Vec<(String, Look, bool)> = Vec::new();
+    let mut group = "";
+    for (at, row) in rows.iter().enumerate() {
+        if row.group != group {
+            group = &row.group;
+            lines.push((group.to_string(), Look::role(Role::Muted).bold(), false));
+        }
+        let text = if row.subtitle.is_empty() {
+            format!("  {}", row.title)
+        } else {
+            format!("  {}  · {}", row.title, row.subtitle)
+        };
+        lines.push((text, Look::role(Role::Text).focused(at == palette.at), at == palette.at));
+    }
+    if rows.is_empty() {
+        lines.push((
+            "  Nothing matches yet".to_string(),
+            Look::role(Role::Muted).italic(),
+            false,
+        ));
+    }
+    // Keep the highlighted row in view.
+    let current = lines.iter().position(|(_, _, on)| *on).unwrap_or(0);
+    let start = current.saturating_sub(room.saturating_sub(1));
+    let shown: Vec<_> = lines.into_iter().skip(start).take(room).collect();
+    let height = u16::try_from(shown.len() + 3).unwrap_or(12).min(canvas.height);
+    let rect = Rect::new(canvas.x + (canvas.width - width) / 2, canvas.y, width, height);
+    paint.clear(rect);
+    let title = if palette.go { " Go to " } else { " Go to anything " };
+    paint.fixed_frame(rect, title);
+    let prompt = format!("{} {}_", if palette.go { ">" } else { "?" }, palette.text);
+    paint.fixed(
+        rect.x + 2,
+        rect.y + 1,
+        &prompt,
+        Look::role(Role::Field),
+        usize::from(width - 4),
+    );
+    for (row, (text, look, _)) in shown.iter().enumerate() {
+        let y = rect.y + 2 + u16::try_from(row).unwrap_or(0);
+        paint.fill_row(rect.x + 1, y, usize::from(width - 2), *look);
+        paint.fixed(rect.x + 2, y, text, *look, usize::from(width - 4));
+    }
+}
+
+/// A click-to-edit value's editor: the text with its cursor, or a select's options.
+fn editor_box(paint: &mut Painter, session: &Session, editor: &Editor, canvas: Rect) {
+    let title = session
+        .index()
+        .fields
+        .get(&editor.field)
+        .map(|field| field.title.clone())
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| "Edit".to_string());
+    let mut lines = Vec::new();
+    match session.field_widget(&editor.field) {
+        Some(crate::model::Widget::Editable { options: choices, .. }) if !choices.is_empty() => {
+            for (at, choice) in choices.iter().enumerate() {
+                let mark = if at == editor.at { ">" } else { " " };
+                lines.push(format!("{mark} {}", choice.label));
+            }
+        }
+        _ => {
+            let before: String = editor.text.chars().take(editor.cursor).collect();
+            let after: String = editor.text.chars().skip(editor.cursor).collect();
+            for line in format!("{before}▏{after}").split('\n') {
+                lines.push(truncate_width(line, 70));
+            }
+        }
+    }
+    lines.push(String::new());
+    lines.push("Enter=Save  Esc=Cancel".to_string());
+    small_box(paint, canvas, &title, &lines);
+}
+
+/// The columns of a list: each field shown in its column or not, the highlighted one reversed.
+fn columns_box(paint: &mut Painter, columns: &Columns, canvas: Rect) {
+    let mut lines = Vec::new();
+    for (at, entry) in columns.entries.iter().enumerate() {
+        let mark = if at == columns.at { ">" } else { " " };
+        let place = entry
+            .column
+            .map_or_else(|| "hidden  ".to_string(), |n| format!("column {:<2}", n + 1));
+        lines.push(format!(
+            "{mark} [{}] {place} {}",
+            if entry.column.is_some() { "x" } else { " " },
+            entry.title
+        ));
+    }
+    lines.push(String::new());
+    lines.push("Space=Show/hide  Alt+Up/Down=Move  Enter=Save  r=Reset  Esc".to_string());
+    let room = usize::from(canvas.height.saturating_sub(2));
+    if lines.len() > room {
+        let start = columns.at.saturating_sub(room.saturating_sub(3));
+        let hint = lines.split_off(lines.len() - 2);
+        lines = lines.into_iter().skip(start).take(room.saturating_sub(2)).collect();
+        lines.extend(hint);
+    }
+    small_box(paint, canvas, "Columns", &lines);
 }

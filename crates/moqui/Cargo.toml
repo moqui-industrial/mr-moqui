@@ -15,7 +15,7 @@ maximal = ["moqui-host/maximal"]
 # The SMTP listener for hosted and shared mail accounts (docs/Mail-Inbound.md), in Enterprise and Maximal; for a
 # Default build `./moq build -- --features inbound-smtp`.
 inbound-smtp = ["moqui-host/inbound-smtp"]
-# The terminal client (`moqui tui`), in enterprise and maximal; for a lite build `./moq build -- --features tui`.
+# The terminal client (`moqui tui`), in every package.
 tui = ["moqui-host/tui"]
 
 [dependencies]

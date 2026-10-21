@@ -134,8 +134,9 @@ fn golden_qvt_static() {
     }
 }
 
-/// A dialog body, a depends-on drop-down, and a `text type="tui"` that is not JSON.
-const TUI_FIXTURES: &[&str] = &["tui-dialog", "tui-depends", "tui-text"];
+/// A dialog body, a depends-on drop-down, a `text type="tui"` that is not JSON, and the dynamic widgets, row forms, typed
+/// columns, row actions, status bar, tree, button menu and wizard of Phase 3.
+const TUI_FIXTURES: &[&str] = &["tui-dialog", "tui-depends", "tui-text", "tui-dynamics"];
 
 #[test]
 fn golden_tui() {
