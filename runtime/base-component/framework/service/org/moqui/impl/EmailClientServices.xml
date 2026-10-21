@@ -521,8 +521,10 @@ along with this software (see the LICENSE.md file). If not, see
             ec.entity.find('moqui.basic.email.EmailAccountUser').condition('emailAccountId', emailAccountId).deleteAll()
             ec.entity.find('moqui.basic.email.EmailRemoteChange').condition('emailAccountId', emailAccountId).deleteAll()
             account.delete()
-            if (ownedServer && ec.entity.find('moqui.basic.email.EmailAccount').condition('emailServerId', ownedServer).count() === 0)
+            if (ownedServer && ec.entity.find('moqui.basic.email.EmailAccount').condition('emailServerId', ownedServer).count() === 0) {
+                ec.entity.find('moqui.basic.email.EmailServerAccessToken').condition('emailServerId', ownedServer).deleteAll()
                 ec.entity.find('moqui.basic.email.EmailServer').condition('emailServerId', ownedServer).deleteAll()
+            }
         ]]></script></actions>
     </service>
     <service verb="delete" noun="AccountMessages" transaction="ignore">

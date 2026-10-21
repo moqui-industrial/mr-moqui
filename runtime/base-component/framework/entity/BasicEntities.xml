@@ -706,7 +706,8 @@ along with this software (see the LICENSE.md file). If not, see
             org.moqui.impl.EmailClientServices.start#OAuthSignIn)</description></field>
         <field name="oauthProviderEnumId" type="id"><description>The EmailOAuthProvider an EatOAuth2 server signs in with</description></field>
         <field name="oauthRefreshToken" type="text-long" encrypt="true"><description>The provider's refresh token, encrypted;
-            never answered by a service. The access tokens made from it are kept in memory only.</description></field>
+            never answered by a service. The access token made from it is kept in memory and, for the other servers of a
+            cluster, encrypted on EmailServerAccessToken.</description></field>
         <field name="oauthSignInDate" type="date-time"><description>When the user last signed in with the provider</description></field>
         <relationship type="one" title="EmailAuthType" related="moqui.basic.Enumeration" short-alias="authType">
             <key-map field-name="authTypeEnumId"/></relationship>
@@ -743,6 +744,17 @@ along with this software (see the LICENSE.md file). If not, see
                 storeProtocol="pop3" storePort="110" (std) storePort="995" (ssl-pop)
             -->
         </seed-data>
+    </entity>
+    <entity entity-name="EmailServerAccessToken" package="moqui.basic.email" use="transactional" cache="never">
+        <description>The current OAuth access token of an EatOAuth2 EmailServer, shared by the servers of a cluster so one
+            refreshes it at a time (EmailServer locked for update) and a refresh token the provider rotates is not lost.
+            Not on EmailServer, which is cached and exported. Written and deleted by the framework only.</description>
+        <field name="emailServerId" type="id" is-pk="true"/>
+        <field name="accessToken" type="text-long" encrypt="true"/>
+        <field name="expiresDate" type="date-time"/>
+        <field name="refreshTokenDigest" type="text-short"><description>The digest of the refresh token the access token
+            came from; a row of another refresh token (a new sign-in) is not used</description></field>
+        <relationship type="one" related="moqui.basic.email.EmailServer" short-alias="server"/>
     </entity>
     <entity entity-name="EmailOAuthProvider" package="moqui.basic.email" use="configuration" cache="true">
         <description>An OAuth 2.0 provider a mail account signs in with instead of a password (docs/Mail-OAuth.md;
