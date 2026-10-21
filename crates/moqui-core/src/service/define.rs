@@ -237,6 +237,9 @@ pub(crate) struct ServiceDef {
     pub transaction: TransactionAttribute,
     /// `no-tx-cache`: flush and stop the transaction cache in place before the service runs.
     pub no_tx_cache: bool,
+    /// `read-only`: the service only reads (and may set the user's context), so a server-static screen's always-actions
+    /// may call it. MR Moqui only.
+    pub read_only: bool,
     pub timeout: Option<Duration>,
     pub semaphore: SemaphoreMode,
     pub semaphore_name: Option<String>,
@@ -275,6 +278,7 @@ impl ServiceDef {
             validate_input: false,
             transaction: TransactionAttribute::UseOrBegin,
             no_tx_cache: false,
+            read_only: false,
             timeout: None,
             semaphore: SemaphoreMode::None,
             semaphore_name: None,
@@ -1157,6 +1161,7 @@ fn load_service(prefix: &str, node: &MNode, failures: &mut Vec<String>) -> Optio
         validate_input: bool_attr(node, "validate", true),
         transaction: transaction_of(node),
         no_tx_cache: bool_attr(node, "no-tx-cache", false),
+        read_only: bool_attr(node, "read-only", false),
         timeout,
         semaphore: semaphore_of(node),
         semaphore_name: node.attribute("semaphore-name"),

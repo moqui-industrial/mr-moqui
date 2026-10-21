@@ -622,6 +622,11 @@ interface MoquiScreenFacade {
     /** A screen-output mode such as xlsx, whose render is bytes. */
     isRenderModeBinary(mode: string): boolean;
     getMimeTypeByMode(mode: string): string | null;
+    /** The server-static qvt report of a screen with the full check (an html render with real data), as the current user. */
+    staticReport(options: { rootScreen: string; screenPath: string; parameters?: Record<string, unknown> }): {
+        location: string; path: string; verdict: "clean" | "static half only" | "violations" | "stays a server merge";
+        marked: boolean; eligible: boolean; fullCheck: boolean; reasons: string[];
+        violations: { kind: string; element: string; detail: string }[] };
     render(options: MoquiScreenRenderOptions): { status: number; contentType: string; text: string; bytes: Uint8Array };
     makeRender(): MoquiScreenRenderBuilder;
     /** Java's ScreenTest: renders whose errors are collected instead of thrown. */
