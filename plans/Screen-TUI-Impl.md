@@ -678,12 +678,7 @@ It would be an own widget over `TextArea`, or a contribution to Revue's `RichTex
 
 ### 4.2 SSH `apps`
 
-- **Command and permission.** `apps` is a new command in `crates/moqui-host/src/ssh/shell.rs`, in the `match` and the `HELP` text. It is also the whole session for a user who has the new `SSH_APPS` permission but not `SSH_SHELL`. `SSH_APPS` is a `UserPermission` in `runtime/base-component/framework/data/SecurityTypeData.xml:58-61` beside `SSH_SFTP`/`SSH_SHELL`, granted to `ADMIN` by default. It gives no rights beyond opening the TUI: every screen is still checked as that user.
-- **Where the permission is checked.** `ADMIN` has `SSH_SFTP` and `SSH_GIT`, but `SSH_SHELL` only through `ADMIN_ADV`. So the typical user of `apps` has no shell, and every place that gates on the shell today needs to know about `apps`:
-  - `Permissions` and `ssh_permissions` (`crates/moqui-host/src/ssh/server.rs:360`) get `apps`, and `Connection` gets `can_apps`.
-  - `Connection::accept` (`server.rs:371`) lets in a user who has only `apps`. It also leaves such a user out of the git-only rule at `server.rs:380`, which refuses password logins for anyone without SFTP or SHELL.
-  - `shell_request` (`server.rs:613`) accepts `can_apps`. When `can_shell` is false it starts `apps` directly rather than the `moqui>` prompt.
-  - `exec_request` (`server.rs:571`) accepts `can_apps` for the command `apps` alone, so `ssh -t host apps` works when a pty was requested. Other commands still need `can_shell`.
+- **Command.** `apps` is a command in `crates/moqui-host/src/ssh/shell.rs`, in the `match` and the `HELP` text, and the whole session of a user without `SSH_SHELL`. Every screen is checked as that user. (The first design gated it on a new `SSH_APPS` permission at every place that gated on the shell; that was built in Phase 3b and removed Oct 21, below.)
 - **Pty.** `pty_request` (`server.rs:489`) keeps only that a pty was asked for and drops the size and `TERM`. It must store `term`, columns and rows on the `Connection`. A `window_change_request` handler is added (there is none today) and forwards the size to the session loop. Without a pty, `apps` refuses with a one-line message.
 - **Stream.** The session takes over the channel stream that `interactive` (`server.rs:691`) reads line by line today. That loop drops escape bytes, so `apps` hands the stream to `run_session` and gets it back on exit, returning to the `moqui>` prompt when the user came from the shell.
 - **Sessions.** One `run_session` per channel, on its own thread (the loop is synchronous). Requests go through `on_pool` with `internal_login_user` per request, as the shell's commands do.
@@ -693,8 +688,7 @@ It would be an own widget over `TextArea`, or a contribution to Revue's `RichTex
   - Over the limit, `apps` refuses with a one-line message, and the socket closes with a reason.
 - **Downloads and uploads** are off over SSH (1.6, `file` and exports). The log pane is off, unless the user has the permission to read logs, in which case it shows only lines at WARN and above. The proposal leaves this to permissions, and it is Phase 4.
 - **As built (Phase 3b).** `crates/moqui-host/src/ssh/apps.rs`, behind `ssh` and `tui`.
-  - `SSH_APPS` is not a sealed permission (`security_checks.rs` `DEFAULT_SEALED_PERMISSIONS`), as `SSH_SFTP` is not: it gives no rights beyond the screens.
-  - `apps` runs as the `exec` command, as the whole shell session of a user with `SSH_APPS` and no `SSH_SHELL`, and as a command at the `moqui>` prompt.
+  - `apps` runs as the `exec` command, as the whole shell session of a user without `SSH_SHELL`, and as a command at the `moqui>` prompt.
   - `env_request` also keeps `COLORTERM`, `NO_COLOR`, `COLORFGBG`, `LANG`, `LC_ALL` and `LC_CTYPE` for the theme. A locale that is set and is not UTF-8 draws in ASCII.
   - The window size is a `watch` per pty channel, so a window change while the user is still at the prompt is not lost.
   - `tui_max_sessions` (16) and `tui_max_sessions_per_user` (4).
@@ -713,7 +707,7 @@ It would be an own widget over `TextArea`, or a contribution to Revue's `RichTex
     session with no user counts toward the total only; the dialog login moves it to the user (`SessionSlot::assign`),
     refused when the user's sessions are full. A host-side `ScreenLink` wrapper (`GatedLink`) does that, decides the log
     pane after the login (`SessionEvent::LogOffered`), and closes the session after `MAX_LOGIN_FAILURES` (5).
-- **`agent-apps` (Phase 3c).** The same client for a program, on an `exec` channel with no pty (`crates/moqui-host/src/ssh/agent.rs`). Sessions are held by the server between one-command execs, and there is a line mode. It needs `SSH_APPS` and takes the same slots. docs/TUI.md "For agents".
+- **`agent-apps` (Phase 3c).** The same client for a program, on an `exec` channel with no pty (`crates/moqui-host/src/ssh/agent.rs`). Sessions are held by the server between one-command execs, and there is a line mode. It needs a user the SSH connection logged in (a key or a password; not a dialog login) and takes the same slots. docs/TUI.md "For agents".
 
 ### 4.3 Remote client (`moqui tui --server <url>`)
 
@@ -730,7 +724,7 @@ It would be an own widget over `TextArea`, or a contribution to Revue's `RichTex
 Built Oct 21, 2026, once SSH was open to every user (4.2): for every signed in user, from the account menu's Terminal UI.
 As built, below the first sketch.
 
-- **Server.** A `/termws` WebSocket route beside `/notws` (`crates/moqui-host/src/http.rs:211`), exempt from the request timeout as `/notws` is (`http.rs:429`). It is authenticated by the session cookie as `notws::upgrade` is (`crates/moqui-host/src/notws.rs:85`), and needs `SSH_APPS`-equivalent permission (the same permission, renamed `TERMINAL_APPS` if the SSH name reads wrong). Its bytes feed `run_session` exactly as SSH does. Because it is exempt from the request deadline, each socket takes a slot of `tui_max_sessions` (4.2) before its session starts.
+- **Server.** A `/termws` WebSocket route beside `/notws` (`crates/moqui-host/src/http.rs:211`), exempt from the request timeout as `/notws` is (`http.rs:429`). It is authenticated by the session cookie as `notws::upgrade` is (`crates/moqui-host/src/notws.rs:85`). Its bytes feed `run_session` exactly as SSH does. Because it is exempt from the request deadline, each socket takes a slot of `tui_max_sessions` (4.2) before its session starts.
 - **Page.** A small page with xterm.js, vendored through `libs/refresh.mjs` with a manifest line and a license review entry (MIT).
 - **Placement.** Phase 4, only on demand, as the proposal says.
 - **As built.**
@@ -928,7 +922,7 @@ The client has 33 more tests (97 in all): `dynamic.rs`, `shell.rs`, `structure.r
 
 ### Phase 3b — SSH
 
-1. **SSH.** `apps` over SSH with the chosen session route, `SSH_APPS` at every gate of 4.2, `tui_max_sessions`, pty size, window change, and the guard against downloads and uploads.
+1. **SSH.** `apps` over SSH with the chosen session route, `SSH_APPS` at every gate of 4.2 (removed Oct 21, 4.2), `tui_max_sessions`, pty size, window change, and the guard against downloads and uploads.
 
 **Exit:** an administrator connects by `ssh user@host`, lands in the apps, and completes the Phase 3 Tools task.
 
@@ -961,6 +955,7 @@ Recorded 2026-10-20.
   - Depth, a wide glyph and links.
   - `run_session` over a channel: keys in split reads to the detail screen, a resize, close, a lone ESC closing the help after its wait, Ctrl+Q, and a refused export.
 - `crates/moqui-host/tests/it/ssh.rs` `apps_runs_the_terminal_client_over_ssh`, on a russh client.
+  - (`SSH_APPS` was removed Oct 21, 4.2; the test now covers a user without `SSH_SHELL`.)
   - A user with only `SSH_APPS` lands in the apps from a shell request, in true color from the `COLORTERM` env request.
   - A second channel of that user is refused by `tui_max_sessions_per_user`.
   - A window change redraws whole, and Ctrl+Q exits 0 with the terminal put back.
@@ -1009,7 +1004,7 @@ Recorded 2026-10-21.
 
 **Exit evidence.**
 - `crates/moqui-tui/tests/agent.rs` (6 tests): the answer's form, elements by number, id and label, `set` on a text field and on a dependent drop-down by label and by value, a settled palette search, JSON, a confirm, the empty-row count, and errors.
-- `crates/moqui-host/tests/it/ssh.rs` `agent_apps_answers_one_command_per_exec`: open, the user list's find by label, JSON elements, another user refused, `tui_max_sessions_per_user`, `SSH_APPS` refused, `close`, and the line mode.
+- `crates/moqui-host/tests/it/ssh.rs` `agent_apps_answers_one_command_per_exec`: open, the user list's find by label, JSON elements, another user refused, `tui_max_sessions_per_user`, `SSH_APPS` refused (removed Oct 21, 4.2), `close`, and the line mode.
 - **Live.** The Tools task, run by an agent on the release build with one `ssh -S <control socket> … agent-apps <id> <command>` per step: 20 commands, none of them a wait, a retry or a Tab count. The command list is in docs/TUI.md "For agents".
 
 **Still awkward for an agent.**
@@ -1075,7 +1070,7 @@ so a remote client shows its login dialog.
 
 Recorded 2026-10-21. Built: the remote client, push, theming, list views, the Markdown source editor, the Gallery
 snapshots and the log pane over SSH. Evaluated and not built: a `diagram` component. Not built, by the user's choice:
-the browser terminal (4.4).
+the browser terminal (4.4); it was built later the same day, once SSH was open to every user (4.2, 4.4 "As built").
 
 **Remote client (4.3).**
 - `crates/moqui-host/src/tui.rs` is now one `Link<T: Transport>`: the level, transition, options, json, fragment, raw and
@@ -1255,7 +1250,7 @@ where it does not; Alt+P gives the terminal its own selection back.
 | Mouse | The hit map under chosen cells (canvas, scrolled canvas, overlays), clicks and the wheel, drag to select and the OSC 52 it writes, Alt+P (Phase 5) | `crates/moqui-tui/tests/mouse.rs` |
 | Sanitizing | Control and bidi characters in every string field of a model are not drawn | unit test |
 | In-process link | A real factory: login, render, submit with a validation error, options, 401 | `crates/moqui-host/tests/it/tui.rs` |
-| SSH | pty request with size, `apps` start, window change to a new size, exit back to the prompt, `SSH_APPS` refused without permission. A user with `SSH_APPS` but no `SSH_SHELL` logs in by password and lands in `apps` from `ssh user@host` and from `ssh -t host apps`. Channels past `tui_max_sessions` are refused. | extend `crates/moqui-host/tests/it/ssh.rs` |
+| SSH | pty request with size, `apps` start, window change to a new size, exit back to the prompt. A user without `SSH_SHELL` logs in by password and lands in `apps` from `ssh user@host` and from `ssh -t host apps`. A client with no key gets the login dialog, and is disconnected after `LOGIN_WAIT` without a login; `ssh_login_dialog=false` turns it off. Channels past `tui_max_sessions` are refused. | extend `crates/moqui-host/tests/it/ssh.rs` |
 | Gallery | Every Gallery screen at 180×50 as a snapshot in the example component's tests, with a fixed date, so a style change shows in the diff as the screenshots do for qvt. Board and Calendar through their components. | `runtime/base-component/example/test/` |
 | Components | Each framework component drawn from fixture props at two widths, its keys, and the unknown-name placeholder | `crates/moqui-tui/tests/components.rs` |
 | Theme keys | `STRT_TUI_KEYS` overrides merge, a bad entry is skipped and logged, a binding of Esc/Enter/Tab is refused, F1 and the key line show the merged keys | `crates/moqui-tui/tests/keys.rs` |
@@ -1281,7 +1276,7 @@ These update the proposal's list with what the survey found.
 | Idle cost | Revue ticks every 16 ms. The session loop blocks until input or its next deadline, about once a minute when idle (3.5). |
 | `.qvue` screens and inline `qvt` | **Decided (D10):** each gets a `tui` implementation, and until then a placeholder with a browser link (2.9). For the BOSS Comms Inbox (a `.qvue`) to work as an email client in the terminal, BOSS writes its `tui` texts and its components (message list, reader, compose on the 3.8 editor) behind its crate's `tui` feature. |
 | Custom components in a remote client | A `tui-client` binary has only the components it was built with. Shown as placeholders, and listed by `=` (2.9). |
-| Security over SSH | Per-request login as the user, `SSH_APPS`, no file transfer, sanitized output (2.7, 4.2). |
+| Security over SSH | Open to every user since Oct 21 (4.2), as HTTP is: per-request login as the user, every screen checked as that user, the login dialog for a client with no key (limited by `LOGIN_WAIT`, `MAX_LOGIN_FAILURES` and `ssh_max_sessions`), no file transfer, sanitized output (2.7). |
 | Rich text | **Decided (D12):** read-only with "Edit in browser". A two-way Markdown editor in the `markdown-view` look comes later (3.8). |
 | Preferences | **Decided (D11):** breakpoints, colors and key bindings are per theme. Only the drawer's open state is per user. Per-user bindings and their UI wait. |
 
