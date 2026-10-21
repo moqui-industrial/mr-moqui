@@ -405,6 +405,42 @@ fn a_failed_request_in_a_browser_is_an_html_error_page_and_elsewhere_json() {
     assert_eq!(json.header("Content-Type"), Some("application/json"));
 }
 
+/// The webapp's `error-screen` of an error type names the page a browser gets, as Java's `getErrorScreenNode`.
+#[test]
+fn a_browser_error_shows_the_error_screen_the_conf_names() {
+    let dir = std::env::temp_dir().join(format!("moqui-error-screen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Root.xml"),
+        format!(
+            r#"<screen require-authentication="false"><subscreens>
+            <subscreens-item name="Oops" location="{}"/></subscreens><widgets><subscreens-active/></widgets></screen>"#,
+            dir.join("Oops.xml").display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Oops.xml"),
+        r#"<screen require-authentication="false"><widgets><label text="Nothing at ${errorType}"/></widgets></screen>"#,
+    )
+    .unwrap();
+    let world = World::open(
+        r#"<moqui-conf><webapp-list><webapp name="webroot">
+            <error-screen error="not-found" screen-path="Oops"/></webapp></webapp-list></moqui-conf>"#,
+    );
+    let mut get = request("GET", "/NoSuchScreen");
+    get.set_header("accept", "text/html");
+    let page = serve_at(&world.factory, get, &dir.join("Root.xml").to_string_lossy());
+    assert_eq!(page.status, 404, "{}", page.body_text());
+    assert!(
+        page.body_text().contains("Nothing at not-found"),
+        "{}",
+        page.body_text()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A root screen that wraps what is below it in the real header and footer, and mounts the real error screens.
 fn shell_root(name: &str) -> Site {
     let dir = std::env::temp_dir().join(format!("moqui-shell-{name}-{}", std::process::id()));

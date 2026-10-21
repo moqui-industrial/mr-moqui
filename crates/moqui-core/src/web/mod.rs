@@ -34,9 +34,6 @@ use crate::entity::query_rest;
 
 /// The cap on a request body that is not multipart, unless `webapp_max_body` says otherwise.
 const DEFAULT_MAX_BODY: usize = 10 * 1024 * 1024;
-const PREFLIGHT_HEADERS: &str = "Accept,Accept-Encoding,Content-Type,Content-Encoding,Origin,X-Requested-With,Access-Control-Request-Method,Access-Control-Request-Headers,api_key,login_key,X-HTTP-Method-Override,moquiSessionToken,SessionToken,X-CSRF-Token,Authorization,A2A-Version";
-const EXPOSE_HEADERS: &str =
-    "Access-Control-Allow-Origin,Access-Control-Allow-Credentials,X-CSRF-Token,moquiSessionToken";
 
 thread_local! {
     static WEB: RefCell<Option<WebSlot>> = const { RefCell::new(None) };
@@ -898,12 +895,12 @@ pub(crate) fn send_resource_response(location: &str, inline: bool, file_name: Op
     } else {
         headers.push(("Content-Disposition".to_string(), attachment_disposition(file_name)));
     }
-    let cache = if inline && application_file {
-        "max-age=86400, must-revalidate, public"
+    // An inline file of the app gets the conf's `web-resource-inline` headers, as Java's; any other file is the user's.
+    if inline && application_file {
+        apply_conf_headers(None, "web-resource-inline", &mut headers, false);
     } else {
-        "private, no-store"
-    };
-    headers.push(("Cache-Control".to_string(), cache.to_string()));
+        headers.push(("Cache-Control".to_string(), "private, no-store".to_string()));
+    }
     let conditional = WEB
         .with(|slot| slot.borrow().as_ref().map(|web| web.conditional.clone()))
         .unwrap_or_default();
@@ -1225,7 +1222,20 @@ pub fn parse_size(text: &str) -> Option<usize> {
 }
 
 fn upload_executable_allowed() -> bool {
-    moqui_lib::env::get_prop_or_env("webapp_upload_executable_allow") == "true"
+    webroot_setting(None, "upload-executable-allow", "webapp_upload_executable_allow") == "true"
+}
+
+/// The `webroot` webapp's attribute `name` (Java's `WebappInfo`), or the property `property` when the conf leaves it out
+/// or it expands to nothing. With no factory given, the current context's, else only the property.
+fn webroot_setting(factory: Option<&crate::context::ExecutionContextFactory>, name: &str, property: &str) -> String {
+    let configured = match factory {
+        Some(factory) => factory.webapp_setting("webroot", name),
+        None => ExecutionContext::with_current(|ec| ec.factory().webapp_setting("webroot", name)).unwrap_or_default(),
+    };
+    if !configured.is_empty() {
+        return configured;
+    }
+    moqui_lib::env::get_prop_or_env(property).trim().to_string()
 }
 
 /// Query, then a form body. A JSON object fills a name only when those did not already set it.
@@ -1518,18 +1528,15 @@ fn canonical_ip(text: &str) -> String {
 }
 
 pub(crate) fn require_session_token() -> bool {
-    !matches!(
-        moqui_lib::env::get_prop_or_env("webapp_require_session_token").as_str(),
-        "false"
-    )
+    webroot_setting(None, "require-session-token", "webapp_require_session_token") != "false"
 }
 
-fn handle_cors() -> bool {
-    !matches!(moqui_lib::env::get_prop_or_env("webapp_handle_cors").as_str(), "false")
+fn handle_cors(factory: Option<&crate::context::ExecutionContextFactory>) -> bool {
+    webroot_setting(factory, "handle-cors", "webapp_handle_cors") != "false"
 }
 
-fn allow_origins() -> Vec<String> {
-    moqui_lib::env::get_prop_or_env("webapp_allow_origins")
+fn allow_origins(factory: Option<&crate::context::ExecutionContextFactory>) -> Vec<String> {
+    webroot_setting(factory, "allow-origins", "webapp_allow_origins")
         .split(',')
         .map(str::trim)
         .filter(|text| !text.is_empty())
@@ -1537,15 +1544,27 @@ fn allow_origins() -> Vec<String> {
         .collect()
 }
 
+/// [`origin_allowed_by`] with the current context's conf.
+pub fn origin_allowed_for(origin: Option<&str>, host: Option<&str>) -> bool {
+    origin_allowed_by(None, origin, host)
+}
+
 /// Java's `WebUtilities.webSocketOriginAllowed`, which CORS follows too: no Origin, `*`, the request's own host, an
 /// allowed origin or domain, or a subdomain of an allowed domain on a dot boundary (`moqui.org` allows `www.moqui.org`,
-/// not `foo-moqui.org`). Case-insensitive.
-pub fn origin_allowed_for(origin: Option<&str>, host: Option<&str>) -> bool {
+/// not `foo-moqui.org`). Case-insensitive. The allowed origins are the `webroot` webapp's `allow-origins`.
+pub fn origin_allowed_by(
+    factory: Option<&crate::context::ExecutionContextFactory>,
+    origin: Option<&str>,
+    host: Option<&str>,
+) -> bool {
     let Some(origin) = origin.map(str::trim).filter(|text| !text.is_empty()) else {
         return true;
     };
     let origin = origin.to_ascii_lowercase();
-    let allow: Vec<String> = allow_origins().iter().map(|text| text.to_ascii_lowercase()).collect();
+    let allow: Vec<String> = allow_origins(factory)
+        .iter()
+        .map(|text| text.to_ascii_lowercase())
+        .collect();
     if allow.iter().any(|entry| entry == "*") {
         return true;
     }
@@ -1574,33 +1593,63 @@ fn origin_host(text: &str) -> String {
     text.split(':').next().unwrap_or("").to_string()
 }
 
-/// Screen-render headers, and CORS when the origin is allowed.
-pub fn finish_response(request: &WebRequest, mut response: WebResponse, preflight: bool) -> WebResponse {
-    push_unique(
-        &mut response.headers,
-        "Cache-Control",
-        "no-cache, no-store, must-revalidate, private",
-    );
-    push_unique(
-        &mut response.headers,
-        "Content-Security-Policy",
-        "frame-ancestors 'none'; form-action 'self';",
-    );
-    push_unique(&mut response.headers, "X-Frame-Options", "sameorigin");
-    push_unique(&mut response.headers, "X-Content-Type-Options", "nosniff");
+/// The conf's `screen-render` headers on every response, as the baseline under what the response set itself, and
+/// `screen-secure` on https; then CORS when the origin is allowed.
+pub fn finish_response(
+    factory: &crate::context::ExecutionContextFactory,
+    request: &WebRequest,
+    mut response: WebResponse,
+    preflight: bool,
+) -> WebResponse {
+    apply_conf_headers(Some(factory), "screen-render", &mut response.headers, true);
     // HSTS holds for every port of a host (RFC 6797), so on localhost a trusted dev certificate would send the plain
     // dev listener and any other local server to https for a year.
     if request.https && !is_localhost(request.header("host").unwrap_or("")) {
-        push_unique(&mut response.headers, "Strict-Transport-Security", "max-age=31536000");
+        apply_conf_headers(Some(factory), "screen-secure", &mut response.headers, true);
     }
-    if handle_cors() {
+    if handle_cors(Some(factory)) {
         if let Some(origin) = request.header("origin").filter(|text| !text.is_empty()) {
-            if origin_allowed_for(Some(origin), request.header("host")) {
-                apply_cors(&mut response.headers, origin, preflight);
+            if origin_allowed_by(Some(factory), Some(origin), request.header("host")) {
+                apply_cors(factory, &mut response.headers, origin, preflight);
             }
         }
     }
     response
+}
+
+/// Java's `WebappInfo.addHeaders`: the conf's `response-header` entries for `kind` (`screen-render`, `cors-actual`). An
+/// entry replaces the header, or adds a value when it says `add="true"`. With `only_missing`, a header the response
+/// already has is left as it is. With no factory given, the current context's conf, else the shipped entries.
+pub(crate) fn apply_conf_headers(
+    factory: Option<&crate::context::ExecutionContextFactory>,
+    kind: &str,
+    headers: &mut Vec<(String, String)>,
+    only_missing: bool,
+) {
+    let entries = match factory {
+        Some(factory) => factory.response_headers("webroot", kind),
+        None => ExecutionContext::with_current(|ec| ec.factory().response_headers("webroot", kind))
+            .unwrap_or_else(|| crate::context::ExecutionContextFactory::default_response_headers(kind)),
+    };
+    for (name, value, add) in entries {
+        if only_missing && headers.iter().any(|(key, _)| key.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        if !add {
+            headers.retain(|(key, _)| !key.eq_ignore_ascii_case(&name));
+        }
+        headers.push((name, value));
+    }
+}
+
+/// The conf's first `response-header` value of `name` for `kind`, such as a `Cache-Control`.
+pub(crate) fn conf_header(kind: &str, name: &str) -> Option<String> {
+    let mut headers = Vec::new();
+    apply_conf_headers(None, kind, &mut headers, false);
+    headers
+        .into_iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value)
 }
 
 /// `localhost` or a name under it, with or without a port.
@@ -1617,30 +1666,16 @@ pub(crate) fn host_without_port(host: &str) -> &str {
     host.split(':').next().unwrap_or(host)
 }
 
-fn apply_cors(headers: &mut Vec<(String, String)>, origin: &str, preflight: bool) {
-    headers.push(("Vary".to_string(), "Origin".to_string()));
-    headers.push(("Access-Control-Allow-Credentials".to_string(), "true".to_string()));
+/// The allowed origin, then the conf's `cors-preflight` or `cors-actual` headers, as `MoquiServlet.handleCors`.
+fn apply_cors(
+    factory: &crate::context::ExecutionContextFactory,
+    headers: &mut Vec<(String, String)>,
+    origin: &str,
+    preflight: bool,
+) {
     headers.push(("Access-Control-Allow-Origin".to_string(), origin.to_string()));
-    if preflight {
-        headers.push((
-            "Access-Control-Allow-Headers".to_string(),
-            PREFLIGHT_HEADERS.to_string(),
-        ));
-        headers.push((
-            "Access-Control-Allow-Methods".to_string(),
-            "GET,PUT,POST,PATCH,DELETE,OPTIONS".to_string(),
-        ));
-        headers.push(("Access-Control-Max-Age".to_string(), "3600".to_string()));
-    } else {
-        headers.push(("Access-Control-Expose-Headers".to_string(), EXPOSE_HEADERS.to_string()));
-    }
-}
-
-fn push_unique(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
-    if headers.iter().any(|(key, _)| key.eq_ignore_ascii_case(name)) {
-        return;
-    }
-    headers.push((name.to_string(), value.to_string()));
+    let kind = if preflight { "cors-preflight" } else { "cors-actual" };
+    apply_conf_headers(Some(factory), kind, headers, false);
 }
 
 /// Names a response never carries: `WebUtilities.stripCredentialParameters`, compared without case.
@@ -1670,6 +1705,31 @@ pub(crate) fn strip_credential_parameters(value: &mut serde_json::Value) {
         }
         serde_json::Value::Array(items) => items.iter_mut().for_each(strip_credential_parameters),
         _ => {}
+    }
+}
+
+/// The JSON error response of `err`: its status and client text, and a `Retry-After` when the error says when the
+/// client may come back (a tarpit), as Java adds one to every 429.
+pub(crate) fn json_error_of(err: &Error) -> WebResponse {
+    let status = status_for(err);
+    let mut response = json_error(status, &error_text(status, err));
+    add_retry_after(&mut response.headers, err);
+    response
+}
+
+/// [`json_error_of`] into the thread's web slot.
+pub(crate) fn send_json_error_of(err: &Error) {
+    let status = status_for(err);
+    send_json_error(status, &error_text(status, err));
+    if let Some(seconds) = err.retry_after() {
+        add_header("Retry-After", seconds.to_string());
+    }
+}
+
+/// A `Retry-After` of `err`'s seconds, when it has some.
+pub(crate) fn add_retry_after(headers: &mut Vec<(String, String)>, err: &Error) {
+    if let Some(seconds) = err.retry_after() {
+        headers.push(("Retry-After".to_string(), seconds.to_string()));
     }
 }
 
@@ -1703,8 +1763,13 @@ pub(crate) fn is_unavailable(err: &Error) -> bool {
     false
 }
 
-pub(crate) fn early_error(request: &WebRequest, status: u16, message: &str) -> WebResponse {
-    finish_response(request, json_error(status, message), false)
+pub(crate) fn early_error(
+    factory: &crate::context::ExecutionContextFactory,
+    request: &WebRequest,
+    status: u16,
+    message: &str,
+) -> WebResponse {
+    finish_response(factory, request, json_error(status, message), false)
 }
 
 /// The HTTP status of an error, by its [`ErrorKind`]. A general error is a 500 whatever its message says, unless it
@@ -2009,6 +2074,13 @@ mod tests {
         let err = Error::from(err);
         assert_eq!(err.kind(), ErrorKind::Tarpit, "{err}");
         assert_eq!(super::status_for(&err), 429);
+        // A tarpit's seconds come through a lib error as the response's Retry-After.
+        let wrapped =
+            moqui_lib::error::Error::from(Error::of_kind(ErrorKind::Tarpit, "too many times").with_retry_after(42));
+        let response = super::json_error_of(&Error::from(wrapped));
+        assert_eq!(response.status, 429);
+        assert_eq!(response.header("Retry-After"), Some("42"));
+        assert_eq!(super::json_error_of(&err).header("Retry-After"), None);
         // The kind is found under a lib error that names it as its source.
         let wrapped = moqui_lib::error::Error::new("outer").with_source(Error::of_kind(ErrorKind::Unavailable, "full"));
         assert_eq!(super::status_for(&Error::from(wrapped)), 503);

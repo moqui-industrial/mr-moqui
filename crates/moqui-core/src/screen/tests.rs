@@ -418,6 +418,10 @@ fn redirect_json_list_security_headers_and_cors() {
         header_value(&response, "X-Content-Type-Options").as_deref(),
         Some("nosniff")
     );
+    assert_eq!(
+        header_value(&response, "X-XSS-Protection").as_deref(),
+        Some("1; mode=block")
+    );
     assert!(header_value(&response, "Strict-Transport-Security").is_some());
 
     world._env.set("webapp_allow_origins", "https://app.example");
@@ -440,6 +444,51 @@ fn redirect_json_list_security_headers_and_cors() {
     assert!(header_value(&response, "Access-Control-Allow-Headers")
         .unwrap()
         .contains("api_key"));
+}
+
+/// The webapp's `response-header` entries and its `handle-cors` and `allow-origins` attributes come from the conf, as
+/// Java's `WebappInfo` reads them; the properties are only the fallback.
+#[test]
+fn the_webapp_conf_sets_the_response_headers_and_cors() {
+    let web = webroot().to_string_lossy().into_owned();
+    let world = World::open(
+        r#"<moqui-conf><webapp-list><webapp name="webroot" allow-origins="https://conf.example">
+            <response-header type="screen-render" name="Content-Security-Policy" value="default-src 'self'"/>
+            <response-header type="screen-render" name="X-Extra" value="yes"/>
+        </webapp></webapp-list></moqui-conf>"#,
+    );
+    let mut get = request("GET", "/");
+    get.set_header("origin", "https://conf.example");
+    let response = serve_at(&world.factory, get, &web);
+    assert_eq!(
+        header_value(&response, "Content-Security-Policy").as_deref(),
+        Some("default-src 'self'")
+    );
+    assert_eq!(header_value(&response, "X-Extra").as_deref(), Some("yes"));
+    assert_eq!(
+        header_value(&response, "Access-Control-Allow-Origin").as_deref(),
+        Some("https://conf.example"),
+        "allow-origins from the webapp element"
+    );
+    drop(world);
+
+    let mut world = World::open(
+        r#"<moqui-conf><webapp-list><webapp name="webroot" handle-cors="false"/></webapp-list></moqui-conf>"#,
+    );
+    world._env.set("webapp_allow_origins", "https://app.example");
+    let mut get = request("GET", "/");
+    get.set_header("origin", "https://app.example");
+    let response = serve_at(&world.factory, get, &web);
+    assert_eq!(
+        header_value(&response, "Access-Control-Allow-Origin"),
+        None,
+        "handle-cors=false"
+    );
+    // A webapp that declares no response-header gets the shipped ones.
+    assert_eq!(
+        header_value(&response, "X-Frame-Options").as_deref(),
+        Some("sameorigin")
+    );
 }
 
 #[test]
@@ -500,6 +549,13 @@ fn entity_json_has_the_primary_key_and_the_service_document_lists_enum_types() {
     let response = serve_at(&world.factory, entity, &root);
     assert_eq!(response.status, 200, "{}", response.body_text());
     assert!(response.body_text().contains("enumTypeId"), "{}", response.body_text());
+    // As Java's RestSchemaUtil sends it: the schema type, and the document alone with no messages merged in.
+    assert_eq!(
+        header_value(&response, "Content-Type").as_deref(),
+        Some("application/schema+json;charset=UTF-8")
+    );
+    let document: serde_json::Value = serde_json::from_str(&response.body_text()).unwrap();
+    assert!(document.get("messages").is_none(), "{document}");
 
     let mut all = request("GET", "/rest/entity.json");
     all.set_header("authorization", basic("admin"));
@@ -524,6 +580,10 @@ fn entity_json_has_the_primary_key_and_the_service_document_lists_enum_types() {
     service.set_header("authorization", basic("admin"));
     let response = serve_at(&world.factory, service, &root);
     assert_eq!(response.status, 200, "{}", response.body_text());
+    assert_eq!(
+        header_value(&response, "Content-Type").as_deref(),
+        Some("application/json;charset=UTF-8")
+    );
     assert!(
         response.body_text().contains("\"openapi\" : \"3.1.0\""),
         "{}",

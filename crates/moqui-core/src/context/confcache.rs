@@ -18,6 +18,16 @@ use std::collections::HashMap;
 
 use moqui_lib::node::MNode;
 
+/// One `response-header` of a `webapp`: the response type it is for, the header, its raw value (`${}` not yet expanded),
+/// and whether it is added to the header's values rather than replacing them (`add="true"`).
+#[derive(Clone, Debug)]
+pub(crate) struct ResponseHeader {
+    pub kind: String,
+    pub name: String,
+    pub value: String,
+    pub add: bool,
+}
+
 #[derive(Default)]
 pub(super) struct ConfCache {
     /// `artifact-execution` attributes: type, then attribute, to true when the value is `true`. Nested, so a lookup by
@@ -30,9 +40,12 @@ pub(super) struct ConfCache {
     /// `web-protection` attributes of a `webapp`: `(webapp name, child, attribute)` to the raw value, the child empty
     /// for an attribute of `web-protection` itself.
     protection: HashMap<(String, String, String), String>,
-    /// Other `webapp` children: `(webapp name, child, attribute)` to the raw value. The child is the element name, or
-    /// `endpoint path` for an `endpoint` (`endpoint /notws`).
+    /// Other `webapp` children: `(webapp name, child, attribute)` to the raw value. The child is the element name,
+    /// `endpoint path` for an `endpoint` (`endpoint /notws`), or `error-screen error` for an `error-screen`
+    /// (`error-screen not-found`).
     webapp_child: HashMap<(String, String, String), String>,
+    /// The `response-header` entries of each `webapp`, in conf order.
+    response_headers: HashMap<String, Vec<ResponseHeader>>,
     /// Attributes of the first element at each path of up to three names below the root (`ssh-server`,
     /// `search-facade/cluster`): path, then attribute, to the raw value.
     elements: HashMap<String, HashMap<String, String>>,
@@ -84,7 +97,22 @@ impl ConfCache {
                 for child in node.children() {
                     let key = match child.name().as_str() {
                         "endpoint" => format!("endpoint {}", child.attribute("path").unwrap_or_default()),
+                        "error-screen" => format!("error-screen {}", child.attribute("error").unwrap_or_default()),
                         "web-protection" => continue,
+                        "response-header" => {
+                            let attr = |name: &str| child.attribute(name).unwrap_or_default();
+                            cache
+                                .response_headers
+                                .entry(webapp.clone())
+                                .or_default()
+                                .push(ResponseHeader {
+                                    kind: attr("type"),
+                                    name: attr("name"),
+                                    value: attr("value"),
+                                    add: attr("add") == "true",
+                                });
+                            continue;
+                        }
                         name => name.to_string(),
                     };
                     for (name, value) in child.attributes() {
@@ -135,6 +163,11 @@ impl ConfCache {
         self.webapp_child
             .get(&(webapp.to_string(), child.to_string(), name.to_string()))
             .cloned()
+    }
+
+    /// The `response-header` entries of a webapp, None when it declares none.
+    pub(super) fn response_headers(&self, webapp: &str) -> Option<&[ResponseHeader]> {
+        self.response_headers.get(webapp).map(Vec::as_slice)
     }
 
     pub(super) fn element_attr(&self, path: &str, name: &str) -> Option<String> {

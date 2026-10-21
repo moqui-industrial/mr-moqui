@@ -54,7 +54,7 @@ const FIRST_SIZE_WAIT: Duration = Duration::from_secs(30);
 const PIPE: usize = 1 << 20;
 
 pub(crate) async fn upgrade(ws: WebSocketUpgrade, headers: HeaderMap, State(state): State<Arc<HttpState>>) -> Response {
-    if !origin_allowed(&headers, "terminal") {
+    if !origin_allowed(&state.factory, &headers, "terminal") {
         return plain(403, "origin not allowed");
     }
     let Some(cookie) = session_cookie(&headers) else {

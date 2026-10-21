@@ -520,7 +520,8 @@ fn check_tarpit(artifact_type: &str, name: &str) -> Result<(), Error> {
                     format!(
                         "User {user_id} has accessed {artifact_type} {name} too many times; retry after {seconds} seconds"
                     ),
-                ));
+                )
+                .with_retry_after(u64::try_from(seconds).unwrap_or(0)));
             }
         }
     }
@@ -1316,6 +1317,8 @@ mod tests {
             .push_checked("AT_SERVICE", "test.Busy#Row", "all", true, true, None)
             .expect_err("locked");
         assert_eq!(err.kind(), crate::context::ErrorKind::Tarpit, "{err}");
+        // The seconds go to the response as Retry-After, as Java's ArtifactTarpitException carries them.
+        assert!(err.retry_after().is_some_and(|seconds| seconds > 0), "{err}");
     }
 
     #[test]

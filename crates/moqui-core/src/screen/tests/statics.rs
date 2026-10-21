@@ -22,6 +22,9 @@ use moqui_lib::object::Value;
 use crate::context::ExecutionContextFactory;
 use crate::screen::{make_render, RenderOutput, ScreenFacade};
 
+/// `response-header` `screen-server-static` of the shipped conf.
+const SERVER_STATIC_CACHE: &str = "max-age=86400, must-revalidate, public";
+
 fn root() -> String {
     format!("{}/src/screen/testdata/Static/Static.xml", env!("CARGO_MANIFEST_DIR"))
 }
@@ -105,10 +108,7 @@ fn the_template_holds_no_request_data_and_compiles_without_with() {
     let output = render(context.factory(), "/Items.qvt", &[("password", "ZEBRA-secret")]);
     assert_eq!(output.status, 200, "{}", output.body_text());
     assert_eq!(header(&output, "X-Moqui-Qvt"), "static-template");
-    assert_eq!(
-        header(&output, "Cache-Control"),
-        crate::screen::statics::SERVER_STATIC_CACHE_CONTROL
-    );
+    assert_eq!(header(&output, "Cache-Control"), SERVER_STATIC_CACHE);
     assert_eq!(header(&output, "Content-Type"), "text/javascript;charset=UTF-8");
     assert!(header(&output, "ETag").starts_with("W/\""), "{:?}", output.headers);
     let script = output.body_text();
@@ -826,7 +826,7 @@ fn qvt_of_a_marked_screen_is_a_template_and_of_an_unmarked_one_a_merge_with_the_
         assert_eq!(header(&output, "X-Moqui-Qvt"), expected, "{screen}");
         let cache = header(&output, "Cache-Control");
         if static_template {
-            assert_eq!(cache, crate::screen::statics::SERVER_STATIC_CACHE_CONTROL, "{screen}");
+            assert_eq!(cache, SERVER_STATIC_CACHE, "{screen}");
         } else {
             assert_eq!(cache, "private, no-store", "{screen}");
         }
@@ -839,15 +839,9 @@ fn a_mode_other_than_qvt_marked_static_sends_the_cache_header_and_the_automatic_
     let factory = context.factory();
     // explicit: html gets the header; the automatic subscreens case does not, since an html page holds the navbar of the user
     let marked = render(factory, "/HtmlOnly.html", &[]);
-    assert_eq!(
-        header(&marked, "Cache-Control"),
-        crate::screen::statics::SERVER_STATIC_CACHE_CONTROL
-    );
+    assert_eq!(header(&marked, "Cache-Control"), SERVER_STATIC_CACHE);
     let all = render(factory, "/All.html", &[]);
-    assert_eq!(
-        header(&all, "Cache-Control"),
-        crate::screen::statics::SERVER_STATIC_CACHE_CONTROL
-    );
+    assert_eq!(header(&all, "Cache-Control"), SERVER_STATIC_CACHE);
     let auto = render(factory, "/Auto.html", &[]);
     assert!(auto.header("Cache-Control").is_none(), "{:?}", auto.headers);
     // a screen not marked for the mode has none
@@ -939,10 +933,7 @@ fn the_template_has_a_validator_and_answers_304_and_head() {
     let tag = first.header("ETag").expect("a validator").to_string();
     assert_eq!(first.header("X-Moqui-Qvt"), Some("static-template"));
     // the shared headers of a screen response are there too, and the cache header of the template was not replaced by the private one
-    assert_eq!(
-        first.header("Cache-Control"),
-        Some(crate::screen::statics::SERVER_STATIC_CACHE_CONTROL)
-    );
+    assert_eq!(first.header("Cache-Control"), Some(SERVER_STATIC_CACHE));
     assert_eq!(first.header("X-Content-Type-Options"), Some("nosniff"));
     let same = get("GET", Some(&tag));
     assert_eq!(same.status, 304);

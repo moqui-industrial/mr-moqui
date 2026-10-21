@@ -724,7 +724,7 @@ fn add_server_static_header(state: &RenderState) {
         .iter()
         .any(|name| name == "all" || canonical_render_mode(name) == mode);
     if marked {
-        web::add_header("Cache-Control", super::statics::SERVER_STATIC_CACHE_CONTROL);
+        web::add_header("Cache-Control", &super::statics::server_static_cache_control());
     }
 }
 

@@ -94,7 +94,7 @@ pub fn serve(factory: &Arc<ExecutionContextFactory>, request: WebRequest) -> Web
     let host = request.header("host").unwrap_or("");
     let root = match info::root_screen_for_host(factory, host, "webroot") {
         Ok(location) => location,
-        Err(err) => return web::early_error(&request, 500, err.message()),
+        Err(err) => return web::early_error(factory, &request, 500, err.message()),
     };
     serve_at(factory, request, &root)
 }
@@ -103,20 +103,26 @@ pub fn serve(factory: &Arc<ExecutionContextFactory>, request: WebRequest) -> Web
 pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, root: &str) -> WebResponse {
     if request.body.len() > web::body_limit(&request) {
         return web::early_error(
+            factory,
             &request,
             413,
             &format!("request body is larger than {} bytes", web::body_limit(&request)),
         );
     }
     if request.method.eq_ignore_ascii_case("options") {
-        return web::finish_response(&request, WebResponse::new(204, Vec::new()), true);
+        return web::finish_response(factory, &request, WebResponse::new(204, Vec::new()), true);
     }
     let parsed = match web::parse_body(&request) {
         Ok(parsed) => parsed,
-        Err(web::BodyError::TooLarge) => return web::early_error(&request, 413, "request body is too large"),
-        Err(web::BodyError::Multipart(message)) => return web::early_error(&request, 400, &message),
+        Err(web::BodyError::TooLarge) => return web::early_error(factory, &request, 413, "request body is too large"),
+        Err(web::BodyError::Multipart(message)) => return web::early_error(factory, &request, 400, &message),
         Err(web::BodyError::Executable(name)) => {
-            return web::early_error(&request, 415, &format!("Executable file {name} upload not allowed"))
+            return web::early_error(
+                factory,
+                &request,
+                415,
+                &format!("Executable file {name} upload not allowed"),
+            )
         }
     };
     // A request-pool worker already entered a fresh context for this job. Direct callers get one here.
@@ -134,12 +140,9 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
         parsed.json_list.as_deref(),
     ) {
         Ok(response) => response,
-        Err(err) => {
-            let status = web::status_for(&err);
-            web::json_error(status, &web::error_text(status, &err))
-        }
+        Err(err) => web::json_error_of(&err),
     };
-    web::finish_response(&request, response, false)
+    web::finish_response(factory, &request, response, false)
 }
 
 fn handle(
@@ -167,8 +170,7 @@ fn handle(
     )?;
     let token_before = peek_token();
     if let Err(err) = user::session::remember_client_ip(&web::client_ip(request)) {
-        let status = web::status_for(&err);
-        let mut response = web::json_error(status, &web::error_text(status, &err));
+        let mut response = web::json_error_of(&err);
         stamp_http_log(&mut response);
         return Ok(response);
     }
@@ -295,10 +297,11 @@ fn dispatch_request(
         // was unavailable under it (a 503).
         let status = web::status_for(&err);
         let message = web::error_text(status, &err);
-        if let Some(page) = error_page(factory, request, root, parameters, status, &err, &message) {
+        if let Some(mut page) = error_page(factory, request, root, parameters, status, &err, &message) {
+            web::add_retry_after(&mut page.headers, &err);
             return Ok(page);
         }
-        return Ok(web::json_error(status, &message));
+        return Ok(web::json_error_of(&err));
     }
     // The render's transaction is done; the worker waits on the PDF engine before the session work ends.
     let pdf = if fop_path.is_some() {
@@ -317,8 +320,7 @@ fn dispatch_request(
     };
     if let Err(err) = end.finish() {
         if !web::output_sent() {
-            let status = web::status_for(&err);
-            return Ok(web::json_error(status, &web::error_text(status, &err)));
+            return Ok(web::json_error_of(&err));
         }
     }
     if let Some(pdf) = pdf {
@@ -425,7 +427,14 @@ fn error_page(
     if ["rest", "rpc", "status", "error", "health", "metrics"].contains(&first) {
         return None;
     }
-    let (kind, page) = web::error_info::error_screen(status);
+    // The webapp's `error-screen` of this error type, as `MoquiServlet.sendErrorResponse`; the shipped path otherwise.
+    let (kind, shipped) = web::error_info::error_screen(status);
+    let configured = factory.webapp_child_setting("webroot", &format!("error-screen {kind}"), "screen-path");
+    let page = if configured.is_empty() {
+        shipped.to_string()
+    } else {
+        configured.trim_start_matches('/').to_string()
+    };
     let _ = web::take_output();
     let production = web::is_production();
     let signed_in = user::current_username().ok().flatten().is_some();

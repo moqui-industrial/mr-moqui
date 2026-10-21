@@ -69,7 +69,8 @@ fn a_file_under_the_screen_is_served_with_a_type_a_validator_and_a_cache_rule() 
     assert_eq!(response.header("Content-Type"), Some("text/css; charset=UTF-8"));
     assert_eq!(
         response.header("Cache-Control"),
-        Some("public, max-age=3600, must-revalidate")
+        Some("max-age=86400, must-revalidate, public"),
+        "the conf's screen-resource-text header"
     );
     assert_eq!(response.header("Content-Length"), Some("19"));
     assert!(response.header("ETag").is_some_and(|tag| tag.starts_with("W/\"")));

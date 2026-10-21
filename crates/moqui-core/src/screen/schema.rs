@@ -36,11 +36,21 @@ pub(crate) fn entity_json(call: &Call<'_>, master: bool) -> Result<bool, Error> 
     }
     let facade = facade()?;
     match crate::entity::schema_document(&facade, &plain_names(call.extra), master).map_err(Error::from) {
-        Ok(value) => web::send_json_response(value),
+        Ok(value) => send_document(&value, "application/schema+json"),
         Err(err) if err.kind() == ErrorKind::BadRequest => web::send_json_error(400, err.message()),
         Err(err) => return Err(err),
     }
     Ok(true)
+}
+
+/// A schema document as Java's `RestSchemaUtil` sends it, `sendTextResponse` with its type: the JSON alone, with no
+/// `messages` merged in. It is shown inline; Java names an attachment (`<entity>.schema.json`).
+fn send_document(document: &moqui_lib::object::Value, content_type: &str) {
+    web::send_text_response_with(
+        &crate::entity::query_rest::encode_json(document),
+        Some(content_type),
+        None,
+    );
 }
 
 pub(crate) fn service_swagger(call: &Call<'_>) -> Result<bool, Error> {
@@ -52,7 +62,7 @@ pub(crate) fn service_swagger(call: &Call<'_>) -> Result<bool, Error> {
         return Ok(true);
     }
     match crate::service::openapi_document(&plain_names(call.extra)) {
-        Ok(value) => web::send_json_response(value),
+        Ok(value) => send_document(&value, "application/json"),
         Err(err) if matches!(err.kind(), ErrorKind::BadRequest | ErrorKind::NotFound) => {
             web::send_json_error(web::status_for(&err), err.message());
         }

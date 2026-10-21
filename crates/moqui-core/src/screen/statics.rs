@@ -42,8 +42,10 @@ pub(crate) const UNIT_MODE: &str = "qvt-static";
 pub(crate) const STATIC_MODULE: &str = "framework/template/screen/ScreenQvtStatic.js";
 /// The module of server-merged qvt. A screen with another macro module for qvt is not transcribed.
 pub(crate) const MERGED_MODULE: &str = "framework/template/screen/ScreenQvt.js";
-/// `response-header` `screen-server-static` in `MoquiDefaultConf.xml`.
-pub const SERVER_STATIC_CACHE_CONTROL: &str = "max-age=86400, must-revalidate, public";
+/// The conf's `Cache-Control` of a server-static response, `response-header` `screen-server-static`.
+pub fn server_static_cache_control() -> String {
+    web::conf_header("screen-server-static", "Cache-Control").unwrap_or_else(|| "private, no-store".to_string())
+}
 const COMPILER_LOCATION: &str = "component://webroot/screen/webroot/libs/vue/compiler-dom.cjs.js";
 const STATIC_MODULE_SOURCE: &str =
     include_str!("../../../../runtime/base-component/framework/template/screen/ScreenQvtStatic.js");
@@ -409,7 +411,7 @@ pub(crate) fn serve_template(state: &RenderState, request: &WebRequest, path: &s
         super::static_files::respond_bytes(
             request,
             "text/javascript;charset=UTF-8",
-            SERVER_STATIC_CACHE_CONTROL,
+            &server_static_cache_control(),
             &[("X-Moqui-Qvt".to_string(), "static-template".to_string())],
             &template.etag,
             template.script.as_bytes().to_vec(),

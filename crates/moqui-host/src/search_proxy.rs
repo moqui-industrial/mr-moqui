@@ -18,9 +18,10 @@
 //! filter has it: 401 with a Basic challenge for nobody, 403 without the permission.
 //!
 //! `/elastic/...` goes to `elasticsearch_url`, `/kibana/...` to `http://${kibana_host}:${kibana_port}`
-//! (set `server.basePath: "/kibana"` in Dashboards). The prefix is removed for `/elastic` and kept
-//! for `/kibana`, as the servlets' `prefix` settings do. The client's `Authorization` and `Cookie`
-//! headers are not forwarded; `elasticsearch_user` and `elasticsearch_password`, when set, are.
+//! (set `server.basePath: "/kibana"` in Dashboards, which then expects the prefix stripped). The prefix is
+//! removed for both, as Jetty's transparent proxy does with the servlets' `prefix`. The client's
+//! `Authorization` and `Cookie` headers are not forwarded; `elasticsearch_user` and
+//! `elasticsearch_password`, when set, are.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
@@ -135,13 +136,7 @@ async fn proxy(
         Err(_) => return plain(500, "request worker stopped"),
     }
 
-    let path = parts.uri.path();
-    let rest = match target {
-        Target::Elastic => path.strip_prefix("/elastic").unwrap_or(path),
-        Target::Kibana => path,
-    };
-    let rest = if rest.is_empty() { "/" } else { rest };
-    let mut url = format!("{base}{rest}");
+    let mut url = format!("{base}{}", upstream_path(target, parts.uri.path()));
     if let Some(query) = parts.uri.query() {
         url.push('?');
         url.push_str(query);
@@ -153,6 +148,21 @@ async fn proxy(
     match forward(&parts.method, &parts.headers, &url, bytes.to_vec(), target).await {
         Ok(response) => response,
         Err(message) => plain(502, &message),
+    }
+}
+
+/// The path the upstream gets: the request's, less the `/elastic` or `/kibana` prefix, as Jetty's
+/// `ProxyServlet$Transparent` strips its `prefix`. Nothing left is `/`.
+fn upstream_path(target: Target, path: &str) -> &str {
+    let prefix = match target {
+        Target::Elastic => "/elastic",
+        Target::Kibana => "/kibana",
+    };
+    let rest = path.strip_prefix(prefix).unwrap_or(path);
+    if rest.is_empty() {
+        "/"
+    } else {
+        rest
     }
 }
 
@@ -218,4 +228,20 @@ async fn forward(
     }
     out.body(axum::body::Body::from(bytes))
         .map_err(|err| format!("could not build the proxy response: {err}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{upstream_path, Target};
+
+    #[test]
+    fn both_prefixes_are_stripped_as_jetty_strips_them() {
+        assert_eq!(upstream_path(Target::Elastic, "/elastic/_cat/indices"), "/_cat/indices");
+        assert_eq!(
+            upstream_path(Target::Kibana, "/kibana/app/dashboards"),
+            "/app/dashboards"
+        );
+        assert_eq!(upstream_path(Target::Kibana, "/kibana"), "/");
+        assert_eq!(upstream_path(Target::Elastic, "/elastic/"), "/");
+    }
 }

@@ -86,7 +86,7 @@ pub(crate) fn install_push() -> Result<(), CoreError> {
 }
 
 pub(crate) async fn upgrade(ws: WebSocketUpgrade, headers: HeaderMap, State(state): State<Arc<HttpState>>) -> Response {
-    if !origin_allowed(&headers, "notification") {
+    if !origin_allowed(&state.factory, &headers, "notification") {
         return plain(403, "origin not allowed");
     }
     // A browser has its session cookie; the terminal client (`moqui tui --server`) has its login key, and no session.
@@ -132,10 +132,13 @@ pub(crate) async fn upgrade(ws: WebSocketUpgrade, headers: HeaderMap, State(stat
 
 /// A page of another site cannot open a socket that carries this site's cookie, as Java's modifyHandshake. `what` names
 /// the socket in the warning.
-pub(crate) fn origin_allowed(headers: &HeaderMap, what: &str) -> bool {
+pub(crate) fn origin_allowed(factory: &ExecutionContextFactory, headers: &HeaderMap, what: &str) -> bool {
     let header = |name: axum::http::header::HeaderName| headers.get(name).and_then(|value| value.to_str().ok());
-    let allowed =
-        moqui_core::web::origin_allowed_for(header(axum::http::header::ORIGIN), header(axum::http::header::HOST));
+    let allowed = moqui_core::web::origin_allowed_by(
+        Some(factory),
+        header(axum::http::header::ORIGIN),
+        header(axum::http::header::HOST),
+    );
     if !allowed {
         tracing::warn!(origin = ?header(axum::http::header::ORIGIN), "{what} socket refused for its origin");
     }

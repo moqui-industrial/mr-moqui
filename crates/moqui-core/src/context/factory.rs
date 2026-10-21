@@ -49,6 +49,82 @@ use crate::user::AuthInfo;
 
 const ENV_HEADER: &str = "# This file holds secrets and must be kept with the instance backup.\n";
 
+/// The `response-header` entries of the shipped `MoquiDefaultConf.xml` webapp, `(type, name, value, add)`, for a conf
+/// whose webapp declares none (a test conf, or one that leaves the defaults out).
+const DEFAULT_RESPONSE_HEADERS: &[(&str, &str, &str, bool)] = &[
+    (
+        "web-resource-inline",
+        "Cache-Control",
+        "max-age=86400, must-revalidate, public",
+        false,
+    ),
+    (
+        "screen-resource-binary",
+        "Cache-Control",
+        "max-age=86400, must-revalidate, public",
+        false,
+    ),
+    (
+        "screen-resource-text",
+        "Cache-Control",
+        "max-age=86400, must-revalidate, public",
+        false,
+    ),
+    (
+        "screen-resource-template",
+        "Cache-Control",
+        "no-cache, no-store, must-revalidate, private",
+        false,
+    ),
+    (
+        "screen-server-static",
+        "Cache-Control",
+        "max-age=86400, must-revalidate, public",
+        false,
+    ),
+    ("screen-secure", "Strict-Transport-Security", "max-age=31536000", false),
+    (
+        "screen-render",
+        "Cache-Control",
+        "no-cache, no-store, must-revalidate, private",
+        false,
+    ),
+    (
+        "screen-render",
+        "Content-Security-Policy",
+        "frame-ancestors 'none'; form-action 'self';",
+        false,
+    ),
+    ("screen-render", "X-Frame-Options", "sameorigin", true),
+    ("screen-render", "X-XSS-Protection", "1; mode=block", false),
+    ("screen-render", "X-Content-Type-Options", "nosniff", true),
+    ("cors-actual", "Vary", "Origin", false),
+    ("cors-actual", "Access-Control-Allow-Credentials", "true", false),
+    (
+        "cors-actual",
+        "Access-Control-Expose-Headers",
+        "Access-Control-Allow-Origin,Access-Control-Allow-Credentials,X-CSRF-Token,moquiSessionToken",
+        true,
+    ),
+    ("cors-preflight", "Vary", "Origin", false),
+    ("cors-preflight", "Access-Control-Allow-Credentials", "true", false),
+    (
+        "cors-preflight",
+        "Access-Control-Allow-Headers",
+        "Accept,Accept-Encoding,Content-Type,Content-Encoding,Origin,X-Requested-With,Access-Control-Request-Method,\
+         Access-Control-Request-Headers,api_key,login_key,X-HTTP-Method-Override,moquiSessionToken,SessionToken,\
+         X-CSRF-Token,Authorization,A2A-Version",
+        true,
+    ),
+    (
+        "cors-preflight",
+        "Access-Control-Allow-Methods",
+        "GET,PUT,POST,PATCH,DELETE,OPTIONS",
+        true,
+    ),
+    ("cors-preflight", "Access-Control-Max-Age", "3600", false),
+];
+
 /// Tarpit hit times and how long to keep them, by key, swept of idle keys as the map grows.
 struct TarpitHits {
     by_key: std::collections::HashMap<String, (Vec<i64>, i64)>,
@@ -591,6 +667,35 @@ impl ExecutionContextFactory {
             .map(|raw| moqui_lib::env::expand(&raw).unwrap_or(raw))
             .map(|value| value.trim().to_string())
             .unwrap_or_default()
+    }
+
+    /// The `response-header` entries of a `webapp` for one response type (`screen-render`, `cors-actual`), as
+    /// `(name, value, add)` with `${}` expanded, Java's `WebappInfo.addHeaders`: an empty value is left out. A webapp that
+    /// declares none gets the shipped `MoquiDefaultConf.xml` entries, so a conf without them still sends them.
+    pub fn response_headers(&self, webapp_name: &str, kind: &str) -> Vec<(String, String, bool)> {
+        let expanded = |raw: &str| moqui_lib::env::expand(raw).unwrap_or_else(|_| raw.to_string());
+        let headers: Vec<(String, String, bool)> = match self.conf().response_headers(webapp_name) {
+            Some(entries) => entries
+                .iter()
+                .filter(|entry| entry.kind == kind)
+                .map(|entry| (entry.name.clone(), expanded(&entry.value), entry.add))
+                .collect(),
+            None => return Self::default_response_headers(kind),
+        };
+        headers
+            .into_iter()
+            .filter(|(name, value, _)| !name.is_empty() && !value.trim().is_empty())
+            .collect()
+    }
+
+    /// The shipped `response-header` entries for one response type, for [`Self::response_headers`] and for a response
+    /// made with no factory at hand.
+    pub fn default_response_headers(kind: &str) -> Vec<(String, String, bool)> {
+        DEFAULT_RESPONSE_HEADERS
+            .iter()
+            .filter(|(entry_kind, ..)| *entry_kind == kind)
+            .map(|(_, name, value, add)| ((*name).to_string(), (*value).to_string(), *add))
+            .collect()
     }
 
     /// An attribute of the first conf element at `path` (`ssh-server`, `search-facade/cluster`, up to three names) with
