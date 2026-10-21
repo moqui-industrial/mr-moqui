@@ -126,7 +126,7 @@ From [EntityService-Parity-Review](archive/EntityService-Parity-Review.md), phas
 
 ## Screen and web review (2026-10-20)
 
-From [ScreenWeb-Parity-Review](ScreenWeb-Parity-Review.md): the screen and web parts of the framework
+From [ScreenWeb-Parity-Review](archive/ScreenWeb-Parity-Review.md): the screen and web parts of the framework
 (`crates/moqui-core/src/screen/`, `crates/moqui-core/src/web/`, the screen macro modules under
 `runtime/base-component/framework/template/screen/`, and the HTTP host in `crates/moqui-host/src/`).
 The review's findings that were fixed (2026-10-20 and 2026-10-21) keep the differences below on purpose, and the
