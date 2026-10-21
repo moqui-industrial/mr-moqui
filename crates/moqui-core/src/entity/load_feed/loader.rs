@@ -15,6 +15,7 @@
 //! The entity data loader: locations and directories, records and their nested records, and the store of each
 //! record in its own transaction.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -247,6 +248,45 @@ pub(super) fn data_service_name(name: &str) -> Option<String> {
     crate::service::define::defined_name(name).or_else(|| name.contains('#').then(|| name.to_string()))
 }
 
+/// A top-level element read without a node: one with no child elements ([`MNode::parse_flat`]), the usual record of a
+/// data file. `None` for any other, which [`parse_top`] reads from its node.
+pub(super) fn parse_flat_top(facade: &EntityFacade, location: &str, text: &str) -> Result<Option<Top>, Error> {
+    let Some(element) = MNode::parse_flat(location, text)? else {
+        return Ok(None);
+    };
+    let key = element_key(element.name);
+    if !entity_defined(facade, &key) {
+        return Ok(None);
+    }
+    let shape = shape_of(facade, &key)?;
+    let mut fields = BTreeMap::new();
+    for (name, value) in element.attributes {
+        add_attribute(&shape, &mut fields, name, value);
+    }
+    Ok(Some(Top::Record(Record {
+        entity: shape.full_name.clone(),
+        fields,
+        children: Vec::new(),
+    })))
+}
+
+/// An attribute of a record element, as its field's value. Java puts an empty attribute as null, so a store clears
+/// the column.
+fn add_attribute(shape: &Shape, fields: &mut BTreeMap<String, Value>, name: &str, value: Cow<'_, str>) {
+    let Some(field_type) = shape.fields.get(name) else {
+        tracing::warn!(entity = %shape.full_name, field = %name, "attribute is not a field");
+        return;
+    };
+    let value = if value.is_empty() {
+        Value::Null
+    } else if field_type == "binary-very-long" {
+        Value::Bytes(decode_binary(&value))
+    } else {
+        Value::String(value.into_owned())
+    };
+    fields.insert(name.to_string(), value);
+}
+
 pub(super) fn parse_record(facade: &EntityFacade, entity_name: &str, node: &MNode) -> Result<Record, Error> {
     parse_record_in(facade, entity_name, node, &BTreeMap::new())
 }
@@ -259,19 +299,7 @@ fn parse_record_in(
 ) -> Result<Record, Error> {
     let shape = shape_of(facade, entity_name)?;
     let mut fields = BTreeMap::new();
-    node.for_each_attribute(|name, value| {
-        let Some(field_type) = shape.fields.get(name) else {
-            tracing::warn!(entity = %shape.full_name, field = %name, "attribute is not a field");
-            return;
-        };
-        // Java puts an empty attribute as null, so a store clears the column.
-        let value = if value.is_empty() {
-            Value::Null
-        } else {
-            field_text(field_type, value)
-        };
-        fields.insert(name.to_string(), value);
-    });
+    node.for_each_attribute(|name, value| add_attribute(&shape, &mut fields, name, Cow::Borrowed(value)));
     let mut pending = Vec::new();
     for child in node.children() {
         let key = element_key(&child.name());
@@ -459,11 +487,11 @@ fn write_tree(
     let exists = !partial && options.only_create && row_exists(facade, &shape, &fields)?;
     let mut total = 0_u64;
     if !partial && !exists {
-        let try_insert = options.use_try_insert && try_insert_allowed(facade, &entity)?;
-        if try_insert {
-            write_upsert(facade, &entity, &fields)?;
-        } else if options.only_create {
+        if options.only_create {
             value_from(facade, &entity, &fields)?.create(facade)?;
+        } else if facade.upsert_fits(&entity, &fields)? {
+            // One statement whether or not the row is there, which a pipelined load does not wait for.
+            write_upsert(facade, &entity, fields)?;
         } else if options.dummy_fks {
             value_from(facade, &entity, &fields)?.create_or_update(facade)?;
         } else {
@@ -480,28 +508,29 @@ fn write_tree(
 }
 
 /// A CSV row, as Java's `handleValue`: its primary key is complete ([`complete_csv_pk`]), and it is created when
-/// missing (`onlyCreate`), inserted or updated (`useTryInsert`), or else `createOrUpdate`d. There is no entity-auto
-/// `fromDate` default, secondary sequence or status-flow check, which Java's CSV path does not run either.
-pub(super) fn store_value(facade: &EntityFacade, options: &LoadOptions, record: &Record) -> Result<u64, Error> {
+/// missing (`onlyCreate`), stored with one upsert where that fits ([`EntityFacade::upsert_fits`]), or else
+/// `createOrUpdate`d. There is no entity-auto `fromDate` default, secondary sequence or status-flow check, which
+/// Java's CSV path does not run either.
+pub(super) fn store_value(facade: &EntityFacade, options: &LoadOptions, record: Record) -> Result<u64, Error> {
     if super::check::checking() {
-        return super::check::check_record(facade, record);
+        return super::check::check_record(facade, &record);
     }
     if options.restrict_sensitive_entities {
-        refuse_restricted(facade, record)?;
+        refuse_restricted(facade, &record)?;
     }
-    let entity = record.entity.as_str();
-    let fields = &record.fields;
+    let Record { entity, fields, .. } = record;
+    let entity = entity.as_str();
     facade
         .transactions_for(entity)?
         .run(TransactionAttribute::UseOrBegin, options.timeout, || {
             if options.only_create {
-                if !row_exists(facade, &*shape_of(facade, entity)?, fields)? {
-                    value_from(facade, entity, fields)?.create(facade)?;
+                if !row_exists(facade, &*shape_of(facade, entity)?, &fields)? {
+                    value_from(facade, entity, &fields)?.create(facade)?;
                 }
-            } else if options.use_try_insert && try_insert_allowed(facade, entity)? {
+            } else if facade.upsert_fits(entity, &fields)? {
                 write_upsert(facade, entity, fields)?;
             } else {
-                value_from(facade, entity, fields)?.create_or_update(facade)?;
+                value_from(facade, entity, &fields)?.create_or_update(facade)?;
             }
             Ok(1)
         })
@@ -670,12 +699,13 @@ fn row_exists(facade: &EntityFacade, shape: &Shape, fields: &BTreeMap<String, Va
     Ok(find.one()?.is_some())
 }
 
-fn try_insert_allowed(facade: &EntityFacade, entity_name: &str) -> Result<bool, Error> {
-    facade.with_entity(entity_name, |_, dialect, _| Ok(!dialect.never_try_insert))
-}
-
-fn write_upsert(facade: &EntityFacade, entity_name: &str, fields: &BTreeMap<String, Value>) -> Result<(), Error> {
-    facade.upsert_record(entity_name, crate::entity::field_map(fields.clone()))
+/// The fields take the entity's shared names ([`EntityValue::set`]).
+fn write_upsert(facade: &EntityFacade, entity_name: &str, fields: BTreeMap<String, Value>) -> Result<(), Error> {
+    let mut value = EntityValue::make(facade, entity_name)?;
+    for (name, field) in fields {
+        value.set(name, field);
+    }
+    facade.upsert_record(entity_name, value.into_fields())
 }
 
 fn value_from(

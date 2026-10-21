@@ -445,7 +445,6 @@ fn loader_filters_types_holds_services_and_reads_zip() {
     let flags = LoadOptions {
         dummy_fks: true,
         disable_fk_create: true,
-        use_try_insert: true,
         only_create: true,
         ..LoadOptions::default()
     };
@@ -749,7 +748,7 @@ fn json_numbers_convert_by_field_type_without_losing_digits() {
 }
 
 #[test]
-fn mysql_try_insert_uses_duplicate_key_update() {
+fn the_upsert_is_one_statement_on_mysql_and_postgres() {
     let framework = framework_dir();
     let conf = MNode::parse_file(framework.join("conf/MoquiDefaultConf.xml")).unwrap();
     let dialects = Dialects::load(&conf).unwrap();
@@ -759,8 +758,8 @@ fn mysql_try_insert_uses_duplicate_key_update() {
     let sql = insert_or_update(entity, mysql, &["fooId", "fooText"]).unwrap();
     assert!(sql.contains("ON DUPLICATE KEY UPDATE"), "{sql}");
     let postgres = dialects.get("postgres").unwrap();
-    let err = insert_or_update(entity, postgres, &["fooId"]).unwrap_err();
-    assert!(err.to_string().contains("try-insert is off"), "{err}");
+    let sql = insert_or_update(entity, postgres, &["fooId", "fooText"]).unwrap();
+    assert!(sql.contains("ON CONFLICT"), "{sql}");
 }
 
 #[test]

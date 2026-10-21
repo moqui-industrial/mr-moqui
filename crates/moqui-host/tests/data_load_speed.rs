@@ -115,7 +115,7 @@ fn data_load_speed() {
 }
 
 fn one_batch(facade: &EntityFacade, dir: &Path, batch: &str, records: usize, rows: &mut Rows) {
-    // The store path. `useTryInsert` is the same on Postgres, whose conf sets `never-try-insert` as Java's does.
+    // A record's store is one upsert where that fits, else the entity-auto store.
     let store = LoadOptions::default();
     let xml = write_file(
         dir,

@@ -174,7 +174,7 @@ pub(super) fn load_csv_reader(
             let stored = store_value(
                 facade,
                 options,
-                &Record {
+                Record {
                     entity: shape.full_name.clone(),
                     fields,
                     children: Vec::new(),

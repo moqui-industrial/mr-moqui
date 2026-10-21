@@ -227,7 +227,7 @@ pub(super) fn put_data(
         .map(std::time::Duration::from_secs);
     let options = LoadOptions {
         dummy_fks: flag(parameters.get("dummyFks")),
-        use_try_insert: flag(parameters.get("useTryInsert")),
+        // `useTryInsert` is not read: a store is one upsert wherever that fits.
         timeout,
         // A sync partner is not an admin: the loader refuses identity-admin and secret-config records, root or
         // nested, and service elements.

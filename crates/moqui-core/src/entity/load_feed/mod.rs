@@ -73,7 +73,6 @@ pub struct LoadOptions {
     pub data_types: Vec<String>,
     pub components: Vec<String>,
     pub only_create: bool,
-    pub use_try_insert: bool,
     pub dummy_fks: bool,
     pub disable_fk_create: bool,
     /// Transaction timeout for each record. `None` uses the transaction manager default.

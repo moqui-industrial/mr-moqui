@@ -26,7 +26,7 @@ use crate::model::{EntityDefinition, EntityModel, FieldDefinition, IndexDefiniti
 
 use super::condition::{fts_config, Column, Condition, FieldRef, LimitOffset, OrderBy, Writer};
 use super::ident::{
-    clip_length, clip_name, is_mysql, physical_column_name, physical_name, placeholders, quote_column,
+    clip_length, clip_name, is_mysql, is_sqlite, physical_column_name, physical_name, placeholders, quote_column,
     quote_ident as quote_alias, quote_list, quote_physical_ident as quote_ident, shrink_name,
 };
 use super::Statement;
@@ -342,14 +342,17 @@ fn where_clause(out: &mut Writer<'_>, entity: &EntityDefinition, condition: Opti
     Ok(())
 }
 
-/// Insert, then update on a key conflict.
-///
-/// When `never_try_insert` is set, this returns an error that says try-insert is off.
-/// The caller uses create-or-update instead. Postgres writes `ON CONFLICT (pk) DO UPDATE SET`.
-/// MySQL writes `ON DUPLICATE KEY UPDATE`.
+/// Whether [`insert_or_update`] writes one statement for `dialect`: Postgres and SQLite (`ON CONFLICT`) and MySQL
+/// (`ON DUPLICATE KEY UPDATE`).
+pub fn supports_upsert(dialect: &Dialect) -> bool {
+    dialect.name == "postgres" || is_mysql(dialect) || is_sqlite(dialect)
+}
+
+/// Insert, or update the given columns on a primary key conflict, in one statement. Postgres and SQLite write
+/// `ON CONFLICT (pk) DO UPDATE SET`, MySQL `ON DUPLICATE KEY UPDATE`; see [`supports_upsert`].
 pub fn insert_or_update(entity: &EntityDefinition, dialect: &Dialect, columns: &[&str]) -> Result<String, Error> {
-    if dialect.never_try_insert {
-        return Err(Error::new(format!("try-insert is off for database {}", dialect.name)));
+    if !supports_upsert(dialect) {
+        return Err(Error::new(format!("database {} has no upsert statement", dialect.name)));
     }
     if columns.is_empty() {
         return Err(Error::new("insert_or_update has no columns"));

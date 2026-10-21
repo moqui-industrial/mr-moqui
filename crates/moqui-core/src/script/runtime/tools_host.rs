@@ -1277,7 +1277,7 @@ fn load_data<'js>(ctx: Ctx<'js>, options: JsValue<'js>) -> rquickjs::Result<JsVa
             data_types: list("dataTypes"),
             components: list("componentNames"),
             only_create: flag("onlyCreate"),
-            use_try_insert: flag("useTryInsert"),
+            // `useTryInsert` is not read: a store is one upsert wherever that fits.
             dummy_fks: flag("dummyFks"),
             disable_fk_create: flag("disableFkCreate"),
             timeout: text("transactionTimeout")

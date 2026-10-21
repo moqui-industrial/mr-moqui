@@ -131,9 +131,7 @@ fn java_names_cover_crud_schema_keys_and_joins_without_changing_logical_aliases(
     assert!(create_fk_index(login, rel, pg)
         .unwrap()
         .ends_with("ON \"custom_login\" (\"account_ref\")"));
-    let mut upsert_pg = pg.clone();
-    upsert_pg.never_try_insert = false;
-    assert!(insert_or_update(user, &upsert_pg, &["userId", "userName"])
+    assert!(insert_or_update(user, pg, &["userId", "userName"])
         .unwrap()
         .contains("ON CONFLICT (\"user_id\") DO UPDATE SET \"user_name\" = EXCLUDED.\"user_name\""));
     let view = model.entity("LoginUser").unwrap();

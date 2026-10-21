@@ -33,7 +33,8 @@ pub struct NameReplace {
 /// One `<database>` profile.
 ///
 /// String fields are `None` when the attribute is absent. XSD defaults are not filled in.
-/// `never_nulls`, `never_try_insert`, and `use_binary_type_for_blob` are false when absent.
+/// `never_nulls` and `use_binary_type_for_blob` are false when absent. Java's `never-try-insert` is not read: an upsert
+/// here is one statement ([`crate::sql::insert_or_update`]), not an insert that may fail and abort the transaction.
 /// `use_foreign_key_indexes`, `use_pk_constraint_names`, `use_foreign_keys`, `use_indexes`, `use_indexes_unique` and
 /// `fts_ddl` are true unless the attribute is `false`.
 /// `sql_types` holds only that database's `<database-type>` entries.
@@ -52,7 +53,6 @@ pub struct Dialect {
     pub offset_style: Option<String>,
     pub from_lateral_style: Option<String>,
     pub never_nulls: bool,
-    pub never_try_insert: bool,
     pub use_binary_type_for_blob: bool,
     pub constraint_name_clip_length: Option<u32>,
     pub lb_name: Option<String>,
@@ -195,7 +195,6 @@ fn parse_database(node: &MNode) -> Result<Dialect, Error> {
         offset_style: optional(node, "offset-style"),
         from_lateral_style: optional(node, "from-lateral-style"),
         never_nulls: flag(node, "never-nulls")?,
-        never_try_insert: flag(node, "never-try-insert")?,
         use_binary_type_for_blob: flag(node, "use-binary-type-for-blob")?,
         constraint_name_clip_length: optional_int(node, "constraint-name-clip-length")?,
         lb_name: optional(node, "lb-name"),
@@ -299,7 +298,6 @@ mod tests {
         assert!(custom.fts_style.is_none());
         assert!(custom.join_style.is_none());
         assert!(!custom.never_nulls);
-        assert!(!custom.never_try_insert);
         assert!(!custom.use_binary_type_for_blob);
         assert!(custom.constraint_name_clip_length.is_none());
         assert!(custom.result_fetch_size.is_none());
@@ -308,7 +306,6 @@ mod tests {
 
         let flags = profile(&dialects, "flags");
         assert!(!flags.never_nulls);
-        assert!(!flags.never_try_insert);
         assert!(!flags.use_binary_type_for_blob);
         assert_eq!(flags.offset_style.as_deref(), Some("fetch"));
     }

@@ -113,8 +113,8 @@ Flags:
   location=FILE                   Load only this data file.
   timeout=SECONDS                 Transaction timeout for each record. Omitted uses the
                                   transaction default, 60 seconds.
-  raw=true|false                  Empty-database load: try-insert, and turn off entity ECA,
-                                  audit log, foreign-key create, and the data feed.
+  raw=true|false                  Empty-database load: turn off entity ECA, audit log,
+                                  foreign-key create, and the data feed.
   disableEntityEca=true|false     Turn off entity ECA rules.
   disableAuditLog=true|false      Turn off the entity audit log.
   disableFkCreate=true|false      Do not create foreign keys.

@@ -158,7 +158,6 @@ impl Browser {
             data_types: data_types.to_vec(),
             components: Vec::new(),
             only_create: false,
-            use_try_insert: false,
             dummy_fks: false,
             disable_fk_create: true,
             timeout: None,

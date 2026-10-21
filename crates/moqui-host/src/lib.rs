@@ -728,7 +728,6 @@ fn load_options(flags: &LoadFlags) -> moqui_core::entity::load_feed::LoadOptions
         data_types,
         components: flags.components.clone(),
         only_create: false,
-        use_try_insert: flags.raw,
         dummy_fks: false,
         disable_fk_create: flags.raw || flags.disable_fk_create,
         timeout: flags.timeout_seconds.map(std::time::Duration::from_secs),
@@ -2497,7 +2496,6 @@ mod tests {
     fn missing_types_use_empty_db_defaults() {
         let options = load_options(&LoadFlags::default());
         assert_eq!(options.data_types, ["seed", "seed-initial", "install"]);
-        assert!(!options.use_try_insert);
         assert!(!options.disable_fk_create);
     }
 
@@ -2517,7 +2515,6 @@ mod tests {
         assert_eq!(flags.components, ["framework", "mantle"]);
         let options = load_options(&flags);
         assert_eq!(options.data_types, ["seed", "seed-initial"]);
-        assert!(options.use_try_insert);
         assert!(options.disable_fk_create);
     }
 
@@ -2545,7 +2542,6 @@ mod tests {
         assert!(!flags.raw);
         let options = load_options(&flags);
         assert!(options.disable_fk_create);
-        assert!(!options.use_try_insert);
     }
 
     #[test]

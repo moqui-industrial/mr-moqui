@@ -966,19 +966,7 @@ impl EntityFacade {
         values: &FieldMap,
         before: Option<&BTreeMap<Arc<str>, Option<Value>>>,
     ) -> Result<Probe, Error> {
-        let eligible = self.with_entity(entity_name, |entity, dialect, _| {
-            Ok(dialect.name == "postgres"
-                && !entity.is_view
-                && !update_reads_row(entity)
-                && (!crate::user::context_entered()
-                    || entity.authorize_skip.trim() == "true"
-                    || crate::context::ExecutionContext::with_current(|ctx| ctx.authz_disabled()).unwrap_or(false)))
-        })?;
-        if !eligible
-            || self.sim_active()
-            || self.transactions_for(entity_name)?.transaction_cache_active()
-            || load_feed::feed_wants_old(self, entity_name)
-        {
+        if !self.writes_unread(entity_name, |dialect| dialect.name == "postgres")? {
             return Ok(Probe::NotTried);
         }
         let plain = self.normalize_values(entity_name, values.clone(), true)?;
@@ -1019,6 +1007,55 @@ impl EntityFacade {
     }
 
     /// Insert, or update on a primary-key conflict. Values are sealed the same way as a create.
+    /// Whether a write of `entity_name` may go without reading the row first and give what the find-then-write path
+    /// would: `dialect` takes it, the update would not read the stored row ([`update_reads_row`], or a data feed that
+    /// wants the old values), no transaction cache or simulation holds the write, and authorization is off, so an
+    /// update and a create need no separate check. See [`Self::update_if_exists`] and [`Self::upsert_fits`].
+    fn writes_unread(&self, entity_name: &str, dialect: impl FnOnce(&moqui_db::dialect::Dialect) -> bool) -> Result<bool, Error> {
+        let eligible = self.with_entity(entity_name, |entity, entity_dialect, _| {
+            Ok(dialect(entity_dialect)
+                && !entity.is_view
+                && !update_reads_row(entity)
+                && (!crate::user::context_entered()
+                    || entity.authorize_skip.trim() == "true"
+                    || crate::context::ExecutionContext::with_current(|ctx| ctx.authz_disabled()).unwrap_or(false)))
+        })?;
+        Ok(eligible
+            && !self.sim_active()
+            && !self.transactions_for(entity_name)?.transaction_cache_active()
+            && !load_feed::feed_wants_old(self, entity_name))
+    }
+
+    /// Whether a data load may store `fields`, a record with its whole primary key, as one upsert
+    /// ([`Self::upsert_record`]): a statement the load sends without waiting, where create-or-update waits for an UPDATE
+    /// to say whether the row is there. It may when [`Self::writes_unread`] and no ECA rule matches a create or an
+    /// update, so no rule depends on which one it was, and when the record sets no `statusId` outside the primary key
+    /// (the entity-auto store checks a status change against the stored row). The row's other fields are left as they are, as a store leaves
+    /// them; the hit is a create's.
+    pub(crate) fn upsert_fits<K: std::borrow::Borrow<str> + Ord>(
+        &self,
+        entity_name: &str,
+        fields: &BTreeMap<K, Value>,
+    ) -> Result<bool, Error> {
+        if !self.writes_unread(entity_name, moqui_db::sql::supports_upsert)? {
+            return Ok(false);
+        }
+        let (pk_complete, status) = self.with_entity(entity_name, |entity, _, _| {
+            let pk_complete = entity
+                .pk_field_names()
+                .iter()
+                .all(|name| fields.get(*name).is_some_and(|value| !value.is_null()));
+            // A `statusId` in the primary key names the row, so it cannot change.
+            let status = entity.field("statusId").is_some_and(|field| !field.is_pk);
+            Ok((pk_complete, status))
+        })?;
+        if !pk_complete || (status && fields.contains_key("statusId")) {
+            return Ok(false);
+        }
+        Ok(load_feed::match_rules_with(self, entity_name, "create").is_empty()
+            && load_feed::match_rules_with(self, entity_name, "update").is_empty())
+    }
+
     pub(crate) fn upsert_record(&self, entity_name: &str, fields: FieldMap) -> Result<(), Error> {
         let plain = self.normalize_values(entity_name, fields, false)?;
         self.require_pk(entity_name, &plain)?;
@@ -1177,7 +1214,13 @@ impl EntityFacade {
             self.check_table_runtime(entity_name);
             let prepared = self.seal_values(entity_name, seal_operation, plain, stored.as_ref())?;
             let (sql, params) = self.with_group(entity_name, |entity, dialect, _, _| {
-                let columns = present_columns(entity, &prepared, operation == "update", operation == "update");
+                // A null an update or upsert names is written, so the field is cleared.
+                let columns = present_columns(
+                    entity,
+                    &prepared,
+                    operation == "update" || operation == "upsert",
+                    operation == "update",
+                );
                 let mut key = String::new();
                 key.push_str(&entity.full_name);
                 key.push('|');

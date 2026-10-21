@@ -500,12 +500,29 @@ impl MemConn {
                     row.insert(column.clone(), value);
                 }
                 let mut rows = self.read_table(&table);
-                if let Some(keys) = conflict {
-                    if rows
+                if let Some((keys, updates)) = conflict {
+                    let same = rows
                         .iter()
-                        .any(|other| keys.iter().all(|key| other.get(key) == row.get(key)))
-                    {
-                        return Ok((0, Vec::new()));
+                        .position(|other| keys.iter().all(|key| other.get(key) == row.get(key)));
+                    if let Some(at) = same {
+                        if updates.is_empty() {
+                            return Ok((0, Vec::new()));
+                        }
+                        let old = rows[at].clone();
+                        for column in &updates {
+                            if let Some(value) = row.get(column) {
+                                rows[at].insert(column.clone(), value.clone());
+                            }
+                        }
+                        let new = rows[at].clone();
+                        self.put_table(&table, rows);
+                        self.record(Change {
+                            table,
+                            old: Some(old),
+                            new: Some(new),
+                            key: Some(keys),
+                        });
+                        return Ok((1, Vec::new()));
                     }
                 }
                 rows.push(row.clone());
@@ -1022,8 +1039,9 @@ enum Stmt {
     Insert {
         table: String,
         columns: Vec<String>,
-        /// `ON CONFLICT (columns) DO NOTHING`: a row equal on these is not inserted again.
-        conflict: Option<Vec<String>>,
+        /// `ON CONFLICT (columns) DO NOTHING`, or `DO UPDATE SET column = EXCLUDED.column, ...`: a row equal on the
+        /// conflict columns is not inserted again, and gets the update columns' new values.
+        conflict: Option<(Vec<String>, Vec<String>)>,
     },
     Update {
         table: String,
@@ -1150,8 +1168,25 @@ fn parse_insert(cur: &mut Cur) -> Result<Stmt, Error> {
         }
         cur.expect_symbol(b')')?;
         cur.expect_keyword("DO")?;
-        cur.expect_keyword("NOTHING")?;
-        Some(keys)
+        let mut updates = Vec::new();
+        if !cur.eat_keyword("NOTHING") {
+            cur.expect_keyword("UPDATE")?;
+            cur.expect_keyword("SET")?;
+            loop {
+                let column = cur.quoted()?;
+                cur.expect_symbol(b'=')?;
+                cur.expect_keyword("EXCLUDED")?;
+                cur.expect_symbol(b'.')?;
+                if cur.quoted()? != column {
+                    return Err(cur.fail("an upsert sets a column from its own excluded value"));
+                }
+                updates.push(column);
+                if !cur.eat_symbol(b',') {
+                    break;
+                }
+            }
+        }
+        Some((keys, updates))
     } else {
         None
     };

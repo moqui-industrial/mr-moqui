@@ -1319,7 +1319,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_map_loader_probes_regular_rows_and_uses_one_for_new_status_rows() {
+    fn plain_map_loader_upserts_each_row_with_its_whole_key() {
         let world = world();
         let _entered = world.context.enter();
         let _authz = world.context.disable_authz();
@@ -1349,13 +1349,10 @@ mod tests {
                 )
             })
             .collect();
-        // The first EnumerationType row: an UPDATE probe that matches nothing, then create. The second: the probe
-        // updates the row, with no refresh.
+        // Each row is one upsert, a create's hit whether the row was there or not. The StatusItem's `statusId` is its
+        // primary key, which cannot change, so it has no status change to check against a stored row.
         let expected = [
-            ("moqui.basic.EnumerationType", "update-probe", 1.0),
-            ("moqui.basic.EnumerationType", "create", 1.0),
-            ("moqui.basic.EnumerationType", "update", 1.0),
-            ("moqui.basic.StatusItem", "one", 1.0),
+            ("moqui.basic.EnumerationType", "create", 2.0),
             ("moqui.basic.StatusItem", "create", 1.0),
         ]
         .into_iter()

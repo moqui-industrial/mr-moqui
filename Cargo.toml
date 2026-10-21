@@ -202,13 +202,11 @@ postgresql_embedded = { version = "0.21", default-features = false, features = [
 # Unpacking the staged Postgres archive (crates/moqui-host/build.rs, db/embedded.rs). Already in the graph under
 # postgresql_embedded. xattr stays off.
 tar = { version = "0.4", default-features = false }
-# The runtime feature is the TCP and Unix socket connect. Values are decoded by moqui-host, so no type features.
-tokio-postgres = { version = "0.7", default-features = false, features = ["runtime"] }
-# Defaults are empty. ring stays off.
-tokio-postgres-rustls = { version = "0.14", default-features = false, features = [
-    "aws-lc-rs",
-    "webpki-roots",
-] }
+# The Postgres wire protocol (message encoding and parsing, SCRAM) and its type oids, for moqui-host's blocking client.
+# Values are encoded and decoded by moqui-host, so no type features.
+postgres-protocol = "0.6"
+postgres-types = { version = "0.2", default-features = false }
+fallible-iterator = "0.2"
 # minimal (not minimal-rust) links system zlib. On this crate rustls-tls means aws-lc.
 # time and chrono stay off. rustls-tls still pulls webpki 0.22, which pulls ring.
 mysql = { version = "28", default-features = false, features = [
