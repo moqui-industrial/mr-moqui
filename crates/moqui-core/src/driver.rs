@@ -25,17 +25,18 @@ use std::time::Duration;
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
 
-/// One result row. Column order is the select list order.
+/// One result row. Column order is the select list order. A driver shares each column name among the rows of one
+/// result (and of one prepared statement), so a row allocates for its values only.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DbRow {
-    pub columns: Vec<(String, Value)>,
+    pub columns: Vec<(Arc<str>, Value)>,
 }
 
 impl DbRow {
     pub fn get(&self, name: &str) -> Option<&Value> {
         self.columns
             .iter()
-            .find(|(column, _)| column == name)
+            .find(|(column, _)| &**column == name)
             .map(|(_, value)| value)
     }
 }
@@ -52,6 +53,22 @@ pub trait DbDriver: Send + Sync {
 /// chosen by the caller.
 pub trait DbConnection: Send {
     fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error>;
+
+    /// [`Self::execute`] without waiting for the result, where the driver can: in a transaction the statement is sent
+    /// and the next call that waits (or [`Self::finish_deferred`], or the commit) reports its failure, and
+    /// `zero_rows` as the error when it changed no row. Statements run in the order sent. The default runs it now.
+    fn execute_deferred(&mut self, sql: &str, params: Vec<Value>, zero_rows: Option<String>) -> Result<(), Error> {
+        let count = self.execute(sql, &params)?;
+        match zero_rows {
+            Some(message) if count == 0 => Err(Error::new(message)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Wait for the statements [`Self::execute_deferred`] sent, and report the first that failed.
+    fn finish_deferred(&mut self) -> Result<(), Error> {
+        Ok(())
+    }
 
     fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error>;
 
@@ -202,7 +219,7 @@ mod tests {
 
         fn query_once(&mut self, _sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
             Ok(vec![DbRow {
-                columns: vec![("n".to_string(), params.first().cloned().unwrap_or(Value::Null))],
+                columns: vec![("n".into(), params.first().cloned().unwrap_or(Value::Null))],
             }])
         }
 
@@ -218,7 +235,7 @@ mod tests {
             }
             self.rows_left -= 1;
             Ok(Some(DbRow {
-                columns: vec![("n".to_string(), Value::I64(self.rows_left))],
+                columns: vec![("n".into(), Value::I64(self.rows_left))],
             }))
         }
 

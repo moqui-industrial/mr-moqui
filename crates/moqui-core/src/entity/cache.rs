@@ -37,6 +37,7 @@ use moqui_lib::cache::{CacheConfig, MCache};
 use moqui_lib::error::Error;
 use moqui_lib::object::{compare_like, compare_obj, to_plain_string, Value};
 
+use super::value::FieldMap;
 use super::exec::{execute_conn, execute_script, query_conn, query_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
@@ -100,15 +101,15 @@ enum Op {
 struct Held {
     entity_name: String,
     operation: Op,
-    plain: BTreeMap<String, Value>,
-    sealed: BTreeMap<String, Value>,
+    plain: FieldMap,
+    sealed: FieldMap,
     pk: String,
 }
 
 struct SealedWrite {
     full_name: String,
     pk: String,
-    sealed: BTreeMap<String, Value>,
+    sealed: FieldMap,
 }
 
 struct ReadMeta {
@@ -135,7 +136,7 @@ impl ReadMeta {
 }
 
 struct MemRow {
-    fields: BTreeMap<String, Value>,
+    fields: FieldMap,
     trusted: bool,
 }
 
@@ -324,7 +325,7 @@ struct CachedCount {
 type FrameWrites = HashMap<String, Option<Vec<FrameWrite>>>;
 
 /// How an overlay gets the stored row a held update applies to.
-type StoredRow<'a> = &'a mut dyn FnMut(&Held) -> Result<Option<BTreeMap<String, Value>>, Error>;
+type StoredRow<'a> = &'a mut dyn FnMut(&Held) -> Result<Option<FieldMap>, Error>;
 
 /// Writes of an open frame, by entity, replayed against the caches when it ends. Past this many the entity's caches are
 /// cleared whole instead.
@@ -553,7 +554,7 @@ fn end_frame_write(facade: &EntityFacade, token: u64, full_name: &str) {
 /// One write of a frame, kept to evict again at the frame's end.
 struct FrameWrite {
     operation: String,
-    values: Arc<BTreeMap<String, Value>>,
+    values: Arc<FieldMap>,
 }
 
 /// Java's `EntityCache.clearCacheForValue`: each cached find of the entity that the write may have changed (it held
@@ -563,7 +564,7 @@ fn evict(
     facade: &EntityFacade,
     meta: &ReadMeta,
     operation: &str,
-    values: &BTreeMap<String, Value>,
+    values: &FieldMap,
 ) -> Result<(), Error> {
     let (lists, counts) = facade.with_slot(OneCaches::default, |caches| {
         (
@@ -576,7 +577,7 @@ fn evict(
         .iter()
         .map(|name| {
             values
-                .get(name)
+                .get(name.as_str())
                 .filter(|value| !value.is_null())
                 .map(|value| (name.as_str(), value))
         })
@@ -604,7 +605,7 @@ fn evict(
 fn list_affected(
     cached: &CachedList,
     operation: &str,
-    values: &BTreeMap<String, Value>,
+    values: &FieldMap,
     pk: Option<&[(&str, &Value)]>,
 ) -> bool {
     let Some(pk) = pk else {
@@ -627,17 +628,17 @@ fn list_affected(
 
 /// False only when the condition surely does not match the values: a field they do not hold, a comparison this
 /// cannot judge, or values of different types count as a possible match.
-fn may_match(condition: Option<&Condition>, values: &BTreeMap<String, Value>) -> bool {
+fn may_match(condition: Option<&Condition>, values: &FieldMap) -> bool {
     condition.is_none_or(|condition| judge(condition, values) != Some(false))
 }
 
 /// A three-valued match: `None` when it cannot be told from `values`.
-fn judge(condition: &Condition, values: &BTreeMap<String, Value>) -> Option<bool> {
+fn judge(condition: &Condition, values: &FieldMap) -> Option<bool> {
     let field = |field: &FieldRef| -> Option<&Value> {
         if field.entity_alias.is_some() {
             return None;
         }
-        values.get(&field.name)
+        values.get(field.name.as_str())
     };
     let same = |left: &Value, right: &Value| -> Option<bool> {
         if left == right || to_plain_string(left) == to_plain_string(right) {
@@ -773,7 +774,7 @@ pub fn gate_write(
     facade: &EntityFacade,
     entity_name: &str,
     operation: &str,
-    values: &BTreeMap<String, Value>,
+    values: &FieldMap,
 ) -> Result<WriteGate, Error> {
     let op = parse_op(operation)?;
     // A sim leaves its own records and the sequence banks on the real database, as Java's `allowsProductionWrite`.
@@ -862,7 +863,7 @@ pub fn on_write(
     facade: &EntityFacade,
     entity_name: &str,
     operation: &str,
-    values: &BTreeMap<String, Value>,
+    values: &FieldMap,
 ) -> Result<(), Error> {
     write_hooks(facade, entity_name, operation, values, || Arc::new(values.clone()))
 }
@@ -872,7 +873,7 @@ pub(crate) fn on_write_shared(
     facade: &EntityFacade,
     entity_name: &str,
     operation: &str,
-    values: &Arc<BTreeMap<String, Value>>,
+    values: &Arc<FieldMap>,
 ) -> Result<(), Error> {
     write_hooks(facade, entity_name, operation, values, || Arc::clone(values))
 }
@@ -881,8 +882,8 @@ fn write_hooks(
     facade: &EntityFacade,
     entity_name: &str,
     operation: &str,
-    values: &BTreeMap<String, Value>,
-    shared: impl FnOnce() -> Arc<BTreeMap<String, Value>>,
+    values: &FieldMap,
+    shared: impl FnOnce() -> Arc<FieldMap>,
 ) -> Result<(), Error> {
     let meta = read_meta(facade, entity_name)?;
     evict(facade, &meta, operation, values)?;
@@ -901,12 +902,12 @@ fn write_hooks(
 pub(crate) fn clear_one_cache(
     facade: &EntityFacade,
     entity_name: &str,
-    primary_key: Option<&BTreeMap<String, Value>>,
+    primary_key: Option<&FieldMap>,
 ) -> Result<(), Error> {
     let meta = read_meta(facade, entity_name)?;
     note_screen_config(facade, &meta.full_name);
     note_feed_definition(facade, &meta.full_name);
-    let cleared = match primary_key.filter(|keys| meta.pk_fields.iter().all(|name| keys.contains_key(name))) {
+    let cleared = match primary_key.filter(|keys| meta.pk_fields.iter().all(|name| keys.contains_key(name.as_str()))) {
         Some(keys) => evict(facade, &meta, "update", keys),
         None => clear_named(facade, &meta.full_name),
     };
@@ -1074,7 +1075,7 @@ pub(super) fn sim_deleted_count() -> usize {
 pub(super) fn sim_written_rows(
     facade: &EntityFacade,
     entity_name: &str,
-) -> Result<Vec<BTreeMap<String, Value>>, Error> {
+) -> Result<Vec<FieldMap>, Error> {
     let meta = read_meta(facade, entity_name)?;
     let view = sim_view(&meta.full_name);
     if !view.table {
@@ -1120,7 +1121,7 @@ pub(super) fn ensure_sim_table(facade: &EntityFacade, entity_name: &str) -> Resu
 pub(super) fn copy_replica(
     facade: &EntityFacade,
     entity_name: &str,
-    plain: BTreeMap<String, Value>,
+    plain: FieldMap,
 ) -> Result<bool, Error> {
     let owner = facade.clone();
     let (full_name, pk, sealed) = facade.with_entity(entity_name, |entity, _, _| {
@@ -1268,7 +1269,7 @@ fn write_sim(
     facade: &EntityFacade,
     entity_name: &str,
     op: Op,
-    plain: &BTreeMap<String, Value>,
+    plain: &FieldMap,
     prepared: &SealedWrite,
 ) -> Result<(), Error> {
     let hit = sim_hit(&prepared.full_name, &prepared.pk)?;
@@ -1320,8 +1321,8 @@ fn sim_statements(
     entity_name: &str,
     op: Op,
     hit: &SimHit,
-    sealed: &BTreeMap<String, Value>,
-    sealed_copy: Option<&BTreeMap<String, Value>>,
+    sealed: &FieldMap,
+    sealed_copy: Option<&FieldMap>,
 ) -> Result<Vec<(String, Vec<Value>)>, Error> {
     let mut statements = Vec::new();
     if let Some(copied) = sealed_copy {
@@ -1533,7 +1534,7 @@ fn pinned_pk(condition: Option<&Condition>, pk_fields: &[String]) -> Option<Stri
     for part in parts {
         if let Condition::Equals(field, value) = part {
             if field.entity_alias.is_none() && pk_fields.contains(&field.name) && !value.is_null() {
-                keys.insert(field.name.clone(), value.clone());
+                keys.insert(Arc::from(field.name.as_str()), value.clone());
             }
         }
     }
@@ -1579,7 +1580,7 @@ fn load_plain(
     condition: Option<&Condition>,
     order: &[OrderBy],
     overlay_schema: Option<&str>,
-) -> Result<Vec<BTreeMap<String, Value>>, Error> {
+) -> Result<Vec<FieldMap>, Error> {
     let plan = plan_select(facade, &meta.full_name, condition, order)?;
     let db_rows = if let Some(schema) = overlay_schema {
         query_sim(facade, schema, &plan.sql, &plan.params)?
@@ -1592,8 +1593,8 @@ fn load_plain(
 fn load_by_pk(
     facade: &EntityFacade,
     entity_name: &str,
-    values: &BTreeMap<String, Value>,
-) -> Result<Option<BTreeMap<String, Value>>, Error> {
+    values: &FieldMap,
+) -> Result<Option<FieldMap>, Error> {
     let owner = facade.clone();
     let plan = facade.with_group(entity_name, |entity, dialect, model, tx| {
         let condition = pk_condition(entity, values)?;
@@ -1614,7 +1615,7 @@ fn load_by_pk(
 struct SelectPlan {
     sql: String,
     params: Vec<Value>,
-    columns: Vec<(String, String)>,
+    columns: Vec<(Arc<str>, String)>,
     tx: TransactionManager,
 }
 
@@ -1642,9 +1643,9 @@ fn plan_select(
 fn rows_plain(
     facade: &EntityFacade,
     entity_name: &str,
-    columns: &[(String, String)],
+    columns: &[(Arc<str>, String)],
     rows: Vec<DbRow>,
-) -> Result<Vec<BTreeMap<String, Value>>, Error> {
+) -> Result<Vec<FieldMap>, Error> {
     let owner = facade.clone();
     facade.with_entity(entity_name, |entity, _, _| {
         let mut out = Vec::with_capacity(rows.len());
@@ -1666,7 +1667,7 @@ fn dml(
     facade: &EntityFacade,
     entity_name: &str,
     op: Op,
-    values: &BTreeMap<String, Value>,
+    values: &FieldMap,
 ) -> Result<Option<(String, Vec<Value>)>, Error> {
     facade.with_group(entity_name, |entity, dialect, _, _| {
         statement_for(entity, dialect, op, values)
@@ -1677,7 +1678,7 @@ fn statement_for(
     entity: &EntityDefinition,
     dialect: &Dialect,
     operation: Op,
-    values: &BTreeMap<String, Value>,
+    values: &FieldMap,
 ) -> Result<Option<(String, Vec<Value>)>, Error> {
     match operation {
         Op::Delete => {
@@ -1717,7 +1718,7 @@ fn statement_for(
 
 fn present_columns<'a>(
     entity: &'a EntityDefinition,
-    values: &BTreeMap<String, Value>,
+    values: &FieldMap,
     include_null: bool,
     skip_pk: bool,
 ) -> Vec<&'a str> {
@@ -1728,20 +1729,20 @@ fn present_columns<'a>(
             if skip_pk && field.is_pk {
                 return false;
             }
-            matches!(values.get(&field.name), Some(value) if include_null || !value.is_null())
+            matches!(values.get(field.name.as_str()), Some(value) if include_null || !value.is_null())
         })
         .map(|field| field.name.as_str())
         .collect()
 }
 
-fn bind_columns(columns: &[&str], values: &BTreeMap<String, Value>) -> Vec<Value> {
+fn bind_columns(columns: &[&str], values: &FieldMap) -> Vec<Value> {
     columns
         .iter()
         .map(|column| values.get(*column).cloned().unwrap_or(Value::Null))
         .collect()
 }
 
-fn pk_condition(entity: &EntityDefinition, values: &BTreeMap<String, Value>) -> Result<Condition, Error> {
+fn pk_condition(entity: &EntityDefinition, values: &FieldMap) -> Result<Condition, Error> {
     let mut parts = Vec::new();
     for name in entity.pk_field_names() {
         let value = values
@@ -1764,7 +1765,7 @@ fn prepare_handled(
     facade: &EntityFacade,
     entity_name: &str,
     operation: &str,
-    values: &BTreeMap<String, Value>,
+    values: &FieldMap,
 ) -> Result<SealedWrite, Error> {
     let owner = facade.clone();
     let operation = operation.to_string();
@@ -1788,8 +1789,8 @@ fn seal(
     facade: &EntityFacade,
     entity_name: &str,
     operation: &str,
-    values: BTreeMap<String, Value>,
-) -> Result<BTreeMap<String, Value>, Error> {
+    values: FieldMap,
+) -> Result<FieldMap, Error> {
     let owner = facade.clone();
     let operation = operation.to_string();
     facade.with_entity(entity_name, |entity, _, _| {
@@ -1801,6 +1802,22 @@ fn seal(
 type ReadMetas = super::derived::ByDefinition<Arc<ReadMeta>>;
 
 /// Read once per entity name: every find and write asks.
+/// The primary key field names of `entity_name`, read once per entity.
+pub(crate) fn pk_field_names(facade: &EntityFacade, entity_name: &str) -> Result<PkNames, Error> {
+    read_meta(facade, entity_name).map(PkNames)
+}
+
+/// See [`pk_field_names`].
+pub(crate) struct PkNames(Arc<ReadMeta>);
+
+impl std::ops::Deref for PkNames {
+    type Target = [String];
+
+    fn deref(&self) -> &[String] {
+        &self.0.pk_fields
+    }
+}
+
 fn read_meta(facade: &EntityFacade, entity_name: &str) -> Result<Arc<ReadMeta>, Error> {
     let generation = super::derived::generation(facade);
     if let Some(meta) = facade.with_slot(ReadMetas::default, |metas| metas.get(entity_name, generation)) {
@@ -1819,7 +1836,7 @@ fn read_meta(facade: &EntityFacade, entity_name: &str) -> Result<Arc<ReadMeta>, 
     Ok(meta)
 }
 
-fn identity(entity: &EntityDefinition, values: &BTreeMap<String, Value>) -> Result<String, Error> {
+fn identity(entity: &EntityDefinition, values: &FieldMap) -> Result<String, Error> {
     let names = entity.pk_field_names();
     if names.is_empty() {
         return Err(Error::new(format!("{} has no primary key", entity.full_name)));
@@ -1840,13 +1857,13 @@ fn identity(entity: &EntityDefinition, values: &BTreeMap<String, Value>) -> Resu
     Ok(key)
 }
 
-fn pk_of(fields: &BTreeMap<String, Value>, pk_fields: &[String]) -> Option<String> {
+fn pk_of(fields: &FieldMap, pk_fields: &[String]) -> Option<String> {
     if pk_fields.is_empty() {
         return None;
     }
     let mut key = String::new();
     for (index, name) in pk_fields.iter().enumerate() {
-        let value = fields.get(name).filter(|value| !value.is_null())?;
+        let value = fields.get(name.as_str()).filter(|value| !value.is_null())?;
         if index > 0 {
             key.push(PK_SEP);
         }
@@ -2219,7 +2236,7 @@ fn sort_rows(rows: &mut [MemRow], order: &[OrderBy]) {
     rows.sort_by(|left, right| {
         for entry in order {
             let read = |row: &MemRow| {
-                let value = row.fields.get(&entry.field.name).cloned().unwrap_or(Value::Null);
+                let value = row.fields.get(entry.field.name.as_str()).cloned().unwrap_or(Value::Null);
                 match (entry.case, value) {
                     (Some(true), Value::String(text)) => Value::String(text.to_uppercase()),
                     (Some(false), Value::String(text)) => Value::String(text.to_lowercase()),
@@ -2254,14 +2271,14 @@ fn cmp_order(left: &Value, right: &Value, descending: bool, nulls_first: bool) -
     }
 }
 
-fn row_matches(condition: Option<&Condition>, fields: &BTreeMap<String, Value>) -> bool {
+fn row_matches(condition: Option<&Condition>, fields: &FieldMap) -> bool {
     match condition {
         None => true,
         Some(condition) => eval_condition(condition, fields),
     }
 }
 
-fn eval_condition(condition: &Condition, fields: &BTreeMap<String, Value>) -> bool {
+fn eval_condition(condition: &Condition, fields: &FieldMap) -> bool {
     match condition {
         Condition::Equals(field, expected) => field_value(fields, &field.name) == *expected,
         Condition::NotEquals(field, expected) => {
@@ -2337,7 +2354,7 @@ fn eval_condition(condition: &Condition, fields: &BTreeMap<String, Value>) -> bo
             }
         }
         Condition::IgnoreCase(inner) => {
-            let upper: BTreeMap<String, Value> = fields
+            let upper: FieldMap = fields
                 .iter()
                 .map(|(name, value)| match value {
                     Value::String(text) => (name.clone(), Value::String(text.to_uppercase())),
@@ -2372,7 +2389,7 @@ fn upper_values(condition: Condition) -> Condition {
     }
 }
 
-fn field_value(fields: &BTreeMap<String, Value>, name: &str) -> Value {
+fn field_value(fields: &FieldMap, name: &str) -> Value {
     fields.get(name).cloned().unwrap_or(Value::Null)
 }
 
@@ -2410,7 +2427,6 @@ fn schema_name_ok(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
     use moqui_db::sql::{CompareOp, Condition};
@@ -2422,10 +2438,10 @@ mod tests {
     use crate::testing;
     use crate::transaction::{TransactionAttribute, TransactionManager};
 
-    fn row(pairs: &[(&str, Value)]) -> BTreeMap<String, Value> {
+    fn row(pairs: &[(&str, Value)]) -> crate::entity::FieldMap {
         pairs
             .iter()
-            .map(|(name, value)| ((*name).to_string(), value.clone()))
+            .map(|(name, value)| ((*name).into(), value.clone()))
             .collect()
     }
 

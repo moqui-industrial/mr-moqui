@@ -139,6 +139,13 @@ impl MNode {
             .collect()
     }
 
+    /// Each attribute in document order, borrowed: [`Self::attributes`] without the copies.
+    pub fn for_each_attribute(&self, mut body: impl FnMut(&str, &str)) {
+        for (name, value) in &self.inner.borrow().attributes {
+            body(name, value);
+        }
+    }
+
     pub fn set_attribute(&self, name: impl Into<String>, value: impl Into<String>) {
         self.inner.borrow_mut().attributes.insert(name.into(), value.into());
     }

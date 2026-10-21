@@ -20,6 +20,7 @@
 //! - **allocs/call**: allocations and reallocations. The allocator's work, and what fragments the heap.
 //! - **bytes/call**: bytes those asked for, freed or not. The memory traffic ("pressure").
 //! - **kept/call**: bytes allocated and not freed on this thread by the end of the batch, a cache or a log that grows.
+//! - **sql/call**: statements the entity layer ran (`statement_stats`), on any thread. Begin and commit are not counted.
 
 #![allow(dead_code)]
 
@@ -96,20 +97,24 @@ pub struct Measured {
     pub allocs: u64,
     pub bytes: u64,
     pub kept: i64,
+    pub statements: u64,
 }
 
 /// Time `body` and count what this thread allocated in it.
 pub fn measure<T>(body: impl FnOnce() -> T) -> (Measured, T) {
+    let (statements_before, _) = moqui_core::entity::statement_stats();
     let before = counts();
     let started = Instant::now();
     let out = body();
     let elapsed = started.elapsed();
     let after = counts();
+    let (statements_after, _) = moqui_core::entity::statement_stats();
     let measured = Measured {
         elapsed,
         allocs: after.allocs - before.allocs,
         bytes: after.bytes - before.bytes,
         kept: after.live - before.live,
+        statements: statements_after - statements_before,
     };
     (measured, out)
 }
@@ -153,8 +158,8 @@ impl Rows {
     /// Per call, from the upper median batch by time. The allocation columns are of that batch too.
     pub fn print(&self) {
         println!(
-            "  {:<46} {:>7} {:>10} {:>9} {:>10} {:>9} {:>10} {:>9} {:>17}",
-            "operation", "calls", "median ms", "us/call", "calls/s", "allocs", "bytes", "kept", "min-max ms"
+            "  {:<46} {:>7} {:>10} {:>9} {:>10} {:>9} {:>10} {:>9} {:>6} {:>17}",
+            "operation", "calls", "median ms", "us/call", "calls/s", "allocs", "bytes", "kept", "sql", "min-max ms"
         );
         for row in &self.rows {
             let mut order: Vec<usize> = (0..row.batches.len()).collect();
@@ -166,7 +171,7 @@ impl Rows {
             let fastest = row.batches[order[0]].elapsed.as_secs_f64() * 1.0e3;
             let slowest = row.batches[order[order.len() - 1]].elapsed.as_secs_f64() * 1.0e3;
             println!(
-                "  {:<46} {:>7} {:>10.3} {:>9.2} {:>10.0} {:>9.1} {:>10.0} {:>9.0} {:>8.3}-{:<8.3}",
+                "  {:<46} {:>7} {:>10.3} {:>9.2} {:>10.0} {:>9.1} {:>10.0} {:>9.0} {:>6.2} {:>8.3}-{:<8.3}",
                 row.operation,
                 row.calls,
                 seconds * 1.0e3,
@@ -175,6 +180,7 @@ impl Rows {
                 median.allocs as f64 / calls,
                 median.bytes as f64 / calls,
                 median.kept as f64 / calls,
+                median.statements as f64 / calls,
                 fastest,
                 slowest,
             );

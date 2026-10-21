@@ -237,7 +237,7 @@ impl Browser {
             if let Some(limit) = limit {
                 find = find.limit(limit);
             }
-            Ok(find.list()?.iter().map(|value| value.fields().clone()).collect())
+            Ok(find.list()?.iter().map(|value| moqui_core::entity::string_map(value.fields())).collect())
         })
     }
 

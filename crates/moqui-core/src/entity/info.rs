@@ -528,7 +528,7 @@ pub fn run_sql(facade: &EntityFacade, group: &str, sql: &str, limit: usize) -> R
             return false;
         }
         if result.columns.is_empty() {
-            result.columns = row.columns.iter().map(|(name, _)| name.clone()).collect();
+            result.columns = row.columns.iter().map(|(name, _)| name.to_string()).collect();
         }
         result
             .records

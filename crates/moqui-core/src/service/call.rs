@@ -1083,30 +1083,21 @@ fn run_entity(
     let settable = |entity: &moqui_db::model::EntityDefinition, key: &str, value: &Value| {
         !reserved(key) && entity.has_field(key) && !matches!(value, Value::Map(_) | Value::List(_))
     };
-    let (pk_names, fields) = facade.with_entity(noun, |entity, _, _| {
-        let pk_names = entity
-            .pk_field_names()
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let fields = if verb == "delete" {
-            Vec::new()
-        } else {
-            parameters
-                .iter()
-                .filter(|(key, value)| settable(entity, key, value))
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect::<Vec<_>>()
-        };
-        Ok((pk_names, fields))
-    })?;
+    let pk_names = crate::entity::cache::pk_field_names(facade, noun)?;
+    let pk_names: &[String] = &pk_names;
     if verb == "delete" {
-        delete_entity(facade, noun, parameters, &pk_names)?;
+        delete_entity(facade, noun, parameters, pk_names)?;
         return Ok(BTreeMap::new());
     }
+    let fields = facade.with_entity(noun, |entity, _, _| {
+        Ok(parameters
+            .iter()
+            .filter(|(key, value)| settable(entity, key, value))
+            .collect::<Vec<_>>())
+    })?;
     let mut record = facade.make_value(noun)?;
     for (key, value) in fields {
-        record.set(key, value);
+        record.set(key, value.clone());
     }
     // `EntityAutoServiceRunner.checkFromDate`: a `fromDate` primary key left out of a create or store is
     // `ec.user.nowTimestamp`.
@@ -1119,11 +1110,11 @@ fn run_entity(
         record.set("fromDate", crate::user::now_effective_value());
     }
     // a primary key field with a default (a content date, say) takes it before a missing key is sequenced
-    if matches!(verb, "create" | "store") && pk_missing(&record, &pk_names) {
+    if matches!(verb, "create" | "store") && pk_missing(&record, pk_names) {
         let with_defaults = facade.apply_field_defaults(noun, record.fields())?;
-        for name in &pk_names {
+        for name in pk_names {
             let missing = record.get(name).is_none_or(|value| value.is_null() || is_empty(value));
-            if let Some(value) = with_defaults.get(name).filter(|value| missing && !value.is_null()) {
+            if let Some(value) = with_defaults.get(name.as_str()).filter(|value| missing && !value.is_null()) {
                 record.set(name, value.clone());
             }
         }
@@ -1131,23 +1122,23 @@ fn run_entity(
     let mut status_out = BTreeMap::new();
     match verb {
         "update" => {
-            check_status(facade, noun, &record, &pk_names, parameters, &mut status_out)?;
+            check_status(facade, noun, &record, pk_names, parameters, &mut status_out)?;
             record.update(facade)?
         }
         "create" => {
-            assign_sequence(facade, &mut record, &pk_names)?;
+            assign_sequence(facade, &mut record, pk_names)?;
             record.create(facade)?;
         }
         "store" => {
-            if pk_missing(&record, &pk_names) {
-                assign_sequence(facade, &mut record, &pk_names)?;
+            if pk_missing(&record, pk_names) {
+                assign_sequence(facade, &mut record, pk_names)?;
                 record.create(facade)?;
             } else if parameters.contains_key("statusId")
                 && facade.with_entity(noun, |entity, _, _| Ok(entity.has_field("statusId")))?
             {
                 // Java's store checks status with one uncached read. A missing row is created
                 // directly; other stores choose create/update through EntityValue.refresh.
-                if check_status(facade, noun, &record, &pk_names, parameters, &mut status_out)? {
+                if check_status(facade, noun, &record, pk_names, parameters, &mut status_out)? {
                     record.create_or_update(facade)?;
                 } else {
                     record.create(facade)?;
@@ -1160,7 +1151,7 @@ fn run_entity(
     }
     nest(facade, verb, noun, parameters, &record, depth)?;
     let mut out = status_out;
-    for pk in &pk_names {
+    for pk in pk_names {
         if let Some(value) = record.get(pk) {
             out.insert(pk.clone(), value.clone());
         }

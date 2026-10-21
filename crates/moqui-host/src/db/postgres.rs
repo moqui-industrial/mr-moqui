@@ -12,28 +12,40 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Sync Postgres client behind [`moqui_core::driver::DbDriver`].
+//! Postgres behind [`moqui_core::driver::DbDriver`], on `tokio_postgres`.
 //!
-//! `postgres::Client` owns the `current_thread` runtime and `block_on`s connect, query, and drop.
+//! Each connection runs its client on its own `current_thread` runtime, and a call blocks on that runtime until its
+//! reply is in, as the sync `postgres` crate does. A `BEGIN`, a `SET LOCAL statement_timeout` and a deferred write
+//! ([`DbConnection::execute_deferred`]) are sent without waiting for their replies: they share the round trip of the
+//! next call that waits, which takes those replies first and reports the first failure among them.
 
 #[cfg(feature = "postgres")]
 mod driver {
     use std::collections::VecDeque;
+    use std::future::{poll_fn, Future};
     use std::path::PathBuf;
+    use std::pin::{pin, Pin};
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Waker};
 
     use moqui_core::driver::{DbCancel, DbConnection, DbDriver, DbRow};
     use moqui_lib::codec::hex_encode;
     use moqui_lib::error::Error;
     use moqui_lib::object::{basic_convert, Value};
-    use postgres::config::SslMode;
-    use postgres::types::private::BytesMut;
-    use postgres::types::{Format, FromSql, IsNull, ToSql, Type};
-    use postgres::{Client, Config, NoTls, Statement};
+    use tokio::io::{AsyncRead, AsyncWrite};
+    use tokio::runtime::Runtime;
+    use tokio_postgres::config::SslMode;
+    use tokio_postgres::tls::MakeTlsConnect;
+    use tokio_postgres::types::private::BytesMut;
+    use tokio_postgres::types::{Format, FromSql, IsNull, ToSql, Type};
+    use tokio_postgres::{AsyncMessage, Client, Config, NoTls, Notification, Socket, Statement};
     use tokio_postgres_rustls::MakeRustlsConnect;
 
     use crate::db::statement_lru::StatementLru;
 
     const CACHE_CAP: usize = 100;
+    /// Requests sent without waiting that may be in flight. A send past this waits for the older half of them.
+    const PIPELINE_DEPTH: usize = 256;
     const FETCH_BATCH: usize = 50;
     const STREAM_CURSOR: &str = "moqui_stream_cursor";
     /// Seconds from the Unix epoch to 2000-01-01 00:00:00 UTC.
@@ -72,10 +84,13 @@ mod driver {
         Rustls(MakeRustlsConnect),
     }
 
-    /// One `postgres::Client`. Statement LRU is keyed by the original SQL text.
+    /// One `tokio_postgres` client and its connection. Statement LRU is keyed by the original SQL text.
     pub struct PostgresConn {
-        client: Client,
-        cache: StatementLru<Statement>,
+        /// Taken when the connection drops, so the connection sees its last client go and sends `Terminate`.
+        client: Option<Arc<Client>>,
+        cancel: tokio_postgres::CancelToken,
+        wire: Wire,
+        cache: StatementLru<Prepared>,
         in_transaction: bool,
         streaming: bool,
         stream_exhausted: bool,
@@ -83,8 +98,51 @@ mod driver {
         tls: TlsMode,
     }
 
+    /// A prepared statement and its column names, which every row it reads shares.
+    #[derive(Clone)]
+    struct Prepared {
+        statement: Statement,
+        names: Arc<[Arc<str>]>,
+    }
+
+    /// The connection's runtime, and what drives the socket.
+    struct Wire {
+        runtime: Runtime,
+        link: Link,
+    }
+
+    /// The socket, the replies owed to requests that did not wait, and the notifications read in passing.
+    struct Link {
+        connection: Box<dyn Drive>,
+        /// Oldest first. Replies come in the order the requests were sent.
+        pending: VecDeque<Pending>,
+        /// The first failure among `pending`, for the next call that waits.
+        failed: Option<Error>,
+        notifications: VecDeque<Notification>,
+        /// The connection failed or ended.
+        dead: bool,
+    }
+
+    /// A request sent and not waited for. It ends when its reply is read.
+    type Pending = Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
+
+    /// A `tokio_postgres::Connection`, whatever its socket and TLS stream.
+    trait Drive: Send {
+        fn poll_message(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<AsyncMessage, tokio_postgres::Error>>>;
+    }
+
+    impl<S, T> Drive for tokio_postgres::Connection<S, T>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send,
+        T: AsyncRead + AsyncWrite + Unpin + Send,
+    {
+        fn poll_message(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<AsyncMessage, tokio_postgres::Error>>> {
+            tokio_postgres::Connection::poll_message(self, cx)
+        }
+    }
+
     struct PgCancel {
-        token: postgres::CancelToken,
+        token: tokio_postgres::CancelToken,
         tls: TlsMode,
     }
 
@@ -199,43 +257,67 @@ mod driver {
             if let Some(options) = &self.options {
                 config.options(options);
             }
-            let (mut client, tls) = match &self.target {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| Error::new("could not start the postgres connection runtime").with_source(err))?;
+            let (client, connection, tls) = match &self.target {
                 #[cfg(unix)]
                 Target::Unix { socket_dir, port } => {
                     config.host_path(socket_dir);
                     config.port(*port);
                     config.ssl_mode(SslMode::Disable);
-                    let client = config.connect(NoTls).map_err(|err| pg("connect", err))?;
-                    (client, TlsMode::None)
+                    let (client, connection) = open(&runtime, &config, NoTls)?;
+                    (client, connection, TlsMode::None)
                 }
                 Target::TcpNoTls { host, port } => {
                     config.host(host);
                     config.port(*port);
                     config.ssl_mode(SslMode::Disable);
-                    let client = config.connect(NoTls).map_err(|err| pg("connect", err))?;
-                    (client, TlsMode::None)
+                    let (client, connection) = open(&runtime, &config, NoTls)?;
+                    (client, connection, TlsMode::None)
                 }
                 Target::Tcp { host, port, tls } => {
                     config.host(host);
                     config.port(*port);
                     config.ssl_mode(SslMode::Require);
-                    let client = config.connect(tls.clone()).map_err(|err| pg("connect", err))?;
-                    (client, TlsMode::Rustls(tls.clone()))
+                    let (client, connection) = open(&runtime, &config, tls.clone())?;
+                    (client, connection, TlsMode::Rustls(tls.clone()))
                 }
             };
-            client
-                .batch_execute("SET TIME ZONE 'UTC'")
-                .map_err(|err| pg("set time zone", err))?;
-            Ok(PostgresConn {
-                client,
+            let mut conn = PostgresConn {
+                cancel: client.cancel_token(),
+                client: Some(Arc::new(client)),
+                wire: Wire {
+                    runtime,
+                    link: Link {
+                        connection,
+                        pending: VecDeque::new(),
+                        failed: None,
+                        notifications: VecDeque::new(),
+                        dead: false,
+                    },
+                },
                 cache: StatementLru::new(CACHE_CAP),
                 in_transaction: false,
                 streaming: false,
                 stream_exhausted: false,
                 stream_buf: VecDeque::new(),
                 tls,
-            })
+            };
+            conn.batch("SET TIME ZONE 'UTC'", "set time zone")?;
+            Ok(conn)
         }
+    }
+
+    /// Connect on `runtime`. The connection is driven by each call that waits, not by a spawned task.
+    fn open<T>(runtime: &Runtime, config: &Config, tls: T) -> Result<(Client, Box<dyn Drive>), Error>
+    where
+        T: MakeTlsConnect<Socket>,
+        T::Stream: Send + 'static,
+    {
+        let (client, connection) = runtime.block_on(config.connect(tls)).map_err(|err| pg("connect", err))?;
+        Ok((client, Box::new(connection)))
     }
 
     impl DbDriver for PostgresDriver {
@@ -260,9 +342,7 @@ mod driver {
             if channel.is_empty() || !channel.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
                 return Err(Error::new(format!("{channel:?} is not a channel name")));
             }
-            self.client
-                .batch_execute(&format!("LISTEN {channel}"))
-                .map_err(|err| pg("listen", err))
+            self.batch(&format!("LISTEN {channel}"), "listen")
         }
 
         /// The payloads of the notifications that arrive within `timeout` of the call, and any already
@@ -272,60 +352,94 @@ mod driver {
         ///
         /// Returns an error when the connection is lost.
         pub fn notifications(&mut self, timeout: std::time::Duration) -> Result<Vec<String>, Error> {
-            use postgres::fallible_iterator::FallibleIterator;
-
-            let mut notifications = self.client.notifications();
-            let mut payloads = Vec::new();
-            let first = notifications
-                .timeout_iter(timeout)
-                .next()
-                .map_err(|err| pg("notification", err))?;
-            if let Some(first) = first {
-                payloads.push(first.payload().to_string());
-                let mut waiting = notifications.iter();
-                while let Some(next) = waiting.next().map_err(|err| pg("notification", err))? {
-                    payloads.push(next.payload().to_string());
-                }
+            let Wire { runtime, link } = &mut self.wire;
+            let first = runtime.block_on(async {
+                let arrived = poll_fn(|cx| match link.drive(cx) {
+                    Err(err) => Poll::Ready(Err(err)),
+                    Ok(()) if !link.notifications.is_empty() || link.dead => Poll::Ready(Ok(())),
+                    Ok(()) => Poll::Pending,
+                });
+                tokio::time::timeout(timeout, arrived).await.unwrap_or(Ok(()))
+            });
+            first?;
+            // Those right behind the first.
+            runtime.block_on(poll_fn(|cx| Poll::Ready(link.drive(cx))))?;
+            if link.dead && link.notifications.is_empty() {
+                return Err(Error::new("postgres notification: the connection is closed"));
             }
-            Ok(payloads)
+            Ok(link
+                .notifications
+                .drain(..)
+                .map(|notification| notification.payload().to_string())
+                .collect())
         }
 
         /// True when the server has closed this connection.
         #[must_use]
         pub fn is_closed(&self) -> bool {
-            self.client.is_closed()
+            self.wire.link.dead || self.client.as_ref().is_none_or(|client| client.is_closed())
         }
 
-        fn prepared(&mut self, sql: &str) -> Result<Statement, Error> {
-            if let Some(statement) = self.cache.get(sql) {
-                return Ok(statement.clone());
+        /// A statement or several, by the simple query protocol, waited for.
+        fn batch(&mut self, sql: &str, context: &str) -> Result<(), Error> {
+            let client = client(&self.client)?;
+            self.wire.wait(client.batch_execute(sql), context)
+        }
+
+        /// A statement by the simple query protocol, sent without waiting for its reply, with the next call that waits.
+        fn send_batch(&mut self, sql: String, context: &'static str) -> Result<(), Error> {
+            let client = Arc::clone(client(&self.client)?);
+            self.wire.send(
+                Box::pin(async move { client.batch_execute(&sql).await.map_err(|err| pg(context, err)) }),
+                false,
+            )
+        }
+
+        fn prepared(&mut self, sql: &str) -> Result<Prepared, Error> {
+            if let Some(prepared) = self.cache.get(sql) {
+                return Ok(prepared.clone());
             }
             let rewritten = rewrite_placeholders(sql);
-            let statement = self.client.prepare(&rewritten).map_err(|err| pg("prepare", err))?;
-            self.cache.insert(sql, statement.clone());
-            Ok(statement)
+            let client = client(&self.client)?;
+            let statement = self.wire.wait(client.prepare(&rewritten), "prepare")?;
+            let prepared = Prepared {
+                names: column_names(statement.columns()),
+                statement,
+            };
+            self.cache.insert(sql, prepared.clone());
+            Ok(prepared)
         }
 
-        /// `COMMIT` closes an open stream's cursor first. `ROLLBACK` does not, since it closes the cursor itself and a
-        /// `CLOSE` in an aborted transaction would fail before the rollback is sent. Either way the stream is gone.
+        /// `COMMIT` waits for the deferred requests first and fails with the first of them that failed: the transaction
+        /// is then aborted, and a `COMMIT` would roll it back without an error. `ROLLBACK` drops their failures. `COMMIT`
+        /// closes an open stream's cursor first. `ROLLBACK` does not, since it closes the cursor itself and a `CLOSE` in
+        /// an aborted transaction would fail before the rollback is sent. Either way the stream is gone.
         fn finish_transaction(&mut self, sql: &str) -> Result<(), Error> {
-            let close = self.streaming && sql == "COMMIT";
+            let commit = sql == "COMMIT";
+            if commit {
+                self.wire.finish()?;
+            } else {
+                self.wire.abandon();
+            }
+            let close = self.streaming && commit;
             let closed = if close { self.close_stream() } else { Ok(()) };
             self.clear_stream();
             closed?;
-            self.client.batch_execute(sql).map_err(|err| pg(sql, err))?;
+            self.batch(sql, sql)?;
             self.in_transaction = false;
             Ok(())
         }
 
         fn fetch_stream(&mut self) -> Result<(), Error> {
             let sql = format!("FETCH {FETCH_BATCH} FROM {STREAM_CURSOR}");
-            let rows = self.client.query(&sql, &[]).map_err(|err| pg("fetch cursor", err))?;
+            let client = client(&self.client)?;
+            let rows = self.wire.wait(client.query(sql.as_str(), &[]), "fetch cursor")?;
             if rows.len() < FETCH_BATCH {
                 self.stream_exhausted = true;
             }
+            let names = rows.first().map(|row| column_names(row.columns())).unwrap_or_default();
             for row in &rows {
-                self.stream_buf.push_back(map_row(row)?);
+                self.stream_buf.push_back(map_row(row, &names)?);
             }
             Ok(())
         }
@@ -337,30 +451,233 @@ mod driver {
         }
     }
 
+    impl Drop for PostgresConn {
+        /// As the sync client closes: with the last client gone (the pending requests hold it too) the connection sends
+        /// `Terminate` and ends.
+        fn drop(&mut self) {
+            self.wire.link.pending.clear();
+            self.client = None;
+            let Wire { runtime, link } = &mut self.wire;
+            if !link.dead {
+                runtime.block_on(poll_fn(|cx| match link.drive(cx) {
+                    Ok(()) if !link.dead => Poll::Pending,
+                    _ => Poll::Ready(()),
+                }));
+            }
+        }
+    }
+
+    impl Wire {
+        /// Run `request` until its reply is in. The requests sent before it are answered first, and the first of them
+        /// that failed is the error returned: in a transaction, that failure is what made the later statements fail.
+        fn wait<T>(
+            &mut self,
+            request: impl Future<Output = Result<T, tokio_postgres::Error>>,
+            context: &str,
+        ) -> Result<T, Error> {
+            let Wire { runtime, link } = self;
+            let mut request = pin!(request);
+            let result = runtime.block_on(poll_fn(|cx| {
+                // The first poll queues the request; the connection then writes it and reads the replies.
+                if let Poll::Ready(result) = request.as_mut().poll(cx) {
+                    return Poll::Ready(Ok(result));
+                }
+                if let Err(err) = link.drive(cx) {
+                    return Poll::Ready(Err(err));
+                }
+                link.settle(cx);
+                request.as_mut().poll(cx).map(Ok)
+            }));
+            // The replies of the requests before it came first: take them.
+            if !link.pending.is_empty() {
+                runtime.block_on(poll_fn(|cx| {
+                    link.settle(cx);
+                    Poll::Ready(())
+                }));
+            }
+            if let Some(err) = link.failed.take() {
+                return Err(err);
+            }
+            match result {
+                Ok(Ok(value)) => Ok(value),
+                Ok(Err(err)) => Err(pg(context, err)),
+                Err(err) => Err(err),
+            }
+        }
+
+        /// Send `request` without waiting for its reply, which a later call takes. With `write` it goes out now, so
+        /// the server runs it while this thread goes on; without, it goes out with the next call that waits, in the
+        /// same write (a `BEGIN`, which the server has nothing to do for, rides with the first statement).
+        fn send(&mut self, request: Pending, write: bool) -> Result<(), Error> {
+            let Wire { runtime, link } = self;
+            if link.dead {
+                return Err(Error::new("postgres: the connection is closed"));
+            }
+            link.pending.push_back(request);
+            if write {
+                runtime.block_on(poll_fn(|cx| {
+                    link.queue_last(cx);
+                    let driven = link.drive(cx);
+                    link.settle(cx);
+                    Poll::Ready(driven)
+                }))?;
+            } else {
+                link.queue_last(&mut Context::from_waker(Waker::noop()));
+            }
+            if self.link.pending.len() >= PIPELINE_DEPTH {
+                self.settle_to(PIPELINE_DEPTH / 2)?;
+            }
+            Ok(())
+        }
+
+        /// Wait until no more than `keep` requests are unanswered.
+        fn settle_to(&mut self, keep: usize) -> Result<(), Error> {
+            let Wire { runtime, link } = self;
+            if link.pending.len() <= keep {
+                return Ok(());
+            }
+            runtime.block_on(poll_fn(|cx| {
+                if let Err(err) = link.drive(cx) {
+                    return Poll::Ready(Err(err));
+                }
+                link.settle(cx);
+                if link.pending.len() <= keep {
+                    Poll::Ready(Ok(()))
+                } else {
+                    Poll::Pending
+                }
+            }))
+        }
+
+        /// Every reply in, and the first failure among them.
+        fn finish(&mut self) -> Result<(), Error> {
+            self.settle_to(0)?;
+            self.link.failed.take().map_or(Ok(()), Err)
+        }
+
+        /// Every reply in, or the connection lost, and their failures dropped.
+        fn abandon(&mut self) {
+            let _ = self.settle_to(0);
+            self.link.pending.clear();
+            self.link.failed = None;
+        }
+    }
+
+    impl Link {
+        /// The first poll of the request just sent, which queues it for the connection. A request that ends there (a
+        /// parameter that does not encode) failed.
+        fn queue_last(&mut self, cx: &mut Context<'_>) {
+            if let Some(request) = self.pending.back_mut() {
+                if let Poll::Ready(result) = request.as_mut().poll(cx) {
+                    self.pending.pop_back();
+                    if let Err(err) = result {
+                        self.failed.get_or_insert(err);
+                    }
+                }
+            }
+        }
+
+        /// Write and read what the socket allows now. A notification is kept for [`PostgresConn::notifications`], a
+        /// notice is logged.
+        fn drive(&mut self, cx: &mut Context<'_>) -> Result<(), Error> {
+            while !self.dead {
+                match self.connection.poll_message(cx) {
+                    Poll::Ready(Some(Ok(AsyncMessage::Notification(notification)))) => {
+                        self.notifications.push_back(notification);
+                    }
+                    Poll::Ready(Some(Ok(AsyncMessage::Notice(notice)))) => {
+                        tracing::info!("postgres {}: {}", notice.severity(), notice.message());
+                    }
+                    Poll::Ready(Some(Ok(_))) => {}
+                    Poll::Ready(Some(Err(err))) => {
+                        self.dead = true;
+                        return Err(pg("connection", err));
+                    }
+                    Poll::Ready(None) => self.dead = true,
+                    Poll::Pending => break,
+                }
+            }
+            Ok(())
+        }
+
+        /// Take the replies that are in, oldest first, up to the first request still waiting for its own.
+        fn settle(&mut self, cx: &mut Context<'_>) {
+            while let Some(request) = self.pending.front_mut() {
+                let Poll::Ready(result) = request.as_mut().poll(cx) else {
+                    break;
+                };
+                self.pending.pop_front();
+                if let Err(err) = result {
+                    self.failed.get_or_insert(err);
+                }
+            }
+        }
+    }
+
+    fn client(slot: &Option<Arc<Client>>) -> Result<&Arc<Client>, Error> {
+        slot.as_ref()
+            .ok_or_else(|| Error::new("postgres: the connection is closed"))
+    }
+
     impl DbConnection for PostgresConn {
         fn is_closed(&self) -> bool {
-            self.client.is_closed()
+            PostgresConn::is_closed(self)
         }
 
         fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
-            let bound = bind(params)?;
-            let refs = param_refs(&bound);
-            let statement = self.prepared(sql)?;
-            self.client.execute(&statement, &refs).map_err(|err| pg("execute", err))
+            check_scalar(params)?;
+            let prepared = self.prepared(sql)?;
+            let client = client(&self.client)?;
+            self.wire
+                .wait(client.execute_raw(&prepared.statement, params.iter().map(Param)), "execute")
+        }
+
+        /// In a transaction the statement is sent and its reply left for the next call that waits, or the commit. Out
+        /// of one it runs as [`Self::execute`]: the connection goes back to the pool after it.
+        fn execute_deferred(&mut self, sql: &str, params: Vec<Value>, zero_rows: Option<String>) -> Result<(), Error> {
+            if !self.in_transaction {
+                let count = self.execute(sql, &params)?;
+                return match zero_rows {
+                    Some(message) if count == 0 => Err(Error::new(message)),
+                    _ => Ok(()),
+                };
+            }
+            check_scalar(&params)?;
+            let statement = self.prepared(sql)?.statement;
+            let client = Arc::clone(client(&self.client)?);
+            self.wire.send(Box::pin(async move {
+                let count = client
+                    .execute_raw(&statement, params.iter().map(Param))
+                    .await
+                    .map_err(|err| pg("execute", err))?;
+                match zero_rows {
+                    Some(message) if count == 0 => Err(Error::new(message)),
+                    _ => Ok(()),
+                }
+            }), true)
+        }
+
+        fn finish_deferred(&mut self) -> Result<(), Error> {
+            self.wire.finish()
         }
 
         fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
             let bound = bind(params)?;
             let refs = param_refs(&bound);
-            let statement = self.prepared(sql)?;
-            let rows = self.client.query(&statement, &refs).map_err(|err| pg("query", err))?;
-            rows.iter().map(map_row).collect()
+            let prepared = self.prepared(sql)?;
+            let client = client(&self.client)?;
+            let rows = self.wire.wait(client.query(&prepared.statement, &refs), "query")?;
+            rows.iter().map(|row| map_row(row, &prepared.names)).collect()
         }
 
         fn returns_rows(&mut self, sql: &str) -> Result<Option<bool>, Error> {
+            // A deferred failure is reported, not taken for this statement's.
+            self.wire.finish()?;
             // Not kept in the statement cache: a statement typed in the SQL runner runs once. One that does not prepare
             // is left to run, so its own error is the one reported.
-            match self.client.prepare(&rewrite_placeholders(sql)) {
+            let rewritten = rewrite_placeholders(sql);
+            let client = client(&self.client)?;
+            match self.wire.wait(client.prepare(&rewritten), "prepare") {
                 Ok(statement) => Ok(Some(!statement.columns().is_empty())),
                 Err(_) => Ok(None),
             }
@@ -370,8 +687,10 @@ mod driver {
             let bound = bind(params)?;
             let refs = param_refs(&bound);
             let rewritten = rewrite_placeholders(sql);
-            let rows = self.client.query(&rewritten, &refs).map_err(|err| pg("query", err))?;
-            rows.iter().map(map_row).collect()
+            let client = client(&self.client)?;
+            let rows = self.wire.wait(client.query(rewritten.as_str(), &refs), "query")?;
+            let names = rows.first().map(|row| column_names(row.columns())).unwrap_or_default();
+            rows.iter().map(|row| map_row(row, &names)).collect()
         }
 
         fn open_stream(&mut self, sql: &str, params: &[Value]) -> Result<(), Error> {
@@ -385,9 +704,9 @@ mod driver {
             let refs = param_refs(&bound);
             let rewritten = rewrite_placeholders(sql);
             let declare = format!("DECLARE {STREAM_CURSOR} NO SCROLL CURSOR FOR {rewritten}");
-            self.client
-                .execute(&declare, &refs)
-                .map_err(|err| pg("declare cursor", err))?;
+            let client = client(&self.client)?;
+            self.wire
+                .wait(client.execute(declare.as_str(), &refs), "declare cursor")?;
             self.streaming = true;
             self.stream_exhausted = false;
             self.stream_buf.clear();
@@ -411,9 +730,7 @@ mod driver {
             if !self.streaming {
                 return Ok(());
             }
-            self.client
-                .batch_execute(&format!("CLOSE {STREAM_CURSOR}"))
-                .map_err(|err| pg("close cursor", err))?;
+            self.batch(&format!("CLOSE {STREAM_CURSOR}"), "close cursor")?;
             self.clear_stream();
             Ok(())
         }
@@ -422,8 +739,9 @@ mod driver {
             self.streaming
         }
 
+        /// Sent without waiting: the first statement of the transaction takes its reply, in the same round trip.
         fn begin(&mut self) -> Result<(), Error> {
-            self.client.batch_execute("BEGIN").map_err(|err| pg("begin", err))?;
+            self.send_batch("BEGIN".to_string(), "begin")?;
             self.in_transaction = true;
             Ok(())
         }
@@ -437,49 +755,47 @@ mod driver {
         }
 
         fn savepoint(&mut self, name: &str) -> Result<(), Error> {
-            let sql = format!("SAVEPOINT {}", quote_ident(name));
-            self.client.batch_execute(&sql).map_err(|err| pg("savepoint", err))
+            self.batch(&format!("SAVEPOINT {}", quote_ident(name)), "savepoint")
         }
 
         fn rollback_to_savepoint(&mut self, name: &str) -> Result<(), Error> {
-            let sql = format!("ROLLBACK TO SAVEPOINT {}", quote_ident(name));
-            self.client
-                .batch_execute(&sql)
-                .map_err(|err| pg("rollback to savepoint", err))
+            self.batch(
+                &format!("ROLLBACK TO SAVEPOINT {}", quote_ident(name)),
+                "rollback to savepoint",
+            )
         }
 
         fn release_savepoint(&mut self, name: &str) -> Result<(), Error> {
-            let sql = format!("RELEASE SAVEPOINT {}", quote_ident(name));
-            self.client
-                .batch_execute(&sql)
-                .map_err(|err| pg("release savepoint", err))
+            self.batch(&format!("RELEASE SAVEPOINT {}", quote_ident(name)), "release savepoint")
         }
 
-        /// `SET LOCAL` lasts until the transaction ends, so clearing is a no-op.
+        /// `SET LOCAL` lasts until the transaction ends, so clearing is a no-op. Sent without waiting, as `BEGIN` is.
         fn set_statement_timeout(&mut self, remaining: Option<std::time::Duration>) -> Result<(), Error> {
             let Some(remaining) = remaining else {
                 return Ok(());
             };
             let ms = crate::db::timeout_millis(remaining)?;
-            self.client
-                .batch_execute(&format!("SET LOCAL statement_timeout = {ms}"))
-                .map_err(|err| pg("statement_timeout", err))?;
-            Ok(())
+            self.send_batch(format!("SET LOCAL statement_timeout = {ms}"), "statement_timeout")
         }
 
         fn canceller(&self) -> Box<dyn DbCancel> {
             Box::new(PgCancel {
-                token: self.client.cancel_token(),
+                token: self.cancel.clone(),
                 tls: self.tls.clone(),
             })
         }
     }
 
     impl DbCancel for PgCancel {
+        /// On the calling thread, the deadline thread, with a runtime of its own as the sync client's cancel had.
         fn cancel(&self) -> Result<(), Error> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| Error::new("could not start the postgres cancel runtime").with_source(err))?;
             let result = match &self.tls {
-                TlsMode::None => self.token.cancel_query(NoTls),
-                TlsMode::Rustls(tls) => self.token.cancel_query(tls.clone()),
+                TlsMode::None => runtime.block_on(self.token.cancel_query(NoTls)),
+                TlsMode::Rustls(tls) => runtime.block_on(self.token.cancel_query(tls.clone())),
             };
             result.map_err(|err| pg("cancel", err))
         }
@@ -535,7 +851,7 @@ mod driver {
             }
         }
 
-        postgres::types::to_sql_checked!();
+        tokio_postgres::types::to_sql_checked!();
     }
 
     impl Param<'_> {
@@ -560,7 +876,7 @@ mod driver {
         }
     }
 
-    fn pg(context: &str, err: postgres::Error) -> Error {
+    fn pg(context: &str, err: tokio_postgres::Error) -> Error {
         // `Display` for a server error is the text "db error". The server message is the useful part.
         let detail = match err.as_db_error() {
             Some(db) => db.message().to_string(),
@@ -570,13 +886,18 @@ mod driver {
     }
 
     fn bind(params: &[Value]) -> Result<Vec<Param<'_>>, Error> {
+        check_scalar(params)?;
+        Ok(params.iter().map(Param).collect())
+    }
+
+    fn check_scalar(params: &[Value]) -> Result<(), Error> {
         if params
             .iter()
             .any(|value| matches!(value, Value::List(_) | Value::Map(_)))
         {
             return Err(Error::new("postgres parameters must be scalar values"));
         }
-        Ok(params.iter().map(Param).collect())
+        Ok(())
     }
 
     fn param_refs<'a>(params: &'a [Param<'a>]) -> Vec<&'a (dyn ToSql + Sync)> {
@@ -753,16 +1074,19 @@ mod driver {
         text
     }
 
-    fn map_row(row: &postgres::Row) -> Result<DbRow, Error> {
+    fn column_names(columns: &[tokio_postgres::Column]) -> Arc<[Arc<str>]> {
+        columns.iter().map(|column| Arc::from(column.name())).collect()
+    }
+
+    /// `names` are the row's column names, shared by the rows of its statement.
+    fn map_row(row: &tokio_postgres::Row, names: &[Arc<str>]) -> Result<DbRow, Error> {
         let mut columns = Vec::with_capacity(row.len());
         for (index, column) in row.columns().iter().enumerate() {
             let value = row
                 .try_get::<_, Option<PgValue>>(index)
                 .map_err(|err| Error::new(format!("postgres column {index}")).with_source(err))?;
-            columns.push((
-                column.name().to_string(),
-                value.map(|cell| cell.0).unwrap_or(Value::Null),
-            ));
+            let name = names.get(index).map_or_else(|| Arc::from(column.name()), Arc::clone);
+            columns.push((name, value.map(|cell| cell.0).unwrap_or(Value::Null)));
         }
         Ok(DbRow { columns })
     }

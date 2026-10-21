@@ -85,7 +85,7 @@ pub(super) fn run_sync(
     sync.update(facade)?;
 
     // The main work is in a separate transaction so it is independent of updating the status.
-    let fields: IndexMap<String, Value> = sync.fields().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let fields: IndexMap<String, Value> = sync.fields().iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
     let results = call_service(
         INTERNAL_RUN,
         pairs([

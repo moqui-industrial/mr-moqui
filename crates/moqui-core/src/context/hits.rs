@@ -595,7 +595,7 @@ fn write_chunk(facade: &EntityFacade, chunk: &[(&str, BTreeMap<String, Value>)])
         }
         value.set_sequenced_id_primary(facade)?;
         let plain = facade.normalize_values(entity_name, value.fields().clone(), false)?;
-        let names: Vec<&str> = plain.keys().map(String::as_str).collect();
+        let names: Vec<&str> = plain.keys().map(|name| &**name).collect();
         let sql = facade.with_entity(entity_name, |entity, dialect, _| sql_insert(entity, dialect, &names))?;
         statements.push((sql, plain.into_values().collect::<Vec<_>>()));
     }
@@ -1149,7 +1149,7 @@ mod tests {
         let mut value = world.facade.make_value(entity).unwrap();
         value.set("enumTypeId", Value::string("HitType"));
         value.set("description", Value::string("first"));
-        // A new row: the UPDATE probe matches nothing (Rust-only `update-probe`), then refresh and create.
+        // A new row: the UPDATE probe matches nothing (Rust-only `update-probe`), then create.
         value.create_or_update(&world.facade).unwrap();
         value.set("description", Value::string("second"));
         // An existing row: the probe is the update, with no refresh.
@@ -1172,7 +1172,7 @@ mod tests {
                 ("create".to_string(), 1.0),
                 ("update".to_string(), 1.0),
                 ("update-probe".to_string(), 1.0),
-                ("refresh".to_string(), 2.0),
+                ("refresh".to_string(), 1.0),
                 ("one".to_string(), 1.0),
                 ("list".to_string(), 1.0),
             ])
@@ -1319,7 +1319,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_map_loader_probes_then_refreshes_regular_rows_and_uses_one_for_new_status_rows() {
+    fn plain_map_loader_probes_regular_rows_and_uses_one_for_new_status_rows() {
         let world = world();
         let _entered = world.context.enter();
         let _authz = world.context.disable_authz();
@@ -1349,11 +1349,10 @@ mod tests {
                 )
             })
             .collect();
-        // The first EnumerationType row: an UPDATE probe that matches nothing, then refresh and create. The second:
-        // the probe updates the row, with no refresh.
+        // The first EnumerationType row: an UPDATE probe that matches nothing, then create. The second: the probe
+        // updates the row, with no refresh.
         let expected = [
             ("moqui.basic.EnumerationType", "update-probe", 1.0),
-            ("moqui.basic.EnumerationType", "refresh", 1.0),
             ("moqui.basic.EnumerationType", "create", 1.0),
             ("moqui.basic.EnumerationType", "update", 1.0),
             ("moqui.basic.StatusItem", "one", 1.0),

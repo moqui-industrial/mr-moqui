@@ -116,7 +116,7 @@ fn load_json_document(facade: &EntityFacade, location: &str, value: Json, option
     if entity_defined(facade, &entity_name) {
         let mut record = json_record(facade, &entity_name, &pairs)?;
         apply_default_values(facade, options, &mut record);
-        store_record(facade, options, &record)
+        store_record(facade, options, record)
     } else if let Some(name) = data_service_name(&entity_name) {
         let mut service = DataFileService {
             name,
@@ -212,7 +212,7 @@ fn json_record_in(
         children.extend(nested);
     }
     Ok(Record {
-        entity: shape.full_name,
+        entity: shape.full_name.clone(),
         fields,
         children,
     })

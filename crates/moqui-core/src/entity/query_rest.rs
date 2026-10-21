@@ -72,7 +72,7 @@ pub fn write_data(facade: &EntityFacade, entity_name: &str, records: &[BTreeMap<
         nodes.push(render_record(
             facade,
             &snap.full_name,
-            record,
+            &crate::entity::field_map(record.clone()),
             levels,
             master.as_deref(),
         )?);
@@ -106,7 +106,7 @@ pub fn write_data(facade: &EntityFacade, entity_name: &str, records: &[BTreeMap<
 pub fn xml_element(
     facade: &EntityFacade,
     entity_name: &str,
-    fields: &BTreeMap<String, Value>,
+    fields: &crate::entity::FieldMap,
     levels: i64,
 ) -> Result<String, Error> {
     let node = render_record(facade, entity_name, fields, levels, None)?;
@@ -701,7 +701,7 @@ pub(crate) fn values_from_plain_map(
 fn render_record(
     facade: &EntityFacade,
     entity_name: &str,
-    fields: &BTreeMap<String, Value>,
+    fields: &crate::entity::FieldMap,
     levels: i64,
     master: Option<&str>,
 ) -> Result<RecordNode, Error> {
@@ -725,7 +725,7 @@ fn render_record(
 fn render(
     facade: &EntityFacade,
     entity_name: &str,
-    fields: &BTreeMap<String, Value>,
+    fields: &crate::entity::FieldMap,
     ctx: &mut RenderCtx<'_>,
 ) -> Result<RecordNode, Error> {
     let snap = load_snap(facade, entity_name)?;
@@ -738,7 +738,7 @@ fn render(
         if !ctx.preserve_keys && ctx.parent_pks.contains(name) {
             continue;
         }
-        let Some(value) = fields.get(name) else {
+        let Some(value) = fields.get(name.as_str()) else {
             continue;
         };
         if value.is_null() {
@@ -754,7 +754,7 @@ fn render(
     Ok(node)
 }
 
-fn seen_key(snap: &EntitySnap, fields: &BTreeMap<String, Value>) -> String {
+fn seen_key(snap: &EntitySnap, fields: &crate::entity::FieldMap) -> String {
     let mut key = snap.full_name.clone();
     for name in snap.pk_names() {
         key.push('\u{1f}');
@@ -768,7 +768,7 @@ fn seen_key(snap: &EntitySnap, fields: &BTreeMap<String, Value>) -> String {
 fn attach(
     facade: &EntityFacade,
     snap: &EntitySnap,
-    fields: &BTreeMap<String, Value>,
+    fields: &crate::entity::FieldMap,
     node: &mut RecordNode,
     ctx: &mut RenderCtx<'_>,
 ) -> Result<(), Error> {
@@ -799,7 +799,7 @@ fn attach(
 fn attach_dependents(
     facade: &EntityFacade,
     snap: &EntitySnap,
-    fields: &BTreeMap<String, Value>,
+    fields: &crate::entity::FieldMap,
     node: &mut RecordNode,
     levels: i64,
     ctx: &mut RenderCtx<'_>,
@@ -825,7 +825,7 @@ fn attach_dependents(
 fn attach_detail_list(
     facade: &EntityFacade,
     snap: &EntitySnap,
-    fields: &BTreeMap<String, Value>,
+    fields: &crate::entity::FieldMap,
     node: &mut RecordNode,
     details: &[MasterDetail],
     ctx: &mut RenderCtx<'_>,
@@ -879,7 +879,7 @@ fn combined_details(
 fn push_related(
     facade: &EntityFacade,
     snap: &EntitySnap,
-    fields: &BTreeMap<String, Value>,
+    fields: &crate::entity::FieldMap,
     node: &mut RecordNode,
     relationship: &Relationship,
     expand: Expand<'_>,
@@ -941,7 +941,7 @@ fn relation_entry(relationship: &Relationship) -> String {
 fn related_rows(
     facade: &EntityFacade,
     relationship: &Relationship,
-    source_fields: &BTreeMap<String, Value>,
+    source_fields: &crate::entity::FieldMap,
     one: bool,
 ) -> Result<Vec<EntityValue>, Error> {
     let target = load_snap(facade, &relationship.related)?;
@@ -949,7 +949,7 @@ fn related_rows(
     let mut find = facade.find(&target.full_name)?;
     let mut bound = false;
     for (source_name, target_name) in pairs {
-        let Some(value) = source_fields.get(&source_name) else {
+        let Some(value) = source_fields.get(source_name.as_str()) else {
             continue;
         };
         if is_empty(value) {
@@ -1051,7 +1051,7 @@ fn named_view(
         find = find.offset(offset);
     }
     let rows = find.list()?;
-    Ok(rows.iter().map(|row| row.fields().clone()).collect())
+    Ok(rows.iter().map(|row| crate::entity::string_map(row.fields())).collect())
 }
 
 fn named_filters(entity: &EntityDefinition, parameters: &BTreeMap<String, Value>) -> Vec<(String, Value)> {
@@ -1399,7 +1399,8 @@ fn run_view(facade: &EntityFacade, built: &BuiltView, authorize: bool) -> Result
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let mapped = map_row(&columns, row);
-        out.push(field_rw::after_read(facade, &view, mapped)?);
+        let row = field_rw::after_read(facade, &view, mapped)?;
+        out.push(row.into_iter().map(|(name, value)| (name.to_string(), value)).collect());
     }
     Ok(out)
 }
@@ -1574,7 +1575,7 @@ fn xml_body(nodes: &[RecordNode], prefix: &str, iso: bool) -> String {
 pub(crate) fn data_body(
     facade: &EntityFacade,
     entity_name: &str,
-    records: &[BTreeMap<String, Value>],
+    records: &[crate::entity::FieldMap],
     json: bool,
     levels: i64,
     master: Option<&str>,

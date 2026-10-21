@@ -142,7 +142,7 @@ impl DbConnection for FakeConn {
     fn query_once(&mut self, sql: &str, _params: &[Value]) -> Result<Vec<DbRow>, Error> {
         self.touch(sql)?;
         Ok(vec![DbRow {
-            columns: vec![("id".to_string(), Value::I64(i64::try_from(self.id).unwrap_or(i64::MAX)))],
+            columns: vec![("id".into(), Value::I64(i64::try_from(self.id).unwrap_or(i64::MAX)))],
         }])
     }
 

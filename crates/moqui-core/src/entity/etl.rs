@@ -95,7 +95,7 @@ impl EtlLoader {
             let try_insert = self.use_try_insert
                 && facade.with_entity(entity_name, |_, dialect, _| Ok(!dialect.never_try_insert))?;
             if try_insert {
-                facade.upsert_record(value.entity_name(), value.fields())
+                facade.upsert_record(value.entity_name(), value.fields().clone())
             } else {
                 value.create_or_update(facade)
             }
@@ -194,7 +194,7 @@ impl EntityFind {
 fn extract_values(find: EntityFind, etl: &mut SimpleEtl) -> Result<(), Error> {
     let mut values = find.iterator()?;
     while let Some(value) = values.next_value()? {
-        let entry = SimpleEntry::new(value.entity_name(), value.fields().clone());
+        let entry = SimpleEntry::new(value.entity_name(), crate::entity::string_map(value.fields()));
         if let Err(stop) = etl.process_entry(entry) {
             tracing::warn!(cause = %stop.cause, "EntityFind extract stopped");
             break;

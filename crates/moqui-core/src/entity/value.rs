@@ -26,12 +26,86 @@ use moqui_lib::object::{basic_convert, Value};
 use moqui_lib::sync::lock;
 
 use super::cache::WriteGate;
-use super::exec::{after_statement, execute_tx};
+use super::exec::{after_statement, execute_deferred_tx, execute_tx, pipelining};
 use super::facade::EntityFacade;
 use super::field_rw;
 use super::load_feed::EcaRule;
 
 use super::{cache, fk, load_feed, sequence};
+
+/// The fields of a record by name. A name is shared, not copied: the rows of one read share each column's name, and a
+/// copy of a map shares its names, as Java's entity values share interned field names.
+pub type FieldMap = BTreeMap<Arc<str>, Value>;
+
+/// A field name as [`EntityValue::set`] takes it: text, copied once, or a name already shared, which is not copied.
+pub trait IntoFieldName {
+    fn name_str(&self) -> &str;
+
+    fn into_field_name(self) -> Arc<str>;
+}
+
+impl IntoFieldName for &str {
+    fn name_str(&self) -> &str {
+        self
+    }
+
+    fn into_field_name(self) -> Arc<str> {
+        Arc::from(self)
+    }
+}
+
+impl IntoFieldName for String {
+    fn name_str(&self) -> &str {
+        self
+    }
+
+    fn into_field_name(self) -> Arc<str> {
+        Arc::from(self)
+    }
+}
+
+impl IntoFieldName for &String {
+    fn name_str(&self) -> &str {
+        self
+    }
+
+    fn into_field_name(self) -> Arc<str> {
+        Arc::from(self.as_str())
+    }
+}
+
+impl IntoFieldName for Arc<str> {
+    fn name_str(&self) -> &str {
+        self
+    }
+
+    fn into_field_name(self) -> Arc<str> {
+        self
+    }
+}
+
+impl IntoFieldName for &Arc<str> {
+    fn name_str(&self) -> &str {
+        self
+    }
+
+    fn into_field_name(self) -> Arc<str> {
+        Arc::clone(self)
+    }
+}
+
+/// `map` with its names as [`FieldMap`] names.
+pub fn field_map(map: BTreeMap<String, Value>) -> FieldMap {
+    map.into_iter().map(|(name, value)| (Arc::from(name), value)).collect()
+}
+
+/// `fields` with owned names, for a map that leaves the entity layer: service parameters, a script's map.
+pub fn string_map(fields: &FieldMap) -> BTreeMap<String, Value> {
+    fields
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.clone()))
+        .collect()
+}
 
 /// One entity value. Field values are [`Value`].
 ///
@@ -49,12 +123,24 @@ pub struct EntityValue {
     /// Shared. A clone does not copy the name.
     entity_name: Arc<str>,
     /// Shared until [`Self::set`] or [`Self::refresh`]. A cache hit clones the `Arc`.
-    fields: Arc<BTreeMap<String, Value>>,
+    fields: Arc<FieldMap>,
+    /// The entity's field names, sorted, on a value made to be written: [`Self::set`] of one of them shares the name.
+    names: Option<EntityNames>,
     /// The entity's localized fields, computed once and shared. Absent when the entity has none.
     l10n: Option<Arc<field_rw::L10nTargets>>,
     /// Created on the first localized read. A `set` replaces it so a clone keeps the old memo.
     l10n_memo: L10nMemo,
     read: ReadState,
+}
+
+/// The field names of an entity, sorted, shared by the values made of it.
+#[derive(Clone)]
+struct EntityNames(Arc<[Arc<str>]>);
+
+impl std::fmt::Debug for EntityNames {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "EntityNames({})", self.0.len())
+    }
 }
 
 /// The localized reads of one value. Empty until the first [`EntityValue::get_localized`].
@@ -109,7 +195,7 @@ struct Read {
     /// Read from the database, or written to it since.
     from_db: bool,
     /// Each field set since the value was read or written, with what it held then (`None`: it held nothing).
-    before: BTreeMap<String, Option<Value>>,
+    before: BTreeMap<Arc<str>, Option<Value>>,
 }
 
 impl ReadState {
@@ -183,7 +269,7 @@ pub(crate) struct LocalizedRead {
     field: String,
     locale: String,
     /// The stored fields the lookup reads: the field itself and the primary key. Every stored field for an expression.
-    fields: BTreeMap<String, Value>,
+    fields: FieldMap,
     /// The entity and the expression of a `pq-expression` alias. Boxed, so a read that needs no lookup stays small.
     pq: Option<Box<(String, String)>>,
 }
@@ -195,18 +281,34 @@ impl LocalizedRead {
             return Some(eval_pq_alias(entity_name, &self.field, expression, &self.fields));
         }
         let found = field_rw::localize_field(facade, &self.l10n.targets, &self.fields, &self.field, &self.locale);
-        let out = found.clone().or_else(|| self.fields.get(&self.field).cloned());
+        let out = found.clone().or_else(|| self.fields.get(self.field.as_str()).cloned());
         lock(&self.l10n.memo).insert((self.field, self.locale), found);
         out
     }
 }
 
+/// What the `UPDATE` that [`EntityFacade::create_or_update_value`] tries first did.
+enum Probe {
+    Updated,
+    /// It matched no row.
+    Missing,
+    /// It was not run.
+    NotTried,
+}
+
 impl EntityValue {
     pub(crate) fn make(facade: &EntityFacade, entity_name: &str) -> Result<Self, Error> {
-        let full_name = facade.with_entity(entity_name, |entity, _, _| Ok(entity.full_name.clone()))?;
+        let (entity_name, names) = facade.with_entity(entity_name, |entity, dialect, _| {
+            if entity.is_view {
+                return Ok((Arc::from(entity.full_name.as_str()), None));
+            }
+            let shape = super::sql_cache::read_shape(facade, entity, dialect);
+            Ok((Arc::clone(&shape.full_name), Some(EntityNames(Arc::clone(&shape.names)))))
+        })?;
         Ok(Self {
-            entity_name: Arc::from(full_name),
+            entity_name,
             fields: Arc::new(BTreeMap::new()),
+            names,
             l10n: None,
             l10n_memo: L10nMemo::default(),
             read: ReadState::default(),
@@ -214,10 +316,11 @@ impl EntityValue {
     }
 
     /// A value read from the database or the entity cache. The rows of one read share `entity_name`.
-    pub(crate) fn from_fields(entity_name: Arc<str>, fields: BTreeMap<String, Value>) -> Self {
+    pub(crate) fn from_fields(entity_name: Arc<str>, fields: FieldMap) -> Self {
         Self {
             entity_name,
             fields: Arc::new(fields),
+            names: None,
             l10n: None,
             l10n_memo: L10nMemo::default(),
             read: ReadState::read(),
@@ -225,7 +328,7 @@ impl EntityValue {
     }
 
     /// The field map, moved out when this value is the only owner.
-    pub(crate) fn into_fields(self) -> BTreeMap<String, Value> {
+    pub(crate) fn into_fields(self) -> FieldMap {
         Arc::try_unwrap(self.fields).unwrap_or_else(|fields| (*fields).clone())
     }
 
@@ -314,7 +417,7 @@ impl EntityValue {
         let fields = l10n
             .targets
             .read_columns(&field)
-            .filter_map(|name| self.fields.get(name).map(|value| (name.to_string(), value.clone())))
+            .filter_map(|name| self.fields.get_key_value(name).map(|(name, value)| (Arc::clone(name), value.clone())))
             .collect();
         Err(LocalizedRead {
             l10n,
@@ -326,14 +429,14 @@ impl EntityValue {
     }
 
     /// Java's `getMap`: every field held, the localized ones in the user's locale, and a view's `pq-expression` aliases.
-    pub fn localized_fields(&self, facade: &EntityFacade) -> BTreeMap<String, Value> {
+    pub fn localized_fields(&self, facade: &EntityFacade) -> FieldMap {
         let mut out = (*self.fields).clone();
         let Some(l10n) = self.l10n.as_deref() else {
             return out;
         };
         for column in l10n.columns().chain(l10n.pq_names()) {
             if let Some(value) = self.get_localized(facade, column) {
-                out.insert(column.to_string(), value);
+                out.insert(Arc::from(column), value);
             }
         }
         out
@@ -341,17 +444,27 @@ impl EntityValue {
 
     /// Set a field. On a value read from the database the first set of a field keeps what it held, as Java's `put`
     /// keeps it in `dbValueMap`, for [`Self::is_field_modified`].
-    pub fn set(&mut self, field: impl Into<String>, value: Value) {
-        let field = field.into();
+    pub fn set(&mut self, field: impl IntoFieldName, value: Value) {
+        // A name the value holds, or one of its entity's, is shared rather than copied.
+        let shared = self
+            .fields
+            .get_key_value(field.name_str())
+            .map(|(name, _)| Arc::clone(name))
+            .or_else(|| {
+                let names = &self.names.as_ref()?.0;
+                let at = names.binary_search_by(|name| (**name).cmp(field.name_str())).ok()?;
+                Some(Arc::clone(&names[at]))
+            });
+        let field = shared.unwrap_or_else(|| field.into_field_name());
         let read = self.read.get_mut();
-        if read.from_db && !read.before.contains_key(&field) {
-            read.before.insert(field.clone(), self.fields.get(&field).cloned());
+        if read.from_db && !read.before.contains_key(&*field) {
+            read.before.insert(field.clone(), self.fields.get(&*field).cloned());
         }
         self.l10n_memo.replace_without(&field);
         Arc::make_mut(&mut self.fields).insert(field, value);
     }
 
-    pub fn fields(&self) -> &BTreeMap<String, Value> {
+    pub fn fields(&self) -> &FieldMap {
         &self.fields
     }
 
@@ -399,7 +512,7 @@ impl EntityValue {
 
     /// What each field set since the value was read or written held then; `None` when the value was not read from
     /// the database, so that an update writes every field it holds.
-    pub(crate) fn read_before(&self) -> Option<BTreeMap<String, Option<Value>>> {
+    pub(crate) fn read_before(&self) -> Option<BTreeMap<Arc<str>, Option<Value>>> {
         let read = self.read.get();
         read.from_db.then(|| read.before.clone())
     }
@@ -531,11 +644,23 @@ impl EntityFacade {
         // updates the row, the Rust-only `update-probe` when it matches none. Otherwise as Java: refresh a clone
         // before choosing the write.
         // Opt in to Java's read-first create-or-update; keep UPDATE-first by default.
-        if moqui_lib::env::get_prop_or_env("create-or-update") != "true"
-            && self.update_if_exists(&copy.entity_name, &copy.fields, before.as_ref())?
-        {
-            value.read.synced();
-            return Ok(());
+        let probe = if moqui_lib::env::get_prop_or_env("create-or-update") == "true" {
+            Probe::NotTried
+        } else {
+            self.update_if_exists(&copy.entity_name, &copy.fields, before.as_ref())?
+        };
+        match probe {
+            Probe::Updated => {
+                value.read.synced();
+                return Ok(());
+            }
+            // The update just saw no row in this transaction, which is what a refresh would read now.
+            Probe::Missing => {
+                self.create_value(&copy)?;
+                value.read.synced();
+                return Ok(());
+            }
+            Probe::NotTried => {}
         }
         let stored = {
             // Java refreshes a throwaway clone without accessing its localized fields.
@@ -583,8 +708,8 @@ impl EntityFacade {
     pub(crate) fn apply_field_defaults(
         &self,
         entity_name: &str,
-        values: &BTreeMap<String, Value>,
-    ) -> Result<BTreeMap<String, Value>, Error> {
+        values: &FieldMap,
+    ) -> Result<FieldMap, Error> {
         self.fill_field_defaults(entity_name, values, DefaultFields::All, None)
     }
 
@@ -595,10 +720,10 @@ impl EntityFacade {
     fn fill_field_defaults(
         &self,
         entity_name: &str,
-        values: &BTreeMap<String, Value>,
+        values: &FieldMap,
         which: DefaultFields,
-        stored: Option<&BTreeMap<String, Value>>,
-    ) -> Result<BTreeMap<String, Value>, Error> {
+        stored: Option<&FieldMap>,
+    ) -> Result<FieldMap, Error> {
         let defaults = self.with_entity(entity_name, |entity, _, _| {
             Ok(entity
                 .fields
@@ -620,15 +745,15 @@ impl EntityFacade {
         })?;
         let mut out = values.clone();
         for (name, default) in defaults {
-            let current = out.get(&name).or_else(|| stored.and_then(|row| row.get(&name)));
+            let current = out.get(name.as_str()).or_else(|| stored.and_then(|row| row.get(name.as_str())));
             if current.is_some_and(|value| !moqui_lib::object::is_empty(value)) {
                 continue;
             }
             let value = match default {
                 FieldDefault::Literal(value) => Some(value),
                 FieldDefault::Field(other) => out
-                    .get(&other)
-                    .or_else(|| stored.and_then(|row| row.get(&other)))
+                    .get(other.as_str())
+                    .or_else(|| stored.and_then(|row| row.get(other.as_str())))
                     .cloned(),
                 // the execution context's effective time, as the Groovy default expression read it
                 FieldDefault::NowTimestamp => Some(crate::user::now_effective_value()),
@@ -642,7 +767,7 @@ impl EntityFacade {
                 }
             };
             if let Some(value) = value.filter(|value| !value.is_null()) {
-                out.insert(name, value);
+                out.insert(Arc::from(name), value);
             }
         }
         Ok(out)
@@ -660,9 +785,9 @@ impl EntityFacade {
     fn write_update(
         &self,
         entity_name: &str,
-        values: &BTreeMap<String, Value>,
-        known: Option<BTreeMap<String, Value>>,
-        before: Option<&BTreeMap<String, Option<Value>>>,
+        values: &FieldMap,
+        known: Option<FieldMap>,
+        before: Option<&BTreeMap<Arc<str>, Option<Value>>>,
     ) -> Result<(), Error> {
         self.reject_view(entity_name, "update")?;
         let (has_defaults, reads_row) = self.with_entity(entity_name, |entity, _, _| {
@@ -747,9 +872,9 @@ impl EntityFacade {
     fn update_columns(
         &self,
         entity_name: &str,
-        stored: Option<&BTreeMap<String, Value>>,
-        plain: &mut BTreeMap<String, Value>,
-        modified: Option<&BTreeSet<String>>,
+        stored: Option<&FieldMap>,
+        plain: &mut FieldMap,
+        modified: Option<&BTreeSet<Arc<str>>>,
     ) -> Result<Option<Vec<String>>, Error> {
         let (mut columns, kept_stamp, create_only, optimistic_lock, has_stamp) =
             self.with_entity(entity_name, |entity, _, _| {
@@ -757,13 +882,13 @@ impl EntityFacade {
                 let mut kept_stamp = false;
                 let mut create_only = Vec::new();
                 for field in entity.fields.iter().filter(|field| !field.is_pk) {
-                    let Some(value) = plain.get(&field.name) else {
+                    let Some(value) = plain.get(field.name.as_str()) else {
                         continue;
                     };
-                    if modified.is_some_and(|modified| !modified.contains(&field.name)) {
+                    if modified.is_some_and(|modified| !modified.contains(field.name.as_str())) {
                         continue;
                     }
-                    let old = stored.map(|row| row.get(&field.name).unwrap_or(&Value::Null));
+                    let old = stored.map(|row| row.get(field.name.as_str()).unwrap_or(&Value::Null));
                     if field.name == STAMP {
                         match old {
                             Some(old) if !old.is_null() && !same_field_value(old, value) => kept_stamp = true,
@@ -815,16 +940,16 @@ impl EntityFacade {
             }
         }
         if has_stamp && !kept_stamp {
-            plain.insert(STAMP.to_string(), self.write_stamp(entity_name));
+            plain.insert(Arc::from(STAMP), self.write_stamp(entity_name));
             columns.push(STAMP.to_string());
         }
         Ok(Some(columns))
     }
 
     /// The first step of [`Self::create_or_update_value`]: one `UPDATE` by primary key, for a row that is probably
-    /// there. Returns `true` when it updated a row. Returns `false` when nothing was written and the caller must
-    /// take the find-then-write path: the row is absent, or this write is one where an update without a prior read
-    /// could differ from the find-then-write path.
+    /// there. [`Probe::Updated`] when it updated a row, [`Probe::Missing`] when it matched none, so the row is created.
+    /// [`Probe::NotTried`] when nothing was run and the caller must take the find-then-write path: this write is one
+    /// where an update without a prior read could differ from the find-then-write path.
     ///
     /// Those are: an ECA rule matches `update` (it must not run for a row that turns out to be new), the update reads
     /// the stored row first (an audit-logged, create-only or defaulted field, optimistic locking, or a data feed
@@ -838,9 +963,9 @@ impl EntityFacade {
     fn update_if_exists(
         &self,
         entity_name: &str,
-        values: &BTreeMap<String, Value>,
-        before: Option<&BTreeMap<String, Option<Value>>>,
-    ) -> Result<bool, Error> {
+        values: &FieldMap,
+        before: Option<&BTreeMap<Arc<str>, Option<Value>>>,
+    ) -> Result<Probe, Error> {
         let eligible = self.with_entity(entity_name, |entity, dialect, _| {
             Ok(dialect.name == "postgres"
                 && !entity.is_view
@@ -854,7 +979,7 @@ impl EntityFacade {
             || self.transactions_for(entity_name)?.transaction_cache_active()
             || load_feed::feed_wants_old(self, entity_name)
         {
-            return Ok(false);
+            return Ok(Probe::NotTried);
         }
         let plain = self.normalize_values(entity_name, values.clone(), true)?;
         // The columns as `update_columns` finds them with no stored row: every non-PK field (of those that changed, for
@@ -867,16 +992,17 @@ impl EntityFacade {
             Ok((has_columns, modified))
         })?;
         if !has_columns {
-            return Ok(false);
+            return Ok(Probe::NotTried);
         }
         let rules = load_feed::match_rules_with(self, entity_name, "update");
         if !rules.is_empty() {
-            return Ok(false);
+            return Ok(Probe::NotTried);
         }
-        Ok(self.finish_write(entity_name, "update-probe", plain, Some(rules), None, modified.as_ref())? > 0)
+        let updated = self.finish_write(entity_name, "update-probe", plain, Some(rules), None, modified.as_ref())?;
+        Ok(if updated > 0 { Probe::Updated } else { Probe::Missing })
     }
 
-    fn write_delete(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
+    fn write_delete(&self, entity_name: &str, values: &FieldMap) -> Result<(), Error> {
         let plain = self.normalize_values(entity_name, values.clone(), false)?;
         self.reject_view(entity_name, "delete")?;
         self.with_entity(entity_name, |entity, _, _| {
@@ -893,8 +1019,8 @@ impl EntityFacade {
     }
 
     /// Insert, or update on a primary-key conflict. Values are sealed the same way as a create.
-    pub(crate) fn upsert_record(&self, entity_name: &str, fields: &BTreeMap<String, Value>) -> Result<(), Error> {
-        let plain = self.normalize_values(entity_name, fields.clone(), false)?;
+    pub(crate) fn upsert_record(&self, entity_name: &str, fields: FieldMap) -> Result<(), Error> {
+        let plain = self.normalize_values(entity_name, fields, false)?;
         self.require_pk(entity_name, &plain)?;
         let mut stack = HashSet::new();
         fk::enforce(self, entity_name, &plain, &mut stack)?;
@@ -913,10 +1039,10 @@ impl EntityFacade {
         &self,
         entity_name: &str,
         operation: &str,
-        plain: BTreeMap<String, Value>,
+        plain: FieldMap,
         rules: Option<Vec<EcaRule>>,
-        stored: Option<BTreeMap<String, Value>>,
-        modified: Option<&BTreeSet<String>>,
+        stored: Option<FieldMap>,
+        modified: Option<&BTreeSet<Arc<str>>>,
     ) -> Result<u64, Error> {
         // `update-probe` is an update that leaves no trace when it matches no row; see `update_if_exists`. It is
         // authorized as an update. Its hit is an `update` when it updated a row, and the Rust-only `update-probe`
@@ -967,7 +1093,7 @@ impl EntityFacade {
                 // What it set is written, as Java's rule sets it on the value; the stamp stays the update's to set.
                 if let Some(modified) = modified.as_mut() {
                     for (name, value) in &plain {
-                        if name != STAMP && before.get(name).is_none_or(|was| !same_field_value(was, value)) {
+                        if &**name != STAMP && before.get(name).is_none_or(|was| !same_field_value(was, value)) {
                             modified.insert(name.clone());
                         }
                     }
@@ -988,11 +1114,11 @@ impl EntityFacade {
         // As Java binds only the fields an update changes, only those and the key are sealed and written: a stored field
         // that could not be decrypted is not written back, and one another transaction changed since the value was read
         // is left as it wrote it.
-        let plain: Cow<'_, BTreeMap<String, Value>> = match &write_columns {
+        let plain: Cow<'_, FieldMap> = match &write_columns {
             Some(columns) => Cow::Owned(self.with_entity(entity_name, |entity, _, _| {
                 Ok(cache_values
                     .iter()
-                    .filter(|(name, _)| columns.contains(*name) || entity.field(name).is_some_and(|field| field.is_pk))
+                    .filter(|(name, _)| columns.iter().any(|column| column == &***name) || entity.field(name).is_some_and(|field| field.is_pk))
                     .map(|(name, value)| (name.clone(), value.clone()))
                     .collect::<BTreeMap<_, _>>())
             })?),
@@ -1088,24 +1214,21 @@ impl EntityFacade {
                 })?;
                 Ok((sql, params))
             })?;
-            affected = execute_tx(&tx, &sql, &params)?;
+            // A data load sends its writes without waiting; an update that then finds no row fails the file later.
+            affected = if !probe && operation != "delete" && pipelining(&tx) {
+                let zero_rows = (operation == "update").then(|| self.missing_update(entity_name, &cache_values));
+                execute_deferred_tx(&tx, &sql, params, zero_rows)?;
+                1
+            } else {
+                execute_tx(&tx, &sql, &params)?
+            };
             if probe {
                 if affected == 0 {
                     return Ok(0);
                 }
                 crate::context::ExecutionContext::with_current(|ctx| ctx.set_hit_detail(Some("update"), None));
             } else if operation == "update" && affected == 0 {
-                // As Java's `updateExtended`: an update of a row that is not there is an error, not a silent no-op.
-                let keys = self
-                    .with_entity(entity_name, |entity, _, _| pk_values(entity, &cache_values))
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|(name, value)| format!("{name}={}", moqui_lib::object::to_plain_string(value)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(Error::new(format!(
-                    "Tried to update a value that does not exist [{entity_name}: {keys}]"
-                )));
+                return Err(Error::new(self.missing_update(entity_name, &cache_values)));
             }
             load_feed::note_touch(self, entity_name, seal_operation, Some(&cache_values), feed_old);
             if let Some(mut values) = after_values {
@@ -1128,18 +1251,30 @@ impl EntityFacade {
         Ok(affected)
     }
 
+    /// As Java's `updateExtended`: an update of a row that is not there is an error, not a silent no-op.
+    fn missing_update(&self, entity_name: &str, values: &FieldMap) -> String {
+        let keys = self
+            .with_entity(entity_name, |entity, _, _| pk_values(entity, values))
+            .unwrap_or_default()
+            .iter()
+            .map(|(name, value)| format!("{name}={}", moqui_lib::object::to_plain_string(value)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("Tried to update a value that does not exist [{entity_name}: {keys}]")
+    }
+
     pub(crate) fn refresh_fields(
         &self,
         entity_name: &str,
-        values: &BTreeMap<String, Value>,
-    ) -> Result<BTreeMap<String, Value>, Error> {
+        values: &FieldMap,
+    ) -> Result<FieldMap, Error> {
         let keys = self.pk_map(entity_name, values)?;
         self.refresh_by_pk(entity_name, &keys)?
             .map(|value| value.into_fields())
             .ok_or_else(|| Error::new(format!("refresh found no {entity_name}")))
     }
 
-    fn refresh_by_pk(&self, entity_name: &str, keys: &BTreeMap<String, Value>) -> Result<Option<EntityValue>, Error> {
+    fn refresh_by_pk(&self, entity_name: &str, keys: &FieldMap) -> Result<Option<EntityValue>, Error> {
         // Refresh bypasses the shared entity cache but still sees transaction-held rows.
         let mut find = self.find(entity_name)?.use_cache(false);
         for (field, value) in keys {
@@ -1151,7 +1286,7 @@ impl EntityFacade {
     pub(crate) fn find_by_pk(
         &self,
         entity_name: &str,
-        keys: &BTreeMap<String, Value>,
+        keys: &FieldMap,
     ) -> Result<Option<EntityValue>, Error> {
         let mut find = self.find(entity_name)?;
         for (field, value) in keys {
@@ -1163,19 +1298,19 @@ impl EntityFacade {
     pub(crate) fn pk_map(
         &self,
         entity_name: &str,
-        values: &BTreeMap<String, Value>,
-    ) -> Result<BTreeMap<String, Value>, Error> {
+        values: &FieldMap,
+    ) -> Result<FieldMap, Error> {
         self.with_entity(entity_name, |entity, _, _| pk_values(entity, values))
     }
 
-    fn require_pk(&self, entity_name: &str, values: &BTreeMap<String, Value>) -> Result<(), Error> {
+    fn require_pk(&self, entity_name: &str, values: &FieldMap) -> Result<(), Error> {
         self.pk_map(entity_name, values).map(|_| ())
     }
 
     pub(crate) fn next_secondary_id(
         &self,
         entity_name: &str,
-        values: &BTreeMap<String, Value>,
+        values: &FieldMap,
     ) -> Result<(String, String), Error> {
         let (seq_field, pad, keys) = self.with_entity(entity_name, |entity, _, _| {
             let pks = entity.pk_field_names();
@@ -1223,14 +1358,14 @@ impl EntityFacade {
     pub(crate) fn normalize_values(
         &self,
         entity_name: &str,
-        mut values: BTreeMap<String, Value>,
+        mut values: FieldMap,
         update: bool,
-    ) -> Result<BTreeMap<String, Value>, Error> {
+    ) -> Result<FieldMap, Error> {
         self.with_entity(entity_name, |entity, _, _| {
             // Converted in place: the map is usually all fields of the entity, so it is not built again.
             let mut known = 0;
             for field in &entity.fields {
-                let Some(value) = values.get_mut(&field.name) else {
+                let Some(value) = values.get_mut(field.name.as_str()) else {
                     continue;
                 };
                 known += 1;
@@ -1244,7 +1379,7 @@ impl EntityFacade {
                 values.retain(|name, _| entity.field(name).is_some());
             }
             if !update && entity.field(STAMP).is_some() && values.get(STAMP).is_none_or(Value::is_null) {
-                values.insert(STAMP.to_string(), self.write_stamp(entity_name));
+                values.insert(Arc::from(STAMP), self.write_stamp(entity_name));
             }
             Ok(values)
         })
@@ -1255,9 +1390,9 @@ impl EntityFacade {
         &self,
         entity_name: &str,
         operation: &str,
-        values: Cow<'a, BTreeMap<String, Value>>,
-        stored: Option<&BTreeMap<String, Value>>,
-    ) -> Result<Cow<'a, BTreeMap<String, Value>>, Error> {
+        values: Cow<'a, FieldMap>,
+        stored: Option<&FieldMap>,
+    ) -> Result<Cow<'a, FieldMap>, Error> {
         let facade = self.clone();
         self.with_entity(entity_name, |entity, _, _| {
             field_rw::before_write_shared(&facade, entity, operation, values, stored)
@@ -1293,15 +1428,14 @@ impl EntityFacade {
     }
 }
 
-fn pk_values(entity: &EntityDefinition, values: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
+fn pk_values(entity: &EntityDefinition, values: &FieldMap) -> Result<FieldMap, Error> {
     let mut keys = BTreeMap::new();
     for pk in entity.pk_field_names() {
-        let value = values
-            .get(pk)
-            .filter(|value| !value.is_null())
-            .cloned()
+        let (name, value) = values
+            .get_key_value(pk)
+            .filter(|(_, value)| !value.is_null())
             .ok_or_else(|| Error::new(format!("primary key {pk} is required on {}", entity.full_name)))?;
-        keys.insert(pk.to_string(), value);
+        keys.insert(Arc::clone(name), value.clone());
     }
     if keys.is_empty() {
         return Err(Error::new(format!("{} has no primary key", entity.full_name)));
@@ -1310,15 +1444,15 @@ fn pk_values(entity: &EntityDefinition, values: &BTreeMap<String, Value>) -> Res
 }
 
 /// Primary-key values in the order [`pk_condition`] binds them.
-fn pk_params(entity: &EntityDefinition, values: &BTreeMap<String, Value>) -> Result<Vec<Value>, Error> {
+fn pk_params(entity: &EntityDefinition, values: &FieldMap) -> Result<Vec<Value>, Error> {
     Ok(pk_values(entity, values)?.into_values().collect())
 }
 
-fn pk_condition(entity: &EntityDefinition, values: &BTreeMap<String, Value>) -> Result<Condition, Error> {
+fn pk_condition(entity: &EntityDefinition, values: &FieldMap) -> Result<Condition, Error> {
     let keys = pk_values(entity, values)?;
     let mut parts: Vec<Condition> = keys
         .into_iter()
-        .map(|(field, value)| Condition::equals(field, value))
+        .map(|(field, value)| Condition::equals(&*field, value))
         .collect();
     if parts.len() == 1 {
         return Ok(parts.remove(0));
@@ -1328,7 +1462,7 @@ fn pk_condition(entity: &EntityDefinition, values: &BTreeMap<String, Value>) -> 
 
 fn present_columns<'a>(
     entity: &'a EntityDefinition,
-    values: &BTreeMap<String, Value>,
+    values: &FieldMap,
     include_null: bool,
     skip_pk: bool,
 ) -> Vec<&'a str> {
@@ -1339,13 +1473,13 @@ fn present_columns<'a>(
             if skip_pk && field.is_pk {
                 return false;
             }
-            matches!(values.get(&field.name), Some(value) if include_null || !value.is_null())
+            matches!(values.get(field.name.as_str()), Some(value) if include_null || !value.is_null())
         })
         .map(|field| field.name.as_str())
         .collect()
 }
 
-fn bind_columns(columns: &[&str], values: &BTreeMap<String, Value>) -> Vec<Value> {
+fn bind_columns(columns: &[&str], values: &FieldMap) -> Vec<Value> {
     columns
         .iter()
         .map(|column| values.get(*column).cloned().unwrap_or(Value::Null))
@@ -1508,8 +1642,8 @@ impl FieldDefault {
 /// `dbValueMap` and then the value map.
 fn eval_field_default(
     expression: &str,
-    values: &BTreeMap<String, Value>,
-    stored: Option<&BTreeMap<String, Value>>,
+    values: &FieldMap,
+    stored: Option<&FieldMap>,
 ) -> Result<Value, Error> {
     let _frame = crate::script::ContextFrame::push();
     for (name, value) in stored.into_iter().flatten().chain(values) {
@@ -1521,7 +1655,7 @@ fn eval_field_default(
 /// A `pq-expression` alias's value, as Java's `get` evaluates it with the row's stored fields in the context. A failing
 /// expression is logged and reads as null, where Java throws: as for other independent pieces (AGENTS.md failure
 /// tolerance), one bad expression does not fail the read of a row, its map, or a form-list of such rows.
-fn eval_pq_alias(entity_name: &str, alias: &str, expression: &str, fields: &BTreeMap<String, Value>) -> Value {
+fn eval_pq_alias(entity_name: &str, alias: &str, expression: &str, fields: &FieldMap) -> Value {
     let evaluated = (|| {
         let _frame = crate::script::ContextFrame::push();
         for (name, value) in fields {
@@ -1567,9 +1701,9 @@ fn update_reads_row(entity: &EntityDefinition) -> bool {
 /// when a primary key field changed: the value names another row, so each field it holds is written.
 fn modified_fields(
     entity: &EntityDefinition,
-    before: &BTreeMap<String, Option<Value>>,
-    plain: &BTreeMap<String, Value>,
-) -> Option<BTreeSet<String>> {
+    before: &BTreeMap<Arc<str>, Option<Value>>,
+    plain: &FieldMap,
+) -> Option<BTreeSet<Arc<str>>> {
     let mut names = BTreeSet::new();
     for (name, old) in before {
         let (Some(field), Some(value)) = (entity.field(name), plain.get(name)) else {
@@ -1581,7 +1715,7 @@ fn modified_fields(
         if field.is_pk {
             return None;
         }
-        if name == STAMP && old.as_ref().is_none_or(Value::is_null) {
+        if &**name == STAMP && old.as_ref().is_none_or(Value::is_null) {
             continue;
         }
         names.insert(name.clone());
@@ -1592,9 +1726,9 @@ fn modified_fields(
 /// Each field of `row`, a stored row just read, that `modified` does not name into `values`, the fields of an update of a
 /// value read from the database: such a value holds a field it did not change as it read it, and another transaction
 /// may have written it since. The stamp stays the value's, for the optimistic lock check.
-fn take_unmodified(values: &mut BTreeMap<String, Value>, row: &BTreeMap<String, Value>, modified: &BTreeSet<String>) {
+fn take_unmodified(values: &mut FieldMap, row: &FieldMap, modified: &BTreeSet<Arc<str>>) {
     for (name, value) in row {
-        if name != STAMP && !modified.contains(name) {
+        if &**name != STAMP && !modified.contains(name) {
             values.insert(name.clone(), value.clone());
         }
     }

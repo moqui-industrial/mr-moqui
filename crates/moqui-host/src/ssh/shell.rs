@@ -187,7 +187,14 @@ fn execute(factory: &ExecutionContextFactory, username: &str, command: &str, res
             let list = rows
                 .values()
                 .iter()
-                .map(|row| Value::Map(row.fields().clone().into_iter().collect()))
+                .map(|row| {
+                    Value::Map(
+                        row.fields()
+                            .iter()
+                            .map(|(name, value)| (name.to_string(), value.clone()))
+                            .collect(),
+                    )
+                })
                 .collect();
             Ok(Outcome::ok(to_json(&Value::List(list))))
         }

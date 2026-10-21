@@ -228,14 +228,14 @@ pub fn apply_remote(facade: &EntityFacade, topic: &str, message: &TopicMessage) 
             .filter(|name| !name.is_empty())
             .ok_or_else(|| Error::new("entity-cache-invalidate body has no entityName"))?;
         // With the written row's key, only the cached finds it may have changed go.
-        let primary_key: Option<std::collections::BTreeMap<String, Value>> = message
+        let primary_key: Option<crate::entity::FieldMap> = message
             .body
             .get("primaryKey")
             .and_then(serde_json::Value::as_object)
             .filter(|keys| !keys.is_empty())
             .map(|keys| {
                 keys.iter()
-                    .map(|(name, value)| (name.clone(), moqui_lib::json::from_json(value)))
+                    .map(|(name, value)| (std::sync::Arc::from(name.as_str()), moqui_lib::json::from_json(value)))
                     .collect()
             });
         crate::entity::cache::clear_one_cache(facade, name, primary_key.as_ref()).map_err(Error::from)?;
@@ -272,7 +272,7 @@ pub(crate) fn note_write(
     facade: &EntityFacade,
     entity_name: &str,
     pk_fields: &[String],
-    values: &std::collections::BTreeMap<String, Value>,
+    values: &crate::entity::FieldMap,
 ) -> Result<(), Error> {
     // No peer and no local listener: there is no one to tell, so the message (a UUID and a JSON body) is not built.
     if !is_linked(facade) && !notify::has_listeners(ENTITY_CACHE_INVALIDATE) {
@@ -717,11 +717,11 @@ fn post_with_retry(sender: &Arc<dyn Sender>, base_url: &str, topic: &str, payloa
 fn invalidation_body(
     entity_name: &str,
     pk_fields: &[String],
-    values: &std::collections::BTreeMap<String, Value>,
+    values: &crate::entity::FieldMap,
 ) -> serde_json::Value {
     let mut primary_key = serde_json::Map::new();
     for name in pk_fields {
-        if let Some(value) = values.get(name).filter(|value| !value.is_null()) {
+        if let Some(value) = values.get(name.as_str()).filter(|value| !value.is_null()) {
             primary_key.insert(name.clone(), moqui_lib::json::to_json(value));
         }
     }

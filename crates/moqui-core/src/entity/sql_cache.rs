@@ -33,8 +33,11 @@ use super::facade::EntityFacade;
 /// A find of every field of a plain entity, in one dialect.
 pub(crate) struct ReadShape {
     dialect: String,
+    pub(crate) full_name: Arc<str>,
     /// Field name and Java type, the columns a row is read with.
-    pub(crate) columns: Arc<[(String, String)]>,
+    pub(crate) columns: Arc<[(Arc<str>, String)]>,
+    /// The same names, sorted, for a value made of the entity to share ([`super::EntityValue::set`]).
+    pub(crate) names: Arc<[Arc<str>]>,
     /// `SELECT <every column> FROM <table>`, for [`moqui_db::sql::select_with_head`].
     pub(crate) head: String,
     /// The select by the single primary key, rendered by the first such find.
@@ -68,13 +71,18 @@ pub(crate) fn read_shape(facade: &EntityFacade, entity: &EntityDefinition, diale
     if let Some(shape) = known {
         return shape;
     }
+    let columns: Arc<[(Arc<str>, String)]> = entity
+        .fields
+        .iter()
+        .map(|field| (Arc::from(field.name.as_str()), field.java_type.clone()))
+        .collect();
+    let mut names: Vec<Arc<str>> = columns.iter().map(|(name, _)| Arc::clone(name)).collect();
+    names.sort();
     let shape = Arc::new(ReadShape {
         dialect: dialect.name.clone(),
-        columns: entity
-            .fields
-            .iter()
-            .map(|field| (field.name.clone(), field.java_type.clone()))
-            .collect(),
+        full_name: Arc::from(entity.full_name.as_str()),
+        columns,
+        names: names.into(),
         head: moqui_db::sql::select_head(entity, dialect, &[]),
         select_pk: OnceLock::new(),
     });

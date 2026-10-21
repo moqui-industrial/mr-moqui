@@ -596,6 +596,17 @@ impl TransactionManager {
         self.with_frames(|frames| active(frames).is_some_and(|frame| frame.rollback_only.is_some()))
     }
 
+    /// Wait for what the enlisted connection sent without waiting ([`DbConnection::execute_deferred`]) and report the
+    /// first that failed, which marks the frame rollback-only as a failed statement does. Nothing when no connection
+    /// is enlisted.
+    pub fn finish_deferred(&self) -> Result<(), Error> {
+        let enlisted = self.has_active() && self.active_conn().is_ok_and(|slot| slot.borrow().is_some());
+        if !enlisted {
+            return Ok(());
+        }
+        self.with_connection(|conn| conn.finish_deferred())
+    }
+
     /// True when this thread has an active frame, as Java `isTransactionInPlace`. A thread whose
     /// frames are all suspended, as in an `ignore` plus `force-new` body, has no transaction in place.
     pub fn in_transaction(&self) -> bool {

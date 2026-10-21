@@ -686,7 +686,7 @@ fn find_entity(
                 row.fields()
                     .iter()
                     .filter(|(_, value)| !value.is_null())
-                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .map(|(name, value)| (name.to_string(), value.clone()))
                     .collect(),
             )),
         }

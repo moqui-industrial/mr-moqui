@@ -16,7 +16,7 @@
 //! definitions it needs are read once and kept on the facade until one of them is written.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use moqui_db::sql::{
@@ -25,6 +25,7 @@ use moqui_db::sql::{
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
 
+use crate::entity::FieldMap;
 use super::loader::canonical_name;
 use super::{error_chain, with_load_slot, FeedServiceNames};
 use crate::driver::{DbConnection, DbRow};
@@ -48,10 +49,10 @@ pub(super) struct Touch {
     operation: String,
     /// The written values. The feed reads keys from them, and a related delete walks back to the
     /// primary entity from them. `None` falls back to the Postgres `xmin` probe. Shared with the write's other hooks.
-    fields: Option<Arc<BTreeMap<String, Value>>>,
+    fields: Option<Arc<FieldMap>>,
     /// For an update of a feed entity, the row as it was before, so an update that changes no document field is
     /// not fed (Java's `oldValues`). `None` feeds the update.
-    old: Option<BTreeMap<String, Value>>,
+    old: Option<FieldMap>,
 }
 
 struct Agg {
@@ -83,8 +84,8 @@ pub(crate) fn note_touch(
     facade: &EntityFacade,
     entity_name: &str,
     operation: &str,
-    fields: Option<&Arc<BTreeMap<String, Value>>>,
-    old: Option<BTreeMap<String, Value>>,
+    fields: Option<&Arc<FieldMap>>,
+    old: Option<FieldMap>,
 ) {
     let Some(tx) = facade.transactions_for(entity_name).ok() else {
         return;
@@ -128,18 +129,18 @@ pub(crate) fn feed_wants_old(facade: &EntityFacade, entity_name: &str) -> bool {
 /// Java's `dataFeedCheckAndRegister` for one document: a create or update is fed when it sets or changes one of the
 /// document's fields of this entity, and has no other value in a field a document condition names. A delete is
 /// always fed.
-fn touch_feeds(target: &DocTarget, touch: &Touch, fields: &BTreeMap<String, Value>) -> bool {
+fn touch_feeds(target: &DocTarget, touch: &Touch, fields: &FieldMap) -> bool {
     if touch.operation == "delete" {
         return true;
     }
     let text = |value: &Value| moqui_lib::object::to_plain_string(value);
     let changed = target.fields.iter().any(|name| {
-        let Some(value) = fields.get(name) else {
+        let Some(value) = fields.get(name.as_str()) else {
             return false;
         };
         match (&touch.old, touch.operation.as_str()) {
             (Some(old), "update") => old
-                .get(name)
+                .get(name.as_str())
                 .map_or(!value.is_null(), |before| text(before) != text(value)),
             _ => !value.is_null(),
         }
@@ -150,7 +151,7 @@ fn touch_feeds(target: &DocTarget, touch: &Touch, fields: &BTreeMap<String, Valu
     // A field the write does not set is left to the document query.
     target.conditions.iter().all(|(name, wanted)| {
         fields
-            .get(name)
+            .get(name.as_str())
             .filter(|value| !value.is_null())
             .is_none_or(|value| &text(value) == wanted)
     })
@@ -330,7 +331,7 @@ fn insert_pending(
 }
 
 /// Primary key values joined with `::`, or `None` when one is missing.
-fn pk_text(facade: &EntityFacade, entity_name: &str, fields: &BTreeMap<String, Value>) -> Option<String> {
+fn pk_text(facade: &EntityFacade, entity_name: &str, fields: &FieldMap) -> Option<String> {
     let names = facade
         .with_entity(entity_name, |entity, _, _| {
             Ok(entity
@@ -342,7 +343,7 @@ fn pk_text(facade: &EntityFacade, entity_name: &str, fields: &BTreeMap<String, V
         .ok()?;
     let mut parts = Vec::with_capacity(names.len());
     for name in &names {
-        let text = scalar_text(fields.get(name)?)?;
+        let text = scalar_text(fields.get(name.as_str())?)?;
         if text.is_empty() {
             return None;
         }
@@ -356,8 +357,8 @@ fn reread(
     facade: &EntityFacade,
     conn: &mut dyn DbConnection,
     entity_name: &str,
-    fields: &BTreeMap<String, Value>,
-) -> Result<Option<BTreeMap<String, Value>>, Error> {
+    fields: &FieldMap,
+) -> Result<Option<FieldMap>, Error> {
     let (names, pk_names) = facade.with_entity(entity_name, |entity, _, _| {
         Ok((
             entity.fields.iter().map(|field| field.name.clone()).collect::<Vec<_>>(),
@@ -370,7 +371,7 @@ fn reread(
     })?;
     let mut conds = Vec::new();
     for name in &pk_names {
-        match fields.get(name) {
+        match fields.get(name.as_str()) {
             Some(value) if !value.is_null() => {
                 conds.push(Condition::equals(FieldRef::new(name.clone()), value.clone()))
             }
@@ -387,7 +388,7 @@ fn select_rows(
     entity_name: &str,
     names: &[String],
     condition: Condition,
-) -> Result<Vec<BTreeMap<String, Value>>, Error> {
+) -> Result<Vec<FieldMap>, Error> {
     let columns: Vec<&str> = names.iter().map(String::as_str).collect();
     let (sql, params) = select_sql(facade, entity_name, &columns, Some(condition))?;
     let rows = probe_query(conn, &sql, &params)?;
@@ -396,7 +397,7 @@ fn select_rows(
         .map(|row| {
             names
                 .iter()
-                .map(|name| (name.clone(), cell_value(row, name).cloned().unwrap_or(Value::Null)))
+                .map(|name| (Arc::from(name.as_str()), cell_value(row, name).cloned().unwrap_or(Value::Null)))
                 .collect()
         })
         .collect())
@@ -410,7 +411,7 @@ fn walk_to_primary(
     facade: &EntityFacade,
     conn: &mut dyn DbConnection,
     path: &[(String, String)],
-    rows: Vec<BTreeMap<String, Value>>,
+    rows: Vec<FieldMap>,
 ) -> Result<Vec<String>, Error> {
     let mut rows = rows;
     for (parent, relationship) in path.iter().rev() {
@@ -424,7 +425,7 @@ fn walk_to_primary(
         for row in &rows {
             let key: Option<Vec<Value>> = pairs
                 .iter()
-                .map(|(_, related)| row.get(related).filter(|value| !value.is_null()).cloned())
+                .map(|(_, related)| row.get(related.as_str()).filter(|value| !value.is_null()).cloned())
                 .collect();
             let Some(key) = key.filter(|key| !key.is_empty()) else {
                 continue;
@@ -1038,16 +1039,18 @@ fn scalar_text(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod filter_tests {
-    use std::collections::{BTreeMap, HashSet};
+    use std::collections::HashSet;
+
+    use crate::entity::FieldMap;
 
     use moqui_lib::object::Value;
 
     use super::{touch_feeds, DocTarget, Touch};
 
-    fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, Value> {
+    fn map(pairs: &[(&str, &str)]) -> FieldMap {
         pairs
             .iter()
-            .map(|(name, value)| ((*name).to_string(), Value::string(*value)))
+            .map(|(name, value)| ((*name).into(), Value::string(*value)))
             .collect()
     }
 
@@ -1064,7 +1067,7 @@ mod filter_tests {
             fields: HashSet::from(["name".to_string(), "kind".to_string()]),
             conditions: vec![("kind".to_string(), "Good".to_string())],
         };
-        let touch = |operation: &str, fields: BTreeMap<String, Value>, old: Option<BTreeMap<String, Value>>| Touch {
+        let touch = |operation: &str, fields: FieldMap, old: Option<FieldMap>| Touch {
             entity_name: "E".to_string(),
             operation: operation.to_string(),
             fields: Some(std::sync::Arc::new(fields)),

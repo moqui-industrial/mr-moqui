@@ -887,7 +887,7 @@ struct ReadPlan {
     sql: String,
     params: Vec<Value>,
     /// Field name and Java type of each column, shared by the finds of an entity that read every field.
-    columns: Arc<[(String, String)]>,
+    columns: Arc<[(Arc<str>, String)]>,
     tx: TransactionManager,
 }
 
@@ -898,7 +898,7 @@ struct ReadPlan {
 pub struct EntityListIterator {
     facade: EntityFacade,
     entity_name: String,
-    columns: Arc<[(String, String)]>,
+    columns: Arc<[(Arc<str>, String)]>,
     tx: Option<TransactionManager>,
     open: bool,
     /// In memory: every row.
@@ -921,7 +921,7 @@ impl EntityListIterator {
     fn stream(
         facade: EntityFacade,
         entity_name: String,
-        columns: Arc<[(String, String)]>,
+        columns: Arc<[(Arc<str>, String)]>,
         tx: TransactionManager,
         scrollable: bool,
     ) -> Self {

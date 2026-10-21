@@ -71,7 +71,7 @@ fn load_embedded_document<R: BufRead>(
             match parse_top(facade, location, &child)? {
                 Some(Top::Record(mut record)) => {
                     apply_default_values(facade, options, &mut record);
-                    total = total.saturating_add(store_record(facade, options, &record)?);
+                    total = total.saturating_add(store_record(facade, options, record)?);
                 }
                 Some(Top::Service(mut service)) => {
                     apply_default_parameters(options, &mut service);
@@ -143,7 +143,7 @@ pub(super) fn load_xml_reader(
         match parse_top(facade, location, &node)? {
             Some(Top::Record(mut record)) => {
                 apply_default_values(facade, options, &mut record);
-                total = total.saturating_add(store_record(facade, options, &record)?);
+                total = total.saturating_add(store_record(facade, options, record)?);
             }
             Some(Top::Service(mut service)) => {
                 apply_default_parameters(options, &mut service);

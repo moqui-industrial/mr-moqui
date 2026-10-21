@@ -236,7 +236,7 @@ fn db_row(pairs: &[(&str, &str)]) -> DbRow {
     DbRow {
         columns: pairs
             .iter()
-            .map(|(name, value)| ((*name).to_string(), Value::string(*value)))
+            .map(|(name, value)| ((*name).into(), Value::string(*value)))
             .collect(),
     }
 }

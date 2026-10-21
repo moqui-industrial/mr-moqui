@@ -4061,7 +4061,6 @@ dependencies = [
  "moqui-tui",
  "mysql",
  "p256",
- "postgres",
  "postgresql_embedded",
  "rcgen",
  "reqwest",
@@ -4072,6 +4071,7 @@ dependencies = [
  "sha2 0.10.9",
  "tar",
  "tokio",
+ "tokio-postgres",
  "tokio-postgres-rustls",
  "tokio-rustls",
  "tokio-tungstenite",
@@ -4931,20 +4931,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "postgres"
-version = "0.19.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33ad20e0aa0b24f5a394eab4f78c781d248982b22b25cecc7e3aa46a681605bd"
-dependencies = [
- "bytes",
- "fallible-iterator 0.2.0",
- "futures-util",
- "log",
- "tokio",
- "tokio-postgres",
-]
-
-[[package]]
 name = "postgres-protocol"
 version = "0.6.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4970,7 +4956,6 @@ checksum = "851ca9db4932932d69f3ea811b1abe63087a0f740a47692619dd40d4899b68be"
 dependencies = [
  "bytes",
  "fallible-iterator 0.2.0",
- "jiff",
  "postgres-protocol",
 ]
 

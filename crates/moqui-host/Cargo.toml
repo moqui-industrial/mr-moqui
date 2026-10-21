@@ -22,7 +22,7 @@ enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx"
 maximal = ["enterprise", "embedded-postgres"]
 
 embedded-postgres = ["postgres", "dep:postgresql_embedded", "dep:tar", "dep:flate2"]
-postgres = ["dep:postgres", "dep:tokio-postgres-rustls"]
+postgres = ["dep:tokio-postgres", "dep:tokio-postgres-rustls"]
 mysql = ["dep:mysql"]
 axum = ["dep:axum", "dep:tower", "dep:tower-http", "dep:hyper", "dep:hyper-util", "dep:futures-util"]
 pdf = ["dep:tokio-tungstenite", "dep:futures-util"]
@@ -67,7 +67,7 @@ serde_json = { workspace = true }
 postgresql_embedded = { workspace = true, optional = true }
 tar = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
-postgres = { workspace = true, optional = true }
+tokio-postgres = { workspace = true, optional = true }
 tokio-postgres-rustls = { workspace = true, optional = true }
 mysql = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
@@ -126,6 +126,13 @@ test = false
 # CARGO_PROFILE_RELEASE_DEBUG=1 cargo test --release -p moqui-host --test service_speed -- --ignored --nocapture
 [[test]]
 name = "service_speed"
+test = false
+
+# Opt-in entity data loader timings: generated XML, CSV and JSON files and the framework data. Not linked by a
+# default `cargo test`.
+# CARGO_PROFILE_RELEASE_DEBUG=1 cargo test --release -p moqui-host --test data_load_speed -- --ignored --nocapture
+[[test]]
+name = "data_load_speed"
 test = false
 
 # Scripted Gallery and Party screens on embedded Postgres, run by scripts/check-packages.sh:

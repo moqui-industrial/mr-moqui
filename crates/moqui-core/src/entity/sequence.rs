@@ -22,7 +22,7 @@
 //! Each sequence name has its own bank lock. A refill holds only that name's lock, so a slow or blocked
 //! refill of one name does not stop ids for the others.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -30,6 +30,7 @@ use moqui_db::sql::{is_mysql, is_sqlite, quote_column, quote_physical_ident};
 use moqui_lib::error::Error;
 use moqui_lib::object::{basic_convert, Value};
 
+use super::value::FieldMap;
 use super::exec::{query_conn, with_reserve_tx};
 use super::facade::EntityFacade;
 use crate::driver::DbConnection;
@@ -177,7 +178,7 @@ struct SeqSql {
 pub(crate) fn assign_primary(
     facade: &EntityFacade,
     entity_name: &str,
-    values: &BTreeMap<String, Value>,
+    values: &FieldMap,
 ) -> Result<(String, String), Error> {
     let spec = facade.with_entity(entity_name, |entity, _, _| {
         let pk_field = entity
@@ -211,7 +212,7 @@ pub(crate) fn assign_primary(
 }
 
 /// The entity's `sequence-primary-prefix`, with `${}` run against the value's fields.
-pub(super) fn expand_prefix(raw: Option<&str>, values: &BTreeMap<String, Value>) -> Result<Option<String>, Error> {
+pub(super) fn expand_prefix(raw: Option<&str>, values: &FieldMap) -> Result<Option<String>, Error> {
     match raw {
         Some(raw) if raw.contains("${") => {
             let _frame = crate::script::ContextFrame::push();

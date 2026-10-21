@@ -400,7 +400,7 @@ impl MemConn {
             return Ok((
                 1,
                 vec![DbRow {
-                    columns: vec![("1".to_string(), Value::I64(1))],
+                    columns: vec![("1".into(), Value::I64(1))],
                 }],
             ));
         }
@@ -444,7 +444,7 @@ impl MemConn {
             .map(|row| DbRow {
                 columns: columns
                     .iter()
-                    .map(|(column, alias)| (alias.clone(), row.get(column).cloned().unwrap_or(Value::Null)))
+                    .map(|(column, alias)| (alias.as_str().into(), row.get(column).cloned().unwrap_or(Value::Null)))
                     .collect(),
             })
             .collect();
@@ -479,7 +479,7 @@ impl MemConn {
         Ok((
             1,
             vec![DbRow {
-                columns: vec![("seq_num".to_string(), Value::I64(end))],
+                columns: vec![("seq_num".into(), Value::I64(end))],
             }],
         ))
     }
@@ -639,7 +639,7 @@ impl MemConn {
             return Ok((
                 1,
                 vec![DbRow {
-                    columns: vec![("count".to_string(), Value::I64(n))],
+                    columns: vec![("count".into(), Value::I64(n))],
                 }],
             ));
         }
@@ -669,7 +669,7 @@ impl MemConn {
             .map(|row| {
                 let mut out = project(row, &query.columns);
                 for (column, name) in out.columns.iter_mut().zip(&query.names) {
-                    column.0.clone_from(name);
+                    column.0 = name.as_str().into();
                 }
                 out
             })
@@ -998,7 +998,7 @@ fn project(row: &Row, columns: &[String]) -> DbRow {
     DbRow {
         columns: columns
             .iter()
-            .map(|name| (name.clone(), row.get(name).cloned().unwrap_or(Value::Null)))
+            .map(|name| (name.as_str().into(), row.get(name).cloned().unwrap_or(Value::Null)))
             .collect(),
     }
 }

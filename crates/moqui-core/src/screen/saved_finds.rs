@@ -327,7 +327,7 @@ pub(crate) fn user_form_list_finds(saved_location: &str) -> Result<Vec<Value>, E
             Value::Map(
                 find.fields()
                     .iter()
-                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .map(|(name, value)| (name.to_string(), value.clone()))
                     .collect(),
             ),
         );

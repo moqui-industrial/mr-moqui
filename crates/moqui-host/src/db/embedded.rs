@@ -878,6 +878,9 @@ mod cluster {
             stream_reads_every_inserted_row(&mut conn);
             rollback_ends_an_aborted_transaction_with_an_open_stream(&mut conn);
             statement_timeout_is_never_lifted_by_rounding(&mut conn);
+            a_pipelined_begin_starts_the_transaction_its_first_statement_runs_in(&mut conn);
+            deferred_writes_run_in_order_and_commit(&mut conn);
+            a_deferred_failure_is_the_next_error_and_stops_the_commit(&mut conn);
 
             let mut other = driver.connect_postgres().unwrap();
             conn.begin().unwrap();
@@ -1430,6 +1433,86 @@ mod cluster {
                 .unwrap();
             assert_eq!(show(conn, "statement_timeout"), "1ms");
             conn.rollback().unwrap();
+        }
+
+        /// `BEGIN` is sent without waiting, and the statement after it runs in the transaction it starts.
+        fn a_pipelined_begin_starts_the_transaction_its_first_statement_runs_in(conn: &mut PostgresConn) {
+            conn.execute("CREATE TABLE piped (n int PRIMARY KEY)", &[]).unwrap();
+            conn.begin().unwrap();
+            conn.execute("INSERT INTO piped (n) VALUES (?)", &[Value::I32(1)]).unwrap();
+            conn.rollback().unwrap();
+            assert!(conn.query("SELECT n FROM piped", &[]).unwrap().is_empty());
+            // `SET LOCAL` outside a transaction does nothing.
+            conn.begin().unwrap();
+            conn.query_once("SET LOCAL application_name = 'piped'", &[]).unwrap();
+            assert_eq!(show(conn, "application_name"), "piped");
+            conn.commit().unwrap();
+            assert_ne!(show(conn, "application_name"), "piped");
+        }
+
+        /// Deferred writes run in the order sent, a read on the connection sees them, and more than the pipeline
+        /// holds commit.
+        fn deferred_writes_run_in_order_and_commit(conn: &mut PostgresConn) {
+            conn.begin().unwrap();
+            for n in 1..=600 {
+                conn.execute_deferred("INSERT INTO piped (n) VALUES (?)", vec![Value::I32(n)], None)
+                    .unwrap();
+            }
+            conn.execute_deferred(
+                "UPDATE piped SET n = ? WHERE n = ?",
+                vec![Value::I32(1000), Value::I32(600)],
+                Some("no row 600".to_string()),
+            )
+            .unwrap();
+            let rows = conn.query("SELECT count(*) AS c, max(n) AS m FROM piped", &[]).unwrap();
+            assert_eq!(rows[0].get("c"), Some(&Value::I64(600)));
+            assert_eq!(rows[0].get("m"), Some(&Value::I32(1000)));
+            conn.execute_deferred("DELETE FROM piped WHERE n > ?", vec![Value::I32(500)], None)
+                .unwrap();
+            conn.commit().unwrap();
+            let rows = conn.query("SELECT count(*) AS c FROM piped", &[]).unwrap();
+            assert_eq!(rows[0].get("c"), Some(&Value::I64(500)));
+            // Out of a transaction it runs at once.
+            conn.execute_deferred("DELETE FROM piped WHERE n > ?", vec![Value::I32(10)], None)
+                .unwrap();
+            let rows = conn.query("SELECT count(*) AS c FROM piped", &[]).unwrap();
+            assert_eq!(rows[0].get("c"), Some(&Value::I64(10)));
+        }
+
+        /// A deferred statement that fails is the error of the next call that waits, not the "transaction is aborted"
+        /// of that call's own statement. Left to the commit, it fails the commit (which would otherwise roll back
+        /// without an error), and so does a deferred update that changed no row.
+        fn a_deferred_failure_is_the_next_error_and_stops_the_commit(conn: &mut PostgresConn) {
+            conn.begin().unwrap();
+            conn.execute_deferred("INSERT INTO piped (n) VALUES (?)", vec![Value::I32(1)], None)
+                .unwrap();
+            let err = conn.query("SELECT n FROM piped", &[]).unwrap_err();
+            assert!(err.message().contains("duplicate key"), "{err}");
+            conn.rollback().unwrap();
+
+            conn.begin().unwrap();
+            conn.execute_deferred("INSERT INTO piped (n) VALUES (?)", vec![Value::I32(11)], None)
+                .unwrap();
+            conn.execute_deferred("INSERT INTO piped (n) VALUES (?)", vec![Value::I32(2)], None)
+                .unwrap();
+            conn.execute_deferred("INSERT INTO piped (n) VALUES (?)", vec![Value::I32(12)], None)
+                .unwrap();
+            let err = conn.commit().unwrap_err();
+            assert!(err.message().contains("duplicate key"), "{err}");
+            conn.rollback().unwrap();
+
+            conn.begin().unwrap();
+            conn.execute_deferred(
+                "UPDATE piped SET n = n WHERE n = ?",
+                vec![Value::I32(99)],
+                Some("no row 99".to_string()),
+            )
+            .unwrap();
+            let err = conn.finish_deferred().unwrap_err();
+            assert_eq!(err.message(), "no row 99");
+            conn.rollback().unwrap();
+            let rows = conn.query("SELECT count(*) AS c FROM piped", &[]).unwrap();
+            assert_eq!(rows[0].get("c"), Some(&Value::I64(10)));
         }
 
         fn show(conn: &mut PostgresConn, name: &str) -> String {

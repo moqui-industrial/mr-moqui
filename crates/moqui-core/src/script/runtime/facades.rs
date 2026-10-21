@@ -560,7 +560,7 @@ impl HostUser {
                     Value::Map(
                         row.fields()
                             .iter()
-                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .map(|(key, value)| (key.to_string(), value.clone()))
                             .collect(),
                     )
                 }))
@@ -660,8 +660,8 @@ fn user_account_snapshot() -> Result<Option<indexmap::IndexMap<String, Value>>, 
     Ok(found.map(|row| {
         row.fields()
             .iter()
-            .filter(|(key, _)| !USER_ACCOUNT_PRIVATE.contains(&key.as_str()))
-            .map(|(key, value)| (key.clone(), value.clone()))
+            .filter(|(key, _)| !USER_ACCOUNT_PRIVATE.contains(&&***key))
+            .map(|(key, value)| (key.to_string(), value.clone()))
             .collect()
     }))
 }
