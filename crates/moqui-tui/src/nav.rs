@@ -105,6 +105,19 @@ impl Nav {
             .chain(std::iter::once(&self.leaf.model))
     }
 
+    /// The models on screen, to change: a dynamic container's body goes in.
+    pub fn models_mut(&mut self) -> impl Iterator<Item = &mut ScreenModel> {
+        self.parents
+            .iter_mut()
+            .map(|level| &mut level.model)
+            .chain(std::iter::once(&mut self.leaf.model))
+    }
+
+    /// The screens asked for, newest first, for the palette's recent group.
+    pub fn history(&self) -> &[Location] {
+        &self.history
+    }
+
     pub fn paths(&self) -> Vec<&str> {
         self.models().map(|model| model.screen.path.as_str()).collect()
     }

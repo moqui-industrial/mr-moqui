@@ -20,17 +20,37 @@
 //! and info boxes, an open drop-down or date picker, the drawer, link numbering, the focused field's editing keys, a
 //! list's rows, and last the keymap.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
+use crate::components::ComponentState;
 use crate::edit::{self, Edited, Limits};
-use crate::forms::{self, FocusItem, FocusKind, Index, Scope};
+use crate::forms::{self, Extra, FocusItem, FocusKind, Index, Scope};
 use crate::keys::{merge_keys, Action, Key, KeyMap, KeyPress, MergeSkip};
 use crate::layout::PAGE_ROWS;
-use crate::link::{row_link, LinkCall, LinkError, MenuItem, Reply, ScreenLink, ShellInfo, TransitionOutcome};
-use crate::model::{Choice, FormList, ScreenModel, Widget};
+use crate::link::{row_link, LinkCall, LinkError, MenuItem, RawBody, Reply, ScreenLink, ShellInfo, TransitionOutcome};
+use crate::model::{Choice, FormList, Node, ScreenModel, Widget};
 use crate::nav::{level_path, Location, Nav};
 use crate::state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, Then};
+
+mod dynamic;
+mod lists;
+mod overlays;
+mod shell;
+mod structure;
+mod submit;
+
+pub use lists::page_count_of;
+use overlays::filtered;
+pub use shell::{ColumnEntry, Columns, Editor, Menu, MenuAct, MenuEntry, Palette, PaletteRow, Prompt, PromptThen};
+pub use structure::{TreeNode, TreeState};
+
+/// Messages kept for Alt+M (section 1.2).
+const HISTORY: usize = 25;
+/// The counters are read again this often while nothing pushes them (section 1.6).
+const COUNTS_SECONDS: u64 = 60;
+/// Typing in a server-search drop-down or the palette waits this long before it asks.
+const SEARCH_MILLIS: u64 = 300;
 
 /// How long a success message stays on the message line (section 1.7).
 const MESSAGE_SECONDS: u64 = 3;
@@ -76,6 +96,34 @@ pub enum Overlay {
     Login(Login),
     /// The drawer has focus, at this row.
     Drawer(usize),
+    /// A list of choices: a button-menu, F10's actions, quick create, saved finds, exports.
+    Menu(Menu),
+    /// Ctrl+K: screens, records, actions and apps by what is typed; `g` goes to a path.
+    Palette(Palette),
+    /// `/`: the text to find on the screen, as it is typed.
+    Search(String),
+    /// Alt+M: the last messages.
+    Messages,
+    /// The editor of a click-to-edit value.
+    Editor(Editor),
+    /// The fields of row `n` of a list.
+    Row(String, usize),
+    /// The columns of a list, to show, hide and order.
+    Columns(Columns),
+    /// A line to type, as a new saved find's name.
+    Prompt(Prompt),
+}
+
+/// Something the session does at a time rather than on a key (section 3.5): the loop asks [`Session::next_deadline`]
+/// when to wake, and calls [`Session::on_time`] then.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Timer {
+    /// Read the title line's counters again.
+    Counts,
+    /// Ask for a server-search drop-down's options, once the typing has stopped.
+    Suggest(String),
+    /// Ask the palette's search, once the typing has stopped.
+    Palette,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -101,6 +149,7 @@ struct Submitted {
     keys: Vec<String>,
     submit_message: String,
     background_hide_id: String,
+    background_reload_id: String,
     then: Option<Then>,
 }
 
@@ -136,6 +185,36 @@ pub struct Session {
     log_open: bool,
     page_rows: Option<usize>,
     mobile: bool,
+    timers: BTreeMap<Timer, Instant>,
+    /// The terminal's columns, for a component's wide layout.
+    columns: u16,
+    /// Dialogs that are not in a screen: a quick create's form, the tray, a document, an export as text.
+    extras: Vec<Extra>,
+    /// The tray's tab while the tray shows.
+    tray_tab: usize,
+    /// Boxes the user opened or closed.
+    collapsed: BTreeMap<String, bool>,
+    trees: BTreeMap<String, TreeState>,
+    components: BTreeMap<String, ComponentState>,
+    /// A display's text from its value url, by field id.
+    shown_text: BTreeMap<String, String>,
+    /// The bodies of dynamic dialogs and containers by node id, kept so a reload of the screen does not blank them.
+    fragments: BTreeMap<String, Vec<Node>>,
+    /// The last messages, newest last.
+    history: VecDeque<Message>,
+    /// The text `/` looks for and `n` and `N` go on with.
+    search: String,
+    /// The palette search's answer: the text it was for, and its rows.
+    palette_found: (String, Vec<PaletteRow>),
+    /// The screen's documents, title and index, for the help.
+    docs: Vec<(String, String)>,
+    /// The screen's saved finds, for the drawer.
+    finds: Vec<MenuItem>,
+    counts: BTreeMap<String, i64>,
+    /// Files the server sent (exports), for the loop to save.
+    downloads: Vec<RawBody>,
+    /// Markdown text areas showing their preview (F4).
+    previews: BTreeSet<String>,
 }
 
 impl Session {
@@ -169,6 +248,23 @@ impl Session {
             log_open: false,
             page_rows: None,
             mobile: false,
+            timers: BTreeMap::new(),
+            columns: 0,
+            extras: Vec::new(),
+            tray_tab: 0,
+            collapsed: BTreeMap::new(),
+            trees: BTreeMap::new(),
+            components: BTreeMap::new(),
+            shown_text: BTreeMap::new(),
+            fragments: BTreeMap::new(),
+            history: VecDeque::new(),
+            search: String::new(),
+            palette_found: (String::new(), Vec::new()),
+            docs: Vec::new(),
+            finds: Vec::new(),
+            counts: BTreeMap::new(),
+            downloads: Vec::new(),
+            previews: BTreeSet::new(),
         };
         session.reindex(false);
         session.show_model_messages();
@@ -230,6 +326,18 @@ impl Session {
                 Err(err) => self.set_message(format!("Could not load the menu: {err}"), true),
             },
             (Purpose::Login, Reply::Login(result)) => self.login_reply(result),
+            (Purpose::Fragment(id), Reply::Fragment(result)) => self.fragment_reply(&id, result),
+            (Purpose::ValueUrl(field), Reply::Json(result)) => self.value_reply(&field, result),
+            (Purpose::Palette, Reply::Json(result)) => self.palette_reply(result),
+            (Purpose::Counts, Reply::Json(result)) => self.counts_reply(result),
+            (Purpose::Tree(key), Reply::Json(result)) => self.tree_reply(&key, result),
+            (Purpose::Component(id), Reply::Json(result)) => self.component_reply(&id, result),
+            (Purpose::Menu, Reply::Json(result)) => self.menu_reply(result),
+            (Purpose::Help, Reply::Json(result)) => self.doc_reply(result),
+            (Purpose::Export, Reply::Raw(result)) => self.export_reply(result),
+            (Purpose::Preference, Reply::Json(Err(err))) => {
+                self.set_message(format!("Could not keep the choice: {err}"), true);
+            }
             _ => {}
         }
     }
@@ -258,6 +366,7 @@ impl Session {
     /// The terminal size changed. The page size of a list follows the rows (10 to 100), and below 80 columns the
     /// mobile column set is asked for (section 1.3). A change reloads the screen.
     pub fn resize(&mut self, columns: u16, rows: u16) {
+        self.columns = columns;
         let page_rows = usize::from(rows).saturating_sub(14).clamp(PAGE_ROWS, 100);
         let mobile = columns < 80;
         let changed = self.page_rows != Some(page_rows) || self.mobile != mobile;
@@ -385,9 +494,49 @@ impl Session {
         self.message.until.is_some_and(|until| Instant::now() >= until)
     }
 
-    /// When the loop has something timed to do: the success message's expiry.
+    /// When the loop has something timed to do: the success message's expiry, the counters' next read, a field's
+    /// suggestions.
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.message.until.filter(|_| !self.message_expired())
+        let message = self.message.until.filter(|_| !self.message_expired());
+        message.into_iter().chain(self.timers.values().copied()).min()
+    }
+
+    /// The time is `now`: run the timers that are due. Returns true when the screen changed.
+    pub fn on_time(&mut self, now: Instant) -> bool {
+        let mut changed = false;
+        if self.message.until.is_some_and(|until| now >= until) && !self.message.text.is_empty() {
+            self.clear_message();
+            changed = true;
+        }
+        let due: Vec<Timer> = self
+            .timers
+            .iter()
+            .filter(|(_, at)| **at <= now)
+            .map(|(timer, _)| timer.clone())
+            .collect();
+        for timer in due {
+            self.timers.remove(&timer);
+            self.fire(timer);
+            changed = true;
+        }
+        changed
+    }
+
+    fn fire(&mut self, timer: Timer) {
+        match timer {
+            Timer::Counts => self.read_counts(),
+            Timer::Suggest(field) => self.request_suggestions(&field),
+            Timer::Palette => self.request_palette(),
+        }
+    }
+
+    /// Run `timer` at `at`, in place of an earlier setting of it.
+    fn set_timer(&mut self, timer: Timer, at: Instant) {
+        self.timers.insert(timer, at);
+    }
+
+    pub fn timer(&self, timer: &Timer) -> Option<Instant> {
+        self.timers.get(timer).copied()
     }
 
     pub fn is_busy(&self) -> bool {
@@ -447,7 +596,16 @@ impl Session {
         let Some(drop) = self.dropdown() else {
             return Vec::new();
         };
-        filtered(self.index.choices(&drop.field), &drop.filter)
+        self.drop_choices(&drop.field, &drop.filter)
+    }
+
+    /// A drop-down's choices for what is typed: narrowed here, or as the server's search answered.
+    fn drop_choices(&self, field: &str, filter: &str) -> Vec<Choice> {
+        if self.is_search(field) {
+            self.index.choices(field).to_vec()
+        } else {
+            filtered(self.index.choices(field), filter)
+        }
     }
 
     pub fn row_at(&self, list_id: &str) -> usize {
@@ -554,6 +712,11 @@ impl Session {
         self.index.fields.get(node).map(|field| &field.widget)
     }
 
+    /// A Markdown text area shows its preview rather than its source.
+    pub fn previewing(&self, field: &str) -> bool {
+        self.previews.contains(field)
+    }
+
     /// Whether a field shows now, by its `visible-when`.
     pub fn visible(&self, field_id: &str) -> bool {
         self.index.visible(field_id, &|key| self.edits.get(key).to_string())
@@ -571,8 +734,12 @@ impl Session {
         if self.message_expired() {
             self.clear_message();
         }
-        let handled =
-            self.overlay_key(press) || self.number_key(press) || self.field_key(press) || self.list_key(press);
+        let handled = self.overlay_key(press)
+            || self.number_key(press)
+            || self.field_key(press)
+            || self.list_key(press)
+            || self.tree_key(press)
+            || self.component_key(press);
         if !handled {
             if let Some(action) = self.keys.action(press) {
                 self.act(action);
@@ -615,13 +782,50 @@ impl Session {
                 self.login_key(login, press);
                 true
             }
-            Some(Overlay::Help | Overlay::Info) => {
+            Some(Overlay::Help) => {
+                // A document's number opens it; any other key closes the help. Ctrl+Q still quits.
+                self.overlays.pop();
+                match &press.key {
+                    Key::Char(ch) if press.is_plain() && ch.is_ascii_digit() => self.open_doc(*ch),
+                    _ if self.keys.action(press) == Some(Action::Quit) => self.act(Action::Quit),
+                    _ => {}
+                }
+                true
+            }
+            Some(Overlay::Info | Overlay::Messages) => {
                 // Any key closes them; Ctrl+Q still quits.
                 self.overlays.pop();
                 if self.keys.action(press) == Some(Action::Quit) {
                     self.act(Action::Quit);
                 }
                 true
+            }
+            Some(Overlay::Menu(menu)) => {
+                self.menu_key(menu, press);
+                true
+            }
+            Some(Overlay::Palette(palette)) => {
+                self.palette_key(palette, press);
+                true
+            }
+            Some(Overlay::Search(text)) => {
+                self.search_key(text, press);
+                true
+            }
+            Some(Overlay::Editor(editor)) => {
+                self.editor_key(editor, press);
+                true
+            }
+            Some(Overlay::Columns(columns)) => {
+                self.columns_key(columns, press);
+                true
+            }
+            Some(Overlay::Prompt(prompt)) => {
+                self.prompt_key(prompt, press);
+                true
+            }
+            Some(Overlay::Dialog(id)) if id == shell::TRAY && press.is_plain() && !self.focused_is_text() => {
+                self.tray_key(press)
             }
             Some(Overlay::DropDown(drop)) => {
                 self.dropdown_key(drop, press);
@@ -632,270 +836,8 @@ impl Session {
                 true
             }
             Some(Overlay::Drawer(at)) => self.drawer_key(at, press),
-            Some(Overlay::Dialog(_) | Overlay::Find(_)) | None => false,
+            Some(Overlay::Dialog(_) | Overlay::Find(_) | Overlay::Row(..)) | None => false,
         }
-    }
-
-    fn confirm_key(&mut self, mut confirm: Confirm, press: &KeyPress) {
-        let chosen = match &press.key {
-            Key::Left | Key::Up | Key::BackTab => {
-                confirm.move_by(-1);
-                None
-            }
-            Key::Right | Key::Down | Key::Tab => {
-                confirm.move_by(1);
-                None
-            }
-            Key::Enter => Some(confirm.choice()),
-            Key::Escape | Key::F(12) => Some(confirm.choices()[0]),
-            Key::Char(ch) => confirm
-                .choices()
-                .iter()
-                .find(|choice| {
-                    choice
-                        .chars()
-                        .next()
-                        .is_some_and(|first| first.eq_ignore_ascii_case(ch))
-                })
-                .copied(),
-            _ => None,
-        };
-        self.pop_confirm();
-        match chosen {
-            None => self.overlays.push(Overlay::Confirm(confirm)),
-            Some(choice) => self.finish_confirm(&confirm, choice),
-        }
-    }
-
-    fn pop_confirm(&mut self) {
-        if let Some(at) = self
-            .overlays
-            .iter()
-            .rposition(|overlay| matches!(overlay, Overlay::Confirm(_)))
-        {
-            self.overlays.remove(at);
-        }
-    }
-
-    fn finish_confirm(&mut self, confirm: &Confirm, choice: &str) {
-        match (&confirm.kind, choice) {
-            (ConfirmKind::Leave, "Discard") => {
-                self.edits.reset();
-                self.cursors.clear();
-                self.run_then(confirm.then.clone());
-            }
-            (ConfirmKind::Leave, "Save") => {
-                if let Some(form) = self.first_dirty_form() {
-                    self.submit_form(&form, Some(confirm.then.clone()));
-                } else {
-                    self.set_message("These edits are not in a form that can be saved.".to_string(), true);
-                }
-            }
-            (ConfirmKind::Ask(_), "Yes") => self.run_then(confirm.then.clone()),
-            _ => {}
-        }
-    }
-
-    fn run_then(&mut self, then: Then) {
-        match then {
-            Then::Navigate(url) => self.navigate(&url, true),
-            Then::Back => self.go_back_now(),
-            Then::Quit => self.quit = true,
-            Then::Submit(id) => self.submit_form_of(&id, None, true),
-            Then::FollowLink(id) => self.follow_link_now(&id),
-            Then::Nothing => {}
-        }
-    }
-
-    fn login_key(&mut self, mut login: Login, press: &KeyPress) {
-        let fields = 3;
-        match &press.key {
-            Key::Tab | Key::Down => login.at = (login.at + 1) % fields,
-            Key::BackTab | Key::Up => login.at = (login.at + fields - 1) % fields,
-            Key::Enter => {
-                self.overlays.pop();
-                self.lanes.push(
-                    Purpose::Login,
-                    LinkCall::Login {
-                        username: login.username.clone(),
-                        password: std::mem::take(&mut login.password),
-                        code: std::mem::take(&mut login.code),
-                    },
-                );
-                login.error.clear();
-                self.overlays.push(Overlay::Login(login));
-                return;
-            }
-            Key::Escape | Key::F(12) => {
-                self.overlays.pop();
-                self.set_message("Not logged in.".to_string(), true);
-                return;
-            }
-            _ => {
-                let text = match login.at {
-                    0 => &mut login.username,
-                    1 => &mut login.password,
-                    _ => &mut login.code,
-                };
-                let mut cursor = text.chars().count();
-                edit::apply(text, &mut cursor, press, &Limits::default());
-            }
-        }
-        self.overlays.pop();
-        self.overlays.push(Overlay::Login(login));
-    }
-
-    fn dropdown_key(&mut self, mut drop: DropDown, press: &KeyPress) {
-        let choices = filtered(self.index.choices(&drop.field), &drop.filter);
-        let multiple = matches!(
-            self.field_widget(&drop.field),
-            Some(Widget::DropDown { multiple: true, .. })
-        );
-        let combo = matches!(
-            self.field_widget(&drop.field),
-            Some(Widget::DropDown { combo: true, .. })
-        );
-        let last = choices.len().saturating_sub(1);
-        match &press.key {
-            Key::Up => drop.at = drop.at.saturating_sub(1),
-            Key::Down => drop.at = (drop.at + 1).min(last),
-            Key::PageUp => drop.at = drop.at.saturating_sub(10),
-            Key::PageDown => drop.at = (drop.at + 10).min(last),
-            Key::Home => drop.at = 0,
-            Key::End => drop.at = last,
-            Key::Char(' ') if multiple => {
-                if let Some(choice) = choices.get(drop.at) {
-                    self.toggle_value(&drop.field.clone(), &choice.value);
-                }
-            }
-            Key::Enter => {
-                self.overlays.pop();
-                if !multiple {
-                    let field = drop.field.clone();
-                    match choices.get(drop.at) {
-                        Some(choice) => self.set_buffer(&field, choice.value.clone()),
-                        None if combo && !drop.filter.is_empty() => self.set_buffer(&field, drop.filter.clone()),
-                        None => {}
-                    }
-                    self.submit_on_select(&field);
-                }
-                return;
-            }
-            Key::Escape | Key::F(4) | Key::F(12) => {
-                self.overlays.pop();
-                return;
-            }
-            Key::Backspace => {
-                drop.filter.pop();
-                drop.at = 0;
-            }
-            Key::Char(ch) if press.is_plain() => {
-                drop.filter.push(*ch);
-                drop.at = 0;
-            }
-            _ => {}
-        }
-        self.overlays.pop();
-        self.overlays.push(Overlay::DropDown(drop));
-    }
-
-    fn submit_on_select(&mut self, field: &str) {
-        if matches!(
-            self.field_widget(field),
-            Some(Widget::DropDown {
-                submit_on_select: true,
-                ..
-            })
-        ) {
-            self.submit_form_of(field, None, false);
-        }
-    }
-
-    fn toggle_value(&mut self, field: &str, value: &str) {
-        let mut values: Vec<String> = self
-            .buffer(field)
-            .split(',')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .map(str::to_string)
-            .collect();
-        if let Some(at) = values.iter().position(|item| item == value) {
-            values.remove(at);
-        } else {
-            values.push(value.to_string());
-        }
-        self.set_buffer(field, values.join(","));
-    }
-
-    fn picker_key(&mut self, mut picker: Picker, press: &KeyPress) {
-        let days = |n: i64| jiff::Span::new().days(n);
-        let moved = match &press.key {
-            Key::Left => picker.date.checked_add(days(-1)).ok(),
-            Key::Right => picker.date.checked_add(days(1)).ok(),
-            Key::Up => picker.date.checked_add(days(-7)).ok(),
-            Key::Down => picker.date.checked_add(days(7)).ok(),
-            Key::PageUp => picker.date.checked_add(jiff::Span::new().months(-1)).ok(),
-            Key::PageDown => picker.date.checked_add(jiff::Span::new().months(1)).ok(),
-            Key::Home | Key::Char('t') => Some(jiff::Zoned::now().date()),
-            Key::Enter => {
-                self.overlays.pop();
-                if let Some((format, date_type)) = self.date_format(&picker.key) {
-                    let text = forms::date_text(picker.date, self.buffer(&picker.key), &format, &date_type);
-                    self.set_buffer(&picker.key.clone(), text);
-                }
-                return;
-            }
-            Key::Escape | Key::F(4) | Key::F(12) => {
-                self.overlays.pop();
-                return;
-            }
-            _ => None,
-        };
-        if let Some(date) = moved {
-            picker.date = date;
-        }
-        self.overlays.pop();
-        self.overlays.push(Overlay::Picker(picker));
-    }
-
-    fn date_format(&self, key: &str) -> Option<(String, String)> {
-        match self.field_widget(key)? {
-            Widget::DateTime { format, date_type, .. } => Some((format.clone(), date_type.clone())),
-            Widget::DateFind { format, date_type, .. } => Some((format.clone(), date_type.clone())),
-            Widget::DatePeriod { time, .. } => {
-                Some((String::new(), if *time { "date-time" } else { "date" }.to_string()))
-            }
-            _ => None,
-        }
-    }
-
-    fn drawer_key(&mut self, at: usize, press: &KeyPress) -> bool {
-        let rows = drawer_rows(&self.shell.menu);
-        let last = rows.len().saturating_sub(1);
-        let next = match &press.key {
-            Key::Up => at.saturating_sub(1),
-            Key::Down => (at + 1).min(last),
-            Key::Enter | Key::Right => {
-                self.overlays.pop();
-                if let Some(url) = rows.get(at).map(|row| row.1.clone()) {
-                    self.follow_url(&url);
-                }
-                return true;
-            }
-            Key::F(9) => {
-                self.overlays.pop();
-                self.drawer = Some(false);
-                return true;
-            }
-            Key::Escape | Key::F(12) | Key::Tab => {
-                self.overlays.pop();
-                return true;
-            }
-            _ => return self.keys.action(press) != Some(Action::Quit),
-        };
-        self.overlays.pop();
-        self.overlays.push(Overlay::Drawer(next));
-        true
     }
 
     /// With `#` on, digits name a link and Enter follows it.
@@ -1014,35 +956,6 @@ impl Session {
         }
     }
 
-    /// Up and Down move through a list's rows; past the first or last row they move focus on, as Lynx does.
-    fn list_key(&mut self, press: &KeyPress) -> bool {
-        let Some(item) = self.focus().cloned().filter(|item| item.kind == FocusKind::List) else {
-            return false;
-        };
-        let rows = self.list(&item.key).map_or(0, |list| list.rows.len());
-        let at = self.row_at(&item.key);
-        match (&press.key, press.shift) {
-            (Key::Up, false) if at > 0 => {
-                self.rows.insert(item.key, at - 1);
-                true
-            }
-            (Key::Down, false) if at + 1 < rows => {
-                self.rows.insert(item.key, at + 1);
-                true
-            }
-            (Key::Right, true) => {
-                *self.hscroll.entry(item.key).or_default() += 1;
-                true
-            }
-            (Key::Left, true) => {
-                let scroll = self.hscroll.entry(item.key).or_default();
-                *scroll = scroll.saturating_sub(1);
-                true
-            }
-            _ => false,
-        }
-    }
-
     fn act(&mut self, action: Action) {
         match action {
             Action::Next => self.move_focus(1),
@@ -1051,11 +964,28 @@ impl Session {
             Action::Back => self.back(),
             Action::Cancel => self.cancel(),
             Action::Help => self.overlays.push(Overlay::Help),
+            Action::Palette => self.open_palette(false),
+            Action::GoTo => self.open_palette(true),
+            Action::QuickCreate => self.open_quick_create(),
+            Action::Actions => self.open_actions(),
+            Action::FindText => self.overlays.push(Overlay::Search(String::new())),
+            Action::FindNext => self.find_next(true),
+            Action::FindPrev => self.find_next(false),
+            Action::Messages => self.overlays.push(Overlay::Messages),
+            Action::Tray => self.open_tray(0),
+            Action::EditRow => self.edit_row(),
             Action::Info => self.overlays.push(Overlay::Info),
             Action::Prompt => self.prompt(),
             Action::Refresh => self.reload(),
             Action::PagePrev => self.turn_page(-1),
-            Action::PageNext => self.turn_page(1),
+            Action::PageNext => {
+                // A wizard with no list to page: PgDn is Next.
+                if self.target_list().is_none() && self.index.wizard.is_some() {
+                    self.wizard_next();
+                } else {
+                    self.turn_page(1);
+                }
+            }
             Action::Drawer => self.toggle_drawer(),
             Action::Submit => {
                 let id = self.focus_id().to_string();
@@ -1108,13 +1038,24 @@ impl Session {
             FocusKind::DropDown => self.open_dropdown(&item.key),
             FocusKind::Link => self.follow_link(&item.key),
             FocusKind::List => {
+                // A row that has fields to edit opens its editor; else its first link.
+                let at = self.row_at(&item.key);
+                if self.index.rows.contains_key(&(item.key.clone(), at)) {
+                    self.edit_row();
+                    return;
+                }
                 let rows = self.list_page(&item.key);
-                let link = rows.get(self.row_at(&item.key)).and_then(row_link).map(str::to_string);
+                let link = rows.get(at).and_then(row_link).map(str::to_string);
                 if let Some(url) = link {
                     self.follow_url(&url);
                 }
             }
             FocusKind::Dialog => self.open_dialog(&item.key),
+            FocusKind::Menu => self.open_button_menu(&item.key),
+            FocusKind::Tree => self.tree_enter(&item.key),
+            FocusKind::Toggle => self.toggle_box(&item.key),
+            FocusKind::Edit => self.open_editor(&item.key),
+            FocusKind::Component => {}
             FocusKind::Button => {
                 if matches!(self.field_widget(&item.key), Some(Widget::Reset { .. })) {
                     self.reset_form(&item.key);
@@ -1152,8 +1093,9 @@ impl Session {
 
     fn cancel(&mut self) {
         if let Some(top) = self.overlays.last() {
-            if matches!(top, Overlay::Dialog(_) | Overlay::Find(_)) {
+            if matches!(top, Overlay::Dialog(_) | Overlay::Find(_) | Overlay::Row(..)) {
                 self.overlays.pop();
+                self.drop_closed_extras();
                 self.rebuild_focus();
             }
             return;
@@ -1181,6 +1123,12 @@ impl Session {
                 let date = forms::date_of(self.buffer(&item.key), &format, &date_type);
                 self.overlays.push(Overlay::Picker(Picker { key: item.key, date }));
             }
+            Some(Widget::TextArea { editor_type, .. }) if editor_type == "md" => {
+                // F4 on a Markdown text area shows its preview, and again its source (D12).
+                if !self.previews.remove(&item.key) {
+                    self.previews.insert(item.key.clone());
+                }
+            }
             Some(Widget::TextFind { .. }) => {
                 // F4 on a text find cycles its operator.
                 let field = item.key.split('#').next().unwrap_or(&item.key).to_string();
@@ -1197,113 +1145,19 @@ impl Session {
         }
     }
 
-    /// F9: show the drawer and focus it; again, hide it.
+    /// F9: show the drawer and focus it; again, hide it. The choice is the user's `TUI_DRAWER_OPEN` preference.
     fn toggle_drawer(&mut self) {
         if self.drawer_focus().is_some() {
             self.overlays.retain(|overlay| !matches!(overlay, Overlay::Drawer(_)));
             self.drawer = Some(false);
+            self.keep_drawer(false);
             return;
         }
         self.drawer = Some(true);
-        if !self.shell.menu.is_empty() {
+        self.keep_drawer(true);
+        if !self.drawer_rows().is_empty() {
             self.overlays.push(Overlay::Drawer(0));
         }
-    }
-
-    fn open_dropdown(&mut self, key: &str) {
-        let current = self.buffer(key).to_string();
-        if let Some((url, params)) = self.index.option_query(key, &|k| self.edits.get(k).to_string()) {
-            self.lanes.push(
-                Purpose::Options(key.to_string()),
-                LinkCall::Options {
-                    url,
-                    parameters: params,
-                },
-            );
-        }
-        let at = self
-            .index
-            .choices(key)
-            .iter()
-            .position(|choice| choice.value == current)
-            .unwrap_or(0);
-        self.overlays.push(Overlay::DropDown(DropDown {
-            field: key.to_string(),
-            at,
-            filter: String::new(),
-        }));
-    }
-
-    fn open_dialog(&mut self, id: &str) {
-        if !self.dialogs_open().contains(&id) {
-            self.overlays.push(Overlay::Dialog(id.to_string()));
-        }
-        self.rebuild_focus();
-        self.focus_first_in_scope();
-    }
-
-    fn open_find(&mut self) {
-        let list = self
-            .focus()
-            .filter(|item| item.kind == FocusKind::List)
-            .map(|item| item.key.clone())
-            .or_else(|| self.first_list(true));
-        let Some(list) = list else {
-            return;
-        };
-        if self.list(&list).is_none_or(|list| list.header_fields.is_empty()) {
-            self.set_message("This list has no find fields.".to_string(), false);
-            return;
-        }
-        self.overlays.push(Overlay::Find(list));
-        self.rebuild_focus();
-        self.focus_first_in_scope();
-    }
-
-    fn toggle_row(&mut self) {
-        let Some(list_id) = self
-            .focus()
-            .filter(|item| item.kind == FocusKind::List)
-            .map(|item| item.key.clone())
-        else {
-            return;
-        };
-        let Some(id) = self.selectable_row(&list_id, self.row_at(&list_id)) else {
-            return;
-        };
-        let set = self.selected.entry(list_id).or_default();
-        if !set.remove(&id) {
-            set.insert(id);
-        }
-    }
-
-    fn select_all(&mut self) {
-        let Some(list_id) = self
-            .focus()
-            .filter(|item| item.kind == FocusKind::List)
-            .map(|item| item.key.clone())
-        else {
-            return;
-        };
-        let rows = self.list(&list_id).map_or(0, |list| list.rows.len());
-        let ids: BTreeSet<String> = (0..rows).filter_map(|at| self.selectable_row(&list_id, at)).collect();
-        let set = self.selected.entry(list_id).or_default();
-        if set.len() == ids.len() {
-            set.clear();
-        } else {
-            *set = ids;
-        }
-    }
-
-    fn selectable_row(&self, list_id: &str, at: usize) -> Option<String> {
-        let list = self.list(list_id)?;
-        list.row_selection.as_ref()?;
-        let row = list.rows.get(at)?;
-        Some(if row.select_id.is_empty() {
-            row.id.clone()
-        } else {
-            row.select_id.clone()
-        })
     }
 
     // ---- navigation ----
@@ -1330,6 +1184,20 @@ impl Session {
         let Some(link) = self.index.links.get(id).cloned() else {
             return;
         };
+        if link.kind == "image" {
+            self.set_message(format!("Open in browser: {}", link.url), false);
+            self.open = Some(link.url);
+            return;
+        }
+        if self
+            .index
+            .wizard
+            .as_ref()
+            .is_some_and(|wizard| id == crate::layout::wizard_next(&wizard.id))
+        {
+            self.wizard_next();
+            return;
+        }
         if link.posts() {
             let location = Location::of_url(&link.url);
             self.submitted = Some(Submitted {
@@ -1337,6 +1205,7 @@ impl Session {
                 keys: Vec::new(),
                 submit_message: String::new(),
                 background_hide_id: String::new(),
+                background_reload_id: String::new(),
                 then: None,
             });
             self.lanes.push(
@@ -1432,6 +1301,7 @@ impl Session {
             }
         }
         let app_changed = app_root(&model.screen.path) != app_root(self.path());
+        let path_changed = model.screen.path != self.path();
         let missing = self.nav.set_leaf(model, parameters.clone());
         for path in missing {
             let call = LinkCall::Level {
@@ -1448,16 +1318,24 @@ impl Session {
             self.selected.clear();
             self.hscroll.clear();
             self.cursors.clear();
+            self.extras.clear();
+            self.fragments.clear();
+            self.trees.clear();
+            self.components.clear();
+            self.shown_text.clear();
+            self.collapsed.clear();
             if app_changed && !self.path().is_empty() {
                 let path = self.path().to_string();
                 self.request_shell(&path);
             }
         } else {
-            // A find submit closes its dialog; paging keeps a list's row in range.
+            // A find submit closes its dialog; paging keeps a list's row in range. A list's selection is kept by id.
             self.overlays
                 .retain(|overlay| !matches!(overlay, Overlay::Find(_) | Overlay::DropDown(_)));
+            self.put_fragments();
         }
         self.reindex(!navigate);
+        self.after_screen(navigate, path_changed);
         let keep_message = !self.message.text.is_empty() && !self.message_expired() && !navigate;
         if !keep_message {
             self.clear_message();
@@ -1486,372 +1364,14 @@ impl Session {
         let (keys, skips) = merge_keys(&KeyMap::baseline(), &overrides);
         self.keys = keys;
         self.key_skips = skips;
+        if self.drawer.is_none() {
+            self.drawer = shell.drawer_open;
+        }
+        if !shell.counts.is_empty() {
+            self.counts.clone_from(&shell.counts);
+            self.set_timer(Timer::Counts, Instant::now() + Duration::from_secs(COUNTS_SECONDS));
+        }
         self.shell = shell;
-    }
-
-    fn ask_login(&mut self) {
-        if !self.overlays.iter().any(|overlay| matches!(overlay, Overlay::Login(_))) {
-            self.overlays.push(Overlay::Login(Login {
-                username: self.shell.user.clone(),
-                ..Login::default()
-            }));
-        }
-    }
-
-    fn login_reply(&mut self, result: Result<(), LinkError>) {
-        match result {
-            Ok(()) => {
-                self.overlays.retain(|overlay| !matches!(overlay, Overlay::Login(_)));
-                // The screen asked for when the server wanted the login, and the shell for it. A save that was refused
-                // is not sent again: its edits stay, and the user saves again.
-                let location = self.last_location.clone().unwrap_or_else(|| self.nav.location());
-                self.request_shell(if location.path.is_empty() { "/" } else { &location.path });
-                self.request_level(&location.path, location.parameters, Intent::Navigate { history: false });
-            }
-            Err(err) => {
-                if let Some(Overlay::Login(login)) = self
-                    .overlays
-                    .iter_mut()
-                    .rev()
-                    .find(|overlay| matches!(overlay, Overlay::Login(_)))
-                {
-                    login.error = err.to_string();
-                    login.at = 1;
-                }
-            }
-        }
-    }
-
-    // ---- forms ----
-
-    fn submit_form_of(&mut self, key: &str, then: Option<Then>, confirmed: bool) {
-        let node = key.split('#').next().unwrap_or(key);
-        if !confirmed {
-            if let Some(Widget::Submit { confirm, .. }) = self.field_widget(node) {
-                if !confirm.is_empty() {
-                    let ask = Confirm::ask(confirm.clone(), Then::Submit(node.to_string()));
-                    self.overlays.push(Overlay::Confirm(ask));
-                    return;
-                }
-            }
-        }
-        let Some(form) = self.index.form_of(node).map(|form| form.id.clone()) else {
-            return;
-        };
-        self.submit_form(&form, then);
-    }
-
-    fn submit_form(&mut self, form_id: &str, then: Option<Then>) {
-        if self.lanes.busy(&Purpose::Transition) {
-            return;
-        }
-        let Some(form) = self.index.forms.get(form_id).cloned() else {
-            return;
-        };
-        let values = |key: &str| self.edits.get(key).to_string();
-        let marks = forms::check(&self.index, &form.fields, &values);
-        if !marks.is_empty() {
-            self.apply_marks(marks);
-            return;
-        }
-        let dirty = |key: &str| self.edits.is_dirty(key);
-        let fields = forms::posted(&self.index, &form.fields, &form.hidden, &values, &dirty);
-        if form.transition_url.is_empty() {
-            // A find form: the screen again, with the form's fields as its parameters, from the first page.
-            let mut parameters = self.parameters().clone();
-            for (name, value) in fields {
-                if value.is_empty() {
-                    parameters.remove(&name);
-                } else {
-                    parameters.insert(name, value);
-                }
-            }
-            parameters.remove("pageIndex");
-            self.reload_with(parameters);
-            return;
-        }
-        let keys = form
-            .fields
-            .iter()
-            .filter_map(|id| self.index.fields.get(id))
-            .flat_map(forms::field_keys)
-            .collect();
-        self.submitted = Some(Submitted {
-            form: form.id.clone(),
-            keys,
-            submit_message: form.submit_message.clone(),
-            background_hide_id: form.background_hide_id.clone(),
-            then,
-        });
-        self.lanes.push(
-            Purpose::Transition,
-            LinkCall::Transition {
-                url: form.transition_url.clone(),
-                method: form.method.clone(),
-                fields,
-            },
-        );
-    }
-
-    /// The find dialog of a list: the list again with its header fields as parameters.
-    fn submit_find(&mut self, list_id: &str) {
-        let Some(list) = self.list(list_id) else {
-            return;
-        };
-        let mut ids = Vec::new();
-        crate::model::walk(&list.header_fields, &mut |node| {
-            if let crate::model::Node::Field { id, .. } = node {
-                ids.push(id.clone());
-            }
-        });
-        let values = |key: &str| self.edits.get(key).to_string();
-        let marks = forms::check(&self.index, &ids, &values);
-        if !marks.is_empty() {
-            self.apply_marks(marks);
-            return;
-        }
-        let dirty = |key: &str| self.edits.is_dirty(key);
-        let fields = forms::posted(&self.index, &ids, &[], &values, &dirty);
-        let mut parameters = self.parameters().clone();
-        for (name, value) in fields {
-            if value.is_empty() || value == "N" && name.ends_with("_not") {
-                parameters.remove(&name);
-            } else {
-                parameters.insert(name, value);
-            }
-        }
-        parameters.remove("pageIndex");
-        self.reload_with(parameters);
-    }
-
-    fn transition_reply(&mut self, result: Result<TransitionOutcome, LinkError>) {
-        let submitted = self.submitted.take();
-        let outcome = match result {
-            Ok(outcome) => outcome,
-            Err(err) => {
-                self.set_message(err.to_string(), true);
-                return;
-            }
-        };
-        if !outcome.messages.validation_errors.is_empty() {
-            let marks: Vec<(String, String)> = outcome
-                .messages
-                .validation_errors
-                .iter()
-                .map(|err| {
-                    let id = submitted
-                        .as_ref()
-                        .and_then(|done| self.index.forms.get(&done.form))
-                        .and_then(|form| {
-                            form.fields
-                                .iter()
-                                .find(|id| self.index.fields.get(*id).is_some_and(|field| field.name == err.field))
-                        })
-                        .cloned()
-                        .unwrap_or_else(|| err.field.clone());
-                    (id, err.message.clone())
-                })
-                .collect();
-            // An error for a field the form does not show is on the message line, not lost.
-            let unshown: Vec<String> = marks
-                .iter()
-                .filter(|(id, _)| !self.index.fields.contains_key(id))
-                .map(|(id, text)| format!("{id}: {text}"))
-                .collect();
-            // The line shows the first mark, unless the server sent a message or named a field this form does not show.
-            self.apply_marks(marks);
-            let mut line = outcome.messages.errors.clone();
-            line.extend(unshown);
-            if !line.is_empty() {
-                self.set_message(line.join("; "), true);
-            }
-            return;
-        }
-        if !outcome.messages.errors.is_empty() {
-            // A service error with no field to mark. The edits stay for another try.
-            self.set_message(outcome.messages.errors.join("; "), true);
-            return;
-        }
-        let text = outcome
-            .messages
-            .info
-            .first()
-            .cloned()
-            .or_else(|| submitted.as_ref().map(|done| done.submit_message.clone()))
-            .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| "Saved".to_string());
-        if let Some(done) = &submitted {
-            self.edits.drop_keys(&done.keys);
-            self.edits.clear_marks();
-            if !done.background_hide_id.is_empty() {
-                let hide = done.background_hide_id.clone();
-                self.overlays
-                    .retain(|overlay| overlay != &Overlay::Dialog(hide.clone()));
-            }
-        }
-        let then = submitted.as_ref().and_then(|done| done.then.clone());
-        match then {
-            Some(Then::Navigate(url)) => self.navigate(&url, true),
-            Some(Then::Quit) => self.quit = true,
-            Some(Then::Back) => self.go_back_now(),
-            _ if !outcome.screen_url.is_empty() => {
-                let mut location = Location::of_url(&outcome.screen_url);
-                location.parameters.extend(outcome.parameters.clone());
-                self.request_level(&location.path, location.parameters, Intent::Navigate { history: true });
-            }
-            // Staying here: the screen again, so it shows what was saved, as the web client does. A form's
-            // background-reload-id names a container; with each level its own request, that is this screen.
-            _ => self.reload(),
-        }
-        self.set_message(text.clone(), false);
-        self.after_level = Some(text);
-    }
-
-    fn reset_form(&mut self, key: &str) {
-        let Some(form) = self.index.form_of(key).cloned() else {
-            return;
-        };
-        let keys: Vec<String> = form
-            .fields
-            .iter()
-            .filter_map(|id| self.index.fields.get(id))
-            .flat_map(forms::field_keys)
-            .collect();
-        self.edits.drop_keys(&keys);
-        for key in &keys {
-            self.cursors.remove(key);
-        }
-    }
-
-    fn apply_marks(&mut self, marks: Vec<(String, String)>) {
-        let first = marks.first().map(|(id, _)| id.clone());
-        self.edits.set_marks(marks);
-        if let Some(id) = first {
-            if let Some(at) = self.focus.iter().position(|item| item.key == id || item.node == id) {
-                self.focus_at = at;
-            }
-            if let Some(text) = self.edits.mark(&id) {
-                let text = text.to_string();
-                self.set_message(text, true);
-            }
-        }
-    }
-
-    fn first_dirty_form(&self) -> Option<String> {
-        let key = self.edits.dirty_keys().next()?;
-        let node = key.split('#').next().unwrap_or(key);
-        self.index.form_of(node).map(|form| form.id.clone())
-    }
-
-    /// After a field changed: drop-downs that depend on it fetch their options, and fields shown by its value appear.
-    fn after_edit(&mut self, key: &str) {
-        let node = key.split('#').next().unwrap_or(key).to_string();
-        let Some(name) = self.index.fields.get(&node).map(|field| field.name.clone()) else {
-            return;
-        };
-        for target in self.index.dependents(&name) {
-            if let Some((url, params)) = self.index.option_query(&target, &|k| self.edits.get(k).to_string()) {
-                self.lanes.push(
-                    Purpose::Options(target),
-                    LinkCall::Options {
-                        url,
-                        parameters: params,
-                    },
-                );
-            }
-        }
-        if self.index.watched_by(&name) {
-            self.rebuild_focus();
-        }
-    }
-
-    fn apply_choices(&mut self, field: &str, choices: Vec<Choice>) {
-        let value = self.buffer(field).to_string();
-        let multiple = matches!(self.field_widget(field), Some(Widget::DropDown { multiple: true, .. }));
-        let combo = matches!(self.field_widget(field), Some(Widget::DropDown { combo: true, .. }));
-        let known = |value: &str| choices.iter().any(|choice| choice.value == value);
-        if !value.is_empty() && !combo && !multiple && !known(&value) {
-            self.edits.set(field, String::new());
-        }
-        self.index.set_choices(field, choices);
-        if let Some(Overlay::DropDown(drop)) = self.overlays.last_mut() {
-            if drop.field == field {
-                drop.at = drop.at.min(self.index.choices(field).len().saturating_sub(1));
-            }
-        }
-    }
-
-    // ---- lists ----
-
-    fn first_list(&self, with_find: bool) -> Option<String> {
-        self.focus
-            .iter()
-            .filter(|item| item.kind == FocusKind::List)
-            .map(|item| item.key.clone())
-            .find(|id| !with_find || self.list(id).is_some_and(|list| !list.header_fields.is_empty()))
-    }
-
-    /// The focused list, else the first one on the screen.
-    fn target_list(&self) -> Option<String> {
-        self.focus()
-            .filter(|item| item.kind == FocusKind::List)
-            .map(|item| item.key.clone())
-            .or_else(|| self.first_list(false))
-    }
-
-    fn has_paged_list(&self) -> bool {
-        self.index.lists.values().any(|list| page_count_of(list) > 1)
-    }
-
-    fn turn_page(&mut self, delta: isize) {
-        let Some(list_id) = self.target_list() else {
-            return;
-        };
-        let count = self.page_count(&list_id) as isize;
-        let current = self.page_index(&list_id) as isize;
-        let next = (current + delta).clamp(0, count - 1);
-        if next == current {
-            return;
-        }
-        let mut params = self.parameters().clone();
-        params.insert("pageIndex".to_string(), next.to_string());
-        self.rows.insert(list_id, 0);
-        self.reload_with(params);
-    }
-
-    fn cycle_sort(&mut self) {
-        let Some(list_id) = self
-            .focus()
-            .filter(|item| item.kind == FocusKind::List)
-            .map(|item| item.key.clone())
-        else {
-            return;
-        };
-        let fields: Vec<String> = self
-            .list(&list_id)
-            .map(|list| {
-                list.columns
-                    .iter()
-                    .filter(|column| !column.order_by.is_empty())
-                    .map(|column| column.order_by.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        if fields.is_empty() {
-            self.set_message("This list does not sort.".to_string(), false);
-            return;
-        }
-        let next = next_order(&fields, self.order_by());
-        let mut params = self.parameters().clone();
-        if next.is_empty() {
-            params.remove("orderByField");
-        } else {
-            params.insert("orderByField".to_string(), next);
-        }
-        params.remove("pageIndex");
-        // The rows come back in another order, so the current row starts at the top again.
-        self.rows.insert(list_id, 0);
-        self.reload_with(params);
     }
 
     // ---- focus ----
@@ -1875,6 +1395,7 @@ impl Session {
             .find_map(|overlay| match overlay {
                 Overlay::Dialog(id) => Some(Scope::Dialog(id.clone())),
                 Overlay::Find(id) => Some(Scope::Find(id.clone())),
+                Overlay::Row(list, row) => Some(Scope::Row(list.clone(), *row)),
                 _ => None,
             })
             .unwrap_or(Scope::Main)
@@ -1890,7 +1411,11 @@ impl Session {
             .index
             .order
             .iter()
-            .filter(|item| item.scope == scope && self.index.visible(&item.node, &values))
+            .filter(|item| {
+                item.scope == scope
+                    && self.index.visible(&item.node, &values)
+                    && item.boxes.iter().all(|id| !self.is_collapsed(id))
+            })
             .cloned()
             .collect();
         let model_focus = self.model().focus.clone();
@@ -1909,7 +1434,7 @@ impl Session {
     /// The model changed: index it, take the values it sends, and rebuild the focus. With `keep`, edits that are still
     /// dirty stay.
     fn reindex(&mut self, keep: bool) {
-        self.index = Index::of(self.nav.models());
+        self.index = Index::with_extras(self.nav.models(), &self.extras);
         self.edits.load(self.index.initial_values(), keep);
         let lists: Vec<(String, usize)> = self
             .index
@@ -1932,6 +1457,18 @@ impl Session {
             error,
             until: (!error).then(|| Instant::now() + Duration::from_secs(MESSAGE_SECONDS)),
         };
+        // The history keeps what was said, not the prompts of typing a link number.
+        if !self.message.text.starts_with("Follow link")
+            && self.history.back().is_none_or(|last| last.text != self.message.text)
+        {
+            if self.history.len() == HISTORY {
+                self.history.pop_front();
+            }
+            self.history.push_back(Message {
+                until: None,
+                ..self.message.clone()
+            });
+        }
     }
 
     fn clear_message(&mut self) {
@@ -1978,59 +1515,12 @@ pub fn drawer_rows(menu: &[MenuItem]) -> Vec<(String, String, usize)> {
     rows
 }
 
-fn filtered(choices: &[Choice], filter: &str) -> Vec<Choice> {
-    if filter.is_empty() {
-        return choices.to_vec();
-    }
-    let needle = filter.to_lowercase();
-    choices
-        .iter()
-        .filter(|choice| choice.label.to_lowercase().contains(&needle) || choice.value.to_lowercase().contains(&needle))
-        .cloned()
-        .collect()
-}
-
 fn app_root(path: &str) -> String {
     path.split('/')
         .filter(|name| !name.is_empty())
         .take(2)
         .collect::<Vec<_>>()
         .join("/")
-}
-
-fn page_size_of(list: &FormList) -> usize {
-    if list.paging.size == 0 {
-        PAGE_ROWS
-    } else {
-        usize::try_from(list.paging.size).unwrap_or(PAGE_ROWS).max(1)
-    }
-}
-
-pub fn page_count_of(list: &FormList) -> usize {
-    if let Some(max) = list.paging.max_index {
-        return usize::try_from(max).unwrap_or(0) + 1;
-    }
-    let size = page_size_of(list);
-    let count = if list.paging.count == 0 {
-        list.rows.len()
-    } else {
-        usize::try_from(list.paging.count).unwrap_or(list.rows.len())
-    };
-    count.div_ceil(size).max(1)
-}
-
-/// Ascending then descending on each sortable column in turn, then unsorted.
-fn next_order(fields: &[String], current: &str) -> String {
-    let (descending, name) = match current.strip_prefix('-') {
-        Some(name) => (true, name),
-        None => (false, current),
-    };
-    let bare = |field: &str| field.trim_start_matches('^').to_string();
-    match fields.iter().position(|field| bare(field) == bare(name)) {
-        None => fields[0].clone(),
-        Some(at) if !descending => format!("-{}", fields[at]),
-        Some(at) => fields.get(at + 1).cloned().unwrap_or_default(),
-    }
 }
 
 fn encode(text: &str) -> String {

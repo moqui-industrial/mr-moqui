@@ -1,6 +1,7 @@
 # Screen TUI implementation plan
 
-Oct 20, 2026 · Phases 1 and 2 built (findings under each in section 5); Phase 3 is next. This plan implements [proposals/Screen-TUI-Revue.md](proposals/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
+Oct 20, 2026 · Phases 1, 2 and 3 built (findings under each in section 5), Phase 3's SSH item moved to Phase 3b; Phase 3b
+and Phase 4 are next. This plan implements [proposals/Screen-TUI-Revue.md](proposals/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
 
 The proposal sets the architecture: a `tui` render mode emits a JSON screen model, and one Revue client interprets it and reaches the server over several channels. This plan adds four things:
 
@@ -809,13 +810,87 @@ Revue always writes RGB escapes, so the 16 and 256 color depths only choose near
 
 ### Phase 3 — Shell and dynamics: a full admin task over SSH
 
-1. **SSH.** `apps` over SSH with the chosen session route, `SSH_APPS` at every gate of 4.2, `tui_max_sessions`, pty size, window change, and the guard against downloads and uploads.
+1. **SSH.** Moved to Phase 3b, below: Revue has no public run-on-writer entry yet.
 2. **Dynamics.** Autocomplete, `depends-on` everywhere, `dynamic-dialog`/`dynamic-container` with reload and hide ids, `editable`, multi lists with inline editing, stacked columns, row actions, saved finds and the columns dialog.
 3. **Shell.** Palette, quick create, counters, tray (as a modal), help with screen documents, message history.
 4. **Structure.** Trees, wizard and stack panels, `container-split`, `status-bar`, `number-card` and `dashboard`.
 5. **Components.** The component registry of 2.9 and the framework set (`board`, `calendar`, `chart`, `timeline`). The Gallery's `Board.tui.json` and `Calendar.tui.json` as the reference pair. `tui` texts for the framework's own inline-`qvt` screens on the lint worklist, and the `tui` feature forwarding to component crates in `moq`.
 
-**Exit:** an administrator connects by `ssh user@host`, lands in the apps, and completes a Tools task (for example: find a user, change their groups, run a service job, read its result) without leaving the TUI. The Gallery's Board and Calendar work in the TUI through their components. The lint worklist has no framework screen left on it.
+**Exit:** an administrator completes a Tools task in `moqui tui` (for example: find a user, change their groups, run a service job, read its result) without leaving the TUI. The Gallery's Board and Calendar work in the TUI through their components. The lint worklist has no framework screen left on it. The SSH part of this exit is Phase 3b's.
+
+#### Phase 3 findings
+
+Recorded 2026-10-20. Items 2 to 5 are built; item 1 is Phase 3b.
+
+**The client.**
+- `session.rs` is now `session/`: `mod.rs` (the state, keys, replies, navigation), `submit` (forms), `lists`, `overlays`, `dynamic` (fragments, server search, value urls), `shell` (palette, menus, quick create, tray, counters, documents, find text, exports, saved finds, columns), `structure` (trees, boxes, components, the wizard, the row editor, click to edit).
+- The link has three more calls: `Json` (a transition's JSON, or text as a JSON string), `Fragment` (a dynamic body: the url rendered in `tui`, a transition's redirect followed, not put in the history), and `Raw` (a file). Each new purpose has its lane (3.6).
+- Timed work is the session's: `Session::next_deadline` and `on_time` run the message expiry, the counters each minute, and the 300 ms wait of a server-search drop-down and of the palette. The local loop redraws on a tick only when one of those fired, a request is busy, or the clock's minute changed. This is the hook `run_session` will block on.
+- Layout reads what only the session knows through a `Shown` trait: a box the user closed, a tree's open rows, a component's lines.
+- A dynamic body's ids get its container's id and `/` before them, since it is its own render and its ids can be the screen's. Bodies are kept by container id, so a reload of the screen shows the old body until the new one comes. A body loads only the containers, trees and components inside it, not the screen's again (an early version asked for itself in a loop).
+- A save whose form has a `background-reload-id` naming a dynamic container on screen reloads only that container. A successful save closes the dialog its form is in, as the browser's page reload does.
+- Extra dialogs (quick create, tray, a document, an export as text) are the session's, indexed with the screen. Their ids have no `#`, which is the separator of a field's parts.
+- List rows with fields are edited in a row editor (Enter or `e`) rather than inline: the proposal's fallback. It reuses the form layout, focus and submit; the table shows each cell's current value with its change and error marks. A multi list posts every row once, as qvt's multi `m-form`, not only the changed rows with `_rowSubmit_N`.
+- A row action is a `dialog` node with `list`; its form posts the selected ids as `m-checkbox-set` does (`parameter=a,b` in list mode, else `parameter_N` and `_isMulti`) and refuses with no row selected.
+- In a multi row, a field's `dependsOn` names the plain field; the client finds the row's own (`orgId_3`).
+- Markdown (the node, and F4's preview of an `editor-type="md"` text area) is converted by `pulldown-cmark` to the blocks and links of an `html` node; both list their links as References to follow.
+- Components (2.9) draw lines of theme-role spans and are in the model feature, so their tests need no Revue: `board`, `calendar`, `chart`, `timeline`, registered with `inventory`. There is no `diagram` component; the Mermaid evaluation stays Phase 4.
+- A shifted character key matches its binding without Shift (`N`, `?`).
+- Exports in local mode are saved by the loop to `XDG_DOWNLOAD_DIR` or `~/Downloads`; the text export shows in a dialog.
+
+**The server.** `ScreenTui.js` emits all of section 2.3's Phase 3 shapes (README "The tui screen model"):
+- an `ac-transition` text line is a server-search drop-down, as in qvt;
+- default and value urls, `editable`, `multipart`;
+- list row forms and multi forms, stacked cells, typed columns;
+- row actions, saved finds, columns and exports;
+- trees, wizard and stack subscreens, the status bar computed on the server, button menus;
+- a component's `base`.
+
+Other server changes:
+- `screenDoc` answers an `html` node with `renderMode=tui`.
+- The shell data's `tui.drawerOpen` is the `TUI_DRAWER_OPEN` preference.
+- A list cell never shows a widget's element name.
+- A `dynamic-dialog` in a list cell is a node, which F10 offers for the current row.
+
+**Exit evidence.** `crates/moqui-host/tests/tui_screens.rs` adds to the Phase 2 flow, on the in-process link:
+- Gallery Board and Calendar through their components, with a card moved through `moveCard`;
+- the Widgets dynamic container's body;
+- the palette's server search;
+- the Tools task: find john.doe, open the account, add a group in its dialog, change the membership's thru date in the group list's row editor, run `clean_ServiceJobRun_daily`, and open its run.
+
+The client has 33 more tests (97 in all): `dynamic.rs`, `shell.rs`, `structure.rs`, the components', and snapshots of the new pieces and overlays. The core has 10 more render tests.
+
+**The worklist.** No framework screen is left on the lint's TUI worklist. What it lists now is in ironstone-boss (202 parts) and MrSimpleScreens (48), each a repository of its own.
+- 16 of the framework's 19 screens got `tui` twins:
+  - the Gallery's Board and Calendar as components;
+  - Landing, Report, Record360 and Chatter with `chart`, `timeline` and number cards;
+  - Editor's page as an `html` node and its compare as text;
+  - QuickTask as a form, now `qvue,tui`, which F6 loads;
+  - Panel, RecordFiles and Widgets;
+  - Tools' AutoEdit, SqlRunner, ServiceLoadRunner and StatusFlows (the flow as text);
+  - AppList.
+- EntityDetail and ServiceDetail had only a highlighter script in their qvt text, so their twin is empty.
+- ElFinder is browser-only (`render-modes="html,qvt"`): the whole screen is the elFinder file manager.
+
+**Found on the way.**
+- A dynamic dialog's or container's url lost its `<parameter>`s: the macro passed the node without its children. The Widgets container rendered the whole screen.
+- `HostLink::level` now follows a redirect, as a browser follows one from an anchor to a transition (Tools' Run Job is a GET to `runJob`).
+- The script runtime had no `ec.service.job(name)`. It is added (`parameters`, `parameter`, `localOnly`, `run` giving the run id, over `service::run_job_now`), so Tools' Run Job works in every mode.
+
+**Open.**
+- A `container-dialog` in a list cell (Gallery Dialog's Edit per row) draws nothing: its body is statement code, and a cell is a value.
+- `split.selectParameter` is carried but not used: the side's links already hold the parameter.
+- `/apps/setPreference` with no user answers 500, not 401 (the screen names a Java exception class the JS runtime does not have).
+- The Calendar component shows and moves through months, but does not create an event as the `.qvue` does.
+- The Service Load Runner needs `ec.service.getLoadRunner`, which the port does not have, in every mode; its twin says so and is ready for it.
+
+### Phase 3b — SSH
+
+1. **SSH.** `apps` over SSH with the chosen session route, `SSH_APPS` at every gate of 4.2, `tui_max_sessions`, pty size, window change, and the guard against downloads and uploads.
+
+The route waits on [hawk90/revue#1153](https://github.com/hawk90/revue/issues/1153): it was still open with no maintainer reply on 2026-10-20, and 3.10.2 does not have a run-on-writer entry. Route 1 is the one to build when a release has it. If it does not come, route 3 (a `moqui tui --attach` child on a server-side pty) is the fallback; the session's timers (`next_deadline`, `on_time`) and the input decoder are ready for either route.
+
+**Exit:** an administrator connects by `ssh user@host`, lands in the apps, and completes the Phase 3 Tools task.
 
 ### Phase 4 — Reach and polish
 

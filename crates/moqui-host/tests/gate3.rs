@@ -794,8 +794,8 @@ fn artifact_group_detail_renders_as_qvt_and_answers_qjs_and_qvue() {
     assert!(qvue.contains("export default"), "{qvue}");
 
     // a .qvt request that names the client modes (moqui.loadComponent for a container's URL) gets the first of them the screen's
-    // render-modes name, and X-Moqui-Qvt says which: the gallery's QuickTask is qvue alone. GateCompanion's modes are all, so it
-    // stays qvt; without the header a qvue screen has no qvt.
+    // render-modes name, and X-Moqui-Qvt says which: the gallery's QuickTask has qvue and tui, no qvt. GateCompanion's modes
+    // are all, so it stays qvt; without the header a qvue screen has no qvt.
     let with_modes = |path: &str| {
         exchange(
             address,

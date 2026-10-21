@@ -18,7 +18,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::model::{FormList, HtmlBlock, Node, ScreenModel, Widget};
+use crate::components::Line;
+use crate::model::{Cell, FormList, HtmlBlock, HtmlLink, Node, ScreenModel, StatusStage, Widget};
 
 /// Rows of a list page when the document has no page size.
 pub const PAGE_ROWS: usize = 10;
@@ -221,6 +222,71 @@ pub fn dotted_label(title: &str, width: usize) -> String {
     out
 }
 
+// ---- what the session adds ----
+
+/// What changes the layout and only the session knows: a box the user closed, the rows of a tree that are open, a
+/// component's lines. [`Plain`] is a screen as it first comes.
+pub trait Shown {
+    /// Whether a collapsible box (one with an `initial`) is closed now.
+    fn collapsed(&self, _id: &str, initial: &str) -> bool {
+        initial == "closed"
+    }
+
+    /// The rows of a tree as they show: its loaded nodes, with the children of the open ones.
+    fn tree_rows(&self, _id: &str) -> Vec<TreeRow> {
+        Vec::new()
+    }
+
+    /// A component's lines at `width`; None when no component of its name is registered.
+    fn component_lines(
+        &self,
+        _id: &str,
+        _name: &str,
+        _props: &serde_json::Value,
+        _width: u16,
+        _wide: bool,
+    ) -> Option<Vec<Line>> {
+        None
+    }
+}
+
+/// A screen as the server sent it: boxes as their `initial` says, trees not loaded, components with no data.
+pub struct Plain;
+
+impl Shown for Plain {
+    fn component_lines(
+        &self,
+        _id: &str,
+        name: &str,
+        props: &serde_json::Value,
+        width: u16,
+        wide: bool,
+    ) -> Option<Vec<Line>> {
+        crate::components::find(name)
+            .map(|component| component.lines(props, &crate::components::ComponentState::default(), width, wide))
+    }
+}
+
+/// One row of a tree as drawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeRow {
+    /// The node's id, which its children are asked for by.
+    pub key: String,
+    pub depth: usize,
+    pub text: String,
+    pub url: String,
+    pub mark: TreeMark,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeMark {
+    Open,
+    Closed,
+    Leaf,
+    /// Its children were asked for and have not come.
+    Loading,
+}
+
 // ---- the pieces ----
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -250,6 +316,11 @@ pub enum Piece {
     Text(LaidText),
     List(LaidList),
     Tabs(LaidTabs),
+    Tree(LaidTree),
+    /// The stages of a status bar on one line.
+    Status(LaidStatus),
+    /// A component's lines.
+    Lines(LaidLines),
     /// A browser-only part, or a node this client has no view for.
     Placeholder {
         id: String,
@@ -278,6 +349,29 @@ pub struct LaidBox {
     pub w: u16,
     pub toolbar: Vec<Inline>,
     pub body: Vec<Piece>,
+    /// The box has an `initial`, so Enter on its title opens or closes it.
+    pub collapsible: bool,
+    /// Closed: the title and the bottom edge only.
+    pub collapsed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaidTree {
+    pub id: String,
+    pub rows: Vec<TreeRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaidStatus {
+    pub id: String,
+    pub text: String,
+    pub stages: Vec<StatusStage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaidLines {
+    pub id: String,
+    pub lines: Vec<Line>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -330,14 +424,16 @@ pub enum Inline {
     },
     /// A submit or reset field. `primary` is the form's submit: dim until the form changes (style guide §4.6).
     Button { id: String, text: String, primary: bool },
-    /// The button that opens a container-dialog.
+    /// The button that opens a container-dialog or a dynamic-dialog.
     Dialog { id: String, text: String },
+    /// A button-menu: `[ More ▾ ]`, Enter opens its items.
+    Menu { id: String, text: String },
 }
 
 impl Inline {
     pub fn id(&self) -> &str {
         match self {
-            Self::Link { id, .. } | Self::Button { id, .. } | Self::Dialog { id, .. } => id,
+            Self::Link { id, .. } | Self::Button { id, .. } | Self::Dialog { id, .. } | Self::Menu { id, .. } => id,
         }
     }
 }
@@ -359,12 +455,24 @@ pub struct LaidList {
     pub scroll: bool,
     pub rows: usize,
     pub selection: bool,
+    /// The lines of each row: more than one where a column stacks several fields.
+    pub heights: Vec<usize>,
 }
 
 impl LaidList {
-    fn height(&self) -> usize {
+    pub fn height(&self) -> usize {
         // Header, rule, the rows (or the empty line), footer.
-        2 + self.rows.max(1) + 1
+        2 + self.body_rows().max(1) + 1
+    }
+
+    /// The lines the rows take.
+    pub fn body_rows(&self) -> usize {
+        self.heights.iter().sum()
+    }
+
+    /// The line within the body where row `at` starts.
+    pub fn row_top(&self, at: usize) -> usize {
+        self.heights.iter().take(at).sum()
     }
 }
 
@@ -387,12 +495,18 @@ impl Piece {
             Self::Stack(pieces) => pieces.iter().map(Self::height).sum(),
             Self::Row(placed) => placed.iter().map(|p| p.piece.height()).max().unwrap_or(0),
             Self::Box(laid) => {
-                2 + usize::from(!laid.toolbar.is_empty()) + laid.body.iter().map(Self::height).sum::<usize>()
+                if laid.collapsed {
+                    2
+                } else {
+                    2 + usize::from(!laid.toolbar.is_empty()) + laid.body.iter().map(Self::height).sum::<usize>()
+                }
             }
             Self::Form(form) => form.lines.iter().map(form_line_height).sum(),
             Self::Text(text) => text.lines.len(),
             Self::List(list) => list.height(),
-            Self::Inline(_) | Self::Tabs(_) | Self::Placeholder { .. } | Self::Error { .. } => 1,
+            Self::Tree(tree) => tree.rows.len().max(1),
+            Self::Lines(lines) => lines.lines.len().max(1),
+            Self::Inline(_) | Self::Tabs(_) | Self::Status(_) | Self::Placeholder { .. } | Self::Error { .. } => 1,
         }
     }
 }
@@ -411,36 +525,25 @@ pub fn layout_levels<'a>(
     models: impl IntoIterator<Item = &'a ScreenModel>,
     canvas: u16,
     breakpoints: &Breakpoints,
+    shown: &dyn Shown,
 ) -> LaidOut {
-    let class = breakpoints.class(canvas);
-    let ctx = Ctx {
-        class,
-        mode: if class == WidthClass::Xs {
-            LabelMode::Above
-        } else {
-            LabelMode::Beside
-        },
-    };
+    let ctx = Ctx::new(breakpoints.class(canvas), shown);
     let mut pieces = Vec::new();
     for model in models {
         pieces.extend(place_nodes(&model.c, &ctx, canvas));
     }
-    LaidOut { class, canvas, pieces }
+    LaidOut {
+        class: ctx.class,
+        canvas,
+        pieces,
+    }
 }
 
 /// Nodes on their own, as a dialog or the find dialog lays out its body.
-pub fn layout_nodes(nodes: &[Node], width: u16, breakpoints: &Breakpoints) -> LaidOut {
-    let class = breakpoints.class(width);
-    let ctx = Ctx {
-        class,
-        mode: if class == WidthClass::Xs {
-            LabelMode::Above
-        } else {
-            LabelMode::Beside
-        },
-    };
+pub fn layout_nodes(nodes: &[Node], width: u16, breakpoints: &Breakpoints, shown: &dyn Shown) -> LaidOut {
+    let ctx = Ctx::new(breakpoints.class(width), shown);
     LaidOut {
-        class,
+        class: ctx.class,
         canvas: width,
         pieces: place_nodes(nodes, &ctx, width),
     }
@@ -448,16 +551,31 @@ pub fn layout_nodes(nodes: &[Node], width: u16, breakpoints: &Breakpoints) -> La
 
 /// One level.
 pub fn layout(model: &ScreenModel, canvas: u16) -> LaidOut {
-    layout_levels(std::iter::once(model), canvas, &Breakpoints::default())
+    layout_levels(std::iter::once(model), canvas, &Breakpoints::default(), &Plain)
 }
 
 #[derive(Clone, Copy)]
-struct Ctx {
+struct Ctx<'a> {
     class: WidthClass,
     mode: LabelMode,
+    shown: &'a dyn Shown,
 }
 
-fn place_nodes(nodes: &[Node], ctx: &Ctx, width: u16) -> Vec<Piece> {
+impl<'a> Ctx<'a> {
+    fn new(class: WidthClass, shown: &'a dyn Shown) -> Self {
+        Self {
+            class,
+            mode: if class == WidthClass::Xs {
+                LabelMode::Above
+            } else {
+                LabelMode::Beside
+            },
+            shown,
+        }
+    }
+}
+
+fn place_nodes(nodes: &[Node], ctx: &Ctx<'_>, width: u16) -> Vec<Piece> {
     let mut pieces = Vec::new();
     let mut index = 0;
     while index < nodes.len() {
@@ -499,6 +617,40 @@ fn place_nodes(nodes: &[Node], ctx: &Ctx, width: u16) -> Vec<Piece> {
     pieces
 }
 
+/// The id of reference link `n` (from 1) of an `html` or `markdown` node.
+pub fn ref_id(node: &str, n: usize) -> String {
+    format!("{node}#ref{n}")
+}
+
+/// The ids of a wizard's Back and Next buttons.
+pub fn wizard_back(id: &str) -> String {
+    format!("{id}#back")
+}
+
+pub fn wizard_next(id: &str) -> String {
+    format!("{id}#next")
+}
+
+/// The steps of a wizard as status stages, and the active step.
+pub fn wizard_steps(items: &[crate::model::SubscreenItem]) -> (Vec<StatusStage>, usize) {
+    let active = items.iter().position(|item| item.active).unwrap_or(0);
+    let stages = items
+        .iter()
+        .enumerate()
+        .map(|(at, item)| StatusStage {
+            status_id: item.url.clone(),
+            label: item.title.clone(),
+            state: match at.cmp(&active) {
+                std::cmp::Ordering::Less => "done",
+                std::cmp::Ordering::Equal => "current",
+                std::cmp::Ordering::Greater => "todo",
+            }
+            .to_string(),
+        })
+        .collect();
+    (stages, active)
+}
+
 fn inline_of(node: &Node) -> Option<Inline> {
     match node {
         Node::Link {
@@ -512,7 +664,8 @@ fn inline_of(node: &Node) -> Option<Inline> {
             id: id.clone(),
             text: text.clone(),
             btn_type: btn_type.clone(),
-            button: kind.contains("button") || kind == "hidden-form",
+            // A link with a button type is a button, as a status bar's transitions are (style guide §4.6).
+            button: kind.contains("button") || kind == "hidden-form" || !btn_type.is_empty(),
         }),
         Node::Dialog { id, button, title, .. } => Some(Inline::Dialog {
             id: id.clone(),
@@ -522,15 +675,33 @@ fn inline_of(node: &Node) -> Option<Inline> {
                 button.clone()
             },
         }),
-        Node::DynamicDialog { id, button, .. } => Some(Inline::Dialog {
+        Node::DynamicDialog { id, button, title, .. } => Some(Inline::Dialog {
             id: id.clone(),
-            text: button.clone(),
+            text: if button.is_empty() {
+                title.clone()
+            } else {
+                button.clone()
+            },
+        }),
+        Node::ButtonMenu { id, text, .. } => Some(Inline::Menu {
+            id: id.clone(),
+            text: if text.is_empty() {
+                "More".to_string()
+            } else {
+                text.clone()
+            },
+        }),
+        Node::Image { id, alt, url } if !url.is_empty() => Some(Inline::Link {
+            id: id.clone(),
+            text: alt.clone(),
+            btn_type: "image".to_string(),
+            button: false,
         }),
         _ => None,
     }
 }
 
-fn place_one(node: &Node, ctx: &Ctx, width: u16) -> Vec<Piece> {
+fn place_one(node: &Node, ctx: &Ctx<'_>, width: u16) -> Vec<Piece> {
     match node {
         Node::Row { c, .. } => place_row(c, ctx, width),
         Node::Section { c, .. }
@@ -539,20 +710,18 @@ fn place_one(node: &Node, ctx: &Ctx, width: u16) -> Vec<Piece> {
         | Node::Active { c, .. }
         | Node::Region { c, .. }
         | Node::Col { c, .. }
-        | Node::ButtonMenu { c, .. }
-        | Node::DynamicContainer { c, .. }
-        | Node::Tree { c, .. } => place_nodes(c, ctx, width),
-        Node::Subscreen { id, kind, items, c } => {
-            let mut pieces = Vec::new();
-            if kind != "popup" && items.len() > 1 {
-                pieces.push(Piece::Tabs(LaidTabs {
-                    id: id.clone(),
-                    items: items.iter().map(|item| (item.title.clone(), item.active)).collect(),
-                }));
-            }
-            pieces.extend(place_nodes(c, ctx, width));
-            pieces
-        }
+        | Node::DynamicContainer { c, .. } => place_nodes(c, ctx, width),
+        Node::Tree { id, .. } => vec![Piece::Tree(LaidTree {
+            id: id.clone(),
+            rows: ctx.shown.tree_rows(id),
+        })],
+        Node::Subscreen {
+            id,
+            kind,
+            items,
+            finish_text,
+            c,
+        } => place_subscreens(id, kind, items, finish_text, c, ctx, width),
         Node::Panel { c, .. } => place_panel(c, ctx, width),
         Node::Split { side_width, c, .. } => place_split(c, *side_width, ctx, width),
         Node::Dashboard { c, .. } => place_dashboard(c, ctx, width),
@@ -564,6 +733,8 @@ fn place_one(node: &Node, ctx: &Ctx, width: u16) -> Vec<Piece> {
         })],
         Node::FormList { list } => {
             let mut pieces = vec![Piece::List(lay_list(list, width))];
+            // The multi form's buttons, once under its rows.
+            pieces.extend(place_nodes(&list.buttons, ctx, width));
             pieces.extend(place_nodes(&list.c, ctx, width));
             pieces
         }
@@ -576,30 +747,71 @@ fn place_one(node: &Node, ctx: &Ctx, width: u16) -> Vec<Piece> {
             })]
         }
         Node::Text { id, text, style } => vec![Piece::Text(text_piece(id, text, style, width))],
-        Node::Markdown { id, text } => vec![Piece::Text(LaidText {
-            id: id.clone(),
-            style: String::new(),
-            lines: text.lines().flat_map(|line| wrap(line, usize::from(width))).collect(),
-        })],
-        Node::Html { id, blocks, .. } => html_pieces(id, blocks, width),
-        Node::NumberCard { id, title, value, .. } => vec![Piece::Box(LaidBox {
-            id: id.clone(),
-            title: title.clone(),
-            kind: String::new(),
-            w: width.min(30),
-            toolbar: Vec::new(),
-            body: vec![Piece::Text(LaidText {
-                id: format!("{id}.value"),
-                style: "h3".to_string(),
-                lines: vec![value.clone()],
-            })],
-        })],
-        Node::StatusBar { id, text } => vec![Piece::Text(text_piece(id, text, "", width))],
+        Node::Markdown { id, text } => {
+            let (blocks, links) = crate::markdown::blocks(text);
+            let mut pieces = html_pieces(id, &blocks, width);
+            pieces.extend(references(id, &links, width));
+            pieces
+        }
+        Node::Html { id, blocks, links } => {
+            let mut pieces = html_pieces(id, blocks, width);
+            pieces.extend(references(id, links, width));
+            pieces
+        }
+        Node::NumberCard { id, title, value, url } => {
+            let body = if url.is_empty() {
+                Piece::Text(LaidText {
+                    id: format!("{id}.value"),
+                    style: "h3".to_string(),
+                    lines: vec![value.clone()],
+                })
+            } else {
+                // The value is the card's link: Enter follows it.
+                Piece::Inline(vec![Inline::Link {
+                    id: id.clone(),
+                    text: value.clone(),
+                    btn_type: String::new(),
+                    button: false,
+                }])
+            };
+            vec![Piece::Box(LaidBox {
+                id: format!("{id}.card"),
+                title: title.clone(),
+                kind: String::new(),
+                w: width.min(30),
+                toolbar: Vec::new(),
+                body: vec![body],
+                collapsible: false,
+                collapsed: false,
+            })]
+        }
+        Node::StatusBar { id, text, stages, c } => {
+            let mut pieces = vec![Piece::Status(LaidStatus {
+                id: id.clone(),
+                text: text.clone(),
+                stages: stages.clone(),
+            })];
+            pieces.extend(place_nodes(c, ctx, width));
+            pieces
+        }
         Node::Image { id, alt, .. } => vec![Piece::Text(LaidText {
             id: id.clone(),
             style: "image".to_string(),
             lines: vec![alt.clone()],
         })],
+        Node::Component { id, name, props, .. } => {
+            match ctx
+                .shown
+                .component_lines(id, name, props, width, ctx.class >= WidthClass::Lg)
+            {
+                Some(lines) => vec![Piece::Lines(LaidLines { id: id.clone(), lines })],
+                None => vec![Piece::Placeholder {
+                    id: id.clone(),
+                    text: format!("The {name} component, which this client does not have,"),
+                    url: String::new(),
+                }],
+            }
+        }
         Node::Placeholder { id, text, url } => vec![Piece::Placeholder {
             id: id.clone(),
             text: text.clone(),
@@ -612,10 +824,105 @@ fn place_one(node: &Node, ctx: &Ctx, width: u16) -> Vec<Piece> {
                 text: line,
             })
             .collect(),
-        Node::Link { .. } | Node::Dialog { .. } | Node::DynamicDialog { .. } => inline_of(node)
-            .map(|item| vec![Piece::Inline(vec![item])])
-            .unwrap_or_default(),
+        Node::Link { .. } | Node::Dialog { .. } | Node::DynamicDialog { .. } | Node::ButtonMenu { .. } => {
+            inline_of(node)
+                .map(|item| vec![Piece::Inline(vec![item])])
+                .unwrap_or_default()
+        }
     }
+}
+
+/// Tabs over the active subscreen; a wizard's steps with Back and Next; a stack's trail. A popup panel shows no bar: its
+/// siblings are in the drawer.
+fn place_subscreens(
+    id: &str,
+    kind: &str,
+    items: &[crate::model::SubscreenItem],
+    finish_text: &str,
+    c: &[Node],
+    ctx: &Ctx<'_>,
+    width: u16,
+) -> Vec<Piece> {
+    let mut pieces = Vec::new();
+    match kind {
+        "wizard" if !items.is_empty() => {
+            let (stages, active) = wizard_steps(items);
+            let title = items.get(active).map(|item| item.title.as_str()).unwrap_or("");
+            pieces.push(Piece::Status(LaidStatus {
+                id: id.to_string(),
+                text: format!("Step {} of {} · {title}", active + 1, items.len()),
+                stages,
+            }));
+            pieces.extend(place_nodes(c, ctx, width));
+            let mut buttons = Vec::new();
+            if active > 0 {
+                buttons.push(Inline::Link {
+                    id: wizard_back(id),
+                    text: "Back".to_string(),
+                    btn_type: String::new(),
+                    button: true,
+                });
+            }
+            let last = active + 1 == items.len();
+            if !last || !finish_text.is_empty() {
+                buttons.push(Inline::Link {
+                    id: wizard_next(id),
+                    text: if last {
+                        finish_text.to_string()
+                    } else {
+                        "Next".to_string()
+                    },
+                    btn_type: "primary".to_string(),
+                    button: true,
+                });
+            }
+            if !buttons.is_empty() {
+                pieces.push(Piece::Inline(buttons));
+            }
+        }
+        "stack" if !items.is_empty() => {
+            let active = items.iter().position(|item| item.active).unwrap_or(items.len() - 1);
+            let trail: Vec<&str> = items[..=active].iter().map(|item| item.title.as_str()).collect();
+            pieces.push(Piece::Text(LaidText {
+                id: id.to_string(),
+                style: "crumbs".to_string(),
+                lines: vec![truncate_width(&trail.join(" ▸ "), usize::from(width))],
+            }));
+            pieces.extend(place_nodes(c, ctx, width));
+        }
+        _ => {
+            if kind != "popup" && items.len() > 1 {
+                pieces.push(Piece::Tabs(LaidTabs {
+                    id: id.to_string(),
+                    items: items.iter().map(|item| (item.title.clone(), item.active)).collect(),
+                }));
+            }
+            pieces.extend(place_nodes(c, ctx, width));
+        }
+    }
+    pieces
+}
+
+/// The numbered links of an `html` or `markdown` node, at its end as Lynx lists References: each one a link to follow.
+fn references(id: &str, links: &[HtmlLink], width: u16) -> Vec<Piece> {
+    if links.is_empty() {
+        return Vec::new();
+    }
+    let mut pieces = vec![Piece::Text(LaidText {
+        id: format!("{id}#refs"),
+        style: "h6".to_string(),
+        lines: vec!["References".to_string()],
+    })];
+    for (at, link) in links.iter().enumerate() {
+        let text = if link.text.is_empty() { &link.url } else { &link.text };
+        pieces.push(Piece::Inline(vec![Inline::Link {
+            id: ref_id(id, at + 1),
+            text: truncate_width(&format!("{}. {text}", at + 1), usize::from(width)),
+            btn_type: String::new(),
+            button: false,
+        }]));
+    }
+    pieces
 }
 
 fn text_piece(id: &str, text: &str, style: &str, width: u16) -> LaidText {
@@ -670,15 +977,23 @@ fn html_pieces(id: &str, blocks: &[HtmlBlock], width: u16) -> Vec<Piece> {
         .collect()
 }
 
-fn place_boxes(nodes: &[Node], ctx: &Ctx, width: u16) -> Vec<Piece> {
+fn place_boxes(nodes: &[Node], ctx: &Ctx<'_>, width: u16) -> Vec<Piece> {
     let slots = box_slots(nodes.len(), ctx.class, width);
     let boxes: Vec<(u16, u16, Piece)> = nodes
         .iter()
         .zip(slots)
         .filter_map(|(node, (x, w))| {
-            let Node::Box { id, title, kind, c, .. } = node else {
+            let Node::Box {
+                id,
+                title,
+                kind,
+                initial,
+                c,
+            } = node
+            else {
                 return None;
             };
+            let collapsed = !initial.is_empty() && ctx.shown.collapsed(id, initial);
             let inner = w.saturating_sub(4);
             let mut toolbar = Vec::new();
             let mut body_nodes = Vec::new();
@@ -699,7 +1014,13 @@ fn place_boxes(nodes: &[Node], ctx: &Ctx, width: u16) -> Vec<Piece> {
                     kind: kind.clone(),
                     w,
                     toolbar,
-                    body: place_nodes(&body_nodes, ctx, inner),
+                    body: if collapsed {
+                        Vec::new()
+                    } else {
+                        place_nodes(&body_nodes, ctx, inner)
+                    },
+                    collapsible: !initial.is_empty(),
+                    collapsed,
                 }),
             ))
         })
@@ -737,7 +1058,7 @@ fn box_slots(count: usize, class: WidthClass, canvas: u16) -> Vec<(u16, u16)> {
     vec![(0, canvas); count]
 }
 
-fn place_row(children: &[Node], ctx: &Ctx, width: u16) -> Vec<Piece> {
+fn place_row(children: &[Node], ctx: &Ctx<'_>, width: u16) -> Vec<Piece> {
     let columns: Vec<&Node> = children
         .iter()
         .filter(|node| matches!(node, Node::Col { .. }))
@@ -777,7 +1098,7 @@ type Sized<'a> = (&'a Node, u16);
 
 /// One line of columns. Below md they stack. A column narrower than 40 is not squeezed: the others stay a row, and it
 /// follows on a line of its own at full width.
-fn place_line(spans: &[Option<u16>], columns: &[&Node], ctx: &Ctx, width: u16) -> Vec<Piece> {
+fn place_line(spans: &[Option<u16>], columns: &[&Node], ctx: &Ctx<'_>, width: u16) -> Vec<Piece> {
     let body = |node: &Node, w: u16| place_nodes(node.children(), ctx, w);
     if ctx.class.stacks_boxes() || columns.len() == 1 {
         return columns.iter().flat_map(|node| body(node, width)).collect();
@@ -865,7 +1186,7 @@ fn region<'a>(children: &'a [Node], name: &str) -> Option<(&'a [Node], u32)> {
 
 /// A panel: header, the left/center/right columns side by side from md (a side's size in pixels ÷ 8), and footer. Below
 /// md everything stacks, since a terminal cannot scroll the page sideways.
-fn place_panel(children: &[Node], ctx: &Ctx, width: u16) -> Vec<Piece> {
+fn place_panel(children: &[Node], ctx: &Ctx<'_>, width: u16) -> Vec<Piece> {
     let mut pieces = Vec::new();
     if let Some((header, _)) = region(children, "header") {
         pieces.extend(place_nodes(header, ctx, width));
@@ -912,7 +1233,7 @@ fn place_panel(children: &[Node], ctx: &Ctx, width: u16) -> Vec<Piece> {
 }
 
 /// A split: side and main together from md, the side `side-width` pixels ÷ 8 wide; below md the side list, then main.
-fn place_split(children: &[Node], side_width: u32, ctx: &Ctx, width: u16) -> Vec<Piece> {
+fn place_split(children: &[Node], side_width: u32, ctx: &Ctx<'_>, width: u16) -> Vec<Piece> {
     let side = region(children, "side").map(|(nodes, _)| nodes).unwrap_or(&[]);
     let main = region(children, "main").map(|(nodes, _)| nodes).unwrap_or(&[]);
     if ctx.class.stacks_boxes() {
@@ -939,7 +1260,7 @@ fn place_split(children: &[Node], side_width: u32, ctx: &Ctx, width: u16) -> Vec
 }
 
 /// Cards of a dashboard in rows, about 24 columns each.
-fn place_dashboard(children: &[Node], ctx: &Ctx, width: u16) -> Vec<Piece> {
+fn place_dashboard(children: &[Node], ctx: &Ctx<'_>, width: u16) -> Vec<Piece> {
     let per_row = usize::from((width / 25).max(1));
     let card_w = (width / u16::try_from(per_row).unwrap_or(1)).saturating_sub(1).max(10);
     let mut pieces = Vec::new();
@@ -960,7 +1281,7 @@ fn place_dashboard(children: &[Node], ctx: &Ctx, width: u16) -> Vec<Piece> {
 
 // ---- forms ----
 
-fn form_lines(nodes: &[Node], ctx: &Ctx, width: u16) -> Vec<FormLine> {
+fn form_lines(nodes: &[Node], ctx: &Ctx<'_>, width: u16) -> Vec<FormLine> {
     let mut titles = Vec::new();
     crate::model::walk(nodes, &mut |node| {
         if let Node::Field { title, w, required, .. } = node {
@@ -983,7 +1304,7 @@ fn form_lines(nodes: &[Node], ctx: &Ctx, width: u16) -> Vec<FormLine> {
 
 fn collect_form(
     nodes: &[Node],
-    ctx: &Ctx,
+    ctx: &Ctx<'_>,
     width: u16,
     label_width: usize,
     lines: &mut Vec<FormLine>,
@@ -1122,7 +1443,9 @@ fn lay_list(list: &FormList, canvas: u16) -> LaidList {
                 let mut width = display_width(&column.title).min(COL_CAP);
                 for row in &list.rows {
                     if let Some(cell) = row.cells.get(index) {
-                        width = width.max(display_width(cell.text()).min(COL_CAP));
+                        for part in cell.parts() {
+                            width = width.max(cell_width(part).min(COL_CAP));
+                        }
                     }
                 }
                 width
@@ -1145,6 +1468,46 @@ fn lay_list(list: &FormList, canvas: u16) -> LaidList {
         scroll: total + gutter > usize::from(canvas),
         rows: list.rows.len(),
         selection,
+        heights: list
+            .rows
+            .iter()
+            .map(|row| {
+                row.cells
+                    .iter()
+                    .map(|cell| cell.parts().len())
+                    .max()
+                    .unwrap_or(1)
+                    .max(1)
+            })
+            .collect(),
+    }
+}
+
+/// The columns a cell part takes: its text, or an input of a row form, which keeps room to type.
+fn cell_width(part: &Cell) -> usize {
+    match part {
+        Cell::Node(node) => match node.as_ref() {
+            Node::Field { w, .. } => match w {
+                Widget::Submit { text, .. } | Widget::Reset { text } => display_width(text) + 4,
+                Widget::Display { text, .. } | Widget::Label { text, .. } | Widget::Editable { text, .. } => {
+                    display_width(text)
+                }
+                Widget::DropDown { options, value, .. } => {
+                    let label = options
+                        .iter()
+                        .find(|choice| &choice.value == value)
+                        .map_or(value.as_str(), |choice| choice.label.as_str());
+                    display_width(label).max(10) + 4
+                }
+                Widget::Check { .. } => 3,
+                other => display_width(other.value()).max(10) + 2,
+            },
+            Node::DynamicDialog { button, title, .. } => {
+                display_width(if button.is_empty() { title } else { button }) + 5
+            }
+            _ => display_width(part.text()),
+        },
+        _ => display_width(part.text()),
     }
 }
 
@@ -1256,7 +1619,8 @@ fn write_piece(out: &mut String, piece: &Piece, indent: &str) {
             }
         }
         Piece::Box(laid) => {
-            out.push_str(&format!("{indent}box {} w={}\n", laid.title, laid.w));
+            let closed = if laid.collapsed { " closed" } else { "" };
+            out.push_str(&format!("{indent}box {} w={}{closed}\n", laid.title, laid.w));
             if !laid.toolbar.is_empty() {
                 let ids: Vec<&str> = laid.toolbar.iter().map(Inline::id).collect();
                 out.push_str(&format!("{nested}toolbar {}\n", ids.join(" ")));
@@ -1309,6 +1673,22 @@ fn write_piece(out: &mut String, piece: &Piece, indent: &str) {
                 .map(|(title, active)| if *active { format!("[{title}]") } else { title.clone() })
                 .collect();
             out.push_str(&format!("{indent}tabs {}\n", items.join(" ")));
+        }
+        Piece::Tree(tree) => {
+            out.push_str(&format!("{indent}tree {} rows={}\n", tree.id, tree.rows.len()));
+        }
+        Piece::Status(status) => {
+            let stages: Vec<String> = status
+                .stages
+                .iter()
+                .map(|stage| format!("{}:{}", stage.label, stage.state))
+                .collect();
+            out.push_str(&format!("{indent}status {} {}\n", status.text, stages.join(" ")));
+        }
+        Piece::Lines(lines) => {
+            for line in &lines.lines {
+                out.push_str(&format!("{indent}line {}\n", crate::components::line_text(line)));
+            }
         }
         Piece::Placeholder { text, .. } => out.push_str(&format!("{indent}placeholder {text}\n")),
         Piece::Error { text, .. } => out.push_str(&format!("{indent}error {text}\n")),

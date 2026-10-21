@@ -231,6 +231,14 @@ impl Theme {
             (Glyph::Bullet, true) => "*",
             (Glyph::Rule, false) => "─",
             (Glyph::Rule, true) => "-",
+            (Glyph::Done, false) => "✓",
+            (Glyph::Done, true) => "x",
+            (Glyph::Current, false) => "●",
+            (Glyph::Current, true) => "*",
+            (Glyph::Todo, false) => "○",
+            (Glyph::Todo, true) => "o",
+            (Glyph::Leaf, false) => "·",
+            (Glyph::Leaf, true) => "-",
         }
     }
 }
@@ -254,6 +262,14 @@ pub enum Glyph {
     Ellipsis,
     Bullet,
     Rule,
+    /// A status stage passed, a step done.
+    Done,
+    /// The current stage or step.
+    Current,
+    /// A stage or step to come.
+    Todo,
+    /// A tree node with no children.
+    Leaf,
 }
 
 /// `COLORFGBG` is `fg;bg` with ANSI numbers; a background of 7 or 15 is light.

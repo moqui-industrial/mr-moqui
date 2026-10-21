@@ -14,8 +14,9 @@
 
 //! Screen model subset from `plans/Screen-TUI-Impl.md` section 2.3.
 //!
-//! Node names match that section (`box`, `formList`, `textLine`). Unknown object fields
-//! are ignored so a later key does not break a fixture. An unknown `t` fails. A `v` other than 1 is refused.
+//! Node names match that section (`box`, `formList`, `textLine`). Unknown object fields are ignored so a later key does
+//! not break a fixture. A node of an unknown `t`, or a widget of an unknown `kind`, becomes a placeholder
+//! ([`ScreenModel::from_json`]). A `v` other than 1 is refused.
 
 use std::collections::BTreeMap;
 
@@ -71,7 +72,7 @@ impl ScreenModel {
 }
 
 /// The `t` values of [`Node`].
-const NODE_TYPES: [&str; 29] = [
+const NODE_TYPES: [&str; 30] = [
     "section",
     "container",
     "box",
@@ -101,10 +102,11 @@ const NODE_TYPES: [&str; 29] = [
     "image",
     "html",
     "markdown",
+    "component",
 ];
 
 /// The `kind` values of [`Widget`].
-const WIDGET_KINDS: [&str; 18] = [
+const WIDGET_KINDS: [&str; 19] = [
     "textLine",
     "textArea",
     "textFind",
@@ -123,6 +125,7 @@ const WIDGET_KINDS: [&str; 18] = [
     "reset",
     "label",
     "image",
+    "editable",
 ];
 
 /// Text as it may be drawn: C0 and C1 controls other than tab and newline, and the bidirectional overrides and
@@ -248,6 +251,18 @@ pub struct SubscreenItem {
     pub active: bool,
 }
 
+/// A stage of a status bar: `done`, `current` or `todo`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusStage {
+    #[serde(default)]
+    pub status_id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub state: String,
+}
+
 /// A node the client can draw. Names are the `t` values from section 2.3.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "camelCase")]
@@ -310,16 +325,23 @@ pub enum Node {
         title: String,
         #[serde(default)]
         button: String,
+        /// A row-selection action of this list: its forms post the selected rows' ids too.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        list: String,
         #[serde(default)]
         c: Vec<Node>,
     },
-    #[serde(rename = "subscreens")]
+    /// The subscreens of a level: `tab`, `popup`, `wizard` (a step per subscreen) or `stack`.
+    #[serde(rename = "subscreens", rename_all = "camelCase")]
     Subscreen {
         id: String,
         #[serde(default)]
         kind: String,
         #[serde(default)]
         items: Vec<SubscreenItem>,
+        /// A wizard's caption for its last step's button.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        finish_text: String,
         #[serde(default)]
         c: Vec<Node>,
     },
@@ -381,6 +403,9 @@ pub enum Node {
         name: String,
         #[serde(default)]
         kind: String,
+        /// The form holds a file field, so it posts as multipart.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        multipart: bool,
         #[serde(default, rename = "transitionUrl")]
         transition_url: String,
         #[serde(default)]
@@ -471,10 +496,16 @@ pub enum Node {
         #[serde(default)]
         url: String,
     },
+    /// The stages of a status, and its transitions as links (`c`), each posting the new status.
     StatusBar {
         id: String,
+        /// The current status, for a bar with no stages.
         #[serde(default)]
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        stages: Vec<StatusStage>,
+        #[serde(default)]
+        c: Vec<Node>,
     },
     DynamicDialog {
         id: String,
@@ -482,6 +513,8 @@ pub enum Node {
         url: String,
         #[serde(default)]
         button: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        title: String,
         #[serde(default)]
         c: Vec<Node>,
     },
@@ -492,8 +525,16 @@ pub enum Node {
         #[serde(default)]
         c: Vec<Node>,
     },
+    /// A tree whose nodes load from `url`: the roots with `treeNodeId=#`, a node's children with its id.
+    #[serde(rename_all = "camelCase")]
     Tree {
         id: String,
+        #[serde(default)]
+        url: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        open_path: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        parameters: BTreeMap<String, String>,
         #[serde(default)]
         c: Vec<Node>,
     },
@@ -517,6 +558,17 @@ pub enum Node {
         #[serde(default)]
         text: String,
     },
+    /// A client component of a `tui` text (section 2.9): its registered name, its props, and the screen path its
+    /// transitions are under.
+    Component {
+        #[serde(default)]
+        id: String,
+        name: String,
+        #[serde(default)]
+        props: serde_json::Value,
+        #[serde(default)]
+        base: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -536,8 +588,101 @@ pub struct FormList {
     /// Rows can be selected, and the selected rows' `select_id`s are posted as `parameter`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_selection: Option<RowSelection>,
+    /// Where a row's form, or the multi form of all rows, posts. Empty for a list that only shows.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub transition_url: String,
+    /// One form of every row, its fields named `name_N` (qvt's multi `m-form`); else each row is its own form.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi: bool,
+    /// Posted with each row form, or once with the multi form.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<HiddenValue>,
+    /// The submit buttons of the multi form.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buttons: Vec<Node>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_finds: Option<Box<SavedFinds>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub select_columns: Option<Box<SelectColumns>>,
+    /// The list as a file or as text: csv, xlsx, text, pdf.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exports: Vec<Export>,
     #[serde(default)]
     pub c: Vec<Node>,
+}
+
+/// The user's saved finds of a list (`formSaveFind`): each applies by its url; a new one, an update, a default or a
+/// delete posts `form_location` and the find's `parameters` to `save_url`, as qvt's saved-finds dialog does.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFinds {
+    #[serde(default)]
+    pub save_url: String,
+    #[serde(default)]
+    pub form_location: String,
+    /// The current find's parameters, which a new or updated find saves.
+    #[serde(default)]
+    pub parameters: BTreeMap<String, String>,
+    /// The screen with no find applied (`formListFindId=_clear`).
+    #[serde(default)]
+    pub clear_url: String,
+    #[serde(default)]
+    pub finds: Vec<SavedFind>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFind {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    /// The screen with the find applied.
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub active: bool,
+    /// The user's default find of the screen.
+    #[serde(default)]
+    pub default: bool,
+    /// The user's own find, which the user may update or delete.
+    #[serde(default)]
+    pub mine: bool,
+}
+
+/// The columns of a list as the user may arrange them (`formSelectColumns`): the shown columns in order, each its
+/// fields, and the fields not shown. Saving posts them as qvt's `columnsTree`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectColumns {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub form_location: String,
+    /// The find parameters, posted back so the list keeps its find.
+    #[serde(default)]
+    pub parameters: BTreeMap<String, String>,
+    #[serde(default)]
+    pub shown: Vec<Vec<ColumnChoice>>,
+    #[serde(default)]
+    pub hidden: Vec<ColumnChoice>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColumnChoice {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub title: String,
+}
+
+/// One export of a list: `csv`, `xlsx`, `text`, `pdf`, or `all` for every row as csv.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Export {
+    pub kind: String,
+    #[serde(default)]
+    pub label: String,
+    pub url: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -577,9 +722,13 @@ pub struct ListRow {
     #[serde(default, rename = "selectId", skip_serializing_if = "String::is_empty")]
     pub select_id: String,
     pub cells: Vec<Cell>,
+    /// The row's values posted with its form and not shown: its hidden fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<HiddenValue>,
 }
 
-/// A list cell is either plain text or one node (a link, in the fixtures).
+/// A list cell: plain text, one node (a link, or a field of a row form), or the parts of a column that stacks several
+/// fields, one under the other.
 ///
 /// The node is boxed so a cell is not the size of every node variant.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -587,16 +736,28 @@ pub struct ListRow {
 pub enum Cell {
     Text(String),
     Node(Box<Node>),
+    Stack(Vec<Cell>),
 }
 
 impl Cell {
+    /// The cell's text as one line: a stack's first part.
     pub fn text(&self) -> &str {
         match self {
             Self::Text(text) => text,
             Self::Node(node) => match node.as_ref() {
                 Node::Link { text, .. } | Node::Text { text, .. } => text,
+                Node::Field { w, .. } => w.value(),
                 _ => "",
             },
+            Self::Stack(parts) => parts.first().map_or("", Self::text),
+        }
+    }
+
+    /// The parts drawn one under the other: a stack's, else the cell itself.
+    pub fn parts(&self) -> Vec<&Cell> {
+        match self {
+            Self::Stack(parts) => parts.iter().flat_map(Self::parts).collect(),
+            other => vec![other],
         }
     }
 
@@ -606,7 +767,17 @@ impl Cell {
                 Node::Link { url, .. } => Some(url),
                 _ => None,
             },
+            Self::Stack(parts) => parts.iter().find_map(Self::link_url),
             Self::Text(_) => None,
+        }
+    }
+
+    /// The nodes in the cell.
+    pub fn nodes(&self) -> Vec<&Node> {
+        match self {
+            Self::Node(node) => vec![node.as_ref()],
+            Self::Stack(parts) => parts.iter().flat_map(Self::nodes).collect(),
+            Self::Text(_) => Vec::new(),
         }
     }
 }
@@ -716,6 +887,18 @@ pub enum Widget {
         mask: String,
         #[serde(default, skip_serializing_if = "is_zero")]
         size: u32,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        prefix: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        disabled: bool,
+        /// `default-transition`: the value asked for when a `depends_on` field changes and this one is empty.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        default_url: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        default_parameters: BTreeMap<String, String>,
+        /// Request parameter name to the field whose value it sends.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        depends_on: BTreeMap<String, String>,
     },
     #[serde(rename_all = "camelCase")]
     TextArea {
@@ -757,9 +940,15 @@ pub enum Widget {
         /// Fixed parameters of the options transition.
         #[serde(default)]
         options_parameters: BTreeMap<String, String>,
-        /// The options transition filters by a `term` parameter.
+        /// The options transition filters by a `term` parameter: an `ac-transition` text line is such a drop-down.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         server_search: bool,
+        /// With `server_search`, the fewest characters typed before a search.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        min_length: u32,
+        /// Ask for the options even when a `depends_on` field is empty.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        depends_optional: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         multiple: bool,
         /// Free text is allowed as well as the options.
@@ -830,12 +1019,20 @@ pub enum Widget {
         #[serde(default)]
         accept: String,
     },
-    /// `value` is the plain value posted with the form (`also-hidden`); absent, nothing is posted.
+    /// `value` is the plain value posted with the form (`also-hidden`); absent, nothing is posted. With `value_url` the
+    /// text and value are asked for again when a `depends_on` field changes (`dynamic-transition`).
+    #[serde(rename_all = "camelCase")]
     Display {
         #[serde(default)]
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         value: Option<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        value_url: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        value_parameters: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        depends_on: BTreeMap<String, String>,
     },
     /// No value. A password in the document would be a secret, so a `value` key is ignored.
     Password {},
@@ -877,6 +1074,26 @@ pub enum Widget {
         #[serde(default)]
         url: String,
     },
+    /// Click to edit (`m-editable`): the text, and Enter opens a one-field editor that posts `parameter_name` to `url`.
+    #[serde(rename_all = "camelCase")]
+    Editable {
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        url: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        parameters: BTreeMap<String, String>,
+        #[serde(default)]
+        parameter_name: String,
+        /// `text`, `textarea` or `select`.
+        #[serde(default)]
+        widget_type: String,
+        /// The value to edit, when it is not the text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        options: Vec<Choice>,
+    },
 }
 
 #[expect(
@@ -902,7 +1119,8 @@ impl Widget {
             Self::Display { text, .. }
             | Self::Submit { text, .. }
             | Self::Reset { text }
-            | Self::Label { text, .. } => text,
+            | Self::Label { text, .. }
+            | Self::Editable { text, .. } => text,
             Self::DateFind { from, .. } | Self::DatePeriod { from, .. } | Self::RangeFind { from, .. } => from,
             Self::Password {} | Self::File { .. } | Self::Image { .. } => "",
         }
@@ -918,7 +1136,10 @@ impl Widget {
 
     /// Shown, not edited: a display, a label, an image.
     pub fn is_display(&self) -> bool {
-        matches!(self, Self::Display { .. } | Self::Label { .. } | Self::Image { .. })
+        matches!(
+            self,
+            Self::Display { .. } | Self::Label { .. } | Self::Image { .. } | Self::Editable { .. }
+        )
     }
 }
 
@@ -953,7 +1174,8 @@ impl Node {
             | Self::Tree { id, .. }
             | Self::Image { id, .. }
             | Self::Html { id, .. }
-            | Self::Markdown { id, .. } => id,
+            | Self::Markdown { id, .. }
+            | Self::Component { id, .. } => id,
         }
     }
 
@@ -977,7 +1199,8 @@ impl Node {
             | Self::Dashboard { c, .. }
             | Self::DynamicDialog { c, .. }
             | Self::DynamicContainer { c, .. }
-            | Self::Tree { c, .. } => c,
+            | Self::Tree { c, .. }
+            | Self::StatusBar { c, .. } => c,
             Self::FormList { list } => &list.c,
             Self::Text { .. }
             | Self::Link { .. }
@@ -985,10 +1208,10 @@ impl Node {
             | Self::Placeholder { .. }
             | Self::Error { .. }
             | Self::NumberCard { .. }
-            | Self::StatusBar { .. }
             | Self::Image { .. }
             | Self::Html { .. }
-            | Self::Markdown { .. } => &[],
+            | Self::Markdown { .. }
+            | Self::Component { .. } => &[],
         }
     }
 
@@ -1012,7 +1235,8 @@ impl Node {
             | Self::Dashboard { c, .. }
             | Self::DynamicDialog { c, .. }
             | Self::DynamicContainer { c, .. }
-            | Self::Tree { c, .. } => c,
+            | Self::Tree { c, .. }
+            | Self::StatusBar { c, .. } => c,
             Self::FormList { list } => &mut list.c,
             Self::Text { .. }
             | Self::Link { .. }
@@ -1020,12 +1244,117 @@ impl Node {
             | Self::Placeholder { .. }
             | Self::Error { .. }
             | Self::NumberCard { .. }
-            | Self::StatusBar { .. }
             | Self::Image { .. }
             | Self::Html { .. }
-            | Self::Markdown { .. } => &mut [],
+            | Self::Markdown { .. }
+            | Self::Component { .. } => &mut [],
         }
     }
+}
+
+impl Node {
+    /// The node's id, to change it.
+    pub fn id_mut(&mut self) -> &mut String {
+        match self {
+            Self::FormList { list } => &mut list.id,
+            Self::Section { id, .. }
+            | Self::Container { id, .. }
+            | Self::Box { id, .. }
+            | Self::Row { id, .. }
+            | Self::Col { id, .. }
+            | Self::Dialog { id, .. }
+            | Self::Subscreen { id, .. }
+            | Self::Active { id, .. }
+            | Self::Fragment { id, .. }
+            | Self::Region { id, .. }
+            | Self::Text { id, .. }
+            | Self::Link { id, .. }
+            | Self::Form { id, .. }
+            | Self::Field { id, .. }
+            | Self::Placeholder { id, .. }
+            | Self::Error { id, .. }
+            | Self::ButtonMenu { id, .. }
+            | Self::Panel { id, .. }
+            | Self::Split { id, .. }
+            | Self::Dashboard { id, .. }
+            | Self::NumberCard { id, .. }
+            | Self::StatusBar { id, .. }
+            | Self::DynamicDialog { id, .. }
+            | Self::DynamicContainer { id, .. }
+            | Self::Tree { id, .. }
+            | Self::Image { id, .. }
+            | Self::Html { id, .. }
+            | Self::Markdown { id, .. }
+            | Self::Component { id, .. } => id,
+        }
+    }
+}
+
+/// Visit every node to change it, list cells, find fields and buttons included.
+pub fn walk_mut(nodes: &mut [Node], visit: &mut impl FnMut(&mut Node)) {
+    for node in nodes {
+        visit(node);
+        if let Node::FormList { list } = node {
+            for row in &mut list.rows {
+                for cell in &mut row.cells {
+                    cell_nodes_mut(cell, visit);
+                }
+            }
+            walk_mut(&mut list.header_fields, visit);
+            walk_mut(&mut list.buttons, visit);
+        }
+        walk_mut(node.children_mut(), visit);
+    }
+}
+
+fn cell_nodes_mut(cell: &mut Cell, visit: &mut impl FnMut(&mut Node)) {
+    match cell {
+        Cell::Node(node) => {
+            visit(node);
+            walk_mut(node.children_mut(), visit);
+        }
+        Cell::Stack(parts) => parts.iter_mut().for_each(|part| cell_nodes_mut(part, visit)),
+        Cell::Text(_) => {}
+    }
+}
+
+/// Put `prefix` before every id in `nodes`, and before the list a row action names: the body of a dynamic dialog or
+/// container is its own render, so its ids may be the screen's too.
+pub fn prefix_ids(nodes: &mut [Node], prefix: &str) {
+    walk_mut(nodes, &mut |node| {
+        let id = node.id_mut();
+        if !id.is_empty() {
+            *id = format!("{prefix}{id}");
+        }
+        if let Node::Dialog { list, .. } = node {
+            if !list.is_empty() {
+                *list = format!("{prefix}{list}");
+            }
+        }
+    });
+}
+
+/// The node with `id`, to change it.
+pub fn find_mut<'a>(nodes: &'a mut [Node], id: &str) -> Option<&'a mut Node> {
+    for node in nodes {
+        if node.id() == id {
+            return Some(node);
+        }
+        if let Some(found) = find_mut(node.children_mut(), id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// A node from JSON the client did not get in a screen (a document for the help), read as a screen's nodes are.
+///
+/// # Errors
+///
+/// Returns the reason when the value is not a node.
+pub fn node_of(mut value: serde_json::Value) -> Result<Node, ModelError> {
+    clean_value(&mut value);
+    serde_json::from_value(value).map_err(|err| ModelError::Json(err.to_string()))
 }
 
 /// Walk every node, including nested children and list-cell nodes.
@@ -1035,13 +1364,14 @@ pub fn walk<'a>(nodes: &'a [Node], visit: &mut impl FnMut(&'a Node)) {
         if let Node::FormList { list } = node {
             for row in &list.rows {
                 for cell in &row.cells {
-                    if let Cell::Node(inner) = cell {
+                    for inner in cell.nodes() {
                         visit(inner);
                         walk(inner.children(), visit);
                     }
                 }
             }
             walk(&list.header_fields, visit);
+            walk(&list.buttons, visit);
         }
         walk(node.children(), visit);
     }

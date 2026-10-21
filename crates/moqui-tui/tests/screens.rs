@@ -260,3 +260,97 @@ fn golden(name: &str, actual: &str) {
         .unwrap_or_else(|err| panic!("read {}: {err}. Set UPDATE_GOLDEN=1", path.display()));
     assert_eq!(expected, actual, "{}", path.display());
 }
+
+const PHASE3_JSON: &str = r#"{
+  "v": 1,
+  "screen": { "path": "/p3", "title": "Phase 3" },
+  "c": [
+    { "t": "statusBar", "id": "Status", "text": "Approved",
+      "stages": [ { "statusId": "P", "label": "Placed", "state": "done" }, { "statusId": "A", "label": "Approved", "state": "current" },
+                  { "statusId": "S", "label": "Shipped", "state": "todo" } ],
+      "c": [ { "t": "link", "id": "Status.S", "text": "Ship", "url": "/p3/setStatus?statusId=S", "method": "post",
+               "kind": "hidden-form-link", "btnType": "primary" } ] },
+    { "t": "buttonMenu", "id": "More", "text": "More",
+      "c": [ { "t": "link", "id": "m1", "text": "Print", "url": "/print" }, { "t": "link", "id": "m2", "text": "Copy", "url": "/copy" } ] },
+    { "t": "box", "id": "Tree", "title": "Accounts",
+      "c": [ { "t": "tree", "id": "Accounts", "url": "/p3/actions/Accounts" } ] },
+    { "t": "box", "id": "Extra", "title": "More options", "initial": "closed",
+      "c": [ { "t": "text", "id": "x", "text": "hidden until opened" } ] },
+    { "t": "formList", "id": "Items", "name": "Items", "transitionUrl": "/p3/update",
+      "columns": [{ "title": "Item" }, { "title": "Qty / Unit" }],
+      "rows": [
+        { "id": "I1", "cells": [ "Widget", [ { "t": "field", "id": "Items.qty.I1", "name": "qty", "title": "", "w": { "kind": "textLine", "value": "4" } }, "each" ] ],
+          "hidden": [{ "name": "itemId", "value": "I1" }] },
+        { "id": "I2", "cells": [ "Bracket", [ { "t": "field", "id": "Items.qty.I2", "name": "qty", "title": "", "w": { "kind": "textLine", "value": "12" } }, "box" ] ],
+          "hidden": [{ "name": "itemId", "value": "I2" }] }
+      ] },
+    { "t": "component", "id": "Pipeline", "name": "board", "base": "/p3",
+      "props": { "source": "boardRows", "groups": "stages", "groupOf": "stage", "fields": ["amount"] } },
+    { "t": "html", "id": "Doc", "blocks": [ { "kind": "p", "text": "See the guide[1]." } ],
+      "links": [ { "text": "the guide", "url": "https://docs.example/guide" } ] }
+  ]
+}"#;
+
+fn phase3_view() -> AppView {
+    let link = FakeLink::from_json(&[PHASE3_JSON]).unwrap();
+    link.answer_json(
+        "/p3/actions/Accounts",
+        BTreeMap::new(),
+        serde_json::json!([
+            { "id": "1000", "text": "Assets", "children": [ { "id": "1100", "text": "Cash", "children": false } ] },
+            { "id": "2000", "text": "Liabilities", "children": true }
+        ]),
+    );
+    link.answer_json(
+        "/p3/boardRows",
+        BTreeMap::new(),
+        serde_json::json!({ "stages": [{ "id": "q", "name": "Qualify", "color": "grey-6" }, { "id": "w", "name": "Won", "color": "positive" }],
+            "rows": [ { "id": "O1", "title": "Acme expansion", "amount": 120000, "stage": "q" },
+                      { "id": "O2", "title": "Beta pilot", "amount": 45000, "stage": "w" } ] }),
+    );
+    link.answer_json(
+        "/shellSearch",
+        BTreeMap::new(),
+        serde_json::json!({ "groups": [{ "label": "Orders", "rows": [{ "title": "SO-10023", "subtitle": "Acme", "url": "/o?id=SO-10023" }] }] }),
+    );
+    link.answer_shell(ShellInfo {
+        apps: vec![MenuItem {
+            title: "Sales".to_string(),
+            url: "/apps/sales".to_string(),
+            children: Vec::new(),
+        }],
+        counts: BTreeMap::from([("chat".to_string(), 1), ("notifications".to_string(), 2), ("today".to_string(), 3)]),
+        ..ShellInfo::default()
+    });
+    let mut view = AppView::with_session(Session::start("/p3"), link);
+    view.set_clock("Tue 14:32");
+    view.session_mut().resize(100, 40);
+    view.run_requests();
+    view
+}
+
+#[test]
+fn phase_three_pieces_and_overlays() {
+    let mut view = phase3_view();
+    golden("structure-100x40", &view.screen_text(100, 40));
+    view.session_mut().resize(180, 50);
+    golden("structure-180x50", &view.screen_text(180, 50));
+    view.session_mut().resize(100, 40);
+    // F10 on the list: the row editor, then the actions menu.
+    while view.session().focus_id() != "Items" {
+        press(&mut view, Key::Tab);
+    }
+    press(&mut view, Key::Char('e'));
+    golden("row-editor-100x40", &view.screen_text(100, 40));
+    press(&mut view, Key::Escape);
+    press(&mut view, Key::F(10));
+    golden("actions-100x40", &view.screen_text(100, 40));
+    press(&mut view, Key::Escape);
+    view.on_key(&KeyPress::with_ctrl(Key::Char('k')));
+    for ch in "sa".chars() {
+        press(&mut view, Key::Char(ch));
+    }
+    view.session_mut().on_time(std::time::Instant::now() + std::time::Duration::from_secs(1));
+    view.run_requests();
+    golden("palette-100x40", &view.screen_text(100, 40));
+}

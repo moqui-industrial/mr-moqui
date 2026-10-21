@@ -785,32 +785,54 @@ level at the path itself (no walk down the default subscreens), which is how the
   validationErrors: [{form, field, message}]}, focus, c}`. `parameters` are the request's, credential names stripped; `messages` the flash of
   the last transition; `focus` the first `focus-field` as `form.field`; `c` the level's nodes. A client refuses a `v` it does not know.
 - **Nodes** carry `t` and an `id`. Ids are stable across renders and unique in the document: an element's own id or name, else its element
-  path, with `~2`, `~3` for a repeat (an iterated section, a section included twice). Structure: `section`, `container`, `box` (`title`, `type`;
-  a `region` named `toolbar` first in `c`), `row` and `col` (`xs` to `lg` spans), `panel` (`region`s `header`, `left`, `center`, `right`,
-  `footer`, a side's `size` in px), `split` (`sideWidth`, `region`s `side` and `main`), `dialog` (`title`, `button`, its body in `c`),
-  `dynamicDialog` and `dynamicContainer` (`url`), `dashboard`, `subscreens` (`kind` tab, popup, wizard or stack; `items` of `{title, url, active}`;
-  the active level in `c`), `active`. Content: `text` (`style` h1 to h6, pre...), `image`, `markdown`, `html` (`blocks` of `{kind, text,
-  depth, marker}` and `links` of `{text, url}`, the n-th link written `[n]` in the text), `numberCard`, `statusBar`, `tree`, `placeholder`
-  (`text`, the browser `url`), `error`. A `fragment` holds the nodes of a `text type="tui"`. A client draws a `t` it does not know as a placeholder.
+  path, with `~2`, `~3` for a repeat (an iterated section, a section included twice). Structure: `section`, `container`, `box` (`title`, `type`,
+  `initial` open or closed for a collapsible box; a `region` named `toolbar` first in `c`), `row` and `col` (`xs` to `lg` spans), `panel`
+  (`region`s `header`, `left`, `center`, `right`, `footer`, a side's `size` in px), `split` (`sideWidth`, `selectParameter`, `region`s `side`
+  and `main`), `dialog` (`title`, `button`, its body in `c`; `list` when it is a row action of that list), `dynamicDialog` (`url`, `button`,
+  `title`) and `dynamicContainer` (`url`): the client renders the url in `tui` (a transition's redirect followed) and puts the body in `c`, its
+  ids prefixed with the node's id and `/`; `dashboard`, `subscreens` (`kind` tab, popup, wizard or stack; `items` of `{title, url, active}`;
+  a wizard's `finishText`; the active level in `c`), `active`. Content: `text` (`style` h1 to h6, pre...), `image` (`alt`, `url`, opened in
+  the browser), `markdown` (`text`: the client draws it as `html` blocks), `html` (`blocks` of `{kind, text, depth, marker}` and `links` of
+  `{text, url}`, the n-th link written `[n]` in the text; the client lists them as References to follow), `numberCard` (`title`, `value`,
+  `url`), `statusBar` (`text`, `stages` `[{statusId, label, state: done | current | todo}]`, its transitions as links in `c`), `tree`
+  (`url`, `openPath`, `parameters`: the roots are asked for with `treeNodeId=#`, a node's children with its id and `treeNodeName`, and the
+  answer is `m-tree-item`'s list of `{id, text, a_attr: {urlText}, li_attr: {treeNodeName}, children: true | false | [...]}`),
+  `buttonMenu` (`text`, its items as links in `c`), `placeholder` (`text`, the browser `url`), `error`. A `fragment` holds the nodes of a
+  `text type="tui"`, and a `component` (`name`, `props`, `base`: the screen path the server sets) names a client component (docs/TUI.md). A
+  client draws a `t` it does not know as a placeholder.
 - **Actions.** `link`: `text`, `url` with its parameters, `kind` (the `link-type`), `method`, `confirm`, `btnType`, `icon` (a Material Symbols
   name), `badge`, `tooltip`, `disabled`. A hidden-form link posts.
 - **Forms.** `form`: `name`, `kind`, `transitionUrl` (empty for a find form, which asks for the screen again with its fields), `method`, `hidden`
   `[{name, value}]` (credential names left out), `submitMessage`, `backgroundReloadId`, `backgroundHideId`, its fields and layout rows in `c`.
-  `formList`: `columns` `[{title, orderBy, printWidth, printWidthType, align}]`, `rows` `[{id, selectId, cells}]` (a cell is text or one node),
-  `paging` `{index, size, count, maxIndex, rangeLow, rangeHigh}`, `headerFields` (the find dialog), `rowSelection` `{idField, parameter, listMode}`.
+  A form with a file field has `multipart`.
+  `formList`: `columns` `[{title, orderBy, printWidth, printWidthType, align}]`, `rows` `[{id, selectId, cells, hidden}]` (a cell is text, one
+  node, or an array of the parts of a column that stacks several fields), `paging` `{index, size, count, maxIndex, rangeLow, rangeHigh}`,
+  `headerFields` (the find dialog), `rowSelection` `{idField, parameter, listMode}` (a row action posts the selected ids as `parameter=a,b` in
+  list mode, else `parameter_N` with `_isMulti`). A list that posts has a `transitionUrl` and `hidden`, and its input cells are `field` nodes:
+  each row is its own form with its row's `hidden`, or with `multi` one form of every row, its fields named `name_N` and its submit buttons in
+  `buttons`. Its tools: `savedFinds` `{saveUrl, formLocation, parameters, clearUrl, finds: [{id, name, url, active, default, mine}]}`,
+  `selectColumns` `{url, formLocation, parameters, shown: [[{name, title}]], hidden}` (saved as `columnsTree`), `exports` `[{kind, label,
+  url}]`.
 - **Fields.** `field`: `name`, `title`, `required`, `maxlength`, `rules` (`{kind: number | integer | pattern | range, pattern, min, minEq, max,
   maxEq, message}`, from `sri.getFieldValidationRules`; a JavaScript pattern a client cannot read is the server's to check), `tooltip`,
-  `visibleWhen` `{field, value}`, and one widget `w` by `kind`: `textLine` (`inputType`, `mask`, `size`), `textArea` (`rows`, `editorType`,
+  `visibleWhen` `{field, value}`, and one widget `w` by `kind`: `textLine` (`inputType`, `mask`, `size`, `prefix`, `disabled`, and a
+  `default-transition`'s `defaultUrl`, `defaultParameters` and `dependsOn`), `textArea` (`rows`, `editorType`,
   `readOnly` for html and rich: never posted), `password` (no value, ever), `dropDown` (`options` `[{value, label}]`, or `optionsUrl` with
   `optionsParameters` (fixed) and `dependsOn` `{parameter: field}`, the transition answering a list or `{options: [...]}`; `multiple`, `combo`,
-  `allowEmpty`, `submitOnSelect`, `showNot`, `serverSearch`), `dateTime` (`type`, `format`, a Java pattern), `dateFind`, `datePeriod` and
+  `allowEmpty`, `submitOnSelect`, `showNot`, `serverSearch` with `minLength` and `dependsOptional`; an `ac-transition` text line is such a
+  drop-down, as in qvt), `dateTime` (`type`, `format`, a Java pattern), `dateFind`, `datePeriod` and
   `rangeFind` (posting `name_from` and `name_thru`), `textFind` (`op`, `not`, `ic`, posting `name_op`, `name_not` and `name_ic`), `check` and
-  `radio` (`options`), `file`, `display` (`text`, and `value` when also-hidden posts it), `hidden`, `submit` (`confirm`), `reset`, `label`, `image`.
+  `radio` (`options`), `file`, `display` (`text`, and `value` when also-hidden posts it; a `dynamic-transition`'s `valueUrl`,
+  `valueParameters` and `dependsOn`), `hidden`, `submit` (`confirm`), `reset`, `label`, `image`, `editable` (`text`, `url`, `parameters`,
+  `parameterName`, `widgetType`, `value`, `options`: Enter edits and posts the value).
 - **Safety.** Every string of the document is stripped of C0 and C1 controls but tab and newline on the server, and again, with the bidi
   overrides, by the client before it draws (D9).
 - **Answers to the client's calls** are the shell's: a transition with `Accept: application/json` answers `screenUrl`, `messageInfos` and
   `validationErrors` (or `sendJsonResponse`'s `messages` and `errors`); a 401 asks for a login. The shell data's `tui` key carries the theme's
-  `breakpoints`, `colors` and `keys` (the `STRT_TUI_*` resource types).
+  `breakpoints`, `colors` and `keys` (the `STRT_TUI_*` resource types) and the user's `drawerOpen` (`TUI_DRAWER_OPEN`, posted to
+  `/apps/setPreference`). The client also reads the shell data's `apps`, `providers` (`quickCreate`, `paletteActions`), the tray screens and
+  `counts`; `/shellSearch`, `/shellCounts`, `/menuData` (the screen's `screenDocList` and `savedFinds`) and a screen's `screenDoc` with
+  `renderMode=tui` (an `html` node).
 
 ## Not here
 

@@ -17,14 +17,16 @@
 //! on the next tick, so a slow request never stops the keys.
 
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use revue::core::app::App;
 use revue::event::{Event, Key as RevueKey, KeyEvent};
 
 use crate::keys::{Key, KeyPress};
-use crate::link::{Reply, ScreenLink};
+use crate::link::{RawBody, Reply, ScreenLink};
 use crate::session::Session;
 use crate::theme::Theme;
 
@@ -59,6 +61,8 @@ pub fn run_local<L: ScreenLink + 'static>(link: L, options: LocalOptions) -> rev
     let _ = out.write_all(b"\x1b[?2004h");
     let _ = out.flush();
     send(&mut view, &link, &done_tx);
+    // The title line's clock moves once a minute; nothing else redraws an idle screen.
+    let mut minute = jiff::Zoned::now().minute();
     let result = App::builder()
         .mouse_capture(false)
         .build()
@@ -91,8 +95,13 @@ pub fn run_local<L: ScreenLink + 'static>(link: L, options: LocalOptions) -> rev
                             any |= view.session().log_open();
                         }
                     }
-                    // The spinner and the message expiry move without a key.
-                    any || view.session().is_busy() || view.session().next_deadline().is_some()
+                    // Timers: the message's expiry, the counters, a search waiting for the typing to stop.
+                    any |= view.session_mut().on_time(Instant::now());
+                    let now = jiff::Zoned::now().minute();
+                    any |= now != minute;
+                    minute = now;
+                    // The spinner moves while a request runs.
+                    any || view.session().is_busy()
                 }
                 Event::Mouse(_) | Event::FocusGained | Event::FocusLost => false,
             };
@@ -102,12 +111,67 @@ pub fn run_local<L: ScreenLink + 'static>(link: L, options: LocalOptions) -> rev
                     log(&note);
                 }
             }
+            for body in view.session_mut().take_downloads() {
+                let saved = save_download(&body);
+                view.session_mut().saved(saved);
+            }
             send(view, &link, &done_tx);
             changed
         });
     let _ = out.write_all(b"\x1b[?2004l");
     let _ = out.flush();
     result
+}
+
+/// Where an export is saved: `XDG_DOWNLOAD_DIR`, else `~/Downloads`, else the current directory.
+fn downloads_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_DOWNLOAD_DIR").filter(|dir| !dir.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home).join("Downloads"),
+        None => PathBuf::from("."),
+    }
+}
+
+/// Save a file the server sent under its own name (made safe), not over one already there. In local mode the client
+/// runs on the user's machine, so this is their downloads directory (section 1.6).
+fn save_download(body: &RawBody) -> Result<String, String> {
+    let dir = downloads_dir();
+    std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    let name: String = body
+        .file_name
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let name = if name.trim_matches(['.', '_']).is_empty() {
+        let extension = body.content_type.split(['/', ';']).nth(1).unwrap_or("bin");
+        format!("export.{}", extension.trim())
+    } else {
+        name
+    };
+    let (stem, extension) = name
+        .rsplit_once('.')
+        .map_or((name.as_str(), ""), |(stem, ext)| (stem, ext));
+    let mut path = dir.join(&name);
+    let mut n = 1;
+    while path.exists() {
+        let next = if extension.is_empty() {
+            format!("{stem}-{n}")
+        } else {
+            format!("{stem}-{n}.{extension}")
+        };
+        path = dir.join(next);
+        n += 1;
+    }
+    std::fs::write(&path, &body.bytes).map_err(|err| format!("{}: {err}", path.display()))?;
+    Ok(path.display().to_string())
 }
 
 /// Start the session's queued requests on worker threads.

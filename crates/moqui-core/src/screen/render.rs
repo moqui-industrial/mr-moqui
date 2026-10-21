@@ -1466,7 +1466,23 @@ fn run_transition_steps(
             return Ok(Step::Respond(response));
         }
         super::Implicit::ScreenDoc => {
+            // The terminal asks with renderMode=tui (or screenDoc.tui) and reads the document as an html node.
+            let tui = text_of(job.parameters.get("renderMode")) == "tui"
+                || info.target_transition_extension.as_deref() == Some("tui");
             match super::saved_finds::screen_document(&transition.screen_location)? {
+                super::saved_finds::ScreenDocument::Text(text) if tui => {
+                    let mut node = super::html_text::html_text(&text).to_json();
+                    node["t"] = "html".into();
+                    node["id"] = "screenDoc".into();
+                    web::send_bytes_with_headers(
+                        200,
+                        vec![(
+                            "Content-Type".to_string(),
+                            "application/json; charset=UTF-8".to_string(),
+                        )],
+                        node.to_string().into_bytes(),
+                    );
+                }
                 super::saved_finds::ScreenDocument::Text(text) => web::send_bytes_with_headers(
                     200,
                     vec![("Content-Type".to_string(), "text/html; charset=UTF-8".to_string())],

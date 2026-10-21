@@ -18,12 +18,14 @@
 //! feature is everything but the Revue view: the model, the link, navigation, state, layout, keys and theme, which
 //! `moqui-core`'s tests use without compiling Revue (D3). The `ui` feature adds the Revue view and the local loop.
 
+mod components;
 mod decode;
 mod edit;
 mod forms;
 mod keys;
 mod layout;
 mod link;
+mod markdown;
 mod model;
 mod nav;
 mod session;
@@ -32,25 +34,38 @@ mod theme;
 #[cfg(feature = "ui")]
 mod ui;
 
+pub use components::{
+    find as find_component, line_text, names as component_names, Act, Component, ComponentState, Line, Registered, Span,
+};
 pub use decode::{Decoded, Decoder};
 pub use edit::{row_col, Edited, Limits};
-pub use forms::{FieldInfo, FocusItem, FocusKind, FormInfo, Index, LinkInfo, Scope, TabInfo};
+pub use forms::{
+    ComponentInfo, DynamicInfo, Extra, FieldInfo, FocusItem, FocusKind, FormInfo, Index, LinkInfo, MenuInfo, RowInfo,
+    Scope, TabInfo, TreeInfo, WizardInfo,
+};
 pub use keys::{merge_keys, Action, Key, KeyMap, KeyPress, MergeSkip, ACTIONS};
 pub use layout::{
     display_width, dotted_label, frame, frame_with, label_column_width, layout, layout_levels, layout_nodes, outline,
-    outline_of, truncate_width, width_class, wrap, Breakpoints, Frame, LabelMode, LaidOut, Piece, WidthClass,
-    DRAWER_DOCK_AT, DRAWER_WIDTH, PAGE_ROWS,
+    outline_of, ref_id, truncate_width, width_class, wizard_back, wizard_next, wrap, Breakpoints, Frame, LabelMode,
+    LaidOut, Piece, Plain, Shown, TreeMark, TreeRow, WidthClass, DRAWER_DOCK_AT, DRAWER_WIDTH, PAGE_ROWS,
 };
 pub use link::{
-    gallery_link, row_link, FakeLink, LinkCall, LinkError, MenuItem, Reply, ScreenLink, ShellInfo, TransitionOutcome,
-    GALLERY_DETAIL_JSON, GALLERY_DETAIL_PATH, GALLERY_LIST_JSON, GALLERY_LIST_PATH,
+    counts_of, gallery_link, row_link, FakeLink, LinkCall, LinkError, MenuItem, RawBody, Reply, ScreenLink,
+    ShellAction, ShellInfo, TransitionOutcome, GALLERY_DETAIL_JSON, GALLERY_DETAIL_PATH, GALLERY_LIST_JSON,
+    GALLERY_LIST_PATH,
 };
+pub use markdown::blocks as markdown_blocks;
 pub use model::{
-    clean_text, walk, Cell, Choice, Column, FormList, HtmlBlock, HtmlLink, ListRow, Messages, ModelError, Node, Paging,
-    RowSelection, Rule, ScreenMeta, ScreenModel, ValidationError, VisibleWhen, Widget, MODEL_VERSION,
+    clean_text, find_mut, node_of, prefix_ids, walk, walk_mut, Cell, Choice, Column, ColumnChoice, Export, FormList,
+    HiddenValue, HtmlBlock, HtmlLink, ListRow, Messages, ModelError, Node, Paging, RowSelection, Rule, SavedFind,
+    SavedFinds, ScreenMeta, ScreenModel, SelectColumns, StatusStage, SubscreenItem, ValidationError, VisibleWhen,
+    Widget, MODEL_VERSION,
 };
 pub use nav::{decode as decode_query, level_path, query_parameters, Location, Nav, LEVEL_FLOOR};
-pub use session::{drawer_rows, DropDown, Login, Message, Overlay, Picker, Session};
+pub use session::{
+    drawer_rows, ColumnEntry, Columns, DropDown, Editor, Login, Menu, MenuAct, MenuEntry, Message, Overlay, Palette,
+    PaletteRow, Picker, Prompt, PromptThen, Session, Timer, TreeNode, TreeState,
+};
 pub use state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, Then};
 pub use theme::{Depth, Glyph, Role, Theme};
 #[cfg(feature = "ui")]

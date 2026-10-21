@@ -35,49 +35,37 @@ const $rows = [];
             try {
                 const $rowKey = String($index);
                 const $cells = [];
-                let $cell = "";
-let $piece = "";
-$cell = "";
-$piece = "";
-$piece = String(sri.getFieldValueString({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || "");
-if ($piece && typeof $piece === "object") $cell = $piece;
-else if ($piece != null && String($piece) !== "" && typeof $cell !== "object") $cell = $cell ? ($cell + " " + $piece) : String($piece);
-$cells.push($cell);
-$cell = "";
-$piece = "";
-$piece = String(sri.getFieldValueString({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{"title":"The Title"},"parent":{"name":"field","attrs":{"name":"title","print-width":"30","print-width-type":"characters"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || "" || "");
-if ($piece && typeof $piece === "object") $cell = $piece;
-else if ($piece != null && String($piece) !== "" && typeof $cell !== "object") $cell = $cell ? ($cell + " " + $piece) : String($piece);
-$cells.push($cell);
-$cell = "";
-$piece = "";
-$piece = String(sri.getFieldValueString({"name":"display","attrs":{"format":"0.0"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"qty","align":"right","print-width":"20"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || "");
-if ($piece && typeof $piece === "object") $cell = $piece;
-else if ($piece != null && String($piece) !== "" && typeof $cell !== "object") $cell = $cell ? ($cell + " " + $piece) : String($piece);
-$cells.push($cell);
-$cell = "";
-$piece = "";
+                let $parts = [];
+let $start = 0;
+$parts = [];
+$start = $parts.length;
+$addPart($parts, $start, String(sri.getFieldValueString({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || ""));
+$cells.push($cellOf($parts));
+$parts = [];
+$start = $parts.length;
+$addPart($parts, $start, String(sri.getFieldValueString({"name":"text-line","attrs":{},"parent":{"name":"default-field","attrs":{"title":"The Title"},"parent":{"name":"field","attrs":{"name":"title","print-width":"30","print-width-type":"characters"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || "" || ""));
+$cells.push($cellOf($parts));
+$parts = [];
+$start = $parts.length;
+$addPart($parts, $start, String(sri.getFieldValueString({"name":"display","attrs":{"format":"0.0"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"qty","align":"right","print-width":"20"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || ""));
+$cells.push($cellOf($parts));
+$parts = [];
 if (!(hideAmt)) {
-    $piece = String(ec.l10n.formatCurrency(sri.getFieldValue({"name":"field","attrs":{"name":"amt","hide":"hideAmt"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}, ""), 'USD') || "");
-    if ($piece && typeof $piece === "object") $cell = $piece;
-    else if ($piece != null && String($piece) !== "" && typeof $cell !== "object") $cell = $cell ? ($cell + " " + $piece) : String($piece);
+    $start = $parts.length;
+    $addPart($parts, $start, String(ec.l10n.formatCurrency(sri.getFieldValue({"name":"field","attrs":{"name":"amt","hide":"hideAmt"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}, ""), 'USD') || ""));
 }
-$cells.push($cell);
-$cell = "";
-$piece = "";
+$cells.push($cellOf($parts));
+$parts = [];
+$start = $parts.length;
 if (status == 'X') {
-    $piece = String(ec.resource.expand("Excluded") || "");
-    if ($piece && typeof $piece === "object") $cell = $piece;
-    else if ($piece != null && String($piece) !== "" && typeof $cell !== "object") $cell = $cell ? ($cell + " " + $piece) : String($piece);
+    $addPart($parts, $start, String(ec.resource.expand("Excluded") || ""));
 } else {
-    $piece = String(sri.getFieldValueString({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"status"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || "");
-    if ($piece && typeof $piece === "object") $cell = $piece;
-    else if ($piece != null && String($piece) !== "" && typeof $cell !== "object") $cell = $cell ? ($cell + " " + $piece) : String($piece);
+    $addPart($parts, $start, String(sri.getFieldValueString({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"status"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || ""));
 }
-$cells.push($cell);
-$cell = "";
-$piece = "";
-$piece = (() => {
+$cells.push($cellOf($parts));
+$parts = [];
+$start = $parts.length;
+$addPart($parts, $start, (() => {
             let $text = ec.resource.expand("Open ${id}");
             if ($text == null || $text === "null") $text = "";
             const $made = sri.makeUrlByType("open", "transition", {"name":"link","attrs":{"url":"open","text":"Open ${id}","link-type":"anchor"},"parent":{"name":"default-field","attrs":{"title":"Open"},"parent":{"name":"field","attrs":{"name":"link"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}, "true");
@@ -91,16 +79,12 @@ $piece = (() => {
             
             
             return $link;
-        })();
-if ($piece && typeof $piece === "object") $cell = $piece;
-else if ($piece != null && String($piece) !== "" && typeof $cell !== "object") $cell = $cell ? ($cell + " " + $piece) : String($piece);
-$cells.push($cell);
-$cell = "";
-$piece = "";
-$piece = String(ec.l10n.localize("Do") || "");
-if ($piece && typeof $piece === "object") $cell = $piece;
-else if ($piece != null && String($piece) !== "" && typeof $cell !== "object") $cell = $cell ? ($cell + " " + $piece) : String($piece);
-$cells.push($cell);
+        })());
+$cells.push($cellOf($parts));
+$parts = [];
+$start = $parts.length;
+$addPart($parts, $start, String(ec.l10n.localize("Do") || ""));
+$cells.push($cellOf($parts));
 const $row = {id:$rowKey,cells:$cells};
                 $rows.push($row);
             } finally {
@@ -138,23 +122,18 @@ const $headerFields = [];
             try {
                 const $rowKey = String($index);
                 const $cells = [];
-                let $cell = "";
-let $piece = "";
-$cell = "";
-$piece = "";
-$piece = String(sri.getFieldValueString({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"a"},"parent":{"name":"form-list","attrs":{"name":"Cols","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || "");
-if ($piece && typeof $piece === "object") $cell = $piece;
-else if ($piece != null && String($piece) !== "" && typeof $cell !== "object") $cell = $cell ? ($cell + " " + $piece) : String($piece);
-$piece = String(sri.getFieldValueString({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"b"},"parent":{"name":"form-list","attrs":{"name":"Cols","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || "");
-if ($piece && typeof $piece === "object") $cell = $piece;
-else if ($piece != null && String($piece) !== "" && typeof $cell !== "object") $cell = $cell ? ($cell + " " + $piece) : String($piece);
-$cells.push($cell);
-$cell = "";
-$piece = "";
-$piece = String(sri.getFieldValueString({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"c"},"parent":{"name":"form-list","attrs":{"name":"Cols","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || "");
-if ($piece && typeof $piece === "object") $cell = $piece;
-else if ($piece != null && String($piece) !== "" && typeof $cell !== "object") $cell = $cell ? ($cell + " " + $piece) : String($piece);
-$cells.push($cell);
+                let $parts = [];
+let $start = 0;
+$parts = [];
+$start = $parts.length;
+$addPart($parts, $start, String(sri.getFieldValueString({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"a"},"parent":{"name":"form-list","attrs":{"name":"Cols","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || ""));
+$start = $parts.length;
+$addPart($parts, $start, String(sri.getFieldValueString({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"b"},"parent":{"name":"form-list","attrs":{"name":"Cols","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || ""));
+$cells.push($cellOf($parts));
+$parts = [];
+$start = $parts.length;
+$addPart($parts, $start, String(sri.getFieldValueString({"name":"display","attrs":{},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"c"},"parent":{"name":"form-list","attrs":{"name":"Cols","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || ""));
+$cells.push($cellOf($parts));
 const $row = {id:$rowKey,cells:$cells};
                 $rows.push($row);
             } finally {

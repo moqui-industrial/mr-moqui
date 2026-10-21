@@ -1629,6 +1629,8 @@ fn service_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     service.set("sync", sync).map_err(js_error)?;
     let async_call = Function::new(ctx.clone(), service_async).map_err(js_error)?;
     service.set("async", async_call).map_err(js_error)?;
+    let job = Function::new(ctx.clone(), service_job).map_err(js_error)?;
+    service.set("job", job).map_err(js_error)?;
     Ok(service)
 }
 

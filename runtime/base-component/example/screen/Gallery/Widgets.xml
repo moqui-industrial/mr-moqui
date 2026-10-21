@@ -202,7 +202,9 @@ along with this software (see the LICENSE.md file). If not, see
                 <link url="noop" link-type="hidden-form-link" icon="edit" text="" tooltip="Edit (Material name)"/>
                 <link url="noop" link-type="hidden-form-link" icon="fa fa-pencil" text="" tooltip="Edit (Font Awesome class)"/>
                 <link url="noop" link-type="hidden-form-link" icon="fa fa-refresh" text="Flat with text" tooltip="Flat with text"/>
-                <render-mode><text type="qvt"><![CDATA[<q-btn flat round dense icon="more_vert" size="sm"><q-tooltip>Raw q-btn flat round, Material name</q-tooltip></q-btn>]]></text></render-mode>
+                <render-mode><text type="qvt"><![CDATA[<q-btn flat round dense icon="more_vert" size="sm"><q-tooltip>Raw q-btn flat round, Material name</q-tooltip></q-btn>]]></text>
+                    <!-- the raw button does nothing: the terminal leaves it out -->
+                    <text type="tui" template="false">[]</text></render-mode>
             </container>
             <label type="p" text="Text links: link-type=anchor to a screen and to a transition that redirects." style="text-caption q-mt-sm q-mb-xs"/>
             <container style="row items-center q-gutter-md">

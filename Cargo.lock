@@ -4107,7 +4107,9 @@ dependencies = [
 name = "moqui-tui"
 version = "0.1.0"
 dependencies = [
+ "inventory",
  "jiff",
+ "pulldown-cmark",
  "regex",
  "revue",
  "serde",

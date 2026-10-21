@@ -53,24 +53,12 @@ $emit((() => {
             }
             const $field = {t:"field",id:$uid("Find.stateGeoId"),name:"stateGeoId",title:String(ec.l10n.localize("State") || ""),w:(() => {
             const $value = String(sri.getFieldValueString({"name":"drop-down","attrs":{},"parent":{"name":"default-field","attrs":{"title":"State"},"parent":{"name":"field","attrs":{"name":"stateGeoId"},"parent":{"name":"form-single","attrs":{"name":"Find","transition":"search"},"parent":{"name":"widgets","attrs":{}}}}}}) || "" || "");
-            const $made = sri.makeUrlByType("getGeoCountryStates", "transition", {"name":"dynamic-options","attrs":{"transition":"getGeoCountryStates","value-field":"geoId","label-field":"geoName"},"children":[{"name":"depends-on","attrs":{"field":"countryGeoId"}}],"parent":{"name":"drop-down","attrs":{},"parent":{"name":"default-field","attrs":{"title":"State"},"parent":{"name":"field","attrs":{"name":"stateGeoId"},"parent":{"name":"form-single","attrs":{"name":"Find","transition":"search"},"parent":{"name":"widgets","attrs":{}}}}}}}, "false");
-            const $optionsUrl = $made ? ($made.url || "") : "";
-            const $depends = {"countryGeoId":"countryGeoId"};
-            const $params = {};
-            const $map = $made ? ($made.getParameterMap() || {}) : {};
-            for (const $key of Object.keys($map)) {
-                const $fixed = $map[$key];
-                if ($depends[$key] === undefined && $fixed != null && $fixed !== "") $params[$key] = String($fixed);
-            }
             let $label = $value;
             if ($value) {
                 const $found = sri.getFieldTransitionValue("getGeoCountryStates", {"name":"dynamic-options","attrs":{"transition":"getGeoCountryStates","value-field":"geoId","label-field":"geoName"},"children":[{"name":"depends-on","attrs":{"field":"countryGeoId"}}],"parent":{"name":"drop-down","attrs":{},"parent":{"name":"default-field","attrs":{"title":"State"},"parent":{"name":"field","attrs":{"name":"stateGeoId"},"parent":{"name":"form-single","attrs":{"name":"Find","transition":"search"},"parent":{"name":"widgets","attrs":{}}}}}}}, $value, "geoName", false);
                 if ($found) $label = String($found);
             }
-            const $w = {kind:"dropDown",value:$value,options:$value ? [{value:$value,label:$label}] : []};
-            if ($optionsUrl) $w.optionsUrl = $optionsUrl;
-            if (Object.keys($depends).length) $w.dependsOn = $depends;
-            if (Object.keys($params).length) $w.optionsParameters = $params;
+            const $w = $withRemote({kind:"dropDown",value:$value,options:$value ? [{value:$value,label:$label}] : []}, $remote(sri.makeUrlByType("getGeoCountryStates", "transition", {"name":"dynamic-options","attrs":{"transition":"getGeoCountryStates","value-field":"geoId","label-field":"geoName"},"children":[{"name":"depends-on","attrs":{"field":"countryGeoId"}}],"parent":{"name":"drop-down","attrs":{},"parent":{"name":"default-field","attrs":{"title":"State"},"parent":{"name":"field","attrs":{"name":"stateGeoId"},"parent":{"name":"form-single","attrs":{"name":"Find","transition":"search"},"parent":{"name":"widgets","attrs":{}}}}}}}, "false"), {"countryGeoId":"countryGeoId"}), "optionsUrl", "optionsParameters");
             return $w;
         })()};
             if ($required) $field.required = true;

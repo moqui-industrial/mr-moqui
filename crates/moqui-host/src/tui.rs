@@ -24,9 +24,12 @@ use moqui_core::context::{Error, ErrorKind, ExecutionContextFactory};
 use moqui_core::screen::RenderOutput;
 use moqui_lib::object::Value;
 use moqui_tui::{
-    query_parameters, Choice, LinkError, MenuItem, Messages, ScreenLink, ScreenModel, ShellInfo, TransitionOutcome,
-    ValidationError,
+    counts_of, query_parameters, Choice, LinkError, MenuItem, Messages, RawBody, ScreenLink, ScreenModel, ShellAction,
+    ShellInfo, TransitionOutcome, ValidationError,
 };
+
+/// Redirects a level or a fragment follows before it gives up: a transition answers its screen with one.
+const FRAGMENT_REDIRECTS: usize = 4;
 
 /// One screen client bound to a running factory.
 #[derive(Clone)]
@@ -102,22 +105,134 @@ impl HostLink {
     }
 }
 
-impl ScreenLink for HostLink {
-    fn level(&self, path: &str, parameters: &BTreeMap<String, String>) -> Result<ScreenModel, LinkError> {
-        let path = self.absolute(path);
+impl HostLink {
+    /// Render `path` in the `tui` mode. A screen the user goes to is remembered for the history and as the base of
+    /// relative urls; a fragment is neither.
+    fn render_tui(
+        &self,
+        path: String,
+        parameters: &BTreeMap<String, String>,
+        remember: bool,
+    ) -> Result<RenderOutput, LinkError> {
         let values = value_map(parameters);
         let factory = Arc::clone(&self.factory);
-        let output = self.on_pool(move || {
+        self.on_pool(move || {
             moqui_core::screen::make_render(&factory)
                 .screen_path(path)
                 .parameters(values)
                 .render_mode("tui")
-                .history(true)
+                .history(remember)
+                .render()
+        })
+    }
+}
+
+impl ScreenLink for HostLink {
+    /// A screen, or a transition a link goes to (an anchor to `runJob`), whose redirect to its screen is followed as the
+    /// browser follows it.
+    fn level(&self, path: &str, parameters: &BTreeMap<String, String>) -> Result<ScreenModel, LinkError> {
+        let mut path = self.absolute(path);
+        let mut parameters = parameters.clone();
+        for _ in 0..FRAGMENT_REDIRECTS {
+            let output = self.render_tui(path.clone(), &parameters, true)?;
+            if (300..400).contains(&output.status) {
+                let Some(location) = output.header("Location").map(local_path) else {
+                    return Err(LinkError::Remote(format!("HTTP {} with no Location", output.status)));
+                };
+                let (bare, query) = split_query(&location);
+                path = bare.to_string();
+                parameters = query.map(query_parameters).unwrap_or_default();
+                continue;
+            }
+            let model = model_from(&output)?;
+            *self.last_path.lock().unwrap_or_else(PoisonError::into_inner) = model.screen.path.clone();
+            return Ok(model);
+        }
+        Err(LinkError::Remote(format!("{path} redirected too many times")))
+    }
+
+    /// A transition that answers JSON, or text (a default value, a value url's label), as a JSON string.
+    fn json(
+        &self,
+        url: &str,
+        method: &str,
+        parameters: &BTreeMap<String, String>,
+    ) -> Result<serde_json::Value, LinkError> {
+        let url = self.absolute(url);
+        let method = if method.is_empty() {
+            "GET".to_string()
+        } else {
+            method.to_ascii_uppercase()
+        };
+        let values = value_map(parameters);
+        let factory = Arc::clone(&self.factory);
+        let asked = url.clone();
+        let result = self
+            .on_pool(move || {
+                moqui_core::screen::make_render(&factory)
+                    .screen_path(asked)
+                    .method(method)
+                    .parameters(values)
+                    .header("Accept", "application/json")
+                    .render()
+            })
+            .and_then(|output| {
+                check_status(&output)?;
+                let text = output.body_text();
+                Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)))
+            });
+        if let Err(err) = &result {
+            tracing::warn!("TUI request to {url} failed: {err}");
+        }
+        result
+    }
+
+    /// The body of a dynamic dialog or container: its url rendered in the `tui` mode. A transition answers with a
+    /// redirect to its screen, which is followed.
+    fn fragment(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<ScreenModel, LinkError> {
+        let mut path = self.absolute(url);
+        let mut parameters = parameters.clone();
+        for _ in 0..FRAGMENT_REDIRECTS {
+            let (bare, query) = split_query(&path);
+            let mut asked = query.map(query_parameters).unwrap_or_default();
+            asked.extend(parameters.clone());
+            let output = self.render_tui(bare.to_string(), &asked, false)?;
+            if !(300..400).contains(&output.status) {
+                return model_from(&output);
+            }
+            let Some(location) = output.header("Location").map(local_path) else {
+                return Err(LinkError::Remote(format!("HTTP {} with no Location", output.status)));
+            };
+            path = location;
+            parameters = BTreeMap::new();
+        }
+        Err(LinkError::Remote(format!("{url} redirected too many times")))
+    }
+
+    /// A file: an export, as the server renders it, with its type and name.
+    fn raw(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<RawBody, LinkError> {
+        let url = self.absolute(url);
+        let values = value_map(parameters);
+        let factory = Arc::clone(&self.factory);
+        let output = self.on_pool(move || {
+            moqui_core::screen::make_render(&factory)
+                .screen_path(url)
+                .parameters(values)
                 .render()
         })?;
-        let model = model_from(&output)?;
-        *self.last_path.lock().unwrap_or_else(PoisonError::into_inner) = model.screen.path.clone();
-        Ok(model)
+        check_status(&output)?;
+        let disposition = output.header("Content-Disposition").unwrap_or("");
+        let file_name = disposition
+            .split(';')
+            .filter_map(|part| part.trim().strip_prefix("filename="))
+            .map(|name| name.trim_matches('"').to_string())
+            .next()
+            .unwrap_or_default();
+        Ok(RawBody {
+            content_type: output.header("Content-Type").unwrap_or("").to_string(),
+            file_name,
+            bytes: output.body,
+        })
     }
 
     fn transition(
@@ -192,7 +307,10 @@ impl ScreenLink for HostLink {
                 .render()
         })?;
         match serde_json::from_str::<serde_json::Value>(&output.body_text()) {
-            Ok(data) => tui_values(&data, &mut shell),
+            Ok(data) => {
+                tui_values(&data, &mut shell);
+                shell_values(&data, &mut shell);
+            }
             Err(err) => tracing::warn!("TUI shell data was not JSON: {err}"),
         }
         Ok(shell)
@@ -534,6 +652,73 @@ fn tui_values(data: &serde_json::Value, shell: &mut ShellInfo) {
     }
     shell.colors = string_map(tui.get("colors"));
     shell.keys = string_map(tui.get("keys"));
+}
+
+/// The apps, their quick create items and palette actions, the tray's screens and the counts of the shell data.
+fn shell_values(data: &serde_json::Value, shell: &mut ShellInfo) {
+    let list =
+        |value: Option<&serde_json::Value>| value.and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
+    for app in list(data.get("apps")) {
+        let title = json_field(&app, "title");
+        let path = json_field(&app, "path");
+        if !path.is_empty() {
+            shell.apps.push(MenuItem {
+                title: if title.is_empty() {
+                    json_field(&app, "name")
+                } else {
+                    title.clone()
+                },
+                url: path,
+                children: Vec::new(),
+            });
+        }
+        let providers = app.get("providers");
+        for (key, out) in [
+            ("quickCreate", &mut shell.quick_create),
+            ("paletteActions", &mut shell.actions),
+        ] {
+            for item in list(providers.and_then(|providers| providers.get(key))) {
+                let url = json_field(&item, "url");
+                if url.is_empty() {
+                    continue;
+                }
+                out.push(ShellAction {
+                    label: json_field(&item, "label"),
+                    url,
+                    app: title.clone(),
+                });
+            }
+        }
+    }
+    if let Some(values) = data.get("shell") {
+        for (key, label) in [
+            ("trayToday", "Today"),
+            ("trayChat", "Chat"),
+            ("trayNotifications", "Notifications"),
+        ] {
+            let url = json_field(values, key);
+            if !url.is_empty() {
+                shell.tray.push((label.to_string(), url));
+            }
+        }
+    }
+    if let Some(counts) = data.get("counts").filter(|counts| !counts.is_null()) {
+        shell.counts = counts_of(counts);
+    }
+    shell.drawer_open = data
+        .get("tui")
+        .and_then(|tui| tui.get("drawerOpen"))
+        .and_then(serde_json::Value::as_bool);
+}
+
+/// The path and query of a redirect's location: a full url keeps what follows its host.
+fn local_path(location: &str) -> String {
+    match location.split_once("://") {
+        Some((_, rest)) => rest
+            .find('/')
+            .map_or_else(|| "/".to_string(), |at| rest[at..].to_string()),
+        None => location.to_string(),
+    }
 }
 
 fn json_field(value: &serde_json::Value, name: &str) -> String {

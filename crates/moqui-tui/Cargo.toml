@@ -14,7 +14,9 @@ model = []
 ui = ["model", "dep:revue"]
 
 [dependencies]
+inventory = { workspace = true }
 jiff = { workspace = true }
+pulldown-cmark = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

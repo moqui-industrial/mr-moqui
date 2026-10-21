@@ -11,7 +11,7 @@ try {
         $hidden.push({name:String($key),value:String($value)});
     }
     let $transitionUrl = "";
-    $openChildren({t:"form",id:$uid("AllFields"),name:"AllFields",kind:"single",transitionUrl:$transitionUrl,method:"",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
+    $openChildren({t:"form",id:$uid("AllFields"),name:"AllFields",kind:"single",multipart:true,transitionUrl:$transitionUrl,method:"",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
     $openChildren({t:"row",id:$uid("AllFields.l0")});
 $emit((() => {
             let $required = false;

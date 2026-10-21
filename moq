@@ -1016,6 +1016,11 @@ crate_package_name() {
     sed -n '/^\[package\]/,/^\[/s/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$1/Cargo.toml" | head -n 1
 }
 
+# Whether the crate in $1 declares the feature $2 in its [features] table.
+crate_has_feature() {
+    sed -n '/^\[features\]/,/^\[/p' "$1/Cargo.toml" | grep -q "^$2[[:space:]]*="
+}
+
 # Write $2 to the file $1 when its content differs, so cargo sees no change on a build with the same components.
 write_if_changed() {
     if [ -f "$1" ] && [ "$(cat "$1")" = "$2" ]; then
@@ -1032,7 +1037,7 @@ write_if_changed() {
 # crates/moqui links, then the add-on ones. Its Cargo.lock starts from the repository's, so the reviewed versions stay
 # and only the component crates' own dependencies are added.
 write_app_crate() {
-    local app=$1 dir package deps="" uses="" unoptimized="" crate
+    local app=$1 dir package deps="" uses="" unoptimized="" crate tui_features=
     shift
     local -a dirs
     mapfile -t dirs < <(component_crate_dirs "$ROOT/runtime/base-component")
@@ -1043,6 +1048,11 @@ write_app_crate() {
         deps+="$package = { path = \"$dir\" }"$'\n'
         unoptimized+=$'\n'"[profile.dev.package.$package]"$'\n'"opt-level = 0"$'\n'
         uses+="use ${package//-/_} as _;"$'\n'
+        # A component crate with its own terminal components (a tui feature, plans/Screen-TUI-Impl.md 2.9) has them
+        # registered when the binary has the TUI.
+        if crate_has_feature "$dir" tui; then
+            tui_features+=", \"$package/tui\""
+        fi
         info "Linking component crate $package ($(rel "$dir"))" >&2
     done
     if ! dry_run; then
@@ -1068,10 +1078,10 @@ path = \"src/main.rs\"
 [features]
 default = [\"maximal\"]
 lite = [\"moqui-host/lite\"]
-enterprise = [\"moqui-host/enterprise\"]
-maximal = [\"moqui-host/maximal\"]
+enterprise = [\"moqui-host/enterprise\", \"tui\"]
+maximal = [\"moqui-host/maximal\", \"tui\"]
 inbound-smtp = [\"moqui-host/inbound-smtp\"]
-tui = [\"moqui-host/tui\"]
+tui = [\"moqui-host/tui\"${tui_features}]
 
 [dependencies]
 moqui-host = { path = \"$ROOT/crates/moqui-host\", default-features = false }

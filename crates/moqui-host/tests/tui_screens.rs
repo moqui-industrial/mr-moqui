@@ -12,11 +12,14 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Scripted Gallery and Party screens through the in-process client: the Phase 2 Exit of plans/Screen-TUI-Impl.md.
+//! Scripted Gallery, Party and Tools screens through the in-process client: the Phase 2 and Phase 3 Exits of
+//! plans/Screen-TUI-Impl.md.
 //!
 //! One server: every Gallery screen renders a model with no error node in it, a login through the dialog, then the
 //! keyboard flows on Gallery List (find, page, sort, open, a dialog submit) and on SimpleScreens Party, a Mantle app
-//! (dependent drop-downs, create, edit and save a person, read back). Mantle is linked into this runtime only.
+//! (dependent drop-downs, create, edit and save a person, read back). Mantle is linked into this runtime only. Phase 3:
+//! the Board and Calendar through their components, a dynamic container, the palette's search, an options transition
+//! that fails, and a Tools task (find a user, add a group, change its membership, run a service job, read its run).
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
@@ -73,6 +76,229 @@ fn gallery_and_party_screens() {
     render_gallery(&link);
     drive_gallery(&link);
     drive_party(&link);
+    drive_components(&link);
+    drive_shell(&link);
+    drive_tools(&link);
+}
+
+/// The Gallery's Board and Calendar are `.qvue` screens with `tui` twins: their components get their data from the
+/// screens' own transitions. Widgets has a dynamic container, which loads with the screen.
+fn drive_components(link: &HostLink) {
+    for (screen, name, shows) in [("Board", "board", "Qualify"), ("Calendar", "calendar", "Mo")] {
+        let mut view = open_screen(link, &format!("/apps/gallery/{screen}"));
+        let id = view
+            .session()
+            .index()
+            .components
+            .iter()
+            .find(|(_, info)| info.name == name)
+            .map(|(id, _)| id.clone())
+            .unwrap_or_else(|| panic!("no {name} component on {screen}: {:?}", view.session().model().c));
+        let state = view.session().component_state(&id).cloned().unwrap_or_default();
+        assert!(state.error.is_empty(), "{screen}: {}", state.error);
+        assert!(state.data.is_some(), "{screen}: no data");
+        let text = view.screen_text(180, 50);
+        assert!(text.contains(shows), "{text}");
+    }
+    let mut view = open_screen(link, "/apps/gallery/Board");
+    let id = view
+        .session()
+        .index()
+        .components
+        .keys()
+        .next()
+        .cloned()
+        .unwrap_or_default();
+    focus(&mut view, &id);
+    view.on_key(&press(Key::Char('m')));
+    view.on_key(&press(Key::Right));
+    view.on_key(&press(Key::Enter));
+    assert!(
+        view.session().message().contains("moved"),
+        "{}",
+        view.session().message()
+    );
+    let view = open_screen(link, "/apps/gallery/Widgets");
+    let mut loaded = false;
+    for model in view.session().nav().models() {
+        moqui_tui::walk(&model.c, &mut |node| {
+            if let Node::DynamicContainer { c, .. } = node {
+                let mut text = String::new();
+                moqui_tui::walk(c, &mut |inner| {
+                    if let Node::Text { text: shown, .. } = inner {
+                        text.push_str(shown);
+                    }
+                });
+                loaded |= text.contains("Loaded by dynamic-container");
+            }
+        });
+    }
+    let mut containers = Vec::new();
+    for model in view.session().nav().models() {
+        moqui_tui::walk(&model.c, &mut |node| {
+            if let Node::DynamicContainer { .. } = node {
+                containers.push(format!("{node:?}"));
+            }
+        });
+    }
+    assert!(
+        loaded,
+        "the dynamic container's body: {containers:?} {}",
+        view.session().message()
+    );
+}
+
+/// The palette asks the server's search; an options transition that fails leaves its message, and the drop-down.
+fn drive_shell(link: &HostLink) {
+    let mut view = open_screen(link, "/apps/gallery/List");
+    view.on_key(&KeyPress::with_ctrl(Key::Char('k')));
+    type_text(&mut view, "gall");
+    view.session_mut()
+        .on_time(std::time::Instant::now() + std::time::Duration::from_secs(1));
+    view.run_requests();
+    assert!(!view.session().message_is_error(), "{}", view.session().message());
+    assert!(!view.session().palette_rows().is_empty(), "the palette found nothing");
+    let failed = link.options("/apps/gallery/List/noSuchOptions", &std::collections::BTreeMap::new());
+    assert!(failed.is_err(), "{failed:?}");
+}
+
+/// A Tools task by keyboard: find a user, add a group in its dialog, change that membership in the group list's row
+/// editor, run a service job, and read its run.
+fn drive_tools(link: &HostLink) {
+    let mut view = open_screen(link, "/apps/system/Security/UserAccount/UserAccountList");
+    view.on_key(&press(Key::Char('f')));
+    assert!(view.session().find_open().is_some(), "{:?}", view.session().overlays());
+    let username = view
+        .session()
+        .focus_order()
+        .iter()
+        .find(|item| item.key.ends_with(".username"))
+        .map(|item| item.key.clone())
+        .expect("a username find field");
+    focus(&mut view, &username);
+    type_text(&mut view, "john");
+    view.on_key(&press(Key::Enter));
+    assert_eq!(
+        view.session().parameters().get("username").map(String::as_str),
+        Some("john")
+    );
+    let list = "UserAccountList".to_string();
+    focus(&mut view, &list);
+    view.on_key(&press(Key::Right));
+    assert!(
+        view.session().path().ends_with("UserAccountDetail"),
+        "{} {}",
+        view.session().path(),
+        view.session().message()
+    );
+    let groups = |view: &AppView<HostLink>| view.session().list("UserGroupList").map_or(0, |list| list.rows.len());
+    let before = groups(&view);
+    focus(&mut view, "AddGroupMemberDialog");
+    view.on_key(&press(Key::Enter));
+    let group = view
+        .session()
+        .focus_order()
+        .iter()
+        .find(|item| item.key.ends_with(".userGroupId"))
+        .map(|item| item.key.clone())
+        .expect("the group drop-down");
+    focus(&mut view, &group);
+    view.on_key(&press(Key::F(4)));
+    let choices = view.session().dropdown_choices();
+    let taken: Vec<String> = view
+        .session()
+        .list_page("UserGroupList")
+        .iter()
+        .map(|row| {
+            row.cells
+                .first()
+                .map(|cell| cell.text().to_string())
+                .unwrap_or_default()
+        })
+        .collect();
+    let at = choices
+        .iter()
+        .position(|choice| !choice.value.is_empty() && !taken.iter().any(|text| text.contains(&choice.value)))
+        .expect("a group the user is not in");
+    for _ in 0..at {
+        view.on_key(&press(Key::Down));
+    }
+    view.on_key(&press(Key::Enter));
+    view.on_key(&KeyPress::with_ctrl(Key::Char('s')));
+    assert!(!view.session().message_is_error(), "{}", view.session().message());
+    assert_eq!(groups(&view), before + 1, "the group is added");
+    // The membership's thru date, in its row's editor.
+    focus(&mut view, "UserGroupList");
+    view.on_key(&press(Key::Char('e')));
+    assert!(
+        view.session().row_editing().is_some(),
+        "{:?}",
+        view.session().overlays()
+    );
+    let thru = view
+        .session()
+        .focus_order()
+        .iter()
+        .find(|item| item.node.contains("thruDate"))
+        .map(|item| item.key.clone())
+        .expect("the thru date of the row");
+    focus(&mut view, &thru);
+    type_text(&mut view, "2099-12-31 00:00");
+    view.on_key(&press(Key::Enter));
+    assert!(!view.session().message_is_error(), "{}", view.session().message());
+    assert!(view.session().row_editing().is_none());
+    // Run a service job and read its run.
+    let mut view = AppView::with_session(
+        Session::start("/apps/system/ServiceJob/Jobs/ServiceJobDetail?jobName=clean_ServiceJobRun_daily"),
+        link.clone(),
+    );
+    view.run_requests();
+    assert!(
+        view.session().path().ends_with("ServiceJobDetail"),
+        "{} {}",
+        view.session().path(),
+        view.session().message()
+    );
+    let run = link_with_text(&view, "Run Job");
+    focus(&mut view, &run);
+    view.on_key(&press(Key::Enter));
+    view.on_key(&press(Key::Char('y')));
+    assert!(!view.session().message_is_error(), "{}", view.session().message());
+    let runs = link_with_text(&view, "Job Runs");
+    focus(&mut view, &runs);
+    view.on_key(&press(Key::Enter));
+    assert!(
+        view.session().path().ends_with("JobRunList"),
+        "{}",
+        view.session().path()
+    );
+    let list = view
+        .session()
+        .index()
+        .lists
+        .keys()
+        .next()
+        .cloned()
+        .expect("the job runs");
+    assert!(!view.session().list_page(&list).is_empty(), "a run of the job");
+    focus(&mut view, &list);
+    view.on_key(&press(Key::Right));
+    assert!(
+        view.session().path().ends_with("JobRunDetail"),
+        "{}",
+        view.session().path()
+    );
+    assert!(lone_error(view.session().model()).is_none());
+}
+
+fn link_with_text(view: &AppView<HostLink>, text: &str) -> String {
+    view.session()
+        .index()
+        .links
+        .values()
+        .find(|link| link.text == text)
+        .map(|link| link.id.clone())
+        .unwrap_or_else(|| panic!("no link {text}"))
 }
 
 /// A link with no user answers 401 to every call, so the client opens its login dialog; a wrong password stays there,

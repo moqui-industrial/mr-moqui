@@ -552,3 +552,881 @@ fn every_phase_two_widget_and_region_is_a_node_the_client_reads() {
     });
     assert!(kinds.contains(&"DatePeriod".to_string()), "{kinds:?}");
 }
+
+/// The document read as the client reads it: no node or widget is one the client does not know (from_json makes those
+/// placeholders, and an unknown widget a display of `[kind]`).
+fn client_model(body: &str) -> moqui_tui::ScreenModel {
+    let model = moqui_tui::ScreenModel::from_json(body).unwrap_or_else(|err| panic!("{err}: {body}"));
+    moqui_tui::walk(&model.c, &mut |node| match node {
+        moqui_tui::Node::Placeholder { text, .. } => panic!("placeholder {text} in {body}"),
+        moqui_tui::Node::Field {
+            w: moqui_tui::Widget::Display { text, .. },
+            ..
+        } => assert!(
+            !(text.starts_with('[') && text.ends_with(']')),
+            "unknown widget {text} in {body}"
+        ),
+        _ => {}
+    });
+    model
+}
+
+/// Every node of the client model, list cells, header fields and buttons included.
+fn client_nodes(model: &moqui_tui::ScreenModel) -> Vec<moqui_tui::Node> {
+    let mut found = Vec::new();
+    moqui_tui::walk(&model.c, &mut |node| found.push(node.clone()));
+    found
+}
+
+fn field_named<'a>(doc: &'a Json, name: &str) -> &'a serde_json::Map<String, Json> {
+    nodes(doc)
+        .into_iter()
+        .find(|node| node.get("t").and_then(Json::as_str) == Some("field") && node["name"] == json!(name))
+        .unwrap_or_else(|| panic!("no field {name} in {doc}"))
+}
+
+fn list_named<'a>(doc: &'a Json, name: &str) -> &'a serde_json::Map<String, Json> {
+    nodes(doc)
+        .into_iter()
+        .find(|node| node.get("t").and_then(Json::as_str) == Some("formList") && node["name"] == json!(name))
+        .unwrap_or_else(|| panic!("no list {name} in {doc}"))
+}
+
+fn hidden_map(value: &Json) -> BTreeMap<String, String> {
+    value
+        .as_array()
+        .unwrap_or_else(|| panic!("no hidden list: {value}"))
+        .iter()
+        .map(|pair| {
+            (
+                pair["name"].as_str().unwrap().to_string(),
+                pair["value"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// An autocomplete text-line is a server-search drop-down; a default-transition, a dynamic display and dynamic options carry
+/// their URL, fixed parameters and depends-on; an editable is a click-to-edit field; a file field makes the form multipart.
+#[test]
+fn autocomplete_default_and_dynamic_values_and_editables_carry_their_transitions() {
+    let output = render(
+        "dynamics",
+        r#"<screen require-authentication="false">
+            <transition name="save"><default-response type="none"/></transition>
+            <transition name="searchParties"><default-response type="none"/></transition>
+            <transition name="getCity"><default-response type="none"/></transition>
+            <transition name="getTotal"><default-response type="none"/></transition>
+            <transition name="states"><default-response type="none"/></transition>
+            <transition name="saveNote"><default-response type="none"/></transition>
+            <transition name="dlg"><default-response type="none"/></transition>
+            <actions><script>
+            fv = {partyId: 'P1', city: '', total: '12', note: 'hello'}
+        </script></actions><widgets>
+            <form-single name="Edit" map="fv" transition="save">
+                <field name="orgId"><default-field><text-line/></default-field></field>
+                <field name="partyId"><default-field title="Party">
+                    <text-line ac-transition="searchParties" ac-min-length="2" ac-use-actual="true" depends-optional="true"
+                            ac-initial-text="Party ${partyId}" parameter-map="{roleTypeId:'Customer', blank:''}">
+                        <depends-on field="orgId" parameter="ownerPartyId"/></text-line>
+                </default-field></field>
+                <field name="city"><default-field>
+                    <text-line prefix="${'@'}" disabled="true" default-transition="getCity"><depends-on field="orgId"/></text-line>
+                </default-field></field>
+                <field name="total"><default-field>
+                    <display dynamic-transition="getTotal" parameter-map="{currency:'USD'}"><depends-on field="orgId"/></display>
+                </default-field></field>
+                <field name="state"><default-field><drop-down>
+                    <dynamic-options transition="states" depends-optional="true" min-length="3" server-search="true">
+                        <depends-on field="orgId"/></dynamic-options>
+                </drop-down></default-field></field>
+                <field name="note"><default-field>
+                    <editable text="${note}" transition="saveNote" parameter-name="noteText" widget-type="select" value="raw"
+                            parameter-map="{partyId: fv.partyId}"><option key="a" text="A"/></editable>
+                </default-field></field>
+                <field name="blank"><default-field><editable text="" transition="saveNote"/></default-field></field>
+                <field name="shown"><default-field><editable text="" transition="saveNote" display-if-empty="true"/></default-field></field>
+                <field name="upload"><default-field><file/></default-field></field>
+            </form-single>
+            <form-single name="Plain"><field name="a"><default-field><text-line/></default-field></field></form-single>
+            <dynamic-dialog id="Dd" button-text="Open" transition="dlg"/>
+            <dynamic-dialog id="Dt" button-text="Open" title="Edit It" transition="dlg"/>
+        </widgets></screen>"#,
+        BTreeMap::new(),
+    );
+    let body = output.body_text();
+    let doc = document(&output);
+    let party = &field_named(&doc, "partyId")["w"];
+    assert_eq!(party["kind"], json!("dropDown"), "{party}");
+    assert_eq!(party["serverSearch"], json!(true));
+    assert_eq!(party["allowEmpty"], json!(true));
+    assert_eq!(party["combo"], json!(true));
+    assert_eq!(party["minLength"], json!(2));
+    assert_eq!(party["dependsOptional"], json!(true));
+    assert_eq!(party["options"], json!([{"value": "P1", "label": "Party P1"}]));
+    assert_eq!(party["dependsOn"], json!({"ownerPartyId": "orgId"}));
+    assert_eq!(party["optionsParameters"], json!({"roleTypeId": "Customer"}));
+    let url = party["optionsUrl"].as_str().unwrap();
+    assert!(url.ends_with("searchParties") && !url.contains('?'), "{party}");
+    let city = &field_named(&doc, "city")["w"];
+    assert_eq!(city["kind"], json!("textLine"));
+    assert!(city["defaultUrl"].as_str().unwrap().ends_with("getCity"), "{city}");
+    assert_eq!(city["dependsOn"], json!({"orgId": "orgId"}));
+    assert!(city.get("defaultParameters").is_none(), "{city}");
+    assert_eq!(city["prefix"], json!("@"));
+    assert_eq!(city["disabled"], json!(true));
+    let total = &field_named(&doc, "total")["w"];
+    assert_eq!(total["kind"], json!("display"));
+    assert_eq!(total["text"], json!("12"));
+    assert!(total["valueUrl"].as_str().unwrap().ends_with("getTotal"), "{total}");
+    assert_eq!(total["valueParameters"], json!({"currency": "USD"}));
+    assert_eq!(total["dependsOn"], json!({"orgId": "orgId"}));
+    let state = &field_named(&doc, "state")["w"];
+    assert_eq!(state["dependsOptional"], json!(true));
+    assert_eq!(state["minLength"], json!(3));
+    assert_eq!(state["serverSearch"], json!(true));
+    let note = &field_named(&doc, "note")["w"];
+    assert_eq!(note["kind"], json!("editable"));
+    assert_eq!(note["text"], json!("hello"));
+    assert!(note["url"].as_str().unwrap().ends_with("saveNote"), "{note}");
+    assert_eq!(note["parameters"], json!({"partyId": "P1"}));
+    assert_eq!(note["parameterName"], json!("noteText"));
+    assert_eq!(note["widgetType"], json!("select"));
+    assert_eq!(note["value"], json!("raw"));
+    assert_eq!(note["options"], json!([{"value": "a", "label": "A"}]));
+    assert!(
+        !nodes(&doc).iter().any(|node| node.get("name") == Some(&json!("blank"))),
+        "an empty editable is not written: {doc}"
+    );
+    let shown = &field_named(&doc, "shown")["w"];
+    assert_eq!(shown["parameterName"], json!("value"));
+    assert_eq!(shown["widgetType"], json!("textarea"));
+    assert!(shown.get("value").is_none(), "{shown}");
+    let forms: Vec<_> = nodes(&doc)
+        .into_iter()
+        .filter(|node| node.get("t").and_then(Json::as_str) == Some("form"))
+        .collect();
+    assert_eq!(forms[0]["multipart"], json!(true));
+    assert!(forms[1].get("multipart").is_none(), "{doc}");
+    let dialogs: Vec<_> = nodes(&doc)
+        .into_iter()
+        .filter(|node| node.get("t").and_then(Json::as_str) == Some("dynamicDialog"))
+        .collect();
+    assert_eq!(dialogs[0]["title"], json!("Open"));
+    assert_eq!(dialogs[1]["title"], json!("Edit It"));
+    let model = client_model(&body);
+    let kinds: Vec<String> = client_nodes(&model)
+        .iter()
+        .filter_map(|node| match node {
+            moqui_tui::Node::Field { name, w, .. } => Some(format!(
+                "{name}:{}",
+                format!("{w:?}").split([' ', '{']).next().unwrap_or("")
+            )),
+            _ => None,
+        })
+        .collect();
+    for expected in [
+        "partyId:DropDown",
+        "city:TextLine",
+        "total:Display",
+        "note:Editable",
+        "shown:Editable",
+    ] {
+        assert!(kinds.contains(&expected.to_string()), "{expected} in {kinds:?}");
+    }
+    assert!(model
+        .c
+        .iter()
+        .any(|node| matches!(node, moqui_tui::Node::Form { multipart: true, .. })));
+}
+
+const ROWS: &str = "rows = [{id:'a1', name:'Alpha', qty:2, note:'n1'}, {id:'b2', name:'Beta', qty:3, note:''}]";
+
+/// A list with a transition is a form: a multi list is one form of every row (fields `name_N`, `_isMulti`, the buttons once)
+/// and any other a form per row (each row its hidden values, and its buttons in its cells). A list without one is text.
+#[test]
+fn a_list_with_a_transition_is_a_multi_form_or_a_form_per_row() {
+    let output = render(
+        "row-forms",
+        &format!(
+            r#"<screen require-authentication="false">
+            <transition name="saveRows"><default-response type="none"/></transition>
+            <transition name="saveRow"><default-response type="none"/></transition>
+            <transition name="saveNote"><default-response type="none"/></transition>
+            <actions><script>{ROWS}</script></actions><widgets>
+            <form-list name="Multi" list="rows" transition="saveRows" multi="true" id-field="id">
+                <hidden-parameters><parameter name="orderId" value="O1"/></hidden-parameters>
+                <field name="id"><default-field><hidden/></default-field></field>
+                <field name="name"><default-field><text-line/></default-field></field>
+                <field name="qty"><default-field><display/></default-field></field>
+                <field name="note"><default-field><editable text="${{note}}" transition="saveNote" parameter-map="{{id: id}}"/></default-field></field>
+                <field name="submitButton"><default-field title="Save All"><submit/></default-field></field>
+            </form-list>
+            <form-list name="Each" list="rows" transition="saveRow">
+                <field name="id"><default-field><hidden/></default-field></field>
+                <field name="name"><default-field><text-line/></default-field></field>
+                <field name="go"><default-field title="Go"><submit/></default-field></field>
+            </form-list>
+            <form-list name="Shown" list="rows">
+                <field name="name"><default-field><text-line/></default-field></field>
+                <field name="go"><default-field title="Go"><submit/></default-field></field>
+            </form-list>
+        </widgets></screen>"#
+        ),
+        BTreeMap::new(),
+    );
+    let body = output.body_text();
+    let doc = document(&output);
+    let multi = list_named(&doc, "Multi");
+    assert!(
+        multi["transitionUrl"].as_str().unwrap().ends_with("saveRows"),
+        "{multi:?}"
+    );
+    assert_eq!(multi["multi"], json!(true));
+    let hidden = hidden_map(&multi["hidden"]);
+    assert_eq!(hidden.get("orderId").map(String::as_str), Some("O1"), "{hidden:?}");
+    assert_eq!(hidden.get("moquiFormName").map(String::as_str), Some("Multi"));
+    assert_eq!(hidden.get("_isMulti").map(String::as_str), Some("true"));
+    assert_eq!(hidden.get("pageIndex").map(String::as_str), Some("0"));
+    let row = &multi["rows"][0];
+    assert_eq!(row["id"], json!("a1"));
+    let name = &row["cells"][0];
+    assert_eq!(name["t"], json!("field"), "{row}");
+    assert_eq!(name["name"], json!("name_0"));
+    assert_eq!(name["id"], json!("Multi.name.a1"));
+    assert_eq!(name["w"]["value"], json!("Alpha"));
+    assert_eq!(multi["rows"][1]["cells"][0]["name"], json!("name_1"));
+    assert_eq!(row["cells"][1], json!("2"));
+    assert_eq!(row["cells"][2]["w"]["kind"], json!("editable"));
+    assert_eq!(row["cells"][2]["w"]["parameters"], json!({"id": "a1"}));
+    assert_eq!(row["cells"][3], json!(""), "the buttons are the list's: {row}");
+    assert_eq!(multi["rows"][1]["cells"][2], json!(""), "an empty editable: {multi:?}");
+    let row_hidden = hidden_map(&row["hidden"]);
+    assert_eq!(row_hidden.get("id_0").map(String::as_str), Some("a1"), "{row_hidden:?}");
+    assert_eq!(row_hidden.get("qty_0").map(String::as_str), Some("2"));
+    let buttons = multi["buttons"].as_array().unwrap();
+    assert_eq!(buttons.len(), 1, "{buttons:?}");
+    assert_eq!(buttons[0]["w"]["kind"], json!("submit"));
+    assert_eq!(buttons[0]["name"], json!("submitButton"));
+
+    let each = list_named(&doc, "Each");
+    assert!(each["transitionUrl"].as_str().unwrap().ends_with("saveRow"), "{each:?}");
+    assert!(each.get("multi").is_none() && each.get("buttons").is_none(), "{each:?}");
+    let hidden = hidden_map(&each["hidden"]);
+    assert_eq!(hidden.get("moquiFormName").map(String::as_str), Some("Each"));
+    assert!(!hidden.contains_key("_isMulti"), "{hidden:?}");
+    let row = &each["rows"][1];
+    assert_eq!(row["cells"][0]["name"], json!("name"));
+    assert_eq!(row["cells"][0]["id"], json!("Each.name.1"));
+    assert_eq!(row["cells"][1]["w"]["kind"], json!("submit"));
+    assert_eq!(row["cells"][1]["w"]["text"], json!("Go"));
+    assert_eq!(hidden_map(&row["hidden"]).get("id").map(String::as_str), Some("b2"));
+
+    let shown = list_named(&doc, "Shown");
+    assert!(
+        shown.get("transitionUrl").is_none() && shown.get("hidden").is_none(),
+        "{shown:?}"
+    );
+    assert_eq!(shown["rows"][0]["cells"], json!(["Alpha", "Go"]));
+    assert!(shown["rows"][0].get("hidden").is_none(), "{shown:?}");
+
+    let model = client_model(&body);
+    let lists: Vec<moqui_tui::FormList> = model
+        .c
+        .iter()
+        .filter_map(|node| match node {
+            moqui_tui::Node::FormList { list } => Some(list.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(lists[0].multi && lists[0].buttons.len() == 1);
+    assert_eq!(lists[0].rows[0].hidden.len(), 2);
+    assert!(matches!(
+        lists[0].rows[0].cells[0].nodes()[0],
+        moqui_tui::Node::Field {
+            w: moqui_tui::Widget::TextLine { .. },
+            ..
+        }
+    ));
+    assert!(matches!(
+        lists[1].rows[0].cells[1].nodes()[0],
+        moqui_tui::Node::Field {
+            w: moqui_tui::Widget::Submit { .. },
+            ..
+        }
+    ));
+}
+
+/// A column of several fields stacks their parts; a widget with no text of its own gives its value or nothing, never its
+/// element's name; typed columns follow the request's `_uiType`.
+#[test]
+fn stacked_columns_are_parts_and_no_cell_is_an_element_name() {
+    let xml = format!(
+        r#"<screen require-authentication="false"><actions><script>{ROWS}</script></actions><widgets>
+            <form-list name="Stack" list="rows">
+                <field name="name"><default-field><display/></default-field></field>
+                <field name="qty"><default-field><display/></default-field></field>
+                <field name="when"><default-field><date-find/></default-field></field>
+                <field name="lbl"><default-field><label text="Lbl ${{name}}"/></default-field></field>
+                <field name="pic"><default-field><image url="/x.png" alt="Pic"/></default-field></field>
+                <field name="up"><default-field><file/></default-field></field>
+                <field name="range"><default-field><range-find/></default-field></field>
+                <field name="look"><default-field><lookup/></default-field></field>
+                <form-list-column><field-ref name="name"/><field-ref name="qty"/></form-list-column>
+                <form-list-column><field-ref name="when"/><field-ref name="lbl"/></form-list-column>
+                <form-list-column><field-ref name="pic"/><field-ref name="up"/></form-list-column>
+                <form-list-column><field-ref name="range"/><field-ref name="look"/></form-list-column>
+            </form-list>
+            <form-list name="Typed" list="rows">
+                <field name="name"><default-field><display/></default-field></field>
+                <field name="qty"><default-field><display/></default-field></field>
+                <columns><column><field-ref name="name"/></column><column><field-ref name="qty"/></column></columns>
+                <columns type="mobile"><column><field-ref name="name"/><field-ref name="qty"/></column></columns>
+            </form-list>
+        </widgets></screen>"#
+    );
+    let output = render("stacked", &xml, BTreeMap::new());
+    let body = output.body_text();
+    let doc = document(&output);
+    let list = list_named(&doc, "Stack");
+    assert_eq!(list["columns"][0]["title"], json!("Name / Qty"));
+    assert_eq!(
+        list["rows"][0]["cells"],
+        json!([["Alpha", "2"], "Lbl Alpha", "Pic", ""])
+    );
+    for name in ["date-find", "label", "image", "file", "range-find", "lookup"] {
+        assert!(!body.contains(&format!("\"{name}\"")), "{name} in {body}");
+    }
+    let typed = list_named(&doc, "Typed");
+    assert_eq!(typed["columns"].as_array().unwrap().len(), 2, "{typed:?}");
+    assert_eq!(typed["rows"][0]["cells"], json!(["Alpha", "2"]));
+    let model = client_model(&body);
+    let stack = model
+        .c
+        .iter()
+        .find_map(|node| match node {
+            moqui_tui::Node::FormList { list } => Some(list.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(stack.rows[0].cells[0].parts().len(), 2);
+
+    let mut mobile = BTreeMap::new();
+    mobile.insert("_uiType".to_string(), Value::string("mobile"));
+    let output = render("stacked-mobile", &xml, mobile);
+    let doc = document(&output);
+    let typed = list_named(&doc, "Typed");
+    assert_eq!(typed["columns"], json!([{"title": "Name / Qty"}]), "{typed:?}");
+    assert_eq!(typed["rows"][1]["cells"], json!([["Beta", "3"]]));
+    client_model(&output.body_text());
+}
+
+/// A row-selection action with a dialog is a dialog after the list, naming the list, with the action's form.
+#[test]
+fn a_row_selection_action_is_a_dialog_of_its_list() {
+    let output = render(
+        "row-actions",
+        &format!(
+            r#"<screen require-authentication="false"><actions><script>{ROWS}</script></actions><widgets>
+            <form-list name="Sel" list="rows">
+                <row-selection id-field="id" parameter="ids">
+                    <action><dialog button-text="Bulk Edit" title="Edit Selected"/>
+                        <form-single name="BulkForm" transition="bulk">
+                            <field name="status"><default-field><text-line/></default-field></field>
+                            <field name="go"><default-field><submit/></default-field></field>
+                        </form-single>
+                    </action>
+                    <action><dialog button-text="Close"/>
+                        <form-single name="CloseForm" transition="close"><field name="go"><default-field><submit/></default-field></field></form-single>
+                    </action>
+                </row-selection>
+                <field name="name"><default-field><display/></default-field></field>
+            </form-list>
+        </widgets></screen>"#
+        ),
+        BTreeMap::new(),
+    );
+    let body = output.body_text();
+    let doc = document(&output);
+    let list = list_named(&doc, "Sel");
+    assert_eq!(list["rows"][0]["selectId"], json!("a1"));
+    assert_eq!(list["rowSelection"]["parameter"], json!("ids"));
+    let dialogs: Vec<_> = nodes(&doc)
+        .into_iter()
+        .filter(|node| node.get("t").and_then(Json::as_str) == Some("dialog"))
+        .collect();
+    assert_eq!(dialogs.len(), 2, "{doc}");
+    assert_eq!(dialogs[0]["list"], list["id"]);
+    assert_eq!(dialogs[0]["title"], json!("Edit Selected"));
+    assert_eq!(dialogs[0]["button"], json!("Bulk Edit"));
+    assert_eq!(dialogs[0]["c"][0]["t"], json!("form"));
+    assert_eq!(dialogs[0]["c"][0]["name"], json!("BulkForm"));
+    assert_eq!(dialogs[0]["c"][0]["c"][0]["name"], json!("status"));
+    assert_eq!(dialogs[1]["title"], json!("Close"));
+    let model = client_model(&body);
+    assert!(model.c.iter().any(|node| matches!(
+        node,
+        moqui_tui::Node::Dialog { list, .. } if list == "Sel"
+    )));
+}
+
+/// The exports of a list are URLs of the screen in the export's mode (with the current parameters, which
+/// `a_list_gives_the_users_saved_finds` shows), and Show All is the screen without a page limit; the column choice lists
+/// the fields that have no column.
+#[test]
+fn a_list_gives_its_exports_and_columns() {
+    let output = render(
+        "exports",
+        &format!(
+            r#"<screen require-authentication="false"><actions><script>{ROWS}</script></actions><widgets>
+            <form-list name="Exp" list="rows" show-csv-button="true" show-xlsx-button="true" show-text-button="true"
+                    show-pdf-button="true" show-all-button="true" select-columns="true">
+                <field name="name"><header-field title="Name"/><default-field><display/></default-field></field>
+                <field name="qty"><default-field><display/></default-field></field>
+                <field name="extra"><default-field title="More"><display/></default-field></field>
+                <field name="hid"><default-field><hidden/></default-field></field>
+                <form-list-column><field-ref name="name"/></form-list-column>
+                <form-list-column><field-ref name="qty"/></form-list-column>
+            </form-list>
+            <form-list name="Bare" list="rows"><field name="name"><default-field><display/></default-field></field></form-list>
+        </widgets></screen>"#
+        ),
+        BTreeMap::new(),
+    );
+    let body = output.body_text();
+    let doc = document(&output);
+    let list = list_named(&doc, "Exp");
+    let exports = list["exports"].as_array().unwrap();
+    let kinds: Vec<&str> = exports.iter().map(|item| item["kind"].as_str().unwrap()).collect();
+    for kind in ["csv", "text", "pdf", "all"] {
+        assert!(kinds.contains(&kind), "{kind} in {exports:?}");
+    }
+    let url = |kind: &str| {
+        exports
+            .iter()
+            .find(|item| item["kind"] == json!(kind))
+            .and_then(|item| item["url"].as_str())
+            .unwrap()
+            .to_string()
+    };
+    for part in [
+        "renderMode=csv",
+        "pageNoLimit=true",
+        "lastStandalone=true",
+        "saveFilename=Exp.csv",
+    ] {
+        assert!(url("csv").contains(part), "{part} in {}", url("csv"));
+    }
+    assert!(url("csv").starts_with('/'), "{}", url("csv"));
+    for part in ["renderMode=text", "lineCharacters=132", "saveFilename=Exp.txt"] {
+        assert!(url("text").contains(part), "{part} in {}", url("text"));
+    }
+    assert!(url("pdf").contains("renderMode=html-print"), "{}", url("pdf"));
+    assert!(url("all").contains("pageNoLimit=true"), "{}", url("all"));
+    let all = exports.iter().find(|item| item["kind"] == json!("all")).unwrap();
+    assert_eq!(all["label"], json!("Show All"));
+    let columns = &list["selectColumns"];
+    assert!(
+        columns["url"].as_str().unwrap().ends_with("formSelectColumns"),
+        "{columns}"
+    );
+    assert_eq!(columns["formLocation"], json!("Exp"));
+    assert_eq!(
+        columns["shown"],
+        json!([[{"name": "name", "title": "Name"}], [{"name": "qty", "title": "Qty"}]])
+    );
+    assert_eq!(columns["hidden"], json!([{"name": "extra", "title": "More"}]));
+    assert_eq!(columns["parameters"], json!({}));
+    let bare = list_named(&doc, "Bare");
+    for key in ["exports", "selectColumns", "savedFinds"] {
+        assert!(bare.get(key).is_none(), "{key} in {bare:?}");
+    }
+    // a list whose columns the user may choose is in a fragment of its own
+    let model = client_model(&body);
+    let exp = client_nodes(&model)
+        .into_iter()
+        .find_map(|node| match node {
+            moqui_tui::Node::FormList { list } if list.name == "Exp" => Some(list),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{:?}", model.c));
+    assert_eq!(exp.select_columns.unwrap().hidden.len(), 1);
+    assert!(exp.exports.len() >= 4);
+}
+
+/// A user's saved finds of a list: each with the URL that applies it, the user's own marked, the current find's parameters
+/// and the URL that clears it.
+#[test]
+fn a_list_gives_the_users_saved_finds() {
+    let dir = std::env::temp_dir().join(format!("moqui-tui-finds-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Root")).unwrap();
+    std::fs::write(
+        dir.join("Root.xml"),
+        r#"<screen require-authentication="false"><subscreens default-item="Find"/><widgets><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Root/Find.xml"),
+        r#"<screen require-authentication="false">
+            <parameter name="a"/>
+            <actions><script>rows = [{a: 'A1'}]</script></actions>
+            <widgets><form-list name="Rows" list="rows" saved-finds="true" select-columns="true" show-csv-button="true">
+                <field name="a"><header-field title="Col A"><text-find/></header-field><default-field><display/></default-field></field>
+            </form-list></widgets>
+        </screen>"#,
+    )
+    .unwrap();
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let world = super::World::open("");
+    world.user("ada", None);
+    let mut post = super::request("POST", "/Find/formSaveFind");
+    post.set_header("authorization", super::basic("ada"));
+    post.set_header("content-type", "application/x-www-form-urlencoded");
+    post.body = b"formLocation=Rows&a=foo&_findDescription=Mine".to_vec();
+    let saved = crate::screen::serve_at(&world.factory, post, &root);
+    assert_eq!(saved.status, 302, "{}", saved.body_text());
+    let mut get = super::request("GET", "/Find");
+    get.set_header("authorization", super::basic("ada"));
+    for (name, value) in [("renderMode", "tui"), ("a", "foo"), ("pageIndex", "0")] {
+        get.query.push((name.to_string(), value.to_string()));
+    }
+    let response = crate::screen::serve_at(&world.factory, get, &root);
+    let _ = std::fs::remove_dir_all(&dir);
+    let body = response.body_text();
+    assert_eq!(response.status, 200, "{body}");
+    let doc: Json = serde_json::from_str(&body).unwrap_or_else(|err| panic!("{err}: {body}"));
+    let list = list_named(&doc, "Rows");
+    let finds = &list["savedFinds"];
+    assert!(
+        finds["saveUrl"].as_str().unwrap().ends_with("/Find/formSaveFind"),
+        "{finds}"
+    );
+    assert!(finds["formLocation"].as_str().unwrap().contains("Rows"), "{finds}");
+    // the find's parameters: not the page, the render mode or the find itself
+    assert_eq!(finds["parameters"], json!({"a": "foo"}), "{finds}");
+    assert_eq!(list["selectColumns"]["parameters"], json!({"a": "foo"}), "{list:?}");
+    assert!(
+        finds["clearUrl"]
+            .as_str()
+            .unwrap()
+            .ends_with("/Find?formListFindId=_clear"),
+        "{finds}"
+    );
+    let csv = list["exports"][0]["url"].as_str().unwrap();
+    assert!(csv.contains("a=foo") && csv.contains("renderMode=csv"), "{csv}");
+    let find = &finds["finds"][0];
+    assert_eq!(find["name"], json!("Mine"), "{finds}");
+    assert_eq!(find["mine"], json!(true));
+    assert_eq!(find["active"], json!(false));
+    assert_eq!(find["default"], json!(false));
+    let id = find["id"].as_str().unwrap();
+    assert!(
+        find["url"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("/Find?formListFindId={id}")),
+        "{find}"
+    );
+    let model = client_model(&body);
+    let list = client_nodes(&model)
+        .into_iter()
+        .find_map(|node| match node {
+            moqui_tui::Node::FormList { list } => Some(list),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{:?}", model.c));
+    assert_eq!(list.saved_finds.unwrap().finds[0].name, "Mine");
+    assert!(list.select_columns.is_some());
+}
+
+/// A tree is the URL its items load from; a button-menu holds its items; a component of a tui text gets the screen's path
+/// as its base unless it names one, and a component with no name makes the text an error node.
+#[test]
+fn trees_button_menus_and_components() {
+    let output = render(
+        "structures",
+        r#"<screen require-authentication="false"><transition name="treeItems"><default-response type="none"/></transition><widgets>
+            <tree name="Cats" root-node-name="n" open-path="${'a/b'}"/>
+            <tree name="Dogs" root-node-name="n" transition="treeItems" parameter-map="{kind:'dog'}"/>
+            <button-menu text="More"><link url="/a" url-type="plain" text="A"/><link url="/b" url-type="plain" text="B"/></button-menu>
+            <render-mode><text type="tui"><![CDATA[{"t":"component","name":"chart","props":{"type":"bar","series":[1,2]}}]]></text></render-mode>
+            <render-mode><text type="tui"><![CDATA[{"t":"box","id":"wrap","c":[{"t":"component","name":"board","base":"/elsewhere"}]}]]></text></render-mode>
+            <render-mode><text type="tui"><![CDATA[[{"t":"box","id":"b","c":[{"t":"component","props":{}}]}]]]></text></render-mode>
+        </widgets></screen>"#,
+        BTreeMap::new(),
+    );
+    let body = output.body_text();
+    let doc = document(&output);
+    let trees: Vec<_> = nodes(&doc)
+        .into_iter()
+        .filter(|node| node.get("t").and_then(Json::as_str) == Some("tree"))
+        .collect();
+    assert_eq!(trees[0]["id"], json!("Cats"));
+    assert!(
+        trees[0]["url"].as_str().unwrap().ends_with("/actions/Cats"),
+        "{trees:?}"
+    );
+    assert_eq!(trees[0]["openPath"], json!("a/b"));
+    assert!(trees[1]["url"].as_str().unwrap().ends_with("treeItems"), "{trees:?}");
+    assert_eq!(trees[1]["parameters"], json!({"kind": "dog"}));
+    let menu = first_of(&doc, "buttonMenu");
+    assert_eq!(menu["text"], json!("More"));
+    let items: Vec<&str> = menu["c"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(items, ["A", "B"]);
+    let components: Vec<_> = nodes(&doc)
+        .into_iter()
+        .filter(|node| node.get("t").and_then(Json::as_str) == Some("component"))
+        .collect();
+    assert_eq!(components.len(), 2, "{doc}");
+    assert_eq!(components[0]["base"], json!("/"));
+    assert_eq!(components[0]["props"], json!({"type": "bar", "series": [1, 2]}));
+    assert_eq!(components[1]["base"], json!("/elsewhere"));
+    let errors: Vec<&str> = nodes(&doc)
+        .into_iter()
+        .filter(|node| node.get("t").and_then(Json::as_str) == Some("error"))
+        .filter_map(|node| node["text"].as_str())
+        .collect();
+    assert!(
+        errors.len() == 1 && errors[0].contains("has a component with no name"),
+        "{errors:?}"
+    );
+    let model = client_model(&body);
+    let found = client_nodes(&model);
+    assert_eq!(
+        found
+            .iter()
+            .filter(|node| matches!(node, moqui_tui::Node::Tree { .. }))
+            .count(),
+        2
+    );
+    assert!(found.iter().any(|node| matches!(
+        node,
+        moqui_tui::Node::ButtonMenu { c, .. } if c.len() == 2
+    )));
+    assert!(found.iter().any(|node| matches!(
+        node,
+        moqui_tui::Node::Component { name, base, .. } if name == "chart" && base == "/"
+    )));
+}
+
+fn qvt_render_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/script/testdata/screen/qvt/render")
+}
+
+/// A wizard or stack panel is a subscreens node like the tabs: the steps, the active one, a wizard's finish text, and the
+/// active level inside.
+#[test]
+fn wizard_and_stack_panels_are_subscreens_nodes() {
+    // The terminal asks for each level on its own (`.tui` on its last name stops the walk down the default subscreens).
+    let dir = std::env::temp_dir().join(format!("moqui-tui-panels-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Root.xml"),
+        format!(
+            r#"<screen require-authentication="false"><subscreens>
+                <subscreens-item name="Wiz" location="{}"/><subscreens-item name="Stk" location="{}"/>
+            </subscreens><widgets><subscreens-active/></widgets></screen>"#,
+            qvt_render_dir().join("Wizard.xml").display(),
+            qvt_render_dir().join("Stack.xml").display()
+        ),
+    )
+    .unwrap();
+    let context = ExecutionContextFactory::test_context();
+    let render_at = |path: &str| {
+        make_render(context.factory())
+            .root_screen(dir.join("Root.xml").to_string_lossy().into_owned())
+            .screen_path(path)
+            .render_mode("tui")
+            .render()
+            .unwrap_or_else(|err| panic!("{path}: {err}"))
+            .body_text()
+    };
+    let body = render_at("Wiz.tui");
+    let doc: Json = serde_json::from_str(&body).unwrap_or_else(|err| panic!("{err}: {body}"));
+    let wizard = first_of(&doc, "subscreens");
+    assert_eq!(wizard["kind"], json!("wizard"));
+    assert_eq!(wizard["id"], json!("ImportWizard"));
+    assert_eq!(wizard["finishText"], json!("Import"));
+    let titles: Vec<&str> = wizard["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Source", "Mapping", "Review"]);
+    assert!(
+        wizard["items"][1]["url"].as_str().unwrap().ends_with("/Wiz/Mapping"),
+        "{wizard:?}"
+    );
+    assert!(wizard["c"].is_array(), "{wizard:?}");
+    assert!(!body.contains("-step\""), "{body}");
+    let model = client_model(&body);
+    assert!(client_nodes(&model).iter().any(|node| matches!(
+        node,
+        moqui_tui::Node::Subscreen { kind, finish_text, .. } if kind == "wizard" && finish_text == "Import"
+    )));
+    let body = render_at("Stk.tui");
+    let _ = std::fs::remove_dir_all(&dir);
+    let doc: Json = serde_json::from_str(&body).unwrap_or_else(|err| panic!("{err}: {body}"));
+    let stack = first_of(&doc, "subscreens");
+    assert_eq!(stack["kind"], json!("stack"));
+    assert_eq!(stack["id"], json!("Pages"));
+    assert_eq!(stack["items"].as_array().unwrap().len(), 2, "{stack:?}");
+    assert!(stack.get("finishText").is_none(), "{stack:?}");
+    client_model(&body);
+}
+
+/// A status-bar is the stages of the status's flow and a link per transition that posts the new status, as qvt's
+/// m-status-bar: the next stage primary, an error danger, each confirming unless confirm="false"; read-only has no links;
+/// no status, no stages.
+#[test]
+fn a_status_bar_has_its_stages_and_a_link_per_transition() {
+    let context = super::qvt::status_context();
+    let _entered = context.enter();
+    let body = make_render(context.factory())
+        .root_screen(qvt_render_dir().join("status.xml").to_string_lossy().into_owned())
+        .screen_path("")
+        .render_mode("tui")
+        .render()
+        .unwrap_or_else(|err| panic!("status: {err}"))
+        .body_text();
+    let doc: Json = serde_json::from_str(&body).unwrap_or_else(|err| panic!("{err}: {body}"));
+    let bar = |id: &str| {
+        nodes(&doc)
+            .into_iter()
+            .find(|node| node.get("t").and_then(Json::as_str) == Some("statusBar") && node["id"] == json!(id))
+            .unwrap_or_else(|| panic!("no bar {id} in {doc}"))
+    };
+    let stages = |bar: &serde_json::Map<String, Json>| -> Vec<String> {
+        bar["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|stage| {
+                format!(
+                    "{}:{}",
+                    stage["statusId"].as_str().unwrap(),
+                    stage["state"].as_str().unwrap()
+                )
+            })
+            .collect()
+    };
+    let sync = bar("SyncStatus");
+    assert_eq!(sync["text"], json!("Running"));
+    assert_eq!(
+        stages(sync),
+        ["EsNotStarted:done", "EsRunning:current", "EsComplete:todo"]
+    );
+    let links = sync["c"].as_array().unwrap();
+    let shape: Vec<String> = links
+        .iter()
+        .map(|link| format!("{}:{}", link["id"].as_str().unwrap(), link["btnType"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            "SyncStatus.EsComplete:primary",
+            "SyncStatus.EsNotStarted:",
+            "SyncStatus.EsOtherError:danger"
+        ]
+    );
+    let first = &links[0];
+    assert_eq!(first["text"], json!("Complete"));
+    assert_eq!(first["method"], json!("post"));
+    assert_eq!(first["kind"], json!("hidden-form-link"));
+    assert_eq!(first["confirm"], json!("Complete: Sync S1?"));
+    let url = first["url"].as_str().unwrap();
+    for part in ["setStatus", "entitySyncId=S1", "statusId=EsComplete"] {
+        assert!(url.contains(part), "{part} in {url}");
+    }
+    let read_only = bar("ReadOnly");
+    assert_eq!(stages(read_only).len(), 3);
+    assert!(read_only["c"].as_array().unwrap().is_empty(), "{read_only:?}");
+    let staged = bar("Staged");
+    assert_eq!(staged["c"][0]["id"], json!("Staged.EsRunning"));
+    assert!(staged["c"][0].get("confirm").is_none(), "{staged:?}");
+    let allowed = bar("Allowed");
+    assert_eq!(allowed["c"].as_array().unwrap().len(), 1);
+    assert!(
+        allowed["c"][0]["url"]
+            .as_str()
+            .unwrap()
+            .contains("toStatusId=EsComplete"),
+        "{allowed:?}"
+    );
+    let none = bar("None");
+    assert_eq!(none["text"], json!(""));
+    assert!(none["stages"].as_array().unwrap().is_empty(), "{none:?}");
+    let model = client_model(&body);
+    assert!(client_nodes(&model).iter().any(|node| matches!(
+        node,
+        moqui_tui::Node::StatusBar { stages, c, .. } if stages.len() == 3 && c.len() == 3
+    )));
+}
+
+/// The screenDoc transition answers a terminal (renderMode=tui) with the document as an html node: blocks and links.
+#[test]
+fn a_screen_document_for_the_terminal_is_an_html_node() {
+    let dir = std::env::temp_dir().join(format!("moqui-tui-doc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Doc.xml"),
+        r#"<screen require-authentication="false"><widgets><label text="body"/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Help.html"),
+        r#"<h1>Help</h1><p>Read <a href="/apps/more">more</a> here.</p>"#,
+    )
+    .unwrap();
+    let root = dir.join("Doc.xml").to_string_lossy().into_owned();
+    let world = super::World::open("");
+    let mut row = world.facade.make_value("moqui.screen.ScreenDocument").unwrap();
+    row.set("screenLocation", Value::string(root.clone()));
+    row.set("docIndex", Value::I64(1));
+    row.set("docTitle", Value::string("Help"));
+    row.set(
+        "docLocation",
+        Value::string(dir.join("Help.html").to_string_lossy().into_owned()),
+    );
+    row.create(&world.facade).unwrap();
+    let ask = |query: &[(&str, &str)]| {
+        let mut get = super::request("GET", "/screenDoc");
+        for (name, value) in query {
+            get.query.push(((*name).to_string(), (*value).to_string()));
+        }
+        crate::screen::serve_at(&world.factory, get, &root)
+    };
+    let response = ask(&[("docIndex", "1"), ("renderMode", "tui")]);
+    let body = response.body_text();
+    assert_eq!(response.status, 200, "{body}");
+    assert!(
+        response
+            .header("content-type")
+            .unwrap_or("")
+            .starts_with("application/json"),
+        "{:?}",
+        response.headers
+    );
+    let node: Json = serde_json::from_str(&body).unwrap_or_else(|err| panic!("{err}: {body}"));
+    assert_eq!(node["t"], json!("html"));
+    assert_eq!(node["id"], json!("screenDoc"));
+    assert_eq!(node["blocks"][0], json!({"kind": "h1", "text": "Help"}));
+    assert!(node["blocks"][1]["text"].as_str().unwrap().contains("more"), "{node}");
+    assert_eq!(node["links"][0]["url"], json!("/apps/more"));
+    let parsed: moqui_tui::Node = serde_json::from_value(node).unwrap();
+    assert!(matches!(parsed, moqui_tui::Node::Html { ref links, .. } if links.len() == 1));
+    let html = ask(&[("docIndex", "1")]);
+    assert!(html.header("content-type").unwrap_or("").starts_with("text/html"));
+    assert!(html.body_text().contains("<h1>Help</h1>"), "{}", html.body_text());
+    let missing = ask(&[("docIndex", "9"), ("renderMode", "tui")]);
+    assert_eq!(missing.status, 404, "{}", missing.body_text());
+    let _ = std::fs::remove_dir_all(&dir);
+}
