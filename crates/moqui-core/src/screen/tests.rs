@@ -504,6 +504,20 @@ fn script_send_json_response_writes_the_web_slot() {
     assert!(text.contains("loggedIn"), "{text}");
 }
 
+/// As Java's `sendTextResponseInternal`: a text response sent while the message facade has an error is the errors,
+/// with a 500.
+#[test]
+fn script_send_text_response_with_an_error_sends_the_errors() {
+    let context = ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    let _web = crate::web::install(BTreeMap::new());
+    crate::script::run_script("ec.message.addError('No such order'); ec.web.sendTextResponse('all good')").unwrap();
+    let (status, _headers, body, sent) = crate::web::take_output();
+    assert!(sent);
+    assert_eq!(status, 500);
+    assert_eq!(String::from_utf8(body).unwrap(), "No such order\n");
+}
+
 #[test]
 fn script_send_error_follows_accept() {
     let context = ExecutionContextFactory::test_context();

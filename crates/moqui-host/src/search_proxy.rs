@@ -110,6 +110,7 @@ async fn proxy(
     web.peer_ip = peer.ip().to_string();
     web.headers = crate::http::header_map(&parts.headers);
     web.query = moqui_core::web::form_pairs(parts.uri.query().unwrap_or(""));
+    web.raw_query = parts.uri.query().map(str::to_string);
     let factory = Arc::clone(&state.factory);
     let job_factory = Arc::clone(&factory);
     let check_factory = Arc::clone(&factory);

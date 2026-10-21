@@ -1208,7 +1208,11 @@ fn a_text_response_takes_a_type_and_a_file_name_and_an_upload_reads_in_its_chars
         "{}",
         html.body_text()
     );
-    assert_eq!(html.header("Content-Disposition"), None);
+    assert_eq!(
+        html.header("Content-Disposition"),
+        Some("inline"),
+        "as Java's with no file name"
+    );
     assert_eq!(html.body_text(), "<p>x</p>");
     let none = serve_at(&world.factory, request("GET", "/none"), &root);
     assert_eq!(none.status, 200);

@@ -146,11 +146,12 @@ pub(crate) fn origin_allowed(factory: &ExecutionContextFactory, headers: &Header
 }
 
 pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(axum::http::header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|header| cookie_value(header, SESSION_COOKIE_NAME))
-        .filter(|value| !value.is_empty())
+    let cookies: Vec<&str> = headers
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    cookie_value(&cookies.join("; "), SESSION_COOKIE_NAME).filter(|value| !value.is_empty())
 }
 
 /// The userId of an HTTP session, or none when no one is logged in to it. Blocks on the request pool.

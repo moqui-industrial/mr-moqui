@@ -61,6 +61,8 @@ pub struct WebRequest {
     pub headers: BTreeMap<String, String>,
     /// Decoded query pairs in request order. A repeated name becomes a list parameter.
     pub query: Vec<(String, String)>,
+    /// The query string as the client sent it, still encoded (the servlet's `getQueryString`), when the host has it.
+    pub raw_query: Option<String>,
     pub body: Vec<u8>,
     /// A `multipart/form-data` body the host read as it arrived ([`multipart::MultipartReader`]), its large files
     /// spooled to disk; `body` is empty then.
@@ -79,6 +81,7 @@ impl WebRequest {
             https: false,
             headers: BTreeMap::new(),
             query: Vec::new(),
+            raw_query: None,
             body: Vec::new(),
             multipart: None,
             peer_ip: String::new(),
@@ -311,20 +314,38 @@ pub(crate) fn set_host(host: &str) {
     });
 }
 
-/// Remember the full URL of the request and its `Referer`, Java's `getRequestUrl`, for artifact hits.
-/// The full URL of a request, as Java's `requestUrl`: scheme, host, path and query.
+/// The full URL of a request for artifact hits and the visit, Java's `getRequestUrl`: the scheme, the host, its port
+/// unless it is 80 or 443, the path, and the query string as the client sent it. Without the raw query (a request the
+/// host did not make) the pairs are encoded again.
 fn full_url(request: &WebRequest) -> String {
     let host = request.header("host").unwrap_or("localhost");
     let scheme = if request.https { "https" } else { "http" };
-    let mut url = format!("{scheme}://{host}{}", request.path);
-    let query: Vec<String> = request
-        .query
-        .iter()
-        .map(|(name, value)| format!("{name}={value}"))
-        .collect();
+    let name = host_without_port(host);
+    let port = host[name.len()..]
+        .strip_prefix(':')
+        .filter(|port| !port.is_empty() && *port != "80" && *port != "443");
+    let mut url = match port {
+        Some(port) => format!("{scheme}://{name}:{port}{}", request.path),
+        None => format!("{scheme}://{name}{}", request.path),
+    };
+    let query = match &request.raw_query {
+        Some(raw) => raw.clone(),
+        None => request
+            .query
+            .iter()
+            .map(|(name, value)| {
+                format!(
+                    "{}={}",
+                    moqui_lib::string::url_encode_if_needed(name),
+                    moqui_lib::string::url_encode_if_needed(value)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("&"),
+    };
     if !query.is_empty() {
         url.push('?');
-        url.push_str(&query.join("&"));
+        url.push_str(&query);
     }
     url
 }
@@ -811,8 +832,16 @@ pub(crate) fn send_text_response_with(text: &str, content_type: Option<&str>, fi
         format!("{content_type};charset=UTF-8")
     };
     let mut headers = vec![("Content-Type".to_string(), content_type)];
-    if let Some(name) = file_name.map(str::trim).filter(|value| !value.is_empty()) {
-        headers.push(("Content-Disposition".to_string(), attachment_disposition(name)));
+    match file_name.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(name) => headers.push(("Content-Disposition".to_string(), attachment_disposition(name))),
+        None => headers.push(("Content-Disposition".to_string(), "inline".to_string())),
+    }
+    // As Java's `sendTextResponseInternal`: with an error in the message facade the errors go instead, with a 500.
+    let errors = message_errors();
+    if !errors.is_empty() {
+        let body: String = errors.iter().map(|error| format!("{error}\n")).collect();
+        send_bytes_with_headers(500, headers, body.into_bytes());
+        return;
     }
     send_bytes_with_headers(200, headers, text.as_bytes().to_vec());
 }
@@ -1301,7 +1330,8 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
             multipart: multipart_files,
         });
     }
-    if media == "application/x-www-form-urlencoded" || (media.is_empty() && request.body.contains(&b'=')) {
+    // Only a form type is a form, as the servlet parses one; a body with no type is no parameter at all.
+    if media == "application/x-www-form-urlencoded" {
         pairs.extend(form_pairs(&String::from_utf8_lossy(&request.body)));
         return Ok(ParsedBody {
             parameters: pairs_to_parameters(pairs),
@@ -1310,9 +1340,17 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
         });
     }
     let mut parameters = pairs_to_parameters(pairs);
-    // As Java's WebFacadeImpl: a body that is not a form is `_requestBodyText`, and a JSON one is read as well. An
-    // object's fields are parameters, an array is `_requestBodyJsonList`, and JSON that does not parse is
-    // `_requestBodyJsonParseError` for the screen or service to answer, not a refused request.
+    // As Java's WebFacadeImpl: a body of a text type (`ResourceReference.isTextContentType`) that is not a form is
+    // `_requestBodyText`, and a JSON one is read as well. An object's fields are parameters, an array is
+    // `_requestBodyJsonList`, and JSON that does not parse is `_requestBodyJsonParseError` for the screen or service to
+    // answer, not a refused request. A binary body is no parameter.
+    if !moqui_lib::resource::is_text_content_type(&media) {
+        return Ok(ParsedBody {
+            parameters,
+            json_list,
+            multipart: multipart_files,
+        });
+    }
     let text = String::from_utf8_lossy(&request.body).into_owned();
     parameters.insert("_requestBodyText".to_string(), Value::String(text.clone()));
     if media == "application/json" || media == "text/json" || media.ends_with("+json") {
@@ -1345,6 +1383,10 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
 }
 
 /// One value stays a string. A name that repeats becomes a list in request order.
+/// A lone non-breaking space is Java's "no parameter" value (`WebUtilities.simplifyRequestParameters`): the html
+/// remote options post it for an empty option, and the name is null, which still hides a JSON or saved value.
+const NO_PARAMETER: &str = "\u{a0}";
+
 fn pairs_to_parameters(pairs: Vec<(String, String)>) -> BTreeMap<String, Value> {
     let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (key, value) in pairs {
@@ -1353,7 +1395,9 @@ fn pairs_to_parameters(pairs: Vec<(String, String)>) -> BTreeMap<String, Value> 
     grouped
         .into_iter()
         .map(|(key, mut values)| {
-            let value = if values.len() == 1 {
+            let value = if values.len() == 1 && values[0] == NO_PARAMETER {
+                Value::Null
+            } else if values.len() == 1 {
                 Value::string(values.remove(0))
             } else {
                 Value::List(values.into_iter().map(Value::string).collect())
@@ -2042,6 +2086,61 @@ mod tests {
         );
     }
 
+    /// A lone non-breaking space is no parameter, as Java's `simplifyRequestParameters`; the name stays, null.
+    #[test]
+    fn a_lone_non_breaking_space_is_a_null_parameter() {
+        let map = pairs_to_parameters(form_pairs("statusId=%C2%A0&note=%C2%A0x&a=%C2%A0&a=1"));
+        assert_eq!(map.get("statusId"), Some(&Value::Null));
+        assert_eq!(map.get("note"), Some(&Value::string("\u{a0}x")));
+        assert_eq!(
+            map.get("a"),
+            Some(&Value::List(vec![Value::string("\u{a0}"), Value::string("1")]))
+        );
+    }
+
+    /// Only a text body is `_requestBodyText`, and only a form type is a form, as Java's `WebFacadeImpl` reads them.
+    #[test]
+    fn a_binary_or_untyped_body_is_no_parameter() {
+        let parse = |content_type: Option<&str>, body: &[u8]| {
+            let mut request = super::WebRequest::new("POST", "/x");
+            if let Some(content_type) = content_type {
+                request.set_header("content-type", content_type);
+            }
+            request.body = body.to_vec();
+            match super::parse_body(&request) {
+                Ok(parsed) => parsed.parameters,
+                Err(_) => panic!("body refused"),
+            }
+        };
+        assert!(parse(Some("application/octet-stream"), b"a=1\xff").is_empty());
+        assert!(parse(None, b"a=1").is_empty());
+        let text = parse(Some("text/plain; charset=utf-8"), b"a=1");
+        assert_eq!(text.get("_requestBodyText"), Some(&Value::string("a=1")));
+        assert_eq!(text.get("a"), None);
+        assert_eq!(
+            parse(Some("application/x-www-form-urlencoded"), b"a=1").get("a"),
+            Some(&Value::string("1"))
+        );
+    }
+
+    /// Java's `getRequestUrl`: the host without a port of 80 or 443, and the query string as the client sent it.
+    #[test]
+    fn the_request_url_keeps_the_query_as_sent_and_drops_a_default_port() {
+        let mut request = super::WebRequest::new("GET", "/apps/Find");
+        request.set_header("host", "site.test:80");
+        request.query = form_pairs("q=a%20b&n=%0A");
+        assert_eq!(super::full_url(&request), "http://site.test/apps/Find?q=a+b&n=%0A");
+        request.raw_query = Some("q=a%20b&n=%0A".to_string());
+        request.set_header("host", "site.test:8080");
+        assert_eq!(
+            super::full_url(&request),
+            "http://site.test:8080/apps/Find?q=a%20b&n=%0A"
+        );
+        request.https = true;
+        request.set_header("host", "[::1]:443");
+        assert_eq!(super::full_url(&request), "https://[::1]/apps/Find?q=a%20b&n=%0A");
+    }
+
     #[test]
     fn percent_decode_keeps_bad_escapes_and_never_panics() {
         assert_eq!(percent_decode("a%20b+c"), "a b c");
@@ -2057,6 +2156,11 @@ mod tests {
             Some("abc")
         );
         assert_eq!(cookie_value("a=b", "moqui.session"), None);
+        // Two Cookie headers as the host joins them.
+        assert_eq!(
+            cookie_value("a=1; moqui.session=abc; b=2", "moqui.session").as_deref(),
+            Some("abc")
+        );
     }
 
     #[test]

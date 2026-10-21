@@ -709,6 +709,7 @@ async fn dispatch_screen(
     web.peer_ip = peer.ip().to_string();
     web.headers = header_map(&parts.headers);
     web.query = moqui_core::web::form_pairs(parts.uri.query().unwrap_or(""));
+    web.raw_query = parts.uri.query().map(str::to_string);
     // The limit is `webapp_max_body` (10 MiB), or `webapp_max_upload` for a multipart body, and it stops the read.
     let limit = moqui_core::web::body_limit_for(Some(&state.factory), &web);
     let declared = parts
@@ -1061,7 +1062,14 @@ pub(crate) fn header_map(headers: &axum::http::HeaderMap) -> BTreeMap<String, St
         if values.is_empty() {
             continue;
         }
-        map.insert(name.as_str().to_ascii_lowercase(), values.join(", "));
+        // Repeated headers are one list, as the servlet's `getHeader` joins them; cookies are pairs split on `;`
+        // (RFC 6265), so a second `Cookie` header must not run into the last pair of the first.
+        let separator = if *name == axum::http::header::COOKIE {
+            "; "
+        } else {
+            ", "
+        };
+        map.insert(name.as_str().to_ascii_lowercase(), values.join(separator));
     }
     map
 }
@@ -1273,7 +1281,7 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::Semaphore;
 
-    use super::{http_port, serve, status_allowed, ListenLimits, TlsConnection};
+    use super::{header_map, http_port, serve, status_allowed, ListenLimits, TlsConnection};
     use crate::guard::Guard;
     use crate::tls;
 
@@ -1604,6 +1612,26 @@ mod tests {
             .await
             .expect("the listener did not stop")
             .unwrap();
+    }
+
+    /// A header sent twice is one value; two `Cookie` headers join as one cookie list, so each pair stays whole.
+    #[test]
+    fn repeated_headers_join_and_cookies_join_as_pairs() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.append(axum::http::header::COOKIE, "a=1".parse().unwrap());
+        headers.append(axum::http::header::COOKIE, "moqui.session=abc".parse().unwrap());
+        headers.append("x-forwarded-for", "10.0.0.1".parse().unwrap());
+        headers.append("x-forwarded-for", "10.0.0.2".parse().unwrap());
+        let map = header_map(&headers);
+        assert_eq!(map.get("cookie").map(String::as_str), Some("a=1; moqui.session=abc"));
+        assert_eq!(
+            map.get("x-forwarded-for").map(String::as_str),
+            Some("10.0.0.1, 10.0.0.2")
+        );
+        assert_eq!(
+            moqui_core::web::cookie_value(&map["cookie"], "moqui.session").as_deref(),
+            Some("abc")
+        );
     }
 
     #[test]
