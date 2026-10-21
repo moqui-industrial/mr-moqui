@@ -1,6 +1,6 @@
 # Screen TUI implementation plan
 
-Oct 20, 2026 · Phases 1, 2, 3 and 3b built (findings under each in section 5); Phase 4 is next. This plan implements [proposals/Screen-TUI-Revue.md](proposals/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
+Oct 21, 2026 · Phases 1, 2, 3, 3b and 3c built (findings under each in section 5); the quirks found over SSH (under 3c) and Phase 4 are next. This plan implements [proposals/Screen-TUI-Revue.md](proposals/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
 
 The proposal sets the architecture: a `tui` render mode emits a JSON screen model, and one Revue client interprets it and reaches the server over several channels. This plan adds four things:
 
@@ -699,6 +699,7 @@ It would be an own widget over `TextArea`, or a contribution to Revue's `RichTex
   - The window size is a `watch` per pty channel, so a window change while the user is still at the prompt is not lost.
   - `tui_max_sessions` (16) and `tui_max_sessions_per_user` (4).
   - **Idle.** russh resets its inactivity timer after any loop turn that is not a keepalive, sent data included (`server/session.rs:834-841` in russh 0.64.1). So the client's minute clock would keep an idle session open forever. An `apps` session therefore ends itself after `IDLE` (600 s) without input, with a one-line note.
+- **`agent-apps` (Phase 3c).** The same client for a program, on an `exec` channel with no pty (`crates/moqui-host/src/ssh/agent.rs`). Sessions are held by the server between one-command execs, and there is a line mode. It needs `SSH_APPS` and takes the same slots. docs/TUI.md "For agents".
 
 ### 4.3 Remote client (`moqui tui --server <url>`)
 
@@ -941,6 +942,63 @@ Recorded 2026-10-20.
 - Unit tests: the session limits, the terminal's theme from `TERM` and the locale, and the SGR colors.
 
 **Not yet checked.** No live terminal has run it: xterm, kitty, GNOME Terminal, tmux and the Linux console are still to do by hand (F-keys, Alt, paste, resize, 256 colors). The full Tools task by keyboard over a real `ssh` is the manual exit check.
+
+**Run over SSH, Oct 21, 2026.**
+- An agent ran the full Tools task as john.doe against the release build, by keyboard over a real `ssh`, with OpenSSH on a pty and a small screen model. `runtime/conf/MoquiDevConf.xml` now sets `ssh_port` 2222, on 127.0.0.1.
+- The run found that a parent level rendered alone (the client asks for each level, `/apps/system/Security.tui`) showed "Tried to render subscreen … no subscreens.@default-item" for its `subscreens-active`. A level under it is the client's next request, so in an always-standalone mode `render_next_screen` (`sri/sections.rs`) now renders nothing there. Test: `screen::tests::tui::a_parent_level_alone_has_an_empty_active_node`.
+
+### Phase 3c — agents
+
+1. **`agent-apps`.** The client for a program: deterministic answers (settled, text or JSON), elements by id, number or label, server-held sessions so each step is one `ssh`, a line mode, and `moqui tui --agent`.
+
+**Exit:** an agent completes the Phase 3 Tools task with one plain `ssh … agent-apps <id> <command>` per step and no harness.
+
+#### Phase 3c findings
+
+Recorded 2026-10-21.
+
+**The client.** `moqui_tui::Agent` (`crates/moqui-tui/src/ui/agent.rs`) runs one command line on an `AppView` and answers it.
+- **Settling.** Keys run their requests in line (`AppView::on_key`). `Session::fire_waits` then fires the server-search and palette waits at once, not after 300 ms, and the requests run again until none is left. The counters keep their time.
+- **Answer.**
+  - The header names the path with its query, the full breadcrumb (`Session::crumbs`, now also the title line's), the focus as kind, id and label, any overlay, and the message.
+  - Then the screen: drawn into a Revue `Buffer` as `ui/encode.rs` does, with reverse-video runs (the focus) between `[[ ]]`. A run of three or more empty rows is one counted line.
+  - Then `--- ok` or `--- error <why>`.
+  - `--json` gives the same as an object with every row and the elements.
+- **Elements.**
+  - An element is the focus order of the current scope. Its label is the field title, link text, dialog title or menu text, else the node's `text`, `button`, `title` or `name`.
+  - It is found by `#n`, by id, by the same label, or by a label holding the text. `Session::focus_key` moves to it.
+- **`set` and `do`.**
+  - `set` writes a text field through `Session::set_buffer`, so depends-on runs. It chooses a drop-down as a person does (F4, the text, Enter on the exact match) and checks the value taken.
+  - `do Yes` answers an open confirm.
+  - `find` is `/` with the text, so list rows are reached and `key Right` follows a row's link.
+
+**The host.** `crates/moqui-host/src/ssh/agent.rs`.
+- `agent-apps open` keeps an `Agent<HostLink>` in a registry by an 8-character random id, found only by its own user.
+- Each command runs under `spawn_blocking` with the session locked. A session unused for `IDLE` is dropped on the next `agent-apps` call, which gives its `tui_max_sessions` slot back.
+- `agent-apps` alone is the line mode. Exit status 0, 1 or 2.
+- `moqui tui --agent` is the line mode on stdin.
+
+**Exit evidence.**
+- `crates/moqui-tui/tests/agent.rs` (6 tests): the answer's form, elements by number, id and label, `set` on a text field and on a dependent drop-down by label and by value, a settled palette search, JSON, a confirm, the empty-row count, and errors.
+- `crates/moqui-host/tests/it/ssh.rs` `agent_apps_answers_one_command_per_exec`: open, the user list's find by label, JSON elements, another user refused, `tui_max_sessions_per_user`, `SSH_APPS` refused, `close`, and the line mode.
+- **Live.** The Tools task, run by an agent on the release build with one `ssh -S <control socket> … agent-apps <id> <command>` per step: 20 commands, none of them a wait, a retry or a Tab count. The command list is in docs/TUI.md "For agents".
+
+**Still awkward for an agent.**
+- Unnamed links have path ids (`widgets/container-row/row-col[0]/link[0]`). Labels work, but an id is no help.
+- A list row is reached by `find`, not by naming the row.
+- Every answer carries the whole screen, even when only the message changed.
+
+#### Quirks found over SSH (Oct 21, 2026)
+
+To fix next, with `agent-apps` to check each. Items later phases already cover are left out.
+
+1. Below the docking width the title line's counters squeeze the breadcrumb, to `system ▸ Ser…` at 120 columns. The counters should take their short form (1.6) or give way first.
+2. A row of buttons does not wrap: AppList's app buttons run off the right edge at 120 columns.
+3. Find text (`/`) does not search the second part of a stacked cell. `MY_ACCOUNT_USERS` under "My Account Users" is "not on this screen".
+4. The confirm dialog shows its choice only as `< Yes >` against `[ No ]`. Elsewhere the chosen button is in reverse video.
+5. Run Job on ServiceJobDetail gives no message, and its "Last Run" still shows the old time after F5. Check whether it is the screen's data or a message lost on the redirect.
+6. The breadcrumb repeats the leaf as its name and its title: `JobRunDetail ▸ Job Run Detail`.
+7. ServiceJobDetail's empty From Date shows the current time. Check against the browser whether it is the field's default value.
 
 ### Phase 4 — Reach and polish
 

@@ -426,6 +426,36 @@ impl Session {
         &self.focus
     }
 
+    /// Move the focus to the item with this key, in the current scope. False when it is not there.
+    pub fn focus_key(&mut self, key: &str) -> bool {
+        match self.focus.iter().position(|item| item.key == key) {
+            Some(at) => {
+                self.focus_at = at;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The screen's place, `Gallery`, `Detail`, then its title when that is not the last name: the title line's
+    /// breadcrumb before it is cut to the width.
+    pub fn crumbs(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.model().screen.path_list.iter().skip(1).cloned().collect();
+        if names.is_empty() {
+            names = self
+                .path()
+                .split('/')
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+        let title = &self.model().screen.title;
+        if !title.is_empty() && names.last().is_none_or(|last| last != title) {
+            names.push(title.clone());
+        }
+        names
+    }
+
     pub fn focused_is_text(&self) -> bool {
         self.focus_kind() == Some(FocusKind::Text)
     }
@@ -520,6 +550,23 @@ impl Session {
             changed = true;
         }
         changed
+    }
+
+    /// Fire the waits for typing to stop (a server search's options, the palette's search) now rather than when they
+    /// are due: the agent mode answers once the screen has settled. The counters are left to their time. Returns true
+    /// when one fired.
+    pub fn fire_waits(&mut self) -> bool {
+        let waits: Vec<Timer> = self
+            .timers
+            .keys()
+            .filter(|timer| !matches!(timer, Timer::Counts))
+            .cloned()
+            .collect();
+        for timer in &waits {
+            self.timers.remove(timer);
+            self.fire(timer.clone());
+        }
+        !waits.is_empty()
     }
 
     fn fire(&mut self, timer: Timer) {

@@ -47,6 +47,95 @@ moqui> apps                                 from the admin shell; quitting the a
 - **Files.** Exports are not downloaded, because the client runs on the server; the text export still shows in a
   dialog. Uploads are off. The log pane is not offered.
 
+## For agents
+
+`agent-apps` is the same client for a program, an AI agent above all: commands in, the screen as text out. Each
+command answers once the screen has settled (its requests done, a search's wait for typing fired at once), so there is
+no timing to guess and no escape sequence to read. It needs `SSH_APPS` and no pty.
+
+```
+ssh -p 2222 john.doe@localhost agent-apps open [path] [--size 120x40] [--json]     a session; answers its id
+ssh -p 2222 john.doe@localhost agent-apps <id> <command>                            one command in it
+ssh -p 2222 john.doe@localhost agent-apps                                           line mode: a command per line on stdin
+moqui tui --agent --user john.doe                                                   line mode on this runtime (dev)
+```
+
+The server keeps an opened session between commands, so each step is one `ssh`, and the agent holds no connection. A
+session is found only by its own user. It ends on `close`, or after 10 minutes without a command, and counts in
+`tui_max_sessions` and `tui_max_sessions_per_user` as `apps` does. The exit status is 0 for an answer that ends
+`--- ok`, 1 for `--- error`, and 2 when there is no such session or none may start.
+
+| Command | |
+| --- | --- |
+| `look` | the screen again |
+| `key <chord>...` | keys, as `F10`, `Enter`, `Esc`, `Tab`, `Shift+Tab`, `Down`, `Ctrl+K`, `Alt+M`, `F4` |
+| `type <text>` | characters as typed; `\r` is Enter, `\t` is Tab |
+| `go <path[?query]>` | go to a screen |
+| `focus <element>` | move the focus |
+| `set <element> <value>` | replace a field's value; a drop-down takes a choice's value or label and chooses it as a person does, so its dependent fields follow |
+| `do <element>` | focus and press Enter: a button, link, dialog button, menu; with a confirm open, `do Yes` answers it |
+| `find <text>` | move to the text on the screen, a list row's included; then `key Right` follows the row's link |
+| `elements` | the focusable elements: number, kind, id, label, value, and required, changed or error marks |
+| `size <cols>x<rows>` | the drawing size; a tall one shows a long list whole (the page size follows the rows) |
+| `format text\|json` | the answers' form; `--json` on one command for that one |
+| `help`, `close` | the commands and the screen's keys; end the session |
+
+An element is its id, its number from `elements` (`#3`), or its label: the same label first, then one that holds the
+text, ignoring case. `set` takes the longest run of leading words that names an element, so `set Thru Date 2026-10-21
+00:53` needs no quotes. An answer is:
+
+```
+path /apps/system/Security/UserAccount/UserAccountDetail?userId=EX_JOHN_DOE
+title system ▸ Security ▸ UserAccount ▸ UserAccountDetail ▸ User Account Detail
+focus dialog AddGroupMemberDialog "Add Group"
+overlay none                                  (a dialog, a confirm with its choices, a drop-down, the palette, ...)
+message Saved                                 (or: error ..., or no line)
+<the screen as text; the focused element between [[ and ]]; long runs of empty rows as one counted line>
+--- ok                                        (or: --- error <why>)
+```
+
+`--json` gives `{ok, reason, session, path, parameters, title, focus, overlay, message, messageError, screen, elements}`,
+with every row of the screen.
+
+A worked example, the Tools task, abridged (the whole of it took 20 commands on Oct 21, 2026):
+
+```
+agent-apps open                                      session hFY74uac ...
+agent-apps hFY74uac go /apps/system/Security/UserAccount/UserAccountList
+agent-apps hFY74uac key f                            the list's find dialog
+agent-apps hFY74uac set Username john
+agent-apps hFY74uac key Enter
+agent-apps hFY74uac find EX_JOHN_DOE                 the row
+agent-apps hFY74uac key Right                        its account
+agent-apps hFY74uac do Add Group
+agent-apps hFY74uac set Group My Account Users
+agent-apps hFY74uac do Add                           message Saved
+agent-apps hFY74uac go /apps/system/ServiceJob/Jobs/ServiceJobDetail?jobName=clean_ServiceJobRun_daily
+agent-apps hFY74uac do Run Job                       overlay confirm "Run job now ...", choices No|Yes
+agent-apps hFY74uac do Yes
+agent-apps hFY74uac close
+```
+
+**Logging in.** Each step is its own `ssh`, so let it not ask for a password every time:
+
+- Give the agent a key: a `UserSshKey` row with the key's fingerprint, for the agent's user.
+- Or keep one connection open and run every step over it, with this in `~/.ssh/config` (the first `ssh` logs in, the
+  rest reuse it):
+
+  ```
+  Host moqui-agent
+      HostName localhost
+      Port 2222
+      User john.doe
+      ControlMaster auto
+      ControlPath /tmp/moqui-agent-%C
+      ControlPersist 30m
+  ```
+
+  A control socket path must be short: a Unix socket path holds at most 108 bytes.
+- Where a desktop is around, `ssh` may ask for a password in a window (`SSH_ASKPASS`). Set `SSH_ASKPASS_REQUIRE=never`
+  so it asks on the terminal, or not at all.
+
 ## Keys
 
 The scheme follows 5250 function keys and Lynx link travel. Single-letter keys act only when focus is not in a text

@@ -26,8 +26,10 @@ pub struct TuiFlags {
     pub ascii: bool,
     pub no_color: bool,
     pub serve: bool,
-    /// Print one frame of `path` at this size and exit.
+    /// Print one frame of `path` at this size and exit; with `agent`, the agent's drawing size.
     pub snapshot: Option<(u16, u16)>,
+    /// Command lines on stdin, an answer each on stdout (`moqui_tui::Agent`), for a program rather than a person.
+    pub agent: bool,
 }
 
 /// # Errors
@@ -57,6 +59,7 @@ pub fn parse(args: &[String]) -> Result<TuiFlags, Error> {
             "--ascii" => flags.ascii = true,
             "--no-color" => flags.no_color = true,
             "--serve" => flags.serve = true,
+            "--agent" => flags.agent = true,
             "--snapshot" => {
                 flags.path = value("a screen path")?;
                 flags.snapshot.get_or_insert((180, 50));
@@ -143,6 +146,12 @@ pub fn run(flags: &TuiFlags) -> Result<(), Error> {
         }
         None => HostLink::new(&factory),
     };
+    if flags.agent {
+        let (columns, rows) = flags.snapshot.unwrap_or((120, 40));
+        let result = agent_lines(link, &flags.path, columns, rows);
+        drop(keep_alive);
+        return result.map_err(|err| Error::new(format!("moqui tui --agent: {err}")));
+    }
     let theme = moqui_tui::Theme::detect(&|name| std::env::var(name).ok(), flags.ascii, flags.no_color);
     if let Some((width, height)) = flags.snapshot {
         println!("{}", moqui_tui::snapshot(link, &flags.path, width, height, theme));
@@ -157,6 +166,29 @@ pub fn run(flags: &TuiFlags) -> Result<(), Error> {
     let result = moqui_tui::run_local(link, options);
     drop(keep_alive);
     result.map_err(|err| Error::new(format!("moqui tui: {err}")))
+}
+
+/// `--agent`: the first screen, then one answer for each command line on stdin, until `close` or the end of input.
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+fn agent_lines(link: crate::tui::HostLink, path: &str, columns: u16, rows: u16) -> std::io::Result<()> {
+    use std::io::{BufRead, Write};
+
+    let mut agent = moqui_tui::Agent::open(link, path, columns, rows);
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{}", agent.look().text)?;
+    out.flush()?;
+    for line in std::io::stdin().lock().lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        writeln!(out, "{}", agent.run(&line).text)?;
+        out.flush()?;
+        if agent.closed() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(all(feature = "axum", any(feature = "postgres", feature = "mysql"))))]
@@ -189,8 +221,10 @@ mod tests {
             "--ascii",
             "--size",
             "100x40",
+            "--agent",
         ]))
         .unwrap();
+        assert!(flags.agent);
         assert_eq!(flags.path, "/apps/gallery/List");
         assert_eq!(flags.user.as_deref(), Some("john.doe"));
         assert!(flags.ascii);

@@ -478,6 +478,11 @@ fn render_next_screen(state: &RenderState, runner: &dyn Runner) -> Result<(), Er
             }
             return Ok(());
         }
+        // An always-standalone mode (`tui`) asks for each level on its own: the level under this one is the client's
+        // next request, so a parent rendered alone has nothing here, with or without a default item.
+        if state.always_standalone {
+            return Ok(());
+        }
         let def = active_def(state);
         let message = format!(
             "Tried to render subscreen in screen [{}] but there is no subscreens.@default-item, and no more valid subscreen names in the screen path [{:?}]",

@@ -21,7 +21,8 @@
 //! user. The `sftp` subsystem needs the `SSH_SFTP` permission and serves `ssh_sftp_root`; `exec` and `shell` need
 //! `SSH_SHELL` and run [`super::shell`]. `apps` (the terminal client, `super::apps`) needs `SSH_APPS` and a pty: it is
 //! the whole session of a user with `SSH_APPS` and no `SSH_SHELL`, the `exec` command `apps` (`ssh -t host apps`), and
-//! a command at the shell's prompt. At most `ssh_max_sessions` logged-in sessions are open at once. A connection
+//! a command at the shell's prompt. `agent-apps` (`super::agent`) is the same client for a program, on an `exec`
+//! channel with no pty, one command line at a time. At most `ssh_max_sessions` logged-in sessions are open at once. A connection
 //! that has not logged in has [`PREAUTH_TIMEOUT`] to do so, and at most [`MAX_PREAUTH`] such connections wait at once.
 
 use std::collections::{BTreeMap, HashMap};
@@ -83,6 +84,9 @@ struct Shared {
     /// The live `apps` sessions, against `tui_max_sessions`.
     #[cfg(feature = "tui")]
     apps: Arc<super::apps::Sessions>,
+    /// The sessions `agent-apps open` started, kept between its commands.
+    #[cfg(feature = "tui")]
+    agents: Arc<super::agent::AgentSessions>,
     /// The cluster topics received, shared with the HTTPS cluster listener.
     cluster_posts: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -170,6 +174,8 @@ pub fn start(
         max_file,
         #[cfg(feature = "tui")]
         apps: Arc::new(super::apps::Sessions::from_properties()),
+        #[cfg(feature = "tui")]
+        agents: Arc::default(),
         cluster_posts,
     });
     crate::edge::handle().spawn(accept_loop(listener, config, shared, watch, max_sessions));
@@ -379,6 +385,12 @@ type AppsAccess = Result<super::apps::Apps, &'static str>;
 #[cfg(not(feature = "tui"))]
 type AppsAccess = Result<(), &'static str>;
 
+/// What `agent-apps` gets on a connection: the sessions and the user, or why not.
+#[cfg(feature = "tui")]
+type AgentAccess = Result<super::agent::AgentAccess, &'static str>;
+#[cfg(not(feature = "tui"))]
+type AgentAccess = Result<(), &'static str>;
+
 /// The SSH permissions of the user now logged in.
 #[derive(Clone, Copy, Debug)]
 struct Permissions {
@@ -448,6 +460,26 @@ impl Connection {
         Auth::Accept
     }
 
+    /// `agent-apps` for this connection: the user's permission and a build with the client. No pty is needed.
+    fn agent_access(&self) -> AgentAccess {
+        if !self.can_apps {
+            return Err("agent-apps needs the SSH_APPS permission");
+        }
+        #[cfg(feature = "tui")]
+        {
+            Ok(super::agent::AgentAccess {
+                factory: std::sync::Weak::clone(&self.shared.factory),
+                sessions: Arc::clone(&self.shared.apps),
+                agents: Arc::clone(&self.shared.agents),
+                username: self.username.clone().unwrap_or_default(),
+            })
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            Err("this build has no terminal UI")
+        }
+    }
+
     /// `apps` on `channel`: the user's permission, a pty, and a build with the client.
     fn apps_access(&self, channel: ChannelId) -> AppsAccess {
         if !self.can_apps {
@@ -473,6 +505,34 @@ impl Connection {
         {
             let _ = pty;
             Err("this build has no terminal UI")
+        }
+    }
+}
+
+/// Run `agent-apps` with `args` on the stream (one command, or the line mode with none), or write why it cannot run.
+/// Returns the exit status.
+async fn run_agent<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    stream: &mut S,
+    access: AgentAccess,
+    args: &str,
+) -> u32 {
+    match access {
+        #[cfg(feature = "tui")]
+        Ok(access) => match super::agent::one_shot(&access, args).await {
+            Some((text, status)) => {
+                let _ = stream.write_all(format!("{text}\n").as_bytes()).await;
+                status
+            }
+            None => super::agent::lines(stream, &access).await,
+        },
+        #[cfg(not(feature = "tui"))]
+        Ok(()) => {
+            let _ = args;
+            2
+        }
+        Err(reason) => {
+            let _ = stream.write_all(format!("--- error {reason}\n").as_bytes()).await;
+            2
         }
     }
 }
@@ -685,7 +745,30 @@ impl russh::server::Handler for Connection {
             ));
             return Ok(());
         }
-        if line.trim() == "apps" && self.username.is_some() {
+        let trimmed = line.trim();
+        if let Some(args) = trimmed
+            .strip_prefix("agent-apps")
+            .filter(|args| args.is_empty() || args.starts_with(char::is_whitespace))
+            .filter(|_| self.username.is_some())
+        {
+            let Some(open) = self.channels.remove(&channel) else {
+                return session.channel_failure(channel);
+            };
+            session.channel_success(channel)?;
+            let access = self.agent_access();
+            let args = args.trim().to_string();
+            let handle = session.handle();
+            tokio::spawn(async move {
+                let mut stream = open.into_stream();
+                let status = run_agent(&mut stream, access, &args).await;
+                let _ = stream.flush().await;
+                let _ = handle.exit_status_request(channel, status).await;
+                let _ = handle.eof(channel).await;
+                let _ = handle.close(channel).await;
+            });
+            return Ok(());
+        }
+        if trimmed == "apps" && self.username.is_some() {
             let Some(open) = self.channels.remove(&channel) else {
                 return session.channel_failure(channel);
             };
