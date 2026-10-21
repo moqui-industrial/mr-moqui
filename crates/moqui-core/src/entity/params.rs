@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 
 use moqui_db::model::{EntityDefinition, EntityModel, FieldDefinition};
-use moqui_lib::object::{basic_convert, Value};
+use moqui_lib::object::{basic_convert, is_java_type, Value};
 
 use crate::driver::DbRow;
 
@@ -51,25 +51,38 @@ pub(crate) fn view_columns(view: &EntityDefinition) -> Vec<(String, String)> {
         .collect()
 }
 
-pub(crate) fn map_row(columns: &[(String, String)], row: &DbRow) -> BTreeMap<String, Value> {
-    let mut values = BTreeMap::new();
+/// The row's values by field name, each converted to its column's Java type. A column the row has that `columns`
+/// does not name is kept as read. The row's names and values move into the map, so a value is not copied.
+pub(crate) fn map_row(columns: &[(String, String)], row: DbRow) -> BTreeMap<String, Value> {
+    let mut cells = row.columns;
     if columns.is_empty() {
-        for (name, value) in &row.columns {
-            values.insert(name.clone(), value.clone());
-        }
-        return values;
+        return cells.into_iter().collect();
     }
-    for (name, java) in columns {
-        let raw = row.get(name).cloned().unwrap_or(Value::Null);
-        let value = if java.is_empty() {
+    let mut values = BTreeMap::new();
+    for (index, (name, java)) in columns.iter().enumerate() {
+        // A row usually has the columns in the select's order. An empty name is a cell already taken.
+        let found = match cells.get(index) {
+            Some((cell, _)) if cell == name => Some(index),
+            _ => cells.iter().position(|(cell, _)| cell == name),
+        };
+        let (key, raw) = match found {
+            Some(at) => {
+                let cell = &mut cells[at];
+                (std::mem::take(&mut cell.0), std::mem::replace(&mut cell.1, Value::Null))
+            }
+            None => (name.clone(), Value::Null),
+        };
+        let value = if is_java_type(&raw, java) {
             raw
         } else {
             basic_convert(&raw, java).value
         };
-        values.insert(name.clone(), value);
+        values.insert(key, value);
     }
-    for (name, value) in &row.columns {
-        values.entry(name.clone()).or_insert_with(|| value.clone());
+    for (name, value) in cells {
+        if !name.is_empty() && !values.contains_key(&name) {
+            values.insert(name, value);
+        }
     }
     values
 }

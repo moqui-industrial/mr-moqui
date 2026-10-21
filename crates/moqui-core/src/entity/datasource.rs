@@ -253,6 +253,7 @@ fn pool_config(inline: Option<&MNode>, database: &MNode) -> Result<PoolConfig, E
         acquire_timeout: Duration::from_secs(u64::from(number("pool-time-wait", 30)?)),
         idle_timeout: Some(Duration::from_secs(u64::from(number("pool-time-idle", 60)?))),
         test_query,
+        test_after_idle: Duration::from_secs(1),
     })
 }
 

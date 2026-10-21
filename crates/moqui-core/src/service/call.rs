@@ -826,6 +826,10 @@ fn canonical(name: &str) -> String {
     name.to_string()
 }
 
+/// The implicit entity-auto definitions made, by service name, kept with the facade whose entities they name. One
+/// definition per name keeps its expanded parameters (see `validate::declared_in`) from one call to the next.
+type ImplicitDefs = crate::entity::ByDefinition<Arc<ServiceDef>>;
+
 fn resolve(name: &str, facade: Option<&EntityFacade>) -> Result<Arc<ServiceDef>, Error> {
     if let Some(def) = super::define::find(name) {
         return Ok(def);
@@ -833,8 +837,14 @@ fn resolve(name: &str, facade: Option<&EntityFacade>) -> Result<Arc<ServiceDef>,
     let (verb, noun) = split_name(name);
     if matches!(verb.as_str(), "create" | "update" | "store" | "delete") && !noun.is_empty() {
         if let Some(facade) = facade {
+            let generation = crate::entity::definition_generation(facade);
+            if let Some(def) = facade.with_slot(ImplicitDefs::default, |defs| defs.get(name, generation)) {
+                return Ok(def);
+            }
             if facade.with_entity(&noun, |_, _, _| Ok(())).is_ok() {
-                return Ok(Arc::new(ServiceDef::implicit(name, &verb, &noun)));
+                let def = Arc::new(ServiceDef::implicit(name, &verb, &noun));
+                facade.with_slot(ImplicitDefs::default, |defs| defs.insert(name, generation, Arc::clone(&def)));
+                return Ok(def);
             }
         }
     }
@@ -1069,31 +1079,34 @@ fn run_entity(
     if depth > 8 {
         return Err(LibError::new("nested entity-auto is too deep"));
     }
-    let (pk_names, field_names) = facade.with_entity(noun, |entity, _, _| {
-        Ok((
-            entity
-                .pk_field_names()
-                .into_iter()
-                .map(str::to_string)
-                .collect::<Vec<_>>(),
-            entity
-                .fields
+    // As Java's `setFields`, only the entity's fields are set: an implicit call passes its parameters as they came.
+    let settable = |entity: &moqui_db::model::EntityDefinition, key: &str, value: &Value| {
+        !reserved(key) && entity.has_field(key) && !matches!(value, Value::Map(_) | Value::List(_))
+    };
+    let (pk_names, fields) = facade.with_entity(noun, |entity, _, _| {
+        let pk_names = entity
+            .pk_field_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let fields = if verb == "delete" {
+            Vec::new()
+        } else {
+            parameters
                 .iter()
-                .map(|field| field.name.clone())
-                .collect::<std::collections::BTreeSet<_>>(),
-        ))
+                .filter(|(key, value)| settable(entity, key, value))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<Vec<_>>()
+        };
+        Ok((pk_names, fields))
     })?;
     if verb == "delete" {
         delete_entity(facade, noun, parameters, &pk_names)?;
         return Ok(BTreeMap::new());
     }
     let mut record = facade.make_value(noun)?;
-    // As Java's `setFields`, only the entity's fields are set: an implicit call passes its parameters as they came.
-    for (key, value) in parameters {
-        if reserved(key) || !field_names.contains(key) || matches!(value, Value::Map(_) | Value::List(_)) {
-            continue;
-        }
-        record.set(key, value.clone());
+    for (key, value) in fields {
+        record.set(key, value);
     }
     // `EntityAutoServiceRunner.checkFromDate`: a `fromDate` primary key left out of a create or store is
     // `ec.user.nowTimestamp`.

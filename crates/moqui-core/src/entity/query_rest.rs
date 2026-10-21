@@ -1398,7 +1398,7 @@ fn run_view(facade: &EntityFacade, built: &BuiltView, authorize: bool) -> Result
     after_statement(facade, &tx, false);
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        let mapped = map_row(&columns, &row);
+        let mapped = map_row(&columns, row);
         out.push(field_rw::after_read(facade, &view, mapped)?);
     }
     Ok(out)

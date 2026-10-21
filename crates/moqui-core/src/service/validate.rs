@@ -494,6 +494,12 @@ fn default_for(
     if param.default_expr.is_none() && param.default_value.is_none() {
         return Ok(None);
     }
+    // Text with nothing to expand (as `expand` decides) needs no scope of the parameters.
+    if let (None, Some(text)) = (&param.default_expr, &param.default_value) {
+        if !text.contains('$') || text.ends_with('$') {
+            return Ok(Some(Value::string(text.as_str())));
+        }
+    }
     scope.enter(params)?;
     if let Some(expression) = &param.default_expr {
         let value = crate::script::eval_value(expression)?;

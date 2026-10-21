@@ -333,6 +333,9 @@ impl TransactionManager {
         if !self.has_active() {
             let mut pooled = self.inner.pool.checkout_ordinary()?;
             let result = body(pooled.conn());
+            if result.is_err() && pooled.live() && pooled.conn().is_closed() {
+                pooled.discard();
+            }
             drop(pooled);
             return result;
         }
@@ -357,6 +360,9 @@ impl TransactionManager {
         self.arm_statement_timeout(borrow.as_mut())?;
         let pooled = borrow.as_mut().ok_or_else(|| Error::new("no connection enlisted"))?;
         let result = body(pooled.conn());
+        if result.is_err() && pooled.live() && pooled.conn().is_closed() {
+            pooled.discard();
+        }
         if let Err(err) = &result {
             let message = err.to_string();
             let info = RollbackInfo {
@@ -378,6 +384,9 @@ impl TransactionManager {
     {
         let mut pooled = self.inner.pool.checkout_reserve()?;
         let result = body(pooled.conn());
+        if result.is_err() && pooled.live() && pooled.conn().is_closed() {
+            pooled.discard();
+        }
         drop(pooled);
         result
     }
@@ -1264,6 +1273,10 @@ fn rollback_after_failure(conn: &Rc<RefCell<Option<PooledConn>>>) {
 fn rollback_enlisted(conn: &Rc<RefCell<Option<PooledConn>>>) -> Result<(), Error> {
     let mut slot = conn.borrow_mut();
     if let Some(pooled) = slot.as_mut() {
+        if !pooled.live() || pooled.conn().is_closed() {
+            pooled.discard();
+            return Ok(());
+        }
         pooled.conn().rollback()?;
     }
     Ok(())

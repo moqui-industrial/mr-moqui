@@ -203,10 +203,8 @@ pub(crate) fn assign_primary(
     if let Some(id) = super::cache::sim_next_seq(&spec.seq_name) {
         return Ok((spec.pk_field, apply_prefix(prefix.as_deref(), &id.to_string())));
     }
-    let prepared = facade.with_entity(SEQUENCE_ENTITY, |entity, dialect, _| seq_sql(entity, dialect))?;
-    let tx = facade.transactions_for(SEQUENCE_ENTITY)?;
     let id = facade.inner.banks.next_id(&spec.seq_name, spec.stagger, |hint| {
-        refill(&tx, &prepared, &spec.seq_name, spec.bank_size, hint)
+        refill_bank(facade, &spec.seq_name, spec.bank_size, hint)
     })?;
     let id = apply_prefix(facade.inner.sequenced_id_prefix.as_deref(), &id.to_string());
     Ok((spec.pk_field, apply_prefix(prefix.as_deref(), &id)))
@@ -248,15 +246,21 @@ pub(crate) fn sequenced_id_primary(
     if let Some(id) = super::cache::sim_next_seq(seq_name) {
         return Ok(id.to_string());
     }
-    let prepared = facade.with_entity(SEQUENCE_ENTITY, |entity, dialect, _| seq_sql(entity, dialect))?;
-    let tx = facade.transactions_for(SEQUENCE_ENTITY)?;
-    let id = facade.inner.banks.next_id(seq_name, stagger, |hint| {
-        refill(&tx, &prepared, seq_name, bank_size, hint)
-    })?;
+    let id = facade
+        .inner
+        .banks
+        .next_id(seq_name, stagger, |hint| refill_bank(facade, seq_name, bank_size, hint))?;
     Ok(apply_prefix(
         facade.inner.sequenced_id_prefix.as_deref(),
         &id.to_string(),
     ))
+}
+
+/// A database refill of `seq_name`'s bank. The SQL is rendered here, as most ids come from the bank without one.
+fn refill_bank(facade: &EntityFacade, seq_name: &str, bank_size: u64, hint: i64) -> Result<SequenceBank, Error> {
+    let prepared = facade.with_entity(SEQUENCE_ENTITY, |entity, dialect, _| seq_sql(entity, dialect))?;
+    let tx = facade.transactions_for(SEQUENCE_ENTITY)?;
+    refill(&tx, prepared, seq_name, bank_size, hint)
 }
 
 fn seq_sql(entity: &moqui_db::model::EntityDefinition, dialect: &moqui_db::dialect::Dialect) -> Result<SeqSql, Error> {
@@ -297,12 +301,11 @@ fn seq_sql(entity: &moqui_db::model::EntityDefinition, dialect: &moqui_db::diale
 
 fn refill(
     tx: &crate::transaction::TransactionManager,
-    prepared: &SeqSql,
+    prepared: SeqSql,
     seq_name: &str,
     bank_size: u64,
     hint: i64,
 ) -> Result<SequenceBank, Error> {
-    let prepared = prepared.clone();
     let seq_name = seq_name.to_string();
     let size = bank_width(bank_size);
     with_reserve_tx(tx, move |conn| {

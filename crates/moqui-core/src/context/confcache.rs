@@ -20,8 +20,9 @@ use moqui_lib::node::MNode;
 
 #[derive(Default)]
 pub(super) struct ConfCache {
-    /// `artifact-execution` attributes: `(type, attribute)` to true when the value is `true`.
-    artifact: HashMap<(String, String), bool>,
+    /// `artifact-execution` attributes: type, then attribute, to true when the value is `true`. Nested, so a lookup by
+    /// `&str` makes no key.
+    artifact: HashMap<String, HashMap<String, bool>>,
     /// `user-facade` child attributes: `(child, attribute)` to the non-empty value.
     user_facade: HashMap<(String, String), String>,
     /// `webapp` attributes: `(webapp name, attribute)` to the raw value, `${}` not yet expanded.
@@ -49,7 +50,9 @@ impl ConfCache {
                     // The first entry for a type wins, as the Java conf lookup does.
                     cache
                         .artifact
-                        .entry((artifact_type.clone(), name))
+                        .entry(artifact_type.clone())
+                        .or_default()
+                        .entry(name)
                         .or_insert(value == "true");
                 }
             }
@@ -94,7 +97,8 @@ impl ConfCache {
 
     pub(super) fn artifact_flag(&self, artifact_type: &str, flag: &str) -> bool {
         self.artifact
-            .get(&(artifact_type.to_string(), flag.to_string()))
+            .get(artifact_type)
+            .and_then(|flags| flags.get(flag))
             .copied()
             .unwrap_or(false)
     }

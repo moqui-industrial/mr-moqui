@@ -338,6 +338,10 @@ mod driver {
     }
 
     impl DbConnection for PostgresConn {
+        fn is_closed(&self) -> bool {
+            self.client.is_closed()
+        }
+
         fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
             let bound = bind(params)?;
             let refs = param_refs(&bound);
@@ -493,13 +497,28 @@ mod driver {
                 out.extend_from_slice(bytes);
                 return Ok(IsNull::No);
             }
-            match value_text(self.0)? {
-                Some(text) => {
+            // The common kinds go straight into the buffer, as `value_text` writes them.
+            use std::fmt::Write as _;
+            let written = match self.0 {
+                Value::Null => return Ok(IsNull::Yes),
+                Value::String(text) => {
                     out.extend_from_slice(text.as_bytes());
-                    Ok(IsNull::No)
+                    Ok(())
                 }
-                None => Ok(IsNull::Yes),
-            }
+                Value::Bool(flag) => {
+                    out.extend_from_slice(if *flag { b"true" } else { b"false" });
+                    Ok(())
+                }
+                Value::I32(number) => write!(out, "{number}"),
+                Value::I64(number) => write!(out, "{number}"),
+                Value::Decimal(number) => write!(out, "{number}"),
+                Value::Timestamp(timestamp) => write!(out, "{timestamp}"),
+                Value::Date(date) => write!(out, "{date}"),
+                Value::Time(time) => write!(out, "{time}"),
+                _ => return self.to_sql_text(out),
+            };
+            written.map_err(|_| bad("could not write a postgres parameter"))?;
+            Ok(IsNull::No)
         }
 
         fn accepts(_ty: &Type) -> bool {
@@ -517,6 +536,18 @@ mod driver {
         }
 
         postgres::types::to_sql_checked!();
+    }
+
+    impl Param<'_> {
+        fn to_sql_text(&self, out: &mut BytesMut) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+            match value_text(self.0)? {
+                Some(text) => {
+                    out.extend_from_slice(text.as_bytes());
+                    Ok(IsNull::No)
+                }
+                None => Ok(IsNull::Yes),
+            }
+        }
     }
 
     impl<'a> FromSql<'a> for PgValue {
@@ -760,7 +791,7 @@ mod driver {
         } else if ty == &Type::BYTEA {
             Ok(Value::Bytes(raw.to_vec()))
         } else if ty == &Type::NUMERIC {
-            expect_value(&numeric_to_text(raw)?, "BigDecimal")
+            expect_value(numeric_to_text(raw)?, "BigDecimal")
         } else if ty == &Type::TIMESTAMPTZ || ty == &Type::TIMESTAMP {
             decode_timestamp(raw)
         } else if ty == &Type::DATE {
@@ -810,7 +841,15 @@ mod driver {
         if micros == i64::MIN {
             return Ok(Value::string("-infinity"));
         }
-        expect_value(&format_pg_timestamp(micros)?, "Timestamp")
+        // The moment the text below names (UTC, no offset), without writing and parsing that text. Outside jiff's range
+        // the text decides.
+        if let Some(stamp) = micros
+            .checked_add(PG_EPOCH_USEC)
+            .and_then(|unix_us| jiff::Timestamp::from_microsecond(unix_us).ok())
+        {
+            return Ok(Value::Timestamp(stamp));
+        }
+        expect_value(format_pg_timestamp(micros)?, "Timestamp")
     }
 
     fn decode_date(raw: &[u8]) -> Result<Value, Box<dyn std::error::Error + Sync + Send>> {
@@ -823,7 +862,7 @@ mod driver {
         }
         let unix_days = i64::from(days) + PG_EPOCH_DAYS;
         let (year, month, day) = civil_from_unix_days(unix_days).ok_or_else(|| bad("date"))?;
-        expect_value(&format!("{year:04}-{month:02}-{day:02}"), "Date")
+        expect_value(format!("{year:04}-{month:02}-{day:02}"), "Date")
     }
 
     fn decode_time(raw: &[u8]) -> Result<Value, Box<dyn std::error::Error + Sync + Send>> {
@@ -839,7 +878,7 @@ mod driver {
         let hour = secs / 3_600;
         let minute = (secs % 3_600) / 60;
         let second = secs % 60;
-        expect_value(&format!("{hour:02}:{minute:02}:{second:02}.{frac:06}"), "Time")
+        expect_value(format!("{hour:02}:{minute:02}:{second:02}.{frac:06}"), "Time")
     }
 
     fn format_pg_timestamp(micros: i64) -> Result<String, Box<dyn std::error::Error + Sync + Send>> {
@@ -859,12 +898,13 @@ mod driver {
         ))
     }
 
-    fn expect_value(text: &str, kind: &str) -> Result<Value, Box<dyn std::error::Error + Sync + Send>> {
-        let converted = basic_convert(&Value::string(text), kind);
+    fn expect_value(text: String, kind: &str) -> Result<Value, Box<dyn std::error::Error + Sync + Send>> {
+        let text = Value::String(text);
+        let converted = basic_convert(&text, kind);
         if kind_matches(&converted.value, kind) {
             Ok(converted.value)
         } else {
-            Err(bad(&format!("could not decode {kind} from {text}")))
+            Err(bad(&format!("could not decode {kind} from {}", text.as_str().unwrap_or_default())))
         }
     }
 
@@ -912,60 +952,60 @@ mod driver {
         if raw.len() < 8 + ndigits * 2 {
             return Err(bad("short numeric"));
         }
-        let mut digits = Vec::with_capacity(ndigits);
-        for index in 0..ndigits {
+        let digit_at = |index: usize| {
             let offset = 8 + index * 2;
-            let digit = u16::from_be_bytes([raw[offset], raw[offset + 1]]);
-            if digit >= 10_000 {
-                return Err(bad("numeric digit"));
-            }
-            digits.push(digit);
+            u16::from_be_bytes([raw[offset], raw[offset + 1]])
+        };
+        if (0..ndigits).any(|index| digit_at(index) >= 10_000) {
+            return Err(bad("numeric digit"));
         }
-        let mut integer = String::new();
-        let mut fraction = String::new();
-        if weight >= 0 {
-            let groups = usize::try_from(weight + 1).map_err(|_| bad("numeric weight"))?;
-            for index in 0..groups {
-                let digit = digits.get(index).copied().unwrap_or(0);
-                if index == 0 {
-                    integer.push_str(&digit.to_string());
-                } else {
-                    integer.push_str(&format!("{digit:04}"));
-                }
-            }
-            for digit in digits.iter().skip(groups) {
-                fraction.push_str(&format!("{digit:04}"));
-            }
+        let leading = if weight >= 0 {
+            0
         } else {
-            integer.push('0');
             let leading = usize::try_from(-weight - 1).map_err(|_| bad("numeric weight"))?;
             if leading > 2_000 {
                 return Err(bad("numeric too large"));
             }
-            for _ in 0..leading {
-                fraction.push_str("0000");
-            }
-            for digit in &digits {
-                fraction.push_str(&format!("{digit:04}"));
-            }
-        }
-        if fraction.len() < dscale {
-            fraction.push_str(&"0".repeat(dscale - fraction.len()));
-        } else {
-            fraction.truncate(dscale);
-        }
-        let mut text = String::new();
+            leading
+        };
+        // Written into one string: base-10000 digit groups, the first without leading zeros, then the fraction to
+        // `dscale` digits.
+        use std::fmt::Write as _;
+        let mut text = String::with_capacity(ndigits * 4 + leading * 4 + dscale + 8);
         if sign == 0x4000 {
             text.push('-');
         }
-        if integer.is_empty() {
-            text.push('0');
+        let groups = if weight >= 0 {
+            let groups = usize::try_from(weight + 1).map_err(|_| bad("numeric weight"))?;
+            for index in 0..groups {
+                let digit = if index < ndigits { digit_at(index) } else { 0 };
+                let _ = if index == 0 {
+                    write!(text, "{digit}")
+                } else {
+                    write!(text, "{digit:04}")
+                };
+            }
+            groups
         } else {
-            text.push_str(&integer);
-        }
+            text.push('0');
+            0
+        };
         if dscale > 0 {
             text.push('.');
-            text.push_str(&fraction);
+            let fraction_start = text.len();
+            for _ in 0..leading {
+                text.push_str("0000");
+            }
+            for index in groups.min(ndigits)..ndigits {
+                let _ = write!(text, "{:04}", digit_at(index));
+            }
+            let fraction_end = fraction_start + dscale;
+            if text.len() < fraction_end {
+                let pad = fraction_end - text.len();
+                text.extend(std::iter::repeat_n('0', pad));
+            } else {
+                text.truncate(fraction_end);
+            }
         }
         Ok(text)
     }
@@ -994,6 +1034,45 @@ mod driver {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn a_parameter_writes_the_text_value_text_gives() {
+            let values = [
+                Value::Null,
+                Value::string("it's"),
+                Value::Bool(true),
+                Value::Bool(false),
+                Value::I32(-5),
+                Value::I64(1 << 40),
+                basic_convert(&Value::string("12.340"), "BigDecimal").value,
+                Value::Timestamp(jiff::Timestamp::from_microsecond(1_700_000_000_123_456).unwrap()),
+                Value::Date(jiff::civil::date(2024, 2, 29)),
+                Value::Time(jiff::civil::time(13, 4, 5, 123_000_000)),
+                Value::F64(1.5),
+                Value::F64(f64::NEG_INFINITY),
+            ];
+            for value in &values {
+                let mut out = BytesMut::new();
+                let null = Param(value).to_sql(&Type::TEXT, &mut out).unwrap();
+                match value_text(value).unwrap() {
+                    Some(text) => {
+                        assert!(matches!(null, IsNull::No), "{value:?}");
+                        assert_eq!(&out[..], text.as_bytes(), "{value:?}");
+                    }
+                    None => assert!(matches!(null, IsNull::Yes), "{value:?}"),
+                }
+            }
+        }
+
+        #[test]
+        fn a_binary_timestamp_decodes_to_the_moment_its_text_names() {
+            for micros in [0_i64, 1, -1, 999_999, 813_456_789_012_345, -946_684_800_000_000, 2_000_000_000_000_000] {
+                let raw = micros.to_be_bytes();
+                let direct = decode_timestamp(&raw).unwrap();
+                let text = expect_value(format_pg_timestamp(micros).unwrap(), "Timestamp").unwrap();
+                assert_eq!(direct, text, "{micros}");
+            }
+        }
 
         #[test]
         fn placeholders_skip_quoted_question_marks() {

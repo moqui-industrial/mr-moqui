@@ -65,6 +65,12 @@ pub trait DbConnection: Send {
 
     fn stream_open(&self) -> bool;
 
+    /// The server has closed this client, or a previous call lost the connection. A local check: it does not
+    /// ask the database. The default is false.
+    fn is_closed(&self) -> bool {
+        false
+    }
+
     fn begin(&mut self) -> Result<(), Error>;
 
     fn commit(&mut self) -> Result<(), Error>;

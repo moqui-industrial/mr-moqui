@@ -106,8 +106,8 @@ pub(super) fn has_rules(service: &str, when: &str) -> bool {
     eca_rules::current().is_some_and(|rules| !rules.seca_index.matching(&rules.seca, service, when).is_empty())
 }
 
-/// The positions of the pattern rules that matched, by `when` and service name.
-type PatternHits = HashMap<(String, String), Arc<[usize]>>;
+/// The positions of the pattern rules that matched, by `when`, then service name. Nested, so a lookup makes no key.
+type PatternHits = HashMap<String, HashMap<String, Arc<[usize]>>>;
 
 /// The SECA rules by `when` and service, made once when the rules load, so a call does not scan every rule at each of
 /// its phases. Each list holds positions in the priority order.
@@ -151,16 +151,23 @@ impl SecaIndex {
         if patterns.is_empty() && exact.is_none() {
             return Cow::Borrowed(&[]);
         }
-        let plain = service.replace('#', "");
+        let plain: Cow<'_, str> = if service.contains('#') {
+            Cow::Owned(service.replace('#', ""))
+        } else {
+            Cow::Borrowed(service)
+        };
         let named = exact
-            .and_then(|by_service| by_service.get(&plain))
+            .and_then(|by_service| by_service.get(plain.as_ref()))
             .map_or(&[][..], Vec::as_slice);
-        let key = (when.to_string(), plain.clone());
+        if patterns.is_empty() {
+            return Cow::Borrowed(named);
+        }
         let cached = self
             .pattern_hits
             .read()
             .unwrap_or_else(|err| err.into_inner())
-            .get(&key)
+            .get(when)
+            .and_then(|by_service| by_service.get(plain.as_ref()))
             .cloned();
         let hits = cached.unwrap_or_else(|| {
             let hits: Arc<[usize]> = patterns
@@ -171,13 +178,15 @@ impl SecaIndex {
             self.pattern_hits
                 .write()
                 .unwrap_or_else(|err| err.into_inner())
-                .insert(key, Arc::clone(&hits));
+                .entry(when.to_string())
+                .or_default()
+                .insert(plain.into_owned(), Arc::clone(&hits));
             hits
         });
-        let mut positions: Vec<usize> = hits.to_vec();
-        if positions.is_empty() {
+        if hits.is_empty() {
             return Cow::Borrowed(named);
         }
+        let mut positions: Vec<usize> = hits.to_vec();
         positions.extend_from_slice(named);
         positions.sort_unstable();
         Cow::Owned(positions)

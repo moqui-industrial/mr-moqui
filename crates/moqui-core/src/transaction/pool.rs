@@ -44,6 +44,9 @@ pub struct PoolConfig {
     /// Idle-connection test: `pool-test-query`, else the database's `default-test-query`.
     /// `None` is [`DEFAULT_TEST_QUERY`]. Newly connected clients need no test.
     pub test_query: Option<String>,
+    /// An idle connection younger than this is handed out without the test query. Zero tests every reuse.
+    /// A client [`DbConnection::is_closed`] already reports is discarded either way.
+    pub test_after_idle: Duration,
 }
 
 impl Default for PoolConfig {
@@ -55,6 +58,7 @@ impl Default for PoolConfig {
             acquire_timeout: Duration::from_secs(30),
             idle_timeout: None,
             test_query: None,
+            test_after_idle: Duration::from_secs(1),
         }
     }
 }
@@ -143,7 +147,10 @@ pub struct Pool {
 }
 
 enum Step {
+    /// Idle long enough to run the test query, or the only way this pool checks a reused client.
     Test(Tracked),
+    /// Returned recently and still open. No test query.
+    Ready(Tracked),
     Connect,
     Wait,
     Fail(Error),
@@ -202,6 +209,10 @@ impl DbConnection for Tracked {
 
     fn stream_open(&self) -> bool {
         self.conn.stream_open()
+    }
+
+    fn is_closed(&self) -> bool {
+        self.conn.is_closed()
     }
 
     fn begin(&mut self) -> Result<(), Error> {
@@ -332,15 +343,23 @@ impl Pool {
         loop {
             let (step, expired) = {
                 let mut state = self.lock();
-                let expired = self.take_expired(&mut state);
+                let mut expired = self.take_expired(&mut state);
                 if budget.is_none() {
                     budget = Some(idle_len(&state, class));
                 }
-                let step = decide(&mut state, class, &self.inner.config, failures, budget.unwrap_or(0));
+                let step = decide(
+                    &mut state,
+                    class,
+                    &self.inner.config,
+                    failures,
+                    budget.unwrap_or(0),
+                    &mut expired,
+                );
                 (step, expired)
             };
             drop(expired);
             match step {
+                Step::Ready(tracked) => return Ok(self.wrap(tracked, class)),
                 Step::Test(tracked) => match test_connection(tracked, self.inner.config.test_sql()) {
                     Ok(tracked) => {
                         self.finish_test(class, true);
@@ -559,6 +578,11 @@ impl PooledConn {
         self.tracked.take();
     }
 
+    /// False after [`Self::discard`] took the client.
+    pub(super) fn live(&self) -> bool {
+        self.tracked.is_some()
+    }
+
     /// Sets the statement timeout once. Returning the connection to the pool clears it, so a
     /// later borrower never inherits it.
     pub(super) fn arm_statement_timeout(&mut self, remaining: std::time::Duration) -> Result<(), Error> {
@@ -615,13 +639,32 @@ fn idle_len(state: &State, class: Class) -> usize {
     }
 }
 
-fn decide(state: &mut State, class: Class, config: &PoolConfig, failures: usize, budget: usize) -> Step {
+/// A client the driver already reports closed goes to `closed`, for the caller to drop off the lock.
+fn decide(
+    state: &mut State,
+    class: Class,
+    config: &PoolConfig,
+    failures: usize,
+    budget: usize,
+    closed: &mut Vec<Tracked>,
+) -> Step {
     if budget > 0 && failures >= budget {
         return Step::Fail(Error::new("connection test failed"));
     }
-    if let Some(tracked) = pop_idle(state, class) {
-        adjust_testing(state, class, true);
-        return Step::Test(tracked);
+    while let Some(tracked) = pop_idle(state, class) {
+        // A client the driver already knows is dead is not worth a test query. Off the idle list, it no longer
+        // counts toward the pool, so another can be opened in its place.
+        if tracked.is_closed() {
+            closed.push(tracked);
+            continue;
+        }
+        if tracked.idle_since.elapsed() >= config.test_after_idle {
+            adjust_testing(state, class, true);
+            return Step::Test(tracked);
+        }
+        // Handed out now, as `finish_test` does after a test.
+        hand_out(state, class);
+        return Step::Ready(tracked);
     }
     if can_create(state, class, config) {
         adjust_creating(state, class, true);
