@@ -15,7 +15,7 @@
 //! [`ScreenLink`] is the client's only way to the server: a level, a transition, a drop-down's options, the shell data,
 //! a login, the JSON of a transition (search, counts, suggestions, a tree's children), a fragment (the body of a
 //! dynamic dialog or container) and a file (an export). The session never calls it itself; it queues [`LinkCall`]s, and the loop runs them off the UI thread
-//! (plans/Screen-TUI-Impl.md 3.6). [`FakeLink`] answers from fixture files and records each call.
+//! (plans/archive/Screen-TUI-Impl.md 3.6). [`FakeLink`] answers from fixture files and records each call.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -37,6 +37,23 @@ pub enum LinkError {
     Auth(String),
     /// The server refused the call, or the worker did not return one.
     Remote(String),
+    /// The password was right and the account needs a second factor's code: the login dialog asks for it.
+    Code(CodeAsk),
+}
+
+/// What a login that needs a code says: why (the factors, or that the code was wrong), and the factors a code can be
+/// sent to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CodeAsk {
+    pub text: String,
+    pub sendable: Vec<Sendable>,
+}
+
+/// A factor the server sends a code to (email, SMS): its id, and what to show (the masked address or number).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Sendable {
+    pub id: String,
+    pub label: String,
 }
 
 impl std::fmt::Display for LinkError {
@@ -45,6 +62,7 @@ impl std::fmt::Display for LinkError {
             Self::Model(err) => write!(f, "{err}"),
             Self::Missing(path) => write!(f, "no screen at {path}"),
             Self::Auth(text) | Self::Remote(text) => write!(f, "{text}"),
+            Self::Code(ask) => write!(f, "{}", ask.text),
         }
     }
 }
@@ -114,6 +132,8 @@ pub struct ShellInfo {
     pub counts: BTreeMap<String, i64>,
     /// The user's choice of the drawer (`TUI_DRAWER_OPEN`), None when not made.
     pub drawer_open: Option<bool>,
+    /// The user's choice of the mouse (`TUI_MOUSE`), None when not made: then it is on.
+    pub mouse: Option<bool>,
 }
 
 /// A quick create item or a palette action: what it is called, and the screen or form it opens.
@@ -161,11 +181,19 @@ pub enum LinkCall {
     Shell {
         path: String,
     },
-    /// The password is not kept: the call is sent once and dropped.
+    /// The call is sent once and dropped. The dialog holds the password until the answer, and longer only while it asks
+    /// for a second factor's code.
     Login {
         username: String,
         password: String,
         code: String,
+    },
+    /// Send a second factor's code to `factor`, for a login the password started. The password goes again, as the
+    /// server keeps no state between the calls of an in-process link.
+    SendCode {
+        username: String,
+        password: String,
+        factor: String,
     },
     /// A transition that answers JSON: the palette's search, the counters, an autocomplete, a display's value, a
     /// tree's children, a status bar, a preference.
@@ -203,6 +231,8 @@ pub enum Reply {
     Options(Result<Vec<Choice>, LinkError>),
     Shell(Result<ShellInfo, LinkError>),
     Login(Result<(), LinkError>),
+    /// The factor the code went to.
+    SendCode(Result<String, LinkError>),
     Json(Result<serde_json::Value, LinkError>),
     Fragment(Result<ScreenModel, LinkError>),
     Raw(Result<RawBody, LinkError>),
@@ -216,6 +246,7 @@ impl Reply {
             | Self::Options(Err(err))
             | Self::Shell(Err(err))
             | Self::Login(Err(err))
+            | Self::SendCode(Err(err))
             | Self::Json(Err(err))
             | Self::Fragment(Err(err))
             | Self::Raw(Err(err)) => Some(err),
@@ -260,6 +291,11 @@ pub trait ScreenLink: Send + Sync {
         Err(LinkError::Remote("this connection does not log in".to_string()))
     }
 
+    /// Send a code to a second factor of the user, after a login answered [`LinkError::Code`]; the answer is the factor.
+    fn send_code(&self, _username: &str, _password: &str, _factor: &str) -> Result<String, LinkError> {
+        Err(LinkError::Remote("this connection does not send codes".to_string()))
+    }
+
     /// A transition's JSON answer.
     fn json(
         &self,
@@ -298,6 +334,11 @@ pub trait ScreenLink: Send + Sync {
                 password,
                 code,
             } => Reply::Login(self.login(username, password, code)),
+            LinkCall::SendCode {
+                username,
+                password,
+                factor,
+            } => Reply::SendCode(self.send_code(username, password, factor)),
             LinkCall::Json {
                 url,
                 method,
@@ -333,6 +374,10 @@ impl<L: ScreenLink + ?Sized> ScreenLink for Arc<L> {
 
     fn login(&self, username: &str, password: &str, code: &str) -> Result<(), LinkError> {
         (**self).login(username, password, code)
+    }
+
+    fn send_code(&self, username: &str, password: &str, factor: &str) -> Result<String, LinkError> {
+        (**self).send_code(username, password, factor)
     }
 
     fn json(
@@ -378,6 +423,8 @@ struct Answers {
     raw: BTreeMap<String, RawBody>,
     /// Calls answered [`LinkError::Auth`] until a login with this password.
     password: Option<String>,
+    /// With the password, the code a login needs, and the factors a code can be sent to.
+    code: Option<(String, Vec<Sendable>)>,
 }
 
 /// Fixture files keyed by `screen.path`. Clones share the answers and the log.
@@ -442,9 +489,15 @@ impl FakeLink {
         self.answers().password = Some(password.to_string());
     }
 
+    /// With [`Self::require_login`], a login needs `code` too; without it the login answers [`LinkError::Code`] naming
+    /// `sendable`.
+    pub fn require_code(&self, code: &str, sendable: Vec<Sendable>) {
+        self.answers().code = Some((code.to_string(), sendable));
+    }
+
     fn record(&self, call: LinkCall) -> Result<(), LinkError> {
         let mut answers = self.answers();
-        let login = matches!(call, LinkCall::Login { .. });
+        let login = matches!(call, LinkCall::Login { .. } | LinkCall::SendCode { .. });
         answers.log.push(call);
         if !login && answers.password.is_some() {
             return Err(LinkError::Auth("Authentication required".to_string()));
@@ -572,10 +625,43 @@ impl ScreenLink for FakeLink {
         match &answers.password {
             Some(expected) if expected != password => Err(LinkError::Remote("Password incorrect".to_string())),
             _ => {
+                if let Some((wanted, sendable)) = &answers.code {
+                    if wanted != code {
+                        let text = if code.is_empty() {
+                            "Enter the code from your authenticator app"
+                        } else {
+                            "Authentication code is not valid"
+                        };
+                        return Err(LinkError::Code(CodeAsk {
+                            text: text.to_string(),
+                            sendable: sendable.clone(),
+                        }));
+                    }
+                }
                 answers.password = None;
+                answers.code = None;
                 Ok(())
             }
         }
+    }
+
+    fn send_code(&self, username: &str, _password: &str, factor: &str) -> Result<String, LinkError> {
+        self.record(LinkCall::SendCode {
+            username: username.to_string(),
+            password: String::new(),
+            factor: factor.to_string(),
+        })?;
+        let answers = self.answers();
+        let sendable = answers
+            .code
+            .as_ref()
+            .map(|(_, sendable)| sendable.as_slice())
+            .unwrap_or_default();
+        sendable
+            .iter()
+            .find(|each| each.id == factor)
+            .map(|each| each.label.clone())
+            .ok_or_else(|| LinkError::Remote(format!("no factor {factor}")))
     }
 }
 

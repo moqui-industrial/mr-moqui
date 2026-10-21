@@ -539,6 +539,8 @@ pub struct LaidCol {
 pub struct LaidTabs {
     pub id: String,
     pub items: Vec<(String, bool)>,
+    /// Each tab's url, for a click.
+    pub urls: Vec<String>,
 }
 
 impl Piece {
@@ -947,6 +949,7 @@ fn place_subscreens(
                 pieces.push(Piece::Tabs(LaidTabs {
                     id: id.to_string(),
                     items: items.iter().map(|item| (item.title.clone(), item.active)).collect(),
+                    urls: items.iter().map(|item| item.url.clone()).collect(),
                 }));
             }
             pieces.extend(place_nodes(c, ctx, width));
@@ -1449,15 +1452,7 @@ fn lay_field(id: &str, title: &str, widget: &Widget, mode: LabelMode, label_widt
         _ => VALUE_DEFAULT + 2,
     };
     let rows = match widget {
-        Widget::TextArea {
-            rows, value, read_only, ..
-        } => {
-            if *read_only {
-                value.lines().count().clamp(1, 12)
-            } else {
-                usize::try_from(*rows).unwrap_or(3).clamp(2, 12)
-            }
-        }
+        Widget::TextArea { .. } => text_area_rows(widget),
         Widget::Display { text, .. } => wrap(text, room).len().max(1),
         _ => 1,
     };
@@ -1554,12 +1549,28 @@ fn cell_width(part: &Cell) -> usize {
                 Widget::Check { .. } => 3,
                 other => display_width(other.value()).max(10) + 2,
             },
-            Node::DynamicDialog { button, title, .. } => {
+            Node::DynamicDialog { button, title, .. } | Node::Dialog { button, title, .. } => {
                 display_width(if button.is_empty() { title } else { button }) + 5
             }
             _ => display_width(part.text()),
         },
         _ => display_width(part.text()),
+    }
+}
+
+/// The rows a text area shows: its `rows` (2 to 12), or a read-only one's lines up to 12. A longer text scrolls.
+pub fn text_area_rows(widget: &Widget) -> usize {
+    match widget {
+        Widget::TextArea {
+            rows, value, read_only, ..
+        } => {
+            if *read_only {
+                value.lines().count().clamp(1, 12)
+            } else {
+                usize::try_from(*rows).unwrap_or(3).clamp(2, 12)
+            }
+        }
+        _ => 1,
     }
 }
 

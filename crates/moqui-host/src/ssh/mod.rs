@@ -17,8 +17,6 @@
 
 #[cfg(feature = "tui")]
 mod agent;
-#[cfg(feature = "tui")]
-mod apps;
 pub mod client;
 pub mod cluster;
 #[cfg(feature = "git")]

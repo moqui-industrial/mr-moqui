@@ -548,7 +548,7 @@ fn shell_data_lists_the_apps_the_user_may_open_with_their_menus_providers_theme_
     assert_eq!(
         data["tui"],
         json!({"breakpoints": {"md": 110}, "colors": {"primary": "#1976d2", "negative": "#c10015"},
-            "keys": {"back": "f3 | alt+left", "refresh": "f5"}, "drawerOpen": null})
+            "keys": {"back": "f3 | alt+left", "refresh": "f5"}, "drawerOpen": null, "mouse": null})
     );
     let text = logged(&lines);
     assert!(
@@ -1229,7 +1229,7 @@ fn publish_sends_the_counts_on_the_shell_counts_topic_once_per_window_and_after_
 
 /// The terminal keeps F9's drawer choice as the `TUI_DRAWER_OPEN` preference through webroot's `/apps/setPreference`
 /// (asked for as JSON, it answers 200 with an empty body and the `X-Moqui-Preferences` header), and the shell data gives
-/// it back as `tui.drawerOpen`: null until it is set.
+/// it back as `tui.drawerOpen`: null until it is set. Alt+P's mouse choice, `TUI_MOUSE`, is `tui.mouse` the same way.
 #[test]
 fn the_drawer_choice_is_a_preference_the_shell_data_gives_back() {
     let world = World::open("");
@@ -1238,6 +1238,18 @@ fn the_drawer_choice_is_a_preference_the_shell_data_gives_back() {
     let (status, data) = get(&world, &root, Some("plain"), "/shellData", &[]);
     assert_eq!(status, 200, "{data}");
     assert_eq!(data["tui"]["drawerOpen"], serde_json::Value::Null, "{data}");
+    assert_eq!(data["tui"]["mouse"], serde_json::Value::Null, "{data}");
+    let set_key = |key: &str, value: &str| {
+        let mut post = request("POST", "/apps/setPreference");
+        post.set_header("authorization", basic("plain"));
+        post.set_header("accept", "application/json");
+        post.set_header("content-type", "application/x-www-form-urlencoded");
+        post.body = format!("preferenceKey={key}&preferenceValue={value}").into_bytes();
+        serve_at(&world.factory, post, &root)
+    };
+    assert_eq!(set_key("TUI_MOUSE", "false").status, 200);
+    let (_, data) = get(&world, &root, Some("plain"), "/shellData", &[]);
+    assert_eq!(data["tui"]["mouse"], json!(false), "{data}");
     let set = |user: Option<&str>, value: &str| {
         let mut post = request("POST", "/apps/setPreference");
         if let Some(user) = user {
@@ -1264,9 +1276,12 @@ fn the_drawer_choice_is_a_preference_the_shell_data_gives_back() {
         assert_eq!(status, 200, "{data}");
         assert_eq!(data["tui"]["drawerOpen"], expected, "{data}");
     }
-    // no user: setPreference refuses. Its `new org.moqui.context.AuthenticationRequiredException` is not a class of the
-    // script runtime, so the refusal is a 500 with the error, not the 401 Java gave.
+    // no user: setPreference refuses with a 401, as Java's AuthenticationRequiredException gave.
     let response = set(None, "true");
-    assert_ne!(response.status, 200, "{}", response.body_text());
-    assert!(response.body_text().contains("errors"), "{}", response.body_text());
+    assert_eq!(response.status, 401, "{}", response.body_text());
+    assert!(
+        response.body_text().contains("Authentication required"),
+        "{}",
+        response.body_text()
+    );
 }

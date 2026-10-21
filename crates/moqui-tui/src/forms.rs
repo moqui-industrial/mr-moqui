@@ -13,7 +13,7 @@
  */
 
 //! The fields, forms, lists, links and dialogs of the levels on screen, found once per model change, with what a form
-//! posts and the checks it makes before a submit (plans/Screen-TUI-Impl.md 1.7, 2.3).
+//! posts and the checks it makes before a submit (plans/archive/Screen-TUI-Impl.md 1.7, 2.3).
 //!
 //! A field's value is in the edit buffers under its id. A find field has parts, under `id#part`: a date or range find
 //! `#from` and `#thru`, a text find `#op`, `#not` and `#ic`, a drop-down with `show-not` `#not`.
@@ -574,6 +574,24 @@ impl Index {
                                     dialog: true,
                                 },
                             );
+                            self.row_dialogs
+                                .entry((list.id.clone(), row_at))
+                                .or_default()
+                                .push(id.clone());
+                            let inner_at = At {
+                                scope: Scope::Dialog(id.clone()),
+                                form: None,
+                                list: None,
+                                ..at.clone()
+                            };
+                            self.add(c, &inner_at);
+                        }
+                        // A container-dialog of the row (an Edit per row): its body came with the row; F10 offers it.
+                        Node::Dialog {
+                            id, button, title, c, ..
+                        } => {
+                            let shown = if title.is_empty() { button } else { title };
+                            self.dialogs.insert(id.clone(), shown.clone());
                             self.row_dialogs
                                 .entry((list.id.clone(), row_at))
                                 .or_default()

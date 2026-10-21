@@ -22,7 +22,7 @@ use moqui_lib::object::Value;
 use super::definition::TransitionDef;
 use crate::context::{Error, ExecutionContext};
 use crate::entity::{query_rest, EntityFacade};
-use crate::user::{self, login_user, logout};
+use crate::user::{self, login_user, logout, CODE_NOT_VALID, FACTOR_INFO, SEND_CODE, VALIDATE_CODE};
 use crate::web::{self, WebRequest};
 
 const ENTITY_AUTH: &str = "Authentication required for entity REST operations";
@@ -201,11 +201,6 @@ fn service_list(call: &Call<'_>, verb: &str, items: &[Value]) -> Result<Value, E
     }
     Ok(Value::List(out))
 }
-
-const FACTOR_INFO: &str = "org.moqui.impl.UserServices.get#ExternalUserAuthcFactorInfo";
-const VALIDATE_CODE: &str = "org.moqui.impl.UserServices.validate#ExternalUserAuthcCode";
-const SEND_CODE: &str = "org.moqui.impl.UserServices.send#ExternalAuthcCode";
-const CODE_NOT_VALID: &str = "Authentication code is not valid";
 
 /// A user who needs a second factor gets the factor info back instead of a login, unless a valid
 /// `code` came with the password. With `createLoginKey=true` a login also answers a new `loginKey` for the

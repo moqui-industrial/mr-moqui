@@ -29,7 +29,7 @@ use crate::link::{Push, Reply, ScreenLink};
 use crate::session::Session;
 use crate::theme::Theme;
 
-use super::encode::{Screen, ENTER, LEAVE};
+use super::encode::{osc52, Screen, ENTER, LEAVE, MOUSE_OFF, MOUSE_ON};
 use super::run::send;
 use super::AppView;
 
@@ -46,6 +46,8 @@ pub enum SessionEvent {
     Push(Push),
     /// A line for the log pane, for a user who may read the log.
     Log(String),
+    /// Whether Alt+L offers the log pane, decided again after a login in the session's dialog.
+    LogOffered(bool),
     /// The channel closed: end without writing more.
     Close,
 }
@@ -61,6 +63,8 @@ pub struct SessionOptions {
     pub notes: Option<fn(&str)>,
     /// The caller sends [`SessionEvent::Log`] lines, so Alt+L offers the log pane.
     pub log: bool,
+    /// The username the login dialog starts with, for a session that starts with no user (the SSH login name).
+    pub login_name: Option<String>,
 }
 
 /// OSC 11 with `?`: the terminal answers with its background color, which the decoder reads. It ends with ST, as the
@@ -132,8 +136,9 @@ fn run<L: ScreenLink + 'static, W: Write>(
     }));
     view.session_mut().set_pushed(subscription.is_some());
     view.session_mut().set_log_offered(options.log);
+    view.session_mut().set_login_name(options.login_name.clone());
     let mut minute = jiff::Zoned::now().minute();
-    settle(&mut view, &link, &done, options.notes);
+    settle(&mut view, &link, &done, options.notes, out)?;
     screen.draw(&view, out)?;
     loop {
         let now = Instant::now();
@@ -180,6 +185,10 @@ fn run<L: ScreenLink + 'static, W: Write>(
                     view.session_mut().on_push(&push);
                     changed = true;
                 }
+                SessionEvent::LogOffered(offered) => {
+                    view.session_mut().set_log_offered(offered);
+                    changed = true;
+                }
                 SessionEvent::Close => return Ok(()),
             }
         }
@@ -197,7 +206,7 @@ fn run<L: ScreenLink + 'static, W: Write>(
         changed |= current != minute;
         minute = current;
         changed |= view.session().is_busy();
-        settle(&mut view, &link, &done, options.notes);
+        settle(&mut view, &link, &done, options.notes, out)?;
         if changed {
             screen.draw(&view, out)?;
         }
@@ -207,7 +216,11 @@ fn run<L: ScreenLink + 'static, W: Write>(
 /// A decoded key, paste or size. Returns true when the user quit.
 fn apply<L: ScreenLink>(view: &mut AppView<Arc<L>>, screen: &mut Screen, decoded: Decoded) -> bool {
     match decoded {
-        Decoded::Key(press) => view.session_mut().on_key(&press),
+        Decoded::Key(press) => view.key(&press),
+        Decoded::Mouse(mouse) => {
+            view.on_mouse(&mouse, Instant::now());
+            false
+        }
         Decoded::Paste(text) => {
             view.session_mut().paste(&text);
             false
@@ -231,12 +244,26 @@ fn resize<L: ScreenLink>(view: &mut AppView<Arc<L>>, screen: &mut Screen, column
     screen.resize(columns, rows);
 }
 
-/// After each turn: the shell data's theme, notes for the log, downloads refused, and the queued requests started.
-fn settle<L, F>(view: &mut AppView<Arc<L>>, link: &Arc<L>, done: &F, notes: Option<fn(&str)>)
+/// After each turn: the shell data's theme, notes for the log, the mouse mode and a copy for the terminal, downloads
+/// refused, and the queued requests started.
+fn settle<L, F, W>(
+    view: &mut AppView<Arc<L>>,
+    link: &Arc<L>,
+    done: &F,
+    notes: Option<fn(&str)>,
+    out: &mut W,
+) -> io::Result<()>
 where
     L: ScreenLink + 'static,
     F: Fn(u64, Reply) + Clone + Send + 'static,
+    W: Write,
 {
+    if let Some(on) = view.session_mut().take_mouse_mode() {
+        out.write_all(if on { MOUSE_ON } else { MOUSE_OFF })?;
+    }
+    if let Some(text) = view.session_mut().take_copy() {
+        out.write_all(&osc52(&text))?;
+    }
     view.sync_shell();
     if let Some(log) = notes {
         for note in view.take_notes() {
@@ -249,6 +276,7 @@ where
             .saved(Err("downloads are off in a remote session; use the browser".to_string()));
     }
     send(view, link, done);
+    Ok(())
 }
 
 /// When the clock on the title line next changes.

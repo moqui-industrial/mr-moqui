@@ -59,13 +59,12 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="SSH_SFTP" fromDate="0"/>
     <moqui.security.UserPermission userPermissionId="SSH_SHELL" description="SSH: admin command shell"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN_ADV" userPermissionId="SSH_SHELL" fromDate="0"/>
-    <!-- apps over SSH: the terminal client (plans/Screen-TUI-Impl.md 4.2). It opens only the TUI; every screen is still
-        checked as the user, and files are not downloaded. With SSH_APPS and no SSH_SHELL, apps is the whole session. -->
-    <moqui.security.UserPermission userPermissionId="SSH_APPS" description="SSH: the applications in the terminal"/>
-    <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="SSH_APPS" fromDate="0"/>
+    <!-- The terminal client (plans/archive/Screen-TUI-Impl.md 4.2, 4.4) needs no permission: every user gets the apps over SSH
+        and in the browser terminal, every screen is still checked as the user, and files are not downloaded. SSH_SHELL
+        adds the admin shell's prompt before them, for a login by key or password at the SSH level. -->
     <!-- git-upload-pack and git-receive-pack over SSH (git clone ssh://...); AT_GIT_REPOSITORY still gates each
-        repository. Grant it to the groups of developers. A user with only this permission logs in by key
-        (UserSshKey) unless ssh_git_password_auth is true. -->
+        repository. Grant it to the groups of developers. Git takes a connection that logged in by key (UserSshKey)
+        unless ssh_git_password_auth is true. -->
     <moqui.security.UserPermission userPermissionId="SSH_GIT" description="SSH: git clone, fetch and push"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="SSH_GIT" fromDate="0"/>
     <!-- Git repositories (AT_GIT_REPOSITORY): view to clone, fetch and read; create and update to push new refs and

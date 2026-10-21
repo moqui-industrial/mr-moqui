@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! HTML as the blocks of text a terminal draws: the `html` node of the tui mode (plans/Screen-TUI-Impl.md 2.3).
+//! HTML as the blocks of text a terminal draws: the `html` node of the tui mode (plans/archive/Screen-TUI-Impl.md 2.3).
 //!
 //! Headings, paragraphs, list items, quotes, preformatted text and table rows become blocks; everything else is
 //! inline text in the block around it. A link's text is followed by `[n]`, and its URL is the n-th entry of `links`,

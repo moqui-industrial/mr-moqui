@@ -16,14 +16,23 @@
 //! `127.0.0.1`) with the host key `ssh_host_key`, a secret property that is the base64 seed of an Ed25519 key
 //! (generated into `runtime/.env` like the other `CHANGEME` secrets) or an OpenSSH private key.
 //!
+//! Any user may connect, as any user may log in over HTTP; every screen and service is still checked as the user.
 //! Login is the user facade: a password through `loginUser` (failures count toward the lockout, and an account that
 //! needs a second factor cannot log in here), or a public key whose fingerprint is an active `UserSshKey` of that
-//! user. The `sftp` subsystem needs the `SSH_SFTP` permission and serves `ssh_sftp_root`; `exec` and `shell` need
-//! `SSH_SHELL` and run [`super::shell`]. `apps` (the terminal client, `super::apps`) needs `SSH_APPS` and a pty: it is
-//! the whole session of a user with `SSH_APPS` and no `SSH_SHELL`, the `exec` command `apps` (`ssh -t host apps`), and
-//! a command at the shell's prompt. `agent-apps` (`super::agent`) is the same client for a program, on an `exec`
-//! channel with no pty, one command line at a time. At most `ssh_max_sessions` logged-in sessions are open at once. A connection
-//! that has not logged in has [`PREAUTH_TIMEOUT`] to do so, and at most [`MAX_PREAUTH`] such connections wait at once.
+//! user. A client with neither (keyboard-interactive, which OpenSSH tries after its keys) is let in with no user and no
+//! questions: it gets the terminal client's login dialog, as `moqui tui` shows it, and nothing else
+//! (`ssh_login_dialog`, on by default).
+//!
+//! `apps`, the terminal client (`crate::term`), needs a pty. It is the whole session of a user without `SSH_SHELL`
+//! and of one who logged in through the dialog, the `exec` command `apps` (`ssh -t host apps`), and a command at the
+//! shell's prompt. A user who logged in by key or password with `SSH_SHELL` gets the admin shell ([`super::shell`]),
+//! for `shell` and `exec`. The `sftp` subsystem needs `SSH_SFTP` and serves `ssh_sftp_root`. Git needs `SSH_GIT`, and
+//! a key unless `ssh_git_password_auth` is true. `agent-apps` (`super::agent`) is the terminal client for a program,
+//! on an `exec` channel with no pty, one command line at a time, for a user logged in by key or password.
+//!
+//! At most `ssh_max_sessions` logged-in sessions are open at once; one with no user counts too. A connection that has
+//! not logged in has [`PREAUTH_TIMEOUT`] to do so, and at most [`MAX_PREAUTH`] such connections wait at once. One let in
+//! with no user is closed when its dialog has not logged in within `crate::term::LOGIN_WAIT`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
@@ -37,6 +46,7 @@ use moqui_lib::object::Value;
 use russh::keys::{HashAlg, PrivateKey, PublicKey};
 use russh::server::{Auth, ChannelOpenHandle, Msg, Session};
 use russh::{Channel, ChannelId, ChannelOpenFailure};
+use russh::{MethodKind, MethodSet};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -44,7 +54,7 @@ use super::{on_pool, sftp_fs::SftpFs, shell};
 
 const DEFAULT_MAX_SESSIONS: usize = 8;
 const DEFAULT_MAX_FILE: usize = 256 * 1024 * 1024;
-/// The connection's inactivity timeout; `apps` ends after as long without input (`super::apps`).
+/// The connection's inactivity timeout; `apps` ends after as long without input (`crate::term::IDLE`).
 pub(super) const IDLE: Duration = Duration::from_secs(600);
 /// How long a connection has from accept to a successful login.
 const PREAUTH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -81,14 +91,17 @@ struct Shared {
     factory: std::sync::Weak<ExecutionContextFactory>,
     root: String,
     max_file: usize,
-    /// The live `apps` sessions, against `tui_max_sessions`.
+    /// The live terminal sessions of the process, against `tui_max_sessions`.
     #[cfg(feature = "tui")]
-    apps: Arc<super::apps::Sessions>,
+    apps: Arc<crate::term::Sessions>,
     /// The sessions `agent-apps open` started, kept between its commands.
     #[cfg(feature = "tui")]
     agents: Arc<super::agent::AgentSessions>,
     /// The cluster topics received, shared with the HTTPS cluster listener.
     cluster_posts: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Keyboard-interactive lets a client in with no user, for the login dialog (`ssh_login_dialog`).
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    dialog: bool,
 }
 
 /// The host key from `ssh_host_key`: an OpenSSH private key, or the base64 of a 32-byte Ed25519 seed.
@@ -116,6 +129,24 @@ pub fn host_key(text: &str) -> Result<PrivateKey, Error> {
     Ok(PrivateKey::from(keypair))
 }
 
+/// The host and port the SSH server binds: `ssh_host` (default `127.0.0.1`) and `ssh_port`. None while `ssh_port` is
+/// empty, which leaves the server off.
+pub(crate) fn listen_target() -> Result<Option<(String, u16)>, Error> {
+    let port_text = moqui_lib::env::get_prop_or_env("ssh_port");
+    let port_text = port_text.trim();
+    if port_text.is_empty() {
+        return Ok(None);
+    }
+    let port: u16 = port_text
+        .parse()
+        .map_err(|_| Error::new(format!("ssh_port {port_text} is not a port number")))?;
+    let host = match moqui_lib::env::get_prop_or_env("ssh_host").trim() {
+        "" => "127.0.0.1".to_string(),
+        other => other.to_string(),
+    };
+    Ok(Some((host, port)))
+}
+
 /// Start the server when `ssh_port` is set (`0` binds an ephemeral port).
 ///
 /// # Errors
@@ -128,17 +159,8 @@ pub fn start(
 ) -> Result<Option<SshServer>, Error> {
     moqui_lib::env::set_property(moqui_core::cluster::SSH_FINGERPRINT_PROPERTY, "");
     moqui_lib::env::set_property(moqui_core::cluster::SSH_ADDRESS_PROPERTY, "");
-    let port_text = moqui_lib::env::get_prop_or_env("ssh_port");
-    let port_text = port_text.trim();
-    if port_text.is_empty() {
+    let Some((host, port)) = listen_target()? else {
         return Ok(None);
-    }
-    let port: u16 = port_text
-        .parse()
-        .map_err(|_| Error::new(format!("ssh_port {port_text} is not a port number")))?;
-    let host = match moqui_lib::env::get_prop_or_env("ssh_host").trim() {
-        "" => "127.0.0.1".to_string(),
-        other => other.to_string(),
     };
     let key = host_key(&moqui_lib::env::get_prop_or_env("ssh_host_key"))?;
     let root = match moqui_lib::env::get_prop_or_env("ssh_sftp_root").trim() {
@@ -152,8 +174,21 @@ pub fn start(
     let max_sessions = number_property("ssh_max_sessions", DEFAULT_MAX_SESSIONS);
     let max_file = number_property("ssh_sftp_max_file", DEFAULT_MAX_FILE);
     let fingerprint = key.public_key().fingerprint(HashAlg::Sha256).to_string();
+    // "none" is not offered, so a client tries its keys first; keyboard-interactive, which OpenSSH tries next, is the
+    // login dialog, and only with the terminal client.
+    let dialog = cfg!(feature = "tui") && moqui_lib::env::get_prop_or_env("ssh_login_dialog").trim() != "false";
+    let methods: &[MethodKind] = if dialog {
+        &[
+            MethodKind::PublicKey,
+            MethodKind::KeyboardInteractive,
+            MethodKind::Password,
+        ]
+    } else {
+        &[MethodKind::PublicKey, MethodKind::Password]
+    };
     let config = Arc::new(russh::server::Config {
         keys: vec![key],
+        methods: MethodSet::from(methods),
         inactivity_timeout: Some(IDLE),
         auth_rejection_time: Duration::from_millis(500),
         auth_rejection_time_initial: Some(Duration::from_millis(0)),
@@ -173,10 +208,11 @@ pub fn start(
         root,
         max_file,
         #[cfg(feature = "tui")]
-        apps: Arc::new(super::apps::Sessions::from_properties()),
+        apps: crate::term::Sessions::of(factory),
         #[cfg(feature = "tui")]
         agents: Arc::default(),
         cluster_posts,
+        dialog,
     });
     crate::edge::handle().spawn(accept_loop(listener, config, shared, watch, max_sessions));
     *factory
@@ -213,6 +249,10 @@ struct Slot {
     counts: Arc<Counts>,
     preauth: AtomicBool,
     session: AtomicBool,
+    /// Let in with no user: the login dialog must log in within `crate::term::LOGIN_WAIT`.
+    dialog: AtomicBool,
+    /// The dialog logged in, set by the session's login gate.
+    dialog_done: Arc<AtomicBool>,
 }
 
 impl Slot {
@@ -226,6 +266,8 @@ impl Slot {
             counts: Arc::clone(counts),
             preauth: AtomicBool::new(true),
             session: AtomicBool::new(false),
+            dialog: AtomicBool::new(false),
+            dialog_done: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -269,6 +311,21 @@ async fn preauth_expired(slot: &Slot, since: tokio::time::Instant) {
     }
 }
 
+/// Resolves the login wait after `since` when the connection was let in with no user and its dialog has not logged in
+/// by then, so a client that opens no session, or leaves the dialog, does not hold a session slot; never otherwise.
+async fn dialog_expired(slot: &Slot, since: tokio::time::Instant) {
+    #[cfg(feature = "tui")]
+    {
+        tokio::time::sleep_until(since + crate::term::LOGIN_WAIT).await;
+        if slot.dialog.load(Ordering::Acquire) && !slot.dialog_done.load(Ordering::Acquire) {
+            return;
+        }
+    }
+    #[cfg(not(feature = "tui"))]
+    let _ = (slot, since);
+    std::future::pending::<()>().await;
+}
+
 async fn accept_loop(
     listener: TcpListener,
     config: Arc<russh::server::Config>,
@@ -301,11 +358,13 @@ async fn accept_loop(
             slot: Arc::clone(&slot),
             peer,
             username: None,
+            login_name: None,
+            dialog_used: false,
+            by_password: false,
             cluster: false,
             can_sftp: false,
             can_shell: false,
             can_git: false,
-            can_apps: false,
             channels: HashMap::new(),
             ptys: HashMap::new(),
             terminal_env: HashMap::new(),
@@ -326,6 +385,10 @@ async fn accept_loop(
                         }
                         () = preauth_expired(&slot, since) => {
                             tracing::debug!("SSH connection from {peer} did not log in within {PREAUTH_TIMEOUT:?}");
+                            let _ = handle.disconnect(russh::Disconnect::ByApplication, "login timed out".into(), String::new()).await;
+                        }
+                        () = dialog_expired(&slot, since) => {
+                            tracing::info!("SSH connection from {peer} did not log in through the dialog in time");
                             let _ = handle.disconnect(russh::Disconnect::ByApplication, "login timed out".into(), String::new()).await;
                         }
                         result = session => {
@@ -349,7 +412,18 @@ struct Connection {
     /// This connection's place in the pre-auth and session counts.
     slot: Arc<Slot>,
     peer: SocketAddr,
+    /// The user logged in by key or password; `None` before, and for a connection let in for the login dialog.
     username: Option<String>,
+    /// Let in with no user (keyboard-interactive): the name the client gave, which the login dialog starts with. Such
+    /// a connection gets `apps` on a pty and nothing else.
+    login_name: Option<String>,
+    /// The connection let in for the login dialog has started its one `apps`, so its channels cannot each hold a
+    /// session with no user.
+    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
+    dialog_used: bool,
+    /// The user logged in by password, not a key: git is refused unless `ssh_git_password_auth`.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    by_password: bool,
     /// A cluster peer logged in with the cluster key: it may open `cluster <topic>` channels and nothing else.
     cluster: bool,
     can_sftp: bool,
@@ -358,13 +432,10 @@ struct Connection {
     /// feature, where git commands are not served.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     can_git: bool,
-    /// `apps`, the terminal client (`SSH_APPS`); it also needs a pty and the `tui` feature.
-    #[cfg_attr(not(feature = "tui"), allow(dead_code))]
-    can_apps: bool,
     channels: HashMap<ChannelId, Channel<Msg>>,
     /// The channels that asked for a pty, with its terminal and window size.
     ptys: HashMap<ChannelId, Pty>,
-    /// The `env` variables of each channel that say how a terminal draws (`super::apps::is_terminal_variable`).
+    /// The `env` variables of each channel that say how a terminal draws (`crate::term::is_terminal_variable`).
     #[cfg_attr(not(feature = "tui"), allow(dead_code))]
     terminal_env: HashMap<ChannelId, BTreeMap<String, String>>,
     /// `GIT_PROTOCOL` of each channel's `env` request.
@@ -381,7 +452,7 @@ struct Pty {
 
 /// What `apps` gets on a channel: the client, or why not.
 #[cfg(feature = "tui")]
-type AppsAccess = Result<super::apps::Apps, &'static str>;
+type AppsAccess = Result<crate::term::Start, &'static str>;
 #[cfg(not(feature = "tui"))]
 type AppsAccess = Result<(), &'static str>;
 
@@ -391,13 +462,12 @@ type AgentAccess = Result<super::agent::AgentAccess, &'static str>;
 #[cfg(not(feature = "tui"))]
 type AgentAccess = Result<(), &'static str>;
 
-/// The SSH permissions of the user now logged in.
+/// The SSH permissions of the user now logged in. Without any of them the user still gets `apps`.
 #[derive(Clone, Copy, Debug)]
 struct Permissions {
     sftp: bool,
     shell: bool,
     git: bool,
-    apps: bool,
 }
 
 fn ssh_permissions() -> Result<Permissions, CoreError> {
@@ -405,9 +475,11 @@ fn ssh_permissions() -> Result<Permissions, CoreError> {
         sftp: moqui_core::user::has_permission("SSH_SFTP")?,
         shell: moqui_core::user::has_permission("SSH_SHELL")?,
         git: moqui_core::user::has_permission("SSH_GIT")?,
-        apps: moqui_core::user::has_permission("SSH_APPS")?,
     })
 }
+
+/// What a connection let in for the login dialog is told when it asks for anything but `apps` on a pty.
+const DIALOG_ONLY: &str = "log in with a key or a password for commands; ssh -t opens the login screen";
 
 /// A window size from the SSH request's `u32`s; 0 (not given) is 80 by 24.
 fn window(columns: u32, rows: u32) -> (u16, u16) {
@@ -420,29 +492,9 @@ fn window(columns: u32, rows: u32) -> (u16, u16) {
 }
 
 impl Connection {
-    /// Let the user in when a permission allows something. A user who may only use git logs in by key, unless
-    /// `ssh_git_password_auth` is true: git hosting opens the server to every developer, and keys are not guessed.
+    /// Let the user in, with what the permissions allow; every user gets `apps`.
     fn accept(&mut self, username: &str, permissions: Permissions, by_password: bool) -> Auth {
-        let Permissions { sftp, shell, git, apps } = permissions;
-        if !sftp && !shell && !git && !apps {
-            tracing::warn!(
-                "SSH login of {username} from {}: no SSH_SFTP, SSH_SHELL, SSH_GIT or SSH_APPS permission",
-                self.peer
-            );
-            return Auth::reject();
-        }
-        if !sftp
-            && !shell
-            && !apps
-            && by_password
-            && moqui_lib::env::get_prop_or_env("ssh_git_password_auth").trim() != "true"
-        {
-            tracing::warn!(
-                "SSH password login of {username} from {} refused: git over SSH takes a key (ssh_git_password_auth)",
-                self.peer
-            );
-            return Auth::reject();
-        }
+        let Permissions { sftp, shell, git } = permissions;
         if !self.slot.log_in() {
             tracing::warn!(
                 "SSH login of {username} from {} refused: ssh_max_sessions {} are open",
@@ -453,17 +505,23 @@ impl Connection {
         }
         tracing::info!("SSH login of {username} from {}", self.peer);
         self.username = Some(username.to_string());
+        self.by_password = by_password;
         self.can_sftp = sftp;
         self.can_shell = shell;
         self.can_git = git;
-        self.can_apps = apps;
         Auth::Accept
     }
 
-    /// `agent-apps` for this connection: the user's permission and a build with the client. No pty is needed.
+    /// Whether a channel may be opened: a user logged in, or a connection let in for the login dialog.
+    fn let_in(&self) -> bool {
+        self.username.is_some() || self.login_name.is_some()
+    }
+
+    /// `agent-apps` for this connection: a user logged in by key or password, and a build with the client. No pty is
+    /// needed.
     fn agent_access(&self) -> AgentAccess {
-        if !self.can_apps {
-            return Err("agent-apps needs the SSH_APPS permission");
+        if self.username.is_none() {
+            return Err(DIALOG_ONLY);
         }
         #[cfg(feature = "tui")]
         {
@@ -480,25 +538,35 @@ impl Connection {
         }
     }
 
-    /// `apps` on `channel`: the user's permission, a pty, and a build with the client.
-    fn apps_access(&self, channel: ChannelId) -> AppsAccess {
-        if !self.can_apps {
-            return Err("apps needs the SSH_APPS permission");
-        }
+    /// `apps` on `channel`: a pty, and a build with the client. It runs as the user logged in, or with the login
+    /// dialog first, once per connection.
+    fn apps_access(&mut self, channel: ChannelId) -> AppsAccess {
         let Some(pty) = self.ptys.get(&channel) else {
             return Err("apps needs a terminal: connect with ssh -t");
         };
         #[cfg(feature = "tui")]
         {
-            Ok(super::apps::Apps {
+            let who = match (&self.username, &self.login_name) {
+                (Some(username), _) => crate::term::Who::User(username.clone()),
+                (None, Some(_)) if self.dialog_used => return Err("one login screen per connection"),
+                (None, Some(name)) => crate::term::Who::Login {
+                    name: Some(name.clone()).filter(|name| !name.is_empty()),
+                    done: Some(Arc::clone(&self.slot.dialog_done)),
+                },
+                (None, None) => return Err(DIALOG_ONLY),
+            };
+            self.dialog_used |= self.username.is_none();
+            Ok(crate::term::Start {
                 factory: std::sync::Weak::clone(&self.shared.factory),
                 sessions: Arc::clone(&self.shared.apps),
-                username: self.username.clone().unwrap_or_default(),
-                terminal: super::apps::Terminal {
+                who,
+                terminal: crate::term::Terminal {
                     term: pty.term.clone(),
                     env: self.terminal_env.get(&channel).cloned().unwrap_or_default(),
                 },
                 size: pty.size.subscribe(),
+                label: format!("SSH apps from {}", self.peer),
+                client_ip: self.peer.ip().to_string(),
             })
         }
         #[cfg(not(feature = "tui"))]
@@ -537,6 +605,29 @@ async fn run_agent<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     }
 }
 
+/// Accept `channel` only to write `reason` on it and end it with exit status 1.
+fn refuse_channel(
+    open: Option<Channel<Msg>>,
+    channel: ChannelId,
+    session: &mut Session,
+    reason: &'static str,
+) -> Result<(), russh::Error> {
+    let Some(open) = open else {
+        return session.channel_failure(channel);
+    };
+    session.channel_success(channel)?;
+    let handle = session.handle();
+    tokio::spawn(async move {
+        let mut stream = open.into_stream();
+        let _ = stream.write_all(format!("{reason}\n").as_bytes()).await;
+        let _ = stream.flush().await;
+        let _ = handle.exit_status_request(channel, 1).await;
+        let _ = handle.eof(channel).await;
+        let _ = handle.close(channel).await;
+    });
+    Ok(())
+}
+
 /// Run `apps` on the stream, or write why it cannot run. Returns the exit status.
 async fn run_apps<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     stream: &mut S,
@@ -545,7 +636,13 @@ async fn run_apps<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
 ) -> u32 {
     match access {
         #[cfg(feature = "tui")]
-        Ok(mut apps) => super::apps::serve(stream, &mut apps, newline).await,
+        Ok(mut start) => {
+            let ended = crate::term::serve(stream, &mut start).await;
+            if let Some(note) = ended.note {
+                let _ = stream.write_all(format!("apps: {note}{newline}").as_bytes()).await;
+            }
+            ended.status
+        }
         #[cfg(not(feature = "tui"))]
         Ok(()) => 1,
         Err(reason) => {
@@ -560,8 +657,9 @@ impl russh::server::Handler for Connection {
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         let (username, secret) = (user.to_string(), password.to_string());
+        let client_ip = self.peer.ip().to_string();
         let checked = on_pool(&self.shared.factory, move |_| {
-            moqui_core::user::login_user(&username, &secret)?;
+            moqui_core::user::with_client_ip(&client_ip, || moqui_core::user::login_user(&username, &secret))?;
             if moqui_core::user::current_user_id()?.is_none_or(|id| id.is_empty()) {
                 return Err(CoreError::new("a second factor is required, which SSH does not take"));
             }
@@ -624,13 +722,41 @@ impl russh::server::Handler for Connection {
         }
     }
 
+    /// No questions: the client is let in with no user, and its `apps` session shows the login dialog. A client with a
+    /// key has tried it by now, since "none" is not offered and OpenSSH tries keys before keyboard-interactive.
+    async fn auth_keyboard_interactive<'a>(
+        &'a mut self,
+        user: &str,
+        _submethods: &str,
+        _response: Option<russh::server::Response<'a>>,
+    ) -> Result<Auth, Self::Error> {
+        if !self.shared.dialog || user == super::cluster::CLUSTER_USER {
+            return Ok(Auth::reject());
+        }
+        if !self.slot.log_in() {
+            tracing::warn!(
+                "SSH login dialog for {user} from {} refused: ssh_max_sessions {} are open",
+                self.peer,
+                self.slot.counts.max_sessions
+            );
+            return Ok(Auth::reject());
+        }
+        self.slot.dialog.store(true, Ordering::Release);
+        tracing::info!(
+            "SSH connection from {} let in for the login dialog as {user:?}",
+            self.peer
+        );
+        self.login_name = Some(user.to_string());
+        Ok(Auth::Accept)
+    }
+
     async fn channel_open_session(
         &mut self,
         channel: Channel<Msg>,
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if self.username.is_none() {
+        if !self.let_in() {
             reply.reject(ChannelOpenFailure::AdministrativelyProhibited).await;
             return Ok(());
         }
@@ -684,7 +810,7 @@ impl russh::server::Handler for Connection {
         name: &str,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        if name != "sftp" || !self.can_sftp {
+        if name != "sftp" || !self.can_sftp || self.username.is_none() {
             return session.channel_failure(channel);
         }
         let Some(open) = self.channels.remove(&channel) else {
@@ -730,6 +856,14 @@ impl russh::server::Handler for Connection {
             let (Some(username), true) = (self.username.clone(), self.can_git) else {
                 return session.channel_failure(channel);
             };
+            // Git hosting opens the server to every developer, and keys are not guessed.
+            if self.by_password && moqui_lib::env::get_prop_or_env("ssh_git_password_auth").trim() != "true" {
+                tracing::warn!(
+                    "SSH git of {username} from {} refused: git over SSH takes a key (ssh_git_password_auth)",
+                    self.peer
+                );
+                return session.channel_failure(channel);
+            }
             let Some(open) = self.channels.remove(&channel) else {
                 return session.channel_failure(channel);
             };
@@ -768,7 +902,7 @@ impl russh::server::Handler for Connection {
             });
             return Ok(());
         }
-        if trimmed == "apps" && self.username.is_some() {
+        if trimmed == "apps" && self.let_in() {
             let Some(open) = self.channels.remove(&channel) else {
                 return session.channel_failure(channel);
             };
@@ -785,6 +919,9 @@ impl russh::server::Handler for Connection {
                 let _ = handle.close(channel).await;
             });
             return Ok(());
+        }
+        if self.username.is_none() && self.login_name.is_some() {
+            return refuse_channel(self.channels.remove(&channel), channel, session, DIALOG_ONLY);
         }
         let (Some(username), true) = (self.username.clone(), self.can_shell) else {
             return session.channel_failure(channel);
@@ -827,7 +964,7 @@ impl russh::server::Handler for Connection {
             return session.channel_success(channel);
         }
         #[cfg(feature = "tui")]
-        if super::apps::is_terminal_variable(variable_name) && self.username.is_some() && variable_value.len() < 256 {
+        if crate::term::is_terminal_variable(variable_name) && self.let_in() && variable_value.len() < 256 {
             self.terminal_env
                 .entry(channel)
                 .or_default()
@@ -837,11 +974,13 @@ impl russh::server::Handler for Connection {
         session.channel_failure(channel)
     }
 
-    /// The admin shell with `SSH_SHELL`; with only `SSH_APPS`, `apps` is the whole session.
+    /// The admin shell for a user with `SSH_SHELL` who logged in by key or password; for everyone else, `apps` is the
+    /// whole session.
     async fn shell_request(&mut self, channel: ChannelId, session: &mut Session) -> Result<(), Self::Error> {
-        let Some(username) = self.username.clone().filter(|_| self.can_shell || self.can_apps) else {
+        if !self.let_in() {
             return session.channel_failure(channel);
-        };
+        }
+        let username = self.username.clone().unwrap_or_default();
         let Some(open) = self.channels.remove(&channel) else {
             return session.channel_failure(channel);
         };
@@ -850,7 +989,7 @@ impl russh::server::Handler for Connection {
         let handle = session.handle();
         let pty = self.ptys.contains_key(&channel);
         let access = self.apps_access(channel);
-        if !self.can_shell {
+        if !self.can_shell || self.username.is_none() {
             let newline = if pty { "\r\n" } else { "\n" };
             tokio::spawn(async move {
                 let mut stream = open.into_stream();
@@ -1047,13 +1186,7 @@ async fn interactive<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                 // `apps` takes the stream until it ends; a second `apps` gets a fresh window watch.
                 #[cfg(feature = "tui")]
                 let access = match &apps {
-                    Ok(apps) => Ok(super::apps::Apps {
-                        factory: std::sync::Weak::clone(&apps.factory),
-                        sessions: Arc::clone(&apps.sessions),
-                        username: apps.username.clone(),
-                        terminal: apps.terminal.clone(),
-                        size: apps.size.clone(),
-                    }),
+                    Ok(start) => Ok(start.again()),
                     Err(reason) => Err(*reason),
                 };
                 #[cfg(not(feature = "tui"))]

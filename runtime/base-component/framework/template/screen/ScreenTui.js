@@ -27,7 +27,10 @@
     const prelude = `
 let $comma = false;
 const $stack = [];
-const $sep = () => { if ($comma) sri.write(","); $comma = true; };
+// While $captured runs, the writes go to its array rather than the output: a node a list cell holds as a value.
+let $sink = null;
+const $w = (text) => { if ($sink) $sink.push(text); else sri.write(text); };
+const $sep = () => { if ($comma) $w(","); $comma = true; };
 const $clean = (value) => {
     const text = String(value == null ? "" : value);
     let out = "";
@@ -54,19 +57,45 @@ const $scrub = (value) => {
     }
     return JSON.stringify($clean(String(value)));
 };
-const $emit = (value) => { $sep(); sri.write($scrub(value)); };
-const $openRender = (fields) => { $sep(); sri.write($scrub(fields).slice(0, -1) + ',"c":'); };
-const $closeRender = () => { sri.write("}"); };
+const $emit = (value) => { $sep(); $w($scrub(value)); };
+const $openRender = (fields) => {
+    // A nested render writes to the output itself, so it cannot be captured.
+    if ($sink) throw new Error("a section, include or subscreen in a list cell's dialog is not supported");
+    $sep();
+    $w($scrub(fields).slice(0, -1) + ',"c":');
+};
+const $closeRender = () => { $w("}"); };
 const $openChildren = (fields) => {
     $sep();
-    sri.write($scrub(fields).slice(0, -1) + ',"c":[');
+    $w($scrub(fields).slice(0, -1) + ',"c":[');
     $stack.push($comma);
     $comma = false;
 };
 const $closeChildren = () => {
-    sri.write("]");
+    $w("]");
     $comma = $stack.pop();
-    sri.write("}");
+    $w("}");
+};
+// The nodes the statements of body write, as values: a container-dialog of a list row. A failure is an error node in
+// their place, and the document stays whole.
+const $captured = (body) => {
+    const $was = {sink: $sink, comma: $comma, depth: $stack.length};
+    $sink = [];
+    $comma = false;
+    let $nodes;
+    try {
+        $w("[");
+        body();
+        $w("]");
+        $nodes = JSON.parse($sink.join(""));
+    } catch ($err) {
+        $nodes = [{t: "error", text: "A dialog of a list row did not render: " + String($err && $err.message || $err)}];
+    } finally {
+        $sink = $was.sink;
+        $comma = $was.comma;
+        $stack.length = $was.depth;
+    }
+    return $nodes;
 };
 const $whole = (value) => {
     const n = Number(value);
@@ -133,10 +162,10 @@ const $screenUrlWith = ($pairs, $remove) => {
     for (const $pair of $pairs) $url.addParameter($pair[0], $pair[1]);
     return $url.getUrlWithParams();
 };
-sri.write("[");
+$w("[");
 `;
     const epilogue = `
-sri.write("]");
+$w("]");
 `;
 
     const typeNames = (type) => (type || "").split(",").map((name) => name.trim()).filter((name) => name);
@@ -583,6 +612,17 @@ sri.write("]");
     // One widget of a list cell: a text, a link, or a field node (an editable; an input or a button of a row form).
     const cellPiece = (field, sub, widget, list) => {
         if (widget.name === "editable") return fieldObject(field, sub, widget, rowFieldOpts(field, false)) || '""';
+        // A container-dialog of a row (an Edit per row): the dialog node its statements write, with the row's values,
+        // its id made the row's; the client offers it on F10 and Enter.
+        if (widget.name === "container-dialog") {
+            if (!widget.source) return '""';
+            return `(() => {
+                const $dialog = $captured(() => {\n${widget.source}})[0];
+                if (!$dialog) return "";
+                if ($dialog.t === "dialog") $dialog.id = $uid(${jsString(idOf(widget) + ".")} + $rowKey);
+                return $dialog;
+            })()`;
+        }
         // A dynamic-dialog of a row (a View per row): its url with the row's parameters; the client offers it on F10.
         if (widget.name === "dynamic-dialog") {
             const condition = attr(widget, "condition");
@@ -1202,10 +1242,10 @@ ${actionDialogs ? "        " + actionDialogs : ""}    } finally {
         "form-list-user-columns": stmt((node, children) =>
             `$openRender({t:"fragment",id:$uid(${jsString((attr(node, "name") || "list") + ".columns")})});
 if (!sri.renderUserColumnsForm(${jsString(attr(node, "name") || "list")})) {
-    sri.write("[");
+    $w("[");
     $stack.push($comma);
     $comma = false;
-    ${children}sri.write("]");
+    ${children}$w("]");
     $comma = $stack.pop();
 }
 $closeRender();

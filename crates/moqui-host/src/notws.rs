@@ -83,10 +83,7 @@ pub(crate) fn install_push() -> Result<(), CoreError> {
 }
 
 pub(crate) async fn upgrade(ws: WebSocketUpgrade, headers: HeaderMap, State(state): State<Arc<HttpState>>) -> Response {
-    // A page of another site cannot open a socket that carries this site's cookie, as Java's modifyHandshake.
-    let header = |name: axum::http::header::HeaderName| headers.get(name).and_then(|value| value.to_str().ok());
-    if !moqui_core::web::origin_allowed_for(header(axum::http::header::ORIGIN), header(axum::http::header::HOST)) {
-        tracing::warn!(origin = ?header(axum::http::header::ORIGIN), "notification socket refused for its origin");
+    if !origin_allowed(&headers, "notification") {
         return plain(403, "origin not allowed");
     }
     // A browser has its session cookie; the terminal client (`moqui tui --server`) has its login key, and no session.
@@ -130,7 +127,19 @@ pub(crate) async fn upgrade(ws: WebSocketUpgrade, headers: HeaderMap, State(stat
     ws.on_upgrade(move |socket| run_socket(socket, factory, session_id, user_id, shutdown))
 }
 
-fn session_cookie(headers: &HeaderMap) -> Option<String> {
+/// A page of another site cannot open a socket that carries this site's cookie, as Java's modifyHandshake. `what` names
+/// the socket in the warning.
+pub(crate) fn origin_allowed(headers: &HeaderMap, what: &str) -> bool {
+    let header = |name: axum::http::header::HeaderName| headers.get(name).and_then(|value| value.to_str().ok());
+    let allowed =
+        moqui_core::web::origin_allowed_for(header(axum::http::header::ORIGIN), header(axum::http::header::HOST));
+    if !allowed {
+        tracing::warn!(origin = ?header(axum::http::header::ORIGIN), "{what} socket refused for its origin");
+    }
+    allowed
+}
+
+pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<String> {
     headers
         .get(axum::http::header::COOKIE)
         .and_then(|value| value.to_str().ok())
@@ -138,7 +147,11 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn session_user(factory: Arc<ExecutionContextFactory>, session_id: String) -> Result<Option<String>, CoreError> {
+/// The userId of an HTTP session, or none when no one is logged in to it. Blocks on the request pool.
+pub(crate) fn session_user(
+    factory: Arc<ExecutionContextFactory>,
+    session_id: String,
+) -> Result<Option<String>, CoreError> {
     let owner = Arc::clone(&factory);
     let looked = Arc::clone(&factory);
     let rx = factory

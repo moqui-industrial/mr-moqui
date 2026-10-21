@@ -15,7 +15,8 @@
 //! SSH and SFTP on the seeded embedded Postgres, with the server as its own SFTP peer: the built-in sshd serves a
 //! `dbresource://` root, the SFTP client logs in with a password and with a `UserSshKey`, the `moqui-sftp` services send
 //! a SystemMessage and poll it back, the host key is trusted on first use and a changed key is refused, and the admin
-//! shell runs for a user with `SSH_SHELL`, refuses one without, and checks artifact authorization for the user.
+//! shell runs for a user with `SSH_SHELL`, refuses one without, and checks artifact authorization for the user. Every
+//! user gets the terminal client (`apps`), and a client with no key gets its login dialog.
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "ssh"))]
 
@@ -210,7 +211,7 @@ fn sftp_and_the_admin_shell_run_on_the_built_in_server() {
     let stranger = key(OTHER_SEED).to_openssh(LineEnding::LF).unwrap().to_string();
     let mut refused = SftpClient::new(&host, "john.doe", None).unwrap();
     assert!(refused.public_key_pkcs8(&stranger, None).connect().is_err());
-    // A wrong password and a user without an SSH permission are refused.
+    // A wrong password is refused, and a user without SSH_SFTP logs in (to the apps) but gets no SFTP.
     assert!(SftpClient::new(&host, "john.doe", None)
         .unwrap()
         .password("wrong")
@@ -479,15 +480,13 @@ fn sftp_and_the_admin_shell_run_on_the_built_in_server() {
     drop(context);
 }
 
-/// Users of the `apps` test: one with `SSH_APPS` alone, and one with `SSH_SHELL` alone. john.doe (ADMIN) has both.
+/// Users of the `apps` tests: one with no SSH permission, and one with `SSH_SHELL` alone. john.doe (ADMIN) has the
+/// shell too.
 #[cfg(feature = "tui")]
 const APPS_DATA: &str = r#"<entity-facade-xml type="seed">
     <!-- password=moqui, as john.doe -->
     <moqui.security.UserAccount userId="APPS_ONLY" username="apps.only" userFullName="Apps Only"
         currentPassword="16ac58bbfa332c1c55bd98b53e60720bfa90d394" passwordHashType="SHA"/>
-    <moqui.security.UserGroup userGroupId="APPS_ONLY" description="SSH apps only"/>
-    <moqui.security.UserGroupMember userGroupId="APPS_ONLY" userId="APPS_ONLY" fromDate="1265184000000"/>
-    <moqui.security.UserGroupPermission userGroupId="APPS_ONLY" userPermissionId="SSH_APPS" fromDate="1265184000000"/>
     <moqui.security.UserAccount userId="SHELL_ONLY" username="shell.only" userFullName="Shell Only"
         currentPassword="16ac58bbfa332c1c55bd98b53e60720bfa90d394" passwordHashType="SHA"/>
     <moqui.security.UserGroup userGroupId="SHELL_ONLY" description="SSH shell only"/>
@@ -517,6 +516,17 @@ mod apps {
         let mut handle = russh::client::connect(config, address, Accept).await.ok()?;
         let auth = handle.authenticate_password(username, password).await.ok()?;
         auth.success().then_some(handle)
+    }
+
+    /// A connection with no key and no password: keyboard-interactive, which the server takes with no questions.
+    pub async fn connect_for_dialog(address: std::net::SocketAddr, username: &str) -> Option<Handle<Accept>> {
+        let config = Arc::new(russh::client::Config::default());
+        let mut handle = russh::client::connect(config, address, Accept).await.ok()?;
+        let auth = handle
+            .authenticate_keyboard_interactive_start(username, None)
+            .await
+            .ok()?;
+        matches!(auth, russh::client::KeyboardInteractiveAuthResponse::Success).then_some(handle)
     }
 
     /// A session channel with a pty of `columns` by `rows`.
@@ -618,9 +628,9 @@ mod apps {
     }
 }
 
-/// `apps` over SSH: a user with only `SSH_APPS` lands in it from `ssh user@host`; `ssh -t host apps` runs it; a window
-/// change redraws at the new size; `apps` at the shell prompt comes back to the prompt; a user without `SSH_APPS` and
-/// a channel without a pty are told why not; and `tui_max_sessions_per_user` holds.
+/// `apps` over SSH: a user with no SSH permission lands in it from `ssh user@host`; `ssh -t host apps` runs it; a window
+/// change redraws at the new size; `apps` at the shell prompt comes back to the prompt; a channel without a pty is told
+/// why not; and `tui_max_sessions_per_user` holds.
 #[cfg(feature = "tui")]
 #[test]
 fn apps_runs_the_terminal_client_over_ssh() {
@@ -638,7 +648,7 @@ fn apps_runs_the_terminal_client_over_ssh() {
     );
     let address = gate.server.ssh_address().expect("the SSH server listens");
     moqui_host::edge::block_on(async move {
-        // SSH_APPS and no SSH_SHELL: the shell request is the client, at the pty's size; Ctrl+Q ends the session.
+        // No SSH permission: the shell request is the client, at the pty's size; Ctrl+Q ends the session.
         let handle = connect(address, "apps.only", "moqui").await.expect("apps.only logs in");
         let mut channel = pty(&handle, 100, 40).await;
         channel.request_shell(true).await.unwrap();
@@ -672,7 +682,7 @@ fn apps_runs_the_terminal_client_over_ssh() {
         assert_eq!(exit_status(&mut channel, &mut seen).await, Some(0));
         assert!(seen.ends_with(b"\x1b[?1049l"), "the terminal is put back");
 
-        // A user with SSH_SHELL and no SSH_APPS: apps at the prompt says why not, and the prompt stays.
+        // A user with SSH_SHELL alone: apps at the prompt needs no other permission, and quitting it is the prompt again.
         let handle = connect(address, "shell.only", "moqui")
             .await
             .expect("shell.only logs in");
@@ -681,13 +691,17 @@ fn apps_runs_the_terminal_client_over_ssh() {
         let mut seen = Vec::new();
         read_until(&mut channel, &mut seen, "moqui> ", true).await.unwrap();
         send(&channel, b"apps\r").await;
-        read_until(&mut channel, &mut seen, "apps needs the SSH_APPS permission", true)
-            .await
-            .unwrap();
+        read_until(&mut channel, &mut seen, "\x1b[?1049h", true).await.unwrap();
+        read_until(&mut channel, &mut seen, "shell.only", false).await.unwrap();
+        send(&channel, b"\x11").await;
+        read_until(&mut channel, &mut seen, "\x1b[?1049l", true).await.unwrap();
+        let mark = seen.len();
+        let mut prompt = seen.split_off(mark);
+        read_until(&mut channel, &mut prompt, "moqui> ", true).await.unwrap();
         send(&channel, b"exit\r").await;
         assert_eq!(exit_status(&mut channel, &mut seen).await, Some(0));
 
-        // john.doe has both: apps at the prompt, to the Tools user list by go to, and back to the prompt on quit.
+        // john.doe has the shell too: apps at the prompt, to the Tools user list by go to, and back to the prompt on quit.
         let handle = connect(address, "john.doe", "moqui").await.expect("john.doe logs in");
         let mut channel = pty(&handle, 160, 45).await;
         channel.request_shell(true).await.unwrap();
@@ -807,10 +821,17 @@ fn agent_apps_answers_one_command_per_exec() {
     let (out, status) = run("john.doe", "agent-apps open");
     assert_eq!(status, 2, "{out}");
     assert!(out.contains("tui_max_sessions_per_user"), "{out}");
-    // A user without SSH_APPS is told why.
+    // Any user who logged in by password may open one; shell.only has no SSH permission but the shell.
     let (out, status) = run("shell.only", "agent-apps open");
-    assert_eq!(status, 2, "{out}");
-    assert!(out.contains("SSH_APPS"), "{out}");
+    assert_eq!(status, 0, "{out}");
+    let other = out
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("session "))
+        .unwrap_or_else(|| panic!("{out}"))
+        .to_string();
+    let (out, status) = run("shell.only", &format!("agent-apps {other} close"));
+    assert_eq!(status, 0, "{out}");
 
     // close frees the slot.
     let (out, status) = run("john.doe", &format!("agent-apps {id} close"));
@@ -829,4 +850,105 @@ fn agent_apps_answers_one_command_per_exec() {
     assert_eq!(out.matches("--- ok").count(), 4, "{out}");
     assert!(out.contains("focus dialog"), "{out}");
     assert!(out.trim_end().ends_with("closed\n--- ok"), "{out}");
+}
+
+/// The login dialog over SSH: a client with no key is let in with no user (keyboard-interactive, no questions), gets
+/// the apps' login dialog with its SSH name filled in, and once logged in the apps as that user, with no shell prompt
+/// even for a user with `SSH_SHELL`. Such a connection gets nothing but `apps` on a pty, and a session closes after
+/// five refused logins.
+#[cfg(feature = "tui")]
+#[test]
+fn the_login_dialog_lets_in_a_client_with_no_key() {
+    use apps::{connect_for_dialog, exit_status, pty, read_until, send, text};
+
+    let seed = base64::engine::general_purpose::STANDARD.encode(HOST_SEED);
+    let gate = crate::common::start_with_properties(
+        "ssh_dialog",
+        Some(APPS_DATA),
+        &[("ssh_port", "0"), ("ssh_host_key", &seed)],
+    );
+    let address = gate.server.ssh_address().expect("the SSH server listens");
+    moqui_host::edge::block_on(async move {
+        let handle = connect_for_dialog(address, "john.doe")
+            .await
+            .expect("keyboard-interactive lets the client in");
+
+        // Commands, agent-apps and SFTP are refused on such a connection.
+        let mut channel = handle.channel_open_session().await.unwrap();
+        channel.exec(true, "status").await.unwrap();
+        let mut seen = Vec::new();
+        assert_eq!(exit_status(&mut channel, &mut seen).await, Some(1));
+        assert!(
+            text(&seen).contains("log in with a key or a password"),
+            "{}",
+            text(&seen)
+        );
+        let mut channel = handle.channel_open_session().await.unwrap();
+        channel.exec(true, "agent-apps open").await.unwrap();
+        let mut seen = Vec::new();
+        assert_eq!(exit_status(&mut channel, &mut seen).await, Some(1));
+        assert!(
+            text(&seen).contains("log in with a key or a password"),
+            "{}",
+            text(&seen)
+        );
+        let mut channel = handle.channel_open_session().await.unwrap();
+        channel.request_subsystem(true, "sftp").await.unwrap();
+        let mut seen = Vec::new();
+        assert!(read_until(&mut channel, &mut seen, "never", true)
+            .await
+            .unwrap_err()
+            .contains("channel request refused"));
+
+        // The shell request is the apps with the login dialog, the name filled in and the password next.
+        let mut channel = pty(&handle, 120, 40).await;
+        channel.request_shell(true).await.unwrap();
+        let mut seen = Vec::new();
+        read_until(&mut channel, &mut seen, "\x1b[?1049h", true).await.unwrap();
+        read_until(&mut channel, &mut seen, "Log in", false).await.unwrap();
+        read_until(&mut channel, &mut seen, "john.doe", false).await.unwrap();
+        send(&channel, b"wrong\r").await;
+        read_until(&mut channel, &mut seen, "not valid", false).await.unwrap();
+        send(&channel, b"moqui\r").await;
+        // Logged in: go to the user list as john.doe.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let mark = seen.len();
+        send(&channel, b"g").await;
+        send(&channel, b"/apps/system/Security/UserAccount/UserAccountList").await;
+        send(&channel, b"\r").await;
+        let mut list = seen.split_off(mark);
+        read_until(&mut channel, &mut list, "EX_JOHN_DOE", false).await.unwrap();
+        seen.extend(list);
+        // A second login screen on the same connection is refused, so its channels cannot fill the sessions.
+        let mut second = pty(&handle, 120, 40).await;
+        second.exec(true, "apps").await.unwrap();
+        let mut refused = Vec::new();
+        assert_eq!(exit_status(&mut second, &mut refused).await, Some(1));
+        assert!(
+            text(&refused).contains("one login screen per connection"),
+            "{}",
+            text(&refused)
+        );
+        // Quitting ends the channel: no prompt, though john.doe has SSH_SHELL.
+        send(&channel, b"\x11").await;
+        assert_eq!(exit_status(&mut channel, &mut seen).await, Some(0));
+        assert!(!text(&seen).contains("moqui> "), "{}", text(&seen));
+
+        // Five refused logins close the session.
+        let handle = connect_for_dialog(address, "nobody.here")
+            .await
+            .expect("keyboard-interactive lets the client in");
+        let mut channel = pty(&handle, 120, 40).await;
+        channel.request_shell(true).await.unwrap();
+        let mut seen = Vec::new();
+        read_until(&mut channel, &mut seen, "Log in", false).await.unwrap();
+        for _ in 0..5 {
+            send(&channel, b"x\r").await;
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        }
+        let status = exit_status(&mut channel, &mut seen).await;
+        assert_eq!(status, Some(0), "{}", text(&seen));
+        assert!(text(&seen).contains("5 refused logins"), "{}", text(&seen));
+    })
+    .unwrap();
 }

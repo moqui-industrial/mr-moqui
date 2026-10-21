@@ -3,7 +3,7 @@
 `moqui tui` shows the apps in a terminal. It draws the same XML Screens the browser does, through the `tui` render mode:
 the server writes each screen as a JSON document of nodes, and the client in `crates/moqui-tui` draws it with
 [Revue](https://github.com/hawk90/revue). There are no TUI-only screens. The design is in
-[plans/Screen-TUI-Impl.md](../plans/Screen-TUI-Impl.md).
+[plans/archive/Screen-TUI-Impl.md](../plans/archive/Screen-TUI-Impl.md).
 
 It is in every package, Default (`lite`) included (the `tui` feature, [Packaging](Packaging.md)). `apps` over SSH also
 needs the `ssh` feature, which Default leaves out.
@@ -26,6 +26,11 @@ tui` says so and stops: stop the server first, or reach it with `moqui tui --ser
 Each screen is rendered as the logged-in user with artifact authorization on, as the browser's requests are. The client
 holds no permission logic: what the user may not do is not in the document.
 
+**The login dialog** asks for the username and password, and the code of an account with a second factor (an
+authenticator app, a single-use code, or one sent by email or SMS). A right password moves the dialog to Code, says
+which factors the account has, and keeps the password for the next try only; Alt+S sends a code to the first factor
+that takes one, when there is one. Esc closes the dialog and forgets what was typed.
+
 ## A running server (`--server`)
 
 `moqui tui --server <url>` is the same client for a server that is already running, here or elsewhere. It boots no
@@ -36,8 +41,8 @@ carries a login key. `--agent`, `--snapshot`, `--ascii` and `--no-color` work wi
   `createLoginKey=true`. The server answers with a login key (`login_key_expire_hours`), which the client keeps in
   `~/.config/moqui/tui/<host>_<port>.toml` (or under `XDG_CONFIG_HOME`), readable by the user only. The password is not
   kept. The next run uses the key; when the server stops taking it (it expired, or its `UserLoginKey` row was removed)
-  the login dialog comes back. `moqui tui --server <url> --forget` removes the key. An account with a second factor is
-  told to use the browser.
+  the login dialog comes back. `moqui tui --server <url> --forget` removes the key. An account with a second factor
+  gets its code asked for in the dialog ("The login dialog", above).
 - **https.** Plain `http://` is refused except to this machine (`localhost`, `127.0.0.1`, `::1`), since the login
   would cross the network in the clear.
 - **Files.** Exports are saved to `XDG_DOWNLOAD_DIR` (else `~/Downloads`) on the user's machine, as in local mode.
@@ -49,22 +54,32 @@ carries a login key. `--agent`, `--snapshot`, `--ascii` and `--no-color` work wi
 ## Over SSH
 
 When the built-in SSH server runs (`ssh_port`, see `crates/moqui-host/src/ssh/server.rs`), the same client runs on an
-SSH channel, in the server's process:
+SSH channel, in the server's process, for any user, as the browser is for any user:
 
 ```
-ssh -p <ssh_port> <user>@<host>             with SSH_APPS and no SSH_SHELL, the apps are the whole session
-ssh -t -p <ssh_port> <user>@<host> apps     the apps from any account with SSH_APPS
+ssh -p <ssh_port> <user>@<host>             the apps; with SSH_SHELL and a key or password login, the admin shell first
+ssh -t -p <ssh_port> <user>@<host> apps     the apps, for any account
 moqui> apps                                 from the admin shell; quitting the apps (Ctrl+Q) comes back to the prompt
 ```
 
-- **Permission.** `SSH_APPS`, granted to `ADMIN` in the seed data. It opens the client and nothing more: every screen is
-  still rendered as the user with artifact authorization on, as in the browser.
+- **Login.** A key (an active `UserSshKey`) logs in at the SSH level and goes straight in. With no key, the client is
+  let in with no user (keyboard-interactive, with no questions, which OpenSSH tries after its keys) and the apps open
+  with the same login dialog `moqui tui` shows, the SSH name filled in. Such a session closes after 2 minutes without a
+  login, or after 5 refused ones, and gets only the apps: no commands, `agent-apps`, SFTP or git. To log in by password
+  at the SSH level instead (for the admin shell without a key), use `ssh -o PreferredAuthentications=password`.
+  `ssh_login_dialog=false` turns the dialog off. An account with a second factor logs in through the dialog ("The login dialog");
+  at the SSH level a password alone does not let it in. A dialog login is checked against the account's and its
+  groups' `ipAllowed` with the SSH client's address, as an SSH password login is.
+- **Permission.** None is needed for the apps: every screen is still rendered as the user with artifact authorization
+  on, as in the browser. `SSH_SHELL` adds the admin shell's `moqui>` prompt, only for a key or password login; a
+  dialog login is the apps alone, and quitting them ends the connection.
 - **Terminal.** It needs a pty (`ssh -t`, which plain `ssh user@host` asks for). The client takes the pty's `TERM` and
   window size, and follows window changes. Colors follow `TERM` (`*-256color` is 256 colors). Send
   `COLORTERM=truecolor` for true color, or `NO_COLOR=1` for none, with `SendEnv COLORTERM NO_COLOR LANG` in
   `~/.ssh/config`. A locale that is set and is not UTF-8 draws in ASCII.
-- **Limits.** At most `tui_max_sessions` (16) apps sessions run at once, and `tui_max_sessions_per_user` (4) of them for
-  one user; `ssh_max_sessions` counts connections, not these. A session ends after 10 minutes without input.
+- **Limits.** At most `tui_max_sessions` (16) terminal sessions run at once, over SSH and in the browser together, and
+  `tui_max_sessions_per_user` (4) of them for one user; a session in its login dialog counts toward the first only.
+  `ssh_max_sessions` counts connections, one let in for the dialog too. A session ends after 10 minutes without input.
 - **Files.** Exports are not downloaded, because the client runs on the server; the text export still shows in a
   dialog. Uploads are off.
 - **Log.** Alt+L opens the log pane, with the WARN and ERROR lines from the session's start, for a user who may view
@@ -72,11 +87,22 @@ moqui> apps                                 from the admin shell; quitting the a
 - **Background.** The client asks the terminal for its background color (OSC 11) and takes the dark or light colors
   to match; a terminal that does not answer keeps what `COLORFGBG` says, else dark.
 
+## In the browser
+
+The account menu (the user's name in the header) has **Terminal UI**, for every signed in user: `/qapps/Terminal`, the
+same client in xterm.js, on the `/termws` WebSocket (`crates/moqui-host/src/termws.rs`). It runs as the browser's user
+with no login of its own, and the apps alone, as a dialog login over SSH does. The socket is checked by origin and
+session cookie as `/notws` is; a logout closes it within a minute. The limits, the idle close, the files and the log are
+as over SSH. When the socket closes, its reason shows with Reconnect. `webapp_terminal=false` turns the socket and the
+menu item off. While the terminal has focus it takes the keys, except those a browser keeps (Ctrl+W, Ctrl+T, Ctrl+N,
+and in some browsers Ctrl+Q); leaving the page ends the session as Ctrl+Q does. A link the client writes (`o`) opens
+in a new tab.
+
 ## For agents
 
 `agent-apps` is the same client for a program, an AI agent above all: commands in, the screen as text out. Each
 command answers once the screen has settled (its requests done, a search's wait for typing fired at once), so there is
-no timing to guess and no escape sequence to read. It needs `SSH_APPS` and no pty.
+no timing to guess and no escape sequence to read. It needs a key or password login and no pty.
 
 ```
 ssh -p 2222 john.doe@localhost agent-apps open [path] [--size 120x40] [--json]     a session; answers its id
@@ -141,6 +167,11 @@ agent-apps hFY74uac do Yes                           message Done
 agent-apps hFY74uac close
 ```
 
+With the login dialog open (`moqui tui --agent --server`, or a session that lost its login), its fields are the
+elements: `set Username john.doe`, `set Password ...`, `set Code 123456`, then `do Log in`. The password is never in an
+answer, as text or JSON. An answer of `--- error Enter the authentication code ...` means the password was right and
+the account wants its code.
+
 **Logging in.** Each step is its own `ssh`, so let it not ask for a password every time:
 
 - Give the agent a key: a `UserSshKey` row with the key's fingerprint, for the agent's user.
@@ -197,6 +228,7 @@ tmux, screen, job control and ssh escapes are left alone. F1 lists the keys in u
 | Alt+L | The log pane (in local mode; over SSH for a user who may view the System app) |
 | Alt+M | The last 25 messages |
 | Alt+T | The tray: Today, Chat and Notifications; Left and Right change the tab |
+| Alt+P | The mouse off (the terminal's own selection and menu back) or on again, kept for the user (`TUI_MOUSE`) |
 | Ctrl+L | Redraw |
 | Ctrl+Q | Quit, after asking if a form changed |
 
@@ -224,12 +256,38 @@ is the agenda of the rows' dates. `v` goes to the next view.
 An `editor-type="md"` text area shows its Markdown source styled as it is typed: headings and links in the primary
 color, bold and italic, code in the info color, and the markers (`#`, `**`, backticks, a link's brackets and url, list
 bullets) muted. The source is the value, so nothing is converted and nothing is lost. F4 shows the preview and the
-source again. Rich-text fields (`html`, `rich`) stay read-only, with "open in browser".
+source again. Rich-text fields (`html`, `rich`) stay read-only, with "open in browser". A text area longer than its
+rows scrolls with its cursor, and PgUp, PgDn and the wheel move it by its rows; `▲` and `▼` on its bar say there is
+more above or below. The preview scrolls the same way.
 
 A row of buttons wider than the screen goes on as many lines as it needs.
 
 Leaving a changed form (a link, F3, Ctrl+Q) asks: Stay, Discard or Save. A button or link with a `confirmation` asks
 No or Yes, starting at No.
+
+## The mouse
+
+The keyboard does everything; the mouse is a second way in. It is on in every channel (local, `--server`, SSH and the
+browser terminal) until the user turns it off with Alt+P, which is kept as the `TUI_MOUSE` preference.
+
+- **Click.** A click does what Enter does on what is under it: a link follows, a button presses, a tab opens, a box
+  title opens or closes, a menu item, a drop-down choice, a palette row, a confirm's choice or a date in the picker is
+  taken. On a field it only takes the focus; a check box toggles and a drop-down opens its list. A click on a list row
+  makes it the current row, and a double click is Enter on it; its first column, or a link in a cell, follows. A
+  column title with a sort sorts by it, ascending, then descending; the selection box `[ ]` selects. The title line's
+  crumbs open the palette, the `≡` of a hidden drawer opens the drawer, and a key line entry presses its key. While a
+  drop-down list, a menu, the palette, a confirm or the login dialog is open, a click elsewhere does nothing, and a
+  click beside a dialog does not close it, so no edits are lost to a stray click.
+- **The wheel** scrolls the screen three rows, until the next key or click; over a text area it scrolls the text, and
+  over an open list or menu it moves the highlight. It never turns a list's page (PgDn does).
+- **Drag to copy.** A drag selects the screen's text in reading order, or a rectangle with Alt held (a column of a
+  list); a double click on plain text takes a word, a triple click the row. On release the text goes to the clipboard
+  by OSC 52 (up to 64 KiB) and the message line says how many characters. kitty, WezTerm, Alacritty, foot, Windows
+  Terminal and xterm (with its window ops allowed) take OSC 52, iTerm2 when allowed, tmux with `set-clipboard on`.
+  GNOME Terminal and the other VTE terminals do not: there, Shift+drag (Option+drag on macOS) is the terminal's own
+  selection, which every terminal keeps while an app has the mouse, or Alt+P turns the mouse off. A password field is
+  drawn as `•`, so it is never copied. In the browser terminal the page puts the text on the clipboard, or shows it to
+  copy by hand when the browser refuses.
 
 ## Widths
 
@@ -344,5 +402,4 @@ post, follow, a message), and its help.
 
 ## Not yet
 
-A browser terminal (xterm.js on a `/termws` socket), per-user key bindings, a two-way rich-text editor, and a
-`diagram` component wait; plans/Remaining-Work.md lists them.
+Per-user key bindings, a two-way rich-text editor, and a `diagram` component wait; plans/Remaining-Work.md lists them.

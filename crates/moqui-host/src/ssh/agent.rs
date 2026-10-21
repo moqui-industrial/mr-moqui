@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `agent-apps` over SSH (plans/Screen-TUI-Impl.md Phase 3c, docs/TUI.md "For agents"): the apps for a program, one
+//! `agent-apps` over SSH (plans/archive/Screen-TUI-Impl.md Phase 3c, docs/TUI.md "For agents"): the apps for a program, one
 //! command line at a time (`moqui_tui::Agent`), on an `exec` channel with no pty.
 //!
 //! - `agent-apps open [path] [--size CxR] [--json]` starts a session the server keeps, and answers its id and the
@@ -21,9 +21,9 @@
 //!   after `IDLE` without a command.
 //! - `agent-apps` alone reads command lines from the channel and answers each, until `close` or the end of input.
 //!
-//! Both need `SSH_APPS`, run every request as the user, and count against `tui_max_sessions` and
-//! `tui_max_sessions_per_user` with `apps`. Exit status: 0 for an answer that ends `--- ok`, 1 for `--- error`, 2 for a
-//! session that is not there or not allowed.
+//! Both need a user the SSH connection logged in (a key or a password), run every request as the user, and count
+//! against `tui_max_sessions` and `tui_max_sessions_per_user` with `apps`. Exit status: 0 for an answer that ends
+//! `--- ok`, 1 for `--- error`, 2 for a session that is not there or not allowed.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -33,8 +33,8 @@ use moqui_core::context::ExecutionContextFactory;
 use moqui_tui::{Agent, AgentAnswer, AGENT_HELP};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use super::apps::{SessionSlot, Sessions};
 use super::server::IDLE;
+use crate::term::{SessionSlot, Sessions};
 use crate::tui::HostLink;
 
 const DEFAULT_PATH: &str = "/apps";

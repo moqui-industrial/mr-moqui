@@ -359,3 +359,44 @@ fn phase_three_pieces_and_overlays() {
     view.run_requests();
     golden("palette-100x40", &view.screen_text(100, 40));
 }
+
+/// A text area longer than its rows scrolls: the cursor at the end shows the last lines with `▲` on the bar, PgUp shows
+/// the lines before with `▼` below them, and a Markdown preview scrolls the same way.
+#[test]
+fn a_long_text_area_scrolls_with_its_cursor() {
+    let body: Vec<String> = (1..=30).map(|n| format!("- line {n:02}")).collect();
+    let json = format!(
+        r#"{{ "v": 1, "screen": {{ "path": "/note", "title": "Note" }}, "c": [
+        {{ "t": "form", "id": "Note", "name": "Note", "transitionUrl": "/note/save", "c": [
+          {{ "t": "field", "id": "Note.body", "name": "body", "title": "Body",
+            "w": {{ "kind": "textArea", "value": {}, "rows": 5, "editorType": "md" }} }} ] }} ] }}"#,
+        serde_json::to_string(&body.join("\n")).unwrap()
+    );
+    let link = FakeLink::from_json(&[json.as_str()]).unwrap();
+    let model = link.level("/note", &BTreeMap::new()).unwrap();
+    let mut view = view_of(model, link);
+    assert!(view.session_mut().focus_key("Note.body"));
+    // The cursor starts at the end of the text, so its last lines show.
+    let text = view.screen_text(100, 30);
+    assert!(
+        text.contains("line 30") && text.contains("line 26") && !text.contains("line 25"),
+        "{text}"
+    );
+    assert!(text.contains("▲"), "{text}");
+    press(&mut view, Key::PageUp);
+    let text = view.screen_text(100, 30);
+    assert!(text.contains("line 21") && !text.contains("line 26"), "{text}");
+    assert!(text.contains("▼"), "{text}");
+    for _ in 0..40 {
+        press(&mut view, Key::Up);
+    }
+    let text = view.screen_text(100, 30);
+    assert!(text.contains("line 01") && !text.contains("line 06"), "{text}");
+    // The preview scrolls by PgDn.
+    press(&mut view, Key::F(4));
+    let text = view.screen_text(100, 30);
+    assert!(text.contains("F4=Source") && !text.contains("line 06"), "{text}");
+    press(&mut view, Key::PageDown);
+    let text = view.screen_text(100, 30);
+    assert!(text.contains("line 06") && text.contains("▲"), "{text}");
+}

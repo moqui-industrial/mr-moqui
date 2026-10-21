@@ -72,6 +72,7 @@ impl Browser {
             framework_dir,
             BootOptions {
                 executor: Executor::Inline,
+                ..BootOptions::default()
             },
         )
         .map_err(|err| Error::new(format!("boot: {err}")))?;

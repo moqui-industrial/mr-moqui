@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The shell around the screens (plans/Screen-TUI-Impl.md 1.6): the palette and go to, quick create, the actions menu
+//! The shell around the screens (plans/archive/Screen-TUI-Impl.md 1.6): the palette and go to, quick create, the actions menu
 //! (F10) and a button-menu's items, find text, the tray, the counters, the drawer's choice and saved finds, the help's
 //! documents, a list's exports, saved finds and columns. Menus share one overlay: a title and entries, each with what
 //! it does.
@@ -700,14 +700,19 @@ impl Session {
 
     /// The drawer's choice is kept as the user's preference, as qvt keeps `QUASAR_LEFT_OPEN`.
     pub(super) fn keep_drawer(&mut self, open: bool) {
+        self.keep_preference("TUI_DRAWER_OPEN", open);
+    }
+
+    /// A choice of the user's kept on the server: the drawer, the mouse.
+    pub(super) fn keep_preference(&mut self, key: &str, value: bool) {
         self.lanes.push(
             Purpose::Preference,
             LinkCall::Json {
                 url: "/apps/setPreference".to_string(),
                 method: "post".to_string(),
                 parameters: BTreeMap::from([
-                    ("preferenceKey".to_string(), "TUI_DRAWER_OPEN".to_string()),
-                    ("preferenceValue".to_string(), open.to_string()),
+                    ("preferenceKey".to_string(), key.to_string()),
+                    ("preferenceValue".to_string(), value.to_string()),
                 ]),
             },
         );

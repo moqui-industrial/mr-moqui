@@ -184,6 +184,19 @@ fn vertical(text: &str, cursor: &mut usize, delta: isize) -> Edited {
     Edited::Moved
 }
 
+/// The cursor at `row` and `col` of a text, the column cut to the row's end: the inverse of [`row_col`].
+pub fn offset_of(text: &str, row: usize, col: usize) -> usize {
+    let mut offset = 0;
+    for (at, line) in text.split('\n').enumerate() {
+        let len = line.chars().count();
+        if at == row {
+            return offset + col.min(len);
+        }
+        offset += len + 1;
+    }
+    text.chars().count()
+}
+
 /// The row and column of the cursor in a text area's text, for drawing.
 pub fn row_col(text: &str, cursor: usize) -> (usize, usize) {
     let mut row = 0;
