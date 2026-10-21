@@ -5,9 +5,6 @@ Digest of the unbuilt proposals in [proposals/](proposals/). None has code in th
 ## Messaging — runtime-reflective FlatBuffers ([Messaging.md](proposals/Messaging.md), 1286 lines)
 Binary request/response and WebSocket document subscriptions using FlatBuffers `.bfbs` schemas generated at runtime from service, screen-transition and Data Document definitions, with a Rust reflective reader, a browser reader/writer on Emscripten WASM, shared message buffers and large-scale fan-out. JSON and other contracts stay. Status: roadmap shows 0 of 6 phases done. Today `moqui-browser` speaks JSON ([`crates/moqui-browser/src/api.rs`](../crates/moqui-browser/src/api.rs)) and cites this plan for the binary forms. Prerequisites in place: Wasm browser build, cached QuickJS service functions, committed-update path. Go/no-go gates are in §19; capacity model in §12–13.
 
-## Screen TUI on Revue ([Screen-TUI-Revue.md](proposals/Screen-TUI-Revue.md))
-A terminal client for the XML Screens: a `tui` render mode writes each screen level as a JSON model, and one client drawn with Revue reaches the server in process (`moqui tui`), over SSH (`apps`), remotely, and in a browser terminal. Status: being built, not a proposal any more; the plan is [Screen-TUI-Impl](Screen-TUI-Impl.md) (Phases 1 and 2 built by 2026-10-20) and the guide [TUI](../docs/TUI.md). The proposal moves to `archive/` when Phase 4 is done.
-
 ## Monitoring ([Monitoring.md](proposals/Monitoring.md), 110 lines)
 Technology-independent requirements linking changes, telemetry, source-level diagnostics, business impact and recovery. Implementation delta: OpenTelemetry bridge over existing `tracing` spans, isolated telemetry schema, error fingerprints and profiles, server-JS profiling, regression baselines, incident screens, and an advisory-by-default recovery state machine. Status: requirements only; the artifact execution stack already opens `tracing` spans, which is the intended hook.
 

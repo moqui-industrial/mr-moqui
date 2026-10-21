@@ -16,14 +16,35 @@ moqui tui --user john.doe                   log in as john.doe (an instance_purp
 moqui tui --path /apps/gallery/List         start on a screen
 moqui tui --serve                           also open the HTTP, SSH and cluster ports, for the browser beside it
 moqui tui --snapshot /apps/gallery/Detail --size 100x40     print one screen as text and exit
+moqui tui --server https://erp.example.com  the apps of a running server, over HTTP
 ```
 
 The client runs in this process on this runtime. It opens no port unless `--serve`, and it writes nothing to stderr: the
 log goes to the log files and to the log pane (Alt+L). If a server already answers on the runtime's HTTP port, `moqui
-tui` says so and stops; stop the server first.
+tui` says so and stops: stop the server first, or reach it with `moqui tui --server http://localhost:8080`.
 
 Each screen is rendered as the logged-in user with artifact authorization on, as the browser's requests are. The client
 holds no permission logic: what the user may not do is not in the document.
+
+## A running server (`--server`)
+
+`moqui tui --server <url>` is the same client for a server that is already running, here or elsewhere. It boots no
+runtime: each screen is a `GET <path>?renderMode=tui`, each form and transition asks for JSON, and every request
+carries a login key. `--agent`, `--snapshot`, `--ascii` and `--no-color` work with it as they do on the runtime.
+
+- **Login.** The client asks for the username and password once and posts them to the REST `login` with
+  `createLoginKey=true`. The server answers with a login key (`login_key_expire_hours`), which the client keeps in
+  `~/.config/moqui/tui/<host>_<port>.toml` (or under `XDG_CONFIG_HOME`), readable by the user only. The password is not
+  kept. The next run uses the key; when the server stops taking it (it expired, or its `UserLoginKey` row was removed)
+  the login dialog comes back. `moqui tui --server <url> --forget` removes the key. An account with a second factor is
+  told to use the browser.
+- **https.** Plain `http://` is refused except to this machine (`localhost`, `127.0.0.1`, `::1`), since the login
+  would cross the network in the clear.
+- **Files.** Exports are saved to `XDG_DOWNLOAD_DIR` (else `~/Downloads`) on the user's machine, as in local mode.
+- **Counters.** The client opens `/notws` with its key, so the counters change when a notification comes, and the
+  notification's title shows on the message line. Without the socket it reads them each minute, as before.
+- **Build.** The client alone builds without a database driver or the HTTP server:
+  `cargo build -p moqui-host --no-default-features --features tui` (docs/Packaging.md).
 
 ## Over SSH
 
@@ -45,7 +66,11 @@ moqui> apps                                 from the admin shell; quitting the a
 - **Limits.** At most `tui_max_sessions` (16) apps sessions run at once, and `tui_max_sessions_per_user` (4) of them for
   one user; `ssh_max_sessions` counts connections, not these. A session ends after 10 minutes without input.
 - **Files.** Exports are not downloaded, because the client runs on the server; the text export still shows in a
-  dialog. Uploads are off. The log pane is not offered.
+  dialog. Uploads are off.
+- **Log.** Alt+L opens the log pane, with the WARN and ERROR lines from the session's start, for a user who may view
+  the System app (whose Log Viewer reads the same log). Others are told the log is not offered.
+- **Background.** The client asks the terminal for its background color (OSC 11) and takes the dark or light colors
+  to match; a terminal that does not answer keeps what `COLORFGBG` says, else dark.
 
 ## For agents
 
@@ -86,7 +111,7 @@ text, ignoring case. `set` takes the longest run of leading words that names an 
 
 ```
 path /apps/system/Security/UserAccount/UserAccountDetail?userId=EX_JOHN_DOE
-title system ▸ Security ▸ UserAccount ▸ UserAccountDetail ▸ User Account Detail
+title system ▸ Security ▸ UserAccount ▸ User Account Detail
 focus dialog AddGroupMemberDialog "Add Group"
 overlay none                                  (a dialog, a confirm with its choices, a drop-down, the palette, ...)
 message Saved                                 (or: error ..., or no line)
@@ -112,7 +137,7 @@ agent-apps hFY74uac set Group My Account Users
 agent-apps hFY74uac do Add                           message Saved
 agent-apps hFY74uac go /apps/system/ServiceJob/Jobs/ServiceJobDetail?jobName=clean_ServiceJobRun_daily
 agent-apps hFY74uac do Run Job                       overlay confirm "Run job now ...", choices No|Yes
-agent-apps hFY74uac do Yes
+agent-apps hFY74uac do Yes                           message Done
 agent-apps hFY74uac close
 ```
 
@@ -163,11 +188,13 @@ tmux, screen, job control and ssh escapes are left alone. F1 lists the keys in u
 | `/`, `n`, `N` | Find text on the screen (links, fields, list rows), then the next and previous match |
 | Space, `*` | On a list: select the row, select all. On a check box: toggle |
 | `f`, `s`, `e` | On a list: the find dialog of its header fields, cycle the sort, edit the row |
+| `v` | On a list with `views`, or its board or calendar: the next view (list, board, calendar), kept for the user |
+| Alt+B, Alt+I, Alt+K | In a Markdown text area: bold, italic or link the word at the cursor |
 | Alt+1…Alt+9, 1…9 | Subscreen tab N |
 | `#` | Number the links; then digits and Enter follow link N |
 | `=` | Info: the screen, its address, the focused link's target |
 | `o` | Open the screen or the focused link in the browser (its address on the message line) |
-| Alt+L | The log pane |
+| Alt+L | The log pane (in local mode; over SSH for a user who may view the System app) |
 | Alt+M | The last 25 messages |
 | Alt+T | The tray: Today, Chat and Notifications; Left and Right change the tab |
 | Ctrl+L | Redraw |
@@ -183,8 +210,23 @@ is on F10, and its form posts the rows selected with Space. In the Columns dialo
 Alt+Up and Alt+Down move it, Enter saves and `r` puts back the list's own columns. An export saves a file to
 `XDG_DOWNLOAD_DIR` (else `~/Downloads`), with its path on the message line; the text export shows in a dialog.
 
-The title line shows the counters (`Today 3  Chat 1  Notif 2`, read again each minute) when the server has a count
-service.
+The title line shows the counters (`Today 3  Chat 1  Notif 2`) when the server has a count service. They change when a
+notification comes for the user (in process, and over `--server` through `/notws`), with its title on the message
+line, and are read again every ten minutes besides; a client that cannot be told reads them each minute. The short form
+`T3 C1 N2` takes over below the md width or when the long one would cut the breadcrumb, then the user and the clock give
+way. The breadcrumb ends with the screen's title in place of its name.
+
+A list with `views` (`view-board`, `view-calendar`; style guide §8.2) opens in the view the user chose last (the
+`LIST_VIEW_` preference the browser keeps), else the first the form names. The board shows the page's rows as cards in
+their status columns, and `m` moves a card through the board's transition as a drag does in the browser; the calendar
+is the agenda of the rows' dates. `v` goes to the next view.
+
+An `editor-type="md"` text area shows its Markdown source styled as it is typed: headings and links in the primary
+color, bold and italic, code in the info color, and the markers (`#`, `**`, backticks, a link's brackets and url, list
+bullets) muted. The source is the value, so nothing is converted and nothing is lost. F4 shows the preview and the
+source again. Rich-text fields (`html`, `rich`) stay read-only, with "open in browser".
+
+A row of buttons wider than the screen goes on as many lines as it needs.
 
 Leaving a changed form (a link, F3, Ctrl+Q) asks: Stay, Discard or Save. A button or link with a `confirmation` asks
 No or Yes, starting at No.
@@ -215,11 +257,21 @@ A screen theme (the user's `STT_INTERNAL_QUASAR` theme, else `DEFAULT_QUASAR`) c
 | --- | --- | --- |
 | `STRT_TUI_BREAKPOINTS` | `sm`, `md`, `lg`, `xl`, `drawer` (columns) | `md = 110` |
 | `STRT_TUI_COLORS` | `text`, `primary`, `secondary`, `positive`, `negative`, `warning`, `info`, `muted`, `field`, `focus`, `changed`, `selection`, `border` | `primary = #1976d2` |
-| `STRT_TUI_KEYS` | an action name: `next`, `prev`, `activate`, `submit`, `back`, `cancel`, `help`, `prompt`, `refresh`, `page-prev`, `page-next`, `drawer`, `select`, `select-all`, `find`, `sort`, `number-links`, `info`, `open-browser`, `redraw`, `log`, `palette`, `go-to`, `quick-create`, `actions`, `find-text`, `find-next`, `find-prev`, `messages`, `tray`, `edit-row`, `quit`, `tab-1` to `tab-9` | `back = f3 \| alt+left` |
+| `STRT_TUI_KEYS` | an action name: `next`, `prev`, `activate`, `submit`, `back`, `cancel`, `help`, `prompt`, `refresh`, `page-prev`, `page-next`, `drawer`, `select`, `select-all`, `find`, `sort`, `view`, `number-links`, `info`, `open-browser`, `redraw`, `log`, `palette`, `go-to`, `quick-create`, `actions`, `find-text`, `find-next`, `find-prev`, `messages`, `tray`, `edit-row`, `quit`, `tab-1` to `tab-9` | `back = f3 \| alt+left` |
 
 A value that does not read is logged and the built-in one stays. Esc, Enter and Tab keep what they do whatever a theme
-binds. Color is never the only signal: every cue has a glyph or text too. `NO_COLOR` (or `--no-color`) draws in reverse
-and underline only, and `--ascii` (also a `TERM` of `linux` or `vt100`) draws borders and symbols in plain ASCII.
+binds.
+
+- **Brand colors.** The theme's browser brand colors (`STRT_QUASAR_CONFIG`, `{"brand": {"primary": …}}`) are the
+  terminal's `primary`, `secondary`, `positive`, `negative`, `warning` and `info` too; a `STRT_TUI_COLORS` row wins.
+- **Dark and light.** A color name may start `dark.` or `light.` (`dark.primary = #64a0ff`) to apply on that
+  background only; it wins over the same name without one. The background is the terminal's answer to OSC 11 over
+  SSH, else `COLORFGBG`, else dark. In local mode only `COLORFGBG` is read: an answer that came late would arrive as
+  keys.
+- **No color, ASCII.** Color is never the only signal: every cue has a glyph or text too. `NO_COLOR` (or `--no-color`)
+  draws in reverse and underline only, and `--ascii` (also a `TERM` of `linux` or `vt100`, or a locale that is not
+  UTF-8) draws borders, symbols and the client's own marks (`…`, `–`, `·`) in plain ASCII. The Gallery snapshots check
+  both on every screen (`crates/moqui-host/tests/tui_screens.rs`).
 
 ## For screen authors
 
@@ -269,8 +321,8 @@ The framework's components, with their props documented at the top of each file 
 
 | Name | Shows | Keys |
 | --- | --- | --- |
-| `board` | Cards in columns by group from lg, else grouped under headings; `source` answers `{groups, rows}` | Up/Down, Left/Right (wide), `m` moves a card through `move`, Enter opens `open` |
-| `calendar` | An agenda by day, with the month grid from lg; `source` answers `{month, events}` | Up/Down, PgUp/PgDn months, `t` today |
+| `board` | Cards in columns by group from lg, else grouped under headings; `source` answers `{groups, rows}`, or the props hold them (a list's board view) | Up/Down, Left/Right (wide), `m` moves a card through `move`, Enter opens `open` |
+| `calendar` | An agenda by day, with the month grid from lg; `source` answers `{month, events}`, or the props hold the events; an event's `_open` is its screen | Up/Down, PgUp/PgDn months, `t` today |
 | `chart` | A table of the datasets (`labels`, `series`) with a bar for the first series | `r` reads again |
 | `timeline` | Entries (`items`) in order, each its time, title and text | Up/Down, Enter |
 
@@ -283,11 +335,14 @@ client knows only those it was built with. An add-on crate registers its own beh
 inventory::submit! { moqui_tui::Registered(&MyInbox) }
 ```
 
+There is no `diagram` component: Revue's Mermaid widget was tried and does not draw a status flow usably, so a
+Mermaid diagram's twin is text (Tools' Status Flows lists its transitions).
+
 A component implements `moqui_tui::Component`: where its data comes from (a transition under the screen's path), its
 lines at a width (spans in theme roles, so it needs no Revue), its keys (moves, and what it asks of the session: reload,
 post, follow, a message), and its help.
 
 ## Not yet
 
-Phase 4 brings the remote client (`moqui tui --server <url>`), list views, a Markdown editor, and the log pane over
-SSH for users who may read the logs.
+A browser terminal (xterm.js on a `/termws` socket), per-user key bindings, a two-way rich-text editor, and a
+`diagram` component wait; plans/Remaining-Work.md lists them.

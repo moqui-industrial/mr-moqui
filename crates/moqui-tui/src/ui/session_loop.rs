@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::decode::{Decoded, Decoder};
-use crate::link::{Reply, ScreenLink};
+use crate::link::{Push, Reply, ScreenLink};
 use crate::session::Session;
 use crate::theme::Theme;
 
@@ -42,6 +42,10 @@ pub enum SessionEvent {
     Resize { columns: u16, rows: u16 },
     /// A request's answer, from a worker thread. Boxed: a screen model is large, and input is most of the traffic.
     Reply(u64, Box<Reply>),
+    /// A notification the link pushed for this user.
+    Push(Push),
+    /// A line for the log pane, for a user who may read the log.
+    Log(String),
     /// The channel closed: end without writing more.
     Close,
 }
@@ -55,7 +59,13 @@ pub struct SessionOptions {
     pub rows: u16,
     /// Called with a note for the log: a theme value that did not apply.
     pub notes: Option<fn(&str)>,
+    /// The caller sends [`SessionEvent::Log`] lines, so Alt+L offers the log pane.
+    pub log: bool,
 }
+
+/// OSC 11 with `?`: the terminal answers with its background color, which the decoder reads. It ends with ST, as the
+/// OSC 8 links do.
+const BACKGROUND_QUERY: &[u8] = b"\x1b]11;?\x1b\\";
 
 /// How often the title line's spinner moves while a request runs.
 const SPIN: Duration = Duration::from_millis(100);
@@ -80,6 +90,9 @@ where
     W: Write,
 {
     out.write_all(ENTER)?;
+    // Ask the terminal for its background (OSC 11); one that answers picks the dark or light colors, one that does not
+    // keeps what COLORFGBG said.
+    out.write_all(BACKGROUND_QUERY)?;
     let result = panic::catch_unwind(AssertUnwindSafe(|| run(link, options, events, replies, out)));
     let _ = out.write_all(LEAVE);
     let _ = out.flush();
@@ -109,10 +122,16 @@ fn run<L: ScreenLink + 'static, W: Write>(
     view.session_mut().resize(options.columns, options.rows);
     let mut screen = Screen::new(options.columns, options.rows, options.theme.depth);
     let mut decoder = Decoder::new();
+    let pushes = replies.clone();
     let replies = replies.clone();
     let done = move |id, reply| {
         let _ = replies.send(SessionEvent::Reply(id, Box::new(reply)));
     };
+    let subscription = link.subscribe(Arc::new(move |push| {
+        let _ = pushes.send(SessionEvent::Push(push));
+    }));
+    view.session_mut().set_pushed(subscription.is_some());
+    view.session_mut().set_log_offered(options.log);
     let mut minute = jiff::Zoned::now().minute();
     settle(&mut view, &link, &done, options.notes);
     screen.draw(&view, out)?;
@@ -153,6 +172,14 @@ fn run<L: ScreenLink + 'static, W: Write>(
                     view.session_mut().on_reply(id, *reply);
                     changed = true;
                 }
+                SessionEvent::Log(line) => {
+                    view.push_log(line);
+                    changed |= view.session().log_open();
+                }
+                SessionEvent::Push(push) => {
+                    view.session_mut().on_push(&push);
+                    changed = true;
+                }
                 SessionEvent::Close => return Ok(()),
             }
         }
@@ -187,6 +214,10 @@ fn apply<L: ScreenLink>(view: &mut AppView<Arc<L>>, screen: &mut Screen, decoded
         }
         Decoded::Resize { columns, rows } => {
             resize(view, screen, columns, rows);
+            false
+        }
+        Decoded::Background { dark } => {
+            view.set_dark(dark);
             false
         }
     }

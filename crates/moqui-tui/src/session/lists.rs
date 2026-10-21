@@ -269,3 +269,129 @@ pub(super) fn next_order(fields: &[String], current: &str) -> String {
         Some(at) => fields.get(at + 1).cloned().unwrap_or_default(),
     }
 }
+
+impl Session {
+    // ---- views ----
+
+    /// The list a view's component shows: `EnumList` for `EnumList~board`.
+    pub fn view_of(&self, id: &str) -> Option<String> {
+        let (list, _) = id.split_once('~')?;
+        self.view_lists.contains_key(list).then(|| list.to_string())
+    }
+
+    /// The views of a list, on screen or put aside.
+    fn list_views(&self, id: &str) -> Option<crate::model::ListViews> {
+        let of = |node: &Node| match node {
+            Node::FormList { list } if list.id == id => list.views.as_deref().cloned(),
+            _ => None,
+        };
+        if let Some(views) = self.view_lists.get(id).and_then(of) {
+            return Some(views);
+        }
+        let mut found = None;
+        for model in self.nav.models() {
+            crate::model::walk(&model.c, &mut |node| {
+                if found.is_none() {
+                    found = of(node);
+                }
+            });
+        }
+        found
+    }
+
+    /// `v`: the focused list's next view, kept as the user's preference as qvt keeps it.
+    pub(super) fn cycle_view(&mut self) {
+        let Some(focused) = self.focus().map(|item| item.key.clone()) else {
+            return;
+        };
+        let list = self.view_of(&focused).unwrap_or(focused);
+        let Some(views) = self.list_views(&list).filter(|views| views.kinds.len() > 1) else {
+            self.set_message("This list has no other view.".to_string(), false);
+            return;
+        };
+        let current = self.views.get(&list).cloned().unwrap_or_else(|| views.chosen.clone());
+        let at = views.kinds.iter().position(|kind| *kind == current).unwrap_or(0);
+        let next = views.kinds[(at + 1) % views.kinds.len()].clone();
+        self.views.insert(list.clone(), next.clone());
+        if !views.key.is_empty() {
+            self.lanes.push(
+                Purpose::Preference,
+                LinkCall::Json {
+                    url: "/apps/setPreference".to_string(),
+                    method: "post".to_string(),
+                    parameters: BTreeMap::from([
+                        ("preferenceKey".to_string(), views.key.clone()),
+                        ("preferenceValue".to_string(), next.clone()),
+                    ]),
+                },
+            );
+        }
+        self.reindex(true);
+        let id = if next == "list" { list } else { format!("{list}~{next}") };
+        self.focus_key(&id);
+        let name = match next.as_str() {
+            "board" => "Board",
+            "calendar" => "Calendar",
+            _ => "List",
+        };
+        self.set_message(format!("{name} view · v for the next"), false);
+    }
+
+    /// Each list with views as its chosen view: the list itself, or the board or calendar component of its rows. A list
+    /// that shows a view is put aside, and comes back when the list is chosen again.
+    pub(super) fn apply_views(&mut self) {
+        let stash = &mut self.view_lists;
+        let chosen = &self.views;
+        for model in self.nav.models_mut() {
+            swap_views(&mut model.c, chosen, stash);
+        }
+    }
+}
+
+/// See [`Session::apply_views`]: a view's component goes back to its list first, then a list becomes the component of
+/// its chosen view.
+fn swap_views(nodes: &mut [Node], chosen: &BTreeMap<String, String>, stash: &mut BTreeMap<String, Node>) {
+    for node in nodes.iter_mut() {
+        if let Node::Component { props, .. } = node {
+            if let Some(list) = props
+                .get("viewOf")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+            {
+                if let Some(kept) = stash.remove(&list) {
+                    *node = kept;
+                }
+            }
+        }
+        let swap = match node {
+            Node::FormList { list } => list.views.as_deref().and_then(|views| {
+                let want = chosen.get(&list.id).map_or(views.chosen.as_str(), String::as_str);
+                let props = match want {
+                    "board" => &views.board,
+                    "calendar" => &views.calendar,
+                    _ => return None,
+                };
+                let mut props = props.clone();
+                if let Some(object) = props.as_object_mut() {
+                    object.insert("viewOf".to_string(), serde_json::Value::String(list.id.clone()));
+                }
+                Some(Node::Component {
+                    id: format!("{}~{want}", list.id),
+                    name: want.to_string(),
+                    props,
+                    base: String::new(),
+                })
+            }),
+            _ => None,
+        };
+        match swap {
+            Some(component) => {
+                let list = std::mem::replace(node, component);
+                if let Node::FormList { list: inner } = &list {
+                    stash.insert(inner.id.clone(), list.clone());
+                }
+            }
+            None => swap_views(node.children_mut(), chosen, stash),
+        }
+    }
+}

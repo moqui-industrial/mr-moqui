@@ -35,6 +35,7 @@ use super::json::load_json_reader;
 use super::xml::{load_xml_reader, load_xml_text};
 use super::zip::load_zip_reader;
 use super::{error_chain, with_load_slot, DataFileService, LoadOptions, LoadResult};
+use crate::entity::FieldMap;
 use crate::entity::facade::EntityFacade;
 use crate::entity::fk::FkScope;
 use crate::entity::value::EntityValue;
@@ -42,17 +43,28 @@ use crate::transaction::TransactionAttribute;
 
 pub(super) struct Record {
     pub(super) entity: String,
-    pub(super) fields: BTreeMap<String, Value>,
+    pub(super) fields: FieldMap,
     pub(super) children: Vec<Record>,
 }
 
 pub(super) struct Shape {
     pub(super) full_name: String,
-    pub(super) fields: HashMap<String, String>,
-    pub(super) pk_names: Vec<String>,
+    /// Each field's type, by the field's name: the one name the entity's values share ([`EntityValue::set`]).
+    pub(super) fields: HashMap<Arc<str>, String>,
+    /// Shared, as [`Self::fields`]'s names are.
+    pub(super) pk_names: Vec<Arc<str>>,
     pub(super) relations: HashMap<String, RelInfo>,
     /// Each field with a dictionary type, in definition order, and that type's Java type.
     java_types: Vec<(String, String)>,
+}
+
+impl Shape {
+    /// The shared name of field `name`, or a name of its own for one the entity does not have.
+    pub(super) fn name(&self, name: &str) -> Arc<str> {
+        self.fields
+            .get_key_value(name)
+            .map_or_else(|| Arc::from(name), |(shared, _)| Arc::clone(shared))
+    }
 }
 
 pub(super) struct RelInfo {
@@ -272,7 +284,7 @@ pub(super) fn parse_flat_top(facade: &EntityFacade, location: &str, text: &str) 
 
 /// An attribute of a record element, as its field's value. Java puts an empty attribute as null, so a store clears
 /// the column.
-fn add_attribute(shape: &Shape, fields: &mut BTreeMap<String, Value>, name: &str, value: Cow<'_, str>) {
+fn add_attribute(shape: &Shape, fields: &mut FieldMap, name: &str, value: Cow<'_, str>) {
     let Some(field_type) = shape.fields.get(name) else {
         tracing::warn!(entity = %shape.full_name, field = %name, "attribute is not a field");
         return;
@@ -284,7 +296,7 @@ fn add_attribute(shape: &Shape, fields: &mut BTreeMap<String, Value>, name: &str
     } else {
         Value::String(value.into_owned())
     };
-    fields.insert(name.to_string(), value);
+    fields.insert(shape.name(name), value);
 }
 
 pub(super) fn parse_record(facade: &EntityFacade, entity_name: &str, node: &MNode) -> Result<Record, Error> {
@@ -295,7 +307,7 @@ fn parse_record_in(
     facade: &EntityFacade,
     entity_name: &str,
     node: &MNode,
-    ancestor: &BTreeMap<String, Value>,
+    ancestor: &FieldMap,
 ) -> Result<Record, Error> {
     let shape = shape_of(facade, entity_name)?;
     let mut fields = BTreeMap::new();
@@ -303,11 +315,11 @@ fn parse_record_in(
     let mut pending = Vec::new();
     for child in node.children() {
         let key = element_key(&child.name());
-        if shape.fields.contains_key(&key) {
+        if shape.fields.contains_key(key.as_str()) {
             // The text as written, whitespace included, as Java's SAX handler reads it (the XML reader parses raw).
             if let Some(text) = child.text().filter(|text| !text.is_empty()) {
-                let field_type = shape.fields.get(&key).map(String::as_str).unwrap_or("");
-                fields.insert(key, field_text(field_type, &text));
+                let field_type = shape.fields.get(key.as_str()).map(String::as_str).unwrap_or("");
+                fields.insert(shape.name(&key), field_text(field_type, &text));
             }
         } else {
             pending.push(child);
@@ -376,13 +388,13 @@ pub(super) fn decode_base64(text: &str) -> Option<Vec<u8>> {
     JAVA_BASE64.decode(text).ok()
 }
 
-pub(super) fn apply_key_pairs(parent: &BTreeMap<String, Value>, rel: &RelInfo, child: &mut BTreeMap<String, Value>) {
+pub(super) fn apply_key_pairs(parent: &FieldMap, rel: &RelInfo, child: &mut FieldMap) {
     for (source, target) in &rel.pairs {
-        if child.get(target).is_some_and(|value| !value.is_null()) {
+        if child.get(target.as_str()).is_some_and(|value| !value.is_null()) {
             continue;
         }
-        if let Some(value) = parent.get(source) {
-            child.insert(target.clone(), value.clone());
+        if let Some(value) = parent.get(source.as_str()) {
+            child.insert(Arc::from(target.as_str()), value.clone());
         }
     }
 }
@@ -390,12 +402,12 @@ pub(super) fn apply_key_pairs(parent: &BTreeMap<String, Value>, rel: &RelInfo, c
 /// This record's primary keys, then ancestor keys whose names are not already there.
 pub(super) fn shared_pks(
     shape: &Shape,
-    fields: &BTreeMap<String, Value>,
-    ancestor: &BTreeMap<String, Value>,
-) -> BTreeMap<String, Value> {
+    fields: &FieldMap,
+    ancestor: &FieldMap,
+) -> FieldMap {
     let mut shared = BTreeMap::new();
     for name in &shape.pk_names {
-        if let Some(value) = fields.get(name).filter(|value| !value.is_null()) {
+        if let Some(value) = fields.get(&**name).filter(|value| !value.is_null()) {
             shared.insert(name.clone(), value.clone());
         }
     }
@@ -411,8 +423,8 @@ pub(super) fn shared_pks(
 pub(super) fn inherit_pk_fields(
     facade: &EntityFacade,
     entity_name: &str,
-    source: &BTreeMap<String, Value>,
-    fields: &mut BTreeMap<String, Value>,
+    source: &FieldMap,
+    fields: &mut FieldMap,
 ) -> Result<(), Error> {
     if source.is_empty() {
         return Ok(());
@@ -468,7 +480,7 @@ fn write_tree(
     facade: &EntityFacade,
     options: &LoadOptions,
     record: Record,
-    ancestor: &BTreeMap<String, Value>,
+    ancestor: &FieldMap,
 ) -> Result<u64, Error> {
     let Record {
         entity,
@@ -497,7 +509,7 @@ fn write_tree(
         } else {
             // Java's plain-map loader (XML and JSON records) uses the entity-auto store path, including status checks.
             // CSV rows go through `store_value` instead.
-            crate::service::call::store_entity(facade, &entity, &fields)?;
+            crate::service::call::store_entity(facade, &entity, &crate::entity::string_map(&fields))?;
         }
         total = 1;
     }
@@ -541,7 +553,7 @@ pub(super) fn store_value(facade: &EntityFacade, options: &LoadOptions, record: 
 pub(super) fn complete_csv_pk(
     facade: &EntityFacade,
     entity_name: &str,
-    fields: &mut BTreeMap<String, Value>,
+    fields: &mut FieldMap,
 ) -> Result<(), Error> {
     convert_fields(facade, entity_name, fields)?;
     let shape = shape_of(facade, entity_name)?;
@@ -553,7 +565,7 @@ pub(super) fn complete_csv_pk(
         let given: Vec<String> = pk_names
             .iter()
             .map(|name| {
-                let value = fields.get(name).map_or_else(|| "null".to_string(), to_plain_string);
+                let value = fields.get(&**name).map_or_else(|| "null".to_string(), to_plain_string);
                 format!("{name}={value}")
             })
             .collect();
@@ -573,19 +585,19 @@ pub(super) fn complete_csv_pk(
 fn prepare_fields(
     facade: &EntityFacade,
     shape: &Shape,
-    fields: &mut BTreeMap<String, Value>,
+    fields: &mut FieldMap,
     only_create: bool,
 ) -> Result<(), Error> {
     convert_with(shape, fields)?;
     let names = &shape.pk_names;
     // `EntityAutoServiceRunner.storeEntity`, which Java's loader uses for nested records: a primary key
     // `fromDate` that is not given is now.
-    let from_date_pk = names.iter().any(|name| name == "fromDate");
+    let from_date_pk = names.iter().any(|name| &**name == "fromDate");
     if from_date_pk && !only_create && fields.get("fromDate").is_none_or(Value::is_null) {
         // `ec.user.nowTimestamp`, so it follows the effective time.
-        fields.insert("fromDate".to_string(), crate::user::now_effective_value());
+        fields.insert(shape.name("fromDate"), crate::user::now_effective_value());
     }
-    let absent = |name: &String| fields.get(name).is_none_or(Value::is_null);
+    let absent = |name: &Arc<str>| fields.get(&**name).is_none_or(Value::is_null);
     let missing = names.iter().any(absent);
     // Every key but the last given: the last is a secondary sequence (`setSequencedIdSecondary`).
     let only_last = names.len() > 1
@@ -618,14 +630,14 @@ fn prepare_fields(
 pub(super) fn convert_fields(
     facade: &EntityFacade,
     entity_name: &str,
-    fields: &mut BTreeMap<String, Value>,
+    fields: &mut FieldMap,
 ) -> Result<(), Error> {
     convert_with(&*shape_of(facade, entity_name)?, fields)
 }
 
-fn convert_with(shape: &Shape, fields: &mut BTreeMap<String, Value>) -> Result<(), Error> {
+fn convert_with(shape: &Shape, fields: &mut FieldMap) -> Result<(), Error> {
     for (name, java) in &shape.java_types {
-        let Some(value) = fields.get_mut(name).filter(|value| !value.is_null()) else {
+        let Some(value) = fields.get_mut(name.as_str()).filter(|value| !value.is_null()) else {
             continue;
         };
         // Already of the type, so `convert_text` would copy it, unless it is the text `null`.
@@ -679,18 +691,18 @@ fn is_number_type(java_type: &str) -> bool {
     )
 }
 
-fn pk_complete(shape: &Shape, fields: &BTreeMap<String, Value>) -> bool {
+fn pk_complete(shape: &Shape, fields: &FieldMap) -> bool {
     shape
         .pk_names
         .iter()
-        .all(|name| fields.get(name).is_some_and(|value| !value.is_null()))
+        .all(|name| fields.get(&**name).is_some_and(|value| !value.is_null()))
 }
 
-fn row_exists(facade: &EntityFacade, shape: &Shape, fields: &BTreeMap<String, Value>) -> Result<bool, Error> {
+fn row_exists(facade: &EntityFacade, shape: &Shape, fields: &FieldMap) -> Result<bool, Error> {
     let mut find = facade.find(&shape.full_name)?;
     for name in &shape.pk_names {
         let value = fields
-            .get(name)
+            .get(&**name)
             .filter(|value| !value.is_null())
             .cloned()
             .ok_or_else(|| Error::new(format!("primary key {name} is required on {}", shape.full_name)))?;
@@ -699,19 +711,15 @@ fn row_exists(facade: &EntityFacade, shape: &Shape, fields: &BTreeMap<String, Va
     Ok(find.one()?.is_some())
 }
 
-/// The fields take the entity's shared names ([`EntityValue::set`]).
-fn write_upsert(facade: &EntityFacade, entity_name: &str, fields: BTreeMap<String, Value>) -> Result<(), Error> {
-    let mut value = EntityValue::make(facade, entity_name)?;
-    for (name, field) in fields {
-        value.set(name, field);
-    }
-    facade.upsert_record(entity_name, value.into_fields())
+/// The record's fields keep the names they share with the entity's values.
+fn write_upsert(facade: &EntityFacade, entity_name: &str, fields: FieldMap) -> Result<(), Error> {
+    facade.upsert_record(entity_name, fields)
 }
 
 fn value_from(
     facade: &EntityFacade,
     entity_name: &str,
-    fields: &BTreeMap<String, Value>,
+    fields: &FieldMap,
 ) -> Result<EntityValue, Error> {
     let mut value = EntityValue::make(facade, entity_name)?;
     for (name, field) in fields {
@@ -764,8 +772,8 @@ pub(super) fn apply_default_values(facade: &EntityFacade, options: &LoadOptions,
         return;
     };
     for (name, text) in &options.default_values {
-        if shape.fields.contains_key(name) && !record.fields.contains_key(name) {
-            record.fields.insert(name.clone(), Value::string(text));
+        if shape.fields.contains_key(name.as_str()) && !record.fields.contains_key(name.as_str()) {
+            record.fields.insert(shape.name(name), Value::string(text));
         }
     }
 }
@@ -791,10 +799,19 @@ pub(super) fn shape_of(facade: &EntityFacade, entity_name: &str) -> Result<Arc<S
 }
 
 fn read_shape(facade: &EntityFacade, entity_name: &str) -> Result<Shape, Error> {
-    facade.with_entity(entity_name, |entity, _, model| {
+    facade.with_entity(entity_name, |entity, dialect, model| {
+        // The names a value of the entity shares, so a record's fields and the value written share them too.
+        let shared = (!entity.is_view).then(|| crate::entity::sql_cache::read_shape(facade, entity, dialect));
         let mut fields = HashMap::new();
         for field in &entity.fields {
-            fields.insert(field.name.clone(), field.field_type.clone());
+            let name = shared
+                .as_ref()
+                .and_then(|shape| {
+                    let at = shape.names.binary_search_by(|name| (**name).cmp(field.name.as_str())).ok()?;
+                    Some(Arc::clone(&shape.names[at]))
+                })
+                .unwrap_or_else(|| Arc::from(field.name.as_str()));
+            fields.insert(name, field.field_type.clone());
         }
         let mut relations = HashMap::new();
         for relationship in &entity.relationships {
@@ -813,7 +830,15 @@ fn read_shape(facade: &EntityFacade, entity_name: &str) -> Result<Shape, Error> 
                 });
             }
         }
-        let pk_names = entity.pk_field_names().into_iter().map(str::to_string).collect();
+        let pk_names = entity
+            .pk_field_names()
+            .into_iter()
+            .map(|name| {
+                fields
+                    .get_key_value(name)
+                    .map_or_else(|| Arc::from(name), |(shared, _)| Arc::clone(shared))
+            })
+            .collect();
         let java_types = entity
             .fields
             .iter()

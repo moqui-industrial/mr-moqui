@@ -671,8 +671,30 @@ impl Session {
             let counts = crate::link::counts_of(&value);
             if !counts.is_empty() {
                 self.counts = counts;
-                self.set_timer(Timer::Counts, Instant::now() + Duration::from_secs(COUNTS_SECONDS));
+                self.set_timer(Timer::Counts, Instant::now() + self.counts_every());
             }
+        }
+    }
+
+    /// How long until the counters are read again: a minute, or ten while the link pushes.
+    pub(super) fn counts_every(&self) -> Duration {
+        Duration::from_secs(if self.pushed {
+            PUSHED_COUNTS_SECONDS
+        } else {
+            COUNTS_SECONDS
+        })
+    }
+
+    /// Whether the link pushes notifications (the loop subscribed), so the minute's read of the counters can wait.
+    pub fn set_pushed(&mut self, pushed: bool) {
+        self.pushed = pushed;
+    }
+
+    /// A notification came: the counters are read now, and its title goes on the message line unless an error holds it.
+    pub fn on_push(&mut self, push: &crate::link::Push) {
+        self.read_counts();
+        if !push.title.is_empty() && !self.message_is_error() {
+            self.set_message(push.title.clone(), false);
         }
     }
 
@@ -839,7 +861,12 @@ impl Session {
             match item.kind {
                 FocusKind::List => {
                     for (row, cells) in self.list_page(&item.key).iter().enumerate() {
-                        let text: String = cells.cells.iter().map(|cell| format!("{} ", cell.text())).collect();
+                        let text: String = cells
+                            .cells
+                            .iter()
+                            .flat_map(crate::model::Cell::parts)
+                            .map(|part| format!("{} ", part.text()))
+                            .collect();
                         if text.to_lowercase().contains(&needle) {
                             stops.push((at, Some(row)));
                         }

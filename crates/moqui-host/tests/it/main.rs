@@ -55,6 +55,7 @@ mod system_sync;
 mod tool_components;
 mod tools_screens;
 mod tools_services;
+mod tui_remote;
 mod types;
 mod web_protection;
 mod web_streaming;

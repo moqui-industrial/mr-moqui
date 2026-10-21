@@ -1,0 +1,50 @@
+ gallery ▸ Views                                                                                                                                                john.doe  Tue 14:32
+─────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ▾ Gallery               │ ┌─ Section 8.2 List views: board and calendar ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+     Landing             │ ┃ One form-list of example records with views="board,list,calendar": the switch at the right above the list keeps the choice per form (the LIST_VIEW_  │
+     List                │ ┃ preference; a view parameter in the URL picks one). The board has a column per Example status in its flow order with the count and the sum of sizes; │
+     Detail              │ ┃ a card shows the name (its link opens the example above the list), the type and start, and the size as a badge. Drag a card to another column: the   │
+     360                 │ ┃ status moves through update#moqui.example.Example, and a move the flow refuses (In Design to Complete) goes back with its message.                   │
+     Task                │ ┃ The calendar shows each example from its start to its end, colored by status, in month, week, day and list modes; in day mode each type is a column. │
+     Board               │ ┃ Drag an event to move it, its lower edge to resize it (the start and end are posted), and click or drag on empty time to create an example there.    │
+     Calendar            │ ┃ The Find Options, saved finds and page size of the list apply to every view.                                                                         │
+     Split               │ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+     Settings            │ No groups
+     Wizard              │
+     Dialog              │
+     Report              │
+     Panel               │
+     Widgets             │
+     Editor              │
+     Message             │
+   ▶ Views               │
+ ▾ Home                  │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+─────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ F1=Help  v=View  F3=Back  F5=Refresh  F9=Menu  Esc=Cancel  #=Number links  Ctrl+Q=Quit  Ctrl+K=Go to  F6=Create

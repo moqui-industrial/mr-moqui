@@ -152,6 +152,8 @@ rquickjs = "=0.14.0"
 # raise the MSRV of lib or core. 0.139.0 declares rust-version 1.94.0.
 # 0.140 and later declare 1.95 or higher.
 oxc_parser = "0.139"
+# The parser's arena, kept per thread and reset after each parse. Already in the tree under oxc_parser.
+oxc_allocator = "0.139"
 # The ESTree JSON of a parsed expression, for the server-static compatibility walk. Already in the tree under oxc_parser.
 oxc_ast = { version = "0.139", features = ["serialize"] }
 # Spans of parsed nodes, for the test harness power-assert rewrite. Already in the tree under oxc_parser.

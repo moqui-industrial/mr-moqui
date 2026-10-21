@@ -266,3 +266,16 @@ An `EntityValue` read from the database (a find, the entity cache, a refresh), o
 | entity value | `clone` keeps what the value read and what it changed; Java's `cloneValue` copies `dbValueMap` and starts not modified | A copy of a found value updates as the value would |
 | ECA rules, cache, data feed | When an update of a found value reads the stored row (the entity reads it first, or an after rule has `get-original-value`), a field the value did not change is given to the rules, the cache clear and the data feed as stored; Java's `entityValue` holds the value as read, which Java also writes | The rules see the row as the update leaves it, so a field another transaction changed does not look changed by this one; `take_unmodified` in `entity/value.rs` |
 | transaction cache, sim | A held update holds, and its flush writes, only the fields the update writes | As the direct write |
+
+## Terminal client (2026-10-21)
+
+The `tui` render mode has no Java counterpart (Parity-Mapping, not in Java); these are the places where serving it
+changes what a request shared with the other modes does ([Screen-TUI-Impl](Screen-TUI-Impl.md), Phase 4 and the quirks
+found over SSH).
+
+| Area | Difference | Rationale / where documented |
+|---|---|---|
+| REST login | `login` takes `createLoginKey=true` and answers `loginKey`, a new login key of the user, with `loggedIn`; Java's answers `loggedIn` only (`send_logged_in`, `screen/dispatch.rs`) | `moqui tui --server` keeps a key and never the password; without the parameter the answer is Java's. Doc comment at `login` |
+| transition response | A transition reached by a `tui` request answers its redirect as JSON (`screenUrl`, messages, errors), as for `Accept: application/json` (`wants_json`, `screen/render.rs`) | The terminal asks for each level as its own request with no session between them, so a redirect's flash messages would be lost; doc comment at `wants_json` |
+| login redirect | A `tui` request that needs a user gets the 401, not the redirect to `/Login` (`redirect_to_login`) | The client shows its own login dialog, as a fragment's caller does; doc comment at the function |
+| notification socket | `/notws` takes a `login_key` header when the request has no session cookie (`key_user`, `moqui-host/src/notws.rs`) | The remote terminal client has a key and no session; a browser's socket is unchanged |

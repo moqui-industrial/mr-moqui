@@ -881,6 +881,7 @@ mod cluster {
             a_pipelined_begin_starts_the_transaction_its_first_statement_runs_in(&mut conn);
             deferred_writes_run_in_order_and_commit(&mut conn);
             a_deferred_failure_is_the_next_error_and_stops_the_commit(&mut conn);
+            a_first_run_prepares_and_a_failed_one_keeps_no_statement(&mut conn);
 
             let mut other = driver.connect_postgres().unwrap();
             conn.begin().unwrap();
@@ -1513,6 +1514,26 @@ mod cluster {
             conn.rollback().unwrap();
             let rows = conn.query("SELECT count(*) AS c FROM piped", &[]).unwrap();
             assert_eq!(rows[0].get("c"), Some(&Value::I64(10)));
+        }
+
+        /// A statement's first run prepares it in the same round trip, and later runs use it. A first run that fails
+        /// after the statement parsed keeps none, and the next run prepares it again.
+        fn a_first_run_prepares_and_a_failed_one_keeps_no_statement(conn: &mut PostgresConn) {
+            let before = conn.statement_cache_len();
+            let select = "SELECT n FROM piped WHERE n <= ? ORDER BY n";
+            for _ in 0..2 {
+                let rows = conn.query(select, &[Value::I32(2)]).unwrap();
+                let numbers: Vec<_> = rows.iter().map(|row| row.get("n").cloned()).collect();
+                assert_eq!(numbers, [Some(Value::I32(1)), Some(Value::I32(2))]);
+                assert_eq!(conn.statement_cache_len(), before + 1);
+            }
+            let insert = "INSERT INTO piped (n) SELECT ?";
+            let err = conn.execute(insert, &[Value::I32(1)]).unwrap_err();
+            assert!(err.message().contains("duplicate key"), "{err}");
+            assert_eq!(conn.statement_cache_len(), before + 1);
+            assert_eq!(conn.execute(insert, &[Value::I32(77)]).unwrap(), 1);
+            assert_eq!(conn.execute(insert, &[Value::I32(78)]).unwrap(), 1);
+            assert_eq!(conn.statement_cache_len(), before + 2);
         }
 
         fn show(conn: &mut PostgresConn, name: &str) -> String {

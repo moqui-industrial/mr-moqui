@@ -217,7 +217,7 @@ fn the_leave_confirmation_and_the_help_show_over_the_screen() {
     view.on_key(&KeyPress::with_ctrl(Key::Char('q')));
     let ask = view.screen_text(100, 40);
     assert!(ask.contains("Leave without saving"), "{ask}");
-    assert!(ask.contains("< Stay >"), "{ask}");
+    assert!(ask.contains("[ Stay ]"), "{ask}");
     press(&mut view, Key::Escape);
     // F1 lists the keymap the theme left: here back is on F2.
     let link = view.link().clone();
@@ -319,7 +319,11 @@ fn phase3_view() -> AppView {
             url: "/apps/sales".to_string(),
             children: Vec::new(),
         }],
-        counts: BTreeMap::from([("chat".to_string(), 1), ("notifications".to_string(), 2), ("today".to_string(), 3)]),
+        counts: BTreeMap::from([
+            ("chat".to_string(), 1),
+            ("notifications".to_string(), 2),
+            ("today".to_string(), 3),
+        ]),
         ..ShellInfo::default()
     });
     let mut view = AppView::with_session(Session::start("/p3"), link);
@@ -350,7 +354,8 @@ fn phase_three_pieces_and_overlays() {
     for ch in "sa".chars() {
         press(&mut view, Key::Char(ch));
     }
-    view.session_mut().on_time(std::time::Instant::now() + std::time::Duration::from_secs(1));
+    view.session_mut()
+        .on_time(std::time::Instant::now() + std::time::Duration::from_secs(1));
     view.run_requests();
     golden("palette-100x40", &view.screen_text(100, 40));
 }
