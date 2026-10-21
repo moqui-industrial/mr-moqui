@@ -131,9 +131,24 @@ impl Default for Executor {
 }
 
 /// Options for [`ExecutionContextFactory::boot_with_options`].
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct BootOptions {
     pub executor: Executor,
+    /// Runs once the default properties and `runtime/.env` are applied, before any facade is built. An error stops the
+    /// boot. The server checks its listen ports here.
+    pub before_init: Option<BeforeInit>,
+}
+
+/// The hook in [`BootOptions::before_init`].
+pub type BeforeInit = Arc<dyn Fn() -> Result<(), Error> + Send + Sync>;
+
+impl std::fmt::Debug for BootOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootOptions")
+            .field("executor", &self.executor)
+            .field("before_init", &self.before_init.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 /// The framework component beside `tools` and `webroot`, when `MOQUI_FRAMEWORK` is not set.
@@ -201,6 +216,9 @@ impl ExecutionContextFactory {
         let native = crate::native::NativeRegistry::discover(&components, &conf_node)?;
         let env_path = runtime_dir.join(".env");
         let (property_names, mut set_by_boot) = apply_default_properties(&conf_node, &env_path)?;
+        if let Some(before_init) = &options.before_init {
+            before_init()?;
+        }
         crate::l10n::init_server_time_zone();
         let entity = Arc::new(RwLock::new(None));
         let resource = ResourceFacade::new(runtime_dir.clone(), component_roots(&components), Arc::clone(&entity));

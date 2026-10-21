@@ -64,6 +64,8 @@ mod guard;
 mod http;
 #[cfg(feature = "axum")]
 mod notws;
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+mod port_check;
 #[cfg(feature = "axum")]
 mod search_proxy;
 #[cfg(feature = "axum")]
@@ -549,6 +551,7 @@ fn dispatch_lint(path: Option<&str>) -> Result<(), moqui_lib::error::Error> {
         &framework,
         moqui_core::context::BootOptions {
             executor: moqui_core::context::Executor::Inline,
+            ..moqui_core::context::BootOptions::default()
         },
     );
     let checked = match booted {
@@ -936,6 +939,7 @@ fn load_pool(conf: &moqui_core::transaction::PoolConfig) -> moqui_core::transact
 }
 
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+#[derive(Clone)]
 enum ListenBind {
     Address(std::net::SocketAddr),
     Property,
@@ -991,7 +995,7 @@ fn serve_thread(
     ready_tx: std::sync::mpsc::Sender<Result<http::ListenReport, String>>,
 ) -> Result<(), moqui_lib::error::Error> {
     let mut ready = Ready { tx: Some(ready_tx) };
-    let process = match boot_server(&runtime_dir, &framework_dir, &cluster_dir) {
+    let process = match boot_server(&runtime_dir, &framework_dir, &cluster_dir, &bind) {
         Ok(process) => process,
         Err(err) => {
             ready.fail(&err);
@@ -1077,16 +1081,19 @@ fn boot_server(
     runtime_dir: &std::path::Path,
     framework_dir: &std::path::Path,
     cluster_dir: &std::path::Path,
+    bind: &ListenBind,
 ) -> Result<ServeProcess, moqui_lib::error::Error> {
-    boot_server_factory(runtime_dir, framework_dir, cluster_dir, true, Listeners::All)
+    let ports = port_check::hook(bind.clone(), runtime_dir.to_path_buf());
+    boot_server_factory(runtime_dir, framework_dir, cluster_dir, true, Listeners::All(ports))
 }
 
 /// What a boot opens to the network. `moqui tui` on its own runtime opens nothing: no HTTP, SSH, cluster or SMTP port,
-/// and it joins no cluster, so it starts where a server already holds those ports and stays a tool of one user.
+/// and it joins no cluster, so it starts where a server already holds those ports and stays a tool of one user. `All`
+/// carries the port check that runs before the framework is built.
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 enum Listeners {
-    All,
+    All(moqui_core::context::BeforeInit),
     None,
 }
 
@@ -1115,8 +1122,16 @@ fn boot_server_factory(
     );
     register_build();
     tracing::info!("Built as {}", version_text());
-    let factory = moqui_core::context::ExecutionContextFactory::boot_with_framework(&runtime_dir, &framework_dir)
-        .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
+    let options = moqui_core::context::BootOptions {
+        before_init: match &listeners {
+            Listeners::All(ports) => Some(std::sync::Arc::clone(ports)),
+            Listeners::None => None,
+        },
+        ..moqui_core::context::BootOptions::default()
+    };
+    let factory =
+        moqui_core::context::ExecutionContextFactory::boot_with_options(&runtime_dir, &framework_dir, options)
+            .map_err(|err| moqui_lib::error::Error::new(err.to_string()))?;
     log_files_attached(&runtime_dir);
     // Tool checks before the database: which Chromium PDF uses, or why there is none.
     let pdf = install_pdf(&runtime_dir);
@@ -1217,7 +1232,7 @@ fn boot_server_factory(
     tracing::info!("Request pool started");
     // Empty cluster_https_port listens on 8444. 0 is ephemeral for tests.
     moqui_core::notify::install();
-    if listeners == Listeners::None {
+    if matches!(listeners, Listeners::None) {
         tracing::info!(
             "Moqui Framework initialized in {:.3} seconds, with no listeners",
             boot_started.elapsed().as_secs_f64()

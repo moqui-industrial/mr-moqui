@@ -98,6 +98,20 @@ pub(crate) fn plan(runtime_dir: &Path, ip: IpAddr, use_default_port: bool) -> Re
     }))
 }
 
+/// The port [`plan`] would bind, without generating a certificate: an explicit port, or by default 8443 when a
+/// certificate exists or a dev instance will generate one. None when the listener stays off.
+pub(crate) fn planned_port(runtime_dir: &Path, use_default_port: bool) -> Result<Option<u16>, Error> {
+    let raw = moqui_lib::env::get_prop_or_env(LISTEN_PORT);
+    let raw = raw.trim();
+    let Some(port) = listen_port(raw, use_default_port)? else {
+        return Ok(None);
+    };
+    if !raw.is_empty() || moqui_lib::env::get_prop_or_env("instance_purpose") == "dev" {
+        return Ok(Some(port));
+    }
+    Ok((!CertStore::new(runtime_dir.join("cert")).is_empty()).then_some(port))
+}
+
 /// `webapp_https_listen_port`: empty is 8443 when `use_default_port` (tests bind their own HTTP address and leave it
 /// off so they do not take 8443), `0` is ephemeral, and `off` turns the listener off.
 fn listen_port(raw: &str, use_default_port: bool) -> Result<Option<u16>, Error> {

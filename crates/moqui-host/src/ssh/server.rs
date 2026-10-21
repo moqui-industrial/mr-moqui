@@ -116,6 +116,24 @@ pub fn host_key(text: &str) -> Result<PrivateKey, Error> {
     Ok(PrivateKey::from(keypair))
 }
 
+/// The host and port the SSH server binds: `ssh_host` (default `127.0.0.1`) and `ssh_port`. None while `ssh_port` is
+/// empty, which leaves the server off.
+pub(crate) fn listen_target() -> Result<Option<(String, u16)>, Error> {
+    let port_text = moqui_lib::env::get_prop_or_env("ssh_port");
+    let port_text = port_text.trim();
+    if port_text.is_empty() {
+        return Ok(None);
+    }
+    let port: u16 = port_text
+        .parse()
+        .map_err(|_| Error::new(format!("ssh_port {port_text} is not a port number")))?;
+    let host = match moqui_lib::env::get_prop_or_env("ssh_host").trim() {
+        "" => "127.0.0.1".to_string(),
+        other => other.to_string(),
+    };
+    Ok(Some((host, port)))
+}
+
 /// Start the server when `ssh_port` is set (`0` binds an ephemeral port).
 ///
 /// # Errors
@@ -128,17 +146,8 @@ pub fn start(
 ) -> Result<Option<SshServer>, Error> {
     moqui_lib::env::set_property(moqui_core::cluster::SSH_FINGERPRINT_PROPERTY, "");
     moqui_lib::env::set_property(moqui_core::cluster::SSH_ADDRESS_PROPERTY, "");
-    let port_text = moqui_lib::env::get_prop_or_env("ssh_port");
-    let port_text = port_text.trim();
-    if port_text.is_empty() {
+    let Some((host, port)) = listen_target()? else {
         return Ok(None);
-    }
-    let port: u16 = port_text
-        .parse()
-        .map_err(|_| Error::new(format!("ssh_port {port_text} is not a port number")))?;
-    let host = match moqui_lib::env::get_prop_or_env("ssh_host").trim() {
-        "" => "127.0.0.1".to_string(),
-        other => other.to_string(),
     };
     let key = host_key(&moqui_lib::env::get_prop_or_env("ssh_host_key"))?;
     let root = match moqui_lib::env::get_prop_or_env("ssh_sftp_root").trim() {

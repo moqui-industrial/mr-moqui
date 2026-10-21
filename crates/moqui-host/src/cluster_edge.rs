@@ -67,7 +67,7 @@ struct Material {
 }
 
 /// `cluster_bind_address`, else every interface: a member on another host must reach this one.
-fn bind_address() -> Result<IpAddr, HostError> {
+pub(crate) fn bind_address() -> Result<IpAddr, HostError> {
     let raw = moqui_lib::env::get_prop_or_env("cluster_bind_address");
     if raw.trim().is_empty() {
         return Ok(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
