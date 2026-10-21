@@ -1371,15 +1371,22 @@ mod tests {
         );
         assert_eq!(client.reply().await, "");
         assert!(fake.delivered.lock().unwrap().is_empty());
-        // 127.0.0.2 is not 127.0.0.1
+        // 127.0.0.2 is not 127.0.0.1; macOS routes only 127.0.0.1 unless lo0 has an alias
         let (address, _fake, _stop) = start(config("127.0.0.1/32")).await;
         let socket = tokio::net::TcpSocket::new_v4().unwrap();
-        socket.bind("127.0.0.2:0".parse().unwrap()).unwrap();
-        let mut other = Client::from(socket.connect(address).await.unwrap());
-        assert_eq!(
-            other.reply().await,
-            "554 5.7.1 mx.test does not take mail from this address"
-        );
+        match socket.bind("127.0.0.2:0".parse().unwrap()) {
+            Err(err) if err.kind() == std::io::ErrorKind::AddrNotAvailable => {
+                eprintln!("skipping the 127.0.0.2 connect: this host does not route 127.0.0.2 ({err})");
+            }
+            bound => {
+                bound.unwrap();
+                let mut other = Client::from(socket.connect(address).await.unwrap());
+                assert_eq!(
+                    other.reply().await,
+                    "554 5.7.1 mx.test does not take mail from this address"
+                );
+            }
+        }
         let mut allowed = Client::connect(address).await;
         assert_eq!(allowed.reply().await, "220 mx.test ESMTP mr-moqui");
     }
