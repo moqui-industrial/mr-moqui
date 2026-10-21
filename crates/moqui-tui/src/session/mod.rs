@@ -35,6 +35,7 @@ use crate::state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Reques
 
 mod dynamic;
 mod lists;
+mod mouse;
 mod overlays;
 mod shell;
 mod structure;
@@ -55,6 +56,8 @@ const PUSHED_COUNTS_SECONDS: u64 = 600;
 const SEARCH_MILLIS: u64 = 300;
 
 /// How long a success message stays on the message line (section 1.7).
+/// The most text a copy carries: OSC 52 is limited by terminals, 64 KiB is safe for xterm, kitty and tmux.
+const COPY_MAX: usize = 64 * 1024;
 const MESSAGE_SECONDS: u64 = 3;
 
 /// An open drop-down list.
@@ -189,6 +192,14 @@ pub struct Session {
     view_lists: BTreeMap<String, Node>,
     typed_number: String,
     drawer: Option<bool>,
+    /// The mouse (Alt+P, `TUI_MOUSE`): None until chosen or read from the shell, and on then. `mouse_told` is the
+    /// state the loop last wrote to the terminal.
+    mouse: Option<bool>,
+    mouse_told: Option<bool>,
+    /// Text a drag selected, for the loop to put on the clipboard (OSC 52); and whether a copy was made before, for
+    /// the fallback hint the first one gives.
+    copy: Option<String>,
+    copied_before: bool,
     /// The screen asked for last, asked for again after a login.
     last_location: Option<Location>,
     quit: bool,
@@ -263,6 +274,10 @@ impl Session {
             view_lists: BTreeMap::new(),
             typed_number: String::new(),
             drawer: None,
+            mouse: None,
+            mouse_told: None,
+            copy: None,
+            copied_before: false,
             last_location: None,
             quit: false,
             open: None,
@@ -819,6 +834,58 @@ impl Session {
         matches!(self.field_widget(id), Some(Widget::TextArea { editor_type, .. }) if editor_type == "md")
     }
 
+    /// Whether the client takes the mouse: on unless the user turned it off (Alt+P, `TUI_MOUSE`).
+    pub fn mouse_on(&self) -> bool {
+        self.mouse.unwrap_or(true)
+    }
+
+    /// The mouse mode to write to the terminal, once each time it changes: the loops turn the reports on or off.
+    pub fn take_mouse_mode(&mut self) -> Option<bool> {
+        let on = self.mouse_on();
+        (self.mouse_told != Some(on)).then(|| {
+            self.mouse_told = Some(on);
+            on
+        })
+    }
+
+    /// The text a drag selected, for the loop to put on the clipboard.
+    pub fn take_copy(&mut self) -> Option<String> {
+        self.copy.take()
+    }
+
+    /// Put `text` on the clipboard through the loop, and say so: the count, a cut when it was longer than OSC 52
+    /// carries, and the first time, how to fall back where the terminal does not take OSC 52.
+    pub fn copy_text(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        let total = text.chars().count();
+        let mut kept = text;
+        if kept.len() > COPY_MAX {
+            let mut end = COPY_MAX;
+            while !kept.is_char_boundary(end) {
+                end -= 1;
+            }
+            kept.truncate(end);
+        }
+        let shown = kept.chars().count();
+        let mut message = if shown < total {
+            format!("Copied {shown} of {total} characters (the clipboard takes 64 KiB).")
+        } else if total == 1 {
+            "Copied 1 character.".to_string()
+        } else {
+            format!("Copied {total} characters.")
+        };
+        if !self.copied_before {
+            message.push_str(
+                " No clipboard? Shift+drag (Option+drag on macOS) selects in the terminal; Alt+P turns the mouse off.",
+            );
+            self.copied_before = true;
+        }
+        self.copy = Some(kept);
+        self.set_message(message, false);
+    }
+
     /// A Markdown text area shows its preview rather than its source.
     pub fn previewing(&self, field: &str) -> bool {
         self.previews.contains(field)
@@ -1197,6 +1264,17 @@ impl Session {
                 self.open = Some(url);
             }
             Action::Redraw => self.redraw = true,
+            Action::Mouse => {
+                let on = !self.mouse_on();
+                self.mouse = Some(on);
+                self.keep_preference("TUI_MOUSE", on);
+                let text = if on {
+                    "Mouse on: click, scroll, drag to copy. Alt+P gives the terminal its own selection."
+                } else {
+                    "Mouse off: the terminal selects and copies. Alt+P turns the mouse on."
+                };
+                self.set_message(text.to_string(), false);
+            }
             Action::Log if self.log_offered => self.log_open = !self.log_open,
             Action::Log => self.set_message("The log is not offered in this session.".to_string(), false),
             Action::Quit => {
@@ -1553,6 +1631,9 @@ impl Session {
         let (keys, skips) = merge_keys(&KeyMap::baseline(), &overrides);
         self.keys = keys;
         self.key_skips = skips;
+        if self.mouse.is_none() {
+            self.mouse = shell.mouse;
+        }
         if self.drawer.is_none() {
             self.drawer = shell.drawer_open;
         }

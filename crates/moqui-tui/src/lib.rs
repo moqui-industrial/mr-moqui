@@ -43,7 +43,7 @@ pub use forms::{
     ComponentInfo, DynamicInfo, Extra, FieldInfo, FocusItem, FocusKind, FormInfo, Index, LinkInfo, MenuInfo, RowInfo,
     Scope, TabInfo, TreeInfo, WizardInfo,
 };
-pub use keys::{merge_keys, Action, Key, KeyMap, KeyPress, MergeSkip, ACTIONS};
+pub use keys::{merge_keys, Action, Key, KeyMap, KeyPress, MergeSkip, Mouse, MouseKind, Target, ACTIONS};
 pub use layout::{
     display_width, dotted_label, frame, frame_with, label_column_width, layout, layout_levels, layout_nodes, outline,
     outline_of, ref_id, truncate_width, width_class, wizard_back, wizard_next, wrap, Breakpoints, Frame, LabelMode,
@@ -70,6 +70,6 @@ pub use state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, 
 pub use theme::{Depth, Glyph, Role, Theme};
 #[cfg(feature = "ui")]
 pub use ui::{
-    from_revue, render_text, run_local, run_session, snapshot, Agent, AgentAnswer, AppView, LocalOptions, Screen,
-    SessionEvent, SessionOptions, AGENT_HELP, ENTER, LEAVE,
+    from_revue, render_text, run_local, run_session, snapshot, Agent, AgentAnswer, AppView, Hit, Hits, LocalOptions,
+    Screen, Selection, SessionEvent, SessionOptions, AGENT_HELP, ENTER, LEAVE, MOUSE_OFF, MOUSE_ON,
 };

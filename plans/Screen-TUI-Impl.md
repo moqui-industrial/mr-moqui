@@ -1,6 +1,6 @@
 # Screen TUI implementation plan
 
-Oct 21, 2026 · Phases 1 to 4 built (findings under each in section 5), the browser terminal (4.4) included, with SSH opened to every user (4.2, "Changed Oct 21"). Phase 5 (the mouse, with drag to select and copy) is planned and not built. This plan implements [archive/Screen-TUI-Revue.md](archive/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
+Oct 21, 2026 · Phases 1 to 5 built (findings under each in section 5): the browser terminal (4.4) included, SSH opened to every user (4.2, "Changed Oct 21"), the leftovers of Phase 4 (a second factor in the login dialog, the client address, text areas that scroll, a dialog per list row) and the mouse with drag to select and copy. What is still open is in [Remaining-Work](../Remaining-Work.md). This plan implements [archive/Screen-TUI-Revue.md](archive/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
 
 The proposal sets the architecture: a `tui` render mode emits a JSON screen model, and one Revue client interprets it and reaches the server over several channels. This plan adds four things:
 
@@ -38,7 +38,7 @@ Most of these are beyond what the proposal settles.
 
 ### 1.1 Principles
 
-- **Green screen first.** Fixed regions, dense forms with dot-leader labels, a message line, and a function-key line that names what each key does on this screen. Nothing needs a mouse. Revue gives no mouse for free, since the client paints its own cells. The mouse comes in Phase 5: a click does what Enter does on what is under it, the wheel scrolls, and a drag selects text and copies it.
+- **Green screen first.** Fixed regions, dense forms with dot-leader labels, a message line, and a function-key line that names what each key does on this screen. Nothing needs a mouse. Revue gives no mouse for free, since the client paints its own cells. The mouse came in Phase 5: a click does what Enter does on what is under it, the wheel scrolls, and a drag selects text and copies it.
 - **Lynx for links.** Up and Down move through links and fields in reading order. Right or Enter follows a link, and Left goes back. `/` finds text on the screen. `#` numbers the links (`[12]Acme Supply Co`), so typing `12` then Enter follows that link. `=` shows where the current link goes and the browser URL of the screen. HTML content gets a numbered References list at its end.
 - **Same screens, same terms.** The TUI renders the XML Screens as written. There are no TUI-only screens and no TUI attributes in the XSD for the first release. Where a screen has gone custom for the browser (a `.qvue` file, inline `qvt` text), it adds a `tui` text of its own (D10, section 2.9). It does not get a separate TUI screen. The BOSS style guide's widget rules (`runtime/component/ironstone-boss/plan/style-guide.md` §4) are the visual source: one primary action per form, status as a chip, numbers right-aligned, a list's first column links to the record.
 - **Color is never the only signal.** Every color cue has a glyph or text cue. `NO_COLOR` and monochrome terminals stay fully usable, and an ASCII mode replaces box drawing and symbol glyphs.
@@ -1235,6 +1235,63 @@ where it does not; Alt+P gives the terminal its own selection back.
   Alt+P writes the mode sequences and the preference.
 - `session_loop.rs`: the mode sequences in `ENTER` and `LEAVE`, and a click as bytes through `run_session`.
 - The browser page's OSC 52 handler by hand, in Chrome and Firefox.
+
+
+#### Leftovers (Oct 21, 2026)
+
+Built after Phase 4, from Remaining-Work and the Phase 3 "Open" list.
+
+- **Second factor.** The login dialog takes the code. A right password answers `LinkError::Code` with the account's
+  factors, and the dialog moves to Code, keeping the password only until the try with the code. In process,
+  `user::login_with_code` checks the password and the code in one request, as `/rest/login` does; over HTTP it is
+  `/rest/login` with `code`. Alt+S sends a code to the first factor that takes one (`user::send_login_code`; over HTTP,
+  `/rest/login` and then `sendOtp` with that session's cookie and CSRF token). A right password that wants a code is
+  not a refused login against `MAX_LOGIN_FAILURES`; a wrong code is.
+- **Client address.** `user::with_client_ip` gives a login with no HTTP request the address `ipAllowed` is checked
+  against. The SSH password login and the dialog login over SSH pass the peer; a browser terminal session has no
+  dialog.
+- **The agent and the login dialog.** While it is open, its fields are the elements `login.username`,
+  `login.password` and `login.code`, and its button is `login.submit`; `set` fills them and `do Log in` sends the
+  dialog. The password never shows in an answer.
+- **Text areas** scroll with their cursor. PgUp and PgDn (and later the wheel) move by their rows, with `▲` and `▼` on
+  the bar; the Markdown preview scrolls too.
+- **A `container-dialog` in a list cell** is the row's `dialog` node. `ScreenTui.js` captures the writes of its
+  statements (`$captured`, a `$sink` the writers use), so the body comes with the row's values. A section inside such a
+  dialog is an `error` node. F10 offers the dialog for the current row.
+- **`apps.xml`** answers 401 with no user, through `ec.web.sendJsonError`, as `webroot.xml` does.
+- **Found on the way.** The Gallery transitions wrote `<message message="…"/>`, but the XSD's `message` takes its text
+  as content, so their messages were empty in every mode. They now write the text as content.
+
+#### Phase 5 findings
+
+Recorded 2026-10-21. Built as planned above, with these decisions:
+
+- `Target` and `Mouse` are in `keys.rs`, so `Session::click` (`session/mouse.rs`) builds without Revue. The painter
+  records areas through `Painter::target` (the cells a draw wrote), `area` and `canvas_area`. `clear`, which every
+  overlay calls, records a `Block`, so nothing under an overlay takes a click. `AppView` keeps the hits and the frame's
+  characters from its last `render`, and draws the selection in reverse video over the frame.
+- **A click on a list row** makes it the current row, and a double click is Enter on it. The plan had a single click
+  open the row, but then picking a row would leave the screen. The first column of a row with a link of its own, and a
+  link in a cell, follow on a single click, as the browser's record link does.
+- **Overlays.** A click on a drop-down choice, menu item, palette row, confirm choice or picker day sets that overlay's
+  index and presses Enter, so it takes the keys' path. While such a popup is open, a click elsewhere does nothing.
+- **The wheel** sets a free scroll that `draw` keeps until a key or a click.
+- **Local mode** keeps Revue's `mouse_capture(false)` and writes `MOUSE_ON` and `MOUSE_OFF` itself, since Revue fixes
+  capture when the app is built. Crossterm parses the reports either way. The OSC 52 text goes to stdout between
+  Revue's frames.
+- The base64 for OSC 52 is a local function in `ui/encode.rs`, so no new crate is needed.
+
+**Tests.**
+- `tests/mouse.rs` (9): the hit map under chosen cells; clicks on a link, a field, a list row, a row link, a key line
+  entry and a drop-down choice; a dialog's clicks and one outside it; the wheel; a drag in reading order and as a
+  rectangle; a double-click word; Alt+P.
+- `decode.rs`: SGR and X10, split reads, past column 223.
+- `session_loop.rs`: the modes, a drag's OSC 52 and a click as SGR bytes through `run_session`.
+- `encode.rs`: base64.
+- `tui_screens` keys: the key line names Alt+P.
+
+**Not checked live.** No real terminal or browser has run Phase 5 yet: kitty, GNOME Terminal (the fallback message),
+local mode's crossterm reports, and the browser's OSC 52 in Chrome and Firefox. These are in Remaining-Work.
 
 ---
 

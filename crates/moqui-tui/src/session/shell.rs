@@ -700,14 +700,19 @@ impl Session {
 
     /// The drawer's choice is kept as the user's preference, as qvt keeps `QUASAR_LEFT_OPEN`.
     pub(super) fn keep_drawer(&mut self, open: bool) {
+        self.keep_preference("TUI_DRAWER_OPEN", open);
+    }
+
+    /// A choice of the user's kept on the server: the drawer, the mouse.
+    pub(super) fn keep_preference(&mut self, key: &str, value: bool) {
         self.lanes.push(
             Purpose::Preference,
             LinkCall::Json {
                 url: "/apps/setPreference".to_string(),
                 method: "post".to_string(),
                 parameters: BTreeMap::from([
-                    ("preferenceKey".to_string(), "TUI_DRAWER_OPEN".to_string()),
-                    ("preferenceValue".to_string(), open.to_string()),
+                    ("preferenceKey".to_string(), key.to_string()),
+                    ("preferenceValue".to_string(), value.to_string()),
                 ]),
             },
         );

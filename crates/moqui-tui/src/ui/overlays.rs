@@ -17,7 +17,7 @@
 
 use revue::layout::Rect;
 
-use crate::keys::ACTIONS;
+use crate::keys::{Action, ACTIONS};
 use crate::layout::{display_width, layout_nodes, truncate_width, Breakpoints, WidthClass};
 use crate::model::{walk, Node};
 use crate::session::{Columns, Editor, Menu, Overlay, Session};
@@ -25,7 +25,7 @@ use crate::state::ConfirmKind;
 use crate::theme::Role;
 
 use super::draw::draw_piece;
-use super::paint::{Look, Painter};
+use super::paint::{Look, Painter, Target};
 
 pub fn draw(paint: &mut Painter, session: &Session, breakpoints: &Breakpoints, canvas: Rect, class: WidthClass) {
     for overlay in session.overlays() {
@@ -125,10 +125,10 @@ pub fn draw(paint: &mut Painter, session: &Session, breakpoints: &Breakpoints, c
                 if y + 1 < rect.y + rect.height {
                     let mut x = rect.x + 2;
                     let right = rect.x + rect.width.saturating_sub(2);
-                    for (choice, button) in confirm.choices().iter().zip(&choices) {
+                    for (at, (choice, button)) in confirm.choices().iter().zip(&choices).enumerate() {
                         let room = usize::from(right.saturating_sub(x));
                         let look = Look::role(Role::Primary).focused(*choice == confirm.choice());
-                        paint.fixed(x, y, button, look, room);
+                        paint.target(Target::ConfirmChoice(at), |paint| paint.fixed(x, y, button, look, room));
                         x = x.saturating_add(u16::try_from(display_width(button) + 2).unwrap_or(u16::MAX));
                     }
                 }
@@ -163,10 +163,21 @@ pub fn draw(paint: &mut Painter, session: &Session, breakpoints: &Breakpoints, c
                         "Enter=Log in  Tab=Next  Esc=Cancel".to_string()
                     },
                 ];
-                if !login.error.is_empty() {
+                let error = !login.error.is_empty();
+                if error {
                     lines.insert(0, format!("! {}", login.error));
                 }
-                small_box(paint, canvas, "Log in", &lines);
+                let rect = small_box(paint, canvas, "Log in", &lines);
+                // The fields, and the key hint line as the button.
+                let first = rect.y + 1 + u16::from(error);
+                let inner = rect.width.saturating_sub(2);
+                for at in 0..3 {
+                    paint.area(
+                        Rect::new(rect.x + 1, first + at, inner, 1),
+                        Target::LoginField(usize::from(at)),
+                    );
+                }
+                paint.area(Rect::new(rect.x + 1, first + 4, inner, 1), Target::LoginField(3));
             }
             Overlay::Drawer(_) => {}
         }
@@ -336,6 +347,7 @@ fn dropdown(paint: &mut Painter, session: &Session, canvas: Rect) {
         let look = Look::role(Role::Text).focused(at == drop.at);
         paint.fill_row(x + 1, row, usize::from(width - 2), look);
         paint.fixed(x + 1, row, &text, look, usize::from(width - 2));
+        paint.area(Rect::new(x + 1, row, width - 2, 1), Target::Choice(at));
         row += 1;
     }
     if choices.is_empty() {
@@ -384,6 +396,7 @@ fn date_picker(paint: &mut Painter, picker: &crate::session::Picker, canvas: Rec
             Look::role(Role::Text)
         };
         paint.fixed(col, row, &format!("{day:>2}"), look, 2);
+        paint.area(Rect::new(col, row, 2, 1), Target::PickerDay(date));
     }
     paint.fixed(
         x + 1,
@@ -439,6 +452,15 @@ fn help(paint: &mut Painter, session: &Session, canvas: Rect) {
     lines.push(format!("{:<16} Alt+1…Alt+9", "Tab 1 to 9"));
     lines.push(String::new());
     lines.push("Shift+Left/Right scrolls a wide list. Any key closes.".to_string());
+    let mouse = keys
+        .chords(Action::Mouse)
+        .first()
+        .map_or_else(|| "Alt+P".to_string(), |press| press.label());
+    lines.push(if session.mouse_on() {
+        format!("Mouse: click, wheel, drag to copy; {mouse} gives the terminal its own selection.")
+    } else {
+        format!("Mouse off: the terminal selects and copies; {mouse} turns it on.")
+    });
     let room = usize::from(canvas.height.saturating_sub(2));
     if lines.len() > room {
         lines.truncate(room);
@@ -476,6 +498,7 @@ fn menu_box(paint: &mut Painter, menu: &Menu, canvas: Rect) {
         let look = Look::role(Role::Text).focused(at == menu.at);
         paint.fill_row(rect.x + 1, y, usize::from(width - 2), look);
         paint.fixed(rect.x + 2, y, &item.label, look, usize::from(width - 4));
+        paint.area(Rect::new(rect.x + 1, y, width - 2, 1), Target::MenuItem(at));
     }
 }
 
@@ -487,29 +510,35 @@ fn palette(paint: &mut Painter, session: &Session, canvas: Rect) {
     let rows = session.palette_rows();
     let width = canvas.width.min(80).max(canvas.width * 7 / 10).min(canvas.width);
     let room = usize::from(canvas.height.saturating_sub(4)).max(1);
-    let mut lines: Vec<(String, Look, bool)> = Vec::new();
+    let mut lines: Vec<(String, Look, bool, Option<usize>)> = Vec::new();
     let mut group = "";
     for (at, row) in rows.iter().enumerate() {
         if row.group != group {
             group = &row.group;
-            lines.push((group.to_string(), Look::role(Role::Muted).bold(), false));
+            lines.push((group.to_string(), Look::role(Role::Muted).bold(), false, None));
         }
         let text = if row.subtitle.is_empty() {
             format!("  {}", row.title)
         } else {
             format!("  {}  · {}", row.title, row.subtitle)
         };
-        lines.push((text, Look::role(Role::Text).focused(at == palette.at), at == palette.at));
+        lines.push((
+            text,
+            Look::role(Role::Text).focused(at == palette.at),
+            at == palette.at,
+            Some(at),
+        ));
     }
     if rows.is_empty() {
         lines.push((
             "  Nothing matches yet".to_string(),
             Look::role(Role::Muted).italic(),
             false,
+            None,
         ));
     }
     // Keep the highlighted row in view.
-    let current = lines.iter().position(|(_, _, on)| *on).unwrap_or(0);
+    let current = lines.iter().position(|(_, _, on, _)| *on).unwrap_or(0);
     let start = current.saturating_sub(room.saturating_sub(1));
     let shown: Vec<_> = lines.into_iter().skip(start).take(room).collect();
     let height = u16::try_from(shown.len() + 3).unwrap_or(12).min(canvas.height);
@@ -525,10 +554,13 @@ fn palette(paint: &mut Painter, session: &Session, canvas: Rect) {
         Look::role(Role::Field),
         usize::from(width - 4),
     );
-    for (row, (text, look, _)) in shown.iter().enumerate() {
+    for (row, (text, look, _, at)) in shown.iter().enumerate() {
         let y = rect.y + 2 + u16::try_from(row).unwrap_or(0);
         paint.fill_row(rect.x + 1, y, usize::from(width - 2), *look);
         paint.fixed(rect.x + 2, y, text, *look, usize::from(width - 4));
+        if let Some(at) = at {
+            paint.area(Rect::new(rect.x + 1, y, width - 2, 1), Target::PaletteRow(*at));
+        }
     }
 }
 

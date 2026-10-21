@@ -14,8 +14,9 @@ along with this software (see the LICENSE.md file). If not, see
 <!-- The browser terminal, served by Terminal.xml in the qvue render mode. xterm.js and its fit addon load the first time the
     page opens (/libs/xterm). The socket (/termws, crate termws.rs) carries the terminal's bytes as binary messages both ways
     and the size as {"type":"resize","cols":N,"rows":N}, the first message. The terminal fills the page below the header and
-    follows its size. A link the client writes (OSC 8, as `o` "Open in browser" does) opens in a new tab. When the socket
-    closes, the reason the server gave shows with Reconnect. -->
+    follows its size. A link the client writes (OSC 8, as `o` "Open in browser" does) opens in a new tab. Text the client
+    copies (a mouse drag, OSC 52) goes to the clipboard; where the browser refuses, it shows in a dialog to copy by hand.
+    When the socket closes, the reason the server gave shows with Reconnect. -->
 <template><div class="m-terminal">
 <!-- the height is on this inner element: the shell's m-subscreens-active gives the root height:100%, which wins over the
     root's own style and, in a page with no fixed height, is only as tall as the content -->
@@ -28,6 +29,15 @@ along with this software (see the LICENSE.md file). If not, see
     </div>
     <div v-else-if="failed" class="m-terminal-closed q-pa-sm text-negative">{{failed}}</div>
 </div>
+<q-dialog v-model="copyOpen" @hide="focus">
+    <q-card style="min-width: 360px; max-width: 90vw">
+        <q-card-section class="text-subtitle1">{{labels.copyByHand}}</q-card-section>
+        <q-card-section class="q-pt-none">
+            <textarea ref="copyText" readonly :value="copyText" rows="8" style="width: 100%; font-family: monospace"></textarea>
+        </q-card-section>
+        <q-card-actions align="right"><q-btn flat no-caps :label="labels.close" v-close-popup></q-btn></q-card-actions>
+    </q-card>
+</q-dialog>
 </div></template>
 
 <script>
@@ -40,9 +50,11 @@ const localize = (text) => (moqui.l10n ? moqui.l10n.localize(text) : text);
 
 module.exports = {
     data() {
-        return { height: 400, closed: false, reason: "", failed: "",
+        return { height: 400, closed: false, reason: "", failed: "", copyOpen: false, copyText: "",
             labels: { reconnect: localize("Reconnect"), ended: localize("The terminal session ended."),
-                notLoaded: localize("The terminal could not load.") } };
+                notLoaded: localize("The terminal could not load."),
+                copyByHand: localize("The browser did not allow the copy. Select the text and copy it:"),
+                close: localize("Close") } };
     },
     computed: {
         dark() { return this.$q.dark.isActive; }
@@ -99,6 +111,25 @@ module.exports = {
             term.loadAddon(this.fitAddon);
             term.open(this.$refs.screen);
             this.term = term;
+            // A copy from the client (a drag selects text, OSC 52 "c;<base64>"): to the clipboard, which a browser allows
+            // shortly after the mouse release that ended the drag, on a secure page or localhost; else a dialog to copy.
+            term.parser.registerOscHandler(52, (data) => {
+                const at = data.indexOf(";");
+                if (at < 0) return true;
+                let text;
+                try {
+                    const bytes = Uint8Array.from(atob(data.slice(at + 1)), (ch) => ch.charCodeAt(0));
+                    text = new TextDecoder().decode(bytes);
+                } catch (e) { return true; }
+                const byHand = () => {
+                    this.copyText = text;
+                    this.copyOpen = true;
+                    this.$nextTick(() => { if (this.$refs.copyText) this.$refs.copyText.select(); });
+                };
+                if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).catch(byHand);
+                else byHand();
+                return true;
+            });
             const encoder = new TextEncoder();
             term.onData((data) => this.send(encoder.encode(data)));
             // the bytes of a mouse report in the X10 encoding, one per character

@@ -539,6 +539,8 @@ pub struct LaidCol {
 pub struct LaidTabs {
     pub id: String,
     pub items: Vec<(String, bool)>,
+    /// Each tab's url, for a click.
+    pub urls: Vec<String>,
 }
 
 impl Piece {
@@ -947,6 +949,7 @@ fn place_subscreens(
                 pieces.push(Piece::Tabs(LaidTabs {
                     id: id.to_string(),
                     items: items.iter().map(|item| (item.title.clone(), item.active)).collect(),
+                    urls: items.iter().map(|item| item.url.clone()).collect(),
                 }));
             }
             pieces.extend(place_nodes(c, ctx, width));

@@ -32,18 +32,31 @@ use crate::session::Session;
 use crate::theme::{Glyph, Role, Theme};
 
 use super::overlays;
-use super::paint::{Look, Painter, Spots};
+use super::paint::{Hits, Look, Painter, Spots, Target};
+
+/// What the view keeps between frames that a frame reads and writes: the canvas scroll (free while the wheel moved
+/// it), and the click areas it records.
+pub struct Kept<'a> {
+    pub scroll: &'a Shared<usize>,
+    pub free_scroll: bool,
+    pub hits: &'a mut Hits,
+}
 
 /// Draw the whole screen.
 pub fn draw(
     session: &Session,
     theme: &Theme,
     breakpoints: &Breakpoints,
-    scroll: &Shared<usize>,
+    kept: Kept,
     clock: Option<&str>,
     log: Option<&std::collections::VecDeque<String>>,
     ctx: &mut RenderContext,
 ) {
+    let Kept {
+        scroll,
+        free_scroll,
+        hits,
+    } = kept;
     let width = ctx.area.width;
     let height = ctx.area.height;
     if width < 10 || height < 3 {
@@ -73,6 +86,8 @@ pub fn draw(
         left: 0,
         right: width,
         spots: &mut spots,
+        hits,
+        aim: None,
     };
     title_line(&mut paint, session, &framed, clock);
     if roomy {
@@ -89,6 +104,13 @@ pub fn draw(
     let body_rows = usize::from(body_bottom.saturating_sub(body_top));
     let target = focus_rows(&laid, session);
     let mut top = scroll.get().min(laid.height().saturating_sub(1));
+    // The wheel scrolled: the canvas stays where it went, no further than its last page, until a key or a click.
+    let target = if free_scroll {
+        top = top.min(laid.height().saturating_sub(body_rows));
+        None
+    } else {
+        target
+    };
     if let Some((y, h)) = target {
         if y < top {
             top = y;
@@ -211,6 +233,11 @@ fn title_line(paint: &mut Painter, session: &Session, framed: &Frame, clock: Opt
     };
     let room = width.saturating_sub(display_width(&right) + 1);
     paint.fixed(0, 0, &truncate_width(&left, room), Look::role(Role::Text).bold(), room);
+    // A click on the crumbs is the palette; on the `≡` of a hidden drawer, the drawer.
+    paint.area(Rect::new(0, 0, u16::try_from(room).unwrap_or(0), 1), Target::Title);
+    if framed.drawer == 0 {
+        paint.area(Rect::new(1, 0, 1, 1), Target::DrawerToggle);
+    }
     let x = u16::try_from(width.saturating_sub(display_width(&right))).unwrap_or(0);
     paint.fixed(x, 0, &right, Look::role(Role::Muted), display_width(&right));
 }
@@ -241,6 +268,7 @@ fn drawer(paint: &mut Painter, session: &Session, framed: &Frame, top: u16, bott
     };
     let rows = session.drawer_rows();
     let focus = session.drawer_focus();
+    paint.area(Rect::new(0, top, width, bottom.saturating_sub(top)), Target::Block);
     for row in top..bottom {
         paint.fill_row(0, row, usize::from(width), Look::default());
         let side = if paint.theme.ascii { "|" } else { "│" };
@@ -280,6 +308,9 @@ fn drawer(paint: &mut Painter, session: &Session, framed: &Frame, top: u16, bott
             look.focused(focus == Some(at)),
             usize::from(width.saturating_sub(1)),
         );
+        if !heading {
+            paint.area(Rect::new(0, row, width.saturating_sub(1), 1), Target::Drawer(at));
+        }
     }
 }
 
@@ -382,8 +413,10 @@ fn key_line(paint: &mut Painter, session: &Session, row: u16, width: u16) {
         Action::Quit,
         Action::Palette,
         Action::QuickCreate,
+        Action::Mouse,
     ]);
     let mut line = String::new();
+    let mut entries = Vec::new();
     for action in actions {
         let Some(hint) = keys.hint(action) else {
             continue;
@@ -392,10 +425,18 @@ fn key_line(paint: &mut Painter, session: &Session, row: u16, width: u16) {
             break;
         }
         line.push(' ');
+        entries.push((display_width(&line), display_width(&hint), action));
         line.push_str(&hint);
         line.push(' ');
     }
     paint.fixed(0, row, &line, Look::role(Role::Muted), usize::from(width));
+    // A click on an entry presses its key.
+    for (start, used, action) in entries {
+        let (Ok(start), Ok(used)) = (u16::try_from(start), u16::try_from(used)) else {
+            continue;
+        };
+        paint.area(Rect::new(start, row, used, 1), Target::KeyLine(action));
+    }
 }
 
 // ---- the focus row, for scrolling ----
@@ -532,9 +573,11 @@ pub fn draw_piece(paint: &mut Painter, session: &Session, piece: &Piece, x: u16,
         Piece::Status(status) => draw_status(paint, status, x, y),
         Piece::Lines(lines) => {
             let focused = session.focus_id() == lines.id;
-            for (at, line) in lines.lines.iter().enumerate() {
-                draw_line(paint, line, x, y + at, focused);
-            }
+            paint.target(Target::Focus(lines.id.clone()), |paint| {
+                for (at, line) in lines.lines.iter().enumerate() {
+                    draw_line(paint, line, x, y + at, focused);
+                }
+            });
         }
         Piece::Tabs(tabs) => {
             let mut col = x;
@@ -545,7 +588,10 @@ pub fn draw_piece(paint: &mut Painter, session: &Session, piece: &Piece, x: u16,
                 } else {
                     Look::role(Role::Text)
                 };
-                let used = paint.text(col, y, &text, look, usize::from(paint.right.saturating_sub(col)));
+                let url = tabs.urls.get(at).cloned().unwrap_or_default();
+                let used = paint.target(Target::Tab(url), |paint| {
+                    paint.text(col, y, &text, look, usize::from(paint.right.saturating_sub(col)))
+                });
                 col = col.saturating_add(u16::try_from(used + 2).unwrap_or(u16::MAX));
             }
         }
@@ -611,6 +657,9 @@ fn draw_box(paint: &mut Painter, session: &Session, laid: &LaidBox, x: u16, y: u
         (false, false) => format!(" {mark} {} ", laid.title),
     };
     paint.frame(x, y, laid.w, height, &title, edge);
+    if laid.collapsible && !title.is_empty() {
+        paint.canvas_area(x + 2, y, display_width(&title), 1, Target::Focus(laid.id.clone()));
+    }
     if laid.collapsible && session.focus_id() == laid.id && !title.is_empty() {
         let width = display_width(&title);
         paint.text(x + 2, y, &title, Look::role(Role::Text).bold().reverse(), width);
@@ -635,10 +684,16 @@ fn draw_box(paint: &mut Painter, session: &Session, laid: &LaidBox, x: u16, y: u
 
 fn draw_form_line(paint: &mut Painter, session: &Session, line: &FormLine, x: u16, y: usize) -> usize {
     match line {
-        FormLine::Field(field) => draw_field(paint, session, field, x, y),
+        FormLine::Field(field) => paint.target(Target::Focus(field.id.clone()), |paint| {
+            draw_field(paint, session, field, x, y)
+        }),
         FormLine::Cells(cells) => cells
             .iter()
-            .map(|(cell_x, field)| draw_field(paint, session, field, x + cell_x, y))
+            .map(|(cell_x, field)| {
+                paint.target(Target::Focus(field.id.clone()), |paint| {
+                    draw_field(paint, session, field, x + cell_x, y)
+                })
+            })
             .max()
             .unwrap_or(1),
         FormLine::Buttons(items) => {
@@ -1172,11 +1227,13 @@ fn draw_inline(paint: &mut Painter, session: &Session, items: &[Inline], x: u16,
             _ => String::new(),
         };
         let room = usize::from(paint.right.saturating_sub(col));
-        let used = if super::paint::safe_link(&url) {
-            paint.link_text(col, y, &text, look.focused(focused), room, &url)
-        } else {
-            paint.text(col, y, &text, look.focused(focused), room)
-        };
+        let used = paint.target(Target::Focus(item.id().to_string()), |paint| {
+            if super::paint::safe_link(&url) {
+                paint.link_text(col, y, &text, look.focused(focused), room, &url)
+            } else {
+                paint.text(col, y, &text, look.focused(focused), room)
+            }
+        });
         col = col.saturating_add(u16::try_from(used + 2).unwrap_or(u16::MAX));
     }
 }
@@ -1235,6 +1292,18 @@ fn draw_list(paint: &mut Painter, session: &Session, laid: &LaidList, x: u16, y:
         }
         let text = fit(&title, column.width, column.right);
         paint.text(col, y, &text, Look::role(Role::Text).bold(), column.width);
+        if !source.order_by.is_empty() {
+            paint.canvas_area(
+                col,
+                y,
+                column.width,
+                1,
+                Target::ListSort {
+                    list: laid.id.clone(),
+                    column: *at,
+                },
+            );
+        }
         col += u16::try_from(column.width + 1).unwrap_or(0);
     }
     if scroll > 0 {
@@ -1266,6 +1335,16 @@ fn draw_list(paint: &mut Painter, session: &Session, laid: &LaidList, x: u16, y:
         let row_y = y + 2 + laid.row_top(at);
         let height = laid.heights.get(at).copied().unwrap_or(1);
         let is_current = focused && at == current;
+        paint.canvas_area(
+            x,
+            row_y,
+            used.min(room),
+            height,
+            Target::ListRow {
+                list: laid.id.clone(),
+                row: at,
+            },
+        );
         if is_current {
             for line in 0..height {
                 paint.text(
@@ -1286,6 +1365,16 @@ fn draw_list(paint: &mut Painter, session: &Session, laid: &LaidList, x: u16, y:
             };
             let on = selected.is_some_and(|set| set.contains(id));
             paint.text(col, row_y, if on { "[x]" } else { "[ ]" }, Look::role(Role::Field), 3);
+            paint.canvas_area(
+                col,
+                row_y,
+                3,
+                1,
+                Target::ListSelect {
+                    list: laid.id.clone(),
+                    row: at,
+                },
+            );
             col += 4;
         }
         for column_at in &fits {
@@ -1294,13 +1383,40 @@ fn draw_list(paint: &mut Painter, session: &Session, laid: &LaidList, x: u16, y:
                 for (line, part) in cell.parts().into_iter().enumerate().take(height) {
                     let (text, look) = cell_part(paint, session, part);
                     let look = if is_current { look.on(Role::Selection) } else { look };
-                    paint.text(
-                        col,
-                        row_y + line,
-                        &fit(&text, column.width, column.right),
-                        look,
-                        column.width,
-                    );
+                    // A link of a cell is its own target over the row's: a click follows that link. The first column
+                    // of a row with a link of its own is that link (the record, as the browser's first column).
+                    let link = match part {
+                        Cell::Node(node) => match node.as_ref() {
+                            Node::Link { id, .. } => Some(id.clone()),
+                            _ => None,
+                        },
+                        _ if *column_at == 0 && crate::link::row_link(row).is_some() => Some(String::new()),
+                        _ => None,
+                    };
+                    let draw = |paint: &mut Painter| {
+                        paint.text(
+                            col,
+                            row_y + line,
+                            &fit(&text, column.width, column.right),
+                            look,
+                            column.width,
+                        )
+                    };
+                    match link {
+                        Some(link) => {
+                            paint.target(
+                                Target::RowLink {
+                                    list: laid.id.clone(),
+                                    row: at,
+                                    link,
+                                },
+                                draw,
+                            );
+                        }
+                        None => {
+                            draw(paint);
+                        }
+                    }
                 }
             }
             col += u16::try_from(column.width + 1).unwrap_or(0);
@@ -1430,7 +1546,13 @@ fn draw_tree(paint: &mut Painter, session: &Session, tree: &LaidTree, x: u16, y:
         } else {
             Look::role(Role::Primary).underline()
         };
-        paint.text(x, y + index, &text, look.focused(focused && index == at), room);
+        paint.target(
+            Target::TreeRow {
+                tree: tree.id.clone(),
+                row: index,
+            },
+            |paint| paint.text(x, y + index, &text, look.focused(focused && index == at), room),
+        );
     }
 }
 

@@ -30,8 +30,12 @@ use crate::theme::{sgr_color, Depth, Rgb};
 
 /// The alternate screen, a hidden cursor, bracketed paste, and a clear screen; no mouse.
 pub const ENTER: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[0m\x1b[2J";
-/// What [`ENTER`] turned on, off again, and the user's own screen back.
-pub const LEAVE: &[u8] = b"\x1b]8;;\x1b\\\x1b[0m\x1b[?2004l\x1b[?25h\x1b[?1049l";
+/// What [`ENTER`] and [`MOUSE_ON`] turned on, off again, and the user's own screen back.
+pub const LEAVE: &[u8] = b"\x1b[?1006l\x1b[?1002l\x1b]8;;\x1b\\\x1b[0m\x1b[?2004l\x1b[?25h\x1b[?1049l";
+/// Mouse reports while a button is down (`?1002`, so a drag is seen; not `?1003`, a report for every move), in SGR
+/// coordinates (`?1006`), which have no 223-column limit. Written when the session's mouse is on (Phase 5).
+pub const MOUSE_ON: &[u8] = b"\x1b[?1002h\x1b[?1006h";
+pub const MOUSE_OFF: &[u8] = b"\x1b[?1006l\x1b[?1002l";
 
 /// The terminal at the other end: its size, its colors, and the frame it shows.
 pub struct Screen {
@@ -177,5 +181,48 @@ impl Screen {
         params.extend(look.fg.and_then(|rgb| sgr_color(self.depth, rgb, false)));
         params.extend(look.bg.and_then(|rgb| sgr_color(self.depth, rgb, true)));
         let _ = write!(out, "\x1b[{}m", params.join(";"));
+    }
+}
+
+/// `text` for the terminal's clipboard: OSC 52 to the clipboard selection (`c`), base64, ended with ST. The terminal
+/// decides whether it takes it (kitty, WezTerm, foot, Windows Terminal and xterm with its window ops do; VTE terminals
+/// do not).
+pub fn osc52(text: &str) -> Vec<u8> {
+    let mut out = b"\x1b]52;c;".to_vec();
+    out.extend(base64(text.as_bytes()));
+    out.extend(b"\x1b\\");
+    out
+}
+
+/// Standard base64 with padding, for [`osc52`].
+fn base64(bytes: &[u8]) -> Vec<u8> {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let triple = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (at, byte)| acc | (u32::from(*byte) << (16 - 8 * at)));
+        for at in 0..4 {
+            if at <= chunk.len() {
+                out.push(ALPHABET[((triple >> (18 - 6 * at)) & 63) as usize]);
+            } else {
+                out.push(b'=');
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn osc52_is_base64_with_padding() {
+        assert_eq!(osc52("Man"), b"\x1b]52;c;TWFu\x1b\\".to_vec());
+        assert_eq!(osc52("Ma"), b"\x1b]52;c;TWE=\x1b\\".to_vec());
+        assert_eq!(osc52("M"), b"\x1b]52;c;TQ==\x1b\\".to_vec());
+        assert_eq!(osc52("é\n"), b"\x1b]52;c;w6kK\x1b\\".to_vec());
     }
 }

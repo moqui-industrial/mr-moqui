@@ -158,10 +158,12 @@ pub enum Action {
     Tray,
     /// Edit the focused row of a list.
     EditRow,
+    /// The mouse on or off: off gives the terminal its own selection and menu back.
+    Mouse,
 }
 
 /// Every action, in the order the help lists them.
-pub const ACTIONS: [Action; 33] = [
+pub const ACTIONS: [Action; 34] = [
     Action::Help,
     Action::Next,
     Action::Prev,
@@ -194,6 +196,7 @@ pub const ACTIONS: [Action; 33] = [
     Action::Messages,
     Action::Tray,
     Action::EditRow,
+    Action::Mouse,
     Action::Quit,
 ];
 
@@ -235,6 +238,7 @@ impl Action {
             Self::Messages => "messages".into(),
             Self::Tray => "tray".into(),
             Self::EditRow => "edit-row".into(),
+            Self::Mouse => "mouse".into(),
         }
     }
 
@@ -275,6 +279,7 @@ impl Action {
             Self::Messages => "Messages",
             Self::Tray => "Tray",
             Self::EditRow => "Edit row",
+            Self::Mouse => "Mouse",
         }
     }
 
@@ -331,6 +336,7 @@ impl KeyMap {
             (ch('o'), Action::OpenBrowser),
             (KeyPress::with_ctrl(Key::Char('l')), Action::Redraw),
             (KeyPress::with_alt(Key::Char('l')), Action::Log),
+            (KeyPress::with_alt(Key::Char('p')), Action::Mouse),
             (KeyPress::with_ctrl(Key::Char('q')), Action::Quit),
             (KeyPress::with_ctrl(Key::Char('k')), Action::Palette),
             (ch(':'), Action::Palette),
@@ -534,4 +540,93 @@ fn parse_key(name: &str) -> Option<Key> {
             }
         }
     })
+}
+
+/// What a click on a part of the frame acts on (plans/Screen-TUI-Impl.md Phase 5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// A focusable by its focus key: a link, a button, a field (its label and its value), a dialog or menu button, a
+    /// box title that opens and closes, a component.
+    Focus(String),
+    /// A row of a list, and its selection box.
+    ListRow {
+        list: String,
+        row: usize,
+    },
+    ListSelect {
+        list: String,
+        row: usize,
+    },
+    /// A column title: its sort. The index is the list's column.
+    ListSort {
+        list: String,
+        column: usize,
+    },
+    /// A link in a list row's cell: the row becomes the current one, and the link is followed; an empty link is the
+    /// row's own (its first column).
+    RowLink {
+        list: String,
+        row: usize,
+        link: String,
+    },
+    /// A subscreen tab: its url.
+    Tab(String),
+    TreeRow {
+        tree: String,
+        row: usize,
+    },
+    Drawer(usize),
+    /// The `≡` of a hidden drawer.
+    DrawerToggle,
+    /// The crumbs of the title line: the palette.
+    Title,
+    /// An entry of the key line: its action.
+    KeyLine(Action),
+    /// The choices of an open overlay, by their index there.
+    Choice(usize),
+    MenuItem(usize),
+    PaletteRow(usize),
+    ConfirmChoice(usize),
+    LoginField(usize),
+    PickerDay(jiff::civil::Date),
+    /// An overlay's area: a click there that is on nothing else does nothing, and never reaches the screen under it.
+    Block,
+}
+
+/// A mouse report, as every channel gives it (plans/Screen-TUI-Impl.md Phase 5): SGR or X10 bytes, or Revue's event in
+/// local mode. Columns and rows count from 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mouse {
+    pub kind: MouseKind,
+    /// 0 left, 1 middle, 2 right.
+    pub button: u8,
+    pub column: u16,
+    pub row: u16,
+    pub alt: bool,
+    pub ctrl: bool,
+    pub shift: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseKind {
+    Press,
+    /// Motion with a button held.
+    Drag,
+    Release,
+    WheelUp,
+    WheelDown,
+}
+
+impl Mouse {
+    pub fn at(kind: MouseKind, column: u16, row: u16) -> Self {
+        Self {
+            kind,
+            button: 0,
+            column,
+            row,
+            alt: false,
+            ctrl: false,
+            shift: false,
+        }
+    }
 }

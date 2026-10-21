@@ -132,6 +132,8 @@ pub struct ShellInfo {
     pub counts: BTreeMap<String, i64>,
     /// The user's choice of the drawer (`TUI_DRAWER_OPEN`), None when not made.
     pub drawer_open: Option<bool>,
+    /// The user's choice of the mouse (`TUI_MOUSE`), None when not made: then it is on.
+    pub mouse: Option<bool>,
 }
 
 /// A quick create item or a palette action: what it is called, and the screen or form it opens.
