@@ -45,6 +45,8 @@ const PIPELINE_DEPTH: usize = 256;
 const QUIET_BEFORE_PEEK: Duration = Duration::from_millis(20);
 /// Bytes asked of the socket at a time.
 const READ_CHUNK: usize = 16 * 1024;
+/// How long a write waits for room before it reads what the server sent meanwhile (see [`Wire::send_all`]).
+const SEND_WAIT: Duration = Duration::from_millis(2);
 /// Every result column comes in binary.
 const BINARY: i16 = 1;
 const TEXT: i16 = 0;
@@ -216,12 +218,68 @@ impl Stream {
         }
     }
 
+    fn set_write_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            Stream::Unix(stream) => stream.set_write_timeout(timeout),
+            Stream::Tcp(stream) => stream.set_write_timeout(timeout),
+            Stream::Tls(stream) => stream.sock.set_write_timeout(timeout),
+        }
+    }
+
     fn set_nonblocking(&self, on: bool) -> std::io::Result<()> {
         match self {
             #[cfg(unix)]
             Stream::Unix(stream) => stream.set_nonblocking(on),
             Stream::Tcp(stream) => stream.set_nonblocking(on),
             Stream::Tls(stream) => stream.sock.set_nonblocking(on),
+        }
+    }
+
+    /// What the server has sent that can be read without waiting, onto `out`; with TLS the records are read and
+    /// decrypted here, as `StreamOwned::read` would first try to finish the write that is waiting for room. False when
+    /// the server closed the connection.
+    fn read_waiting(&mut self, out: &mut BytesMut) -> std::io::Result<bool> {
+        self.set_nonblocking(true)?;
+        let read = self.read_waiting_nonblocking(out);
+        let restored = self.set_nonblocking(false);
+        let open = read?;
+        restored?;
+        Ok(open)
+    }
+
+    fn read_waiting_nonblocking(&mut self, out: &mut BytesMut) -> std::io::Result<bool> {
+        let mut chunk = [0u8; READ_CHUNK];
+        loop {
+            let read = match self {
+                Stream::Tls(stream) => match stream.conn.read_tls(&mut stream.sock) {
+                    Ok(0) => Ok(0),
+                    Ok(_) => {
+                        stream
+                            .conn
+                            .process_new_packets()
+                            .map_err(|err| std::io::Error::new(ErrorKind::InvalidData, err))?;
+                        loop {
+                            match stream.conn.reader().read(&mut chunk) {
+                                Ok(0) => break,
+                                Ok(count) => out.extend_from_slice(&chunk[..count]),
+                                Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+                                Err(err) => return Err(err),
+                            }
+                        }
+                        continue;
+                    }
+                    Err(err) => Err(err),
+                },
+                _ => self.read(&mut chunk),
+            };
+            match read {
+                Ok(0) => return Ok(false),
+                Ok(count) => out.extend_from_slice(&chunk[..count]),
+                Err(err) if err.kind() == ErrorKind::WouldBlock => return Ok(true),
+                Err(err) if err.kind() == ErrorKind::Interrupted => {}
+                Err(err) => return Err(err),
+            }
         }
     }
 }
@@ -335,6 +393,11 @@ impl Wire {
             process_id: 0,
             secret_key: 0,
         };
+        if !matches!(wire.stream, Stream::Tls(_)) {
+            wire.stream
+                .set_write_timeout(Some(SEND_WAIT))
+                .map_err(|err| io_error("connect", err))?;
+        }
         let mut parameters = vec![("user", user), ("database", database), ("client_encoding", "UTF8")];
         if let Some(options) = options {
             parameters.push(("options", options));
@@ -469,12 +532,71 @@ impl Wire {
         if self.write.is_empty() {
             return Ok(());
         }
-        let written = self.stream.write_all(&self.write).and_then(|()| self.stream.flush());
+        let written = self.send_all();
         self.write.clear();
         written.map_err(|err| {
             self.dead = true;
             io_error("write", err)
         })
+    }
+
+    /// Write the buffer, and read what the server sends while the write waits for room. Requests go out without
+    /// waiting for the replies before them, and the server stops reading when it cannot send those replies: a write
+    /// that only wrote would wait on a server that waits on it, once the replies fill the socket (8 KB each way on a
+    /// macOS Unix socket). The replies read here are parsed by the next read, as if they had come then.
+    ///
+    /// A Unix or TCP socket has the [`SEND_WAIT`] timeout from the connect, as only this writes to it. Over TLS a read
+    /// may write too (`StreamOwned::read` finishes a write first), and must not stop at the timeout, so it is set for
+    /// the write only.
+    fn send_all(&mut self) -> std::io::Result<()> {
+        if !matches!(self.stream, Stream::Tls(_)) {
+            return self.send_all_waiting();
+        }
+        self.stream.set_write_timeout(Some(SEND_WAIT))?;
+        let sent = self.send_all_waiting();
+        let restored = self.stream.set_write_timeout(None);
+        sent?;
+        restored
+    }
+
+    fn send_all_waiting(&mut self) -> std::io::Result<()> {
+        let mut at = 0;
+        loop {
+            let step = if at < self.write.len() {
+                match self.stream.write(&self.write[at..]) {
+                    // TLS takes no more plaintext while its records wait to go out: push them first.
+                    Ok(0) if matches!(self.stream, Stream::Tls(_)) => self.stream.flush(),
+                    Ok(0) => return Err(std::io::Error::new(ErrorKind::WriteZero, "the server took no bytes")),
+                    Ok(count) => {
+                        at += count;
+                        Ok(())
+                    }
+                    Err(err) => Err(err),
+                }
+            } else {
+                match self.stream.flush() {
+                    Ok(()) => return Ok(()),
+                    Err(err) => Err(err),
+                }
+            };
+            match step {
+                Ok(()) => {}
+                Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                    let before = self.read.len();
+                    if !self.stream.read_waiting(&mut self.read)? {
+                        return Err(std::io::Error::new(
+                            ErrorKind::UnexpectedEof,
+                            "the server closed the connection",
+                        ));
+                    }
+                    if self.read.len() > before {
+                        self.last_read = Instant::now();
+                    }
+                }
+                Err(err) if err.kind() == ErrorKind::Interrupted => {}
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     /// More bytes from the socket. An end of stream is a closed connection.
@@ -1109,6 +1231,112 @@ mod tests {
         assert_eq!(wire.cancel_key(), (7, 9));
         wire.simple("SELECT 1", "query").unwrap();
         drop(wire);
+        server.join().unwrap();
+    }
+
+    /// The server's side of a session that sends `noise` bytes of notices before it reads the client's query, as a
+    /// server does that cannot send the replies of requests sent before: the query, of as many bytes, goes out while
+    /// the notices are read. Without that, each side waits on the other's write.
+    fn notices_then_query(stream: &mut (impl Read + Write), noise: usize) {
+        let mut len = [0u8; 4];
+        stream.read_exact(&mut len).unwrap();
+        let mut startup = vec![0u8; u32::from_be_bytes(len) as usize - 4];
+        stream.read_exact(&mut startup).unwrap();
+        let mut reply = message(b'R', &0_i32.to_be_bytes());
+        reply.extend(message(b'K', &[0, 0, 0, 7, 0, 0, 0, 9]));
+        reply.extend(message(b'Z', b"I"));
+        stream.write_all(&reply).unwrap();
+        let mut body = b"SNOTICE\0VNOTICE\0C00000\0M".to_vec();
+        body.extend(std::iter::repeat_n(b'n', 1000));
+        body.extend(b"\0\0");
+        let notice = message(b'N', &body);
+        let mut notices = Vec::with_capacity(noise + notice.len());
+        while notices.len() < noise {
+            notices.extend_from_slice(&notice);
+        }
+        stream.write_all(&notices).unwrap();
+        let (tag, query) = read_message(stream);
+        assert_eq!(tag, b'Q');
+        assert_eq!(query.len(), noise + 1, "the query and its NUL");
+        let mut reply = message(b'C', b"SELECT 1\0");
+        reply.extend(message(b'Z', b"I"));
+        stream.write_all(&reply).unwrap();
+        let (tag, _) = read_message(stream);
+        assert_eq!(tag, b'X', "Terminate");
+    }
+
+    /// The client's side: a query of `noise` bytes, which must finish (a deadlock would hang, so it is waited for).
+    fn send_big_query(endpoint: Endpoint, noise: usize) {
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut wire = Wire::connect(&endpoint, "moqui", "moqui", None, None).unwrap();
+            let sql = "x".repeat(noise);
+            let result = wire.simple(&sql, "query").map_err(|err| err.to_string());
+            drop(wire);
+            let _ = done.send(result);
+        });
+        let result = finished
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the query finished: the client read the notices while its write waited");
+        result.unwrap();
+    }
+
+    /// Over a Unix socket, whose buffers are 8 KB each way on macOS.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_reads_what_the_server_sends_while_it_waits() {
+        let dir = std::env::temp_dir().join(format!("pgwire-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".s.PGSQL.5432");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let noise = 2 * 1024 * 1024;
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            notices_then_query(&mut stream, noise);
+        });
+        send_big_query(Endpoint::Unix(path), noise);
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Over TLS, where the records waiting are read through the connection, not the stream that is writing.
+    #[test]
+    fn a_tls_write_reads_what_the_server_sends_while_it_waits() {
+        let issued = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert = issued.cert.der().clone();
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(issued.signing_key.serialize_der().into());
+        let server_config = rustls::ServerConfig::builder_with_provider(provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.clone()], key)
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // More than loopback TCP buffers hold, so the server is still writing when the client writes.
+        let noise = 16 * 1024 * 1024;
+        let server = std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            let mut request = [0u8; 8];
+            tcp.read_exact(&mut request).unwrap();
+            tcp.write_all(b"S").unwrap();
+            let connection = rustls::ServerConnection::new(Arc::new(server_config)).unwrap();
+            let mut tls = rustls::StreamOwned::new(connection, tcp);
+            notices_then_query(&mut tls, noise);
+        });
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert).unwrap();
+        let client_config = rustls::ClientConfig::builder_with_provider(provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let endpoint = Endpoint::Tcp {
+            host: "localhost".to_string(),
+            port,
+            tls: Some(Arc::new(client_config)),
+        };
+        send_big_query(endpoint, noise);
         server.join().unwrap();
     }
 
