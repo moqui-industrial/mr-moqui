@@ -470,7 +470,9 @@ where
             }
         }
     });
-    let connection = builder.serve_connection(TokioIo::new(stream), service).with_upgrades();
+    let connection = builder
+        .serve_connection(TokioIo::new(Lingering::new(stream)), service)
+        .with_upgrades();
     let mut connection = std::pin::pin!(connection);
     tokio::select! {
         result = connection.as_mut() => {
@@ -482,6 +484,116 @@ where
             connection.as_mut().graceful_shutdown();
             let _ = connection.await;
         }
+    }
+}
+
+/// How long a closed connection the client has not closed yet is read and dropped, after the write side is shut down.
+const LINGER: Duration = Duration::from_secs(2);
+
+/// A connection that closes as a lingering close does. A server that closes with request bytes still unread (a
+/// request head over `max-header-bytes`, answered 431) sends a reset, and a macOS or BSD client then discards the
+/// answer it has not read yet. So when the connection is dropped before the client has closed its side, the write
+/// side is shut down first and whatever the client still sends is read and dropped, for up to `LINGER`.
+struct Lingering<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> {
+    inner: Option<S>,
+    /// The client closed its side, or the connection failed: nothing is left to drain.
+    ended: bool,
+}
+
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> Lingering<S> {
+    fn new(inner: S) -> Self {
+        Self {
+            inner: Some(inner),
+            ended: false,
+        }
+    }
+
+    fn inner(&mut self) -> std::pin::Pin<&mut S> {
+        std::pin::Pin::new(self.inner.as_mut().expect("the stream is taken only on drop"))
+    }
+}
+
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> tokio::io::AsyncRead for Lingering<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let polled = self.inner().poll_read(cx, buf);
+        match &polled {
+            std::task::Poll::Ready(Ok(())) if buf.filled().len() == before && buf.remaining() > 0 => self.ended = true,
+            std::task::Poll::Ready(Err(_)) => self.ended = true,
+            _ => {}
+        }
+        polled
+    }
+}
+
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> tokio::io::AsyncWrite for Lingering<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let polled = self.inner().poll_write(cx, buf);
+        if matches!(polled, std::task::Poll::Ready(Err(_))) {
+            self.ended = true;
+        }
+        polled
+    }
+
+    fn poll_write_vectored(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let polled = self.inner().poll_write_vectored(cx, bufs);
+        if matches!(polled, std::task::Poll::Ready(Err(_))) {
+            self.ended = true;
+        }
+        polled
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.as_ref().is_some_and(|inner| inner.is_write_vectored())
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.inner().poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.inner().poll_shutdown(cx)
+    }
+}
+
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> Drop for Lingering<S> {
+    fn drop(&mut self) {
+        let Some(mut stream) = self.inner.take() else {
+            return;
+        };
+        if self.ended {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            let _ = tokio::time::timeout(LINGER, async {
+                let _ = stream.shutdown().await;
+                let mut sink = [0u8; 4096];
+                while matches!(stream.read(&mut sink).await, Ok(read) if read > 0) {}
+            })
+            .await;
+        });
     }
 }
 
