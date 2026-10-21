@@ -43,7 +43,7 @@ imap = ["moqui-core/imap"]
 git = ["moqui-core/git"]
 image = ["moqui-core/image"]
 xlsx = ["moqui-core/xlsx"]
-# The terminal client (`moqui tui`, plans/Screen-TUI-Impl.md 4.6): in every package, so it compiles Revue; lite has it
+# The terminal client (`moqui tui`, plans/archive/Screen-TUI-Impl.md 4.6): in every package, so it compiles Revue; lite has it
 # for a quick terminal loop while developing and testing.
 # Its remote client (`moqui tui --server`) takes pushed notifications from `/notws` over tungstenite, with the web's
 # root certificates for https.

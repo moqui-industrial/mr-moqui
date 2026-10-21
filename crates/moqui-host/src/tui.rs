@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The in-process [`ScreenLink`](moqui_tui::ScreenLink) (plans/Screen-TUI-Impl.md 2.7, 4.1). Each call runs on the
+//! The in-process [`ScreenLink`](moqui_tui::ScreenLink) (plans/archive/Screen-TUI-Impl.md 2.7, 4.1). Each call runs on the
 //! factory's request pool in a fresh execution context, logged in as the link's user, as the SSH shell's commands are;
 //! the client holds no permission logic. Until a user is logged in, every call answers [`LinkError::Auth`], so the client
 //! shows its login dialog. The link holds the factory weakly, as the SSH tasks do: a session over SSH never keeps a

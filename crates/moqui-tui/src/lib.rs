@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The terminal client of the `tui` render mode (plans/Screen-TUI-Impl.md section 3).
+//! The terminal client of the `tui` render mode (plans/archive/Screen-TUI-Impl.md section 3).
 //!
 //! It does no I/O of its own (D4): the session queues calls, and the host's [`ScreenLink`] answers them. The `model`
 //! feature is everything but the Revue view: the model, the link, navigation, state, layout, keys and theme, which

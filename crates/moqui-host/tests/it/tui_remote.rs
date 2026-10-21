@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `moqui tui --server` (plans/Screen-TUI-Impl.md 4.3): the HTTP link against a served runtime. A screen asks for the
+//! `moqui tui --server` (plans/archive/Screen-TUI-Impl.md 4.3): the HTTP link against a served runtime. A screen asks for the
 //! login (401, not the browser's redirect to /Login), the login keeps a key and never the password, a transition posts
 //! with the key alone and brings its message, and a key the server does not know is a login again.
 

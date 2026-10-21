@@ -270,7 +270,7 @@ An `EntityValue` read from the database (a find, the entity cache, a refresh), o
 ## Terminal client (2026-10-21)
 
 The `tui` render mode has no Java counterpart (Parity-Mapping, not in Java); these are the places where serving it
-changes what a request shared with the other modes does ([Screen-TUI-Impl](Screen-TUI-Impl.md), Phase 4 and the quirks
+changes what a request shared with the other modes does ([Screen-TUI-Impl](archive/Screen-TUI-Impl.md), Phase 4 and the quirks
 found over SSH).
 
 | Area | Difference | Rationale / where documented |

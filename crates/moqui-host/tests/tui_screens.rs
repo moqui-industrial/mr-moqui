@@ -13,7 +13,7 @@
  */
 
 //! Scripted Gallery, Party and Tools screens through the in-process client: the Phase 2 and Phase 3 Exits of
-//! plans/Screen-TUI-Impl.md.
+//! plans/archive/Screen-TUI-Impl.md.
 //!
 //! One server: every Gallery screen renders a model with no error node in it, a login through the dialog, then the
 //! keyboard flows on Gallery List (find, page, sort, open, a dialog submit) and on SimpleScreens Party, a Mantle app

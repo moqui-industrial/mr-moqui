@@ -15,7 +15,7 @@
 //! [`ScreenLink`] is the client's only way to the server: a level, a transition, a drop-down's options, the shell data,
 //! a login, the JSON of a transition (search, counts, suggestions, a tree's children), a fragment (the body of a
 //! dynamic dialog or container) and a file (an export). The session never calls it itself; it queues [`LinkCall`]s, and the loop runs them off the UI thread
-//! (plans/Screen-TUI-Impl.md 3.6). [`FakeLink`] answers from fixture files and records each call.
+//! (plans/archive/Screen-TUI-Impl.md 3.6). [`FakeLink`] answers from fixture files and records each call.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};

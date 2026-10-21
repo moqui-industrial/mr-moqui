@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The terminal client in a session of this server (plans/Screen-TUI-Impl.md 4.2, 4.4): `apps` over SSH and the
+//! The terminal client in a session of this server (plans/archive/Screen-TUI-Impl.md 4.2, 4.4): `apps` over SSH and the
 //! browser terminal on `/termws`. The client's session loop (`moqui_tui::run_session`) runs on a thread of its own,
 //! since it and the in-process link block; a task here carries the stream's bytes and window changes to it and its
 //! frames back. Every request runs as the user through the request pool, so a session gives nothing beyond the screens

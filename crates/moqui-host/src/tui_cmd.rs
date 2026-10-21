@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `moqui tui` (plans/Screen-TUI-Impl.md 4.1): the terminal client on this runtime, in process. It boots with no
+//! `moqui tui` (plans/archive/Screen-TUI-Impl.md 4.1): the terminal client on this runtime, in process. It boots with no
 //! listeners unless `--serve`, logs to the files and the log pane only, and asks for a login unless a dev instance names
 //! the user.
 

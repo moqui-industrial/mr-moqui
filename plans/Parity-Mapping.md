@@ -310,7 +310,7 @@ Framework service XML with no Rust body (`BasicServices`, `UserServices`, `Serve
 | `screen/form.rs` | `ScreenForm.initForm` (`extends`, `auto-fields-entity`, `auto-fields-service`, `DbForm`). | Port |
 | `screen/render.rs` | `ScreenRenderImpl.internalRender`, `ScreenRender`, `WebFacadeStub` via `make_render`. | Port |
 | `screen/url.rs` | `ScreenUrlInfo.initUrl`. | Port |
-| `screen/html_text.rs`, `ScreenTui.js` | The `tui` render mode: one JSON screen model per level for the terminal client, and HTML as text blocks. Not in Java. [Screen-TUI-Impl](Screen-TUI-Impl.md). | Native |
+| `screen/html_text.rs`, `ScreenTui.js` | The `tui` render mode: one JSON screen model per level for the terminal client, and HTML as text blocks. Not in Java. [Screen-TUI-Impl](archive/Screen-TUI-Impl.md). | Native |
 | `screen/urls.rs` | `sri.buildUrl` and `sri.makeUrlByType`, including transition alias expansion. | Port |
 | `screen/tree.rs` | `ScreenTree.sendSubNodeJson`. | Port |
 | `screen/screen_test.rs` | `ScreenTestImpl`, `ScreenTest`. | Port |
@@ -448,7 +448,7 @@ The service section names the Rust service bodies. This section is where the add
 | `typegen/mod.rs`, `typegen/entities.rs`, `typegen/services.rs`, `typegen/screens.rs`, `typegen/ts.rs` | TypeScript declarations from the loaded definitions. [TypeGeneration](archive/TypeGeneration.md). | Native |
 | `moqui-host/src/types.rs` | `moqui types`. | Native |
 | `moqui-host/src/qvt_report.rs` | `moqui lint --screens --qvt-static`. The report is `screen/statics/report.rs`. | Native |
-| `moqui-host/src/tui.rs`, `tui_remote.rs`, `tui_cmd.rs`, `crates/moqui-tui` | `moqui tui`: the in-process and HTTP screen links and the terminal client on Revue. Not in Java. [Screen-TUI-Impl](Screen-TUI-Impl.md), [TUI](../docs/TUI.md). | Native |
+| `moqui-host/src/tui.rs`, `tui_remote.rs`, `tui_cmd.rs`, `crates/moqui-tui` | `moqui tui`: the in-process and HTTP screen links and the terminal client on Revue. Not in Java. [Screen-TUI-Impl](archive/Screen-TUI-Impl.md), [TUI](../docs/TUI.md). | Native |
 | `native.rs` | Component JAR on the classpath: linked Rust services, tools, resource schemes, template renderers. [Native-Components](archive/Native-Components.md). | Native |
 
 ## Browser host

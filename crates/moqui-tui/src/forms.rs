@@ -13,7 +13,7 @@
  */
 
 //! The fields, forms, lists, links and dialogs of the levels on screen, found once per model change, with what a form
-//! posts and the checks it makes before a submit (plans/Screen-TUI-Impl.md 1.7, 2.3).
+//! posts and the checks it makes before a submit (plans/archive/Screen-TUI-Impl.md 1.7, 2.3).
 //!
 //! A field's value is in the edit buffers under its id. A find field has parts, under `id#part`: a date or range find
 //! `#from` and `#thru`, a text find `#op`, `#not` and `#ic`, a drop-down with `show-not` `#not`.

@@ -3,7 +3,7 @@
 `moqui tui` shows the apps in a terminal. It draws the same XML Screens the browser does, through the `tui` render mode:
 the server writes each screen as a JSON document of nodes, and the client in `crates/moqui-tui` draws it with
 [Revue](https://github.com/hawk90/revue). There are no TUI-only screens. The design is in
-[plans/Screen-TUI-Impl.md](../plans/Screen-TUI-Impl.md).
+[plans/archive/Screen-TUI-Impl.md](../plans/archive/Screen-TUI-Impl.md).
 
 It is in every package, Default (`lite`) included (the `tui` feature, [Packaging](Packaging.md)). `apps` over SSH also
 needs the `ssh` feature, which Default leaves out.

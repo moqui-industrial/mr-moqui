@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Key names, the actions of plans/Screen-TUI-Impl.md 1.5 and the default keymap. A theme's `STRT_TUI_KEYS` rows merge
+//! Key names, the actions of plans/archive/Screen-TUI-Impl.md 1.5 and the default keymap. A theme's `STRT_TUI_KEYS` rows merge
 //! on top (D11). Esc, Enter and Tab stay bound to what they do whatever a theme says, so no theme can leave a user stuck
 //! in a dialog. Single-letter keys act only when focus is not in a text field; the session sends typing to the field
 //! before it looks here.
@@ -542,7 +542,7 @@ fn parse_key(name: &str) -> Option<Key> {
     })
 }
 
-/// What a click on a part of the frame acts on (plans/Screen-TUI-Impl.md Phase 5).
+/// What a click on a part of the frame acts on (plans/archive/Screen-TUI-Impl.md Phase 5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     /// A focusable by its focus key: a link, a button, a field (its label and its value), a dialog or menu button, a
@@ -593,7 +593,7 @@ pub enum Target {
     Block,
 }
 
-/// A mouse report, as every channel gives it (plans/Screen-TUI-Impl.md Phase 5): SGR or X10 bytes, or Revue's event in
+/// A mouse report, as every channel gives it (plans/archive/Screen-TUI-Impl.md Phase 5): SGR or X10 bytes, or Revue's event in
 /// local mode. Columns and rows count from 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mouse {

@@ -1,6 +1,8 @@
 # Screen TUI implementation plan
 
-Oct 21, 2026 · Phases 1 to 5 built (findings under each in section 5): the browser terminal (4.4) included, SSH opened to every user (4.2, "Changed Oct 21"), the leftovers of Phase 4 (a second factor in the login dialog, the client address, text areas that scroll, a dialog per list row) and the mouse with drag to select and copy. What is still open is in [Remaining-Work](../Remaining-Work.md). This plan implements [archive/Screen-TUI-Revue.md](archive/Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
+> Archived 2026-10-21: Phases 1 to 5 are built, with the findings under each in section 5. The open parts (live checks in real terminals and browsers, per-user key bindings, a two-way rich-text editor, a `diagram` component, board sums and calendar create, the upstream Revue asks) are in [Remaining-Work](../Remaining-Work.md). The user guide is [docs/TUI.md](../../docs/TUI.md).
+
+Oct 21, 2026 · Phases 1 to 5 built (findings under each in section 5): the browser terminal (4.4) included, SSH opened to every user (4.2, "Changed Oct 21"), the leftovers of Phase 4 (a second factor in the login dialog, the client address, text areas that scroll, a dialog per list row) and the mouse with drag to select and copy. What is still open is in [Remaining-Work](../Remaining-Work.md). This plan implements [archive/Screen-TUI-Revue.md](Screen-TUI-Revue.md). Revue was read at 3.10.1 (commit `011741e`, the clone at `~/work/moquiwork/3p_other/revue`). Revue paths below are relative to that clone. Every other path is relative to this repository.
 
 The proposal sets the architecture: a `tui` render mode emits a JSON screen model, and one Revue client interprets it and reaches the server over several channels. This plan adds four things:
 

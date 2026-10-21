@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The shell around the screens (plans/Screen-TUI-Impl.md 1.6): the palette and go to, quick create, the actions menu
+//! The shell around the screens (plans/archive/Screen-TUI-Impl.md 1.6): the palette and go to, quick create, the actions menu
 //! (F10) and a button-menu's items, find text, the tray, the counters, the drawer's choice and saved finds, the help's
 //! documents, a list's exports, saved finds and columns. Menus share one overlay: a title and entries, each with what
 //! it does.

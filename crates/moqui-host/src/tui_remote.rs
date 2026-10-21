@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `moqui tui --server <url>` (plans/Screen-TUI-Impl.md 4.3): the terminal client of a running server, over HTTP. A
+//! `moqui tui --server <url>` (plans/archive/Screen-TUI-Impl.md 4.3): the terminal client of a running server, over HTTP. A
 //! level is `GET <path>?renderMode=tui`, a transition asks for JSON, and every request carries the `login_key` header.
 //! The login posts the password once to the REST `login` with `createLoginKey=true` and keeps only the key, in
 //! `~/.config/moqui/tui/<host>.toml` (mode 0600); a 401 later, an expired key above all, opens the login dialog again.

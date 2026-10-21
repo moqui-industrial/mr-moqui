@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Clicks (plans/Screen-TUI-Impl.md Phase 5): a click on what the view drew does what the keys do there. The view finds
+//! Clicks (plans/archive/Screen-TUI-Impl.md Phase 5): a click on what the view drew does what the keys do there. The view finds
 //! the target under the pointer; the session acts on it through the same paths as Enter, so every confirmation and
 //! the question before leaving a changed form still ask.
 

@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The mouse (plans/Screen-TUI-Impl.md Phase 5): the hit map of a drawn frame, clicks on its targets, the wheel, a drag
+//! The mouse (plans/archive/Screen-TUI-Impl.md Phase 5): the hit map of a drawn frame, clicks on its targets, the wheel, a drag
 //! that selects and copies, and Alt+P.
 
 use std::collections::BTreeMap;
