@@ -617,6 +617,12 @@ impl EntityFacade {
     }
 
     pub fn delete_value(&self, value: &EntityValue) -> Result<(), Error> {
+        self.write_delete(&value.entity_name, &value.fields).map(|_| ())
+    }
+
+    /// [`Self::delete_value`] with the number of rows the delete removed: 0 when the row was already gone, as when
+    /// another transaction deleted it first. A delete the transaction cache holds counts as 1.
+    pub(crate) fn delete_value_counted(&self, value: &EntityValue) -> Result<u64, Error> {
         self.write_delete(&value.entity_name, &value.fields)
     }
 
@@ -979,7 +985,7 @@ impl EntityFacade {
         Ok(if updated > 0 { Probe::Updated } else { Probe::Missing })
     }
 
-    fn write_delete(&self, entity_name: &str, values: &FieldMap) -> Result<(), Error> {
+    fn write_delete(&self, entity_name: &str, values: &FieldMap) -> Result<u64, Error> {
         let plain = self.normalize_values(entity_name, values.clone(), false)?;
         self.reject_view(entity_name, "delete")?;
         self.with_entity(entity_name, |entity, _, _| {
@@ -992,7 +998,6 @@ impl EntityFacade {
             Ok(())
         })?;
         self.finish_write(entity_name, "delete", plain, None, None, None)
-            .map(|_| ())
     }
 
     /// Insert, or update on a primary-key conflict. Values are sealed the same way as a create.
