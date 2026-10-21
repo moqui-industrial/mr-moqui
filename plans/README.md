@@ -1,11 +1,14 @@
 # Plans
 
-Design, status and review documents for the MR-Moqui port. The first pass is complete: phases 0–12 and gates 1–4 of [Implementation-Phases](archive/Implementation-Phases.md) were built by 2026-10-14, with LLM/A2A deferred. The entity and service parity review finished on 2026-10-16, and the screen and web parity review on 2026-10-20; the gap review of the rest of the framework is in progress. After it come performance work and then the proposals.
+Design, status and review documents for the MR-Moqui port. The first pass is complete: phases 0–12 and gates 1–4 of [Implementation-Phases](archive/Implementation-Phases.md) were built by 2026-10-14, with LLM/A2A deferred (Phase 13, now redesigned in [LLM-A2A-Assist](LLM-A2A-Assist.md)). The entity and service parity review finished on 2026-10-16, and the screen and web parity review on 2026-10-20; the gap review of the rest of the framework is in progress. After it come performance work and then the proposals.
 
 **Start here**
 - [Remaining-Work.md](Remaining-Work.md): what is still open, in one place: the deferred phase, known gaps, the parity gap review's progress, the code quality review's leftovers, Mantle follow-ups.
 - [Future-Plans.md](Future-Plans.md): digest of the unbuilt proposals.
 - [Performance-Summary.md](Performance-Summary.md): digest of the performance plan, the recorded numbers and the Mantle USL audit.
+
+**Phase 13: LLM, A2A and Assist**
+- [LLM-A2A-Assist.md](LLM-A2A-Assist.md): the design and implementation plan for the agent runtime, the Assist drawer, chat and triggered agents, A2A, MCP and the OpenAI-compatible gateway, with the review of the Java prototype it replaces and the ideas taken from other assistants. Nothing built yet.
 
 **Reference** (long-lived, kept current)
 - [Parity-Mapping.md](Parity-Mapping.md): every Rust module mapped to the Java, Groovy, XML and FreeMarker it was ported from, and the reverse index; what is excluded on purpose; the cross-cutting threads a review carries.
