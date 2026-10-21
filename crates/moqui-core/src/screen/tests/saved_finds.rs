@@ -244,6 +244,43 @@ fn a_template_expression_in_a_description_stays_text_in_the_scheduled_email_subj
     assert!(!timestamp.is_empty() && !timestamp.contains('$'), "{expanded}");
 }
 
+/// The qvt Saved Finds dialog shows the active find and a form that schedules it, as Java's macros do, and once it is
+/// scheduled shows the schedule instead. A mode the dialog does not offer is refused.
+#[test]
+fn the_saved_finds_dialog_schedules_the_active_find_then_shows_its_schedule() {
+    let site = Site::new("schedule-dialog");
+    let id = site.save_find("Weekly");
+    assert!(
+        !site.get(&[("renderMode", "qvt")]).contains("_SCHED"),
+        "no active find, no schedule form"
+    );
+    let qvt = site.get(&[("renderMode", "qvt"), ("formListFindId", &id)]);
+    assert!(qvt.contains("Active Saved Find:") && qvt.contains("Weekly"), "{qvt}");
+    assert!(
+        qvt.contains("_SCHED\"") && qvt.contains("name=\"ScheduleFind\"") && qvt.contains("name=\"cronSelected\""),
+        "{qvt}"
+    );
+    assert!(qvt.contains("0 0 6 ? * MON-FRI") && qvt.contains("xsl-fo"), "{qvt}");
+    super::qvt::assert_compiles(&["schedule form".to_string()], &[qvt]);
+
+    site.post("/formSaveFind", &format!("{}&renderMode=foo", Site::schedule_body(&id)));
+    assert!(site
+        .rows("moqui.screen.ScreenScheduled", "formListFindId", &id)
+        .is_empty());
+    site.post(
+        "/formSaveFind",
+        &format!("{}&renderMode=xsl-fo", Site::schedule_body(&id)),
+    );
+    assert_eq!(
+        site.rows("moqui.screen.ScreenScheduled", "formListFindId", &id).len(),
+        1
+    );
+    let qvt = site.get(&[("renderMode", "qvt"), ("formListFindId", &id)]);
+    assert!(qvt.contains("Scheduled for") && qvt.contains("PDF"), "{qvt}");
+    assert!(!qvt.contains("_SCHED"), "{qvt}");
+    super::qvt::assert_compiles(&["scheduled".to_string()], &[qvt]);
+}
+
 #[test]
 fn a_find_is_scheduled_or_made_a_default_only_by_a_user_it_belongs_to() {
     let site = Site::new("not-mine");

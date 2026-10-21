@@ -726,6 +726,73 @@ fn an_aggregated_form_list_groups_rows_with_sub_rows_and_totals() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A `group-by` field the list does not show is not in the group key, as Java's `includeFields`: a field left out of the
+/// columns, a field whose `hide` holds, and a field outside the columns of the request's `_uiType`.
+#[test]
+fn a_group_by_field_the_list_does_not_show_does_not_split_the_groups() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-group-shown-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let write = |name: &str, invoice: &str, columns: &str| {
+        let path = dir.join(name);
+        std::fs::write(
+            &path,
+            format!(
+                r#"<screen require-authentication="false">
+    <actions>
+        <script>lines = [{{party: 'Acme', invoice: 'i1', amount: 1}}, {{party: 'Acme', invoice: 'i2', amount: 2}}, {{party: 'Zed', invoice: 'i3', amount: 4}}]</script>
+    </actions>
+    <widgets>
+        <form-list name="Lines" list="lines">
+            <field name="party" aggregate="group-by"><default-field title="Party"><display/></default-field></field>
+            <field name="invoice" aggregate="group-by"{invoice}><default-field title="Invoice"><display/></default-field></field>
+            <field name="amount" aggregate="sum"><default-field title="Amount"><display/></default-field></field>
+            {columns}
+        </form-list>
+    </widgets>
+</screen>"#
+            ),
+        )
+        .unwrap();
+        path.to_string_lossy().into_owned()
+    };
+    let world = World::open("");
+    let acme_rows = |root: &str, ui_type: Option<&str>| {
+        let mut get = request("GET", "/");
+        if let Some(kind) = ui_type {
+            get.query.push(("_uiType".into(), kind.into()));
+        }
+        let html = serve_at(&world.factory, get, root).body_text();
+        let body = html[html.find("<tbody>").expect("rows")..].to_string();
+        (body.matches(">Acme<").count(), body)
+    };
+
+    let columns = write(
+        "Columns.xml",
+        "",
+        r#"<form-list-column><field-ref name="party"/></form-list-column><form-list-column><field-ref name="amount"/></form-list-column>"#,
+    );
+    let (count, body) = acme_rows(&columns, None);
+    assert_eq!(count, 1, "invoice is not a column: {body}");
+    assert!(body.contains(">3<"), "Acme's amounts summed: {body}");
+
+    let hidden = write("Hidden.xml", r#" hide="true""#, "");
+    let (count, body) = acme_rows(&hidden, None);
+    assert_eq!(count, 1, "invoice is hidden: {body}");
+
+    let typed = write(
+        "Typed.xml",
+        "",
+        r#"<columns type="mobile"><column><field-ref name="party"/></column><column><field-ref name="amount"/></column></columns>
+            <columns><column><field-ref name="party"/></column><column><field-ref name="invoice"/></column><column><field-ref name="amount"/></column></columns>"#,
+    );
+    let (count, body) = acme_rows(&typed, Some("mobile"));
+    assert_eq!(count, 1, "the mobile columns leave invoice out: {body}");
+    let (count, body) = acme_rows(&typed, None);
+    assert_eq!(count, 2, "the untyped columns show invoice: {body}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A group average includes the first row. 10, 20 and 30 show as 20, and the count field shows 3.
 #[test]
 fn an_average_form_list_includes_the_first_row() {

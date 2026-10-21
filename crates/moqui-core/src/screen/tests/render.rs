@@ -1366,6 +1366,105 @@ fn a_transition_link_carries_its_service_keys_and_a_failed_condition_disables_it
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Allow `group` the `action` on one artifact, with the authorization inherited by what runs under it.
+fn grant(world: &World, id: &str, group: &str, artifact_type: &str, name: &str, action: &str) {
+    let mut member = world.facade.make_value("moqui.security.ArtifactGroupMember").unwrap();
+    member.set("artifactGroupId", Value::string(id));
+    member.set("artifactName", Value::string(name));
+    member.set("artifactTypeEnumId", Value::string(artifact_type));
+    member.set("nameIsPattern", Value::string("N"));
+    member.set("inheritAuthz", Value::string("Y"));
+    member.create(&world.facade).unwrap();
+    let mut authz = world.facade.make_value("moqui.security.ArtifactAuthz").unwrap();
+    authz.set("artifactAuthzId", Value::string(id));
+    authz.set("userGroupId", Value::string(group));
+    authz.set("artifactGroupId", Value::string(id));
+    authz.set("authzTypeEnumId", Value::string("AUTHZT_ALWAYS"));
+    authz.set("authzActionEnumId", Value::string(action));
+    authz.create(&world.facade).unwrap();
+}
+
+#[test]
+fn a_link_to_a_transition_whose_service_the_user_may_not_call_is_disabled_and_counts_no_hit() {
+    let world = World::open(
+        "<moqui-conf><artifact-execution-facade><artifact-execution type=\"AT_XML_SCREEN\" authz-enabled=\"true\"/>\
+         <artifact-execution type=\"AT_SERVICE\" authz-enabled=\"true\"/></artifact-execution-facade>\
+         <server-stats><artifact-stats type=\"AT_XML_SCREEN\" persist-bin=\"true\"/>\
+         <artifact-stats type=\"AT_XML_SCREEN_TRANS\" persist-bin=\"true\"/></server-stats></moqui-conf>",
+    );
+    world.enumeration_type();
+    world.user("plain", Some("VIEWERS"));
+    world.user("admin", Some("ADMIN"));
+    let dir = std::env::temp_dir().join(format!("moqui-screen-link-service-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let screen = |authentication: &str| {
+        format!(
+            r#"<screen require-authentication="{authentication}">
+            <transition name="deleteType"><service-call name="delete#moqui.basic.EnumerationType"/><default-response url="."/></transition>
+            <widgets><link url="deleteType" text="Remove" link-type="anchor" parameter-map="{{enumTypeId: 'TestType'}}"/></widgets></screen>"#
+        )
+    };
+    std::fs::write(dir.join("Links.xml"), screen("true")).unwrap();
+    std::fs::write(dir.join("Open.xml"), screen("anonymous-all")).unwrap();
+    let links = dir.join("Links.xml").to_string_lossy().into_owned();
+    for group in ["VIEWERS", "ADMIN"] {
+        grant(
+            &world,
+            &format!("LINKS_{group}"),
+            group,
+            "AT_XML_SCREEN",
+            &links,
+            "AUTHZA_VIEW",
+        );
+    }
+    grant(
+        &world,
+        "DELETE_TYPE",
+        "ADMIN",
+        "AT_SERVICE",
+        "delete#moqui.basic.EnumerationType",
+        "AUTHZA_ALL",
+    );
+    let page = |root: &str, username: &str| {
+        let mut get = request("GET", "/");
+        get.set_header("authorization", super::basic(username));
+        let response = serve_at(&world.factory, get, root);
+        assert_eq!(response.status, 200, "{}", response.body_text());
+        response.body_text()
+    };
+
+    // Java greys the link when the user may view the screen but not call its service.
+    let html = page(&links, "plain");
+    assert!(html.contains("Remove") && !html.contains("deleteType"), "{html}");
+    let html = page(&links, "admin");
+    assert!(html.contains("deleteType?enumTypeId=TestType"), "{html}");
+    // An anonymous-all screen needs no allow record for the service either.
+    let html = page(&dir.join("Open.xml").to_string_lossy(), "plain");
+    assert!(html.contains("deleteType?enumTypeId=TestType"), "{html}");
+
+    // The checks are not artifact hits: the transition never ran, so it has no bin.
+    world.factory.flush_artifact_hits().unwrap();
+    let bins = world
+        .facade
+        .find("moqui.server.ArtifactHitBin")
+        .unwrap()
+        .list()
+        .unwrap();
+    let names: Vec<String> = bins
+        .values()
+        .iter()
+        .map(|bin| {
+            bin.get("artifactName")
+                .map(moqui_lib::object::to_plain_string)
+                .unwrap_or_default()
+        })
+        .collect();
+    assert!(names.iter().any(|name| name.ends_with("Links.xml")), "{names:?}");
+    assert!(!names.iter().any(|name| name.contains("deleteType")), "{names:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_transition_that_writes_refuses_parameters_in_the_url() {
     let world = World::open("");

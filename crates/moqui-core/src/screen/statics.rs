@@ -1112,6 +1112,32 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
             &source,
         ))?;
         let listed: Vec<serde_json::Value> = finds.iter().map(saved_find_json).collect();
+        // The schedule of the active find, when it is one of these: the dialog shows it, or offers to schedule the find.
+        let active = script::context_value("formListFindId")
+            .map(|value| moqui_lib::object::to_plain_string(&value))
+            .filter(|id| listed.iter().any(|find| find["formListFindId"] == id.as_str()));
+        if let Some(scheduled) = active
+            .map(|id| super::saved_finds::form_list_find_screen_scheduled(&id))
+            .transpose()?
+            .flatten()
+        {
+            let field = |name: &str| match &scheduled {
+                Value::Map(map) => map
+                    .get(name)
+                    .map(moqui_lib::object::to_plain_string)
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            let mode = match field("renderMode").as_str() {
+                "xsl-fo" => "PDF".to_string(),
+                "" => "CSV".to_string(),
+                other => other.to_uppercase(),
+            };
+            body.insert(
+                "formListFindScheduled".to_string(),
+                serde_json::json!({ "mode": mode, "cronDescription": field("cronDescription") }),
+            );
+        }
         body.insert("formListFinds".to_string(), serde_json::Value::Array(listed));
         if let Some(id) = super::saved_finds::user_default_find_id(&def.location)? {
             body.insert("defaultFormListFindId".to_string(), serde_json::Value::String(id));

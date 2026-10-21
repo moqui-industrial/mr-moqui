@@ -196,6 +196,64 @@ fn form_select_fields(form: &MNode) -> Vec<String> {
     names
 }
 
+/// The fields a form-list shows, with each one's `hide` expression, as the macros' `formListColumns` picks them: the
+/// `columns` of the `ui_type` (`_uiType`) when the form has them, else the untyped `columns`, else the
+/// `form-list-column`s, else every field. A field whose widget is hidden is not shown. For Java's `includeFields`.
+pub(crate) fn list_column_fields(form: &MNode, ui_type: Option<&str>) -> Vec<(String, Option<String>)> {
+    let fields = form.children_named("field");
+    let shown = |field: &MNode| {
+        (!list_field_hidden_widget(field)).then(|| {
+            (
+                field.attribute("name").unwrap_or_default(),
+                field.attribute("hide").filter(|hide| !hide.is_empty()),
+            )
+        })
+    };
+    let columns = form.children_named("columns");
+    let typed = ui_type.filter(|kind| !kind.is_empty()).and_then(|kind| {
+        columns
+            .iter()
+            .find(|node| node.attribute("type").as_deref() == Some(kind))
+    });
+    let untyped = || {
+        columns
+            .iter()
+            .find(|node| node.attribute("type").is_none_or(|kind| kind.is_empty()))
+    };
+    let column_nodes = match typed.or_else(untyped) {
+        Some(node) => node.children_named("column"),
+        None => form.children_named("form-list-column"),
+    };
+    if column_nodes.is_empty() {
+        return fields.iter().filter_map(shown).collect();
+    }
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    for field_ref in column_nodes
+        .iter()
+        .flat_map(|column| column.children_named("field-ref"))
+    {
+        let name = field_ref.attribute("name").unwrap_or_default();
+        let field = fields
+            .iter()
+            .find(|field| field.attribute("name").as_deref() == Some(name.as_str()));
+        if let Some(entry) = field.and_then(shown) {
+            if !out.iter().any(|(known, _)| *known == entry.0) {
+                out.push(entry);
+            }
+        }
+    }
+    out
+}
+
+/// The hidden fields that have a `default-field`, which an `entity-find` list also selects (Java's `getListObject`).
+pub(crate) fn hidden_list_fields_with_default(form: &MNode) -> Vec<String> {
+    form.children_named("field")
+        .iter()
+        .filter(|field| list_field_hidden_widget(field) && field.first_named("default-field").is_some())
+        .filter_map(|field| field.attribute("name"))
+        .collect()
+}
+
 /// Java's `isListFieldHiddenWidget`: the default field and each conditional field are hidden or ignored.
 fn list_field_hidden_widget(field: &MNode) -> bool {
     let shown = |sub: &MNode| sub.first_named("hidden").is_none() && sub.first_named("ignored").is_none();

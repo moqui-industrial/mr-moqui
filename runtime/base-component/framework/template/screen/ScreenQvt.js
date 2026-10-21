@@ -1251,12 +1251,39 @@
                 // make it the screen's default or no longer, or delete it.
                 const finds = sri.getUserFormListFinds(at(n, "name"));
                 const base = sri.getScreenUrlInstance().path;
+                const activeId = ctx("formListFindId") || "";
+                const defaultId = finds.length ? sri.getUserDefaultFormListFindId() || "" : "";
+                // The active find, and a form that sends it by email on a schedule unless it is scheduled already.
+                const active = finds.find((find) => find.formListFind.formListFindId === activeId);
+                if (active) {
+                    w("<div><strong>" + t(L("Active Saved Find:")) + "</strong> " + t(active.description || activeId) +
+                        (activeId === defaultId ? ' <span class="text-info">(' + t(L("My Default")) + ")</span>" : "") + "</div>");
+                    const scheduled = sri.getFormListFindScreenScheduled(activeId);
+                    if (scheduled) {
+                        const mode = scheduled.renderMode === "xsl-fo" ? "PDF" : String(scheduled.renderMode || "csv").toUpperCase();
+                        w("<p>(" + t(L("Scheduled for")) + " " + t(mode) + " " + t(scheduled.cronDescription) + ")</p>");
+                    } else {
+                        const modes = [{ value: "xlsx", label: "XLSX" }, { value: "csv", label: "CSV" }, { value: "xsl-fo", label: "PDF" }];
+                        const crons = [{ value: "0 0 6 ? * MON-FRI", label: L("Monday-Friday") }, { value: "0 0 6 ? * *", label: L("Every Day") },
+                            { value: "0 0 6 ? * MON", label: L("Monday Only") }, { value: "0 0 6 1 * ?", label: L("Monthly") }];
+                        w("<m-form" + A({
+                            class: "form-inline", id: formId + "_SCHED", action: saveUrl, "v-slot:default": "formProps",
+                            ":fields-initial": js_({ formListFindId: activeId, screenPath: base, renderMode: "", cronSelected: "" })
+                        }) + "><m-drop-down" + A({
+                            "v-model": "formProps.fields.renderMode", name: "renderMode", label: L("Mode"), id: formId + "_SCHED_renderMode", ":options": js_(modes)
+                        }) + "></m-drop-down><m-drop-down" + A({
+                            "v-model": "formProps.fields.cronSelected", name: "cronSelected", label: L("Schedule"), id: formId + "_SCHED_cronSelected", ":options": js_(crons)
+                        }) + '></m-drop-down><q-btn dense outline no-caps' + A({
+                            type: "submit", name: "ScheduleFind", value: "Y", label: L("Schedule"),
+                            "data-confirm": L("Setup a schedule to send this saved find to you by email?")
+                        }) + "></q-btn></m-form>");
+                    }
+                    if (Object.keys(params).length) w("<hr>");
+                }
                 // Clear Current Find goes to the screen with formListFindId=_clear, which drops an applied find and does not put the user default back.
                 w('<q-list dense separator class="q-my-sm">');
                 w("<q-item><q-item-section><m-link" + A({ href: base + "?formListFindId=_clear" }) + ">" + t(L("Clear Current Find")) + "</m-link></q-item-section></q-item>");
                 if (finds.length) {
-                    const activeId = ctx("formListFindId") || "";
-                    const defaultId = sri.getUserDefaultFormListFindId() || "";
                     finds.forEach((find) => {
                         const id = find.formListFind.formListFindId;
                         const label = (find.description || id) + (id === defaultId ? " (" + L("Default") + ")" : "");

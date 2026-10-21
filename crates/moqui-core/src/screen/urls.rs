@@ -180,14 +180,15 @@ impl UrlInstance {
         Ok(!self.permitted())
     }
 
-    /// `isPermitted`: each screen of the path with its parents on the artifact stack, and the transition with its action.
+    /// `isPermitted`: each screen of the path with its parents on the artifact stack, the single service of a transition
+    /// that is not read-only, and the transition with its action. The frames are a check, not artifact hits.
     fn permitted(&self) -> bool {
         let path_defs = self.path_defs();
         let Some(last) = path_defs.len().checked_sub(1) else {
             return true;
         };
         let transition = self.transition();
-        let mut frames = super::render::Frames::default();
+        let mut frames = super::render::Frames::untracked();
         for (index, def) in path_defs.iter().enumerate() {
             if index == last && transition.is_none() {
                 return sri::screen_permitted(def);
@@ -203,6 +204,11 @@ impl UrlInstance {
         let required = target.authentication == super::definition::Authentication::Required;
         if required && crate::user::current_username().ok().flatten().is_none() {
             return false;
+        }
+        if let Some(service) = transition.single_service.as_deref().filter(|name| !name.is_empty()) {
+            if !transition.read_only && !service_permitted(target, service) {
+                return false;
+            }
         }
         frames
             .push(
@@ -240,6 +246,32 @@ impl UrlInstance {
         }
         map
     }
+}
+
+/// Whether the user may call a transition's single service, as `ScreenUrlInfo.isPermitted` checks it: with the service's
+/// authorization action, inheriting from the last screen, and with no allow record needed when that screen or the
+/// service is anonymous for the action. The frame is popped before the transition's own is pushed, as Java does not
+/// stack the transition.
+fn service_permitted(target: &ScreenDef, service: &str) -> bool {
+    use super::definition::Authentication;
+    use crate::service::define::Authenticate;
+    let action = crate::service::call::service_authz_action(service);
+    let authenticate = crate::service::call::service_authenticate(service);
+    let allowed = match action.as_str() {
+        "view" => {
+            target.authentication == Authentication::AnonymousView
+                || matches!(
+                    authenticate,
+                    Some(Authenticate::AnonymousView | Authenticate::AnonymousAll)
+                )
+        }
+        "all" | "create" | "update" | "delete" => {
+            target.authentication == Authentication::AnonymousAll || authenticate == Some(Authenticate::AnonymousAll)
+        }
+        _ => false,
+    };
+    let mut frames = super::render::Frames::untracked();
+    frames.push("AT_SERVICE", service, &action, !allowed).is_ok()
 }
 
 fn join_query(mut base: String, query: &str) -> String {
