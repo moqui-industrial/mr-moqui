@@ -29,6 +29,7 @@ use super::loader::{
 };
 use super::pull::Pull;
 use super::{DataFileService, LoadOptions};
+use crate::entity::FieldMap;
 use crate::entity::facade::EntityFacade;
 
 pub(super) fn load_json_reader(
@@ -165,7 +166,7 @@ fn json_record_in(
     facade: &EntityFacade,
     entity_name: &str,
     pairs: &[(String, Json)],
-    ancestor: &BTreeMap<String, Value>,
+    ancestor: &FieldMap,
 ) -> Result<Record, Error> {
     let shape = shape_of(facade, entity_name)?;
     let mut fields = BTreeMap::new();
@@ -177,14 +178,14 @@ fn json_record_in(
         match value {
             Json::Object(_) | Json::Array(_) => nested_values.push((key, value)),
             _ => {
-                if !shape.fields.contains_key(key) {
+                if !shape.fields.contains_key(key.as_str()) {
                     tracing::warn!(entity = %shape.full_name, field = %key, "json field is not on the entity");
                     continue;
                 }
                 if let Some(converted) =
-                    json_field_value(shape.fields.get(key).map(String::as_str).unwrap_or(""), value)?
+                    json_field_value(shape.fields.get(key.as_str()).map(String::as_str).unwrap_or(""), value)?
                 {
-                    fields.insert(key.clone(), converted);
+                    fields.insert(shape.name(key), converted);
                 }
             }
         }
@@ -222,7 +223,7 @@ fn json_children(
     facade: &EntityFacade,
     entity_name: &str,
     value: &Json,
-    ancestor: &BTreeMap<String, Value>,
+    ancestor: &FieldMap,
 ) -> Result<Vec<Record>, Error> {
     match value {
         Json::Object(pairs) => Ok(vec![json_record_in(facade, entity_name, pairs, ancestor)?]),

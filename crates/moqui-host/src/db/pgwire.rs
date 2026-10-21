@@ -35,7 +35,7 @@ use fallible_iterator::FallibleIterator;
 use moqui_core::driver::DbRow;
 use moqui_lib::error::Error;
 use postgres_protocol::authentication::sasl::{ChannelBinding, ScramSha256, SCRAM_SHA_256};
-use postgres_protocol::message::backend::{DataRowBody, ErrorFields, Message};
+use postgres_protocol::message::backend::{DataRowBody, ErrorFields, Message, ParameterDescriptionBody, RowDescriptionBody};
 use postgres_protocol::message::frontend;
 use postgres_types::{Kind, Type};
 
@@ -76,6 +76,15 @@ pub(super) struct Described {
 pub(super) type Encode<'a> = &'a mut dyn FnMut(usize, &mut BytesMut) -> Result<bool, Error>;
 /// One result cell from its type and bytes (`None` for a SQL NULL).
 pub(super) type Decode<'a> = &'a dyn Fn(&Type, Option<&[u8]>) -> Result<moqui_lib::object::Value, Error>;
+
+/// Which `Describe` a request carries.
+enum Describe {
+    None,
+    /// Of the statement it parses: its parameter types and columns, for later runs.
+    Statement,
+    /// Of the portal it binds: the columns of its rows.
+    Portal,
+}
 
 /// What the reply to an unanswered request must hold.
 enum Expect {
@@ -595,32 +604,16 @@ impl Wire {
             Ok(())
         })?;
         let mut params = Vec::new();
-        let mut columns = Vec::new();
+        let mut columns: Arc<[Column]> = Arc::new([]);
         self.round("prepare", |message| {
             match message {
-                Message::ParameterDescription(body) => {
-                    let mut oids = body.parameters();
-                    while let Some(oid) = oids.next().map_err(|err| io_error("prepare", err))? {
-                        params.push(type_of(oid));
-                    }
-                }
-                Message::RowDescription(body) => {
-                    let mut fields = body.fields();
-                    while let Some(field) = fields.next().map_err(|err| io_error("prepare", err))? {
-                        columns.push(Column {
-                            name: Arc::from(field.name()),
-                            ty: type_of(field.type_oid()),
-                        });
-                    }
-                }
+                Message::ParameterDescription(body) => params = params_of(&body)?,
+                Message::RowDescription(body) => columns = columns_of(&body)?,
                 _ => {}
             }
             Ok(())
         })?;
-        Ok(Described {
-            params,
-            columns: columns.into(),
-        })
+        Ok(Described { params, columns })
     }
 
     /// Close prepared statement `name`, with the next request.
@@ -633,18 +626,26 @@ impl Wire {
         self.leave(Expect::Close, false)
     }
 
-    /// `Bind` of prepared statement `statement` (or the unnamed one, `""`) to `count` parameters, each written by
-    /// `encode` in the format it gives, with every result column in binary, then `Execute` and `Sync`. With `describe`,
-    /// a `Describe` of the portal first, for an unnamed statement's columns.
+    /// One request: with `parse`, a `Parse` of that SQL as `statement` first; with [`Describe::Statement`], a
+    /// `Describe` of the statement after it; then a `Bind` of `statement` to `count` parameters, each written by `encode`
+    /// in the format `formats` gives, with every result column in binary; with [`Describe::Portal`], a `Describe` of
+    /// the portal; then `Execute` and `Sync`. Nothing of it stays in the buffer when a parameter does not encode.
     fn bind_execute(
         &mut self,
+        parse: Option<&str>,
         statement: &str,
+        describe: Describe,
         formats: &[i16],
         count: usize,
         encode: Encode<'_>,
-        describe: bool,
     ) -> Result<(), Error> {
         self.encode(|buf| {
+            if let Some(sql) = parse {
+                frontend::parse(statement, sql, std::iter::empty(), buf).map_err(|err| io_error("parse", err))?;
+            }
+            if matches!(describe, Describe::Statement) {
+                frontend::describe(b'S', statement, buf).map_err(|err| io_error("describe", err))?;
+            }
             let mut failure = None;
             let bound = frontend::bind(
                 "",
@@ -670,7 +671,7 @@ impl Wire {
                 frontend::BindError::Conversion(err) => Error::new(format!("postgres bind: {err}")),
                 frontend::BindError::Serialization(err) => io_error("bind", err),
             })?;
-            if describe {
+            if matches!(describe, Describe::Portal) {
                 frontend::describe(b'P', "", buf).map_err(|err| io_error("describe", err))?;
             }
             frontend::execute("", 0, buf).map_err(|err| io_error("execute", err))?;
@@ -687,7 +688,7 @@ impl Wire {
         count: usize,
         encode: Encode<'_>,
     ) -> Result<u64, Error> {
-        self.bind_execute(statement, formats, count, encode, false)?;
+        self.bind_execute(None, statement, Describe::None, formats, count, encode)?;
         let mut rows = 0;
         self.round("execute", |message| {
             if let Message::CommandComplete(body) = message {
@@ -707,7 +708,7 @@ impl Wire {
         encode: Encode<'_>,
         zero_rows: Option<String>,
     ) -> Result<(), Error> {
-        self.bind_execute(statement, formats, count, encode, false)?;
+        self.bind_execute(None, statement, Describe::None, formats, count, encode)?;
         self.leave(Expect::Execute { zero_rows }, true)
     }
 
@@ -721,7 +722,7 @@ impl Wire {
         encode: Encode<'_>,
         decode: Decode<'_>,
     ) -> Result<Vec<DbRow>, Error> {
-        self.bind_execute(statement, formats, count, encode, false)?;
+        self.bind_execute(None, statement, Describe::None, formats, count, encode)?;
         let mut rows = Vec::new();
         self.round("query", |message| {
             if let Message::DataRow(body) = message {
@@ -742,24 +743,13 @@ impl Wire {
         decode: Decode<'_>,
         context: &str,
     ) -> Result<(Vec<DbRow>, u64), Error> {
-        self.encode(|buf| frontend::parse("", sql, std::iter::empty(), buf).map_err(|err| io_error(context, err)))?;
-        self.bind_execute("", &[TEXT], count, encode, true)?;
+        self.bind_execute(Some(sql), "", Describe::Portal, &[TEXT], count, encode)?;
         let mut columns: Arc<[Column]> = Arc::new([]);
         let mut rows = Vec::new();
         let mut changed = 0;
         self.round(context, |message| {
             match message {
-                Message::RowDescription(body) => {
-                    let mut fields = body.fields();
-                    let mut described = Vec::new();
-                    while let Some(field) = fields.next().map_err(|err| io_error(context, err))? {
-                        described.push(Column {
-                            name: Arc::from(field.name()),
-                            ty: type_of(field.type_oid()),
-                        });
-                    }
-                    columns = described.into();
-                }
+                Message::RowDescription(body) => columns = columns_of(&body)?,
                 Message::DataRow(body) => rows.push(row_of(&body, &columns, decode)?),
                 Message::CommandComplete(body) => changed = body.tag().map(tag_rows).unwrap_or(0),
                 _ => {}
@@ -767,6 +757,45 @@ impl Wire {
             Ok(())
         })?;
         Ok((rows, changed))
+    }
+
+    /// Prepare `sql` as statement `name`, describe it and run it, in one round trip where [`Self::prepare`] then a run
+    /// take two: every parameter in text, as the server infers its type. The statement as described, its rows and the
+    /// rows it changed. When the run fails after the statement parsed, the statement is closed, so a later use
+    /// prepares it again.
+    pub(super) fn prepare_run(
+        &mut self,
+        name: &str,
+        sql: &str,
+        count: usize,
+        encode: Encode<'_>,
+        decode: Decode<'_>,
+        context: &str,
+    ) -> Result<(Described, Vec<DbRow>, u64), Error> {
+        self.bind_execute(Some(sql), name, Describe::Statement, &[TEXT], count, encode)?;
+        let mut parsed = false;
+        let mut params = Vec::new();
+        let mut columns: Arc<[Column]> = Arc::new([]);
+        let mut rows = Vec::new();
+        let mut changed = 0;
+        let ran = self.round(context, |message| {
+            match message {
+                Message::ParseComplete => parsed = true,
+                Message::ParameterDescription(body) => params = params_of(&body)?,
+                Message::RowDescription(body) => columns = columns_of(&body)?,
+                Message::DataRow(body) => rows.push(row_of(&body, &columns, decode)?),
+                Message::CommandComplete(body) => changed = body.tag().map(tag_rows).unwrap_or(0),
+                _ => {}
+            }
+            Ok(())
+        });
+        if let Err(err) = ran {
+            if parsed && !self.dead {
+                self.close_statement(name)?;
+            }
+            return Err(err);
+        }
+        Ok((Described { params, columns }, rows, changed))
     }
 
     /// The payloads of the notifications that arrive within `timeout` of the call, and any already waiting behind the
@@ -816,6 +845,27 @@ impl Drop for Wire {
         let _ = self.stream.write_all(&self.write);
         let _ = self.stream.flush();
     }
+}
+
+fn params_of(body: &ParameterDescriptionBody) -> Result<Vec<Type>, Error> {
+    let mut oids = body.parameters();
+    let mut params = Vec::new();
+    while let Some(oid) = oids.next().map_err(|err| io_error("describe", err))? {
+        params.push(type_of(oid));
+    }
+    Ok(params)
+}
+
+fn columns_of(body: &RowDescriptionBody) -> Result<Arc<[Column]>, Error> {
+    let mut fields = body.fields();
+    let mut columns = Vec::new();
+    while let Some(field) = fields.next().map_err(|err| io_error("describe", err))? {
+        columns.push(Column {
+            name: Arc::from(field.name()),
+            ty: type_of(field.type_oid()),
+        });
+    }
+    Ok(columns.into())
 }
 
 fn row_of(body: &DataRowBody, columns: &Arc<[Column]>, decode: Decode<'_>) -> Result<DbRow, Error> {

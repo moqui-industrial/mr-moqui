@@ -1155,22 +1155,25 @@ fn breadth_first(root: &MNode, visit: &mut dyn FnMut(&MNode)) {
 /// Every element below `root` that is a section, form, tree, section-include, or subscreens
 /// panel or menu, in document order. Nested ones are included.
 fn descendants(root: &MNode, out: &mut Vec<MNode>) {
-    for child in root.children() {
-        if matches!(
-            child.name().as_str(),
-            "section"
-                | "section-iterate"
-                | "section-include"
-                | "form-single"
-                | "form-list"
-                | "tree"
-                | "subscreens-panel"
-                | "subscreens-menu"
-        ) {
+    root.for_each_child(|child| {
+        let wanted = child.with_name(|name| {
+            matches!(
+                name,
+                "section"
+                    | "section-iterate"
+                    | "section-include"
+                    | "form-single"
+                    | "form-list"
+                    | "tree"
+                    | "subscreens-panel"
+                    | "subscreens-menu"
+            )
+        });
+        if wanted {
             out.push(child.clone());
         }
-        descendants(&child, out);
-    }
+        descendants(child, out);
+    });
 }
 
 /// A screen whose widgets are only the subscreens placeholders renders the same every time.
