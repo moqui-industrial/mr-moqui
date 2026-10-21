@@ -109,6 +109,10 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
             &format!("request body is larger than {} bytes", web::body_limit(&request)),
         );
     }
+    if let Some(origin) = web::refused_origin(factory, &request) {
+        tracing::warn!("Origin not allowed: {origin} for {} {}", request.method, request.path);
+        return web::early_error(factory, &request, 401, "Origin not allowed");
+    }
     if request.method.eq_ignore_ascii_case("options") {
         return web::finish_response(factory, &request, WebResponse::new(204, Vec::new()), true);
     }

@@ -87,7 +87,10 @@ pub(super) fn send_template(
     if screen.is_empty() && supplied_body.is_empty() && supplied_text.is_empty() {
         return fail("email has no body");
     }
-    let env = RenderEnv::new(&template, parameters);
+    let server_web_base_url = find_one(facade, SERVER, "emailServerId", &field_text(&template, "emailServerId"))?
+        .map(|server| field_text(&server, "webBaseUrl"))
+        .unwrap_or_default();
+    let env = RenderEnv::new(&template, &server_web_base_url, parameters);
     let email_type = {
         let given = param_text(parameters, "emailTypeEnumId");
         if given.is_empty() {
@@ -431,7 +434,9 @@ struct RenderEnv {
 }
 
 impl RenderEnv {
-    fn new(template: &EntityValue, parameters: &BTreeMap<String, Value>) -> Self {
+    /// The base URL links in the email start with is the first of: `https://` and the template's `webHostName`, the
+    /// server's `webBaseUrl`, the conf webapp's root URL. Never a request's host: an email is often sent from a job.
+    fn new(template: &EntityValue, server_web_base_url: &str, parameters: &BTreeMap<String, Value>) -> Self {
         let factory = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()));
         let webapp_name = {
             let named = field_text(template, "webappName");
@@ -441,17 +446,24 @@ impl RenderEnv {
                 named
             }
         };
-        let base_url = factory
-            .as_ref()
-            .map(|factory| factory.webapp_root_url(&webapp_name))
-            .unwrap_or_default();
+        let web_host_name = field_text(template, "webHostName");
+        let base_url = if !web_host_name.is_empty() {
+            format!("https://{web_host_name}")
+        } else if !server_web_base_url.trim().is_empty() {
+            server_web_base_url.trim().trim_end_matches('/').to_string()
+        } else {
+            factory
+                .as_ref()
+                .map(|factory| factory.webapp_root_url(&webapp_name))
+                .unwrap_or_default()
+        };
         let parameters = body_parameters(parameters)
             .map(|map| map.iter().map(|(key, value)| (key.clone(), value.clone())).collect())
             .unwrap_or_default();
         Self {
             factory,
             webapp_name,
-            web_host_name: field_text(template, "webHostName"),
+            web_host_name,
             base_url,
             parameters,
         }
@@ -729,7 +741,9 @@ pub(super) fn require_host(host: &str) -> Result<(), Error> {
     if host_allowed(host) {
         Ok(())
     } else {
-        Err(Error::new(format!("Email host {host} is not in email-client allowed-hosts")))
+        Err(Error::new(format!(
+            "Email host {host} is not in email-client allowed-hosts"
+        )))
     }
 }
 

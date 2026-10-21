@@ -603,6 +603,12 @@ impl ExecutionContextFactory {
     /// the http ones; an empty host is `localhost`, and the default port is left out. Empty when the
     /// conf has no such webapp.
     pub fn webapp_root_url(&self, webapp_name: &str) -> String {
+        self.webapp_root_url_for(webapp_name, None)
+    }
+
+    /// [`webapp_root_url`](Self::webapp_root_url) with the scheme asked for: `Some(true)` is https when the webapp has
+    /// `https-enabled`, else http as Java's `makeWebappHost`; `Some(false)` is http; `None` follows `https-enabled`.
+    pub fn webapp_root_url_for(&self, webapp_name: &str, secure: Option<bool>) -> String {
         let conf = self.conf();
         let attr = |name: &str| {
             conf.webapp_attr(webapp_name, name)
@@ -613,7 +619,7 @@ impl ExecutionContextFactory {
         if conf.webapp_attr(webapp_name, "name").is_none() {
             return String::new();
         }
-        let https = attr("https-enabled") == "true";
+        let https = attr("https-enabled") == "true" && secure != Some(false);
         let (scheme, host, port, default_port) = if https {
             ("https", attr("https-host"), attr("https-port"), "443")
         } else {

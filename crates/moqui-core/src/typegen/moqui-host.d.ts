@@ -545,8 +545,11 @@ interface MoquiWebFacade {
     getScreenHistory(): { name: string; url: string; urlNoParams: string }[];
     getHostName(withPort?: boolean): string;
     getResourceDistinctValue(): string;
-    /** The base URL. The arguments are ignored. */
-    getWebappRootUrl(...ignored: unknown[]): string;
+    /** Empty when a path-only link will do (in a request whose security matches useEncryption), else the scheme and
+     * host: the render's base URL, or the conf webapp's host and port, never the request's Host header. */
+    getWebappRootUrl(requireFullUrl?: boolean, useEncryption?: boolean | null): string;
+    getWebappRootUrl(webappName: string, servletContextPath: string | null, requireFullUrl: boolean,
+        useEncryption?: boolean | null): string;
 }
 
 interface MoquiScreenRenderOptions {

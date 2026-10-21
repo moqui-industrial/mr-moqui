@@ -970,16 +970,35 @@ impl HostWeb {
         host_guard(&ctx, || host_to_js(&ctx, map_value(crate::web::parameters())))
     }
 
-    /// The root URL of the web app. The arguments are the ones Java takes and are not needed here.
+    /// The root URL of the web app, as Java's two forms: `(requireFullUrl, useEncryption)` for the `webroot` webapp, and
+    /// `(webappName, servletContextPath, requireFullUrl, useEncryption)`; no arguments is `(false, null)`. See
+    /// [`crate::web::webapp_root_url`].
     fn get_webapp_root_url(
         &self,
         ctx: Ctx<'_>,
-        _webapp_name: Opt<JsValue<'_>>,
-        _servlet_context_path: Opt<JsValue<'_>>,
-        _include_webapp_path: Opt<JsValue<'_>>,
-        _is_secure: Opt<JsValue<'_>>,
+        first: Opt<JsValue<'_>>,
+        second: Opt<JsValue<'_>>,
+        third: Opt<JsValue<'_>>,
+        fourth: Opt<JsValue<'_>>,
     ) -> rquickjs::Result<String> {
-        host_guard(&ctx, || Ok(crate::web::base_url().trim_end_matches('/').to_string()))
+        host_guard(&ctx, || {
+            let text = |value: &Option<JsValue<'_>>| {
+                value
+                    .as_ref()
+                    .and_then(|value| value.as_string())
+                    .and_then(|text| text.to_string().ok())
+                    .filter(|text| !text.is_empty())
+            };
+            let flag = |value: &Option<JsValue<'_>>| value.as_ref().and_then(JsValue::as_bool);
+            let named = first.0.as_ref().is_some_and(JsValue::is_string);
+            let (webapp, full, encryption) = if named {
+                (text(&first.0), flag(&third.0), flag(&fourth.0))
+            } else {
+                (None, flag(&first.0), flag(&second.0))
+            };
+            let webapp = webapp.unwrap_or_else(|| "webroot".to_string());
+            Ok(crate::web::webapp_root_url(&webapp, full.unwrap_or(false), encryption))
+        })
     }
 
     /// Reads and writes go to the session, with `remove` and `put` as on the Java map.

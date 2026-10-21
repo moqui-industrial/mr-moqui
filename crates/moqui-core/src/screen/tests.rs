@@ -491,6 +491,46 @@ fn the_webapp_conf_sets_the_response_headers_and_cors() {
     );
 }
 
+/// As `MoquiServlet.handleCors`: a request from an origin CORS does not allow is answered 401 before it runs; an
+/// allowed origin, the request's own host and no origin at all go on.
+#[test]
+fn a_disallowed_origin_is_refused_before_the_request_runs() {
+    let mut world = World::open("");
+    let path = std::env::temp_dir().join(format!("moqui-screen-origin-{}.xml", std::process::id()));
+    std::fs::write(
+        &path,
+        r#"<screen require-authentication="false">
+            <transition name="go"><default-response type="url" url="/next"/></transition>
+        </screen>"#,
+    )
+    .unwrap();
+    let root = path.to_string_lossy().into_owned();
+    world._env.set("webapp_allow_origins", "https://app.example");
+    let send = |method: &str, origin: Option<&str>| {
+        let mut call = request(method, "/go");
+        call.set_header("host", "erp.example:8080");
+        if let Some(origin) = origin {
+            call.set_header("origin", origin);
+        }
+        serve_at(&world.factory, call, &root)
+    };
+    for method in ["GET", "POST", "OPTIONS"] {
+        let response = send(method, Some("https://evil.example"));
+        assert_eq!(response.status, 401, "{method} {}", response.body_text());
+        assert!(
+            response.body_text().contains("Origin not allowed"),
+            "{}",
+            response.body_text()
+        );
+        assert_eq!(header_value(&response, "Access-Control-Allow-Origin"), None);
+    }
+    assert_eq!(send("GET", Some("https://app.example")).status, 302);
+    assert_eq!(send("GET", Some("http://erp.example:8080")).status, 302);
+    assert_eq!(send("GET", None).status, 302);
+    assert_eq!(send("OPTIONS", Some("https://app.example")).status, 204);
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn script_send_json_response_writes_the_web_slot() {
     let context = ExecutionContextFactory::test_context();
@@ -516,6 +556,38 @@ fn script_send_text_response_with_an_error_sends_the_errors() {
     assert!(sent);
     assert_eq!(status, 500);
     assert_eq!(String::from_utf8(body).unwrap(), "No such order\n");
+}
+
+/// P8-08: in a request a path-only link is empty, and a full URL is the conf webapp's, never the request's `Host`.
+#[test]
+fn webapp_root_url_is_the_conf_webapp_and_never_the_host_header() {
+    let context = ExecutionContextFactory::test_context_with_conf(
+        r#"<moqui-conf><webapp-list><webapp name="webroot" http-host="erp.example" http-port="8080"
+            https-host="erp.example" https-port="8443"/></webapp-list></moqui-conf>"#,
+    );
+    let _entered = context.enter();
+    let _web = crate::web::install(BTreeMap::new());
+    let mut request = WebRequest::new("GET", "/apps/ship");
+    request.set_header("host", "attacker.example");
+    crate::web::set_request_info(&request);
+    let conf = context.factory().webapp_root_url("webroot");
+    assert_eq!(conf, "http://erp.example:8080");
+    let value = |script: &str| {
+        crate::script::eval_value(script)
+            .map(|value| moqui_lib::object::to_plain_string(&value))
+            .unwrap()
+    };
+    assert_eq!(value("ec.web.getWebappRootUrl(false, null)"), "");
+    assert_eq!(value("ec.web.getWebappRootUrl()"), "");
+    assert_eq!(value("ec.web.getWebappRootUrl(true, null)"), conf);
+    assert_eq!(value("ec.web.getWebappRootUrl('webroot', null, true, false)"), conf);
+    // An https link asked for from an http request needs the full URL; with no https-enabled it stays http.
+    assert_eq!(value("ec.web.getWebappRootUrl(false, true)"), conf);
+    let mut secure = WebRequest::new("GET", "/apps/ship");
+    secure.https = true;
+    crate::web::set_request_info(&secure);
+    assert_eq!(value("ec.web.getWebappRootUrl(false, null)"), "");
+    assert_eq!(value("ec.web.getWebappRootUrl(false, false)"), conf);
 }
 
 #[test]

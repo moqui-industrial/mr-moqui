@@ -190,6 +190,8 @@ struct WebSlot {
     locale: Option<String>,
     /// Scheme, host, and context path that links start with. Empty for a path-only link.
     base_url: String,
+    /// Whether the request came over https; None with no request, as for a render from a job.
+    secure: Option<bool>,
     /// The request path, Java's `getPathInfo`, for `sendError`.
     path: String,
     /// The `Accept` header, for `sendError`.
@@ -241,6 +243,7 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             client_ip: String::new(),
             locale: None,
             base_url,
+            secure: None,
             path: String::new(),
             accept: String::new(),
             changed_preferences: BTreeMap::new(),
@@ -387,6 +390,7 @@ pub(crate) fn set_request_info(request: &WebRequest) {
     WEB.with(|slot| {
         if let Some(web) = slot.borrow_mut().as_mut() {
             web.request_url = url;
+            web.secure = Some(request.https);
             web.referrer = referrer;
             web.path = request.path.clone();
             web.accept = request.header("accept").unwrap_or("").to_string();
@@ -533,6 +537,29 @@ pub(crate) fn is_same_origin_redirect(url: &str, configured_host: Option<&str>) 
     }
     let host = authority.split(':').next().unwrap_or("");
     !host.is_empty() && host.eq_ignore_ascii_case(&configured)
+}
+
+/// Whether the request came over https, None with no request (a job, a render from a script).
+pub(crate) fn request_secure() -> Option<bool> {
+    WEB.with(|slot| slot.borrow().as_ref().and_then(|web| web.secure))
+}
+
+/// Java's `WebFacadeImpl.getWebappRootUrl`: empty, as the context path, when a path-only link will do, which is in a
+/// request whose security matches `use_encryption`; otherwise the scheme and host. Those are the render's base URL
+/// when it has one (an email, a render with no socket), else the conf `webapp`'s host and port. Never the request's
+/// `Host` header, which the sender of the request picks (Parity-Diffs P8-08).
+pub(crate) fn webapp_root_url(webapp_name: &str, require_full_url: bool, use_encryption: Option<bool>) -> String {
+    let secure = request_secure();
+    let require_encryption = use_encryption.unwrap_or(secure.unwrap_or(false));
+    if !require_full_url && secure == Some(require_encryption) {
+        return String::new();
+    }
+    let base = base_url();
+    if base.starts_with("http://") || base.starts_with("https://") {
+        return base.trim_end_matches('/').to_string();
+    }
+    let https = require_encryption || secure == Some(true);
+    ExecutionContext::with_current(|ec| ec.factory().webapp_root_url_for(webapp_name, Some(https))).unwrap_or_default()
 }
 
 pub(crate) fn base_url() -> String {
@@ -1635,6 +1662,21 @@ fn origin_host(text: &str) -> String {
         return format!("[{}]", bracketed.split(']').next().unwrap_or(""));
     }
     text.split(':').next().unwrap_or("").to_string()
+}
+
+/// The `Origin` of a request CORS refuses, as `MoquiServlet.handleCors`: CORS is on, the request names an origin and
+/// `origin_allowed_by` does not allow it. The caller answers 401 before the request runs.
+pub(crate) fn refused_origin<'a>(
+    factory: &crate::context::ExecutionContextFactory,
+    request: &'a WebRequest,
+) -> Option<&'a str> {
+    if !handle_cors(Some(factory)) {
+        return None;
+    }
+    request
+        .header("origin")
+        .filter(|origin| !origin.trim().is_empty())
+        .filter(|origin| !origin_allowed_by(Some(factory), Some(origin), request.header("host")))
 }
 
 /// The conf's `screen-render` headers on every response, as the baseline under what the response set itself, and

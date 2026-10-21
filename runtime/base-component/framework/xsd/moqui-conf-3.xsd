@@ -743,7 +743,6 @@ along with this software (see the LICENSE.md file). If not, see
         </xs:annotation></xs:attribute>
         <xs:attribute name="mime-type" type="xs:string" use="optional"/>
         <xs:attribute name="always-standalone" type="boolean" default="false"/>
-        <xs:attribute name="skip-actions" type="boolean" default="false"/>
         <xs:attribute name="macro-template-location" type="xs:string" use="required"/>
         <xs:attribute name="output-kind"><xs:annotation><xs:documentation>
             How a failed section is written, and whether the finished level is one JSON document: text and html write
@@ -762,7 +761,6 @@ along with this software (see the LICENSE.md file). If not, see
         </xs:annotation></xs:attribute>
         <xs:attribute name="mime-type" type="xs:string" use="optional"/>
         <xs:attribute name="always-standalone" type="boolean" default="false"/>
-        <xs:attribute name="skip-actions" type="boolean" default="false"/>
         <xs:attribute name="macro-template-location" type="xs:string"><xs:annotation><xs:documentation>
             The JavaScript macro module that fills the document of this binary mode, such as
             framework/template/screen/ScreenXlsx.js for xlsx.</xs:documentation></xs:annotation></xs:attribute>
