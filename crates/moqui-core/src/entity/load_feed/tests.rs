@@ -27,7 +27,7 @@ use moqui_lib::object::Value;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use super::feed::{probe_query, TOUCHES};
+use super::feed::{probe_query, Touch, TOUCHES};
 use super::{
     conf_data_locations, data_file_services, eca_rules, error_chain, feed_service_names, load_entity_data,
     load_entity_xml_text, location_in_components, match_rules, register_feed_insert, LoadOptions,
@@ -892,6 +892,11 @@ fn frame_touches() -> usize {
     TOUCHES.with(|touches| touches.borrow().values().map(Vec::len).sum())
 }
 
+/// Whether each touch of the open frames keeps its written values.
+fn touch_fields_kept() -> Vec<bool> {
+    TOUCHES.with(|touches| touches.borrow().values().flatten().map(Touch::keeps_fields).collect())
+}
+
 #[test]
 fn a_failed_first_write_leaves_no_touch_and_feed_names_do_not_grow() {
     let script = new_script(false, true);
@@ -954,16 +959,27 @@ fn feed_definitions_are_read_once_until_one_is_written() {
     assert_eq!(reads(), first, "the second commit used the kept definitions");
     assert_eq!(script.inserts.lock().expect("inserts").len(), 2);
 
-    // A write to an entity no document reads sets no savepoint and reads nothing.
+    // A write to an entity no document reads sets no savepoint and reads nothing, and its touch keeps no values
+    // once the definitions are known; a document entity's keeps them.
     let savepoints = script.savepoints.load(Ordering::SeqCst);
     facade.begin("moqui.test.TestEntity", None).unwrap();
     let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
     row.set("testId", Value::string("T1"));
     row.create(&facade).unwrap();
+    assert_eq!(touch_fields_kept(), vec![false]);
     facade.commit("moqui.test.TestEntity").unwrap();
     assert_eq!(script.savepoints.load(Ordering::SeqCst), savepoints);
     assert_eq!(reads(), first);
     assert_eq!(script.inserts.lock().expect("inserts").len(), 2);
+    facade.begin("moqui.test.Foo", None).unwrap();
+    let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+    row.set("testId", Value::string("T2"));
+    row.create(&facade).unwrap();
+    create_foo(&facade, "F2b").unwrap();
+    assert_eq!(touch_fields_kept(), vec![false, true]);
+    facade.commit("moqui.test.Foo").unwrap();
+    assert_eq!(reads(), first);
+    assert_eq!(script.inserts.lock().expect("inserts").len(), 3, "F2b was fed");
 
     // A definition write, here outside a transaction, makes the next commit read them again.
     let mut feed = facade.make_value("moqui.entity.feed.DataFeed").unwrap();

@@ -484,12 +484,13 @@ fn frame_wrote(facade: &EntityFacade, entity_name: &str, meta: &ReadMeta) -> boo
 /// Inside a transaction, record the write on the frame and clear the one-cache again when the frame commits or
 /// rolls back, so rows read and cached by other threads before the commit do not stay. Hooks go on once per entity
 /// per frame.
-/// `write` runs only inside a frame, so a write with none does not copy its values.
+/// `write` runs only inside a frame, so a write with none does not copy its values. When it gives `None` the entity's
+/// writes in the frame are not kept, and its caches are cleared whole at the end.
 fn note_frame_write(
     facade: &EntityFacade,
     entity_name: &str,
     full_name: &str,
-    write: impl FnOnce() -> FrameWrite,
+    write: impl FnOnce() -> Option<FrameWrite>,
 ) -> Result<(), Error> {
     let tx = facade.transactions_for(entity_name)?;
     let Some(token) = tx.frame_token() else {
@@ -503,8 +504,8 @@ fn note_frame_write(
             .or_default()
             .entry(full_name.to_string())
             .or_insert_with(|| Some(Vec::new()));
-        match entry {
-            Some(writes) if writes.len() < FRAME_WRITES_MAX => writes.push(write),
+        match (entry.as_mut(), write) {
+            (Some(writes), Some(write)) if writes.len() < FRAME_WRITES_MAX => writes.push(write),
             _ => *entry = None,
         }
     });
@@ -547,7 +548,7 @@ fn end_frame_write(facade: &EntityFacade, token: u64, full_name: &str) {
     let result = match (writes.flatten(), read_meta(facade, full_name)) {
         (Some(writes), Ok(meta)) => writes
             .iter()
-            .try_for_each(|write| evict(facade, &meta, &write.operation, &write.values)),
+            .try_for_each(|write| evict(facade, &meta, write.operation, &write.values).map(|_| ())),
         _ => clear_named(facade, full_name),
     };
     if let Err(err) = result {
@@ -559,20 +560,32 @@ fn end_frame_write(facade: &EntityFacade, token: u64, full_name: &str) {
 
 /// One write of a frame, kept to evict again at the frame's end.
 struct FrameWrite {
-    operation: String,
+    operation: &'static str,
     values: Arc<FieldMap>,
+}
+
+/// `operation` as the static name [`FrameWrite`] keeps; `None` for one [`evict`] does not name.
+fn frame_operation(operation: &str) -> Option<&'static str> {
+    match operation {
+        "create" => Some("create"),
+        "update" => Some("update"),
+        "upsert" => Some("upsert"),
+        "delete" => Some("delete"),
+        _ => None,
+    }
 }
 
 /// Java's `EntityCache.clearCacheForValue`: each cached find of the entity that the write may have changed (it held
 /// the row, or its condition may match the values written; a field the write did not set counts as a match), each
-/// count it may have changed, and every cached find of a view that has the entity as a member.
+/// count it may have changed, and every cached find of a view that has the entity as a member. True when the entity
+/// has a cache of finds or of counts.
 fn evict(
     facade: &EntityFacade,
     meta: &ReadMeta,
     operation: &str,
     values: &FieldMap,
-) -> Result<(), Error> {
-    let (lists, counts) = facade.with_slot(OneCaches::default, |caches| {
+) -> Result<bool, Error> {
+    let (lists, counts) = facade.with_slot_read(OneCaches::default, |caches| {
         (
             caches.lists.get(&meta.full_name).cloned(),
             caches.counts.get(&meta.full_name).cloned(),
@@ -588,6 +601,7 @@ fn evict(
                 .map(|value| (name.as_str(), value))
         })
         .collect();
+    let cached = lists.is_some() || counts.is_some();
     if let Some(cache) = lists {
         cache.remove_where(|_, cached| list_affected(cached, operation, values, pk.as_deref()))?;
     }
@@ -603,7 +617,7 @@ fn evict(
     for view in views.get(&meta.full_name).into_iter().flatten() {
         clear_named(facade, view)?;
     }
-    Ok(())
+    Ok(cached)
 }
 
 /// Whether a write may change a cached list: a delete when the list held the row, a create when the row may match,
@@ -892,10 +906,15 @@ fn write_hooks(
     shared: impl FnOnce() -> Arc<FieldMap>,
 ) -> Result<(), Error> {
     let meta = read_meta(facade, entity_name)?;
-    evict(facade, &meta, operation, values)?;
-    note_frame_write(facade, entity_name, &meta.full_name, || FrameWrite {
-        operation: operation.to_string(),
-        values: shared(),
+    // With no cache of the entity's finds or counts there is nothing to evict the write from at the frame's end
+    // either, unless one is made meanwhile; the entity is then cleared whole, and its values are not kept.
+    let cached = evict(facade, &meta, operation, values)?;
+    note_frame_write(facade, entity_name, &meta.full_name, || {
+        let operation = frame_operation(operation).filter(|_| cached)?;
+        Some(FrameWrite {
+            operation,
+            values: shared(),
+        })
     })?;
     note_screen_config(facade, &meta.full_name);
     note_feed_definition(facade, &meta.full_name);
@@ -914,7 +933,7 @@ pub(crate) fn clear_one_cache(
     note_screen_config(facade, &meta.full_name);
     note_feed_definition(facade, &meta.full_name);
     let cleared = match primary_key.filter(|keys| meta.pk_fields.iter().all(|name| keys.contains_key(name.as_str()))) {
-        Some(keys) => evict(facade, &meta, "update", keys),
+        Some(keys) => evict(facade, &meta, "update", keys).map(|_| ()),
         None => clear_named(facade, &meta.full_name),
     };
     super::derived::note_write(facade, &meta.full_name);
@@ -2993,5 +3012,73 @@ mod tests {
             "the commit cleared the cache"
         );
         assert!(super::TX_WRITTEN.with(|slot| slot.borrow().is_empty()));
+    }
+
+    /// The writes of each open frame kept for `full_name`: `None` when the frame keeps none (clears it whole), else
+    /// how many.
+    fn kept_writes(full_name: &str) -> Vec<Option<usize>> {
+        super::TX_WRITES.with(|slot| {
+            slot.borrow()
+                .values()
+                .filter_map(|entities| entities.get(full_name).map(|writes| writes.as_ref().map(Vec::len)))
+                .collect()
+        })
+    }
+
+    fn found_by(facade: &EntityFacade, field: &str, value: &str) -> usize {
+        facade
+            .find(TYPE)
+            .unwrap()
+            .eq(field, Value::string(value))
+            .use_cache(true)
+            .list()
+            .unwrap()
+            .len()
+    }
+
+    /// A frame's update of an entity with a cached find keeps the values written, and the commit evicts a find by a
+    /// field outside the primary key that another thread cached before it.
+    #[test]
+    fn an_update_evicts_a_find_by_another_field_at_commit() {
+        let facade = testing::open();
+        let mut row = facade.make_value(TYPE).unwrap();
+        row.set("enumTypeId", Value::string("UPD"));
+        row.set("description", Value::string("before"));
+        row.create(&facade).unwrap();
+        assert_eq!(found_by(&facade, "description", "after"), 0, "caches the empty result");
+        let tx = facade.transactions_for(TYPE).unwrap();
+        assert!(tx.begin(None).unwrap());
+        row.set("description", Value::string("after"));
+        row.update(&facade).unwrap();
+        assert_eq!(kept_writes(TYPE), vec![Some(1)]);
+        let reader = facade.clone();
+        let before_commit = std::thread::spawn(move || found_by(&reader, "description", "after"))
+            .join()
+            .unwrap();
+        assert_eq!(before_commit, 0, "another thread caches the committed rows");
+        tx.commit().unwrap();
+        assert_eq!(found_by(&facade, "description", "after"), 1, "the commit evicted the find");
+    }
+
+    /// A frame's write of an entity with no cached find or count keeps no values; a find another thread caches during
+    /// the frame, by a field the write set, is still cleared at the commit.
+    #[test]
+    fn a_find_cached_during_the_frame_is_cleared_at_commit_without_kept_values() {
+        let facade = testing::open();
+        let tx = facade.transactions_for(TYPE).unwrap();
+        assert!(tx.begin(None).unwrap());
+        let mut row = facade.make_value(TYPE).unwrap();
+        row.set("enumTypeId", Value::string("LATE"));
+        row.set("description", Value::string("late"));
+        row.create(&facade).unwrap();
+        assert_eq!(kept_writes(TYPE), vec![None], "nothing cached, nothing kept");
+        let reader = facade.clone();
+        let before_commit = std::thread::spawn(move || found_by(&reader, "description", "late"))
+            .join()
+            .unwrap();
+        assert_eq!(before_commit, 0, "another thread caches the committed rows");
+        tx.commit().unwrap();
+        assert_eq!(found_by(&facade, "description", "late"), 1, "the commit cleared the entity's caches");
+        assert!(kept_writes(TYPE).is_empty());
     }
 }
