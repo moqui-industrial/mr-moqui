@@ -24,6 +24,7 @@
 //! `ENTITY_SPEED_CALLS` is the loop size (default 1000). `ENTITY_SPEED_BATCHES` is how many timed
 //! batches to keep (default 5). The printed per-call figures use the upper median batch; see `speed/mod.rs` for the
 //! allocation columns. The rows a create keeps in the test's own list count as kept.
+//! `SPEED_PG_HOST` runs it on a new database of an external Postgres instead of the embedded one (`speed::SpeedDb`).
 //!
 //! There is no `ExecutionContext`, so artifact authorization and hit counting do not run. `fsync` and
 //! synchronous commit stay on. The pool is one ordinary connection and one reserve connection (sequence
@@ -47,7 +48,6 @@ use std::time::Duration;
 use moqui_core::driver::DbDriver;
 use moqui_core::entity::{EntityFacade, EntityValue};
 use moqui_core::transaction::PoolConfig;
-use moqui_host::db::embedded::EmbeddedCluster;
 use moqui_host::db::entity_facade::open_entity_facade;
 use moqui_lib::cache::{CacheConfig, MCache};
 use moqui_lib::object::Value;
@@ -78,7 +78,7 @@ fn entity_facade_speed() {
 
     let dir = speed::temp_dir("entity-speed");
     let _guard = DirGuard(dir.clone());
-    let (cluster, driver) = EmbeddedCluster::start(&dir, 20).expect("start embedded Postgres");
+    let (cluster, driver) = speed::SpeedDb::start(&dir, 20);
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
     let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
     let facade = open_entity_facade(&framework, driver, pool()).expect("open entity facade");

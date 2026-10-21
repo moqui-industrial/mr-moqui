@@ -977,7 +977,9 @@ build_binary() {
     package_args=(--profile "$(package_profile "$package")" --no-default-features
         --features "$(package_features "$package")")
     local -a addons
-    mapfile -t addons < <(component_crate_dirs "$RUNTIME_DIR/component" "$RUNTIME_DIR/ecomponent")
+    local addon
+    while IFS= read -r addon; do addons+=("$addon"); done \
+        < <(component_crate_dirs "$RUNTIME_DIR/component" "$RUNTIME_DIR/ecomponent")
     if [ ${#addons[@]} -eq 0 ]; then
         run_cmd cargo build "${package_args[@]}" -p moqui "$@" >&2 || die "cargo build failed"
         return
@@ -1040,7 +1042,7 @@ write_app_crate() {
     local app=$1 dir package deps="" uses="" unoptimized="" crate tui_features=
     shift
     local -a dirs
-    mapfile -t dirs < <(component_crate_dirs "$ROOT/runtime/base-component")
+    while IFS= read -r dir; do dirs+=("$dir"); done < <(component_crate_dirs "$ROOT/runtime/base-component")
     dirs+=("$@")
     for dir in "${dirs[@]}"; do
         package=$(crate_package_name "$dir")
@@ -2112,10 +2114,10 @@ BEGIN { FS = "\t" }
     path = $2
     name = base(path)
     parent = path
-    sub(/\/[^/]+$/, "", parent)
+    sub(/\/[^\/]+$/, "", parent)
     parent_name = base(parent)
     grand = parent
-    sub(/\/[^/]+$/, "", grand)
+    sub(/\/[^\/]+$/, "", grand)
 
     if (parent_name == ".fingerprint") {
         unit[path] = name

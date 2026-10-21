@@ -742,6 +742,21 @@ fn load_options(flags: &LoadFlags) -> moqui_core::entity::load_feed::LoadOptions
     }
 }
 
+/// Where a datasource's database is, for the log: the embedded cluster's directory, or the server the conf names.
+fn datasource_target(conf: &moqui_core::entity::datasource::DatasourceConf, cluster_dir: &std::path::Path) -> String {
+    use moqui_core::entity::datasource::DatasourceKind;
+    match conf.kind {
+        DatasourceKind::Embedded => format!("cluster directory {}", cluster_dir.display()),
+        DatasourceKind::Postgres | DatasourceKind::Mysql => format!(
+            "server {}{}/{}{}",
+            conf.host,
+            conf.port.map(|port| format!(":{port}")).unwrap_or_default(),
+            conf.database,
+            if conf.tls { " (TLS)" } else { "" }
+        ),
+    }
+}
+
 /// Boot, create framework tables, and load data into a fresh embedded cluster at `cluster_dir`.
 ///
 /// The same path serves startup empty-db load and `moqui load`. `location` replaces the conf list.
@@ -802,10 +817,10 @@ fn load_embedded(
         let pool = load_pool(&conf.pool);
         let install = crate::db::embedded::shared_install_dir(&runtime_dir, cluster_dir);
         tracing::info!(
-            "Opening DataSource transactional, database {}, max pool {}, cluster directory {}",
+            "Opening DataSource transactional, database {}, max pool {}, {}",
             conf.dialect,
             pool.max,
-            cluster_dir.display()
+            datasource_target(&conf, cluster_dir)
         );
         crate::db::entity_db::open(conf, cluster_dir, &install, pool.max).map(|db| (db, pool))
     });
@@ -1115,10 +1130,10 @@ fn boot_server_factory(
     let install = crate::db::embedded::shared_install_dir(&runtime_dir, &cluster_dir);
     let db_started = std::time::Instant::now();
     tracing::info!(
-        "Opening DataSource transactional, database {}, max pool {}, cluster directory {}",
+        "Opening DataSource transactional, database {}, max pool {}, {}",
         conf.dialect,
         pool.max,
-        cluster_dir.display()
+        datasource_target(&conf, &cluster_dir)
     );
     let db = crate::db::entity_db::open(conf, &cluster_dir, &install, pool.max)?;
     tracing::info!(

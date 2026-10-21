@@ -54,7 +54,7 @@ use std::time::Instant;
 
 use moqui_lib::object::Value;
 
-use crate::context::{Error, ErrorKind, ExecutionContextFactory};
+use crate::context::{Error, ExecutionContextFactory};
 use crate::user::{self, apply_header_keys, login_user};
 use crate::web::{self, WebRequest, WebResponse};
 
@@ -131,7 +131,10 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
         parsed.json_list.as_deref(),
     ) {
         Ok(response) => response,
-        Err(err) => web::json_error(500, &web::error_text(500, &err)),
+        Err(err) => {
+            let status = web::status_for(&err);
+            web::json_error(status, &web::error_text(status, &err))
+        }
     };
     web::finish_response(&request, response, false)
 }
@@ -161,7 +164,8 @@ fn handle(
     )?;
     let token_before = peek_token();
     if let Err(err) = user::session::remember_client_ip(&web::client_ip(request)) {
-        let mut response = web::json_error(500, &web::error_text(500, &err));
+        let status = web::status_for(&err);
+        let mut response = web::json_error(status, &web::error_text(status, &err));
         stamp_http_log(&mut response);
         return Ok(response);
     }
@@ -284,12 +288,9 @@ fn dispatch_request(
     };
     let end = EndRequest::armed();
     if let Err(err) = render::run_job(factory, &job) {
-        // Only a kind names a client error. A script or load failure is a 500 whatever it says.
-        let status = if err.kind() == ErrorKind::General {
-            500
-        } else {
-            web::status_for(&err)
-        };
+        // Only a kind names a client error. A script or load failure is a 500 whatever it says, unless the database
+        // was unavailable under it (a 503).
+        let status = web::status_for(&err);
         let message = web::error_text(status, &err);
         if let Some(page) = error_page(factory, request, root, parameters, status, &err, &message) {
             return Ok(page);
@@ -313,7 +314,8 @@ fn dispatch_request(
     };
     if let Err(err) = end.finish() {
         if !web::output_sent() {
-            return Ok(web::json_error(500, &web::error_text(500, &err)));
+            let status = web::status_for(&err);
+            return Ok(web::json_error(status, &web::error_text(status, &err)));
         }
     }
     if let Some(pdf) = pdf {
@@ -503,6 +505,8 @@ fn peek_token() -> Option<String> {
 /// The login error, if any, and whether this request logged a user in from its own credentials
 /// (Basic, `api_key`, `login_key`, or `authUsername`). Such a request carries no ambient cookie
 /// authority, so it skips the session-token check as it does in the Java `ScreenRenderImpl`.
+///
+/// A login the database could not serve is the request's error (a 503), not a failed login answered with 401.
 fn authenticate(request: &WebRequest, parameters: &BTreeMap<String, Value>) -> Result<(Option<String>, bool), Error> {
     let mut login_error = None;
     let mut by_header = false;
@@ -511,6 +515,7 @@ fn authenticate(request: &WebRequest, parameters: &BTreeMap<String, Value>) -> R
             // A password login that still needs a second factor leaves nobody logged in.
             match login_user(&username, &password) {
                 Ok(()) => by_header = !user::session::session_attribute_flag(user::AUTHC_FACTOR_REQUIRED),
+                Err(err) if web::is_unavailable(&err) => return Err(err),
                 Err(err) => {
                     let message = err.message().to_string();
                     web::record_login_error(&message);
@@ -523,6 +528,9 @@ fn authenticate(request: &WebRequest, parameters: &BTreeMap<String, Value>) -> R
         let keyed = request.header("api_key").is_some_and(|text| !text.is_empty())
             || request.header("login_key").is_some_and(|text| !text.is_empty());
         if let Err(err) = apply_header_keys(request.header("api_key"), request.header("login_key")) {
+            if web::is_unavailable(&err) {
+                return Err(err);
+            }
             let message = err.message().to_string();
             web::record_login_error(&message);
             login_error = Some(message);
@@ -536,6 +544,7 @@ fn authenticate(request: &WebRequest, parameters: &BTreeMap<String, Value>) -> R
         if !username.is_empty() && !password.is_empty() {
             match login_user(&username, &password) {
                 Ok(()) => by_header = !user::session::session_attribute_flag(user::AUTHC_FACTOR_REQUIRED),
+                Err(err) if web::is_unavailable(&err) => return Err(err),
                 Err(err) => {
                     let message = err.message().to_string();
                     web::record_login_error(&message);

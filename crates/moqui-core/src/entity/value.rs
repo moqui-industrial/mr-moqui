@@ -26,7 +26,7 @@ use moqui_lib::object::{basic_convert, Value};
 use moqui_lib::sync::lock;
 
 use super::cache::WriteGate;
-use super::exec::{after_statement, execute_deferred_tx, execute_tx, pipelining};
+use super::exec::{after_statement, execute_deferred_row_tx, execute_deferred_tx, execute_tx, pipelining};
 use super::facade::EntityFacade;
 use super::field_rw;
 use super::load_feed::EcaRule;
@@ -1213,7 +1213,7 @@ impl EntityFacade {
             // Java's `checkTableRuntime` before each write, when the group adds missing tables at runtime.
             self.check_table_runtime(entity_name);
             let prepared = self.seal_values(entity_name, seal_operation, plain, stored.as_ref())?;
-            let (sql, params) = self.with_group(entity_name, |entity, dialect, _, _| {
+            let (sql, params, row_key) = self.with_group(entity_name, |entity, dialect, _, _| {
                 // A null an update or upsert names is written, so the field is cleared.
                 let columns = present_columns(
                     entity,
@@ -1255,12 +1255,22 @@ impl EntityFacade {
                         insert(entity, dialect, &columns)
                     }
                 })?;
-                Ok((sql, params))
+                let row_key = if matches!(operation, "create" | "upsert") {
+                    pk_key(entity, &prepared)
+                } else {
+                    0
+                };
+                Ok((sql, params, row_key))
             })?;
-            // A data load sends its writes without waiting; an update that then finds no row fails the file later.
+            // A data load sends its writes without waiting; an update that then finds no row fails the file later. Its
+            // creates and upserts may go out several rows to a statement.
             affected = if !probe && operation != "delete" && pipelining(&tx) {
-                let zero_rows = (operation == "update").then(|| self.missing_update(entity_name, &cache_values));
-                execute_deferred_tx(&tx, &sql, params, zero_rows)?;
+                if operation == "update" {
+                    let zero_rows = Some(self.missing_update(entity_name, &cache_values));
+                    execute_deferred_tx(&tx, &sql, params, zero_rows)?;
+                } else {
+                    execute_deferred_row_tx(&tx, &sql, params, row_key)?;
+                }
                 1
             } else {
                 execute_tx(&tx, &sql, &params)?
@@ -1487,6 +1497,24 @@ fn pk_values(entity: &EntityDefinition, values: &FieldMap) -> Result<FieldMap, E
 }
 
 /// Primary-key values in the order [`pk_condition`] binds them.
+/// A hash of the primary key of `values`, which names the row to [`crate::driver::DbConnection::execute_deferred_row`].
+/// Two keys that hash the same only send their rows in two statements.
+fn pk_key(entity: &EntityDefinition, values: &FieldMap) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    // A write is never to a view, so the key is the entity's own primary key fields.
+    for field in entity.fields.iter().filter(|field| field.is_pk) {
+        match values.get(field.name.as_str()) {
+            Some(Value::String(text)) => text.hash(&mut hasher),
+            Some(Value::I64(number)) => number.hash(&mut hasher),
+            Some(Value::I32(number)) => i64::from(*number).hash(&mut hasher),
+            Some(Value::Null) | None => 0u8.hash(&mut hasher),
+            Some(other) => moqui_lib::object::to_plain_string(other).hash(&mut hasher),
+        }
+    }
+    hasher.finish()
+}
+
 fn pk_params(entity: &EntityDefinition, values: &FieldMap) -> Result<Vec<Value>, Error> {
     Ok(pk_values(entity, values)?.into_values().collect())
 }

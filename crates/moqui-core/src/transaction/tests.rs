@@ -30,6 +30,7 @@ struct Shared {
     statements: AtomicUsize,
     fail_at: AtomicUsize,
     fail_test: AtomicBool,
+    fail_connect: AtomicBool,
     log: Mutex<Vec<String>>,
     next_id: AtomicU64,
     cancels: Mutex<Vec<Arc<AtomicBool>>>,
@@ -58,6 +59,7 @@ impl FakeDriver {
                 statements: AtomicUsize::new(0),
                 fail_at: AtomicUsize::new(0),
                 fail_test: AtomicBool::new(false),
+                fail_connect: AtomicBool::new(false),
                 log: Mutex::new(Vec::new()),
                 next_id: AtomicU64::new(1),
                 cancels: Mutex::new(Vec::new()),
@@ -209,6 +211,9 @@ impl DbConnection for FakeConn {
 
 impl DbDriver for FakeDriver {
     fn connect(&self) -> Result<Box<dyn DbConnection>, Error> {
+        if self.shared.fail_connect.load(Ordering::SeqCst) {
+            return Err(Error::new("connection refused"));
+        }
         let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
         self.shared.connects.fetch_add(1, Ordering::SeqCst);
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -600,15 +605,36 @@ fn fresh_connections_run_application_sql_before_any_checkout_test() {
 }
 
 #[test]
-fn failed_checkout_test_discards_the_idle_connection() {
+fn failed_checkout_test_discards_the_idle_connection_and_connects_anew() {
     let (mgr, driver) = harness(small());
     let _clean = Clean(&mgr);
     mgr.with_connection(|_| Ok(())).expect("warm");
     assert_eq!(mgr.stats().ordinary_idle, 1);
+    // As after a server restart: every idle connection fails its test, and the server takes new ones.
     driver.shared.fail_test.store(true, Ordering::SeqCst);
-    let err = mgr.with_connection(|_| Ok(())).expect_err("bad test");
-    assert!(err.to_string().contains("connection test failed"), "{err}");
-    assert_eq!(driver.connects(), 1);
+    mgr.with_connection(|conn| conn.query_once("after-restart", &[]))
+        .expect("a new connection in place of the dead one");
+    assert_eq!(driver.connects(), 2);
+    assert_eq!(driver.event_count("sql:SELECT 1"), 1);
+    assert_eq!(driver.event_count("sql:after-restart"), 1);
+    assert_eq!(mgr.stats().ordinary_idle, 1);
+    assert_eq!(mgr.stats().checked_out, 0);
+}
+
+#[test]
+fn a_checkout_the_database_cannot_serve_is_unavailable() {
+    let (mgr, driver) = harness(small());
+    let _clean = Clean(&mgr);
+    mgr.with_connection(|_| Ok(())).expect("warm");
+    driver.shared.fail_test.store(true, Ordering::SeqCst);
+    driver.shared.fail_connect.store(true, Ordering::SeqCst);
+    let err = mgr.with_connection(|_| Ok(())).expect_err("server down");
+    assert!(err.to_string().contains("connection refused"), "{err}");
+    assert_eq!(
+        crate::context::ErrorKind::of(&err),
+        crate::context::ErrorKind::Unavailable,
+        "{err}"
+    );
     assert_eq!(mgr.stats().ordinary_idle, 0);
     assert_eq!(mgr.stats().checked_out, 0);
 }
@@ -677,6 +703,35 @@ fn a_connection_returned_recently_skips_the_test_query() {
     mgr.with_connection(|_| Ok(())).expect("connect");
     std::thread::sleep(Duration::from_millis(40));
     mgr.with_connection(|_| Ok(())).expect("reuse after the window");
+    assert_eq!(driver.event_count("sql:SELECT 1"), 1);
+}
+
+/// A proxy or NAT that drops connections tells the client nothing until it writes, so a recently returned connection
+/// can be dead too. Once one is found dead, the others that were idle by then are tested whatever their age.
+#[test]
+fn a_lost_connection_makes_the_recent_idle_ones_suspect() {
+    let config = PoolConfig {
+        test_after_idle: Duration::from_secs(60),
+        ..small()
+    };
+    let (mgr, driver) = harness(config);
+    let _clean = Clean(&mgr);
+    mgr.with_connection(|_| mgr.with_connection(|_| Ok(())))
+        .expect("two connections");
+    assert_eq!(mgr.stats().ordinary_idle, 2);
+    // The outer client (1) went back last, so it is handed out first. Its statement finds it dead.
+    let err = mgr
+        .with_connection(|_| -> Result<(), Error> {
+            driver.close(1);
+            Err(Error::new("connection reset"))
+        })
+        .expect_err("dead");
+    assert!(err.to_string().contains("connection reset"), "{err}");
+    assert_eq!(driver.event_count("sql:SELECT 1"), 0);
+    mgr.with_connection(|_| Ok(())).expect("the other, tested");
+    assert_eq!(driver.event_count("sql:SELECT 1"), 1);
+    // Once tested and returned, it is recent again.
+    mgr.with_connection(|_| Ok(())).expect("untested");
     assert_eq!(driver.event_count("sql:SELECT 1"), 1);
 }
 

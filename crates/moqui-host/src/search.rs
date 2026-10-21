@@ -125,6 +125,13 @@ pub fn attach_search(
     }
 }
 
+/// The TLS of a search url: none for `sslmode=disable`, else what its `sslmode` and `sslrootcert` say.
+#[cfg(feature = "postgres")]
+fn url_tls(url: &moqui_core::search::conf::PostgresUrl) -> Option<crate::db::pg_tls::TlsOptions> {
+    url.tls
+        .then(|| crate::db::pg_tls::TlsOptions::new(url.tls_verify, &url.tls_root_cert))
+}
+
 #[cfg(feature = "postgres")]
 fn external_tx(url: &str, user: Option<&str>, password: Option<&str>) -> Result<TransactionManager, Error> {
     let url = moqui_core::search::conf::parse_postgres_url(url)?;
@@ -134,7 +141,7 @@ fn external_tx(url: &str, user: Option<&str>, password: Option<&str>) -> Result<
         &url.database,
         &url.host,
         url.port,
-        url.tls,
+        url_tls(&url).as_ref(),
     )?;
     TransactionManager::new(Arc::new(driver), search_pool())
 }
@@ -152,7 +159,7 @@ fn read_tx(url: &str, conf: &moqui_core::search::conf::PostgresConf) -> Result<T
         &parsed.database,
         &parsed.host,
         parsed.port,
-        parsed.tls,
+        url_tls(&parsed).as_ref(),
     )?
     .options(format!(
         "-c default_transaction_read_only=on -c statement_timeout={timeout_ms}"

@@ -65,6 +65,15 @@ pub trait DbConnection: Send {
         }
     }
 
+    /// [`Self::execute_deferred`] of a one-row `INSERT` (an upsert among them) that the driver may hold and send with
+    /// the rows of the same statement that follow it, as one `INSERT` of many rows. `key` names the row's primary key:
+    /// a row whose key is among those held goes after them, as one upsert cannot change a row twice. A row changing no
+    /// row is not an error. The default sends it alone.
+    fn execute_deferred_row(&mut self, sql: &str, params: Vec<Value>, key: u64) -> Result<(), Error> {
+        let _ = key;
+        self.execute_deferred(sql, params, None)
+    }
+
     /// Wait for the statements [`Self::execute_deferred`] sent, and report the first that failed.
     fn finish_deferred(&mut self) -> Result<(), Error> {
         Ok(())

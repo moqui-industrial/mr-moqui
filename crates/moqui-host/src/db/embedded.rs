@@ -876,6 +876,8 @@ mod cluster {
             savepoint_keeps_the_first_row(&mut conn);
             stream_requires_a_transaction(&mut conn);
             stream_reads_every_inserted_row(&mut conn);
+            a_refused_stream_fails_at_open_and_a_closed_one_reopens(&mut conn);
+            deferred_rows_go_out_as_statements_of_many_rows(&mut conn);
             rollback_ends_an_aborted_transaction_with_an_open_stream(&mut conn);
             statement_timeout_is_never_lifted_by_rounding(&mut conn);
             a_pipelined_begin_starts_the_transaction_its_first_statement_runs_in(&mut conn);
@@ -993,6 +995,149 @@ mod cluster {
                 }
             }
             (pids.len(), rss, pss)
+        }
+
+        /// A session the server ends or cancels fails the call that finds it with the server's reason, and leaves
+        /// the connection closed (or, for a cancel or a timeout, usable after a rollback); the pool then opens a new
+        /// one. The session is ended with `pg_terminate_backend`, as an administrator or a server shutdown ends it.
+        #[test]
+        fn connections_fail_cleanly_when_the_server_ends_or_cancels_them() {
+            let dir = temp_cluster_dir();
+            let _guard = DirGuard(dir.clone());
+            let (_cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
+            let mut admin = driver.connect_postgres().unwrap();
+            admin
+                .execute("CREATE TABLE ended (id text PRIMARY KEY, n int)", &[])
+                .unwrap();
+            for n in 0..120 {
+                admin
+                    .execute(
+                        "INSERT INTO ended (id, n) VALUES (?, ?)",
+                        &[Value::string(format!("e{n}")), Value::I32(n)],
+                    )
+                    .unwrap();
+            }
+            let pid_of = |conn: &mut PostgresConn| {
+                let rows = conn.query_once("SELECT pg_backend_pid() AS pid", &[]).unwrap();
+                match rows[0].get("pid") {
+                    Some(Value::I32(pid)) => *pid,
+                    other => panic!("pid {other:?}"),
+                }
+            };
+            /// End the session `pid` and wait until it is gone, and past the client's quiet time.
+            fn end(admin: &mut PostgresConn, pid: i32) {
+                admin
+                    .query_once("SELECT pg_terminate_backend(?)", &[Value::I32(pid)])
+                    .unwrap();
+                let alive = "SELECT count(*) AS c FROM pg_stat_activity WHERE pid = ?";
+                while admin.query_once(alive, &[Value::I32(pid)]).unwrap()[0].get("c") != Some(&Value::I64(0)) {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+
+            // Mid-transaction: the next statement fails and the connection is closed.
+            let mut conn = driver.connect_postgres().unwrap();
+            let pid = pid_of(&mut conn);
+            conn.begin().unwrap();
+            conn.execute("UPDATE ended SET n = n + 1 WHERE id = ?", &[Value::string("e1")])
+                .unwrap();
+            end(&mut admin, pid);
+            let err = conn
+                .execute("UPDATE ended SET n = n + 1 WHERE id = ?", &[Value::string("e2")])
+                .unwrap_err();
+            assert!(err.message().contains("terminating connection"), "{err}");
+            assert!(DbConnection::is_closed(&conn));
+            let _ = conn.rollback();
+
+            // Mid-pipeline: rows held and writes sent unanswered; the commit fails and nothing is written.
+            let mut conn = driver.connect_postgres().unwrap();
+            let pid = pid_of(&mut conn);
+            conn.begin().unwrap();
+            let upsert = "INSERT INTO ended (id, n) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n";
+            for n in 0..40_u32 {
+                let row = vec![Value::string(format!("p{n}")), Value::I64(i64::from(n))];
+                conn.execute_deferred_row(upsert, row, u64::from(n)).unwrap();
+            }
+            conn.execute_deferred("UPDATE ended SET n = 0 WHERE id = ?", vec![Value::string("e3")], None)
+                .unwrap();
+            end(&mut admin, pid);
+            assert!(conn.commit().is_err());
+            assert!(DbConnection::is_closed(&conn));
+            let _ = conn.rollback();
+            let written = admin
+                .query_once("SELECT count(*) AS c FROM ended WHERE id LIKE 'p%'", &[])
+                .unwrap();
+            assert_eq!(written[0].get("c"), Some(&Value::I64(0)));
+
+            // Mid-stream: the rows already fetched are read, then the next fetch fails.
+            let mut conn = driver.connect_postgres().unwrap();
+            let pid = pid_of(&mut conn);
+            conn.begin().unwrap();
+            conn.open_stream("SELECT id FROM ended ORDER BY n", &[]).unwrap();
+            assert!(conn.next_row().unwrap().is_some());
+            end(&mut admin, pid);
+            let mut failed = None;
+            for _ in 0..200 {
+                match conn.next_row() {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(err) => {
+                        failed = Some(err);
+                        break;
+                    }
+                }
+            }
+            assert!(failed.is_some(), "the stream ended without an error");
+            assert!(DbConnection::is_closed(&conn));
+            let _ = conn.rollback();
+
+            // A statement timeout fires: the statement fails, and after the rollback the connection is used again.
+            let mut conn = driver.connect_postgres().unwrap();
+            conn.begin().unwrap();
+            conn.set_statement_timeout(Some(std::time::Duration::from_millis(50)))
+                .unwrap();
+            let err = conn.query_once("SELECT pg_sleep(5)", &[]).unwrap_err();
+            assert!(err.message().contains("statement timeout"), "{err}");
+            conn.rollback().unwrap();
+            assert!(!DbConnection::is_closed(&conn));
+            assert_eq!(conn.query_once("SELECT 1", &[]).unwrap().len(), 1);
+
+            // A cancel from another thread, as the deadline thread sends it.
+            let canceller = conn.canceller();
+            let cancelling = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                canceller.cancel().unwrap();
+            });
+            let err = conn.query_once("SELECT pg_sleep(5)", &[]).unwrap_err();
+            cancelling.join().unwrap();
+            assert!(err.message().contains("canceling statement"), "{err}");
+            assert_eq!(conn.query_once("SELECT 1", &[]).unwrap().len(), 1);
+
+            // The pool: a connection the server ended fails one call; the next has a new connection.
+            let tx = moqui_core::transaction::TransactionManager::new(
+                std::sync::Arc::new(driver.clone()) as std::sync::Arc<dyn DbDriver>,
+                moqui_core::transaction::PoolConfig {
+                    min: 0,
+                    max: 4,
+                    reserve: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let pid = tx
+                .with_connection(|conn| conn.query_once("SELECT pg_backend_pid() AS pid", &[]))
+                .unwrap()[0]
+                .get("pid")
+                .cloned();
+            let Some(Value::I32(pid)) = pid else {
+                panic!("pid {pid:?}")
+            };
+            end(&mut admin, pid);
+            assert!(tx.with_connection(|conn| conn.query_once("SELECT 1", &[])).is_err());
+            let again = tx.with_connection(|conn| conn.query_once("SELECT pg_backend_pid() AS pid", &[]));
+            assert_ne!(again.unwrap()[0].get("pid"), Some(&Value::I32(pid)));
+            let _ = tx.destroy_all_in_thread();
         }
 
         #[test]
@@ -1411,6 +1556,97 @@ mod cluster {
             conn.close_stream().unwrap();
             assert!(!conn.stream_open());
             conn.commit().unwrap();
+        }
+
+        /// The `DECLARE` goes out with the first `FETCH`, so a query the server refuses still fails at the open, with its
+        /// own error. The `CLOSE` goes out with the next request, so the cursor can be declared again right after it.
+        fn a_refused_stream_fails_at_open_and_a_closed_one_reopens(conn: &mut PostgresConn) {
+            conn.begin().unwrap();
+            let err = conn
+                .open_stream("SELECT no_such_column FROM streamed", &[])
+                .unwrap_err();
+            assert!(err.message().contains("no_such_column"), "{err}");
+            assert!(!conn.stream_open());
+            conn.rollback().unwrap();
+
+            conn.begin().unwrap();
+            conn.open_stream("SELECT n FROM streamed WHERE n > ? ORDER BY n", &[Value::I32(49)])
+                .unwrap();
+            assert_eq!(conn.next_row().unwrap().unwrap().get("n"), Some(&Value::I32(50)));
+            conn.close_stream().unwrap();
+            conn.open_stream("SELECT n FROM streamed ORDER BY n", &[]).unwrap();
+            let mut count = 0;
+            while conn.next_row().unwrap().is_some() {
+                count += 1;
+            }
+            assert_eq!(count, 51);
+            conn.close_stream().unwrap();
+            conn.commit().unwrap();
+        }
+
+        /// Rows of one upsert go out several to a statement. A key the held rows already have goes after them (one upsert
+        /// cannot change a row twice), another statement or a query sends them first, a rollback drops them, and a
+        /// row the server refuses fails the commit.
+        fn deferred_rows_go_out_as_statements_of_many_rows(conn: &mut PostgresConn) {
+            conn.execute("CREATE TABLE batched (id text PRIMARY KEY, n int NOT NULL)", &[])
+                .unwrap();
+            conn.execute("CREATE TABLE beside (id text PRIMARY KEY)", &[]).unwrap();
+            let upsert = "INSERT INTO batched (id, n) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET n = EXCLUDED.n";
+            let key = |id: &str| {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                id.hash(&mut hasher);
+                hasher.finish()
+            };
+            let row = |conn: &mut PostgresConn, id: &str, n: i32| {
+                conn.execute_deferred_row(upsert, vec![Value::string(id), Value::I32(n)], key(id))
+                    .unwrap();
+            };
+            conn.begin().unwrap();
+            for n in 0..125 {
+                row(conn, &format!("r{n}"), n);
+                if n == 60 {
+                    // The same key again, and a row of another statement between.
+                    row(conn, "r7", 700);
+                    conn.execute_deferred_row("INSERT INTO beside (id) VALUES (?)", vec![Value::string("b")], 1)
+                        .unwrap();
+                }
+            }
+            // A query sends what is held first, and sees it.
+            let counted = conn.query("SELECT count(*) AS c FROM batched", &[]).unwrap();
+            assert_eq!(counted[0].get("c"), Some(&Value::I64(125)));
+            row(conn, "r124", 1240);
+            conn.commit().unwrap();
+            let rows = conn.query(
+                "SELECT id, n FROM batched WHERE id IN (?, ?, ?)",
+                &[Value::string("r7"), Value::string("r100"), Value::string("r124")],
+            );
+            let rows = rows.unwrap();
+            let n_of = |id: &str| {
+                rows.iter()
+                    .find(|row| row.get("id") == Some(&Value::string(id)))
+                    .and_then(|row| row.get("n").cloned())
+            };
+            assert_eq!(n_of("r7"), Some(Value::I32(700)));
+            assert_eq!(n_of("r100"), Some(Value::I32(100)));
+            assert_eq!(n_of("r124"), Some(Value::I32(1240)));
+            assert_eq!(conn.query("SELECT id FROM beside", &[]).unwrap().len(), 1);
+
+            conn.begin().unwrap();
+            row(conn, "dropped", 1);
+            conn.rollback().unwrap();
+            let dropped = conn.query("SELECT id FROM batched WHERE id = ?", &[Value::string("dropped")]);
+            assert!(dropped.unwrap().is_empty());
+
+            conn.begin().unwrap();
+            row(conn, "fine", 1);
+            conn.execute_deferred_row(upsert, vec![Value::string("refused"), Value::Null], key("refused"))
+                .unwrap();
+            let err = conn.commit().unwrap_err();
+            assert!(err.message().contains("null value"), "{err}");
+            conn.rollback().unwrap();
+            let fine = conn.query("SELECT id FROM batched WHERE id = ?", &[Value::string("fine")]);
+            assert!(fine.unwrap().is_empty());
         }
 
         /// ROLLBACK closes the cursor itself, so a stream left open in an aborted transaction does not stop it.

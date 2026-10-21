@@ -246,8 +246,13 @@
     <default-property name="entity_ds_schema" value=""/>
     <default-property name="entity_ds_user" value="sa"/>
     <default-property name="entity_ds_password" value="sa" is-secret="true"/>
-    <!-- An external postgres or mysql server is reached over TLS. "disable" connects without it, for a local dev server. -->
+    <!-- An external postgres or mysql server is reached over TLS. "disable" connects without it, for a local dev server.
+        Postgres: empty and "verify-full" check the certificate's authority and name, "verify-ca" the authority only,
+        "require" encrypts without checking (libpq and pgjdbc), and none falls back to a connection without TLS.
+        entity_ds_sslrootcert is a PEM file of the authorities to trust in place of the public ones, such as a managed
+        database's own (with it "require" checks as "verify-ca", as in libpq). -->
     <default-property name="entity_ds_sslmode" value=""/>
+    <default-property name="entity_ds_sslrootcert" value=""/>
     <default-property name="entity_ds_crypt_pass" value="MoquiDefaultPassword:CHANGEME" is-secret="true"/>
     <default-property name="entity_ds_crypt_pass_old" value="MoquiDefaultPassword:CHANGEME" is-secret="true"/>
     <!-- Phase 7 signs the session cookie with this key. Phase 2 generates it. -->
@@ -1245,7 +1250,7 @@
             <!-- default max connections for PostgreSQL is 100 -->
             <inline-jdbc pool-maxsize="90"><xa-properties serverName="${entity_ds_host}" portNumber="${entity_ds_port?:'5432'}"
                     databaseName="${entity_ds_database}" user="${entity_ds_user}" password="${entity_ds_password}"
-                    sslmode="${entity_ds_sslmode}"/></inline-jdbc>
+                    sslmode="${entity_ds_sslmode}" sslrootcert="${entity_ds_sslrootcert}"/></inline-jdbc>
         </database>
         <!--
         * SQLite: the browser build's local database (crates/moqui-browser, plans/archive/Wasm.md). Not a server datasource.

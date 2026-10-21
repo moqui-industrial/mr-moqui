@@ -25,6 +25,7 @@
 //! `DATA_LOAD_SPEED_RECORDS` (default 1000) is the records of each generated file and `DATA_LOAD_SPEED_BATCHES`
 //! (default 5) the batches; see `speed/mod.rs` for the columns. Every batch writes new files with new keys, so a
 //! "create" row inserts and a "reload" row updates what the batch's create wrote.
+//! `SPEED_PG_HOST` runs it on a new database of an external Postgres instead of the embedded one (`speed::SpeedDb`).
 
 #![cfg(all(unix, feature = "embedded-postgres"))]
 
@@ -40,7 +41,6 @@ use moqui_core::driver::DbDriver;
 use moqui_core::entity::load_feed::{conf_data_locations, load_entity_data, LoadOptions};
 use moqui_core::entity::EntityFacade;
 use moqui_core::transaction::PoolConfig;
-use moqui_host::db::embedded::EmbeddedCluster;
 use moqui_host::db::entity_facade::{attach, open_entity_facade};
 use moqui_lib::node::MNode;
 
@@ -69,7 +69,7 @@ fn data_load_speed() {
     );
     std::fs::create_dir_all(&runtime).expect("runtime dir");
     std::fs::create_dir_all(&files).expect("files dir");
-    let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 20).expect("start embedded Postgres");
+    let (cluster, driver) = speed::SpeedDb::start(&cluster_dir, 20);
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
     let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
     let factory = ExecutionContextFactory::boot_with_framework(&runtime, &framework).expect("boot");

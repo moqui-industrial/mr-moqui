@@ -25,7 +25,8 @@
     <default-property name="entity_ds_password" value="moquiroot"/>
     <default-property name="entity_ds_sslmode" value="disable"/>
     -->
-    <!-- minimal overrides for testing on local postgres:
+    <!-- minimal overrides for testing on local postgres (docker run -d -e POSTGRES_USER=moqui
+        -e POSTGRES_PASSWORD=moqui -e POSTGRES_DB=moqui -p 127.0.0.1:5432:5432 postgres:18):
     <default-property name="entity_ds_db_conf" value="postgres"/>
     <default-property name="entity_ds_user" value="moqui"/>
     <default-property name="entity_ds_password" value="moqui"/>
