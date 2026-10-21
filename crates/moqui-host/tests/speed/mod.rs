@@ -140,6 +140,40 @@ impl Rows {
         out
     }
 
+    /// Run `body` on `threads` threads at once, each making `calls` calls (`body` is given the thread's index), and
+    /// keep their measure under `operation` as `threads * calls` calls. The time is the slowest thread's, from a
+    /// common start; the allocation columns are the threads' sums, each counted on its own thread; the statements are
+    /// those of the whole run.
+    pub fn run_threads(&mut self, operation: &str, threads: usize, calls: usize, body: impl Fn(usize) + Sync) {
+        let barrier = std::sync::Barrier::new(threads);
+        let (statements_before, _) = moqui_core::entity::statement_stats();
+        let each: Vec<Measured> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..threads)
+                .map(|thread| {
+                    let barrier = &barrier;
+                    let body = &body;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        measure(|| body(thread)).0
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("speed thread"))
+                .collect()
+        });
+        let (statements_after, _) = moqui_core::entity::statement_stats();
+        let measured = Measured {
+            elapsed: each.iter().map(|one| one.elapsed).max().unwrap_or_default(),
+            allocs: each.iter().map(|one| one.allocs).sum(),
+            bytes: each.iter().map(|one| one.bytes).sum(),
+            kept: each.iter().map(|one| one.kept).sum(),
+            statements: statements_after - statements_before,
+        };
+        self.note(operation, threads * calls, measured);
+    }
+
     pub fn note(&mut self, operation: &str, calls: usize, measured: Measured) {
         if !self.record {
             return;

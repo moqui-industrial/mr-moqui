@@ -392,7 +392,7 @@ pub fn before_count(facade: &EntityFacade, lookup: &FindLookup) -> Option<i64> {
         }
     }
     if meta.caches(lookup) && !frame_wrote(facade, &lookup.entity_name, &meta) {
-        let cache = facade.with_slot(OneCaches::default, |caches| caches.counts.get(&meta.full_name).cloned())?;
+        let cache = facade.with_slot_read(OneCaches::default, |caches| caches.counts.get(&meta.full_name).cloned())?;
         return with_lookup_key(lookup, |key| {
             cache.get_arc(key).ok().flatten().map(|cached| cached.count)
         });
@@ -408,12 +408,15 @@ pub fn after_count(facade: &EntityFacade, lookup: &FindLookup, count: i64) -> Re
     }
     let key = owned_lookup_key(lookup);
     let name = &meta.full_name;
-    let cache = facade.with_slot(OneCaches::default, |caches| {
-        caches
-            .counts
-            .entry(name.clone())
-            .or_insert_with(|| count_cache(name))
-            .clone()
+    let known = facade.with_slot_read(OneCaches::default, |caches| caches.counts.get(name).cloned());
+    let cache = known.unwrap_or_else(|| {
+        facade.with_slot(OneCaches::default, |caches| {
+            caches
+                .counts
+                .entry(name.clone())
+                .or_insert_with(|| count_cache(name))
+                .clone()
+        })
     });
     cache.put(
         key,
@@ -435,12 +438,15 @@ pub fn after_find(facade: &EntityFacade, lookup: &FindLookup, rows: &EntityList)
     }
     let key = owned_lookup_key(lookup);
     let name = &meta.full_name;
-    let cache = facade.with_slot(OneCaches::default, |caches| {
-        caches
-            .lists
-            .entry(name.clone())
-            .or_insert_with(|| list_cache(name))
-            .clone()
+    let known = facade.with_slot_read(OneCaches::default, |caches| caches.lists.get(name).cloned());
+    let cache = known.unwrap_or_else(|| {
+        facade.with_slot(OneCaches::default, |caches| {
+            caches
+                .lists
+                .entry(name.clone())
+                .or_insert_with(|| list_cache(name))
+                .clone()
+        })
     });
     cache.put(
         key,
@@ -717,7 +723,7 @@ fn judge(condition: &Condition, values: &FieldMap) -> Option<bool> {
 
 /// Each entity to the view entities that have it as a member, at any depth.
 fn views_by_member(facade: &EntityFacade) -> Arc<HashMap<String, Vec<String>>> {
-    let known = facade.with_slot(OneCaches::default, |caches| caches.views_by_member.clone());
+    let known = facade.with_slot_read(OneCaches::default, |caches| caches.views_by_member.clone());
     match known {
         Some(map) => map,
         None => {
@@ -1820,7 +1826,7 @@ impl std::ops::Deref for PkNames {
 
 fn read_meta(facade: &EntityFacade, entity_name: &str) -> Result<Arc<ReadMeta>, Error> {
     let generation = super::derived::generation(facade);
-    if let Some(meta) = facade.with_slot(ReadMetas::default, |metas| metas.get(entity_name, generation)) {
+    if let Some(meta) = facade.with_slot_read(ReadMetas::default, |metas| metas.get(entity_name, generation)) {
         return Ok(meta);
     }
     let meta = Arc::new(facade.with_entity(entity_name, |entity, _, _| {
@@ -1957,7 +1963,7 @@ impl SimView {
 }
 
 fn cache_get(facade: &EntityFacade, entity_name: &str, lookup: &FindLookup) -> Option<EntityList> {
-    let cache = facade.with_slot(OneCaches::default, |caches| caches.lists.get(entity_name).cloned())?;
+    let cache = facade.with_slot_read(OneCaches::default, |caches| caches.lists.get(entity_name).cloned())?;
     with_lookup_key(lookup, |key| {
         cache.get_arc(key).ok().flatten().map(|cached| cached.rows.clone())
     })

@@ -838,7 +838,7 @@ fn resolve(name: &str, facade: Option<&EntityFacade>) -> Result<Arc<ServiceDef>,
     if matches!(verb.as_str(), "create" | "update" | "store" | "delete") && !noun.is_empty() {
         if let Some(facade) = facade {
             let generation = crate::entity::definition_generation(facade);
-            if let Some(def) = facade.with_slot(ImplicitDefs::default, |defs| defs.get(name, generation)) {
+            if let Some(def) = facade.with_slot_read(ImplicitDefs::default, |defs| defs.get(name, generation)) {
                 return Ok(def);
             }
             if facade.with_entity(&noun, |_, _, _| Ok(())).is_ok() {

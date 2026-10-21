@@ -61,7 +61,7 @@ struct ReadShapes {
 
 /// The shape of `entity`, a plain entity, built on its first find.
 pub(crate) fn read_shape(facade: &EntityFacade, entity: &EntityDefinition, dialect: &Dialect) -> Arc<ReadShape> {
-    let known = facade.with_slot(ReadShapes::default, |shapes| {
+    let known = facade.with_slot_read(ReadShapes::default, |shapes| {
         shapes
             .by_entity
             .get(&entity.full_name)
@@ -128,7 +128,7 @@ pub(crate) fn cached(
     key: &str,
     render: impl FnOnce() -> Result<String, Error>,
 ) -> Result<Arc<str>, Error> {
-    if let Some(hit) = facade.with_slot(SqlText::default, |cache| cache.get(key)) {
+    if let Some(hit) = facade.with_slot_read(SqlText::default, |cache| cache.get(key)) {
         return Ok(hit);
     }
     let sql: Arc<str> = Arc::from(render()?);

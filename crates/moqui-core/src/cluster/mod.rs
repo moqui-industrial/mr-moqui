@@ -264,7 +264,7 @@ pub(crate) fn is_linked(facade: &EntityFacade) -> bool {
 }
 
 fn linked_state(facade: &EntityFacade) -> Option<Arc<ClusterState>> {
-    facade.with_slot(ClusterLink::default, |link| link.0.upgrade())
+    facade.with_slot_read(ClusterLink::default, |link| link.0.upgrade())
 }
 
 /// Publish a cache invalidation after the local clear. An open transaction waits for commit.

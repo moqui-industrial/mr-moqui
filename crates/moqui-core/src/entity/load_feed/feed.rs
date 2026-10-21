@@ -27,7 +27,7 @@ use moqui_lib::object::Value;
 
 use crate::entity::FieldMap;
 use super::loader::canonical_name;
-use super::{error_chain, with_load_slot, FeedServiceNames};
+use super::{error_chain, with_load_slot, with_load_slot_read, FeedServiceNames};
 use crate::driver::{DbConnection, DbRow};
 use crate::entity::facade::EntityFacade;
 use crate::transaction::TransactionManager;
@@ -119,7 +119,7 @@ pub(crate) fn feed_wants_old(facade: &EntityFacade, entity_name: &str) -> bool {
     let Ok(full_name) = canonical_name(facade, entity_name) else {
         return false;
     };
-    with_load_slot(facade, |slot| {
+    with_load_slot_read(facade, |slot| {
         slot.feed_config
             .as_ref()
             .is_some_and(|config| config.targets.iter().any(|target| target.entity_name == full_name))
