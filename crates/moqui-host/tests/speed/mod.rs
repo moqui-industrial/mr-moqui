@@ -222,3 +222,80 @@ pub fn warn_if_debug(name: &str) {
         );
     }
 }
+
+/// The database a test runs on: the embedded cluster in `dir`, or, when `SPEED_PG_HOST` is set, a new database on that
+/// server, dropped when this is. `SPEED_PG_PORT` (5432), `SPEED_PG_USER` and `SPEED_PG_PASSWORD` (`moqui`),
+/// `SPEED_PG_DATABASE` (`postgres`, the one connected to for `CREATE DATABASE`) and `SPEED_PG_SSLMODE` (an `sslmode`;
+/// unset or `disable` is no TLS) with `SPEED_PG_SSLROOTCERT` name the rest. The role needs `CREATEDB`.
+#[cfg(all(unix, feature = "embedded-postgres"))]
+pub enum SpeedDb {
+    Embedded(moqui_host::db::embedded::EmbeddedCluster),
+    External {
+        admin: moqui_host::db::postgres::PostgresDriver,
+        name: String,
+    },
+}
+
+#[cfg(all(unix, feature = "embedded-postgres"))]
+impl SpeedDb {
+    pub fn start(dir: &std::path::Path, max_connections: u32) -> (Self, moqui_host::db::postgres::PostgresDriver) {
+        use moqui_core::driver::DbDriver;
+        use moqui_host::db::entity_db::postgres_server_driver;
+
+        let Some(host) = std::env::var("SPEED_PG_HOST").ok().filter(|host| !host.is_empty()) else {
+            let (cluster, driver) = moqui_host::db::embedded::EmbeddedCluster::start(dir, max_connections)
+                .expect("start embedded Postgres");
+            println!("database: embedded Postgres, Unix socket");
+            return (Self::Embedded(cluster), driver);
+        };
+        let var = |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_string());
+        let port: u16 = var("SPEED_PG_PORT", "5432").parse().expect("SPEED_PG_PORT");
+        let user = var("SPEED_PG_USER", "moqui");
+        let password = var("SPEED_PG_PASSWORD", "moqui");
+        let mode = var("SPEED_PG_SSLMODE", "disable");
+        let tls = moqui_core::entity::datasource::tls_wanted(&mode).then(|| {
+            moqui_host::db::pg_tls::TlsOptions::new(
+                moqui_core::entity::datasource::tls_verify(&mode),
+                &var("SPEED_PG_SSLROOTCERT", ""),
+            )
+        });
+        let driver = |database: &str| {
+            postgres_server_driver(&user, Some(&password), database, &host, port, tls.as_ref())
+                .expect("postgres driver")
+        };
+        let admin = driver(&var("SPEED_PG_DATABASE", "postgres"));
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_micros())
+            .unwrap_or(0);
+        let name = format!("speed_{}_{stamp}", std::process::id());
+        admin
+            .connect()
+            .and_then(|mut conn| conn.execute(&format!("CREATE DATABASE {name}"), &[]))
+            .expect("create speed database");
+        let shown = if tls.is_some() {
+            format!(" sslmode {mode}")
+        } else {
+            String::new()
+        };
+        println!("database: external Postgres {host}:{port}{shown}, database {name}");
+        let target = driver(&name);
+        (Self::External { admin, name }, target)
+    }
+}
+
+#[cfg(all(unix, feature = "embedded-postgres"))]
+impl Drop for SpeedDb {
+    fn drop(&mut self) {
+        use moqui_core::driver::DbDriver;
+
+        if let Self::External { admin, name } = self {
+            let dropped = admin
+                .connect()
+                .and_then(|mut conn| conn.execute(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"), &[]));
+            if let Err(err) = dropped {
+                eprintln!("drop speed database {name}: {err}");
+            }
+        }
+    }
+}

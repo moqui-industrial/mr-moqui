@@ -14,9 +14,10 @@
 
 //! Postgres behind [`moqui_core::driver::DbDriver`], on the protocol client of [`super::pgwire`].
 //!
-//! A call is a round trip on a blocking socket: one write, one read. A `BEGIN`, a `SET LOCAL statement_timeout` and a
-//! deferred write ([`DbConnection::execute_deferred`]) are not waited for: they share the round trip of the next call
-//! that waits, which reads their replies first and reports the first failure among them.
+//! A call is a round trip on a blocking socket: one write, one read. A `BEGIN`, a `SET LOCAL statement_timeout`, a
+//! deferred write ([`DbConnection::execute_deferred`]), a stream's `DECLARE` and its `CLOSE` are not waited for: they
+//! share the round trip of the next call that waits, which reads their replies first and reports the first failure
+//! among them.
 
 #[cfg(feature = "postgres")]
 mod driver {
@@ -192,14 +193,22 @@ mod driver {
             host: impl Into<String>,
             port: u16,
         ) -> Result<Self, Error> {
-            let roots = rustls::RootCertStore {
-                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-            };
-            let tls = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
-                .with_safe_default_protocol_versions()
-                .map_err(|err| Error::new("postgres TLS configuration").with_source(err))?
-                .with_root_certificates(roots)
-                .with_no_client_auth();
+            Self::external_with(user, database, host, port, &crate::db::pg_tls::TlsOptions::default())
+        }
+
+        /// TCP host and TLS as `tls` says: the authorities trusted and what of the certificate is checked.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error when the root certificate file cannot be read or the TLS configuration cannot be built.
+        pub fn external_with(
+            user: impl Into<String>,
+            database: impl Into<String>,
+            host: impl Into<String>,
+            port: u16,
+            tls: &crate::db::pg_tls::TlsOptions,
+        ) -> Result<Self, Error> {
+            let tls = crate::db::pg_tls::client_config(tls)?;
             Ok(Self {
                 user: user.into(),
                 database: database.into(),
@@ -208,7 +217,7 @@ mod driver {
                 target: Target::Tcp {
                     host: host.into(),
                     port,
-                    tls: Arc::new(tls),
+                    tls,
                 },
             })
         }
@@ -406,8 +415,9 @@ mod driver {
     }
 
     impl DbConnection for PostgresConn {
+        /// Also true for an idle connection the server has since closed (a restart), so the pool does not hand it out.
         fn is_closed(&self) -> bool {
-            PostgresConn::is_closed(self)
+            self.wire.closed_while_idle()
         }
 
         fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
@@ -488,11 +498,23 @@ mod driver {
             if self.streaming {
                 return Err(Error::new("a stream is already open"));
             }
-            let declare = format!("DECLARE {STREAM_CURSOR} NO SCROLL CURSOR FOR {sql}");
-            self.run_unnamed(&declare, params, "declare cursor")?;
+            check_scalar(params)?;
+            let declare = rewrite_placeholders(&format!("DECLARE {STREAM_CURSOR} NO SCROLL CURSOR FOR {sql}"));
+            self.wire.queue_unnamed(
+                &declare,
+                params.len(),
+                &mut |index, buf| encode_param(&params[index], None, buf),
+                "declare cursor",
+            )?;
             self.streaming = true;
             self.stream_exhausted = false;
             self.stream_buf.clear();
+            // The first batch in the same write as the `DECLARE`: one round trip, and a query the server refuses fails
+            // here with the `DECLARE`'s error.
+            if let Err(err) = self.fetch_stream() {
+                self.clear_stream();
+                return Err(err);
+            }
             Ok(())
         }
 
@@ -513,7 +535,9 @@ mod driver {
             if !self.streaming {
                 return Ok(());
             }
-            self.wire.simple(&format!("CLOSE {STREAM_CURSOR}"), "close cursor")?;
+            // Not waited for: it goes out with the next request, which reports its failure.
+            self.wire
+                .queue_simple(&format!("CLOSE {STREAM_CURSOR}"), "close cursor")?;
             self.clear_stream();
             Ok(())
         }

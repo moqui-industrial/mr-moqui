@@ -24,6 +24,7 @@
 //!
 //! `SERVICE_SPEED_CALLS` (default 1000) and `SERVICE_SPEED_BATCHES` (default 5) size it; see `speed/mod.rs` for the
 //! columns. Each call builds its parameter map, as a caller does, so a few allocations per call are the test's.
+//! `SPEED_PG_HOST` runs it on a new database of an external Postgres instead of the embedded one (`speed::SpeedDb`).
 //!
 //! Authorization is disabled, as `ec.artifactExecution.disableAuthz()`; artifact hits are counted. Two modes:
 //!
@@ -46,7 +47,6 @@ use moqui_core::context::{ExecutionContext, ExecutionContextFactory};
 use moqui_core::driver::DbDriver;
 use moqui_core::entity::EntityFacade;
 use moqui_core::transaction::PoolConfig;
-use moqui_host::db::embedded::EmbeddedCluster;
 use moqui_host::db::entity_facade::{attach, open_entity_facade};
 use moqui_lib::object::Value;
 
@@ -76,7 +76,7 @@ fn service_facade_speed() {
     let cluster_dir = speed::temp_dir("service-speed-pg");
     let _guards = (DirGuard(runtime.clone()), DirGuard(cluster_dir.clone()));
     std::fs::create_dir_all(&runtime).expect("runtime dir");
-    let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 20).expect("start embedded Postgres");
+    let (cluster, driver) = speed::SpeedDb::start(&cluster_dir, 20);
     let driver: Arc<dyn DbDriver> = Arc::new(driver);
     let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
     let factory = ExecutionContextFactory::boot_with_framework(&runtime, &framework).expect("boot");

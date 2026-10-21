@@ -28,7 +28,7 @@ use std::os::unix::net::UnixStream;
 #[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 use fallible_iterator::FallibleIterator;
@@ -41,6 +41,8 @@ use postgres_types::{Kind, Type};
 
 /// Requests sent and not waited for that may be unanswered. A queue past this waits for the older half.
 const PIPELINE_DEPTH: usize = 256;
+/// A connection that read from its server more recently than this was alive then, and is not peeked at.
+const QUIET_BEFORE_PEEK: Duration = Duration::from_millis(20);
 /// Bytes asked of the socket at a time.
 const READ_CHUNK: usize = 16 * 1024;
 /// Every result column comes in binary.
@@ -107,6 +109,8 @@ pub(super) struct Wire {
     notifications: VecDeque<String>,
     /// The connection failed or ended.
     dead: bool,
+    /// When bytes last came from the server.
+    last_read: Instant,
     process_id: i32,
     secret_key: i32,
 }
@@ -253,7 +257,7 @@ impl Write for Stream {
     }
 }
 
-/// `SSLRequest`, then the TLS handshake (rustls runs it on the first write).
+/// `SSLRequest`, then the TLS handshake, run here so that a refused certificate is reported as the handshake's.
 fn negotiate_tls(mut tcp: TcpStream, host: &str, config: &Arc<rustls::ClientConfig>) -> Result<Stream, Error> {
     let mut request = BytesMut::new();
     frontend::ssl_request(&mut request);
@@ -266,9 +270,30 @@ fn negotiate_tls(mut tcp: TcpStream, host: &str, config: &Arc<rustls::ClientConf
     }
     let name = rustls::pki_types::ServerName::try_from(host.to_string())
         .map_err(|err| Error::new(format!("postgres connect: {host} is not a TLS server name")).with_source(err))?;
-    let connection = rustls::ClientConnection::new(Arc::clone(config), name)
+    let mut connection = rustls::ClientConnection::new(Arc::clone(config), name)
         .map_err(|err| Error::new("postgres connect: TLS setup").with_source(err))?;
+    while connection.is_handshaking() {
+        connection.complete_io(&mut tcp).map_err(|err| {
+            Error::new(format!("postgres connect: TLS handshake with {host}: {err}")).with_source(err)
+        })?;
+    }
     Ok(Stream::Tls(Box::new(rustls::StreamOwned::new(connection, tcp))))
+}
+
+/// Whether the backend messages at the start of `bytes` include an `ErrorResponse`. A message cut off at the end is
+/// not looked into.
+fn has_error_message(mut bytes: &[u8]) -> bool {
+    while bytes.len() >= 5 {
+        if bytes[0] == b'E' {
+            return true;
+        }
+        let len = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
+        if len < 4 || bytes.len() < len + 1 {
+            return false;
+        }
+        bytes = &bytes[len + 1..];
+    }
+    false
 }
 
 fn io_error(context: &str, err: std::io::Error) -> Error {
@@ -306,6 +331,7 @@ impl Wire {
             failed: None,
             notifications: VecDeque::new(),
             dead: false,
+            last_read: Instant::now(),
             process_id: 0,
             secret_key: 0,
         };
@@ -396,6 +422,44 @@ impl Wire {
         self.dead
     }
 
+    /// Whether the server closed this connection while it sat idle, which a server shutdown or restart does to every
+    /// session: a `FATAL` error, then the end of the stream. A non-blocking peek, so a live connection with nothing to
+    /// read costs three syscalls and no round trip, and one that read from the server in the last
+    /// [`QUIET_BEFORE_PEEK`] is not looked at. Over TLS the bytes cannot be read without decrypting them, and
+    /// any waiting on an idle connection counts as closed. A connection with unanswered requests or unread bytes is
+    /// not looked at, nor is a Unix socket (a local server).
+    pub(super) fn closed_while_idle(&self) -> bool {
+        if self.dead {
+            return true;
+        }
+        if !self.pending.is_empty()
+            || !self.write.is_empty()
+            || !self.read.is_empty()
+            || self.last_read.elapsed() < QUIET_BEFORE_PEEK
+        {
+            return false;
+        }
+        let (tcp, tls) = match &self.stream {
+            Stream::Tcp(stream) => (stream, false),
+            Stream::Tls(stream) => (&stream.sock, true),
+            #[cfg(unix)]
+            Stream::Unix(_) => return false,
+        };
+        if tcp.set_nonblocking(true).is_err() {
+            return true;
+        }
+        let mut waiting = [0u8; 512];
+        let peeked = tcp.peek(&mut waiting);
+        if tcp.set_nonblocking(false).is_err() {
+            return true;
+        }
+        match peeked {
+            Ok(0) => true,
+            Ok(count) => tls || has_error_message(&waiting[..count]),
+            Err(err) => !matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted),
+        }
+    }
+
     /// The handle a cancel request names this connection's backend by.
     pub(super) fn cancel_key(&self) -> (i32, i32) {
         (self.process_id, self.secret_key)
@@ -424,6 +488,7 @@ impl Wire {
                 }
                 Ok(count) => {
                     self.read.extend_from_slice(&chunk[..count]);
+                    self.last_read = Instant::now();
                     return Ok(());
                 }
                 Err(err) if err.kind() == ErrorKind::Interrupted => {}
@@ -759,6 +824,19 @@ impl Wire {
         Ok((rows, changed))
     }
 
+    /// [`Self::query_unnamed`] unanswered and for no rows, written with the next request: a cursor's `DECLARE` goes out
+    /// with its first `FETCH`, which reports its failure.
+    pub(super) fn queue_unnamed(
+        &mut self,
+        sql: &str,
+        count: usize,
+        encode: Encode<'_>,
+        context: &'static str,
+    ) -> Result<(), Error> {
+        self.bind_execute(Some(sql), "", Describe::Portal, &[TEXT], count, encode)?;
+        self.leave(Expect::Simple { context }, false)
+    }
+
     /// Prepare `sql` as statement `name`, describe it and run it, in one round trip where [`Self::prepare`] then a run
     /// take two: every parameter in text, as the server infers its type. The statement as described, its rows and the
     /// rows it changed. When the run fails after the statement parsed, the statement is closed, so a later use
@@ -986,6 +1064,109 @@ mod tests {
         server.join().unwrap();
     }
 
+    /// A server for `connections` TLS sessions in turn with `issued` as its certificate: each takes the startup and
+    /// waits for the client to go. A session whose handshake the client refuses ends there.
+    fn tls_server(
+        issued: &rcgen::CertifiedKey<rcgen::KeyPair>,
+        connections: usize,
+    ) -> (u16, std::thread::JoinHandle<()>) {
+        let cert = issued.cert.der().clone();
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(issued.signing_key.serialize_der().into());
+        let server_config = Arc::new(
+            rustls::ServerConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert], key)
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            for _ in 0..connections {
+                let (mut tcp, _) = listener.accept().unwrap();
+                let mut request = [0u8; 8];
+                tcp.read_exact(&mut request).unwrap();
+                tcp.write_all(b"S").unwrap();
+                let connection = rustls::ServerConnection::new(Arc::clone(&server_config)).unwrap();
+                let mut tls = rustls::StreamOwned::new(connection, tcp);
+                let mut len = [0u8; 4];
+                if tls.read_exact(&mut len).is_err() {
+                    continue;
+                }
+                let mut startup = vec![0u8; u32::from_be_bytes(len) as usize - 4];
+                tls.read_exact(&mut startup).unwrap();
+                let mut reply = message(b'R', &0_i32.to_be_bytes());
+                reply.extend(message(b'K', &[0, 0, 0, 7, 0, 0, 0, 9]));
+                reply.extend(message(b'Z', b"I"));
+                tls.write_all(&reply).unwrap();
+                let mut rest = Vec::new();
+                let _ = tls.read_to_end(&mut rest);
+            }
+        });
+        (port, server)
+    }
+
+    fn tls_connect(
+        host: &str,
+        port: u16,
+        options: &crate::db::pg_tls::TlsOptions,
+    ) -> Result<Wire, moqui_lib::error::Error> {
+        let endpoint = Endpoint::Tcp {
+            host: host.to_string(),
+            port,
+            tls: Some(crate::db::pg_tls::client_config(options)?),
+        };
+        Wire::connect(&endpoint, "moqui", "moqui", None, None)
+    }
+
+    /// `sslmode` and `sslrootcert` against a server whose certificate is for `localhost` and signed by no public
+    /// authority, as a managed database with its own is.
+    #[test]
+    fn tls_modes_check_what_sslmode_says() {
+        use crate::db::pg_tls::TlsOptions;
+        use moqui_core::entity::datasource::TlsVerify;
+
+        let issued = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let dir = std::env::temp_dir().join(format!("pg-tls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("root.pem");
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, issued.cert.der());
+        let lines: Vec<&str> = encoded
+            .as_bytes()
+            .chunks(64)
+            .map(|line| std::str::from_utf8(line).unwrap())
+            .collect();
+        let pem = format!(
+            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+            lines.join("\n")
+        );
+        std::fs::write(&root, pem).unwrap();
+        let root_text = root.display().to_string();
+        let (port, server) = tls_server(&issued, 6);
+
+        // The public authorities do not know it.
+        let err = tls_connect("localhost", port, &TlsOptions::default()).err().unwrap();
+        assert!(err.message().contains("TLS handshake with localhost"), "{err}");
+        assert!(err.message().contains("UnknownIssuer"), "{err}");
+        // With the root file, verify-full passes for the name in the certificate and refuses another.
+        let full = TlsOptions::new(TlsVerify::Full, &root_text);
+        drop(tls_connect("localhost", port, &full).unwrap());
+        let err = tls_connect("127.0.0.1", port, &full).err().unwrap();
+        assert!(err.message().contains("TLS handshake with 127.0.0.1"), "{err}");
+        // verify-ca checks the authority and not the name.
+        drop(tls_connect("127.0.0.1", port, &TlsOptions::new(TlsVerify::Ca, &root_text)).unwrap());
+        // require encrypts without checking; with a root file it is verify-ca.
+        drop(tls_connect("127.0.0.1", port, &TlsOptions::new(TlsVerify::Encrypt, "")).unwrap());
+        drop(tls_connect("127.0.0.1", port, &TlsOptions::new(TlsVerify::Encrypt, &root_text)).unwrap());
+        server.join().unwrap();
+
+        let missing = TlsOptions::new(TlsVerify::Full, &dir.join("missing.pem").display().to_string());
+        let err = crate::db::pg_tls::client_config(&missing).err().unwrap();
+        assert!(err.message().contains("missing.pem"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_server_that_refuses_tls_is_an_error() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1009,6 +1190,50 @@ mod tests {
         let err = Wire::connect(&endpoint, "moqui", "moqui", None, None).err().unwrap();
         assert!(err.message().contains("does not accept TLS"), "{err}");
         server.join().unwrap();
+    }
+
+    /// An idle connection reads as closed once the server sends `FATAL` and closes, as a restart does; a parameter
+    /// status that arrives while idle does not close it.
+    #[test]
+    fn an_idle_connection_the_server_closed_reads_as_closed() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (sent, sent_rx) = std::sync::mpsc::channel::<()>();
+        let (go, go_rx) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            let mut len = [0u8; 4];
+            tcp.read_exact(&mut len).unwrap();
+            let mut startup = vec![0u8; u32::from_be_bytes(len) as usize - 4];
+            tcp.read_exact(&mut startup).unwrap();
+            let mut reply = message(b'R', &0_i32.to_be_bytes());
+            reply.extend(message(b'K', &[0, 0, 0, 7, 0, 0, 0, 9]));
+            reply.extend(message(b'Z', b"I"));
+            tcp.write_all(&reply).unwrap();
+            go_rx.recv().unwrap();
+            tcp.write_all(&message(b'S', b"TimeZone\0UTC\0")).unwrap();
+            sent.send(()).unwrap();
+            go_rx.recv().unwrap();
+            tcp.write_all(&message(b'E', b"SFATAL\0C57P01\0Mterminating connection\0\0"))
+                .unwrap();
+            drop(tcp);
+            sent.send(()).unwrap();
+        });
+        let endpoint = Endpoint::Tcp {
+            host: "127.0.0.1".to_string(),
+            port,
+            tls: None,
+        };
+        let wire = Wire::connect(&endpoint, "moqui", "moqui", None, None).unwrap();
+        std::thread::sleep(super::QUIET_BEFORE_PEEK);
+        assert!(!wire.closed_while_idle(), "open and idle");
+        go.send(()).unwrap();
+        sent_rx.recv().unwrap();
+        assert!(!wire.closed_while_idle(), "a parameter status leaves it open");
+        go.send(()).unwrap();
+        sent_rx.recv().unwrap();
+        server.join().unwrap();
+        assert!(wire.closed_while_idle(), "closed by the server");
     }
 
     #[test]

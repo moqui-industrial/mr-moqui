@@ -1684,13 +1684,34 @@ pub(crate) fn json_error(status: u16, message: &str) -> WebResponse {
     response
 }
 
+/// Whether `err` or an error in its source chain is [`ErrorKind::Unavailable`]: the database could not be reached, or
+/// the server cannot take the work now.
+pub(crate) fn is_unavailable(err: &Error) -> bool {
+    if err.kind() == ErrorKind::Unavailable {
+        return true;
+    }
+    let mut source = std::error::Error::source(err);
+    while let Some(found) = source {
+        if found
+            .downcast_ref::<Error>()
+            .is_some_and(|context| context.kind() == ErrorKind::Unavailable)
+        {
+            return true;
+        }
+        source = found.source();
+    }
+    false
+}
+
 pub(crate) fn early_error(request: &WebRequest, status: u16, message: &str) -> WebResponse {
     finish_response(request, json_error(status, message), false)
 }
 
-/// The HTTP status of an error, by its [`ErrorKind`]. A general error is a 500 whatever its message says.
+/// The HTTP status of an error, by its [`ErrorKind`]. A general error is a 500 whatever its message says, unless it
+/// was caused by one that is unavailable (no database connection), which is the whole request's: a 503.
 pub(crate) fn status_for(err: &Error) -> u16 {
     match err.kind() {
+        ErrorKind::General | ErrorKind::RollbackOnly if is_unavailable(err) => 503,
         ErrorKind::Validation | ErrorKind::BadRequest => 400,
         ErrorKind::AuthenticationRequired => 401,
         ErrorKind::Unauthorized => 403,
@@ -1991,6 +2012,11 @@ mod tests {
         // The kind is found under a lib error that names it as its source.
         let wrapped = moqui_lib::error::Error::new("outer").with_source(Error::of_kind(ErrorKind::Unavailable, "full"));
         assert_eq!(super::status_for(&Error::from(wrapped)), 503);
+        // An unavailable database under a general error is still the request's 503.
+        let beneath = Error::new("find failed").with_source(Error::of_kind(ErrorKind::Unavailable, "no connection"));
+        assert_eq!(super::status_for(&beneath), 503);
+        let not_found = Error::new("service failed").with_source(Error::of_kind(ErrorKind::NotFound, "no row"));
+        assert_eq!(super::status_for(&not_found), 500);
         // A general error is a 500 whatever its words.
         for message in [
             "Operation x not supported",

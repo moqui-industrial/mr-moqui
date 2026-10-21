@@ -876,6 +876,7 @@ mod cluster {
             savepoint_keeps_the_first_row(&mut conn);
             stream_requires_a_transaction(&mut conn);
             stream_reads_every_inserted_row(&mut conn);
+            a_refused_stream_fails_at_open_and_a_closed_one_reopens(&mut conn);
             rollback_ends_an_aborted_transaction_with_an_open_stream(&mut conn);
             statement_timeout_is_never_lifted_by_rounding(&mut conn);
             a_pipelined_begin_starts_the_transaction_its_first_statement_runs_in(&mut conn);
@@ -1410,6 +1411,32 @@ mod cluster {
             assert!(conn.stream_open());
             conn.close_stream().unwrap();
             assert!(!conn.stream_open());
+            conn.commit().unwrap();
+        }
+
+        /// The `DECLARE` goes out with the first `FETCH`, so a query the server refuses still fails at the open, with its
+        /// own error. The `CLOSE` goes out with the next request, so the cursor can be declared again right after it.
+        fn a_refused_stream_fails_at_open_and_a_closed_one_reopens(conn: &mut PostgresConn) {
+            conn.begin().unwrap();
+            let err = conn
+                .open_stream("SELECT no_such_column FROM streamed", &[])
+                .unwrap_err();
+            assert!(err.message().contains("no_such_column"), "{err}");
+            assert!(!conn.stream_open());
+            conn.rollback().unwrap();
+
+            conn.begin().unwrap();
+            conn.open_stream("SELECT n FROM streamed WHERE n > ? ORDER BY n", &[Value::I32(49)])
+                .unwrap();
+            assert_eq!(conn.next_row().unwrap().unwrap().get("n"), Some(&Value::I32(50)));
+            conn.close_stream().unwrap();
+            conn.open_stream("SELECT n FROM streamed ORDER BY n", &[]).unwrap();
+            let mut count = 0;
+            while conn.next_row().unwrap().is_some() {
+                count += 1;
+            }
+            assert_eq!(count, 51);
+            conn.close_stream().unwrap();
             conn.commit().unwrap();
         }
 

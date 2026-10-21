@@ -1,6 +1,6 @@
 # Profiling
 
-Status 2026-10-21: four rounds of profiling and optimization of entity, service, data load and XML/definition work against embedded Postgres, built and committed. The next round tests against an external Postgres (see [Next steps](#next-steps)). Companion to [Performance-Summary](Performance-Summary.md), which digests the performance plan; this document records what was measured and changed, how to measure, and what is left.
+Status 2026-10-21: four rounds of profiling and optimization of entity, service, data load and XML/definition work against embedded Postgres, built and committed. Round 5 tested and measured against an external Postgres 18 in Docker ([Round 5](#round-5-external-postgres)); its findings lead the [Next steps](#next-steps). Companion to [Performance-Summary](Performance-Summary.md), which digests the performance plan; this document records what was measured and changed, how to measure, and what is left.
 
 ## How to measure
 
@@ -14,7 +14,7 @@ Five opt-in speed tests in `crates/moqui-host/tests/` (each `test = false` and `
 | `xml_speed` | `MNode` parse, keep, read, lookup and drop over the 784 runtime XML files, and loader-style record elements | nothing |
 | `definition_speed` | the framework entity model, the service definitions, and the base components' screen definitions | nothing |
 
-Run one with `CARGO_PROFILE_RELEASE_DEBUG=1 cargo test --release -p moqui-host --test <name> -- --ignored --nocapture`; each file's header names its size variables. The shared harness (`tests/speed/mod.rs`) prints, per call: median time, allocations, bytes allocated, bytes kept after the batch (a cache or a leak), and SQL statements (`entity::statement_stats`, a round-trip count). The allocation columns come from a thread-local counting allocator and do not change from run to run, so they are the steady measure on a busy machine.
+Run one with `CARGO_PROFILE_RELEASE_DEBUG=1 cargo test --release -p moqui-host --test <name> -- --ignored --nocapture`; each file's header names its size variables. `SPEED_PG_HOST` (with `SPEED_PG_PORT`, `SPEED_PG_USER`, `SPEED_PG_PASSWORD`, `SPEED_PG_SSLMODE`, `SPEED_PG_SSLROOTCERT`) runs the three database tests on a new database of an external server instead, dropped at the end (`speed::SpeedDb`; the role needs `CREATEDB`). The shared harness (`tests/speed/mod.rs`) prints, per call: median time, allocations, bytes allocated, bytes kept after the batch (a cache or a leak), and SQL statements (`entity::statement_stats`, a round-trip count). The allocation columns come from a thread-local counting allocator and do not change from run to run, so they are the steady measure on a busy machine.
 
 Tools, as used here:
 - **samply** for CPU (`samply record --save-only --unstable-presymbolicate`); needs `/proc/sys/kernel/perf_event_paranoid` at 1 or lower, which resets at reboot.
@@ -22,6 +22,7 @@ Tools, as used here:
 - **perf stat** `-e instructions:u` with 1 and 6 batches, for a load-independent comparison (the difference over 5 is one batch, Postgres children included).
 - **strace** `-ff -o DIR/t` for syscalls per round trip (`perf trace` has no tracefs access on the dev machine); the client thread is the file whose `sendto` carries `SET TIME ZONE`.
 - **Comparing builds:** copy each build's test binaries aside under a tag, run them alternately, and take each row's best batch median. Wall times swing ±50–100% when other jobs run; allocation counts do not.
+- **Waited round trips per call**: add a known delay on the server side (`tc qdisc add dev eth0 root netem delay 200us` in a container started with `--cap-add NET_ADMIN`, after `apt-get install iproute2`) and divide each row's added time by the delay. Connect to the container's bridge IP, not a published `127.0.0.1` port, which goes through docker's userland proxy.
 - **Keep profiling output on disk** (`target/profiling/`), not in `/tmp`: `/tmp` is a RAM-backed tmpfs on the dev machine, and 23 GB of traces and binary copies there ran it out of memory during a workspace test build.
 
 ## What changed
@@ -73,7 +74,51 @@ What the numbers say:
 - **Data loads are where the design changed the outcome:** a record went from three waited statements to one pipelined statement, and the client work per record from 406 allocations to 48.
 - **Memory.** Read rows share their column names, values share their entity's names, and parsed XML trees hold half what they did.
 
+## Round 5: external Postgres
+
+Setup: `postgres:18` (18.6) in Docker, default settings (shared_buffers 128 MB, fsync and synchronous_commit on), SCRAM auth, reached over the docker bridge (veth, ~40 µs ping RTT). Two containers: `moqui-pg18` with its data on disk (the dev conf's database, `runtime/conf/MoquiDevConf.xml`), and `moqui-pg18-mem` with `--tmpfs /var/lib/postgresql`, which matches the embedded test cluster (under `/tmp`, a tmpfs, so its fsync is free).
+
+**Functional.** `./moq load` (8,740 records in 4.9 s), the server (REST reads and writes through mantle, tools and system screens) and `./moq test mantle-usl --db existing` (557 features, 61 specs, all passed in 74 s) work against `moqui-pg18`.
+
+**Times** (µs per call, median batch; same binaries, run in turn):
+
+| Operation | Embedded (socket) | Docker tmpfs | Docker disk | tmpfs + 200 µs delay | Waited round trips |
+|---|---|---|---|---|---|
+| entity one PK find | 20.9 | 28.8 | 34.3 | 240.6 | 1 |
+| entity create / update / delete, one transaction | 27 / 31 / 23 | 40 / 42 / 33 | 43 / 50 / 38 | 253 / 257 / 246 | 1 each |
+| entity create / update / delete, autocommit | 34 / 34 / 27 | 46 / 50 / 39 | 249 / 303 / 295 | 261 / 268 / 253 | 1 each |
+| iterate 100 rows | 417 | 482 | 517 | 1565 | 5.4 |
+| service create, one transaction / own transaction | 37 / 63 | 48 / 102 | 61 / 270 | 268 / 541 | 1 / 2 |
+| data load, XML record, new / reload | 13.5 / 15.4 | 20.4 / 22.8 | 19.1 / 21.7 | 22.6 / 25.2 | 0.01 |
+| framework seed data, first load / reload | 48 / 22 | 91 / 32 | 62 / 32 | 96 / 60 | 0.03 / 0.14 |
+
+What the numbers say:
+- **The pipelining works as designed.** Every single-statement call waits exactly one round trip; a service in its own transaction waits two (the statement, with `BEGIN` and `SET LOCAL` in the same write, and `COMMIT`); a 1,000-record data file waits about 11 (one per 128 records from `PIPELINE_DEPTH`, plus the end of the file). Allocations are the same as embedded.
+- **TCP adds 8–15 µs per round trip** over the Unix socket on the same machine.
+- **On disk, a commit is 250–300 µs** (WAL fsync) and dominates every autocommit and own-transaction row.
+- **A data load is server bound.** Over TCP a record costs +7 µs more than over the socket, but the single backend used 4.07 s CPU in a 4.31 s run, so the client is waiting on the server. Holding deferred writes until 8 KB was buffered (one `sendto` per run instead of one per record: 12.4k sends for ~12k records) was 0–14% slower, as the server starts later; reverted. Fewer statements is the lever: multi-row upserts or `COPY`.
+- **An iterate waits five round trips** for 100 rows: `DECLARE`, three `FETCH 50` (the third returns nothing, as a full batch cannot say it was the last), and `CLOSE`.
+
+**TLS.** Against a server that requires TLS (`hostssl` only) with a certificate from a private CA, the driver fails with `invalid peer certificate: UnknownIssuer` (reported as a `postgres write` error): the external driver trusts only the `webpki-roots` public CAs, and there is no way to name a root certificate or to encrypt without verifying. A managed database with its own CA (AWS RDS, for one) cannot be reached over TLS. Without TLS, that server's refusal names `pg_hba.conf` and "no encryption", as it should. A server cannot be set to require SCRAM channel binding (only libpq's client-side `channel_binding=require` does that), so the missing `SCRAM-SHA-256-PLUS` refuses no server; it is hardening against a man in the middle only.
+
+**Server restart under a running server** (`docker restart` takes 0.28 s):
+- Requests right after the restart fail, about one per pooled connection, with `Connection reset by peer` (6 in a row here, then the 401 below), because a connection returned within `test_after_idle` (1 s) is handed out without `SELECT 1`. Each failure marks its connection dead, and requests succeed after that.
+- Even with a 2 s wait, so every idle connection is tested, one request fails with `connection test failed`: `acquire` allows as many failed tests as there were idle connections, then returns the error instead of opening a new connection. When every idle connection is dead (any restart), that request fails although the server is up. `failed_checkout_test_discards_the_idle_connection` asserts this behaviour.
+- That failure, in the login lookup, came back to the client as **401**, not 500 or 503.
+
+**Round 5 fixes:**
+- **Pool.** When as many tests have failed as connections were idle, the checkout opens a new connection instead of failing. A connection found dead (a failed statement or test, or the peek below) marks the time, and every connection idle since before then is tested whatever its age: a proxy, NAT or load balancer that drops connections says nothing until the client writes (docker's userland proxy on a published port does this). A checkout that cannot connect, or times out, is `ErrorKind::Unavailable`.
+- **Idle peek.** The Postgres connection's `is_closed`, which the pool asks of each idle connection it takes, peeks without blocking at a TCP connection that has read nothing for 20 ms: the end of the stream, or an `ErrorResponse` among the waiting messages, is a closed connection; over TLS any waiting bytes are. A connection read from in the last 20 ms is not peeked, so a busy pool pays nothing (an alternating A/B run showed no change).
+- **Status.** An `Unavailable` error anywhere in a request error's source chain answers 503, and a login the database could not serve is the request's error, not a failed login (no more 401). The request paths in `screen/mod.rs` (REST included) that hard-coded 500 use the same mapping.
+- **TLS** (`db/pg_tls.rs`): `sslmode` `require` encrypts without checking the certificate, `verify-ca` checks the authority, and `verify-full`, empty, `allow` and `prefer` check the authority and the name (TLS is always required when on; there is no fallback to plain). `sslrootcert` (in `xa-properties`, a `jdbc-uri`, a search url, or the new `entity_ds_sslrootcert` property) is a PEM file of authorities to trust in place of the public ones, and makes `require` check as `verify-ca`, as libpq does. The handshake is run at connect, so a refused certificate reads `postgres connect: TLS handshake with <host>: invalid peer certificate: UnknownIssuer`.
+- **Streams.** A stream's `DECLARE` goes out with its first `FETCH`, at the open (a refused query still fails there, with the `DECLARE`'s error), and `CLOSE` is not waited for. An iterate of 100 rows waits three round trips instead of five: 1,565 → 1,087 µs at 200 µs added delay, and 484 → 443 µs on the bridge.
+
+Checked against the containers: a restart under a running server with requests sent as soon as Postgres is ready, 15 of 15 succeed (direct to the container, and through docker's proxy); while it is down or starting, requests answer 503 and succeed once it is up. `require`, `verify-ca` and `verify-full` with the private authority connect to a TLS-only server; `verify-full` with the public roots, and `require` with a root file that does not hold its authority, are refused with the handshake error; `./moq load seed -D entity_ds_host=... -D entity_ds_sslmode=verify-full -D entity_ds_sslrootcert=ca.crt` loads over TLS.
+
 ## Behaviour changes to know
+
+- `sslmode=require` on an external Postgres now encrypts without checking the server's certificate, as libpq and pgjdbc do (it checked authority and name before). `verify-full` or empty keeps the full check; `sslrootcert` makes `require` check the authority.
+- A request that fails because the database cannot be reached answers 503 (it was 500, or 401 when it held credentials).
 
 - An upserted data-load record records a `create` artifact hit whether or not the row existed, and runs no update ECA rules (it is only used where the entity has none).
 - `create_or_update` of a new row no longer records a `refresh` hit.
@@ -83,7 +128,13 @@ What the numbers say:
 
 ## Next steps
 
-**External Postgres (next).** What the embedded tests cannot show:
+**From round 5 (external Postgres), by expected payoff:**
+1. ~~Pool after a server restart~~, ~~TLS roots and modes~~ and ~~iterate round trips~~: done, see Round 5 fixes.
+2. **MySQL**: the same idle check (the `mysql` crate's connection), and `sslMode`/`useSSL` root certificates; neither was looked at.
+3. **Multi-row upsert for data loads.** The server is the bottleneck in a pipelined load; `INSERT ... VALUES (...), (...) ON CONFLICT DO UPDATE` for runs of records of one entity, or `COPY` for an empty database (item 1 below), cuts its per-statement work.
+4. Still open from the list below: connection failure mid-transaction, mid-pipeline and mid-stream, `cancel` over TLS, a `statement_timeout` that fires, and poolers.
+
+**External Postgres (before round 5).** What the embedded tests cannot show:
 1. **TLS against a real server.** The client's TLS is tested only against an in-process server (SSLRequest, rustls handshake, startup, a query, Terminate). Test certificate verification with real roots, a server that requires TLS, and `sslmode`-style choices if any are wanted beyond "required".
 2. **SCRAM channel binding.** The client offers `SCRAM-SHA-256` without channel binding; a server set to require `SCRAM-SHA-256-PLUS` would refuse it. Add `tls-server-end-point` binding from the rustls peer certificate if that matters.
 3. **Latency.** Re-run `entity_speed`, `service_speed` and `data_load_speed` against a server one network hop away. The round-trip savings should grow: BEGIN pipelining saves one round trip per own-transaction service call, upsert pipelining all but one per data file, first-run prepare one per new statement per connection.
