@@ -1219,6 +1219,48 @@ fn qvt_render_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/script/testdata/screen/qvt/render")
 }
 
+/// A parent level asked for alone, as the terminal asks for each level, holds an empty active node: the level under it is
+/// the client's next request, so a parent with no default item is not an error (Tools' ServiceJob, Security).
+#[test]
+fn a_parent_level_alone_has_an_empty_active_node() {
+    let dir = std::env::temp_dir().join(format!("moqui-tui-parent-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Root/Parent")).unwrap();
+    std::fs::write(
+        dir.join("Root.xml"),
+        r#"<screen require-authentication="false"><widgets><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Root/Parent.xml"),
+        r#"<screen require-authentication="false"><widgets><label text="Above"/><subscreens-active/></widgets></screen>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Root/Parent/Child.xml"),
+        r#"<screen require-authentication="false"><widgets><label text="Leaf"/></widgets></screen>"#,
+    )
+    .unwrap();
+    let context = ExecutionContextFactory::test_context();
+    let render_at = |path: &str| {
+        make_render(context.factory())
+            .root_screen(dir.join("Root.xml").to_string_lossy().into_owned())
+            .screen_path(path)
+            .render_mode("tui")
+            .render()
+            .unwrap_or_else(|err| panic!("{path}: {err}"))
+            .body_text()
+    };
+    let parent = render_at("Parent.tui");
+    let child = render_at("Parent/Child");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!parent.contains("Tried to render subscreen"), "{parent}");
+    let doc: Json = serde_json::from_str(&parent).unwrap_or_else(|err| panic!("{err}: {parent}"));
+    assert_eq!(first_of(&doc, "active")["c"], json!([]), "{parent}");
+    assert!(parent.contains("Above"), "{parent}");
+    assert!(child.contains("Leaf") && !child.contains("Above"), "{child}");
+}
+
 /// A wizard or stack panel is a subscreens node like the tabs: the steps, the active one, a wizard's finish text, and the
 /// active level inside.
 #[test]

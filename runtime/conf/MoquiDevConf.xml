@@ -9,6 +9,9 @@
     <default-property name="webapp_allow_origins" value="*"/>
     <default-property name="entity_empty_db_load" value="all"/>
     <default-property name="entity_lock_track" value="true"/>
+    <!-- The built-in SSH server on localhost (ssh_host defaults to 127.0.0.1): the apps in the terminal over SSH for
+        users with SSH_APPS (ADMIN, so john.doe), as `ssh -p 2222 john.doe@localhost apps`; docs/TUI.md "Over SSH" -->
+    <default-property name="ssh_port" value="2222"/>
 
     <!-- Dump full LLM interactions, leaving on for easier testing until llm-client branch stabilizes -->
     <default-property name="llm_trace_dump" value="true"/>
