@@ -18,6 +18,7 @@ Design, status and review documents for the MR-Moqui port. The first pass is com
 **Next phase: performance** (digested in Performance-Summary)
 - [Performance.md](Performance.md): the target (100,000 durable commits or reads per second), one-node and maximum-scale setups, startup budget, capacity limits.
 - [Performance-Implementation.md](Performance-Implementation.md): outcomes and recorded before/after numbers for schema inspection, macro compilation reuse, definition loading and build feedback.
+- [Profiling.md](Profiling.md): the speed tests and how to run and profile them, what four rounds of entity, service, data load and XML work changed, the measured results, and next steps (external Postgres next).
 - [MantleUSL-Performance-Audit.md](MantleUSL-Performance-Audit.md): static review of mantle-usl for avoidable work amplification.
 - [MantleUSL-Execution-Benchmark-Plan.md](MantleUSL-Execution-Benchmark-Plan.md): Stages A–E, the correctness gate, and the execution-method comparison. The audit and this plan cite `../experiments/mantle-execution/README.md`, which lives on a separate experiment branch, not in this repository.
 

@@ -303,6 +303,8 @@ impl EntityModel {
     pub fn load(conf: &MNode, documents: &[MNode]) -> Result<Self, Error> {
         let dictionary = parse_dictionary(conf)?;
         let legacy_names = crate::dialect::legacy_names(conf)?;
+        // Each node as the document holds it; only one an `extend-entity` changes is copied first ([`apply_extend`]),
+        // so the documents stay as they were read.
         let mut nodes: Vec<MNode> = Vec::new();
         let mut view_flags: Vec<bool> = Vec::new();
         let mut by_full: HashMap<String, usize> = HashMap::new();
@@ -314,7 +316,7 @@ impl EntityModel {
             for child in document.children() {
                 match child.name().as_str() {
                     "entity" | "view-entity" => {
-                        let node = child.deep_copy();
+                        let node = child.clone();
                         let (entity_name, package_name) = entity_identity(&node)?;
                         let full_name = format!("{package_name}.{entity_name}");
                         if let Some(index) = by_full.get(&full_name).copied() {
@@ -331,13 +333,14 @@ impl EntityModel {
                         view_flags.push(child.name() == "view-entity");
                         nodes.push(node);
                     }
-                    "extend-entity" => extends.push(child.deep_copy()),
+                    "extend-entity" => extends.push(child.clone()),
                     _ => {}
                 }
             }
         }
+        let mut copied = vec![false; nodes.len()];
         for extend_node in &extends {
-            apply_extend(&nodes, &by_full, extend_node)?;
+            apply_extend(&mut nodes, &mut copied, &by_full, extend_node)?;
         }
 
         let mut entities = Vec::with_capacity(nodes.len());
@@ -592,7 +595,13 @@ fn collect_dictionary(node: &MNode, out: &mut Vec<MNode>) {
     }
 }
 
-fn apply_extend(nodes: &[MNode], by_full: &HashMap<String, usize>, extend_node: &MNode) -> Result<(), Error> {
+/// `copied` marks the nodes copied from their documents already; a node is copied before its first change.
+fn apply_extend(
+    nodes: &mut [MNode],
+    copied: &mut [bool],
+    by_full: &HashMap<String, usize>,
+    extend_node: &MNode,
+) -> Result<(), Error> {
     let (entity_name, package_name) = entity_identity(extend_node)?;
     let full_name = format!("{package_name}.{entity_name}");
     let Some(index) = by_full.get(&full_name) else {
@@ -604,6 +613,10 @@ fn apply_extend(nodes: &[MNode], by_full: &HashMap<String, usize>, extend_node: 
         );
         return Ok(());
     };
+    if !copied[*index] {
+        nodes[*index] = nodes[*index].deep_copy();
+        copied[*index] = true;
+    }
     let entity_node = &nodes[*index];
     entity_node.copy_attributes_from(extend_node);
     for field in extend_node.children_named("field") {

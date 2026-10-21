@@ -1269,7 +1269,7 @@ fn bool_attr(node: &MNode, name: &str, default: bool) -> bool {
 
 fn expressions_ok(service: &str, node: &MNode, errors: &mut Vec<String>) -> bool {
     let mut ok = true;
-    if node.name() == "script" {
+    if node.has_name("script") {
         if let Some(text) = node.text() {
             if let Err(err) = check_javascript(service, &text) {
                 errors.push(err);
@@ -1277,19 +1277,19 @@ fn expressions_ok(service: &str, node: &MNode, errors: &mut Vec<String>) -> bool
             }
         }
     }
-    for (key, value) in node.attributes() {
-        if is_expression_attr(&key) {
-            if let Err(err) = check_javascript(service, &value) {
+    node.for_each_attribute(|key, value| {
+        if is_expression_attr(key) {
+            if let Err(err) = check_javascript(service, value) {
                 errors.push(err);
                 ok = false;
             }
         }
-    }
-    for child in node.children() {
-        if !expressions_ok(service, &child, errors) {
+    });
+    node.for_each_child(|child| {
+        if !expressions_ok(service, child, errors) {
             ok = false;
         }
-    }
+    });
     ok
 }
 

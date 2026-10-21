@@ -150,6 +150,11 @@ impl MNode {
         self.inner.borrow().name.to_string()
     }
 
+    /// `body` with the element's name, borrowed.
+    pub fn with_name<R>(&self, body: impl FnOnce(&str) -> R) -> R {
+        body(&self.inner.borrow().name)
+    }
+
     /// Whether the element is named `name`, without copying its name.
     pub fn has_name(&self, name: &str) -> bool {
         *self.inner.borrow().name == *name
@@ -252,6 +257,14 @@ impl MNode {
 
     pub fn children(&self) -> Vec<MNode> {
         self.inner.borrow().children.clone()
+    }
+
+    /// Each child in order, without copying the list. `body` may read the children, and this node, but not change
+    /// this node.
+    pub fn for_each_child(&self, mut body: impl FnMut(&MNode)) {
+        for child in &self.inner.borrow().children {
+            body(child);
+        }
     }
 
     /// How many children the element has.
@@ -505,12 +518,13 @@ impl MNode {
         for _ in 0..level {
             out.push_str("    ");
         }
-        let name = self.name();
+        // Read in place: a child is its own cell, so this node's borrow is held across the children's.
+        let inner = self.inner.borrow();
         out.push('<');
-        out.push_str(&name);
-        for (key, value) in self.attributes() {
+        out.push_str(&inner.name);
+        for (key, value) in &inner.attributes {
             out.push(' ');
-            out.push_str(&key);
+            out.push_str(key);
             out.push_str("=\"");
             for ch in value.chars() {
                 match ch {
@@ -522,17 +536,23 @@ impl MNode {
             }
             out.push('"');
         }
-        let text = self.text();
-        let children = self.children();
-        if text.is_some() || !children.is_empty() {
+        let children = &inner.children;
+        if inner.text.is_some() || !children.is_empty() {
             out.push('>');
-            if let Some(text) = text {
+            if let Some(text) = &inner.text {
                 out.push_str("<![CDATA[");
-                out.push_str(&text.replace("]]>", "]]]]><![CDATA[>"));
+                let mut pieces = text.split("]]>");
+                if let Some(first) = pieces.next() {
+                    out.push_str(first);
+                }
+                for piece in pieces {
+                    out.push_str("]]]]><![CDATA[>");
+                    out.push_str(piece);
+                }
                 out.push_str("]]>");
             }
             if !children.is_empty() {
-                for child in &children {
+                for child in children {
                     out.push('\n');
                     child.write_into(out, level + 1);
                 }
@@ -544,7 +564,7 @@ impl MNode {
                 }
             }
             out.push_str("</");
-            out.push_str(&name);
+            out.push_str(&inner.name);
             out.push('>');
         } else {
             out.push_str("/>");

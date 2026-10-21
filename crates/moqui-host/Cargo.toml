@@ -102,6 +102,8 @@ workspace = true
 
 [dev-dependencies]
 indexmap = { workspace = true }
+# The entity model the definition_speed test builds.
+moqui-db = { workspace = true }
 # The example component is on by default and its MoquiConf.xml selects a tool factory, so a test that boots the
 # repository runtime (tests/it, gate3, gate3_browser, search_logs_postgres) links the crate as the moqui binary does.
 example = { workspace = true }
@@ -144,6 +146,13 @@ test = false
 # CARGO_PROFILE_RELEASE_DEBUG=1 cargo test --release -p moqui-host --test xml_speed -- --ignored --nocapture
 [[test]]
 name = "xml_speed"
+test = false
+
+# Opt-in definition load timings: the entity model, service and screen definitions. No database. Not linked by a
+# default `cargo test`.
+# CARGO_PROFILE_RELEASE_DEBUG=1 cargo test --release -p moqui-host --test definition_speed -- --ignored --nocapture
+[[test]]
+name = "definition_speed"
 test = false
 
 # Scripted Gallery and Party screens on embedded Postgres, run by scripts/check-packages.sh:

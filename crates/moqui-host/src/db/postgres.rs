@@ -302,9 +302,46 @@ mod driver {
             if let Some(prepared) = self.cache.get(sql) {
                 return Ok(Arc::clone(prepared));
             }
+            let name = self.statement_name();
+            let described = self.wire.prepare(&name, &rewrite_placeholders(sql))?;
+            self.remember(sql, name, described)
+        }
+
+        /// The cached statement for `sql`; `None` when there is none and it can be prepared in its first run
+        /// ([`Self::first_run`]), which sends every parameter in text: none of them is bytes.
+        fn cached(&mut self, sql: &str, params: &[Value]) -> Result<Option<Arc<Prepared>>, Error> {
+            if let Some(prepared) = self.cache.get(sql) {
+                return Ok(Some(Arc::clone(prepared)));
+            }
+            if params.iter().any(|value| matches!(value, Value::Bytes(_))) {
+                return self.prepared(sql).map(Some);
+            }
+            Ok(None)
+        }
+
+        /// Prepare `sql` and run it in one round trip, and keep the statement. Its rows and the rows it changed.
+        fn first_run(&mut self, sql: &str, params: &[Value], context: &str) -> Result<(Vec<DbRow>, u64), Error> {
+            let name = self.statement_name();
+            let (described, rows, changed) = self.wire.prepare_run(
+                &name,
+                &rewrite_placeholders(sql),
+                params.len(),
+                &mut |index, buf| encode_param(&params[index], None, buf),
+                &decode_cell,
+                context,
+            )?;
+            self.remember(sql, name, described)?;
+            Ok((rows, changed))
+        }
+
+        fn statement_name(&mut self) -> String {
             let name = format!("s{}", self.next_statement);
             self.next_statement += 1;
-            let described = self.wire.prepare(&name, &rewrite_placeholders(sql))?;
+            name
+        }
+
+        /// Keep statement `name` for `sql`, and close the one the cache lets go for it.
+        fn remember(&mut self, sql: &str, name: String, described: pgwire::Described) -> Result<Arc<Prepared>, Error> {
             let prepared = Arc::new(Prepared {
                 name,
                 params: described.params,
@@ -375,7 +412,9 @@ mod driver {
 
         fn execute(&mut self, sql: &str, params: &[Value]) -> Result<u64, Error> {
             check_scalar(params)?;
-            let prepared = self.prepared(sql)?;
+            let Some(prepared) = self.cached(sql, params)? else {
+                return Ok(self.first_run(sql, params, "execute")?.1);
+            };
             let formats = prepared.formats(params);
             self.wire.execute(
                 &prepared.name,
@@ -413,7 +452,9 @@ mod driver {
 
         fn query(&mut self, sql: &str, params: &[Value]) -> Result<Vec<DbRow>, Error> {
             check_scalar(params)?;
-            let prepared = self.prepared(sql)?;
+            let Some(prepared) = self.cached(sql, params)? else {
+                return Ok(self.first_run(sql, params, "query")?.0);
+            };
             let formats = prepared.formats(params);
             self.wire.query(
                 &prepared.name,
