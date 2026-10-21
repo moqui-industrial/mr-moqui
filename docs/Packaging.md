@@ -134,16 +134,23 @@ everything, and postgresql_embedded's `bundled` build script compiled a second H
 | Before (release, everything) | 171 s | 1394 s | 623 | 84 MB | 67.5 MB | 38.1 MiB |
 | Maximal (`release`) | 151 s | 1091 s | 545 | 82.9 MB | 66.8 MB | 37.7 MiB |
 | Enterprise | 141 s | 971 s | 522 | 68.4 MB | 53.1 MB | 36.4 MiB |
-| Default (`lite`) | 101 s | 608 s | 354 | 57.1 MB | 47.4 MB | 24.5 MiB |
+| Default (`lite`) | 113 s | 1054 s | 397 | 64.6 MB | 53.1 MB | 28.2 MiB |
+| Default without `tui` | 105 s | 901 s | 375 | 58.4 MB | 48.4 MB | 25.2 MiB |
 
-These were measured before the terminal client joined `lite` (2026-10-20), which adds Revue and crossterm to it.
+The two Default rows were measured on Oct 20, 2026, on the same machine, at commit 5a18e9c, after the terminal client
+joined `lite`; the other rows are Oct 19's, on the code of that day, and were not measured again. The terminal client
+(Revue, crossterm and their dependencies, 22 crates) adds 8 s to a clean build, 153 s of compile CPU, 6.2 MB to the
+binary and 3.0 MiB of `.text`. Default without it is `cargo build --profile lite --no-default-features -F
+moqui-host/axum,moqui-host/embedded-postgres,moqui-host/pdf,moqui-host/smtp -p moqui`, for comparison only; it is not a
+package. Without it, Default still takes 293 s more compile CPU and 21 more crates than Oct 19's row; that came with
+the code and dependencies added since, and is not broken down here.
 
 The embedded Postgres archive is 11.9 MB of each binary that has it.
 
 | Build | Rebuild after a one-line edit in moqui-core | Load seed, seed-initial, install (8141 records) |
 |---|---|---|
 | Maximal (`release`) | 60 s | 8.4 to 10.0 s |
-| Default (`lite`, opt-level 3) | 11.6 s | 8.6 s |
+| Default (`lite`, opt-level 3) | 11.3 s (Oct 20, with the terminal client; 11.6 s on Oct 19) | 8.6 s |
 | Default at opt-level 2 / 1 | 11.6 s / 10.7 s | 8.3 s / 9.1 s |
 | Debug (`dev`) | 8.8 s | 18.1 s |
 
