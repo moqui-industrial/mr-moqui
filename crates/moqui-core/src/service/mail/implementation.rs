@@ -1186,9 +1186,70 @@ pub(super) fn header_value(headers: &str, name: &str) -> String {
 }
 
 fn deliver(facade: &EntityFacade, letter: &Letter, server: &EntityValue) -> Result<(), Error> {
+    if captured(letter) {
+        return Ok(());
+    }
+    lettre_send(facade, letter, server)
+}
+
+/// A message built whole (the SMTP listener's delivered notice, `delivery.rs`), sent from the null reverse path to
+/// `to` through the SMTP of server `server_id`, within half a minute. A test sink or `mail_capture_sends` keeps it as
+/// a letter with the message as its text.
+#[cfg(feature = "imap")]
+pub(super) fn send_built(
+    facade: &EntityFacade,
+    server_id: &str,
+    from: &str,
+    to: &str,
+    subject: &str,
+    raw: &[u8],
+) -> Result<(), Error> {
+    let letter = Letter {
+        subject: subject.to_string(),
+        from_address: from.to_string(),
+        from_name: String::new(),
+        to: vec![to.to_string()],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        bounce: String::new(),
+        body: String::new(),
+        body_text: String::from_utf8_lossy(raw).into_owned(),
+        attachments: Vec::new(),
+        inline: Vec::new(),
+        message_id: String::new(),
+        in_reply_to: String::new(),
+        references: String::new(),
+        date: None,
+        extra_headers: Vec::new(),
+    };
+    if captured(&letter) {
+        return Ok(());
+    }
+    let server = find_one(facade, SERVER, "emailServerId", server_id)
+        .map_err(|err| Error::new(err.to_string()))?
+        .ok_or_else(|| Error::new(format!("no email server {server_id}")))?;
+    let host = field_text(&server, "smtpHost");
+    if host.is_empty() {
+        return Err(Error::new(format!("email server {server_id} has no SMTP host")));
+    }
+    require_host(&host)?;
+    let recipient = to
+        .parse::<lettre::Address>()
+        .map_err(|err| Error::new(format!("{to} is not an address: {err}")))?;
+    let envelope = lettre::address::Envelope::new(None, vec![recipient]).map_err(|err| Error::new(err.to_string()))?;
+    let auth = smtp_auth(facade, &server, None)?;
+    let transport = smtp_transport(&server, &auth, Some(Duration::from_secs(30)))?;
+    lettre::Transport::send_raw(&transport, &envelope, raw)
+        .map(|_| ())
+        .map_err(|err| Error::new(err.to_string()))
+}
+
+/// Whether a test sink or `mail_capture_sends` kept `letter` instead of sending it.
+fn captured(letter: &Letter) -> bool {
     #[cfg(test)]
     if push_sink(letter) {
-        return Ok(());
+        return true;
     }
     // mail_capture_sends (moqui test): kept for the spec instead of sent (service/mail_capture.rs)
     if crate::service::mail_capture::enabled() {
@@ -1208,9 +1269,9 @@ fn deliver(facade: &EntityFacade, letter: &Letter, server: &EntityValue) -> Resu
             attachment_names: letter.attachments.iter().map(|part| part.filename.clone()).collect(),
             headers: letter.extra_headers.clone(),
         });
-        return Ok(());
+        return true;
     }
-    lettre_send(facade, letter, server)
+    false
 }
 
 fn lettre_send(facade: &EntityFacade, letter: &Letter, server: &EntityValue) -> Result<(), Error> {

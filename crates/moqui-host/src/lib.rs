@@ -74,7 +74,7 @@ mod search_proxy;
 mod termws;
 #[cfg(feature = "axum")]
 mod source_body;
-#[cfg(feature = "axum")]
+#[cfg(any(feature = "axum", feature = "inbound-smtp"))]
 mod tls;
 
 /// No arguments start the HTTP listener and block until it stops.

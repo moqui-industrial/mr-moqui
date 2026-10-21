@@ -1163,6 +1163,14 @@ along with this software (see the LICENSE.md file). If not, see
         </xs:complexType>
     </xs:element>
 
+            <xs:attribute name="protocol" default="smtp"><xs:annotation><xs:documentation>smtp, or lmtp (RFC 2033): LHLO, and a reply per recipient after the data.</xs:documentation></xs:annotation>
+                <xs:simpleType><xs:restriction base="xs:token"><xs:enumeration value="smtp"/><xs:enumeration value="lmtp"/></xs:restriction></xs:simpleType></xs:attribute>
+            <xs:attribute name="starttls" type="boolean-expandable" default="false"><xs:annotation><xs:documentation>Offer STARTTLS (RFC 3207). With no certificate the listener does not start.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="require-tls" type="boolean-expandable" default="false"><xs:annotation><xs:documentation>Refuse MAIL before STARTTLS (530); needs starttls.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="tls-cert-file" type="xs:string"><xs:annotation><xs:documentation>The certificate (and chain) PEM file of STARTTLS, absolute or under the runtime directory; empty for runtime/cert by the name asked for or hostname.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="tls-key-file" type="xs:string"><xs:annotation><xs:documentation>The private key PEM file that goes with tls-cert-file.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="chunking" type="boolean-expandable" default="true"><xs:annotation><xs:documentation>CHUNKING (RFC 3030): BDAT.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="dsn" type="boolean-expandable" default="false"><xs:annotation><xs:documentation>DSN (RFC 3461): RET, ENVID, NOTIFY and ORCPT are taken and kept, and NOTIFY=SUCCESS gets a "delivered" report.</xs:documentation></xs:annotation></xs:attribute>
     <xs:element name="logging">
         <xs:annotation><xs:documentation>The log files moqui.log (all events) and moqui-error.log (warn and error).
             The stderr level and color are the properties moqui_log_level and moqui_log_color, read before the conf.

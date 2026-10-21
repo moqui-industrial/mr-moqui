@@ -111,13 +111,16 @@
         (127.0.0.1 for a gateway on this host); every other address is refused at connect, and an empty list does not
         start the listener. smtp_hostname: the name in the greeting and the Received field; empty for webapp_http_host.
         smtp_authserv_id: the authserv-id of the gateway's Authentication-Results; only those are kept (the verdict is
-        trusted, not verified again).
+        trusted, not verified again). smtp_tls_cert_file and smtp_tls_key_file: the certificate (with its chain) and key
+        PEM files of STARTTLS (smtp-server starttls), absolute or under the runtime directory; empty for runtime/cert.
     -->
     <default-property name="smtp_listen_port" value=""/>
     <default-property name="smtp_listen_host" value="127.0.0.1"/>
     <default-property name="smtp_allowed_addresses" value=""/>
     <default-property name="smtp_hostname" value=""/>
     <default-property name="smtp_authserv_id" value=""/>
+    <default-property name="smtp_tls_cert_file" value=""/>
+    <default-property name="smtp_tls_key_file" value=""/>
 
     <!-- Properties for the primary (transactional group) datasource -->
     <default-property name="entity_ds_db_conf" value="h2"/>
@@ -810,13 +813,17 @@
         the address it names must be in allowed-addresses too. spam-headers: the gateway's spam verdict fields; mail one
         of them says yes to goes to Junk. plus-separator: the plus-addressing characters (sales+news@ is sales@); none
         turns it off. max-message-size is bytes; the timeouts are seconds (each command or data chunk, and a whole
-        session).
+        session). protocol: smtp, or lmtp (LHLO, and a reply per recipient after the data). starttls: offer STARTTLS,
+        with the tls-cert-file and tls-key-file pair (see the smtp_tls_ properties) or else runtime/cert by the name the
+        gateway asks for or hostname; with no certificate the listener does not start. require-tls: refuse MAIL before
+        STARTTLS. chunking: BDAT (RFC 3030). dsn: the DSN parameters (RFC 3461) and "delivered" reports.
     -->
     <smtp-server listen-port="${smtp_listen_port}" listen-host="${smtp_listen_host}"
             allowed-addresses="${smtp_allowed_addresses}" hostname="${smtp_hostname}" authserv-id="${smtp_authserv_id}"
             proxy-protocol="false" spam-headers="X-Spam-Flag,X-Spam-Status,X-Spam" plus-separator="+"
             max-message-size="26214400" max-recipients="100" max-connections="20" command-timeout="300"
-            session-timeout="1800"/>
+            session-timeout="1800" protocol="smtp" starttls="false" require-tls="false"
+            tls-cert-file="${smtp_tls_cert_file}" tls-key-file="${smtp_tls_key_file}" chunking="true" dsn="false"/>
 
     <!-- Log files: dir (moqui_log_dir). A file rolls over to moqui.yyyy-MM-dd.N.log (UTC) at max-size-mb or when the day
         changes, and only the newest max-files rolled files of each kind are kept. -->
