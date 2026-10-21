@@ -76,8 +76,20 @@ struct World {
 
 impl World {
     fn open(conf: &str) -> Self {
+        Self::open_with(ExecutionContextFactory::test_context_with_conf(conf))
+    }
+
+    /// [`World::open`] with the framework directory, so `component://` locations of the base components resolve.
+    fn open_in_framework(conf: &str) -> Self {
+        Self::open_with(ExecutionContextFactory::test_context_in(
+            conf,
+            crate::service::ServicePools::idle(),
+            crate::context::framework_dir(),
+        ))
+    }
+
+    fn open_with(context: crate::context::ExecutionContext) -> Self {
         let env = Env::new();
-        let context = ExecutionContextFactory::test_context_with_conf(conf);
         let facade = crate::testing::open();
         context.factory().set_entity(facade.clone());
         let entered = context.enter();
@@ -528,6 +540,29 @@ fn a_disallowed_origin_is_refused_before_the_request_runs() {
     assert_eq!(send("GET", Some("http://erp.example:8080")).status, 302);
     assert_eq!(send("GET", None).status, 302);
     assert_eq!(send("OPTIONS", Some("https://app.example")).status, 204);
+
+    drop(world);
+
+    // behind a proxy that rewrites Host: the forwarded host of a believed proxy, or the conf webapp's host
+    let world = World::open(
+        r#"<moqui-conf><webapp-list><webapp name="webroot" client-ip-header="x-forwarded-for"
+            trusted-proxies="127.0.0.1" http-host="erp.example"/></webapp-list></moqui-conf>"#,
+    );
+    let mut proxied = request("POST", "/go");
+    proxied.set_header("host", "127.0.0.1:8080");
+    proxied.set_header("x-forwarded-host", "shop.example");
+    proxied.set_header("origin", "https://shop.example");
+    assert_eq!(serve_at(&world.factory, proxied.clone(), &root).status, 302);
+    proxied.peer_ip = "10.1.1.1".to_string();
+    assert_eq!(
+        serve_at(&world.factory, proxied, &root).status,
+        401,
+        "not from a trusted proxy"
+    );
+    let mut configured = request("POST", "/go");
+    configured.set_header("host", "127.0.0.1:8080");
+    configured.set_header("origin", "https://erp.example");
+    assert_eq!(serve_at(&world.factory, configured, &root).status, 302);
     let _ = std::fs::remove_file(&path);
 }
 
@@ -837,6 +872,7 @@ mod print;
 mod qvt;
 mod render;
 mod saved_finds;
+mod servlets;
 mod shell;
 mod statics;
 mod tui;

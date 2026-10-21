@@ -68,8 +68,6 @@ mod http;
 mod notws;
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 mod port_check;
-#[cfg(feature = "axum")]
-mod search_proxy;
 #[cfg(all(feature = "axum", feature = "tui"))]
 mod termws;
 #[cfg(feature = "axum")]
@@ -1049,6 +1047,7 @@ fn serve_thread(
     ));
     tracing::info!("HTTP listener stopped, shutting down");
     if let Some(factory) = process.factory.as_ref() {
+        moqui_core::web::servlet::stopping(factory);
         // Hits and the open bins are only in memory until written, as Java's destroy writes the bins.
         if let Err(err) = factory.flush_artifact_hits() {
             tracing::warn!("Artifact hit flush failed: {err}");
@@ -1293,6 +1292,8 @@ fn boot_server_factory(
     tracing::info!("Integrations installed: {}", integrations());
     // last, so mail is taken only once everything it runs is up
     let smtpd = start_smtp(&factory);
+    // the webapp's listeners and after-startup actions, as Java's MoquiContextListener runs them
+    moqui_core::web::servlet::started(&factory);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

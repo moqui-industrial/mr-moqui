@@ -153,6 +153,8 @@ pub struct ExecutionContextFactory {
     cache: CacheFacade,
     conf_text: String,
     conf_cache: std::sync::OnceLock<ConfCache>,
+    /// The `webroot` webapp's servlets, filters, listeners and lifecycle actions, read from the conf when first asked for.
+    webapp_scripts: std::sync::OnceLock<Arc<crate::web::servlet::WebappScripts>>,
     /// Hit times per `userId@type:name`, for tarpit counting.
     tarpit_hits: std::sync::Mutex<TarpitHits>,
     property_names: Vec<String>,
@@ -323,6 +325,7 @@ impl ExecutionContextFactory {
             cache,
             conf_text,
             conf_cache: std::sync::OnceLock::new(),
+            webapp_scripts: std::sync::OnceLock::new(),
             tarpit_hits: std::sync::Mutex::default(),
             property_names,
             extensions: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -767,6 +770,10 @@ impl ExecutionContextFactory {
         lock(&self.tarpit_hits).by_key.len()
     }
 
+    pub(crate) fn webapp_scripts_cell(&self) -> &std::sync::OnceLock<Arc<crate::web::servlet::WebappScripts>> {
+        &self.webapp_scripts
+    }
+
     pub fn conf_text(&self) -> &str {
         &self.conf_text
     }
@@ -1114,6 +1121,15 @@ fn install_session_flush(factory: &Arc<ExecutionContextFactory>) {
         };
         if let Err(err) = crate::user::session::flush_dirty(&factory) {
             tracing::warn!("session flush failed: {err}");
+        }
+        let expired = crate::user::session::take_expired(&factory);
+        if !expired.is_empty() {
+            let context = factory.new_context();
+            let _entered = context.enter();
+            let scripts = factory.webapp_scripts();
+            for id in expired {
+                scripts.fire("sessionDestroyed", crate::user::session::session_event(&id));
+            }
         }
     });
 }
@@ -1492,6 +1508,7 @@ impl ExecutionContextFactory {
             cache: CacheFacade::from_conf(&conf).expect("cache"),
             conf_text: conf_text.to_string(),
             conf_cache: std::sync::OnceLock::new(),
+            webapp_scripts: std::sync::OnceLock::new(),
             tarpit_hits: std::sync::Mutex::default(),
             property_names: Vec::new(),
             extensions: std::sync::Mutex::new(std::collections::HashMap::new()),

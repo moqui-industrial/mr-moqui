@@ -69,6 +69,7 @@ mod upload;
 mod urls;
 mod user_host;
 mod values;
+mod web_host;
 
 pub(crate) use compiled::ScriptText;
 use compiled::{eval_compiled, eval_compiled_text, MAX_COMPILED_SCRIPTS, MAX_COMPILED_SCRIPT_BYTES};
@@ -90,6 +91,7 @@ pub use values::script_list_values;
 pub(crate) use values::{
     context_combined, pop_context_frame, put_context_all, value_entity_name, value_field, value_items, value_map,
 };
+pub(crate) use web_host::invoke as invoke_web_handler;
 
 use crate::context::{Error, ErrorKind, ExecutionContext};
 use moqui_db::sql::{CompareOp, Condition};
@@ -704,6 +706,10 @@ fn with_context<R>(body: impl FnOnce(&Ctx) -> Result<R, Error>) -> Result<R, Err
             ctx.run_gc();
         }
         let flushed = flush_tracked(&ctx, &engine, Flush::End);
+        // what the outermost script opened with `send()` and did not read or forward goes with it
+        if depth == 0 {
+            crate::web::upstream::clear();
+        }
         match (result, flushed) {
             (Ok(value), Ok(())) => Ok(value),
             (Err(err), _) | (Ok(_), Err(err)) => Err(err),

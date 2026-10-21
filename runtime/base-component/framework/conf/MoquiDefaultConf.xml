@@ -202,7 +202,7 @@
     <default-property name="llm_openai_model" value=""/>
     <default-property name="llm_log_content" value="false"/>
 
-    <!-- Kibana Proxy Servlet settings -->
+    <!-- The OpenSearch Dashboards behind the /dashboard proxy (the DashboardProxy servlet); an empty host turns it off -->
     <default-property name="kibana_host" value="127.0.0.1"/>
     <default-property name="kibana_port" value="5601"/>
 
@@ -311,69 +311,64 @@
             <error-screen error="not-found" screen-path="error/NotFound"/>
             <error-screen error="too-many" screen-path="error/TooMany"/>
             <error-screen error="internal-error" screen-path="error/InternalError"/>
-            <!-- lifecycle actions examples, none by default:
+            <!-- Lifecycle actions, none by default. Each runs as Java's does (docs/Web-Scripts.md): before-request once the
+                user is known, after-request however the request ended, after-login and before-logout for a web sign in and
+                sign out, first-hit-in-visit when a request starts a visit, after-startup and before-shutdown with the server.
             <first-hit-in-visit><actions><log level="info" message="========================== first-hit-in-visit actions"/></actions></first-hit-in-visit>
             <before-request><actions><log level="info" message="========================== before-request actions"/></actions></before-request>
             <after-request><actions><log level="info" message="========================== after-request actions"/></actions></after-request>
             <after-login><actions><log level="info" message="========================== after-login actions"/></actions></after-login>
             <before-logout><actions><log level="info" message="========================== before-logout actions"/></actions></before-logout>
-            <after-startup><actions><log level="info" message="========================== after-startup actions"/></actions></after-login>
-            <before-shutdown><actions><log level="info" message="========================== before-shutdown actions"/></actions></before-logout>
+            <after-startup><actions><log level="info" message="========================== after-startup actions"/></actions></after-startup>
+            <before-shutdown><actions><log level="info" message="========================== before-shutdown actions"/></actions></before-shutdown>
             -->
 
-            <!-- ElasticSearch Request Log Filter (log requests directly to ElasticSearch) -->
-            <filter name="ElasticRequestLogFilter" class="org.moqui.impl.webapp.ElasticRequestLogFilter" async-supported="true">
+            <!-- Servlets, filters and listeners (docs/Web-Scripts.md): a script at location whose value is a handler object
+                with the Servlet API's methods, or one of the Java classes this server has natively: MoquiServlet (the
+                screens), MoquiFopServlet (a screen as PDF), MoquiAuthFilter (webroot/script/AuthFilter.js),
+                ElasticRequestLogFilter (the server's request log, which enabled="false" turns off) and MoquiSessionListener
+                (the server's session expiry). Another class is logged and left out. A url-pattern maps as the Servlet spec
+                has it; filters run in priority order, then as declared. -->
+            <filter name="ElasticRequestLogFilter" class="org.moqui.impl.webapp.ElasticRequestLogFilter">
                 <url-pattern>/*</url-pattern>
                 <dispatcher>REQUEST</dispatcher>
             </filter>
-            <!-- ElasticSearch and Kibana auth filters, see below for proxy servlets on the same url-pattern -->
-            <filter name="ElasticAuthFilter" class="org.moqui.impl.webapp.MoquiAuthFilter" async-supported="true">
-                <init-param name="permission" value="ElasticRemote"/>
-                <url-pattern>/elastic/*</url-pattern>
+            <!-- OpenSearch and OpenSearch Dashboards: a signed in user with the permission, then the proxies below -->
+            <filter name="SearchAuthFilter" location="component://webroot/script/AuthFilter.js">
+                <init-param name="permission" value="SearchRemote"/>
+                <url-pattern>/search/*</url-pattern>
             </filter>
-            <filter name="KibanaAuthFilter" class="org.moqui.impl.webapp.MoquiAuthFilter" async-supported="true">
-                <init-param name="permission" value="KibanaRemote"/>
-                <url-pattern>/kibana/*</url-pattern>
-            </filter>
-            <!-- LLM gateway: session/Basic/login_key via MoquiAuthFilter; CSRF is checked in LlmServlet.
-                 No async-supported: service() pumps SSE on the request thread so this filter's EC stays live. -->
-            <filter name="LlmAuthFilter" class="org.moqui.impl.webapp.MoquiAuthFilter">
-                <init-param name="permission" value="LlmGateway"/>
-                <url-pattern>/llm/*</url-pattern>
+            <filter name="DashboardAuthFilter" location="component://webroot/script/AuthFilter.js">
+                <init-param name="permission" value="DashboardRemote"/>
+                <url-pattern>/dashboard/*</url-pattern>
             </filter>
 
-            <!-- Moqui Session Listener (necessary to handle expired sessions, etc) -->
             <listener class="org.moqui.impl.webapp.MoquiSessionListener"/>
 
-            <servlet name="MoquiServlet" class="org.moqui.impl.webapp.MoquiServlet" load-on-startup="1">
+            <servlet name="MoquiServlet" class="org.moqui.impl.webapp.MoquiServlet">
                 <url-pattern>/*</url-pattern>
             </servlet>
-            <servlet name="MoquiFopServlet" class="org.moqui.impl.webapp.MoquiFopServlet" load-on-startup="1">
+            <servlet name="MoquiFopServlet" class="org.moqui.impl.webapp.MoquiFopServlet">
                 <url-pattern>/fop/*</url-pattern>
             </servlet>
-            <servlet name="A2AServlet" class="org.moqui.impl.webapp.A2AServlet" load-on-startup="1">
-                <url-pattern>/llm/a2a/*</url-pattern>
-            </servlet>
-            <servlet name="A2ACardServlet" class="org.moqui.impl.webapp.A2ACardServlet" load-on-startup="1">
-                <url-pattern>/.well-known/agent-card.json</url-pattern>
-            </servlet>
-            <servlet name="LlmServlet" class="org.moqui.impl.webapp.LlmServlet" load-on-startup="1">
-                <url-pattern>/llm/*</url-pattern>
-            </servlet>
 
-            <!-- ElasticSearch and Kibana proxy servlets, see above for auth filters on the same url-pattern -->
-            <servlet name="ElasticSearchProxy" class="org.eclipse.jetty.ee11.proxy.ProxyServlet$Transparent" load-on-startup="1" async-supported="true">
-                <!-- this proxies to the embedded ElasticSearch instance -->
+            <!-- The search store at elasticsearch_url, signed in as elasticsearch_user, and OpenSearch Dashboards (in
+                opensearch_dashboards.yml set server.basePath: "/dashboard"). Both are there only when the search backend is
+                OpenSearch, the Dashboards one only with a kibana_host. The bodies stream through; a bulk load may be 100 MB.
+                The proxies run on the request pool (tools request-pool-max), so a busy Dashboards page shares it. -->
+            <servlet name="SearchProxy" location="component://webroot/script/ProxyServlet.js" max-body="100m">
                 <init-param name="proxyTo" value="${elasticsearch_url ?: 'http://127.0.0.1:9200'}"/>
-                <init-param name="prefix" value="/elastic"/>
-                <url-pattern>/elastic/*</url-pattern>
+                <init-param name="prefix" value="/search"/>
+                <init-param name="user" value="${elasticsearch_user}"/>
+                <init-param name="password" value="${elasticsearch_password}"/>
+                <init-param name="requireElasticApi" value="true"/>
+                <url-pattern>/search/*</url-pattern>
             </servlet>
-            <servlet name="KibanaProxy" class="org.eclipse.jetty.ee11.proxy.ProxyServlet$Transparent" load-on-startup="1" async-supported="true">
-                <!-- this proxies to a Kibana instance run locally, in another container, etc -->
-                <!-- in kibana.yml set server.basePath: "/kibana" -->
-                <init-param name="proxyTo" value="http://${kibana_host}:${kibana_port}"/>
-                <init-param name="prefix" value="/kibana"/>
-                <url-pattern>/kibana/*</url-pattern>
+            <servlet name="DashboardProxy" location="component://webroot/script/ProxyServlet.js" max-body="100m">
+                <init-param name="proxyTo" value="http://${kibana_host}:${kibana_port ?: '5601'}"/>
+                <init-param name="prefix" value="/dashboard"/>
+                <init-param name="requireElasticApi" value="true"/>
+                <url-pattern>/dashboard/*</url-pattern>
             </servlet>
 
             <!-- timeout: minutes without a request before a web session expires, 0 never. max: the most web sessions kept in
@@ -487,7 +482,7 @@
             already a member (seed/install and disableAuthz skip the check). sealed-permissions: UserGroupPermission
             create/update/delete for these IDs is allowed only if the caller already has that permission. -->
         <authz privileged-groups="ADMIN,ADMIN_ADV"
-                sealed-permissions="GROOVY_SHELL_WEB,SQL_RUNNER_WEB,SSH_SHELL,SERVICE_LOAD_RUNNER,ADMIN_LOGIN_AS,ADMIN_PASSWORD,ElasticRemote,KibanaRemote,REST_SCHEMA,LlmGateway"/>
+                sealed-permissions="GROOVY_SHELL_WEB,SQL_RUNNER_WEB,SSH_SHELL,SERVICE_LOAD_RUNNER,ADMIN_LOGIN_AS,ADMIN_PASSWORD,SearchRemote,DashboardRemote,REST_SCHEMA,LlmGateway"/>
     </user-facade>
 
     <transaction-facade use-transaction-cache="true" use-connection-stash="true" use-lock-track="${entity_lock_track}" use-statement-timeout="${entity_statement_timeout}">

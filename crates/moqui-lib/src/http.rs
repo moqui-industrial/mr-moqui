@@ -174,6 +174,36 @@ impl RestResponse {
     }
 }
 
+/// A request for [`RestClient::open`]: the body as bytes, sent as they are with the headers given.
+#[derive(Debug, Clone)]
+pub struct OpenRequest {
+    pub method: Method,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<bytes::Bytes>,
+    /// The whole exchange's limit, the body's read included; `None` is the client's.
+    pub timeout: Option<Duration>,
+}
+
+/// The status and headers of a response whose body is still to be read.
+pub struct OpenResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    /// The `Content-Length`, when the server sent one and the body is not compressed.
+    pub length: Option<u64>,
+    pub reader: Box<dyn std::io::Read + Send>,
+}
+
+impl std::fmt::Debug for OpenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenResponse")
+            .field("status", &self.status)
+            .field("headers", &self.headers)
+            .field("length", &self.length)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Reusable blocking client. The reqwest runtime starts on the first send.
 #[derive(Debug)]
 pub struct RestClient {
@@ -335,6 +365,56 @@ impl RestClient {
         })
     }
 
+    /// Send a request with a body of bytes and return as soon as the response headers are in: the body is a reader the
+    /// caller drains, for a proxy that passes a large body on without holding it. `timeout` covers the whole exchange,
+    /// the body's read included. The response size limit does not apply; the caller bounds what it reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the URL or a header is not valid or the request fails before the response headers.
+    pub fn open(&self, request: OpenRequest) -> Result<OpenResponse, Error> {
+        let parsed = reqwest::Url::parse(&request.url)
+            .map_err(|err| Error::new(format!("invalid URL {}", redacted(&request.url))).with_source(err))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(Error::new(format!(
+                "URL {} must be http or https",
+                redacted(&request.url)
+            )));
+        }
+        for (name, value) in &request.headers {
+            check_header(name, value)?;
+        }
+        if self.deny_internal {
+            deny_internal_literal(&request.url)?;
+        }
+        let client = self.transport()?;
+        let method = request.method;
+        let shown = redacted(&request.url);
+        let mut builder = client.request(method.as_reqwest(), &request.url);
+        for (name, value) in &request.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        if let Some(body) = request.body {
+            builder = builder.body(body);
+        }
+        let response = builder
+            .timeout(request.timeout.unwrap_or(self.timeout))
+            .send()
+            .map_err(|err| Error::new(format!("HTTP {method} {shown} failed")).with_source(err.without_url()))?;
+        let status = response.status().as_u16();
+        let headers = response
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| Some((name.as_str().to_string(), value.to_str().ok()?.to_string())))
+            .collect();
+        Ok(OpenResponse {
+            status,
+            headers,
+            length: response.content_length(),
+            reader: Box::new(response),
+        })
+    }
+
     fn call(&self, method: Method, url: impl Into<String>) -> Call<'_> {
         Call {
             client: self,
@@ -354,7 +434,11 @@ impl RestClient {
         let mut builder = reqwest::blocking::Client::builder()
             .timeout(self.timeout)
             .connect_timeout(CONNECT_TIMEOUT)
-            .redirect(redirect_policy(self.max_redirects, self.redirect_any_host, self.deny_internal));
+            .redirect(redirect_policy(
+                self.max_redirects,
+                self.redirect_any_host,
+                self.deny_internal,
+            ));
         if self.deny_internal {
             builder = builder.dns_resolver(std::sync::Arc::new(PublicOnly));
         }
@@ -772,7 +856,12 @@ mod tests {
         ] {
             assert!(internal_literal(&reqwest::Url::parse(url).unwrap()), "{url}");
         }
-        for url in ["http://93.184.216.34/", "https://example.com/", "http://localhost/", "https://[2606:4700::1111]/"] {
+        for url in [
+            "http://93.184.216.34/",
+            "https://example.com/",
+            "http://localhost/",
+            "https://[2606:4700::1111]/",
+        ] {
             assert!(!internal_literal(&reqwest::Url::parse(url).unwrap()), "{url}");
         }
     }
@@ -787,7 +876,8 @@ mod tests {
                 let Ok(mut stream) = stream else { return };
                 let mut buffer = [0_u8; 4096];
                 let _ = std::io::Read::read(&mut stream, &mut buffer);
-                let _ = std::io::Write::write_all(&mut stream, response.replace("{port}", &port.to_string()).as_bytes());
+                let _ =
+                    std::io::Write::write_all(&mut stream, response.replace("{port}", &port.to_string()).as_bytes());
             }
         });
         port
@@ -796,7 +886,12 @@ mod tests {
     #[test]
     fn a_large_body_is_an_error_or_its_start_when_truncated() {
         let body = "x".repeat(2000);
-        let ok = |body: &str| format!("HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+        let ok = |body: &str| {
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        };
         let port = serve(vec![ok(&body), ok(&body)]);
         let url = format!("http://127.0.0.1:{port}/page");
         let strict = RestClient::new().max_response_bytes(1000);
@@ -817,7 +912,11 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/first");
         let same_host = RestClient::new().get(&url).send(false).expect("the 3xx comes back");
         assert_eq!(same_host.status(), 302);
-        let any_host = RestClient::new().redirects(3, true).get(&url).send(false).expect("followed");
+        let any_host = RestClient::new()
+            .redirects(3, true)
+            .get(&url)
+            .send(false)
+            .expect("followed");
         assert_eq!(any_host.status(), 200);
         assert_eq!(any_host.body(), "here");
     }

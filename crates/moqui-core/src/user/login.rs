@@ -388,6 +388,14 @@ pub fn logout_anonymous_only() {
 ///
 /// Returns an error when the account row cannot be updated. The session is cleared either way.
 pub fn logout() -> Result<(), Error> {
+    // As Java's `logoutLocal`, a web logout runs the webapp's before-logout actions while the user is still there.
+    if crate::web::current_request().is_some() {
+        if let Some(factory) = ExecutionContext::with_current(|ec| Arc::clone(ec.factory())) {
+            factory
+                .webapp_scripts()
+                .run_actions_logged("before-logout", &Default::default());
+        }
+    }
     let _authz = without_authz();
     let update = if let Some(user_id) = session::current_user_id()? {
         match entity_facade() {
@@ -577,7 +585,16 @@ fn finish_login(facade: &EntityFacade, account: &EntityValue, plain: Option<&str
     let zone = nonempty(text_field(account, "timeZone"));
     session::set_locale(locale.as_deref());
     session::set_time_zone(zone.as_deref());
-    link_visit(facade, &user_id)
+    link_visit(facade, &user_id)?;
+    // As Java's `UserFacadeImpl`, a web login runs the webapp's after-login actions.
+    if crate::web::current_request().is_some() {
+        if let Some(factory) = ExecutionContext::with_current(|ec| Arc::clone(ec.factory())) {
+            factory
+                .webapp_scripts()
+                .run_actions_logged("after-login", &Default::default());
+        }
+    }
+    Ok(())
 }
 
 thread_local! {

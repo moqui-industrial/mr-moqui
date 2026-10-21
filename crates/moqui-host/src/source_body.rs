@@ -90,6 +90,8 @@ pub(crate) fn body(factory: Arc<ExecutionContextFactory>, stream: ResponseStream
                 };
                 Some((Ok(bytes::Bytes::from(bytes)), Some(next)))
             }
+            // a stream of unknown length (a proxied body sent in chunks) ends when its source does
+            Ok(Ok(_)) if state.stream.length == ResponseStream::UNKNOWN_LENGTH => None,
             Ok(Ok(_)) => {
                 tracing::warn!("a streamed response ended at {offset} of {} bytes", state.stream.length);
                 failed("the content ended early".to_string())

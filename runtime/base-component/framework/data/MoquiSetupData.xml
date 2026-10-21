@@ -183,14 +183,14 @@ along with this software (see the LICENSE.md file). If not, see
 
     <!-- ========== ElasticSearch Setup Data ========== -->
 
-    <moqui.security.UserPermission userPermissionId="ElasticRemote" description="ElasticSearch Remote Access"/>
-    <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="ElasticRemote" fromDate="0"/>
+    <moqui.security.UserPermission userPermissionId="SearchRemote" description="Search store access through /search"/>
+    <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="SearchRemote" fromDate="0"/>
 
     <moqui.security.UserPermission userPermissionId="REST_SCHEMA" description="REST schema dumps"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="REST_SCHEMA" fromDate="0"/>
 
-    <moqui.security.UserPermission userPermissionId="KibanaRemote" description="Kibana Remote Access"/>
-    <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="KibanaRemote" fromDate="0"/>
+    <moqui.security.UserPermission userPermissionId="DashboardRemote" description="OpenSearch Dashboards access through /dashboard"/>
+    <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="DashboardRemote" fromDate="0"/>
 
     <!-- Handy cron strings: [0 0 2 * * ?] every night at 2:00 am, [0 0/15 * * * ?] every 15 minutes, [0 0/2 * * * ?] every 2 minutes -->
     <moqui.service.job.ServiceJob jobName="clean_ElasticSearchLogMessages_daily" description="Clean log messages stored in ElasticSearch"
