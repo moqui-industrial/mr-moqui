@@ -76,8 +76,20 @@ struct World {
 
 impl World {
     fn open(conf: &str) -> Self {
+        Self::open_with(ExecutionContextFactory::test_context_with_conf(conf))
+    }
+
+    /// [`World::open`] with the framework directory, so `component://` locations of the base components resolve.
+    fn open_in_framework(conf: &str) -> Self {
+        Self::open_with(ExecutionContextFactory::test_context_in(
+            conf,
+            crate::service::ServicePools::idle(),
+            crate::context::framework_dir(),
+        ))
+    }
+
+    fn open_with(context: crate::context::ExecutionContext) -> Self {
         let env = Env::new();
-        let context = ExecutionContextFactory::test_context_with_conf(conf);
         let facade = crate::testing::open();
         context.factory().set_entity(facade.clone());
         let entered = context.enter();
@@ -491,6 +503,99 @@ fn the_webapp_conf_sets_the_response_headers_and_cors() {
     );
 }
 
+/// A login form posted with no username or password fails as a wrong password does, back to the Login screen with the
+/// message, not a 500 from `loginUser(null, null)`; and it tried no password, so web protection does not count it.
+#[test]
+fn a_blank_login_is_a_failed_login_not_an_error() {
+    let world = World::open_in_framework("");
+    let root = webroot().to_string_lossy().into_owned();
+    let _ = crate::web::take_auth_failure();
+    let response = serve_at(&world.factory, request("POST", "/Login/login"), &root);
+    assert_ne!(response.status, 500, "{}", response.body_text());
+    assert!(!crate::web::take_auth_failure(), "a blank form is not a failed guess");
+    // over JSON the answer is the failed transition's, the same as for a wrong password
+    let json = |body: &[u8]| {
+        let mut call = request("POST", "/Login/login");
+        call.set_header("accept", "application/json");
+        call.set_header("content-type", "application/json");
+        call.body = body.to_vec();
+        serve_at(&world.factory, call, &root)
+    };
+    let blank = json(br#"{"username": null}"#);
+    let wrong = json(br#"{"username": "nobody", "password": "wrong"}"#);
+    assert_eq!(blank.status, wrong.status, "{}", blank.body_text());
+    assert!(
+        blank
+            .body_text()
+            .contains("\"errors\" : \"The username or password is not valid\""),
+        "{}",
+        blank.body_text()
+    );
+}
+
+/// As `MoquiServlet.handleCors`: a request from an origin CORS does not allow is answered 401 before it runs; an
+/// allowed origin, the request's own host and no origin at all go on.
+#[test]
+fn a_disallowed_origin_is_refused_before_the_request_runs() {
+    let mut world = World::open("");
+    let path = std::env::temp_dir().join(format!("moqui-screen-origin-{}.xml", std::process::id()));
+    std::fs::write(
+        &path,
+        r#"<screen require-authentication="false">
+            <transition name="go"><default-response type="url" url="/next"/></transition>
+        </screen>"#,
+    )
+    .unwrap();
+    let root = path.to_string_lossy().into_owned();
+    world._env.set("webapp_allow_origins", "https://app.example");
+    let send = |method: &str, origin: Option<&str>| {
+        let mut call = request(method, "/go");
+        call.set_header("host", "erp.example:8080");
+        if let Some(origin) = origin {
+            call.set_header("origin", origin);
+        }
+        serve_at(&world.factory, call, &root)
+    };
+    for method in ["GET", "POST", "OPTIONS"] {
+        let response = send(method, Some("https://evil.example"));
+        assert_eq!(response.status, 401, "{method} {}", response.body_text());
+        assert!(
+            response.body_text().contains("Origin not allowed"),
+            "{}",
+            response.body_text()
+        );
+        assert_eq!(header_value(&response, "Access-Control-Allow-Origin"), None);
+    }
+    assert_eq!(send("GET", Some("https://app.example")).status, 302);
+    assert_eq!(send("GET", Some("http://erp.example:8080")).status, 302);
+    assert_eq!(send("GET", None).status, 302);
+    assert_eq!(send("OPTIONS", Some("https://app.example")).status, 204);
+
+    drop(world);
+
+    // behind a proxy that rewrites Host: the forwarded host of a believed proxy, or the conf webapp's host
+    let world = World::open(
+        r#"<moqui-conf><webapp-list><webapp name="webroot" client-ip-header="x-forwarded-for"
+            trusted-proxies="127.0.0.1" http-host="erp.example"/></webapp-list></moqui-conf>"#,
+    );
+    let mut proxied = request("POST", "/go");
+    proxied.set_header("host", "127.0.0.1:8080");
+    proxied.set_header("x-forwarded-host", "shop.example");
+    proxied.set_header("origin", "https://shop.example");
+    assert_eq!(serve_at(&world.factory, proxied.clone(), &root).status, 302);
+    proxied.peer_ip = "10.1.1.1".to_string();
+    assert_eq!(
+        serve_at(&world.factory, proxied, &root).status,
+        401,
+        "not from a trusted proxy"
+    );
+    let mut configured = request("POST", "/go");
+    configured.set_header("host", "127.0.0.1:8080");
+    configured.set_header("origin", "https://erp.example");
+    assert_eq!(serve_at(&world.factory, configured, &root).status, 302);
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn script_send_json_response_writes_the_web_slot() {
     let context = ExecutionContextFactory::test_context();
@@ -516,6 +621,38 @@ fn script_send_text_response_with_an_error_sends_the_errors() {
     assert!(sent);
     assert_eq!(status, 500);
     assert_eq!(String::from_utf8(body).unwrap(), "No such order\n");
+}
+
+/// P8-08: in a request a path-only link is empty, and a full URL is the conf webapp's, never the request's `Host`.
+#[test]
+fn webapp_root_url_is_the_conf_webapp_and_never_the_host_header() {
+    let context = ExecutionContextFactory::test_context_with_conf(
+        r#"<moqui-conf><webapp-list><webapp name="webroot" http-host="erp.example" http-port="8080"
+            https-host="erp.example" https-port="8443"/></webapp-list></moqui-conf>"#,
+    );
+    let _entered = context.enter();
+    let _web = crate::web::install(BTreeMap::new());
+    let mut request = WebRequest::new("GET", "/apps/ship");
+    request.set_header("host", "attacker.example");
+    crate::web::set_request_info(&request);
+    let conf = context.factory().webapp_root_url("webroot");
+    assert_eq!(conf, "http://erp.example:8080");
+    let value = |script: &str| {
+        crate::script::eval_value(script)
+            .map(|value| moqui_lib::object::to_plain_string(&value))
+            .unwrap()
+    };
+    assert_eq!(value("ec.web.getWebappRootUrl(false, null)"), "");
+    assert_eq!(value("ec.web.getWebappRootUrl()"), "");
+    assert_eq!(value("ec.web.getWebappRootUrl(true, null)"), conf);
+    assert_eq!(value("ec.web.getWebappRootUrl('webroot', null, true, false)"), conf);
+    // An https link asked for from an http request needs the full URL; with no https-enabled it stays http.
+    assert_eq!(value("ec.web.getWebappRootUrl(false, true)"), conf);
+    let mut secure = WebRequest::new("GET", "/apps/ship");
+    secure.https = true;
+    crate::web::set_request_info(&secure);
+    assert_eq!(value("ec.web.getWebappRootUrl(false, null)"), "");
+    assert_eq!(value("ec.web.getWebappRootUrl(false, false)"), conf);
 }
 
 #[test]
@@ -765,6 +902,7 @@ mod print;
 mod qvt;
 mod render;
 mod saved_finds;
+mod servlets;
 mod shell;
 mod statics;
 mod tui;

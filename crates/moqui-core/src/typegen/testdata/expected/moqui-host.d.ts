@@ -499,7 +499,8 @@ interface MoquiUserFacade {
     getVisit(): MoquiMap | null;
     /** End another session of the signed-in user by its visit (`org.moqui.impl.UserServices.end#UserVisit`); the web sessions ended. */
     endVisit(visitId: string): number;
-    loginUser(username: string, password: string): boolean;
+    /** A null or empty username or password fails as a wrong one does: false, with the message in ec.message. */
+    loginUser(username: string | null, password: string | null): boolean;
     internalLoginUser(username: string): boolean;
     logoutUser(): boolean;
 }
@@ -546,8 +547,88 @@ interface MoquiWebFacade {
     getScreenHistory(): { name: string; url: string; urlNoParams: string }[];
     getHostName(withPort?: boolean): string;
     getResourceDistinctValue(): string;
-    /** The base URL. The arguments are ignored. */
-    getWebappRootUrl(...ignored: unknown[]): string;
+    /** Empty when a path-only link will do (in a request whose security matches useEncryption), else the scheme and
+     * host: the render's base URL, or the conf webapp's host and port, never the request's Host header. */
+    getWebappRootUrl(requireFullUrl?: boolean, useEncryption?: boolean | null): string;
+    getWebappRootUrl(webappName: string, servletContextPath: string | null, requireFullUrl: boolean,
+        useEncryption?: boolean | null): string;
+    /** The servlet API's request of a web request, null with none (docs/Web-Scripts.md). */
+    readonly request: MoquiWebRequest | null;
+    /** The servlet API's response of a web request, null with none. */
+    readonly response: MoquiWebResponse | null;
+    getRequest(): MoquiWebRequest | null;
+    getResponse(): MoquiWebResponse | null;
+}
+
+/** A subset of `HttpServletRequest`; each field is also a getX() method, `secure` is isSecure(). */
+interface MoquiWebRequest {
+    readonly method: string;
+    readonly requestURI: string;
+    readonly queryString: string | null;
+    readonly contextPath: string;
+    readonly servletPath: string;
+    readonly pathInfo: string | null;
+    readonly scheme: string;
+    readonly serverName: string;
+    readonly serverPort: number;
+    readonly secure: boolean;
+    readonly remoteAddr: string;
+    readonly contentType: string | null;
+    readonly characterEncoding: string | null;
+    readonly contentLength: number;
+    /** The request headers as sent, names in lower case. */
+    readonly headerPairs: [string, string][];
+    getRequestURL(): string;
+    getHeader(name: string): string | null;
+    getHeaders(name: string): string[];
+    getHeaderNames(): string[];
+    getCookies(): { name: string; value: string }[];
+    getParameter(name: string): string | null;
+    getParameterValues(name: string): string[] | null;
+    getParameterMap(): MoquiMap;
+    getParameterNames(): string[];
+    getAttribute(name: string): unknown;
+    setAttribute(name: string, value: unknown): void;
+    removeAttribute(name: string): void;
+    getAttributeNames(): string[];
+    getSession(): { id: string; getId(): string; getAttribute(name: string): unknown; setAttribute(name: string, value: unknown): void;
+        removeAttribute(name: string): void; getAttributeNames(): string[] } | null;
+    /** The raw body as text; empty for a multipart body. */
+    bodyText(): string;
+    bodyBytes(): Uint8Array;
+}
+
+/** A subset of `HttpServletResponse`. */
+interface MoquiWebResponse {
+    setStatus(status: number): void;
+    getStatus(): number;
+    setHeader(name: string, value: string | null): void;
+    addHeader(name: string, value: string): void;
+    getHeader(name: string): string | null;
+    getHeaders(name: string): string[];
+    getHeaderNames(): string[];
+    containsHeader(name: string): boolean;
+    setContentType(contentType: string): void;
+    getContentType(): string | null;
+    setCharacterEncoding(charset: string): void;
+    write(content: string | Uint8Array): void;
+    getWriter(): { write(text: string): void; print(text: string): void; println(text?: string): void; flush(): void };
+    getOutputStream(): { write(bytes: Uint8Array | string): void; flush(): void };
+    isCommitted(): boolean;
+    sendError(status: number, message?: string | null): void;
+    sendRedirect(location: string): void;
+    /** The status, headers and body of an `ec.service.rest()` response as this response; a body `send()` left on the server
+     * streams to the client without entering the script. */
+    forward(upstream: unknown, options?: { skipHeaders?: string[] }): void;
+}
+
+/** The `config` of a web script handler: its conf element's name and init-params. */
+interface MoquiWebHandlerConfig {
+    readonly name: string;
+    readonly location: string;
+    readonly initParams: Record<string, string>;
+    getInitParameter(name: string): string | null;
+    getInitParameterNames(): string[];
 }
 
 interface MoquiScreenRenderOptions {

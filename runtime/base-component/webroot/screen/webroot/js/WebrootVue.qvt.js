@@ -846,7 +846,8 @@
                     findFields: (id) => Object.assign({ formLocation: this.formLocation, formListFindId: id }, params),
                     newFindFields: () => Object.assign({ formLocation: this.formLocation, _findDescription: "" }, params),
                     exportUrl: (mode) => screen.path + "?" + query({ renderMode: mode, pageNoLimit: "true", lastStandalone: "true", saveFilename: this.name + "." + mode }),
-                    printUrl: () => screen.path + "?" + query({ renderMode: "html-print", pageNoLimit: "true" }),
+                    // the page as a PDF, under /fop as Java's MoquiFopServlet
+                    printUrl: () => "/fop" + screen.path + "?" + query({ pageNoLimit: "true" }),
                     columnsAction: this.columnsAction || "", columnsTree: this.columnsTree()
                 };
             },

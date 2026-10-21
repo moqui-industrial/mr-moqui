@@ -354,9 +354,7 @@ impl TransitionDef {
                     call.set_attribute(key, value);
                 }
             }
-            if call.attribute("multi").is_none_or(|text| text.is_empty())
-                && !call.attribute_is("async", "true")
-            {
+            if call.attribute("multi").is_none_or(|text| text.is_empty()) && !call.attribute_is("async", "true") {
                 call.set_attribute("multi", "parameter");
             }
             single_service = call.attribute("name").filter(|text| !text.is_empty());
@@ -703,7 +701,8 @@ impl ScreenDef {
         self.transitions.iter().any(|transition| transition.name == name)
     }
 
-    /// A transition by name for an HTTP method. A method-specific transition wins over `any`.
+    /// A transition by name for an HTTP method. A method-specific transition wins over `any`. With no method, as for a
+    /// link, `any` comes first, then `get`, then the first declared; Java finds none there (Parity-Diffs P7-11).
     pub fn transition(&self, name: &str, method: Option<&str>) -> Option<&TransitionDef> {
         let method = method.map(str::to_ascii_lowercase).unwrap_or_default();
         self.transitions
@@ -713,6 +712,11 @@ impl ScreenDef {
                 self.transitions
                     .iter()
                     .find(|item| item.name == name && item.method == "any")
+            })
+            .or_else(|| {
+                self.transitions
+                    .iter()
+                    .find(|item| item.name == name && method.is_empty() && item.method == "get")
             })
             .or_else(|| {
                 self.transitions
@@ -1120,9 +1124,7 @@ fn merge_extend(screen: &MNode, extend: &MNode, location: &str, extended: &mut E
         };
         let mut matches = Vec::new();
         breadth_first(screen, &mut |candidate| {
-            if candidate.attribute_is("name", &target)
-                || candidate.attribute_is("id", &target)
-            {
+            if candidate.attribute_is("name", &target) || candidate.attribute_is("id", &target) {
                 matches.push(candidate.clone());
             }
         });
@@ -1784,5 +1786,40 @@ mod tests {
             "a lookup with no method takes names only"
         );
         assert!(def.transition("report_pdf", Some("get")).is_none());
+    }
+
+    #[test]
+    fn a_lookup_with_no_method_prefers_any_then_get_over_the_first_declared() {
+        let context = ExecutionContextFactory::test_context();
+        let facade = ScreenFacade::of(context.factory());
+        let node = MNode::parse_text(
+            "T.xml",
+            r#"<screen><transition name="image" method="post"><default-response type="none"/></transition>
+                <transition name="image" method="get" read-only="true"><default-response type="none"/></transition>
+                <transition name="oneClick" method="post"><default-response type="none"/></transition>
+                <transition name="oneClick" read-only="true"><default-response type="none"/></transition>
+                <transition name="save" method="post"><default-response type="none"/></transition></screen>"#,
+        )
+        .unwrap();
+        let def = ScreenDef::build(
+            &facade,
+            context.factory(),
+            &node,
+            "T.xml",
+            0,
+            Extended::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let method = |name: &str, request: Option<&str>| def.transition(name, request).map(|t| t.method.as_str());
+        assert_eq!(method("image", None), Some("get"));
+        assert_eq!(method("image", Some("post")), Some("post"));
+        assert_eq!(method("oneClick", None), Some("any"));
+        assert_eq!(method("oneClick", Some("post")), Some("post"));
+        assert_eq!(
+            method("save", None),
+            Some("post"),
+            "the first declared is the last fallback"
+        );
     }
 }

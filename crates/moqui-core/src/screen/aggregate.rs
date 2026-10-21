@@ -87,7 +87,17 @@ impl Aggregation {
             let show_total = match field.attribute("show-total").as_deref() {
                 None | Some("" | "false") => None,
                 Some("true") => Some(Function::Sum),
-                Some(other) => Function::of(other),
+                Some(other) => {
+                    let function = Function::of(other);
+                    // Java's AggregateFunction.valueOf throws; here the field is logged and gets no total.
+                    if function.is_none() {
+                        tracing::error!(
+                            "Ignoring show-total {other} on field {name} in form {}, not true, false, or a valid function",
+                            form.attribute("name").unwrap_or_default()
+                        );
+                    }
+                    function
+                }
             };
             let aggregate = field.attribute("aggregate").unwrap_or_default();
             let group_by = aggregate == "group-by";
@@ -492,6 +502,20 @@ mod tests {
         let out = aggregation.apply(rows(), Some(&HashSet::new()), value_of);
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(out[0].get("amount"), Some(&d(7)));
+    }
+
+    /// A show-total that is not a function is logged and ignored, as a bad aggregate is (failure tolerance).
+    #[test]
+    fn a_bad_show_total_is_ignored_and_the_form_still_aggregates() {
+        let node = form(
+            r#"<form-list name="F" list="l">
+                <field name="party" aggregate="group-by"/>
+                <field name="n" aggregate="sum" show-total="tally"/>
+            </form-list>"#,
+        );
+        let aggregation = Aggregation::of(&node).unwrap().unwrap();
+        assert_eq!(aggregation.fields[1].show_total, None);
+        assert_eq!(aggregation.fields[1].function, Some(Function::Sum));
     }
 
     #[test]

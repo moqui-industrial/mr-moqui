@@ -33,7 +33,7 @@
 //    sri.getSavedFindFullLocation (the form location, plus #entity or #service when the form is dynamic). The column
 //    dialog posts the form's name; the server strips a '#' and keeps columns on the bare location.
 //  - lookup is a text line. The Java macros had it commented out.
-//  - A show-pdf-button is a link to the html-print version of the page.
+//  - A show-pdf-button is a link to the page as a PDF, under /fop as Java's MoquiFopServlet, with no page-layout dialog.
 (function (T, S) {
     "use strict";
 
@@ -991,8 +991,9 @@
                 out += "<button" + A({ type: "button", "data-dialog": formId + "_TextDialog", title: L("Text") }) + '><i class="fa fa-share"></i> ' + e(L("Text")) + "</button>";
             }
             if (at(n, "show-pdf-button") === "true") {
-                const print = sri.getScreenUrlInstance().cloneUrlInstance().addParameter("renderMode", "html-print").addParameter("pageNoLimit", "true");
-                out += '<a data-btn="default" target="_blank" href="' + e(print.getUrlWithParams()) + '">' + e(L("Print")) + "</a>";
+                // the page as a PDF: /fop renders the screen at the rest of the path as html-print and sends the PDF
+                const print = sri.getScreenUrlInstance().cloneUrlInstance().removeParameter("renderMode").removeParameter("lastStandalone").addParameter("pageNoLimit", "true");
+                out += '<a data-btn="default" target="_blank" href="' + e("/fop" + print.pathWithParams) + '">' + e(L("Print")) + "</a>";
             }
             w(out + "</nav></th></tr>\n");
         };

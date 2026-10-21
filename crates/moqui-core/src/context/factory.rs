@@ -153,6 +153,8 @@ pub struct ExecutionContextFactory {
     cache: CacheFacade,
     conf_text: String,
     conf_cache: std::sync::OnceLock<ConfCache>,
+    /// The `webroot` webapp's servlets, filters, listeners and lifecycle actions, read from the conf when first asked for.
+    webapp_scripts: std::sync::OnceLock<Arc<crate::web::servlet::WebappScripts>>,
     /// Hit times per `userId@type:name`, for tarpit counting.
     tarpit_hits: std::sync::Mutex<TarpitHits>,
     property_names: Vec<String>,
@@ -323,6 +325,7 @@ impl ExecutionContextFactory {
             cache,
             conf_text,
             conf_cache: std::sync::OnceLock::new(),
+            webapp_scripts: std::sync::OnceLock::new(),
             tarpit_hits: std::sync::Mutex::default(),
             property_names,
             extensions: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -603,6 +606,12 @@ impl ExecutionContextFactory {
     /// the http ones; an empty host is `localhost`, and the default port is left out. Empty when the
     /// conf has no such webapp.
     pub fn webapp_root_url(&self, webapp_name: &str) -> String {
+        self.webapp_root_url_for(webapp_name, None)
+    }
+
+    /// [`webapp_root_url`](Self::webapp_root_url) with the scheme asked for: `Some(true)` is https when the webapp has
+    /// `https-enabled`, else http as Java's `makeWebappHost`; `Some(false)` is http; `None` follows `https-enabled`.
+    pub fn webapp_root_url_for(&self, webapp_name: &str, secure: Option<bool>) -> String {
         let conf = self.conf();
         let attr = |name: &str| {
             conf.webapp_attr(webapp_name, name)
@@ -613,7 +622,7 @@ impl ExecutionContextFactory {
         if conf.webapp_attr(webapp_name, "name").is_none() {
             return String::new();
         }
-        let https = attr("https-enabled") == "true";
+        let https = attr("https-enabled") == "true" && secure != Some(false);
         let (scheme, host, port, default_port) = if https {
             ("https", attr("https-host"), attr("https-port"), "443")
         } else {
@@ -759,6 +768,10 @@ impl ExecutionContextFactory {
     #[cfg(test)]
     pub(crate) fn tarpit_key_count(&self) -> usize {
         lock(&self.tarpit_hits).by_key.len()
+    }
+
+    pub(crate) fn webapp_scripts_cell(&self) -> &std::sync::OnceLock<Arc<crate::web::servlet::WebappScripts>> {
+        &self.webapp_scripts
     }
 
     pub fn conf_text(&self) -> &str {
@@ -1108,6 +1121,15 @@ fn install_session_flush(factory: &Arc<ExecutionContextFactory>) {
         };
         if let Err(err) = crate::user::session::flush_dirty(&factory) {
             tracing::warn!("session flush failed: {err}");
+        }
+        let expired = crate::user::session::take_expired(&factory);
+        if !expired.is_empty() {
+            let context = factory.new_context();
+            let _entered = context.enter();
+            let scripts = factory.webapp_scripts();
+            for id in expired {
+                scripts.fire("sessionDestroyed", crate::user::session::session_event(&id));
+            }
         }
     });
 }
@@ -1486,6 +1508,7 @@ impl ExecutionContextFactory {
             cache: CacheFacade::from_conf(&conf).expect("cache"),
             conf_text: conf_text.to_string(),
             conf_cache: std::sync::OnceLock::new(),
+            webapp_scripts: std::sync::OnceLock::new(),
             tarpit_hits: std::sync::Mutex::default(),
             property_names: Vec::new(),
             extensions: std::sync::Mutex::new(std::collections::HashMap::new()),

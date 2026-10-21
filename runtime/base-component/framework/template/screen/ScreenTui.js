@@ -156,6 +156,9 @@ const $findParameters = () => {
     for (const $name of ["pageIndex", "moquiFormName", "moquiSessionToken", "lastStandalone", "formListFindId", "renderMode"]) $url.removeParameter($name);
     return $strMap($url.getParameterMap(), true);
 };
+// The screen as a PDF under /fop, Java's MoquiFopServlet, with every row.
+const $fopUrl = () => "/fop" + sri.getScreenUrlInstance().cloneUrlInstance().removeParameter("renderMode")
+    .removeParameter("lastStandalone").addParameter("pageNoLimit", "true").pathWithParams;
 const $screenUrlWith = ($pairs, $remove) => {
     const $url = sri.getScreenUrlInstance().cloneUrlInstance();
     if ($remove) $url.removeParameter($remove);
@@ -789,7 +792,7 @@ try {
             code += push("text", "Text", [["renderMode", "text"], ["pageNoLimit", "true"], ["lastStandalone", "true"], ["lineCharacters", "132"],
                 ["pageLines", "88"], ["lineWrap", "true"], ["saveFilename", formName + ".txt"]]);
         }
-        if (flag(node, "show-pdf-button")) code += push("pdf", "Print", [["renderMode", "html-print"], ["pageNoLimit", "true"]]);
+        if (flag(node, "show-pdf-button")) code += `$exports.push({kind:"pdf",label:String(ec.l10n.localize("Print")),url:$fopUrl()});\n`;
         if (flag(node, "show-all-button")) {
             code += `{
     const $noLimit = ec.context.get("pageNoLimit");

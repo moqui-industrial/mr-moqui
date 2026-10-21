@@ -1,11 +1,16 @@
 # Screen and Web Parity Review
 
+> Archived 2026-10-21: every finding is fixed, recorded or dropped, and the last eight decisions were made the same
+> day (see [Remaining-Work, Parity gap review](../Remaining-Work.md#parity-gap-review)). What stays different from Java
+> is in [Parity-Diffs](../Parity-Diffs.md#screen-and-web-review-2026-10-20). The phase tables and the "checked and found
+> equivalent" lists stay here as the record of what was compared.
+
 Scope: the screen and web parts of the framework — `crates/moqui-core/src/screen/`,
 `crates/moqui-core/src/web/`, the screen macro modules under
 `runtime/base-component/framework/template/screen/`, and the HTTP host in `crates/moqui-host/src/`
 — compared against the Moqui Java / Groovy / FreeMarker / XML sources they were ported from. This
-is the screen-and-web half of [Remaining-Work, Parity gap review](Remaining-Work.md#parity-gap-review);
-the entity and service half is [EntityService-Parity-Review](archive/EntityService-Parity-Review.md).
+is the screen-and-web half of [Remaining-Work, Parity gap review](../Remaining-Work.md#parity-gap-review);
+the entity and service half is [EntityService-Parity-Review](EntityService-Parity-Review.md).
 
 History:
 
@@ -17,14 +22,14 @@ History:
   P2-06, P3-03, P4-02, P4-04, P5-02, P5-03, P5-05 to P5-09, P7-08, P8-03, P8-07, P9-09 and P9-10
   (`bbbfa24`). Rows found invalid or duplicated were removed: P1-09, P1-12, P2-01, P2-08, P2-14,
   P4-01, P4-08, P5-04, P9-04, P9-05. What the fixes keep different from Java is in
-  [Parity-Diffs](Parity-Diffs.md#screen-and-web-review-2026-10-20).
+  [Parity-Diffs](../Parity-Diffs.md#screen-and-web-review-2026-10-20).
 - **2026-10-21, third pass.** All 63 open rows were checked again against the current code, which
   now includes the configuration overhaul (`62d0a01`), and against the Java source. This pass
   rewrote the table descriptions where they were wrong. P3-04, P4-07, P6-05 and P7-05 describe
   behavior that is not in the code. Four more rows (P2-04, P4-05, P7-02, P7-03) are worse than the
   first two passes said. One new bug (P8-20) came up while checking P8-10. The phase narratives
   from the earlier passes are removed, since several of them were wrong. They are in git history:
-  `git show 62d0a01:plans/ScreenWeb-Parity-Review.md`.
+  `git show 62d0a01:plans/ScreenWeb-Parity-Review.md` (before this file moved to `plans/archive/`).
 - **2026-10-21, first batch fixed.** P8-20, P4-05, P2-04 and P7-02 (a) are fixed, with a test for each
   that fails on the old code. P7-02's check also stopped counting artifact hits. Every link drawn
   pushed tracked frames, so each permission check of a link counted a hit for its transition. P7-02
@@ -32,8 +37,15 @@ History:
   port's aggregated exports and record them. See
   [Fixed on 2026-10-21](#fixed-on-2026-10-21).
 - **2026-10-21, second batch fixed and recorded.** The 15 Low Fix rows are fixed (`f9ee72a`, `8840941`,
-  `54f4a3b`). The 24 Record rows are in [Parity-Diffs](Parity-Diffs.md#screen-and-web-review-2026-10-20), with the
-  follow-up corrections to `Parity-Mapping.md`. What is open is the [Decide](#decide) list.
+  `54f4a3b`). The 24 Record rows are in [Parity-Diffs](../Parity-Diffs.md#screen-and-web-review-2026-10-20), with the
+  follow-up corrections to `Parity-Mapping.md`. The Decide rows were [decided](#decided-on-2026-10-21) the same day.
+- **2026-10-21, first decisions.** P3-01 follows the failure-tolerance rule; Print goes to `/fop`; `.md` files stay
+  unblocked; a bad `show-total` is logged.
+- **2026-10-21, the last eight decided.** P7-11, P8-05 and P8-08 are fixed; P7-09, P3-05 and P6-04 are recorded. P9-02
+  and P9-03 are built: the lifecycle actions run, and `servlet`, `filter` and `listener` are scripts whose value is a
+  handler object with the Servlet API's methods ([Web-Scripts](../../docs/Web-Scripts.md)). The search proxies are now
+  `ProxyServlet.js` on `/search` and `/dashboard`. See [Decided on 2026-10-21](#decided-on-2026-10-21). The Decide list
+  is empty.
 
 The review asks **"is the feature there?"**, not "is this line the same?". The port replaces
 FreeMarker macros with JavaScript modules, Groovy with Rust and the servlet API with axum, so the
@@ -47,12 +59,12 @@ line numbers, because the line numbers drift.
 
 | Disposition | Rows |
 |---|---|
-| [Fixed on 2026-10-21](#fixed-on-2026-10-21) | 19: P8-20, P4-05, P2-04, P7-02 (a); then P7-03 with P9-13, P8-06, P8-04, P4-09, P3-06, P9-01, P9-11, P8-09, P8-12, P8-17, P9-07, P7-10, P6-03, P8-11 |
-| [Decide](#decide) | 9, still open: P3-01, P8-05, P9-02, P9-03, P7-11, P7-09, P8-08, P3-05, P6-04 |
+| [Fixed on 2026-10-21](#fixed-on-2026-10-21) | 20: P8-20, P4-05, P2-04, P7-02 (a); then P7-03 with P9-13, P8-06, P8-04, P4-09, P3-06, P9-01, P9-11, P8-09, P8-12, P8-17, P9-07, P7-10, P6-03, P8-11; then P3-01 (decided) |
+| [Decided on 2026-10-21](#decided-on-2026-10-21) | 8: P8-05, P9-02, P9-03, P7-11, P7-09, P8-08, P3-05, P6-04 |
 | [Recorded in Parity-Diffs](#recorded-in-parity-diffs) | 24: P1-05, P1-07, P1-08, P2-05, P2-09, P2-10, P2-11, P2-15, P3-02, P4-03, P6-01, P6-02, P6-06, P7-02 (b), P7-04, P7-07, P8-13, P8-14, P8-18, P8-19, P9-06, P9-12, P9-14, P9-15 |
 | [Dropped](#dropped-on-the-third-pass) | 14: P1-10, P1-11, P2-12, P2-13, P3-04, P4-06, P4-07, P4-10, P6-05, P7-05, P7-06, P8-10, P8-15, P8-16 |
 
-No High or Medium finding is open, and nothing is left to fix without a decision.
+No finding is open.
 
 ## Fixed on 2026-10-21
 
@@ -113,60 +125,76 @@ Second batch (`f9ee72a` conf and host, `8840941` request parsing, `54f4a3b` macr
 - **P6-03.** An untitled xlsx column is headed by `StringUtilities.camelCaseToPretty` at render time. Only the xlsx
   header uses it in Java; the other modes keep the split on capitals that their FTL has.
 
-## Decide
+Decided and done:
 
-Each of these needs an owner call before the code changes. Each question ends with this pass's
-recommendation.
+- **P3-01.** An element no macro names no longer fails the render. The walker logs it ("No screen macro in html,
+  element for X") and calls the module's `@element` macro, as FreeMarker's `@element` does: html and qvt write Java's
+  `<p>=== Doing nothing for element X, not yet implemented. ===</p>`, xml writes it as a comment, and the other
+  modes write nothing. The element's children are not rendered, as Java's macro does not recurse; the rest of the
+  screen is. XML actions keep the strict error. `moqui lint --screens` fails on such an element, using the html
+  module's own macro names, so a typo is still caught before it ships (no shipped screen has one).
 
-- **P3-01.** An element no macro module names fails the render ("no screen macro in html, element
-  X"). In a subscreen or section, `guarded` replaces only that screen's body with the error text.
-  Java writes a placeholder and renders the rest. *Recommend* following the
-  [failure-tolerance rule](../AGENTS.md): log the element name, write the placeholder, and render
-  the rest. Keep the strict error in `moqui lint --screens`, where it catches typos.
-- **P8-05.** An origin that is not allowed is answered 401 in Java before the request runs. The
-  port runs the request and leaves out the CORS headers. Browsers are protected anyway: the
-  cookie is `SameSite=Lax`, and `csrf_rejected` asks for a token even on a cookieless Basic-auth
-  request. *Recommend* adding the 401 before dispatch as a cheap extra layer. Otherwise record it.
-- **P9-02.** The webapp lifecycle actions (`before-request`, `after-request`, `after-login`,
-  `before-logout`, `after-startup`, `before-shutdown`, `first-hit-in-visit`) are merged and never
-  run. The shipped examples are in a comment. *Recommend* an error log at boot that names each
-  lifecycle element present in the conf, plus a record. Implement them when someone needs one.
-- **P9-03.** `<endpoint>` and `<session-config>` are now read. `<servlet>`, `<filter>` and
-  `<listener>` are still inert, including the proxies' `proxyTo`/`prefix` init-params, yet the
-  port conf ships them with Java class names. That goes against `62d0a01`'s "what is actually
-  used". `runtime/conf/MoquiDevConf.xml` adds a dead `H2Console` servlet. *Recommend* removing
-  them, or at least commenting them as "not read by this port", and dropping `H2Console`.
-- **P7-11.** A URL instance looks up a transition with no request method. When a name has several
-  methods, `ScreenDef::transition` takes the first one declared. Java passes the current request
-  method, so a link to a `method="post"` transition stays a read-only anchor. Shipped cases are
-  `webroot.xml` `richTextImage` and BOSS `Unsubscribe.xml` `oneClick`, and no rendered link
-  targets either. *Recommend* making the fallback prefer `get` or `any`, then recording it.
-- **P7-09.** The `skip-actions` attribute of a `screen-text-output` is not read. No conf sets it,
-  and its consumer in Java was `vuet`, which the port excludes. *Recommend* removing it from the
-  port's `moqui-conf-3.xsd` (two places) and recording that.
-- **P8-08.** `ec.web.getWebappRootUrl` ignores its arguments and answers `web::base_url()`, which
-  is empty on a real request. Java answers `""` for the plain form, so that part matches, and
-  scheme plus host when a full URL is required. The only shipped caller that needs the full form
-  is `send#ContactListEmail`, which is called from jobs. *Recommend* answering
-  `webapp_root_url` for the full form, never the `Host` header.
-- **P3-05.** The csv, text, xml, xlsx and html-print exports always use the untyped `columns`.
-  Java picks the `columns type=` that matches `_uiType`, and the qvt client sets
-  `_uiType=mobile` below 600px. Shipped `type="mobile"` sets include `FindOrder.xml`, the Gallery
-  List/Landing screens and BOSS Comms/Home. *Recommend* keeping the full columns for an export,
-  then recording it.
-- **P6-04.** The default print document has a page number ("- N -") on every page, plus a running
-  title when `documentTitle` is set. Java's FOP header has both commented out. *Recommend*
-  keeping the page number and recording it.
+## Decided on 2026-10-21
+
+Each row's decision and what was done. What stays different from Java is in
+[Parity-Diffs](../Parity-Diffs.md#screen-and-web-review-2026-10-20).
+
+- **P8-05.** Add the 401. `serve_at` answers a request whose `Origin` CORS refuses with 401 "Origin not allowed"
+  before it runs (`web::refused_origin`), as `MoquiServlet.handleCors` does, the script servlets included. Behind a
+  proxy that rewrites `Host`, the request's own site is also a believed proxy's `X-Forwarded-Host` or the conf webapp's
+  host, so a browser's own POST is not refused. Test: `a_disallowed_origin_is_refused_before_the_request_runs`.
+- **P9-02.** Implement the lifecycle actions as Java runs them, with the same script tools as services
+  (`WebappScripts` in `web/servlet.rs`):
+  - `before-request` after the sign in;
+  - `after-request` however the request ended, and before the session work ends;
+  - `after-login` and `before-logout` for a web sign in and sign out;
+  - `after-startup` and `before-shutdown` with the server (`moqui-host/src/lib.rs`);
+  - `first-hit-in-visit` when a request starts a visit, which Java never calls (recorded).
+
+  A `before-request` failure fails the request; a failure of the others is logged.
+- **P9-03.** `H2Console` is removed. `servlet`, `filter` and `listener` are now scripts in configurable locations.
+  - **Handler objects.** Each script's value is a handler object that borrows the Servlet API: `doGet`, `service`,
+    `doFilter(request, response, chain)`, `contextInitialized`, `sessionCreated`, `requestDestroyed` and the rest.
+  - **Request and response.** `ec.web.request` and `ec.web.response` are subsets of `HttpServletRequest` and
+    `HttpServletResponse` (`script/runtime/web_host.rs`).
+  - **Mapping.** URL patterns map as the Servlet spec has it. The Java classes the port has natively can still be
+    named by class.
+  - **The search proxies.** `/elastic` is `/search` and `/kibana` is `/dashboard`.
+    - Each is a conf servlet on `webroot/script/ProxyServlet.js` behind `webroot/script/AuthFilter.js`.
+    - The permissions are `SearchRemote` and `DashboardRemote`.
+    - The bodies stream through: `ec.service.rest()...send()` and `response.forward` (`web/upstream.rs`).
+    - `moqui-host/src/search_proxy.rs` is gone.
+  - **Conf.** The LLM and A2A servlets left the conf.
+  - **Kept native.** Other request handling was reviewed for a move to scripts, and these stay native:
+    - `/health` and `/metrics`, a gate that must not depend on scripts;
+    - the sockets and `/git`, async protocols the synchronous script engine cannot serve;
+    - the request log, which runs on every request.
+
+  Guide: [Web-Scripts](../../docs/Web-Scripts.md).
+- **P7-11.** A `get` or `any` transition is now preferred over the first one declared. With no method,
+  `ScreenDef::transition` takes the `any` transition, then the `get` one, then the first. Recorded.
+- **P7-09.** `skip-actions` is left out of the conf XSD. Recorded.
+- **P8-08.** The configured value is used.
+  - `getWebappRootUrl` reads Java's arguments. It answers empty for a path-only link in a request, and otherwise the
+    render's base URL or the conf webapp's URL, never the request's `Host`.
+  - An email's link base is the template's `webHostName`, then the new `EmailServer.webBaseUrl`, then the conf
+    webapp.
+  - `send#ContactListEmail` and the unsubscribe services follow the same order, and store emails keep
+    `ProductStore.storeDomain`.
+
+  Recorded.
+- **P3-05.** An export keeps the full columns. Recorded.
+- **P6-04.** The page number stays. Recorded.
 
 ## Recorded in Parity-Diffs
 
 The rows the review found deliberate, or a harmless superset, are in
-[Parity-Diffs](Parity-Diffs.md#screen-and-web-review-2026-10-20) with their reasons, recorded 2026-10-21: P1-05,
+[Parity-Diffs](../Parity-Diffs.md#screen-and-web-review-2026-10-20) with their reasons, recorded 2026-10-21: P1-05,
 P1-07, P1-08, P2-05, P2-09, P2-10, P2-11, P2-15, P3-02 with P4-03, P6-01, P6-02, P6-06, P7-02 (b), P7-04, P7-07,
 P8-13, P8-14, P8-18, P8-19, P9-06, P9-12, P9-14 and P9-15, and the second batch's two kept differences (P7-03's
-versioned files, P7-10's inline schema). Do not revert them. Two ideas in these rows are left for an owner: point
-the Print item at `/fop/<path>` for a real PDF (P3-02), and block `.md` files under a screen (P7-04). A bad
-`show-total` is still dropped without a log line (P2-05).
+versioned files, P7-10's inline schema). Do not revert them. Decided 2026-10-21: the Print item goes straight to
+`/fop/<path>` for a real PDF, with no page-layout dialog (P3-02, P4-03), and `.md` files under a screen stay unblocked,
+since screens read them directly (P7-04). A bad `show-total` is now logged as a bad `aggregate` is (P2-05).
 
 ## Dropped on the third pass
 
@@ -224,9 +252,9 @@ Compared `ScreenSupport.js`, `ScreenHtml.js`, `ScreenCsv.js`, `ScreenText.js`, `
 
 | ID | Port | Java | Divergence | Sev | Disposition |
 |---|---|---|---|---|---|
-| P3-01 | `script/walker.rs` (the "no screen macro" error), `guarded` (`screen/sri/sections.rs`) | `@element` fallback in each `DefaultScreenMacros.*.ftl` | An element no mode names is an error. Inside a subscreen or section, `guarded` puts the error text in place of that screen's body. In the root screen the request fails. Java writes a placeholder and renders the rest. No shipped screen uses an unknown element. `screen/tests/modules.rs` locks in the current rule | Low | Decide |
-| P3-02 | `ScreenHtml.js` (`show-pdf-button`) | `DefaultScreenMacros.html.ftl` PDF dialog | A Print link to `html-print&pageNoLimit=true`. Java opens a "Generate PDF" dialog with `layoutMaster` and `saveFilename` that posts to `/fop`. The one shipped use is `ArtifactHitSummary.xml` | Low | Recorded |
-| P3-05 | `S.formListColumns(node)` in `ScreenCsv.js`, `ScreenText.js`, `ScreenXml.js`, `ScreenXlsx.js`, `ScreenHtmlPrint.js` | `ScreenForm.makeFormListColumnInfo` | The export modes always use the untyped `columns`. Java picks the `columns type=` that matches `_uiType`. Only html, qvt, qvt-static and tui read `_uiType` | Low | Decide |
+| P3-01 | `script/walker.rs` (the "no screen macro" error), `guarded` (`screen/sri/sections.rs`) | `@element` fallback in each `DefaultScreenMacros.*.ftl` | An element no mode names is an error. Inside a subscreen or section, `guarded` puts the error text in place of that screen's body. In the root screen the request fails. Java writes a placeholder and renders the rest. No shipped screen uses an unknown element. `screen/tests/modules.rs` locks in the current rule | Low | Fixed 2026-10-21 (decided) |
+| P3-02 | `ScreenHtml.js` (`show-pdf-button`) | `DefaultScreenMacros.html.ftl` PDF dialog | A Print link straight to `/fop/<path>?pageNoLimit=true` (the PDF; before 2026-10-21 it was `html-print`). Java opens a "Generate PDF" dialog with `layoutMaster` and `saveFilename` that posts to `/fop`. The one shipped use is `ArtifactHitSummary.xml` | Low | Recorded (decided: no dialog) |
+| P3-05 | `S.formListColumns(node)` in `ScreenCsv.js`, `ScreenText.js`, `ScreenXml.js`, `ScreenXlsx.js`, `ScreenHtmlPrint.js` | `ScreenForm.makeFormListColumnInfo` | The export modes always use the untyped `columns`. Java picks the `columns type=` that matches `_uiType`. Only html, qvt, qvt-static and tui read `_uiType` | Low | Recorded (decided 2026-10-21) |
 | P3-06 | `ScreenHtml.js` `display`, `display-entity` | `DefaultScreenMacros.html.ftl` `display` (`sri.getFieldValueClass`) | No value-type class on the display span. Java's `webroot-layout.css` right-aligns `td .BigDecimal` and `td .currency`, and the port's html list cells do not. The html display also drops Java's `text-center`/`text-right` align classes, because the cell takes the `align` | Low | Fixed 2026-10-21 |
 
 ## Phase 4 — The qvt render mode
@@ -236,7 +264,7 @@ Compared `ScreenQvt.js` (and `WebrootVue.qvt.js` where the contract turned on it
 
 | ID | Port | Java | Divergence | Sev | Disposition |
 |---|---|---|---|---|---|
-| P4-03 | `ScreenQvt.js` export menu | `DefaultScreenMacros.qvt.ftl` PDF dialog | Same as P3-02 in qvt: a Print item to `html-print`, not a dialog that posts to `/fop`. `/fop` still makes a PDF, and `?layoutMaster=` still selects a page | Low | Recorded |
+| P4-03 | `ScreenQvt.js` export menu | `DefaultScreenMacros.qvt.ftl` PDF dialog | Same as P3-02 in qvt, server-static qvt and tui: a Print item straight to `/fop/<path>`, not a dialog that posts to it. `?layoutMaster=` still selects a page on the URL | Low | Recorded (decided: no dialog) |
 | P4-05 | Saved Finds dialog in `ScreenQvt.js` and `ScreenQvtStatic.js` | `DefaultScreenMacros.qvt.ftl` active-find block | No Mode/Schedule drop-downs and no Schedule button. Nothing else in the UI posts `ScheduleFind`, so no user can create a scheduled find. My Account and BOSS only edit existing ones | Med | Fixed 2026-10-21 |
 | P4-09 | `valueText` in `ScreenQvt.js` | `DefaultScreenMacros.qvt.ftl` `widgetTextValue` | `display` and `display-entity` are in the no-display list. Java took them out on purpose (an FTL comment says so). Java shows the field's value (not `@text`) and a display-entity's entity text, so Find Payment's `eitherPaymentMethodId` was missing; Find Invoice's constant status text has no value in either | Low | Fixed 2026-10-21 |
 
@@ -261,7 +289,7 @@ moqui-poi's `FormListExcelRender.groovy` and `ScreenWidgetRenderExcel.groovy`, a
 | P6-01 | `cellCode` → `S.fieldChain` (`ScreenXlsx.js`) | `FormListExcelRender.renderSheet` | The xlsx cell uses the `conditional-field` whose condition holds, as the csv mode does. Java reads only `default-field` and throws a null-pointer exception when there is none (Find Task's `ownerPartyId`). The module header says so | Low | Recorded |
 | P6-02 | container and section macros (`ScreenXlsx.js`) | `ScreenWidgetRenderExcel.renderSubNodes` | The port makes a sheet for a form-list inside `container`, `container-panel`, `container-split`, `section-iterate` and `dynamic-form`. Java walks only form-list, section, container-box and container-row. All 45 shipped `show-xlsx-button` lists are on paths Java reaches | Low | Recorded |
 | P6-03 | `S.titleText` (`ScreenSupport.js`) | `StringUtilities.camelCaseToPretty` | A field with no title gets a header split on capitals only. Java also splits on digits, `.` and `#`, drops repeated parts, and writes `id` as "ID" (`address1` → "Address 1"). Java does not localize the header. Only the xlsx header uses `camelCaseToPretty` in Java; every other mode splits on capitals as the port does | Low | Fixed 2026-10-21 |
-| P6-04 | `documentCode` `@page` rule (`ScreenHtmlPrint.js`) | `Header.xsl-fo.ftl` (regions commented out) | Every printed page gets `@bottom-center "- N -"`, and `@top-center` too when `documentTitle` is set. Java's default FOP document has neither. That covers `/fop`, `print#ScreenDocument` and scheduled finds | Low | Decide |
+| P6-04 | `documentCode` `@page` rule (`ScreenHtmlPrint.js`) | `Header.xsl-fo.ftl` (regions commented out) | Every printed page gets `@bottom-center "- N -"`, and `@top-center` too when `documentTitle` is set. Java's default FOP document has neither. That covers `/fop`, `print#ScreenDocument` and scheduled finds | Low | Recorded (decided 2026-10-21) |
 | P6-06 | `canonical_render_mode` (`screen/cache.rs`), the port's `MoquiDefaultConf.xml` `xsl-fo` mode | `MoquiDefaultConf.xml` `xsl-fo` (`text/xml`) | A direct `.xsl-fo` request answers `text/html`. Java answers FO XML. Every shipped `renderMode=xsl-fo` goes through `/fop` or a PDF | Low | Recorded |
 
 ## Phase 7 — Screen URLs, tree, menu, static files, facade and cache
@@ -275,11 +303,11 @@ Compared `screen/url.rs`, `screen/urls.rs`, `screen/tree.rs`, `screen/menu.rs`,
 |---|---|---|---|---|---|
 | P7-02 | `UrlInstance::permitted` (`screen/urls.rs`) | `ScreenUrlInfo.isPermitted` | (a) There is no `AT_SERVICE` check of a non-read-only transition's single service, so a user without the service permission sees an enabled link that fails when clicked. (b) The check follows the transition run, which is looser than `isPermitted`. It also skips the last screen's own view check when the path ends on a transition. Not a bypass: the request path matches Java's run | Low-Med | Fixed (a) 2026-10-21, Recorded (b) |
 | P7-03 | `static_files.rs` (`LONG_CACHE`, `REVALIDATE_CACHE`), `finish_response`, `apply_cors`, `send_resource_response`; `merge_response_headers` (`context/conf.rs`) | `WebappInfo.addHeaders` from `ScreenRenderImpl` and `WebFacadeImpl` | The conf's `<response-header>` entries (`screen-resource-*`, `web-resource-inline`, `screen-render`, `cors-*`) are merged and never applied. The port's conf now ships the full list. File `Cache-Control` is 1 hour, or 1 year `immutable` for a versioned file, where the conf says 24 hours | Low | Fixed 2026-10-21 |
-| P7-04 | `BLOCKED_EXTENSIONS` (`screen/static_files.rs`), file branch (`screen/render.rs`) | `ScreenUrlInfo` file lookup, `ScreenRenderImpl` file branch | Non-screen `.xml`, `.properties`, `.sql`, `.groovy`, `.ftl` and `.html.fancy` files are refused with a 404. Java serves the plain ones and renders the templates through `screen-resource-template`. A `.md` under a screen without `include-child-content` is sent raw, where Java renders it. `screen/tests/files.rs` locks in the list | Low | Recorded |
+| P7-04 | `BLOCKED_EXTENSIONS` (`screen/static_files.rs`), file branch (`screen/render.rs`) | `ScreenUrlInfo` file lookup, `ScreenRenderImpl` file branch | Non-screen `.xml`, `.properties`, `.sql`, `.groovy`, `.ftl` and `.html.fancy` files are refused with a 404. Java serves the plain ones and renders the templates through `screen-resource-template`. A `.md` under a screen without `include-child-content` is sent raw, where Java renders it. `screen/tests/files.rs` locks in the list | Low | Recorded (decided: `.md` stays unblocked) |
 | P7-07 | `?` tail via `web::form_pairs` (`screen/url.rs`) | `ScreenUrlInfo` `split("=")` | A pair whose value holds `=` or is empty is kept. Java keeps only exactly-two-part pairs. No shipped `url=` has either | Low | Recorded |
-| P7-09 | `TextOutput` (`screen/cache.rs`) | `ScreenSection.renderSingle`, `ScreenRenderImpl` (required parameters) | `skip-actions` is not read. No conf sets it. The port's `moqui-conf-3.xsd` still declares it | Low | Decide (remove from the XSD) |
+| P7-09 | `TextOutput` (`screen/cache.rs`) | `ScreenSection.renderSingle`, `ScreenRenderImpl` (required parameters) | `skip-actions` is not read. No conf sets it. The port's `moqui-conf-3.xsd` still declares it | Low | Recorded (removed from the XSD 2026-10-21) |
 | P7-10 | `entity_json` → `send_json_response` (`screen/schema.rs`) | `RestSchemaUtil` `sendTextResponse(..., "application/schema+json", "<name>.schema.json")` | The schema is `application/json` with the facade's `messages` merged in, and it has no attachment name. Only the curl examples in `rest.xml` use it | Low | Fixed 2026-10-21 |
-| P7-11 | `UrlInstance` transition lookup (`screen/urls.rs`), `ScreenDef::transition` (`screen/definition.rs`) | `UrlInstance.getTargetTransition` → `getTransitionItem(name, method)` | The port looks up with no method and gets the first transition declared under that name. Java passes the current request method (or `""` outside a request) | Low | Decide |
+| P7-11 | `UrlInstance` transition lookup (`screen/urls.rs`), `ScreenDef::transition` (`screen/definition.rs`) | `UrlInstance.getTargetTransition` → `getTransitionItem(name, method)` | The port looks up with no method and gets the first transition declared under that name. Java passes the current request method (or `""` outside a request) | Low | Fixed 2026-10-21 (decided), recorded |
 
 ## Phase 8 — The web facade
 
@@ -290,9 +318,9 @@ Compared `web/mod.rs`, `web/multipart.rs`, `web/error_info.rs` and the `ec.web` 
 | ID | Port | Java | Divergence | Sev | Disposition |
 |---|---|---|---|---|---|
 | P8-04 | `pairs_to_parameters` (`web/mod.rs`), `end_part` (`web/multipart.rs`) | `WebUtilities.simplifyRequestParameters`, `WebFacadeImpl.addValueToMultipartParameterMap` | A single non-breaking space is Java's "no value" and becomes null. The port keeps the text. The html remote-option list posts it for an empty option, and qvt does not | Low | Fixed 2026-10-21 |
-| P8-05 | `finish_response` (`web/mod.rs`) | `MoquiServlet.handleCors` | A request from a disallowed origin runs, without CORS headers. Java answers 401 "Origin not allowed" and does not run it. `SameSite=Lax` and the session-token check already stop a browser write | Low | Decide |
+| P8-05 | `finish_response` (`web/mod.rs`) | `MoquiServlet.handleCors` | A request from a disallowed origin runs, without CORS headers. Java answers 401 "Origin not allowed" and does not run it. `SameSite=Lax` and the session-token check already stop a browser write | Low | Fixed 2026-10-21 (decided) |
 | P8-06 | `require_session_token`, `handle_cors`, `allow_origins`, `upload_executable_allowed` (`web/mod.rs`) | `WebappInfo` from the `<webapp>` attributes | These four read `get_prop_or_env("webapp_*")`. The stock attributes point at the same properties, so a default deployment matches, but a conf override of the attribute is ignored | Low | Fixed 2026-10-21 |
-| P8-08 | `get_webapp_root_url` (`script/runtime/facades.rs`) | `WebFacadeImpl.getWebappRootUrl`, `makeWebappRootUrl` | The arguments are ignored and the answer is `web::base_url()`, which is empty on a real request. Java answers `""` for the plain form and scheme plus host for the full form | Low | Decide |
+| P8-08 | `get_webapp_root_url` (`script/runtime/facades.rs`) | `WebFacadeImpl.getWebappRootUrl`, `makeWebappRootUrl` | The arguments are ignored and the answer is `web::base_url()`, which is empty on a real request. Java answers `""` for the plain form and scheme plus host for the full form | Low | Fixed 2026-10-21 (decided), recorded |
 | P8-09 | `send_text_response_with` (`web/mod.rs`) | `WebFacadeImpl.sendTextResponseInternal` | With an error in the message facade, Java sends the errors with a 500. The port sends the text with a 200 | Low | Fixed 2026-10-21 |
 | P8-11 | `header_map` (`moqui-host/src/http.rs`), `cookie_value` (`web/mod.rs`) | the servlet's `getHeader`, `getCookies` | A repeated header is joined with `", "`. Two `Cookie` headers make the session cookie unreadable, which logs the user out. The listener is HTTP/1.1 only, and proxies merge cookies with `"; "`. `notws.rs` reads only the first value | Low | Fixed 2026-10-21 |
 | P8-12 | `parse_body` (`web/mod.rs`) | `WebFacadeImpl` constructor, `ResourceReference.isTextContentType` | Every non-form body becomes `_requestBodyText` (lossy UTF-8), binary included. A body with no content type that contains `=` is parsed as a form. Java reads only a text content type | Low | Fixed 2026-10-21 |
@@ -312,23 +340,23 @@ Compared `moqui-host/src/` (router, `http.rs`, `search_proxy.rs`, `logging.rs`),
 | ID | Port | Java | Divergence | Sev | Disposition |
 |---|---|---|---|---|---|
 | P9-01 | `error_screen` (`web/error_info.rs`) | `MoquiServlet.sendErrorResponse` → `getErrorScreenNode` | A hardcoded table picks the error screen. The conf's five `<error-screen>` entries have the same paths and are never read. `confcache` keeps only the first entry's attributes | Low | Fixed 2026-10-21 |
-| P9-02 | lifecycle elements merged in `context/conf.rs` | `ExecutionContextImpl`, `UserFacadeImpl`, `MoquiContextListener` | `before-request`, `after-request`, `after-login`, `before-logout`, `after-startup`, `before-shutdown` and `first-hit-in-visit` are merged and never run. The shipped examples are in a comment | Low | Decide |
-| P9-03 | fixed routes (`moqui-host/src/http.rs`), conf merge (`context/conf.rs`) | `MoquiContextListener` servlet and filter setup | `<endpoint>` (`endpoint_enabled`: `/notws`, `/termws`) and `<session-config>` are read. `<servlet>`, `<filter>` and `<listener>` are merged and inert, including the proxies' init-params. The port's conf ships them with Java class names, and `MoquiDevConf.xml` adds an `H2Console` servlet | Low | Decide |
+| P9-02 | lifecycle elements merged in `context/conf.rs` | `ExecutionContextImpl`, `UserFacadeImpl`, `MoquiContextListener` | `before-request`, `after-request`, `after-login`, `before-logout`, `after-startup`, `before-shutdown` and `first-hit-in-visit` are merged and never run. The shipped examples are in a comment | Low | Fixed 2026-10-21 (decided) |
+| P9-03 | fixed routes (`moqui-host/src/http.rs`), conf merge (`context/conf.rs`) | `MoquiContextListener` servlet and filter setup | `<endpoint>` (`endpoint_enabled`: `/notws`, `/termws`) and `<session-config>` are read. `<servlet>`, `<filter>` and `<listener>` are merged and inert, including the proxies' init-params. The port's conf ships them with Java class names, and `MoquiDevConf.xml` adds an `H2Console` servlet | Low | Fixed 2026-10-21 (decided) |
 | P9-06 | `serve_at` (`screen/mod.rs`) | `MoquiServlet.service`, `handleCors` | Every `OPTIONS` answers 204 before the path is resolved. Java renders the screen, or answers 200 for an allowed preflight. Browsers accept the 204 | Low | Recorded |
 | P9-07 | `check_tarpit` (`user/authz.rs`), `ErrorKind::Tarpit` | `MoquiServlet.service`, `MoquiFopServlet` | The 429 has the seconds in its text but no `Retry-After` header. Reachable through the `WebrootSecurityDemoData` ALL_SCREENS tarpit | Low | Fixed 2026-10-21 |
 | P9-11 | `proxy` (`moqui-host/src/search_proxy.rs`) | Jetty `ProxyServlet$Transparent` with `prefix=/kibana` | The port forwards `/kibana/app/...`. Jetty strips the prefix. The module doc's "as the servlets' prefix settings do" is wrong | Low | Fixed 2026-10-21 |
 | P9-12 | `logging.rs` | `log4j2.xml` `ErrorFile` | The second file is `moqui-error.log` at WARN and above. Java's is `error.log` at ERROR (`ThresholdFilter`). The port conf's comment documents the name | Low | Recorded |
 | P9-13 | `finish_response` (`web/mod.rs`) | `MoquiDefaultConf.xml` `screen-render` response-header | `X-XSS-Protection: 1; mode=block` is listed in the port's conf and not sent | Low | Fixed 2026-10-21 |
-| P9-14 | `forward` (`moqui-host/src/search_proxy.rs`) | Jetty `ProxyServlet` | `Authorization` and `Cookie` are not forwarded. Jetty forwards both, and with them the session cookie | Low | Recorded |
-| P9-15 | `search_proxy.rs` 401 | `MoquiAuthFilter` `sendError(401, ...)` | The proxy 401 carries `WWW-Authenticate: Basic realm="Moqui"` and "login required". Java sends no challenge and the message-facade text | Low | Recorded |
+| P9-14 | `forward` (`moqui-host/src/search_proxy.rs`, now `SKIP` in `ProxyServlet.js`) | Jetty `ProxyServlet` | `Authorization` and `Cookie` are not forwarded. Jetty forwards both, and with them the session cookie | Low | Recorded |
+| P9-15 | `search_proxy.rs` 401 (now `AuthFilter.js`) | `MoquiAuthFilter` `sendError(401, ...)` | The proxy 401 carries `WWW-Authenticate: Basic realm="Moqui"` and "login required". Java sends no challenge and the message-facade text | Low | Recorded |
 
 ## What this review does not cover
 
 - The **screen XML dialect**: the port's `xml-screen-3.xsd` is its own, and the two XSDs were
   compared only for the elements the port's code reads.
-- **Excluded on purpose** in [Parity-Mapping](Parity-Mapping.md): the FreeMarker engine and macro
+- **Excluded on purpose** in [Parity-Mapping](../Parity-Mapping.md): the FreeMarker engine and macro
   libraries, the `js` and `vuet` render modes, `/vapps`, Groovy expression evaluation, JSON-RPC
-  and the servlet types (`getRequest`, `getResponse`, `getServletContext`).
+  and the servlet context (`getServletContext`). `getRequest` and `getResponse` are subsets since 2026-10-21 (P9-03).
 - The **client library** (`runtime/base-component/webroot/screen/webroot/js/`), the Quasar widgets
   and the CSS, except where a finding turned on the server-client contract.
 - The **screen services** (`ScreenServices.xml`, `WikiServices.xml`), which the entity and service
@@ -336,11 +364,9 @@ Compared `moqui-host/src/` (router, `http.rs`, `search_proxy.rs`, `logging.rs`),
 
 ## Next steps
 
-1. Get a decision on each row under [Decide](#decide), then make the change it calls for.
-2. When the Decide list is empty, leave a pointer in
-   [Remaining-Work](Remaining-Work.md#parity-gap-review) and archive this file under
-   `plans/archive/`, as [EntityService-Parity-Review](archive/EntityService-Parity-Review.md)
-   was.
+None. Every row under [Decide](#decided-on-2026-10-21) was decided and made on 2026-10-21, and this file was archived
+the same day, with a pointer in [Remaining-Work](../Remaining-Work.md#parity-gap-review), as
+[EntityService-Parity-Review](EntityService-Parity-Review.md) was.
 
 ---
 
@@ -519,7 +545,7 @@ log files, `ec.web.parameters`). The line numbers are from 2026-10-19 and have d
     `sendJsonRedirect`, `getBasicResponseMap` — the servlet types are gone with the servlet, and the rest are the internals of the
     path and the URL (`screen/url.rs`, `screen/urls.rs`). `getBaseLinkUri` is the one with a known gap: the port keeps
     `baseLinkUrl` on the render (`screen/render.rs:255-258`) and nothing reads it, which is the open item in
-    [Remaining-Work](Remaining-Work.md) ("`sri.baseLinkUrl(url)` is kept on the render but nothing reads it"), so this phase
+    [Remaining-Work](../Remaining-Work.md) ("`sri.baseLinkUrl(url)` is kept on the render but nothing reads it"), so this phase
     confirms it rather than reports it.
 - **The render mode.** Java takes the mode from the builder, then the `renderMode` request parameter, then the extension of the
   target screen, and falls back to `html` (`ScreenRenderImpl.groovy:416-431`); the port does the same in that order
@@ -696,7 +722,7 @@ log files, `ec.web.parameters`). The line numbers are from 2026-10-19 and have d
   quotes doubled (`ScreenCsv.js:31-37`, Java's `csvValue` at `DefaultScreenMacros.csv.ftl:16-21`).
   The port writes one row per line; FreeMarker wrote the newline only after some of the field
   macros, so a Java CSV row ran onto the next line. A label writes nothing in the port — that is the
-  recorded difference in [Parity-Diffs, Gallery fixes (2026-10-18)](Parity-Diffs.md#gallery-fixes-2026-10-18)
+  recorded difference in [Parity-Diffs, Gallery fixes (2026-10-18)](../Parity-Diffs.md#gallery-fixes-2026-10-18)
   ("csv render"), and the port names it in the header comment of `ScreenCsv.js:18-20`.
 - **The xml mode**: the screen's name is the root element (`ScreenXml.js:96-107`, Java's `widgets`
   macro at `DefaultScreenMacros.xml.ftl:18-22`), a form-list is an element of `…Entry` elements
@@ -717,11 +743,11 @@ log files, `ec.web.parameters`). The line numbers are from 2026-10-19 and have d
   `background-submit`, `background-reload-id`, `background-hide-id` and `background-message`
   (`ScreenHtml.js:604-610`) and the container-dialog's button takes the `tooltip`
   (`ScreenHtml.js:672-679`); Java's macros have neither — they are the recorded additions in
-  [Parity-Diffs, Framework gaps from the IronStone screens (2026-10-19)](Parity-Diffs.md#framework-gaps-from-the-ironstone-screens-2026-10-19).
+  [Parity-Diffs, Framework gaps from the IronStone screens (2026-10-19)](../Parity-Diffs.md#framework-gaps-from-the-ironstone-screens-2026-10-19).
 - **The wizard and stack subscreens-panel**: Java writes "LATER … not yet supported"
   (`DefaultScreenMacros.html.ftl:125-128`); the port writes the step list and the Back/Next links
   (`ScreenHtml.js:782-804`), which is the recorded difference in
-  [Parity-Diffs, Layout panels and the calendar and contact tools (2026-10-19)](Parity-Diffs.md#layout-panels-and-the-calendar-and-contact-tools-2026-10-19).
+  [Parity-Diffs, Layout panels and the calendar and contact tools (2026-10-19)](../Parity-Diffs.md#layout-panels-and-the-calendar-and-contact-tools-2026-10-19).
 
 
 ### Phase 4
@@ -898,7 +924,7 @@ log files, `ec.web.parameters`). The line numbers are from 2026-10-19 and have d
 - **The attributes of the widgets.** The port reads the same attributes as the FreeMarker macros: the `condition` of a link, a label and a status bar (Java's `ec.getResource().condition`, the port's `raw(condition)`); the `text-map` of a link and a label (`ec.resource.expand(text, "", textMap)` in both); `no-current-selected-key` on a check, a drop-down and a radio (Java's `.node["@no-current-selected-key"]!`, the port's `attr(node, "no-current-selected-key")`); `default-value` and `format`/`type` on a date-time (the port's `S.dateTimeFormat` gives the same `yyyy-MM-dd`, `HH:mm` and `yyyy-MM-dd HH:mm` defaults, `ScreenSupport.js:276-281`); `currency-unit-field` and `currency-hide-symbol` on a display (`S.displayValueExpr`, `ScreenSupport.js:248-264`); `align` on a form-list field (the port writes it as the cell's `text-align`, Java as `fo:block text-align`); `print-width` and `print-width-type` on a field (see the widths below); `entity-name`, `key-field-name`, `entity-key-name` and `use-cache` on a display-entity or a link with an entity (`screen/sri/fields.rs:209-258` follows Java's `getFieldEntityValue`: the default text when the field is empty or the entity is not found, the entity's map for a `text` attribute, the entity's default description field otherwise).
 - **The page layout.** The ten page masters of `Header.xsl-fo.ftl:1-55` (letter, legal, tabloid, A4 and A3, portrait and landscape) with their page sizes and margins are the port's `$masters` (ScreenHtmlPrint.js:26-34); the line width for the form-list columns is Java's `layoutWidthIn * 72 / 6` (DefaultScreenMacros.xsl-fo.ftl:33-36) as the port's `$lineChars` (ScreenHtmlPrint.js:35); the column width algorithm is Java's `getFormListColumnCharWidths` (ScreenForm.groovy:2180+) in `screen/sri/layout.rs:27-156` — the fixed character widths, the percent widths, the `print-width="0"` column that takes no room and the rounding of the rest are the same. The `@page` size and margin the PDF renderer uses are the document's own (`preferCSSPageSize`, `moqui-host/src/pdf.rs:477`).
 - **The form-list of the print document.** The columns come from the assembled form, as in Java: the macro module is generated from the assembled form node (`screen/generate.rs:262-300`), which is Java's `sri.getFormInstance(name)` and `getAllColInfo()`, and a form-list whose columns the user chose is rendered through `sri.renderUserColumnsForm` (`screen/sri/forms.rs:119-161`), as Java's `form-list-user-columns` does. The page range line ("low - high / count", Java's `context[listName + "PageRangeLow"]` etc., the port's `page-range` div, ScreenHtmlPrint.js:43-44), the header row that repeats on each page (`display: table-header-group`), the row that does not split (`break-inside: avoid`), the grey band on every other row (Java's `background-color="#EEEEEE"` on the even index, the port's `tbody tr:nth-child(odd)`, the same rows) and the cell padding of 2pt are the same. A list with no rows writes no table in both.
-- **The PDF images.** `PdfRenderer::render` inlines every `<img>` whose source is a resource location as a `data:` URL (`screen/pdf.rs:96-251`), which is what Java's FOP resolver did through the resource facade (`FopToolFactory.groovy:97-123`, the `LocalResourceResolver`); an `http`/`https` source is not fetched and a source that is not a png, jpeg, gif, webp, bmp or svg is left as written — the recorded difference in Parity-Diffs, [Print fixes (2026-10-18)](Parity-Diffs.md), "PDF images". The barcode is an inline SVG from `ec.resource.code128Svg` where Java had barcode4j's FOP extension; the difference in the quiet zone and the height is recorded in the same table, "barcodes".
+- **The PDF images.** `PdfRenderer::render` inlines every `<img>` whose source is a resource location as a `data:` URL (`screen/pdf.rs:96-251`), which is what Java's FOP resolver did through the resource facade (`FopToolFactory.groovy:97-123`, the `LocalResourceResolver`); an `http`/`https` source is not fetched and a source that is not a png, jpeg, gif, webp, bmp or svg is left as written — the recorded difference in Parity-Diffs, [Print fixes (2026-10-18)](../Parity-Diffs.md), "PDF images". The barcode is an inline SVG from `ec.resource.code128Svg` where Java had barcode4j's FOP extension; the difference in the quiet zone and the height is recorded in the same table, "barcodes".
 - **The print pipeline around the document.** `/fop/<path>` renders the screen at that path as the print mode and sends it as a PDF, with `filename` or `saveFilename` making it a download (`screen/mod.rs:241-305`), as Java's `MoquiFopServlet` did with its FOP transform; the difference that the port makes only PDF is recorded in Parity-Diffs, "Print fixes (2026-10-18)", `/fop`, and P8a-17 for `print#ScreenDocument` (`service/tools.rs:179-221`, which renders `html-print` and hands it to `PdfRenderer`). The email attachment of a screen rendered in `xsl-fo` becomes a PDF (`service/mail/implementation.rs:926-991`, as Java's `sendEmailTemplate.groovy:305-313`), and the scheduled report of `run#ScreenScheduled` does the same, with `layoutMaster` set to `letter-landscape` and the full render path (`runtime/base-component/framework/service/org/moqui/impl/ScreenServices.xml:84-134`, the same lines as `../moqui/framework/service/org/moqui/impl/ScreenServices.xml:86-143`).
 - **The xlsx sheet layout.** One sheet per form-list, named for the form (`ScreenXlsx.js:106-107`; Java's `wb.createSheet(formName)`, FormListExcelRender.groovy:60), a header row of the field titles, a row per list entry, a frozen header row (`set_freeze_panes(1, 0)` for Java's `createFreezePane(0, 1)`), the columns fitted to their text (`autofit` for Java's `autoSizeColumn`), and the row height left to the application (Java's `setHeight((short) -1)`) — `screen/xlsx.rs:150-206`.
 - **The xlsx styles.** The header is bold, centred and filled with `GREY_40_PERCENT` (the port's `0x0096_9696`, `screen/xlsx.rs:37` and `:224-229`; Java's `IndexedColors.GREY_40_PERCENT`, FormListExcelRender.groovy:330-341); a string is left-aligned and wrapped, a number centred, a number of a field with `align="right"` right-aligned, a currency or a `.00` format right-aligned with the negatives in red, and the dates, times and stamps carry the `yyyy-MM-dd`, `HH:mm:ss` and `yyyy-MM-dd HH:mm` formats — the same number formats, the same currency format `#,##0.00_);[Red](#,##0.00)` and the same alignments as Java's `makeRow*Style` methods (FormListExcelRender.groovy:343-420).
@@ -975,7 +1001,7 @@ log files, `ec.web.parameters`). The line numbers are from 2026-10-19 and have d
   each level with their paths, the parameter strings, the images and their type, the `hasTabMenu` and
   `renderModes`, the last entry with the screen documents, the extra path list and the user's saved finds. The
   difference Java's `getMenuData` records for a broken subscreen — it throws and the whole menu answers 500 — is
-  recorded in [Parity-Diffs](Parity-Diffs.md) (the `menus` row of the gallery fixes, 2026-10-18), and the port
+  recorded in [Parity-Diffs](../Parity-Diffs.md) (the `menus` row of the gallery fixes, 2026-10-18), and the port
   leaves the entry out and logs it (`moqui-core/src/screen/menu.rs:76-87`).
 - **The static file response** (`moqui-core/src/screen/static_files.rs:217-313`): the media type by extension, the
   `ETag` and the 304 for a matching `If-None-Match`, the one byte range of RFC 9110 (and the 416), the `HEAD`
@@ -988,7 +1014,7 @@ log files, `ec.web.parameters`). The line numbers are from 2026-10-19 and have d
 - **The schema documents** (`moqui-core/src/screen/schema.rs:25-40` against
   `util/RestSchemaUtil.groovy:584-663`): the entity name and the master name out of the path, the `.json`
   suffix, the master name `default` when none is given, and the 400 for an entity that does not exist. The shape
-  of the document is a recorded difference ([Parity-Diffs](Parity-Diffs.md), the `P2-12` row).
+  of the document is a recorded difference ([Parity-Diffs](../Parity-Diffs.md), the `P2-12` row).
 
 
 ### Phase 8
@@ -1014,7 +1040,7 @@ The facade surface, method by method. Java's `WebFacade` interface and the publi
 | `getSessionAttributes` | `ec.web.sessionAttributes` | the same map, read and written |
 | `getSessionToken` | `ec.web.sessionToken` | the same value; the response carries `moquiSessionToken` and `X-CSRF-Token` when it is new (`screen/mod.rs:468-474`), as Java's constructor does |
 | `getServletContext`, `getApplicationAttributes` | — | the servlet context; out of scope |
-| `getWebappRootUrl(boolean, Boolean)` | `ec.web.getWebappRootUrl` | present, but empty for a real request (P8-08) |
+| `getWebappRootUrl(boolean, Boolean)` | `ec.web.getWebappRootUrl` | Java's arguments; the full form is the conf webapp's URL, never the request's host (P8-08, fixed 2026-10-21) |
 | `getErrorParameters` | `ec.web.errorParameters` | the same saved map, taken once per request |
 | `getSavedMessages`, `getSavedErrors`, `getSavedValidationErrors` | `ec.web.savedMessages`, `savedErrors`, `savedValidationErrors` | the same lists, taken from the session once (`web/mod.rs:265-277`) |
 | `getSavedPublicMessages` | — | the port has no public messages; no Java screen reads them |
@@ -1060,7 +1086,7 @@ Other checks of this phase:
   `web/address.rs:130-216`): the same header of the conf, the same first hop when no proxy list is
   set, the same fall back to the socket peer. The port adds `trusted-proxies` with CIDR ranges and
   takes the rightmost hop that is not a trusted proxy; that difference is named in
-  [Parity-Mapping, Web and the HTTP host](Parity-Mapping.md#web-and-the-http-host) (`web/address.rs`,
+  [Parity-Mapping, Web and the HTTP host](../Parity-Mapping.md#web-and-the-http-host) (`web/address.rs`,
   "Partial") and is a hardening.
 - `WebUtilities.isExecutable` (`WebUtilities.java:752-779` against `multipart.rs:199-203`): the same
   headers — Windows PE, Linux ELF, Java class, macOS Mach-O and its byte swap, and the `#!` shebang —
@@ -1094,7 +1120,7 @@ Other checks of this phase:
   was left empty posts nothing in both.
 - The session cookie: the port has its own cookie names (`moqui.session`, `moqui.visitor`) and its own
   session row; that is README redesign 7, named in
-  [Parity-Mapping, User and session](Parity-Mapping.md#user-and-session) (`user/session.rs`,
+  [Parity-Mapping, User and session](../Parity-Mapping.md#user-and-session) (`user/session.rs`,
   "Redesign").
 
 
@@ -1105,7 +1131,8 @@ Other checks of this phase:
   `http.rs:220-221` → `moqui-core/src/screen/mod.rs:89-135`), `/fop/*` → the same dispatcher
   through `fop_screen_path` (`screen/mod.rs:241-254,316-320`, Java's `MoquiFopServlet`), `/notws` →
   `notws::upgrade` (`http.rs:211`), `/elastic/*` and `/kibana/*` → the proxy
-  (`http.rs:212-217`, Java's `ElasticSearchProxy`/`KibanaProxy`). The port adds `/health`,
+  (`http.rs:212-217`, Java's `ElasticSearchProxy`/`KibanaProxy`); since 2026-10-21 every path but the fixed routes goes
+  to the conf's servlets (`web/servlet.rs`), the proxies being `ProxyServlet.js` on `/search` and `/dashboard` (P9-03). The port adds `/health`,
   `/metrics` and `/git/*`, which have no Java counterpart. The LLM, A2A and `groovysh` routes are
   excluded (see below).
 - **The screen request pipeline.** Java's servlet thread does the render inside
@@ -1144,7 +1171,8 @@ Other checks of this phase:
   (`moqui-core/src/screen/mod.rs:546-579`) binds the session, runs the same `authenticate`
   (`screen/mod.rs:485-527`) and answers 401 without a user and 403 without the permission
   (`moqui-host/src/search_proxy.rs:123-136`); the `ElasticRemote` and `KibanaRemote` permissions
-  are the ones Java's filter declares (`MoquiDefaultConf.xml:248-255`).
+  are the ones Java's filter declares (`MoquiDefaultConf.xml:248-255`). Since 2026-10-21 this is
+  `webroot/script/AuthFilter.js` with `SearchRemote` and `DashboardRemote` (P9-03).
 - **The screen auth rules.** Java's `checkWebappSettings` (`ScreenRenderImpl.groovy:998-1040`)
   refuses a screen with `allow-web-request="false"`, redirects a screen that needs a user to the
   last `login-path` of the path, and answers 401 for a `lastStandalone` or a transition; the port

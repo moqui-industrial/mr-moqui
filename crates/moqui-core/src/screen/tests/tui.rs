@@ -1089,7 +1089,13 @@ fn a_list_gives_its_exports_and_columns() {
     for part in ["renderMode=text", "lineCharacters=132", "saveFilename=Exp.txt"] {
         assert!(url("text").contains(part), "{part} in {}", url("text"));
     }
-    assert!(url("pdf").contains("renderMode=html-print"), "{}", url("pdf"));
+    // Print is the page as a PDF under /fop, Java's MoquiFopServlet, with every row
+    assert!(url("pdf").starts_with("/fop/"), "{}", url("pdf"));
+    assert!(
+        url("pdf").contains("pageNoLimit=true") && !url("pdf").contains("renderMode"),
+        "{}",
+        url("pdf")
+    );
     assert!(url("all").contains("pageNoLimit=true"), "{}", url("all"));
     let all = exports.iter().find(|item| item["kind"] == json!("all")).unwrap();
     assert_eq!(all["label"], json!("Show All"));

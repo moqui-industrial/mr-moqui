@@ -699,6 +699,9 @@ along with this software (see the LICENSE.md file). If not, see
             own sign-in; empty for the same sign-in as the store</description></field>
         <field name="smtpPassword" type="text-medium" encrypt="true" enable-audit-log="update"><description>The password
             of smtpUsername, encrypted; empty for mailPassword. Not used without smtpUsername.</description></field>
+        <field name="webBaseUrl" type="text-medium" enable-audit-log="update"><description>Full base URL, scheme and host,
+            for links in emails sent through this server, such as https://shop.example.com. Used when the EmailTemplate has
+            no webHostName; empty for the conf webapp's host. Store emails use ProductStore.storeDomain.</description></field>
         <field name="allowedToDomains" type="text-long" enable-audit-log="update">
             <description>Comma separated list of domain names to allow (like: moqui.org, dejc.com), matched by ends with; if no value specified all domains allowed</description></field>
         <field name="authTypeEnumId" type="id"><description>How SMTP and the store sign in: EatPassword (mailUsername and

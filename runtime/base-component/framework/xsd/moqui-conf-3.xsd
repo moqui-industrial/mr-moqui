@@ -232,39 +232,72 @@ along with this software (see the LICENSE.md file). If not, see
                     <xs:attribute name="name" type="xs:string" use="required"/>
                     <xs:attribute name="value" type="xs:string" use="required"/>
                 </xs:complexType></xs:element>
-                <xs:element minOccurs="0" maxOccurs="unbounded" name="filter"><xs:complexType>
+                <xs:element minOccurs="0" maxOccurs="unbounded" name="filter">
+                    <xs:annotation><xs:documentation>
+                        A filter on the requests whose path a url-pattern maps (as the Servlet spec has it), run in
+                        priority order, then as declared, before the servlet. It is the script at location, whose value is
+                        a handler object with doFilter(request, response, chain); chain.doFilter() goes on. Or class, one
+                        of the Java classes this server has: org.moqui.impl.webapp.MoquiAuthFilter (the script
+                        component://webroot/script/AuthFilter.js) and org.moqui.impl.webapp.ElasticRequestLogFilter (the
+                        server's request log; enabled="false" turns it off). See docs/Web-Scripts.md.
+                    </xs:documentation></xs:annotation>
+                    <xs:complexType>
                     <xs:sequence>
                         <xs:element minOccurs="0" maxOccurs="unbounded" ref="init-param"/>
-                        <xs:element minOccurs="1" maxOccurs="unbounded" name="url-pattern" type="xs:string"/>
-                        <xs:element minOccurs="0" maxOccurs="unbounded" name="dispatcher" type="xs:string"/>
+                        <xs:element minOccurs="0" maxOccurs="unbounded" name="url-pattern" type="xs:string"/>
+                        <xs:element minOccurs="0" maxOccurs="unbounded" name="dispatcher" type="xs:string"><xs:annotation>
+                            <xs:documentation>Only REQUEST: a filter runs once, on the request from the client.</xs:documentation>
+                        </xs:annotation></xs:element>
                     </xs:sequence>
                     <xs:attribute name="name" type="xs:string" use="required"/>
-                    <xs:attribute name="class" type="xs:string" use="required"/>
-                    <xs:attribute name="async-supported" type="boolean" default="false"/>
+                    <xs:attribute name="location" type="xs:string"><xs:annotation><xs:documentation>
+                        The script of the filter, such as component://mycomp/script/MyFilter.js. This or class.
+                    </xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="class" type="xs:string"/>
+                    <xs:attribute name="async-supported" type="boolean" default="false"><xs:annotation><xs:documentation>
+                        Not read by this server.</xs:documentation></xs:annotation></xs:attribute>
                     <xs:attribute name="enabled" type="boolean" default="true"/>
                     <xs:attribute name="priority" type="xs:nonNegativeInteger" default="5"/>
                 </xs:complexType></xs:element>
                 <xs:element minOccurs="0" maxOccurs="unbounded" name="listener">
                     <xs:annotation><xs:documentation>
-                        Note that for Jetty, and other servlet containers, these can only be implementations of
-                        HttpSessionListener, HttpSessionIdListener, and HttpSessionAttributeListener; other listeners such
-                        as ServletContextListener implementations must be in the web.xml file (cannot be loaded when
-                        MoquiContextListener initializes).
+                        The script at location, whose value is a handler object with any of contextInitialized,
+                        contextDestroyed, sessionCreated, sessionDestroyed, requestInitialized and requestDestroyed, each
+                        taking the event. Or class org.moqui.impl.webapp.MoquiSessionListener, which this server has
+                        natively. See docs/Web-Scripts.md.
                     </xs:documentation></xs:annotation>
                     <xs:complexType>
-                        <xs:attribute name="class" type="xs:string" use="required"/>
+                        <xs:attribute name="location" type="xs:string"/>
+                        <xs:attribute name="class" type="xs:string"/>
                         <xs:attribute name="enabled" type="boolean" default="true"/>
                     </xs:complexType>
                 </xs:element>
-                <xs:element minOccurs="0" maxOccurs="unbounded" name="servlet"><xs:complexType>
+                <xs:element minOccurs="0" maxOccurs="unbounded" name="servlet">
+                    <xs:annotation><xs:documentation>
+                        What answers the requests whose path a url-pattern maps: an exact path, else the longest /path/*,
+                        else *.extension, else the default /. It is the script at location, whose value is a handler object
+                        with service(request, response) or doGet, doPost and the other methods. Or class, one of the Java
+                        classes this server has: org.moqui.impl.webapp.MoquiServlet (the screens) and
+                        org.moqui.impl.webapp.MoquiFopServlet (a screen as PDF). See docs/Web-Scripts.md.
+                    </xs:documentation></xs:annotation>
+                    <xs:complexType>
                     <xs:sequence>
                         <xs:element minOccurs="0" maxOccurs="unbounded" ref="init-param"/>
                         <xs:element minOccurs="1" maxOccurs="unbounded" name="url-pattern" type="xs:string"/>
                     </xs:sequence>
                     <xs:attribute name="name" type="xs:string" use="required"/>
-                    <xs:attribute name="class" type="xs:string" use="required"/>
-                    <xs:attribute name="load-on-startup" type="xs:nonNegativeInteger" default="1"/>
-                    <xs:attribute name="async-supported" type="boolean" default="false"/>
+                    <xs:attribute name="location" type="xs:string"><xs:annotation><xs:documentation>
+                        The script of the servlet, such as component://mycomp/script/MyServlet.js. This or class.
+                    </xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="class" type="xs:string"/>
+                    <xs:attribute name="max-body" type="xs:string"><xs:annotation><xs:documentation>
+                        The largest request body this servlet takes, such as 100m, in place of the web-protection max-body;
+                        for a proxy that passes on a bulk load. Not for a multipart upload, whose limit is max-upload.
+                        No Java counterpart.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="load-on-startup" type="xs:nonNegativeInteger" default="1"><xs:annotation>
+                        <xs:documentation>Not read by this server.</xs:documentation></xs:annotation></xs:attribute>
+                    <xs:attribute name="async-supported" type="boolean" default="false"><xs:annotation><xs:documentation>
+                        Not read by this server.</xs:documentation></xs:annotation></xs:attribute>
                     <xs:attribute name="enabled" type="boolean" default="true"/>
                 </xs:complexType></xs:element>
                 <xs:element minOccurs="0" name="session-config"><xs:complexType>
@@ -743,7 +776,6 @@ along with this software (see the LICENSE.md file). If not, see
         </xs:annotation></xs:attribute>
         <xs:attribute name="mime-type" type="xs:string" use="optional"/>
         <xs:attribute name="always-standalone" type="boolean" default="false"/>
-        <xs:attribute name="skip-actions" type="boolean" default="false"/>
         <xs:attribute name="macro-template-location" type="xs:string" use="required"/>
         <xs:attribute name="output-kind"><xs:annotation><xs:documentation>
             How a failed section is written, and whether the finished level is one JSON document: text and html write
@@ -762,7 +794,6 @@ along with this software (see the LICENSE.md file). If not, see
         </xs:annotation></xs:attribute>
         <xs:attribute name="mime-type" type="xs:string" use="optional"/>
         <xs:attribute name="always-standalone" type="boolean" default="false"/>
-        <xs:attribute name="skip-actions" type="boolean" default="false"/>
         <xs:attribute name="macro-template-location" type="xs:string"><xs:annotation><xs:documentation>
             The JavaScript macro module that fills the document of this binary mode, such as
             framework/template/screen/ScreenXlsx.js for xlsx.</xs:documentation></xs:annotation></xs:attribute>

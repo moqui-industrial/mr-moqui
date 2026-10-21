@@ -507,9 +507,33 @@ fn generate_body<'js>(
         opaque: &module.opaque,
         resolve,
         missing: &missing,
+        fallback: Some("@element"),
     };
     let (source, _) = walker::walk(ctx, &walk, root, None)?;
     Ok(source.replace(['\u{1}', '\u{2}'], ""))
+}
+
+/// The elements the built-in html module names, and those whose subtree it reads for itself, for `moqui lint
+/// --screens`: an element of a screen's widgets outside the first set renders as an unknown element.
+///
+/// # Errors
+///
+/// Returns an error when the module does not load.
+pub fn widget_vocabulary() -> Result<(HashSet<String>, HashSet<String>), Error> {
+    let source = MODE_MODULES
+        .iter()
+        .find(|(name, _)| *name == "ScreenHtml.js")
+        .map(|(_, source)| *source)
+        .ok_or_else(|| Error::new("missing built-in module"))?;
+    crate::script::walker_context(|ctx| {
+        let module = load_mode_source(ctx, source, "html", false)?;
+        let names = module
+            .macros
+            .keys::<String>()
+            .collect::<Result<HashSet<String>, _>>()
+            .map_err(|err| Error::new(err.to_string()))?;
+        Ok((names, module.opaque.clone()))
+    })
 }
 
 /// Generate the body for a tree of widgets with the built-in module for `mode`, forms as given. For

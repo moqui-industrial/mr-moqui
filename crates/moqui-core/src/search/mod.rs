@@ -357,7 +357,7 @@ pub trait SearchBackend: Send + Sync {
         false
     }
 
-    /// True when this backend is an Elastic-compatible server the `/elastic` and `/kibana` proxies can reach.
+    /// True when this backend is an Elastic-compatible server the `/search` and `/dashboard` proxies (`ProxyServlet.js`) can reach.
     fn has_elastic_api(&self) -> bool {
         false
     }

@@ -124,6 +124,8 @@ pub struct SessionTable {
     flushing: BTreeSet<String>,
     /// Signalled when an id leaves `flushing`.
     flushed: Arc<Condvar>,
+    /// Sessions that expired since the listeners last heard, for their `sessionDestroyed` ([`take_expired`]).
+    expired: Vec<String>,
 }
 
 impl SessionTable {
@@ -135,6 +137,7 @@ impl SessionTable {
             max_live,
             flushing: BTreeSet::new(),
             flushed: Arc::new(Condvar::new()),
+            expired: Vec::new(),
         }
     }
 }
@@ -339,6 +342,12 @@ pub fn bind(
     let (id, created) = resolve_id(factory, presented.as_deref())?;
     touch_session(factory, &id);
     install_thread(factory, &id)?;
+    if created {
+        let scripts = factory.webapp_scripts();
+        if scripts.has_listeners() {
+            scripts.fire("sessionCreated", session_event(&id));
+        }
+    }
     // A request with no moqui cookie may come from a client that keeps none, such as a crawler, which
     // would leave a Visitor and a Visit behind on every request. Its visit starts when the session
     // cookie comes back or a user logs in.
@@ -359,6 +368,13 @@ pub fn bind(
     }
     evict_over_cap(factory, &id);
     Ok(SessionGuard { https })
+}
+
+/// The event of a session listener: `{sessionId}`.
+pub(crate) fn session_event(id: &str) -> Value {
+    let mut map = indexmap::IndexMap::new();
+    map.insert("sessionId".to_string(), Value::string(id));
+    Value::Map(map)
 }
 
 /// Start the visit a bound web session put off, for a login on it.
@@ -1293,11 +1309,18 @@ fn expire_idle(factory: &ExecutionContextFactory) -> Result<(), Error> {
         return Ok(());
     };
     let now = now_millis();
+    let listening = factory.webapp_scripts().has_listeners();
     let purge = {
         let mut table = lock_sessions(factory);
-        table
-            .sessions
-            .retain(|_, live| !is_idle(live.last_access, now, Some(timeout)));
+        let mut expired = Vec::new();
+        table.sessions.retain(|id, live| {
+            let idle = is_idle(live.last_access, now, Some(timeout));
+            if idle && listening {
+                expired.push(id.clone());
+            }
+            !idle
+        });
+        table.expired.extend(expired);
         if now.saturating_sub(table.last_purge) > 60_000 {
             table.last_purge = now;
             true
@@ -1323,6 +1346,12 @@ fn expire_idle(factory: &ExecutionContextFactory) -> Result<(), Error> {
         Ok(())
     })?;
     cache::on_write(&facade, HTTP_SESSION, "delete", &BTreeMap::new()).map_err(Error::from)
+}
+
+/// The sessions that expired in memory since the last call, for the listeners' `sessionDestroyed`. A session that
+/// was only in the database when it expired is deleted with no event.
+pub(crate) fn take_expired(factory: &ExecutionContextFactory) -> Vec<String> {
+    std::mem::take(&mut lock_sessions(factory).expired)
 }
 
 fn install_from_row(factory: &ExecutionContextFactory, id: &str) -> Result<(), Error> {
@@ -1428,6 +1457,10 @@ fn ensure_visit(factory: &Arc<ExecutionContextFactory>, visitor_cookie: Option<&
     let visitor_id = resolve_visitor(&facade, visitor_cookie)?;
     let visit_id = create_visit(&facade, &visitor_id)?;
     set_visit(&visit_id, &visitor_id);
+    // Java defines first-hit-in-visit and never runs it; here it runs when a request starts a visit (Parity-Diffs P9-02)
+    factory
+        .webapp_scripts()
+        .run_actions_logged("first-hit-in-visit", &BTreeMap::new());
     Ok(())
 }
 

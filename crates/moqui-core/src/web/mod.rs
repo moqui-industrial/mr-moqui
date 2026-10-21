@@ -28,6 +28,8 @@ use moqui_lib::object::Value;
 pub mod address;
 pub mod error_info;
 pub mod multipart;
+pub mod servlet;
+pub(crate) mod upstream;
 
 use crate::context::{Error, ErrorKind, ExecutionContext};
 use crate::entity::query_rest;
@@ -125,7 +127,13 @@ pub struct WebResponse {
 pub struct ResponseStream {
     pub source: std::sync::Arc<dyn crate::resource::source::ByteSource>,
     pub offset: u64,
+    /// [`ResponseStream::UNKNOWN_LENGTH`] reads until the source has no more.
     pub length: u64,
+}
+
+impl ResponseStream {
+    /// The length of a stream that ends when its source does, such as a proxied body sent in chunks.
+    pub const UNKNOWN_LENGTH: u64 = u64::MAX;
 }
 
 impl std::fmt::Debug for ResponseStream {
@@ -190,11 +198,23 @@ struct WebSlot {
     locale: Option<String>,
     /// Scheme, host, and context path that links start with. Empty for a path-only link.
     base_url: String,
+    /// Whether the request came over https; None with no request, as for a render from a job.
+    secure: Option<bool>,
+    /// The request itself and its raw body, for a web script's `request` ([`set_request`]). None with no socket.
+    request: Option<std::sync::Arc<WebRequest>>,
+    request_body: bytes::Bytes,
+    /// The servlet API's request attributes: what a filter leaves for the servlet after it.
+    attributes: BTreeMap<String, Value>,
+    /// The servlet path and path info of the servlet the request went to ([`servlet::Match`]).
+    servlet_path: String,
+    path_info: Option<String>,
     /// The request path, Java's `getPathInfo`, for `sendError`.
     path: String,
     /// The `Accept` header, for `sendError`.
     accept: String,
     sent: bool,
+    /// Whether the body was written through [`write_bytes`], which may go on writing after it committed.
+    writing: bool,
     status: u16,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
@@ -241,10 +261,17 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             client_ip: String::new(),
             locale: None,
             base_url,
+            secure: None,
+            request: None,
+            request_body: bytes::Bytes::new(),
+            attributes: BTreeMap::new(),
+            servlet_path: String::new(),
+            path_info: None,
             path: String::new(),
             accept: String::new(),
             changed_preferences: BTreeMap::new(),
             sent: false,
+            writing: false,
             status: 200,
             headers: Vec::new(),
             body: Vec::new(),
@@ -387,6 +414,7 @@ pub(crate) fn set_request_info(request: &WebRequest) {
     WEB.with(|slot| {
         if let Some(web) = slot.borrow_mut().as_mut() {
             web.request_url = url;
+            web.secure = Some(request.https);
             web.referrer = referrer;
             web.path = request.path.clone();
             web.accept = request.header("accept").unwrap_or("").to_string();
@@ -533,6 +561,194 @@ pub(crate) fn is_same_origin_redirect(url: &str, configured_host: Option<&str>) 
     }
     let host = authority.split(':').next().unwrap_or("");
     !host.is_empty() && host.eq_ignore_ascii_case(&configured)
+}
+
+/// Keep the request and its raw body for a web script's `request`. The parsed parameters are already in the slot.
+pub(crate) fn set_request(request: std::sync::Arc<WebRequest>, body: bytes::Bytes) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.request = Some(request);
+            web.request_body = body;
+        }
+    });
+}
+
+/// The request of this thread's web slot, None with no socket.
+pub(crate) fn current_request() -> Option<std::sync::Arc<WebRequest>> {
+    WEB.with(|slot| slot.borrow().as_ref().and_then(|web| web.request.clone()))
+}
+
+/// The raw body of the request, empty with none or for a multipart body (read as it arrived, files spooled).
+pub(crate) fn request_body() -> bytes::Bytes {
+    WEB.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|web| web.request_body.clone())
+            .unwrap_or_default()
+    })
+}
+
+/// The servlet path and path info of the servlet the request went to.
+pub(crate) fn set_servlet_match(servlet_path: &str, path_info: Option<&str>) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.servlet_path = servlet_path.to_string();
+            web.path_info = path_info.map(str::to_string);
+        }
+    });
+}
+
+pub(crate) fn servlet_match() -> (String, Option<String>) {
+    WEB.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|web| (web.servlet_path.clone(), web.path_info.clone()))
+            .unwrap_or_default()
+    })
+}
+
+/// A request attribute; None when unset.
+pub(crate) fn attribute(name: &str) -> Option<Value> {
+    WEB.with(|slot| slot.borrow().as_ref().and_then(|web| web.attributes.get(name).cloned()))
+}
+
+/// Set a request attribute, or remove it with None.
+pub(crate) fn set_attribute(name: &str, value: Option<Value>) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            match value {
+                Some(value) => web.attributes.insert(name.to_string(), value),
+                None => web.attributes.remove(name),
+            };
+        }
+    });
+}
+
+pub(crate) fn attribute_names() -> Vec<String> {
+    WEB.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|web| web.attributes.keys().cloned().collect())
+            .unwrap_or_default()
+    })
+}
+
+/// The servlet API's `setStatus`: the status of the response still to be written; a written one is left alone.
+pub(crate) fn set_status(status: u16) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            if !web.sent {
+                web.status = status;
+            }
+        }
+    });
+}
+
+/// The servlet API's `setHeader`: replace every value of `name`, or remove them with None.
+pub(crate) fn set_header(name: &str, value: Option<&str>) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.headers.retain(|(key, _)| !key.eq_ignore_ascii_case(name));
+            if let Some(value) = value {
+                web.headers.push((name.to_string(), value.to_string()));
+            }
+        }
+    });
+}
+
+/// The values of the response header `name` so far.
+pub(crate) fn response_header_values(name: &str) -> Vec<String> {
+    WEB.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|web| {
+                web.headers
+                    .iter()
+                    .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .map(|(_, value)| value.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// The names of the response headers so far, each once.
+pub(crate) fn response_header_names() -> Vec<String> {
+    WEB.with(|slot| {
+        let mut names: Vec<String> = Vec::new();
+        if let Some(web) = slot.borrow().as_ref() {
+            for (name, _) in &web.headers {
+                if !names.iter().any(|known| known.eq_ignore_ascii_case(name)) {
+                    names.push(name.clone());
+                }
+            }
+        }
+        names
+    })
+}
+
+/// The servlet API's writer: append bytes to the body and commit the response, its status and headers as they are.
+/// Nothing is written after a response another way sent (an error, a redirect, a stream).
+pub(crate) fn write_bytes(bytes: &[u8]) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            if web.stream.is_some() || (web.sent && !web.writing) {
+                return;
+            }
+            web.sent = true;
+            web.writing = true;
+            web.body.extend_from_slice(bytes);
+        }
+    });
+}
+
+/// Put a whole response in the slot, as the screen servlet made it, for the filters around it to see and change.
+pub(crate) fn put_response(response: WebResponse) {
+    WEB.with(|slot| {
+        if let Some(web) = slot.borrow_mut().as_mut() {
+            web.sent = true;
+            web.status = response.status;
+            web.headers = response.headers;
+            web.body = response.body;
+            web.stream = response.stream;
+        }
+    });
+}
+
+/// The response the slot holds, its status 200 when nothing set one.
+pub(crate) fn take_response() -> WebResponse {
+    let stream = take_stream();
+    let (status, headers, body, _) = take_output();
+    WebResponse {
+        status,
+        headers,
+        body,
+        stream,
+        http_log: HttpLogIdentity::default(),
+    }
+}
+
+/// Whether the request came over https, None with no request (a job, a render from a script).
+pub(crate) fn request_secure() -> Option<bool> {
+    WEB.with(|slot| slot.borrow().as_ref().and_then(|web| web.secure))
+}
+
+/// Java's `WebFacadeImpl.getWebappRootUrl`: empty, as the context path, when a path-only link will do, which is in a
+/// request whose security matches `use_encryption`; otherwise the scheme and host. Those are the render's base URL
+/// when it has one (an email, a render with no socket), else the conf `webapp`'s host and port. Never the request's
+/// `Host` header, which the sender of the request picks (Parity-Diffs P8-08).
+pub(crate) fn webapp_root_url(webapp_name: &str, require_full_url: bool, use_encryption: Option<bool>) -> String {
+    let secure = request_secure();
+    let require_encryption = use_encryption.unwrap_or(secure.unwrap_or(false));
+    if !require_full_url && secure == Some(require_encryption) {
+        return String::new();
+    }
+    let base = base_url();
+    if base.starts_with("http://") || base.starts_with("https://") {
+        return base.trim_end_matches('/').to_string();
+    }
+    let https = require_encryption || secure == Some(true);
+    ExecutionContext::with_current(|ec| ec.factory().webapp_root_url_for(webapp_name, Some(https))).unwrap_or_default()
 }
 
 pub(crate) fn base_url() -> String {
@@ -1106,6 +1322,7 @@ pub(crate) fn clear_output() {
     WEB.with(|slot| {
         if let Some(web) = slot.borrow_mut().as_mut() {
             web.sent = false;
+            web.writing = false;
             web.status = 200;
             web.headers.clear();
             web.body.clear();
@@ -1196,6 +1413,10 @@ pub fn body_limit_for(factory: Option<&crate::context::ExecutionContextFactory>,
         ))
         .unwrap_or(DEFAULT_MAX_UPLOAD)
     } else {
+        // a servlet that takes larger bodies says so (`max-body`), as a search proxy does for a bulk load
+        if let Some(max) = factory.and_then(|factory| factory.webapp_scripts().max_body_for(&request.path)) {
+            return max;
+        }
         parse_size(&protection_setting(factory, "requests", "max-body", "webapp_max_body")).unwrap_or(DEFAULT_MAX_BODY)
     }
 }
@@ -1344,7 +1565,7 @@ pub(crate) fn parse_body(request: &WebRequest) -> Result<ParsedBody, BodyError> 
     // `_requestBodyText`, and a JSON one is read as well. An object's fields are parameters, an array is
     // `_requestBodyJsonList`, and JSON that does not parse is `_requestBodyJsonParseError` for the screen or service to
     // answer, not a refused request. A binary body is no parameter.
-    if !moqui_lib::resource::is_text_content_type(&media) {
+    if !moqui_lib::resource::is_text_content_type(media) {
         return Ok(ParsedBody {
             parameters,
             json_list,
@@ -1635,6 +1856,42 @@ fn origin_host(text: &str) -> String {
         return format!("[{}]", bracketed.split(']').next().unwrap_or(""));
     }
     text.split(':').next().unwrap_or("").to_string()
+}
+
+/// The `Origin` of a request CORS refuses, as `MoquiServlet.handleCors`: CORS is on, the request names an origin and
+/// `origin_allowed_by` does not allow it. The caller answers 401 before the request runs.
+///
+/// The request's own site is never refused, also behind a proxy that rewrites `Host`: the origin may be the
+/// `X-Forwarded-Host` of a proxy whose forwarding headers are believed, as Jetty's `ForwardedRequestCustomizer` made it
+/// Java's server name, or the conf webapp's `http-host` or `https-host`.
+pub(crate) fn refused_origin<'a>(
+    factory: &crate::context::ExecutionContextFactory,
+    request: &'a WebRequest,
+) -> Option<&'a str> {
+    if !handle_cors(Some(factory)) {
+        return None;
+    }
+    let origin = request.header("origin").filter(|origin| !origin.trim().is_empty())?;
+    if origin_allowed_by(Some(factory), Some(origin), request.header("host")) {
+        return None;
+    }
+    let origin_domain = origin_host(origin);
+    let forwarded = request
+        .header("x-forwarded-host")
+        .and_then(|value| value.split(',').next())
+        .filter(|_| {
+            request
+                .peer_ip
+                .trim()
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|peer| factory.extension(address::ClientAddressing::of_factory).believes(peer))
+        });
+    let configured = ["http-host", "https-host"].map(|name| factory.webapp_setting("webroot", name));
+    let own = forwarded
+        .into_iter()
+        .chain(configured.iter().map(String::as_str))
+        .any(|host| !host.trim().is_empty() && origin_host(host) == origin_domain);
+    (!own).then_some(origin)
 }
 
 /// The conf's `screen-render` headers on every response, as the baseline under what the response set itself, and

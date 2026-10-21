@@ -789,18 +789,6 @@ mod tests {
             .first_named_attrs("artifact-execution", &[("type", "AT_XML_SCREEN")])
             .unwrap();
         assert_eq!(screen.attribute("tarpit-enabled").as_deref(), Some("false"));
-
-        let webapp = base
-            .first_named("webapp-list")
-            .unwrap()
-            .first_named_attrs("webapp", &[("name", "webroot")])
-            .unwrap();
-        let servlet = webapp.first_named_attrs("servlet", &[("name", "H2Console")]).unwrap();
-        assert_eq!(
-            servlet.attribute("class").as_deref(),
-            Some("org.h2.server.web.JakartaWebServlet")
-        );
-        assert!(servlet.first_named("url-pattern").is_some());
     }
 
     #[test]

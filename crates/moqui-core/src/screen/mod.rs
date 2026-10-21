@@ -100,7 +100,7 @@ pub fn serve(factory: &Arc<ExecutionContextFactory>, request: WebRequest) -> Web
 }
 
 /// Handle one request whose root screen is `root`.
-pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, root: &str) -> WebResponse {
+pub fn serve_at(factory: &Arc<ExecutionContextFactory>, mut request: WebRequest, root: &str) -> WebResponse {
     if request.body.len() > web::body_limit(&request) {
         return web::early_error(
             factory,
@@ -108,6 +108,10 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
             413,
             &format!("request body is larger than {} bytes", web::body_limit(&request)),
         );
+    }
+    if let Some(origin) = web::refused_origin(factory, &request) {
+        tracing::warn!("Origin not allowed: {origin} for {} {}", request.method, request.path);
+        return web::early_error(factory, &request, 401, "Origin not allowed");
     }
     if request.method.eq_ignore_ascii_case("options") {
         return web::finish_response(factory, &request, WebResponse::new(204, Vec::new()), true);
@@ -131,9 +135,13 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
     let mut parameters = parsed.parameters;
     // Files fill names the query and the form body left empty. `multiPartParameters` stays the file map.
     web::overlay_multipart(&mut parameters, &parsed.multipart);
+    // The raw body, for a web script's request (a proxy sends it on), without a copy.
+    let body = bytes::Bytes::from(std::mem::take(&mut request.body));
+    let request = Arc::new(request);
     let response = match handle(
         factory,
         &request,
+        body,
         root,
         &parameters,
         &parsed.multipart,
@@ -147,7 +155,8 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, request: WebRequest, roo
 
 fn handle(
     factory: &Arc<ExecutionContextFactory>,
-    request: &WebRequest,
+    request: &Arc<WebRequest>,
+    body: bytes::Bytes,
     root: &str,
     parameters: &BTreeMap<String, Value>,
     multipart: &BTreeMap<String, Value>,
@@ -193,18 +202,32 @@ fn handle(
     web::set_host(request.header("host").unwrap_or(""));
     web::set_request_info(request);
     web::set_request_locale(request.header("accept-language"));
+    web::set_request(Arc::clone(request), body);
     let (login_error, header_authenticated) = authenticate(request, parameters)?;
     // A session that did not come with the request was made for it, and its token was never sent to the client.
     let new_session = presented.as_deref() != Some(guard.session_id().as_str());
-    let response = dispatch_request(
+    let scripts = factory.webapp_scripts();
+    // As Java's `ExecutionContextImpl.destroy`, the after-request actions run however the request ended, and before
+    // the session work ends.
+    let end = EndRequest::armed();
+    let outcome = run_request(
         factory,
+        &scripts,
         request,
         root,
         parameters,
         json_list,
-        login_error.as_deref(),
+        login_error,
         (header_authenticated, new_session),
-    )?;
+    );
+    if scripts.has_listeners() {
+        scripts.fire("requestDestroyed", Value::Null);
+    }
+    scripts.run_actions_logged("after-request", parameters);
+    let response = match end.finish() {
+        Err(err) if !web::output_sent() && outcome.is_ok() => web::json_error_of(&err),
+        _ => outcome?,
+    };
     let mut response = attach_session(
         response,
         &guard,
@@ -224,6 +247,106 @@ fn handle(
     Ok(response)
 }
 
+/// The request after its user is known: the `before-request` actions, then the servlet the path maps to, through the
+/// filters on the path. A `before-request` failure fails the request, as its actions may be a check.
+#[allow(clippy::too_many_arguments)]
+fn run_request(
+    factory: &Arc<ExecutionContextFactory>,
+    scripts: &crate::web::servlet::WebappScripts,
+    request: &Arc<WebRequest>,
+    root: &str,
+    parameters: &BTreeMap<String, Value>,
+    json_list: Option<&[Value]>,
+    login_error: Option<String>,
+    flags: (bool, bool),
+) -> Result<WebResponse, Error> {
+    if scripts.has_listeners() {
+        scripts.fire("requestInitialized", Value::Null);
+    }
+    scripts.run_actions("before-request", parameters)?;
+    let Some(found) = scripts.match_servlet(&request.path) else {
+        return Ok(web::json_error(404, "Not found"));
+    };
+    web::set_servlet_match(&found.servlet_path, found.path_info.as_deref());
+    let filters = scripts.filters_for(&request.path);
+    if filters.is_empty() {
+        return serve_servlet(
+            factory,
+            &found,
+            request,
+            root,
+            parameters,
+            json_list,
+            login_error.as_deref(),
+            flags,
+        );
+    }
+    // The servlet at the end of the chain runs from inside the last filter's script, so it takes what it needs along.
+    let (factory, request, root) = (Arc::clone(factory), Arc::clone(request), root.to_string());
+    let (parameters, json_list) = (parameters.clone(), json_list.map(<[Value]>::to_vec));
+    crate::web::servlet::run_chain(
+        filters,
+        Box::new(move || {
+            let response = serve_servlet(
+                &factory,
+                &found,
+                &request,
+                &root,
+                &parameters,
+                json_list.as_deref(),
+                login_error.as_deref(),
+                flags,
+            )?;
+            web::put_response(response);
+            Ok(())
+        }),
+    )?;
+    Ok(web::take_response())
+}
+
+/// One servlet's response: the screens (`MoquiServlet`), a screen as PDF (`MoquiFopServlet`), or a script's.
+#[allow(clippy::too_many_arguments)]
+fn serve_servlet(
+    factory: &Arc<ExecutionContextFactory>,
+    found: &crate::web::servlet::Match,
+    request: &WebRequest,
+    root: &str,
+    parameters: &BTreeMap<String, Value>,
+    json_list: Option<&[Value]>,
+    login_error: Option<&str>,
+    flags: (bool, bool),
+) -> Result<WebResponse, Error> {
+    use crate::web::servlet::Handler;
+    match &found.servlet.handler {
+        Handler::Screen => dispatch_request(factory, request, root, parameters, json_list, login_error, flags, None),
+        Handler::Fop => {
+            let path = found.path_info.as_deref().unwrap_or("");
+            dispatch_request(
+                factory,
+                request,
+                root,
+                parameters,
+                json_list,
+                login_error,
+                flags,
+                Some(path),
+            )
+        }
+        Handler::Script(location) => match crate::script::invoke_web_handler(location, "servlet", found.servlet.data())
+        {
+            Ok(()) => Ok(web::take_response()),
+            Err(err) => {
+                let status = web::status_for(&err);
+                if status >= 500 {
+                    tracing::error!("Error in servlet {} ({location}): {err}", found.servlet.name);
+                }
+                web::clear_output();
+                Ok(web::json_error(status, &web::error_text(status, &err)))
+            }
+        },
+    }
+}
+
 /// The HTTP log's session, visitor, and username. Read before the session guard drops.
 fn stamp_http_log(response: &mut WebResponse) {
     let (session, visitor_id, remote_user) = user::http_log_identity();
@@ -234,6 +357,9 @@ fn stamp_http_log(response: &mut WebResponse) {
     };
 }
 
+/// The screens' servlet: a token route, else the screen at the path; with `fop_path` the screen at that path as a PDF.
+/// The caller ends the request's session work.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_request(
     factory: &Arc<ExecutionContextFactory>,
     request: &WebRequest,
@@ -242,6 +368,7 @@ fn dispatch_request(
     json_list: Option<&[Value]>,
     login_error: Option<&str>,
     (header_authenticated, new_session): (bool, bool),
+    fop_path: Option<&str>,
 ) -> Result<WebResponse, Error> {
     // `/<route>/<token>`: a token route's public screen, after its token check (token_route.rs)
     if let Some(found) = token_route::find(factory, &request.path) {
@@ -264,7 +391,6 @@ fn dispatch_request(
     }
     // `/fop/<path>`, Java's `MoquiFopServlet`: the screen at `<path>` as `html-print`, sent as PDF. The `filename`
     // parameter (else `saveFilename`) makes it a download.
-    let fop_path = fop_screen_path(&request.path);
     let fop_parameters;
     let parameters = if fop_path.is_some() && !parameters.contains_key("saveFilename") {
         let mut with_name = parameters.clone();
@@ -291,7 +417,6 @@ fn dispatch_request(
         new_session,
         started: Instant::now(),
     };
-    let end = EndRequest::armed();
     if let Err(err) = render::run_job(factory, &job) {
         // Only a kind names a client error. A script or load failure is a 500 whatever it says, unless the database
         // was unavailable under it (a 503).
@@ -318,11 +443,6 @@ fn dispatch_request(
     } else {
         None
     };
-    if let Err(err) = end.finish() {
-        if !web::output_sent() {
-            return Ok(web::json_error_of(&err));
-        }
-    }
     if let Some(pdf) = pdf {
         return Ok(pdf);
     }
@@ -335,12 +455,6 @@ fn dispatch_request(
         stream,
         http_log: web::HttpLogIdentity::default(),
     })
-}
-
-/// The screen path of a `/fop/...` request, the path after `/fop`. `None` for any other path.
-fn fop_screen_path(path: &str) -> Option<&str> {
-    let rest = path.strip_prefix("/fop")?;
-    (rest.is_empty() || rest.starts_with('/')).then_some(rest)
 }
 
 /// The response of a `/fop` request whose render succeeded: its `html-print` document as PDF, with the render's headers
@@ -566,58 +680,6 @@ fn authenticate(request: &WebRequest, parameters: &BTreeMap<String, Value>) -> R
         }
     }
     Ok((login_error, by_header))
-}
-
-/// What [`check_permission`] found for a request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PermissionCheck {
-    Allowed,
-    /// Nobody is logged in: Java's `MoquiAuthFilter` answers 401 with a Basic challenge.
-    Unauthenticated,
-    /// Logged in without the permission: 403.
-    Forbidden,
-}
-
-/// Java's `MoquiAuthFilter`, for a path that is not a screen (the `/elastic` and `/kibana` proxies):
-/// the session cookie, Basic, `api_key`/`login_key`, or `authUsername`/`authPassword` login a screen
-/// request makes, then whether the user has `permission`. The session is not handed back to the client.
-///
-/// # Errors
-///
-/// Returns an error when the session or the permission rows cannot be read.
-pub fn check_permission(
-    factory: &Arc<ExecutionContextFactory>,
-    request: &WebRequest,
-    permission: &str,
-) -> Result<PermissionCheck, Error> {
-    let context = (!crate::context::ExecutionContext::is_entered()).then(|| factory.new_context());
-    let _entered = context.as_ref().map(|context| context.enter());
-    let session_cookie = web::session_cookie_of(request);
-    let visitor_cookie = web::visitor_cookie_of(request);
-    let guard = user::bind(
-        factory,
-        session_cookie.as_deref(),
-        visitor_cookie.as_deref(),
-        request.https,
-    )?;
-    let parameters: BTreeMap<String, Value> = request
-        .query
-        .iter()
-        .map(|(name, value)| (name.clone(), Value::string(value)))
-        .collect();
-    let _web = web::install(parameters.clone());
-    let end = EndRequest::armed();
-    authenticate(request, &parameters)?;
-    let check = if user::current_username()?.is_none() {
-        PermissionCheck::Unauthenticated
-    } else if user::has_permission(permission)? {
-        PermissionCheck::Allowed
-    } else {
-        PermissionCheck::Forbidden
-    };
-    end.finish()?;
-    drop(guard);
-    Ok(check)
 }
 
 /// Walk `path` from `root` without binding a session.

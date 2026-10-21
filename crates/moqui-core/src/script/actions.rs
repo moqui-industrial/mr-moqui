@@ -220,6 +220,7 @@ fn render<'js>(ctx: &Ctx<'js>, macros: &Object<'js>, node: &MNode) -> Result<(St
         opaque: &opaque,
         resolve: None,
         missing: "XML action macro",
+        fallback: None,
     };
     walker::walk(ctx, &walk, node, None)
 }

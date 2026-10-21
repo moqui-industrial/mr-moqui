@@ -27,7 +27,7 @@ use axum::body::HttpBody as _;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
-use axum::routing::{any, get};
+use axum::routing::get;
 use axum::Router;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use moqui_core::context::ErrorKind;
@@ -39,7 +39,7 @@ use tokio::net::TcpListener;
 use tower::ServiceExt as _;
 
 use crate::guard::{setting, Event, Guard, GuardConf};
-use crate::{notws, search_proxy};
+use crate::notws;
 
 pub(crate) struct HttpState {
     pub factory: Arc<ExecutionContextFactory>,
@@ -212,7 +212,7 @@ pub(crate) async fn listen(
     let notws = endpoint_enabled(&factory, "/notws");
     let termws = cfg!(feature = "tui") && endpoint_enabled(&factory, "/termws");
     tracing::info!(
-        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, {}{}/elastic, /kibana, {}the screen dispatcher",
+        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, {}{}{}the webapp's servlets",
         if notws { "/notws, " } else { "" },
         if termws { "/termws, " } else { "" },
         if cfg!(feature = "git") { "/git and " } else { "" }
@@ -225,13 +225,7 @@ pub(crate) async fn listen(
     // Text responses are compressed when the client accepts gzip (`Compressible`).
     let app = Router::new()
         .route("/health", get(health))
-        .route("/metrics", get(metrics))
-        .route("/elastic", any(search_proxy::elastic))
-        .route("/elastic/", any(search_proxy::elastic))
-        .route("/elastic/{*rest}", any(search_proxy::elastic))
-        .route("/kibana", any(search_proxy::kibana))
-        .route("/kibana/", any(search_proxy::kibana))
-        .route("/kibana/{*rest}", any(search_proxy::kibana));
+        .route("/metrics", get(metrics));
     // The notification socket, unless the webapp's `/notws` endpoint has enabled="false"; the html and qvt clients
     // connect when the property is set.
     let app = if notws {
@@ -252,10 +246,15 @@ pub(crate) async fn listen(
         app
     };
     #[cfg(feature = "git")]
-    let app = app.route("/git/{*rest}", any(crate::git_http::handle));
+    let app = app.route("/git/{*rest}", axum::routing::any(crate::git_http::handle));
+    let app = app.fallback(dispatch_screen);
+    // The request log, Java's ElasticRequestLogFilter: off when its filter element says enabled="false".
+    let app = if factory.webapp_scripts().request_log() {
+        app.layer(axum::middleware::from_fn(log_http))
+    } else {
+        app
+    };
     let app = app
-        .fallback(dispatch_screen)
-        .layer(axum::middleware::from_fn(log_http))
         .layer(tower_http::compression::CompressionLayer::new().compress_when(Compressible))
         .with_state(Arc::new(HttpState {
             factory,

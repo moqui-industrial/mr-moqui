@@ -239,7 +239,19 @@
             "subscreens-panel": stmt(() => "sri.renderSubscreen();"),
             "section": stmt((node) => `sri.renderSection(${jsString(attr(node, "name"))});`),
             "section-iterate": stmt((node) => `sri.renderSection(${jsString(attr(node, "name"))});`),
+            // An element no macro names, Java's @element: the walker logs it and renders this instead of failing, and the
+            // element's children are not rendered. html and qvt show Java's placeholder, xml writes it as a comment, and the
+            // other modes write nothing.
+            "@element": stmt((node) => unknownElementCode(mode, node.name)),
         };
+    };
+
+    // The placeholder of an element no macro names, as the Java macros' @element writes it.
+    const unknownElementCode = (mode, name) => {
+        const text = "Doing nothing for element " + name + ", not yet implemented.";
+        if (mode === "html" || mode === "qvt") return `sri.write(${jsString("<p>=== " + text + " ===</p>")});`;
+        if (mode === "xml") return `sri.write(${jsString("<!-- " + text + " -->")});`;
+        return "";
     };
 
     // The text of a display widget: the expanded text, or the field value, with currency when asked.
@@ -320,7 +332,7 @@
     const noops = (names) => T.noops(names);
 
     return {
-        allElements, opaqueElements, expandExpr, expandNoL10nExpr, htmlViewTextFn, htmlViewTextExpr, markdownTextExpr, statusTextExpr, nodeLit, bareLit, write, indent, widgetsSource,
+        allElements, opaqueElements, unknownElementCode, expandExpr, expandNoL10nExpr, htmlViewTextFn, htmlViewTextExpr, markdownTextExpr, statusTextExpr, nodeLit, bareLit, write, indent, widgetsSource,
         setCode, widgetless, fieldChain, hideGuard, titleText, localizedTitle, fieldLit, renderTextCode, anyMacros,
         displayValueExpr, linkTextExpr, dateTimeFormat, listFieldHiddenWidget, formListColumns, headerSub, noops
     };
