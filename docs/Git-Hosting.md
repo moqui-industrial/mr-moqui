@@ -61,9 +61,16 @@ and ArtifactAuthz rows:
 Posting a commit status needs any of create, update or delete (a push right).
 
 The seed data has the `GitRepositories` group (every repository, `.*`) with ALWAYS ALL for ADMIN. Mantle adds an
-ALLOW ALL for ALL_USERS on it whose `authzServiceName` is `mantle.work.GitServices.check#GitRepositoryAuthz`: the
-active parties of a project a repository is linked to may view, create and update (not delete). A user who may not
-view a repository gets 404 as if it were not there; one who may view and not push gets 403 on a push. The server
+ALLOW ALL for ALL_USERS on it whose `authzServiceName` is `mantle.work.GitServices.check#GitRepositoryAuthz`, by the
+user's party's current roles on the projects a repository is linked to: an internal member may view, create and update;
+a lead (`ProjectManager`, `Manager`, `ProgrammerLead`, `SysArchitect`) also deletes; a client contact (`Customer`,
+`CustomerBillTo`, `ClientManager`, `ClientBilling`) only views, and only when the project shares its repositories
+(`WorkEffortSetting` `WstShareRepositories` Y). A user who may not view a repository gets 404 as if it were not there;
+one who may view and not push gets 403 on a push.
+
+A repository's rights are its own records' (`crate::user::authorize_own`): an inheritable authorization of the screen or
+service that asks (an app root's ALLOW for its users) is not taken, so the code screens and services grant no more than
+a clone does. The server
 refuses to serve at all when `<artifact-execution type="AT_GIT_REPOSITORY" authz-enabled="true"/>` is not in the conf,
 as every check would pass then. Reading and writing `git://` locations is not checked against this type.
 
@@ -283,9 +290,17 @@ In a repository linked to a project:
 | `Fixes`, `Closes` or `Resolves` before a task ID | completes and resolves the task (`WeComplete`, `WerCompleted`) when the commit reaches the default branch: only commits made after the repository was linked, and only where the task's status flow has a way to Complete |
 | A branch named `PROJ-100023` or `PROJ-100023-login-fix` (its last path segment, or the part of it before a `-`) | the branch to the task (`WorkEffortGitRef`) |
 | A tag named `<workEffortId>` or `<workEffortId>/<anything>`: `PROJ/v1.2.0`, `PROJ-MS-01/rc1`, `PROJ-100023/review` | the tag to that project, milestone or task; an annotated tag's message is read for task IDs as a commit's is |
+| A tag named as a release's version, or `v` and the version (`1.4.0`, `v1.4.0`) | the tag to that release (`WetRelease` named so) of a linked project |
+| A merge request whose source branch is named for a task, or whose title or description names one | the merge request to the task (`WorkEffortGitMergeRequest`); `Closes PROJ-12` there, or the project's `WstMergeRequestMoves`, completes it when the merge request merges |
 
 Deleting a branch or tag ends its links (`thruDate`). The rules run on pushes, mirror fetches (so a repository hosted
-elsewhere and mirrored here links too), imports and commits made through Moqui. A task's Source tab links commits,
+elsewhere and mirrored here links too), imports and commits made through Moqui. Merge requests follow the rules of
+`mantle-usl/service/WorkGit.secas.xml`, after the framework's review services: opened and edited ones link their
+tasks (`link#MergeRequestItems`), an opened or ready one moves them to In Review when the project's
+`WstMergeRequestMoves` is Y (`move#MergeRequestItemsToReview`), a merged one completes them (`complete#MergeRequestItems`), reviewers and authors are told (topics `MergeRequestReview`,
+`MergeRequestUpdate`), and a failed check tells the commit's author (`CommitStatusFailed`). `create#TaskBranch` makes a
+task's branch by the project's `WstBranchPattern`; review comments on a line are `CommunicationEvent`s with a
+`CommunicationEventGitAnchor` (`create#ReviewComment`, `resolve#ReviewThread`, `get#ReviewThreads`). A task's Source tab links commits,
 branches and tags by hand; its summary shows them, and the project summary the repositories and tags.
 `Project/GitCommit` shows a commit: its message, people, parents, linked tasks, and each changed file's diff.
 

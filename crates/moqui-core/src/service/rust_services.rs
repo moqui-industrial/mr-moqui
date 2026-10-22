@@ -51,6 +51,7 @@ static REGISTRY: OnceLock<BTreeMap<&'static str, RustServiceFn>> = OnceLock::new
 /// call reports that the feature is not built into this host.
 const FEATURE_LOCATIONS: &[(&str, &str, bool)] = &[
     ("moqui_core::service::git::", "git", cfg!(feature = "git")),
+    ("moqui_core::service::git_hosting::", "git", cfg!(feature = "git")),
     ("moqui_core::service::images::", "image", cfg!(feature = "image")),
     ("moqui_core::service::spreadsheet::", "xlsx", cfg!(feature = "xlsx")),
     (

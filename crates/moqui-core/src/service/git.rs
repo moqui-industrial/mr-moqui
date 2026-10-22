@@ -170,7 +170,7 @@ fn setup_lfs(
     let Some((provider, id)) = provider_and_id(parameters, true) else {
         return Ok(BTreeMap::new());
     };
-    if let Err(err) = crate::user::authorize(GIT_ARTIFACT_TYPE, &id, "update") {
+    if let Err(err) = crate::user::authorize_own(GIT_ARTIFACT_TYPE, &id, "update") {
         add_error(err.message());
         return Ok(BTreeMap::new());
     }
@@ -262,7 +262,7 @@ pub(super) fn viewable(parameters: &BTreeMap<String, Value>) -> Option<(GitProvi
     if crate::resource::git::server::permitted(&id, "view") {
         return Some((provider, id));
     }
-    match crate::user::authorize(GIT_ARTIFACT_TYPE, &id, "view") {
+    match crate::user::authorize_own(GIT_ARTIFACT_TYPE, &id, "view") {
         Ok(()) => Some((provider, id)),
         Err(err) => {
             add_error(err.message());
@@ -631,7 +631,7 @@ fn commit_files(
     let Some((provider, id)) = provider_and_id(parameters, true) else {
         return Ok(BTreeMap::new());
     };
-    if let Err(err) = crate::user::authorize(GIT_ARTIFACT_TYPE, &id, "update") {
+    if let Err(err) = crate::user::authorize_own(GIT_ARTIFACT_TYPE, &id, "update") {
         add_error(err.message());
         return Ok(BTreeMap::new());
     }

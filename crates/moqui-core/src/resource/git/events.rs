@@ -379,10 +379,14 @@ impl GitProvider {
         if claimed == 0 {
             return Ok(text(update.get("ecaStatus")).unwrap_or_default());
         }
+        // the events run as the user who made the change; a caller's own user (a screen's Run again, a test) is put back
+        // after, so the rest of its request is not that user's
         let user_id = text(update.get("userId"));
+        let mut caller: Option<Option<String>> = None;
         if let Some(user_id) = &user_id {
             if crate::user::current_user_id().ok().flatten().as_deref() != Some(user_id.as_str()) {
                 if let Some(username) = username_of(&entity, user_id) {
+                    caller = Some(crate::user::current_username().ok().flatten());
                     if let Err(err) = crate::user::internal_login_user(&username) {
                         tracing::warn!(update = update_id, "git update events run without their user: {err}");
                     }
@@ -393,6 +397,19 @@ impl GitProvider {
             Ok(errors) => errors,
             Err(err) => vec![err.message().to_string()],
         };
+        match caller {
+            Some(Some(username)) => {
+                if let Err(err) = crate::user::internal_login_user(&username) {
+                    tracing::error!(
+                        update = update_id,
+                        "the caller's user {username} was not put back after the git update events: {err}"
+                    );
+                    crate::user::session::clear_login();
+                }
+            }
+            Some(None) => crate::user::session::clear_login(),
+            None => {}
+        }
         let status = if errors.is_empty() { "done" } else { "failed" };
         let _rows = rows_guard();
         let mut fields = vec![

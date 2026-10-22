@@ -464,7 +464,7 @@ fn may_push(id: &str) -> bool {
 /// rule (`FileServices.get#DriveAccess`): view to fetch, edit to push new refs and fast-forwards on a drive that is not
 /// read only, manage to force a push or delete a ref. Asked once per request and action.
 pub(crate) fn permitted(id: &str, action: &str) -> bool {
-    if crate::user::authorize(GIT_ARTIFACT_TYPE, id, action).is_ok() {
+    if crate::user::authorize_own(GIT_ARTIFACT_TYPE, id, action).is_ok() {
         return true;
     }
     let key = format!("git.driveAccess.{id}");
