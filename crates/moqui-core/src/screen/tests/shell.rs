@@ -77,6 +77,15 @@ const SERVICES: &str = r#"<services>
         <out-parameters><parameter name="counts" type="Map"/></out-parameters>
         <actions><script>counts = {zone: ec.user.timeZone, locale: ec.user.locale, user: userId}</script></actions>
     </service>
+    <service verb="get" noun="IdiomCounts" authenticate="false">
+        <description>the Java idiom of Mantle's get#ShellCounts: off for the reads, on again after only if it was on</description>
+        <in-parameters><parameter name="userId"/></in-parameters>
+        <out-parameters><parameter name="counts" type="Map"/></out-parameters>
+        <actions><script><![CDATA[
+            const wasDisabled = ec.artifactExecution.disableAuthz()
+            try { counts = {idiom: true, wasDisabled: wasDisabled} } finally { if (!wasDisabled) ec.artifactExecution.enableAuthz() }
+        ]]></script></actions>
+    </service>
     <service verb="get" noun="BadCounts" authenticate="false">
         <in-parameters><parameter name="userId"/></in-parameters>
         <out-parameters><parameter name="counts" type="Map"/></out-parameters>
@@ -1284,4 +1293,87 @@ fn the_drawer_choice_is_a_preference_the_shell_data_gives_back() {
         "{}",
         response.body_text()
     );
+}
+
+/// One execution context renders several screens, as a spec, a TUI session or an agent's renders do: the shell data
+/// (whose counts service runs with authorization disabled by the framework and takes the Java idiom
+/// `wasDisabled = disableAuthz(); ...; if (!wasDisabled) enableAuthz()`), a screen and a transition under an app whose
+/// inheritable authorization is ALWAYS, a service called from that transition. None of them leaves authorization
+/// disabled after it: the user is still refused the screen of an app they may not open.
+#[test]
+fn renders_under_always_and_the_shell_counts_leave_authorization_as_it_was() {
+    let dir = tree("authz-scope");
+    std::fs::write(
+        dir.join("Apps/Open/List.xml"),
+        r#"<screen require-authentication="true" default-menu-title="List">
+            <transition name="touch"><actions><script><![CDATA[
+                const shellData = sri.getShellData()
+                const out = ec.service.sync().name('test.Shell.get#IdiomCounts').parameters({userId: ec.user.userId}).call()
+                ec.web.sendJsonResponse({counts: shellData.counts, direct: out.counts, disabled: ec.artifactExecution.authzDisabled()})
+            ]]></script></actions><default-response type="none"/></transition>
+            <actions><script>const shellData = sri.getShellData()</script></actions>
+            <widgets><label text="List"/></widgets></screen>"#,
+    )
+    .unwrap();
+    let world = world(&dir);
+    world.user("idiom", None);
+    theme_value(
+        &world,
+        "IDIOM_QUASAR",
+        1,
+        "STRT_SHELL_COUNTS_SERVICE",
+        "test.Shell.get#IdiomCounts",
+    );
+    row(
+        &world,
+        "moqui.security.UserScreenTheme",
+        &[
+            ("userId", Value::string("idiom")),
+            ("screenThemeTypeEnumId", Value::string("STT_INTERNAL_QUASAR")),
+            ("screenThemeId", Value::string("IDIOM_QUASAR")),
+        ],
+    );
+    let root = root_of(&dir);
+    let secret = dir.join("Apps/Secret.xml").to_string_lossy().into_owned();
+    let ctx = world.factory.new_context();
+    let _entered = ctx.enter();
+    crate::user::internal_login_user("idiom").unwrap();
+    let test = crate::screen::ScreenTest::new(&world.factory).root_screen(root.clone());
+    let still_refused = |step: &str| {
+        assert!(!ctx.authz_disabled(), "authorization is disabled after {step}");
+        let err = crate::user::authorize("AT_XML_SCREEN", &secret, "view").unwrap_err();
+        assert!(err.to_string().contains("not authorized"), "after {step}: {err}");
+    };
+    still_refused("login");
+
+    // the shell data: its counts service ran with authorization disabled, by the framework
+    let data = test.render("shellData", BTreeMap::new()).unwrap();
+    assert_eq!(data.status(), 200, "{}", data.text());
+    let data = data.json().unwrap();
+    assert_eq!(data["counts"], json!({"idiom": true, "wasDisabled": true}), "{data}");
+    still_refused("the shell data");
+
+    // a screen under ALWAYS whose actions get the shell data
+    let list = test.render("apps/open/List", BTreeMap::new()).unwrap();
+    assert_eq!(list.status(), 200, "{}", list.text());
+    assert!(list.text().contains("List"), "{}", list.text());
+    still_refused("a screen under ALWAYS");
+
+    // a transition under ALWAYS: the shell data, and the service called directly with authorization on
+    let touch = test.render("apps/open/List/touch", BTreeMap::new()).unwrap();
+    assert_eq!(touch.status(), 200, "{}", touch.text());
+    let touch = touch.json().unwrap();
+    assert_eq!(touch["direct"], json!({"idiom": true, "wasDisabled": false}), "{touch}");
+    assert_eq!(touch["disabled"], json!(false), "{touch}");
+    still_refused("a transition under ALWAYS");
+
+    // the screen the user may not open is still refused by a render
+    let refused = test.render("apps/secret", BTreeMap::new());
+    assert!(
+        refused.as_ref().map_or(true, |out| !out.text().contains("secret")),
+        "{:?}",
+        refused.map(|out| out.text())
+    );
+    still_refused("a refused render");
+    let _ = std::fs::remove_dir_all(&dir);
 }
