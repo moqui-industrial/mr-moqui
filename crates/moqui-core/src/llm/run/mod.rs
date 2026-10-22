@@ -51,6 +51,7 @@ use serde_json::{json, Value as Json};
 
 use crate::context::{ExecutionContext, ExecutionContextFactory};
 use crate::entity::{EntityFacade, EntityValue};
+use crate::llm::conf::Tier;
 use crate::llm::prompt::Surface;
 use crate::llm::provider::CancelToken;
 use crate::llm::tools::{ClientCaps, Pause, PauseKind};
@@ -248,6 +249,8 @@ pub struct RunRow {
     pub cost: Decimal,
     pub limits: RunLimits,
     pub active_seconds: i64,
+    /// The tier the client chose; the agent's own tier wins.
+    pub tier: Option<Tier>,
 }
 
 impl RunRow {
@@ -295,6 +298,7 @@ impl RunRow {
                     .filter(|n| *n > 0),
             },
             active_seconds: int_of(row, "activeSeconds").unwrap_or(0),
+            tier: text_of(row, "tier").and_then(|tier| Tier::parse(&tier)),
         }
     }
 
@@ -351,6 +355,15 @@ pub struct StartRequest {
     /// The tools run as the agent's `runAsUserId` instead of the user: for internal callers only (a trigger or a
     /// scheduled job), never from a service a user calls.
     pub run_as_agent_user: bool,
+    /// The tier the client chose (the drawer's Fast, Balanced, Thorough); an agent that names its own keeps it, and a
+    /// message queued to an active run leaves that run's as it is.
+    pub tier: Option<Tier>,
+    /// The screen state of a new conversation (the drawer's page when it sent the first message), so its first screen
+    /// session opens where the user is.
+    pub screen_state: Option<crate::llm::screen::ScreenState>,
+    /// The new run is made but not handed to the agent pool: the caller does what must come first (the drawer's
+    /// follow claim and page sync, only once the run is there) and then calls [`submit_started`].
+    pub defer_submit: bool,
 }
 
 /// What [`start_run`] did.
@@ -397,6 +410,9 @@ pub fn start_run(factory: &Arc<ExecutionContextFactory>, request: &StartRequest)
         }
         if request.user_id.is_empty() {
             return Err(Error::new("a run needs a user"));
+        }
+        if let Some(existing) = existing_message(&facade, &request.user_id, request.client_message_id.as_deref())? {
+            return Ok(existing);
         }
         if let Some(client_request_id) = &request.client_request_id {
             if let Some(row) = facade
@@ -489,18 +505,34 @@ pub fn start_run(factory: &Arc<ExecutionContextFactory>, request: &StartRequest)
         sink.signal(payload);
         quietly(|| sink.flush_logged());
     }
-    if !started.queued && !started.existing && started.state == RunState::Submitted {
-        engine.local(&started.run_id);
-        if let Err(error) = pool::submit(factory, &started.run_id) {
-            tracing::error!(
-                "agent run {} could not be queued, so the recovery sweep will start it: {error}",
-                started.run_id
-            );
-            quietly(|| lease::release(&facade, &started.run_id, engine.node()))?;
-            engine.forget(&started.run_id);
-        }
+    if !request.defer_submit {
+        submit_started(factory, &started)?;
     }
     Ok(started)
+}
+
+/// Hand a run [`start_run`] made to the agent pool (once; a queued message, an existing run or a rejected one has
+/// nothing to hand). A run that cannot be queued is released for the recovery sweep.
+///
+/// # Errors
+///
+/// Returns an error when the lease of a run the pool refused cannot be released.
+pub fn submit_started(factory: &Arc<ExecutionContextFactory>, started: &Started) -> Result<(), Error> {
+    if started.queued || started.existing || started.state != RunState::Submitted {
+        return Ok(());
+    }
+    let facade = facade_of(factory)?;
+    let engine = engine(factory);
+    engine.local(&started.run_id);
+    if let Err(error) = pool::submit(factory, &started.run_id) {
+        tracing::error!(
+            "agent run {} could not be queued, so the recovery sweep will start it: {error}",
+            started.run_id
+        );
+        quietly(|| lease::release(&facade, &started.run_id, engine.node()))?;
+        engine.forget(&started.run_id);
+    }
+    Ok(())
 }
 
 enum Begun {
@@ -540,7 +572,7 @@ fn begin_run(
                 let state = load_run(facade, &active)?.map(|run| run.state);
                 match state {
                     Some(state) if !state.is_terminal() => {
-                        add_input(
+                        add_input_with(
                             facade,
                             &active,
                             &request.user_id,
@@ -548,6 +580,7 @@ fn begin_run(
                             &request.text,
                             None,
                             request.tail.as_deref(),
+                            request.client_message_id.as_deref(),
                         )?;
                         return Ok(Begun::Queued {
                             run_id: active,
@@ -572,6 +605,11 @@ fn begin_run(
             row.set("statusId", Value::string("AgcActive"));
             row.set("lastMessageSeq", Value::I64(0));
             row.set("createdDate", stamp(now));
+            if let Some(state) = &request.screen_state {
+                if let Ok(text) = serde_json::to_string(state) {
+                    row.set("screenStateJson", Value::string(text));
+                }
+            }
             row.create(facade)?;
             text_of(&row, "conversationId").unwrap_or_default()
         }
@@ -608,6 +646,10 @@ fn begin_run(
     }
     if let Some(client_request_id) = &request.client_request_id {
         run.set("clientRequestId", Value::string(client_request_id));
+    }
+    // the client's tier, unless the agent names its own
+    if let Some(tier) = request.tier.filter(|_| agent.tier.is_none()) {
+        run.set("tier", Value::string(tier.as_str()));
     }
     let set_limit = |run: &mut EntityValue, field: &str, value: Option<Value>| {
         if let Some(value) = value {
@@ -648,6 +690,9 @@ fn begin_run(
         run.delete(facade)?;
         return Ok(Begun::Stale);
     }
+    // the AT_LLM tarpit counts a run where it is made, under the conversation's lock: never a message handed to the
+    // active run, a step, a start that found the conversation taken, or a send again (J25); a refusal rolls this back
+    count_run_hit(&agent.agent_id)?;
     let metadata = request
         .tail
         .as_ref()
@@ -736,6 +781,21 @@ pub(crate) fn add_input(
     data: Option<&Json>,
     tail: Option<&str>,
 ) -> Result<String, Error> {
+    add_input_with(facade, run_id, user_id, kind_enum_id, text, data, tail, None)
+}
+
+/// [`add_input`] of a message with the client's own id of it, which the folded message keeps.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_input_with(
+    facade: &EntityFacade,
+    run_id: &str,
+    user_id: &str,
+    kind_enum_id: &str,
+    text: &str,
+    data: Option<&Json>,
+    tail: Option<&str>,
+    client_message_id: Option<&str>,
+) -> Result<String, Error> {
     let mut row = facade.make_value(INPUT)?;
     row.set_sequenced_id_primary(facade)?;
     row.set("runId", Value::string(run_id));
@@ -755,9 +815,81 @@ pub(crate) fn add_input(
     if let Some(data) = data {
         row.set("dataJson", Value::string(data.to_string()));
     }
+    if let Some(client_message_id) = client_message_id {
+        row.set("clientMessageId", Value::string(client_message_id));
+    }
     row.set("receivedDate", stamp(now_millis()));
     row.create(facade)?;
     Ok(text_of(&row, "inputId").unwrap_or_default())
+}
+
+/// What a message the user sent before with `client_message_id` became: the run it started or went to, so the same
+/// send again changes nothing. `None` when there is none (or no id).
+///
+/// # Errors
+///
+/// Returns an error when the rows cannot be read.
+pub fn existing_message(
+    facade: &EntityFacade,
+    user_id: &str,
+    client_message_id: Option<&str>,
+) -> Result<Option<Started>, Error> {
+    let Some(client_message_id) = client_message_id.filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    let message = facade
+        .find(MESSAGE)?
+        .eq("userId", Value::string(user_id))
+        .eq("clientMessageId", Value::string(client_message_id))
+        .disable_authz()
+        .one()?;
+    let (run_id, queued) = match message.and_then(|row| text_of(&row, "runId")) {
+        Some(run_id) => {
+            // a message folded into a run that was active when it came was queued
+            let folded = facade
+                .find(INPUT)?
+                .eq("userId", Value::string(user_id))
+                .eq("clientMessageId", Value::string(client_message_id))
+                .disable_authz()
+                .count()?
+                > 0;
+            (run_id, folded)
+        }
+        None => match facade
+            .find(INPUT)?
+            .eq("userId", Value::string(user_id))
+            .eq("clientMessageId", Value::string(client_message_id))
+            .disable_authz()
+            .one()?
+            .and_then(|row| text_of(&row, "runId"))
+        {
+            Some(run_id) => (run_id, true),
+            None => return Ok(None),
+        },
+    };
+    Ok(load_run(facade, &run_id)?.map(|run| Started {
+        run_id: run.run_id,
+        conversation_id: run.conversation_id,
+        state: run.state,
+        queued,
+        existing: true,
+    }))
+}
+
+/// Count a new run of `agent_id` against the user's AT_LLM tarpit (`agent:<agentId>`): one hit per run, never per
+/// step or per message. A user over the limit is refused with the seconds to wait.
+///
+/// # Errors
+///
+/// Returns the tarpit's refusal ([`crate::context::ErrorKind::Tarpit`], with `retry_after`).
+pub fn count_run_hit(agent_id: &str) -> Result<(), Error> {
+    let name = format!("agent:{agent_id}");
+    ExecutionContext::with_current(|ec| -> Result<(), Error> {
+        ec.push_checked("AT_LLM", &name, "view", false, true, None)?;
+        let _ = ec.pop();
+        Ok(())
+    })
+    .unwrap_or(Ok(()))
 }
 
 /// Input for a run from its user: a message (folded in as steering while the run works), an answer to its question,
@@ -1074,6 +1206,9 @@ pub(crate) struct Change {
     pub error: Option<(String, String)>,
     pub result: Option<Json>,
     pub hold: Hold,
+    /// Leave the run as it is when a message for it is waiting (a run about to complete goes on to fold it in),
+    /// checked under the conversation's lock, which a message queued to the run takes first.
+    pub unless_input: bool,
 }
 
 impl Change {
@@ -1120,6 +1255,18 @@ pub(crate) fn transition(
             return Ok(());
         }
         run.state.move_to(to)?;
+        if change.unless_input {
+            // a message queued meanwhile holds the conversation until its input is stored: wait for it, then look
+            facade
+                .find(CONVERSATION)?
+                .eq("conversationId", Value::string(&run.conversation_id))
+                .for_update(true)
+                .disable_authz()
+                .one()?;
+            if step::open_inputs(facade, run_id)?.iter().any(|input| input.kind == "message") {
+                return Ok(());
+            }
+        }
         let now = now_millis();
         row.set("statusId", Value::string(to.status_id()));
         row.set(

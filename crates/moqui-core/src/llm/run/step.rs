@@ -218,6 +218,43 @@ fn append_in_tx(
     Ok(message_id)
 }
 
+/// The model of a step: the agent's feature binding (or its tier); when the client chose a tier the agent leaves open
+/// and the bound model is of another, the first usable model of the chosen tier, at the agent's reasoning level or the
+/// binding's.
+fn resolve_target(
+    llm: &crate::llm::LlmFacade,
+    facade: &EntityFacade,
+    agent: &AgentDef,
+    run: &RunRow,
+) -> Result<Target, Error> {
+    if !llm.enabled() {
+        return Err(Error::new("the llm-facade is disabled"));
+    }
+    let registry = llm.registry(facade);
+    let bound = registry.resolve(&Want {
+        feature: Some(agent.feature_id.as_deref().unwrap_or("assist")),
+        tier: agent.tier,
+        reasoning: agent.reasoning,
+        local_only: agent.local_only,
+        ..Want::default()
+    });
+    let Some(tier) = run.tier.filter(|_| agent.tier.is_none()) else {
+        return bound;
+    };
+    if bound.as_ref().is_ok_and(|target| target.model.tier == tier) {
+        return bound;
+    }
+    match registry.tier_model(tier, agent.local_only) {
+        Some(model_id) => registry.resolve(&Want {
+            model: Some(model_id),
+            reasoning: agent.reasoning.or_else(|| bound.as_ref().ok().map(|target| target.reasoning)),
+            local_only: agent.local_only,
+            ..Want::default()
+        }),
+        None => bound,
+    }
+}
+
 /// Input for a run not taken yet.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct OpenInput {
@@ -226,6 +263,8 @@ pub(crate) struct OpenInput {
     pub kind: String,
     pub text: String,
     pub data: Option<Json>,
+    /// The client's own id of a message, which the folded message keeps.
+    pub client_message_id: Option<String>,
 }
 
 impl OpenInput {
@@ -270,6 +309,7 @@ pub(crate) fn open_inputs(facade: &EntityFacade, run_id: &str) -> Result<Vec<Ope
             .to_string(),
             text: text_of(row, "messageText").unwrap_or_default(),
             data: text_of(row, "dataJson").and_then(|text| serde_json::from_str(&text).ok()),
+            client_message_id: text_of(row, "clientMessageId"),
         })
         .collect())
 }
@@ -779,16 +819,7 @@ fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalR
         quietly(|| transition(&facade, &mut sink, run_id, RunState::Working, &Change::default()))?;
     }
     let llm = crate::llm::facade(factory);
-    let target = match llm.resolve(
-        &facade,
-        &Want {
-            feature: Some(agent.feature_id.as_deref().unwrap_or("assist")),
-            tier: agent.tier,
-            reasoning: agent.reasoning,
-            local_only: agent.local_only,
-            ..Want::default()
-        },
-    ) {
+    let target = match resolve_target(&llm, &facade, &agent, &run) {
         Ok(target) => target,
         Err(error) => return fail(&facade, &mut sink, run_id, "no_model", &error.to_string()),
     };
@@ -991,7 +1022,7 @@ impl Turn {
                         Some(&run_id),
                         "user",
                         Some(&self.user.user_id),
-                        None,
+                        input.client_message_id.as_deref(),
                         &[Part::text(&input.text)],
                         metadata.as_ref(),
                         None,
@@ -1312,10 +1343,15 @@ impl Turn {
                         &Change {
                             reason,
                             result: Some(result),
+                            unless_input: true,
                             ..Change::default()
                         },
                     )
                 })?;
+                // a message that came during this step is folded in by the next one, which answers it
+                if quietly(|| load_run(&facade, &run_id))?.is_some_and(|run| run.state == RunState::Working) {
+                    return Ok(Next::Continue);
+                }
                 super::engine(&self.factory).forget_if(&run_id, &self.local);
                 Ok(Next::Stop)
             }

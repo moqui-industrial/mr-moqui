@@ -265,6 +265,12 @@ pub(super) fn start(
     let expires = now + ttl;
     let mut sink = EventSink::new(factory, facade, &view.run_id, &view.user_id);
     let changes = view.changes();
+    // the page events go to the conversation's follow owner (the deciding tab claims it), for its page as it is now
+    let stamp = crate::llm::assist::follow_stamp(facade, &run.conversation_id);
+    let stamped = |mut payload: Json| {
+        stamp.apply(&mut payload);
+        payload
+    };
     let handoff_id = in_tx(facade, || {
         let decided = vec![
             ("decisionUserId", Value::string(decider.user_id())),
@@ -312,19 +318,20 @@ pub(super) fn start(
             .collect();
         sink.emit(
             "handoff.started",
-            json!({"handoffId": handoff_id, "approvalId": view.approval_id, "path": target.path,
+            stamped(json!({"handoffId": handoff_id, "approvalId": view.approval_id, "path": target.path,
                 "parameters": target.parameters, "form": target.form, "transition": target.transition,
-                "values": values, "expiresAt": expires}),
+                "values": values, "expiresAt": expires})),
         );
         sink.emit(
             "ui.navigate",
-            json!({"path": target.path, "parameters": target.parameters, "title": view.summary(), "handoffId": handoff_id}),
+            stamped(json!({"path": target.path, "parameters": target.parameters, "title": view.summary(),
+                "handoffId": handoff_id})),
         );
         for change in &changes {
             sink.emit(
                 "ui.fill",
-                json!({"form": target.form, "domId": target.form, "occurrence": 0, "field": change.field,
-                    "value": change.proposed, "label": change.label, "handoffId": handoff_id}),
+                stamped(json!({"form": target.form, "domId": target.form, "occurrence": 0, "field": change.field,
+                    "value": change.proposed, "label": change.label, "handoffId": handoff_id})),
             );
         }
         sink.signal(json!({"runId": view.run_id, "approvalId": view.approval_id, "handoffId": handoff_id,

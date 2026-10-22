@@ -600,6 +600,7 @@ fn client_components_are_precompiled() {
         &[
             &read("js/MoquiLib.js"),
             &read("js/WebrootChat.js"),
+            &read("js/WebrootAssist.js"),
             &read("js/WebrootVue.qvt.js"),
         ],
     )

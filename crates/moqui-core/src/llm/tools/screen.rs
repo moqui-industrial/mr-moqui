@@ -36,6 +36,7 @@ use super::schema::{object, Property};
 use super::{caps, AgentTool, Classification, ToolInput, ToolOutcome, ToolResult, ToolSpec};
 use crate::context::{ExecutionContext, ExecutionContextFactory};
 use crate::llm::approval::{self, ApprovalRequest, ChangeRow, HandoffTarget, PreviewMode, Requested, Resumed, TargetKind};
+use crate::llm::assist::FollowStamp;
 use crate::llm::run::context::{ScreenHandle, TurnContext};
 use crate::llm::screen::{
     self, ApprovalGrant, OpenSpec, PendingWrite, ScreenAnswer, ScreenCommand, ScreenError, ScreenSessions,
@@ -105,6 +106,9 @@ impl AgentTool for ScreenTool {
             };
         }
         let follow = ctx.caps.has(caps::SCREEN_FOLLOW);
+        // the follow owner and its page version as the command starts: a page the user moved on from since drops what
+        // this command makes
+        let stamp = follow.then(|| follow_stamp_of(&factory, ctx)).flatten();
         let Some(handle) = ctx.screen.as_deref_mut() else {
             return ToolOutcome::Failed("this run has no screen session".to_string());
         };
@@ -127,9 +131,7 @@ impl AgentTool for ScreenTool {
         let conversation_id = handle.conversation_id.clone();
         keep_state(ctx, &factory, &conversation_id, &answer.state);
         if follow {
-            for event in &answer.follow {
-                ctx.events.emit(&event.event_type, event.payload.clone());
-            }
+            emit_follow(ctx, &answer.follow, stamp.as_ref());
         }
         match answer.held.take() {
             Some(write) => held_write(ctx, &factory, &answer, write),
@@ -391,9 +393,8 @@ fn execute(
                 keep_state(ctx, factory, &conversation_id, &answer.state);
             }
             if ctx.caps.has(caps::SCREEN_FOLLOW) {
-                for event in &answer.follow {
-                    ctx.events.emit(&event.event_type, event.payload.clone());
-                }
+                let stamp = follow_stamp_of(factory, ctx);
+                emit_follow(ctx, &answer.follow, stamp.as_ref());
             }
             let line = if answer.ok {
                 format!("The user approved {transition}, and it was saved.")
@@ -573,6 +574,24 @@ fn replace_outcome(text: &str, outcome: &str) -> String {
         outcome.to_string()
     } else {
         format!("{kept}\n{outcome}")
+    }
+}
+
+/// The follow stamp of the run's conversation ([`crate::llm::assist::follow_stamp`]), when it has one.
+fn follow_stamp_of(factory: &Arc<ExecutionContextFactory>, ctx: &TurnContext<'_>) -> Option<FollowStamp> {
+    let conversation_id = ctx.screen.as_deref().map(|handle| handle.conversation_id.clone())?;
+    let facade = factory.entity()?;
+    Some(crate::llm::assist::follow_stamp(&facade, &conversation_id))
+}
+
+/// The session's follow events as stored events of the run, each stamped with the follow owner and its page version.
+fn emit_follow(ctx: &mut TurnContext<'_>, events: &[screen::FollowEvent], stamp: Option<&FollowStamp>) {
+    for event in events {
+        let mut payload = event.payload.clone();
+        if let Some(stamp) = stamp {
+            stamp.apply(&mut payload);
+        }
+        ctx.events.emit(&event.event_type, payload);
     }
 }
 

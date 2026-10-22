@@ -29,6 +29,7 @@ use example as _;
 
 mod agent_eval;
 mod agent_screens;
+mod assist;
 mod backup;
 mod cluster_notify;
 mod collab;

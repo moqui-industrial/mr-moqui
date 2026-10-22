@@ -200,4 +200,41 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="serviceClassification"/>
         </out-parameters>
     </service>
+
+    <service verb="get" noun="AgentAuditView" type="rust" location="moqui_core::llm::assist::audit::get_audit_view"
+            transaction="ignore">
+        <description>For System > LLM > Conversations, Runs and Approvals: the content of a conversation (its
+            transcript, messageList, and its runs), a run (stepList; toolCallList with arguments and results; eventList
+            with payloads; approvalList) or an approval (with its arguments, snapshot, changes and edited arguments).
+            Shown (shown true) for the content's own user, or for a user with AgentAudit, whose every read is logged in
+            AgentAuditLog with the reason; for anyone else only the runs, steps and the tool calls' names and statuses
+            come back, with the reason why. AgentAdmin alone does not show another user's content (D12).</description>
+        <in-parameters>
+            <parameter name="conversationId"/>
+            <parameter name="runId"/>
+            <parameter name="approvalId"/>
+            <parameter name="reason"><description>Why the auditor reads it, for the log</description></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="shown" type="Boolean"/>
+            <parameter name="audited" type="Boolean"/>
+            <parameter name="reason"/>
+            <parameter name="conversation" type="Map"/>
+            <parameter name="messageList" type="List"/>
+            <parameter name="runList" type="List"/>
+            <parameter name="stepList" type="List"/>
+            <parameter name="toolCallList" type="List"/>
+            <parameter name="eventList" type="List"/>
+            <parameter name="approvalList" type="List"/>
+            <parameter name="approval" type="Map"/>
+        </out-parameters>
+    </service>
+
+    <service verb="cancel" noun="AgentRun" type="rust" location="moqui_core::llm::assist::audit::cancel_run_admin"
+            transaction="ignore">
+        <description>Stop any user's run (System > LLM > Runs), as the user's own Stop does: the partial answer is kept.
+            It stops the run and acts for no one. Needs AgentAdmin.</description>
+        <in-parameters><parameter name="runId" required="true"/></in-parameters>
+        <out-parameters><parameter name="statusId"/></out-parameters>
+    </service>
 </services>

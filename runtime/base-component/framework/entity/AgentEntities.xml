@@ -113,7 +113,10 @@ along with this software (see the LICENSE.md file). If not, see
             (activeRunId, set with a conditional update). The frozen prefix of the prompt (systemText, toolsHash,
             promptVariant) is fixed when the conversation starts, so every call shares the provider's prefix cache;
             compaction keeps a summary of the messages through compactedThroughSeq. screenStateJson is the state of its
-            screen session, recordEntityName and recordId the record it is attached to.</description>
+            screen session, recordEntityName and recordId the record it is attached to. clientId is the follow owner (the
+            drawer tab whose page follows the agent: the one that sent the last turn or claimed follow), and
+            contextVersion the newest page version its tab reported (raised when the user navigates); the agent's
+            ui.* events carry both, so a tab applies only its own and only for the page they were made for.</description>
         <field name="conversationId" type="id" is-pk="true"/>
         <field name="userId" type="id"/>
         <field name="agentId" type="id"/>
@@ -137,6 +140,7 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="recordEntityName" type="text-medium"/>
         <field name="recordId" type="text-medium"/>
         <field name="clientId" type="id"/>
+        <field name="contextVersion" type="number-integer"/>
         <field name="createdDate" type="date-time"/>
         <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
         <relationship type="one-nofk" related="moqui.agent.AgentDefinition" short-alias="agent"/>
@@ -194,6 +198,8 @@ along with this software (see the LICENSE.md file). If not, see
             raises it</description></field>
         <field name="capsText" type="text-medium"><description>The surface capabilities in effect for the run (a comma
             list), which decide the tools offered</description></field>
+        <field name="tier" type="text-short"><description>The tier the client chose for this run (fast, balanced,
+            thorough); an agent that names its own tier keeps it</description></field>
         <field name="deadlineDate" type="date-time"/>
         <field name="activeSeconds" type="number-integer"><description>Wall time spent working, without pauses</description></field>
         <field name="submittedDate" type="date-time"/>
@@ -265,10 +271,13 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="dataJson" type="text-very-long"/>
         <field name="receivedDate" type="date-time"/>
         <field name="consumedDate" type="date-time"/>
+        <field name="clientMessageId" type="text-medium"><description>The client's own id of a message (a drawer turn
+            sent while a run was active), unique with the user as on AgentMessage, so a send tried again finds it</description></field>
         <relationship type="one-nofk" related="moqui.agent.AgentRun" short-alias="run"/>
         <relationship type="one" title="AgentInputKind" related="moqui.basic.Enumeration" short-alias="inputKind">
             <key-map field-name="inputKindEnumId"/></relationship>
         <index name="AGENT_INPUT_RUN"><index-field name="runId"/><index-field name="consumedDate"/></index>
+        <index name="AGENT_INPUT_CLIENT" unique="true"><index-field name="userId"/><index-field name="clientMessageId"/></index>
     </entity>
 
     <entity entity-name="AgentMessage" package="moqui.agent" use="transactional" cache="never">

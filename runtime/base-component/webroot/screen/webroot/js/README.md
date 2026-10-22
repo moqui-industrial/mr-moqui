@@ -64,6 +64,7 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 | `WebrootVue.qvt.js` | the `m-*` components and the application. `moqui.qvt.components` holds the definitions. |
 | `WebrootPublic.qvt.js` | the public shell of the anonymous token routes (`/s/<token>`; `docs/Revision-Management.md`, Token routes): on the page `webroot/PublicShell.xml` makes, with its own settings block `moqui-public-config` (`route {name, basePath, title, renderModes}`, `context`, the locale and the theme's Quasar configuration), it mounts the route's screen (loaded as `basePath.qvt`, `.qvue` or `.qjs`) with the `m-*` components of `WebrootVue.qvt.js`, which loads before it and starts nothing there. The root offers the parts of `m-qapps-root` the components call; a link under the route stays on the page, any other leaves it. |
 | `WebrootChat.js` | `moqui.chat`: the chat store and presence of the shell (below, Chat store and presence), and the account menu's status components, in `moqui.qvtComponents`, which `WebrootVue.qvt.js` registers. Loads before it. Runs under Node. |
+| `WebrootAssist.js` | `moqui.assist`: the Assist drawer (`m-assist-button`, `m-shell-assist` and its parts, in `moqui.qvtComponents`), its store, transport and follow; the contract with the server is `docs/Assist.md`. Loads after `WebrootChat.js` and before `WebrootVue.qvt.js`; `qvt.registerLate` takes components that load after it. Runs under Node (`WebrootAssist.test.js`). |
 | `MoquiQzComponent.js` | QZ Tray 2.3 printing, loaded after `/libs/qz-tray/qz-tray.js` and only when the user preference `qz.print.enabled` is `true`. |
 | `../css/WebrootVue.qvt.css` | the styles of the shell, the div tables and the widgets |
 
@@ -71,7 +72,7 @@ The tests are `MoquiLib.test.js`, `MoquiL10n.test.js`, `WebrootVue.qvt.test.js`,
 screen context's forms and the root's shell data), `WebrootVue.qvt.records.test.js` (the HTML of the rich-text editor, the record panel URL,
 avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer), `WebrootVue.qvt.htmlview.test.js` (m-html-view's cleaning), `WebrootVue.qvt.views.test.js` (the board's columns, the calendar's times, events and lanes, and what a move posts), `WebrootVue.qvt.markdown.test.js` (m-markdown on the vendored Marked: heading ids, links, wiki links, tables), `WebrootVue.qvt.coedit.test.js`
 (m-coedit's provider on the vendored bundle's Yjs, with a fake notification client and server: the join, batching, acks, peers, read-only,
-errors, a join again after a reconnect, two editors converging), `WebrootPublic.qvt.test.js` (the public shell's screen load and links), `WebrootChat.test.js` (the chat store: presence,
+errors, a join again after a reconnect, two editors converging), `WebrootPublic.qvt.test.js` (the public shell's screen load and links), `WebrootAssist.test.js` (Assist: the reducer, follow, safePath, commands, chips, the thread's Markdown, the shell hooks), `WebrootChat.test.js` (the chat store: presence,
 typing, read markers, unread counts, a pushed event merged into a timeline, do not disturb, the status components) and `WebrootVue.qvt.static.test.js` (the script and package
 the server answers for `crates/moqui-core` `testdata/Static/Items` run on the real Vue runtime over a fake DOM; every component template compiles with the vendored
 Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
@@ -82,7 +83,7 @@ browser (mounting, Quasar menus and popups, dialogs, posts, the lazy libraries, 
 
 `/qapps/**` is one HTML page, `includes/WebrootVue.qvt.html.fancy`, made by the pre-actions of `qapps.xml`. The libraries load at the end
 of the body in this order: `vue/vue.global.prod.js`, `quasar/quasar.umd.prod.js`, `quasar/lang/<pack>.umd.prod.js`, `MoquiLib.js`,
-`MoquiL10n.js`, `WebrootChat.js`, `WebrootVue.qvt.render.js`, `WebrootVue.qvt.js`. Compiling templates in the browser needs `unsafe-eval` in a content security policy; the page has no
+`MoquiL10n.js`, `WebrootChat.js`, `WebrootAssist.js`, `WebrootVue.qvt.render.js`, `WebrootVue.qvt.js`. Compiling templates in the browser needs `unsafe-eval` in a content security policy; the page has no
 inline script and no inline event handler, and the settings are a data block:
 
 ```html
@@ -101,6 +102,7 @@ inline script and no inline event handler, and the settings are a data block:
 | `notificationEndpoint` | the path of the notification WebSocket, from `webapp_notification_endpoint`. Empty means no socket is opened. |
 | `navPlugins`, `accountPlugins` | theme values `STRT_HEADER_NAVBAR_COMP` and `STRT_HEADER_ACCOUNT_COMP`: URLs of components for the header |
 | `qz` | `{enabled}`: print through QZ Tray |
+| `assist` | whether Assist is on for the user (the `llm` feature built and enabled, and `AgentUse`); without it the drawer makes no request |
 | `qvt` | `{build, handles}`: the Vue build this page loaded (`compiler`, or `runtime` with `webapp_qvt_static_only=true`) and the `X-Moqui-Qvt` responses it handles (`merged-fragment`, `static-template`) |
 | `userAccount`, `preferences` | the snapshot of the user for the `ec` of a server-static screen: `{partyId, emailAddress, userFullName}` (no password column) and the user's preferences by key |
 | `labels` | text the shell needs localized |

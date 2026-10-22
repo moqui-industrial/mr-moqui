@@ -46,7 +46,9 @@ const FETCH_SPY: &str = r#"(() => {
         const url = String((input && input.url) || input);
         const method = (init && init.method) || (input && input.method) || "GET";
         // the fields a form posted, for a check of what a request carried
-        const sent = init && init.body && typeof init.body.entries === "function" ? Array.from(init.body.entries()).map(([key, value]) => key + "=" + value) : [];
+        const body = init && init.body;
+        const sent = body && typeof body.entries === "function" ? Array.from(body.entries()).map(([key, value]) => key + "=" + value)
+            : typeof body === "string" ? body.split("&").map((pair) => { try { return decodeURIComponent(pair.replace(/\+/g, " ")); } catch (err) { return pair; } }) : [];
         response.clone().text().then((body) => window.__gate.fetches.push({ url, method, status: response.status, body, sent }));
         return response;
     });
@@ -2904,5 +2906,598 @@ fn the_form_list_board_and_calendar_move_cards_and_events_in_chromium() {
     if let Some(dir) = std::env::var_os("MOQUI_SHELL_SHOTS") {
         views_shots(&mut browser, &base, std::path::Path::new(&dir));
         assert_clean(&mut browser, "the views in each mode, light and dark");
+    }
+}
+
+/// The Assist drawer (docs/Assist.md "The drawer"; plans/LLM-A2A-Assist.md 13.5) driven as a user would, against the scripted fake
+/// provider: a run streams into the thread, a reload re-attaches to it, a page of the build without the compiler runs it, a gallery
+/// hand-off reports the refused save and then the saved one, the user's own navigation wins over the agent's, only the tab that
+/// owns follow follows, and an approval executes while a second tab sees it.
+#[cfg(all(feature = "llm", feature = "tui"))]
+mod assist {
+    use std::time::Duration;
+
+    use moqui_core::llm::provider::fake::{self, Reply, Step};
+    use moqui_lib::object::{to_plain_string, Value};
+    use serde_json::json;
+
+    use super::common::cdp::Browser;
+    use super::common::{start_with_conf_files, Gate};
+    use super::{assert_clean, by_text, key_chord, sign_in, FETCH_SPY, WAIT};
+
+    const ENDPOINT: &str = "gate-assist";
+
+    /// The fake endpoint for the assist feature, a record the fixture screen edits, and the fixture screens for ADMIN.
+    const DATA: &str = r#"<entity-facade-xml type="seed">
+        <moqui.llm.LlmEndpoint endpointId="gate-assist" protocol="fake" description="Gate assist fake" isLocal="Y"/>
+        <moqui.llm.LlmModel modelId="gate-assist-fast" endpointId="gate-assist" providerModel="fake-fast" tier="fast" contextWindow="32768"/>
+        <moqui.llm.LlmFeatureBinding featureId="assist" modelId="gate-assist-fast" reasoningLevel="none"/>
+        <moqui.basic.EnumerationType enumTypeId="AST_GATE" description="Before"/>
+        <moqui.security.ArtifactGroup artifactGroupId="ASSIST_GATE" description="Assist gate screens"/>
+        <moqui.security.ArtifactGroupMember artifactGroupId="ASSIST_GATE" artifactName="component://assistgate/.*"
+            nameIsPattern="Y" artifactTypeEnumId="AT_XML_SCREEN" inheritAuthz="Y"/>
+        <moqui.security.ArtifactGroupMember artifactGroupId="ASSIST_GATE" artifactName="component://assistgate/.*"
+            nameIsPattern="Y" artifactTypeEnumId="AT_XML_SCREEN_TRANS" inheritAuthz="Y"/>
+        <moqui.security.ArtifactGroupMember artifactGroupId="ASSIST_GATE" artifactName=".*EnumerationType"
+            nameIsPattern="Y" artifactTypeEnumId="AT_SERVICE"/>
+        <moqui.security.ArtifactAuthz artifactAuthzId="ASSIST_GATE_ADMIN" userGroupId="ADMIN" artifactGroupId="ASSIST_GATE"
+            authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+    </entity-facade-xml>"#;
+
+
+    /// The fixture component, mounted under the apps root by its own conf: Edit saves the record's description through a service; Slow takes a few seconds to render, so the
+    /// user can move while the agent's command runs.
+    const FILES: &[(&str, &str)] = &[
+        ("component/assistgate/component.xml", r#"<component name="assistgate"/>"#),
+        (
+            "component/assistgate/MoquiConf.xml",
+            r#"<moqui-conf><screen-facade><screen location="component://webroot/screen/webroot/apps.xml">
+    <subscreens-item name="assistgate" menu-title="Assist Gate" menu-include="false" location="component://assistgate/screen/AssistGate.xml"/>
+</screen></screen-facade></moqui-conf>"#,
+        ),
+        (
+            "component/assistgate/screen/AssistGate.xml",
+            r#"<screen require-authentication="true" default-menu-title="Assist Gate">
+    <subscreens default-item="Edit">
+        <subscreens-item name="Edit" location="component://assistgate/screen/AssistGate/Edit.xml"/>
+        <subscreens-item name="Slow" location="component://assistgate/screen/AssistGate/Slow.xml"/>
+    </subscreens>
+    <widgets><subscreens-active/></widgets>
+</screen>"#,
+        ),
+        (
+            "component/assistgate/screen/AssistGate/Edit.xml",
+            r#"<screen require-authentication="true" default-menu-title="Edit">
+    <transition name="updateEnumType"><service-call name="update#moqui.basic.EnumerationType"/>
+        <default-response url="."/></transition>
+    <actions><entity-find-one entity-name="moqui.basic.EnumerationType" value-field="enumType">
+        <field-map field-name="enumTypeId" value="AST_GATE"/></entity-find-one></actions>
+    <widgets>
+        <form-single name="EditEnumType" transition="updateEnumType" map="enumType">
+            <field name="enumTypeId"><default-field><hidden/></default-field></field>
+            <field name="description"><default-field title="Description"><text-line/></default-field></field>
+            <field name="submitButton"><default-field title="Save"><submit/></default-field></field>
+        </form-single>
+    </widgets>
+</screen>"#,
+        ),
+        (
+            "component/assistgate/screen/AssistGate/Slow.xml",
+            r#"<screen require-authentication="true" default-menu-title="Slow">
+    <actions><script>const until = Date.now() + 5000; while (Date.now() &lt; until) { }</script></actions>
+    <widgets><label text="The slow screen" type="p"/></widgets>
+</screen>"#,
+        ),
+    ];
+
+    /// The gate with the fake, the fixture component and `extra_conf`; `properties` are set once it runs (as
+    /// [`super::common::start_with_conf`] does) and cleared when it drops.
+    fn start(label: &str, properties: &[(&str, &str)], extra_conf: &str) -> (Gate, super::common::PropertyReset) {
+        let gate = start_with_conf_files(label, Some(DATA), extra_conf, &[], FILES);
+        for (name, value) in properties {
+            moqui_lib::env::set_property(name, (*value).to_string());
+        }
+        fake::clear(ENDPOINT);
+        (gate, super::common::PropertyReset::of(&properties.iter().map(|(name, _)| *name).collect::<Vec<_>>()))
+    }
+
+    /// A tool call of the fake model: the screen tool with `arguments`, then the finish that runs it.
+    fn screen_call(id: &str, arguments: serde_json::Value, delay: u64) -> Reply {
+        let mut steps = Vec::new();
+        if delay > 0 {
+            steps.push(Step::Delay(delay));
+        }
+        steps.push(Step::Tool {
+            id: id.to_string(),
+            name: "screen".to_string(),
+            arguments: arguments.to_string(),
+            pieces: 1,
+        });
+        steps.push(Step::Finish("tool_calls".to_string()));
+        Reply::steps(steps)
+    }
+
+    /// Text in pieces with a pause before each but the first, then a stop.
+    fn slow_text(pieces: &[&str], pause: u64) -> Reply {
+        let mut steps = Vec::new();
+        for (index, piece) in pieces.iter().enumerate() {
+            if index > 0 {
+                steps.push(Step::Delay(pause));
+            }
+            steps.push(Step::Text((*piece).to_string()));
+        }
+        steps.push(Step::Finish("stop".to_string()));
+        Reply::steps(steps)
+    }
+
+    fn field_of(gate: &Gate, entity: &str, key: &str, id: &str, field: &str) -> String {
+        let factory = gate.server.factory();
+        let ctx = factory.new_context();
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        factory
+            .entity()
+            .unwrap()
+            .find(entity)
+            .unwrap()
+            .eq(key, Value::string(id))
+            .one()
+            .unwrap()
+            .and_then(|row| row.get(field).map(to_plain_string))
+            .unwrap_or_default()
+    }
+
+    /// The shell with the Assist button, after its bootstrap.
+    fn open_page(browser: &mut Browser, url: &str) {
+        browser.navigate(url);
+        browser.wait_for(
+            "the Assist button",
+            "!!document.getElementById('m-assist-button') && !!moqui.assist.state.bootstrap && !!moqui.webrootVue && !moqui.webrootVue.loading",
+            WAIT,
+        );
+    }
+
+    /// Mod+J opens the drawer with the composer focused.
+    fn open_drawer(browser: &mut Browser) {
+        key_chord(browser, "j", "KeyJ", 74, 2);
+        browser.wait_for(
+            "the drawer open with the composer focused",
+            "(() => { const drawer = document.getElementById('m-assist-drawer'); const active = document.activeElement; \
+             return !!drawer && drawer.getBoundingClientRect().width > 300 && !!active && !!active.closest && !!active.closest('#m-assist-composer'); })()",
+            WAIT,
+        );
+    }
+
+    /// Type into the composer and send with Enter.
+    fn send(browser: &mut Browser, text: &str) {
+        browser.eval(
+            "(() => { const input = document.querySelector('#m-assist-composer textarea'); input.focus(); return true; })()",
+        );
+        browser.type_text(text);
+        browser.press("Enter");
+    }
+
+    fn convo_of(browser: &mut Browser) -> String {
+        browser
+            .wait_for("the conversation", "moqui.assist.state.convo.conversationId", WAIT)
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// With `MOQUI_SHELL_SHOTS=<dir>`: the page as it is, the drawer open, light and dark, 1280 and 390 px wide, as
+    /// `assist-<name>-<mode>-<width>.png`; then the page as it was.
+    fn shots(browser: &mut Browser, name: &str) {
+        use base64::Engine as _;
+        let Some(dir) = std::env::var_os("MOQUI_SHELL_SHOTS") else { return };
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        for (width, height) in [(1280, 900), (390, 844)] {
+            browser.call(
+                "Emulation.setDeviceMetricsOverride",
+                json!({"width": width, "height": height, "deviceScaleFactor": 1, "mobile": width < 600}),
+            );
+            for dark in [false, true] {
+                let mode = if dark { "dark" } else { "light" };
+                browser.eval(&format!("moqui.webrootVue.$q.dark.set({dark}), true"));
+                browser.pump(Duration::from_millis(700));
+                let shot = browser.call("Page.captureScreenshot", json!({"format": "png"}));
+                let bytes = base64::engine::general_purpose::STANDARD.decode(shot["data"].as_str().unwrap()).unwrap();
+                std::fs::write(dir.join(format!("assist-{name}-{mode}-{width}.png")), bytes).unwrap();
+            }
+        }
+        browser.call("Emulation.clearDeviceMetricsOverride", json!({}));
+        browser.eval("moqui.webrootVue.$q.dark.set(false), true");
+        browser.pump(Duration::from_millis(300));
+    }
+
+    /// The text of the thread's assistant rows.
+    const ANSWERS: &str =
+        "Array.from(document.querySelectorAll('#m-assist-thread [data-assist-item=assistant] .m-assist-markdown')).map((el) => el.innerText.trim()).join('|')";
+
+    /// Mod+J opens the drawer; a message sent with Enter starts a run whose text streams in pieces into one assistant row, and the
+    /// done line follows. A reload in the middle of the next run opens the drawer again on its conversation, re-attaches to the
+    /// run's stream and ends with its whole text once.
+    #[test]
+    fn the_assist_drawer_streams_a_run_and_reattaches_after_a_reload_in_chromium() {
+        let (gate, _reset) = start("browser-assist", &[], "");
+        let base = format!("http://{}", gate.server.address());
+        let mut browser = Browser::launch();
+        sign_in(&mut browser, &base);
+        open_page(&mut browser, &format!("{base}/qapps/gallery/Landing"));
+        browser.eval(FETCH_SPY);
+        open_drawer(&mut browser);
+        assert_eq!(
+            browser.eval("!!document.getElementById('m-assist-empty') && !document.getElementById('m-assist-stop')"),
+            true
+        );
+        fake::script(ENDPOINT, vec![slow_text(&["Hello ", "from ", "the scripted ", "model."], 700)]);
+        send(&mut browser, "Say hello");
+        // the user's message, then the answer as it streams: a part of it before all of it
+        browser.wait_for(
+            "the user's message",
+            "Array.from(document.querySelectorAll('#m-assist-thread [data-assist-item=user]')).some((el) => el.innerText.indexOf('Say hello') >= 0)",
+            WAIT,
+        );
+        let partial = browser.wait_for(
+            "a part of the answer",
+            &format!("(() => {{ const text = {ANSWERS}; return text.indexOf('Hello') >= 0 && text.indexOf('model.') < 0 ? text : null; }})()"),
+            WAIT,
+        );
+        assert!(partial.as_str().unwrap().starts_with("Hello"), "{partial}");
+        assert_eq!(browser.eval("!!document.getElementById('m-assist-stop') && !!document.getElementById('m-assist-status')"), true);
+        browser.wait_for(
+            "the whole answer and the done line",
+            &format!("{ANSWERS} === 'Hello from the scripted model.' && !!document.querySelector('#m-assist-thread [data-assist-item=done][data-state=TASK_STATE_COMPLETED]')"),
+            WAIT,
+        );
+        assert_eq!(browser.eval("!document.getElementById('m-assist-stop') && !document.getElementById('m-assist-status')"), true);
+        shots(&mut browser, "thread");
+        let conversation_id = convo_of(&mut browser);
+        // the turn posted the page, which the conversation's screen session took
+        let turn = super::fetched(&mut browser, "the turn", "/assist/turn");
+        assert_eq!(turn["status"], 200, "{turn}");
+        let screen = field_of(&gate, "moqui.agent.AgentConversation", "conversationId", &conversation_id, "screenStateJson");
+        assert!(screen.contains("/apps/gallery/Landing"), "the page state: {screen}");
+        assert_clean(&mut browser, "a run streams");
+
+        // a reload while the next answer streams: the drawer opens again on the conversation and the stream goes on
+        fake::script(ENDPOINT, vec![slow_text(&["First part. ", "Second part."], 4000)]);
+        send(&mut browser, "Take your time");
+        browser.wait_for(
+            "the first part",
+            &format!("{ANSWERS}.indexOf('First part.') >= 0"),
+            WAIT,
+        );
+        browser.reload();
+        browser.wait_for(
+            "the drawer open again on the conversation",
+            &format!("!!document.getElementById('m-assist-drawer') && moqui.assist.state.open && moqui.assist.state.convo.conversationId === {conversation_id:?}"),
+            WAIT,
+        );
+        browser.wait_for(
+            "the run's whole answer, once",
+            &format!("{ANSWERS} === 'Hello from the scripted model.|First part. Second part.' \
+             && document.querySelectorAll('#m-assist-thread [data-assist-item=done][data-state=TASK_STATE_COMPLETED]').length === 2"),
+            WAIT,
+        );
+        assert_eq!(
+            browser.eval("Array.from(document.querySelectorAll('#m-assist-thread [data-assist-item=user]')).map((el) => el.innerText.trim()).join('|')"),
+            "Say hello|Take your time"
+        );
+        assert_clean(&mut browser, "a reload re-attaches");
+    }
+
+    /// With `webapp_qvt_static_only=true` and a policy without `unsafe-eval` the drawer's components run their precompiled render
+    /// functions: it opens, a run streams and its Markdown renders.
+    #[test]
+    fn the_assist_drawer_works_on_a_static_only_page_in_chromium() {
+        let (gate, _reset) = start(
+            "browser-assist-static",
+            &[("webapp_qvt_static_only", "true")],
+            r#"<webapp-list><webapp name="webroot">
+                <response-header type="screen-render" name="Content-Security-Policy" value="frame-ancestors 'none'; form-action 'self'; script-src 'self'"/>
+            </webapp></webapp-list>"#,
+        );
+        let base = format!("http://{}", gate.server.address());
+        let mut browser = Browser::launch();
+        // the screen first, so the login goes back to it (the login page itself is not one of the static-only build's)
+        browser.navigate(&format!("{base}/qapps/GateStaticList"));
+        browser.wait_for("the login page", "location.pathname === '/Login' && document.readyState === 'complete'", WAIT);
+        browser.eval(
+            "(() => { const form = document.getElementById('login_form'); form.username.value = 'john.doe'; \
+             form.password.value = 'moqui'; form.requestSubmit(); return true; })()",
+        );
+        browser.wait_event("Page.loadEventFired", WAIT);
+        browser.take_problems();
+        browser.wait_for(
+            "the Assist button",
+            "location.pathname === '/qapps/GateStaticList' && !!document.getElementById('m-assist-button') && !!moqui.assist.state.bootstrap \
+             && document.body.innerText.indexOf('Enumerations of john.doe') >= 0",
+            WAIT,
+        );
+        assert_eq!(
+            browser.eval("!!document.querySelector('script[src*=\"vue.runtime.global.prod.js\"]')"),
+            true,
+            "the build without the compiler"
+        );
+        open_drawer(&mut browser);
+        fake::script(ENDPOINT, vec![slow_text(&["A **bold** ", "answer."], 300)]);
+        send(&mut browser, "Answer in Markdown");
+        browser.wait_for(
+            "the Markdown answer",
+            &format!("!!document.querySelector('#m-assist-thread [data-assist-item=assistant] strong') && {ANSWERS} === 'A bold answer.'"),
+            WAIT,
+        );
+        browser.wait_for(
+            "the done line",
+            "!!document.querySelector('#m-assist-thread [data-assist-item=done]')",
+            WAIT,
+        );
+        // an answer with images and raw HTML: no image of another host is fetched, the raw HTML is text, and a link no tool
+        // returned (answer.references) is plain text
+        fake::script(
+            ENDPOINT,
+            vec![Reply::text(
+                "![chart](http://127.0.0.2:9/p.png) <image src=\"http://127.0.0.2:9/i.png\"> <img src=x onerror=\"window.__pwned = 1\"> \
+                 <svg><image href=\"http://127.0.0.2:9/s.png\"></image></svg> <a href=\"javascript:window.__pwned = 2\">raw</a> [ok](/qapps/gallery/List) done",
+            )],
+        );
+        send(&mut browser, "Show a picture");
+        browser.wait_for("the second answer", &format!("{ANSWERS}.indexOf('done') >= 0"), WAIT);
+        assert_eq!(
+            browser.eval(
+                "(() => { const last = Array.from(document.querySelectorAll('#m-assist-thread [data-assist-item=assistant] .m-assist-markdown')).pop(); \
+                 return [last.querySelectorAll('img, image, svg, iframe').length, last.querySelectorAll('[onerror], a[href^=javascript]').length, \
+                 !!last.querySelector('.m-assist-image[data-assist-image=\"127.0.0.2\"]'), !last.querySelector('a') && last.innerText.indexOf(' ok done') >= 0, \
+                 last.innerText.indexOf('<image src=') >= 0, window.__pwned === undefined].join(','); })()"
+            ),
+            "0,0,true,true,true,true"
+        );
+        assert_clean(&mut browser, "a static-only page");
+    }
+
+    /// Edit in screen on the gallery's Contact: the page goes to the form with the proposed values filled and Save ringed; the
+    /// user's save with a bad email is refused, which the hand-off card reports while it keeps watching; the save with a good one
+    /// ends the hand-off and the run goes on with it.
+    #[test]
+    fn a_gallery_hand_off_reports_the_refused_save_then_saves_in_chromium() {
+        let (gate, _reset) = start("browser-assist-handoff", &[], "");
+        let base = format!("http://{}", gate.server.address());
+        let mut browser = Browser::launch();
+        sign_in(&mut browser, &base);
+        open_page(&mut browser, &format!("{base}/qapps/gallery/Landing"));
+        open_drawer(&mut browser);
+        fake::script(
+            ENDPOINT,
+            vec![
+                screen_call(
+                    "h1",
+                    json!({"go": "/apps/gallery/Contact", "set": {"Name": "Ann Example", "Email": "ann@example.com"}, "do": "Save"}),
+                    0,
+                ),
+                Reply::text("You saved the contact."),
+            ],
+        );
+        send(&mut browser, "Change the contact to Ann");
+        let card = "#m-assist-thread [data-assist-card=approval][data-status=pending]";
+        browser.wait_for(
+            "the approval card with Edit in screen",
+            &format!("!!document.querySelector('{card} [data-assist-action=edit]') && document.querySelector('{card}').innerText.indexOf('Ann Example') >= 0"),
+            WAIT,
+        );
+        // the agent followed: the page is the Contact form; the card shows current → proposed
+        browser.wait_for("the page followed", "location.pathname === '/qapps/gallery/Contact'", WAIT);
+        browser.click("Edit in screen", &format!("document.querySelector('{card} [data-assist-action=edit]')"));
+        browser.wait_for(
+            "the hand-off: the form filled and Save ringed",
+            "(() => { const form = document.querySelector('[name=contactName]'); return !!form && form.value === 'Ann Example' \
+             && document.querySelector('[name=emailAddress]').value === 'ann@example.com' && !!document.querySelector('[data-assist-save]') \
+             && !!document.querySelector('#m-assist-drawer [data-assist-card=handoff][data-status=watching]'); })()",
+            WAIT,
+        );
+        let handoff_id = browser
+            .eval("document.querySelector('[data-assist-card=handoff]').getAttribute('data-handoff-id')")
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(!handoff_id.is_empty());
+        assert_eq!(
+            browser.eval("!!document.querySelector('[data-assist-touched=contactName]')"),
+            true,
+            "the filled field is marked"
+        );
+        browser.eval(FETCH_SPY);
+        // the user's own save, with an email that does not read: refused on its field, and reported
+        browser.eval("(() => { const input = document.querySelector('[name=emailAddress]'); input.focus(); input.select(); return true; })()");
+        browser.type_text("ann-at-example");
+        browser.click("the ringed Save", "document.querySelector('[data-assist-save]')");
+        browser.wait_for(
+            "the refused save on its field and in the card",
+            "document.body.innerText.indexOf('Enter an email address') >= 0 && \
+             document.querySelector('#m-assist-drawer [data-assist-card=handoff]').innerText.indexOf('refused') >= 0",
+            WAIT,
+        );
+        let submitted = super::fetched(&mut browser, "the submitted signal", "/assist/submitted");
+        assert_eq!(submitted["status"], 200, "{submitted}");
+        assert!(submitted["sent"].to_string().contains("validationErrors"), "{submitted}");
+        assert_eq!(field_of(&gate, "moqui.agent.AgentHandoff", "handoffId", &handoff_id, "statusId"), "AghFailed");
+        shots(&mut browser, "handoff");
+        // fixed and saved: the hand-off is done and the run answers
+        browser.eval("(() => { const input = document.querySelector('[name=emailAddress]'); input.focus(); input.select(); return true; })()");
+        browser.type_text("ann@example.com");
+        browser.click("Save", &by_text("button", "Save"));
+        browser.wait_for(
+            "the run's answer after the save",
+            &format!("{ANSWERS}.indexOf('You saved the contact.') >= 0 && !document.querySelector('#m-assist-drawer [data-assist-card=handoff]') \
+             && !!document.querySelector('#m-assist-thread [data-assist-item=done][data-state=TASK_STATE_COMPLETED]')"),
+            WAIT,
+        );
+        assert_eq!(field_of(&gate, "moqui.agent.AgentHandoff", "handoffId", &handoff_id, "statusId"), "AghSaved");
+        assert_eq!(browser.eval("!document.querySelector('[data-assist-save]')"), true, "the ring goes with the hand-off");
+        // the refused save is answered 500 with its validation errors, as every refused transition is
+        let problems = browser.take_problems();
+        assert!(
+            problems.iter().all(|problem| problem.text.contains("500") && problem.text.contains("saveContact") || problem.text == "request failed, status 500 Internal Server Error"),
+            "only the 500 of the refused save: {problems:#?}"
+        );
+    }
+
+    /// Two tabs on one conversation: the tab that sent the message owns follow and goes where the agent goes; the other shows
+    /// "Following in another tab" with the agent's navigation as a chip and stays. A held write shows its approval card in both;
+    /// approved in the first, it runs, the record changes and the second tab sees the card executed. Then the user's own
+    /// navigation while the agent's command runs wins: the agent's page action, minted for the page before, is a chip.
+    #[test]
+    fn only_the_owner_tab_follows_and_an_approval_executes_while_a_second_tab_sees_it_in_chromium() {
+        let (gate, _reset) = start("browser-assist-tabs", &[], "");
+        let base = format!("http://{}", gate.server.address());
+        let mut browser = Browser::launch();
+        sign_in(&mut browser, &base);
+        let owner = browser.first_tab();
+        open_page(&mut browser, &format!("{base}/qapps/gallery/Landing"));
+        open_drawer(&mut browser);
+        fake::script(ENDPOINT, vec![Reply::text("Ready.")]);
+        send(&mut browser, "Get ready");
+        browser.wait_for("the first answer", &format!("{ANSWERS} === 'Ready.'"), WAIT);
+        let conversation_id = convo_of(&mut browser);
+        let owner_client = browser.eval("moqui.assist.clientId").as_str().unwrap_or_default().to_string();
+
+        // the second tab, on the conversation by ?assist=
+        let other = browser.open_tab();
+        open_page(&mut browser, &format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR&assist={conversation_id}"));
+        browser.wait_for(
+            "the conversation in the second tab, followed elsewhere",
+            &format!("moqui.assist.state.open && moqui.assist.state.convo.conversationId === {conversation_id:?} && {ANSWERS} === 'Ready.' \
+             && !!document.getElementById('m-assist-elsewhere') && document.getElementById('m-assist-elsewhere').innerText.indexOf('Following in another tab') >= 0"),
+            WAIT,
+        );
+        let other_client = browser.eval("moqui.assist.clientId").as_str().unwrap_or_default().to_string();
+        assert_ne!(owner_client, other_client, "each tab has its own client id");
+        assert_eq!(browser.eval("document.visibilityState"), "visible");
+
+        // the agent goes to the list, then proposes a save; the pause before lets the second tab attach to the run
+        browser.use_tab(&owner);
+        fake::script(
+            ENDPOINT,
+            vec![
+                screen_call("t1", json!({"go": "/apps/gallery/List"}), 2500),
+                screen_call(
+                    "t2",
+                    json!({"go": "/apps/assistgate/Edit", "set": {"Description": "From Assist"}, "do": "Save"}),
+                    0,
+                ),
+                Reply::text("Changed it."),
+            ],
+        );
+        send(&mut browser, "Open the list, then change the description");
+        browser.wait_for("the owner tab followed to the list", "location.pathname === '/qapps/gallery/List'", WAIT);
+        let card = "[data-assist-card=approval][data-status=pending]";
+        browser.wait_for(
+            "the approval card in the owner tab",
+            &format!("location.pathname === '/qapps/assistgate/Edit' && !!document.querySelector('{card} [data-assist-action=approve]')"),
+            WAIT,
+        );
+        browser.use_tab(&other);
+        browser.wait_for(
+            "the approval card in the second tab, which stayed",
+            &format!("!!document.querySelector('{card}') && document.querySelector('{card}').innerText.indexOf('From Assist') >= 0"),
+            WAIT,
+        );
+        assert_eq!(browser.eval("location.pathname"), "/qapps/gallery/Detail", "the second tab does not follow");
+        browser.wait_for(
+            "the agent's navigation as a chip",
+            "!!document.querySelector('#m-assist-chips [data-assist-chip=navigate]')",
+            WAIT,
+        );
+        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Before");
+        shots(&mut browser, "elsewhere");
+        browser.use_tab(&owner);
+        shots(&mut browser, "approval");
+
+        // approved in the owner tab: it runs, and the second tab sees it executed and the answer
+        browser.use_tab(&owner);
+        browser.click("Approve", &format!("document.querySelector('{card} [data-assist-action=approve]')"));
+        browser.wait_for(
+            "the answer after the approval",
+            &format!("{ANSWERS}.indexOf('Changed it.') >= 0 && !!document.querySelector('[data-assist-card=approval][data-status=executed]')"),
+            WAIT,
+        );
+        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "From Assist");
+        browser.use_tab(&other);
+        browser.wait_for(
+            "the second tab sees it executed",
+            &format!("!!document.querySelector('[data-assist-card=approval][data-status=executed]') && {ANSWERS}.indexOf('Changed it.') >= 0"),
+            WAIT,
+        );
+        assert_eq!(browser.eval("location.pathname"), "/qapps/gallery/Detail");
+        assert_clean(&mut browser, "two tabs and an approval");
+
+        // the user moves while the agent's command runs: the page stays where the user went
+        browser.use_tab(&owner);
+        fake::script(
+            ENDPOINT,
+            vec![screen_call("t3", json!({"go": "/apps/assistgate/Slow"}), 0), Reply::text("Opened the slow screen.")],
+        );
+        send(&mut browser, "Open the slow screen");
+        browser.wait_for(
+            "the agent's command running",
+            "!!document.querySelector('#m-assist-thread [data-assist-item=step][data-tool=screen][data-status=running]')",
+            WAIT,
+        );
+        browser.eval("(() => { moqui.webrootVue.setUrl('/qapps/gallery/Landing'); return true; })()");
+        browser.wait_for("the user's page", "location.pathname === '/qapps/gallery/Landing'", WAIT);
+        browser.wait_for(
+            "the run done, the agent's navigation a chip",
+            &format!("{ANSWERS}.indexOf('Opened the slow screen.') >= 0 && !!document.querySelector('#m-assist-chips [data-assist-chip=navigate]')"),
+            WAIT,
+        );
+        browser.pump(Duration::from_millis(1500));
+        assert_eq!(browser.eval("location.pathname"), "/qapps/gallery/Landing", "the user's navigation wins");
+        assert_clean(&mut browser, "user navigation wins over follow");
+
+        // Edit in screen from the tab that does not follow, after it moved on its own (so its page version is ahead of the
+        // server's, which it never reported): the hand-off's page events are for it, and it follows them
+        fake::script(
+            ENDPOINT,
+            vec![
+                screen_call(
+                    "t4",
+                    json!({"go": "/apps/assistgate/Edit", "set": {"Description": "Handed over"}, "do": "Save"}),
+                    0,
+                ),
+                Reply::text("You saved it."),
+            ],
+        );
+        send(&mut browser, "Change it again");
+        browser.wait_for(
+            "the second approval in the owner tab",
+            &format!("location.pathname === '/qapps/assistgate/Edit' && !!document.querySelector('{card}')"),
+            WAIT,
+        );
+        browser.use_tab(&other);
+        browser.eval("(() => { moqui.webrootVue.setUrl('/qapps/gallery/List'); return true; })()");
+        browser.wait_for("the second tab moved", "location.pathname === '/qapps/gallery/List'", WAIT);
+        browser.click(
+            "Edit in screen in the second tab",
+            &format!("document.querySelector('{card} [data-assist-action=edit]')"),
+        );
+        browser.wait_for(
+            "the second tab follows the hand-off",
+            "location.pathname === '/qapps/assistgate/Edit' && !!document.querySelector('[name=description]') \
+             && document.querySelector('[name=description]').value === 'Handed over'",
+            WAIT,
+        );
+        browser.wait_for(
+            "the hand-off's Save ringed, and this tab follows",
+            "!!document.querySelector('[data-assist-save]') && !document.getElementById('m-assist-elsewhere')",
+            WAIT,
+        );
+        browser.click("the ringed Save", "document.querySelector('[data-assist-save]')");
+        browser.wait_for("the run after the user's save", &format!("{ANSWERS}.indexOf('You saved it.') >= 0"), WAIT);
+        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Handed over");
+        browser.use_tab(&owner);
+        assert_eq!(browser.eval("location.pathname"), "/qapps/assistgate/Edit", "the first tab stays");
+        browser.wait_for("the first tab follows elsewhere now", "!!document.getElementById('m-assist-elsewhere')", WAIT);
+        assert_clean(&mut browser, "Edit in screen from the other tab");
     }
 }

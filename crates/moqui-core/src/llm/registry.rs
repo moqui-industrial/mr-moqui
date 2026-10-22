@@ -388,6 +388,22 @@ impl Registry {
     /// The model and its endpoint, or why they cannot take a call: an unknown or disabled model, a model with no
     /// provider name, an unknown or disabled endpoint, an endpoint with no URL, or one that is not local when
     /// `local_only`.
+    /// The first usable model of exactly `tier` (by id), for a client that chose a tier: none when no model has it.
+    pub fn tier_model(&self, tier: Tier, local_only: bool) -> Option<&str> {
+        self.models
+            .values()
+            .find(|model| model.conf.tier == tier && self.usable(&model.conf.id, local_only).is_ok())
+            .map(|model| model.conf.id.as_str())
+    }
+
+    /// The tiers some usable model has, in order: what a client may choose from.
+    pub fn usable_tiers(&self, local_only: bool) -> Vec<Tier> {
+        Tier::ALL
+            .into_iter()
+            .filter(|tier| self.tier_model(*tier, local_only).is_some())
+            .collect()
+    }
+
     pub fn usable(&self, model_id: &str, local_only: bool) -> Result<(&Model, &Endpoint), String> {
         let model = self
             .models

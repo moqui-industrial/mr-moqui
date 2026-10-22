@@ -1649,6 +1649,25 @@
         return some(resp.errors) || some(resp.validationErrors);
     };
 
+    // The answers of m-form's background submits, for the Assist hand-off (WebrootAssist.js, which reports the user's own save):
+    // fn({form, ok, json, status}) after each answer, a refused one too (ok false, the error's json). moqui.onFormAnswer returns the
+    // function that takes the listener back.
+    moqui.formAnswerListeners = [];
+    moqui.onFormAnswer = (fn) => {
+        if (typeof fn !== "function") return () => {};
+        moqui.formAnswerListeners.push(fn);
+        return () => { const index = moqui.formAnswerListeners.indexOf(fn); if (index >= 0) moqui.formAnswerListeners.splice(index, 1); };
+    };
+    moqui.formAnswered = (vm, info) => {
+        // once per submit: an answer whose handling failed is not told again as refused
+        if (!vm || vm.answerTold) return;
+        vm.answerTold = true;
+        const answer = Object.assign({ form: vm }, info);
+        moqui.formAnswerListeners.slice().forEach((fn) => {
+            try { fn(answer); } catch (err) { console.error("form answer listener failed", err); }
+        });
+    };
+
     // The fields and the buttons of a form. The value a field starts with is the fields-initial, and a changed field is
     // tinted by the widget through fieldChanged.
     component("m-form", {
@@ -1714,6 +1733,7 @@
             },
             submitGo() {
                 this.fieldErrors = {};
+                this.answerTold = false;
                 const formEl = this.$refs.qForm.$el;
                 const button = submitButton(formEl, this.buttonClicked);
                 let btnName = null;
@@ -1780,6 +1800,9 @@
                     });
                 }).catch((err) => {
                     if (!arrived) root_.loading--;
+                    // a refused save: the user fixes it and saves again at once (a good one keeps its button off for 3 s)
+                    if (button) button.disabled = false;
+                    moqui.formAnswered(this, { ok: false, json: err && moqui.isPlainObject(err.json) ? err.json : null, status: err && err.status !== undefined ? err.status : 0 });
                     if (err && err.json) err = Object.assign({}, err, { json: moqui.placeFieldErrors(this, err.json) });
                     moqui.handleLoadError(err && err.status !== undefined ? err : { status: 0, error: err, text: "" });
                     if (this.mWizard) this.mWizard.stepRefused(this);
@@ -1806,6 +1829,7 @@
                 } else if (!notified) notify(Object.assign({}, moqui.notifyOpts, { message: "Submit successful" }));
                 if (wizard) wizard.stepAnswered(this, resp);
                 if (!moqui.responseHasErrors(resp)) this.$emit("submitted", resp);
+                moqui.formAnswered(this, { ok: !moqui.responseHasErrors(resp), json: moqui.isPlainObject(resp) ? resp : null, status: 200 });
             }
         },
         mounted() {
@@ -5558,6 +5582,10 @@
                     image(token) {
                         const link = md.resolve(token.href, opts, { image: true });
                         return '<img src="' + mdAttr(link.href) + '" alt="' + mdAttr(token.text) + '"' + (token.title ? ' title="' + mdAttr(token.title) + '"' : "") + ">";
+                    },
+                    // escapeHtml (a text that never needs raw HTML, such as an agent's answer): raw HTML is shown as text
+                    html(token) {
+                        return opts.escapeHtml ? mdAttr(token.text !== undefined ? token.text : token.raw) : false;
                     }
                 }
             });
@@ -6392,6 +6420,8 @@
             const head = raw.charAt(0);
             if (head === ">") return { text: raw.slice(1).trim(), mode: "actions", prefix: ">", groups: [] };
             if (head === ":") return { text: raw.slice(1).trim(), mode: "screens", prefix: ":", groups: [] };
+            // ? asks Assist the rest of the text (the Ask row alone)
+            if (head === "?") return { text: raw.slice(1).trim(), mode: "ask", prefix: "?", groups: [] };
             let prefix = "";
             (sources || []).forEach((source) => {
                 const own = source && source.prefix ? String(source.prefix) : "";
@@ -6473,6 +6503,8 @@
                 add("screens", screensLabel, "sym_o_web", palette.rank(given.screens, text), palette.RECENT_LIMIT);
             } else if (query.mode === "actions") {
                 add("actions", actionsLabel, "sym_o_bolt", palette.rank(given.actions, text), 50);
+            } else if (query.mode === "ask") {
+                // nothing else: the Ask row comes last, below
             } else {
                 if (query.mode === "all") {
                     add("screens", screensLabel, "sym_o_web", palette.rank(given.screens, text), palette.LIMIT);
@@ -6481,10 +6513,17 @@
                 }
                 (given.remote || []).forEach((group) => {
                     if (!group || (query.mode === "sources" && query.groups.indexOf(group.group) < 0)) return;
-                    const rows = (group.rows || []).filter((row) => row && row.url).map((row) => ({ title: row.title || row.url, subtitle: row.subtitle || "",
-                        icon: row.icon || group.icon || null, url: row.url }));
+                    // a row of a record keeps its entity and id (recordEntity, recordId), so Assist's @ inserts the record
+                    const rows = (group.rows || []).filter((row) => row && row.url).map((row) => Object.assign({ title: row.title || row.url, subtitle: row.subtitle || "",
+                        icon: row.icon || group.icon || null, url: row.url }, row.recordEntity && row.recordId ? { recordEntity: String(row.recordEntity), recordId: String(row.recordId) } : {}));
                     add("source:" + group.group, group.label || group.group, group.icon, rows, palette.LIMIT, group.moreUrl);
                 });
+            }
+            // the last group: Ask Assist the text (given.ask: Assist is there for this user), alone after ?
+            if (given.ask && text && (query.mode === "all" || query.mode === "ask")) {
+                const asked = text.length > 80 ? text.slice(0, 79) + "…" : text;
+                out.push({ key: "ask", label: labels.assist || "Assist", icon: "sym_o_auto_awesome",
+                    rows: [{ ask: true, text, title: (labels.askAssist || "Ask Assist") + " ‘" + asked + "’", icon: "sym_o_auto_awesome" }] });
             }
             let index = 0;
             out.forEach((group) => group.rows.forEach((row) => { row.index = index; index += 1; }));
@@ -6700,7 +6739,7 @@
             groups() {
                 const root_ = this.$root;
                 return palette.groups(this.query, { recent: root_.paletteRecent, screens: root_.paletteScreens, savedFinds: root_.paletteSavedFinds,
-                    actions: root_.paletteActions, remote: this.remote, labels: root_.labels });
+                    actions: root_.paletteActions, remote: this.remote, labels: root_.labels, ask: !!root_.assistOn });
             },
             rows() { return palette.rows(this.groups); },
             // the keys and the prefixes, under the results
@@ -6773,12 +6812,21 @@
                         const el = this.$refs.results && this.$refs.results.querySelector('[data-index="' + this.selected + '"]');
                         if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
                     });
+                } else if (key === "Enter" && event.shiftKey && this.$root.assistOn) {
+                    // Shift+Enter asks Assist the text
+                    event.preventDefault();
+                    this.open(this.rows.find((row) => row.ask), event);
                 } else if (key === "Enter") {
                     event.preventDefault();
                     this.open(this.rows.find((row) => row.index === this.selected) || this.rows[0], event);
                 }
             },
             open(row, event) {
+                if (row && row.ask) {
+                    this.$root.paletteOpen = false;
+                    if (moqui.assist) moqui.assist.ask(row.text);
+                    return;
+                }
                 if (!row || !row.url) return;
                 const newTab = !!(event && (event.ctrlKey || event.metaKey));
                 this.$root.paletteOpen = false;
@@ -7048,13 +7096,15 @@
         "                </q-item>\n" +
         "            </q-list></q-menu>\n" +
         "        </q-btn>\n" +
-        // The Assist toggle and its right q-drawer (view LpR) come with the Assist port (mr-moqui Phase 13): the slot is kept free,
-        // the screen context and assistReach are its inputs (IronStone impl-drawers-commons R1).
+        // the Assist toggle, rightmost (WebrootAssist.js, for a user who may use it); its right q-drawer (view LpR) below, the
+        // screen context and assistReach its inputs (IronStone impl-drawers-commons R1)
+        "        <m-assist-button v-if=\"assistOn\"></m-assist-button>\n" +
         "    </q-toolbar></q-header>\n" +
         "\n" +
         "    <q-drawer v-model=\"leftOpen\" side=\"left\" bordered :width=\"260\" :breakpoint=\"1023\">\n" +
         "        <q-scroll-area class=\"fit\"><q-list dense padding><m-menu-nav-item :menu-index=\"0\"></m-menu-nav-item></q-list></q-scroll-area>\n" +
         "    </q-drawer>\n" +
+        "    <m-shell-assist v-if=\"assistOn\"></m-shell-assist>\n" +
         "\n" +
         "    <q-page-container id=\"m-canvas\">\n" +
         "        <q-page class=\"q-pa-sm\"><m-subscreens-active></m-subscreens-active></q-page>\n" +
@@ -7101,7 +7151,7 @@
         closeTopmost: "Close the dialog, menu or panel", keyboardShortcuts: "Keyboard shortcuts", keysEverywhere: "Everywhere", recent: "Recent",
         screens: "Screens", savedFinds: "Saved finds", actions: "Actions", more: "More", noResults: "Nothing found",
         paletteHint: "Search screens, records and actions", paletteEmpty: "Type to search screens, records, people and actions",
-        paletteKeys: "↑ ↓ to move, Enter to open, Ctrl+Enter in a new tab" };
+        paletteKeys: "↑ ↓ to move, Enter to open, Ctrl+Enter in a new tab", assist: "Assist", askAssist: "Ask Assist" };
 
     const rootOptions = (config) => ({
         data() {
@@ -7711,6 +7761,8 @@
             paletteKeyHint() { return keymap.isMac ? "⌘K" : "Ctrl K"; },
             // the chat store (WebrootChat.js), for a signed in user: the status in the account menu and the user's own dot
             chatStatus() { return !!(moqui.chat && this.userId); },
+            // Assist (WebrootAssist.js): for a signed in user whose bootstrap answered with an agent to use
+            assistOn() { return !!(moqui.assist && this.userId && moqui.assist.state.available); },
             myPresence() { return moqui.chat && this.userId ? moqui.chat.myPresence() : ""; },
             paletteSources() {
                 const out = [];
@@ -7787,6 +7839,8 @@
             }
             // the chat store: presence, status, heartbeat, the chat pushes (WebrootChat.js)
             if (moqui.chat) moqui.chat.start(this);
+            // Assist: its bootstrap, the keys, follow and the run signals (WebrootAssist.js)
+            if (moqui.assist) moqui.assist.start(this);
             // the suite shell: its data once, its keys, and the counts every 5 minutes while the socket is down
             this.loadShellData();
             this.shellKeysOff = keymap.registerScope("global", this.shellKeyBindings());
@@ -7866,6 +7920,20 @@
             delete comp.template;
         });
     };
+    // A component of a script that loads after this one (a client part loaded on first use, such as the Assist canvas): its
+    // precompiled render function is applied as applyRenders does (moqui.qvtRenders, while the hash matches), so a page of the
+    // build without the compiler (webapp_qvt_static_only) runs it too, and it is registered on the running application, or kept
+    // for start when the application is not running yet. Returns the definition.
+    qvt.registerLate = (name, def) => {
+        component(name, def);
+        const made = (moqui.qvtRenders || {})[name];
+        if (made && root.Vue && typeof def.template === "string" && made.hash === qvt.templateHash(def.template)) {
+            def.render = made.make(root.Vue);
+            delete def.template;
+        }
+        if (qvt.app) qvt.app.component(name, def);
+        return def;
+    };
 
     qvt.start = () => {
         qvt.applyRenders();
@@ -7905,6 +7973,7 @@
         if (root.Quasar.IconSet && root.Quasar.IconSet.materialSymbolsOutlined) quasarOptions.iconSet = root.Quasar.IconSet.materialSymbolsOutlined;
         app.use(root.Quasar, quasarOptions);
         Object.keys(qvt.components).forEach((name) => app.component(name, qvt.components[name]));
+        qvt.app = app;
         app.config.globalProperties.moqui = moqui;
         // Field rules call $mq. The browser compiler reads this, not the page global.
         app.config.globalProperties.$mq = moqui;

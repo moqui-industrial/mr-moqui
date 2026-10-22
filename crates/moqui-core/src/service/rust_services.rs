@@ -117,6 +117,8 @@ fn build() -> BTreeMap<&'static str, RustServiceFn> {
         super::git::register(&mut map),
         #[cfg(feature = "llm")]
         crate::llm::services::register(&mut map),
+        #[cfg(feature = "llm")]
+        crate::llm::assist::register(&mut map),
     ] {
         if let Err(error) = result {
             errors.push(error);
@@ -230,6 +232,9 @@ mod tests {
         }
         if cfg!(feature = "llm") {
             expected.extend([
+                "moqui_core::llm::assist::audit::cancel_run_admin",
+                "moqui_core::llm::assist::audit::get_audit_view",
+                "moqui_core::llm::assist::call_drawer",
                 "moqui_core::llm::services::abandon_agent_handoff",
                 "moqui_core::llm::services::cancel_agent_run",
                 "moqui_core::llm::services::check_quota",

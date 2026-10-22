@@ -13,8 +13,8 @@
  */
 
 //! The host routes of the agents (plans/LLM-A2A-Assist.md 4.5), under the `llm` feature: the event stream of a run
-//! and its catch-up ([`sse`]). The drawer's JSON calls are transitions of the webroot `assist` subscreen (phase 13.5);
-//! the A2A, MCP and gateway adapters join here in their phases.
+//! and its catch-up ([`sse`]). The drawer's JSON calls are transitions of the webroot `assist` subscreen
+//! (`moqui_core::llm::assist`, docs/Assist.md); the A2A, MCP and gateway adapters join here in their phases.
 
 #[cfg(feature = "tui")]
 pub(crate) mod screens;

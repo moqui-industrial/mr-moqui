@@ -40,6 +40,8 @@ along with this software (see the LICENSE.md file). If not, see
         footer_scripts.add('/js/MoquiL10n.js')
         // the chat store and the account menu's status (moqui.chat), before the client, which registers its components
         footer_scripts.add('/js/WebrootChat.js')
+        // Assist: the drawer, its store, transport and follow (moqui.assist), before the client, which registers its components
+        footer_scripts.add('/js/WebrootAssist.js')
         // the render functions of the components, precompiled from their templates; WebrootVue.qvt.js applies them when it starts
         footer_scripts.add('/js/WebrootVue.qvt.render.js')
         footer_scripts.add('/js/WebrootVue.qvt.js')
@@ -87,6 +89,8 @@ along with this software (see the LICENSE.md file). If not, see
             terminalUrl: (ec.user.userId && System.getProperty('webapp_terminal_endpoint')) ? '/qapps/Terminal' : '',
             navPlugins: sri.getThemeValues('STRT_HEADER_NAVBAR_COMP'), accountPlugins: sri.getThemeValues('STRT_HEADER_ACCOUNT_COMP'),
             qz: { enabled: qzEnabled },
+            // Assist (js/WebrootAssist.js): the agents are built and on, and the user may use them (AgentUse); else the drawer makes no request
+            assist: !!(ec.user.userId && ec.llm && ec.llm.isEnabled() && ec.user.hasPermission('AgentUse')),
             userAccount: { partyId: account.partyId || '', emailAddress: account.emailAddress || '', userFullName: account.userFullName || '' },
             preferences: preferences, moquiVersion: ec.factory.moquiVersion, quasar: quasarConfig,
             avatarUrl: avatarList.length ? String(avatarList[0]) : '',
@@ -116,7 +120,9 @@ along with this software (see the LICENSE.md file). If not, see
                 statusText: ec.l10n.localize("What's your status?"), emoji: ec.l10n.localize('Emoji'), clearAfter: ec.l10n.localize('Clear after'),
                 dontClear: ec.l10n.localize("Don't clear"), minutes30: ec.l10n.localize('30 minutes'), hour1: ec.l10n.localize('1 hour'),
                 hours4: ec.l10n.localize('4 hours'), thisWeek: ec.l10n.localize('This week'),
-                save: ec.l10n.localize('Save'), cancel: ec.l10n.localize('Cancel') }
+                save: ec.l10n.localize('Save'), cancel: ec.l10n.localize('Cancel'),
+                // Assist (js/WebrootAssist.js; its other texts are moqui.assist.labels)
+                assist: ec.l10n.localize('Assist'), askAssist: ec.l10n.localize('Ask Assist') }
         }
         // conditional QZ Tray scripts, only for a user who turned printing on; the client loads them
     ]]></script></pre-actions>

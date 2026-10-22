@@ -1,0 +1,599 @@
+# Assist: the drawer and its server
+
+The Assist drawer is the agent of the `/qapps` shell: the user asks in a side panel, the agent works the user's own
+screens through a server-side screen session as the user, the user's page follows it, and every write waits for the
+user's approval. This page is the contract between the drawer (`js/WebrootAssist.js`, phase 13.5 part B) and the server
+(part A), and how the server side works. The design is [plans/LLM-A2A-Assist.md](../plans/LLM-A2A-Assist.md) (4.4 runs,
+4.5 events and the drawer's calls, 4.7 screens, 4.8 approvals, 4.11 the drawer, 4.18 the admin screens, 7.1 the tail).
+As of Oct 22, 2026 (13.5 built: the server, the drawer and their Chromium smokes).
+
+The code: `crates/moqui-core/src/llm/assist/` (the calls: `mod.rs` the dispatcher, errors and parameters, `read.rs`,
+`write.rs`, `state.rs` the page state, tail and follow stamp, `prompts.rs` the suggested-prompt providers, `audit.rs`
+the admin services), the webroot subscreen `runtime/base-component/webroot/screen/webroot/assist.xml` (one transition per
+call, each calling `org.moqui.agent.AssistServices.call#Drawer`), the event stream in
+`crates/moqui-host/src/llm/sse.rs`, and the admin screens under `runtime/base-component/tools/screen/System/Llm/`
+(Conversations, Runs, Approvals). Tests: `crates/moqui-core/src/llm/assist/tests.rs` (the page state, parameters,
+errors) and `crates/moqui-host/tests/it/assist.rs` (every call over HTTP on embedded Postgres with the scripted fake
+provider, the full run → stream → decide → resume flow, and the audit log).
+
+## Conventions
+
+- **Where.** Each call is `/assist/<call>` under the webapp root (`appRootPath + "/assist/" + call`). The reads are
+  `GET` with query parameters; the writes are `POST`. A call with the other method is 405.
+- **Who.** The browser session's cookie. Every call acts for the current user only and needs the `AgentUse`
+  permission. A conversation, run, approval, question, hand-off or message of anyone else is **not found** (404),
+  never named. A call made from inside an agent's own run is refused (403): nobody, the agent included, drives a
+  conversation that is not theirs.
+- **The session token.** Every `POST` presents the session token, as every transition that runs actions does: the
+  `X-CSRF-Token` header (what `moqui.request` sends from `moqui.sessionToken`), or a `moquiSessionToken` parameter.
+  Missing or wrong is 401 `{"errorCode": 401, "errors": "Session token is missing or is not valid"}` from the render,
+  before the call runs. A response may carry a new token in its `X-CSRF-Token` header (`moqui.onSessionToken`).
+- **Bodies.** A `POST` body is JSON (`Content-Type: application/json`, an object whose fields are the parameters), or a
+  form (`application/x-www-form-urlencoded`) where an object or list parameter (`state`, `arguments`, `values`,
+  `choices`) is JSON text. `moqui.request` posts a plain object as a form (and a string body as a form too), so with it
+  the client passes those parameters through `JSON.stringify`; a `fetch` of its own may post the whole body as JSON.
+- **Answers.** 200 with a JSON object. An error is its status with `{"errorCode": <status>, "errors": "<text to
+  show>", "code": "<code>"}`:
+
+  | Status | `code` | When |
+  | --- | --- | --- |
+  | 400 | `invalid` | A parameter is missing or does not read (also a form answer that does not fit its form) |
+  | 401 | `unauthorized` | No user (or the session token, from the render, with no `code`) |
+  | 403 | `refused` | No `AgentUse`; a decision not from a browser session with its token; a call from inside a run |
+  | 404 | `not_found` | Not the user's, or none |
+  | 409 | `conflict` | The thing is not in a state that takes this: decided already, expired, the run ended or is active |
+  | 429 | `tarpit` | The AT_LLM tarpit (too many runs); `Retry-After` has the seconds |
+  | 500 | `failed` | Anything else (logged on the server) |
+  | 501 | `not_available` | A call of a later phase (13.6, 13.14) |
+  | 503 | `disabled`, `unavailable` | The agents are turned off (`llm-facade enabled="false"`; `bootstrap` still answers), or the database is down |
+
+- **Ids the client makes.** `clientId` is the tab's id: made once per tab (random, kept in `sessionStorage`), sent
+  with every turn and follow call. `clientMessageId` is the message's id: made per message and kept with the draft
+  until the server answers, so a send tried again (a timeout, a reload) is the same send. Both are letters, digits,
+  `-`, `_`, `.` and `:`, at most 100 characters.
+- **Dates** are epoch milliseconds. **Run states** are the A2A wire values (`TASK_STATE_SUBMITTED`, `_WORKING`,
+  `_INPUT_REQUIRED`, `_AUTH_REQUIRED`, `_COMPLETED`, `_FAILED`, `_CANCELED`, `_REJECTED`) with the `statusId`
+  (`AgrSubmitted` … `AgrRejected`) beside; paused is INPUT_REQUIRED or AUTH_REQUIRED, ended is the last four.
+
+## The page state
+
+A turn, a retry and `context` carry `state`, what the user's page is (plan 4.11 "Follow on the page"). The server reads
+it leniently (a part of the wrong type is left out), caps it, and drops every value whose name looks secret before it is
+stored or put in the prompt; the client should leave those out itself (`bootstrap.secretFields`), with file, hidden and
+password widgets.
+
+```json
+{
+  "path": "/qapps/system/Security/UserAccount/UserAccountList",
+  "parameters": {"username": "john"},
+  "title": "User Accounts",
+  "forms": [{"domId": "UserAccountList", "values": {"username": "john"}, "dirty": ["username"]}],
+  "dialogs": ["CreateUserDialog"],
+  "record": {"entityName": "moqui.security.UserAccount", "id": "EX_JOHN_DOE", "label": "john.doe"},
+  "selections": [{"form": "UserAccountList", "ids": ["EX_JOHN_DOE", "EX_JANE"], "total": 5}],
+  "filters": [{"form": "UserAccountList", "values": {"username": "john"}}],
+  "formInfo": [{"name": "UserAccountList", "kind": "list", "fields": ["Username", "Email"], "rows": 25}],
+  "canvas": {"title": "Logins by day", "version": 3}
+}
+```
+
+- `path` is the screen path; `/qapps/…` is read as `/apps/…` (the screen sessions' tree), and one that is not a plain
+  path from the root (a scheme, a host, `..`, `//`, a backslash, a control character) is no path. Parameters are
+  flat strings (at most 50). `forms` are the registered `m-form`s of the page and its open dialogs, by the qvt
+  `domId`, with the values the user changed (`moqui.fieldChanged`) and their names in `dirty` (at most 20 forms of
+  100 values of 4000 characters); `dialogs` are the open container dialogs' ids.
+- The sync-in (below) takes `path`, `parameters`, the dirty values and `dialogs`. The tail of the message (plan 7.1)
+  takes `now` (the user's time zone), `page` (path, query and title), `record`, `selections`, `filters`, `formInfo`
+  and `canvas`. All of it is optional.
+
+## The calls
+
+### `GET bootstrap`
+
+What the drawer needs before anything else.
+
+```json
+{
+  "user": {"userId": "EX_JOHN_DOE", "username": "john.doe", "locale": "en_US", "timeZone": "US/Central", "weekStart": "Sunday"},
+  "agents": [{"agentId": "assist", "name": "Assist", "description": "…", "tier": null, "tierFixed": false,
+              "tiers": ["fast", "balanced"], "dialects": [], "startPath": "/apps"}],
+  "defaultAgentId": "assist",
+  "tiers": ["fast", "balanced", "thorough"],
+  "features": {"enabled": true, "screenFollow": true, "preview": true, "canvas": false, "attachments": false,
+               "transcribe": false, "textActions": false, "admin": true, "audit": false},
+  "limits": {"maxMessageChars": 16000, "maxForms": 20, "maxFormValues": 100, "maxValueChars": 4000,
+             "approvalTtlMinutes": 30, "maxSteps": 40, "maxRunSeconds": 900},
+  "secretFields": {"contains": ["password", "passwd", "token", "secret", "credential", "salt"], "endsWith": ["key"],
+                   "names": []},
+  "paths": {"calls": "/assist", "events": "/assist/runs/{runId}/events", "catchUp": "/assist/runs/{runId}/events.json"}
+}
+```
+
+- `agents` are the agents the user may use in the drawer (not disabled, serving the drawer surface). An agent's `tiers`
+  are those some usable model has; with `tierFixed` the agent names its own `tier` and the tier picker is hidden.
+  `dialects` (the canvas dialects it allows) are empty until phase 13.6.
+- `features.screenFollow` is false on a server without the screen sessions (no follow events will come);
+  `features.preview` says whether approvals can be previewed (the sim overlay); `admin` and `audit` are the user's
+  `AgentAdmin` and `AgentAudit`, for the admin `/` commands.
+- `secretFields`: a field whose name, in lower case, contains a `contains` word, ends with an `endsWith` text, or is
+  one of `names` (the conf's `content-log redact-keys`) is never sent.
+
+### `GET conversations`
+
+The user's conversations, newest first. Parameters: `search` (text in the title or the user's messages), `filter`
+(`all`, the default; `running`; `waiting`, for an approval, question or hand-off; `record`, with `recordEntityName` and
+`recordId`), `surface` (`drawer`, `chat`, `tui`, …; all by default), `agentId`, `pageIndex` (0), `pageSize` (25, at
+most 100).
+
+```json
+{"conversations": [{"conversationId": "100050", "title": "Say hello", "agentId": "assist", "surface": "drawer",
+   "statusId": "AgcActive", "activeRunId": null, "activeRunState": null, "waiting": false,
+   "lastMessageDate": 1761140000000, "createdDate": 1761139990000, "recordEntityName": null, "recordId": null}],
+ "pageIndex": 0, "pageSize": 25, "hasMore": false}
+```
+
+A conversation's title is the first line of its first message (80 characters); 400 for an unknown `filter` or
+`surface`.
+
+### `GET conversation`
+
+One conversation of the user's, to draw the thread and re-attach. Parameters: `conversationId` (required), `clientId`
+(to learn whether this tab follows), `limit` (the newest messages, 200 by default, at most 500), `beforeSeq` (the
+messages before that sequence, for an earlier page).
+
+```json
+{
+  "conversation": {"conversationId": "100050", "title": "…", "agentId": "assist", "surface": "drawer",
+                   "statusId": "AgcActive", "recordEntityName": null, "recordId": null, "createdDate": 0,
+                   "lastMessageDate": 0, "lastMessageSeq": 4},
+  "activeRun": {"runId": "100071", "agentId": "assist", "state": "TASK_STATE_INPUT_REQUIRED", "statusId": "AgrInputRequired",
+                "pauseKind": "approval", "pauseRef": "9f…", "lastEventSeq": 14, "submittedDate": 0, "endedDate": null,
+                "stepCount": 1, "toolCallCount": 1, "inputTokens": 900, "outputTokens": 40, "activeSeconds": 2,
+                "tier": null, "errorCode": null, "errorText": null, "cost": null},
+  "runs": [ /* every run of the conversation, oldest first, in the activeRun shape */ ],
+  "items": [
+    {"messageId": "100060", "seq": 1, "role": "user", "runId": "100051", "clientMessageId": "m-1", "createdDate": 0,
+     "compacted": false, "feedback": null, "parts": [{"part": 1, "kind": "text", "text": "Say hello"}]},
+    {"messageId": "100061", "seq": 2, "role": "assistant", "runId": "100051", "clientMessageId": null, "createdDate": 0,
+     "compacted": false, "feedback": {"rating": "up", "note": "good", "userId": "EX_JOHN_DOE", "date": 0},
+     "parts": [{"part": 1, "kind": "text", "text": "Hello."},
+               {"part": 2, "kind": "tool-call", "toolCallId": "100062", "name": "run_tool", "arguments": "{…}",
+                "status": "AgtcDone", "classification": "write", "approvalId": "9f…", "startedDate": 0, "endedDate": 0}]},
+    {"messageId": "100063", "seq": 3, "role": "tool", "runId": "100051", "parts": [
+               {"part": 1, "kind": "tool-result", "toolCallId": "100062", "name": "run_tool", "isError": false, "text": "…"}]}
+  ],
+  "hasEarlier": false,
+  "pending": {"approvals": [ /* approval cards */ ], "questions": [ /* question cards */ ],
+              "handoffs": [{"handoffId": "…", "approvalId": "…", "runId": "…", "screenPath": "component://…",
+                            "transition": "updateOrder", "path": "/apps/Orders/Edit", "parameters": {}, "form": "EditOrder",
+                            "values": [{"field": "statusId", "label": "Status", "value": "Closed"}], "status": "watching", "createdDate": 0, "expiresAt": 0}],
+              "queued": [{"inputId": "…", "text": "Also this", "clientMessageId": "m-3", "receivedDate": 0}]},
+  "canvas": null,
+  "follow": {"clientId": "tab-a", "contextVersion": 3, "following": true}
+}
+```
+
+- `items` are the stored messages in order: `role` is `user`, `assistant` or `tool`; parts are `text`, `reasoning`,
+  `tool-call` (the step row: arguments redacted and cut at 2000 characters, the call's status and class, its approval,
+  and for a decided one `approval`, `{approvalId, runId, toolCallId, classification, targetName, summary, status,
+  decisionChannel}`, so a decided card is drawn collapsed after a reload and in another tab),
+  `tool-result` (redacted, cut at 2000), `file` and `data`. A user message never shows its `<context>` tail.
+- `activeRun` is the run working or paused now (null when none), with `lastEventSeq`: open the event stream after it.
+  `runs` give the done line of each (steps, tokens, seconds; `cost` only for an `AgentAdmin`).
+- `pending` are the cards that wait for the user: approvals Pending, questions open, hand-offs watching (or refused
+  once and watching again), and the messages queued for the active run that it has not folded in yet ("Queued" rows).
+- **The approval card** (also the payload of `approval.requested`): `{approvalId, runId, toolCallId, classification
+  (read|write|destructive|external), targetKind (screen|service|tool), targetName, summary, changes: [{field, label,
+  current, proposed}], record, recordRefs, status (pending|approved|executing|executed|failed|rejected|expired|conflict|
+  handed-off), decisionChannel, feedback, expiresAt, canEdit (Edit in screen is offered), preview, result, tool,
+  canPreview}`.
+- **The question card**: `{questionId, runId, toolCallId, text, options: [{label, recommended}], multi, fields: [{name,
+  label, type, required?, options?, search?}], freeText, kind (ask|budget), status, createdDate, expiresAt}`. A budget
+  question ("This run reached its limit of steps. Continue?") has the options `continue` and `stop`.
+- `follow` is the follow owner (`clientId`), the page version the server has (`contextVersion`), and whether the
+  asking tab is the owner.
+
+### `POST turn`
+
+The user's message. Parameters: `text` (required, at most `limits.maxMessageChars`), `clientMessageId` (required),
+`clientId` (required), `conversationId` (none starts a new conversation), `agentId` (for a new conversation; `assist`
+by default; an existing conversation keeps its agent), `tier` (`fast`, `balanced`, `thorough`; ignored when the agent
+fixes its tier), `contextVersion` (the tab's page version), `state` (the page).
+
+```json
+{"conversationId": "100050", "runId": "100051", "state": "TASK_STATE_SUBMITTED", "statusId": "AgrSubmitted",
+ "queued": false, "existing": false, "lastEventSeq": 1,
+ "follow": {"clientId": "tab-a", "contextVersion": 1}, "eventsPath": "/assist/runs/100051/events"}
+```
+
+- While the conversation's run is active the message is **queued** for that run (`queued` true, `runId` the active
+  run's): it becomes an `AgentInput` the run folds into its next step (`input.folded`), and the run answers it. A message
+  that arrives during the run's last model call keeps the run going for one more step rather than being dropped.
+- The same `clientMessageId` again answers what the first send did (`existing` true, the same run, `queued` as it was)
+  and changes nothing: it is unique with the user, for messages and queued input alike.
+- The sending tab becomes the **follow owner** and its `contextVersion` is kept (the higher of the stored and the sent);
+  only once the turn is taken (a run made or the message queued): a refused turn (the tarpit, another user's
+  conversation) and a run rejected for the quota move neither the owner nor the session's page;
+  its page **syncs into** the conversation's screen session (a new conversation's first session opens on it).
+- A new run counts one hit of the user's AT_LLM tarpit (`agent:<agentId>`; the seed allows 30 a minute), where the run is
+  made under the conversation's lock (so a send that finds the run active, or a second send of the same moment, counts none); a queued
+  message counts none. Over the limit is 429 with `Retry-After`. A user over their daily quota gets a run in state
+  `TASK_STATE_REJECTED` (200; its `run.done` says `quota_exhausted`).
+- 404 for another user's conversation or an agent the user may not use in the drawer.
+
+### `POST cancel`
+
+`runId` (required). Stops a run of the user's (Stop in the drawer): a run waiting or not yet working ends Canceled at
+once; one working stops at its next check, and the text streamed so far is kept. `{"runId", "state", "statusId"}`.
+
+### `POST retry`
+
+Runs the conversation's last user message again after its run failed or was stopped: `conversationId`,
+`clientMessageId` (a new one), `clientId` (required), `tier`, `contextVersion`, `state` (optional; the stored tail is used
+without it). The message is sent again, so it shows twice in the history. 409 while a run is active or when there is no
+message. Answers as `turn`.
+
+### `POST follow`
+
+`conversationId`, `clientId` (required), `contextVersion`, `release`. This tab follows the conversation's agent (its
+`ui.*` events are for it): "Follow here". With `release: true` the tab gives it up (when it has it). `{"conversationId",
+"follow": {"clientId", "contextVersion"}, "following"}`.
+
+### `POST context`
+
+The user navigated (or changed the page) while a conversation is open: `conversationId`, `clientId`, `contextVersion`
+(required, raised by the tab before it posts), `state`. From the follow owner (or any tab when none follows, which then
+does) the server keeps the version and syncs the page into the session, so the agent goes on from where the user went;
+from another tab nothing changes (the owner is checked and claimed under one lock). `{"conversationId", "applied",
+"follow": {"clientId", "contextVersion"}}`; the tab's own version is at least the answer's.
+
+### `POST submitted`
+
+A hand-off's form was answered in the browser (`moqui.onFormAnswer`): `handoffId` (required), and what the client saw
+(`ok`, `messageInfos`, `errors`, `validationErrors`, `screenUrl`; never the form's values). It is a **signal only**: the user's own save
+is observed on the server (the transition observer), which resumes the run; the answer is the watch as the server has
+it: `{"handoffId", "approvalId", "runId", "status": "watching|saved|failed|abandoned"}`. With `abandoned` (a reason:
+`navigated`, `skipped`) the watch is abandoned and the run goes on with that; like a decision, only from the browser
+session with its token (403 otherwise).
+
+### `POST decide`
+
+The user's decision on an approval of theirs: `approvalId` and `decision` (required): `approve` (with `arguments`, an
+object of edited arguments, for a service or tool call; they are checked again and hashed anew), `reject` (with
+`feedback`, which becomes the agent's next task) or `edit` (Edit in screen: the write is handed to the page; with
+`clientId` and `contextVersion` the deciding tab becomes the follow owner at the higher of its version and the stored one,
+so it gets the hand-off's `ui.*` events even when it never reported its page). `{"approvalId", "status", "statusId",
+"handoffId", "follow"}`: `follow` (`{clientId, contextVersion}`, for an `edit` with `clientId`) is what the hand-off's
+events are stamped with, which the tab takes as its own.
+
+Only from a **browser session by its cookie with the session token** (`approval::Decider::from_request`): a header
+login (Basic, `api_key`, `login_key`) and a session a header login made are 403, so a program can never approve; another
+user's approval is 404; a second decision, an expired approval and one whose run no longer waits are 409. The run
+resumes with the decision (`approval.decided`, then the call's events).
+
+### `POST preview`
+
+`approvalId`. The effects of a pending approval run in the sim overlay as the user (slower: "Preview effects"), kept on
+the approval: `{"approvalId", "preview": {"ok", "rows": [{"entity", "action", "key", "fields": [{"field", "before",
+"after"}]}], …}}` (an encrypted or secret-named field shows `(hidden)`). 409 when the server cannot preview
+(`bootstrap.features.preview` false) or the approval is not pending; 404 for another user's.
+
+### `POST answer`
+
+The answer to the question a run of the user's waits on: `runId` (required), `questionId` (when given it must be the
+one the run waits on, else 409), and one of `choices` (a list of option labels) or `choice`, `values` (an object of a
+form's values by field name; a record field's value may be `{id, label}`), `text` (free text). A form's values are
+checked first (400 with the problems). The budget question takes `choice: "continue"` or `"stop"`. `{"runId",
+"state", "statusId"}`; 409 when the run does not wait for an answer.
+
+### `POST feedback`
+
+`messageId` (an assistant message of the user's), `rating` (`up`, `down`, or empty to clear), `note` (at most 2000
+characters). Kept in the message's metadata and shown back as the item's `feedback`. `{"messageId", "feedback"}`.
+
+### `GET tasks`
+
+The tasks pane, across every surface: `{"waiting": [...], "running": [...], "failed": [...], "done": [...], "inbox": [],
+"counts": {"waiting": 2, "running": 1}}`. A waiting item is `{"kind": "approval|question|budget|handoff", the card's id
+(approvalId, questionId or handoffId), runId, conversationId, conversationTitle, surface, summary, createdDate,
+expiresAt}`; a run item is `{"kind": "run", runId, agentId, conversationId, conversationTitle, surface, state,
+pauseKind, submittedDate, endedDate, errorCode, errorText}`. `failed` covers the last 7 days, `done` the last day;
+`inbox` (threads started by triggered agents) comes with phase 13.9. `counts.waiting` is the badge.
+
+### `GET prompts`
+
+Suggested prompts for the page: `path` (the page path), `entityName`, `recordId`, `agentId` (`assist` by default).
+`{"prompts": [{"promptId", "label", "text", "send", "source"}]}` (at most 8): the admin's `AgentSuggestedPrompt` rows
+for the agent or any agent whose `screenPathPattern` (a regular expression over the whole `/apps/…` path) and
+`entityName` fit, then the registered providers' (`source` is the provider's name). With `send` the chip sends at once,
+else it fills the composer. Components register a provider in Rust:
+
+```rust
+#[derive(Default)]
+struct OrderPrompts;
+impl moqui_core::llm::assist::prompts::PromptProvider for OrderPrompts {
+    fn name(&self) -> &str { "orders" }
+    fn prompts(&self, facade: &EntityFacade, query: &PromptQuery) -> Result<Vec<SuggestedPrompt>, Error> { … }
+}
+moqui_core::submit_assist_prompts!(OrderPrompts);
+```
+
+Each provider runs under the read fence; one that fails or writes is logged and left out. The app
+`<shell-providers><assist-prompt>` element of the plan comes with phase 13.14.
+
+### `GET mentions`
+
+The `@` pickers: `kind` and `q`.
+
+- `kind=agents` (the default): `{"kind": "agents", "items": [{"kind": "agent", "agentId", "label", "description"}]}`.
+- `kind=skills`: the published skills there are, site and the user's own (`{"kind": "skill", "name", "label",
+  "description"}`); the skill index and retrieval come with phase 13.6.
+- `kind=records`: the palette's sources, as `/shellSearch` answers them, with `groups` and `limit`: `{"kind":
+  "records", "groups": [{…palette group with rows carrying recordEntity and recordId…}]}`.
+
+### Calls of later phases
+
+`POST attachments`, `transcribe`, `textAction` (phase 13.14) and `POST canvasState`, `canvasAction`, `canvasAdjust`,
+`canvasProblems` and `GET read` (phase 13.6) are routed and answer 501 `not_available` until their phases; each is a
+branch of `llm::assist::call` to fill in.
+
+## The event stream
+
+`GET /assist/runs/{runId}/events` is Server-Sent Events for the run's owner (anyone else 404; no user 401; an origin
+the server does not allow 403; more than 256 streams on a node 503 with `Retry-After`). It replays the stored events
+after `Last-Event-ID` (or `?after=`), then follows the run live. A stored event is `id: <seq>`, `event: <type>`, `data:
+{"seq", "type", "payload"}`; a live one has no `id:` and `seq` null. `retry: 2000` comes first, `: ping` every 15 s. The
+stream ends after `run.done`, or after a `run.state` that pauses the run (INPUT_REQUIRED or AUTH_REQUIRED): open it
+again from the last id after the user acts. `GET /assist/runs/{runId}/events.json?after=` is the catch-up of a client
+that polls: `{"events": [{"seq", "type", "payload"}], "lastEventSeq", "statusId", "state"}` (at most 1000).
+
+The events (`crates/moqui-core/src/llm/run/events.rs` is the sink; the payloads are built where each is emitted):
+
+| Event | Kept | Payload |
+| --- | --- | --- |
+| `run.state` | stored | `runId, conversationId, state, statusId, reason`; `pauseKind` (`Agps…`) and `pauseRef` on a pause; `errorCode` on a failure |
+| `run.done` | stored | `runId, state, result` (`{text, messageId, invented?}` on Completed) `, errorCode` |
+| `error` | stored | `code, message` (before a Failed `run.state`) |
+| `message.start` | stored | `messageId, role, stepSeq, model` |
+| `text.delta` | live | `messageId, part, offset, text` |
+| `text.chunk` | stored | `messageId, part, offset, text` (deltas coalesced every 300 ms or 512 characters) |
+| `part.done` | stored | `messageId, part, length` |
+| `step.restart` | stored | `messageId, attempt, reason`: drop the text streamed for the message |
+| `reasoning.delta` | live | `messageId, text` |
+| `reasoning.summary` | stored | `messageId, text` |
+| `tool.args` | live | `messageId, index, callId?, name?, text` |
+| `tool.call` | stored | `toolCallId, messageId, name, arguments, classification` |
+| `tool.result` | stored | `toolCallId, name, status (done|failed|unknown-outcome|denied), isError, text` |
+| `input.folded` | stored | `inputId, kind`: a queued message became part of the history |
+| `usage` | stored | `stepSeq, input, cachedInput, output, reasoning, cost` |
+| `compaction` | stored | `stepSeq, droppedMessages, stub` |
+| `answer.references` | stored | `messageId, invented, text`: links no tool returned, to show plain |
+| `approval.requested` | stored | the approval card |
+| `approval.decided` | stored | `approvalId, toolCallId, decision (approve|reject|edit|expire), status, channel?, feedback?, handoffId?, policy?` |
+| `question.asked` | stored | the question card's fields with `questionId, toolCallId, surface`; a budget one `questionId, text, choices, kind: "budget", exhausted` |
+| `question.answered` | stored | `toolCallId, answer` or `questionId, continue` |
+| `handoff.started` | stored | `handoffId, approvalId, path, parameters, form, transition, values: [{field, label, value}], expiresAt, clientId, contextVersion` |
+| `handoff.done` | stored | `handoffId, approvalId, outcome (saved|abandoned), values?, messages?` |
+| `ui.navigate` | stored | `path, parameters, title, handoffId?, clientId, contextVersion` |
+| `ui.fill` | stored | `scope (page|dialog|find), form, domId, occurrence, row, dialog?, field, part, value, label, tuiId, handoffId?, clientId, contextVersion` |
+| `ui.dialog` | stored | `id, title, open, clientId, contextVersion` |
+| `ui.focus`, `ui.highlight` | stored | `tuiId, kind, label` and for a field `scope, form, domId, occurrence, row, field`; `clientId, contextVersion` |
+
+The low-rate signals go to every tab of the user over `/notws` as non-stored notifications of topic `AgentRun`: a run
+started or changed state (the `run.state` payload), `{runId, conversationId, approvalId, event: "approval.requested",
+summary}`, `{runId, approvalId, event: "approval.decided", status}`, `{runId, approvalId, handoffId, event:
+"handoff.started"}` and `{runId, handoffId, event: "handoff.done", outcome}`. A tab that is not streaming reads
+`conversation` or `tasks` again when one arrives.
+
+## Follow
+
+Only the **follow owner** applies the agent's page events. The server stamps every `ui.*` and `handoff.started` event
+with the conversation's follow owner (`clientId`) and page version (`contextVersion`) as they stood when the command
+began, so:
+
+1. A tab makes its `clientId` once and keeps a `contextVersion` per conversation, starting from the one
+   `conversation.follow` (or a turn's `follow`) gives.
+2. Sending a turn makes the tab the owner. "Follow here" posts `follow`.
+3. When the user navigates in the owner tab (the URL listener, not a navigation the agent caused) or opens a page
+   with a conversation in the drawer, the tab raises its `contextVersion` and posts `context` with the page state.
+4. The tab applies a `ui.*` event only when `payload.clientId` is its own, follow is on, `payload.contextVersion`
+   equals its own, the event is past its applied sequence and no load is running; it never applies `ui.*` events on a
+   replay after a reload. Another tab shows "Following in another tab".
+
+On the server the conversation keeps the owner and the version (`AgentConversation.clientId`, `contextVersion`), and the
+screen session takes the owner's page at each turn and `context` (`llm::screen::sync_in`, checked against the
+conversation's owner), so the agent continues from where the user is.
+
+## The drawer
+
+`runtime/base-component/webroot/screen/webroot/js/WebrootAssist.js` is `moqui.assist`; its tests are `WebrootAssist.test.js`
+(`node --test`, run by `cargo test -p moqui-core --lib the_qvt_client_passes_its_node_tests`). It loads on every `/qapps`
+page after `WebrootChat.js` and before `WebrootVue.qvt.js` (`qapps.xml`), so its components are in `moqui.qvtComponents`,
+which the client registers and `WebrootVue.qvt.render.js` precompiles (a `webapp_qvt_static_only` page runs it too); a part
+that loads later registers through `qvt.registerLate(name, def)`. The page's settings carry `assist` (the `llm` feature built
+and enabled and the user's `AgentUse`, from `qapps.xml`); without it the drawer makes no request at all. With it the root
+calls `moqui.assist.start(root)` once mounted, which reads `bootstrap` (the button shows when an agent answers), the tasks
+count, and reopens the tab's conversation of before a reload (`sessionStorage`), or the one `?assist=<conversationId>` names.
+
+**The components.** `m-assist-button` (rightmost in the header, the waiting count as its badge) and `m-shell-assist`, one
+right `q-drawer` of the shell's layout, mounted on first open and kept: nothing is reparented or teleported. It is
+`persistent`: an overlay `q-drawer` hides itself on every navigation and on Esc, and this one follows the agent across pages
+(it closes by Close, Mod+J and a second Esc). 420 px by
+default, 320–720 by the handle on its left edge (kept as `localStorage` `ASSIST_WIDTH`), the full width below 600 px; it
+pushes the page from 1440 px and overlays it below. Inside: the header (agent picker when there are several, which starts
+a new conversation; the tier unless the agent fixes it; New, History, Tasks with the badge, a menu with Follow on this
+page, Close), the status line, "Following in another tab" with Follow here, the chips, then `m-assist-thread`,
+`m-assist-card`s and `m-assist-composer`, or `m-assist-history` or `m-assist-tasks`.
+
+**The store** is a pure reducer of one conversation (`assist.emptyState`):
+
+- `assist.snapshot(state, conversationJson, {clientId})` takes `GET conversation`: the items, runs, pending cards, queued
+  input and the follow owner. This tab's messages the server does not list yet stay at the end, and a message the tab
+  streams keeps its text when the stored one is shorter. A run first seen here replays its events from 0 (everything is
+  idempotent) with its `floor` at the `lastEventSeq` the snapshot gives: a `ui.*` or `handoff.started` event at or below it
+  is never applied, so a reload never replays a page action. A run the tab streams keeps its place.
+- `assist.apply(state, runId, event, {clientId, followOn})` applies one event `{seq, type, payload}`. A stored event at or
+  below the run's sequence changes nothing; one past the next answers `{kind: "gap", after}` and changes nothing (the
+  transport reads `events.json?after=` and applies those in order). Text goes by `(messageId, part, offset)`: the
+  stream's part `n` is the message's `n`-th text part (the stream counts from 0, the stored parts from 1), only the text past
+  what is there is added, a live delta past the end waits for its stored chunk, and a stored chunk past the end or a
+  `part.done` longer than the text reads the conversation again (`{kind: "refresh"}`); `step.restart` empties the message's
+  text. A tool call is one step row by `toolCallId`; `tool.result` sets its status and result. The cards: an approval is
+  pending until `approval.decided` (its status, or one from the decision: approved, rejected, handed-off, expired), a
+  question open until `question.answered` (by `questionId` or `toolCallId`; the budget question's options are its
+  choices), a hand-off watching until `handoff.done`. `input.folded` moves a queued message into the history (an unknown
+  input id refreshes). `run.state` and `run.done` answer `paused` or `ended`: a paused run stays the active one.
+- `assist.threadRows(state)` is what the thread draws: user messages (sending, failed with Retry, or queued at the end),
+  an assistant message's text, its reasoning ("Thought") and its steps (each with its result, and its approval card in
+  place), the done line after a run's last message (steps, tokens, seconds, and cost when the server gave it; Retry on a
+  failed or canceled run), notes of the `/` commands.
+
+**The transport.** A turn posts with `X-CSRF-Token` (`moqui.request`) and the object parameters as JSON text
+(`assist.callParams`); its `clientMessageId` stays with the message until the server answers, so Retry sends the same
+message. The active run's stream is `fetch` of `paths.events` with `Last-Event-ID` and `?after=` (the run's last sequence),
+read frame by frame (`assist.parseSse`); it is open only while a run is active, not paused, and the tab visible (hidden:
+closed; visible again: a catch-up, then the stream). It ends at a pause or `run.done`; a decision, an answer or Skip opens it
+again from the last id. A stream that ends early is opened again after 500 ms doubling to 15 s (the count starts over once
+a stream brings an event). A stream refused (503, no stream) or ended three times without a reason turns into polling
+`events.json` each second while events come, slower (to 5 s) while none do, until the run ends or waits for the user (the
+catch-up's `state` says so when its events do not). An `AgentRun` signal on the notification socket reads the tasks count again,
+and the conversation when it is this tab's and the tab does not stream that run (a run started or decided in another tab).
+
+**Follow on the page.**
+
+- A `ui.*` (and `handoff.started`) event is applied (`assist.follow.applies`) only when follow is on in this tab, the
+  payload's `clientId` is the tab's, its `contextVersion` equals the tab's, and it is past the run's floor; else it is a
+  chip ("Assist opened Orders — Show", "Assist filled Name"; at most five, a navigation starts them over). Applied events
+  wait in a queue until no load runs and the last navigation is a moment old, and are checked again then.
+- `ui.navigate` goes through `assist.safePath` and `setUrl`, flagged so the URL listener does not count it as the user's
+  (nor a navigation the page makes by itself within 1.5 s after it with no input of the user's between, such as a redirect).
+- `ui.fill`, `ui.focus` and `ui.highlight` find their field with `assist.follow.locate(target, forms)` over the page's
+  registered forms in DOM order (`assist.gatherForms`): a list row by its row form `<list>_<row>`, else a multi form's
+  `<field>_<row>`; else the form whose qvt id is `domId` (several with it, as a static render repeats the bare name: the
+  `occurrence`-th); else by name, the name or `<name>_<n>` (a merged render appends the section entry index), the
+  `occurrence`-th within the scope (a dialog's forms for `dialog`, the page's before the dialogs' otherwise); a list's find
+  form is `<list>_header`. Refused: a form outside `assistReach` (the canvas, the open tray, the quick-create dialog, and the
+  screen dialogs; never the header, the drawer or the palette), a hidden, password or file field, a secret name, a field the
+  form does not have. A fill sets the form's value (dependent fields follow), outlines the field with an "Assist" tag until
+  it is focused or for 8 s, and is announced in a polite region; a form still mounting after a navigation is looked for
+  again for 3 s. `ui.dialog` opens or closes a container dialog by its id.
+- The user's own navigation (the root's URL listener) raises the tab's `contextVersion` at once (`assist.nextContextVersion`)
+  and drops the queued page actions, then posts `context` with the page state once the page has loaded (from the owner tab,
+  or any tab when none owns follow). Sending a turn makes the tab the owner; Follow here posts `follow`; "Follow on this page"
+  off (kept as `localStorage` `ASSIST_FOLLOW`) turns the page actions into chips.
+- **The page state** of a turn, retry and context (`assist.currentPageState`, `assist.pageState`): the root's
+  `screenContext` (path, parameters, record, selection, filters and form summaries) as the contract names them, the screen
+  title, the open dialogs, and `assist.follow.unsaved`: per form (by its qvt id) the values that differ from what it came
+  with and their names in `dirty`. A secret name (`bootstrap.secretFields`) is never read, a hidden, password or file
+  widget and the transition parameters are left out, a list value is joined with commas; at most 20 forms of 100 values of
+  4000 characters (`bootstrap.limits`).
+- **The hand-off.** Edit in screen posts `decide` with `edit`, the tab's `clientId` and its `contextVersion`, which makes the
+  tab the owner and turns follow on; the tab takes the answer's `follow` (`assist.takeFollow`), so a tab that moved without
+  reporting (it was not the owner) applies the hand-off's events too. `handoff.started`, then the agent's `ui.navigate` and `ui.fill`, show the filled form; the hand-off's form
+  (its name, with a section entry index, or a form posting to its transition) has its Save ringed (`data-assist-save`), and the
+  drawer shows the values Assist filled with Skip. The client hook `moqui.onFormAnswer(fn)` (called once per background
+  submit of `m-form`, after its answer and in its catch for a refused one, with `{form, ok, json, status}`) reports the
+  user's own save with `submitted` (`ok`, `messageInfos`, `errors`, `validationErrors`, `screenUrl`; never the form's
+  values); a refused save keeps it watching ("The save was refused" in its card), and its form's Save works again at once
+  (`m-form` takes its button's 3 s lock off when the answer is a refusal). Skip posts `submitted` with `abandoned: "skipped"`; the user leaving
+  the hand-off's page (not within 3 s after a save that went through) posts `abandoned: "navigated"`.
+
+**`assist.safePath(path, parameters, {linkBase})`**, the client's one path check (the server is the authority): a path under
+`/apps` or `/qapps`; no scheme or host, no `//`, `..` or `.` segment, backslash, whitespace or control character, also once
+decoded, no anchor; parameters flat (string, number or boolean values, names of letters, digits, `_`, `.` and `-`, at most
+50). It answers the `/qapps` URL to `setUrl`. The tests port Java's `RequestTool.validatePath` and
+`AssistOpenUiNav.validatePath` cases.
+
+**The thread's text.** An assistant text is Markdown through `moqui.markdown.render` (Marked, with `escapeHtml`: raw HTML
+in the text is shown as text, as the model never needs it) and `assist.sanitize`: DOMPurify (`assist.purifyOptions`: no
+style, form, media, frame or SVG) to a fragment, then `assist.cleanTree` on the cleaned DOM (every image that is not this
+site's own path a placeholder, every URL-bearing attribute but a checked link's `href` and a site image's `src` removed,
+event attributes removed), drawn again at most once a frame while it streams
+(`assist.renderMarkdown`): a path link only when `safePath` takes it, then through the shell; an external `http(s)` link in a
+new tab with its host shown; a link the server named in `answer.references`, a mail, script, relative or anchor link as text;
+images as placeholders with their host, never fetched (one of this site's own paths stays). A record chip
+`[[record:Entity:id|label]]` is drawn only when the message's chip map (`item.chips`, by `Entity:id`, with `url` and
+`label`) holds it, else it is its label; the user's own chips (from `@`) are drawn without a link. The server sends no chip
+map yet (the model is not told of record chips and no tool returns record references to build one from; with 13.6's
+skills), so an assistant's chip is its label.
+
+**The composer.** Enter sends, Shift+Enter is a new line, ↑ in an empty composer recalls the last message. `@` searches
+`mentions` with `kind=records` (the palette's sources; a row with `recordEntity` and `recordId`) and inserts its record chip.
+`/new`, `/tier fast|balanced|thorough`, `/skill <name> [text]` and `/help`; an admin also has `/prompt`, `/tools` and
+`/usage` (the System › LLM screens), `/context` (the page state the next turn sends) and `/skills` (`mentions kind=skills`).
+Any other text that starts with `/` (a pasted `/apps` path) is a message. Stop posts `cancel` (the partial answer stays).
+
+**The cards.** An approval: its summary, record chip, "field: current → proposed" rows, Approve, Edit in screen (when
+`canEdit`), Edit arguments for a service or tool call (approved with `arguments`), Reject with a feedback box (and the
+server's `alternatives` as chips), Preview effects (when the server can preview), the preview's rows; decided, it collapses
+into its status; a conflict offers Review again. A question: its options (the recommended one marked; several with `multi`),
+its typed fields, free text; the budget question's continue and stop. A 409 or 404 on a decision reads the conversation
+again. No card has a keyboard accelerator.
+
+**The shell's hooks** (in `WebrootVue.qvt.js`): `moqui.onFormAnswer`; `qvt.registerLate`; the palette's last group "Ask
+Assist ‘…’" (a `?` first is that row alone, Shift+Enter asks), which opens the drawer and sends the text; palette rows that
+keep `recordEntity` and `recordId`; Mod+J opens the drawer and focuses the composer (from inside the drawer it closes),
+Mod+. stops the run, Esc in the drawer returns focus to the page and a second Esc closes it (`moqui.keymap` actions
+`assist` and `assistStop`).
+
+**For the browser smokes** the drawer has stable hooks: `#m-assist-button` (badge `[data-assist-badge]`),
+`#m-assist-drawer`, `#m-assist-input` (the composer's textarea), `#m-assist-send`, `#m-assist-stop`, `#m-assist-new`,
+`#m-assist-history`, `#m-assist-tasks`, `#m-assist-status`, `#m-assist-elsewhere`, `#m-assist-follow-here`,
+`#m-assist-chips`, `#m-assist-thread` (rows `[data-assist-item=user|assistant|step|done|queued|note|reasoning]`, a step's
+`data-tool` and `data-status`, a local message's `data-assist-local`; an assistant row's text is its `.m-assist-markdown`), cards `[data-assist-card=approval|question|handoff]`
+with `data-status` and `data-approval-id` / `data-question-id` / `data-handoff-id`, their buttons
+`[data-assist-action=approve|edit|edit-arguments|reject|reject-send|preview|review|answer|skip|resend|retry]`, the feedback box
+`[data-assist-feedback]`, a question's options `[data-assist-option]`; on the page a filled field
+`[data-assist-touched=<field>]` (`[data-assist-highlight]` for a highlight) and the hand-off's Save
+`[data-assist-save=<handoffId>]`: attributes, not classes, as a field's or a button's component sets its class again on every
+update. The composer's id is on its textarea through `q-input`'s `for`.
+`moqui.assist.state` (its `convo` the store) and `moqui.assist.clientId` can be read from the page.
+
+**The Chromium smokes** are the `assist` module of `crates/moqui-host/tests/gate3_browser.rs` (`cargo test -p moqui-host
+--test gate3_browser assist::`; the browser is `pdf-chromium-path`, for instance `pdf_chromium_path="/Applications/Google
+Chrome.app/Contents/MacOS/Google Chrome"`, else the downloaded or `PATH` Chromium), against the scripted fake provider
+(`fake::script` of the endpoint `gate-assist`) and a fixture component (`assistgate`: Edit saves an `EnumerationType`, Slow
+takes 5 s to render): a run streams (Mod+J, Enter, the text in pieces, the done line) and a reload in the middle of the next
+run re-attaches and ends with its text once; the drawer on a `webapp_qvt_static_only` page under a policy without
+`unsafe-eval`, with an answer whose images and raw HTML fetch and run nothing; a hand-off on the gallery's Contact
+(`example/screen/Gallery/Contact.xml`, a form whose save is refused with validation errors) reports the refused save and then
+saves; two tabs, where only the sender follows, the other shows "Following in another tab" and a chip, an approval shows in
+both and executes from the first while the second sees it executed; the user's own navigation while the agent's command runs
+wins (the agent's navigation is a chip); and Edit in screen from the tab that does not follow, after it moved on its own,
+follows there. With `MOQUI_SHELL_SHOTS=<dir>` they save `assist-<thread|approval|elsewhere|handoff>-<light|dark>-<1280|390>.png`;
+`example/test/gallery-shots.mjs --assist` opens the drawer on a running server's pages.
+
+**Not in the client yet**: the canvas modes (Wide, Page) and `m-assist-canvas` (13.6); attachments, dictation, the
+context meter, editing or canceling a queued message, response actions of the apps, the history's filters, rename, export
+and attach (13.14, or calls the server does not have yet); "Let Assist save it" on a hand-off (the server has no call that
+turns a hand-off back into an approval) and the phone's "View page" pill. The composer is a plain text area rather than
+`m-rich-text`.
+
+## On the server
+
+- **The run.** `turn` builds a `StartRequest` (surface drawer, the tail from the page state, the client message id,
+  the tier, a new conversation's screen state, `defer_submit`) for `llm::run::start_run`, which makes the run or queues the
+  message, counts the tarpit where it makes a run (`run::count_run_hit`, under the conversation's lock) and answers an
+  earlier send of the same client message id (`run::existing_message`); the turn then claims follow and syncs the page in,
+  and hands the run to the pool (`run::submit_started`), so the run's first command sees the tab as the owner. A queued message is an `AgentInput` with its client message id, which the folded message
+  keeps; a run completing checks for one under the conversation's lock (the lock a queued message takes first) and goes
+  on one more step instead (`Change::unless_input`).
+- **The tier.** `AgentRun.tier` keeps the client's choice; a step uses the agent's feature binding unless the agent
+  fixes no tier and the bound model is of another tier, then the first usable model of the chosen one
+  (`Registry::tier_model`).
+- **The tail.** `llm::assist::state::DrawerState::tail_spec` and `llm::prompt::build_tail`: the user's local time and
+  week start, the page with its title, the record, selections, filters and form summaries, capped at 1,200 characters.
+- **Authority.** The calls run without artifact authorization (no app's screens cover them, as the shell and chat
+  transitions do) and check the user, `AgentUse` and ownership themselves; the run's tools run as the user, with the
+  user's own permissions, under the agent's policy (plan 4.3).
+
+## Admin screens
+
+System › LLM › **Conversations**, **Runs** and **Approvals** (`AgentAdmin`, as all of System › LLM). The lists show
+who, which agent and surface, the status, the dates, counts, tokens and cost, never content. A detail screen shows its
+content (a conversation's transcript, a run's tool arguments and results, events and approvals, an approval's
+arguments, changes, edited arguments, preview and outcome) only to its own user or a user with `AgentAudit`, and each
+such read writes an `AgentAuditLog` row (auditor, target user, conversation, run, reason):
+`org.moqui.agent.AgentAdminServices.get#AgentAuditView`. Run detail has the state box (status, pause, lease, attempts,
+budgets against their caps, tokens, cost, capabilities) with **Cancel**, which stops the run as its own Stop does
+(`cancel#AgentRun`); nothing there acts in another user's conversation.

@@ -21,10 +21,11 @@
 //! calls; [`usage`] logs them and counts them against the quotas; [`run::state`] is the run state table.
 //! [`LlmFacade::complete`] is `ec.llm.complete` for app code, with structured output. [`run`] is the run engine (the
 //! agent pool, the step jobs, the leases and the recovery sweep, the events), [`tools`] the tool registry, [`approval`]
-//! the approvals of writes, [`prompt`] the context builder; [`start`] starts the engine's background work on a booted
-//! server.
+//! the approvals of writes, [`assist`] the drawer's JSON calls, [`prompt`] the context builder; [`start`] starts the
+//! engine's background work on a booted server.
 
 pub mod approval;
+pub mod assist;
 pub mod conf;
 pub mod facts;
 pub mod prompt;
