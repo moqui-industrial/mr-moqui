@@ -27,7 +27,9 @@ mod common;
 // the example component loads with the repository runtime; link its tool factory as the moqui binary does
 use example as _;
 
+mod a2a;
 mod agent_eval;
+mod agent_members;
 mod agent_screens;
 mod assist;
 mod backup;

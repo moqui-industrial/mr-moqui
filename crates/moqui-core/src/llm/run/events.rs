@@ -322,6 +322,8 @@ impl EventSink {
         let run_id = self.run_id.clone();
         let user_id = self.user_id.clone();
         let publish = move || {
+            // the surface adapters (chat members, triggers) act on what committed, on this node only
+            super::observe::notify(&factory, &run_id, &stored);
             hub.push_stored(&run_id, stored);
             for signal in signals {
                 send_signal(&factory, &user_id, &signal);

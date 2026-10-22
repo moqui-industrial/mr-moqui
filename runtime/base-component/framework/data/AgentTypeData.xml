@@ -231,9 +231,19 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.service.job.ServiceJob jobName="clean_LlmCallContent_daily" description="Clear old LLM call content"
             serviceName="org.moqui.agent.AgentAdminServices.clean#LlmCallContent" cronExpression="0 0 2 * * ?" paused="N"/>
 
+    <!-- ========== Triggers ========== -->
+    <!-- The record changes of document triggers: store#AgentTrigger links each trigger's DataDocument to this feed, whose
+        services batch the documents for the triggers (the loop guard drops the trigger's own agent's writes) -->
+    <moqui.entity.feed.DataFeed dataFeedId="AgentTriggers" dataFeedTypeEnumId="DTFDTP_RT_PUSH" feedName="Agent Triggers"
+            feedReceiveServiceName="org.moqui.agent.AgentTriggerServices.receive#TriggerDocuments"
+            feedDeleteServiceName="org.moqui.agent.AgentTriggerServices.delete#TriggerDocument"/>
+
     <!-- ========== The system agent ========== -->
+    <!-- The service user that is Assist in chat rooms (add it to a room with role agent and the agentRef
+        org.moqui.agent.AgentServices.handle#ChatMessage); it has no password, so nobody logs in as it -->
+    <moqui.security.UserAccount userId="_AGENT_ASSIST_" username="_agent_assist_" userFullName="Assist"/>
     <moqui.agent.AgentDefinition agentId="assist" agentName="Assist" isSystem="Y" featureId="assist" reasoningLevel="low"
-            surfaces="drawer,chat,tui" startPath="/apps"
+            surfaces="drawer,chat,tui" startPath="/apps" chatUserId="_AGENT_ASSIST_"
             description="The assistant of the Assist drawer: finds and opens screens, answers from data, proposes changes"
             instructions="Scope: this site's apps and the user's work in them. Decline anything else in one friendly sentence and offer something you can do here."/>
 </entity-facade-xml>

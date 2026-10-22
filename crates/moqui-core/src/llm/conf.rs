@@ -443,6 +443,17 @@ impl Default for ScreenSessionsConf {
 /// read with authorization off: encrypted fields are never read, and fields named like secrets (password, token,
 /// secret, credential, a key) only when the pattern says `secret-fields="true"`; any other plaintext secret of a listed
 /// entity is readable, so list only entities fit for every user of the agent.
+/// A typed AI task a component adds (`ai-task`, [`crate::llm::ai_task`]): its name, the service that prepares its call
+/// (an implementation of `org.moqui.agent.AiTaskServices.prepare#AiTask`), the feature whose model runs it, and what it
+/// does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiTaskConf {
+    pub name: String,
+    pub service: String,
+    pub feature: Option<String>,
+    pub description: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataEntityConf {
     pub package: Option<String>,
@@ -537,6 +548,8 @@ pub struct LlmConf {
     /// The services that add facts about a user to a conversation's prefix (`user-facts`, in order), each an
     /// implementation of `org.moqui.agent.AgentServices.get#UserFacts` ([`crate::llm::facts`]).
     pub user_fact_services: Vec<String>,
+    /// The AI tasks components add (`ai-task`, by name).
+    pub ai_tasks: Vec<AiTaskConf>,
     pub a2a: A2aConf,
     pub mcp: McpConf,
     pub gateway: GatewayConf,
@@ -679,6 +692,21 @@ impl LlmConf {
                 None => problems.push("llm-facade user-facts needs a service".to_string()),
             }
         }
+        let mut ai_tasks: Vec<AiTaskConf> = Vec::new();
+        for element in node.map(|node| node.children_named("ai-task")).unwrap_or_default() {
+            match (attr(&element, "name"), attr(&element, "service")) {
+                (Some(name), Some(service)) => {
+                    ai_tasks.retain(|task| task.name != name);
+                    ai_tasks.push(AiTaskConf {
+                        name,
+                        service,
+                        feature: attr(&element, "feature"),
+                        description: attr(&element, "description"),
+                    });
+                }
+                _ => problems.push("llm-facade ai-task needs a name and a service".to_string()),
+            }
+        }
         let a2a = child("a2a");
         let push = a2a.as_ref().and_then(|a2a| a2a.first_named("push"));
         let security = a2a.as_ref().and_then(|a2a| a2a.first_named("security"));
@@ -733,6 +761,7 @@ impl LlmConf {
             screen_sessions,
             data_entities,
             user_fact_services,
+            ai_tasks,
             a2a,
             mcp,
             gateway,

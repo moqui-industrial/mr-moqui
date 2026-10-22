@@ -5,7 +5,8 @@ screens through a server-side screen session as the user, the user's page follow
 user's approval. This page is the contract between the drawer (`js/WebrootAssist.js`, phase 13.5 part B) and the server
 (part A), and how the server side works. The design is [plans/LLM-A2A-Assist.md](../plans/LLM-A2A-Assist.md) (4.4 runs,
 4.5 events and the drawer's calls, 4.7 screens, 4.8 approvals, 4.11 the drawer, 4.18 the admin screens, 7.1 the tail).
-As of Oct 22, 2026 (13.5 built: the server, the drawer and their Chromium smokes; 13.6: the OpenUI canvas, "The canvas" below).
+As of Oct 22, 2026 (13.5 built: the server, the drawer and their Chromium smokes; 13.6: the OpenUI canvas, "The canvas" below;
+13.9: chat members, triggers and AI tasks, "Chat members, triggers and AI tasks" below).
 
 The code: `crates/moqui-core/src/llm/assist/` (the calls: `mod.rs` the dispatcher, errors and parameters, `read.rs`,
 `write.rs`, `state.rs` the page state, tail and follow stamp, `prompts.rs` the suggested-prompt providers, `audit.rs`
@@ -935,7 +936,108 @@ sandbox.rs` the route's headers.
   otherwise) caps a run's calls, the same failing call twice answers `repeated`, and arguments the deterministic repair
   cannot fit get one schema-constrained call when the model's `json-schema` verdict is yes.
 
+## Chat members, triggers and AI tasks
+
+Phase 13.9 (plan 4.13, 4.14). The code: `crates/moqui-core/src/llm/chat.rs` (chat agent members and the room's
+cards), `trigger.rs` (triggers, the loop guard, batching, limits, the breaker and the inbox), `ai_task.rs` (typed AI
+tasks, `ec.llm.summarize`/`classify`/`extract`/`startRun`, `propose#AiFieldValue` and its `set_field` tool) and
+`run/observe.rs` (the observer worker that hands a run's committed events to them). Tests:
+`crates/moqui-core/src/llm/members_tests.rs` (in memory, scripted fake), `crates/moqui-host/tests/it/agent_members.rs`
+(the loop guard through the real data feed on embedded Postgres) and the node tests of `js/WebrootChat.test.js`.
+
+### Chat agent members
+
+- **Joining.** An agent's `AgentDefinition.chatUserId` is a service user (the seed's `_AGENT_ASSIST_`, "Assist", has no
+  password). A moderator adds it to a room with role `agent` and the `agentRef`
+  `org.moqui.agent.AgentServices.handle#ChatMessage` (`add#Member`, `set#MemberRole`). The agent must serve the chat
+  surface.
+- **What it answers.** `send#Message` hands each message to the agent members (`deliver#AgentMessage`, async).
+  `handle#ChatMessage` reads the message from the room, so the sender is whoever posted it, and answers a message that
+  mentions the agent, any message of a direct room with it, and the sender's next message in a thread where the agent
+  already works for them. Messages of agents (the chat or run-as user of any agent) start nothing. A message sent
+  before the agent joined or before the conversation began, one the conversation answered already, and one older than
+  five minutes that is not its sender's newest are left, so handing the entry point an old message starts no run. Only
+  an agent's chat user may be given the `agent` role (`add#Member`, `set#MemberRole`).
+  The sender needs `AgentUse` (else a one-line reply says so).
+- **The run.** As the sender, on the chat surface (`question.inline`, `approval.link`), in the conversation of
+  `(room, thread root, sender)` (`AgentConversation.chatRoomId`, `threadRootEventSeq`); the reply's thread is the
+  message's thread, or a new thread on the message, and a direct room's timeline. The first message of a conversation in
+  a thread brings up to ten earlier messages as `<untrusted from="chat">`. The chat addendum names the room
+  (`${roomName}`). The same message again starts no second run (`clientRequestId` `chat:<room>:<seq>:<agent>`).
+- **In the room.** While the run works the agent types every 3 seconds (`signal#Typing` with `userId` and `statusText`,
+  as "Searching…", from the tool it calls). An approval or a question is a card message, `content.assist`
+  `{kind, runId, conversationId, itemId, requesterUserId, requesterName, title, summary, rows | options, state}`
+  (`send#AssistCard`), changed in place by `update#AssistCard` (pushed as `update`, `fields.assist`); when the run ends
+  each approval card shows how its approval ended. The answer is a message of kind `reply` naming the run, so a client
+  offers "View run" to the requester. Steps stay out of the room.
+- **Who decides** (answered question 12). Any human user who may post in the room decides an approval card, through
+  the card's button: `POST /chatAssistCard` (webroot.xml) → `org.moqui.agent.AgentServices.decide#ChatCard`, taken only
+  from a browser session by its cookie with the session token (`approval::Decider::from_request` with channel `chat`, so a
+  header login, an agent's context and internal code are refused); an agent member, the chat or run-as user of any agent,
+  or a user who may not post never decides (not found). The write runs as the requester. A member who is not the
+  requester approves the write as it stands or rejects it: edited arguments, Edit in screen and a question's answer
+  stay the requester's, and a member's rejection keeps no feedback and gives the agent no task (it reads only that
+  another member rejected it, and asks the requester). The plan's section 1 said the card is "for the sender only": the card is a room
+  message every member sees, naming the requester, and it is the decision that question 12 opens to the room. A card
+  shows the changed fields' current and proposed values to the room, as the agent's reply would.
+- **The client.** `js/WebrootChat.js`: `moqui.chat.assistCard(event, me)` (who may act, the lines to show),
+  `moqui.chat.decideCard(roomId, eventSeq, params)`, `moqui.chat.typingText(roomId, userId)`, and the component
+  `<m-assist-card :event :chat-room-id>` that a chat screen writes for a message with `event.assist` (BOSS's chat screen).
+
+### Triggers
+
+- **`AgentTrigger`** (System › LLM › Triggers; `org.moqui.agent.AgentTriggerServices.store#AgentTrigger`): an agent, a
+  kind (`AgttCron` with `cronExpression`, `AgttDocument` with `dataDocumentId`), instructions, a run-as user (else the
+  agent's `runAsUserId`), `batchSeconds`, `maxBatchEvents` (50), `maxRunsPerHour`, `maxRunsPerDay`, `maxConcurrent`,
+  `failureLimit` (3), `approvalHold`, `paused`; `maxRunsPerHour` is 60 and `maxConcurrent` 2 when empty, so a loop the
+  guard does not see stays bounded. A trigger runs as an agent's service user (an AgentDefinition's run-as or chat user)
+  or as the admin who stores it, never as another person. The trigger row is locked from the limit check to the run
+  tagged with it, so concurrent firings keep the limits. A run is on the job surface; its `triggerId` and `triggerRef` (the cause
+  and the events) are on the `AgentRun`.
+- **Firing.** A cron trigger's `ServiceJob` `agent_trigger_<triggerId>` calls `fire#AgentTrigger`. A document trigger's
+  DataDocument is linked to the seeded `AgentTriggers` data feed, whose receive service stores each document as an
+  `AgentTriggerEvent`; a window of 0 fires once the delivery commits, a longer one when the scheduler's tick finds its
+  oldest event older than the window. One run takes the waiting events (claimed with a conditional update), with each
+  record as `<untrusted from="record">`.
+- **The loop guard.** Each write's data-feed touch records the `ExecutionContext`'s agent origin (set by every step of a
+  run, approved writes included); `DataFeedPending.originAgentId` is the agent when every write of the record in the
+  transaction came from it (async service calls, run-on-commit and async ECAs, and service jobs started from a run's
+  context carry the origin to their worker; a call a full queue stores as a one-shot job does not), the delivery gives a non-search receive service the document with `_originAgentId` (a
+  delete with `originAgentId`), and a trigger drops a document its own agent changed.
+- **Limits and the breaker.** A firing over a limit is skipped (logged), and a document trigger's events wait. A failed
+  run, or a firing that cannot start one, counts; a completed run resets the count; at `failureLimit` in a row the
+  breaker opens (`breakerState` open, the cron job paused), the AgentAdmin users and the run-as user get an inbox
+  message, and nothing fires until **Reset Breaker** (`reset#AgentTriggerBreaker`).
+- **The inbox** (`AgentInbox` topic, kept; System › LLM › Inbox lists the viewer's own, D12): a job-surface run's result or
+  failure goes to its user, and so does an approval it waits for (the drawer's tasks pane lists it, and the user decides
+  it there). A background agent's policy rule approves by itself; a trigger with `approvalHold` Y lets a write its
+  policy does not approve wait for its run-as user's decision, else that write is an error the model reads.
+
+### AI tasks and AI fields
+
+- **`org.moqui.agent.AiTaskServices`**: `run#Summarize` (`summary`), `run#Classify` (`label`, `labelList` with
+  `multiple`), `run#Extract` (`valueMap` from `fieldMap` or `schema`), `run#Translate`, `run#Generate`, and `run#AiTask`
+  by `taskType` with an `input` map; each is one structured completion (`LlmFacade::complete` with the task's JSON
+  schema) on the task's feature (`summarize`, `classify`, …) when bound, else `assist`, with the caller's text wrapped as
+  untrusted; `list#AiTaskTypes` is the registry. A component adds a task with `<ai-task name service feature
+  description>` in its `llm-facade` conf, the service an implementation of `prepare#AiTask` (system, prompt, schema).
+- **Async**: `async=true` answers a `taskId` (a tool-less `AgentRun` of the job surface, `triggerRef` `ai-task:<type>`)
+  and runs the task on a service worker (`execute#AiTask`); `get#AiTask` gives its state and output; its user gets an
+  inbox message and, with `webhookUrl` (https, public addresses only), a POST of `{taskId, taskType, state, output |
+  error}`.
+- **`ec.llm`**: `summarize(text, {maxWords})`, `classify(text, labels)`, `extract(text, fields)`, `startRun(agentId,
+  text)` (a job-surface run as the current user, which needs `AgentUse` and `AgentAdmin`, as `start#AgentRun` does).
+- **`propose#AiFieldValue`** (entityName, the key as `pk` or `recordId`, fieldName, instructions): the `ai-field`
+  feature's model (else `assist`) proposes `proposedValue` with a `reason`; nothing is written. `mode=approval` ("Update
+  with AI") starts a drawer run attached to the record whose first step is a seeded `set_field` call (the tool exists
+  only for runs with the `ai.field` capability): its approval card shows current against proposed, it runs only when the
+  user approves (never by a policy), the record's `lastUpdatedStamp` is compared first (a change meanwhile is a
+  conflict), and the write is the entity-auto update as the user.
+
 ## Admin screens
+
+System › LLM › **Triggers** (list, detail with Fire Now and Reset Breaker, the waiting events and the runs) and
+**Inbox** (the viewer's own AgentInbox messages) come with phase 13.9.
 
 System › LLM › **Conversations**, **Runs** and **Approvals** (`AgentAdmin`, as all of System › LLM). The lists show
 who, which agent and surface, the status, the dates, counts, tokens and cost, never content. A detail screen shows its

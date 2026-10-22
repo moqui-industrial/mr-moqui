@@ -73,7 +73,7 @@ screen context's forms and the root's shell data), `WebrootVue.qvt.records.test.
 avatars and record cards), `WebrootVue.qvt.layout.test.js` (the split's layout and the wizard's way after an answer), `WebrootVue.qvt.htmlview.test.js` (m-html-view's cleaning), `WebrootVue.qvt.views.test.js` (the board's columns, the calendar's times, events and lanes, and what a move posts), `WebrootVue.qvt.markdown.test.js` (m-markdown on the vendored Marked: heading ids, links, wiki links, tables), `WebrootVue.qvt.code.test.js` (m-code on the vendored highlight.js: languages of file names, marked lines, spans split by line), `WebrootVue.qvt.coedit.test.js`
 (m-coedit's provider on the vendored bundle's Yjs, with a fake notification client and server: the join, batching, acks, peers, read-only,
 errors, a join again after a reconnect, two editors converging), `WebrootPublic.qvt.test.js` (the public shell's screen load and links), `WebrootAssist.test.js` (Assist: the reducer, follow, safePath, commands, chips, the thread's Markdown, the shell hooks), `WebrootChat.test.js` (the chat store: presence,
-typing, read markers, unread counts, a pushed event merged into a timeline, do not disturb, the status components) and `WebrootVue.qvt.static.test.js` (the script and package
+typing, read markers, unread counts, a pushed event merged into a timeline, do not disturb, the status components, an agent's room cards) and `WebrootVue.qvt.static.test.js` (the script and package
 the server answers for `crates/moqui-core` `testdata/Static/Items` run on the real Vue runtime over a fake DOM; every component template compiles with the vendored
 Vue compiler; `loadComponent` is checked with a stub for the request). `cargo test` runs them when `node` is on the path. What needs a
 browser (mounting, Quasar menus and popups, dialogs, posts, the lazy libraries, static lists) is the Chromium smoke of Gate 3
@@ -695,13 +695,19 @@ notification socket, started by the shell root once mounted for a signed-in user
 (`framework/service/org/moqui/impl/ChatServices.xml`, which describes the rooms, the access rules and the pushes); BOSS's Chat screens use
 the store for the live parts and their own transitions over those services for the rest.
 
+**Agent cards** (plans/LLM-A2A-Assist.md 4.13, docs/Assist.md "Chat members, triggers and AI tasks"): a message of an agent member may
+carry `event.assist`, an approval, a question or a reply of an agent's run. `chat.assistCard(event, me)` says who may act (any member
+decides an approval, as the server checks; the requester answers a question and opens the run), `chat.decideCard(roomId, eventSeq,
+{decision | choice})` posts the button to `/chatAssistCard`, and `<m-assist-card :event :chat-room-id>` draws it; the card changes
+through the room's `update` push. `chat.typingText(roomId, userId)` is an agent's typing status.
+
 **The pushes** are NotificationMessages that are not persisted and show no alert, routed by the socket to their users only:
 
 ```
 chatRoom:<chatRoomId>  {kind: 'event', chatRoomId, eventSeq, event}           // to the room's members: a new event, as get#Timeline lists one
-                       {kind: 'typing', chatRoomId, userId, typing}            // to the other members (signal#Typing; nothing stored)
+                       {kind: 'typing', chatRoomId, userId, typing, statusText}   // to the other members (signal#Typing; nothing stored; statusText: an agent's "Searching…")
                        {kind: 'read', chatRoomId, userId, lastReadEventSeq}    // a member's read marker (read receipts; none when CHAT_READ_RECEIPTS is N)
-                       {kind: 'update', chatRoomId, eventSeq, threadRootEventSeq, fields}   // a message's linkPreviews or poll changed; the same for everyone
+                       {kind: 'update', chatRoomId, eventSeq, threadRootEventSeq, fields}   // a message's linkPreviews, poll or assist card changed; the same for everyone
 chatUser:<userId>      {kind: 'room', action: 'joined'|'left'|'changed'|'role'|'settings', chatRoomId}
                        {kind: 'read', chatRoomId, lastReadEventSeq} | {kind: 'read', all: true}   // read in another tab
 userStatus             {userId, presence, statusText, emoji, clearAtDate, inCall}   // to the user's room members; self and status to the user

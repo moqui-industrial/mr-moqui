@@ -55,6 +55,9 @@ pub(crate) fn register(map: &mut BTreeMap<&'static str, RustServiceFn>) -> Resul
     rust_service!(map, get_agent_approval)?;
     rust_service!(map, abandon_agent_handoff)?;
     rust_service!(map, store_tool_exposure)?;
+    super::chat::register(map)?;
+    super::trigger::register(map)?;
+    super::ai_task::register(map)?;
     super::skills::services::register(map)
 }
 

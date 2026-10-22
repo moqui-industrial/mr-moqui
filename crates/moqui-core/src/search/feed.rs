@@ -181,12 +181,18 @@ fn deliver_rows(
 ) {
     // Document id, then record id to the pending row ids for it.
     let mut by_document: IndexMap<String, IndexMap<String, Vec<String>>> = IndexMap::new();
+    // The agent that made a pending row's writes (`originAgentId`), by row id.
+    let mut row_origins: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for row in rows.iter() {
         let text = |name: &str| row.get(name).map(to_plain_string).unwrap_or_default();
         let (pending_id, document_id, record_id) =
             (text("dataFeedPendingId"), text("dataDocumentId"), text("primaryKey"));
         if document_id.is_empty() || record_id.is_empty() {
             continue;
+        }
+        let origin = text("originAgentId");
+        if !origin.is_empty() {
+            row_origins.insert(pending_id.clone(), origin);
         }
         by_document
             .entry(document_id)
@@ -222,18 +228,33 @@ fn deliver_rows(
                 claims.sort();
                 let mut claimed_records: Vec<String> = Vec::new();
                 let mut claimed = 0_usize;
+                // a record's origin: the agent of every row claimed for it, else none (the agent triggers' loop guard)
+                let mut origins: std::collections::HashMap<String, Option<String>> = std::collections::HashMap::new();
                 for (pending_id, record_id) in claims {
                     if claim_pending(facade, pending_id)? {
                         claimed += 1;
                         if !claimed_records.contains(record_id) {
                             claimed_records.push(record_id.clone());
                         }
+                        let origin = row_origins.get(pending_id).cloned();
+                        origins
+                            .entry(record_id.clone())
+                            .and_modify(|known| {
+                                if *known != origin {
+                                    *known = None;
+                                }
+                            })
+                            .or_insert(origin);
                     }
                 }
                 if claimed_records.is_empty() {
                     return Ok((0, 0, 0));
                 }
-                let (indexed, deleted) = deliver(facade, &document_id, &claimed_records, &document_feeds)?;
+                let origins: std::collections::HashMap<String, String> = origins
+                    .into_iter()
+                    .filter_map(|(record_id, origin)| origin.map(|origin| (record_id, origin)))
+                    .collect();
+                let (indexed, deleted) = deliver(facade, &document_id, &claimed_records, &document_feeds, &origins)?;
                 Ok((indexed, deleted, claimed))
             })
         });
@@ -259,13 +280,29 @@ fn deliver_rows(
     }
 }
 
+/// Deliver the documents of `record_ids`; a record whose every write came from one agent's run (`origins`) carries it as
+/// `_originAgentId` (and a delete as `originAgentId`), so an agent trigger leaves out its own agent's changes.
 fn deliver(
     facade: &EntityFacade,
     document_id: &str,
     record_ids: &[String],
     feeds: &[&Feed],
+    origins: &std::collections::HashMap<String, String>,
 ) -> Result<(usize, usize), Error> {
     let documents = document::documents_by_ids(facade, document_id, record_ids)?;
+    // the search index gets the documents as they are; another receive gets the origin too
+    let tagged: Vec<_> = documents
+        .iter()
+        .filter(|_| !origins.is_empty())
+        .map(|doc| {
+            let mut doc = doc.clone();
+            let id = doc.get("_id").map(to_plain_string).unwrap_or_default();
+            if let Some(origin) = origins.get(&id) {
+                doc.insert("_originAgentId".to_string(), Value::string(origin));
+            }
+            doc
+        })
+        .collect();
     let found: std::collections::HashSet<String> = documents
         .iter()
         .filter_map(|doc| doc.get("_id").map(to_plain_string))
@@ -277,9 +314,10 @@ fn deliver(
             let mut params = BTreeMap::new();
             params.insert("dataFeedId".to_string(), Value::string(&feed.data_feed_id));
             params.insert("feedStamp".to_string(), stamp.clone());
+            let shown = if feed.receive == DEFAULT_RECEIVE || origins.is_empty() { &documents } else { &tagged };
             params.insert(
                 "documentList".to_string(),
-                Value::List(documents.iter().cloned().map(Value::Map).collect()),
+                Value::List(shown.iter().cloned().map(Value::Map).collect()),
             );
             call_checked(&feed.receive, &params)?;
         }
@@ -289,6 +327,9 @@ fn deliver(
             params.insert("feedStamp".to_string(), stamp.clone());
             params.insert("dataDocumentId".to_string(), Value::string(document_id));
             params.insert("documentId".to_string(), Value::string(*id));
+            if let Some(origin) = origins.get(*id) {
+                params.insert("originAgentId".to_string(), Value::string(origin));
+            }
             call_checked(&feed.delete, &params)?;
         }
     }

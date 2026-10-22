@@ -196,12 +196,22 @@ pub fn has_permission(user_permission_id: &str) -> Result<bool, Error> {
     let Some(user_id) = session::current_user_id()?.filter(|id| !id.is_empty()) else {
         return Ok(false);
     };
+    user_has_permission(&user_id, user_permission_id)
+}
+
+/// [`has_permission`] for `user_id`, who need not be logged in: internal work for another user (a chat agent that runs as
+/// a message's sender).
+///
+/// # Errors
+///
+/// Returns an error when the rows cannot be read.
+pub fn user_has_permission(user_id: &str, user_permission_id: &str) -> Result<bool, Error> {
     let _authz = without_authz();
     let facade = entity_facade()?;
     let now = now_value();
     let members = facade
         .find(GROUP_MEMBER)?
-        .eq("userId", Value::string(&user_id))
+        .eq("userId", Value::string(user_id))
         .list()?;
     for member in members
         .iter()

@@ -24,8 +24,11 @@
 //! the approvals of writes, [`assist`] the drawer's JSON calls, [`prompt`] the context builder; [`start`] starts the
 //! engine's background work on a booted server.
 
+pub mod a2a;
+pub mod ai_task;
 pub mod approval;
 pub mod assist;
+pub mod chat;
 pub mod conf;
 pub mod facts;
 pub mod json_mode;
@@ -38,10 +41,13 @@ pub(crate) mod services;
 pub mod skills;
 pub mod tokens;
 pub mod tools;
+pub mod trigger;
 pub mod ui;
 pub mod usage;
 pub mod window;
 
+#[cfg(test)]
+mod members_tests;
 #[cfg(test)]
 mod tests;
 
@@ -321,10 +327,13 @@ pub fn facade(factory: &ExecutionContextFactory) -> Arc<LlmFacade> {
 
 /// Start the run engine's background work on a booted server: the lease keeper, the recovery sweep on the scheduler's
 /// tick and one sweep now (the host calls it after the cluster starts, so the lease owner is the cluster instance id),
-/// the screen render's observer of the hand-off watches, and the sync of the skill files into their rows.
+/// the batch sweep of the agent triggers, the screen render's observer of the hand-off watches, and the sync of the skill
+/// files into their rows.
 pub fn start(factory: &Arc<ExecutionContextFactory>) {
     run::start(factory);
+    trigger::start(factory);
     approval::handoff::install(factory);
+    a2a::push::start(factory);
     if let Some(facade) = factory.entity() {
         skills::sync::ensure_synced(factory, &facade);
     }

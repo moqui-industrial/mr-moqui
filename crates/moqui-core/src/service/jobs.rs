@@ -72,6 +72,8 @@ pub(crate) struct JobRun {
     last_run_time: Value,
     delete_when_done: bool,
     user_name: Option<String>,
+    /// The agent run that started it, which the run works for too (the agent triggers' loop guard).
+    origin: Option<crate::context::AgentOrigin>,
     /// `ServiceJob.topic`: a notification of this topic is sent when the run ends.
     topic: Option<String>,
     description: Option<String>,
@@ -300,6 +302,7 @@ fn dispatch(
             last_run_time: ready.last_run_time,
             delete_when_done: queued,
             user_name: None,
+            origin: None,
             topic: Some(field_text(job, "topic")).filter(|topic| !topic.is_empty()),
             description: Some(field_text(job, "description")).filter(|text| !text.is_empty()),
             factory: Arc::clone(factory),
@@ -411,6 +414,7 @@ pub fn run_job_now(job_name: &str, extra: &BTreeMap<String, Value>) -> Result<St
         last_run_time: Value::Null,
         delete_when_done: false,
         user_name: crate::user::current_username().ok().flatten(),
+        origin: super::pool::current_origin(),
         topic: Some(field_text(&job, "topic")).filter(|topic| !topic.is_empty()),
         description: Some(field_text(&job, "description")).filter(|text| !text.is_empty()),
         factory: Arc::clone(&factory),
@@ -468,6 +472,7 @@ pub(crate) fn run_job(job: JobRun) {
             tracing::warn!(job = %job.job_name, error = %err, "could not log in the job's user");
         }
     }
+    context.set_agent_origin(job.origin.clone());
     let Some(facade) = factory.entity() else {
         return;
     };
@@ -1013,6 +1018,7 @@ mod tests {
             last_run_time: timestamp_value(PREVIOUS),
             delete_when_done: false,
             user_name: None,
+            origin: None,
             topic: None,
             description: None,
             factory: Arc::clone(ctx.factory()),

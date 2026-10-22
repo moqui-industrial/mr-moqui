@@ -4,7 +4,8 @@
 // markers, unread and mention counts, the room list), a pushed event merged into a timeline (messages, edits, reactions,
 // redactions, pins, threads), a pushed update (link previews, a poll, keeping my own votes), the outbox (its limits, by room
 // and thread, what a failed send does next, sends that wait and go later), the user's own dot and do not disturb, the
-// clear-at choices, the batched presence requests, the start of the store, and the account menu's components (they compile, and WebrootVue.qvt.js registers them). The
+// clear-at choices, the batched presence requests, an agent's room cards (who may act, what they show, the card's button
+// post) and an agent's typing status text, the start of the store, and the account menu's components (they compile, and WebrootVue.qvt.js registers them). The
 // account menu and an avatar's dot in the page are the Chromium smoke of Gate 3 (crates/moqui-host/tests/gate3_browser.rs).
 // Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootChat.test.js
 "use strict";
@@ -279,7 +280,7 @@ test("the store starts once: its topics, the user's status, the counts and a hea
 });
 
 test("the account menu's components compile, and WebrootVue.qvt.js registers them before the shell", () => {
-    ["m-user-status-menu", "m-user-status-dialog"].forEach((name) => {
+    ["m-user-status-menu", "m-user-status-dialog", "m-assist-card"].forEach((name) => {
         const comp = moqui.qvt.components[name];
         assert.ok(comp && comp.template, name);
         const errors = [];
@@ -426,4 +427,54 @@ test("a send goes through the outbox: answered now, waiting to try again, held, 
         chat.started = false;
         if (savedStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = savedStorage;
     }
+});
+
+test("an agent's room card: any member decides an approval, only the requester answers or opens the run", () => {
+    const approval = event({ eventSeq: 9, senderUserId: "_AGENT_ASSIST_", assist: { kind: "approval", runId: "R9", conversationId: "C9", itemId: "A1",
+        requesterUserId: "ann", requesterName: "Ann", title: "Approval needed", summary: "Status: Approved → Held",
+        rows: [{ field: "statusId", label: "Status", current: "Approved", proposed: "Held" }], state: "pending" } });
+    const forBob = chat.assistCard(approval, "bob");
+    assert.equal(forBob.kind, "approval");
+    assert.ok(forBob.canDecide, "another member may decide (answered question 12)");
+    assert.ok(!forBob.canViewRun, "the run is the requester's");
+    assert.equal(forBob.askedBy, "Asked by Ann");
+    assert.deepEqual(forBob.rows, [{ label: "Status", current: "Approved", proposed: "Held" }]);
+    assert.ok(chat.assistCard(approval, "ann").canViewRun);
+    const decided = event({ assist: Object.assign({}, approval.assist, { state: "executed", decidedBy: { userId: "bob", name: "Bob" } }) });
+    const shown = chat.assistCard(decided, "ann");
+    assert.ok(!shown.canDecide && !shown.pending);
+    assert.equal(shown.decided, "Done by Bob");
+    const question = event({ assist: { kind: "question", itemId: "Q1", requesterUserId: "ann", requesterName: "Ann", summary: "Which one?",
+        options: [{ label: "First", recommended: true }, { label: "Second" }], state: "pending" } });
+    assert.deepEqual(chat.assistCard(question, "ann").options, ["First", "Second"]);
+    assert.ok(chat.assistCard(question, "ann").canAnswer);
+    assert.ok(!chat.assistCard(question, "bob").canAnswer);
+    assert.equal(chat.assistCard(question, "bob").waiting, "Waiting for Ann");
+    assert.equal(chat.assistCard(event({}), "ann"), null, "a message with no card");
+    const reply = chat.assistCard(event({ assist: { kind: "reply", runId: "R9", conversationId: "C9", requesterUserId: "ann" } }), "ann");
+    assert.equal(reply.state, "done");
+    assert.ok(reply.canViewRun);
+});
+
+test("a card's button posts to chatAssistCard; an agent's typing carries its status text", async () => {
+    const original = moqui.request;
+    const sent = [];
+    moqui.request = (url, options) => { sent.push({ url, options }); return Promise.resolve({ json: { status: "approved" } }); };
+    const saved = chat.vm;
+    chat.vm = { appRootPath: "/qapps" };
+    const answer = await chat.decideCard("R1", 9, { decision: "approve" });
+    assert.deepEqual(answer, { status: "approved" });
+    assert.equal(sent[0].url, "/qapps/chatAssistCard");
+    assert.deepEqual(sent[0].options, { method: "POST", params: { chatRoomId: "R1", eventSeq: 9, decision: "approve" } });
+    moqui.request = () => Promise.reject({ status: 409, json: { errors: "this approval was decided already" } });
+    assert.deepEqual(await chat.decideCard("R1", 9, { decision: "reject" }), { error: "this approval was decided already" });
+    moqui.request = original;
+    chat.vm = saved;
+    const state = freshState();
+    const typed = chat.reduce(state, push("chatRoom:R1", { kind: "typing", chatRoomId: "R1", userId: "_AGENT_ASSIST_", typing: true,
+        statusText: "Searching…" }), "ann", 1000);
+    assert.equal(typed.statusText, "Searching…");
+    assert.equal(state.typingText.R1._AGENT_ASSIST_, "Searching…");
+    chat.reduce(state, push("chatRoom:R1", { kind: "typing", chatRoomId: "R1", userId: "_AGENT_ASSIST_", typing: false }), "ann", 1100);
+    assert.equal(state.typingText.R1._AGENT_ASSIST_, undefined);
 });

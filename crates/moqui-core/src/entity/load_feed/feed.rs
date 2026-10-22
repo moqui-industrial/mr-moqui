@@ -53,6 +53,8 @@ pub(super) struct Touch {
     /// For an update of a feed entity, the row as it was before, so an update that changes no document field is
     /// not fed (Java's `oldValues`). `None` feeds the update.
     old: Option<FieldMap>,
+    /// The agent whose run made the write (the execution context's agent origin), for the agent triggers' loop guard.
+    origin_agent: Option<String>,
 }
 
 impl Touch {
@@ -115,6 +117,10 @@ pub(crate) fn note_touch(
         operation: operation.to_string(),
         fields: fields.filter(|_| keep_fields).cloned(),
         old: old.filter(|_| keep_fields),
+        origin_agent: keep_fields
+            .then(|| crate::context::ExecutionContext::with_current(|ec| ec.agent_origin()).flatten())
+            .flatten()
+            .map(|origin| origin.agent_id),
     };
     TOUCHES.with(|touches| touches.borrow_mut().entry(frame).or_default().push(touch));
 }
@@ -251,6 +257,18 @@ fn insert_pending(
     // Writes that carry their values: the document id is found from them, and the last write to
     // a document decides between index and delete.
     let mut resolved: indexmap::IndexMap<(String, String), (String, &'static str)> = indexmap::IndexMap::new();
+    // the agent that made every write of a document's record, else none (the agent triggers' loop guard)
+    let mut origins: HashMap<(String, String), Option<String>> = HashMap::new();
+    let mut note_origin = |key: &(String, String), origin: &Option<String>| {
+        origins
+            .entry(key.clone())
+            .and_modify(|known| {
+                if known != origin {
+                    *known = None;
+                }
+            })
+            .or_insert_with(|| origin.clone());
+    };
     for touch in &touches {
         let Some(fields) = touch.fields.as_deref() else {
             continue;
@@ -265,6 +283,7 @@ fn insert_pending(
                 };
                 let operation = if touch.operation == "delete" { "delete" } else { "index" };
                 let key = (hit.data_document_id.clone(), id);
+                note_origin(&key, &touch.origin_agent);
                 resolved.shift_remove(&key);
                 resolved.insert(key, (hit.primary_entity.clone(), operation));
             } else {
@@ -276,6 +295,7 @@ fn insert_pending(
                 for path in &hit.paths {
                     for id in walk_to_primary(facade, conn, path, vec![row.clone()])? {
                         let key = (hit.data_document_id.clone(), id);
+                        note_origin(&key, &touch.origin_agent);
                         if !resolved.contains_key(&key) {
                             resolved.insert(key, (hit.primary_entity.clone(), "index"));
                         }
@@ -286,12 +306,18 @@ fn insert_pending(
     }
     for ((document_id, id), (entity_name, operation)) in &resolved {
         let row_id = crate::entity::uuid_v4()?;
+        let origin = origins
+            .get(&(document_id.clone(), id.clone()))
+            .cloned()
+            .flatten()
+            .map_or(Value::Null, Value::String);
         let params = vec![
             Value::string(&row_id),
             Value::string(document_id),
             Value::string(entity_name),
             Value::string(id),
             Value::string(*operation),
+            origin,
         ];
         probe_execute(conn, &insert_sql, &params)?;
         inserted.push(row_id);
@@ -342,6 +368,7 @@ fn insert_pending(
                     Value::string(entity_name),
                     Value::string(&key),
                     Value::string(operation),
+                    legacy_origin(&touches, entity_name).map_or(Value::Null, Value::String),
                 ];
                 probe_execute(conn, &insert_sql, &params)?;
                 inserted.push(row_id);
@@ -349,6 +376,16 @@ fn insert_pending(
         }
     }
     Ok(inserted)
+}
+
+/// The agent that made every value-less write of `entity_name` in the frame, else `None`.
+fn legacy_origin(touches: &[Touch], entity_name: &str) -> Option<String> {
+    let mut origins = touches
+        .iter()
+        .filter(|touch| touch.entity_name == entity_name && touch.fields.is_none())
+        .map(|touch| touch.origin_agent.as_deref());
+    let first = origins.next()??;
+    origins.all(|origin| origin == Some(first)).then(|| first.to_string())
 }
 
 /// Primary key values joined with `::`, or `None` when one is missing.
@@ -914,6 +951,7 @@ fn pending_insert_sql(facade: &EntityFacade) -> Result<String, Error> {
                 "entityName",
                 "primaryKey",
                 "operation",
+                "originAgentId",
             ],
         )
     })
@@ -1093,6 +1131,7 @@ mod filter_tests {
             operation: operation.to_string(),
             fields: Some(std::sync::Arc::new(fields)),
             old,
+            origin_agent: None,
         };
         let feeds = |touch: &Touch| touch_feeds(&target, touch, touch.fields.as_ref().unwrap());
         assert!(feeds(&touch("create", map(&[("id", "1"), ("name", "a")]), None)));

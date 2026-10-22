@@ -39,7 +39,11 @@
         labels: { statusOnline: "Online", statusAway: "Away", statusDnd: "Do not disturb", statusInvisible: "Invisible", statusOffline: "Offline",
             setStatus: "Set a status message", clearStatus: "Clear status message", statusText: "What's your status?", emoji: "Emoji",
             clearAfter: "Clear after", dontClear: "Don't clear", minutes30: "30 minutes", hour1: "1 hour", hours4: "4 hours", today: "Today",
-            thisWeek: "This week", save: "Save", cancel: "Cancel", status: "Status" },
+            thisWeek: "This week", save: "Save", cancel: "Cancel", status: "Status",
+            assistApprove: "Approve", assistReject: "Reject", assistFeedback: "What should the agent do instead?", assistViewRun: "View run",
+            assistWaitingFor: "Waiting for {0}", assistAskedBy: "Asked by {0}", assistDecidedBy: "{0} by {1}", assistNoDecide: "This could not be decided",
+            assistStates: { pending: "Waiting", approved: "Approved", rejected: "Rejected", executed: "Done", executing: "Running", failed: "Failed",
+                expired: "Expired", conflict: "Changed meanwhile", handedOff: "Handed to the screen", answered: "Answered", done: "Done" } },
         // The status presets until the user keeps their own (the preference CHAT_STATUS_PRESETS), as IronStone's chat settings
         // start them: {emoji, text, clearAfter}, clearAfter minutes, today, week or 0 for never.
         defaultPresets: [{ emoji: "📅", text: "In a meeting", clearAfter: "60" }, { emoji: "🚌", text: "Commuting", clearAfter: "30" },
@@ -177,6 +181,36 @@
             return list;
         },
 
+        // An agent's card (content.assist of a message: an approval, a question or a reply; ChatServices.send#AssistCard) as a
+        // room shows it to the user me: its kind and state, whether it waits, who may act, and the lines to show. Any human who
+        // may post in the room may decide an approval (the server checks, and refuses agents); only the requester answers a
+        // question or opens the run. null for a message with no card.
+        assistCard(event, me, labels) {
+            const card = event && moqui.isPlainObject(event.assist) ? event.assist : null;
+            if (!card || !card.kind) return null;
+            const text = Object.assign({}, chat.labels, labels);
+            const fill = (template, ...values) => String(template).replace(/\{(\d)\}/g, (match, index) => values[Number(index)] ?? "");
+            const state = String(card.state || (card.kind === "reply" ? "done" : "pending"));
+            const pending = state === "pending";
+            const requester = card.requesterName || card.requesterUserId || "";
+            const mine = !!me && card.requesterUserId === me;
+            const stateLabel = (text.assistStates || {})[state] || state;
+            const decidedBy = card.decidedBy && (card.decidedBy.name || card.decidedBy.userId);
+            return {
+                kind: card.kind, state, pending, stateLabel, mine,
+                itemId: card.itemId || null, runId: card.runId || null, conversationId: card.conversationId || null,
+                title: card.title || "", summary: card.summary || "",
+                rows: Array.isArray(card.rows) ? card.rows.map((row) => ({ label: row.label || row.field || "", current: row.current ?? "", proposed: row.proposed ?? "" })) : [],
+                options: Array.isArray(card.options) ? card.options.map((option) => (moqui.isPlainObject(option) ? option.label : String(option))).filter((label) => label) : [],
+                canDecide: card.kind === "approval" && pending,
+                canAnswer: card.kind === "question" && pending && mine && !card.hasFields,
+                canViewRun: mine && !!card.conversationId,
+                askedBy: requester ? fill(text.assistAskedBy, requester) : "",
+                waiting: card.kind === "question" && pending && !mine && requester ? fill(text.assistWaitingFor, requester) : "",
+                decided: !pending && card.kind !== "reply" ? (decidedBy ? fill(text.assistDecidedBy, stateLabel, decidedBy) : stateLabel) : ""
+            };
+        },
+
         // A pushed update of a message (push#Update: its link previews, its poll) merged into a timeline: the fields replace
         // the message's, but what is the user's own stays as the list has it (mine: the push is the same for everyone, so it
         // has none). Nothing for a message not in the list. Returns the list (changed in place).
@@ -256,7 +290,12 @@
                     const typing = state.typing[roomId] = Object.assign({}, state.typing[roomId]);
                     if (message.typing) typing[message.userId] = now + TYPING_FOR;
                     else delete typing[message.userId];
-                    return { kind: "typing", chatRoomId: roomId, userId: message.userId, typing: !!message.typing };
+                    // what an agent member says it does ("Looking up open orders…")
+                    const texts = state.typingText = state.typingText || {};
+                    const roomTexts = texts[roomId] = Object.assign({}, texts[roomId]);
+                    if (message.typing && message.statusText) roomTexts[message.userId] = String(message.statusText);
+                    else delete roomTexts[message.userId];
+                    return { kind: "typing", chatRoomId: roomId, userId: message.userId, typing: !!message.typing, statusText: message.statusText || null };
                 }
                 if (message.kind === "read") {
                     state.reads[roomId] = Object.assign({}, state.reads[roomId], { [message.userId]: message.lastReadEventSeq });
@@ -422,6 +461,15 @@
             chat.request("/chatTyping", { chatRoomId: roomId, typing: !stop }, "POST");
         },
         typingIn(roomId) { return chat.typingUsers(chat.state, roomId, Date.now()); },
+        // the status text of a user typing in a room (an agent's), "" for none
+        typingText(roomId, userId) { return ((chat.state.typingText || {})[roomId] || {})[userId] || ""; },
+        // A button of an agent's card: decision approve or reject (with feedback), or choice for a question. Resolves to the
+        // server's answer ({status}) or {error}; the card itself changes through the room's update push.
+        decideCard(roomId, eventSeq, params) {
+            const base = (chat.vm && chat.vm.appRootPath) || "";
+            return moqui.request(base + "/chatAssistCard", { method: "POST", params: Object.assign({ chatRoomId: roomId, eventSeq }, params) })
+                .then((result) => (result && result.json) || {}, (err) => ({ error: (err && err.json && err.json.errors) || chat.labels.assistNoDecide }));
+        },
 
         // ---- the outbox ----
 
@@ -672,6 +720,64 @@
                     '<q-item-section>{{labels.clearStatus}}</q-item-section>' +
                 '</q-item>' +
             '</div>'
+    };
+
+    // An agent's card in a room (content.assist): an approval with its changes (current → proposed) and Approve / Reject for
+    // any member, a question with its options for the person who asked, a reply's View run for them; decided cards show who
+    // decided. A chat screen writes <m-assist-card :event="event" :chat-room-id="roomId"> for a message with event.assist.
+    components["m-assist-card"] = {
+        name: "mAssistCard",
+        props: { event: { type: Object, required: true }, chatRoomId: { type: String, required: true } },
+        data() { return { busy: false, error: "", rejecting: false, feedback: "" }; },
+        computed: {
+            labels() { return labelsOf(this); },
+            card() { return chat.assistCard(this.event, chat.me, this.labels); }
+        },
+        methods: {
+            send(params) {
+                this.busy = true;
+                this.error = "";
+                return chat.decideCard(this.chatRoomId, this.event.eventSeq, params).then((json) => {
+                    this.busy = false;
+                    if (json && json.error) this.error = String(json.error);
+                    else { this.rejecting = false; this.feedback = ""; }
+                });
+            },
+            approve() { return this.send({ decision: "approve" }); },
+            // the requester's feedback is the agent's next task; another member's rejection carries none
+            reject() {
+                if (!this.card.mine) return this.send({ decision: "reject" });
+                if (!this.rejecting) { this.rejecting = true; return null; }
+                return this.send({ decision: "reject", feedback: this.feedback });
+            },
+            answer(option) { return this.send({ choice: option }); },
+            viewRun() {
+                const assist = root.moqui && root.moqui.assist;
+                if (!assist || !this.card || !this.card.conversationId) return;
+                assist.openDrawer();
+                assist.load(this.card.conversationId);
+            }
+        },
+        template:
+            '<div v-if="card && card.kind !== \'reply\'" class="m-assist-card" :class="\'m-assist-\' + card.kind + \' m-assist-state-\' + card.state">' +
+                '<div class="m-assist-card-title text-weight-medium">{{card.title}} <span class="m-assist-card-state text-caption">{{card.stateLabel}}</span></div>' +
+                '<div v-if="card.summary" class="m-assist-card-summary">{{card.summary}}</div>' +
+                '<table v-if="card.rows.length" class="m-assist-card-rows"><tr v-for="row in card.rows" :key="row.label">' +
+                    '<th>{{row.label}}</th><td class="m-assist-current">{{row.current}}</td><td>→</td><td class="m-assist-proposed">{{row.proposed}}</td></tr></table>' +
+                '<div v-if="card.askedBy" class="m-assist-card-asked text-caption">{{card.askedBy}}</div>' +
+                '<div v-if="card.canDecide" class="m-assist-card-actions">' +
+                    '<q-input v-if="rejecting" v-model="feedback" dense outlined autogrow :label="labels.assistFeedback" class="m-assist-feedback"></q-input>' +
+                    '<q-btn unelevated no-caps dense color="primary" :label="labels.assistApprove" :loading="busy" class="m-assist-approve" @click="approve"></q-btn>' +
+                    '<q-btn flat no-caps dense :label="labels.assistReject" :disable="busy" class="m-assist-reject" @click="reject"></q-btn>' +
+                '</div>' +
+                '<div v-if="card.canAnswer" class="m-assist-card-actions">' +
+                    '<q-btn v-for="option in card.options" :key="option" outline no-caps dense :label="option" :disable="busy" class="m-assist-option" @click="answer(option)"></q-btn>' +
+                '</div>' +
+                '<div v-if="card.waiting" class="m-assist-card-waiting text-caption">{{card.waiting}}</div>' +
+                '<div v-if="card.decided" class="m-assist-card-decided text-caption">{{card.decided}}</div>' +
+                '<div v-if="error" class="m-assist-card-error text-negative text-caption">{{error}}</div>' +
+            '</div>' +
+            '<div v-else-if="card && card.canViewRun" class="m-assist-card-run"><q-btn flat no-caps dense size="sm" :label="labels.assistViewRun" class="m-assist-view-run" @click="viewRun"></q-btn></div>'
     };
 
     // The status message dialog of the account menu, outside the menu so it outlives it.

@@ -213,6 +213,7 @@ pub struct RestClient {
     truncate_body: bool,
     max_redirects: usize,
     redirect_any_host: bool,
+    connect_timeout: Duration,
     transport: OnceLock<reqwest::blocking::Client>,
 }
 
@@ -231,8 +232,18 @@ impl RestClient {
             truncate_body: false,
             max_redirects: MAX_REDIRECTS,
             redirect_any_host: false,
+            connect_timeout: CONNECT_TIMEOUT,
             transport: OnceLock::new(),
         }
+    }
+
+    /// How long a connection may take to open, 10 seconds by default.
+    #[must_use]
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = timeout;
+        // The timeout is part of the transport, so one built before this is not kept.
+        self.transport = OnceLock::new();
+        self
     }
 
     /// Refuse a host that resolves to a loopback, private, link-local, shared (CGNAT), or unspecified address,
@@ -433,7 +444,7 @@ impl RestClient {
         }
         let mut builder = reqwest::blocking::Client::builder()
             .timeout(self.timeout)
-            .connect_timeout(CONNECT_TIMEOUT)
+            .connect_timeout(self.connect_timeout)
             .redirect(redirect_policy(
                 self.max_redirects,
                 self.redirect_any_host,
@@ -715,7 +726,9 @@ fn resolve_public(host: &str) -> LookupResult {
     Ok(Box::new(addresses.into_iter()))
 }
 
-fn internal_address(address: std::net::IpAddr) -> bool {
+/// Whether `address` is loopback, private, link-local, shared (CGNAT), unspecified or otherwise not public, also
+/// inside IPv6: what [`RestClient::deny_internal_addresses`] refuses.
+pub fn internal_address(address: std::net::IpAddr) -> bool {
     match address {
         std::net::IpAddr::V4(v4) => {
             let octets = v4.octets();

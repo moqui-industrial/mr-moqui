@@ -132,6 +132,52 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
     </service>
 
+    <service verb="handle" noun="ChatMessage" type="rust" location="moqui_core::llm::chat::handle_chat_message"
+            authenticate="anonymous-all" allow-remote="false" transaction="ignore">
+        <description>The agentRef of an agent's chat member (plans/LLM-A2A-Assist.md 4.13; ChatServices.deliver#AgentMessage
+            calls it for each message of the room): the message is read from the room, and a message that mentions the
+            agent, any message of a direct room with it, or the sender's next message in a thread where the agent works
+            for them starts a run of the agent (the AgentDefinition whose chatUserId is agentUserId) as the sender, on
+            the chat surface, in the conversation of the room, the thread and the sender. Messages of agents start
+            nothing. The reply, the approval and question cards and the typing status go to the room as the run works.
+            The same message again starts no second run. It trusts none of its parameters but the room, the message's
+            eventSeq and the agent member (the sender is the message's), so any caller may hand it a message, and the run
+            is always the sender's; not callable remotely.</description>
+        <in-parameters>
+            <parameter name="chatRoomId" required="true"/>
+            <parameter name="eventSeq" type="Integer" required="true"/>
+            <parameter name="agentUserId" required="true"/>
+            <parameter name="senderUserId"/>
+            <parameter name="body" allow-html="any"/>
+            <parameter name="bodyText" allow-html="any"/>
+            <parameter name="threadRootEventSeq" type="Integer"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="runId"/>
+            <parameter name="conversationId"/>
+        </out-parameters>
+    </service>
+
+    <service verb="decide" noun="ChatCard" type="rust" location="moqui_core::llm::chat::decide_chat_card"
+            transaction="ignore">
+        <description>The current user's press of a button on an agent's card in a chat room (content.assist of message
+            eventSeq): approve or reject an approval, which any human user who may post in the room may do (answered
+            question 12; the write still runs as the person who asked), or answer a question (choice or text), which
+            only that person may. Taken only from an interactive browser session by its cookie with the session token,
+            as decide#AgentApproval: a header login, an agent's context and internal code are refused, and an agent
+            member or the chat or run-as user of any agent never decides. Edit in screen is the requester's, from the
+            drawer.</description>
+        <in-parameters>
+            <parameter name="chatRoomId" required="true"/>
+            <parameter name="eventSeq" type="Integer" required="true"/>
+            <parameter name="decision"><description>approve or reject, for an approval</description></parameter>
+            <parameter name="feedback" allow-html="any"/>
+            <parameter name="choice" allow-html="any"/>
+            <parameter name="text" allow-html="any"/>
+        </in-parameters>
+        <out-parameters><parameter name="status"/></out-parameters>
+    </service>
+
     <service verb="get" noun="UserFacts" type="interface">
         <description>What a user-facts provider implements (plans/LLM-A2A-Assist.md 7.6; crates/moqui-core/src/llm/facts.rs):
             facts about the user for the prompt of a new conversation with an agent, such as the active organization,

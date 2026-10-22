@@ -51,6 +51,7 @@ pub use period::period_range;
 pub use policy::password_acceptable;
 pub use preference::{
     get_preference, get_preference_for, get_preferences, has_permission, is_in_group, set_preference, user_group_ids,
+    user_has_permission,
 };
 pub(crate) use session::Memory;
 pub use session::{
