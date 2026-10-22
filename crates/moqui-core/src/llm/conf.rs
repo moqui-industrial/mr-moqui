@@ -306,6 +306,11 @@ pub struct ModelBehavior {
     pub compact_high_percent: Option<u32>,
     pub compact_low_percent: Option<u32>,
     pub max_concurrency: Option<u32>,
+    /// `intent-prefilter="hint"`: a tiny pre-call names the likely intent in the tail (`likely: data`).
+    pub intent_hint: bool,
+    /// `side-calls="false"`: no call besides a step's own (no intent hint, the deterministic compaction summary, no
+    /// schema repair call). The agent evaluation's replay model has it, since a recording holds only the steps' replies.
+    pub no_side_calls: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -875,6 +880,12 @@ fn model_from(element: &MNode, problems: &mut Vec<String>) -> Result<ModelConf, 
     behavior.compact_high_percent = number(element, "compact-high-percent");
     behavior.compact_low_percent = number(element, "compact-low-percent");
     behavior.max_concurrency = number(element, "max-concurrency");
+    match attr(element, "intent-prefilter").as_deref() {
+        None | Some("none" | "off") => {}
+        Some("hint") => behavior.intent_hint = true,
+        Some(other) => problems.push(format!("llm-facade model {id} intent-prefilter {other} is not none or hint; none is used")),
+    }
+    behavior.no_side_calls = !flag(element, "side-calls", true);
     model.chars_per_token = number(element, "chars-per-token");
     model.disabled = flag(element, "disabled", false);
     Ok(model)

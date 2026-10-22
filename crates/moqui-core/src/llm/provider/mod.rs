@@ -133,6 +133,10 @@ pub struct Message {
     /// What an assistant message gives back to its model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay: Option<ReplayBag>,
+    /// The model's own text of a JSON tool mode reply (plan 7.9), sent in place of the text and calls to a model in
+    /// that mode, so its next request starts with the bytes it wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
 }
 
 impl Message {
@@ -145,6 +149,7 @@ impl Message {
             tool_name: None,
             is_error: false,
             replay: None,
+            raw: None,
         }
     }
 

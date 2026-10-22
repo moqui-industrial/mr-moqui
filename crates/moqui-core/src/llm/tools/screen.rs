@@ -556,8 +556,10 @@ fn open_spec(
             .clone()
             .filter(|path| screen::path_problem(path).is_none())
             .unwrap_or_else(|| screen::DEFAULT_START_PATH.to_string()),
-        columns: screen::DEFAULT_COLUMNS,
-        rows: command.rows.unwrap_or(screen::DEFAULT_ROWS),
+        columns: handle.size.map_or(screen::DEFAULT_COLUMNS, |(columns, _)| columns),
+        rows: command
+            .rows
+            .unwrap_or_else(|| handle.size.map_or(screen::DEFAULT_ROWS, |(_, rows)| rows)),
         follow,
         state,
     }

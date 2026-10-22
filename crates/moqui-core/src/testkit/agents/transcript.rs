@@ -176,8 +176,12 @@ impl Recording {
 }
 
 /// The fake's reply for a recorded one: its text, its calls with their arguments in one piece, and `tool_calls` or
-/// `stop`.
+/// `stop`; a JSON tool mode reply's own text (`raw`) and `stop`.
 pub fn reply_of(reply: &ModelReply) -> Reply {
+    // a JSON tool mode reply is played as the text the model wrote
+    if let Some(raw) = &reply.raw {
+        return Reply::steps(vec![Step::Text(raw.clone()), Step::Finish("stop".to_string())]);
+    }
     let mut steps = Vec::new();
     if !reply.text.is_empty() {
         steps.push(Step::Text(reply.text.clone()));

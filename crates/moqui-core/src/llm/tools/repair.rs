@@ -17,7 +17,8 @@
 //! stringified object): each argument is fitted to its property in the tool's schema. Numbers, booleans, arrays and
 //! objects written as text are converted, an enum value in the wrong case takes the schema's case, a synonym or a
 //! case variant of a property name is renamed, and a null is left out; an argument the schema does not have is dropped
-//! and reported as `ignored`. The schema-constrained repair call of a model that supports it is phase 13.7.
+//! and reported as `ignored`. When this still does not fit, the step makes one schema-constrained repair call of a
+//! model whose `json-schema` verdict is yes (`run::step`, plan 7.9).
 
 use serde_json::{Map, Number, Value as Json};
 

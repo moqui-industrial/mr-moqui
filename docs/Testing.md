@@ -222,17 +222,18 @@ sessions installed as a server has them (`plans/LLM-A2A-Assist.md`, section 9). 
 ```sh
 moqui test tools --agents --llm-profile local-qwen --runs 3 --seed 7   # a model of the llm-facade conf
 moqui test tools --agents --replay runtime/base-component/tools/test/agent/replay   # no model
+moqui test tools --agents --replay runtime/base-component/tools/test/agent/replay-small   # a small model in JSON tool mode
 moqui test tools --agents --llm-profile local-qwen --feature "approval" --db snapshot
 ```
 
 | Option | |
 |---|---|
 | `--llm-profile model` | The model the agent runs on: a `model` id of the `llm-facade` conf or an `LlmModel` row. The agent's feature (`assist`) is bound to it for the run and put back after. When the model's endpoint does not take a connection the run is skipped, not failed. An unknown id is an error |
-| `--replay dir` | No model: the model replies recorded in `<dir>/<spec>/<task>-<n>.jsonl` (else `<task>-1.jsonl`) are played by the scripted fake provider, with the recorded model's settings, and the tools run live |
+| `--replay dir` | No model: the model replies recorded in `<dir>/<spec>/<task>-<n>.jsonl` (else `<task>-1.jsonl`) are played by the scripted fake provider, with the recorded model's settings, and the tools run live. The replay model makes no side call (`sideCalls` N: no intent hint, the deterministic compaction summary, no schema repair call), since a recording holds only the steps' replies. The directory is a profile's set: `replay/` is the profile `replay`, another `replay-<name>/` (or `<name>/`) the profile `replay-<name>`, with its own baseline; a task the set has no recording of is skipped |
 | `--runs N` | Runs of each task, for pass@1 and pass^N. 1 by default |
 | `--seed S` | Run n sends `seed` S + n - 1 to a Chat Completions model (in the model row's `apiConfigJson`; other protocols take none) |
 | `--min-pass F` | The pass@1 a live run needs, 0.75 by default (6 of 8). A replay needs every task to pass |
-| `--write-baseline` | Write `test/agent/baseline-<profile>.json` (`baseline-replay.json` for a replay) from this run |
+| `--write-baseline` | Write `test/agent/baseline-<profile>.json` (`baseline-replay.json`, `baseline-replay-small.json` for the replay sets) from this run |
 
 `--spec` picks agent spec files by name (without `.agent.js`), `--feature` tasks by name, and `--db` works as for the
 specs. A live profile is a model of the conf, such as the commented `local-qwen` example of `MoquiDefaultConf.xml` (Qwen
@@ -280,6 +281,7 @@ A task has `say` (one message, or an array of messages) or `turns`, `[{ say, exp
 | `results` | `{tool, result}`: some result of the tool matches |
 | `held`, `noWrite` | The approvals the run asked for (a number, or a match of `{tool, transition, text, status, channel}`: `text` is the summary and the changes, `Label: current → proposed`; `status` what became of it, such as executed, rejected or expired); no approval and no write tool call |
 | `maxWrongCalls`, `maxToolCalls`, `questions`, `state` | Limits on failed calls and on calls, the questions asked, the run's end state |
+| `noInvented` | The answer links nothing no tool returned (no `invented_reference`) |
 | `verify(run)` | A function over what the run did (`answer`, `calls`, `held`, `questions`, `screen`, `turns`); `assert` fails it |
 
 A value in a check is a string (equal), a `RegExp`, `null` (empty), or an object or array matched in part. A run that
@@ -295,16 +297,25 @@ Each task run writes `runtime/log/agent-eval/<run>/<spec>/<task>-<n>.jsonl`: a h
 the user's messages, each model reply (text, tool calls, usage) with its calls and their full results, the held writes,
 the questions, the answer and the screen, and the result with its measures. The console has a line per task run, and a
 summary per component, also written as `summary-<component>.json`: pass@1, pass^k, model and tool calls, wrong calls,
-argument repairs, invented references, held writes against the expectation, prompt, completion and cached tokens, the
+argument repairs, invented references, held writes against the expectation, the wrong calls' share of the tool calls, prompt, completion and cached tokens, the
 cache-hit ratio, the prompt prefix size, compactions and wall time.
 
-A transcript is also a recording: `--replay` takes its `model` lines and compares its `tool` lines with what the tools
+A transcript is also a recording: `--replay` takes its `model` lines (a line's `raw`, the text a model wrote in JSON tool
+mode or a call it wrote as text, is played as that text) and compares its `tool` lines with what the tools
 answer now, dates, clock times and long ids left out. A change shows as a `replay drift` note, so a change of a tool's
 output is seen without a model; the checks decide whether it fails. To record a live run, copy its transcripts into
 the replay directory.
 
-A committed `test/agent/baseline-<profile>.json` holds each task's pass@1 and tokens a run. A run with lower success, or
-more than 20% more tokens, than the baseline prints a `REGRESSION` line and fails.
+A committed `test/agent/baseline-<profile>.json` holds each task's pass@1 and tokens a run, and the suite's wrong-call
+share, invented references and cache-hit ratio. A run with lower success, or more than 20% more tokens, than the baseline
+prints a `REGRESSION` line and fails; so does a task of the baseline that did not run, unless `--feature` or `--spec`
+picked some. The tools component has `baseline-replay.json` (24 tasks) and `baseline-replay-small.json` (9, JSON tool
+mode); the baselines of a live model (`baseline-local-qwen.json`, an 8B model's in JSON mode) are written by a live run
+with `--write-baseline`.
+
+The tools component's suite (`test/agent/`): `assist.agent.js` (21 tasks in the drawer) and `headless.agent.js` (3 on
+the `a2a` surface, run through the run engine; the spec lets the assist agent serve that surface while it runs). The
+surface of a spec is `drawer`, `chat`, `tui`, `job`, `a2a` or `mcp`; a headless one sends only the time in the tail.
 
 ## Pitfalls
 

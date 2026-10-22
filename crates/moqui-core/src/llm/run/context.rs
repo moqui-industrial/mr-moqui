@@ -68,6 +68,8 @@ pub struct AgentDef {
     pub max_run_seconds: Option<u64>,
     pub local_only: bool,
     pub disabled: bool,
+    /// The canvas dialects it may write (`canvasDialects`); empty is OpenUI Lang only.
+    pub canvas_dialects: Vec<String>,
     /// The row, for what a later phase reads of it (instructions, requireSkill).
     pub row: Option<EntityValue>,
 }
@@ -109,6 +111,9 @@ impl AgentDef {
             max_run_seconds: positive("maxRunSeconds").and_then(|n| u64::try_from(n).ok()),
             local_only: flag_of(row, "localOnly") == Some(true),
             disabled: flag_of(row, "disabled") == Some(true),
+            canvas_dialects: text_of(row, "canvasDialects")
+                .map(|list| list.split(',').map(str::trim).filter(|name| !name.is_empty()).map(str::to_string).collect())
+                .unwrap_or_default(),
             row: Some(row.clone()),
         }
     }
@@ -120,6 +125,15 @@ impl AgentDef {
             return DEFAULT_SURFACES.contains(&surface);
         }
         self.surfaces.contains(&surface)
+    }
+
+    /// Whether it may write canvases of `dialect`: those its `canvasDialects` name, and with none named only OpenUI
+    /// Lang. Vue SFC is off unless an agent names it (plan 4.10: generated code in a frame that may still navigate).
+    pub fn allows_dialect(&self, dialect: &str) -> bool {
+        if self.canvas_dialects.is_empty() {
+            return dialect == "openui";
+        }
+        self.canvas_dialects.iter().any(|name| name == dialect)
     }
 
     /// The role groups that bound its tools; none is no bound.
@@ -239,6 +253,8 @@ pub struct ScreenHandle {
     pub conversation_id: String,
     /// Empty until the session is opened or found.
     pub session_id: String,
+    /// The columns and rows a new session draws, the model's `screen-size`; `None` is the default 100x30.
+    pub size: Option<(u16, u16)>,
 }
 
 impl ScreenHandle {
@@ -246,7 +262,14 @@ impl ScreenHandle {
         Self {
             conversation_id: conversation_id.to_string(),
             session_id: String::new(),
+            size: None,
         }
+    }
+
+    #[must_use]
+    pub fn sized(mut self, size: Option<(u16, u16)>) -> Self {
+        self.size = size;
+        self
     }
 }
 

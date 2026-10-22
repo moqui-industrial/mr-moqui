@@ -32,7 +32,8 @@ along with this software (see the LICENSE.md file). If not, see
             comma list of drawer, chat, a2a, mcp, job, tui; empty is drawer and tui only), the screen a headless
             session starts on, and its budgets. runAsUserId is for jobs and triggers, which have no user of their own.
             requireSkill names skills the agent always loads. a2aSkillsJson describes its skills on the A2A agent
-            card. A system agent (isSystem) ships in seed data.</description>
+            card. canvasDialects is a comma list of the canvas dialects it may write (openui, vue-sfc); empty is openui
+            only, so Vue SFC canvases are off unless an agent names them. A system agent (isSystem) ships in seed data.</description>
         <field name="agentId" type="id" is-pk="true"/>
         <field name="agentName" type="text-medium"/>
         <field name="description" type="text-long"/>
@@ -52,6 +53,7 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="maxRunSeconds" type="number-integer"/>
         <field name="localOnly" type="text-indicator"><description>Use only endpoints marked local</description></field>
         <field name="requireSkill" type="text-medium"/>
+        <field name="canvasDialects" type="text-medium"/>
         <field name="exposeA2a" type="text-indicator"/>
         <field name="exposeMcp" type="text-indicator"/>
         <field name="a2aSkillsJson" type="text-long"/>
@@ -111,8 +113,8 @@ along with this software (see the LICENSE.md file). If not, see
         <description>A conversation of a user with an agent on one surface; it is an A2A context (conversationId is the
             contextId). A chat-room conversation names its room and thread root. One run at a time is active
             (activeRunId, set with a conditional update). The frozen prefix of the prompt (systemText, toolsHash,
-            promptVariant, and skillCatalog, the names its skill catalog lists) is fixed when the conversation starts, so
-            every call shares the provider's prefix cache;
+            promptVariant, standard or small with +json for JSON tool mode, and skillCatalog, the names its skill catalog
+            lists) is fixed when the conversation starts, so every call shares the provider's prefix cache;
             compaction keeps a summary of the messages through compactedThroughSeq. screenStateJson is the state of its
             screen session, recordEntityName and recordId the record it is attached to. clientId is the follow owner (the
             drawer tab whose page follows the agent: the one that sent the last turn or claimed follow), and
@@ -287,7 +289,10 @@ along with this software (see the LICENSE.md file). If not, see
             client's own id of a message it sends (clientMessageId) is unique for the user, so a send that is tried again
             finds the message it made. replayJson is what the provider needs back with the next request (reasoning
             signatures, encrypted reasoning items), sent only to the same endpoint and model (replayEndpointId,
-            replayModelId). A compacted message is summarized and no longer sent.</description>
+            replayModelId). A compacted message is summarized and no longer sent. An assistant message's tokenCount is the
+            prompt tokens the provider reported for the request that made it (promptChars in its metadata is that
+            request's characters), the anchor of the window's estimate; its metadata raw is the text a model wrote in JSON
+            tool mode.</description>
         <field name="messageId" type="id" is-pk="true"/>
         <field name="conversationId" type="id"/>
         <field name="messageSeq" type="number-integer"/>

@@ -13,11 +13,12 @@
  */
 
 //! The host routes of the agents (plans/LLM-A2A-Assist.md 4.5), under the `llm` feature: the event stream of a run
-//! and its catch-up ([`sse`]). The drawer's JSON calls are transitions of the webroot `assist` subscreen
+//! and its catch-up ([`sse`]), and the frame document of a Vue SFC canvas ([`sandbox`]). The drawer's JSON calls are transitions of the webroot `assist` subscreen
 //! (`moqui_core::llm::assist`, docs/Assist.md); the A2A, MCP and gateway adapters join here in their phases.
 
 #[cfg(feature = "tui")]
 pub(crate) mod screens;
+pub(crate) mod sandbox;
 pub(crate) mod sse;
 
 use std::sync::Arc;
@@ -27,8 +28,10 @@ use axum::Router;
 
 use crate::http::HttpState;
 
-/// Add `GET /assist/runs/{runId}/events` (SSE) and `GET /assist/runs/{runId}/events.json` to `app`.
+/// Add `GET /assist/runs/{runId}/events` (SSE), `GET /assist/runs/{runId}/events.json` and `GET /assist/sandbox` (the
+/// Vue SFC frame document, [`sandbox`]) to `app`.
 pub(crate) fn routes(app: Router<Arc<HttpState>>) -> Router<Arc<HttpState>> {
     app.route("/assist/runs/{run_id}/events", get(sse::events))
         .route("/assist/runs/{run_id}/events.json", get(sse::events_json))
+        .route("/assist/sandbox", get(sandbox::frame))
 }

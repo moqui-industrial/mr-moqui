@@ -58,13 +58,15 @@ const TIME_LIMIT: Duration = Duration::from_secs(5);
 /// A rule of the skill: its section and its text, quoted verbatim in the section (a test checks it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rule {
+    /// The skill of the section: `openui-lang`, `vue-sfc`.
+    pub skill: &'static str,
     pub section: &'static str,
     pub text: &'static str,
 }
 
 macro_rules! rule {
     ($name:ident, $section:expr, $text:expr) => {
-        pub const $name: Rule = Rule { section: $section, text: $text };
+        pub const $name: Rule = Rule { skill: SKILL, section: $section, text: $text };
     };
 }
 
@@ -183,10 +185,14 @@ pub struct Problem {
     /// Problems that keep the program from parsing at all (`openui_parse`) rather than from checking.
     pub parse: bool,
     pub did_you_mean: Vec<String>,
+    /// The page's own source and code of a reported problem (`canvasProblems`), for the revalidation gate; empty for a
+    /// problem the server's own checks found.
+    pub source: String,
+    pub code: String,
 }
 
 impl Problem {
-    fn new(rule: Rule, message: impl Into<String>) -> Self {
+    pub(crate) fn new(rule: Rule, message: impl Into<String>) -> Self {
         Self {
             rule,
             message: message.into(),
@@ -194,6 +200,8 @@ impl Problem {
             statement: None,
             parse: false,
             did_you_mean: Vec::new(),
+            source: String::new(),
+            code: String::new(),
         }
     }
 
@@ -203,14 +211,14 @@ impl Problem {
         self
     }
 
-    fn parse_error(mut self) -> Self {
+    pub(crate) fn parse_error(mut self) -> Self {
         self.parse = true;
         self
     }
 
     /// `openui-lang#query`.
     pub fn skill(&self) -> String {
-        format!("{SKILL}#{}", self.rule.section)
+        format!("{}#{}", self.rule.skill, self.rule.section)
     }
 
     /// The hash a reported problem is deduplicated by: its rule, its statement and its message.
@@ -1337,6 +1345,8 @@ pub fn reported(source: &str, code: &str, message: &str, statement: Option<&str>
     };
     let mut problem = Problem::new(rule, crate::llm::tools::format::cut(message.trim(), 300));
     problem.statement = statement.map(str::to_string);
+    problem.source = source.to_string();
+    problem.code = code.to_string();
     problem
 }
 
@@ -1380,6 +1390,7 @@ impl super::Dialect for OpenUi {
                 program: checked.program,
                 statements: checked.statements,
                 mutations: checked.mutations,
+                reads: Vec::new(),
             }),
             Ok(Err(problems)) => Err(refused(&problems, input)),
             Err(error) => {

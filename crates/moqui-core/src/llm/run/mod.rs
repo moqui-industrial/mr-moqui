@@ -446,6 +446,8 @@ pub fn start_run(factory: &Arc<ExecutionContextFactory>, request: &StartRequest)
         {
             caps = caps.with([screen_cap]);
         }
+        // the canvas dialects the agent does not write are off whatever the surface offers (Vue SFC is off by default)
+        let caps = caps.dialects_only(|dialect| agent.allows_dialect(dialect));
         let caps = caps.with(request.extra_caps.iter().map(String::as_str));
         let limits = RunLimits::of(&agent, &llm.conf().limits, &request.limits);
         let quota =

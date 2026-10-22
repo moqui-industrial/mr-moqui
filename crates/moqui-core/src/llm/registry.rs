@@ -339,6 +339,15 @@ impl Registry {
             set_some(&mut behavior.compact_high_percent, positive(row, "compactHighPercent"));
             set_some(&mut behavior.compact_low_percent, positive(row, "compactLowPercent"));
             set_some(&mut behavior.max_concurrency, positive(row, "maxConcurrency"));
+            match text_of(row, "intentPrefilter").as_deref() {
+                None => {}
+                Some("none" | "off") => behavior.intent_hint = false,
+                Some("hint") => behavior.intent_hint = true,
+                Some(other) => self.problems.push(format!("LlmModel {id} intentPrefilter {other} is not none or hint")),
+            }
+            if let Some(on) = flag_of(row, "sideCalls") {
+                behavior.no_side_calls = !on;
+            }
             set_some(
                 &mut model.chars_per_token,
                 decimal_of(row, "charsPerToken").and_then(|value| value.to_string().parse().ok()),

@@ -13,8 +13,9 @@
  */
 
 //! `write_ui` (plans/LLM-A2A-Assist.md 7.3, 4.10, D5, D6): show a generated view in the drawer's canvas. It is listed
-//! from the start with a small schema and answers `skill_required` until the dialect's skill (`openui-lang`) is loaded
-//! in the conversation, so the 27.9k-character guide is read only when a canvas is wanted. A program (or a `patch` of
+//! from the start with a small schema and answers `skill_required` until the dialect's skill (`openui-lang`, or
+//! `vue-sfc` for an agent that writes Vue SFC canvases) is loaded in the conversation, so the 27.9k-character guide is
+//! read only when a canvas is wanted; a kind the agent does not write is refused first. A program (or a `patch` of
 //! the current canvas's statements, merged on the server) is parsed and checked before anything is shown
 //! ([`crate::llm::ui::Dialect::prepare`]); every problem names its skill section and quotes the rule, and the model
 //! fixes it in the next step. A program that checks becomes the conversation's canvas, a new version
@@ -95,18 +96,25 @@ impl AgentTool for WriteUi {
                 .did_you_mean(ui::dialects().iter().filter(|dialect| dialect.available()).map(|dialect| dialect.name().to_string()).collect())
                 .outcome();
         };
+        // a kind this server, this drawer or this agent does not offer is answered before its skill is asked for
+        if !dialect.available() || !ctx.caps.has(&format!("ui.write:{}", dialect.name())) {
+            let instead = if dialect.name() != "openui" && ctx.caps.has(caps::UI_OPENUI) {
+                "Write the view with kind openui (skill openui-lang)."
+            } else {
+                "Answer in text."
+            };
+            return ToolError::new(
+                "dialect_unavailable",
+                format!("This agent does not show {kind} canvases here, so nothing was shown. {instead}"),
+            )
+            .outcome();
+        }
         if crate::llm::skills::loaded(ctx, dialect.skill()).is_none() {
             return ToolOutcome::Failed(skill_required(dialect.skill()));
         }
         let Some(factory) = factory() else {
             return ToolOutcome::Failed("write_ui runs only in a run's context".to_string());
         };
-        if !dialect.available() || !ctx.caps.has(&format!("ui.write:{}", dialect.name())) {
-            let refused = dialect.prepare(&factory, None, &WriteInput::default(), &openui::NoPaths);
-            return ToolOutcome::Failed(refused.err().map(|refused| refused.error).unwrap_or_else(|| {
-                ToolError::new("dialect_unavailable", format!("This drawer cannot show {kind} canvases; answer in text.")).to_text()
-            }));
-        }
         let Some(run) = ctx.run.cloned() else {
             return ToolError::new("no_conversation", "A canvas belongs to a conversation, and this call has none; answer in text.").outcome();
         };
@@ -239,13 +247,22 @@ fn shown_text(canvas: &Canvas, prepared: &ui::Prepared, patched: bool) -> String
         names.join(", "),
         if prepared.statements.len() > names.len() { ", …" } else { "" }
     );
-    if !prepared.mutations.is_empty() {
+    if !prepared.mutations.is_empty() && canvas.dialect == "vue-sfc" {
+        text.push_str(&format!(
+            "\nActions {} run when the user submits them and confirms; to run one without that, call write_ui with run (it waits for approval).",
+            prepared.mutations.join(", ")
+        ));
+    } else if !prepared.mutations.is_empty() {
         text.push_str(&format!(
             "\nMutations {} run when the user clicks their Button; to run one without a click, call write_ui with run (it waits for approval).",
             prepared.mutations.join(", ")
         ));
     }
-    text.push_str("\nThe user sees it now. Say in one line what it shows; to change it, send a patch with only the changed statements.");
+    text.push_str(if canvas.dialect == "vue-sfc" {
+        "\nThe user sees it now. Say in one line what it shows; to change it, send a patch with only the changed blocks."
+    } else {
+        "\nThe user sees it now. Say in one line what it shows; to change it, send a patch with only the changed statements."
+    });
     text
 }
 
@@ -258,9 +275,10 @@ fn propose_run(ctx: &mut TurnContext<'_>, factory: &Arc<ExecutionContextFactory>
     let held = match ui::write::hold(factory, ctx.agent, run_id.as_deref(), canvas, statement, None) {
         Ok(held) => held,
         Err(why) => {
+            let rule = if canvas.dialect == "vue-sfc" { ui::vue_sfc::ACTIONS } else { openui::MUTATION_SHAPE };
             return ToolError::new("mutation", format!("{why}, so nothing was run."))
-                .skill(format!("{}#{}", openui::SKILL, openui::MUTATION_SHAPE.section))
-                .rule(openui::MUTATION_SHAPE.text)
+                .skill(format!("{}#{}", rule.skill, rule.section))
+                .rule(rule.text)
                 .outcome();
         }
     };

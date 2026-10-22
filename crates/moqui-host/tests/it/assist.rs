@@ -1015,6 +1015,7 @@ fn make_canvas(factory: &Arc<ExecutionContextFactory>, conversation_id: &str, ru
         program: program.to_string(),
         statements: vec!["root".to_string()],
         mutations: mutations.iter().map(|name| (*name).to_string()).collect(),
+        reads: Vec::new(),
     };
     facade
         .transactions_for("moqui.agent.AgentArtifact")

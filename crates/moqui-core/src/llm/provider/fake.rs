@@ -21,7 +21,10 @@
 //! request: with a response schema it answers a sample of the schema; with tools it calls each tool the newest user
 //! message names; with a reasoning level other than none it reasons and gives a replay token; otherwise it answers
 //! "Fake reply to: …". Its text comes in pieces of 8 characters. Its usage counts 4 characters a token, and a request
-//! with the cache key of an earlier one reports that one's input as cached. [`requests`] gives the bodies it was sent.
+//! with the cache key of an earlier one reports as cached what a prefix-caching server would: the longest common prefix
+//! of its prompt (the system text, the tools, then the messages, as serialized) with that earlier one's; with
+//! [`single_slot`] it models a one-slot local server, where any request, a side call too, replaces the cached prompt.
+//! [`requests`] gives the bodies it was sent.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Read;
@@ -115,8 +118,12 @@ impl Reply {
 struct State {
     scripts: HashMap<String, VecDeque<Reply>>,
     requests: HashMap<String, Vec<Json>>,
-    /// The input of the last request with a cache key, by key.
-    cached: HashMap<String, u64>,
+    /// The prompt of the last request with a cache key, by endpoint and key.
+    cached: HashMap<String, String>,
+    /// The endpoints that model a single-slot server (llama.cpp or LM Studio with one slot).
+    single_slot: std::collections::HashSet<String>,
+    /// The prompt in such an endpoint's one slot: the last request's, whatever its cache key.
+    slot: HashMap<String, String>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -140,11 +147,27 @@ pub fn script(endpoint_id: &str, replies: Vec<Reply>) {
     });
 }
 
-/// Drop the endpoint's queued replies and the bodies it was sent.
+/// Drop the endpoint's queued replies, the bodies it was sent and the prompt in its slot.
 pub fn clear(endpoint_id: &str) {
     with_state(|state| {
         state.scripts.remove(endpoint_id);
         state.requests.remove(endpoint_id);
+        state.slot.remove(endpoint_id);
+    });
+}
+
+/// Model the endpoint as a local server with one slot (on) or as a cache per key (off, the default). With one slot,
+/// every request, a side call with no cache key too, replaces the cached prompt, and a request reads from the cache only
+/// its common prefix with the request just before it on the endpoint: a side call between two calls of a conversation
+/// evicts that conversation's prefix.
+pub fn single_slot(endpoint_id: &str, on: bool) {
+    with_state(|state| {
+        state.slot.remove(endpoint_id);
+        if on {
+            state.single_slot.insert(endpoint_id.to_string());
+        } else {
+            state.single_slot.remove(endpoint_id);
+        }
     });
 }
 
@@ -228,9 +251,23 @@ impl Protocol for Fake {
             });
         }
         let input = input_tokens(&call.body);
-        let cached = text(call.body.get("cache_key")).map_or(0, |key| {
-            with_state(|state| state.cached.insert(key, input).unwrap_or(0).min(input))
+        // the cache is the endpoint's, as a server's is its own: one slot, or a prompt per cache key
+        let slot = with_state(|state| {
+            state.single_slot.contains(&endpoint).then(|| {
+                let prompt = prompt_text(&call.body);
+                state.slot.insert(endpoint.clone(), prompt.clone()).map(|earlier| cached_tokens(&earlier, &prompt))
+            })
         });
+        let cached = if let Some(slot) = slot {
+            slot.unwrap_or(0).min(input)
+        } else {
+            text(call.body.get("cache_key")).map_or(0, |key| {
+            let key = format!("{endpoint}\n{key}");
+            let prompt = prompt_text(&call.body);
+            let earlier = with_state(|state| state.cached.insert(key, prompt.clone())).unwrap_or_default();
+            cached_tokens(&earlier, &prompt).min(input)
+            })
+        };
         let mut headers = reply.headers.clone();
         headers.push(("content-type".to_string(), "text/event-stream".to_string()));
         Ok(OpenResponse {
@@ -257,6 +294,28 @@ fn input_tokens(body: &Json) -> u64 {
     let messages = body.get("messages").map_or(0, |messages| messages.to_string().len());
     let tools = body.get("tools").map_or(0, |tools| tools.to_string().len());
     tokens(system + messages + tools)
+}
+
+/// The prompt of a body as a server caches it: the system text, the tools and the messages, in that order.
+fn prompt_text(body: &Json) -> String {
+    let system = body.get("system").and_then(Json::as_str).unwrap_or_default();
+    let tools = body.get("tools").map_or_else(String::new, Json::to_string);
+    let messages = body.get("messages").map_or_else(String::new, Json::to_string);
+    format!("{system}\n{tools}\n{messages}")
+}
+
+/// The tokens of `prompt` a server that cached `earlier` reads from its cache: their longest common prefix, in whole
+/// tokens of 4 characters (all of it for the same prompt).
+pub fn cached_tokens(earlier: &str, prompt: &str) -> u64 {
+    if !earlier.is_empty() && earlier == prompt {
+        return u64::MAX;
+    }
+    let common = earlier
+        .bytes()
+        .zip(prompt.bytes())
+        .take_while(|(left, right)| left == right)
+        .count();
+    common as u64 / 4
 }
 
 /// The reply the fake makes up for a body when nothing is scripted.

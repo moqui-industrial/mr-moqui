@@ -94,10 +94,7 @@ pub(super) fn dispatch(args: &TestArgs, runtime: &Path, framework: &Path) -> Res
     #[cfg(all(feature = "axum", feature = "tui"))]
     crate::llm::screens::install(&fixture.factory);
 
-    let label = match &mode {
-        Mode::Live { profile } => profile.clone(),
-        Mode::Replay { .. } => "replay".to_string(),
-    };
+    let label = mode.label();
     let stamp = jiff::Zoned::now().strftime("%Y%m%d-%H%M%S").to_string();
     let run_dir = std::fs::canonicalize(runtime)
         .unwrap_or_else(|_| runtime.to_path_buf())
@@ -137,7 +134,11 @@ pub(super) fn dispatch(args: &TestArgs, runtime: &Path, framework: &Path) -> Res
             .ok()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         {
-            let found = agents::regressions(&summary, &baseline);
+            let mut found = agents::regressions(&summary, &baseline);
+            // a task of the baseline that did not run (a recording lost) is one, unless only some were asked for
+            if args.feature.is_none() && args.specs.is_empty() {
+                found.extend(agents::not_run(&summary, &baseline));
+            }
             for line in &found {
                 println!("REGRESSION {}: {line}", component.name);
             }

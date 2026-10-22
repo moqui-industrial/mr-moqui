@@ -248,11 +248,12 @@ impl Summary {
             if self.skipped > 0 { format!(", {} skipped", self.skipped) } else { String::new() }
         ));
         text.push_str(&format!(
-            "a run: {:.1} model calls, {:.1} tool calls; in all: {} wrong calls, {} repairs, {} invented references, \
-             approvals as expected {} of {}\n",
+            "a run: {:.1} model calls, {:.1} tool calls; in all: {} wrong calls ({:.0}% of the tool calls), {} repairs, \
+             {} invented references, approvals as expected {} of {}\n",
             per(t.model_calls),
             per(t.tool_calls),
             t.wrong_calls,
+            self.wrong_call_share() * 100.0,
             t.repairs,
             t.invented,
             self.approvals_as_expected,
@@ -272,6 +273,15 @@ impl Summary {
         text
     }
 
+    /// The share of the tool calls that were wrong (an error result): the plan's check is at most 10%.
+    pub fn wrong_call_share(&self) -> f64 {
+        if self.totals.tool_calls == 0 {
+            0.0
+        } else {
+            self.totals.wrong_calls as f64 / self.totals.tool_calls as f64
+        }
+    }
+
     /// The baseline file's content: each task's success and tokens.
     pub fn baseline(&self) -> Json {
         let tasks: serde_json::Map<String, Json> = self
@@ -280,6 +290,7 @@ impl Summary {
             .map(|(key, task)| (key.clone(), json!({"passAt1": round(task.pass_at1), "tokens": task.tokens})))
             .collect();
         json!({"profile": self.profile, "runs": self.runs, "passAt1": round(self.pass_at1), "tokens": self.tokens,
+            "wrongCalls": round(self.wrong_call_share()), "invented": self.totals.invented, "cacheHit": round(self.cache_hit),
             "tasks": tasks})
     }
 }
@@ -320,6 +331,19 @@ pub fn regressions(summary: &Summary, baseline: &Json) -> Vec<String> {
         check("the suite", summary.pass_at1, summary.tokens, baseline, &mut found);
     }
     found
+}
+
+/// The tasks of `baseline` that `summary` did not run (skipped or missing): a set that lost a recording, or a task
+/// renamed.
+pub fn not_run(summary: &Summary, baseline: &Json) -> Vec<String> {
+    let Some(tasks) = baseline.get("tasks").and_then(Json::as_object) else {
+        return Vec::new();
+    };
+    tasks
+        .keys()
+        .filter(|key| !summary.tasks.contains_key(key.as_str()))
+        .map(|key| format!("{key}: in the baseline, not run"))
+        .collect()
 }
 
 fn round(value: f64) -> f64 {

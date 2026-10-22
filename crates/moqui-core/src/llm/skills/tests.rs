@@ -374,7 +374,9 @@ mod flow {
         assert!(dates.location.starts_with("component://framework/skill/"), "{}", dates.location);
         let again = sync::sync(&factory, &facade).unwrap();
         assert_eq!((again.added, again.changed), (0, 0), "{again:?}");
-        assert_eq!(again.unchanged, index.skills.len());
+        // the vue-sfc skill is synced too, and left out of the index of an agent that does not write Vue SFC canvases
+        assert!(index.get("vue-sfc").is_none());
+        assert_eq!(again.unchanged, index.skills.len() + 1);
 
         // turn 1: the model loads dates; the catalog is frozen with the conversation
         fake::script(&endpoint, vec![tool("c1", "skill", json!({"name": "dates"})), fake::Reply::text("Last month.")]);

@@ -741,6 +741,15 @@
             <reasoning level="high">{"reasoning_effort":"xhigh","chat_template_kwargs":{"enable_thinking":true}}</reasoning>
         </model>
         -->
+        <!-- An 8B model on the same LM Studio endpoint in JSON tool mode (plans/LLM-A2A-Assist.md 7.9): no native tool
+            calls, the tools as signatures in the prompt and one JSON object a reply; a 16k window with an 80x24 screen and
+            a 3k result cap, and the intent hint. The profile local-small of the agent evaluation in JSON mode.
+        <model id="local-small" endpoint="lmstudio" name="qwen3-8b" tier="fast" context-window="16384" max-output="2048"
+                tool-mode="json" prompt-variant="small" result-cap-chars="3000" list-limit="10" screen-size="80x24"
+                reasoning-replay="none" max-concurrency="1" temperature="0.2" max-tool-calls="12" intent-prefilter="hint">
+            <reasoning level="low">{"chat_template_kwargs":{"enable_thinking":false}}</reasoning>
+        </model>
+        -->
         <!-- GLM: glm-5.2 can turn thinking off, glm-5.3 cannot. High is max.
         <endpoint id="glm" protocol="chat-completions" url="https://api.z.ai/api/paas/v4" path="/chat/completions"
                 api-key="${llm_glm_api_key}"/>

@@ -21,7 +21,7 @@ use moqui_lib::object::Value;
 use serde_json::json;
 
 use super::*;
-use crate::llm::conf::{EndpointConf, ModelConf, ProtocolId, ReasoningLevel};
+use crate::llm::conf::{EndpointConf, ModelConf, ProtocolId, ReasoningLevel, ToolMode};
 use crate::llm::provider::{self, Message, Role, ToolCall};
 use crate::llm::registry::Target;
 use crate::testing;
@@ -51,6 +51,7 @@ fn spec<'a>(
         user_facts: facts,
         memory: &[],
         tools,
+        tool_mode: ToolMode::Native,
     }
 }
 
@@ -65,6 +66,9 @@ fn every_prompt_file_reads_and_the_core_and_its_addenda_fit_their_budgets() {
         &texts.job,
         &texts.small,
         &texts.language,
+        &texts.summary,
+        &texts.tools_json,
+        &texts.intent,
     ]) {
         assert!(!text.is_empty(), "{name} is empty");
         assert!(!text.contains("<!--"), "{name} keeps its comment");
@@ -76,6 +80,9 @@ fn every_prompt_file_reads_and_the_core_and_its_addenda_fit_their_budgets() {
     }
     assert!(chars(&texts.small) <= caps::SMALL, "small {}", chars(&texts.small));
     assert!(chars(&texts.language) <= caps::LANGUAGE, "language {}", chars(&texts.language));
+    assert!(chars(&texts.tools_json) <= caps::ADDENDUM, "tools-json {}", chars(&texts.tools_json));
+    assert!(chars(&texts.summary) <= caps::SUMMARY, "summary {}", chars(&texts.summary));
+    assert!(chars(&texts.intent) <= caps::ADDENDUM, "intent {}", chars(&texts.intent));
     // core plus the addenda of each surface and variant, with the placeholders filled with long values
     let vars = PromptVars {
         site_name: "s".repeat(200),

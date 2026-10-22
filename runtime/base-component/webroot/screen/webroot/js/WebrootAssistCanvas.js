@@ -21,6 +21,12 @@
  * screen from the page. A Mutation is run by the server from the stored program (POST canvasAction): the user's click on
  * a Button the framework drew is the approval, so no card is asked for it; a Mutation the agent proposes without a click
  * is an approval card in the drawer (write_ui run). The dialect registers itself: moqui.assist.dialects.register("openui").
+ *
+ * The Vue SFC dialect (m-assist-vue-sfc, docs/Assist.md "Vue SFC canvases") is the parent's half of a sandboxed frame:
+ * canvas.sfc holds its pure parts (the blocks and actions of a program, the validator of every frame message, read paths,
+ * link targets, the watchdog, the submit gate), and the component owns the frame (GET /assist/sandbox, an opaque origin),
+ * its MessageChannel, the reads through the proxy, the confirm of a submit drawn outside the frame and the kills. The frame
+ * runtime is js/WebrootAssistSandbox.js.
  */
 (function (root) {
     "use strict";
@@ -346,6 +352,241 @@
     };
     // A click that may run a Mutation: a real event of the user's (isTrusted) while the page has the user's activation.
     canvas.trustedClick = (event, nav) => !!(event && event.isTrusted === true && (!nav || !nav.userActivation || nav.userActivation.isActive));
+
+    // ---- Vue SFC: the parent side of the sandbox (the frame runtime is js/WebrootAssistSandbox.js) ----
+
+    // The pure parts of the Vue SFC dialect, tested under node: the blocks of a program (as the server splits them,
+    // llm/ui/vue_sfc.rs), its actions, the validator every frame message passes, the read path, the link targets, the
+    // watchdog and the submit gate. Nothing the frame sends is believed beyond its shape.
+    const sfc = {};
+    sfc.LIMITS = {
+        maxMessageChars: 262144,  // one message from the frame, as JSON
+        maxValues: 100, maxValueChars: 4000, maxListItems: 100,
+        maxPathChars: 500, maxQueryKeys: 30, maxQueryValue: 500,
+        maxInflight: 6, readWindowMs: 10000, readsPerWindow: 60, maxResultChars: 1500000,
+        minHeight: 60, maxHeight: 4000,
+        renderMs: 15000,          // from the first load to "rendered"
+        silentMs: 10000,          // no message at all for this long after it rendered (it pings every 2 s)
+        floodWindowMs: 1000, floodMax: 120,
+        submitGapMs: 2000,
+        confirmArmMs: 600,     // the Save is dead this long after the confirm appears (anti-clickjacking)
+    };
+    sfc.BLOCKS = ["template", "script", "style", "actions", "reads"];
+    const lower = (text) => String(text).toLowerCase();
+    // The blocks of a program, as the server's vue_sfc::blocks: {template, script, style, actions} or {error}.
+    sfc.blocks = (text) => {
+        const source = String(text || "");
+        const low = lower(source);
+        const out = {};
+        const tagAt = (at, name) => low.startsWith("<" + name, at) && (at + name.length + 1 >= low.length || /[\s>/]/.test(low.charAt(at + name.length + 1)));
+        let at = 0;
+        while (at < source.length) {
+            if (/\s/.test(source.charAt(at))) { at++; continue; }
+            if (low.startsWith("<!--", at)) { const end = low.indexOf("-->", at + 4); at = end < 0 ? source.length : end + 3; continue; }
+            const name = sfc.BLOCKS.find((one) => tagAt(at, one));
+            if (!name) return { error: "text outside the blocks" };
+            const open = source.indexOf(">", at);
+            if (open < 0) return { error: "the <" + name + "> tag does not close" };
+            const start = open + 1;
+            let end = -1;
+            if (name === "template") {
+                let depth = 1;
+                for (let index = start; index < source.length; index++) {
+                    if (tagAt(index, "template")) depth++;
+                    else if (low.startsWith("</template", index) && --depth === 0) { end = index; break; }
+                }
+            } else end = low.indexOf("</" + name + ">", start);
+            if (end < 0) return { error: "the <" + name + "> block does not close" };
+            if (has(out, name)) return { error: "a second <" + name + "> block" };
+            out[name] = source.slice(start, end);
+            const close = source.indexOf(">", end);
+            at = close < 0 ? source.length : close + 1;
+        }
+        if (!out.template || !out.template.trim()) return { error: "no <template>" };
+        return out;
+    };
+    const PLAIN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+    // The actions of a program (its <actions> block, which the server checked): [{name, label, method, path, fields, parameters}].
+    sfc.actions = (program) => {
+        const blocks = sfc.blocks(program);
+        if (blocks.error || !blocks.actions) return [];
+        let list;
+        try { list = JSON.parse(blocks.actions); } catch (err) { return []; }
+        if (!Array.isArray(list)) return [];
+        return list.filter((item) => item && typeof item === "object" && PLAIN.test(String(item.name || ""))).map((item) => ({
+            name: String(item.name), label: String(item.label || item.name), method: String(item.method || "POST").toUpperCase(), path: String(item.path || ""),
+            fields: Array.isArray(item.fields) ? item.fields.map(String) : [],
+            parameters: item.parameters && typeof item.parameters === "object" && !Array.isArray(item.parameters) ? item.parameters : {},
+        }));
+    };
+    // What a confirm shows of a submit, and what the server will post: the action's fixed parameters, then its fields
+    // from the values (a missing one empty), nothing else.
+    sfc.confirmRows = (action, values) => {
+        const rows = [];
+        Object.keys(action.parameters || {}).forEach((name) => rows.push({ name, value: action.parameters[name], fixed: true }));
+        (action.fields || []).forEach((name) => rows.push({ name, value: values && has(values, name) ? values[name] : null, fixed: false }));
+        return rows;
+    };
+    // A read path of a canvas: an /apps (or /qapps) path of plain characters, no host, scheme, dot segment or doubled slash.
+    sfc.readPath = (path) => {
+        if (typeof path !== "string" || !path || path.length > sfc.LIMITS.maxPathChars) return { ok: false, error: "not a path" };
+        if (!/^\/(apps|qapps)\/[A-Za-z0-9_\-./~%:@+=,$]*$/.test(path)) return { ok: false, error: "not an /apps path" };
+        let decoded;
+        try { decoded = decodeURIComponent(path); } catch (err) { return { ok: false, error: "not a valid path" }; }
+        if (path.indexOf("//") >= 0 || decoded.split("/").some((part) => part === ".." || part === ".") || /[\s\\\u0000-\u001f]/.test(decoded)) {
+            return { ok: false, error: "a dot segment, a doubled slash or a control character" };
+        }
+        return { ok: true, path: "/apps" + path.slice(path.indexOf("/", 1)) };
+    };
+    // Where a link of the frame goes: an /apps screen of this site beside the canvas (internal), another site only when the
+    // user allows external content, nothing else (a script, a file, this site's other paths).
+    sfc.linkTarget = (href, origin, external) => {
+        let url;
+        try { url = new URL(String(href || ""), origin); } catch (err) { return { blocked: "not a link" }; }
+        if (url.protocol !== "http:" && url.protocol !== "https:") return { blocked: "a " + url.protocol.replace(":", "") + " link" };
+        if (url.origin === origin) {
+            const checked = moqui.assist && moqui.assist.safePath ? moqui.assist.safePath(url.pathname + url.search, null) : null;
+            if (checked && checked.ok) return { kind: "internal", url: checked.url, path: checked.path };
+            return { blocked: "not a screen of the apps" };
+        }
+        return external ? { kind: "external", url: url.href } : { blocked: "another site" };
+    };
+    // The version the frame document's scripts are loaded with (?v=), so a page caches Vue and Quasar once: change it
+    // when WebrootAssistSandbox.js changes.
+    sfc.RUNTIME_VERSION = "13.8.1";
+    sfc.frameUrl = (base, version, nonce, external) =>
+        String(base || "/assist/sandbox") + "?v=" + encodeURIComponent(version || "") + (external ? "&x=1" : "") + "#n=" + nonce;
+    // A flat value of the canvas: text, a number, true or false, null, or a list of those.
+    const flatValue = (value) => {
+        if (value === null || typeof value === "boolean") return true;
+        if (typeof value === "number") return isFinite(value);
+        if (typeof value === "string") return value.length <= sfc.LIMITS.maxValueChars;
+        return Array.isArray(value) && value.length <= sfc.LIMITS.maxListItems && value.every((item) => item === null || ["string", "number", "boolean"].includes(typeof item));
+    };
+    const cleanValues = (values) => {
+        if (!values || typeof values !== "object" || Array.isArray(values)) return null;
+        const keys = Object.keys(values);
+        if (keys.length > sfc.LIMITS.maxValues) return null;
+        const out = {};
+        for (const key of keys) {
+            if (!/^[A-Za-z_$][A-Za-z0-9_$.-]{0,99}$/.test(key) || key.indexOf("__") >= 0 || !flatValue(values[key])) return null;
+            out[key] = values[key];
+        }
+        return out;
+    };
+    const ID = /^[A-Za-z0-9_-]{1,40}$/;
+    // The validator of every message from the frame: {ok: true, message} with only the fields of its type, cleaned, or
+    // {ok: false, reason}; a message is never passed on as the frame sent it.
+    sfc.validate = (data) => {
+        const no = (reason) => ({ ok: false, reason });
+        if (!data || typeof data !== "object" || Array.isArray(data) || typeof data.t !== "string") return no("shape");
+        let size;
+        try { size = JSON.stringify(data).length; } catch (err) { return no("shape"); }
+        if (size > sfc.LIMITS.maxMessageChars) return no("size");
+        const t = data.t;
+        switch (t) {
+            case "ready": case "rendered": case "ping": case "leaving":
+                return { ok: true, message: { t } };
+            case "input": {
+                const values = cleanValues(data.values);
+                return values ? { ok: true, message: { t, values } } : no("values");
+            }
+            case "get": {
+                if (typeof data.id !== "string" || !ID.test(data.id)) return no("id");
+                const path = sfc.readPath(data.path);
+                if (!path.ok) return { ok: false, reason: "path", id: data.id, error: "the path " + String(data.path).slice(0, 200) + " is not an /apps path (" + path.error + ")" };
+                const query = {};
+                const given = data.query === null || data.query === undefined ? {} : data.query;
+                if (typeof given !== "object" || Array.isArray(given) || Object.keys(given).length > sfc.LIMITS.maxQueryKeys) return { ok: false, reason: "query", id: data.id, error: "the query is not a flat object" };
+                for (const key of Object.keys(given)) {
+                    const value = given[key];
+                    if (value === null || value === undefined) continue;
+                    if (!/^[A-Za-z0-9_.-]{1,100}$/.test(key) || typeof value === "object" || String(value).length > sfc.LIMITS.maxQueryValue) {
+                        return { ok: false, reason: "query", id: data.id, error: "the query is not a flat object of short values" };
+                    }
+                    query[key] = String(value);
+                }
+                const list = data.list === null || data.list === undefined ? null : String(data.list);
+                if (list !== null && !/^[A-Za-z0-9_]{1,100}$/.test(list)) return { ok: false, reason: "list", id: data.id, error: "the list is not a list name" };
+                return { ok: true, message: { t, id: data.id, path: path.path, query, list } };
+            }
+            case "submit": {
+                if (typeof data.id !== "string" || !ID.test(data.id)) return no("id");
+                if (typeof data.action !== "string" || !PLAIN.test(data.action) || data.action.length > 40) return { ok: false, reason: "action", id: data.id, error: "not an action name" };
+                const values = cleanValues(data.values === undefined ? {} : data.values);
+                return values ? { ok: true, message: { t, id: data.id, action: data.action, values } } : { ok: false, reason: "values", id: data.id, error: "the values are not flat" };
+            }
+            case "link":
+                return typeof data.href === "string" && data.href.length <= 2000 ? { ok: true, message: { t, href: data.href } } : no("href");
+            case "resize": {
+                const height = Number(data.height);
+                if (!isFinite(height)) return no("height");
+                return { ok: true, message: { t, height: Math.max(sfc.LIMITS.minHeight, Math.min(sfc.LIMITS.maxHeight, Math.ceil(height))) } };
+            }
+            case "error": {
+                const code = typeof data.code === "string" && /^[a-z-]{1,40}$/.test(data.code) ? data.code : "error";
+                return { ok: true, message: { t, phase: data.phase === "compile" ? "compile" : "runtime", code, message: String(data.message === null || data.message === undefined ? "" : data.message).slice(0, 2000) } };
+            }
+            default:
+                return no("type");
+        }
+    };
+    // The watchdog of one frame (the clock is passed in): a load after the port was taken is the frame navigating itself;
+    // a frame that does not render in time, goes silent after it rendered, or floods the page is closed.
+    sfc.watchdog = (limits) => {
+        const L = Object.assign({}, sfc.LIMITS, limits || {});
+        const dog = { started: null, ready: false, renderedAt: null, lastAt: null, window: [] };
+        dog.loaded = (now) => {
+            if (dog.ready) return "navigation";
+            if (dog.started === null) dog.started = now;
+            return null;
+        };
+        dog.readied = () => { dog.ready = true; };
+        dog.rendered = (now) => { if (dog.renderedAt === null) dog.renderedAt = now; };
+        dog.message = (now) => {
+            dog.lastAt = now;
+            dog.window.push(now);
+            while (dog.window.length && now - dog.window[0] > L.floodWindowMs) dog.window.shift();
+            return dog.window.length > L.floodMax ? "flood" : null;
+        };
+        dog.check = (now) => {
+            if (dog.started === null) return null;
+            if (dog.renderedAt === null) return now - dog.started > L.renderMs ? "timeout" : null;
+            return now - Math.max(dog.lastAt || 0, dog.renderedAt) > L.silentMs ? "unresponsive" : null;
+        };
+        return dog;
+    };
+    // Whether a submit from the frame counts (plan 4.10): the page has the user's activation now (a click in the frame
+    // activates its ancestors), the frame has the focus (the click was in it, not in the drawer), and none came in the last
+    // two seconds. It never posts: a submit that counts is a confirm the page draws outside the frame.
+    sfc.submitAllowed = (input, limits) => {
+        const L = Object.assign({}, sfc.LIMITS, limits || {});
+        if (!input.activation) return { ok: false, reason: "activation" };
+        if (!input.focused) return { ok: false, reason: "focus" };
+        if (input.last !== null && input.last !== undefined && input.now - input.last < L.submitGapMs) return { ok: false, reason: "rate" };
+        return { ok: true };
+    };
+    // The reads of one frame: at most maxInflight at once and readsPerWindow in readWindowMs.
+    sfc.reads = (limits) => {
+        const L = Object.assign({}, sfc.LIMITS, limits || {});
+        const reads = { inflight: 0, stamps: [] };
+        reads.begin = (now) => {
+            reads.stamps = reads.stamps.filter((at) => now - at < L.readWindowMs);
+            if (reads.stamps.length >= L.readsPerWindow) return "too many reads, slow down";
+            if (reads.inflight >= L.maxInflight) return "too many reads at once";
+            reads.stamps.push(now);
+            reads.inflight++;
+            return null;
+        };
+        reads.end = () => { reads.inflight = Math.max(0, reads.inflight - 1); };
+        return reads;
+    };
+    sfc.nonce = () => {
+        const bytes = new Uint8Array(16);
+        root.crypto.getRandomValues(bytes);
+        return Array.from(bytes).map((byte) => ("0" + byte.toString(16)).slice(-2)).join("");
+    };
+    canvas.sfc = sfc;
 
     if (typeof module !== "undefined" && module.exports) module.exports = canvas;
     const Vue = root.Vue;
@@ -844,6 +1085,273 @@
         const qvt = moqui.qvt;
         if (qvt && qvt.registerLate) qvt.registerLate("m-assist-openui", component);
         if (moqui.assist && moqui.assist.dialects) moqui.assist.dialects.register("openui", { label: "OpenUI Lang", component: "m-assist-openui", streaming: true });
+    }
+
+    // The Vue SFC canvas: the sandboxed frame (GET /assist/sandbox, an opaque origin with its own CSP) and the parent's half
+    // of its channel. Every message from the frame is validated (sfc.validate), counted by the watchdog and acted on only as
+    // its type allows: a read goes to the read proxy as the canvas's reads do; a submit that counts (sfc.submitAllowed) is a
+    // confirm drawn here, outside the frame, and only the user's click on its Save runs the action on the server (arm, then
+    // mutation, as an OpenUI Button's click); a link opens an /apps screen beside the canvas, another site only when the user
+    // allows it. A frame that navigates itself, does not render, goes silent or floods is closed and the reason reported as
+    // a canvas problem (source sandbox).
+    sfc_register();
+    function sfc_register() {
+        const component = {
+            name: "mAssistVueSfc",
+            props: { program: String, streaming: Boolean, artifactId: String, version: Number, initialState: Object, readOnly: Boolean },
+            emits: ["problems", "state", "action", "navigate"],
+            data() { return { height: 160, killed: null, confirm: null, confirmArmed: false, notice: "", ignored: 0, dropped: 0, frameKey: 0, saving: false, external: false }; },
+            computed: {
+                blocks() { return sfc.blocks(this.program || ""); },
+                actionList() { return sfc.actions(this.program || ""); },
+                src() {
+                    const boot = (moqui.assist && moqui.assist.state && moqui.assist.state.bootstrap) || {};
+                    const base = (boot.paths && boot.paths.sandbox) || "/assist/sandbox";
+                    // frameKey: a new frame (a new element, a new nonce) for each version and each restart
+                    return this.frameKey >= 0 ? sfc.frameUrl(base, sfc.RUNTIME_VERSION, this.nonce, this.external) : "";
+                },
+            },
+            created() {
+                const boot = (moqui.assist && moqui.assist.state && moqui.assist.state.bootstrap) || {};
+                this.external = !!(boot.features && boot.features.canvasExternal);
+                this.values = Object.assign({}, this.initialState || {});
+                this.reset();
+                // the page's theme follows into the frame
+                if (this.$q && this.$q.dark) this.$watch(() => this.$q.dark.isActive, (dark) => this.post({ t: "theme", dark: !!dark }));
+            },
+            beforeUnmount() { this.close(); },
+            watch: {
+                version() { this.values = Object.assign({}, this.values, this.initialState || {}); this.restart(); },
+                streaming(value) { if (!value) this.restart(); },
+            },
+            methods: {
+                reset() {
+                    this.nonce = sfc.nonce();
+                    this.dog = sfc.watchdog();
+                    this.limiter = sfc.reads();
+                    this.lastSubmit = null;
+                    this.ready = false;
+                    this.reported = {};
+                },
+                close() {
+                    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+                    if (this.armTimer) { clearTimeout(this.armTimer); this.armTimer = null; }
+                    if (this.port) { try { this.port.onmessage = null; this.port.close(); } catch (err) { /* closed */ } }
+                    this.port = null;
+                },
+                restart() { this.close(); this.killed = null; this.confirm = null; this.notice = ""; this.reset(); this.frameKey++; },
+                post(message) { if (this.port) { try { this.port.postMessage(message); } catch (err) { /* closed */ } } },
+                problem(source, code, message, block) {
+                    const key = source + "|" + code + "|" + message;
+                    if (this.reported[key]) return;
+                    this.reported[key] = true;
+                    this.$emit("problems", [{ source, code, message, block: block || null }]);
+                },
+                kill(reason, message) {
+                    if (this.killed) return;
+                    this.close();
+                    this.killed = { reason, message };
+                    this.confirm = null;
+                    this.problem("sandbox", reason, message);
+                },
+                // The frame loaded: the first time it gets its port (the nonce of its URL); after it took one, a load is the frame
+                // navigating itself, which closes it.
+                onLoad() {
+                    if (this.killed) return;
+                    if (this.dog.loaded(Date.now()) === "navigation") {
+                        this.kill("navigation", "the canvas navigated its frame away, so it was closed");
+                        return;
+                    }
+                    const frame = this.$refs.frame;
+                    if (!frame || !frame.contentWindow) return;
+                    this.close();
+                    const channel = new root.MessageChannel();
+                    this.port = channel.port1;
+                    this.port.onmessage = (event) => this.onMessage(event.data);
+                    // an opaque origin has no name to target: the nonce, only in the frame's own URL, is what the frame checks
+                    frame.contentWindow.postMessage({ t: "port", nonce: this.nonce }, "*", [channel.port2]);
+                    this.timer = setInterval(() => {
+                        const verdict = this.dog.check(Date.now());
+                        if (verdict === "timeout") this.kill("timeout", "the canvas did not draw in time, so it was closed");
+                        else if (verdict === "unresponsive") this.kill("unresponsive", "the canvas stopped answering, so it was closed");
+                    }, 1000);
+                },
+                onMessage(data) {
+                    if (this.killed) return;
+                    if (this.dog.message(Date.now()) === "flood") { this.kill("flood", "the canvas sent too many messages, so it was closed"); return; }
+                    const checked = sfc.validate(data);
+                    if (!checked.ok) {
+                        this.dropped++;
+                        if (checked.id) this.post({ t: "result", id: checked.id, ok: false, status: 400, error: checked.error || "refused", json: data && data.t === "submit" ? { status: "ignored", error: checked.error } : undefined });
+                        return;
+                    }
+                    const m = checked.message;
+                    switch (m.t) {
+                        case "ready": {
+                            if (this.ready) return;
+                            this.ready = true;
+                            this.dog.readied();
+                            const blocks = this.blocks.error ? {} : this.blocks;
+                            this.post({ t: "init", template: blocks.template || "", script: blocks.script || "", style: blocks.style || "",
+                                values: JSON.parse(JSON.stringify(this.values || {})), dark: !!(this.$q && this.$q.dark && this.$q.dark.isActive), external: this.external });
+                            return;
+                        }
+                        case "rendered": this.dog.rendered(Date.now()); return;
+                        case "ping": return;
+                        case "leaving": this.kill("navigation", "the canvas navigated its frame away, so it was closed"); return;
+                        case "resize": if (!this.confirm) this.height = m.height; return;
+                        case "input":
+                            this.values = Object.assign({}, this.values, m.values);
+                            this.$emit("state", Object.assign({}, this.values));
+                            return;
+                        case "error":
+                            this.problem(m.phase, m.code, m.message, m.phase === "compile" ? (m.code === "template" ? "template" : "script") : null);
+                            return;
+                        case "get": this.read(m); return;
+                        case "submit": this.submit(m); return;
+                        case "link": this.link(m.href); return;
+                        default: return;
+                    }
+                },
+                read(m) {
+                    if (this.external) {
+                        this.notice = "This canvas may show other sites' content, so it cannot read screen data; turn Other sites off to read.";
+                        this.post({ t: "result", id: m.id, ok: false, status: 403, error: "reading is off while other sites are allowed" });
+                        return;
+                    }
+                    const refused = this.limiter.begin(Date.now());
+                    if (refused) { this.post({ t: "result", id: m.id, ok: false, status: 429, error: refused }); return; }
+                    const params = { artifactId: this.artifactId || "", path: m.path };
+                    if (m.list) params.list = m.list;
+                    if (Object.keys(m.query).length) params.query = JSON.stringify(m.query);
+                    moqui.assist.call("read", params).then((json) => {
+                        let size = 0;
+                        try { size = JSON.stringify(json).length; } catch (err) { size = Infinity; }
+                        if (size > sfc.LIMITS.maxResultChars) this.post({ t: "result", id: m.id, ok: false, status: 413, error: "the answer is too large; read a page with pageSize" });
+                        else this.post({ t: "result", id: m.id, ok: true, status: 200, json });
+                    }, (err) => {
+                        this.post({ t: "result", id: m.id, ok: false, status: (err && err.status) || 0, error: String((err && err.errors) || "the read failed") });
+                    }).then(() => this.limiter.end());
+                },
+                submit(m) {
+                    const answer = (status, error) => this.post({ t: "result", id: m.id, ok: status === "saved", json: { status, error: error || null } });
+                    const action = this.actionList.find((one) => one.name === m.action);
+                    if (this.readOnly || !action) { this.ignored++; answer("ignored", action ? "the canvas is read-only" : "there is no action " + m.action); return; }
+                    const nav = root.navigator;
+                    const now = Date.now();
+                    const allowed = sfc.submitAllowed({ activation: !!(nav && nav.userActivation && nav.userActivation.isActive),
+                        focused: !!this.$refs.frame && root.document.activeElement === this.$refs.frame, now, last: this.lastSubmit });
+                    if (!allowed.ok || this.confirm) {
+                        this.ignored++;
+                        answer("ignored", allowed.ok ? "a confirm is open" : allowed.reason === "rate" ? "one submit every two seconds" : "a submit counts only from the user's click");
+                        if (allowed.reason === "activation" || allowed.reason === "focus") this.problem("submit", "activation", "the canvas submitted " + m.action + " without the user's click, so it was ignored");
+                        return;
+                    }
+                    this.lastSubmit = now;
+                    const values = Object.assign({}, this.values, m.values);
+                    this.confirm = { id: m.id, action, values, rows: sfc.confirmRows(action, values) };
+                    // the Save is armed only after the confirm has been still for a moment, so a frame that moves under the
+                    // pointer cannot have a waiting click land on it (clickjacking)
+                    this.confirmArmed = false;
+                    if (this.armTimer) clearTimeout(this.armTimer);
+                    this.armTimer = setTimeout(() => { this.confirmArmed = true; }, sfc.LIMITS.confirmArmMs);
+                },
+                // the user acted inside the frame now: the page has the user's activation and the frame holds the focus
+                framedGesture() {
+                    const nav = root.navigator;
+                    return !!(nav && nav.userActivation && nav.userActivation.isActive) && !!this.$refs.frame && root.document.activeElement === this.$refs.frame;
+                },
+                // Save on the confirm: the user's own click here, outside the frame, runs the action on the server (the click's nonce)
+                save(event) {
+                    const confirm = this.confirm;
+                    if (!confirm || this.saving || !this.confirmArmed || !canvas.trustedClick(event, root.navigator)) return;
+                    this.saving = true;
+                    const finish = (status, error) => {
+                        this.saving = false;
+                        this.confirm = null;
+                        this.post({ t: "result", id: confirm.id, ok: status === "saved", json: { status, error: error || null } });
+                        if (error) this.notice = error;
+                    };
+                    this.values = confirm.values;
+                    this.$emit("action", { kind: "arm", count: 1, failed: (error) => finish("failed", String(error || "the save was refused")),
+                        done: (nonces) => this.$emit("action", { kind: "mutation", statement: confirm.action.name, nonce: (nonces || [])[0], state: confirm.values, activation: true,
+                            done: (json) => {
+                                const problems = canvas.responseProblems(json && json.data);
+                                if (json && json.ok === false) finish("failed", json.error || problems.errors.join("\n") || "the save failed");
+                                else if (problems.errors.length) finish("failed", problems.errors.join("\n"));
+                                else finish("saved");
+                            },
+                            failed: (error) => finish("failed", String(error || "the save failed")) }) });
+                },
+                cancel() {
+                    const confirm = this.confirm;
+                    if (!confirm) return;
+                    this.confirm = null;
+                    this.post({ t: "result", id: confirm.id, ok: false, json: { status: "canceled", error: null } });
+                },
+                link(href) {
+                    // a link opens only from the user's click in the frame, as a submit does: no navigation without a gesture
+                    if (!this.framedGesture()) { this.notice = "A link opens only when you click it."; return; }
+                    const target = sfc.linkTarget(href, root.location.origin, this.external);
+                    if (target.kind === "internal") { this.$emit("navigate", target.url); return; }
+                    if (target.kind === "external") { root.open(target.url, "_blank", "noopener,noreferrer"); return; }
+                    this.notice = "A link to " + (target.blocked || "another site") + " was not opened" + (target.blocked === "another site" ? "; allow other sites to open it" : "");
+                },
+                setExternal(value) {
+                    this.external = !!value;
+                    const boot = moqui.assist && moqui.assist.state && moqui.assist.state.bootstrap;
+                    if (boot && boot.features) boot.features.canvasExternal = this.external;
+                    const vm = moqui.webrootVue;
+                    if (vm && vm.setPreference && vm.userId) vm.setPreference("ASSIST_CANVAS_EXTERNAL", this.external ? "true" : "false");
+                    this.restart();
+                },
+            },
+            render() {
+                if (this.streaming) return h("div", { class: "m-muted q-pa-md" }, "…");
+                const kids = [];
+                if (this.blocks.error) kids.push(h("div", { class: "text-negative q-pa-md" }, "The component does not read: " + this.blocks.error));
+                else if (this.killed) {
+                    kids.push(h(R("q-banner"), { dense: true, rounded: true, class: "bg-red-1 text-red-10 q-my-sm", "data-assist-sfc-killed": this.killed.reason },
+                        { default: () => this.killed.message, action: () => [h(R("q-btn"), { flat: true, dense: true, noCaps: true, label: "Show again", "data-assist-sfc-reload": "", onClick: () => this.restart() })] }));
+                } else {
+                    kids.push(h("iframe", { key: this.frameKey, ref: "frame", sandbox: "allow-scripts", referrerpolicy: "no-referrer", allow: "", title: "Canvas",
+                        class: "m-assist-sfc-frame", "data-assist-sfc-frame": "", src: this.src, onLoad: () => this.onLoad(),
+                        style: { width: "100%", height: this.height + "px", border: "0", display: "block", colorScheme: "normal" } }));
+                }
+                if (this.confirm) {
+                    const action = this.confirm.action;
+                    const label = String(action.label || action.name).slice(0, 80);
+                    const method = String(action.method || "POST").toUpperCase();
+                    const saves = (method === "POST" ? "" : method + " ") + canvas.savesText(action.path);
+                    const card = h(R("q-card"), { class: "m-assist-sfc-confirm", "data-assist-sfc-confirm": action.name, style: "min-width:300px;max-width:min(92vw,520px)" }, { default: () => [
+                        h(R("q-card-section"), { class: "q-pb-xs" }, { default: () => [
+                            h("div", { class: "text-subtitle1" }, label),
+                            h("div", { class: "text-caption text-negative", "data-assist-canvas-saves": "" }, "saves: " + saves),
+                            h("div", { class: "q-mt-sm" }, this.confirm.rows.map((row) => h("div", { key: row.name, class: "text-body2", "data-assist-sfc-confirm-row": row.name },
+                                [h("span", { class: "text-weight-medium" }, row.name + ": "), textOf(Array.isArray(row.value) ? row.value.join(", ") : row.value)]))),
+                        ] }),
+                        h(R("q-card-actions"), { align: "right" }, { default: () => [
+                            h(R("q-btn"), { flat: true, dense: true, noCaps: true, label: "Cancel", autofocus: true, "data-assist-sfc-confirm-cancel": "", onClick: () => this.cancel() }),
+                            h(R("q-btn"), { unelevated: true, dense: true, noCaps: true, color: "primary", label: "Save", loading: this.saving, disable: !this.confirmArmed,
+                                "data-assist-sfc-confirm-save": "", onClick: (event) => this.save(event) }),
+                        ] }),
+                    ] });
+                    // a modal dialog, so the Save is not a control sitting under the frame's pointer; Cancel has the focus
+                    kids.push(h(R("q-dialog"), { modelValue: true, persistent: true, "onUpdate:modelValue": (open) => { if (!open) this.cancel(); } }, { default: () => [card] }));
+                }
+                kids.push(h("div", { class: "row items-center no-wrap q-mt-xs" }, [
+                    this.notice ? h("div", { class: "text-caption m-muted col", "data-assist-sfc-notice": "" }, this.notice) : h("div", { class: "col" }),
+                    h(R("q-toggle"), { dense: true, size: "sm", modelValue: this.external, "onUpdate:modelValue": (value) => this.setExternal(value),
+                        label: "Other sites", class: "text-caption", "data-assist-sfc-external": "" }),
+                ]));
+                return h("div", { class: "m-assist-vue-sfc", "data-assist-canvas-version": String(this.version || ""), "data-assist-sfc-ignored": String(this.ignored),
+                    "data-assist-sfc-dropped": String(this.dropped) }, kids);
+            },
+        };
+        canvas.sfcComponent = component;
+        const qvt = moqui.qvt;
+        if (qvt && qvt.registerLate) qvt.registerLate("m-assist-vue-sfc", component);
+        if (moqui.assist && moqui.assist.dialects) moqui.assist.dialects.register("vue-sfc", { label: "Vue SFC", component: "m-assist-vue-sfc", streaming: false });
     }
     if (moqui.assist) moqui.assist.canvas = canvas;
 })(globalThis);

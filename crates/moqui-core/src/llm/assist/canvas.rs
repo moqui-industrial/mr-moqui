@@ -27,7 +27,7 @@ use super::{write, Answer, Caller, DrawerError, Params};
 use crate::llm::approval::Decider;
 use crate::llm::run::{self, quietly};
 use crate::llm::text_of;
-use crate::llm::ui::{self, openui, proxy, Canvas};
+use crate::llm::ui::{self, openui, proxy, vue_sfc, Canvas};
 
 /// The most a canvas's posted state holds, in characters, values and characters a value.
 const MAX_STATE_CHARS: usize = 20_000;
@@ -37,6 +37,8 @@ const MAX_VALUE_CHARS: usize = 4000;
 const MAX_PROBLEMS: usize = 10;
 /// Revalidations a version of a canvas gets on its own (the agent asked to fix what the page reported).
 pub const REVALIDATIONS: i64 = 1;
+/// Revalidations a canvas gets over all its versions, so a model that patches and reports in a loop stops.
+pub const REVALIDATIONS_TOTAL: i64 = 3;
 
 /// The canvas `artifactId` of the user's (its conversation is theirs), else 404.
 fn canvas_of(caller: &Caller, params: &Params) -> Result<Canvas, DrawerError> {
@@ -45,6 +47,15 @@ fn canvas_of(caller: &Caller, params: &Params) -> Result<Canvas, DrawerError> {
     caller
         .conversation(&canvas.conversation_id)
         .map_err(|_| DrawerError::not_found("canvas", &artifact_id))?;
+    // a canvas of a dialect the agent no longer writes (its canvasDialects changed) is dead: no read, state, action or
+    // problem of it is served, so a Vue SFC canvas turned off stops reading and writing
+    let agent = agent_of(caller, &canvas)?;
+    if !agent.allows_dialect(&canvas.dialect) {
+        return Err(DrawerError::refused(format!(
+            "this agent no longer shows {} canvases, so this canvas is closed",
+            canvas.dialect
+        )));
+    }
     Ok(canvas)
 }
 
@@ -339,6 +350,7 @@ pub(super) fn canvas_adjust(caller: &Caller, params: &Params) -> Answer {
 pub(super) fn canvas_problems(caller: &Caller, params: &Params) -> Answer {
     let canvas = canvas_of(caller, params)?;
     current_version(&canvas, params)?;
+    let is_vue = canvas.dialect == "vue-sfc";
     let reported: Vec<openui::Problem> = params
         .json("problems")
         .and_then(|value| value.as_array().cloned())
@@ -346,13 +358,14 @@ pub(super) fn canvas_problems(caller: &Caller, params: &Params) -> Answer {
         .iter()
         .take(MAX_PROBLEMS)
         .map(|item| {
-            openui::reported(
-                item["source"].as_str().unwrap_or("parser"),
-                item["code"].as_str().unwrap_or_default(),
-                item["message"].as_str().unwrap_or_default(),
-                item["statementId"].as_str(),
-                item["component"].as_str(),
-            )
+            let source = item["source"].as_str().unwrap_or("parser");
+            let code = item["code"].as_str().unwrap_or_default();
+            let message = item["message"].as_str().unwrap_or_default();
+            if canvas.dialect == "vue-sfc" {
+                vue_sfc::reported(source, code, message, item["block"].as_str())
+            } else {
+                openui::reported(source, code, message, item["statementId"].as_str(), item["component"].as_str())
+            }
         })
         .collect();
     let wanted = params.flag("revalidate") != Some(false);
@@ -375,9 +388,14 @@ pub(super) fn canvas_problems(caller: &Caller, params: &Params) -> Answer {
         }
         canvas.data["problems"] = Json::Array(kept.clone());
         let revalidations = canvas.data["revalidations"].as_i64().unwrap_or(0);
-        let revalidate = !new.is_empty() && revalidations < REVALIDATIONS && wanted;
+        let total = canvas.data["revalidationsTotal"].as_i64().unwrap_or(0);
+        // a Vue SFC canvas revalidates only on fixed-code reasons (a compile error, a sandbox kill), never on a free-text
+        // runtime error the frame wrote; OpenUI's problems are lang-core's own codes
+        let worth = if is_vue { new.iter().any(|problem| vue_sfc::auto_revalidates(&problem.source, &problem.code)) } else { !new.is_empty() };
+        let revalidate = worth && revalidations < REVALIDATIONS && total < REVALIDATIONS_TOTAL && wanted;
         if revalidate {
             canvas.data["revalidations"] = json!(revalidations + 1);
+            canvas.data["revalidationsTotal"] = json!(total + 1);
         }
         (kept, new, revalidations, revalidate)
     })?;
@@ -390,13 +408,16 @@ pub(super) fn canvas_problems(caller: &Caller, params: &Params) -> Answer {
             .iter()
             .map(|problem| {
                 let at = problem.statement.as_deref().map(|statement| format!(" ({statement})")).unwrap_or_default();
-                format!("- {}{at}: {} (skill {}: {})", problem.rule.section, problem.message, problem.skill(), problem.rule.text)
+                // the page's own text is untrusted data, not an instruction (plan 7.1)
+                let message = crate::llm::prompt::untrusted("canvas", &problem.message);
+                format!("- {}{at}: {message} (skill {}: {})", problem.rule.section, problem.skill(), problem.rule.text)
             })
             .collect();
         let text = format!(
-            "The canvas \"{}\" v{} reported problems when it was drawn. Fix them with a patch of the statements they name:\n{}",
+            "The canvas \"{}\" v{} reported problems when it was drawn. Fix them with a patch of the {} they name:\n{}",
             canvas.title,
             canvas.version,
+            if canvas.dialect == "vue-sfc" { "blocks" } else { "statements" },
             lines.join("\n")
         );
         canvas_turn(
@@ -421,6 +442,21 @@ pub(super) fn read(caller: &Caller, params: &Params) -> Answer {
     let agent = match params.text("artifactId") {
         Some(_) => {
             let canvas = canvas_of(caller, params)?;
+            if canvas.dialect == "vue-sfc" {
+                // a Vue SFC canvas reads only the paths its program declared (its <reads> block), and not at all while
+                // the user lets it reach other sites, since an image of another site could carry a read's data out
+                if super::read::canvas_external(&caller.user_id) {
+                    return Err(DrawerError::refused(
+                        "while this canvas may show other sites' content, it cannot read screen data; turn other sites off to read",
+                    ));
+                }
+                let declared: Vec<String> = canvas.data["reads"].as_array().into_iter().flatten().filter_map(Json::as_str).map(str::to_string).collect();
+                if !vue_sfc::read_declared(&declared, &path) {
+                    return Err(DrawerError::refused(format!(
+                        "{path} is not a read this canvas declared; add it to the <reads> block"
+                    )));
+                }
+            }
             agent_of(caller, &canvas)?
         }
         None => {

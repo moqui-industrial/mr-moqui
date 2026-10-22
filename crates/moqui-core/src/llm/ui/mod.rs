@@ -16,7 +16,7 @@
 //! the user asked for. A canvas dialect is the server half of a client renderer: it parses and checks what the model
 //! wrote before anything is shown ([`Dialect::prepare`]). Dialects register through `inventory`
 //! ([`submit_dialect!`](crate::submit_dialect)), as tools do: [`openui`] (OpenUI Lang, the default) and [`vue_sfc`]
-//! (a registered placeholder until phase 13.8 builds its sandbox).
+//! (a Vue 3 component in a sandboxed frame, for an agent whose `canvasDialects` name it).
 //!
 //! A conversation has one canvas, an `AgentArtifact` of kind `canvas` updated in place ([`Canvas`]): its program (part
 //! 1, text), and its data (part 2: the dialect's statement names, the state the user's page posted, the problems the
@@ -62,6 +62,9 @@ pub struct Prepared {
     pub statements: Vec<String>,
     /// The writes it can make (OpenUI Mutations), which run only through the canvas's action call.
     pub mutations: Vec<String>,
+    /// For a Vue SFC canvas, the `/apps` read paths it declared (its actions' paths and its `<reads>` block): the read
+    /// proxy answers only these. Empty for OpenUI, whose Query paths are checked as they run.
+    pub reads: Vec<String>,
 }
 
 /// Why a program is not shown: the error JSON the model reads (each problem naming its skill section and rule), and
@@ -308,12 +311,15 @@ impl Canvas {
         let existing = current.as_ref();
         let version = existing.map_or(1, |canvas| canvas.version + 1);
         let state = existing.map(|canvas| canvas.data["state"].clone()).unwrap_or(Json::Null);
+        let total = existing.and_then(|canvas| canvas.data["revalidationsTotal"].as_i64()).unwrap_or(0);
         let data = json!({
             "statements": prepared.statements,
             "mutations": prepared.mutations,
+            "reads": prepared.reads,
             "state": state,
             "problems": [],
             "revalidations": 0,
+            "revalidationsTotal": total,
             "closed": false,
         });
         let artifact_id = match existing {
@@ -384,6 +390,7 @@ impl Canvas {
             "program": self.program,
             "statements": self.data["statements"],
             "mutations": self.data["mutations"],
+            "reads": self.data["reads"],
             "state": self.data["state"],
             "problems": self.problems(),
             "closed": self.closed(),

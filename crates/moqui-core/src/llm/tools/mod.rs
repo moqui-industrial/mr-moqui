@@ -195,6 +195,12 @@ impl ClientCaps {
         self.caps.contains(cap)
     }
 
+    /// Without the canvas dialects (`ui.write:<name>`) `allowed` refuses.
+    pub fn dialects_only(mut self, allowed: impl Fn(&str) -> bool) -> Self {
+        self.caps.retain(|cap| cap.strip_prefix("ui.write:").is_none_or(&allowed));
+        self
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         self.caps.iter().map(String::as_str)
     }

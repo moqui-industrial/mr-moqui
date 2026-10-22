@@ -29,7 +29,7 @@ use serde_json::{json, Map, Value as Json};
 
 use crate::context::ExecutionContextFactory;
 use crate::entity::{EntityFacade, EntityValue};
-use crate::llm::conf::{EndpointConf, ModelConf, PromptVariant, ProtocolId, ReasoningLevel, ToolMode};
+use crate::llm::conf::{EndpointConf, ModelConf, PromptVariant, ProtocolId, ReasoningLevel, ReasoningReplay, ToolMode};
 use crate::llm::run::{in_tx, quietly};
 
 /// The endpoint and model a replay's fake answers on.
@@ -40,7 +40,7 @@ const MODEL: &str = "moqui.llm.LlmModel";
 const BINDING: &str = "moqui.llm.LlmFeatureBinding";
 
 /// The `LlmModel` fields a recording's model settings may set on the replay model.
-const SETTINGS: [&str; 11] = [
+const SETTINGS: [&str; 14] = [
     "tier",
     "contextWindow",
     "maxOutput",
@@ -52,6 +52,9 @@ const SETTINGS: [&str; 11] = [
     "listLimit",
     "catalogSize",
     "maxToolCalls",
+    "reasoningReplay",
+    "intentPrefilter",
+    "compactHighPercent",
 ];
 
 /// How long the endpoint's host has to take a connection.
@@ -150,10 +153,13 @@ impl Rows {
     /// Returns an error when a row cannot be written.
     pub fn replay_model(&mut self, factory: &ExecutionContextFactory, recorded: &Json) -> Result<(), Error> {
         let facade = facade(factory)?;
+        // a recording holds only the steps' replies, so the replay model makes no side call (the intent hint, the
+        // compaction summary, the schema repair), which would take the next recorded reply: the deterministic summary
         let mut fields: Vec<(String, String)> = vec![
             ("modelId".to_string(), REPLAY_MODEL.to_string()),
             ("endpointId".to_string(), REPLAY_MODEL.to_string()),
             ("providerModel".to_string(), "replay".to_string()),
+            ("sideCalls".to_string(), "N".to_string()),
         ];
         for field in SETTINGS {
             if let Some(value) = recorded.get(field).filter(|value| !value.is_null()) {
@@ -275,6 +281,13 @@ pub fn settings(model: &ModelConf) -> Json {
         "listLimit": behavior.list_limit,
         "catalogSize": behavior.catalog_size,
         "maxToolCalls": behavior.max_tool_calls,
+        "reasoningReplay": match behavior.reasoning_replay {
+            ReasoningReplay::None => "none",
+            ReasoningReplay::Last => "last",
+            ReasoningReplay::All => "all",
+        },
+        "intentPrefilter": if behavior.intent_hint { "hint" } else { "none" },
+        "compactHighPercent": behavior.compact_high_percent,
     })
 }
 

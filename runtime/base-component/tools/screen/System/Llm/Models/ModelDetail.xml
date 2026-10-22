@@ -98,6 +98,7 @@ along with this software (see the LICENSE.md file). If not, see
                         <option key="fast"/><option key="balanced"/><option key="thorough"/></drop-down></default-field></field>
                     <field name="toolMode"><default-field><drop-down allow-empty="true"><option key="native"/><option key="json"/></drop-down></default-field></field>
                     <field name="promptVariant"><default-field><drop-down allow-empty="true"><option key="standard"/><option key="small"/></drop-down></default-field></field>
+                    <field name="intentPrefilter"><default-field><drop-down allow-empty="true"><option key="none"/><option key="hint"/></drop-down></default-field></field>
                     <field name="reasoningReplay"><default-field><drop-down allow-empty="true">
                         <option key="none"/><option key="last"/><option key="all"/></drop-down></default-field></field>
                     <field name="reasoningJson"><default-field tooltip="A JSON patch per level: {&quot;low&quot;: {...}, &quot;high&quot;: {...}}">

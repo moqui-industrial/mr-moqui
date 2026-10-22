@@ -100,20 +100,23 @@ What the drawer needs before anything else.
               "startPath": "/apps"}],
   "defaultAgentId": "assist",
   "tiers": ["fast", "balanced", "thorough"],
-  "features": {"enabled": true, "screenFollow": true, "preview": true, "canvas": true, "attachments": false,
-               "transcribe": false, "textActions": false, "admin": true, "audit": false},
+  "features": {"enabled": true, "screenFollow": true, "preview": true, "canvas": true, "canvasExternal": false,
+               "attachments": false, "transcribe": false, "textActions": false, "admin": true, "audit": false},
   "limits": {"maxMessageChars": 16000, "maxForms": 20, "maxFormValues": 100, "maxValueChars": 4000,
              "approvalTtlMinutes": 30, "maxSteps": 40, "maxRunSeconds": 900},
   "secretFields": {"contains": ["password", "passwd", "token", "secret", "credential", "salt"], "endsWith": ["key"],
                    "names": []},
-  "paths": {"calls": "/assist", "events": "/assist/runs/{runId}/events", "catchUp": "/assist/runs/{runId}/events.json"}
+  "paths": {"calls": "/assist", "events": "/assist/runs/{runId}/events", "catchUp": "/assist/runs/{runId}/events.json",
+            "sandbox": "/assist/sandbox"}
 }
 ```
 
 - `agents` are the agents the user may use in the drawer (not disabled, serving the drawer surface). An agent's `tiers`
   are those some usable model has; with `tierFixed` the agent names its own `tier` and the tier picker is hidden.
   `dialects` are the canvas dialects the drawer offers it (built on this server, with the drawer's `ui.write:<name>`
-  capability): `openui`; `vue-sfc` is registered but not offered until phase 13.8. `features.canvas` says whether any is.
+  capability, and named by the agent's `canvasDialects`, empty being `openui` only): `openui`, and `vue-sfc` for an
+  agent that names it. `features.canvas` says whether any agent has one; `features.canvasExternal` is the user's
+  preference `ASSIST_CANVAS_EXTERNAL` (a Vue SFC canvas may open other sites and show their images).
 - `features.screenFollow` is false on a server without the screen sessions (no follow events will come);
   `features.preview` says whether approvals can be previewed (the sim overlay); `admin` and `audit` are the user's
   `AgentAdmin` and `AgentAudit`, for the admin `/` commands.
@@ -407,8 +410,8 @@ The events (`crates/moqui-core/src/llm/run/events.rs` is the sink; the payloads 
 | `tool.call` | stored | `toolCallId, messageId, name, arguments, classification` |
 | `tool.result` | stored | `toolCallId, name, status (done|failed|unknown-outcome|denied), isError, text` |
 | `input.folded` | stored | `inputId, kind`: a queued message became part of the history |
-| `usage` | stored | `stepSeq, input, cachedInput, output, reasoning, cost` |
-| `compaction` | stored | `stepSeq, droppedMessages, stub` |
+| `usage` | stored | `stepSeq, input, cachedInput, cacheRatio, output, reasoning, cost` (`cacheRatio`, the share of the prompt read from the provider's cache, is the cache-hit ratio of the call) |
+| `compaction` | stored | `stepSeq, stages, beforeTokens, afterTokens, digested, summarized, summaryFallback, full`: the window was compacted before the step's call (plan 7.8); `stages` are those applied, of `digests, reasoning, canvas, tails, summary, current`; `full` ends the run `context_full` |
 | `answer.references` | stored | `messageId, invented, text`: links no tool returned, to show plain |
 | `approval.requested` | stored | the approval card |
 | `approval.decided` | stored | `approvalId, toolCallId, decision (approve|reject|edit|expire), status, channel?, feedback?, handoffId?, policy?` |
@@ -632,8 +635,9 @@ drawer brings it back.
 the changed statements, `run` a Mutation of the canvas to run) is in the tool list from the start with a small schema
 and answers `{"error":"skill_required","skill":"openui-lang",…}` until the skill `openui-lang` (any part of it) was
 loaded in the conversation (`llm::skills::loaded`). It is READ for the policy and the fence; the canvas is the run's own
-record, written under the run's lease with the fence lifted for it, as an approval is. `vue-sfc` is answered that it is
-not available (phase 13.8).
+record, written under the run's lease with the fence lifted for it, as an approval is. A kind the agent does not write
+(its `canvasDialects`) is answered `dialect_unavailable` before its skill is asked for; `vue-sfc` is
+[below](#vue-sfc-canvases).
 
 **Parsed once, on the server** (`crates/moqui-core/src/llm/ui/openui.rs`, J28). The one parser is the vendored
 `@openuidev/lang-core` 0.2.18 (`webroot/libs/openui/lang-core.min.js`, the global `OpenUILang`), built by `libs/refresh.mjs`
@@ -715,7 +719,8 @@ beside its label ("saves: updateEnumType", `[data-assist-canvas-saves]`), so the
   approval card like any other: the run pauses, the card shows the request's parameters, and approving it runs the held
   request with the state the canvas last posted. This is the phase's check "a canvas Mutation yields a card".
 
-A Vue SFC submit (phase 13.8) will yield a card, never a POST.
+A Vue SFC submit never posts either: it is a confirm the page draws, whose Save is such a click
+([below](#vue-sfc-canvases)).
 
 **Adjust and revalidation.** Under the canvas the user can write a correction (Adjust): `canvasAdjust` is a turn that
 names the canvas and its version, which the skill's `edit` section makes the agent's only task. After it draws, the page
@@ -737,6 +742,164 @@ canvas state; `crates/moqui-core/src/llm/ui/` the checks, the sections, the merg
 evaluation task "chart fallback" (`tools/test/agent/assist.agent.js`) passes on its hand-authored recording in two
 `write_ui` calls.
 
+## Vue SFC canvases
+
+The escape hatch of the canvases (plan 4.10, J11, J12): a Vue 3 single-file component the agent writes when OpenUI Lang
+cannot express a layout. It is **off by default**: only an agent whose `AgentDefinition.canvasDialects` names `vue-sfc`
+(a comma list; empty is `openui` only) gets the `ui.write:vue-sfc` capability in its runs, the dialect in `bootstrap` and
+the skill `vue-sfc` in its index (the skill of a dialect an agent does not write is neither listed nor loaded).
+
+**The program** is the component's blocks: `<template>`, `<script>` (`module.exports = {...}`, the Options API; no
+`import`, `export default`, `<script setup>` or TypeScript), an optional `<style>` and an optional `<actions>`, a JSON list
+of `{name, label, path, fields, parameters}`: the writes it may ask for. A patch is a program with only the blocks that
+change; each replaces the canvas's block of its name. The skill is
+`runtime/base-component/framework/skill/vue-sfc.md` (sections `shape`, `sandbox`, `bridge`, `widgets`, `example`; every
+rule of `llm/ui/vue_sfc.rs` is quoted in its section, and the example checks, which a test asserts).
+
+**Checked on the server** (`crates/moqui-core/src/llm/ui/vue_sfc.rs`) before anything is shown, each problem naming its
+section and quoting its rule (`vue_sfc_invalid`, with the `block` and its line): at most 64k characters; the blocks
+(nothing outside them, none twice, a template); the template compiled with the vendored `libs/vue/compiler-dom.cjs.js`
+in QuickJS (the compiler of the qvt screens; the same version as the browser build); the script compiled, not run, in a
+QuickJS runtime of its own; names the frame does not have (`window`, `document`, `location`, `fetch`, `XMLHttpRequest`,
+`WebSocket`, `eval`, `Function`, `navigator`, the storages, `open`, …, as free names outside strings and comments; a
+property such as `row.location` is a field) and properties that lead out (`ownerDocument`, `defaultView`,
+`constructor`, `innerHTML`, …), in the script and in the template's bindings and `{{ }}`; elements that load, post or
+run (`script`, `style`, `iframe`, `object`, `embed`, `form`, `base`, `meta`, `link`), `v-html`, `srcdoc`, `http-equiv`,
+`javascript:` URLs, a protocol-relative link; a `<style>` with `@import` or a `url()` that is not `data:`; an `m-`
+component other than the six widgets, `router-link`; the actions (a JSON list of at most 10, a plain unique name, a
+path that is an `/apps` transition, POST, PUT, PATCH or DELETE, plain field and parameter names, no secret name, fixed
+parameters that are scalars); and a `$bridge.submit('name'` that no action declares. These checks tell the model what
+does not work; they are not the boundary (a computed name such as `this.$el['owner' + 'Document']` passes them). The
+boundary is the frame.
+
+**The frame** (`GET /assist/sandbox`, `crates/moqui-host/src/llm/sandbox.rs`; the document and its policy are
+`vue_sfc::frame_document`). The canvas is `<iframe sandbox="allow-scripts" src="/assist/sandbox?v=…#n=<nonce>"
+referrerpolicy="no-referrer">`: without `allow-same-origin` the document has an opaque origin (no page DOM, cookies,
+storage or session token), and without the other tokens no popups, forms, top navigation, modals or downloads. The
+document holds no data and needs no session; it is a host route because the screens send `frame-ancestors 'none'` and a
+`srcdoc` frame would inherit the drawer page's policy. Its own policy:
+
+```
+sandbox allow-scripts; default-src 'none';
+script-src <origin>/libs/vue/ <origin>/libs/quasar/ <origin>/js/WebrootAssistSandbox.js 'unsafe-eval';
+style-src <origin>/libs/ 'unsafe-inline'; font-src <origin>/libs/; img-src data: <origin>/images/ <origin>/libs/;
+connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none';
+manifest-src 'none'; form-action 'none'; frame-ancestors 'self' <origin>; base-uri 'none'
+```
+
+with `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, a `Permissions-Policy` that turns the powerful
+features off, and no `X-Frame-Options`. `<origin>` is written out from the request (its `Host`, which must be a plain
+host and port, else 400, and HTTPS on TLS or from a trusted proxy), since `'self'` does not match an opaque origin. The
+`sandbox` directive sandboxes the document even when it is opened on its own. `?x=1` (the user's
+`ASSIST_CANVAS_EXTERNAL`) adds `https:` to `img-src` only. **Compiled in the frame**: the component's template is compiled
+by Vue 3's full build (`libs/vue/vue.global.prod.js`) inside the frame, the only place `'unsafe-eval'` is allowed, and
+the script is evaluated there as `new Function("module", "exports", script)`; the server compiled both first to report
+errors, but ships source, not code. Fonts and styles are the vendored Quasar and Material ones; the nonce is in the URL
+fragment, so no inline script is needed and it never reaches a server log.
+
+**The frame runtime** (`js/WebrootAssistSandbox.js`) takes one MessageChannel port, once, from `window.parent` with
+the nonce of its fragment, then mounts the component with Quasar 2, the six widget shims (`m-text-line`, `m-drop-down`
+with options or `options-url` through the bridge, `m-date-time`, `m-display`, `m-date-period`, `m-container-box`) and
+`this.$bridge`: `get(path, query, list)` (a Promise of the read's JSON) and `submit(name, values)` (a Promise of `{status:
+saved | canceled | failed | ignored, error}`). A click on a link is caught (capture phase) and sent as `link`; the frame
+never navigates for one. It pings every 2 s, reports its height, its compile and runtime errors and, on `pagehide`,
+`leaving`. It is as untrusted as the component: nothing it says is believed beyond its shape.
+
+| parent → frame | frame → parent |
+| --- | --- |
+| `port {nonce}` (window message, target `*`, the port transferred), then on the port: `init {template, script, style, values, dark, external}`, `values {values}`, `theme {dark}`, `result {id, ok, json, status, error}` | `ready`, `rendered`, `ping`, `input {values}`, `get {id, path, query, list}`, `submit {id, action, values}`, `link {href}`, `resize {height}`, `error {phase, code, message}`, `leaving` |
+
+**The parent** (`m-assist-vue-sfc` in `js/WebrootAssistCanvas.js`; its pure parts are `moqui.assist.canvas.sfc`, under
+node tests) listens only on its end of the channel, never on window messages, and passes every message through
+`sfc.validate`: an object with a known string `t`, at most 256k characters as JSON, and only the fields of its type,
+cleaned (flat values only: at most 100, plain names, no `__`, strings of at most 4000; a read path `/apps` or `/qapps`
+of plain characters with no `..`, doubled slash or host, a flat query of at most 30 short values, a list name; a plain
+action name; a height clamped to 60–4000). What fails is dropped (a read or submit is answered refused to its id).
+
+- **Reads** go to the one read proxy, `GET /assist/read` with the canvas's id, as OpenUI's do (fenced, the user ∩ the
+  agent, a transition that writes is 403), at most 6 at once and 60 in 10 s from a frame, an answer of at most 1.5 MB.
+  A Vue SFC canvas reads **only the paths it declared** in its `<reads>` block (a JSON list of `/apps` screen paths,
+  stored on the canvas as `reads` and checked by the proxy with `vue_sfc::read_declared`); an undeclared path is 403.
+  And it does **not read at all while the user lets it reach other sites** (`ASSIST_CANVAS_EXTERNAL`): the proxy refuses
+  every read then, and the client refuses it too, so the "Other sites" option and proxy reads are never on together
+  (their combination is the only way an image of another site could carry a read's data out).
+- **Writes** (J11). A `submit` counts only when the page has the user's transient activation (`navigator.userActivation
+  .isActive`: a click in a child frame activates its ancestors), the frame has the focus (`document.activeElement` is the
+  iframe, so the activation came from a click in the frame and not from typing in the drawer), the action is the
+  program's, and none counted in the last 2 s; otherwise it is ignored (`status: "ignored"`, counted in
+  `data-assist-sfc-ignored`, and a submit without a click is reported as a problem of the `bridge` section). A submit
+  that counts never posts: the page draws a confirm outside the frame with the action's label, the transition it saves
+  ("saves: updateEnumType") and every value the server will post (the action's fixed parameters and its fields from the
+  values, `sfc.confirmRows`, which is what `vue_sfc::action_request` builds, with the method shown — for example
+  `saves: DELETE updateEnumType` — when it is not a POST). The confirm is a modal `q-dialog` with Cancel focused, and its
+  Save is dead for the first 600 ms after the confirm appears (`confirmArmMs`), and the frame cannot resize while it is
+  open, so a frame moving under a waiting pointer cannot have a click land on Save (clickjacking). Only the user's
+  trusted, armed click on Save runs it, exactly as an OpenUI Button: `canvasAction` `kind=arm` then `kind=mutation` with the click's nonce; the
+  server builds the request from the **stored** program's action with the posted values, holds it at the transition gate,
+  checks the user ∩ the agent and runs the held request under `Approved` (an `AgentApproval` through the channel
+  `canvas`). The agent's `write_ui` `run` of an action is an approval card, as for OpenUI. **Trust model**: activation
+  cannot be proven across the opaque frame boundary (the frame's code can call submit whenever the page happens to be
+  active), so the activation and focus gate only keeps a component from asking without the user's gesture; the approval
+  is the click on the framework-drawn confirm, which the frame cannot reach (another origin's DOM), cannot script
+  (`isTrusted`), and whose content (the values posted) the server reproduces from its own copy of the program.
+- **Links** open only from the user's click in the frame, with the same activation-and-focus gate as a submit (the
+  runtime sends a `link` only for a trusted event; the parent re-checks `navigator.userActivation.isActive` and the frame
+  focus), so no navigation happens without a gesture. An `/apps` or `/qapps` screen of this site (through `safePath`)
+  opens beside the canvas as an OpenUI Link does; another site opens in a new tab (`noopener,noreferrer`) only when the
+  user allows other sites; anything else (this site's other paths, `javascript:`, `data:`) is not opened and the canvas
+  says so.
+- **The watchdog** (`sfc.watchdog`, a timer of a second): a load of the frame after it took its port (the frame
+  navigated itself), or a `leaving`, closes the frame (`navigation`); so does no `rendered` 15 s after the first load
+  (`timeout`), no message for 10 s after it rendered (`unresponsive`), or more than 120 messages in a second
+  (`flood`). A closed frame is removed (`[data-assist-sfc-killed=<reason>]`, with Show again) and the reason is
+  reported to `canvasProblems` as source `sandbox`, kept on the canvas as a problem of `vue-sfc#sandbox`, in the tail,
+  and revalidated once a version like any other.
+
+**Residual risks**, accepted (answered open question 2: the watchdog and the link and resource restrictions). These are
+why the dialect is **off by default per agent**, and why **the worker renderer is required before Vue SFC is enabled for
+any agent that reads untrusted content** (a component in a worker that sends DOM operations to an allowlist applier with
+no `href`, `action`, `<meta>` or navigation; the watchdog and the checks are not a substitute for it). A component the
+model wrote, perhaps steered by text in data it read, can still move data it read out of the page through channels CSP
+does not close, and the watchdog catches a navigation only after the request has left:
+
+- **Self-navigation and downloads.** The frame can navigate itself (`location` through a computed name, a `<meta>`
+  refresh written into the DOM, an `<a download>`), and a navigation answered **204/205 or a download** fires neither a
+  `load` nor a `pagehide`, so it leaves **no watchdog signal at all**; even an ordinary navigation leaves only after the
+  request, carrying whatever the component put in the URL, has gone. CSP ships no navigation directive (`navigate-to` was
+  dropped) and the Navigation API's `navigate` event does not fire in an opaque-origin document, so the frame cannot be
+  made to cancel it.
+- **WebRTC.** `connect-src 'none'` does **not** govern `RTCPeerConnection`, so a STUN/TURN server URL could carry data
+  out over DNS/UDP. The runtime deletes `RTCPeerConnection`, `webkitRTCPeerConnection` and `RTCDataChannel` before the
+  component runs and the server's check refuses them, but a renderer the model replaced could restore them; only the
+  worker renderer removes the capability for good.
+- **Other sites' images.** The "Other sites" option adds `https:` to `img-src`, so `new Image().src` could carry a
+  read's data to any host. That is why a Vue SFC canvas **cannot read through the proxy while other sites are on** (above):
+  the two are mutually exclusive, which closes this channel but does not remove the toggle's own risk for content the
+  user pastes in.
+- A read returns to the component whatever the user ∩ the agent may read; a component that loops forever may hold a CPU
+  core (a sandboxed frame is out of process in current Chromium, so the watchdog can still close it, but the browser does
+  not promise a separate thread). `'unsafe-eval'` is on inside the frame only; DNS prefetch is not stopped by CSP in
+  every browser. The server's name checks (which also ban `self`, `top`, `parent` and the WebRTC constructors) are
+  **defence in depth only** — a computed name slips past them — so they are never the boundary; the frame is.
+
+**For the browser smokes**: `[data-assist-sfc-frame]` (the iframe), `.m-assist-vue-sfc` (`data-assist-sfc-ignored`,
+`data-assist-sfc-dropped`), `[data-assist-sfc-confirm=<action>]` with `[data-assist-sfc-confirm-row=<name>]`,
+`[data-assist-sfc-confirm-save]` and `[data-assist-sfc-confirm-cancel]`, `[data-assist-sfc-killed=<reason>]`,
+`[data-assist-sfc-notice]`, `[data-assist-sfc-external]`. The smoke
+`a_vue_sfc_canvas_runs_sandboxed_and_holds_the_java_probes_in_chromium` (the `assist` module of `gate3_browser.rs`, on
+the scripted fake) ports the probes of the Java prototype's `framework/test/vue_sfc_sandbox_browser_smoke.py`: the
+route's headers; the frame's attributes and its opaque origin; from inside the frame, through computed names, the
+parent's DOM, the top window, cookies, both storages, a popup and top navigation are blocked; fetch, XHR, a WebSocket,
+another site's image, this site's image outside the static paths and a form post are blocked; a list read through the
+bridge answers, a transition that writes is refused by the proxy (403) and the paths that are not `/apps` never leave the
+page; a submit on mount is ignored, and a message posted to the page window is nothing; a real click in the frame shows
+the confirm with what it saves, a scripted click on its Save arms nothing, the user's click saves; a component that
+navigates its frame is closed and recorded as a `vue-sfc#sandbox` problem (`MOQUI_SHELL_SHOTS` saves `assist-sfc-*` and
+`assist-sfc-killed-*`). `WebrootAssistCanvas.test.js` covers the validator, the blocks and actions, the read paths,
+the link targets, the watchdog, the submit gate and the read limits; `crates/moqui-core/src/llm/ui/vue_sfc_tests.rs` the
+checks and their sections, the merge, the actions' request, the skill, and the policy; `crates/moqui-host/src/llm/
+sandbox.rs` the route's headers.
+
 ## On the server
 
 - **The run.** `turn` builds a `StartRequest` (surface drawer, the tail from the page state, the client message id,
@@ -755,6 +918,22 @@ evaluation task "chart fallback" (`tools/test/agent/assist.agent.js`) passes on 
 - **Authority.** The calls run without artifact authorization (no app's screens cover them, as the shell and chat
   transitions do) and check the user, `AgentUse` and ownership themselves; the run's tools run as the user, with the
   user's own permissions, under the agent's policy (plan 4.3).
+- **The window** (plan 7.8, `llm::window`). Before each call the step estimates the request (the newest reply's reported
+  prompt tokens, `AgentMessage.tokenCount` with its request's `promptChars`, plus the characters since, at the model's
+  calibrated characters a token) and compacts only above 85% of the budget, down to 55%, in stages: digests of older tool
+  results, replayed reasoning, old canvases, old tails, a summary of the turns before the last three user messages (on the
+  agent's model, `summary.md`), and last the turn in progress. What a compaction did is stored with the messages (a
+  result part's `digest`, a message's `tailLine` and `reasoningStripped`, a call part's `compactedArguments`, `compacted`
+  messages and the conversation's `compactionSummary`), so the drawer's history still shows every message whole and the
+  calls between compactions share the provider's prefix cache. A provider's overflow compacts at once.
+- **Small models** (plan 7.9). A model's `tool-mode="json"` freezes its conversations' prefix with the tools as signatures
+  (`tools-json.md`; `promptVariant` stored as `small+json`), sends no native tools, and reads each reply as one protocol
+  object (`llm::json_mode`); its protocol text is not streamed, the answer is sent once read. A native model's reply that is
+  only calls written as text (`<tool_call>` blocks, or one bare call object) is taken as calls, the streamed text voided
+  with `step.restart`; a call quoted in prose, a fence or quotes never runs. `intent-prefilter="hint"`
+  adds `likely: <intent>` to the stored tail of a new message. A model's `max-tool-calls` (12 for the small variant, 30
+  otherwise) caps a run's calls, the same failing call twice answers `repeated`, and arguments the deterministic repair
+  cannot fit get one schema-constrained call when the model's `json-schema` verdict is yes.
 
 ## Admin screens
 

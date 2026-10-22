@@ -18,8 +18,10 @@
 //! `LlmModel`) is where its calibration starts.
 //!
 //! The window ([`Window`]) is the model's context less the output, a reasoning reserve and a 3% margin; compaction
-//! (phase 13.7) works between its high and low watermarks. Counting a request is the last reported prompt tokens plus
-//! the characters added since, divided by `k` ([`Estimator::since`]), so the estimate is only ever off by the new part.
+//! ([`super::window`]) works between its high and low watermarks. Counting a request is the last reported prompt tokens
+//! plus the characters added since, divided by `k` ([`Estimator::since`]), so the estimate is only ever off by the new
+//! part. The characters of a request ([`RequestChars::sent`]) are what is sent: message text, tool-call arguments and
+//! names, the reasoning replayed to the model, the tools, the system text and the tail.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -27,7 +29,8 @@ use std::sync::Mutex;
 use moqui_lib::sync::lock;
 
 use super::conf::ModelConf;
-use super::provider::{ModelRequest, Role};
+use super::provider::{ModelRequest, ReplayBag, ReplayItem, Role};
+use super::registry::Target;
 
 /// Characters per token of a model with no calibration yet.
 pub const DEFAULT_CHARS_PER_TOKEN: f64 = 3.6;
@@ -196,9 +199,19 @@ pub struct RequestChars {
     /// Message text, tool-call arguments and the tool names, without the tail.
     pub history: usize,
     pub tail: usize,
+    /// The reasoning sent back to the model with its messages (the replay bags `reasoning-replay` sends).
+    pub reasoning: usize,
 }
 
 impl RequestChars {
+    /// The characters of `request` as sent to `target`: [`Self::of`] with the replay bags the model gets back.
+    pub fn sent(request: &ModelRequest, target: &Target) -> Self {
+        let mut chars = Self::of(request);
+        chars.reasoning = request.replays(target).into_iter().flatten().map(replay_chars).sum();
+        chars
+    }
+
+    /// The characters of `request` without its replayed reasoning (which depends on the model it goes to).
     pub fn of(request: &ModelRequest) -> Self {
         let system = request.system_text().chars().count();
         let tools = request.tools.iter().map(tool_chars).sum();
@@ -225,12 +238,30 @@ impl RequestChars {
             tools,
             history,
             tail,
+            reasoning: 0,
         }
     }
 
     pub fn total(&self) -> usize {
-        self.system + self.tools + self.history + self.tail
+        self.system + self.tools + self.history + self.tail + self.reasoning
     }
+}
+
+/// The characters of a replay bag as it goes back: thinking text and signatures, encrypted items, echoed reasoning.
+pub fn replay_chars(bag: &ReplayBag) -> usize {
+    bag.items
+        .iter()
+        .map(|item| match item {
+            ReplayItem::Thinking { thinking, signature } => thinking.chars().count() + signature.chars().count(),
+            ReplayItem::RedactedThinking { data } => data.chars().count(),
+            ReplayItem::ResponsesReasoning { item } => item.to_string().chars().count(),
+            ReplayItem::ReasoningContent { text } => text.chars().count(),
+            ReplayItem::ToolCallExtra { fields, .. } | ReplayItem::MessageExtra { fields } => {
+                serde_json::Value::Object(fields.clone()).to_string().chars().count()
+            }
+            ReplayItem::Fake { token } => token.chars().count(),
+        })
+        .sum()
 }
 
 /// The characters of a tool as sent: its name, description and parameters schema, as compact JSON.

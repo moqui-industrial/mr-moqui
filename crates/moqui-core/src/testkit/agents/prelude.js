@@ -9,7 +9,7 @@
         "cleanup", "timeout", "ignore", "judge"];
     const TURN_FIELDS = ["say", "expect"];
     const EXPECT_FIELDS = ["path", "parameters", "values", "answer", "answerNot", "called", "notCalled", "results",
-        "held", "noWrite", "maxWrongCalls", "maxToolCalls", "questions", "state"];
+        "held", "noWrite", "maxWrongCalls", "maxToolCalls", "questions", "state", "noInvented"];
     const SURFACES = ["drawer", "chat", "tui", "job", "a2a", "mcp"];
 
     const A = {};
@@ -233,6 +233,7 @@
             }
         }
         if (expect.state !== undefined && !fits(expect.state, view.state)) fail(`the run ended ${show(view.state)}, expected ${show(expect.state)}`);
+        if (expect.noInvented && (view.invented || []).length) fail(`the answer links what no tool returned: ${show(view.invented)}`);
         return failures;
     };
 

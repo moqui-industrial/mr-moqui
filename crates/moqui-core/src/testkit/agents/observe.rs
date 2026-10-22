@@ -43,6 +43,9 @@ pub struct ModelReply {
     pub finish: String,
     #[serde(default)]
     pub usage: Usage,
+    /// JSON tool mode: the text the model wrote, which a replay plays (its calls and answer are read from it again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
 }
 
 /// A tool call of a reply: the provider's id, the tool, and its arguments; `raw` holds the text of arguments that did
@@ -122,6 +125,10 @@ pub struct TurnSeen {
     pub screen: Option<ScreenState>,
     #[serde(skip)]
     pub compactions: u32,
+    /// What every model call of the run spent, its side calls (the intent hint, a summary, a schema repair) among them:
+    /// the `LlmCall` rows.
+    #[serde(skip)]
+    pub spent: Usage,
     /// The system text of the conversation's frozen prefix, in characters (on the last turn).
     #[serde(skip)]
     pub prefix_chars: u64,
@@ -198,6 +205,22 @@ fn observe_quietly(facade: &EntityFacade, conversation_id: &str, run_id: &str, s
         }
     }
 
+    // every call of the run, the side calls among them
+    for row in facade
+        .find("moqui.llm.LlmCall")?
+        .eq("runId", Value::string(run_id))
+        .disable_authz()
+        .list()?
+        .values()
+    {
+        let count = |field: &str| int_of(row, field).and_then(|n| u64::try_from(n).ok()).unwrap_or(0);
+        turn.spent.add(&Usage {
+            input: count("inputTokens"),
+            cached: count("cachedInputTokens"),
+            output: count("outputTokens"),
+        });
+    }
+
     // the steps, for the finish and usage of each reply
     let steps = facade
         .find("moqui.agent.AgentRunStep")?
@@ -205,7 +228,8 @@ fn observe_quietly(facade: &EntityFacade, conversation_id: &str, run_id: &str, s
         .order_by("stepSeq", false)
         .disable_authz()
         .list()?;
-    let mut step_info: Vec<(String, Usage)> = steps
+    // in step order, as the replies are
+    let step_info: Vec<(String, Usage)> = steps
         .values()
         .iter()
         .map(|row| {
@@ -220,7 +244,6 @@ fn observe_quietly(facade: &EntityFacade, conversation_id: &str, run_id: &str, s
             )
         })
         .collect();
-    step_info.reverse();
 
     // the messages of the run and their parts
     let messages = facade
@@ -265,7 +288,12 @@ fn observe_quietly(facade: &EntityFacade, conversation_id: &str, run_id: &str, s
         parts.sort_by_key(|part| part.seq);
         match role.as_str() {
             "assistant" => {
-                let mut reply = ModelReply::default();
+                let mut reply = ModelReply {
+                    raw: text_of(message, "metadataJson")
+                        .and_then(|text| serde_json::from_str::<Json>(&text).ok())
+                        .and_then(|meta| meta.get("raw").and_then(Json::as_str).map(str::to_string)),
+                    ..ModelReply::default()
+                };
                 for part in parts {
                     match part.kind.as_str() {
                         "AgpkText" => reply.text.push_str(&part.text.unwrap_or_default()),

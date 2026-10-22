@@ -911,6 +911,7 @@ fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
             user_facts: &facts,
             memory: &memory,
             tools: &tools,
+            tool_mode: target.as_ref().map(|target| target.model.behavior.tool_mode).unwrap_or_default(),
         },
     );
     let tail = prompt::sample_tail(surface, text(parameters, "samplePath").as_deref(), fact("time zone").as_deref());

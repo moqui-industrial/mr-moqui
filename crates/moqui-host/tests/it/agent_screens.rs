@@ -254,6 +254,8 @@ fn agent_screen_sessions_hold_writes_sync_in_and_follow() {
     no_approval_for_what_the_user_may_not_do(&factory);
     a_held_write_previews_in_the_sim(&factory);
     a_destructive_service_previews_before_its_card(&factory);
+    a_header_login_session_never_decides(&factory, address);
+    a_preview_reaches_nothing_outside_the_sim(&factory);
 }
 
 /// A save is held, the row unchanged; the held request with a tampered field is refused, with the approved hash it

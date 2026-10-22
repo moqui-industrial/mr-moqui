@@ -63,7 +63,7 @@ use crate::llm::text_of;
 use crate::llm::tools::PauseKind;
 use crate::testkit::SpecFile;
 
-pub use metrics::{regressions, summarize, Summary, TaskMetrics, TaskOutcome, TaskResult};
+pub use metrics::{not_run, regressions, summarize, Summary, TaskMetrics, TaskOutcome, TaskResult};
 pub use spec::ScriptedApproval;
 
 /// A turn's limit on a live model, and on a replay, unless the spec or the task gives one.
@@ -94,12 +94,31 @@ pub struct EvalOptions {
 }
 
 impl EvalOptions {
-    /// The profile's name in reports and the baseline's file name: the model id, or `replay`.
+    /// The profile's name in reports and the baseline's file name: the model id, or the replay's ([`replay_label`]).
     pub fn profile_label(&self) -> String {
-        match &self.mode {
+        self.mode.label()
+    }
+}
+
+impl Mode {
+    /// The profile's name in reports and the baseline's file name: the model id, or the replay's ([`replay_label`]).
+    pub fn label(&self) -> String {
+        match self {
             Mode::Live { profile } => profile.clone(),
-            Mode::Replay { .. } => "replay".to_string(),
+            Mode::Replay { dir } => replay_label(dir),
         }
+    }
+}
+
+/// The profile of a replay set: `replay` for a directory named so (the recordings of the default profile), else
+/// `replay-<name>` (`replay-small` for `replay-small/`, the JSON tool mode recordings of a small model), so each set
+/// has its own baseline.
+pub fn replay_label(dir: &Path) -> String {
+    let name = dir.file_name().and_then(|name| name.to_str()).unwrap_or("replay");
+    if name == "replay" || name.starts_with("replay-") {
+        name.to_string()
+    } else {
+        format!("replay-{name}")
     }
 }
 
@@ -314,6 +333,14 @@ impl TaskJob<'_> {
         let mut recording = None;
         let mut model = json!(null);
         let mut seed = None;
+        if let Mode::Replay { dir } = &self.options.mode {
+            // a replay set of a profile may record only some tasks (a JSON-mode set of a small model): the others are
+            // skipped, and a baseline names what must run
+            if !dir.join(self.spec_name).join(format!("{}-1.jsonl", self.task.slug)).is_file() {
+                result.outcome = TaskOutcome::Skipped(format!("{} has no recording of it", dir.display()));
+                return;
+            }
+        }
         match &self.options.mode {
             Mode::Replay { dir } => match find_recording(dir, self.spec_name, &self.task.slug, self.run)
                 .and_then(|path| transcript::Recording::read(&path).map_err(|err| err.to_string()))
@@ -445,6 +472,10 @@ impl TaskJob<'_> {
                 tail: Some(self.tail(state.as_ref())),
                 ..StartRequest::default()
             };
+            // the AT_LLM tarpit (30 runs a minute) is for people: a suite of 24 tasks, or --runs 3, starts more
+            let caller = crate::user::current_user_id().ok().flatten().unwrap_or_default();
+            self.factory
+                .clear_tarpit_hits(&format!("{caller}@AT_LLM:agent:{}", self.spec.agent));
             let started = match run::start_run(self.factory, &request) {
                 Ok(started) => started,
                 Err(error) => {
@@ -620,11 +651,15 @@ impl TaskJob<'_> {
             metrics.held += turn.held.len() as u64;
             metrics.compactions += u64::from(turn.compactions);
             metrics.prefix_chars = metrics.prefix_chars.max(turn.prefix_chars);
+            // the call log has every call of the run, the side calls too; the steps only the turn's own
+            let mut steps = observe::Usage::default();
             for reply in &turn.replies {
-                metrics.prompt_tokens += reply.usage.input;
-                metrics.cached_tokens += reply.usage.cached;
-                metrics.completion_tokens += reply.usage.output;
+                steps.add(&reply.usage);
             }
+            let spent = if turn.spent.input >= steps.input { turn.spent } else { steps };
+            metrics.prompt_tokens += spent.input;
+            metrics.cached_tokens += spent.cached;
+            metrics.completion_tokens += spent.output;
         }
         metrics
     }

@@ -1036,6 +1036,14 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="compact-high-percent" type="xs:string"/>
                 <xs:attribute name="compact-low-percent" type="xs:string"/>
                 <xs:attribute name="max-concurrency" type="xs:string"/>
+                <xs:attribute name="intent-prefilter" default="none"><xs:annotation><xs:documentation>hint: a tiny
+                    pre-call names the likely intent of a message in its context tail (likely: data); the tools never
+                    change</xs:documentation></xs:annotation><xs:simpleType><xs:restriction base="xs:token">
+                    <xs:enumeration value="none"/><xs:enumeration value="hint"/>
+                </xs:restriction></xs:simpleType></xs:attribute>
+                <xs:attribute name="side-calls" type="boolean-expandable" default="true"><xs:annotation><xs:documentation>
+                    false: no calls besides a step's own (no intent hint, the deterministic compaction summary, no schema
+                    repair call)</xs:documentation></xs:annotation></xs:attribute>
                 <xs:attribute name="chars-per-token" type="xs:string"/>
                 <xs:attribute name="disabled" type="boolean-expandable" default="false"/>
             </xs:complexType></xs:element>

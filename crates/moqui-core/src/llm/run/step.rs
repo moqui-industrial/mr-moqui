@@ -20,7 +20,9 @@
 //! `UnknownOutcome` (a READ runs again; a write, destructive or external call never does, and the model is told to check
 //! its outcome). Then the budget is checked (an interactive run pauses with a "continue?" question, a background one
 //! fails `budget_exhausted`), the request is built from the conversation's frozen prefix, its history and the newest
-//! message's tail, and the model is called with no transaction open. The reply is stored (the step, the assistant
+//! message's tail, compacted first when it is over the model's high watermark ([`crate::llm::window`]), and the model is
+//! called with no transaction open. A JSON tool mode reply is read as its protocol object, and a native reply's calls
+//! written as text are taken as calls ([`crate::llm::json_mode`]). The reply is stored (the step, the assistant
 //! message, its tool calls), and the calls run in model order: consecutive READ calls in parallel when the model allows
 //! it, the rest one at a time. A call that pauses moves the run to InputRequired or AuthRequired and ends the step; a
 //! reply with no calls completes the run; otherwise the next step job is queued.
@@ -44,6 +46,8 @@ use super::{
 use crate::context::{AgentOrigin, ExecutionContext, ExecutionContextFactory};
 use crate::entity::{fence, EntityFacade, EntityValue};
 use crate::llm::prompt::{self, Catalog, PrefixSpec, PromptTexts, PromptVars};
+use crate::llm::tokens::Window;
+use crate::llm::window;
 use crate::llm::provider::{
     self, CallOptions, Finish, Message, ModelRequest, ProviderEvent, Recorder, ReplayBag, Role, Signal,
 };
@@ -56,6 +60,28 @@ use crate::llm::{int_of, text_of};
 const DEFAULT_RESULT_CAP: usize = 8000;
 /// What a tool call's `resultSummary` keeps.
 const SUMMARY_CAP: usize = 4000;
+/// What the calls besides a step's own (the intent hint, the summary, the schema repair) spent, until the run's totals
+/// and budget take it ([`Turn::settle_side`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SideSpend {
+    usage: crate::llm::usage::Usage,
+    cost: rust_decimal::Decimal,
+}
+
+impl SideSpend {
+    fn add(&mut self, reply: &provider::Reply) {
+        self.usage.add(&reply.usage);
+        self.cost += reply.cost.unwrap_or_default();
+    }
+}
+
+/// The system text of the schema repair call.
+const SCHEMA_REPAIR: &str = "You fix the arguments of a tool call so that they fit the tool's JSON schema. Keep the values \
+the call meant, convert them to the schema's types, and leave out what has no place in it. Answer with only the arguments \
+as one JSON object.";
+/// The tool calls of a run on a model that sets no `max-tool-calls` (plan 7.9): small and standard prompt variants.
+pub(crate) const SMALL_TOOL_CALLS: u32 = 12;
+pub(crate) const STANDARD_TOOL_CALLS: u32 = 30;
 /// Independent reads run at most this many at a time, fewer when the connection pool has less room
 /// ([`super::Engine::parallel_reads`]).
 pub(crate) const PARALLEL_READS: usize = 4;
@@ -556,125 +582,14 @@ fn set_call_status(
 }
 
 /// The conversation's history as the model reads it, and the tail of its newest user message: messages in order,
-/// compacted ones left out; an older user message keeps the tail it was sent with, as text, so the bytes sent before
-/// are sent again (append-only).
+/// compacted ones left out and what compaction did in place ([`crate::llm::window`]); an older user message keeps the
+/// tail it was sent with, as text, so the bytes sent before are sent again (append-only).
+#[cfg(test)]
 pub(crate) fn load_history(
     facade: &EntityFacade,
     conversation_id: &str,
 ) -> Result<(Vec<Message>, Option<String>), Error> {
-    let rows = facade
-        .find(MESSAGE)?
-        .eq("conversationId", Value::string(conversation_id))
-        .order_by("messageSeq", false)
-        .disable_authz()
-        .list()?;
-    let messages: Vec<&EntityValue> = rows
-        .values()
-        .iter()
-        .filter(|row| crate::llm::flag_of(row, "compacted") != Some(true))
-        .collect();
-    let ids: Vec<Value> = messages
-        .iter()
-        .filter_map(|row| text_of(row, "messageId"))
-        .map(Value::string)
-        .collect();
-    let mut parts: HashMap<String, Vec<EntityValue>> = HashMap::new();
-    if !ids.is_empty() {
-        for part in facade
-            .find(PART)?
-            .condition(Condition::is_in("messageId", ids))
-            .order_by("messageId", false)
-            .order_by("partSeq", false)
-            .disable_authz()
-            .list()?
-            .into_values()
-        {
-            parts
-                .entry(text_of(&part, "messageId").unwrap_or_default())
-                .or_default()
-                .push(part);
-        }
-    }
-    let mut history = Vec::new();
-    let mut tails: Vec<Option<String>> = Vec::new();
-    for row in messages {
-        let message_id = text_of(row, "messageId").unwrap_or_default();
-        let mut own = parts.remove(&message_id).unwrap_or_default();
-        own.sort_by_key(|part| int_of(part, "partSeq").unwrap_or(0));
-        let text_parts = || {
-            own.iter()
-                .filter(|part| text_of(part, "partKindEnumId").as_deref() == Some("AgpkText"))
-                .filter_map(|part| text_of(part, "textValue"))
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        };
-        let metadata: Option<Json> = text_of(row, "metadataJson").and_then(|text| serde_json::from_str(&text).ok());
-        match text_of(row, "role").as_deref() {
-            Some("user") => {
-                history.push(Message::user(text_parts()));
-                tails.push(
-                    metadata
-                        .as_ref()
-                        .and_then(|meta| meta.get("tail"))
-                        .and_then(Json::as_str)
-                        .map(str::to_string),
-                );
-            }
-            Some("assistant") => {
-                let mut message = Message::assistant(text_parts());
-                for part in own
-                    .iter()
-                    .filter(|part| text_of(part, "partKindEnumId").as_deref() == Some("AgpkToolCall"))
-                {
-                    let data: Json = text_of(part, "dataJson")
-                        .and_then(|text| serde_json::from_str(&text).ok())
-                        .unwrap_or(Json::Null);
-                    message.tool_calls.push(provider::ToolCall {
-                        id: data.get("id").and_then(Json::as_str).unwrap_or_default().to_string(),
-                        name: data.get("name").and_then(Json::as_str).unwrap_or_default().to_string(),
-                        arguments: data.get("arguments").cloned().unwrap_or_else(|| json!({})),
-                    });
-                }
-                message.replay = text_of(row, "replayJson").and_then(|text| ReplayBag::from_json(&text).ok());
-                history.push(message);
-                tails.push(None);
-            }
-            Some("tool") => {
-                for part in own
-                    .iter()
-                    .filter(|part| text_of(part, "partKindEnumId").as_deref() == Some("AgpkToolResult"))
-                {
-                    let meta: Json = text_of(part, "metadataJson")
-                        .and_then(|text| serde_json::from_str(&text).ok())
-                        .unwrap_or(Json::Null);
-                    let mut message = Message::tool_result(
-                        meta.get("providerCallId").and_then(Json::as_str).unwrap_or_default(),
-                        meta.get("name").and_then(Json::as_str).unwrap_or_default(),
-                        text_of(part, "textValue").unwrap_or_default(),
-                    );
-                    message.is_error = meta.get("isError").and_then(Json::as_bool).unwrap_or(false);
-                    history.push(message);
-                    tails.push(None);
-                }
-            }
-            _ => {}
-        }
-    }
-    let newest_user = history.iter().rposition(|message| message.role == Role::User);
-    let mut tail = None;
-    for (index, message) in history.iter_mut().enumerate() {
-        let Some(own_tail) = tails[index].take().filter(|own| !own.is_empty()) else {
-            continue;
-        };
-        if Some(index) == newest_user {
-            tail = Some(own_tail);
-        } else if message.text.is_empty() {
-            message.text = own_tail;
-        } else {
-            message.text = format!("{}\n\n{own_tail}", message.text);
-        }
-    }
-    Ok((history, tail))
+    Ok(window::load(facade, conversation_id)?.messages())
 }
 
 enum Next {
@@ -766,6 +681,12 @@ struct Turn {
     per_tool: HashMap<String, u32>,
     /// The conversation's screen session, when the run has the `screen` capability.
     screen: Option<ScreenHandle>,
+    /// The step's model, for the calls besides the turn's own (the schema repair).
+    target: Option<Target>,
+    /// The tool calls a run on this model may make: its `max-tool-calls`, else 12 for the small variant and 30.
+    model_tool_calls: u32,
+    /// What the side calls spent and the run's totals do not have yet.
+    side: std::sync::Mutex<SideSpend>,
 }
 
 fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalRun>) -> Result<Next, Error> {
@@ -843,7 +764,11 @@ fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalR
         ..Budget::default()
     };
     let screen = (run.caps.has(caps::SCREEN) && crate::llm::screen::installed())
-        .then(|| ScreenHandle::new(&run.conversation_id));
+        .then(|| ScreenHandle::new(&run.conversation_id).sized(target.model.behavior.screen_size));
+    let model_tool_calls = target.model.behavior.max_tool_calls.unwrap_or(match variant {
+        crate::llm::conf::PromptVariant::Small => SMALL_TOOL_CALLS,
+        crate::llm::conf::PromptVariant::Standard => STANDARD_TOOL_CALLS,
+    });
     let mut turn = Turn {
         screen,
         factory: Arc::clone(factory),
@@ -879,6 +804,9 @@ fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalR
             engine.parallel_reads()
         },
         per_tool,
+        target: Some(target.clone()),
+        model_tool_calls,
+        side: std::sync::Mutex::new(SideSpend::default()),
     };
     let started = Instant::now();
     let next = turn.work(&target, started);
@@ -1176,7 +1104,9 @@ impl Turn {
         )
     }
 
-    fn build_request(&self, target: &Target) -> Result<ModelRequest, Error> {
+    /// The request of a call: the conversation's frozen prefix (made now for a new conversation), its history with what
+    /// compaction did, and the tail of the newest message; and the history and prefix it was made from.
+    fn build_request(&self, target: &Target) -> Result<(ModelRequest, window::History, prompt::FrozenPrefix), Error> {
         let facade = &self.facade;
         let tools: Vec<provider::ToolSpec> = self
             .offered
@@ -1184,10 +1114,17 @@ impl Turn {
             .map(|offered| offered.tool.spec().to_provider())
             .collect();
         let conversation_id = self.run.conversation_id.clone();
-        let (history, tail) = quietly(|| load_history(facade, &conversation_id))?;
+        let loaded = quietly(|| window::load(facade, &conversation_id))?;
+        let (history, tail) = loaded.messages();
         let frozen = quietly(|| {
             prompt::freeze(facade, &conversation_id, &tools, || {
-                let catalog = self.catalog(&tools, &history, tail.as_deref());
+                let mut catalog = self.catalog(&tools, &history, tail.as_deref());
+                if let Some(size) = target.model.behavior.catalog_size.and_then(|size| usize::try_from(size).ok()) {
+                    if catalog.entries.len() > size {
+                        catalog.more += catalog.entries.len() - size;
+                        catalog.entries.truncate(size);
+                    }
+                }
                 let user_facts =
                     crate::llm::facts::collect(&self.factory, facade, &self.run.user_id, &self.agent.agent_id);
                 let facts = &user_facts.facts;
@@ -1228,19 +1165,151 @@ impl Turn {
                         user_facts: facts,
                         memory: &memory,
                         tools: &tools,
+                        tool_mode: target.model.behavior.tool_mode,
                     },
                 )
             })
         })?;
-        let mut request = frozen.request(history, tail, Some(&conversation_id));
-        request.reasoning = Some(target.reasoning);
-        Ok(request)
+        let request = request_from(&frozen, &loaded, target, &conversation_id);
+        Ok((request, loaded, frozen))
+    }
+
+    /// The intent pre-call (`intent-prefilter="hint"`, plan 7.9): before the first call for a new user message, a tiny
+    /// call names its likely intent, which goes into the message's stored tail as `likely: data`, so every later call
+    /// sends the same bytes. A call that fails or answers no intent adds nothing. Out: whether the tail changed.
+    fn intent_hint(&self, target: &Target, history: &mut window::History) -> bool {
+        let Some(entry) = history.entries.last() else {
+            return false;
+        };
+        if target.model.behavior.no_side_calls
+            || entry.message.role != Role::User
+            || entry.tail.as_deref().is_some_and(|tail| tail.contains("\nlikely: "))
+        {
+            return false;
+        }
+        let prompt = PromptTexts::of(&self.factory).intent;
+        if prompt.is_empty() {
+            return false;
+        }
+        let message: String = entry.message.text.chars().take(600).collect();
+        let request = ModelRequest {
+            system: vec![prompt],
+            history: vec![Message::user(format!("route({})", json!(prompt::elide_markers(&message))))],
+            reasoning: Some(crate::llm::conf::ReasoningLevel::None),
+            max_output: Some(16),
+            ..ModelRequest::default()
+        };
+        let llm = crate::llm::facade(&self.factory);
+        let mut options = self.side_options(&llm, Duration::from_secs(30));
+        let reply = provider::call(target, &request, &mut options);
+        moqui_lib::sync::lock(&self.side).add(&reply);
+        let Some(intent) = (reply.finish == Finish::Stop)
+            .then(|| crate::llm::json_mode::parse_intent(&reply.text))
+            .flatten()
+        else {
+            tracing::info!(
+                "the intent pre-call of agent run {} answered no intent ({})",
+                self.run.run_id,
+                reply.finish.as_str()
+            );
+            return false;
+        };
+        let tail = crate::llm::json_mode::tail_with_intent(
+            entry.tail.as_deref().unwrap_or("<context>\n</context>"),
+            intent,
+        );
+        let message_id = entry.message_id.clone();
+        let mut metadata = entry.metadata.clone();
+        metadata.insert("tail".to_string(), json!(tail));
+        let node = self.sink.node().to_string();
+        let stored = quietly(|| {
+            in_tx(&self.facade, || {
+                held(&self.facade, &self.run.run_id, &node, Hold::Lease)?;
+                self.facade
+                    .find(MESSAGE)?
+                    .eq("messageId", Value::string(&message_id))
+                    .disable_authz()
+                    .update_all([("metadataJson".to_string(), Value::string(Json::Object(metadata.clone()).to_string()))])
+                    .map(|_| ())
+            })
+        });
+        if let Err(error) = stored {
+            tracing::error!("the intent hint of agent run {} could not be stored: {error}", self.run.run_id);
+            return false;
+        }
+        if let Some(entry) = history.entries.last_mut() {
+            entry.tail = Some(tail);
+            entry.metadata = metadata;
+        }
+        true
+    }
+
+    /// The options of a call besides the turn's own (the intent hint, the schema repair): logged as the run's, no
+    /// streaming, no retries past the provider's.
+    fn side_options<'a>(&'a self, llm: &'a crate::llm::LlmFacade, limit: Duration) -> CallOptions<'a> {
+        let mut options = CallOptions::new(CallSource::Agent);
+        options.user_id = Some(self.run.user_id.clone());
+        options.run_id = Some(self.run.run_id.clone());
+        options.step_seq = Some(self.run_ref.step_seq);
+        options.cancel = self.local.cancel.clone();
+        options.deadline = Some(Instant::now() + limit);
+        options.length_retry = false;
+        options.recorder = Some(Recorder {
+            llm,
+            facade: &self.facade,
+        });
+        options
     }
 
     fn call_model(&mut self, target: &Target, started: Instant) -> Result<Next, Error> {
         let facade = self.facade.clone();
         let run_id = self.run.run_id.clone();
-        let request = self.build_request(target)?;
+        let (mut request, mut history, frozen) = self.build_request(target)?;
+        if target.model.behavior.intent_hint && self.intent_hint(target, &mut history) {
+            request = request_from(&frozen, &history, target, &self.run.conversation_id);
+        }
+        let json_tools = frozen.json_tools;
+        let window = Window::for_model(
+            &target.model,
+            None,
+            target.reasoning != crate::llm::conf::ReasoningLevel::None,
+        );
+        let node = self.sink.node().to_string();
+        let compactor = Compactor {
+            factory: &self.factory,
+            facade: &self.facade,
+            run_id: &self.run.run_id,
+            conversation_id: &self.run.conversation_id,
+            user_id: &self.run.user_id,
+            step_seq: self.run_ref.step_seq,
+            node: &node,
+            cancel: &self.local.cancel,
+            side: &self.side,
+        };
+        // the window (plan 7.8): compacted in stages only over the high watermark, so the calls between compactions
+        // share the prefix cache
+        let estimate = estimate(&request, &history, target);
+        let mut compactions = Vec::new();
+        if window::needs_compaction(estimate, &window) {
+            let outcome = compactor.run(target, &request, &mut history, &window, false)?;
+            request = request_from(&frozen, &history, target, &self.run.conversation_id);
+            let full = outcome.full;
+            compactions.push(outcome);
+            if full {
+                for outcome in &compactions {
+                    self.sink.emit("compaction", compaction_event(self.run_ref.step_seq, outcome));
+                }
+                self.settle_side()?;
+                return fail(
+                    &facade,
+                    &mut self.sink,
+                    &run_id,
+                    "context_full",
+                    "This conversation no longer fits the model's context window. Start a new conversation, or use a \
+                     model with a larger window.",
+                );
+            }
+        }
         let mut message = quietly(|| -> Result<EntityValue, Error> {
             let mut row = facade.make_value(MESSAGE)?;
             row.set_sequenced_id_primary(&facade)?;
@@ -1258,22 +1327,27 @@ impl Turn {
             let left = i64::try_from(max.saturating_mul(1000)).unwrap_or(i64::MAX) - self.budget.active_ms;
             started + Duration::from_millis(u64::try_from(left.max(30_000)).unwrap_or(30_000))
         });
-        let compacted = std::cell::Cell::new(0usize);
-        let mut compact = |request: &ModelRequest| -> Option<ModelRequest> {
-            // phase 13.7 compacts with digests and a summary; until then the turns before the newest user message go
-            let newest_user = request.history.iter().rposition(|message| message.role == Role::User)?;
-            if newest_user == 0 {
-                return None;
-            }
-            let mut smaller = request.clone();
-            smaller.history.drain(..newest_user);
-            compacted.set(newest_user);
-            Some(smaller)
+        // a provider's overflow compacts at once, whatever the estimate said
+        let mut overflowed = None;
+        let mut compact = |_: &ModelRequest| -> Option<ModelRequest> {
+            let outcome = match compactor.run(target, &request, &mut history, &window, true) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    tracing::error!("agent run {} could not be compacted after an overflow: {error}", compactor.run_id);
+                    return None;
+                }
+            };
+            let smaller = (outcome.changed() && !outcome.full)
+                .then(|| request_from(&frozen, &history, target, compactor.conversation_id));
+            overflowed = Some(outcome);
+            smaller
         };
         let sink = &mut self.sink;
         // the program of a write_ui call as it streams, for the canvas's canvas.delta
         let mut canvases = crate::llm::ui::StreamingPrograms::default();
         let mut on_signal = |signal: Signal<'_>| match signal {
+            // a JSON-mode reply is protocol text: its answer is sent once it is read
+            Signal::Event(ProviderEvent::Text { .. }) if json_tools => {}
             Signal::Event(ProviderEvent::Text { delta, .. }) => sink.text_delta(&message_id, 0, delta),
             Signal::Event(ProviderEvent::Reasoning { delta }) => {
                 sink.live("reasoning.delta", json!({"messageId": message_id, "text": delta}));
@@ -1315,45 +1389,105 @@ impl Turn {
             !crate::transaction::thread_in_transaction(),
             "no transaction may be open across a model call"
         );
-        let reply = provider::call(target, &request, &mut options);
+        let first_request = request.clone();
+        let mut reply = provider::call(target, &first_request, &mut options);
         drop(options);
+        if let Some(outcome) = overflowed.take() {
+            compactions.push(outcome);
+            request = request_from(&frozen, &history, target, &self.run.conversation_id);
+        }
         if self.local.is_lost() {
             // another node has the run: its reply is not this node's to store
             return Ok(Next::Stop);
         }
+        let sent_chars = crate::llm::tokens::RequestChars::sent(&request, target).total();
         if reply.usage.input > 0 {
-            let chars = crate::llm::tokens::RequestChars::of(&request).total();
             crate::llm::tokens::observe(
                 &target.model,
-                chars,
+                sent_chars,
                 reply.usage.input,
                 crate::llm::tokens::cjk_share(&request.system_text()),
             );
         }
+        // JSON tool mode: the reply is one protocol object (one retry when it is not); native mode: calls written as
+        // text are taken as calls
+        let mut raw = None;
+        let answered = matches!(reply.finish, Finish::Stop | Finish::Length | Finish::ToolCalls);
+        if json_tools && answered && reply.tool_calls.is_empty() {
+            raw = self.read_json_reply(target, &request, &mut reply);
+            if !reply.text.is_empty() {
+                self.sink.text_delta(&message_id, 0, &reply.text);
+            }
+        } else if answered && reply.tool_calls.is_empty() && !reply.text.is_empty() {
+            let names: Vec<&str> = self.offered.iter().map(|offered| offered.tool.spec().name.as_str()).collect();
+            if let Some((calls, rest)) = crate::llm::json_mode::leaked_calls(&reply.text, &names) {
+                tracing::info!(
+                    "agent run {run_id} step {step_seq}: {} tool call(s) written as text were taken as calls",
+                    calls.len()
+                );
+                self.sink.restart(&message_id, reply.attempts + 1, "tool calls written as text");
+                reply.tool_calls = calls
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (name, arguments))| provider::ToolCall {
+                        id: format!("text_{run_id}_{step_seq}_{index}"),
+                        name,
+                        arguments,
+                    })
+                    .collect();
+                // what the model wrote, which a replay plays again
+                raw = Some(std::mem::replace(&mut reply.text, rest));
+                reply.finish = Finish::ToolCalls;
+                if !reply.text.is_empty() {
+                    self.sink.text_delta(&message_id, 0, &reply.text);
+                }
+            }
+        }
         if !reply.text.is_empty() {
             self.sink.part_done(&message_id, 0);
         }
-        if compacted.get() > 0 {
-            self.sink.emit(
-                "compaction",
-                json!({"stepSeq": step_seq, "droppedMessages": compacted.get(), "stub": true}),
-            );
+        for outcome in &compactions {
+            self.sink.emit("compaction", compaction_event(step_seq, outcome));
         }
+        self.settle_side()?;
         if !reply.reasoning.is_empty() {
             self.sink.emit(
                 "reasoning.summary",
                 json!({"messageId": message_id, "text": reply.reasoning.chars().take(500).collect::<String>()}),
             );
         }
-        let calls = quietly(|| self.store_reply(target, &reply, &mut message))?;
+        // the provider's count of this request anchors the next estimate (only a call made once counts it alone)
+        let mut metadata = serde_json::Map::new();
+        if let Some(raw) = &raw {
+            metadata.insert("raw".to_string(), json!(raw));
+        }
+        if reply.attempts == 1 && reply.usage.input > 0 {
+            message.set("tokenCount", Value::I64(i64::try_from(reply.usage.input).unwrap_or(i64::MAX)));
+            metadata.insert("promptChars".to_string(), json!(sent_chars));
+        }
+        let metadata = (!metadata.is_empty()).then_some(Json::Object(metadata));
+        let calls = quietly(|| self.store_reply(target, &reply, &mut message, metadata.as_ref()))?;
         self.budget.steps += 1;
         self.budget.tokens += reply.usage.input + reply.usage.output;
         self.budget.cost += reply.cost.unwrap_or_default();
+        // the share of the prompt read from the provider's cache: a chat template that breaks the cache shows here
+        let cache_ratio = cache_ratio(reply.usage.cached_input, reply.usage.input);
         self.sink.emit(
             "usage",
             json!({"stepSeq": step_seq, "input": reply.usage.input, "cachedInput": reply.usage.cached_input,
-                "output": reply.usage.output, "reasoning": reply.usage.reasoning, "cost": reply.cost.map(|cost| cost.to_string())}),
+                "cacheRatio": cache_ratio, "output": reply.usage.output, "reasoning": reply.usage.reasoning,
+                "cost": reply.cost.map(|cost| cost.to_string())}),
         );
+        if compactions.is_empty() && step_seq > 1 && reply.usage.input > 2048 && cache_ratio.is_some_and(|ratio| ratio < 0.5)
+            && reply.usage.cached_input > 0
+        {
+            tracing::warn!(
+                "agent run {run_id} step {step_seq}: only {:.0}% of the prompt came from model {}'s cache with no \
+                 compaction; its chat template may change earlier messages",
+                cache_ratio.unwrap_or(0.0) * 100.0,
+                target.model.id
+            );
+        }
         quietly(|| self.sink.flush_logged());
         let canceled = self.local.cancel.is_canceled() || reply.finish == Finish::Canceled;
         if canceled {
@@ -1439,6 +1573,96 @@ impl Turn {
         }
     }
 
+    /// Count what the side calls spent in the run's budget and its totals (`AgentRun` tokens and cost), under the lease.
+    fn settle_side(&mut self) -> Result<(), Error> {
+        let spent = std::mem::take(&mut *moqui_lib::sync::lock(&self.side));
+        if spent.usage.input + spent.usage.output == 0 && spent.cost.is_zero() {
+            return Ok(());
+        }
+        self.budget.tokens += spent.usage.input + spent.usage.output;
+        self.budget.cost += spent.cost;
+        let facade = self.facade.clone();
+        let run_id = self.run.run_id.clone();
+        let node = self.sink.node().to_string();
+        quietly(|| {
+            in_tx(&facade, || {
+                let mut row = held(&facade, &run_id, &node, Hold::LeaseOrNone)?;
+                let add = |row: &EntityValue, field: &str, value: u64| {
+                    Value::I64(int_of(row, field).unwrap_or(0) + i64::try_from(value).unwrap_or(i64::MAX))
+                };
+                row.set("inputTokens", add(&row, "inputTokens", spent.usage.input));
+                row.set("cachedInputTokens", add(&row, "cachedInputTokens", spent.usage.cached_input));
+                row.set("outputTokens", add(&row, "outputTokens", spent.usage.output));
+                let cost = crate::llm::decimal_of(&row, "cost").unwrap_or_default() + spent.cost;
+                row.set("cost", Value::Decimal(cost));
+                row.update(&facade)
+            })
+        })
+    }
+
+    /// A JSON-mode reply (plan 7.9) read as the protocol's object: a call, or the answer. One that is not a valid object
+    /// is asked again once with the protocol's reminder; plain text is the answer. Out: the model's own text, kept as
+    /// the message's `raw` when it is not what is stored, so the next request sends the bytes the model wrote.
+    fn read_json_reply(&mut self, target: &Target, request: &ModelRequest, reply: &mut provider::Reply) -> Option<String> {
+        use crate::llm::json_mode::{self, Parsed};
+        let mut parsed = json_mode::parse_reply(&reply.text);
+        if let Parsed::Invalid(why) = &parsed {
+            tracing::info!(
+                "agent run {} step {}: the JSON-mode reply is not a protocol object ({why}); asking once more",
+                self.run.run_id,
+                self.run_ref.step_seq
+            );
+            let mut again = request.clone();
+            again.history.push(Message::assistant(reply.text.clone()));
+            again.history.push(Message::user(json_mode::RETRY_NOTE));
+            let llm = crate::llm::facade(&self.factory);
+            let mut options = self.side_options(&llm, Duration::from_secs(300));
+            let second = provider::call(target, &again, &mut options);
+            drop(options);
+            let mut usage = reply.usage;
+            usage.add(&second.usage);
+            let cost = match (reply.cost, second.cost) {
+                (Some(first), Some(more)) => Some(first + more),
+                (first, more) => first.or(more),
+            };
+            let mut call_ids = std::mem::take(&mut reply.call_ids);
+            call_ids.extend(second.call_ids.iter().cloned());
+            let attempts = reply.attempts + second.attempts;
+            if matches!(second.finish, Finish::Stop | Finish::Length | Finish::ToolCalls) {
+                *reply = second;
+            }
+            reply.usage = usage;
+            reply.cost = cost;
+            reply.call_ids = call_ids;
+            reply.attempts = attempts;
+            parsed = match json_mode::parse_reply(&reply.text) {
+                // still no object: the text is the answer
+                Parsed::Invalid(_) => Parsed::Reply(reply.text.trim().to_string()),
+                other => other,
+            };
+        }
+        let written = reply.text.clone();
+        match parsed {
+            Parsed::Call { name, args } => {
+                reply.tool_calls = vec![provider::ToolCall {
+                    // unique in the conversation: the window and the canvases find a call by its id
+                    id: format!("json_{}_{}_0", self.run.run_id, self.run_ref.step_seq),
+                    name,
+                    arguments: args,
+                }];
+                reply.text = String::new();
+                reply.finish = Finish::ToolCalls;
+                Some(written)
+            }
+            Parsed::Reply(text) => {
+                let raw = (text != written).then_some(written);
+                reply.text = text;
+                raw
+            }
+            Parsed::Invalid(_) => None,
+        }
+    }
+
     /// Store the step, the assistant message and its tool calls, and the run's totals, in one transaction. A call whose
     /// arguments did not parse is stored failed, with a result telling the model what was wrong. Out: the calls, in
     /// model order (the complete ones, then the bad ones).
@@ -1447,6 +1671,7 @@ impl Turn {
         target: &Target,
         reply: &provider::Reply,
         message: &mut EntityValue,
+        metadata: Option<&Json>,
     ) -> Result<Vec<StoredCall>, Error> {
         let facade = self.facade.clone();
         let run = self.run.clone();
@@ -1561,7 +1786,7 @@ impl Turn {
                 None,
                 None,
                 &parts,
-                None,
+                metadata,
                 reply.replay.as_ref(),
                 Some(message.clone()),
             )?;
@@ -1731,6 +1956,7 @@ impl Turn {
                         prepared.push((call.clone(), offered, args));
                     }
                     Err(text) => {
+                        let text = self.repeated(call, &text).unwrap_or(text);
                         quietly(|| {
                             store_result(
                                 &facade,
@@ -1747,6 +1973,8 @@ impl Turn {
                 }
             }
             index += batch.len();
+            // a schema repair call of the batch's preparing
+            self.settle_side()?;
             let outcomes = if prepared.len() > 1 {
                 self.invoke_parallel(&prepared)?
             } else {
@@ -1792,6 +2020,17 @@ impl Turn {
         if self.budget.caps.max_tool_calls.is_some_and(|max| calls_so_far >= max) {
             return Err("This run has used all of its tool calls.".to_string());
         }
+        // the model's own budget a turn (plan 7.9: 12 for a small model, 30 for a large one)
+        if calls_so_far >= self.model_tool_calls {
+            return Err(tools::format::ToolError::new(
+                "budget",
+                format!(
+                    "This turn has used its {} tool calls. Answer with what the results so far show, and say what is left.",
+                    self.model_tool_calls
+                ),
+            )
+            .to_text());
+        }
         if let Some(limit) = offered.rule.calls_per_run {
             let so_far =
                 self.per_tool.get(&call.name).copied().unwrap_or(0) + planned.get(&call.name).copied().unwrap_or(0);
@@ -1803,19 +2042,128 @@ impl Turn {
             }
         }
         // the arguments fitted to the schema first (plan 7.9); what is left over is reported with the result
-        let repaired = tools::repair::repair(&call.arguments, &offered.tool.spec().parameters);
-        tools::schema::check_arguments(&repaired.args, &offered.tool.spec().parameters).map_err(|problem| {
+        let schema = &offered.tool.spec().parameters;
+        let repaired = tools::repair::repair(&call.arguments, schema);
+        let Err(problem) = tools::schema::check_arguments(&repaired.args, schema) else {
+            return Ok((offered.clone(), repaired.args));
+        };
+        // then, for a model with JSON-schema output, one schema-constrained repair call
+        if let Some(args) = self.repair_with_model(call, schema, &repaired.args, &problem) {
+            return Ok((offered.clone(), args));
+        }
+        Err(tools::format::ToolError::new(
+            "arguments",
+            format!(
+                "The arguments of {} do not fit its schema: {problem}. Call it again with arguments that fit.",
+                call.name
+            ),
+        )
+        .ignored(repaired.ignored.clone())
+        .to_text())
+    }
+
+    /// The schema-constrained repair of arguments the deterministic repair could not fit (plan 7.9, after Twenty): one
+    /// call to the step's model with the tool's schema as the response schema, only when the model's `json-schema`
+    /// verdict is yes. A reply that is prose, or does not fit either, is refused loudly in the log and gives `None`.
+    fn repair_with_model(&self, call: &StoredCall, schema: &Json, args: &Json, problem: &str) -> Option<Json> {
+        let target = self.target.as_ref()?;
+        if schema.is_null() || target.model.behavior.no_side_calls {
+            return None;
+        }
+        let verdicts = crate::llm::registry::capabilities(&self.facade, &target.model.id).ok()?;
+        if verdicts.get("json-schema").map(|verdict| verdict.verdict) != Some(crate::llm::registry::Verdict::Yes) {
+            return None;
+        }
+        let request = ModelRequest {
+            system: vec![SCHEMA_REPAIR.to_string()],
+            history: vec![Message::user(format!(
+                "Tool: {}\nSchema: {schema}\nArguments: {args}\nProblem: {problem}",
+                call.name
+            ))],
+            reasoning: Some(crate::llm::conf::ReasoningLevel::None),
+            max_output: Some(1024),
+            response_schema: Some(provider::ResponseSchema {
+                name: "arguments".to_string(),
+                schema: schema.clone(),
+                strict: false,
+            }),
+            ..ModelRequest::default()
+        };
+        let llm = crate::llm::facade(&self.factory);
+        let mut options = self.side_options(&llm, Duration::from_secs(60));
+        let reply = provider::call(target, &request, &mut options);
+        moqui_lib::sync::lock(&self.side).add(&reply);
+        if reply.finish != Finish::Stop {
+            tracing::warn!(
+                "the schema repair of {} in agent run {} ended {}",
+                call.name,
+                self.run.run_id,
+                reply.finish.as_str()
+            );
+            return None;
+        }
+        let fixed = match provider::reply_json(&reply.text) {
+            Ok(fixed) => fixed,
+            Err(why) => {
+                // structure was asked for: prose is a failure, never an argument
+                tracing::error!(
+                    "the schema repair of {} in agent run {} answered prose, not the arguments: {why}",
+                    call.name,
+                    self.run.run_id
+                );
+                return None;
+            }
+        };
+        let fixed = tools::repair::repair(&fixed, schema).args;
+        match tools::schema::check_arguments(&fixed, schema) {
+            Ok(()) => {
+                tracing::info!("the arguments of {} in agent run {} were fitted by a repair call", call.name, self.run.run_id);
+                Some(fixed)
+            }
+            Err(still) => {
+                tracing::error!(
+                    "the schema repair of {} in agent run {} still does not fit: {still}",
+                    call.name,
+                    self.run.run_id
+                );
+                None
+            }
+        }
+    }
+
+    /// A failure that this run's same call (the tool and the hash of its arguments) already had: the `repeated` error
+    /// (plan 7.9), so a small model stops trying it.
+    fn repeated(&self, call: &StoredCall, text: &str) -> Option<String> {
+        let hash = moqui_lib::json::canonical_sha256(&call.arguments);
+        let summary: String = text.chars().take(SUMMARY_CAP).collect();
+        let earlier = quietly(|| {
+            self.facade
+                .find(TOOL_CALL)?
+                .eq("runId", Value::string(&self.run.run_id))
+                .eq("toolName", Value::string(&call.name))
+                .eq("argumentsHash", Value::string(&hash))
+                .eq("statusId", Value::string("AgtcFailed"))
+                .disable_authz()
+                .list()
+        })
+        .ok()?;
+        let same = earlier.values().iter().any(|row| {
+            text_of(row, "toolCallId").as_deref() != Some(call.tool_call_id.as_str())
+                && text_of(row, "resultSummary").as_deref() == Some(summary.trim())
+        });
+        same.then(|| {
+            let first = text.lines().next().unwrap_or(text);
             tools::format::ToolError::new(
-                "arguments",
+                "repeated",
                 format!(
-                    "The arguments of {} do not fit its schema: {problem}. Call it again with arguments that fit.",
+                    "This {} call failed the same way before. Do not call it again with these arguments: tell the user \
+                     what failed, or try another way.",
                     call.name
                 ),
             )
-            .ignored(repaired.ignored.clone())
+            .hint(first.chars().take(300).collect::<String>())
             .to_text()
-        })?;
-        Ok((offered.clone(), repaired.args))
+        })
     }
 
     /// Mark a call running and count it.
@@ -2020,6 +2368,7 @@ impl Turn {
                 } else {
                     spill.fit(&format!("Error: {text}"))
                 } + &note;
+                let text = self.repeated(call, &text).unwrap_or(text);
                 quietly(|| {
                     store_result(
                         &facade,
@@ -2071,6 +2420,134 @@ impl Turn {
         })?;
         super::engine(&self.factory).forget_if(&run_id, &self.local);
         Ok(ToolsEnd::Paused)
+    }
+}
+
+/// The request of a call from the conversation's frozen prefix and its history as compaction left it.
+fn request_from(
+    frozen: &prompt::FrozenPrefix,
+    history: &window::History,
+    target: &Target,
+    conversation_id: &str,
+) -> ModelRequest {
+    let (messages, tail) = history.messages();
+    let mut request = frozen.request(messages, tail, Some(conversation_id));
+    request.reasoning = Some(target.reasoning);
+    request
+}
+
+/// The tokens of `request`: the provider's count of the newest reply's request plus the characters added since, by the
+/// model's calibration (plan 7.8).
+fn estimate(request: &ModelRequest, history: &window::History, target: &Target) -> u64 {
+    let chars = crate::llm::tokens::RequestChars::sent(request, target).total();
+    crate::llm::tokens::Estimator::for_model(&target.model).since(history.anchor, chars)
+}
+
+/// The share of `input` read from the cache, when there was input.
+fn cache_ratio(cached: u64, input: u64) -> Option<f64> {
+    (input > 0).then(|| ((cached.min(input) as f64 / input as f64) * 1000.0).round() / 1000.0)
+}
+
+/// The `compaction` event of a compaction.
+fn compaction_event(step_seq: i64, outcome: &window::Outcome) -> Json {
+    json!({"stepSeq": step_seq, "stages": outcome.stages, "beforeTokens": outcome.before, "afterTokens": outcome.after,
+        "digested": outcome.digested, "summarized": outcome.summarized, "summaryFallback": outcome.summary_fallback,
+        "full": outcome.full})
+}
+
+/// What a compaction needs of the step, borrowed apart from its event sink (which streams the call meanwhile).
+struct Compactor<'a> {
+    factory: &'a Arc<ExecutionContextFactory>,
+    facade: &'a EntityFacade,
+    run_id: &'a str,
+    conversation_id: &'a str,
+    user_id: &'a str,
+    step_seq: i64,
+    node: &'a str,
+    cancel: &'a provider::CancelToken,
+    side: &'a std::sync::Mutex<SideSpend>,
+}
+
+impl Compactor<'_> {
+    /// Compact `history` for `request` within `window` ([`window::compact`]), the summary on the agent's model, and
+    /// store what changed while this node holds the run's lease.
+    fn run(
+        &self,
+        target: &Target,
+        request: &ModelRequest,
+        history: &mut window::History,
+        window: &Window,
+        force: bool,
+    ) -> Result<window::Outcome, Error> {
+        let chars = crate::llm::tokens::RequestChars::sent(request, target);
+        // the conversation's own ratio when the provider counted a request of it, else the model's calibration
+        let chars_per_token = match history.anchor {
+            Some((tokens, at)) if tokens > 0 && at > 0 => at as f64 / tokens as f64,
+            _ => crate::llm::tokens::Estimator::for_model(&target.model).k,
+        };
+        let budget = window::Budget {
+            fixed_chars: chars.system + chars.tools,
+            chars_per_token,
+            window: *window,
+        };
+        let prompt = PromptTexts::of(self.factory).summary;
+        let mut summarize = |input: &window::SummaryInput| self.summarize(target, &prompt, input);
+        let outcome = window::compact(history, &budget, force, &mut summarize);
+        if outcome.changed() {
+            quietly(|| {
+                in_tx(self.facade, || {
+                    held(self.facade, self.run_id, self.node, Hold::Lease)?;
+                    window::persist(self.facade, self.conversation_id, history)
+                })
+            })?;
+            for entry in &mut history.entries {
+                entry.dirty = false;
+            }
+            history.anchor = None;
+            tracing::info!(
+                "agent run {} compacted its conversation {} ({}): about {} to {} tokens",
+                self.run_id,
+                self.conversation_id,
+                outcome.stages.join(", "),
+                outcome.before,
+                outcome.after
+            );
+        }
+        Ok(outcome)
+    }
+
+    /// The summary of older turns on the agent's model (answered question 9); `None` when the call does not answer, so
+    /// the deterministic one is used.
+    fn summarize(&self, target: &Target, prompt: &str, input: &window::SummaryInput) -> Option<String> {
+        if prompt.is_empty() || target.model.behavior.no_side_calls {
+            return None;
+        }
+        let llm = crate::llm::facade(self.factory);
+        let request = window::summary_request(prompt, input);
+        let mut options = CallOptions::new(CallSource::Agent);
+        options.user_id = Some(self.user_id.to_string());
+        options.run_id = Some(self.run_id.to_string());
+        options.step_seq = Some(self.step_seq);
+        options.cancel = self.cancel.clone();
+        options.deadline = Some(Instant::now() + Duration::from_secs(120));
+        options.length_retry = false;
+        options.recorder = Some(Recorder {
+            llm: &llm,
+            facade: self.facade,
+        });
+        let reply = provider::call(target, &request, &mut options);
+        moqui_lib::sync::lock(self.side).add(&reply);
+        match reply.finish {
+            Finish::Stop | Finish::Length if !reply.text.trim().is_empty() => Some(reply.text),
+            other => {
+                tracing::warn!(
+                    "the compaction summary of agent run {} did not come from the model ({}), so the deterministic one is used",
+                    self.run_id,
+                    other.as_str()
+                );
+                None
+            }
+        }
     }
 }
 

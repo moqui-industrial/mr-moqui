@@ -220,7 +220,8 @@ fn the_html_client_passes_its_node_tests() {
 /// the cleaning of m-html-view, the form-list views (board columns, calendar times and lanes), m-markdown's rendering, and
 /// the chat store (WebrootChat.js: presence, unread counts, typing, a pushed event
 /// merged into a timeline, the status menu), Assist (WebrootAssist.js: the reducer, follow.locate, safePath, chips) and its canvas
-/// (WebrootAssistCanvas.js: the library spec golden, lang-core parses, state reconciliation).
+/// (WebrootAssistCanvas.js: the library spec golden, lang-core parses, state reconciliation, and the Vue SFC frame's
+/// message validator, watchdog and submit gate).
 /// Nothing runs when `node` is not installed.
 #[test]
 fn the_qvt_client_passes_its_node_tests() {

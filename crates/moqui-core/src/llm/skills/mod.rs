@@ -769,9 +769,11 @@ impl SkillIndex {
                 Vec::new()
             }
         };
+        let hidden = hidden_dialect_skills(facade, audience.agent_id);
         let skills = resolve(candidates, audience.user_id)
             .into_iter()
             .filter(|skill| skill.serves(audience.agent_id, audience.surface))
+            .filter(|skill| !hidden.contains(&skill.name.as_str()))
             .collect();
         Self { skills, aliases }
     }
@@ -846,6 +848,26 @@ pub fn pins(facade: &EntityFacade, agent_id: &str) -> Vec<String> {
             Vec::new()
         }
     }
+}
+
+/// The skills of the canvas dialects `agent_id` does not write (`AgentDefinition.canvasDialects`; with no agent, the
+/// default, OpenUI Lang only): such a skill is neither listed nor loaded, since its `write_ui` kind is not offered.
+fn hidden_dialect_skills(facade: &EntityFacade, agent_id: Option<&str>) -> Vec<&'static str> {
+    let agent = match agent_id {
+        Some(agent_id) => match crate::llm::run::quietly(|| crate::llm::run::AgentDef::load(facade, agent_id)) {
+            Ok(agent) => agent.unwrap_or_default(),
+            Err(error) => {
+                tracing::error!("the canvas dialects of agent {agent_id} could not be read: {error}");
+                crate::llm::run::AgentDef::default()
+            }
+        },
+        None => crate::llm::run::AgentDef::default(),
+    };
+    crate::llm::ui::dialects()
+        .iter()
+        .filter(|dialect| !agent.allows_dialect(dialect.name()))
+        .map(|dialect| dialect.skill())
+        .collect()
 }
 
 /// What the catalog of a new conversation is built from.

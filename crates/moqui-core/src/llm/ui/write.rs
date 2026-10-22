@@ -13,14 +13,16 @@
  */
 
 //! The writes of a canvas (plans/LLM-A2A-Assist.md 4.10, answered open question 13). A canvas never posts from the
-//! page: an OpenUI Mutation names a transition of an `/apps` screen, and the server evaluates its arguments from the
-//! stored program with the canvas's state ([`super::openui::evaluate_mutation`]), holds it at the transition gate (a
+//! page: an OpenUI Mutation (or a Vue SFC action, [`super::vue_sfc::action_request`]) names a transition of an `/apps`
+//! screen, and the server evaluates its arguments from the stored program with the canvas's state
+//! ([`super::openui::evaluate_mutation`]), holds it at the transition gate (a
 //! render fenced with the gate `Hold`, which runs nothing and answers the held request with its hash), and runs that
 //! exact request under the gate's `Approved` with the hash ([`execute`]). Two ways reach it:
 //!
 //! - **A click** on a Button the framework drew (`canvasAction` with the user's activation, from the browser session
 //!   with its token): the click is the approval, so no card is asked for; an `AgentApproval` row records it, approved
-//!   through the channel `canvas` and run at once.
+//!   through the channel `canvas` and run at once. For a Vue SFC canvas that Button is the Save of the confirm the page
+//!   draws outside the frame for a submit the frame made.
 //! - **The agent proposes it** (`write_ui` with `run`): that is a write without a click, so it is an approval card like
 //!   any other ([`crate::llm::approval::request`]); the run pauses until the user decides, and the approved request runs
 //!   when it resumes.
@@ -157,32 +159,23 @@ pub fn hold(
     state: Option<&Json>,
 ) -> Result<HeldMutation, String> {
     let agent_id = agent.agent_id.as_str();
-    if canvas.dialect != "openui" {
-        return Err(format!("a {} canvas has no Mutations", canvas.dialect));
-    }
-    let sources = super::openui::sources(factory).map_err(|error| {
-        tracing::error!("OpenUI Lang is not available for a canvas write: {error}");
-        "the canvas cannot run writes on this server now".to_string()
-    })?;
     let state = state.cloned().unwrap_or_else(|| canvas.data["state"].clone());
-    let evaluated = super::openui::evaluate_mutation(&sources, &canvas.program, statement, &state)
-        .map_err(|error| format!("the Mutation {statement} could not be evaluated: {error}"))?;
-    let Some((tool, args)) = evaluated else {
-        let known: Vec<&str> = canvas.data["mutations"].as_array().into_iter().flatten().filter_map(Json::as_str).collect();
-        return Err(format!(
-            "canvas v{} has no Mutation named {statement}{}",
-            canvas.version,
-            if known.is_empty() { String::new() } else { format!("; its Mutations are {}", known.join(", ")) }
-        ));
+    let (method, raw_path, body) = match canvas.dialect.as_str() {
+        "openui" => openui_request(factory, canvas, statement, &state)?,
+        "vue-sfc" => super::vue_sfc::action_request(&canvas.program, statement, &state)?.ok_or_else(|| {
+            let known: Vec<&str> = canvas.data["mutations"].as_array().into_iter().flatten().filter_map(Json::as_str).collect();
+            format!(
+                "canvas v{} has no action named {statement}{}",
+                canvas.version,
+                if known.is_empty() { String::new() } else { format!("; its actions are {}", known.join(", ")) }
+            )
+        })?,
+        other => return Err(format!("a {other} canvas has no Mutations")),
     };
-    if tool != "request" {
-        return Err(format!("the Mutation {statement} names the tool {tool}; the only tool is request"));
-    }
-    let method = args["method"].as_str().unwrap_or("POST").to_ascii_uppercase();
     if method == "GET" {
         return Err(format!("the Mutation {statement} reads with GET; a read is a Query"));
     }
-    let path = crate::llm::tools::apps::app_path(args["path"].as_str().unwrap_or_default());
+    let path = crate::llm::tools::apps::app_path(&raw_path);
     let bare = path.split('?').next().unwrap_or_default().to_string();
     if !bare.starts_with("/apps/") {
         return Err(format!("{path} is not a transition of an /apps screen"));
@@ -190,7 +183,7 @@ pub fn hold(
     if let Some(problem) = crate::llm::screen::path_problem(&bare) {
         return Err(format!("{bare}: {problem}"));
     }
-    let parameters = parameters_of(&args["body"]);
+    let parameters = parameters_of(&body);
     // a canvas never posts a secret: a password form is a screen's, and a secret-named value is never shown or kept
     if let Some(secret) = parameters.keys().find(|name| crate::llm::tools::data::secret_name(name)) {
         return Err(format!(
@@ -224,6 +217,35 @@ pub fn hold(
             crate::llm::tools::format::cut(&output.body_text(), 200)
         )),
     }
+}
+
+/// The request of the OpenUI Mutation `statement` of `canvas`, evaluated from the stored program with `state`: its
+/// method (upper case), its path and its body.
+fn openui_request(
+    factory: &Arc<ExecutionContextFactory>,
+    canvas: &super::Canvas,
+    statement: &str,
+    state: &Json,
+) -> Result<(String, String, Json), String> {
+    let sources = super::openui::sources(factory).map_err(|error| {
+        tracing::error!("OpenUI Lang is not available for a canvas write: {error}");
+        "the canvas cannot run writes on this server now".to_string()
+    })?;
+    let evaluated = super::openui::evaluate_mutation(&sources, &canvas.program, statement, state)
+        .map_err(|error| format!("the Mutation {statement} could not be evaluated: {error}"))?;
+    let Some((tool, args)) = evaluated else {
+        let known: Vec<&str> = canvas.data["mutations"].as_array().into_iter().flatten().filter_map(Json::as_str).collect();
+        return Err(format!(
+            "canvas v{} has no Mutation named {statement}{}",
+            canvas.version,
+            if known.is_empty() { String::new() } else { format!("; its Mutations are {}", known.join(", ")) }
+        ));
+    };
+    if tool != "request" {
+        return Err(format!("the Mutation {statement} names the tool {tool}; the only tool is request"));
+    }
+    let method = args["method"].as_str().unwrap_or("POST").to_ascii_uppercase();
+    Ok((method, args["path"].as_str().unwrap_or_default().to_string(), args["body"].clone()))
 }
 
 /// Whether the user ∩ the agent may run `held`: the agent's role groups on the transition (`AT_XML_SCREEN_TRANS`

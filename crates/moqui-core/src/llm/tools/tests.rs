@@ -318,6 +318,46 @@ impl AgentTool for TestHeld {
     }
 }
 
+/// A screen-like page of `size` characters (the 40-turn window test): a path and title from `page`, rows, the outcome.
+pub(crate) struct TestPage(ToolSpec);
+
+impl Default for TestPage {
+    fn default() -> Self {
+        Self(
+            ToolSpec::new(
+                "test_page",
+                "Opens a test page.",
+                object(&[
+                    Property::required("page", "string", ""),
+                    Property::optional("size", "integer", ""),
+                ]),
+                Classification::Read,
+            )
+            .needs(&[TEST_CAP]),
+        )
+    }
+}
+
+impl AgentTool for TestPage {
+    fn spec(&self) -> &ToolSpec {
+        &self.0
+    }
+
+    fn call(&self, _ctx: &mut TurnContext<'_>, args: Json) -> ToolOutcome {
+        let page = args.get("page").and_then(Json::as_str).unwrap_or("Page").to_string();
+        let size = args.get("size").and_then(Json::as_u64).unwrap_or(2500) as usize;
+        let mut text = format!("path /apps/test/{page}?pageId={page}\ntitle Test ▸ {page}\n");
+        let mut row = 0;
+        while text.chars().count() + 40 < size {
+            row += 1;
+            text.push_str(&format!("   {page}-{row:03} | a value of row {row} of the page\n"));
+        }
+        text.push_str(&format!("   Rows 1–{row} of {row}\n--- ok"));
+        ToolOutcome::text(text)
+    }
+}
+
+crate::submit_tool!(TestPage);
 crate::submit_tool!(TestRead);
 crate::submit_tool!(TestWrite);
 crate::submit_tool!(TestAsk);
@@ -362,7 +402,7 @@ fn the_test_tools_are_offered_only_with_their_capability_sorted_by_name() {
         .collect();
     assert_eq!(
         test,
-        ["test_approve", "test_ask", "test_held", "test_read", "test_sneaky", "test_write"]
+        ["test_approve", "test_ask", "test_held", "test_page", "test_read", "test_sneaky", "test_write"]
     );
     assert!(all.iter().all(|offered| offered.rule.mode == ApprovalMode::Ask));
     assert!(crate::llm::prompt::offered_tools(Surface::Drawer, PromptVariant::Small)
@@ -393,7 +433,7 @@ fn a_policy_decides_by_its_first_matching_rule() {
     let offered = offered(&caps, PromptVariant::Standard, &policy, &[], &[]);
     let test: Vec<&Offered> = offered
         .iter()
-        .filter(|offered| offered.tool.spec().name.starts_with("test_"))
+        .filter(|offered| offered.tool.spec().name.starts_with("test_") && offered.tool.spec().name != "test_page")
         .collect();
     assert_eq!(
         test.iter()

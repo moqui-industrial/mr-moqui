@@ -101,10 +101,15 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
     let registry = quietly(|| llm.registry(&caller.facade));
     let agents = drawer_agents(&caller.facade)?;
     // no development-only dialect is built yet (screen-xml is planned separately)
-    let dialects: Json = crate::llm::ui::offered(&crate::llm::tools::ClientCaps::for_surface(crate::llm::prompt::Surface::Drawer), false)
-        .iter()
-        .map(|dialect| json!({"name": dialect.name(), "label": dialect.label(), "skill": dialect.skill()}))
-        .collect();
+    let drawer_dialects = crate::llm::ui::offered(&crate::llm::tools::ClientCaps::for_surface(crate::llm::prompt::Surface::Drawer), false);
+    let dialects_of = |agent: &crate::llm::run::AgentDef| -> Json {
+        drawer_dialects
+            .iter()
+            .filter(|dialect| agent.allows_dialect(dialect.name()))
+            .map(|dialect| json!({"name": dialect.name(), "label": dialect.label(), "skill": dialect.skill()}))
+            .collect()
+    };
+    let any_canvas = agents.iter().any(|(agent, _)| !dialects_of(agent).as_array().is_none_or(Vec::is_empty));
     let agent_list: Vec<Json> = agents
         .iter()
         .map(|(agent, row)| {
@@ -120,8 +125,8 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
                 "tier": agent.tier.map(|tier| tier.as_str()),
                 "tierFixed": agent.tier.is_some(),
                 "tiers": tiers,
-                // the canvas dialects the drawer offers this agent (the dialects built here whose capability the drawer has)
-                "dialects": dialects,
+                // the canvas dialects the drawer offers this agent (built here, with the drawer's capability, and the agent's)
+                "dialects": dialects_of(agent),
                 "startPath": agent.start_path,
             })
         })
@@ -149,7 +154,9 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
             "enabled": llm.enabled(),
             "screenFollow": crate::llm::screen::installed(),
             "preview": quietly(|| approval::preview::available(&caller.facade)),
-            "canvas": !dialects.as_array().is_none_or(Vec::is_empty),
+            "canvas": any_canvas,
+            // the user lets a Vue SFC canvas open other sites and show their images (ASSIST_CANVAS_EXTERNAL)
+            "canvasExternal": canvas_external(&caller.user_id),
             "attachments": false,
             "transcribe": false,
             "textActions": false,
@@ -174,8 +181,23 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
             "calls": "/assist",
             "events": "/assist/runs/{runId}/events",
             "catchUp": "/assist/runs/{runId}/events.json",
+            "sandbox": "/assist/sandbox",
         },
     }))
+}
+
+/// The user preference that lets a Vue SFC canvas reach other sites (its links and images); off unless the user set it.
+pub const CANVAS_EXTERNAL: &str = "ASSIST_CANVAS_EXTERNAL";
+
+/// Whether the user lets a Vue SFC canvas reach other sites.
+pub(crate) fn canvas_external(user_id: &str) -> bool {
+    match crate::user::get_preference_for(CANVAS_EXTERNAL, Some(user_id)) {
+        Ok(value) => value.as_deref().map(str::trim) == Some("true"),
+        Err(error) => {
+            tracing::error!("the preference {CANVAS_EXTERNAL} of {user_id} could not be read: {error}");
+            false
+        }
+    }
 }
 
 /// The runs `ids` by id, read at once.

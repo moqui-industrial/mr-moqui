@@ -13,8 +13,9 @@
  */
 
 //! The agent evaluation harness (plans/LLM-A2A-Assist.md 9, `moqui test --agents`) on a seeded server on embedded
-//! Postgres: the tools component's first 12 tasks (the approve, edit and reject ones of 13.4, the service tool one and the chart fallback of 13.6 among them) pass on their
-//! recordings with no model; a live profile runs through the normal provider path, on the scripted fake and on a Chat
+//! Postgres: the tools component's 24 tasks (`assist.agent.js` in the drawer, `headless.agent.js` on the a2a surface)
+//! pass on their recordings with no model, and the JSON tool mode set of a small model (`replay-small/`, 9 of them)
+//! passes with the others skipped; a live profile runs through the normal provider path, on the scripted fake and on a Chat
 //! Completions endpoint (a loopback server that answers one stream and keeps the request, so the seed is seen in the
 //! body), with the feature binding put back after; a profile whose endpoint does not answer is skipped, not failed. A user with only `AgentUse` runs an agent end to
 //! end: the calls, the run's rows, a question, a spilled result read back and the screen state are written for them.
@@ -136,34 +137,81 @@ fn the_agent_tasks_replay_with_no_model_and_run_live_or_skip() {
     let _ = std::fs::remove_dir_all(&out);
 }
 
-/// The committed recordings of the tools component pass with no model: every task, each a transcript.
+fn tools_specs(dir: &std::path::Path) -> Vec<AgentSpecFile> {
+    ["assist", "headless"]
+        .into_iter()
+        .map(|name| AgentSpecFile {
+            component: "tools".to_string(),
+            file: SpecFile {
+                name: name.to_string(),
+                display: format!("tools/test/agent/{name}.agent.js"),
+                source: std::fs::read_to_string(dir.join(format!("{name}.agent.js"))).unwrap(),
+            },
+        })
+        .collect()
+}
+
+/// The committed recordings of the tools component pass with no model: every task of both specs, each a transcript;
+/// then the JSON tool mode set, whose tasks without a recording are skipped.
 fn replayed(factory: &Arc<ExecutionContextFactory>, out: &std::path::Path) {
     let dir = repo().join("runtime/base-component/tools/test/agent");
-    let source = std::fs::read_to_string(dir.join("assist.agent.js")).unwrap();
-    let specs = vec![AgentSpecFile {
-        component: "tools".to_string(),
-        file: SpecFile {
-            name: "assist".to_string(),
-            display: "tools/test/agent/assist.agent.js".to_string(),
-            source,
-        },
-    }];
+    let specs = tools_specs(&dir);
     let mode = Mode::Replay {
         dir: dir.join("replay"),
     };
     let evaluation = evaluate(factory, &specs, &options(mode, out), &mut |_| {}).unwrap();
     assert!(evaluation.skipped.is_none());
-    assert_eq!(evaluation.results.len(), 12, "the first 12 tasks");
+    assert_eq!(evaluation.results.len(), 24, "21 drawer tasks and 3 headless ones");
     for result in &evaluation.results {
         assert_eq!(result.outcome, TaskOutcome::Passed, "{}: {:?}", result.task, result.notes);
         let transcript = result.transcript.as_ref().unwrap();
-        assert!(transcript.starts_with(out.join("assist")), "{}", transcript.display());
+        assert!(transcript.starts_with(out.join(&result.spec)), "{}", transcript.display());
         let text = std::fs::read_to_string(transcript).unwrap();
         assert!(text.lines().last().unwrap().contains(r#""passed":true"#), "{text}");
     }
+    assert_eq!(evaluation.results.iter().filter(|result| result.spec == "headless").count(), 3);
     let held: u64 = evaluation.results.iter().map(|result| result.metrics.held).sum();
-    assert_eq!(held, 4, "the approve, edit, reject and service tool tasks each ask for one approval");
+    assert_eq!(held, 5, "the approve, edit, reject, service tool and headless write tasks each ask for one approval");
+    let invented: u64 = evaluation.results.iter().map(|result| result.metrics.invented).sum();
+    assert_eq!(invented, 0);
     assert_eq!(binding_model(factory), "eval-fake-model", "the replay's binding is put back");
+
+    // the JSON tool mode set: 9 tasks recorded as protocol objects, the rest skipped
+    let small = dir.join("replay-small");
+    let evaluation = evaluate(factory, &specs, &options(Mode::Replay { dir: small.clone() }, out), &mut |_| {}).unwrap();
+    assert_eq!(moqui_core::testkit::agents::replay_label(&small), "replay-small");
+    let passed: Vec<&str> = evaluation
+        .results
+        .iter()
+        .filter(|result| result.outcome == TaskOutcome::Passed)
+        .map(|result| result.slug.as_str())
+        .collect();
+    let failed: Vec<String> = evaluation
+        .results
+        .iter()
+        .filter(|result| matches!(result.outcome, TaskOutcome::Failed(_)))
+        .map(|result| format!("{}: {:?} {:?}", result.task, result.outcome, result.notes))
+        .collect();
+    assert_eq!(passed.len(), 9, "{passed:?} failed: {failed:#?}");
+    for result in &evaluation.results {
+        assert!(
+            matches!(result.outcome, TaskOutcome::Passed | TaskOutcome::Skipped(_)),
+            "{}: {:?} {:?}",
+            result.task,
+            result.outcome,
+            result.notes
+        );
+        if result.outcome == TaskOutcome::Passed {
+            let text = std::fs::read_to_string(result.transcript.as_ref().unwrap()).unwrap();
+            let header: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+            assert_eq!(header["model"]["toolMode"], "json", "{}", result.task);
+            // every reply is played as the text the model wrote
+            assert!(text.contains(r#""raw":""#), "{text}");
+        }
+    }
+    let held: u64 = evaluation.results.iter().map(|result| result.metrics.held).sum();
+    assert_eq!(held, 1, "multi-step with approval");
+    assert_eq!(binding_model(factory), "eval-fake-model");
 }
 
 /// A live profile on the scripted fake: the run goes through the provider, the checks see the screen call.

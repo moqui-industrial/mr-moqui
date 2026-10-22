@@ -1273,6 +1273,12 @@ fn boot_server_factory(
     // One sender for every transport: a peer's base URL picks HTTPS, SSH, or Postgres NOTIFY.
     cluster_notify::install_sender(&factory, db.is_postgres())?;
     let notify_listener = cluster_notify::listen_if_configured(&factory, &db, Arc::clone(&cluster_posts))?;
+    // The skill files into their rows before the cluster starts, as the seed data is loaded: a write after the start
+    // sends, which reads the member list, and while that list says no peers nothing is queued until the next tick.
+    #[cfg(feature = "llm")]
+    if let Some(facade) = factory.entity() {
+        moqui_core::llm::skills::sync::ensure_synced(&factory, &facade);
+    }
     moqui_core::cluster::start(&factory).map_err(moqui_lib::error::Error::from)?;
     // the mail client's IMAP IDLE workers, started on the scheduler's tick (email-client idle-enabled)
     moqui_core::service::start_mail_idle(&factory);

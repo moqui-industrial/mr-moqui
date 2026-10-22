@@ -20,17 +20,27 @@ use super::*;
 use crate::llm::tools::{caps, ClientCaps};
 
 #[test]
-fn the_dialects_register_and_only_openui_is_offered() {
+fn the_dialects_register_and_vue_sfc_only_for_an_agent_that_names_it() {
     let names: Vec<&str> = dialects().iter().map(|dialect| dialect.name()).collect();
     assert_eq!(names, ["openui", "vue-sfc"]);
     assert!(dialect("openui").unwrap().available());
     assert_eq!(dialect("openui").unwrap().skill(), "openui-lang");
-    assert!(!dialect("vue-sfc").unwrap().available(), "vue-sfc is a placeholder until 13.8");
+    assert!(dialect("vue-sfc").unwrap().available());
+    assert_eq!(dialect("vue-sfc").unwrap().skill(), "vue-sfc");
     let drawer = ClientCaps::for_surface(crate::llm::prompt::Surface::Drawer);
-    let offered: Vec<&str> = offered(&drawer, false).iter().map(|dialect| dialect.name()).collect();
-    assert_eq!(offered, ["openui"]);
+    let offered_here: Vec<&str> = offered(&drawer, false).iter().map(|dialect| dialect.name()).collect();
+    assert_eq!(offered_here, ["openui", "vue-sfc"]);
     let chat = ClientCaps::of([caps::QUESTION_INLINE]);
     assert!(offered_names(&chat).is_empty());
+    // an agent writes OpenUI Lang only unless its canvasDialects name another (Vue SFC is off by default)
+    let plain = crate::llm::run::AgentDef::default();
+    assert!(plain.allows_dialect("openui") && !plain.allows_dialect("vue-sfc"));
+    let lowered = drawer.clone().dialects_only(|name| plain.allows_dialect(name));
+    assert!(lowered.has(caps::UI_OPENUI) && !lowered.has(caps::UI_VUE_SFC) && lowered.has(caps::APPROVAL_INLINE));
+    let both = crate::llm::run::AgentDef { canvas_dialects: vec!["openui".to_string(), "vue-sfc".to_string()], ..Default::default() };
+    assert!(drawer.clone().dialects_only(|name| both.allows_dialect(name)).has(caps::UI_VUE_SFC));
+    let only_sfc = crate::llm::run::AgentDef { canvas_dialects: vec!["vue-sfc".to_string()], ..Default::default() };
+    assert!(!only_sfc.allows_dialect("openui"));
 }
 
 fn offered_names(caps: &ClientCaps) -> Vec<&'static str> {

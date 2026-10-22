@@ -1,10 +1,12 @@
-# Recordings of the first agent tasks
+# Recordings of the agent tasks (the default profile)
 
-`assist/<task>-1.jsonl` are the recordings `moqui test tools --agents --replay runtime/base-component/tools/test/agent/replay`
-plays, one per task of `../assist.agent.js`.
+`assist/<task>-1.jsonl` and `headless/<task>-1.jsonl` are the recordings
+`moqui test tools --agents --replay runtime/base-component/tools/test/agent/replay` plays, one per task of
+`../assist.agent.js` and `../headless.agent.js` (24 in all); its baseline is `../baseline-replay.json`. The JSON tool mode
+recordings of a small model are in `../replay-small/`.
 
 **The model replies in them are hand-authored, not recorded from a model.** No live model was available when the
-evaluation harness was built (phase 13.3 of `plans/LLM-A2A-Assist.md`, the approval and service tool tasks in 13.4, the chart fallback in 13.6), so each `model` line was written by hand as a
+evaluation harness was built (phase 13.3 of `plans/LLM-A2A-Assist.md`, the approval and service tool tasks in 13.4, the chart fallback in 13.6, the rest in 13.7), so each `model` line was written by hand as a
 plausible, correct reply of a small model (the header's `model` is the settings of the `local-qwen` example: the small
 prompt variant, a 4,000-character result cap, 10 rows a list, a 100x30 screen). The `tool` lines are what the tools
 answered when the replies were played on a `moqui test` database (every data type of the repository's runtime, so the
@@ -36,6 +38,18 @@ The replies, task by task:
   are keyed by), `skill openui-lang`, then `write_ui` with a Query whose options are closed with one `}` (the classic
   mistake), answered `openui_parse` naming `openui-lang#query` and quoting its rule, then the same program fixed, shown
   as canvas v1: two `write_ui` calls.
+
+- Phase 13.7, drawer: `ask-when-ambiguous` (`data` finds two groups, `ask` with both, the scripted answer picks one,
+  `screen go` to it); `follow-up-on-the-same-page` (two turns: open the group list, then `do Find`, `set` Group ID and
+  `do Find` on the page the tail names); `a-record-that-is-not-there` (`data` with no rows, an answer with no link);
+  `a-wrong-screen-path` (`screen go` to a path that is not a screen, answered `--- error` on the dashboard it fell back to,
+  then `do Visits` there); `unknown-tool-recovery` (a call of `navigate`, answered `unknown_tool` naming `screen`);
+  `arguments-repaired` (`data` with `screen`, `filters`, a limit as text and an unknown `verbose`, fitted and reported
+  `ignored`); `a-tool-call-written-as-text` (a Qwen `<tool_call>` block as the reply's text, kept as the line's `raw`, which
+  the replay plays, taken as a `data` call); `answer-without-tools` (no tool calls); `page-on-before-answering` (`data` two
+  rows at a time to the fifth).
+- Phase 13.7, headless (`headless/`, the `a2a` surface): `data` for a count; `screen go` to a group and an answer with its
+  link; `screen set` and `do Update`, approved as in the app, and saved.
 
 To replace a recording with one from a model, run the task live and copy its transcript here as `<task>-1.jsonl`
 (`runtime/log/agent-eval/<run>/assist/<task>-<n>.jsonl`, the same form); to keep several runs, name them

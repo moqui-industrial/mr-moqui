@@ -28,6 +28,7 @@ pub mod approval;
 pub mod assist;
 pub mod conf;
 pub mod facts;
+pub mod json_mode;
 pub mod prompt;
 pub mod provider;
 pub mod registry;
@@ -39,6 +40,7 @@ pub mod tokens;
 pub mod tools;
 pub mod ui;
 pub mod usage;
+pub mod window;
 
 #[cfg(test)]
 mod tests;
