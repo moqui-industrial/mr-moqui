@@ -2052,6 +2052,19 @@
             w(withCondition(n, "<m-markdown" + A(out) + "></m-markdown>\n"));
         };
 
+        // A code-view as ScreenQvt.js writes it, the text, language and file name bound over the scope.
+        const codeView = (n) => {
+            const out = {};
+            plainAttr(out, "id", at(n, "id"), n);
+            plainAttr(out, "text", at(n, "text"), n);
+            plainAttr(out, "language", at(n, "language"), n);
+            plainAttr(out, "file-name", at(n, "file-name"), n);
+            if (at(n, "line-numbers") === "false") out[":line-numbers"] = "false";
+            plainAttr(out, "highlight-lines", at(n, "highlight-lines"), n);
+            plainAttr(out, "class", at(n, "style"), n);
+            w(withCondition(n, "<m-code" + A(out) + "></m-code>\n"));
+        };
+
         // ---- dashboards ----
 
         // A number-card as ScreenQvt.js writes it, its attributes bound over the scope as a label's text is: the title localized,
@@ -2142,7 +2155,8 @@
             containerDialog, dynamicDialog, dynamicContainer, tree, subscreensPanel, subscreensTabs, image, label: labelWidget,
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
             split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose, screenContext,
-            numberCard, dashboardOpen, chatter, recordFiles, splitOpen, htmlView, markdownView, statusBar
+            numberCard, dashboardOpen, chatter, recordFiles, splitOpen, htmlView, markdownView, statusBar,
+            codeView
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -2351,6 +2365,7 @@
         "record-files": widget("recordFiles", false),
         "html-view": widget("htmlView", false),
         "markdown-view": widget("markdownView", false),
+        "code-view": widget("codeView", false),
         "form-single": formSingleMacro,
         "form-list": formListMacro
     });

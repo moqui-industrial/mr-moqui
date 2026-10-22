@@ -207,6 +207,42 @@
               ]))
             }
         } },
+        "m-code": { hash: "83b1b6c5", make: function (Vue) {
+            const { renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createElementVNode: _createElementVNode, normalizeClass: _normalizeClass } = Vue
+
+            return function render(_ctx, _cache) {
+              return (_openBlock(), _createElementBlock("div", {
+                class: _normalizeClass(["m-code", {'m-code-numbered': _ctx.lineNumbers}]),
+                id: _ctx.id
+              }, [
+                _createElementVNode("table", { class: "m-code-table" }, [
+                  _createElementVNode("tbody", null, [
+                    (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.lines, (line, index) => {
+                      return (_openBlock(), _createElementBlock("tr", {
+                        key: index,
+                        class: _normalizeClass({'m-code-marked': _ctx.marked.has(index + 1)}),
+                        "data-line-row": index + 1
+                      }, [
+                        (_ctx.lineNumbers)
+                          ? (_openBlock(), _createElementBlock("td", {
+                              key: 0,
+                              class: "m-code-number",
+                              "data-line": index + 1
+                            }, null, 8, ["data-line"]))
+                          : _createCommentVNode("", true),
+                        _createElementVNode("td", { class: "m-code-line" }, [
+                          _createElementVNode("code", {
+                            class: "hljs",
+                            innerHTML: line || ' '
+                          }, null, 8, ["innerHTML"])
+                        ])
+                      ], 10, ["data-line-row"]))
+                    }), 128))
+                  ])
+                ])
+              ], 10, ["id"]))
+            }
+        } },
         "m-coedit": { hash: "148d829f", make: function (Vue) {
             const { renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, resolveComponent: _resolveComponent, createBlock: _createBlock, createVNode: _createVNode, toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, mergeProps: _mergeProps, createCommentVNode: _createCommentVNode } = Vue
 

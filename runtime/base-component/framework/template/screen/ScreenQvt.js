@@ -1865,6 +1865,18 @@
             }) + "></m-markdown>\n");
         };
 
+        // code-view: an m-code with the code as an attribute value (never template text, so nothing in it is compiled), its language or
+        // file name and the line options. Nothing for a false condition.
+        const codeView = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const value = (text) => (text && text !== "null" ? text : null);
+            w("<m-code" + A({
+                id: nodeId(n) || null, text: value(xn(at(n, "text"))) || "", language: value(xn(at(n, "language"))),
+                "file-name": value(xn(at(n, "file-name"))), ":line-numbers": at(n, "line-numbers") === "false" ? "false" : null,
+                "highlight-lines": value(xn(at(n, "highlight-lines"))), class: value(xn(at(n, "style")))
+            }) + "></m-code>\n");
+        };
+
         // ---- the shell ----
 
         // The screen context of the suite shell (the context element): m-screen-context registers it with the root while the
@@ -1988,7 +2000,8 @@
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
             quasarColor, icon, iconTag, tooltipTag, tonal, btnKind, js: js_, screenContext, numberCard, chatter, recordFiles, splitOpen, htmlView, statusBar,
-            markdownView
+            markdownView,
+            codeView
         };
         Object.defineProperty(globalThis, "$mqQvt", { value: h, configurable: true });
     };
@@ -2579,6 +2592,7 @@
         "record-files": widget("recordFiles", false),
         "html-view": widget("htmlView", false),
         "markdown-view": widget("markdownView", false),
+        "code-view": widget("codeView", false),
         "status-bar": widget("statusBar", true),
 
         "form-single": formSingleMacro,

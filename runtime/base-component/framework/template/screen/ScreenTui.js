@@ -1367,6 +1367,11 @@ ${regionCode(node, child(node, "box-toolbar"), "toolbar")}${body}$closeChildren(
 `),
         "image": stmt((node) =>
             `$emit({t:"image",id:$uid(${jsString(idOf(node))}),alt:String(${S.expandExpr(attr(node, "alt") || "")} || ""),url:String(${S.expandNoL10nExpr(attr(node, "url") || "")} || "")});\n`),
+        // a code-view as a pre block of an html node, its lines kept
+        "code-view": stmt((node) => guarded(node, `{
+    const $code = ((t) => (t && t !== "null" ? String(t).replace(/\\s+$/, "") : ""))(ec.resource.expandNoL10n(${jsString(attr(node, "text") || "")}));
+    if ($code) ${htmlNode(jsString(idOf(node)), '"<pre>" + $code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</pre>"')}}
+`)),
         "markdown-view": stmt((node) => guarded(node,
             `$emit({t:"markdown",id:$uid(${jsString(idOf(node))}),text:String(${S.markdownTextExpr(node)} || "")});\n`)),
         "status-bar": stmt((node) => guarded(node, statusBarCode(node))),

@@ -1521,6 +1521,14 @@
             w("<div" + A({ id: nodeId(n) || null, class: cls("markdown-view", xn(at(n, "style")) || null), style: "white-space:pre-wrap" }) + ">" + e(text.trim()) + "</div>\n");
         };
 
+        // code-view: the page has no highlighter, so a pre of the code, escaped. Nothing for a false condition.
+        const codeView = (n) => {
+            if (at(n, "condition") && !cond(at(n, "condition"))) return;
+            const text = xn(at(n, "text"));
+            if (!text || text === "null") return;
+            w("<pre" + A({ id: nodeId(n) || null, class: cls("code-view", xn(at(n, "style")) || null) }) + "><code>" + e(text.replace(/\s+$/, "")) + "</code></pre>\n");
+        };
+
         const h = {
             reset, enter, leave, e, lib, fid, fnm,
             textLine, textArea, password, file, hidden, reset_, submit, dateTime, dateFind, datePeriod, rangeFind, textFind,
@@ -1532,7 +1540,8 @@
             accordion: (id, active) => { st.accordion = id; st.accIndex = 0; st.accActive = active; },
             endAccordion: () => { st.accordion = ""; },
             labelCols: (value) => { st.labelCols = value || ""; },
-            numberCard, chatter, recordFiles, splitOpen, splitMain, htmlView, markdownView, statusBar
+            numberCard, chatter, recordFiles, splitOpen, splitMain, htmlView, markdownView, statusBar,
+            codeView
         };
         Object.defineProperty(globalThis, "$mqHtml", { value: h, configurable: true });
     };
@@ -2030,6 +2039,7 @@
         "record-files": widget("recordFiles", false),
         "html-view": widget("htmlView", false),
         "markdown-view": widget("markdownView", false),
+        "code-view": widget("codeView", false),
 
         "form-single": formSingleMacro,
         "form-list": formListMacro,

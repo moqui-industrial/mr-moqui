@@ -39,7 +39,8 @@
         "panel-right", "panel-footer", "container-dialog", "dynamic-container", "dynamic-dialog", "button-menu",
         "tree", "tree-node", "tree-sub-node", "label", "link", "image", "parameter", "dialog",
         "render-dynamic-form", "dynamic-form", "form-list-user-columns", "context", "dashboard", "number-card",
-        "chatter", "record-files", "container-split", "split-side", "split-main", "html-view", "status-bar", "markdown-view"
+        "chatter", "record-files", "container-split", "split-side", "split-main", "html-view", "status-bar", "markdown-view",
+        "code-view"
     ];
     const formElements = [
         "form-single", "form-list", "row-actions", "field", "header-field", "first-row-field", "second-row-field",

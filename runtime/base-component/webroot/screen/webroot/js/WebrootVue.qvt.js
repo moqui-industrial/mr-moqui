@@ -5634,6 +5634,107 @@
         }
     });
 
+    /* ========== code ========== */
+
+    // Source code with line numbers (m-code, the code-view element): highlight.js (libs/highlightjs: its core and the languages of
+    // refresh.mjs's HLJS_LANGS) loaded on first use. The language is the one given, else the file name's extension, else plain text:
+    // never guessed, so a large file costs no detection. The code shows at once as plain lines and is highlighted when the library
+    // has loaded; a file over 512 KB stays plain. Lines in highlightLines ("3,5-7") are marked and the first is scrolled to. The line
+    // numbers are drawn by CSS (data-line), so a copy takes only the code. The helpers are pure (node tests in WebrootVue.qvt.code.test.js).
+    const codeEscape = (text) => String(text === null || text === undefined ? "" : text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    moqui.code = {
+        // file extensions (and whole names) to highlight.js languages
+        extensions: {
+            java: "java", groovy: "groovy", gradle: "groovy", gvy: "groovy", kt: "kotlin", kts: "kotlin",
+            xml: "xml", xsd: "xml", xsl: "xml", xslt: "xml", html: "xml", htm: "xml", xhtml: "xml", svg: "xml", ftl: "xml", qvt: "xml", qvue: "xml", vue: "xml",
+            js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript", ts: "typescript", mts: "typescript", tsx: "typescript",
+            rs: "rust", py: "python", sql: "sql", yml: "yaml", yaml: "yaml", json: "json", md: "markdown", markdown: "markdown",
+            css: "css", scss: "css", sh: "bash", bash: "bash", zsh: "bash", diff: "diff", patch: "diff", txt: "plaintext"
+        },
+        // the highlight.js language of a file name or path; plaintext when the extension is not known
+        languageOf(fileName) {
+            const name = String(fileName || "").split("/").pop().toLowerCase();
+            if (!name) return "plaintext";
+            if (name === "dockerfile" || name === "makefile") return "bash";
+            const dot = name.lastIndexOf(".");
+            return (dot >= 0 && moqui.code.extensions[name.slice(dot + 1)]) || "plaintext";
+        },
+        // "3,5-7" as the set of those line numbers
+        parseLines(text) {
+            const lines = new Set();
+            String(text || "").split(",").forEach((part) => {
+                const match = /^\s*(\d+)\s*(?:-\s*(\d+)\s*)?$/.exec(part);
+                if (!match) return;
+                const from = Number(match[1]), to = match[2] ? Number(match[2]) : from;
+                for (let line = Math.min(from, to); line <= Math.max(from, to) && line - Math.min(from, to) < 100000; line++) lines.add(line);
+            });
+            return lines;
+        },
+        // highlighted HTML split into lines, each with its own spans: a span open at a line's end is closed there and opened again on the
+        // next line, so a comment or string over several lines keeps its color on each
+        splitLines(html) {
+            const lines = [];
+            const open = [];
+            let current = "";
+            const re = /(<span[^>]*>)|(<\/span>)|(\n)|([^<\n]+|<)/g;
+            let match;
+            while ((match = re.exec(String(html || ""))) !== null) {
+                if (match[1]) { open.push(match[1]); current += match[1]; }
+                else if (match[2]) { open.pop(); current += match[2]; }
+                else if (match[3]) { lines.push(current + "</span>".repeat(open.length)); current = open.join(""); }
+                else current += match[4];
+            }
+            lines.push(current + "</span>".repeat(open.length));
+            return lines;
+        },
+        // plain lines, escaped
+        plainLines(text) { return codeEscape(text).split("\n"); },
+        // text without the trailing newline a file ends with
+        trimEnd(text) { return String(text === null || text === undefined ? "" : text).replace(/\r\n?/g, "\n").replace(/\n+$/, ""); }
+    };
+    let highlightLoad = null;
+    const loadHighlight = () => highlightLoad || (highlightLoad = moqui.loadScript("/libs/highlightjs/highlight.min.js", null, () => !!root.hljs)
+        .catch((err) => { highlightLoad = null; throw err; }));
+    component("m-code", {
+        name: "mCode",
+        props: { id: String, text: String, language: String, fileName: String, lineNumbers: { type: Boolean, default: true }, highlightLines: String },
+        data() { return { highlighted: null }; },
+        template:
+            '<div class="m-code" :id="id" :class="{\'m-code-numbered\': lineNumbers}">' +
+                '<table class="m-code-table"><tbody>' +
+                    '<tr v-for="(line, index) in lines" :key="index" :class="{\'m-code-marked\': marked.has(index + 1)}" :data-line-row="index + 1">' +
+                        '<td v-if="lineNumbers" class="m-code-number" :data-line="index + 1"></td>' +
+                        '<td class="m-code-line"><code class="hljs" v-html="line || \' \'"></code></td>' +
+                    '</tr>' +
+                '</tbody></table>' +
+            '</div>',
+        computed: {
+            code() { return moqui.code.trimEnd(this.text); },
+            lang() { return this.language || moqui.code.languageOf(this.fileName); },
+            lines() { return this.highlighted || moqui.code.plainLines(this.code); },
+            marked() { return moqui.code.parseLines(this.highlightLines); }
+        },
+        watch: { code() { this.render(); }, lang() { this.render(); }, highlightLines() { this.$nextTick(() => this.scrollToMark()); } },
+        mounted() { this.render(); this.$nextTick(() => this.scrollToMark()); },
+        methods: {
+            render() {
+                this.highlighted = null;
+                const code = this.code, lang = this.lang;
+                if (lang === "plaintext" || !code || code.length > 512 * 1024) return;
+                loadHighlight().then(() => {
+                    if (code !== this.code || lang !== this.lang || !root.hljs.getLanguage(lang)) return;
+                    try { this.highlighted = moqui.code.splitLines(root.hljs.highlight(code, { language: lang, ignoreIllegals: true }).value); }
+                    catch (err) { console.warn("m-code: " + lang + " did not highlight", err); }
+                }, (err) => console.warn("m-code: highlight.js did not load", err));
+            },
+            scrollToMark() {
+                const first = Array.from(this.marked).sort((a, b) => a - b)[0];
+                const row = first && this.$el && this.$el.querySelector ? this.$el.querySelector('[data-line-row="' + first + '"]') : null;
+                if (row && row.scrollIntoView) row.scrollIntoView({ block: "center" });
+            }
+        }
+    });
+
     /* ========== dashboards ========== */
 
     // The delta of a number-card: its sign (a leading + or -, else the number's; 0 or no number is none) and, against

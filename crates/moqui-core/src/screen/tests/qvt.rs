@@ -299,6 +299,31 @@ fn the_html_view_element() {
     assert!(!text.contains("alert(1)") || !text.contains("<script"), "{text}");
 }
 
+/// `code-view` is an m-code with the code as an attribute value (so `{{` in a file is never compiled), the file name or language
+/// and the line options; a false condition writes nothing. The html and print modes write a pre of the code, escaped; the text
+/// modes the code; the tui mode a pre block of an html node.
+#[test]
+fn the_code_view_element() {
+    let out = check("codeview", &[]);
+    for expected in [
+        "<m-code id=\"Source\" text=\"fn main() {\n    let t = &quot;{{x}} &lt;b&gt;&quot;;\n}\n\" file-name=\"src/main.rs\" highlight-lines=\"2\" class=\"q-mt-sm\"></m-code>",
+        "<m-code text=\"fn main() {\n    let t = &quot;{{x}} &lt;b&gt;&quot;;\n}\n\" language=\"rust\" :line-numbers=\"false\"></m-code>",
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    assert_eq!(out.matches("<m-code").count(), 2, "{out}");
+    let html = render_mode("codeview", "", "html", &[]);
+    assert!(
+        html.contains("<pre id=\"Source\" class=\"code-view q-mt-sm\"><code>fn main() {\n    let t = &quot;{{x}} &lt;b&gt;&quot;;\n}</code></pre>"),
+        "{html}"
+    );
+    assert_eq!(html.matches("<pre").count(), 2, "{html}");
+    let text = render_mode("codeview", "", "text", &[]);
+    assert!(text.contains("fn main() {\n    let t = \"{{x}} <b>\";\n}\n"), "{text}");
+    let tui = render_mode("codeview", "", "tui", &[]);
+    assert!(tui.contains("pre") && tui.contains("{{x}} <b>"), "{tui}");
+}
+
 #[test]
 fn form_lists() {
     let out = check("lists", &[]);

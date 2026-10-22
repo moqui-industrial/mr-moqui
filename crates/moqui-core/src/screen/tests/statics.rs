@@ -426,6 +426,21 @@ fn the_html_view_is_bound_over_the_scope_in_a_static_template() {
     assert!(!html.contains("{{ada}}") && !html.contains("alert(1)"), "{html}");
 }
 
+/// A code-view of a server-static screen is bound over the scope: the text and file name are expressions of the screen's data,
+/// the condition a v-if; no code is in the template.
+#[test]
+fn the_code_view_is_bound_over_the_scope_in_a_static_template() {
+    let (html, _) = static_fixture("codeview");
+    for expected in [
+        r#"<m-code id="Source" :text="ec.resource.expandNoL10n('${source}',{'source':()=&gt;(source)})" :file-name="ec.resource.expandNoL10n('${path}',{'path':()=&gt;(path)})" highlight-lines="2" class="q-mt-sm"></m-code>"#,
+        r#"<m-code :text="ec.resource.expandNoL10n('${source}',{'source':()=&gt;(source)})" language="rust" :line-numbers="false"></m-code>"#,
+        r#"<template v-if="(false)"><m-code"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    assert!(!html.contains("{{x}}"), "{html}");
+}
+
 /// A split of a server-static screen is the same m-container-split, its panes the side and main slots, the selection read from
 /// the URL in the browser: nothing in it is request data. A wizard or stack panel reads its steps from the menu data.
 #[test]
